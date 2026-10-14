@@ -59,6 +59,14 @@ pub(crate) trait WakeRoute: Send + Sync {
         None
     }
 
+    /// The seal the host lent this route's dispatcher (Part 2 #54); `None` = none, and a reveal of
+    /// a `Secret` its instances' services would make is refused.
+    fn seal(
+        &self,
+    ) -> Option<std::sync::Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
+        None
+    }
+
     /// The waker of an INLINE ticket's task (`super::inline`); `None` for any other ticket.
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
         let _ = t;

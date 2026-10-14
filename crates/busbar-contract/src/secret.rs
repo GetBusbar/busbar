@@ -178,12 +178,11 @@ pub struct SecretRefused {
 pub trait SecretCalls: Send + Sync {
     /// `resolve` one reference's `settings` object (JSON bytes) to the secret's material. The
     /// plugin's lease is released before this returns; the material is held only in the
-    /// [`Redacted`](crate::redacted::Redacted) it comes back in.
+    /// [`Secret`](crate::redacted::Secret) it comes back in.
     ///
     /// # Errors
     /// The plugin's refusal, its code and its text.
-    fn resolve(&self, settings: &[u8])
-        -> Result<crate::redacted::Redacted<Vec<u8>>, SecretRefused>;
+    fn resolve(&self, settings: &[u8]) -> Result<crate::redacted::Secret<Vec<u8>>, SecretRefused>;
 }
 
 /// THE SECRET AXIS, as the composition root hands it to the kernel (ARCHITECT ruling Q8: the kernel

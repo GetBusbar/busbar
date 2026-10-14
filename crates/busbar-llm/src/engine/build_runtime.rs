@@ -142,7 +142,7 @@ pub(crate) fn build_runtime(
         // AUDIT POINT: the resolved credential leaves redaction here and nowhere else on this path —
         // the auth plugin serving the lane's style is handed the plaintext to bind, and the `Lane`
         // this builds re-wraps it.
-        let api_key = li.api_key.expose_secret().clone();
+        let api_key = li.api_key.expose(&busbar_kernel::seal::lend()).clone();
         let signing_host = host_from_base(&li.base_url);
         let credential =
             crate::engine::credential::credential_for(input, li, protocol, &signing_host, &api_key);
@@ -184,7 +184,7 @@ pub(crate) fn build_runtime(
             base_url,
             authority,
             lane_id,
-            api_key: busbar_contract::redacted::Redacted::new(api_key),
+            api_key: busbar_contract::redacted::Secret::new(api_key),
             protocol,
             credential,
             max: li.max_concurrent,

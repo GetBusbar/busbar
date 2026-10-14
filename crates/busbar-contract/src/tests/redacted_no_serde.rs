@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SERDE FENCE for [`Redacted`](crate::Redacted) — a compile-time pin that a secret VALUE can
+//! THE SERDE FENCE for [`Secret`](crate::Secret) — a compile-time pin that a secret VALUE can
 //! NEVER be serialized into an audit record, a wire payload, on-disk config, or a log line by
 //! construction. The single structural guarantee the whole secret-hygiene design rests on
 //! (`docs/design/BUSBAR-1.6.0.md` #53/#54, Part 2's resolved-secret-value rule, and Part 3,
 //! Check 3) is:
 //!
-//!   > `Redacted<T>` deliberately implements NEITHER `Serialize` NOR `Deserialize`.
+//!   > `Secret<T>` deliberately implements NEITHER `Serialize` NOR `Deserialize`.
 //!
 //! `redacted.rs` states this in a comment; this file makes it a TEST that goes RED the instant a
-//! future edit adds an `impl serde::Serialize for Redacted` (or a `#[derive(Serialize)]`-adjacent
+//! future edit adds an `impl serde::Serialize for Secret` (or a `#[derive(Serialize)]`-adjacent
 //! glue) — so the invariant is enforced, not merely documented.
 //!
 //! ## The mechanism: AUTOREF SPECIALIZATION (no extra deps, genuinely detects the impl)
 //!
-//! We cannot write a `where Redacted<T>: !Serialize` bound on stable Rust (negative bounds are
+//! We cannot write a `where Secret<T>: !Serialize` bound on stable Rust (negative bounds are
 //! unstable), and this crate deliberately carries no `static_assertions`/`trybuild` dev-dep. So we
 //! detect the impl the way `redacted_tests.rs::redacted_does_not_implement_serialize` already does,
 //! generalized to BOTH directions: a `Probe<T>` whose inherent method exists ONLY when `T: Serialize`
@@ -61,27 +61,27 @@ impl<T: serde::de::DeserializeOwned> Probe<T> {
     }
 }
 
-/// THE FENCE: `Redacted<String>` implements neither `Serialize` nor `Deserialize`. Either half going
+/// THE FENCE: `Secret<String>` implements neither `Serialize` nor `Deserialize`. Either half going
 /// green (someone adds an impl) flips this test RED — proving a secret value cannot reach a wire /
 /// disk / audit / log sink through serde by construction. Kept a runtime `assert!` rather than a
 /// `const` so the failure message names exactly which half regressed.
 #[test]
 fn redacted_implements_neither_serialize_nor_deserialize() {
-    let secret_probe = Probe::<Redacted<String>>(PhantomData);
+    let secret_probe = Probe::<Secret<String>>(PhantomData);
     assert!(
         !secret_probe.ser(),
-        "FENCE BREACH: Redacted<T> must NOT implement serde::Serialize — a secret VALUE could now be \
+        "FENCE BREACH: Secret<T> must NOT implement serde::Serialize — a secret VALUE could now be \
          written into an audit record / wire payload / config dump / log line. Remove the impl."
     );
     assert!(
         !secret_probe.de(),
-        "FENCE BREACH: Redacted<T> must NOT implement serde::Deserialize — a secret VALUE could now be \
+        "FENCE BREACH: Secret<T> must NOT implement serde::Deserialize — a secret VALUE could now be \
          reconstructed from untrusted wire/disk input. Remove the impl."
     );
 
     // CONTROL: the probe is not vacuously false — over a type that genuinely IS Serialize AND
     // Deserialize (`String`), BOTH halves report true. This proves the fence detects real impls, so a
-    // future `impl Serialize for Redacted` truly would be caught above.
+    // future `impl Serialize for Secret` truly would be caught above.
     let control = Probe::<String>(PhantomData);
     assert!(
         control.ser(),

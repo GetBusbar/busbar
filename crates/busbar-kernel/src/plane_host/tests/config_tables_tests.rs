@@ -20,7 +20,7 @@ fn lane(model: &str, provider: &str) -> LaneInput {
         organization: None,
         project: None,
         upstream_model: None,
-        api_key: busbar_contract::redacted::Redacted::new(String::new()),
+        api_key: busbar_contract::redacted::Secret::new(String::new()),
         auth_style: AuthStyleInput::Default,
         scope: None,
         token_url: None,

@@ -24,7 +24,7 @@ use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::auth_calls::{AuthAxis, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::config::UpstreamCreds;
 use busbar_contract::protocol::EgressAuthHeaders;
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use http::{HeaderName, HeaderValue};
 
 use crate::proto::SigningContext;
@@ -160,7 +160,7 @@ impl BoundCredential {
             query: None,
             timestamp: ctx.timestamp_epoch,
             headers: self.headers.clone(),
-            caller_credential: passthrough.then(|| Redacted::new(key.as_bytes().to_vec())),
+            caller_credential: passthrough.then(|| Secret::new(key.as_bytes().to_vec())),
             ..FieldsRequest::default()
         }
     }
@@ -178,7 +178,7 @@ impl CredentialProvider for BoundCredential {
                 .filter_map(|f| {
                     Some((
                         HeaderName::from_bytes(&f.name).ok()?,
-                        HeaderValue::from_bytes(f.value.expose_secret()).ok()?,
+                        HeaderValue::from_bytes(f.value.expose(&crate::seal::lend())).ok()?,
                     ))
                 })
                 .collect(),

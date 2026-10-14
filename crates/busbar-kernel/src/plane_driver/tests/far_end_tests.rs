@@ -407,7 +407,7 @@ impl OutboundAuth for Bearer {
         self.callers.lock().unwrap().push(
             r.caller_credential
                 .as_ref()
-                .map(|c| c.expose_secret().clone()),
+                .map(|c| c.expose(&crate::seal::lend()).clone()),
         );
         self.facts
             .lock()

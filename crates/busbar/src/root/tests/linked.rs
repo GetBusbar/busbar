@@ -327,7 +327,10 @@ fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
     let got = env
         .resolve(format!(r#"{{"key":"{var}"}}"#).as_bytes())
         .expect("a set variable resolves");
-    assert_eq!(got.expose_secret().as_slice(), b"hunter2");
+    assert_eq!(
+        got.expose(&busbar_kernel::seal::lend()).as_slice(),
+        b"hunter2"
+    );
     std::env::remove_var(var);
     let refused = env
         .resolve(br#"{"key":"BUSBAR_WIRE_SECRET_ROOT_UNSET"}"#)

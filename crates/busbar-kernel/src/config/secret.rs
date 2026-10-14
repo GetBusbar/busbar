@@ -87,7 +87,7 @@ impl SecretResolver {
         if let Some(axis) = axis().filter(|a| a.linked(module)) {
             let material = axis.shared(module)?.resolve(settings.as_bytes());
             return material
-                .map(|m| m.expose_secret().clone())
+                .map(|m| m.expose(&crate::seal::lend()).clone())
                 .map_err(|r| r.text);
         }
         let Some(f) = &self.plugin else {

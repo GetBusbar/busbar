@@ -520,7 +520,7 @@ pub struct DoorSteps<'s> {
     /// How deep the unit is nested.
     depth: u32,
     /// The caller's verified credential, lent on the unit's record at authenticate.
-    credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
+    credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
     /// A nested unit's parent's hold cell: its door accrues against the parent's admission.
     parent: Option<&'s busbar_contract::caps::HoldCell>,
     unit: Mutex<DoorUnit>,
@@ -552,7 +552,7 @@ pub struct DoorCaller {
     pub depth: u32,
     /// The caller's verified credential, lent on the unit's record while it runs: a passthrough
     /// member's auth call made inside the unit (the plane's own fetches included) is lent it.
-    pub credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
+    pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
 }
 
 impl<'s> DoorSteps<'s> {

@@ -252,7 +252,7 @@ async fn dial_provider_fails_closed_on_a_guarded_target() {
 fn sekret_endpoint(base_url: &str) -> crate::mount::ProviderEndpoint {
     crate::mount::ProviderEndpoint {
         base_url: base_url.to_string(),
-        api_key: busbar_contract::Redacted::new(SEKRET.to_string()),
+        api_key: busbar_contract::Secret::new(SEKRET.to_string()),
     }
 }
 

@@ -1,6 +1,6 @@
 use super::*;
 use busbar_contract::records::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use busbar_kernel_ledger::{
     cost::{
         plane_fee_lane, split_plane_lane, History, Money, MoneyError, MICROS_PER_CENT, PER_REQUEST,
@@ -332,7 +332,7 @@ impl GovState {
     /// MINT a signed-token key (1.5.0): persist the policy BINDING row (subject id -> group,
     /// allowed_pools, labels; NO inline limits - keys are pure auth) and issue a busbar-SIGNED
     /// token `{sub, exp, kid}` for it. Returns `(binding, token)`; the token is shown ONCE and
-    /// comes back [`Redacted`] (a `{:?}`/`{}` prints `[REDACTED]`), read via `expose_secret`. The
+    /// comes back [`Secret`] (a `{:?}`/`{}` prints `[REDACTED]`), read via the sealed `expose`. The
     /// subject id is a fresh unguessable `vk_<hex>` from the OS CSPRNG (its own bucket namespace).
     /// FAIL-CLOSED: no signer configured is an error (a key with no token is useless).
     pub fn mint_signed(
@@ -340,7 +340,7 @@ impl GovState {
         spec: NewKeySpec,
         exp: u64,
         now: u64,
-    ) -> RecordStoreResult<(VirtualKey, Redacted<String>)> {
+    ) -> RecordStoreResult<(VirtualKey, Secret<String>)> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
@@ -358,16 +358,16 @@ impl GovState {
     /// signed token. Returns `(binding, token, aws_access_key_id, aws_secret_access_key)` - the
     /// token and the AWS secret are shown ONCE. See `mint_signed` for the binding shape.
     ///
-    /// Both secrets come back as [`Redacted`](busbar_contract::redacted::Redacted): a `{:?}`/`{}` of
+    /// Both secrets come back as [`Secret`](busbar_contract::redacted::Secret): a `{:?}`/`{}` of
     /// either (or of the tuple) prints `[REDACTED]`, so the one-time values cannot reach a log line
-    /// by accident; the caller reads them once, at the response boundary, via `expose_secret`. The
+    /// by accident; the caller reads them once, at the response boundary, via the sealed `expose`. The
     /// AccessKeyId is not secret (it travels in the SigV4 header) and stays a plain `String`.
     pub fn mint_signed_with_aws(
         &self,
         spec: NewKeySpec,
         exp: u64,
         now: u64,
-    ) -> RecordStoreResult<(VirtualKey, Redacted<String>, String, Redacted<String>)> {
+    ) -> RecordStoreResult<(VirtualKey, Secret<String>, String, Secret<String>)> {
         let Some(material) = self.signing_material() else {
             return Err(RecordStoreError(
                 "signed-token minting is unavailable: no signing key is configured".to_string(),
@@ -375,7 +375,7 @@ impl GovState {
         };
         let (binding, generation) = signed_binding(spec, now)?;
         let access_key_id = generate_aws_access_key_id().store()?;
-        let secret_access_key = Redacted::new(generate_aws_secret_access_key().store()?);
+        let secret_access_key = Secret::new(generate_aws_secret_access_key().store()?);
         let mut cred_raw = [0u8; 16];
         getrandom::fill(&mut cred_raw)
             .map_err(|e| RecordStoreError(format!("CSPRNG unavailable: {e}")))?;
@@ -398,7 +398,10 @@ impl GovState {
                 revoke_reason: None,
                 revision: 0,
             },
-            secret: format!("v1:plain:{}", secret_access_key.expose_secret()),
+            secret: format!(
+                "v1:plain:{}",
+                secret_access_key.expose(&crate::seal::lend())
+            ),
         };
         self.store.put_key_with_credential(&binding, &secret)?;
         self.refresh()?;
@@ -1267,7 +1270,7 @@ impl GovState {
                  credential."
             )));
         }
-        let token: Redacted<String> = material.signer.mint(&key.id, exp, Some(&generation)).into();
+        let token: Secret<String> = material.signer.mint(&key.id, exp, Some(&generation)).into();
         Ok(Some(RotatedCredential { key, token, exp }))
     }
 
@@ -2403,7 +2406,7 @@ impl GovState {
         kind: &str,
         public_id: &str,
         now: u64,
-    ) -> (busbar_contract::redacted::Redacted<String>, bool) {
+    ) -> (busbar_contract::redacted::Secret<String>, bool) {
         let dummy = crate::auth::DUMMY_SECRET;
         // Owned copies, out of the cache lock before the revocation check takes its own: two
         // allocations on either path.
@@ -2417,7 +2420,7 @@ impl GovState {
         let revoked = self.is_revoked_at(&key, now);
         let live = enabled && plain.is_some() && !revoked;
         let secret = plain.unwrap_or_else(|| dummy.to_string());
-        (busbar_contract::redacted::Redacted::new(secret), live)
+        (busbar_contract::redacted::Secret::new(secret), live)
     }
 
     /// Direct handle to the backing store — for tests that seed/inspect persistence AND for the boot

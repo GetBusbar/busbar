@@ -970,7 +970,7 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
     Ok(DoorRig {
         router,
-        token: token.expose_secret().to_string(),
+        token: token.expose(&busbar_kernel::seal::lend()).to_string(),
         app,
         book: Arc::clone(&book.durability),
         key_id: key.id.to_string(),

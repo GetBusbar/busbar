@@ -33,7 +33,7 @@ use crate::dispatch::{Budgets, DispatchConfig, Dispatcher};
 use crate::{LinkedPlugin, PluginRegistry};
 use busbar_contract::abi::auth::AuthPoint;
 use busbar_contract::auth_calls::{Verified, VerifyAnswer, VerifyRequest};
-use busbar_contract::redacted::{sha256_hex, Redacted};
+use busbar_contract::redacted::{sha256_hex, Secret};
 
 /// The both-ways table row this proof reads.
 const PROOF: &str = "auth-verify";
@@ -84,7 +84,7 @@ fn dispatcher() -> Arc<Dispatcher> {
 
 /// One case at the `Head` point.
 fn request(bearer: Option<&str>, other: Option<&str>) -> VerifyRequest {
-    let line = |name: &str, value: String| (name.to_string(), Redacted::new(value.into_bytes()));
+    let line = |name: &str, value: String| (name.to_string(), Secret::new(value.into_bytes()));
     let lines = bearer
         .map(|b| line(LINES.0, format!("Bearer {b}")))
         .into_iter()

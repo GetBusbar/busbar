@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::future::Future;
 
-use crate::redacted::Redacted;
+use crate::redacted::Secret;
 use std::sync::Arc;
 
 use crate::abi::auth::AuthPoint;
@@ -33,9 +33,9 @@ pub struct VerifyRequest {
     /// The candidate credential the host extracted from the request (the data plane's client token,
     /// the admin plane's Bearer), lent as `verify`'s `credential` blob (`abi::auth::VerifyIn`);
     /// `None` = none presented. SECRET.
-    pub credential: Option<Redacted<Vec<u8>>>,
+    pub credential: Option<Secret<Vec<u8>>>,
     /// The neutral field lines, as presented (name, value). A value may be a credential: secret.
-    pub lines: Vec<(String, Redacted<Vec<u8>>)>,
+    pub lines: Vec<(String, Secret<Vec<u8>>)>,
     /// The peer facts; `Some` only at [`AuthPoint::Peer`].
     pub peer: Option<Vec<u8>>,
     /// The whole body; `Some` only at [`AuthPoint::HeadBody`], bounded by the size gate.
@@ -108,7 +108,7 @@ pub struct VerifiedIdentity {
     /// The credential the identity was verified from, for the kernel to hold on the unit for the
     /// `caller-credential` style (THE DESIGN, "Auth points and guest lists", step 4). SECRET:
     /// the kernel's only, never the transport's; `None` = the plugin named none.
-    pub credential: Option<Redacted<String>>,
+    pub credential: Option<Secret<String>>,
 }
 
 /// A replay claim an identity asks the kernel to make.
@@ -481,8 +481,8 @@ pub struct FieldsRequest {
     /// `abi::auth::STYLE_NEEDS_HEADERS`; empty otherwise.
     pub headers: Vec<(Vec<u8>, Vec<u8>)>,
     /// The caller's verified credential, for a passthrough binding (`abi::auth::MODE_PASSTHROUGH`).
-    /// Secret: zeroised when it drops (every copy is its own [`Redacted`]).
-    pub caller_credential: Option<Redacted<Vec<u8>>>,
+    /// Secret: zeroised when it drops (every copy is its own [`Secret`]).
+    pub caller_credential: Option<Secret<Vec<u8>>>,
     /// The call's extensions blob (`abi::mechanism::extensions`), lent as `FieldsIn::head.extensions`:
     /// the per-call scope under `abi::auth::EXT_SCOPE` when the request stated one. Empty = absent.
     pub extensions: Vec<u8>,
@@ -529,7 +529,7 @@ pub struct AuthField {
     /// The field name.
     pub name: Vec<u8>,
     /// The value: credential material, zeroised when it drops, whichever copy it is.
-    pub value: Redacted<Vec<u8>>,
+    pub value: Secret<Vec<u8>>,
     /// `abi::auth::FIELD_SENSITIVE`: never logged, zeroised once the head is encoded.
     pub sensitive: bool,
 }
@@ -539,7 +539,9 @@ impl std::fmt::Debug for AuthField {
         let value = if self.sensitive {
             "<redacted>".to_string()
         } else {
-            String::from_utf8_lossy(self.value.expose_secret()).into_owned()
+            // A field the auth plugin marked NOT sensitive renders as it is: this crate reads its
+            // own `Secret`'s field (the sealed `expose` is the host's accessor).
+            String::from_utf8_lossy(&self.value.0).into_owned()
         };
         f.debug_struct("AuthField")
             .field("name", &String::from_utf8_lossy(&self.name))
@@ -550,9 +552,7 @@ impl std::fmt::Debug for AuthField {
 
 impl PartialEq for AuthField {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-            && self.value.expose_secret() == other.value.expose_secret()
-            && self.sensitive == other.sensitive
+        self.name == other.name && self.value == other.value && self.sensitive == other.sensitive
     }
 }
 

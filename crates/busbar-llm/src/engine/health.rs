@@ -286,7 +286,7 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
     // no static key) or nothing to authenticate at all (a provider declaring `api_key: none` for a
     // keyless local upstream — ollama, vLLM). The probe would go out unauthenticated, and against a
     // real provider the guaranteed 401 would only thrash the breaker.
-    if lane.api_key.expose_secret().is_empty() {
+    if lane.api_key.expose(&busbar_kernel::seal::lend()).is_empty() {
         return;
     }
 
@@ -337,7 +337,11 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
         // token), so the native API-key shape (Token mode) is correct here.
         upstream_creds: busbar_contract::config::UpstreamCreds::Own,
     };
-    let auth = crate::engine::lane_auth_headers(lane, lane.api_key.expose_secret(), &signing_ctx);
+    let auth = crate::engine::lane_auth_headers(
+        lane,
+        lane.api_key.expose(&busbar_kernel::seal::lend()),
+        &signing_ctx,
+    );
 
     // Send the SAME native-SDK fingerprint headers the organic forward path sends, so a probe is
     // indistinguishable from real traffic to the backend: the shared client emits no default

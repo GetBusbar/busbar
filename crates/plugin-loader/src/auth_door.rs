@@ -182,8 +182,23 @@ unsafe impl Send for Held {}
 // SAFETY: as above.
 unsafe impl Sync for Held {}
 
+/// Whether `req` carries secret material a `verify` lends the plugin: a reveal, which only a
+/// dispatcher lent the host's seal may make (Part 2 #54).
+fn reveals(req: &VerifyRequest) -> bool {
+    req.credential.is_some() || !req.lines.is_empty()
+}
+
 impl Held {
-    fn new(req: &VerifyRequest, buf_cap: usize, groups_cap: u32, strip_cap: u32) -> Arc<Self> {
+    /// `seal` is the host's, lent to the dispatcher ([`Dispatcher::lend_seal`]): the credential and
+    /// the lines are revealed under it to be lent to the plugin's `verify`. The caller refuses a
+    /// request that [`reveals`] anything when none was lent, so `None` here reveals nothing.
+    fn new(
+        req: &VerifyRequest,
+        seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
+        buf_cap: usize,
+        groups_cap: u32,
+        strip_cap: u32,
+    ) -> Arc<Self> {
         let buf = Box::into_raw(vec![0u8; buf_cap].into_boxed_slice()).cast::<u8>();
         let empty = Span {
             offset: SPAN_ABSENT,
@@ -203,12 +218,12 @@ impl Held {
             credential: req
                 .credential
                 .as_ref()
-                .map(|c| c.expose_secret().clone())
+                .and_then(|c| Some(c.expose(seal?).clone()))
                 .unwrap_or_default(),
             lines: req
                 .lines
                 .iter()
-                .map(|(n, v)| (n.clone(), v.expose_secret().clone()))
+                .filter_map(|(n, v)| Some((n.clone(), v.expose(seal?).clone())))
                 .collect(),
             named: Vec::new(),
             point: req.point.bit(),
@@ -713,7 +728,18 @@ impl AuthCalls for AuthInstance {
     fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer> {
         let presented = request.credential.is_some();
         let plugin = &self.shared.plugin;
-        let held = Held::new(request, IDENTITY_BUF_BYTES, IDENTITY_GROUPS, FIELDS_MAX);
+        // No seal lent to the dispatcher: secret material is not revealed, and the verify fails.
+        let seal = self.shared.dispatcher.seal();
+        if reveals(request) && seal.is_none() {
+            return Some(Verified::Failed.into());
+        }
+        let held = Held::new(
+            request,
+            seal,
+            IDENTITY_BUF_BYTES,
+            IDENTITY_GROUPS,
+            FIELDS_MAX,
+        );
         let mut f = Frame::new(held.input(presented), identify_out());
         let called = plugin.call(slot::VERIFY, &mut f);
         match called.outcome {
@@ -723,7 +749,7 @@ impl AuthCalls for AuthInstance {
                 let Some((cap, groups, strips)) = grown(&f.out, &held) else {
                     return Some(Verified::Failed.into());
                 };
-                let bigger = Held::new(request, cap, groups, strips);
+                let bigger = Held::new(request, seal, cap, groups, strips);
                 let mut g = Frame::new(bigger.input(presented), identify_out());
                 let again = plugin.recall(token, slot::VERIFY, &mut g);
                 Some(verdict(again.outcome, &g.out, &bigger))
@@ -742,7 +768,18 @@ impl AuthCalls for AuthInstance {
             return Box::new(Settled(Some(Verified::Overloaded.into())));
         };
         let presented = request.credential.is_some();
-        let held = Held::new(&request, IDENTITY_BUF_BYTES, IDENTITY_GROUPS, FIELDS_MAX);
+        // No seal lent to the dispatcher: secret material is not revealed, and the verify fails.
+        let seal = sh.dispatcher.seal();
+        if reveals(&request) && seal.is_none() {
+            return Box::new(Settled(Some(Verified::Failed.into())));
+        }
+        let held = Held::new(
+            &request,
+            seal,
+            IDENTITY_BUF_BYTES,
+            IDENTITY_GROUPS,
+            FIELDS_MAX,
+        );
         let reply = sh.submit(ticket, &held, presented);
         Box::new(Submitted {
             shared: sh.clone(),
@@ -862,7 +899,8 @@ impl Submitted {
             self.recalled = true;
             let grow = out.as_ref().and_then(|o| grown(o, &self.held));
             if let Some((cap, groups, strips)) = grow {
-                self.held = Held::new(&self.request, cap, groups, strips);
+                let seal = self.shared.dispatcher.seal();
+                self.held = Held::new(&self.request, seal, cap, groups, strips);
                 self.reply = Some(self.shared.submit(self.ticket, &self.held, self.presented));
                 return None;
             }

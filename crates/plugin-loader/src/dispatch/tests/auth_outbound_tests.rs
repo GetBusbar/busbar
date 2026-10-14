@@ -373,7 +373,12 @@ fn a_refused_fields_is_refused_on_a_ticket_and_left_to_it_on_the_spot() {
 fn the_body_is_lent_at_head_body_and_never_at_head() {
     let a = opened();
     let signed = |f: Fields| match f {
-        Fields::Ready(v) => String::from_utf8(v[0].value.expose_secret().clone()).unwrap(),
+        Fields::Ready(v) => String::from_utf8(
+            v[0].value
+                .expose(&busbar_contract::plugin::TestKernelSeal)
+                .clone(),
+        )
+        .unwrap(),
         other => panic!("{other:?}"),
     };
     let at = |point| FieldsRequest {
@@ -419,7 +424,12 @@ fn the_extensions_blob_carries_the_per_call_scope_to_the_plugin() {
     let a = opened();
     assert_eq!(a.open_outbound(SCOPED, b"", &serde_json::json!({})), Ok(4));
     let scope_of = |f: Fields| match f {
-        Fields::Ready(v) => String::from_utf8(v[0].value.expose_secret().clone()).unwrap(),
+        Fields::Ready(v) => String::from_utf8(
+            v[0].value
+                .expose(&busbar_contract::plugin::TestKernelSeal)
+                .clone(),
+        )
+        .unwrap(),
         other => panic!("{other:?}"),
     };
     let scoped = FieldsRequest {

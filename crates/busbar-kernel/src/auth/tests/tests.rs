@@ -1162,7 +1162,11 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);
     let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
     let generation = verifier
-        .verify(plain_token.expose_secret().as_str(), 1_000_000_000, None)
+        .verify(
+            plain_token.expose(&crate::seal::lend()).as_str(),
+            1_000_000_000,
+            None,
+        )
         .expect("plain claims")
         .generation;
     let bound_token = signer.mint_for_audience(
@@ -1228,7 +1232,7 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
         .get(format!("http://{addr}/stats"))
         .header(
             "authorization",
-            format!("Bearer {}", plain_token.expose_secret()),
+            format!("Bearer {}", plain_token.expose(&crate::seal::lend())),
         )
         .send()
         .await
@@ -1599,7 +1603,10 @@ fn dp_gov_with_key() -> (std::sync::Arc<crate::governance::GovState>, String) {
             1_000_000_000,
         )
         .unwrap();
-    (gov, secret.expose_secret().as_str().to_string())
+    (
+        gov,
+        secret.expose(&crate::seal::lend()).as_str().to_string(),
+    )
 }
 
 fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
@@ -1677,7 +1684,7 @@ fn test_1_5_2_keys_arm_resolves_the_vkey() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = secret.expose_secret().as_str();
+    let secret = secret.expose(&crate::seal::lend()).as_str();
     let mw = AuthMiddleware::new_builtin(&chain_cfg(&["keys"]));
     let now = busbar_kernel::store::now();
     let verdict = mw.run_chain_with(Some(secret), Some(&gov), now, None);
@@ -2165,7 +2172,11 @@ impl LentCredentialDoor {
         r: &busbar_contract::auth_calls::VerifyRequest,
     ) -> busbar_contract::auth_calls::VerifyAnswer {
         use busbar_contract::auth_calls::{Verified, VerifiedIdentity};
-        match r.credential.as_ref().map(|c| c.expose_secret().as_slice()) {
+        match r
+            .credential
+            .as_ref()
+            .map(|c| c.expose(&crate::seal::lend()).as_slice())
+        {
             Some(b"tok") => Verified::Identity(VerifiedIdentity {
                 subject: "ext:who".into(),
                 groups: vec!["ops".into()],

@@ -251,6 +251,8 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     // connector.
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
+    // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = load_linked::<Plane>(
         &row,
@@ -375,7 +377,12 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
 
     // THE SERVED REQUEST, as the keyed caller.
-    let response = send(&router, CLAIMED, Some(token.expose_secret())).await;
+    let response = send(
+        &router,
+        CLAIMED,
+        Some(token.expose(&busbar_kernel::seal::lend())),
+    )
+    .await;
     assert_eq!(response.status(), StatusCode::OK, "served through the door");
     let kind = response.headers()["content-type"].to_str().expect("a type");
     assert!(kind.starts_with("application/json"), "{kind}");
@@ -397,7 +404,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         "the member's credential, presented by the auth plugin serving its style: {head}"
     );
     assert!(
-        !head.contains(token.expose_secret()),
+        !head.contains(token.expose(&busbar_kernel::seal::lend())),
         "the caller's own credential never reaches the far end: {head}"
     );
     assert!(
@@ -452,6 +459,8 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
 
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
+    // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = load_linked::<Plane>(
         &row,
@@ -527,6 +536,8 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     let app = busbar_kernel::test_support::TestApp::new().build();
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
+    // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = load_linked::<Plane>(
         &row,
@@ -1437,7 +1448,10 @@ mod tools_door {
             rig.gov.store().put_key(&key).expect("the key is stored");
         }
         rig.gov.refresh().expect("the book refreshes");
-        (key.id.clone(), token.expose_secret().to_string())
+        (
+            key.id.clone(),
+            token.expose(&busbar_kernel::seal::lend()).to_string(),
+        )
     }
 
     /// GOVERNANCE-BUDGET: a call's spend is attributed to the key that PRESENTED it — the key whose
@@ -2468,6 +2482,8 @@ async fn serve_configured(
     .expect("the connector builds");
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
+    // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
     let plane = load_linked::<Plane>(
         &row,
@@ -2610,7 +2626,7 @@ async fn serve_configured(
         busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
     Ok(Serving {
         router,
-        token: token.expose_secret().to_string(),
+        token: token.expose(&busbar_kernel::seal::lend()).to_string(),
         handle,
         live,
         egress,

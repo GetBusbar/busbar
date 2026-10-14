@@ -73,12 +73,12 @@ The badge criteria are grouped as the bestpractices.dev form groups them. Answer
 | `know_secure_design` + `know_common_errors` | Met | [`THREAT_MODEL.md`](../../THREAT_MODEL.md) (T1–T9 with in-code mitigations) and the posture doc's six structural defenses. |
 | `crypto_published` + `crypto_call` + `crypto_floss` | Met | No home-grown crypto; standard vetted crates. Constant-time secret comparison (`crates/api/src/auth.rs`), SHA-256 digests. |
 | `crypto_keylength` + `crypto_working` + `crypto_weaknesses` | Met | SHA-256, ed25519 plugin signing key, TLS/mTLS. See posture doc §2.6, §2.3. |
-| `crypto_pfs` + `crypto_password_storage` + `crypto_random` | Met | TLS; secrets stored via `Redacted<T>` / `SecretRef` (posture doc §2.2), never plaintext at rest by design. |
+| `crypto_pfs` + `crypto_password_storage` + `crypto_random` | Met | TLS; secrets stored via `Secret<T>` / `SecretRef` (posture doc §2.2), never plaintext at rest by design. |
 | `delivery_mitm` — signed/hash-verified delivery | Unmet | The release build, SBOM, build-provenance attestation and cosign signing lived in the deleted release workflows; the release engine in busbar-release does not build or publish yet (`promote.yml` fails a hop that plans a build). Verify recipes for past releases: <https://getbusbar.com/security/>. |
 | `delivery_unsigned` — no unsigned critical delivery | Unmet | Nothing is published until the engine ports the builds; see `RELEASE.md`. |
 | `vulnerabilities_fixed_60_days` | Met | `SECURITY.md` backport policy: fix on `dev` first, severity-driven backport window. |
 | `vulnerabilities_critical_fixed` | Met | Critical/High cherry-picked to the latest two minor lines with a GitHub Security Advisory + CVE (`SECURITY.md`). |
-| `no_leaked_credentials` | Met | `Redacted<T>` (no `Serialize`/`Deserialize`), `SecretRef` (inline literal unrepresentable), and the `cargo xtask gate settings-leak` gate. |
+| `no_leaked_credentials` | Met | `Secret<T>` (no `Serialize`/`Deserialize`), `SecretRef` (inline literal unrepresentable), and the `cargo xtask gate settings-leak` gate. |
 | `static_analysis` + `static_analysis_common_vulnerabilities` | Unmet | The CodeQL workflow was deleted. The xtask gate battery runs on every hop, but it checks this project's own rules, not common-vulnerability classes. |
 | `static_analysis_fixed` + `static_analysis_often` | Met | CodeQL on every `qa` promotion; clippy on every push. |
 | `dynamic_analysis` / `dynamic_analysis_unsafe` | Unmet | The cargo-fuzz harness is in `fuzz/` and the loom model in `cargo xtask loom`, but the workflow that ran the fuzz job was deleted and nothing in the pipeline runs either. |

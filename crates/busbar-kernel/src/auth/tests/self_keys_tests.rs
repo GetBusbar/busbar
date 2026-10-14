@@ -588,12 +588,15 @@ async fn resolve_then_issue_via_real_seam() {
     let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
         .await
         .unwrap();
-    assert!(issued.secret.expose_secret().starts_with("bbk_"));
+    assert!(issued
+        .secret
+        .expose(&crate::seal::lend())
+        .starts_with("bbk_"));
     assert_eq!(issued.group, "user:sam");
     // The token the seam handed back verifies through the ordinary path.
     let now = busbar_kernel::store::now();
     assert!(gov
-        .verify_token(issued.secret.expose_secret(), now, None)
+        .verify_token(issued.secret.expose(&crate::seal::lend()), now, None)
         .is_some());
 }
 
@@ -628,7 +631,7 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     );
     assert!(gov
         .verify_token(
-            issued.secret.expose_secret(),
+            issued.secret.expose(&crate::seal::lend()),
             busbar_kernel::store::now(),
             None
         )
@@ -670,7 +673,7 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         .expect("first login issues");
     let now = busbar_kernel::store::now();
     assert!(gov
-        .verify_token(t0.secret.expose_secret(), now, None)
+        .verify_token(t0.secret.expose(&crate::seal::lend()), now, None)
         .is_some());
 
     // The admin disables it, exactly as `PATCH /api/v1/admin/keys/{id} {"enabled":false}` would.
@@ -693,7 +696,7 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         "the admin's disable still stands"
     );
     assert!(
-        gov.verify_token(t0.secret.expose_secret(), now, None)
+        gov.verify_token(t0.secret.expose(&crate::seal::lend()), now, None)
             .is_none(),
         "the pre-disable token must NOT come back to life"
     );
@@ -747,7 +750,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
     );
     let now = busbar_kernel::store::now();
     assert!(gov
-        .verify_token(issued.secret.expose_secret(), now, None)
+        .verify_token(issued.secret.expose(&crate::seal::lend()), now, None)
         .is_some());
     let again = issue_key(&corp, &alice, ttl, false)
         .await
@@ -806,7 +809,7 @@ impl SelfServeKeys for FakeKeys {
         _ttl: Duration,
     ) -> Result<IssuedKey, ExchangeError> {
         Ok(IssuedKey {
-            secret: busbar_contract::redacted::Redacted::new(format!(
+            secret: busbar_contract::redacted::Secret::new(format!(
                 "fake-scheme-token:{}",
                 principal.id
             )),
@@ -832,16 +835,22 @@ async fn endpoint_is_scheme_agnostic_over_the_trait() {
     let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
         .await
         .unwrap();
-    assert_eq!(issued.secret.expose_secret(), "fake-scheme-token:sam");
+    assert_eq!(
+        issued.secret.expose(&crate::seal::lend()),
+        "fake-scheme-token:sam"
+    );
     // Refresh path also rides the same trait object.
     let refreshed = issue_key(&FakeKeys, p, Duration::from_secs(60), true)
         .await
         .unwrap();
-    assert_eq!(refreshed.secret.expose_secret(), "fake-scheme-token:sam");
+    assert_eq!(
+        refreshed.secret.expose(&crate::seal::lend()),
+        "fake-scheme-token:sam"
+    );
 }
 
 /// HEADLINE secret-hygiene fix: an `IssuedKey` carries a LIVE bearer token, and the struct derives
-/// `Debug`. Before the `secret: Redacted<String>` conversion, `format!("{issued:?}")` printed the
+/// `Debug`. Before the `secret: Secret<String>` conversion, `format!("{issued:?}")` printed the
 /// token verbatim — a latent leak the instant any code `tracing`/`{:?}`'d an `IssuedKey`. Now the
 /// token is `[REDACTED]` in Debug while the safe `key_id` identity still shows.
 #[tokio::test]
@@ -852,7 +861,7 @@ async fn issued_key_debug_never_leaks_the_live_token() {
     let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
         .await
         .unwrap();
-    let token = issued.secret.expose_secret().clone();
+    let token = issued.secret.expose(&crate::seal::lend()).clone();
     let dbg = format!("{issued:?}");
     assert!(
         !dbg.contains(&token),

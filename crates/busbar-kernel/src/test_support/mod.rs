@@ -531,7 +531,7 @@ pub struct LaneSpec {
     // witnessed busbar-llm codec, so the witness can be deleted at the final flip.
     protocol: &'static str,
     max: usize,
-    api_key: busbar_contract::redacted::Redacted<String>,
+    api_key: busbar_contract::redacted::Secret<String>,
     error_map: std::collections::HashMap<String, String>,
     context_max: Option<usize>,
     path: Option<String>,

@@ -11,7 +11,7 @@
 //!
 //! `open` is a ticket-less crossing (it may not pend); `resolve` is submitted on a ticket and the
 //! calling thread waits for its answer, which may PEND (the dispatcher's worker drives it). The
-//! material is copied out of the plugin's lease into a [`Redacted`] and the lease is released before
+//! material is copied out of the plugin's lease into a [`SecretValue`] and the lease is released before
 //! `resolve` returns, so no plugin memory outlives the call. An instance is closed when its last
 //! handle drops.
 
@@ -29,7 +29,7 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, 
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::secret::{slot, ResolveIn, ResolveOut, ERROR_KIND_INTERNAL};
 use busbar_contract::conn::DeclaredConns;
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret as SecretValue;
 use busbar_contract::secret::{SecretAxis, SecretCalls, SecretRefused};
 use busbar_contract::secret_ref::SecretRef;
 
@@ -84,20 +84,32 @@ fn refused(error_kind: u32, text: String) -> SecretRefused {
 
 impl LoadedSecret {
     /// `open` `plugin` over its module `settings` (JSON bytes, empty = none) and the material its
-    /// Statement's `secret_refs` resolved to, in order, on `dispatcher`.
+    /// Statement's `secret_refs` resolved to, in order, on `dispatcher`. The material is revealed
+    /// under the seal the host lent `dispatcher` (Part 2 #54).
     ///
     /// # Errors
-    /// The plugin's refusal, in 1.5.5's words (`plugin '<name>' open failed: <reason>`).
+    /// The plugin's refusal, in 1.5.5's words (`plugin '<name>' open failed: <reason>`); material
+    /// to hand over on a dispatcher lent no seal (refused, never revealed).
     pub fn open(
         plugin: Plugin<Secret>,
         dispatcher: Arc<Dispatcher>,
         settings: &[u8],
-        secrets: &[Redacted<Vec<u8>>],
+        secrets: &[SecretValue<Vec<u8>>],
     ) -> Result<Self, String> {
-        let lent: Vec<Blob> = secrets
-            .iter()
-            .map(|s| blob(s.expose_secret(), BLOB_OCTETS, BLOB_SECRET))
-            .collect();
+        let lent: Vec<Blob> = match (secrets.is_empty(), dispatcher.seal()) {
+            (true, _) => Vec::new(),
+            (false, Some(seal)) => secrets
+                .iter()
+                .map(|s| blob(s.expose(seal), BLOB_OCTETS, BLOB_SECRET))
+                .collect(),
+            (false, None) => {
+                return Err(format!(
+                    "plugin '{}' open failed: its secret material is revealed only on a \
+                     dispatcher the host lent its seal",
+                    plugin.name()
+                ))
+            }
+        };
         let mut f = Frame::new(
             OpenIn {
                 head: in_head(),
@@ -152,7 +164,7 @@ impl Drop for LoadedSecret {
 }
 
 impl SecretCalls for LoadedSecret {
-    fn resolve(&self, settings: &[u8]) -> Result<Redacted<Vec<u8>>, SecretRefused> {
+    fn resolve(&self, settings: &[u8]) -> Result<SecretValue<Vec<u8>>, SecretRefused> {
         let name = self.plugin.name();
         let workers = self.dispatcher.workers().max(1);
         let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
@@ -215,7 +227,7 @@ impl SecretCalls for LoadedSecret {
                 } else {
                     unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
                 };
-                let material = Redacted::new(material);
+                let material = SecretValue::new(material);
                 if done.lease != 0 {
                     self.release(done.lease);
                 }
@@ -480,7 +492,7 @@ impl SecretAxis for SecretRows {
                     resolve(&r).map_err(|e| format!("secrets.{module}.settings.{key}: {e}"))?
                 }
             };
-            secrets.push(Redacted::new(material));
+            secrets.push(SecretValue::new(material));
         }
         let bytes = if settings.is_null() {
             Vec::new()

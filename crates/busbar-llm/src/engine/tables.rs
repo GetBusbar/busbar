@@ -40,9 +40,9 @@ pub(crate) struct Lane {
     /// writer reads it; other protocols ignore `SigningContext::host`.
     pub(crate) signing_host: String,
     /// The resolved provider credential (api key / SigV4 secret material / OAuth credential string),
-    /// held [`busbar_contract::redacted::Redacted`] so it never leaks via `Debug`/logs and zeroizes on drop. Reach
-    /// the plaintext only at the egress seam via `expose_secret()`.
-    pub(crate) api_key: busbar_contract::redacted::Redacted<String>,
+    /// held [`busbar_contract::redacted::Secret`] so it never leaks via `Debug`/logs and zeroizes on drop. Reach
+    /// the plaintext only at the egress seam via the sealed `expose(seal)`.
+    pub(crate) api_key: busbar_contract::redacted::Secret<String>,
     /// This lane's protocol, as the registry's interned `&'static str` NAME. Post-G6-A4b the concrete
     /// `Protocol` (reader + writer) lives in the `busbar-llm` plugin and core names none of it; a lane
     /// reaches its dialect's neutral computed-codec facade via `proto::decl_for(self.protocol).dialect()`

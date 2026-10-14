@@ -20,7 +20,7 @@ use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::auth_calls::{
     AuthCalls, Decision, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest,
 };
-use busbar_contract::Redacted;
+use busbar_contract::Secret;
 
 use crate::auth_axis::AuthRows;
 use crate::dispatch::{Budgets, DispatchConfig, Dispatcher};
@@ -172,7 +172,7 @@ fn request(credential: Option<&str>, alt: Option<&str>) -> VerifyRequest {
     VerifyRequest {
         query: credential.map(str::to_string),
         lines: alt
-            .map(|a| vec![("X-Alt".to_string(), Redacted::new(a.as_bytes().to_vec()))])
+            .map(|a| vec![("X-Alt".to_string(), Secret::new(a.as_bytes().to_vec()))])
             .unwrap_or_default(),
         method: "GET".into(),
         authority: "node.example".into(),
@@ -214,7 +214,7 @@ fn script() -> Vec<(VerifyRequest, VerifyAnswer)> {
 /// `credential` blob of `verify`'s `in`), and nothing on the query or the field lines.
 fn lent(credential: &str) -> VerifyRequest {
     VerifyRequest {
-        credential: Some(Redacted::new(credential.as_bytes().to_vec())),
+        credential: Some(Secret::new(credential.as_bytes().to_vec())),
         method: "GET".into(),
         authority: "node.example".into(),
         path: "/v1/chat/completions".into(),
@@ -860,7 +860,7 @@ mod outbound {
             serving.auth.fields_now(handle, &FieldsRequest::default()),
             Some(Fields::Ready(vec![AuthField {
                 name: b"authorization".to_vec(),
-                value: Redacted::new(b"Bearer k".to_vec()),
+                value: Secret::new(b"Bearer k".to_vec()),
                 sensitive: false,
             }]))
         );

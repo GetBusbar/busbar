@@ -36,10 +36,14 @@ pub fn boot(workers: usize, services: Arc<dyn HostServices>) -> Arc<Dispatcher> 
     Arc::clone(DISPATCHER.get_or_init(|| Arc::new(build(workers, services))))
 }
 
-/// The dispatcher [`boot`] builds, for `workers` data workers, serving `services`.
+/// The dispatcher [`boot`] builds, for `workers` data workers, serving `services`, lent the
+/// kernel's seal (Part 2 #54: a door it binds reveals a resolved `Secret` it hands a plugin only
+/// under it).
 #[must_use]
 pub fn build(workers: usize, services: Arc<dyn HostServices>) -> Dispatcher {
-    Dispatcher::with_services(config(workers), services)
+    let dispatcher = Dispatcher::with_services(config(workers), services);
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    dispatcher
 }
 
 /// The process's dispatcher (built at boot; built with one worker and no installed services on

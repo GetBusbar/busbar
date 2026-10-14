@@ -37,7 +37,7 @@ fn lane_with_auth(auth: Option<&str>) -> Lane {
         // would have been built from, so the fixture stays a lane row and not a second interner.
         authority: "https://res.openai.azure.com",
         lane_id: "gpt-4o",
-        api_key: busbar_contract::redacted::Redacted::new("SECRETKEY".to_string()),
+        api_key: busbar_contract::redacted::Secret::new("SECRETKEY".to_string()),
         protocol: "openai",
         max: 1,
         error_map: Arc::new(HashMap::new()),

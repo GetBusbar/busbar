@@ -41,7 +41,7 @@ use crate::test_issuer::Issuer;
 use crate::{LinkedPlugin, PluginRegistry};
 use busbar_contract::auth::{BeginLogin, CompleteLogin, LoginOutcome};
 use busbar_contract::auth_calls::{AuthCalls, LoginCallback, Verified, VerifyRequest};
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 
 /// The both-ways table row this proof reads.
 const PROOF: &str = "auth";
@@ -144,7 +144,7 @@ fn step(o: &LoginOutcome) -> String {
 
 fn presented(token: Option<&str>) -> VerifyRequest {
     VerifyRequest {
-        credential: token.map(|t| Redacted::new(t.as_bytes().to_vec())),
+        credential: token.map(|t| Secret::new(t.as_bytes().to_vec())),
         ..VerifyRequest::default()
     }
 }

@@ -109,16 +109,16 @@ pub enum CredentialPlacement {
     },
 }
 
-/// A credential for one dial: where it goes and the secret itself. The secret stays [`Redacted`]
+/// A credential for one dial: where it goes and the secret itself. The secret stays [`Secret`]
 /// until the request handed to the WebSocket handshake is built, and no error carries it.
 ///
-/// [`Redacted`]: busbar_contract::Redacted
+/// [`Secret`]: busbar_contract::Secret
 #[derive(Debug, Clone, Copy)]
 pub struct DialCredential<'a> {
     /// Where the secret is presented.
     pub placement: CredentialPlacement,
     /// The secret.
-    pub secret: &'a busbar_contract::Redacted<String>,
+    pub secret: &'a busbar_contract::Secret<String>,
 }
 
 /// Why an outbound duplex dial failed — the FACT, kept separate so a caller renders its own sentence
@@ -300,7 +300,7 @@ fn upgrade_request(
     let Some(cred) = credential else {
         return keyless_url.into_client_request().map_err(|_| unbuildable());
     };
-    let secret = cred.secret.expose_secret().as_str();
+    let secret = cred.secret.expose(&crate::seal::lend()).as_str();
     match cred.placement {
         CredentialPlacement::Query(name) => {
             busbar_kernel_egress::query_auth::append_query(keyless_url, &[(name, secret)])
@@ -335,7 +335,7 @@ fn scrub_secret(text: &str, credential: Option<DialCredential<'_>>) -> String {
     let Some(cred) = credential else {
         return text.to_string();
     };
-    let secret = cred.secret.expose_secret().as_str();
+    let secret = cred.secret.expose(&crate::seal::lend()).as_str();
     if secret.is_empty() {
         return text.to_string();
     }

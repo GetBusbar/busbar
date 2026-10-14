@@ -28,7 +28,7 @@ fn resolve_linked(secret: &SecretRef) -> Result<Vec<u8>, String> {
     let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
     axis.shared(&secret.module)?
         .resolve(settings.as_bytes())
-        .map(|m| m.expose_secret().clone())
+        .map(|m| m.expose(&busbar_kernel::seal::lend()).clone())
         .map_err(|r| r.text)
 }
 

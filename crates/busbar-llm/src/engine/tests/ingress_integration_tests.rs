@@ -5171,7 +5171,11 @@ async fn governed_pool_acl_router(
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
-    (addr, handle, secret.expose_secret().clone())
+    (
+        addr,
+        handle,
+        secret.expose(&busbar_kernel::seal::lend()).clone(),
+    )
 }
 
 /// Cohere `/v2/chat` governance pool-ACL 403 must carry the Cohere-native error envelope
@@ -5463,7 +5467,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     // is configured and the key is not allowed on B, so the request must be rejected upfront.
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/A/v1/messages"))
-        .credential(secret.expose_secret())
+        .credential(secret.expose(&busbar_kernel::seal::lend()))
         .body(json!({"model": "A", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -5552,7 +5556,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/A/v1/messages"))
-        .credential(secret.expose_secret())
+        .credential(secret.expose(&busbar_kernel::seal::lend()))
         .body(json!({"model": "A", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -5724,7 +5728,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/anthropic/claude-x/v1/messages"))
-        .credential(secret.expose_secret())
+        .credential(secret.expose(&busbar_kernel::seal::lend()))
         .body(json!({"model": "claude-x", "messages": [], "max_tokens": 16}).to_string())
         .send()
         .await
@@ -6069,7 +6073,11 @@ async fn governed_limit_router(
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
-    (addr, handle, secret.expose_secret().clone())
+    (
+        addr,
+        handle,
+        secret.expose(&busbar_kernel::seal::lend()).clone(),
+    )
 }
 
 /// Each first-class ingress route: an over-RPM virtual key is rejected with a PROTOCOL-NATIVE

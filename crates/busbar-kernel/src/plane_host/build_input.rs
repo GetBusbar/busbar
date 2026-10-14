@@ -24,7 +24,7 @@
 //!
 //! Pre-RESOLVED secrets and the rate-card-derived costs ARE carried (fidelity: the plane cannot
 //! re-resolve a secret ref — it has no `SecretResolver` — nor re-price without the rate card). A
-//! resolved secret is carried in `busbar_contract::redacted::Redacted`, never as a bare `String`: this carrier is
+//! resolved secret is carried in `busbar_contract::redacted::Secret`, never as a bare `String`: this carrier is
 //! formatted on the build path, so the wrapper is what keeps the credential out of a trace line.
 //! Pool-hook ROUTING POLICIES are NOT: their resolved value is the core-owned
 //! `busbar_kernel::hooks::ResolvedPolicy` (an `Arc<dyn RoutingPolicy>` over a dlopen plugin), which
@@ -103,13 +103,13 @@ pub struct LaneInput {
     /// Optional upstream model-name override (the wire model), else the config key.
     pub upstream_model: Option<String>,
     /// The PRE-RESOLVED provider credential — the resolved secret, carried because the plane cannot
-    /// re-resolve a secret ref (it has no `SecretResolver`). Held in the SAME `busbar_contract::redacted::Redacted`
+    /// re-resolve a secret ref (it has no `SecretResolver`). Held in the SAME `busbar_contract::redacted::Secret`
     /// wrapper the `Lane` it feeds holds it in, for the whole of its life here rather than only after
     /// it lands: a bare `String` on a carrier that a build trace, a panic message or an error `{:?}`
     /// can reach is the plaintext in a log, and the wrapper is what makes that structurally impossible
     /// (it prints `[REDACTED]`, does not serialize, and zeroizes on drop). Read through
-    /// `expose_secret` at the one place the credential is actually built.
-    pub api_key: busbar_contract::redacted::Redacted<String>,
+    /// the sealed `expose` at the one place the credential is actually built.
+    pub api_key: busbar_contract::redacted::Secret<String>,
     /// The provider's auth-style override (neutral).
     pub auth_style: AuthStyleInput,
     /// OAuth scope (`auth: oauth-client-credentials` / an override for `jwt-bearer`).
@@ -149,7 +149,7 @@ pub struct LaneInput {
 
 /// HAND-ROLLED, never derived. This carrier holds a resolved provider credential, and a type that
 /// does is one the construction gate names as a secret carrier and holds to writing this impl —
-/// belt and braces over the `Redacted` field, so neither the wrapper nor the derive is the single
+/// belt and braces over the `Secret` field, so neither the wrapper nor the derive is the single
 /// thing standing between the credential and a log line. What a reader of a build trace needs is
 /// which lane this is and where it points; nothing else printed here is a secret.
 impl std::fmt::Debug for LaneInput {

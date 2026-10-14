@@ -785,7 +785,7 @@ async fn spawn_refusing_server() -> SocketAddr {
 /// the handshake each fail, under both placements, and no rendering of the error carries the secret.
 #[tokio::test]
 async fn a_credentialed_dial_carries_the_secret_in_no_error() {
-    let secret = busbar_contract::Redacted::new(SEKRET.to_string());
+    let secret = busbar_contract::Secret::new(SEKRET.to_string());
     let refusing = spawn_refusing_server().await;
     for placement in PLACEMENTS {
         let cred = DialCredential {
@@ -840,7 +840,7 @@ async fn the_credential_is_written_into_the_upgrade_request() {
         axum::serve(listener, app).await.unwrap();
     });
 
-    let secret = busbar_contract::Redacted::new(SEKRET.to_string());
+    let secret = busbar_contract::Secret::new(SEKRET.to_string());
     for (placement, want) in [
         (
             PLACEMENTS[0],

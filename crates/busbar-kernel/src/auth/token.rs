@@ -656,8 +656,8 @@ async fn issue_and_render(
     let page = render_key_issued(
         &principal.id,
         &issued.group,
-        // `.expose_secret()`: the once-shown "key issued" page is the intended plaintext egress.
-        issued.secret.expose_secret(),
+        // `.expose(&crate::seal::lend())`: the once-shown "key issued" page is the intended plaintext egress.
+        issued.secret.expose(&crate::seal::lend()),
         base_url,
         module_name,
     );
@@ -666,7 +666,7 @@ async fn issue_and_render(
 
 /// `credential_submit`: complete a CREDENTIAL-flow login. Called by the POST `/auth/token` handler
 /// (`exchange`) when a login cookie is present. Validates CSRF (`__state` vs the cookie), builds
-/// [`CompleteLogin`] from the submitted field values (each [`busbar_contract::redacted::Redacted`]), runs the
+/// [`CompleteLogin`] from the submitted field values (each [`busbar_contract::redacted::Secret`]), runs the
 /// module's `complete_login` (the plugin verifies the credential itself, e.g. an LDAP bind), and — on
 /// `Identify` — issues through the SAME `issue_and_render` seam. Redirect methods never reach here.
 pub(crate) async fn credential_submit(
@@ -712,11 +712,11 @@ pub(crate) async fn credential_submit(
             "This sign-in method can't be completed here. Please head back and start again.",
         ));
     }
-    // Build the submitted map (every field EXCEPT the CSRF token), Redacted the moment it is held.
-    let submitted: Vec<(String, busbar_contract::redacted::Redacted<String>)> = form
+    // Build the submitted map (every field EXCEPT the CSRF token), Secret the moment it is held.
+    let submitted: Vec<(String, busbar_contract::redacted::Secret<String>)> = form
         .into_iter()
         .filter(|(k, _)| k != FORM_STATE_FIELD)
-        .map(|(k, v)| (k, busbar_contract::redacted::Redacted::new(v)))
+        .map(|(k, v)| (k, busbar_contract::redacted::Secret::new(v)))
         .collect();
     let cl = CompleteLogin {
         submitted,

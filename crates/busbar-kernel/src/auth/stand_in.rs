@@ -77,7 +77,7 @@ impl AuthCalls for InProcessAuth {
         let credential = request
             .credential
             .as_ref()
-            .map(|c| String::from_utf8_lossy(c.expose_secret()).into_owned());
+            .map(|c| String::from_utf8_lossy(c.expose(&crate::seal::lend())).into_owned());
         Some(verified(self.module.authenticate(credential.as_deref())).into())
     }
 

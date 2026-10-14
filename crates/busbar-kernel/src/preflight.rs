@@ -770,7 +770,7 @@ fn log_build(n: boot::Note<'_>, dir: &str) {
 pub(crate) fn resolve_admin_token(
     auth: Option<&config::AuthCfg>,
     resolver: &config::secret::SecretResolver,
-) -> Result<Option<busbar_contract::redacted::Redacted<String>>, String> {
+) -> Result<Option<busbar_contract::redacted::Secret<String>>, String> {
     let Some(r) = auth.and_then(|a| a.admin_token_ref()) else {
         return Ok(None);
     };
@@ -782,7 +782,7 @@ pub(crate) fn resolve_admin_token(
     if token.trim().is_empty() {
         return Err(blank_token(op));
     }
-    Ok(Some(busbar_contract::redacted::Redacted::new(token)))
+    Ok(Some(busbar_contract::redacted::Secret::new(token)))
 }
 
 /// Parse resolved bytes into a 32-byte ed25519 secret: accept RAW 32 bytes or 64 hex chars. Shared
@@ -1240,7 +1240,7 @@ impl OpenedSecrets {
         let calls = self.calls(key, open)?;
         calls
             .resolve(settings.as_bytes())
-            .map(|m| m.expose_secret().clone())
+            .map(|m| m.expose(&crate::seal::lend()).clone())
             .map_err(|r| r.text)
     }
 }

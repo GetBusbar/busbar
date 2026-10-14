@@ -66,7 +66,7 @@ use busbar_contract::caps::{Pass, Route};
 use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use busbar_contract::transport::registry::status_ns;
 use busbar_contract::transport::wire::{WireStatus, WireStatusClass};
 
@@ -254,7 +254,7 @@ pub struct UnitRoute {
     pub leg: u8,
     /// The caller's verified credential, as the identity step read it, for a member configured for
     /// passthrough. Zeroised on drop; never logged, stored or handed to the plane.
-    pub caller_credential: Option<Redacted<Vec<u8>>>,
+    pub caller_credential: Option<Secret<Vec<u8>>>,
     /// The unit's operation is performed AT MOST ONCE (the plane's `ROUTE_ONCE`): a member that
     /// ANSWERED with a failure is not retried on another; its answer reaches the plane as it came.
     /// A walk still moves on before anything was answered.
@@ -903,7 +903,7 @@ impl EgressFarEnd<'_> {
                     self.route
                         .caller_credential
                         .clone()
-                        .unwrap_or_else(|| Redacted::new(Vec::new())),
+                        .unwrap_or_else(|| Secret::new(Vec::new())),
                 )
             } else {
                 None
@@ -1025,7 +1025,7 @@ impl EgressFarEnd<'_> {
         head.0.extend(auth.iter().map(|f| {
             (
                 String::from_utf8_lossy(&f.name).into_owned(),
-                f.value.expose_secret().clone(),
+                f.value.expose(&crate::seal::lend()).clone(),
             )
         }));
         // A plane field named like an auth field never doubles it: the auth binding's stands.

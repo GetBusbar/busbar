@@ -205,7 +205,7 @@ pub struct PlaneReqCtx {
     /// The caller's verified credential as the auth gate extracted it, lent for the host's egress
     /// alone (a passthrough member's outbound auth call); `None` when the caller presented none or
     /// the route bypassed the gate. A plane handler never reads it.
-    pub caller_credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
+    pub caller_credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
     /// The live engine handle, type-erased. The core adapter erases the router's `Arc<AppHandle>`
     /// state here; a plane still coupled to the engine downcasts it (a transitional reach that the
     /// per-subsystem App-sever removes), but the SEAM names no core type.

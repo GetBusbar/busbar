@@ -351,7 +351,9 @@ fn write(
             id.provider.as_deref(),
             id.name.as_deref(),
             id.replay.as_ref().map(|r| r.key.as_str()),
-            id.credential.as_ref().map(|c| c.expose_secret().as_str()),
+            // The plugin's own credential, written back as it supplied it: this crate reads its own
+            // `Secret`'s field (a plugin holds no seal to `expose` with).
+            id.credential.as_ref().map(|c| c.0.as_str()),
         ]
     });
     let id_groups: &[String] = id.map_or(&[][..], |id| id.groups.as_slice());

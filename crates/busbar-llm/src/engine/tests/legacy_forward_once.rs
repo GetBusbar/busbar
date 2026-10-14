@@ -201,9 +201,9 @@ pub(super) async fn forward_once(
         // keyless passthrough (lane.api_key already empty); only changes the misconfigured
         // passthrough+configured-key case.
         busbar_contract::config::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
-        busbar_contract::config::UpstreamCreds::Own => {
-            EngineTables::new(rt).lanes()[i].api_key.expose_secret()
-        }
+        busbar_contract::config::UpstreamCreds::Own => EngineTables::new(rt).lanes()[i]
+            .api_key
+            .expose(&busbar_kernel::seal::lend()),
     };
 
     // per-request auth (SigV4 for Bedrock; static otherwise). The (operation × stream) egress

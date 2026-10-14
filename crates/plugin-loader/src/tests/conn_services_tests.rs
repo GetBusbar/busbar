@@ -746,7 +746,7 @@ use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, Ou
 use busbar_contract::conn::ConnAuth;
 use busbar_contract::conn::PieceKind;
 use busbar_contract::ids::StreamId;
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering};
 
 /// What one open carried: the need, target, head words, fields and body.
@@ -1783,7 +1783,7 @@ impl Seen {
 fn bearer() -> Fields {
     Fields::Ready(vec![AuthField {
         name: b"authorization".to_vec(),
-        value: Redacted::new(b"Bearer member".to_vec()),
+        value: Secret::new(b"Bearer member".to_vec()),
         sensitive: true,
     }])
 }

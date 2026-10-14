@@ -11,7 +11,7 @@
 //! compare it feeds ([`crate::redacted::sha256_hex`]), once the owner ruled the
 //! `sha2 -> cpufeatures -> libc` edge tree-wide (2026-09-22).
 
-use crate::redacted::Redacted;
+use crate::redacted::Secret;
 
 /// The authenticated PRINCIPAL — who the caller IS, established at the auth stage and keyed to by
 /// everything downstream (governance, audit attribution, the hook `send_user` projection, admin
@@ -157,7 +157,7 @@ pub enum LoginKind {
 }
 
 /// The input type of one credential field the plugin DECLARES in a [`LoginForm`]. `Password` is
-/// masked in the UI and carried [`Redacted`] on the wire; `Text` is a plain field (username, …).
+/// masked in the UI and carried [`Secret`] on the wire; `Text` is a plain field (username, …).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldKind {
     Text,
@@ -193,10 +193,10 @@ pub struct CompleteLogin {
     pub redirect_uri: Option<String>,
     pub code_verifier: Option<String>,
     /// Credential-flow: the submitted form values, keyed by the [`LoginField::name`] the plugin
-    /// declared in its [`LoginForm`]. Every value is [`Redacted`] (Debug/Display never print it). This
+    /// declared in its [`LoginForm`]. Every value is [`Secret`] (Debug/Display never print it). This
     /// SUBSUMES the old ad-hoc `username`/`password` pair — one generic credential transport, so a
     /// method declaring `[username, password, totp]` just works.
-    pub submitted: Vec<(String, Redacted<String>)>,
+    pub submitted: Vec<(String, Secret<String>)>,
     pub token_response: Option<LoginHttpResponse>,
 }
 

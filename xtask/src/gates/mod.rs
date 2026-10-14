@@ -3208,7 +3208,7 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(secret_hygiene::SecretHygieneGate::shipped()),
-        summary: "no bare-string secret field, no .expose_secret() at a sink, no secret interpolated \
+        summary: "no bare-string secret field, no .expose(seal) at a sink, no secret interpolated \
                   into a returned message (BLOCKING, #53; SECRET_GATE_REPORT_ONLY=1 is the report-only escape)",
     },
     Registration {

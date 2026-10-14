@@ -293,8 +293,8 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     Rig {
         app,
         key: Arc::new(key),
-        token: token.expose_secret().clone(),
-        expired_token: expired_token.expose_secret().clone(),
+        token: token.expose(&busbar_kernel::seal::lend()).clone(),
+        expired_token: expired_token.expose(&busbar_kernel::seal::lend()).clone(),
         server,
         upstream: state,
         charged_at: busbar_kernel::store::now(),

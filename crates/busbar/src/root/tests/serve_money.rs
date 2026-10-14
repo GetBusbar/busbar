@@ -179,6 +179,7 @@ fn governed_full(
         DispatchConfig::default(),
         Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
     ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let plane = bound(instance, &dispatcher);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let gov = Arc::new(
@@ -300,7 +301,7 @@ fn governed_full(
         money,
         gov,
         key,
-        token: token.expose_secret().clone(),
+        token: token.expose(&busbar_kernel::seal::lend()).clone(),
         app,
         book,
         current,
@@ -807,6 +808,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         DispatchConfig::default(),
         Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
     ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let plane = bound(instance, &dispatcher);
     let _published = Published(instance);
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
@@ -871,7 +873,10 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         let req = axum::http::Request::builder()
             .method("POST")
             .uri("/call/direct:m")
-            .header("authorization", format!("Bearer {}", token.expose_secret()))
+            .header(
+                "authorization",
+                format!("Bearer {}", token.expose(&busbar_kernel::seal::lend())),
+            )
             .body(axum::body::Body::from("ping"))
             .expect("a request");
         let resp = router.oneshot(req).await.expect("the router answers");

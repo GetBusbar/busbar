@@ -65,3 +65,15 @@ pub fn acquire() -> KernelSeal {
 pub fn __busbar_kernel_root(seal: KernelSeal) -> Box<dyn std::any::Any + Send + Sync> {
     Box::new(Held(seal))
 }
+
+/// THE GRANT A HOST CRATE PRESENTS TO READ A RESOLVED SECRET (Part 2 #54: `Secret::expose` is the
+/// one raw accessor, and it is sealed). Minted from the kernel's own seal ([`acquire`]) and lent to
+/// host code that holds a `Secret` and must use its value: a hop injection, an outbound credential,
+/// a key handed to the TLS stack, the once-shown mint response.
+///
+/// A plugin is never lent one: its closure is `busbar-contract` alone (Part 2 #40(a)), so it cannot
+/// name this crate, and it cannot implement the sealed `KernelSeal` for a type of its own.
+#[must_use]
+pub fn lend() -> busbar_contract::caps::Grant<busbar_contract::caps::Sign> {
+    busbar_contract::caps::Grant::mint(&acquire())
+}

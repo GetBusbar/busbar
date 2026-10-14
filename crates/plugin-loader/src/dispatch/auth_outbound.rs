@@ -28,7 +28,7 @@ use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, DeadlineClass, Outcome, BLOB_ABSENT, BLOB_JSON, BLOB_OCTETS, BLOB_SECRET,
 };
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 
 use super::kinds::auth::{Auth, AuthFacts, OutboundStyle};
 use super::{in_head, out_head, Dispatcher, Frame, Plugin};
@@ -185,7 +185,7 @@ impl Drop for Lend {
     /// The caller's credential and the auth fields are credential material: zeroised once the
     /// crossing's memory is dropped (after the op's last crossing and the host's copy-out).
     fn drop(&mut self) {
-        // The caller's credential zeroises itself (`Redacted`); the field bytes are wiped here.
+        // The caller's credential zeroises itself (`Secret`); the field bytes are wiped here.
         self.field_buf.fill(0);
     }
 }
@@ -208,8 +208,14 @@ impl Lend {
         })
     }
 
-    /// The `in` naming this memory under `handle`.
-    fn input(&mut self, handle: u64) -> FieldsIn {
+    /// The `in` naming this memory under `handle`. `seal` is the host's, lent to the dispatcher: the
+    /// caller's credential is revealed under it to be lent to the plugin (the caller refuses a
+    /// request that carries one when none was lent).
+    fn input(
+        &mut self,
+        handle: u64,
+        seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
+    ) -> FieldsIn {
         let r = &self.request;
         let mut head = in_head();
         // The call's extensions blob (the per-call scope, when the request stated one), lent with
@@ -233,9 +239,10 @@ impl Lend {
                 query: r.query.as_deref().map_or(ABSENT_STR, abi_str),
                 timestamp: r.timestamp,
             },
-            caller_credential: r.caller_credential.as_ref().map_or(NO_BLOB, |c| {
-                blob(c.expose_secret(), BLOB_OCTETS, BLOB_SECRET)
-            }),
+            caller_credential: match (r.caller_credential.as_ref(), seal) {
+                (Some(c), Some(seal)) => blob(c.expose(seal), BLOB_OCTETS, BLOB_SECRET),
+                _ => NO_BLOB,
+            },
             field_buf: self.field_buf.as_mut_ptr(),
             field_buf_cap: self.field_buf.len(),
             fields: self.fields.as_mut_ptr(),
@@ -274,7 +281,7 @@ impl Lend {
                 .take(out.fields_len as usize)
                 .map(|f| AuthField {
                     name: take(f.name),
-                    value: Redacted::new(take(f.value)),
+                    value: Secret::new(take(f.value)),
                     sensitive: f.flags & FIELD_SENSITIVE != 0,
                 })
                 .collect(),
@@ -405,14 +412,19 @@ impl OutboundAuth for OutboundInstance {
     }
 
     fn fields_now(&self, handle: u64, request: &FieldsRequest) -> Option<Fields> {
+        // No seal lent to the dispatcher: a caller credential is not revealed, and the fields fail.
+        let seal = self.dispatcher.seal();
+        if request.caller_credential.is_some() && seal.is_none() {
+            return Some(Fields::Failed);
+        }
         let mut lend = Lend::new(copy(request), FIELDS_BUF_BYTES, FIELDS_MAX as usize);
-        let mut frame = Frame::new(lend.input(handle), fields_out());
+        let mut frame = Frame::new(lend.input(handle, seal), fields_out());
         let mut called = self.plugin.call(slot::FIELDS, &mut frame);
         if let Some(token) = called.recall.take() {
             let (bytes, fields) = grown(&frame.out);
             lend.field_buf.resize(bytes, 0);
             lend.fields.resize(fields, NO_FIELD);
-            frame = Frame::new(lend.input(handle), fields_out());
+            frame = Frame::new(lend.input(handle, seal), fields_out());
             called = self.plugin.recall(token, slot::FIELDS, &mut frame);
         }
         (called.outcome == Outcome::Ready).then(|| lend.answer(&frame.out))
@@ -421,6 +433,11 @@ impl OutboundAuth for OutboundInstance {
     fn fields(&self, handle: u64, request: FieldsRequest, deadline_ns: u64) -> Box<dyn Fielding> {
         let this = self.clone();
         let run = async move {
+            // No seal lent to the dispatcher: a caller credential is not revealed, and the fields
+            // fail.
+            if request.caller_credential.is_some() && this.dispatcher.seal().is_none() {
+                return Fields::Failed;
+            }
             let Some(ticket) = this.dispatcher.mint(this.worker) else {
                 return Fields::Failed;
             };
@@ -433,7 +450,7 @@ impl OutboundAuth for OutboundInstance {
             let mut first = true;
             loop {
                 let mut lend = Lend::new(copy(&request), sizes.0, sizes.1);
-                let input = lend.input(handle);
+                let input = lend.input(handle, this.dispatcher.seal());
                 let lent: Arc<Lend> = Arc::from(lend);
                 let reply = this.dispatcher.submit_lent(
                     &this.plugin,

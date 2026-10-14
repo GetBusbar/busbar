@@ -1,14 +1,14 @@
 //! `cargo xtask gate secret-hygiene` — THE SECRET-VALUE-TYPE DEBT METER (BUSBAR-1.6.0.md #53/#54).
 //!
 //! Ported from `scripts/secret-hygiene-gate.sh`, rule for rule. busbar's secret-hygiene guarantee is
-//! a TYPE guarantee: a secret value is `Redacted<T>` (Debug/Display = `[REDACTED]`, no Serialize,
+//! a TYPE guarantee: a secret value is `Secret<T>` (Debug/Display = `[REDACTED]`, no Serialize,
 //! zeroize-on-drop), never a bare `String`/`&str`/`Vec<u8>`; its safe-to-log identity is a
 //! `SecretRef` or a plain id. Three ways that regresses, each a ledger row:
 //!
 //! * **Check 1** — a known-secret struct FIELD declared as a bare string type instead of
-//!   `Redacted<T>`/`Zeroizing`/`SecretRef`. Needles are matched on the field-name TAIL
+//!   `Secret<T>`/`Zeroizing`/`SecretRef`. Needles are matched on the field-name TAIL
 //!   (`fname == N || fname ends with _N`), never as a substring.
-//! * **Check 2** — `.expose_secret()` on the SAME STATEMENT as a log/audit/metric sink.
+//! * **Check 2** — `.expose(seal)` on the SAME STATEMENT as a log/audit/metric sink.
 //! * **Check 3** — a secret-bearing value interpolated into a message a caller receives: a
 //!   `format!`/`write!`/`panic!`/… enclosed by an `Err(..)`/`map_err`/`push(..)`/diagnostic call.
 //!   Rule A (secret-named binding), B (decoder error on secret input), C (secret-subject
@@ -258,7 +258,7 @@ fn cfg_test_attr(code: &[u8]) -> bool {
 /// One hit of any check.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Hit {
-    /// Check 1: the field; Check 2: `expose_secret`; Check 3: the rule (`PARSE-WARN` for a lexer
+    /// Check 1: the field; Check 2: `expose`; Check 3: the rule (`PARSE-WARN` for a lexer
     /// warning).
     pub rule: String,
     /// `file:line`.
@@ -493,7 +493,8 @@ impl FieldScan<'_> {
                             let bare = index_of(ftype, b"String") > 0
                                 || is_ref_str(ftype)
                                 || is_vec_u8(ftype);
-                            let wrapped = index_of(ftype, b"Redacted") > 0
+                            // `Secret<T>` (Part 2 #54; was `Redacted<T>`), and `SecretRef`.
+                            let wrapped = index_of(ftype, b"Secret") > 0
                                 || index_of(ftype, b"Zeroizing") > 0
                                 || index_of(ftype, b"SecretRef") > 0;
                             if bare && !wrapped && !self.allowlisted(name, fname) {
@@ -548,7 +549,8 @@ pub fn scan_fields(files: &[(String, String)], allow: &[Allow]) -> Vec<Hit> {
 
 // ── CHECK 2 ──────────────────────────────────────────────────────────────────────────────────────
 
-/// CHECK 2 over `(path, text)` files: `.expose_secret()` and a sink on one STATEMENT.
+/// CHECK 2 over `(path, text)` files: `.expose(` (the sealed accessor, Part 2 #54) and a sink on
+/// one STATEMENT.
 pub fn scan_sinks(files: &[(String, String)]) -> Vec<Hit> {
     let sinks = words(SINKS);
     let mut out = Vec::new();
@@ -562,11 +564,11 @@ pub fn scan_sinks(files: &[(String, String)]) -> Vec<Hit> {
                  pdepth: &mut i64,
                  out: &mut Vec<Hit>| {
         if !stmt.is_empty()
-            && index_of(stmt, b".expose_secret()") > 0
+            && index_of(stmt, b".expose(") > 0
             && sinks.iter().any(|s| index_of(stmt, s) > 0)
         {
             out.push(Hit {
-                rule: "expose_secret".into(),
+                rule: "expose".into(),
                 loc: format!("{stmtfile}:{stmtline}"),
                 name: String::new(),
                 text: lossy(stmt),
@@ -1652,11 +1654,11 @@ impl SecretHygieneGate {
             self.roots.join(" ")
         );
         eprintln!(
-            "  Check 1 (bare secret field, not Redacted/Zeroizing/SecretRef): {}",
+            "  Check 1 (bare secret field, not Secret/Zeroizing/SecretRef): {}",
             sc.c1.len()
         );
         eprintln!(
-            "  Check 2 (.expose_secret() on a log/audit/metric sink line):     {}",
+            "  Check 2 (.expose(seal) on a log/audit/metric sink line):        {}",
             sc.c2.len()
         );
         eprintln!(
@@ -1665,7 +1667,7 @@ impl SecretHygieneGate {
         );
         if !sc.c1.is_empty() {
             eprintln!(
-                "\n== Check 1 — bare secret fields (convert to busbar_contract::Redacted<T>) =="
+                "\n== Check 1 — bare secret fields (convert to busbar_contract::Secret<T>) =="
             );
             for h in &sc.c1 {
                 eprintln!("  {:<20} {}", h.rule, h.loc);
@@ -1702,7 +1704,7 @@ fn check_row(id: &str, title: &str, lines: &[String], measured: bool, blocking: 
             id,
             title,
             format!(
-                "{} violation(s) (BLOCKING, #53; SECRET_GATE_REPORT_ONLY=1 is the report-only escape): {} — wrap each secret VALUE in busbar_contract::Redacted<T>; log a SecretRef/id, never .expose_secret() output; for a Check-3 hit REDACT AT THE FORMAT SITE, never delete the diagnostic",
+                "{} violation(s) (BLOCKING, #53; SECRET_GATE_REPORT_ONLY=1 is the report-only escape): {} — wrap each secret VALUE in busbar_contract::Secret<T>; log a SecretRef/id, never .expose(seal) output; for a Check-3 hit REDACT AT THE FORMAT SITE, never delete the diagnostic",
                 lines.len(),
                 lines.join(" | ")
             ),
@@ -1819,14 +1821,14 @@ impl Gate for SecretHygieneGate {
             .collect();
         rows.push(check_row(
             ROW_C1,
-            "Check 1: no bare-string secret field (not Redacted/Zeroizing/SecretRef)",
+            "Check 1: no bare-string secret field (not Secret/Zeroizing/SecretRef)",
             &l1,
             measured,
             blocking,
         ));
         rows.push(check_row(
             ROW_C2,
-            "Check 2: no .expose_secret() on a log/audit/metric sink statement",
+            "Check 2: no .expose(seal) on a log/audit/metric sink statement",
             &l2,
             measured,
             blocking,
@@ -1949,7 +1951,7 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
     report.push(prove_rows_green(
         &base_cx,
         &SANDBOX,
-        "GREEN c1: Redacted-wrapped fields, a comment, a fn param and a non-secret `token: usize` flag NONE",
+        "GREEN c1: Secret-wrapped fields, a comment, a fn param and a non-secret `token: usize` flag NONE",
         &[ROW_C1],
         plant("c1_green", fixtures::C1_GREEN),
     ));
@@ -1993,7 +1995,7 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
     report.push(prove_rows_red(
         &base_cx,
         &SANDBOX,
-        "RED c2: `.expose_secret()` on a tracing:: sink line is caught",
+        "RED c2: `.expose(seal)` on a tracing:: sink line is caught",
         &[ROW_C2],
         plant("c2_red", fixtures::C2_RED),
         &["c2_red.rs"],
@@ -2001,7 +2003,7 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
     report.push(prove_rows_red(
         &base_cx,
         &SANDBOX,
-        "RED c2 MULTILINE: the rustfmt-split `.expose_secret()` inside a multi-line tracing macro is caught",
+        "RED c2 MULTILINE: the rustfmt-split `.expose(seal)` inside a multi-line tracing macro is caught",
         &[ROW_C2],
         plant("c2_multiline", fixtures::C2_RED_MULTILINE),
         &["c2_multiline.rs:2"],
@@ -2009,7 +2011,7 @@ fn selftest_battery<'a>(gate: &'a SecretHygieneGate, cx: &'a Ctx) -> Report<'a> 
     report.push(prove_rows_green(
         &base_cx,
         &SANDBOX,
-        "GREEN c2: expose_secret at a header injection, then a real sink on the NEXT statement — the statement window does not join them",
+        "GREEN c2: expose at a header injection, then a real sink on the NEXT statement — the statement window does not join them",
         &[ROW_C2],
         plant("c2_green", fixtures::C2_GREEN),
     ));
@@ -2195,7 +2197,7 @@ pub struct IssuedKey {
 "#####;
     pub(super) const C1_GREEN: &str = r#####"// api_key: String  <- a comment naming the bad shape must be ignored
 pub struct LaneConfig {
-    pub api_key: busbar_contract::Redacted<String>,
+    pub api_key: busbar_contract::Secret<String>,
     pub base_url: String,
 }
 impl LaneConfig {
@@ -2234,19 +2236,19 @@ pub struct LaneWire {
     pub plane_tokens: String,
 }
 "#####;
-    pub(super) const C2_RED: &str = r#####"fn leak(key: &Redacted<String>) {
-    tracing::info!(api_key = %key.expose_secret(), "using key");
+    pub(super) const C2_RED: &str = r#####"fn leak(key: &Secret<String>, seal: &Grant<Sign>) {
+    tracing::info!(api_key = %key.expose(seal), "using key");
 }
 "#####;
-    pub(super) const C2_RED_MULTILINE: &str = r#####"fn leak(key: &Redacted<String>) {
+    pub(super) const C2_RED_MULTILINE: &str = r#####"fn leak(key: &Secret<String>, seal: &Grant<Sign>) {
     tracing::info!(
-        api_key = %key.expose_secret(),
+        api_key = %key.expose(seal),
         "using key"
     );
 }
 "#####;
-    pub(super) const C2_GREEN: &str = r#####"fn inject(key: &Redacted<String>, req: &mut Request) {
-    req.header("authorization", format!("Bearer {}", key.expose_secret()));
+    pub(super) const C2_GREEN: &str = r#####"fn inject(key: &Secret<String>, seal: &Grant<Sign>, req: &mut Request) {
+    req.header("authorization", format!("Bearer {}", key.expose(seal)));
     // tracing::info!("sent");  <- a sink in a COMMENT, on a different statement, is not a leak
     tracing::info!(key_id = %key.reference(), "sent");
 }
@@ -2524,7 +2526,7 @@ mod tests {
         assert!(is_ref_str(b"&str"));
         assert!(is_ref_str(b"& 'a str"));
         assert!(is_ref_str(b"Option<&'static str>"));
-        assert!(!is_ref_str(b"&Redacted<u8>"));
+        assert!(!is_ref_str(b"&Secret<u8>"));
         assert!(is_vec_u8(b"Vec<u8>"));
         assert!(is_vec_u8(b"Vec < u8>"));
         assert!(!is_vec_u8(b"Vec<u16>x"));

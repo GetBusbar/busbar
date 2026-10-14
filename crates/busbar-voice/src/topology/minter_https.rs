@@ -47,8 +47,8 @@ const CLIENT_SECRETS_PATH: &str = "/v1/realtime/client_secrets";
 pub struct HttpsTokenMinter {
     client: EngineClient,
     base_url: String,
-    /// The real provider key, held `Redacted`; exposed only into the mint's `Authorization` header.
-    api_key: busbar_contract::Redacted<String>,
+    /// The real provider key, held `Secret`; exposed only into the mint's `Authorization` header.
+    api_key: busbar_contract::Secret<String>,
     safety_identifier: String,
     requested_ttl_secs: Option<u64>,
 }
@@ -68,7 +68,7 @@ impl HttpsTokenMinter {
         HttpsTokenMinter {
             client,
             base_url: base_url.into(),
-            api_key: busbar_contract::Redacted::new(api_key.into()),
+            api_key: busbar_contract::Secret::new(api_key.into()),
             safety_identifier: safety_identifier.into(),
             requested_ttl_secs,
         }
@@ -127,7 +127,10 @@ impl TokenMinter for HttpsTokenMinter {
             .header(http::header::CONTENT_TYPE, "application/json")
             .header(
                 http::header::AUTHORIZATION,
-                format!("Bearer {}", self.api_key.expose_secret()),
+                format!(
+                    "Bearer {}",
+                    self.api_key.expose(&busbar_kernel::seal::lend())
+                ),
             )
             .header(SAFETY_IDENTIFIER_HEADER, &self.safety_identifier)
             .body(Full::new(Bytes::from(body_bytes)))

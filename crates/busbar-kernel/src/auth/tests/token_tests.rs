@@ -619,7 +619,7 @@ fn cred_login() -> std::sync::Arc<DoorLogin> {
                     .submitted
                     .iter()
                     .find(|(n, _)| n == k)
-                    .map(|(_, v)| v.expose_secret().as_str())
+                    .map(|(_, v)| v.expose(&crate::seal::lend()).as_str())
             };
             if get("username") == Some("alice") && get("password") == Some("pw") {
                 let mut p = Principal::from_id("test-login-double:alice");

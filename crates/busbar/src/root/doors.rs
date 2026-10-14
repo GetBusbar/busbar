@@ -44,7 +44,11 @@ pub fn install_dispatcher(d: Arc<Dispatcher>) {
 
 /// The dispatcher every transport door is adopted by.
 pub fn dispatcher() -> &'static Dispatcher {
-    ONE.get_or_init(|| Arc::new(Dispatcher::new(DispatchConfig::default())))
+    ONE.get_or_init(|| {
+        let d = Dispatcher::new(DispatchConfig::default());
+        let _ = d.lend_seal(busbar_kernel::seal::lend());
+        Arc::new(d)
+    })
 }
 
 /// What a transport door is bound to. The instance label is the transport lane's own; every door

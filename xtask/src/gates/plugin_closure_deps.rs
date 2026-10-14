@@ -138,12 +138,25 @@ impl Gate for PluginClosureDepsGate {
             cx,
             self,
             &SPEC,
-            vec![(
-                ROW_BUSBAR,
-                "a plugin depending on the kernel is RED, naming the kernel",
-                with_dep("busbar-kernel-wal = { path = \"../busbar-kernel-wal\" }"),
-                vec![manifest, "busbar-kernel-wal"],
-            )],
+            vec![
+                (
+                    ROW_BUSBAR,
+                    "a plugin depending on the kernel is RED, naming the kernel",
+                    with_dep("busbar-kernel-wal = { path = \"../busbar-kernel-wal\" }"),
+                    vec![manifest, "busbar-kernel-wal"],
+                ),
+                // THE SEAL LENDER (Part 2 #54): `busbar_kernel::seal::lend()` mints the grant a
+                // `Secret::expose` presents, for any crate that depends on busbar-kernel. That is
+                // safe only while no plugin can: a plugin naming busbar-kernel itself is RED.
+                (
+                    ROW_BUSBAR,
+                    "a plugin depending on busbar-kernel (the seal lender) is RED, naming it",
+                    with_dep(
+                        "busbar-kernel = { path = \"../busbar-kernel\", default-features = false }",
+                    ),
+                    vec![manifest, "busbar-kernel"],
+                ),
+            ],
         );
         // OWNER RULING 2026-09-28 (PLUGIN LIBRARIES): a plugin's own third-party library choice is
         // no longer this gate's business, so a plugin naming a runtime, logger or subscriber crate

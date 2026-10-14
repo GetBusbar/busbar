@@ -128,10 +128,10 @@ fn session_scope_refusal() -> axum::response::Response {
 pub(crate) struct ProviderEndpoint {
     /// The provider origin (scheme + authority, e.g. `https://api.openai.com`).
     pub base_url: String,
-    /// The REAL provider key, held server-side and `Redacted`: exposed only at the two sites that
+    /// The REAL provider key, held server-side and `Secret`: exposed only at the two sites that
     /// put it on the provider hop (the mint minter, the SDP bearer). The WebSocket dial hands it,
-    /// still `Redacted`, to the substrate dialer, which writes it into the upgrade request only.
-    pub api_key: busbar_contract::Redacted<String>,
+    /// still `Secret`, to the substrate dialer, which writes it into the upgrade request only.
+    pub api_key: busbar_contract::Secret<String>,
 }
 
 impl ProviderEndpoint {
@@ -173,7 +173,7 @@ pub fn install_provider(base_url: impl Into<String>, api_key: impl Into<String>)
     COMPOSED_PROVIDER
         .set(ProviderEndpoint {
             base_url: base_url.into(),
-            api_key: busbar_contract::Redacted::new(api_key.into()),
+            api_key: busbar_contract::Secret::new(api_key.into()),
         })
         .is_ok()
 }
@@ -238,7 +238,7 @@ pub fn install_gemini_provider(base_url: impl Into<String>, api_key: impl Into<S
     COMPOSED_PROVIDER_GEMINI
         .set(ProviderEndpoint {
             base_url: base_url.into(),
-            api_key: busbar_contract::Redacted::new(api_key.into()),
+            api_key: busbar_contract::Secret::new(api_key.into()),
         })
         .is_ok()
 }
@@ -1107,7 +1107,7 @@ async fn serve_mint(
     let minter = HttpsTokenMinter::new(
         egress_client(),
         &p.base_url,
-        p.api_key.expose_secret(),
+        p.api_key.expose(&busbar_kernel::seal::lend()),
         owner,
         None,
     );
@@ -1153,7 +1153,9 @@ async fn serve_sdp(
         .uri(&uri)
         .header(http::header::CONTENT_TYPE, "application/sdp");
     // Busbar's OWN provider credential — never the caller's inbound governance bearer.
-    for (name, value) in crate::voice_provider_bearer(p.api_key.expose_secret()) {
+    for (name, value) in
+        crate::voice_provider_bearer(p.api_key.expose(&busbar_kernel::seal::lend()))
+    {
         builder = builder.header(name, value);
     }
     let req = match builder.body(Full::new(offer)) {

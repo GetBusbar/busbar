@@ -9,16 +9,40 @@ use super::*;
 #[test]
 fn debug_and_display_never_reveal_the_secret() {
     let secret = "sk-super-secret-value-12345";
-    let r = Redacted::new(secret.to_string());
+    let r = Secret::new(secret.to_string());
     assert_eq!(format!("{r:?}"), "[REDACTED]");
     assert_eq!(format!("{r}"), "[REDACTED]");
     assert!(!format!("{r:?}").contains(secret));
     assert!(!format!("{r}").contains(secret));
-    // And it is reachable only through the explicit audit point.
-    assert_eq!(r.expose_secret(), secret);
+    // And it is reachable only through the explicit audit point, under a kernel seal.
+    assert_eq!(r.expose(&seal()), secret);
 }
 
-/// A struct that embeds a `Redacted` field and derives `Debug` inherits the redaction — proving
+/// A kernel-minted grant: the seal `expose` takes (this crate's own tests may mint one).
+fn seal() -> crate::caps::Grant<crate::caps::Sign> {
+    crate::caps::Grant::mint(&crate::caps::KernelSeal::acquire_for_kernel())
+}
+
+/// RED (Part 2 #54, coordinator ruling 2026-10-14): `Debug`, `Display` and `to_string` render the
+/// literal `[REDACTED]`, byte for byte what 1.5.5's `Redacted` printed (`crates/api/src/redacted.rs:61`
+/// at v1.5.5), for a `String` and a byte secret alike — a log line reads as it did.
+#[test]
+fn debug_display_and_to_string_are_the_1_5_5_bytes() {
+    let text = Secret::new("sk-live-0001".to_string());
+    let bytes = Secret::new(b"\x01\x02".to_vec());
+    for rendered in [
+        format!("{text:?}"),
+        format!("{text}"),
+        text.to_string(),
+        format!("{bytes:?}"),
+        format!("{bytes}"),
+        bytes.to_string(),
+    ] {
+        assert_eq!(rendered.as_bytes(), b"[REDACTED]");
+    }
+}
+
+/// A struct that embeds a `Secret` field and derives `Debug` inherits the redaction — proving
 /// the guarantee is STRUCTURAL (the whole point: no call site has to remember to redact).
 #[test]
 fn embedded_in_a_derived_debug_struct_is_redacted() {
@@ -26,11 +50,11 @@ fn embedded_in_a_derived_debug_struct_is_redacted() {
     #[allow(dead_code)] // fields are read via the derived Debug, which dead-code analysis ignores
     struct Holder {
         id: String,
-        token: Redacted<String>,
+        token: Secret<String>,
     }
     let h = Holder {
         id: "acct-1".into(),
-        token: Redacted::new("token-abc-XYZ".to_string()),
+        token: Secret::new("token-abc-XYZ".to_string()),
     };
     let dbg = format!("{h:?}");
     assert!(
@@ -46,10 +70,10 @@ fn embedded_in_a_derived_debug_struct_is_redacted() {
 
 #[test]
 fn clone_and_eq_operate_on_the_secret() {
-    let a = Redacted::new("v".to_string());
+    let a = Secret::new("v".to_string());
     let b = a.clone();
     assert_eq!(a, b);
-    assert_ne!(a, Redacted::new("w".to_string()));
+    assert_ne!(a, Secret::new("w".to_string()));
 }
 
 /// Equality is CONSTANT-TIME: it routes through the crate's `constant_time_eq` over the secret
@@ -60,25 +84,25 @@ fn clone_and_eq_operate_on_the_secret() {
 fn eq_is_constant_time_and_correct() {
     // Equal secrets compare equal.
     assert_eq!(
-        Redacted::new("sk-abc-123".to_string()),
-        Redacted::new("sk-abc-123".to_string())
+        Secret::new("sk-abc-123".to_string()),
+        Secret::new("sk-abc-123".to_string())
     );
     // Equal length, differing bytes (the case a data-dependent `memcmp` would short-circuit) — the
     // constant-time compare still returns not-equal.
     assert_ne!(
-        Redacted::new("sk-abc-123".to_string()),
-        Redacted::new("sk-abc-124".to_string())
+        Secret::new("sk-abc-123".to_string()),
+        Secret::new("sk-abc-124".to_string())
     );
     // Differing lengths compare not-equal.
     assert_ne!(
-        Redacted::new("sk-abc".to_string()),
-        Redacted::new("sk-abc-123".to_string())
+        Secret::new("sk-abc".to_string()),
+        Secret::new("sk-abc-123".to_string())
     );
     // Empty vs empty is equal.
-    assert_eq!(Redacted::new(String::new()), Redacted::new(String::new()));
+    assert_eq!(Secret::new(String::new()), Secret::new(String::new()));
 }
 
-/// `Drop` for `Redacted<T>` MUST actually call `T::zeroize` — the whole point of the wrapper is
+/// `Drop` for `Secret<T>` MUST actually call `T::zeroize` — the whole point of the wrapper is
 /// that the backing memory is overwritten when it goes out of scope, not left as freed-but-intact
 /// plaintext. A test type that records whether `zeroize` ran (rather than asserting on process
 /// memory, which isn't reliably observable from safe Rust) pins this directly: mutating the `Drop`
@@ -97,21 +121,21 @@ fn drop_actually_calls_zeroize() {
 
     let flag = Arc::new(AtomicBool::new(false));
     {
-        let _r = Redacted::new(FlagOnZeroize(flag.clone()));
+        let _r = Secret::new(FlagOnZeroize(flag.clone()));
         assert!(!flag.load(Ordering::SeqCst), "must not zeroize before drop");
     }
     assert!(
         flag.load(Ordering::SeqCst),
-        "Redacted's Drop must call the backing value's zeroize"
+        "Secret's Drop must call the backing value's zeroize"
     );
 }
 
-/// `Redacted` must NOT implement `serde::Serialize`, so a secret held in engine memory has no
+/// `Secret` must NOT implement `serde::Serialize`, so a secret held in engine memory has no
 /// implicit path into JSON (the credential-transport boundary uses a plain wire `String`, on
 /// purpose). This uses AUTOREF SPECIALIZATION to actually detect the impl at test time: the
 /// inherent `ser` (which requires `T: Serialize`) shadows the trait-default `ser` IFF a
 /// `Serialize` impl exists — so unlike an unconstrained generic, this test FLIPS to red the moment
-/// someone adds `#[derive(Serialize)]` to `Redacted`.
+/// someone adds `#[derive(Serialize)]` to `Secret`.
 #[test]
 fn redacted_does_not_implement_serialize() {
     use core::marker::PhantomData;
@@ -128,10 +152,10 @@ fn redacted_does_not_implement_serialize() {
             true
         }
     }
-    let probe = Probe::<Redacted<String>>(PhantomData);
+    let probe = Probe::<Secret<String>>(PhantomData);
     assert!(
         !probe.ser(),
-        "Redacted<T> must NOT implement Serialize (add one and this test goes red)"
+        "Secret<T> must NOT implement Serialize (add one and this test goes red)"
     );
     // Sanity: the probe DOES report true for a type that is Serialize (proving it detects impls).
     let control = Probe::<String>(PhantomData);

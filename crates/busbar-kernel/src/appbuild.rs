@@ -881,7 +881,7 @@ pub fn build_app_from_config(
             organization: provider_cfg.organization.clone(),
             project: provider_cfg.project.clone(),
             upstream_model: ld.upstream_model.clone(),
-            api_key: busbar_contract::redacted::Redacted::new(api_key),
+            api_key: busbar_contract::redacted::Secret::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),
             scope: provider_cfg.scope.clone(),
             token_url: provider_cfg.token_url.clone(),
@@ -1191,7 +1191,7 @@ pub fn build_app_from_config(
             });
             // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
             // — carry on serving with the old credential — is exactly the defect being fixed.
-            let admin_token: Option<Option<busbar_contract::redacted::Redacted<String>>> =
+            let admin_token: Option<Option<busbar_contract::redacted::Secret<String>>> =
                 if declares_operator {
                     // Declared with no token ref resolves to `None`: the admin API is credential-less
                     // BY CONFIGURATION, so fail closed and disable it rather than keep the old secret.
@@ -1202,8 +1202,8 @@ pub fn build_app_from_config(
                 } else {
                     None
                 };
-            let hash = |t: &busbar_contract::redacted::Redacted<String>| {
-                busbar_contract::redacted::sha256_hex(t.expose_secret().as_bytes())
+            let hash = |t: &busbar_contract::redacted::Secret<String>| {
+                busbar_contract::redacted::sha256_hex(t.expose(&crate::seal::lend()).as_bytes())
             };
             rotated_digest = admin_token.as_ref().map(|t| t.as_ref().map(hash));
             let signer = match auth.and_then(|a| a.signing_key.as_ref()) {
@@ -1213,7 +1213,11 @@ pub fn build_app_from_config(
             if admin_token.is_some() || signer.is_some() {
                 rotate_gov_credentials = Some(Box::new(move || {
                     if let Some(token) = admin_token {
-                        gs.set_admin_token(token.as_ref().map(|r| r.expose_secret().as_str()));
+                        gs.set_admin_token(
+                            token
+                                .as_ref()
+                                .map(|r| r.expose(&crate::seal::lend()).as_str()),
+                        );
                     }
                     if let Some(signer) = signer {
                         gs.set_signing_key(signer);
@@ -1290,7 +1294,7 @@ pub fn build_app_from_config(
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
-        let admin_token: Option<busbar_contract::redacted::Redacted<String>> =
+        let admin_token: Option<busbar_contract::redacted::Secret<String>> =
             resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
         // The KEY-SIGNING key: resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
         // bytes. ABSENT => no signer (1.5.1: busbar no longer auto-generates one; config_validate
@@ -1299,7 +1303,9 @@ pub fn build_app_from_config(
         let signer = resolve_signing_key(cfg.auth.as_ref(), &secret_resolver)?;
         match governance::GovState::new_with_signer(
             store,
-            admin_token.as_ref().map(|r| r.expose_secret().clone()),
+            admin_token
+                .as_ref()
+                .map(|r| r.expose(&crate::seal::lend()).clone()),
             signer,
         ) {
             Ok(gs) => {

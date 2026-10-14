@@ -422,7 +422,7 @@ pub fn origin_of(url: &str) -> &str {
 pub trait LendCredential: Send + Sync {
     /// The credential `unit`'s caller presented, while the unit runs; `None` when it presented
     /// none, or the unit is not in flight.
-    fn lent(&self, unit: u64) -> Option<crate::redacted::Redacted<Vec<u8>>>;
+    fn lent(&self, unit: u64) -> Option<crate::redacted::Secret<Vec<u8>>>;
 }
 
 /// ONE MEMBER'S AUTH BINDING, as the connector holds it for a plugin's own requests to that member

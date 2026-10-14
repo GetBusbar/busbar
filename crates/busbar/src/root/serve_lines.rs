@@ -292,7 +292,7 @@ where
             // member's outbound auth call alone, as the data listener lends the gate's.
             credential: credential
                 .as_ref()
-                .map(|c| busbar_contract::redacted::Redacted::new(c.as_bytes().to_vec())),
+                .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
             app: app.load(),
         };
         let routes = Arc::clone(&routes);
