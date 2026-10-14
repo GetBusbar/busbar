@@ -35,8 +35,8 @@ fn every_real_transport_answers_composed_over_consistently_with_its_construction
     let shipped = shipped_fold();
     // Every linked transport row is built: the fold's rows plus the rows this build leaves unlinked
     // are the shipped table, so a row dropped from the manifest is a row missing here.
-    // A row registers every scheme its entry claims (ONE ENTRY PER PLUGIN: `sse` is the http
-    // entry's), so the shipped fold has one row per CLAIM of a linked row.
+    // A row registers every scheme its entry claims (ONE ENTRY PER PLUGIN: an entry's second scheme
+    // is its own claim, not a row), so the shipped fold has one row per CLAIM of a linked row.
     let claimed: usize = LINKED_TRANSPORTS.iter().map(|r| (r.claims)().len()).sum();
     assert_eq!(
         claimed + LINKED_TRANSPORTS_OFF,

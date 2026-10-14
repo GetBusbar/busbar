@@ -81,7 +81,7 @@ pub fn free_port() -> u16 {
 /// `SO_REUSEPORT`), never listening, and the port the kernel chose for it.
 fn held_ephemeral_port() -> (socket2::Socket, u16) {
     use socket2::{Domain, Socket, Type};
-    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).expect("a TCP socket");
+    let socket = Socket::new(Domain::IPV4, Type::STREAM, None).expect("a stream socket");
     socket.set_reuse_address(true).expect("SO_REUSEADDR");
     socket.set_reuse_port(true).expect("SO_REUSEPORT");
     socket

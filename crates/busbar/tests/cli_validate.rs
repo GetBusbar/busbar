@@ -1002,14 +1002,14 @@ fn validate_honors_deprecated_busbar_config_overlay_env_var() {
 /// The env var is removed explicitly rather than merely left unset, so an unrelated variable in the
 /// developer's or the runner's environment can never turn this test green by accident.
 ///
-/// Gated on `auth-admin-tokens` because the FIXTURE cannot exist without it: the identity provider
-/// this test configures is `module: admin-tokens`, which that feature compiles out entirely. Built
-/// without it, `--validate` fails EARLIER — "an admin-tokens token is configured but this binary
-/// was built WITHOUT the `auth-admin-tokens` feature" — so the run never reaches the secret check
-/// and the assertion below fails against an error about something else. The B1 behaviour under test
-/// is feature-independent; only this fixture is not. `docs_examples.rs` gates its whole file on the
-/// same feature for the same reason.
-#[cfg(feature = "auth-admin-tokens")]
+/// Gated on the operator credential's linked row (`linked_operator_auth`, build.rs: the row the
+/// manifest's `operator-auth` table names) because the FIXTURE cannot exist without it: the identity
+/// provider this test configures is that row's module, which a build not linking it compiles out
+/// entirely. Built without it, `--validate` fails EARLIER — the operator token is
+/// configured but no row answers it — so the run never reaches the secret check and the assertion
+/// below fails against an error about something else. The B1 behaviour under test is
+/// feature-independent; only this fixture is not.
+#[cfg(linked_operator_auth)]
 #[test]
 fn validate_fails_on_unresolvable_browser_login_client_secret() {
     const UNSET_VAR: &str = "BUSBAR_TEST_B1_OIDC_CLIENT_SECRET_NEVER_SET";
@@ -1026,7 +1026,8 @@ fn validate_fails_on_unresolvable_browser_login_client_secret() {
              \x20     client_id: busbar-web\n\
              \x20     client_secret: {{ env: {UNSET_VAR} }}\n\
              auth:\n\
-             \x20 admin_auth: [admin-tokens]\n"
+             \x20 admin_auth:\n\
+             \x20   - admin-tokens\n"
         ),
     );
     let out = Command::new(env!("CARGO_BIN_EXE_busbar"))
@@ -1139,11 +1140,11 @@ fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
 /// `protocol:`, and `telemetry` banks one metric family per entry and finds it again BY POSITION,
 /// so a reordering silently re-points every dashboard series behind the moved entry. Nothing inside
 /// `busbar-core` can pin it — core's test build resolves the dialects from its own built-in table,
-/// while the SHIPPED order is `merged_boot_decls(busbar_llm::DECLS ++ mcp, remaining built-ins)`,
+/// while the SHIPPED order is `merged_boot_decls(<the node plane's DECLS> ++ <the rest>)`,
 /// which only exists once the composition root has run. So it is pinned here, black-box, on the
 /// real binary, by reading the refusal an operator would read.
 ///
-/// This is the assertion the LLM consolidation had to satisfy. Folding six per-dialect crates into
+/// This is the assertion the node plane's consolidation had to satisfy. Folding six per-dialect crates into
 /// one plugin moves every one of them from core's built-in table into the installed set, and the
 /// installed set is folded AHEAD of the built-ins — so a naive fold reorders the list. It was
 /// measured doing exactly that during this work (cohere went from slot 6 to slot 2). The order is

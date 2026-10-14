@@ -950,7 +950,8 @@ auth:
   chain:
     - keys
   signing_key: {{ file: "{key_file}" }}
-  admin_auth: [admin-tokens]
+  admin_auth:
+    - admin-tokens
 per_request_fee: {FEE_CENTS}
 groups:
   oracle:
