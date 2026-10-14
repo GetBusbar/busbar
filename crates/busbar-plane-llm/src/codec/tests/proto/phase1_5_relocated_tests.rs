@@ -133,8 +133,58 @@ fn error_kind_to_bedrock_type_covers_ingress_emitted_kinds() {
     );
     assert_eq!(
         bedrock::error_kind_to_bedrock_type(KIND_INSUFFICIENT_QUOTA),
-        "ServiceQuotaExceededException"
+        "ThrottlingException"
     );
+}
+
+/// Every kind the bedrock writer can be handed answers an exception that Converse AND
+/// ConverseStream DECLARE: the `errors` of both operations in the pinned botocore model
+/// (`testing/llm-conformance/spec-digests.tsv` row `bedrock`, bedrock-runtime 2023-09-30 at
+/// e5c8122617a2). 1.5.5 answered an exhausted budget with `ServiceQuotaExceededException`, which
+/// only InvokeModel declares, so the llm conformance rig failed `error.declared` on
+/// `llm|bedrock|bedrock|request|over_budget_total`; OWNER rule 22 (2026-10-14) makes that a defect.
+#[test]
+fn every_bedrock_error_kind_is_a_converse_declared_exception() {
+    const CONVERSE_DECLARED: [&str; 9] = [
+        "AccessDeniedException",
+        "InternalServerException",
+        "ModelErrorException",
+        "ModelNotReadyException",
+        "ModelTimeoutException",
+        "ResourceNotFoundException",
+        "ServiceUnavailableException",
+        "ThrottlingException",
+        "ValidationException",
+    ];
+    use busbar_contract::protocol::{
+        KIND_API_ERROR, KIND_INSUFFICIENT_QUOTA, KIND_INVALID_REQUEST, KIND_OVERLOADED,
+        KIND_PERMISSION, KIND_RATE_LIMIT, KIND_SERVER_ERROR, KIND_TIMEOUT,
+    };
+    let kinds = [
+        KIND_INVALID_REQUEST,
+        KIND_RATE_LIMIT,
+        KIND_PERMISSION,
+        KIND_INSUFFICIENT_QUOTA,
+        KIND_TIMEOUT,
+        KIND_OVERLOADED,
+        KIND_API_ERROR,
+        KIND_SERVER_ERROR,
+        "quota_exceeded",
+        "service_quota_exceeded",
+        "not_found",
+        "forbidden",
+        "unauthorized",
+        "service_unavailable",
+        "internal_error",
+        "a kind nothing names",
+    ];
+    for kind in kinds {
+        let exc = bedrock::error_kind_to_bedrock_type(kind);
+        assert!(
+            CONVERSE_DECLARED.contains(&exc),
+            "kind {kind:?} answers {exc}, which Converse/ConverseStream do not declare"
+        );
+    }
 }
 
 /// THE EXHAUSTIVENESS GUARD: every registered protocol has a reader that produces a readable IR, so

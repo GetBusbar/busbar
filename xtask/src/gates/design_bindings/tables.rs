@@ -135,7 +135,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "an_idempotency_key_survives_a_client_disconnect_mid_mint", "InFlight is deliberately not cleared"),
     ]),
     ("PB-22", &[
-        ("test", "test_governance_over_budget_native_envelope_all_ingress", "budget is insufficient_quota, 429 everywhere and 400 on bedrock"),
+        ("test", "test_governance_over_budget_native_envelope_all_ingress", "budget is insufficient_quota, 429 everywhere, bedrock included as ThrottlingException"),
         ("test", "test_governance_rate_limit_429_native_envelope_all_ingress", "requests is always 429 rate_limit_error, bedrock included"),
         ("test", "crates/busbar-kernel/src/governance/tests/limits_tests.rs::chain_and_parent_blocks_child_and_charges_nothing", "a blocked attempt charges nothing on any chain bucket"),
         ("test", "test_group_blocked_429_names_the_budget_group", "the first blocking bucket names the 429 and charges 0"),
@@ -438,7 +438,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "test_try_admit_rejects_at_group_cap", "the concurrent refusal carries retry_after None"),
         ("test", "test_chain_enforcement_rejects_naming_the_blocking_group", "the first blocking bucket names the refusal"),
         ("test", "test_governance_rate_limit_429_native_envelope_all_ingress", "requests refusal is 429 rate_limit_error on every ingress"),
-        ("test", "test_budget_over_quota_bedrock_envelope", "budget refusal is the Bedrock 400"),
+        ("test", "test_budget_over_quota_bedrock_envelope", "budget refusal is the Bedrock 429 ThrottlingException"),
     ]),
     ("PB-80", &[
         ("test", "backoff_saturates_not_wraps_at_high_streak", "the shift saturates rather than wrapping"),
@@ -623,7 +623,7 @@ pub static SUGGEST: &[(&str, &str)] = &[
     ("PB-16", "billing cell family: byte-identical /usage after each exit class; unit test that an undelivered unit writes no metering row and refunds the fee"),
     ("PB-17", "boot.warning oracle family gate: warning count on every 1.5.5 corpus config equals the golden's (config.migrate cells could carry the warning count)"),
     ("PB-18", "unit test: budgets derived from max_inbound_concurrent, and 0 leaves every derived budget unbounded; a body 1.5.5 accepted is accepted"),
-    ("PB-19", "governance unit test: a key bound to an absent group is refused insufficient_quota 429 (400 on bedrock) with the literal message; over_budget cell variant"),
+    ("PB-19", "governance unit test: a key bound to an absent group is refused insufficient_quota 429 (bedrock included, ThrottlingException) with the literal message; over_budget cell variant"),
     ("PB-20", "audit unit test: 8 wire fields, genesis prev_hash empty, SHA-256 over the canonical string, 1000-entry ring; admin.ops|GetAudit cell"),
     ("PB-21", "admin.ops idempotent-replay cells cover replay; add a unit test for the in-flight 409 conflict envelope and the TTL 600 s"),
     ("PB-22", "governance unit test: check-then-charge order, first blocking bucket names the 429, requests/billable +1 on every bucket of the chain, budget formula"),
