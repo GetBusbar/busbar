@@ -223,9 +223,10 @@ fn with_no_durable_sink_a_demotion_is_recorded_nowhere() {
 }
 
 /// AND THE RAM DEFAULT REALLY IS RAM — which is a statement about the PROCESS, not about the write.
-/// Within one process `busbar-store-memory` is a real store and reads a demotion back; what it loses
-/// is everything the moment the process ends, and a restart is modelled here the only way a RAM
-/// restart can be, by opening a new one. That is the documented `store: memory` contract.
+/// Within one process the RAM store (here its kernel double) is a real store and reads a demotion
+/// back; what it loses is everything the moment the process ends, and a restart is modelled here the
+/// only way a RAM restart can be, by opening a new one. That is the documented `store: memory`
+/// contract.
 ///
 /// The "a write that reaches nothing reads back as nothing" control lives in the no-sink case above,
 /// where it belongs: the engine learns durability by READING BACK and never from a write's return

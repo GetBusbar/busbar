@@ -21,7 +21,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use busbar_contract::billing::TokenUsage;
-use busbar_contract::codec::OperationHandler;
+use busbar_contract::codec::{OperationHandler, UsageTapFault};
 use busbar_contract::protocol::HeadFields;
 use busbar_contract::upstream::{Disposition, StatusClass};
 
@@ -160,6 +160,9 @@ pub struct Piece<'a> {
     /// audit row per path (`<path> from <dialect>`), 1.5.5's row. Empty on a relay of the caller's
     /// own dialect and on every end that delivers nothing.
     pub dropped: Vec<String>,
+    /// Why the usage tap could not read a same-dialect whole body, on the end that read it: the
+    /// door carries it out beside its units, and the kernel counts it (row 155).
+    pub tap_fault: Option<UsageTapFault>,
 }
 
 enum State {
@@ -243,6 +246,7 @@ fn answered<'a>(r: Rendered, units: Units, verdict: Verdict, fault: Option<Fault
         fault,
         done: true,
         dropped: Vec::new(),
+        tap_fault: None,
     }
 }
 
@@ -397,6 +401,7 @@ impl Reply {
                         fault: None,
                         done: false,
                         dropped: Vec::new(),
+                        tap_fault: None,
                     };
                 }
                 let partial = relay.partial();
@@ -434,6 +439,7 @@ impl Reply {
                     fault,
                     done: true,
                     dropped: end.dropped,
+                    tap_fault: end.tap_fault,
                 }
             }
         }
@@ -481,6 +487,7 @@ impl Reply {
                     fault: Some(Fault::Transient(cut.reason)),
                     done: true,
                     dropped: Vec::new(),
+                    tap_fault: None,
                 }
             }
         }

@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use busbar_contract::billing::{Billing, TokenUsage};
-use busbar_contract::codec::OperationHandler;
+use busbar_contract::codec::{OperationHandler, UsageTapFault};
 use busbar_contract::protocol::{ArrayStreamFramer, ProtocolDecl, StreamTranslator};
 use serde_json::Value;
 
@@ -92,6 +92,9 @@ pub struct End {
     /// The far-end wire paths a translated stream dropped (design F3 "Drops"), each warned once:
     /// the host records one audit row per path.
     pub dropped: Vec<String>,
+    /// Why the usage tap could not read a same-dialect whole body (only when metering): returned
+    /// as data for the kernel to count, never reported from here (row 155).
+    pub tap_fault: Option<UsageTapFault>,
 }
 
 /// How a relayed answer was cut: by the far end's transport, or by the stream's ceiling.
@@ -361,6 +364,7 @@ impl Relay {
             })
             == Some(crate::codec::ir::IrStopReason::Error);
         let mut open_billing: Option<Billing> = None;
+        let mut tap_fault = None;
         let usage = if !self.meter {
             None
         } else if let Some(t) = self.translate.as_ref() {
@@ -378,7 +382,9 @@ impl Relay {
             if self.nonstream_buf_truncated {
                 Some(wire::unrecovered_usage(self.ingress, &buf))
             } else {
-                self.handler.extract_usage(self.ingress, &buf).or_else(|| {
+                let tapped = self.handler.extract_usage(self.ingress, &buf);
+                tap_fault = tapped.as_ref().err().copied();
+                tapped.ok().flatten().or_else(|| {
                     match self.handler.read_response(&buf) {
                         Ok(read) => {
                             open_billing = read.billing();
@@ -418,6 +424,7 @@ impl Relay {
                 .as_ref()
                 .map(|t| t.dropped())
                 .unwrap_or_default(),
+            tap_fault,
         }
     }
 
