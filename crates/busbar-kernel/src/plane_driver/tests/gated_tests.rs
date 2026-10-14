@@ -68,3 +68,20 @@ fn the_gates_bind_over_the_recorded_entry_and_a_projection_naming_another_is_ref
         "a projection with no entry and no body has nothing to screen"
     );
 }
+
+/// F25 row 218: rehomed from crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::
+/// the_refusal_literal_is_the_shared_constant. The refusal a failed load-bearing hook produces is
+/// ONE constant at 1.5.5's literal and status, and the gate-first stage serves it as it is, so the
+/// two seats cannot drift into two different client-visible refusals.
+#[test]
+fn the_refusal_literal_is_the_shared_constant() {
+    const GATE_COULD_NOT_COMPLETE: &str =
+        "A required gate could not complete. Please retry shortly.";
+    assert_eq!(GATE_COULD_NOT_COMPLETE, REQUIRED_HOOK_UNAVAILABLE_MESSAGE);
+    assert_eq!(503, REQUIRED_HOOK_UNAVAILABLE_STATUS);
+    assert_eq!(
+        rewrite_refusal(503, GATE_COULD_NOT_COMPLETE),
+        (503, GATE_COULD_NOT_COMPLETE.to_string()),
+        "the gate-first stage serves the shared refusal unchanged"
+    );
+}

@@ -2984,3 +2984,44 @@ pub(crate) fn frozen_str(key: &str) -> String {
         .unwrap_or_else(|| panic!("frozen `{key}` is not a string"))
         .to_string()
 }
+
+/// F25 row 634: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect.
+/// Pins: an ingress name that resolves to no protocol is answered in the kernel's OWN envelope —
+/// the status as given (503), `application/json`, the agnostic `kind` stated VERBATIM
+/// (`overloaded`, never rewritten onto a dialect's vocabulary), the message verbatim — and with no
+/// dialect's error headers (the content type is the only header).
+#[tokio::test]
+async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
+    let resp = crate::proxy::ingress_error(
+        "no-such-protocol",
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        crate::proxy::KIND_OVERLOADED,
+        "everything is on fire",
+    );
+    assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        resp.headers().get("x-amzn-requestid").is_none(),
+        "an unresolved ingress must not carry a dialect's error headers"
+    );
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok()),
+        Some("application/json")
+    );
+    assert_eq!(
+        resp.headers().len(),
+        1,
+        "no dialect attached a header of its own: {:?}",
+        resp.headers()
+    );
+    use http_body_util::BodyExt as _;
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON envelope");
+    assert_eq!(
+        v["error"]["type"],
+        crate::proxy::KIND_OVERLOADED,
+        "the kernel's envelope states the agnostic kind verbatim"
+    );
+    assert_eq!(v["error"]["message"], "everything is on fire");
+}
