@@ -336,11 +336,18 @@
 # owed-baseline row and golden (busbar-release oracle-rerecord run 38471635786, recorded from the published
 # 1.5.5) land with this commit. The digests are dev-bin's busbar-oracle-linux-<arch>-<release_ref>.sha256.
 #
+# 2026-10-13 (ARCHITECT ruling, busbar status row 155; #62): moved db64d9218d8b -> 7e606a7aa904, busbar-release
+# main after the dev -> qa -> main promotion (#353, #354), which carries #352 (733d619): the corpus generator adds
+# the six literal cells llm|<d>|<d>|request|stream_upstream_cut, whose cells.json rows, owed-baseline rows and
+# goldens (busbar-release oracle-rerecord run 38488778377, recorded from the published 1.5.5) land with this
+# commit's PR; it also carries #349 (busbar-release slimmed to busbar's tools; no corpus change). The digests are
+# dev-bin's busbar-oracle-linux-<arch>-<release_ref>.sha256.
+#
 # To move the pin: set release_ref to the new busbar-release commit and each sha256_linux_<arch> to the
 # sha256 of its dev-bin busbar-oracle-linux-<arch>-<release_ref> asset (the .sha256 beside it).
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=db64d9218d8ba71abfc64be9898e33531c22e7f6
-sha256_linux_x86_64=dee96ad6096f400f5508f06e93a6fa9b800bad3040bcc56d7e48a8ae71ceed5d
-sha256_linux_aarch64=6216a4bcb71ca2473f8e97189f66858f81d1d2778b5820dff7afb86a6400fbd6
+release_ref=7e606a7aa904a729b74a5e4644eb7f08dfc7b51a
+sha256_linux_x86_64=25b196dfab7dad0827ea061a581e37c5d912c3a9a14033ea20f3e181091a0fcf
+sha256_linux_aarch64=381e9ac9c3d29fe51947f1d6ee3d315d32edc42c15c47dd92387f2b983073510
 crate=busbar-release-oracle
 bin=busbar-oracle
