@@ -918,6 +918,7 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
             .map(|h| stream_intent(h, arrived.parsed.as_ref()))
             .unwrap_or_default(),
         passthrough: piece.passthrough,
+        translate_cap: unit.shaping.translate_cap(),
     };
     if let Some(status) = piece.status {
         unit.reply = Some(Reply::new(

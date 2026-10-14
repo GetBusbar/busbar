@@ -28,6 +28,11 @@ impl ProtocolWriter for ResponsesWriter {
         self.store_request_echo(ingress_request_body);
     }
 
+    /// Latch the stream's translation cap, the one its plane's settings carry.
+    fn set_translate_cap(&self, cap: usize) {
+        self.store_translate_cap(cap);
+    }
+
     fn dropped_egress_controls(&self, req: &crate::codec::ir::IrRequest) -> Vec<&'static str> {
         // Mirrors the `write_request` drop-warns: the controls the mapping file has no row for
         // (`top_k`, `stop`, the penalties, `seed`, `n`) are derived from it.

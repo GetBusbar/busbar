@@ -1745,6 +1745,11 @@ pub struct GeminiWriter {
     /// (IR audit GEM-16), exactly as the buffered writer converts them. Same `Mutex` /
     /// poison-degrades discipline as `open_tools`; a poisoned lock passes offsets through unconverted.
     stream_text: std::sync::Mutex<GeminiStreamText>,
+    /// THIS STREAM'S TRANSLATION CAP: the byte ceiling one open tool's streamed `args` may reach
+    /// (see the `InputJsonDelta` arm of `write_response_event`). The plane hands it from its own
+    /// settings when it opens the stream ([`crate::codec::proto_codec::ProtocolWriter::set_translate_cap`]);
+    /// until then, [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`].
+    translate_cap: std::sync::atomic::AtomicUsize,
 }
 
 /// The streamed answer text [`GeminiWriter::stream_text`] accumulates: the concatenated `text` and
@@ -1777,6 +1782,9 @@ pub const GeminiWriter: GeminiWriter = GeminiWriter {
         text: String::new(),
         block_starts: Vec::new(),
     }),
+    translate_cap: std::sync::atomic::AtomicUsize::new(
+        busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+    ),
 };
 
 impl Clone for GeminiWriter {
@@ -1800,6 +1808,10 @@ impl Clone for GeminiWriter {
                     .lock()
                     .map(|t| t.clone())
                     .unwrap_or_default(),
+            ),
+            translate_cap: std::sync::atomic::AtomicUsize::new(
+                self.translate_cap
+                    .load(std::sync::atomic::Ordering::Relaxed),
             ),
         }
     }

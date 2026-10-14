@@ -406,7 +406,7 @@ pub mod linked {
     /// translator, so the neutral construction seam resolves it in production exactly as the test
     /// kit does.
     pub fn install_protocol_seams() {
-        super::install_stream_translator_factory(crate::proto_stream::new_stream_translator);
+        super::install_stream_translator_factory(crate::engine::stream_translator);
     }
 }
 

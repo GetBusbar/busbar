@@ -534,14 +534,15 @@ pub type CounterAddFn = extern "C-unwind" fn(
 ) -> StatusClass;
 
 // ── THE HOST SERVICES (minor 30; ARCHITECT SD-3 queue (6), DEC-SERVE G2). The contract ports a
-//    codec reaches — `busbar_contract::codec::{fill_entropy, wall_clock_now,
-//    max_translate_body_bytes}` — are process-wide `OnceLock`s the host arms in ITS image. A plane
-//    dropped in as a `cdylib` carries its own copy of the contract, whose ports nothing armed, so it
-//    read the failure path of every one. These slots carry the host's own services across the seam;
-//    the dropped-in door arms the plane image's ports over them (`services::arm`) when the host
-//    opens the door. The usage-tap fault latch is RETIRED (row 155): the fault crosses as data on
-//    the plane's answer (`abi::plane::OnPieceOut::tap_fault`), so no host serves its slot and no
-//    plane calls it. Process-wide, so `host` may be `HostCtx::NULL`. ──
+//    codec reaches — `busbar_contract::codec::{fill_entropy, wall_clock_now}` — are process-wide
+//    `OnceLock`s the host arms in ITS image. A plane dropped in as a `cdylib` carries its own copy of
+//    the contract, whose ports nothing armed, so it read the failure path of every one. These slots
+//    carry the host's own services across the seam; the dropped-in door arms the plane image's ports
+//    over them (`services::arm`) when the host opens the door. The usage-tap fault latch is RETIRED
+//    (row 155): the fault crosses as data on the plane's answer (`abi::plane::OnPieceOut::tap_fault`).
+//    So is the translate cap: the kernel hands it in the settings the plane is opened and refreshed
+//    with. No host serves either slot and no plane calls them. Process-wide, so `host` may be
+//    `HostCtx::NULL`. ──
 /// Fill `out_len` bytes at `out` from the host's entropy source (its CSPRNG). [`StatusClass::Ok`]
 /// when every byte was written; [`StatusClass::Refused`] when the host has no entropy to give or
 /// `out` is NULL with a non-zero length (the bytes are then unspecified); [`StatusClass::Fault`] on
@@ -561,8 +562,9 @@ pub type TapFaultLatchFn = extern "C-unwind" fn(
     reason_ptr: *const u8,
     reason_len: usize,
 ) -> bool;
-/// The operator's per-response translation cap in bytes, as the host holds it NOW (the operator may
-/// reload it live).
+/// RETIRED (row 155): the slot's shape, kept so the table's layout holds. The translate cap reaches
+/// a plane in the settings it is opened and refreshed with; no host serves this slot and no plane
+/// calls it.
 pub type TranslateCapFn = extern "C-unwind" fn(host: HostCtx) -> u64;
 
 /// The `#[repr(C)]` inbound-capability vtable a plane calls back into. Leads with the FROZEN
@@ -717,7 +719,7 @@ pub struct PlaneHostVtable {
     pub wall_clock: Option<WallClockFn>,
     /// RETIRED (row 155): always `None`; the usage-tap fault is data on the plane's answer.
     pub tap_fault_latch: Option<TapFaultLatchFn>,
-    /// Read the operator's live translation cap.
+    /// RETIRED (row 155): always `None`; the translate cap reaches a plane in its settings.
     pub translate_cap: Option<TranslateCapFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // New inbound capabilities append as trailing `Option` slots BELOW this line and bump the
@@ -930,13 +932,12 @@ impl PlaneHostVtable {
         translate_cap: None,
     };
 
-    /// [`EMPTY`](Self::EMPTY) plus the three HOST SERVICES, each served from THIS image's own armed
+    /// [`EMPTY`](Self::EMPTY) plus the two HOST SERVICES, each served from THIS image's own armed
     /// contract ports ([`super::services`]). A host grants them by building its table over this
     /// (`..PlaneHostVtable::SERVICES`): the services are the contract's, so the host adds no code.
     pub const SERVICES: PlaneHostVtable = PlaneHostVtable {
         entropy_fill: Some(super::services::entropy_fill),
         wall_clock: Some(super::services::wall_clock),
-        translate_cap: Some(super::services::translate_cap),
         ..Self::EMPTY
     };
 }

@@ -187,30 +187,21 @@ impl UsageTapFault {
     }
 }
 
-/// The host's TRANSLATE-BODY CAP READER: the operator's per-response translation cap, in bytes, as
-/// the host holds it NOW (an operator may reload it live). A codec that bounds what it buffers while
-/// translating a response reads the cap through here at each use, so its bound and the host's never
-/// diverge.
-pub type TranslateCapReader = fn() -> usize;
-
-static TRANSLATE_CAP_READER: std::sync::OnceLock<TranslateCapReader> = std::sync::OnceLock::new();
-
-/// The cap a process whose host installed no reader bounds translation at: 32 MiB, the host's own
-/// default for an unconfigured `limits.request_body_max_bytes`.
+/// The translation cap a plane bounds a response's translation at when its settings name none:
+/// 32 MiB, the host's own default for an unconfigured `limits.request_body_max_bytes`. The cap a
+/// plane enforces is the one the kernel hands it in the settings it is opened and refreshed with
+/// (`limits.request_body_max_bytes`), held in the plane's own state. The contract carries only this
+/// default: there is no reader to install and no port a codec reads the cap through.
+///
+/// ```compile_fail
+/// // The cap is no host port: a codec reads it from the plane's own settings.
+/// let _ = busbar_contract::codec::max_translate_body_bytes();
+/// ```
+///
+/// ```compile_fail
+/// busbar_contract::codec::install_translate_cap_reader(|| 0);
+/// ```
 pub const TRANSLATE_BODY_MAX_BYTES_DEFAULT: usize = 32 * 1024 * 1024;
-
-/// Install the host's [`TranslateCapReader`]. First install wins.
-pub fn install_translate_cap_reader(reader: TranslateCapReader) {
-    let _ = TRANSLATE_CAP_READER.set(reader);
-}
-
-/// The per-response translation cap the host holds now, or
-/// [`TRANSLATE_BODY_MAX_BYTES_DEFAULT`] when no host installed a reader.
-pub fn max_translate_body_bytes() -> usize {
-    TRANSLATE_CAP_READER
-        .get()
-        .map_or(TRANSLATE_BODY_MAX_BYTES_DEFAULT, |read| read())
-}
 
 /// The host's ENTROPY SOURCE: fills the buffer with fresh bytes from the host's CSPRNG and answers
 /// `true`, or answers `false` when the host has none to give (the buffer's contents are then

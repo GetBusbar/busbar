@@ -826,7 +826,7 @@ fn test_writer_tool_call_reassembles_split_json_args() {
 
 /// Regression: a tool call's `arguments` accumulated JSON string must not grow WITHOUT BOUND
 /// across the life of a stream. Feed enough `InputJsonDelta` fragments to exceed
-/// `busbar_contract::codec::max_translate_body_bytes()` (the cap this accumulator now enforces — the same
+/// `busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT` (the cap this accumulator enforces until the plane hands its own — the same
 /// operator-tunable limit that already bounds a buffered cross-protocol non-stream completion body
 /// elsewhere) and assert the established overflow behavior fires: fragments past the cap stop being
 /// appended (the buffer stops growing, it is not aborted and no in-band error frame is emitted), so
@@ -836,7 +836,7 @@ fn test_writer_tool_call_reassembles_split_json_args() {
 /// the unbounded-buffer defect).
 #[test]
 fn test_writer_tool_call_args_capped_at_max_len() {
-    let cap = busbar_contract::codec::max_translate_body_bytes();
+    let cap = busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT;
     let writer = GeminiWriter;
     writer.write_response_event(&IrStreamEvent::BlockStart {
         index: 1,
@@ -912,7 +912,7 @@ fn test_writer_tool_call_args_capped_at_max_len() {
 }
 
 /// Happy-path regression: a NORMAL-sized tool call's arguments (well under
-/// `busbar_contract::codec::max_translate_body_bytes()`) must still round-trip correctly — the cap must not
+/// `busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`) must still round-trip correctly — the cap must not
 /// false-positive on legitimate multi-fragment argument streams.
 #[test]
 fn test_writer_tool_call_args_under_cap_round_trips() {

@@ -533,6 +533,72 @@ fn a_usage_tap_fault_rides_one_window_of_the_doors_answer() {
     }
 }
 
+/// The same far end, model and pool, with a translation cap below [`ANSWER`]'s length: the
+/// `limits.request_body_max_bytes` the kernel hands a plane in its settings.
+const SETTINGS_CAPPED: &[u8] = br#"{
+    "providers": { "ant": { "protocol": "anthropic", "base_url": "https://anthropic.example" } },
+    "models": { "claude": { "provider": "ant" } },
+    "pools": { "p": { "members": ["claude"] } },
+    "limits": { "request_body_max_bytes": 64 }
+}"#;
+
+/// One openai caller's unit against the anthropic far end, its whole answer [`ANSWER`]: the far
+/// end's answer line.
+fn translated(p: &Plugin<Plane>, unit: u64) -> String {
+    assert!(arrive(p, unit, b"/v1/chat/completions", CHAT).starts_with("arrive Ready"));
+    let mut wide = Piece::new(1024);
+    assert!(wide
+        .call(p, unit, FROM_KERNEL, 0, b"", 1)
+        .contains("to_far_end=true"));
+    wide.call(p, unit, FROM_CALLER, PIECE_LAST, CHAT, 0);
+    wide.call(
+        p,
+        unit,
+        FROM_FAR_END,
+        PIECE_HAS_STATUS | PIECE_LAST,
+        ANSWER,
+        0,
+    )
+}
+
+/// THE TRANSLATE CAP IS THE SETTINGS' (row 155): the cap the door's codec enforces is the one the
+/// kernel handed in the settings the plane was opened and refreshed with. Opened with none, the
+/// whole answer of another dialect translates (200); refreshed onto settings whose
+/// `limits.request_body_max_bytes` is below the answer's length, the same answer is refused with
+/// the over-cap 500's own bytes. Linked and dropped in alike: no host reader is consulted.
+#[test]
+fn the_translate_cap_the_settings_carry_is_the_one_the_door_enforces() {
+    let refused = busbar_plane_llm::exchange::reply::whole::over_cap("openai").answer;
+    let d = Dispatcher::new(DispatchConfig::default());
+    for p in [linked(&d), dropped(&d)] {
+        let mut i: PlaneOpenIn = z();
+        i.open.head = in_head();
+        (i.open.generation, i.open.settings) = (1, octets(SETTINGS));
+        let mut o: PlaneOpenOut = z();
+        o.open.head = out_head();
+        assert_eq!(p.open(&mut Frame::new(i, o)).0.outcome, Outcome::Ready);
+        let open = translated(&p, 21);
+        assert!(
+            open.contains(" status=200 ") && open.contains("chat.completion"),
+            "opened with the default cap, the answer translates: {open}"
+        );
+
+        let mut f: Frame<RefreshIn, PlaneRefreshOut> = Frame::new(z(), z());
+        (f.input.head, f.out.head) = (in_head(), out_head());
+        (f.input.generation, f.input.settings) = (2, octets(SETTINGS_CAPPED));
+        assert_eq!(p.refresh(&mut f).0.outcome, Outcome::Ready);
+        let capped = translated(&p, 22);
+        assert!(
+            capped.contains(&format!(" status={} ", refused.status))
+                && capped.contains(&format!(
+                    "emitted={} more=",
+                    String::from_utf8_lossy(&refused.body)
+                )),
+            "refreshed onto a 64-byte cap, the same answer is the over-cap refusal: {capped}"
+        );
+    }
+}
+
 /// A call capture for the hand-built table entry below: one slot per thread, as `plugin_door!`
 /// expands for a plugin's own image.
 struct TestCapture;

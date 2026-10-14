@@ -246,6 +246,10 @@ pub trait TranslateCodec: OperationHandler {
         // Responses) can answer with the client's actual values instead of the spec's bare
         // defaults. `None` when the caller has no parsed ingress body (the opaque/audio bridge).
         ingress_request_body: Option<&Value>,
+        // The TRANSLATION CAP the plane enforces (the one the kernel handed it in its settings),
+        // threaded to `IrHandle::apply_translate_cap` so a writer re-emitting the response as a
+        // stream bounds what it accumulates there.
+        translate_cap: usize,
     ) -> Result<(Option<Billing>, TranslatedResponse), CodecError> {
         match input {
             TranslateRespInput::Opaque(bytes) => {
@@ -270,6 +274,7 @@ pub trait TranslateCodec: OperationHandler {
                 if let Some(body) = ingress_request_body {
                     ir.apply_request_echo(body);
                 }
+                ir.apply_translate_cap(translate_cap);
                 ir.prepare_for_ingress(ingress_protocol, now);
                 // Buffered-2xx-to-native-stream synthesis (a wants-stream ingress served a non-SSE
                 // upstream): try first; `None` falls through to the normal write. The handle resolves

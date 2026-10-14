@@ -7896,7 +7896,7 @@ fn writer_accumulators_are_bounded_in_entry_count() {
 /// established empty-arguments fallback; `output_item.done` still emits a well-formed item.
 #[test]
 fn writer_tool_arguments_stop_growing_at_the_translate_cap() {
-    let cap = busbar_contract::codec::max_translate_body_bytes();
+    let cap = busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT;
     let writer = ResponsesWriter;
     writer.record_tool_meta(0, "call_x", "lookup");
     writer.mark_tool_open(0);

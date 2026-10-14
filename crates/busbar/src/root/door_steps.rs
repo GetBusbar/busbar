@@ -1370,7 +1370,8 @@ pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::An
 /// dialect fields of the providers it references and resolves model -> dialect itself"): `providers`
 /// (catalog-merged, each provider's dialect fields: no `base_url`, no credential reference, no
 /// health or token endpoint), `models`, `pools` (each pool's members and its fallback pool) and
-/// `limits` (the output-cap default and the effort budgets). The previous release kept these in the
+/// `limits` (the output-cap default, the effort budgets and the translation cap,
+/// `request_body_max_bytes`). The previous release kept these in the
 /// kernel; they are the root's to hand a door plane whose Statement names them. `pools` is present
 /// whenever `models` is: a deployment with models and no pools routes to its models directly.
 #[must_use]
@@ -1507,8 +1508,11 @@ pub fn kernel_sections(
         }
         pools.insert(name.clone(), Value::Object(p));
     }
+    // The translation cap (row 155): the operator's one knob for the inbound body limit and the
+    // egress translate cap, handed so the plane enforces the kernel's value from its own settings.
     let limits = json!({
         "default_max_tokens": cfg.limits.default_max_tokens,
+        "request_body_max_bytes": cfg.limits.request_body_max_bytes,
         "reasoning_effort_budgets": {
             "minimal": cfg.limits.reasoning_effort_budgets.minimal,
             "low": cfg.limits.reasoning_effort_budgets.low,
