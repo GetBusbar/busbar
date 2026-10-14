@@ -9,7 +9,8 @@ on_green: merge
 # The owner's approval on the pull request holds the merge too; q128-audit gates the move on the
 # audit's record for the commit (no open BLOCK).
 approve: true
-deadline: 6h
+# 8h: plane-delete --all (40-90 min), two LTO release builds and the workspace tests do not fit in 6h.
+deadline: 8h
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -100,6 +101,8 @@ checks:
     # obtains the judge through bin/oracle as the oracle check does (BUSBAR_RELEASE_TOKEN).
     run: bash scripts/verify-1.6.0-done.sh
     needs: [gates]
+    # It reads merge-bases and tags (the config-schema baseline is tag v1.5.3): full history and tags.
+    requires: [git-history]
   q128-audit:
     # DEV-GREEN item 5 (docs/design/BUSBAR-1.6.0.md l.2910-2912; 1.6.0-QUESTIONS.md Q128, option
     # A): one fresh, independent architecture audit on this commit with no open BLOCK, and a clean
@@ -109,3 +112,5 @@ checks:
     # tree, or none, is a BLOCK.
     run: cargo xtask q128 audit
     needs: [gates]
+    # The audit is judged against this commit's history: full history and tags.
+    requires: [git-history]
