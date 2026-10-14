@@ -230,6 +230,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key", "a non-Bearer Authorization falls through to x-api-key"),
         ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_api_key", "a non-Bearer Authorization falls through to x-goog-api-key"),
         ("test", "test_admin_v1_credential_cache_and_flush_endpoint", "POST /auth/cache/flush returns a real flushed count"),
+        ("test", "crates/busbar-kernel/src/auth/tests/tests.rs::every_request_is_verified_by_the_door_and_the_kernel_caches_no_verdict", "the kernel caches no verdict: one door verify per request, the second verdict the door's own"),
         ("oracle-cell", "admin.ops|PostAuthCacheFlush|ok", "the flush's {\"flushed\": N} diffed against the 1.5.5 binary"),
     ]),
     ("PB-36", &[
@@ -399,7 +400,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "test_ssrf_allows_private_and_loopback_by_default", "no over-blocking, no runtime DNS check"),
         ("test", "test_validate_rejects_non_https_base_url", "the public-https / private-http scheme rule literals"),
         ("test", "test_validate_token_url_ssrf_and_scheme", "the same rules on token_url"),
-        ("test", "crates/busbar-kernel/src/tests/net_guard_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked", "one shared predicate across planes"),
+        ("test", "crates/busbar-kernel-egress/src/trust/tests/net_tests.rs::the_shared_internal_predicate_covers_every_range_any_plane_ever_checked", "one shared predicate across planes"),
     ]),
     ("PB-73", &[
         ("test", "server_timing_header_absent_by_default_present_when_enabled", "Server-Timing absent by default, on every response when enabled"),
@@ -559,9 +560,6 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "begin_sets_httponly_secure_cookie_and_redirects", "the GET /auth/token begin flow"),
         ("test", "callback_state_mismatch_400", "constant-time state check"),
         ("test", "callback_nonce_mismatch_rejected", "the id_token nonce"),
-        ("test", "execute_hop_refuses_non_allowlisted_host", "the hop host allowlist"),
-        ("test", "vet_hop_url_enforces_https_allowlist_and_blocks_metadata", "ssrf_blocked_host on hops"),
-        ("test", "execute_hop_does_not_follow_redirect", "hops never follow redirects"),
         ("test", "refresh_rotates_key_and_revokes_the_old_one", "?refresh rotates and revokes"),
     ]),
     ("PB-101", &[

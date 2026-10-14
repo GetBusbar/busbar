@@ -459,7 +459,8 @@ pub struct DoorFacts {
     pub keeps: Vec<busbar_kernel::plane_driver::ResponseKeep>,
     /// The plane's dialect names, by the index `arrive` answers, and each provider's dialect: an
     /// attempt whose far end speaks another dialect than the caller's is counted as a translation
-    /// (`busbar_translations_total`), as the previous release counted it. Empty = none counted.
+    /// (`busbar_translations_total`), as the previous release counted it, and a usage-tap fault
+    /// an answer carries is counted under the unit's dialect. Empty = none counted.
     pub translations: (Arc<[String]>, Arc<BTreeMap<String, String>>),
     /// The plane's declared breaker fact (`declares.breaker`, ARCHITECT Q4): whether a transient
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
@@ -499,6 +500,9 @@ struct DoorUnit {
     recorded: Option<u64>,
     /// A `ROUTE_SCOPE` unit several entries reach: those entries, named in its refusal's words.
     reachable: Vec<String>,
+    /// The pool a budget `on_exhaust: downgrade` re-admitted the unit through, where one did: its
+    /// charge landed there and its walk routes there.
+    downgraded: Option<String>,
 }
 
 /// ONE UNIT'S KERNEL STEPS (see the module doc), lent to the plane driver for the unit's life.
@@ -638,6 +642,46 @@ impl<'s> DoorSteps<'s> {
         self.lock().charged
     }
 
+    /// The pool a budget `on_exhaust: downgrade` re-admitted the unit through, where one did: the
+    /// pool its charge landed on, its walk routes over and its request is counted under (1.5.5's
+    /// `ingress::dispatch`: "dispatch through the pool the charge actually landed on").
+    #[must_use]
+    pub fn downgraded(&self) -> Option<String> {
+        self.lock().downgraded.clone()
+    }
+
+    /// WHETHER A BUDGET DOWNGRADE MAY SEND THE UNIT TO `to` (1.5.5's `admit_check` guard, hop by
+    /// hop): `to` is a pool of this section not yet visited, the visited set is smaller than the
+    /// pool count, and the caller's grant reaches `to` and every pool its `on_exhausted` fallback
+    /// chain spills into (a downgrade never routes a key into a pool it may not use).
+    fn downgrade_reaches(&self, key: &VirtualKey, to: &str, visited: &[String]) -> bool {
+        let pools = self.pools.pools();
+        if visited.iter().any(|v| v == to)
+            || visited.len() >= pools.len()
+            || !pools.contains_key(to)
+        {
+            return false;
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        let mut at = Some(to);
+        while let Some(pool) = at {
+            if seen.contains(&pool) {
+                break;
+            }
+            if !self.pools.granted(
+                self.facts.scope_kind.as_deref(),
+                Some(key),
+                ROUTE_POOL,
+                Some(pool.as_bytes()),
+            ) {
+                return false;
+            }
+            seen.push(pool);
+            at = self.pools.fallback(pool);
+        }
+        true
+    }
+
     /// The pool a unit's charge and refund land on: the plane's own (#47 per-plane fees), the
     /// route's label qualified by the plane's key (a direct route's label is 1.5.5's empty one).
     fn charged_pool(&self, label: &str) -> String {
@@ -668,26 +712,51 @@ impl<'s> DoorSteps<'s> {
             let u = self.lock();
             (u.routed.clone(), u.expected.clone())
         };
-        let label = routed.as_ref().map_or("", |(label, _)| label.as_str());
-        let pool = self.charged_pool(label);
-        let lanes: Vec<String> = routed
-            .iter()
-            .flat_map(|(_, members)| members)
-            .map(|m| plane_lane(&self.facts.plane, m))
-            .collect();
-        let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
         let units = self.expected_units(&expected);
-        let grant = gov
-            .try_admit_estimated(&self.app.cost, key, &pool, self.arrived, &models, &units)
-            .map_err(|blocked| {
-                // The plane serving the `pools` map answers a blocked admission in the previous
-                // release's words (`busbar_kernel::ingress::limit_refusal`).
-                if self.facts.plane.is_empty() {
-                    self.lock().refused.1 =
-                        Some(busbar_kernel::ingress::limit_refusal("", &blocked).2);
+        let lanes_of = |routed: &Option<Routed>| -> Vec<String> {
+            routed
+                .iter()
+                .flat_map(|(_, members)| members)
+                .map(|m| plane_lane(&self.facts.plane, m))
+                .collect()
+        };
+        // BUDGET DOWNGRADE (1.5.5 `ingress::admit_check`): a budget block whose limit declared
+        // `on_exhaust: downgrade` re-admits through its `downgrade_to` pool instead of refusing. The
+        // chain may cascade; the visited set bounds it, and every hop re-judges the caller's grant.
+        // The charge lands on the EFFECTIVE pool and the unit's walk routes there.
+        let mut routed = routed;
+        let mut visited: Vec<String> = Vec::new();
+        let (grant, pool, lanes) = loop {
+            let label = routed.as_ref().map_or("", |(label, _)| label.as_str());
+            let pool = self.charged_pool(label);
+            let lanes = lanes_of(&routed);
+            let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
+            match gov.try_admit_estimated(&self.app.cost, key, &pool, self.arrived, &models, &units)
+            {
+                Ok(grant) => break (grant, pool, lanes),
+                Err(LimitBlocked::Limit {
+                    downgrade_to: Some(to),
+                    ..
+                }) if self.downgrade_reaches(key, &to, &visited) => {
+                    routed = self.pools.resolve(ROUTE_POOL, Some(to.as_bytes()));
+                    visited.push(to);
                 }
-                refusal_for(&blocked)
-            })?;
+                Err(blocked) => {
+                    // The plane serving the `pools` map answers a blocked admission in the
+                    // previous release's words (`busbar_kernel::ingress::limit_refusal`).
+                    if self.facts.plane.is_empty() {
+                        self.lock().refused.1 =
+                            Some(busbar_kernel::ingress::limit_refusal("", &blocked).2);
+                    }
+                    return Err(refusal_for(&blocked));
+                }
+            }
+        };
+        if let Some(to) = visited.last() {
+            let mut u = self.lock();
+            u.routed = routed;
+            u.downgraded = Some(to.clone());
+        }
         money.open(
             ctx.key,
             UnitMoney {
@@ -758,6 +827,13 @@ impl DriverSteps for DoorSteps<'_> {
             if from != to {
                 busbar_kernel::telemetry::translation(from, to);
             }
+        }
+    }
+
+    fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
+        // The unit's dialect is the ingress protocol its tap read the body as (row 155).
+        if let Some(protocol) = self.facts.translations.0.get(dialect as usize) {
+            busbar_kernel::handlers::usage_tap_fault(protocol, reason);
         }
     }
 

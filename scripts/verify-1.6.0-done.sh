@@ -808,17 +808,19 @@ print("golden whole: %d PASS rows = meta recorded %d, every one with its cell fi
 PY
 }
 
-# The engine every PARITY step judges with: bin/oracle fetches busbar-release at the pinned ref into
-# target/oracle/rust/<ref>/checkout and builds it (`tool-dir` is the cheapest subcommand that resolves
-# it). Fails naming the two ways to provide it, so a missing judge reads as that, not as a red cell.
+# The engine every PARITY step judges with: on Linux bin/oracle fetches busbar-release's published
+# busbar-oracle for the pinned ref and runs it only at the pin's sha256 (elsewhere it builds the pinned
+# source; `tool-dir` is the cheapest subcommand that resolves it). Fails naming how to provide it, so
+# a missing judge reads as that, not as a red cell.
 parity_resolve_judge() {  # $1 = the pinned busbar-release ref
   local ref="${1:-}"
   [ -n "$ref" ] || { echo "testing/shadow-oracle/oracle-rust.pin names no release_ref — there is no judge to build"; return 1; }
   if ./bin/oracle tool-dir >/dev/null 2>/tmp/done-parity-judge.$$; then rm -f /tmp/done-parity-judge.$$; return 0; fi
   tail -6 /tmp/done-parity-judge.$$; rm -f /tmp/done-parity-judge.$$
   echo "the judge could not be fetched or built. busbar-release is private: give the run a token"
-  echo "(BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN; bin/oracle never stores it), or place a git"
-  echo "checkout holding commit $ref at target/oracle/rust/$ref/checkout before running"
+  echo "(BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN; bin/oracle never stores it). On Linux the"
+  echo "judge is dev-bin's busbar-oracle for commit $ref at the pin's sha256 (no line: no judge);"
+  echo "elsewhere, place a git checkout holding $ref at target/oracle/rust/$ref/checkout"
   return 1
 }
 
@@ -1437,7 +1439,7 @@ elif [ -x bin/oracle ]; then
   # cannot be obtained (busbar-release is private: a runner with no token and no checkout of the
   # pinned commit), say so here, by name, instead of as three unrelated-looking reds below.
   PARITY_JUDGE_REF="$(awk -F= '$1=="release_ref"{print $2; exit}' testing/shadow-oracle/oracle-rust.pin 2>/dev/null)"
-  step "the pinned judge (busbar-release ${PARITY_JUDGE_REF:-<no pin>}) is fetched and built from its source" \
+  step "the pinned judge (busbar-release ${PARITY_JUDGE_REF:-<no pin>}) is fetched at the pin's sha256" \
     parity_resolve_judge "$PARITY_JUDGE_REF"
   step "replay-selftest (the differ can see a diff)" ./bin/oracle replay-selftest
   # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in

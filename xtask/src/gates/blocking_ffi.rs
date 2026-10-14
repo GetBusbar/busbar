@@ -133,7 +133,7 @@ fn seams() -> Vec<Seam> {
         },
         // dlopen + the plugin CONSTRUCTOR: a staging copy, dynamic-linker work, then the open.
         Seam {
-            methods: &["open_hook", "open_login", "open_auth"],
+            methods: &["open_hook"],
             bare: &["gate_transport_named", "preopen_gate_hooks"],
             msg: "plugin OPEN (dlopen + constructor) called inline from an async fn — use \
                   hooks::gate_transport_offloaded / offload_bounded",

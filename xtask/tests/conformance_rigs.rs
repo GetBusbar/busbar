@@ -221,6 +221,152 @@ fn at_the_node_width_the_jev_ledger_is_the_callers_bucket() {
     assert!(judge_jev_ledger(&bucketed(&[("vk_caller", "", "", 1, "41")]), "vk_caller").is_err());
 }
 
+/// THE MODEL-RESOLUTION BOOT (THE DESIGN §2, the decisions bullet): two models, the second with an
+/// `upstream_model`, each priced.
+#[test]
+fn the_models_subject_configures_two_models_one_with_an_upstream_model() {
+    use xtask::conformance_record::{jev_models_config, UPSTREAM_MODEL, UPSTREAM_NAME};
+    let text = jev_models_config(41000, 41001, std::path::Path::new("/tmp/signing.key"));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect("the config is YAML");
+    let models = &doc["decisions"]["models"];
+    assert_eq!(models["jev-1"]["provider"].as_str(), Some("typesafe"));
+    assert!(models["jev-1"]["upstream_model"].is_null());
+    assert_eq!(
+        models[UPSTREAM_MODEL]["upstream_model"].as_str(),
+        Some(UPSTREAM_NAME)
+    );
+    for m in ["jev-1", UPSTREAM_MODEL] {
+        assert_eq!(
+            doc["decisions"]["rate_card"][m]["units"]["decision"].as_u64(),
+            Some(1),
+            "{m}"
+        );
+    }
+    // THE DESIGN §7: the card prices `decision`, `input_tokens` and `output_tokens`, all three
+    // required (0 = free), on both subjects.
+    let main = xtask::conformance_record::jev_subject_config(
+        41000,
+        41001,
+        std::path::Path::new("/tmp/signing.key"),
+    );
+    let main: serde_yaml::Value = serde_yaml::from_str(&main).expect("the config is YAML");
+    for (doc, m) in [(&doc, "jev-1"), (&doc, UPSTREAM_MODEL), (&main, "jev-1")] {
+        for class in ["input_tokens", "output_tokens"] {
+            assert_eq!(
+                doc["decisions"]["rate_card"][m]["units"][class].as_u64(),
+                Some(0),
+                "{m} {class}"
+            );
+        }
+    }
+    assert_eq!(doc["store"]["module"].as_str(), Some("memory"));
+}
+
+fn call(status: u16, body: &[u8], hops: usize) -> xtask::conformance_record::Call {
+    xtask::conformance_record::Call {
+        status,
+        body: body.to_vec(),
+        hops,
+    }
+}
+
+/// `models.unnamed-400` / `models.unknown-404`: the status in jev's shape, before any hop.
+#[test]
+fn an_unrouted_request_is_refused_in_jev_shape_before_any_hop() {
+    use xtask::conformance_record::judge_unrouted;
+    let bad = br#"{"error":{"code":"invalid_request","message":"name one"}}"#;
+    assert!(judge_unrouted(&call(400, bad, 0), 400, "invalid_request").is_ok());
+    // RED ARMS: another status, a hop, another shape.
+    assert!(judge_unrouted(&call(404, bad, 0), 400, "invalid_request").is_err());
+    assert!(judge_unrouted(&call(400, bad, 1), 400, "invalid_request").is_err());
+    assert!(judge_unrouted(&call(400, b"{}", 0), 400, "invalid_request").is_err());
+}
+
+/// `models.upstream-model`: served, and the far end saw the top-level `model` value alone spliced.
+#[test]
+fn the_upstream_model_is_spliced_into_what_the_far_end_receives() {
+    use xtask::conformance_record::{
+        judge_upstream_model, models_request, JEV_SUCCESS, UPSTREAM_MODEL, UPSTREAM_NAME,
+    };
+    let sent = models_request(Some(UPSTREAM_MODEL));
+    let spliced = String::from_utf8(sent.clone())
+        .unwrap()
+        .replace(UPSTREAM_MODEL, UPSTREAM_NAME);
+    let ok = call(200, JEV_SUCCESS, 1);
+    assert!(judge_upstream_model(&ok, &sent, spliced.as_bytes()).is_ok());
+    // RED ARMS: the caller's own name relayed, the far end not reached, another answer.
+    assert!(judge_upstream_model(&ok, &sent, &sent).is_err());
+    assert!(judge_upstream_model(&call(200, JEV_SUCCESS, 0), &sent, spliced.as_bytes()).is_err());
+    assert!(judge_upstream_model(&call(400, b"{}", 1), &sent, spliced.as_bytes()).is_err());
+    // The unnamed request names no model.
+    assert!(!String::from_utf8(models_request(None))
+        .unwrap()
+        .contains("\"model\""));
+}
+
+/// THE `nanojev` BOOT (THE DESIGN §2, the decisions bullet): a NanoJev model on a `nanojev`
+/// provider beside the jev one, each priced.
+#[test]
+fn the_nanojev_subject_configures_a_nanojev_provider_and_model() {
+    use xtask::conformance_record::{
+        jev_nanojev_config, nanojev_providers, NANOJEV_MODEL, NANOJEV_PROVIDER,
+    };
+    let text = jev_nanojev_config(41000, 41001, std::path::Path::new("/tmp/signing.key"));
+    let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect("the config is YAML");
+    assert_eq!(
+        doc["decisions"]["models"][NANOJEV_MODEL]["provider"].as_str(),
+        Some(NANOJEV_PROVIDER)
+    );
+    assert_eq!(
+        doc["decisions"]["models"]["jev-1"]["provider"].as_str(),
+        Some("typesafe")
+    );
+    assert!(!doc["providers"][NANOJEV_PROVIDER].is_null());
+    for m in ["jev-1", NANOJEV_MODEL] {
+        assert_eq!(
+            doc["decisions"]["rate_card"][m]["units"]["decision"].as_u64(),
+            Some(1),
+            "{m}"
+        );
+    }
+    let providers: serde_yaml::Value =
+        serde_yaml::from_str(&nanojev_providers(9)).expect("the providers are YAML");
+    assert_eq!(
+        providers[NANOJEV_PROVIDER]["protocol"].as_str(),
+        Some("nanojev")
+    );
+    assert_eq!(providers["typesafe"]["protocol"].as_str(), Some("jev"));
+}
+
+/// `nanojev.served` and `nanojev.no-count-refused`.
+#[test]
+fn a_nanojev_unit_is_served_at_evaluate_and_a_missing_count_refused() {
+    use xtask::conformance_record::{
+        judge_nanojev_no_count, judge_nanojev_served, NANOJEV_NO_COUNT, NANOJEV_REQUEST,
+        NANOJEV_SUCCESS, PATH_EVALUATE,
+    };
+    let ok = call(200, NANOJEV_SUCCESS, 1);
+    assert!(judge_nanojev_served(&ok, PATH_EVALUATE, NANOJEV_REQUEST).is_ok());
+    // RED ARMS: another path, other bytes, another answer, no dial.
+    assert!(judge_nanojev_served(&ok, "/v1/systemone", NANOJEV_REQUEST).is_err());
+    assert!(judge_nanojev_served(&ok, PATH_EVALUATE, b"{}").is_err());
+    assert!(judge_nanojev_served(&call(200, b"{}", 1), PATH_EVALUATE, NANOJEV_REQUEST).is_err());
+    assert!(judge_nanojev_served(
+        &call(200, NANOJEV_SUCCESS, 0),
+        PATH_EVALUATE,
+        NANOJEV_REQUEST
+    )
+    .is_err());
+
+    let refused = br#"{"error":{"code":"internal","message":"plane fault"}}"#;
+    assert!(judge_nanojev_no_count(&call(502, refused, 1)).is_ok());
+    // RED ARMS: the far end's bytes relayed, a success, an extra dial, another shape.
+    assert!(judge_nanojev_no_count(&call(200, NANOJEV_NO_COUNT, 1)).is_err());
+    assert!(judge_nanojev_no_count(&call(502, NANOJEV_NO_COUNT, 1)).is_err());
+    assert!(judge_nanojev_no_count(&call(502, refused, 2)).is_err());
+    assert!(judge_nanojev_no_count(&call(502, b"oops", 1)).is_err());
+}
+
 // ── a2a ───────────────────────────────────────────────────────────────────────────────────────
 
 fn report(rows: &[(&str, &str)]) -> String {
