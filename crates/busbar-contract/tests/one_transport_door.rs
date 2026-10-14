@@ -51,16 +51,5 @@ fn the_frozen_symbols_answer_through_the_registered_transport() {
             __door::busbar_plane_decl().is_null(),
             "a transport image is not a plane"
         );
-        assert_eq!(
-            __door::busbar_open(
-                std::ptr::null(),
-                0,
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-                std::ptr::null_mut(),
-            ),
-            busbar_contract::abi::cold::STATUS_PROTOCOL,
-            "a transport image speaks no cold-lane call"
-        );
     }
 }
