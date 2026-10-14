@@ -1638,8 +1638,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-contract"
 axis  = "instance:secret"
-count = "133"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value"
+count = "131"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value; LOWERED 133 -> 131 by GetBusbar/busbar#904 (row 84): the cold lane's SDK side and its suites are deleted, and two secret-instance hits went with them (the gate's measure on #904: 131) (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar-contract"
@@ -1788,8 +1788,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "1128"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; REBALANCED 1172 -> 1168 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the cross-plane cells moved verbatim into the composition root's crates/busbar/tests/, which takes the same 4 hits (busbar × plane 822 -> 826); LOWERED 1168 -> 1141 by row 157: the hits drained with the deleted HOT trust and guard slots (plane_host/trust.rs, plane_host/guard.rs); LOWERED 1141 -> 1132 by row 156: the hits drained with the deleted kernel call log (calllog.rs, plane/calllog.rs); LOWERED 1132 -> 1128 by this PR: the deletion of the kernel's dead ask-state seal (audit K2-H3) removes four hits, its two `crate::mcp::roots` doc links and its two `\\x6dcp` seal domains"
+count = "1122"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; REBALANCED 1172 -> 1168 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the cross-plane cells moved verbatim into the composition root's crates/busbar/tests/, which takes the same 4 hits (busbar × plane 822 -> 826); LOWERED 1168 -> 1141 by row 157: the hits drained with the deleted HOT trust and guard slots (plane_host/trust.rs, plane_host/guard.rs); LOWERED 1141 -> 1132 by row 156: the hits drained with the deleted kernel call log (calllog.rs, plane/calllog.rs); LOWERED 1132 -> 1128 by this PR: the deletion of the kernel's dead ask-state seal (audit K2-H3) removes four hits, its two `crate::mcp::roots` doc links and its two `\\x6dcp` seal domains; LOWERED 1128 -> 1122 by status row 130 E2: net_guard.rs and its two suites deleted (six plane hits, the gate's measure on the E2 candidate)"
 
 [[law0]]
 crate = "busbar-kernel"

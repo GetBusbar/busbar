@@ -35,7 +35,7 @@ pub mod trust;
 // `crate::proxy::` paths.
 pub mod engine;
 
-// THE NEUTRAL FULL-DUPLEX WS EGRESS DIALER — dial an upstream `wss://` THROUGH `net_guard`
+// THE NEUTRAL FULL-DUPLEX WS EGRESS DIALER — dial an upstream `wss://` THROUGH the egress unit's guard
 // (resolve→pin→guard, then TCP to the pinned address, then TLS with the URL host for SNI, then the WS
 // handshake) and hand back the `Stream`/`Sink<Vec<u8>>` pair `byte_duplex::serve_messages` consumes.
 // The outbound half of the WS transport `Transport::WebSocket` selects; armed under `runtime`. This is
