@@ -55,11 +55,11 @@
     }
   ],
   "counts": {
-    "total": 2518,
+    "total": 2566,
     "by_plane": {
       "a2a": 468,
       "core": 989,
-      "llm": 149,
+      "llm": 197,
       "mcp": 912
     },
     "by_family": {
@@ -87,7 +87,7 @@
       "hooks": 11,
       "http.crosscut": 23,
       "ledger": 5,
-      "llm.wire": 142,
+      "llm.wire": 190,
       "mcp": 913,
       "money.reserved-tier": 2,
       "neutrality": 22,
@@ -23011,6 +23011,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|anthropic|anthropic|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "anthropic",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|anthropic|anthropic|request|out_of_scope",
       "plane": "llm",
       "family": "llm.wire",
@@ -23112,6 +23129,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|anthropic|bedrock|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|anthropic|bedrock|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -23149,6 +23183,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|anthropic|cohere|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|anthropic|cohere|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -23172,6 +23223,35 @@
       "op": "chat",
       "outcome": "ok",
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
+    },
+    {
+      "id": "llm|anthropic|gemini|request|ok_stream",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream",
+      "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|anthropic|gemini|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|anthropic|gemini|request|upstream_down",
@@ -23211,6 +23291,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|anthropic|openai|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|anthropic|openai|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -23248,6 +23345,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|anthropic|responses|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|anthropic|responses|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -23283,6 +23397,23 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|bedrock|anthropic|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|bedrock|anthropic|request|upstream_down",
@@ -23345,6 +23476,23 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|bedrock|bedrock|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "bedrock",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|bedrock|bedrock|request|out_of_scope",
@@ -23448,6 +23596,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|bedrock|cohere|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|bedrock|cohere|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -23471,6 +23636,35 @@
       "op": "chat",
       "outcome": "ok",
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
+    },
+    {
+      "id": "llm|bedrock|gemini|request|ok_stream",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream",
+      "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|bedrock|gemini|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|bedrock|gemini|request|upstream_down",
@@ -23510,6 +23704,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|bedrock|openai|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|bedrock|openai|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -23545,6 +23756,23 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|bedrock|responses|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|bedrock|responses|request|upstream_down",
@@ -23584,6 +23812,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|cohere|anthropic|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|cohere|anthropic|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -23619,6 +23864,23 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|cohere|bedrock|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|cohere|bedrock|request|upstream_down",
@@ -23668,6 +23930,23 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|cohere|cohere|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|cohere|cohere|request|out_of_scope",
@@ -23759,6 +24038,35 @@
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
     },
     {
+      "id": "llm|cohere|gemini|request|ok_stream",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream",
+      "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|cohere|gemini|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|cohere|gemini|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -23794,6 +24102,23 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|cohere|openai|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|cohere|openai|request|upstream_down",
@@ -23833,6 +24158,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|cohere|responses|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|cohere|responses|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -23868,6 +24210,40 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|gemini|anthropic|request|ok_stream_array_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_array_whole_answer",
+      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives, its array written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
+      "id": "llm|gemini|anthropic|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|gemini|anthropic|request|upstream_down",
@@ -23907,6 +24283,40 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|gemini|bedrock|request|ok_stream_array_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_array_whole_answer",
+      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives, its array written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
+      "id": "llm|gemini|bedrock|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|gemini|bedrock|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -23942,6 +24352,40 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|gemini|cohere|request|ok_stream_array_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_array_whole_answer",
+      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives, its array written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
+      "id": "llm|gemini|cohere|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|gemini|cohere|request|upstream_down",
@@ -23981,6 +24425,18 @@
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
     },
     {
+      "id": "llm|gemini|gemini|request|ok_stream",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream",
+      "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
       "id": "llm|gemini|gemini|request|ok_stream_array",
       "plane": "llm",
       "family": "llm.wire",
@@ -23991,6 +24447,40 @@
       "op": "chat",
       "outcome": "ok_stream_array",
       "why": "happy path, streamed as a JSON array (gemini without alt=sse)"
+    },
+    {
+      "id": "llm|gemini|gemini|request|ok_stream_array_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_array_whole_answer",
+      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives, its array written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
+      "id": "llm|gemini|gemini|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|gemini|gemini|request|ok_tool_use_tokens",
@@ -24107,6 +24597,40 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|gemini|openai|request|ok_stream_array_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_array_whole_answer",
+      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives, its array written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
+      "id": "llm|gemini|openai|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|gemini|openai|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -24142,6 +24666,40 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|gemini|responses|request|ok_stream_array_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_array_whole_answer",
+      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives, its array written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
+      "id": "llm|gemini|responses|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|gemini|responses|request|upstream_down",
@@ -24181,6 +24739,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|openai|anthropic|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|openai|anthropic|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -24216,6 +24791,23 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|openai|bedrock|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|openai|bedrock|request|upstream_down",
@@ -24255,6 +24847,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|openai|cohere|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|openai|cohere|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -24278,6 +24887,35 @@
       "op": "chat",
       "outcome": "ok",
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
+    },
+    {
+      "id": "llm|openai|gemini|request|ok_stream",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream",
+      "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|openai|gemini|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|openai|gemini|request|upstream_down",
@@ -24327,6 +24965,23 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|openai|openai|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|openai|openai|request|out_of_scope",
@@ -24430,6 +25085,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|openai|responses|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "responses",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|openai|responses|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -24465,6 +25137,23 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|responses|anthropic|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "anthropic",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|responses|anthropic|request|upstream_down",
@@ -24504,6 +25193,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|responses|bedrock|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "bedrock",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|responses|bedrock|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -24541,6 +25247,23 @@
       "why": "happy path, streamed response (SSE / frames)"
     },
     {
+      "id": "llm|responses|cohere|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "cohere",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
+    },
+    {
       "id": "llm|responses|cohere|request|upstream_down",
       "plane": "llm",
       "family": "llm.wire",
@@ -24564,6 +25287,35 @@
       "op": "chat",
       "outcome": "ok",
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
+    },
+    {
+      "id": "llm|responses|gemini|request|ok_stream",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream",
+      "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|responses|gemini|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "gemini",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|responses|gemini|request|upstream_down",
@@ -24601,6 +25353,23 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|responses|openai|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "openai",
+      "cross_protocol": true,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|responses|openai|request|upstream_down",
@@ -24666,6 +25435,23 @@
       "op": "chat",
       "outcome": "ok_stream",
       "why": "happy path, streamed response (SSE / frames)"
+    },
+    {
+      "id": "llm|responses|responses|request|ok_stream_whole_answer",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "responses",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "ok_stream_whole_answer",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "whole": true
+      }
     },
     {
       "id": "llm|responses|responses|request|out_of_scope",
