@@ -136,6 +136,12 @@ fn main() {
     for cfg in linked_axis_cfgs(&manifest, &enabled).1 {
         println!("cargo::rustc-check-cfg=cfg({cfg})");
     }
+    // `BUSBAR_LINKED_AXES`: the same set as data, space-separated, so a black-box case's `requires`
+    // reads it at run time rather than a test spelling a `cfg` per axis.
+    println!(
+        "cargo:rustc-env=BUSBAR_LINKED_AXES={}",
+        linked_axis_cfgs(&manifest, &enabled).0.join(" ")
+    );
     for cfg in linked_axis_cfgs(&manifest, &enabled).0 {
         println!("cargo::rustc-cfg={cfg}");
     }
@@ -419,12 +425,24 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
     let mut cells: Vec<String> = Vec::new();
     let mut missing: Vec<String> = Vec::new();
     let mut files: Vec<String> = Vec::new();
+    let mut blackbox: Vec<String> = Vec::new();
     for (feature, krate) in metadata_map(manifest, "package.metadata.busbar.linked") {
         let is_door = axes
             .iter()
             .any(|(f, a)| *f == feature && a.split_whitespace().any(|x| x == PLANE_DOOR_AXIS));
         if !(enabled(&feature) && is_door) {
             continue;
+        }
+        // THE BLACK-BOX CASES the crate states beside its cells (`blackbox=<dir>`, the same
+        // `links` name): read for every door, cells or none, so the runner sees each.
+        let box_var = format!(
+            "DEP_{}_BLACKBOX",
+            door_cells_links(&krate).to_uppercase().replace('-', "_")
+        );
+        println!("cargo:rerun-if-env-changed={box_var}");
+        if let Ok(dir) = env::var(&box_var) {
+            println!("cargo:rerun-if-changed={dir}");
+            blackbox.push(format!("    ({krate:?}, {dir:?}),\n"));
         }
         let var = format!(
             "DEP_{}_CELLS",
@@ -472,8 +490,13 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
          /// Every door plane's root cells: the path the ledger cites them by (the crate's census\n\
          /// mount, `crates/<crate>/tests/root/mod.rs`) and the file its crate states.\n\
          #[allow(dead_code)]\n\
-         static DOOR_CELLS_FILES: &[(&str, &str)] = &[\n{}];\n",
-        files.concat()
+         static DOOR_CELLS_FILES: &[(&str, &str)] = &[\n{}];\n\
+         /// Every door plane's black-box case directory (`blackbox=<dir>` under its `links` name):\n\
+         /// its crate and the directory its crate states.\n\
+         #[allow(dead_code)]\n\
+         static DOOR_BLACKBOX: &[(&str, &str)] = &[\n{}];\n",
+        files.concat(),
+        blackbox.concat()
     );
     (out, files)
 }
