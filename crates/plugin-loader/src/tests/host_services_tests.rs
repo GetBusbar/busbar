@@ -2177,9 +2177,9 @@ fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
 }
 
 /// #74, THE UNTRUSTED-ABI HALF: a context the host did not mint is refused before it names an
-/// instance. The service answers as it answers no context, the wake wakes nothing, and both are
-/// counted ([`crate::dispatch::handle::forged`]); the minted context does both (the control). It
-/// used to be an address the host read through, whatever the plugin handed back.
+/// instance. The service answers as it answers no context and the wake wakes nothing; the minted
+/// context does both (the control). It used to be an address the host read through, whatever the
+/// plugin handed back. (The counting is `handle_tests`', on a latch of its own.)
 #[test]
 fn a_forged_context_is_refused_before_it_names_an_instance() {
     let d = double();
@@ -2211,7 +2211,6 @@ fn a_forged_context_is_refused_before_it_names_an_instance() {
                 as u64,
         },
     ] {
-        let before = crate::dispatch::handle::forged();
         let mut o = blank();
         let ret = HOST_SLOTS.clock_now.unwrap()(forged, std::ptr::from_ref(&i).cast(), &mut o);
         assert_eq!(ret.outcome(), Outcome::Refused, "{forged:?}");
@@ -2219,10 +2218,6 @@ fn a_forged_context_is_refused_before_it_names_an_instance() {
         assert!(
             d.route.wakes.lock().unwrap().is_empty(),
             "a forged context woke a ticket: {forged:?}"
-        );
-        assert!(
-            crate::dispatch::handle::forged() >= before + 2,
-            "a forged context was not counted: {forged:?}"
         );
     }
     let mut o = blank();

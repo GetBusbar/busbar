@@ -65,6 +65,9 @@ static INSTANCES: RwLock<Vec<&'static InstanceWake>> = RwLock::new(Vec::new());
 
 /// The off-crossing latch: unattributed forgeries counted; tripped at [`LATCH_AT`].
 pub(crate) struct Latch {
+    /// Every forgery judged against this latch, attributed or not: what a test asserts on, so no
+    /// test reads the process-wide [`forged`] another test moves.
+    forged: AtomicU64,
     unattributed: AtomicU64,
     tripped: AtomicBool,
 }
@@ -72,6 +75,7 @@ pub(crate) struct Latch {
 impl Latch {
     pub(crate) const fn new() -> Self {
         Self {
+            forged: AtomicU64::new(0),
             unattributed: AtomicU64::new(0),
             tripped: AtomicBool::new(false),
         }
@@ -89,8 +93,18 @@ impl Latch {
         }
     }
 
-    fn tripped(&self) -> bool {
+    pub(crate) fn tripped(&self) -> bool {
         self.tripped.load(Ordering::Acquire)
+    }
+
+    /// Forgeries judged against this latch.
+    pub(crate) fn forged(&self) -> u64 {
+        self.forged.load(Ordering::Acquire)
+    }
+
+    /// Unattributed forgeries counted towards the trip.
+    pub(crate) fn unattributed(&self) -> u64 {
+        self.unattributed.load(Ordering::Acquire)
     }
 }
 
@@ -245,15 +259,25 @@ pub(crate) fn resolve_in(
         count_forgery(latch, crossing);
         return None;
     };
-    if entry.revoked.load(Ordering::Acquire) {
-        return None;
-    }
+    // Inside a crossing another instance's handle is a forgery, revoked or not: judged BEFORE the
+    // revocation, so a stale handle of another instance cannot pass as merely revoked.
     if let Some(own) = crossing {
         if !std::ptr::eq(own, entry) {
             count_forgery(latch, crossing);
             return None;
         }
     }
+    if entry.revoked.load(Ordering::Acquire) {
+        return None;
+    }
+    // The latch read again after any counting this or another thread did: once it trips, not one
+    // off-crossing resolve passes, so the bound is exactly `LATCH_AT`.
+    if crossing.is_none() && latch.tripped() {
+        return None;
+    }
+    // THE REVOKE/USE RACE, memory-safe by construction: an entry revoked by another thread after
+    // this load is still a leaked, valid `InstanceWake`; the call it serves finishes against an
+    // instance that refuses its next op.
     Some(entry)
 }
 
@@ -262,6 +286,7 @@ pub(crate) fn resolve_in(
 /// never a second); and with no crossing to blame, counted against `latch`.
 fn count_forgery(latch: &Latch, crossing: Option<&'static InstanceWake>) {
     FORGED.fetch_add(1, Ordering::Relaxed);
+    latch.forged.fetch_add(1, Ordering::AcqRel);
     if crossing.is_none() || !super::plugin::quarantine_crossing() {
         latch.count();
     }

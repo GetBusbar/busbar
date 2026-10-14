@@ -281,6 +281,18 @@ fn list_models_dialect(
 }
 
 pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
+    // THE PLUGIN HANDLE LATCH (#74): a plugin handed the host contexts it did not mint from outside
+    // any crossing until the latch tripped; every host call made outside a crossing is refused from
+    // then on (a plugin's background wakes included), so the node is not ready and says why. The
+    // remedy is a restart without the plugin that forged them.
+    if busbar_plugin_loader::dispatch::handle::latched() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "plugin handle latch tripped: a plugin forged host contexts outside any crossing; \
+             restart without it",
+        )
+            .into_response();
+    }
     let t = now();
     // Side-effect-FREE readiness check: `/healthz` is unauthenticated and high-frequency (k8s
     // liveness, load balancers), so it must NOT transition expired-Open lanes to HalfOpen or steal

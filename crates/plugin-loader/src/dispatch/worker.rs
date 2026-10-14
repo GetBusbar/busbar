@@ -1395,8 +1395,23 @@ impl std::fmt::Debug for Dispatcher {
 impl Dispatcher {
     /// Workers and a watchdog, per `config`, with no host services bound: every service answers
     /// REFUSED.
+    ///
+    /// # Panics
+    ///
+    /// When the OS random source cannot answer the handle key (#74): a boot with no key is refused,
+    /// never run under a weaker one. [`Dispatcher::try_new`] answers the refusal instead.
     pub fn new(config: DispatchConfig) -> Self {
-        Self::build(config, None)
+        Self::try_new(config).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// THE LOADER'S BOOT (#74): the handle key drawn first, then the dispatcher.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
+    pub fn try_new(config: DispatchConfig) -> Result<Self, super::LoadError> {
+        super::handle::arm()?;
+        Ok(Self::build(config, None))
     }
 
     /// The connection table's wake: its wake number ([`super::conn_services::conn_ticket`]) routed to
@@ -1426,14 +1441,28 @@ impl Dispatcher {
     }
 
     /// Workers and a watchdog, per `config`, serving the host services the kernel implements.
+    ///
+    /// # Panics
+    ///
+    /// As [`Dispatcher::new`]; [`Dispatcher::try_with_services`] answers the refusal instead.
     pub fn with_services(config: DispatchConfig, provider: Arc<dyn HostServices>) -> Self {
-        Self::build(config, Some(provider))
+        Self::try_with_services(config, provider).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// [`Dispatcher::try_new`], serving `provider`.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
+    pub fn try_with_services(
+        config: DispatchConfig,
+        provider: Arc<dyn HostServices>,
+    ) -> Result<Self, super::LoadError> {
+        super::handle::arm()?;
+        Ok(Self::build(config, Some(provider)))
     }
 
     fn build(config: DispatchConfig, provider: Option<Arc<dyn HostServices>>) -> Self {
-        // THE LOADER'S BOOT draws the handle key now (#74); a source that cannot answer refuses
-        // every bind with `LoadError::Entropy`, so nothing is minted under a weaker key.
-        let _ = super::handle::arm();
         // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
         let n = config.workers.clamp(1, MAX_WORKERS - 1);
         let env = Arc::new(Env {
