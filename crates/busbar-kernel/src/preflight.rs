@@ -133,6 +133,10 @@ pub struct RootInstall {
     /// the process's one dispatcher (ARCHITECT ruling 2026-09-29, the opener seam). `None` = no
     /// export module resolves.
     pub export_axis: Option<&'static dyn busbar_contract::export_calls::ExportAxis>,
+    /// The root's ONE plugin trust builder — the one boot admits plugins under — carried onto every
+    /// [`crate::state::App`] so the operator surface judges a plugin exactly as boot does. `None` =
+    /// no trust resolves (the admin catalog lists the linked rows alone; an upload is refused).
+    pub trust_policy: Option<TrustPolicyBuild>,
 }
 
 /// THE ROOT'S HOOK AXIS over one plugin registry (each configuration's registry gets its own).
@@ -144,6 +148,15 @@ pub type HookAxisBuild =
     fn(
         &std::sync::Arc<PluginRegistry>,
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
+
+/// THE ROOT'S PLUGIN TRUST BUILDER: the `plugins:` block, and the binary version a floor reads, to
+/// the policy a plugin is judged under (the root's `trust_policy`, a `test-harness` build's
+/// first-party key included). No other builder judges a plugin.
+///
+/// # Errors
+/// A reserved or malformed publisher, or the root's own refusal.
+pub type TrustPolicyBuild =
+    fn(&config::PluginsCfg, &str) -> Result<busbar_plugin_loader::sign::TrustPolicy, String>;
 
 /// A test build has no root: its store double ([`crate::test_support::store_double`]) and ranking
 /// double stand in for the root's entries, the in-crate secret double
@@ -157,6 +170,7 @@ const STAND_IN: RootInstall = RootInstall {
     store_axis: Some(crate::test_support::store_axis_stand_in),
     secret_axis: Some(&crate::test_support::SecretsStandIn),
     export_axis: Some(&crate::test_support::export_axis::STAND_IN),
+    trust_policy: Some(crate::test_support::trust_policy_stand_in),
 };
 
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,

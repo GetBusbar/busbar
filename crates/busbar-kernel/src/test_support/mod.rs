@@ -914,6 +914,7 @@ pub struct TestApp {
     explicit_no_overlay: bool,
     plugins_dir: Option<std::path::PathBuf>,
     plugins_cfg: Option<crate::config::PluginsCfg>,
+    plugin_trust: Option<crate::preflight::TrustPolicyBuild>,
     hook_env: Option<crate::hooks::HookEnv>,
     disk_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
     /// When `true`, build an App that booted with NO plugin routes at all — an EMPTY live table AND an
@@ -1045,6 +1046,7 @@ impl TestApp {
             explicit_no_overlay: false,
             plugins_dir: None,
             plugins_cfg: None,
+            plugin_trust: None,
             hook_env: None,
             disk_paths: None,
             no_plugin_routes: false,
@@ -1166,6 +1168,12 @@ impl TestApp {
     /// strict disabled default.
     pub fn plugins_cfg(mut self, cfg: crate::config::PluginsCfg) -> Self {
         self.plugins_cfg = Some(cfg);
+        self
+    }
+    /// Judge plugins under `build` — a composition root's own trust builder — instead of the test
+    /// build's [`trust_policy_stand_in`].
+    pub fn plugin_trust(mut self, build: crate::preflight::TrustPolicyBuild) -> Self {
+        self.plugin_trust = Some(build);
         self
     }
 
@@ -2061,6 +2069,7 @@ impl TestApp {
                 .plugins_dir
                 .unwrap_or_else(|| std::path::PathBuf::from("plugins")),
             plugins_cfg: self.plugins_cfg.unwrap_or_default(),
+            plugin_trust: Some(self.plugin_trust.unwrap_or(trust_policy_stand_in)),
             self_key_ttl_secs: crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
             mint_policy: std::sync::Arc::new(self.mint_policy.unwrap_or_default()),
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
@@ -2463,6 +2472,16 @@ pub fn trust_policy(
     })?;
     policy.first_party_key = Some(test_release_key().verifying_key());
     Ok(policy)
+}
+
+/// [`trust_policy`] as a test build's root trust row ([`crate::preflight::TrustPolicyBuild`]): what
+/// a [`TestApp`] judges plugins under unless the test hands it the root's own. `binary_version` is
+/// carried for diagnostics only.
+pub fn trust_policy_stand_in(
+    cfg: &crate::config::PluginsCfg,
+    _binary_version: &str,
+) -> Result<busbar_plugin_loader::sign::TrustPolicy, String> {
+    trust_policy(cfg)
 }
 
 /// A test build's store axis (it has no composition root): the loader's axis over a dispatcher of

@@ -64,7 +64,9 @@ pub fn registry(
 /// THE `plugins:` BLOCK'S TRUST, resolved: the embedded first-party key, the configured
 /// publishers and opt-ins and the per-name floors (`min_versions`, the rollback pins), through the
 /// loader's `TrustPolicy::from_config`. `binary_version` is carried for diagnostics only. The
-/// automatic first-party floor is the registry build's to arm.
+/// automatic first-party floor is the registry build's to arm. THE ONE BUILDER: the root hands this
+/// same function to the kernel (`RootInstall::trust_policy`, `root::linked::register_stores`), and
+/// every snapshot carries it to the admin surface, which judges a plugin under nothing else.
 ///
 /// # Errors
 ///
