@@ -1333,7 +1333,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // it binds no listener at all (a child that opened ports would be a network server its
     // supervisor never asked for) and speaks newline-delimited JSON-RPC on its own stdin/stdout.
     // EOF on stdin is the shutdown signal, and the tail below is the listener path's own shutdown
-    // tail: the final budget/metering flush, then the tracer.
+    // tail (`root::shutdown::tail`): the final budget/metering flush, the plane record write-behind
+    // and the journal's lane to the store, all drained before the process exits.
     // The mode is served when a served door plane, compiled in or dropped in, claims the stdio
     // transport. With none there is nothing to serve on stdin/stdout, so the build falls through to
     // its listener path.
@@ -1342,12 +1343,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             root::kernel::ROOT_CARD.pin()
         })
         .await;
-        if let Some(gov) = app_handle.load().governance.clone() {
-            let n = gov.flush_budgets();
-            tracing::info!(flushed = n, "budget counters flushed on shutdown");
-            let m = gov.flush_metering();
-            tracing::info!(flushed = m, "metering rows flushed on shutdown");
-        }
+        let gov = app_handle.load().governance.clone();
+        root::shutdown::tail(gov, &late_services, book.as_ref().map(|b| &b.durability)).await;
         std::process::exit(code);
     }
 
@@ -1470,39 +1467,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             ),
         );
     }
-    // BUDGET WRITE-BEHIND: one FINAL, SYNCHRONOUS flush after the graceful drain, so a graceful stop
-    // persists the freshest accrued spend/requests before the process exits. The background flusher's
-    // shutdown arm also flushes, but it is a fire-and-forget task that could lose the race with process
-    // exit; flushing inline here on the run task guarantees durability (this call blocks briefly under
-    // the budget lock, off any request path — the listeners have already drained).
-    if let Some(gov) = app_handle.load().governance.clone() {
-        let n = gov.flush_budgets();
-        tracing::info!(flushed = n, "budget counters flushed on shutdown");
-        // The flusher task's own shutdown arm also flushes metering, but it is fire-and-forget and
-        // can lose the race with process exit (same reason the budget flush above is inline here).
-        let m = gov.flush_metering();
-        tracing::info!(flushed = m, "metering rows flushed on shutdown");
-    }
-    // THE PLANE RECORD WRITE-BEHIND, drained before the store closes (`root::serve::drain_records`).
-    if !root::serve::drain_records(&late_services).await {
-        tracing::warn!("plane record writes were still queued at shutdown");
-    }
-    // THE JOURNAL'S LANE TO THE STORE, drained the same way and under the same deadline: on a node
-    // with no data directory the store is where the chain is kept.
-    if let Some(lane) = book.as_ref().and_then(|book| {
-        book.durability
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .lane()
-            .cloned()
-    }) {
-        let drained = tokio::task::spawn_blocking(move || lane.drain(root::serve::RECORD_DRAIN))
-            .await
-            .unwrap_or(false);
-        if !drained {
-            tracing::warn!("journal records were still queued for the store at shutdown");
-        }
-    }
+    // THE ONE SHUTDOWN TAIL (`root::shutdown::tail`), the same one the line-serve mode runs: the
+    // budget/metering write-behind flushed, then the plane records and the journal lane drained.
+    let gov = app_handle.load().governance.clone();
+    root::shutdown::tail(gov, &late_services, book.as_ref().map(|b| &b.durability)).await;
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
     // no side-car state file to flush).
