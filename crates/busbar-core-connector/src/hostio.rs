@@ -26,7 +26,7 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll, Waker};
@@ -37,7 +37,7 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::Program;
 use busbar_contract::io_host::{IoHost, IoRefusal, IoResult, Spawn};
 
-use crate::compose::DEFAULT_OPEN_TIMEOUT;
+use crate::compose::{DEFAULT_OPEN_TIMEOUT, MAX_PENDING_LOOKUPS};
 use crate::io::{self as reactor, Direction, Registered};
 use crate::socket::{self, Sock};
 
@@ -697,7 +697,8 @@ impl IoHost for HostIo {
 /// comes back over a channel the caller waits on for at most that long; a lookup with no answer by
 /// then is a resolution FAILURE (`Err`), which the guard reads as an unresolvable name. The wedged
 /// thread is let go, never joined: it ends when its lookup does, and its answer, if one comes, has
-/// no one to hear it.
+/// no one to hear it. Let-go threads are CAPPED: at most [`MAX_PENDING_LOOKUPS`] lookups are in
+/// flight at once, and one more is refused at once (an unresolvable name) until one ends.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemNames;
 
@@ -729,20 +730,43 @@ impl busbar_kernel_egress::trust::net::Resolver for SystemNames {
     }
 }
 
+/// The name lookups in flight now, against [`MAX_PENDING_LOOKUPS`].
+static PENDING_LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+
 /// Runs one `lookup` on a thread of its own and waits for its answer at most `bound`: no answer by
 /// then, or a lookup that died without one, is an `Err`. The thread is never joined, so a lookup
-/// that never returns holds only itself.
+/// that never returns holds only itself and one of the [`MAX_PENDING_LOOKUPS`] places.
 fn within<F>(bound: Duration, lookup: F) -> Result<Vec<IpAddr>, String>
 where
     F: FnOnce() -> Result<Vec<IpAddr>, String> + Send + 'static,
 {
+    within_capped(bound, MAX_PENDING_LOOKUPS, &PENDING_LOOKUPS, lookup)
+}
+
+/// [`within`] with its cap and its count stated: a lookup takes a place in `in_flight` BEFORE its
+/// thread starts, and with `cap` places taken it is refused at once, no thread started. The place is
+/// given back when the lookup ends (answers, errs or panics), even if no one is waiting for it.
+fn within_capped<F>(
+    bound: Duration,
+    cap: usize,
+    in_flight: &'static AtomicUsize,
+    lookup: F,
+) -> Result<Vec<IpAddr>, String>
+where
+    F: FnOnce() -> Result<Vec<IpAddr>, String> + Send + 'static,
+{
+    let place = LookupPlace::take(cap, in_flight)
+        .ok_or_else(|| format!("name lookup: {cap} lookups already in flight"))?;
     let (answer, answered) = std::sync::mpsc::sync_channel(1);
     std::thread::Builder::new()
         .name("busbar-names".into())
         .spawn(move || {
+            // Given back when this thread ends, an unwinding panic included.
+            let _place = place;
             // The caller may have stopped waiting: then no one hears this, and that is fine.
             let _ = answer.send(lookup());
         })
+        // A thread that never started dropped its closure, and the place with it.
         .map_err(|e| format!("name lookup: could not start a thread: {e}"))?;
     match answered.recv_timeout(bound) {
         Ok(found) => found,
@@ -750,6 +774,27 @@ where
         Err(RecvTimeoutError::Disconnected) => {
             Err("name lookup: the worker thread panicked".to_string())
         }
+    }
+}
+
+/// One taken place among the lookups in flight; dropping it gives the place back.
+struct LookupPlace(&'static AtomicUsize);
+
+impl LookupPlace {
+    /// Takes a place if fewer than `cap` are taken.
+    fn take(cap: usize, in_flight: &'static AtomicUsize) -> Option<Self> {
+        in_flight
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < cap).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Self(in_flight))
+    }
+}
+
+impl Drop for LookupPlace {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 
