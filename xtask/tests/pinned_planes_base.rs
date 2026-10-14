@@ -83,7 +83,7 @@ fn a_plant_wins_over_the_base_and_keeps_it_beneath() {
 /// The base layer lays every pinned plugin crate of a kind the census floors, transport included, so
 /// the stdio carrier, which left `crates/` for its own repo, is still a transport the census counts
 /// and whose lines the construction rules scan. Laid only for planes, the `transport` glob matched
-/// no pinned directory and `forbid-unsafe` owed the carrier no row: a transport extracted is a
+/// no pinned directory and `forbid-unsafe-deny` owed the carrier no row: a transport extracted is a
 /// transport the gates stop reading.
 #[test]
 fn the_base_lays_a_pinned_transport_the_census_counts_and_the_rules_read() {
@@ -114,7 +114,7 @@ fn the_base_lays_a_pinned_transport_the_census_counts_and_the_rules_read() {
     );
     let reg = gates::find("construction").expect("the construction gate");
     let gate = (reg.build)();
-    let row = "forbid-unsafe:busbar-transport-stdio";
+    let row = "forbid-unsafe-deny:busbar-transport-stdio";
     let ids = |v: &xtask::ledger::Verdict| -> BTreeSet<String> {
         v.rows.iter().map(|r| r.id.clone()).collect()
     };
