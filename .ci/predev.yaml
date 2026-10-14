@@ -29,21 +29,20 @@ checks:
     # The base-relative rules read history: only a backend with the repo's history runs this check.
     requires: [git-history]
   oracle:
-    # busbar's own check tool, the pinned busbar-oracle (the backend's busbar-oracle tool sets
-    # BUSBAR_ORACLE_RUST_BIN): the judge is the one predev's oracle-rust.pin names ($MODERNCI_HEAD,
-    # the commit that landed through every lane move's review; dev holds no pin), run only when its
-    # sha256 is that pin's for this host, and the backend's install is pinned by ModernCI, not by the
-    # candidate; the 1.5.5 golden is add-only from dev to this commit wherever dev holds it (dev
-    # holds none before the first move); then the candidate's release binary is recorded over the
-    # corpus and replayed against the committed 1.5.5 golden, strict: green is every cell byte-green
-    # or forgiven by an owner-signed accepted difference.
+    # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
+    # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
+    # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
+    # holds none: the first move) and runs it only at that pin's sha256 for this architecture, its
+    # .sig verified against busbar-release's release key; no line for this architecture is no judge.
+    # BUSBAR_RELEASE_TOKEN (a secret ModernCI gives this check) reads the private release. The 1.5.5
+    # golden is add-only from dev to this commit wherever dev holds it (none before the first move);
+    # then the candidate's release binary is recorded over the corpus and replayed against the
+    # committed 1.5.5 golden, strict: green is every cell byte-green or forgiven by an owner-signed
+    # accepted difference.
     run: |
-      pin=$(git show "$MODERNCI_HEAD:testing/shadow-oracle/oracle-rust.pin")
-      want=$(printf '%s\n' "$pin" | sed -n "s/^sha256_linux_$(uname -m)=//p")
-      [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "ORACLE-PIN: oracle-rust.pin at $MODERNCI_HEAD pins no linux $(uname -m) judge"; exit 1; }
-      echo "$want  $BUSBAR_ORACLE_RUST_BIN" | sha256sum -c -
+      ./bin/oracle tool-dir >/dev/null
       if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
-        "$BUSBAR_ORACLE_RUST_BIN" golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
+        ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
       else
         echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
       fi
@@ -53,8 +52,6 @@ checks:
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
     needs: [gates]
-    # Only the backend that installs the pinned judge (the prover: aarch64) runs this check.
-    requires: [busbar-oracle]
   conformance:
     # Every registered suite recorded on this commit (the llm rigs judge the oracle's candidate
     # recording), then every MUST a fresh pass for it. A not-run suite denies.
@@ -99,7 +96,8 @@ checks:
     # backend probed to have all of these, and says which one is missing otherwise.
     requires: [docker, docker-compose, python3-venv, curl, git]
   verify-done:
-    # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer).
+    # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer). Its PARITY group
+    # obtains the judge through bin/oracle as the oracle check does (BUSBAR_RELEASE_TOKEN).
     run: bash scripts/verify-1.6.0-done.sh
     needs: [gates]
   q128-audit:
