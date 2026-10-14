@@ -47,6 +47,7 @@ checks:
     # As the hop's build:dlopen-cdylibs and test:workspace: the workspace's cdylibs and the four
     # dropped-in plugins the tests dlopen, then one build and one nextest run.
     run: |
+      . .ci/tool.sh nextest jq
       meta=$(cargo metadata --format-version 1 --locked)
       cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
       # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
@@ -89,6 +90,7 @@ checks:
     # transport-webrtc, openapi-schema, timing), filtered to the gated binaries and modules so the
     # default suites do not run twice; B, the plugin-pack CLI (pack); C, the loom models in release.
     run: |
+      . .ci/tool.sh nextest jq
       meta=$(cargo metadata --format-version 1 --locked)
       cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
       # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
@@ -134,9 +136,10 @@ checks:
     baseline: target
     needs: [gates]
   deny:
-    run: cargo deny check
+    run: |
+      . .ci/tool.sh deny
+      cargo deny check
     baseline: target
-    requires: [cargo-deny]
     needs: [preflight]
   # ON-DEMAND ONLY (not in on.move): the predev->dev oracle, measurable on a PR head that changes the
   # served LLM path (e.g. a plane default flip), so claim C3 is proven before landing, not only at the move.
