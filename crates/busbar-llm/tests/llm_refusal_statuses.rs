@@ -34,6 +34,46 @@ fn recorded(cell: &str) -> u32 {
         .unwrap_or_else(|| panic!("{cell} records a status")) as u32
 }
 
+/// Recorded refusals whose 1.6.0 status is an owner-accepted difference from 1.5.5: the cell, the
+/// status 1.6.0 answers, and the `id` of its entry in `testing/shadow-oracle/accepted-differences.json`
+/// (asserted present and naming the cell, so this list can never forgive more than the register does).
+const ACCEPTED: &[(&str, u32, &str)] = &[(
+    "llm__bedrock__bedrock__request__over_budget_total",
+    429,
+    "C-22 bedrock budget refusal is a declared Converse error",
+)];
+
+/// The status 1.6.0 owes for `cell`: the accepted difference's, else the recording's.
+fn owed(cell: &str) -> u32 {
+    let Some((_, status, id)) = ACCEPTED.iter().find(|(c, _, _)| *c == cell) else {
+        return recorded(cell);
+    };
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testing/shadow-oracle/accepted-differences.json");
+    let text = std::fs::read_to_string(&path).expect("the register is readable");
+    let register: serde_json::Value = serde_json::from_str(&text).expect("the register is JSON");
+    let entry = register["accepted"]
+        .as_array()
+        .expect("the register holds `accepted`")
+        .iter()
+        .find(|e| e["id"].as_str() == Some(*id))
+        .unwrap_or_else(|| panic!("accepted difference {id:?} is in the register"));
+    let id_form = cell.replace("__", "\\|");
+    assert!(
+        entry["cells"]
+            .as_str()
+            .is_some_and(|c| c.contains(&id_form)),
+        "accepted difference {id:?} names {cell}"
+    );
+    assert!(
+        entry["classes"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|v| v == "status")),
+        "accepted difference {id:?} accepts the status class"
+    );
+    *status
+}
+
 fn config() -> DriverConfig {
     DriverConfig {
         caps: BufferCaps::default(),
@@ -76,7 +116,7 @@ fn every_recorded_llm_refusal_wears_the_status_the_driver_chooses() {
         "unauthenticated",
         ReasonCode::Unauthenticated,
     ));
-    // A spend cap: 429, but 400 on bedrock.
+    // A spend cap: 429 (1.5.5 answered 400 on bedrock; see ACCEPTED).
     cells.extend(every_dialect("over_budget_total", ReasonCode::OverBudget));
     // A count cap (requests per day): 429 everywhere.
     cells.extend(every_dialect("over_budget", ReasonCode::RateLimited));
@@ -114,7 +154,7 @@ fn every_recorded_llm_refusal_wears_the_status_the_driver_chooses() {
     let mut wrong = Vec::new();
     for (cell, d, reason) in &cells {
         let chosen = config.status(dialect(d), *reason);
-        let want = recorded(cell);
+        let want = owed(cell);
         if chosen != want {
             wrong.push(format!(
                 "{cell}: {d} {reason:?} chose {chosen}, 1.5.5 answered {want}"

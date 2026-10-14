@@ -882,7 +882,7 @@
   {
    "id": "PB-19",
    "surface": "`MissingGroup`",
-   "binding": "a key bound to a group absent from this node's config fails closed: `insufficient_quota`, 429 (400 on the one dialect), literal message",
+   "binding": "a key bound to a group absent from this node's config fails closed: `insufficient_quota`, 429 on every dialect (1.5.5 answered 400 on bedrock; 1.6.0 answers 429 `ThrottlingException`, a declared Converse error: accepted difference C-22), literal message",
    "inventory": "governance",
    "status": "mapped",
    "checks": [
@@ -1027,14 +1027,14 @@
   {
    "id": "PB-22",
    "surface": "admission decision",
-   "binding": "CHECK-THEN-CHARGE under one set of shard guards: pass 1 checks every bucket of the pool-filtered chain and returns on the FIRST blocking bucket in chain order (metric priority `requests` → `tokens` → `budget`; that bucket names the 429 message and `Retry-After` scale), charging nothing — preceded by the phases OUTSIDE the shard guards: `MissingGroup` → FREEZE (403 `permission_error`, before any gauge or charge) → the `concurrent` CAS (429, its own message, `retry_after: None`) — PB-79; the Bedrock 400 (`quota_exceeded_status()`) applies ONLY to `budget` (`insufficient_quota`) and `MissingGroup`, never to `requests`/`tokens` (always 429 `rate_limit_error`); pass 2 then adds `requests` and `billable_requests` +1 on EVERY bucket of the chain (uncapped key bucket included; `capped_bucket_ids` is only the sweep-exemption set) and the fee lookahead; `budget` as `derived_cents >= cap || derived + fee > cap`, `tokens` post-hoc, `concurrent` gauge, pool scope, downgrade cascade, frozen groups; the hold is accounting only",
+   "binding": "CHECK-THEN-CHARGE under one set of shard guards: pass 1 checks every bucket of the pool-filtered chain and returns on the FIRST blocking bucket in chain order (metric priority `requests` → `tokens` → `budget`; that bucket names the 429 message and `Retry-After` scale), charging nothing — preceded by the phases OUTSIDE the shard guards: `MissingGroup` → FREEZE (403 `permission_error`, before any gauge or charge) → the `concurrent` CAS (429, its own message, `retry_after: None`) — PB-79; the dialect's quota status (`quota_exceeded_status()`; 1.5.5's Bedrock 400 is 429 `ThrottlingException` in 1.6.0, accepted difference C-22) applies ONLY to `budget` (`insufficient_quota`) and `MissingGroup`, never to `requests`/`tokens` (always 429 `rate_limit_error`); pass 2 then adds `requests` and `billable_requests` +1 on EVERY bucket of the chain (uncapped key bucket included; `capped_bucket_ids` is only the sweep-exemption set) and the fee lookahead; `budget` as `derived_cents >= cap || derived + fee > cap`, `tokens` post-hoc, `concurrent` gauge, pool scope, downgrade cascade, frozen groups; the hold is accounting only",
    "inventory": "governance (:196-197), (:218-231), (`state.rs:1757-1849`)",
    "status": "mapped",
    "checks": [
     {
      "kind": "test",
      "ref": "test_governance_over_budget_native_envelope_all_ingress",
-     "proves": "budget is insufficient_quota, 429 everywhere and 400 on bedrock",
+     "proves": "budget is insufficient_quota, 429 everywhere, bedrock included as ThrottlingException",
      "source": "curated",
      "status": "mapped"
     },
@@ -3613,7 +3613,7 @@
   {
    "id": "PB-79",
    "surface": "admission refusal identity",
-   "binding": "the refusal phase order is 1.5.5's: `MissingGroup` first → any FROZEN group in the chain → `concurrent` gauges innermost-first (`retry_after: None`, no `Retry-After`) → windowed buckets in pool-filtered chain order with metric priority `requests` → `tokens` → `budget`; the first blocking bucket names the 429 message and the `Retry-After` scale (Bedrock 400 only for `budget` and `MissingGroup`; `requests`/`tokens` are 429 `rate_limit_error` on every protocol — governance 3.6.3/3.6.5) — one cell per (phase, metric, depth)",
+   "binding": "the refusal phase order is 1.5.5's: `MissingGroup` first → any FROZEN group in the chain → `concurrent` gauges innermost-first (`retry_after: None`, no `Retry-After`) → windowed buckets in pool-filtered chain order with metric priority `requests` → `tokens` → `budget`; the first blocking bucket names the 429 message and the `Retry-After` scale (1.5.5's Bedrock 400 for `budget` and `MissingGroup` is 429 `ThrottlingException` in 1.6.0, accepted difference C-22; `requests`/`tokens` are 429 `rate_limit_error` on every protocol — governance 3.6.3/3.6.5) — one cell per (phase, metric, depth)",
    "inventory": "governance (`state.rs:1644-1679`, `:1791-1805`)",
    "status": "mapped",
    "checks": [
@@ -3669,7 +3669,7 @@
     {
      "kind": "test",
      "ref": "test_budget_over_quota_bedrock_envelope",
-     "proves": "budget refusal is the Bedrock 400",
+     "proves": "budget refusal is the Bedrock 429 ThrottlingException",
      "source": "curated",
      "status": "mapped"
     }

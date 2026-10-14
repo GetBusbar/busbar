@@ -258,9 +258,9 @@ pub fn limit_refusal(
             retry_after,
             ..
         } => (
-            // Native quota status differs by vendor (Bedrock's
-            // ServiceQuotaExceededException is 400; every other vendor surfaces
-            // over-quota as 429). The writer owns that mapping.
+            // The native quota status is the writer's (every dialect answers 429 today;
+            // Bedrock's is ThrottlingException, a Converse-declared error). The writer owns
+            // that mapping.
             crate::proto::decl_for(proto)
                 .map(|d| d.quota_exceeded_status)
                 .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
@@ -327,7 +327,7 @@ pub fn limit_refusal(
 /// request that is about to be forwarded. Returns the protocol-native rejection response already
 /// passed through `finish_rejected`. The statuses are deliberately vendor-faithful and never 402:
 /// pool-not-allowed and a frozen group map to 403, an exhausted budget maps to the vendor's quota
-/// status (Bedrock's quota shape is a 400-class error, see `admit_check`), and requests / tokens /
+/// status (429 on every dialect; Bedrock's is `ThrottlingException`, see `admit_check`), and requests / tokens /
 /// concurrent limits map to 429 (+ `Retry-After` for rolling windows). busbar never emits 402 here
 /// a blanket 402 was a vendor-agnostic tell, since no real provider returns 402 for these
 /// conditions. Routing through `finish_rejected` means a governance-rejected request still emits

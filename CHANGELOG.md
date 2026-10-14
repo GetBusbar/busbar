@@ -411,19 +411,20 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly eight entries of kind `breaking`
+The accepted-differences register for this release has exactly nine entries of kind `breaking`
 presented here: two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is
 unchanged in both), one confined to Cohere backends that report `usage.billed_units`, one field
 removed from the hook view, one Gemini turn's server-side-tool tokens now billed, one key-rotate
 endpoint that now refuses an overlong id like its siblings, one where rate cards become a dated
-history so a card's own effective date bounds what it reprices, and one provider credential that no
-longer degrades to an empty key.
+history so a card's own effective date bounds what it reprices, one provider credential that no
+longer degrades to an empty key, and one Bedrock budget refusal that now answers an error Converse
+declares.
 (Two more register entries are also of kind `breaking` but are presented above under Improvements
 instead, because each waives only a caller-additive or documentation-only surface rather than a
 money or status class: F-003 — the CLI `--help`/`--version` text is a parseable contract surface —
 and F-011c — `openapi.json`'s overlay-delete endpoint prose, registered breaking only because the
 oracle tool cannot leaf-correct a string under a `paths` key, not because the endpoint's behaviour
-changed. A reader counting `kind: breaking` rows in the register will find ten, not eight. One
+changed. A reader counting `kind: breaking` rows in the register will find eleven, not nine. One
 further entry, AUTH-ROW's, is also registered `breaking` and presented under Improvements: the
 differ accepts a `status` class on no other kind, and what it waives is a misconfigured admin-auth
 provider that answered 401 now authenticating.)
@@ -432,6 +433,13 @@ as an improvement or does not exist: a config written for 1.5.5 boots, validates
 identically (once it carries the `store:` block that `--migrate-config` inserts), and every 1.5.5 key and
 minted secret carries over.
 
+- 1.6.0 Changed: a Bedrock caller whose budget is spent is refused 429 `ThrottlingException`, an
+  error Converse declares; 1.5.5 answered 400 `ServiceQuotaExceededException`, which only
+  InvokeModel declares. The message, the `Retry-After` header and the charge (none) are unchanged,
+  and the five other dialects already answered an exhausted budget with 429. **Migration:** a
+  Bedrock client that matched `ServiceQuotaExceededException` on Converse must match
+  `ThrottlingException`; the AWS SDKs retry it under their standard retry mode, as they retry the
+  other dialects' 429.
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
   auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a
   fallback, least-bad or queue hop relayed the upstream's 401/403 body verbatim and left the
