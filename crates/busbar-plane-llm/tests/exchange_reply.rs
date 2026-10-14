@@ -965,3 +965,1401 @@ fn a_same_dialect_stream_drops_nothing() {
         .replace("\"object\":", "\"obfuscation\":\"x\",\"object\":");
     assert!(stream_drops("openai", "openai", far.as_bytes()).is_empty());
 }
+
+// ── rehomed: the engine's metered-answer tests on the served reply (F25 REHOME, status row 155) ──
+
+/// The legacy engine's tests that pin what an answer bills (`crates/busbar-llm/src/engine/**`),
+/// rehomed onto the served reply: the far end's reported units each piece carries, and the
+/// verdict and fault that decide whether the request's fee stands. Each test names the legacy test
+/// it replaces, the 1.5.5 figure it pins, and its RED.
+mod rehomed_metering {
+    use super::*;
+    use std::borrow::Cow;
+
+    use busbar_contract::abi::transport::{FAULT_NONE, FAULT_TRANSIENT};
+    use busbar_plane_llm::codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN;
+    use busbar_plane_llm::exchange::arrive::PathModel;
+    use busbar_plane_llm::exchange::attempt::StreamIntent;
+    use busbar_plane_llm::exchange::reply::{Piece, Units};
+    use busbar_plane_llm::plane_door::breaker_fault;
+    use serde_json::json;
+
+    const SSE_HEAD: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
+    const EVENTSTREAM: &str = "application/vnd.amazon.eventstream";
+
+    /// The host's entropy, so a dialect that mints an id mints one.
+    fn entropy() {
+        busbar_contract::codec::install_entropy_source(|out| {
+            out.fill(7);
+            true
+        });
+    }
+
+    thread_local! {
+        /// The translation cap this test thread runs under; `None` is the host default.
+        static CAP: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    }
+
+    fn read_cap() -> usize {
+        CAP.with(std::cell::Cell::get)
+            .unwrap_or(busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT)
+    }
+
+    /// A small translation cap for the test that holds it (its own thread only), the host default
+    /// again when it is dropped.
+    struct CapGuard;
+
+    impl CapGuard {
+        fn install(cap: usize) -> Self {
+            busbar_contract::codec::install_translate_cap_reader(read_cap);
+            CAP.with(|cell| cell.set(Some(cap)));
+            assert_eq!(
+                busbar_contract::codec::max_translate_body_bytes(),
+                cap,
+                "the cap reader this binary installs is the one in force"
+            );
+            CapGuard
+        }
+    }
+
+    impl Drop for CapGuard {
+        fn drop(&mut self) {
+            CAP.with(|cell| cell.set(None));
+        }
+    }
+
+    /// A chat request in `dialect`'s own shape.
+    fn chat_request(dialect: &str, stream: bool) -> Value {
+        match dialect {
+            "anthropic" => json!({"model": "p", "max_tokens": 64, "stream": stream,
+                "messages": [{"role": "user", "content": "hi"}]}),
+            "responses" => json!({"model": "p", "stream": stream, "input": "hi"}),
+            "gemini" => json!({"model": "p", "stream": stream,
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}]}),
+            "bedrock" => json!({"model": "p", "stream": stream,
+                "messages": [{"role": "user", "content": [{"text": "hi"}]}]}),
+            _ => json!({"model": "p", "stream": stream,
+                "messages": [{"role": "user", "content": "hi"}]}),
+        }
+    }
+
+    /// The caller's arrival of `request` for `operation` in `dialect` (`None`: a body that is not
+    /// JSON); `json_array` is a stream asked without the event-stream switch.
+    fn arrived_for(
+        dialect: &'static str,
+        operation: OpVerb,
+        request: Option<Value>,
+        json_array: bool,
+    ) -> Arrived {
+        let stream = request
+            .as_ref()
+            .and_then(|body| body["stream"].as_bool())
+            .unwrap_or(false);
+        Arrived {
+            dialect,
+            operation,
+            model: "p".to_string(),
+            content_type: "application/json".to_string(),
+            body: request
+                .as_ref()
+                .map(|body| serde_json::to_vec(body).expect("JSON"))
+                .unwrap_or_default(),
+            parsed: request,
+            path: String::new(),
+            query: None,
+            path_model: matches!(dialect, "gemini" | "bedrock").then_some(PathModel {
+                stream,
+                json_array,
+                model_not_found_message: None,
+            }),
+        }
+    }
+
+    /// A `caller` asking a far end of `far` for a chat answer, streamed when `stream`.
+    fn ask(caller: &'static str, far: &'static str, stream: bool) -> (Arrived, Lane) {
+        (
+            arrived_for(
+                caller,
+                OpVerb::CHAT,
+                Some(chat_request(caller, stream)),
+                false,
+            ),
+            lane(far),
+        )
+    }
+
+    fn reply_ctx<'a>(arrived: &'a Arrived, lane: &'a Lane) -> ReplyCtx<'a> {
+        let wants_stream = arrived
+            .parsed
+            .as_ref()
+            .and_then(|request| request["stream"].as_bool())
+            .unwrap_or(false);
+        ReplyCtx {
+            arrived,
+            lane,
+            intent: StreamIntent {
+                wants_stream,
+                client_include_usage: false,
+            },
+            passthrough: false,
+        }
+    }
+
+    /// A piece the caller read, its bytes its own.
+    fn owned(piece: Piece<'_>) -> Piece<'static> {
+        Piece {
+            head: piece.head,
+            bytes: Cow::Owned(piece.bytes.into_owned()),
+            units: piece.units,
+            verdict: piece.verdict,
+            fault: piece.fault,
+            done: piece.done,
+            dropped: piece.dropped,
+        }
+    }
+
+    /// What the caller read of one answer.
+    struct Read {
+        status: u16,
+        fields: Vec<(String, Vec<u8>)>,
+        body: Vec<u8>,
+        pieces: Vec<Piece<'static>>,
+    }
+
+    impl Read {
+        /// The piece that ended the answer.
+        fn end(&self) -> &Piece<'static> {
+            self.pieces
+                .iter()
+                .find(|piece| piece.done)
+                .or(self.pieces.last())
+                .expect("a piece")
+        }
+
+        /// The far end's reported (input, output) tokens the answer settled on.
+        fn tokens(&self) -> (u64, u64) {
+            (self.end().units.tokens_in, self.end().units.tokens_out)
+        }
+
+        /// How many pieces ended the answer: the one settlement.
+        fn settlements(&self) -> usize {
+            self.pieces.iter().filter(|piece| piece.done).count()
+        }
+
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.body).into_owned()
+        }
+
+        fn json(&self) -> Value {
+            serde_json::from_slice(&self.body)
+                .unwrap_or_else(|err| panic!("a JSON body ({err}): {}", self.text()))
+        }
+
+        /// The first head field named `name`, as text.
+        fn value(&self, name: &str) -> Option<String> {
+            field(&self.fields, name).map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        }
+    }
+
+    /// One answer through the served reply: the far end's `status` and `head`, its body in
+    /// `pieces`, then a transport cut when `cut`.
+    fn answer(
+        ctx: &ReplyCtx<'_>,
+        status: u16,
+        head: &[(&[u8], &[u8])],
+        pieces: &[&[u8]],
+        cut: bool,
+    ) -> Read {
+        let mut reply = Reply::new(ctx, status, head);
+        let mut out: Vec<Piece<'static>> = Vec::new();
+        for (index, bytes) in pieces.iter().enumerate() {
+            let last = index + 1 == pieces.len() && !cut;
+            out.push(owned(reply.feed(ctx, bytes, last, AT)));
+        }
+        if pieces.is_empty() {
+            out.push(owned(reply.feed(ctx, &[], !cut, AT)));
+        }
+        if cut {
+            out.push(reply.cut(ctx, true));
+        }
+        let mut read = Read {
+            status: 0,
+            fields: Vec::new(),
+            body: Vec::new(),
+            pieces: Vec::new(),
+        };
+        for piece in &out {
+            if let (Some(head), 0) = (&piece.head, read.status) {
+                read.status = head.status;
+                read.fields = head.fields.clone();
+            }
+            read.body.extend_from_slice(&piece.bytes);
+        }
+        read.pieces = out;
+        read
+    }
+
+    /// `events` framed as a far end's `data:` stream.
+    fn data_frames(events: &[&str]) -> Vec<u8> {
+        events
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect::<String>()
+            .into_bytes()
+    }
+
+    // ── a failed generation (failed_generation.rs) ─────────────────────────────────────────────
+
+    /// A cohere whole chat body with `finish_reason`, reporting 10 in / 5 out.
+    fn cohere_body(finish_reason: &str) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "id": "c-1",
+            "finish_reason": finish_reason,
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "x"}]},
+            "usage": {"tokens": {"input_tokens": 10, "output_tokens": 5}}
+        }))
+        .expect("JSON")
+    }
+
+    /// A gemini event stream: a text chunk, then the terminal chunk with `finish_reason`,
+    /// reporting 10 prompt / 5 candidate tokens.
+    fn gemini_stream(finish_reason: &str) -> Vec<u8> {
+        let first = json!({"candidates": [{"index": 0,
+            "content": {"role": "model", "parts": [{"text": "x"}]}}]});
+        let last = json!({"candidates": [{"index": 0,
+            "content": {"role": "model", "parts": [{"text": ""}]},
+            "finishReason": finish_reason}],
+            "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5,
+                "totalTokenCount": 15}});
+        data_frames(&[&first.to_string(), &last.to_string()])
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/attempt/tests/failed_generation.rs::buffered_cohere_error_is_an_error_a_breaker_fault_and_charges_10_5`
+    /// (map row 5). 1.5.5 (item 302, Q31): a whole cohere `finish_reason: "ERROR"` to a chat
+    /// caller is a 502 with no `finish_reason` in the body, a transient fault on the far end, an
+    /// error end, and the far end's reported 10 in / 5 out (15 tokens) still billed.
+    /// RED: a failed generation delivered as a 200 success, no breaker fault, or its usage dropped
+    /// (0 billed) or changed.
+    #[test]
+    fn buffered_cohere_error_is_an_error_a_breaker_fault_and_charges_10_5() {
+        let (arrived, lane) = ask("openai", "cohere", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let body = cohere_body("ERROR");
+        let read = answer(&ctx, 200, JSON_HEAD, &[&body], false);
+        assert_eq!(read.status, 502, "{}", read.text());
+        assert!(
+            !read.text().contains("\"finish_reason\""),
+            "{}",
+            read.text()
+        );
+        assert_eq!(read.end().verdict, Verdict::Hard);
+        assert_eq!(
+            read.end().fault,
+            Some(Fault::Transient("upstream-generation-failed"))
+        );
+        assert_eq!(breaker_fault(read.end().fault.as_ref()), FAULT_TRANSIENT);
+        assert_eq!(read.tokens(), (10, 5));
+        assert_eq!(read.tokens().0 + read.tokens().1, 15);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/attempt/tests/failed_generation.rs::buffered_cohere_complete_is_a_success_and_charges_10_5`
+    /// (map row 6). 1.5.5: the same body ending `COMPLETE` is a 200 success, no fault, 10 / 5
+    /// (15 tokens) billed.
+    /// RED: a completed generation faulted, or its usage anything but 10 / 5.
+    #[test]
+    fn buffered_cohere_complete_is_a_success_and_charges_10_5() {
+        let (arrived, lane) = ask("openai", "cohere", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let body = cohere_body("COMPLETE");
+        let read = answer(&ctx, 200, JSON_HEAD, &[&body], false);
+        assert_eq!(read.status, 200, "{}", read.text());
+        assert_eq!(read.end().verdict, Verdict::Ok);
+        assert_eq!(read.end().fault, None);
+        assert_eq!(breaker_fault(read.end().fault.as_ref()), FAULT_NONE);
+        assert_eq!(read.tokens(), (10, 5));
+        assert_eq!(read.tokens().0 + read.tokens().1, 15);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/attempt/tests/failed_generation.rs::same_protocol_cohere_error_relays_verbatim_faults_the_breaker_and_charges_10_5`
+    /// (map row 7). 1.5.5 (Q31 follow-up): a same-dialect cohere `ERROR` relays the far bytes
+    /// unchanged under the far 200, yet ends as an error, faults the far end, and bills 10 / 5.
+    /// RED: the relay counted a success (no fault), or its usage not billed.
+    #[test]
+    fn same_protocol_cohere_error_relays_verbatim_faults_the_breaker_and_charges_10_5() {
+        let (arrived, lane) = ask("cohere", "cohere", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let body = cohere_body("ERROR");
+        let read = answer(&ctx, 200, JSON_HEAD, &[&body], false);
+        assert_eq!(read.status, 200);
+        assert_eq!(read.body, body, "the far end's bytes");
+        assert_eq!(read.end().verdict, Verdict::Hard);
+        assert_eq!(
+            read.end().fault,
+            Some(Fault::Transient("upstream-generation-failed"))
+        );
+        assert_eq!(breaker_fault(read.end().fault.as_ref()), FAULT_TRANSIENT);
+        assert_eq!(read.tokens(), (10, 5));
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/attempt/tests/failed_generation.rs::same_protocol_cohere_complete_is_a_success_and_charges_10_5`
+    /// (map row 8). 1.5.5: the same-dialect `COMPLETE` relay is a 200 success, no fault, exactly
+    /// 10 / 5 (15 tokens) billed.
+    /// RED: a same-dialect relay billing presence but not the far figures.
+    #[test]
+    fn same_protocol_cohere_complete_is_a_success_and_charges_10_5() {
+        let (arrived, lane) = ask("cohere", "cohere", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let body = cohere_body("COMPLETE");
+        let read = answer(&ctx, 200, JSON_HEAD, &[&body], false);
+        assert_eq!(read.status, 200);
+        assert_eq!(read.end().verdict, Verdict::Ok);
+        assert_eq!(read.end().fault, None);
+        assert_eq!(read.tokens(), (10, 5));
+        assert_eq!(read.tokens().0 + read.tokens().1, 15);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/attempt/tests/failed_generation.rs::streamed_gemini_malformed_function_call_is_an_error_frame_a_breaker_fault_and_charges`
+    /// (map row 9). 1.5.5 (item 303, #62): a gemini stream ending `MALFORMED_FUNCTION_CALL`, to a
+    /// chat caller, is served 200 on its head, ends in an `"error"` frame, faults the far end, and
+    /// bills the 10 / 5 it streamed.
+    /// RED: a failed generation ending as a normal `stop`, no fault, or its streamed usage not
+    /// billed.
+    #[test]
+    fn streamed_gemini_malformed_function_call_is_an_error_frame_a_breaker_fault_and_charges() {
+        let (arrived, lane) = ask("openai", "gemini", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let far = gemini_stream("MALFORMED_FUNCTION_CALL");
+        let read = answer(&ctx, 200, SSE_HEAD, &[&far], false);
+        assert_eq!(read.status, 200);
+        assert!(read.text().contains("\"error\""), "{}", read.text());
+        assert_eq!(read.end().verdict, Verdict::Hard);
+        assert_eq!(breaker_fault(read.end().fault.as_ref()), FAULT_TRANSIENT);
+        assert_eq!(read.tokens(), (10, 5));
+        assert_eq!(read.tokens().0 + read.tokens().1, 15);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/attempt/tests/failed_generation.rs::streamed_gemini_stop_is_a_success_and_charges`
+    /// (map row 10). 1.5.5: the same stream ending `STOP` is 200 with no `"error"` frame, no
+    /// fault, a complete end, and exactly 10 / 5 (15 tokens) billed.
+    /// RED: a clean stream framed or faulted as an error, or billed anything but 10 / 5.
+    #[test]
+    fn streamed_gemini_stop_is_a_success_and_charges() {
+        let (arrived, lane) = ask("openai", "gemini", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let far = gemini_stream("STOP");
+        let read = answer(&ctx, 200, SSE_HEAD, &[&far], false);
+        assert_eq!(read.status, 200);
+        assert!(!read.text().contains("\"error\""), "{}", read.text());
+        assert_eq!(read.end().verdict, Verdict::Ok);
+        assert_eq!(read.end().fault, None);
+        assert_eq!(read.tokens(), (10, 5));
+        assert_eq!(read.tokens().0 + read.tokens().1, 15);
+    }
+
+    // ── a delivered or undelivered whole answer (crossproto_delivery_billing_tests.rs) ─────────
+
+    /// REHOMES `crates/busbar-llm/src/engine/engine_tests/crossproto_delivery_billing_tests.rs::delivered_cross_protocol_response_bills_once`
+    /// (map row 13). 1.5.5: a chat-dialect completion (13 + 9) delivered to an anthropic caller is
+    /// a 200 that bills exactly 22 tokens once and keeps the request's fee (a success status, no
+    /// fault).
+    /// RED: a delivered answer billed twice, billed short, or its fee refunded.
+    #[test]
+    fn delivered_cross_protocol_response_bills_once() {
+        let (arrived, lane) = ask("anthropic", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let body = br#"{"id":"x","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":13,"completion_tokens":9}}"#;
+        let (head, tail) = body.split_at(body.len() / 2);
+        let read = answer(&ctx, 200, JSON_HEAD, &[head, tail], false);
+        assert_eq!(read.status, 200);
+        assert_eq!(read.end().verdict, Verdict::Ok);
+        assert_eq!(read.end().fault, None);
+        assert_eq!(read.tokens(), (13, 9));
+        assert_eq!(read.tokens().0 + read.tokens().1, 22);
+        assert_eq!(read.settlements(), 1, "billed once");
+        assert_eq!(
+            read.pieces[0].units,
+            Units::default(),
+            "nothing billed before the whole answer is read"
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/engine_tests/crossproto_delivery_billing_tests.rs::ingress_unsupported_404_does_not_charge`
+    /// (map row 14). 1.5.5: a chat-dialect embeddings answer (42 prompt tokens) to an anthropic
+    /// caller, whose dialect serves no embeddings, is a 404 that bills none of the 42 tokens and
+    /// refunds the request's fee (a non-success status with no units).
+    /// RED: the 42 far tokens billed for an answer the caller never received.
+    #[test]
+    fn ingress_unsupported_404_does_not_charge() {
+        let body = br#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2,0.3]}],"model":"text-embedding-3-small","usage":{"prompt_tokens":42}}"#;
+        let request = json!({"model": "p", "input": "hi"});
+        let arrived = arrived_for("anthropic", OpVerb::EMBEDDINGS, Some(request), false);
+        let lane = lane("openai");
+        let ctx = reply_ctx(&arrived, &lane);
+        let read = answer(&ctx, 200, JSON_HEAD, &[body], false);
+        assert_eq!(read.status, 404, "{}", read.text());
+        assert_eq!(read.end().units, Units::default(), "nothing billed");
+        assert_eq!(read.end().verdict, Verdict::Hard);
+        assert_eq!(read.end().fault, None);
+        let mut whole_ctx = super::ctx("anthropic", "openai", false, false);
+        whole_ctx.operation = OpVerb::EMBEDDINGS;
+        let answered = whole::translate(&whole_ctx, 200, body);
+        assert_eq!(answered.end, WholeEnd::IngressUnsupported);
+        assert_eq!(answered.usage, None);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/engine_tests/crossproto_delivery_billing_tests.rs::untranslatable_500_does_not_charge`
+    /// (map row 15). 1.5.5: a chat-dialect SPEECH answer (opaque audio bytes) to an anthropic
+    /// caller, whose dialect serves no speech, is the caller's 500 that bills nothing and refunds
+    /// the request's fee.
+    /// RED: the opaque answer metered (a flat or token charge) though nothing was delivered.
+    #[test]
+    fn untranslatable_500_does_not_charge() {
+        let body: &[u8] = &[
+            0x00, 0x01, 0x02, 0xFF, b'n', b'o', b't', b'-', b'j', b's', b'o', b'n',
+        ];
+        let arrived = arrived_for("anthropic", OpVerb::SPEECH, None, false);
+        let lane = lane("openai");
+        let ctx = reply_ctx(&arrived, &lane);
+        let read = answer(&ctx, 200, JSON_HEAD, &[body], false);
+        assert_eq!(read.status, 500, "{}", read.text());
+        assert_eq!(read.end().units, Units::default(), "nothing billed");
+        assert_eq!(read.end().verdict, Verdict::Hard);
+    }
+
+    /// A chat-dialect 2xx whose `choices` is empty: the chat reader refuses it.
+    const EMPTY_CHOICES: &[u8] = br#"{"id":"chatcmpl-EMPTY","object":"chat.completion","created":1234567890,"model":"glm-4.5","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}"#;
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker`
+    /// (map row 123). 1.5.5: on the last-resort attempt, an untranslatable 2xx (empty `choices`)
+    /// to an anthropic caller is the caller's 500, a HARD verdict with a transient fault (the
+    /// breaker penalised), and no units (the request's fee refunded, the 7 / 3 not billed).
+    /// RED: the untranslatable 2xx recorded as a success, or its usage billed.
+    #[test]
+    fn test_forward_once_untranslatable_2xx_refunds_budget_and_trips_breaker() {
+        let (arrived, lane) = ask("anthropic", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let read = answer(&ctx, 200, JSON_HEAD, &[EMPTY_CHOICES], false);
+        assert_eq!(read.status, 500, "{}", read.text());
+        assert_eq!(read.end().verdict, Verdict::Hard);
+        assert_eq!(
+            read.end().fault,
+            Some(Fault::Transient("untranslatable-2xx"))
+        );
+        assert_eq!(breaker_fault(read.end().fault.as_ref()), FAULT_TRANSIENT);
+        assert_eq!(read.end().units, Units::default());
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_untranslatable_2xx_refunds_budget_and_trips_breaker`
+    /// (map row 334). 1.5.5: on the main path the same untranslatable 2xx records a breaker
+    /// transient and returns the request's fee: the whole translate refuses it (no usage), and the
+    /// reply is a 500 with a transient fault and no units.
+    /// RED: a lane answering undecodable 200s forever never trips, or the 500 bills.
+    #[test]
+    fn test_untranslatable_2xx_refunds_budget_and_trips_breaker() {
+        let answered = whole::translate(
+            &super::ctx("anthropic", "openai", false, false),
+            200,
+            EMPTY_CHOICES,
+        );
+        assert_eq!(answered.end, WholeEnd::NotTranslatable);
+        assert_eq!(answered.usage, None);
+        assert_eq!(answered.answer.status, 500);
+        let (arrived, lane) = ask("anthropic", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let read = answer(&ctx, 200, JSON_HEAD, &[EMPTY_CHOICES], false);
+        assert_eq!(read.status, 500);
+        assert_eq!(breaker_fault(read.end().fault.as_ref()), FAULT_TRANSIENT);
+        assert_eq!(read.end().units, Units::default());
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_openai_ingress_single_model_anthropic_response_translated`
+    /// (map row 196). 1.5.5: an anthropic answer (`hi there`, `end_turn`, 9 in / 3 out) to a chat
+    /// caller is 200, `object: "chat.completion"`, `choices[0].message.content: "hi there"`,
+    /// `finish_reason: "stop"`, `usage.prompt_tokens: 9`, `usage.completion_tokens: 3`, no
+    /// `stop_reason`, and 9 / 3 billed.
+    /// RED: the far body relayed raw, or the usage figures moved in translation.
+    #[test]
+    fn test_openai_ingress_single_model_anthropic_response_translated() {
+        let (arrived, lane) = ask("openai", "anthropic", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let body = br#"{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hi there"}],"stop_reason":"end_turn","usage":{"input_tokens":9,"output_tokens":3}}"#;
+        let read = answer(&ctx, 200, JSON_HEAD, &[body], false);
+        assert_eq!(read.status, 200);
+        let completion = read.json();
+        assert_eq!(completion["object"], "chat.completion", "{completion}");
+        assert_eq!(completion["choices"][0]["message"]["content"], "hi there");
+        assert_eq!(completion["choices"][0]["finish_reason"], "stop");
+        assert_eq!(completion["usage"]["prompt_tokens"], 9);
+        assert_eq!(completion["usage"]["completion_tokens"], 3);
+        assert!(completion.get("stop_reason").is_none(), "{completion}");
+        assert_eq!(read.tokens(), (9, 3));
+    }
+
+    // ── a same-dialect whole body's usage (ingress_indistinguishability_tests.rs) ──────────────
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_same_protocol_nonstream_multichunk_counts_usage`
+    /// (map row 335). 1.5.5: a same-dialect whole body split before its trailing `usage` (600 in +
+    /// 400 out) reaches the caller byte-identical and bills exactly 1000 tokens.
+    /// RED: a per-piece usage read that keeps no state across pieces bills 0.
+    #[test]
+    fn test_same_protocol_nonstream_multichunk_counts_usage() {
+        let (arrived, lane) = ask("openai", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let body = r#"{"id":"chatcmpl-split","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":600,"completion_tokens":400}}"#;
+        let split = body.find(r#""usage""#).expect("a usage member");
+        let read = answer(
+            &ctx,
+            200,
+            JSON_HEAD,
+            &[&body.as_bytes()[..split], &body.as_bytes()[split..]],
+            false,
+        );
+        assert_eq!(read.body, body.as_bytes(), "byte-identical");
+        assert_eq!(read.end().verdict, Verdict::Ok);
+        assert_eq!(read.tokens(), (600, 400));
+        assert_eq!(read.tokens().0 + read.tokens().1, 1000);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage`
+    /// (map row 336). 1.5.5: under a 4096-byte cap, a same-dialect body three caps long whose
+    /// `usage` (600 + 400) trails it reaches the caller whole and still bills 1000 tokens: the
+    /// billing copy keeps the tail, not the head.
+    /// RED: a head-truncated billing copy never reaches the trailing usage and bills 0.
+    #[test]
+    fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
+        const CAP: usize = 4096;
+        let _cap = CapGuard::install(CAP);
+        let (arrived, lane) = ask("openai", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let filler = "x".repeat(CAP * 3);
+        let body = format!(
+            r#"{{"id":"chatcmpl-huge","object":"chat.completion","choices":[{{"index":0,"message":{{"role":"assistant","content":"{filler}"}},"finish_reason":"stop"}}],"usage":{{"prompt_tokens":600,"completion_tokens":400}}}}"#
+        );
+        assert!(body.len() > CAP * 2);
+        let pieces: Vec<&[u8]> = body.as_bytes().chunks(512).collect();
+        let read = answer(&ctx, 200, JSON_HEAD, &pieces, false);
+        assert_eq!(read.body, body.as_bytes(), "the whole body, verbatim");
+        assert_eq!(read.tokens(), (600, 400));
+        assert_eq!(read.tokens().0 + read.tokens().1, 1000);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_truncated_beyond_recovery_bills_nonzero_floor_not_zero`
+    /// (map row 337). 1.5.5 (C2): under a 4096-byte cap, a same-dialect body whose `usage` sits at
+    /// its front, pushed out of the kept tail by the filler, bills the floor over the 4096 kept
+    /// bytes: 4096 / 4 = 1024 output tokens, never 0.
+    /// RED: an unrecoverable usage billed as zero tokens (only the flat fee lands).
+    #[test]
+    fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
+        const CAP: usize = 4096;
+        let _cap = CapGuard::install(CAP);
+        let (arrived, lane) = ask("openai", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let filler = "x".repeat(CAP * 3);
+        let body = format!(
+            r#"{{"id":"chatcmpl-huge","object":"chat.completion","usage":{{"prompt_tokens":600,"completion_tokens":400}},"choices":[{{"index":0,"message":{{"role":"assistant","content":"{filler}"}},"finish_reason":"stop"}}]}}"#
+        );
+        let pieces: Vec<&[u8]> = body.as_bytes().chunks(512).collect();
+        let read = answer(&ctx, 200, JSON_HEAD, &pieces, false);
+        assert_eq!(read.body, body.as_bytes(), "the whole body, verbatim");
+        let floor = CAP as u64 / TRUNCATED_TAIL_BYTES_PER_TOKEN;
+        assert_eq!(floor, 1024);
+        assert_eq!(read.tokens(), (0, floor));
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array`
+    /// (map row 339). 1.5.5: a chat-dialect stream whose usage (600 / 400) arrives in its own
+    /// trailing chunk, to a gemini JSON-array caller, is one JSON array whose terminal
+    /// `usageMetadata.promptTokenCount` is 600, and 600 / 400 bill.
+    /// RED: the trailing usage chunk dropped by the array close (0 or absent), or not billed.
+    #[test]
+    fn test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array() {
+        let arrived = arrived_for(
+            "gemini",
+            OpVerb::CHAT,
+            Some(chat_request("gemini", true)),
+            true,
+        );
+        let lane = lane("openai");
+        let ctx = reply_ctx(&arrived, &lane);
+        let far = [
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":600,\"completion_tokens\":400}}\n\n",
+            "data: [DONE]\n\n",
+        ];
+        let pieces: Vec<&[u8]> = far.iter().map(|frame| frame.as_bytes()).collect();
+        let read = answer(&ctx, 200, SSE_HEAD, &pieces, false);
+        let array = read.json();
+        let prompt = array.as_array().and_then(|elements| {
+            elements
+                .iter()
+                .find_map(|element| element["usageMetadata"]["promptTokenCount"].as_i64())
+        });
+        assert_eq!(prompt, Some(600), "{array}");
+        assert_eq!(read.tokens(), (600, 400));
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_mid_stream_transport_error_does_not_bill_partial_usage`
+    /// (map row 341). 1.5.5 (#62): an anthropic stream to a chat caller, cut after it reported 100
+    /// input (`message_start`) and 50 output (`message_delta`), bills exactly those 150 tokens.
+    /// RED: a cut stream refunded to 0 tokens, or billed more than streamed.
+    #[test]
+    fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
+        let (arrived, lane) = ask("openai", "anthropic", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let far = [
+            "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"role\":\"assistant\",\"usage\":{\"input_tokens\":100,\"output_tokens\":0}}}\n\n",
+            "event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n",
+            "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n",
+            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":50}}\n\n",
+        ];
+        let pieces: Vec<&[u8]> = far.iter().map(|frame| frame.as_bytes()).collect();
+        let read = answer(&ctx, 200, SSE_HEAD, &pieces, true);
+        let cut = read.pieces.last().expect("the cut");
+        assert!(
+            cut.done && !cut.bytes.is_empty(),
+            "the caller's error frame"
+        );
+        assert_eq!(cut.verdict, Verdict::Hard);
+        assert_eq!(cut.fault, Some(Fault::Transient("mid-stream")));
+        assert_eq!((cut.units.tokens_in, cut.units.tokens_out), (100, 50));
+        assert_eq!(cut.units.tokens_in + cut.units.tokens_out, 150);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response_id`
+    /// (map row 343). 1.5.5: a Converse answer (no body identity; 7 in / 3 out) to a gemini
+    /// caller is 200 `application/json` with `usageMetadata` 7 / 3 / total 10, a minted
+    /// `responseId`, no foreign id, and 7 / 3 billed.
+    /// RED: an identity-empty far answer read as same-dialect, dropping `totalTokenCount` and
+    /// `responseId`.
+    #[test]
+    fn test_cross_protocol_bedrock_to_gemini_carries_total_tokens_and_response_id() {
+        entropy();
+        let (arrived, lane) = ask("gemini", "bedrock", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let body = br#"{"output":{"message":{"role":"assistant","content":[{"text":"Hi"}]}},"stopReason":"end_turn","usage":{"inputTokens":7,"outputTokens":3}}"#;
+        let read = answer(&ctx, 200, JSON_HEAD, &[body], false);
+        assert_eq!(read.status, 200);
+        assert_eq!(
+            read.value("content-type").as_deref(),
+            Some("application/json")
+        );
+        let answer_body = read.json();
+        assert_eq!(
+            answer_body["usageMetadata"]["totalTokenCount"],
+            json!(10u64)
+        );
+        assert_eq!(
+            answer_body["usageMetadata"]["promptTokenCount"],
+            json!(7u64)
+        );
+        assert_eq!(
+            answer_body["usageMetadata"]["candidatesTokenCount"],
+            json!(3u64)
+        );
+        assert!(
+            !answer_body["responseId"]
+                .as_str()
+                .unwrap_or_default()
+                .is_empty(),
+            "{answer_body}"
+        );
+        let text = read.text();
+        assert!(
+            !text.contains("chatcmpl-") && !text.contains("msg_"),
+            "{text}"
+        );
+        assert_eq!(read.tokens(), (7, 3));
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged`
+    /// (map row 359). 1.5.5: under a 4096-byte cap, a chat-dialect body over the cap (5 / 999999
+    /// reported) to an anthropic caller is the caller's 500 at once, no units billed, and no fault
+    /// on the far end (the cap is ours).
+    /// RED: an over-cap answer translated and delivered (its 999999 tokens billed), or the far end
+    /// faulted for our limit.
+    #[test]
+    fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
+        const CAP: usize = 4096;
+        let _cap = CapGuard::install(CAP);
+        let (arrived, lane) = ask("anthropic", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let huge = "x".repeat(CAP + 1024);
+        let body = serde_json::to_vec(&json!({
+            "id": "chatcmpl-huge", "object": "chat.completion", "created": 1_234_567_890,
+            "model": "gpt-4o",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": huge},
+                "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 5, "completion_tokens": 999_999}
+        }))
+        .expect("JSON");
+        let pieces: Vec<&[u8]> = body.chunks(512).collect();
+        let read = answer(&ctx, 200, JSON_HEAD, &pieces, false);
+        assert_eq!(read.status, 500, "{}", read.text());
+        assert_eq!(read.settlements(), 1);
+        let end = read.end();
+        assert_eq!(end.verdict, Verdict::Hard);
+        assert_eq!(end.fault, None, "our cap, not the far end's fault");
+        assert_eq!(end.units, Units::default(), "nothing billed");
+        assert!(
+            read.pieces
+                .iter()
+                .all(|piece| piece.units == Units::default()),
+            "no piece bills"
+        );
+    }
+
+    // ── a stream that ends early (ingress_indistinguishability_tests.rs) ──────────────────────
+
+    /// A chat-dialect trailing usage chunk: 600 prompt / 400 completion.
+    const USAGE_CHUNK: &[u8] =
+        b"data: {\"choices\":[],\"usage\":{\"prompt_tokens\":600,\"completion_tokens\":400}}\n\n";
+
+    /// More bytes than one event-stream frame may hold, with no frame end: the reframing gives up.
+    fn overflow() -> Vec<u8> {
+        vec![b'x'; busbar_plane_llm::codec::eventstream::MAX_FRAME_BYTES + 16]
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_streaming_translate_abort_trips_breaker_and_skips_billing`
+    /// (map row 367). 1.5.5 (#62): a translated stream whose reframing gives up after its first
+    /// byte records a transient fault on the far end (the optimistic success reversed) and still
+    /// bills the 600 / 400 (1000 tokens) read before it.
+    /// RED: an abort that records no fault, or one that refunds what streamed.
+    #[test]
+    fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
+        let (arrived, lane) = ask("anthropic", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let overflow = overflow();
+        let read = answer(&ctx, 200, SSE_HEAD, &[USAGE_CHUNK, &overflow], false);
+        let end = read.end();
+        assert!(end.done);
+        assert_eq!(end.verdict, Verdict::Hard);
+        assert_eq!(end.fault, Some(Fault::Transient("stream-translate-abort")));
+        assert_eq!(breaker_fault(end.fault.as_ref()), FAULT_TRANSIENT);
+        assert_eq!(read.tokens(), (600, 400));
+        assert_eq!(read.tokens().0 + read.tokens().1, 1000);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cancel_drop_bills_partial_tokens`
+    /// (map row 368). 1.5.5: a caller that leaves mid-stream, after the usage chunk was read, bills
+    /// the 600 / 400 (1000 tokens) captured so far: the piece it last read states them, and the
+    /// answer is a usable partial.
+    /// RED: a cancel that bills 0 because the stream never reached its end.
+    #[test]
+    fn test_cancel_drop_bills_partial_tokens() {
+        let (arrived, lane) = ask("anthropic", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let mut reply = Reply::new(&ctx, 200, SSE_HEAD);
+        let piece = reply.feed(&ctx, USAGE_CHUNK, false, AT);
+        assert!(!piece.done);
+        assert_eq!((piece.units.tokens_in, piece.units.tokens_out), (600, 400));
+        assert_eq!(piece.units.tokens_in + piece.units.tokens_out, 1000);
+        assert!(reply.partial(), "the caller had a usable part");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cancel_drop_bills_streamed_tokens_on_aborted_translate`
+    /// (map row 369). 1.5.5 (#62): a caller that leaves after the reframing gave up still bills the
+    /// 600 / 400 (1000 tokens) streamed before the abort.
+    /// RED: an aborted translate's captured usage dropped on the cancel.
+    #[test]
+    fn test_cancel_drop_bills_streamed_tokens_on_aborted_translate() {
+        let (arrived, lane) = ask("anthropic", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let mut reply = Reply::new(&ctx, 200, SSE_HEAD);
+        let first = reply.feed(&ctx, USAGE_CHUNK, false, AT);
+        assert_eq!((first.units.tokens_in, first.units.tokens_out), (600, 400));
+        let overflow = overflow();
+        let after = reply.feed(&ctx, &overflow, false, AT);
+        assert!(!after.done);
+        assert_eq!((after.units.tokens_in, after.units.tokens_out), (600, 400));
+        assert_eq!(after.units.tokens_in + after.units.tokens_out, 1000);
+    }
+
+    // ── a cut stream, every caller (plane_reply_parity_tests.rs) ─────────────────────────────
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/plane_reply_parity_tests.rs::a_cut_stream_reads_the_same_through_the_plane`
+    /// (map row 563). 1.5.5, for far ends of the chat, anthropic and bedrock dialects x all six
+    /// callers, a stream cut halfway: the head is 200 under the caller's stream content type, the
+    /// cut is HARD with the transient `mid-stream` fault, its bytes are exactly one error frame in
+    /// the caller's own framing (bedrock: one binary `InternalServerException` frame, byte-equal to
+    /// the dialect's; chat and gemini: a bare `data:` `error` frame; cohere: a `message-end`
+    /// `ERROR`; anthropic: `event: error`; responses: `event: response.failed`), and the units it
+    /// settles are exactly the units the stream had reported before the cut (the chat stream's
+    /// usage rides its last chunk, so 0 / 0 there).
+    /// RED: a cut ending in another dialect's frame, no frame, or settling units other than what
+    /// streamed (a refund to zero, or a guess).
+    #[test]
+    fn a_cut_stream_reads_the_same_through_the_plane() {
+        use busbar_plane_llm::exchange::reply::wire;
+        let mut checked = 0;
+        for far in ["openai", "anthropic", "bedrock"] {
+            let bytes = native_stream(far);
+            let far_type = wire::ingress_stream_content_type(far).expect("a stream type");
+            let head: &[(&[u8], &[u8])] = &[(b"content-type", far_type.as_bytes())];
+            let mut pieces: Vec<&[u8]> = bytes.chunks(64).collect();
+            pieces.truncate(pieces.len() / 2);
+            for caller in SIX {
+                let what = format!("{caller}<-{far}");
+                let (arrived, lane) = ask(caller, far, true);
+                let ctx = reply_ctx(&arrived, &lane);
+                let read = answer(&ctx, 200, head, &pieces, true);
+                assert_eq!(read.status, 200, "{what}");
+                let caller_type = wire::ingress_stream_content_type(caller).expect("a type");
+                assert_eq!(
+                    read.value("content-type").as_deref(),
+                    Some(caller_type),
+                    "{what}"
+                );
+                let cut = read.pieces.last().expect("the cut");
+                assert!(cut.done, "{what}");
+                assert_eq!(cut.verdict, Verdict::Hard, "{what}");
+                assert_eq!(cut.fault, Some(Fault::Transient("mid-stream")), "{what}");
+                let before = &read.pieces[read.pieces.len() - 2].units;
+                assert_eq!(
+                    (cut.units.tokens_in, cut.units.tokens_out),
+                    (before.tokens_in, before.tokens_out),
+                    "{what}: the cut settles what streamed"
+                );
+                if far == "openai" {
+                    assert_eq!(
+                        (cut.units.tokens_in, cut.units.tokens_out),
+                        (0, 0),
+                        "{what}"
+                    );
+                }
+                let frame: &[u8] = &cut.bytes;
+                let text = String::from_utf8_lossy(frame);
+                match caller {
+                    "bedrock" => {
+                        assert_eq!(
+                            frame,
+                            wire::mid_stream_error_bytes(
+                                "bedrock",
+                                true,
+                                wire::MID_STREAM_GENERIC_DETAIL,
+                                None
+                            )
+                            .as_slice(),
+                            "{what}"
+                        );
+                        let mut buf = frame.to_vec();
+                        let frames = busbar_plane_llm::codec::eventstream::drain_frames_checked(
+                            &mut buf, None,
+                        )
+                        .0;
+                        assert_eq!((frames.len(), buf.len()), (1, 0), "{what}");
+                        assert!(text.contains("InternalServerException"), "{what}");
+                    }
+                    "anthropic" => {
+                        assert!(text.starts_with("event: error\n"), "{what}: {text}");
+                        assert_eq!(text.matches("\n\n").count(), 1, "{what}: {text}");
+                    }
+                    "responses" => {
+                        assert!(
+                            text.starts_with("event: response.failed\n"),
+                            "{what}: {text}"
+                        );
+                        assert_eq!(text.matches("\n\n").count(), 1, "{what}: {text}");
+                    }
+                    _ => {
+                        assert!(
+                            text.starts_with("data: ") && text.ends_with("\n\n"),
+                            "{what}: {text}"
+                        );
+                        assert!(!text.contains("event:"), "{what}: {text}");
+                        assert_eq!(text.matches("\n\n").count(), 1, "{what}: {text}");
+                        let data: Value = serde_json::from_str(
+                            text.trim_start_matches("data: ").trim_end_matches("\n\n"),
+                        )
+                        .expect("JSON");
+                        if caller == "cohere" {
+                            assert_eq!(data["type"], "message-end", "{what}: {data}");
+                            assert!(
+                                data["delta"]["finish_reason"]
+                                    .as_str()
+                                    .is_some_and(|reason| reason.starts_with("ERROR")),
+                                "{what}: {data}"
+                            );
+                        } else {
+                            assert!(data.get("error").is_some(), "{what}: {data}");
+                        }
+                    }
+                }
+                checked += 1;
+            }
+        }
+        assert_eq!(checked, 3 * 6);
+    }
+
+    // ── a responses caller that asked to stream (responses_ingress_stream_tests.rs) ───────────
+
+    const MARKER: &str = "hi";
+    const IN_TOK: u64 = 11;
+    const OUT_TOK: u64 = 7;
+
+    /// Event-stream frames: each `(event, data)`, the event line left out when empty.
+    fn sse(frames: &[(&str, Value)]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for (event, data) in frames {
+            busbar_plane_llm::codec::dialect::write_sse_frame(&mut out, event, data);
+        }
+        out
+    }
+
+    /// The far end's answer, in `far`'s dialect, to a stream request: its content type and bytes,
+    /// a native stream when `stream`, else one whole body. One text block of `MARKER`, 11 in / 7
+    /// out (the legacy fixtures, byte for byte).
+    fn upstream_answer(far: &str, stream: bool) -> (&'static str, Vec<u8>) {
+        let usage_chat = json!({"prompt_tokens": IN_TOK, "completion_tokens": OUT_TOK,
+            "total_tokens": IN_TOK + OUT_TOK});
+        match (far, stream) {
+            ("anthropic", true) => (
+                "text/event-stream",
+                sse(&[
+                    (
+                        "message_start",
+                        json!({"type": "message_start", "message": {"id": "msg_up",
+                        "type": "message", "role": "assistant", "model": "m0", "content": [],
+                        "stop_reason": null, "usage": {"input_tokens": IN_TOK, "output_tokens": 0}}}),
+                    ),
+                    (
+                        "content_block_start",
+                        json!({"type": "content_block_start", "index": 0,
+                        "content_block": {"type": "text", "text": ""}}),
+                    ),
+                    (
+                        "content_block_delta",
+                        json!({"type": "content_block_delta", "index": 0,
+                        "delta": {"type": "text_delta", "text": MARKER}}),
+                    ),
+                    (
+                        "content_block_stop",
+                        json!({"type": "content_block_stop", "index": 0}),
+                    ),
+                    (
+                        "message_delta",
+                        json!({"type": "message_delta",
+                        "delta": {"stop_reason": "end_turn", "stop_sequence": null},
+                        "usage": {"output_tokens": OUT_TOK}}),
+                    ),
+                    ("message_stop", json!({"type": "message_stop"})),
+                ]),
+            ),
+            ("anthropic", false) => (
+                "application/json",
+                json!({"id": "msg_up", "type": "message", "role": "assistant", "model": "m0",
+                    "content": [{"type": "text", "text": MARKER}], "stop_reason": "end_turn",
+                    "stop_sequence": null,
+                    "usage": {"input_tokens": IN_TOK, "output_tokens": OUT_TOK}})
+                .to_string()
+                .into_bytes(),
+            ),
+            ("openai", true) => {
+                let base = json!({"id": "chatcmpl-up", "object": "chat.completion.chunk",
+                    "created": 0, "model": "m0"});
+                let mut first = base.clone();
+                first["choices"] = json!([{"index": 0,
+                    "delta": {"role": "assistant", "content": MARKER}, "finish_reason": null}]);
+                let mut last = base;
+                last["choices"] = json!([{"index": 0, "delta": {}, "finish_reason": "stop"}]);
+                last["usage"] = usage_chat;
+                let mut body = sse(&[("", first), ("", last)]);
+                body.extend_from_slice(busbar_plane_llm::codec::dialect::SSE_DONE_FRAME);
+                ("text/event-stream", body)
+            }
+            ("openai", false) => (
+                "application/json",
+                json!({"id": "chatcmpl-up", "object": "chat.completion", "created": 0,
+                    "model": "m0",
+                    "choices": [{"index": 0, "message": {"role": "assistant", "content": MARKER},
+                        "finish_reason": "stop"}],
+                    "usage": usage_chat})
+                .to_string()
+                .into_bytes(),
+            ),
+            ("cohere", true) => {
+                let mut body = sse(&[
+                    (
+                        "",
+                        json!({"type": "message-start", "id": "cohere-up",
+                        "delta": {"message": {"role": "assistant", "content": []}}}),
+                    ),
+                    (
+                        "",
+                        json!({"type": "content-delta", "index": 0,
+                        "delta": {"message": {"content": {"type": "text", "text": MARKER}}}}),
+                    ),
+                    (
+                        "",
+                        json!({"type": "message-end", "delta": {"finish_reason": "COMPLETE",
+                        "usage": {"tokens": {"input_tokens": IN_TOK, "output_tokens": OUT_TOK}}}}),
+                    ),
+                ]);
+                body.extend_from_slice(busbar_plane_llm::codec::dialect::SSE_DONE_FRAME);
+                ("text/event-stream", body)
+            }
+            ("cohere", false) => (
+                "application/json",
+                json!({"id": "cohere-up", "finish_reason": "COMPLETE",
+                    "message": {"role": "assistant", "content": [{"type": "text", "text": MARKER}]},
+                    "usage": {"billed_units": {"input_tokens": IN_TOK, "output_tokens": OUT_TOK},
+                        "tokens": {"input_tokens": IN_TOK, "output_tokens": OUT_TOK}}})
+                .to_string()
+                .into_bytes(),
+            ),
+            ("gemini", stream) => {
+                let body = json!({"candidates": [{"content": {"role": "model",
+                    "parts": [{"text": MARKER}]}, "finishReason": "STOP", "index": 0}],
+                    "usageMetadata": {"promptTokenCount": IN_TOK, "candidatesTokenCount": OUT_TOK,
+                        "totalTokenCount": IN_TOK + OUT_TOK},
+                    "modelVersion": "m0"});
+                if stream {
+                    ("text/event-stream", sse(&[("", body)]))
+                } else {
+                    ("application/json", body.to_string().into_bytes())
+                }
+            }
+            ("bedrock", true) => {
+                let frames: [(&str, Value); 5] = [
+                    ("messageStart", json!({"role": "assistant"})),
+                    (
+                        "contentBlockDelta",
+                        json!({"delta": {"text": MARKER}, "contentBlockIndex": 0}),
+                    ),
+                    ("contentBlockStop", json!({"contentBlockIndex": 0})),
+                    ("messageStop", json!({"stopReason": "end_turn"})),
+                    (
+                        "metadata",
+                        json!({"usage": {"inputTokens": IN_TOK, "outputTokens": OUT_TOK,
+                        "totalTokens": IN_TOK + OUT_TOK}, "metrics": {"latencyMs": 12}}),
+                    ),
+                ];
+                let mut body = Vec::new();
+                for (event, payload) in frames {
+                    body.extend(busbar_plane_llm::codec::eventstream::encode_frame(
+                        event,
+                        &busbar_plane_llm::codec::json::to_vec(&payload).expect("frame JSON"),
+                    ));
+                }
+                (EVENTSTREAM, body)
+            }
+            ("bedrock", false) => (
+                "application/json",
+                json!({"output": {"message": {"role": "assistant", "content": [{"text": MARKER}]}},
+                    "stopReason": "end_turn",
+                    "usage": {"inputTokens": IN_TOK, "outputTokens": OUT_TOK,
+                        "totalTokens": IN_TOK + OUT_TOK},
+                    "metrics": {"latencyMs": 12}})
+                .to_string()
+                .into_bytes(),
+            ),
+            ("responses", true) => {
+                let item_done = json!({"type": "message", "id": "msg_up", "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": MARKER, "annotations": []}]});
+                let usage = json!({"input_tokens": IN_TOK,
+                    "input_tokens_details": {"cached_tokens": 0}, "output_tokens": OUT_TOK,
+                    "output_tokens_details": {"reasoning_tokens": 0},
+                    "total_tokens": IN_TOK + OUT_TOK});
+                (
+                    "text/event-stream",
+                    sse(&[
+                        (
+                            "response.created",
+                            json!({"type": "response.created",
+                            "sequence_number": 0, "response": {"id": "resp_up", "object": "response",
+                            "created_at": 0, "model": "m0", "status": "in_progress", "error": null,
+                            "output": [], "usage": null}}),
+                        ),
+                        (
+                            "response.output_item.added",
+                            json!({"type": "response.output_item.added",
+                            "sequence_number": 1, "output_index": 0, "item": {"type": "message",
+                            "id": "msg_up", "role": "assistant", "status": "in_progress",
+                            "content": []}}),
+                        ),
+                        (
+                            "response.output_text.delta",
+                            json!({"type": "response.output_text.delta",
+                            "sequence_number": 2, "output_index": 0, "content_index": 0,
+                            "item_id": "msg_up", "delta": MARKER}),
+                        ),
+                        (
+                            "response.output_item.done",
+                            json!({"type": "response.output_item.done",
+                            "sequence_number": 3, "output_index": 0, "item": item_done}),
+                        ),
+                        (
+                            "response.completed",
+                            json!({"type": "response.completed",
+                            "sequence_number": 4, "response": {"id": "resp_up", "object": "response",
+                            "created_at": 0, "model": "m0", "status": "completed", "error": null,
+                            "output": [item_done], "usage": usage}}),
+                        ),
+                    ]),
+                )
+            }
+            ("responses", false) => (
+                "application/json",
+                json!({"id": "resp_up", "object": "response", "status": "completed", "model": "m0",
+                    "output": [{"type": "message", "id": "msg_up", "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": MARKER, "annotations": []}]}],
+                    "usage": {"input_tokens": IN_TOK, "output_tokens": OUT_TOK,
+                        "total_tokens": IN_TOK + OUT_TOK}})
+                .to_string()
+                .into_bytes(),
+            ),
+            (other, _) => panic!("no far-end fixture for {other}"),
+        }
+    }
+
+    /// One `stream: true` responses request answered by a far end of `far` (a native stream when
+    /// `stream`, else one whole body): the caller reads a responses event stream (or, within one
+    /// dialect, the far end's whole body unchanged), and the answer bills exactly 11 / 7 once.
+    fn responses_case(far: &'static str, stream: bool) {
+        entropy();
+        let label = format!("responses<-{far} (stream: {stream})");
+        let (content_type, body) = upstream_answer(far, stream);
+        let (arrived, lane) = ask("responses", far, true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let head: &[(&[u8], &[u8])] = &[(b"content-type", content_type.as_bytes())];
+        let pieces: Vec<&[u8]> = body.chunks(97).collect();
+        let read = answer(&ctx, 200, head, &pieces, false);
+        assert_eq!(read.status, 200, "{label}");
+        let read_type = read.value("content-type").unwrap_or_default();
+        if far == "responses" && !stream {
+            assert_eq!(read_type, content_type, "{label}");
+            assert_eq!(read.body, body, "{label}: the far end's bytes");
+        } else {
+            assert!(
+                read_type.starts_with("text/event-stream"),
+                "{label}: {read_type}"
+            );
+            let text = read.text();
+            assert!(!text.contains("[DONE]"), "{label}: {text}");
+            let mut frames: Vec<(String, String)> = Vec::new();
+            for frame in text.split("\n\n").filter(|frame| !frame.trim().is_empty()) {
+                let mut event = String::new();
+                let mut data: Vec<&str> = Vec::new();
+                for line in frame.lines() {
+                    if let Some(rest) = line.strip_prefix("event:") {
+                        event = rest.trim().to_string();
+                    } else if let Some(rest) = line.strip_prefix("data:") {
+                        data.push(rest.strip_prefix(' ').unwrap_or(rest));
+                    }
+                }
+                frames.push((event, data.join("\n")));
+            }
+            assert!(!frames.is_empty(), "{label}");
+            assert_eq!(frames[0].0, "response.created", "{label}: {text}");
+            let (last_event, last_data) = frames.last().expect("a terminal frame");
+            assert_eq!(last_event, "response.completed", "{label}: {text}");
+            let completed: Value = serde_json::from_str(last_data).expect("JSON");
+            assert_eq!(completed["type"], "response.completed", "{label}");
+            assert!(
+                completed["sequence_number"].is_u64(),
+                "{label}: {last_data}"
+            );
+            let response = &completed["response"];
+            assert_eq!(response["object"], "response", "{label}");
+            assert_eq!(response["status"], "completed", "{label}");
+            assert!(
+                response["id"]
+                    .as_str()
+                    .is_some_and(|id| id.starts_with("resp_")),
+                "{label}: {last_data}"
+            );
+            assert_eq!(
+                response["output"][0]["content"][0]["text"], MARKER,
+                "{label}: {last_data}"
+            );
+            assert_eq!(response["usage"]["input_tokens"], IN_TOK, "{label}");
+            assert_eq!(response["usage"]["output_tokens"], OUT_TOK, "{label}");
+            assert_eq!(
+                response["usage"]["total_tokens"],
+                IN_TOK + OUT_TOK,
+                "{label}"
+            );
+            for (event, data) in &frames {
+                let payload: Value = serde_json::from_str(data).expect("JSON");
+                assert_eq!(payload["type"], event.as_str(), "{label}");
+            }
+        }
+        assert_eq!(read.tokens(), (IN_TOK, OUT_TOK), "{label}");
+        assert_eq!(read.settlements(), 1, "{label}: billed once");
+        assert!(
+            read.pieces
+                .iter()
+                .all(|piece| piece.units.tokens_in <= IN_TOK && piece.units.tokens_out <= OUT_TOK),
+            "{label}: never more than the far end reported"
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs::responses_stream_over_anthropic_stream`
+    /// (map row 588). 1.5.5: a responses stream over an anthropic stream opens `response.created`,
+    /// has no `[DONE]`, ends `response.completed` (a u64 `sequence_number`, `object: "response"`,
+    /// `status: "completed"`, a `resp_` id, the text, usage 11 / 7 / 18), and bills 11 / 7 once.
+    /// RED: the event sequence broken, the usage figures moved, or the answer billed twice or not
+    /// at all.
+    #[test]
+    fn responses_stream_over_anthropic_stream() {
+        responses_case("anthropic", true);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs::responses_stream_over_anthropic_buffered`
+    /// (map row 589). 1.5.5: a responses caller that asked to stream, answered one anthropic body,
+    /// reads the same responses event stream and bills 11 / 7 once.
+    /// RED: the buffered answer delivered as JSON to a stream caller, or not billed.
+    #[test]
+    fn responses_stream_over_anthropic_buffered() {
+        responses_case("anthropic", false);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs::responses_stream_over_openai_stream`
+    /// (map row 590). 1.5.5: as row 588 over a chat-dialect stream; 11 / 7 billed once.
+    /// RED: the event sequence broken, the usage figures moved, or the answer billed twice.
+    #[test]
+    fn responses_stream_over_openai_stream() {
+        responses_case("openai", true);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs::responses_stream_over_openai_buffered`
+    /// (map row 591). 1.5.5: as row 589 over one chat-dialect body; 11 / 7 billed once.
+    /// RED: the buffered answer delivered as JSON to a stream caller, or not billed.
+    #[test]
+    fn responses_stream_over_openai_buffered() {
+        responses_case("openai", false);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs::responses_stream_over_cohere_stream`
+    /// (map row 592). 1.5.5: as row 588 over a cohere stream; 11 / 7 billed once.
+    /// RED: the event sequence broken, the usage figures moved, or the answer billed twice.
+    #[test]
+    fn responses_stream_over_cohere_stream() {
+        responses_case("cohere", true);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs::responses_stream_over_cohere_buffered`
+    /// (map row 593). 1.5.5: as row 589 over one cohere body; 11 / 7 billed once.
+    /// RED: the buffered answer delivered as JSON to a stream caller, or not billed.
+    #[test]
+    fn responses_stream_over_cohere_buffered() {
+        responses_case("cohere", false);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs::responses_stream_over_gemini_stream`
+    /// (map row 594). 1.5.5: as row 588 over a gemini stream; 11 / 7 billed once.
+    /// RED: the event sequence broken, the usage figures moved, or the answer billed twice.
+    #[test]
+    fn responses_stream_over_gemini_stream() {
+        responses_case("gemini", true);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs::responses_stream_over_gemini_buffered`
+    /// (map row 595). 1.5.5: as row 589 over one gemini body; 11 / 7 billed once.
+    /// RED: the buffered answer delivered as JSON to a stream caller, or not billed.
+    #[test]
+    fn responses_stream_over_gemini_buffered() {
+        responses_case("gemini", false);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs::responses_stream_over_bedrock_stream`
+    /// (map row 596). 1.5.5: as row 588 over a bedrock binary event stream; 11 / 7 billed once.
+    /// RED: the event sequence broken, the usage figures moved, or the answer billed twice.
+    #[test]
+    fn responses_stream_over_bedrock_stream() {
+        responses_case("bedrock", true);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs::responses_stream_over_bedrock_buffered`
+    /// (map row 597). 1.5.5: as row 589 over one Converse body; 11 / 7 billed once.
+    /// RED: the buffered answer delivered as JSON to a stream caller, or not billed.
+    #[test]
+    fn responses_stream_over_bedrock_buffered() {
+        responses_case("bedrock", false);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs::responses_stream_over_responses_stream`
+    /// (map row 598). 1.5.5: as row 588 over a responses stream (relayed within one dialect);
+    /// 11 / 7 billed once.
+    /// RED: the same-dialect stream rewritten, or its usage billed twice or not at all.
+    #[test]
+    fn responses_stream_over_responses_stream() {
+        responses_case("responses", true);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/responses_ingress_stream_tests.rs::responses_stream_over_responses_buffered`
+    /// (map row 599). 1.5.5 (DIALECT FIDELITY): a responses far end that answered one body to a
+    /// stream request is relayed under its own content type, bytes unchanged, and bills 11 / 7
+    /// once.
+    /// RED: the same-dialect body reframed as a stream, or its usage not billed.
+    #[test]
+    fn responses_stream_over_responses_buffered() {
+        responses_case("responses", false);
+    }
+
+    // ── an unreadable usage after delivery (unreadable_usage_floor_tests.rs) ──────────────────
+
+    /// The floor the far end's `delivered` bytes bill when no usage can be read: a quarter of
+    /// them, as output, never 0.
+    fn floor_for(delivered: usize) -> u64 {
+        (delivered as u64 / TRUNCATED_TAIL_BYTES_PER_TOKEN).max(1)
+    }
+
+    fn message_with_usage(usage: &str) -> String {
+        format!(
+            r#"{{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","content":[{{"type":"text","text":"hi"}}],"stop_reason":"end_turn","stop_sequence":null,"usage":{usage}}}"#
+        )
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/unreadable_usage_floor_tests.rs::buffered_relay_refused_usage_bills_the_floor_not_zero`
+    /// (map row 620). 1.5.5 (item 133): a same-dialect anthropic body relays verbatim; a readable
+    /// usage bills exactly 1500 + 9 = 1509; a count the reader refuses (`"1500"`) bills the floor
+    /// over the delivered bytes (their length / 4, as output), never 0.
+    /// RED: a refused usage on a delivered body billed as zero tokens.
+    #[test]
+    fn buffered_relay_refused_usage_bills_the_floor_not_zero() {
+        let (arrived, lane) = ask("anthropic", "anthropic", false);
+        let ctx = reply_ctx(&arrived, &lane);
+        let readable = message_with_usage(r#"{"input_tokens":1500,"output_tokens":9}"#);
+        let read = answer(&ctx, 200, JSON_HEAD, &[readable.as_bytes()], false);
+        assert_eq!(read.body, readable.as_bytes());
+        assert_eq!(read.tokens(), (1500, 9));
+        assert_eq!(read.tokens().0 + read.tokens().1, 1509);
+
+        let refused = message_with_usage(r#"{"input_tokens":"1500","output_tokens":9}"#);
+        let read = answer(&ctx, 200, JSON_HEAD, &[refused.as_bytes()], false);
+        assert_eq!(read.body, refused.as_bytes(), "the body relays verbatim");
+        assert_ne!(read.tokens(), (0, 0), "never 0");
+        assert_eq!(read.tokens(), (0, floor_for(refused.len())));
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/unreadable_usage_floor_tests.rs::stream_refused_usage_bills_the_floor_not_zero`
+    /// (map row 621). 1.5.5: a same-dialect chat stream whose usage chunk carries a count the
+    /// reader refuses (`"prompt_tokens":"1500"`) is served 200 and bills the floor over every byte
+    /// the far end sent (their length / 4, as output), never 0.
+    /// RED: a refused stream usage billed as zero tokens.
+    #[test]
+    fn stream_refused_usage_bills_the_floor_not_zero() {
+        let (arrived, lane) = ask("openai", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let base = json!({"id": "chatcmpl-refused", "object": "chat.completion.chunk",
+            "created": 0, "model": "m0"});
+        let mut first = base.clone();
+        first["choices"] = json!([{"index": 0,
+            "delta": {"role": "assistant", "content": "hello"}, "finish_reason": null}]);
+        let mut last = base.clone();
+        last["choices"] = json!([{"index": 0, "delta": {}, "finish_reason": "stop"}]);
+        let mut usage = base;
+        usage["choices"] = json!([]);
+        usage["usage"] = json!({"prompt_tokens": "1500", "completion_tokens": 9});
+        let mut far = data_frames(&[&first.to_string(), &last.to_string(), &usage.to_string()]);
+        far.extend_from_slice(busbar_plane_llm::codec::dialect::SSE_DONE_FRAME);
+        let read = answer(&ctx, 200, SSE_HEAD, &[&far], false);
+        assert_eq!(read.status, 200);
+        assert_ne!(read.tokens(), (0, 0), "never 0");
+        assert_eq!(read.tokens(), (0, floor_for(far.len())));
+    }
+}
