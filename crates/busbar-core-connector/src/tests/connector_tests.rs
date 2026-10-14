@@ -2000,9 +2000,9 @@ fn a_pinned_metadata_literal_is_refused_at_declare() {
 
 /// RED (INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.477-478; v1.5.5 `crates/busbar/src/tls.rs`:242): THE
 /// LISTENER'S PROTOCOL OFFER IS THE ENTRY'S OFFER FOR ITS ACCEPTING SIDE. An entry that dials
-/// offering `h2, http/1.1` and listens offering `http/1.1` alone answers the two apart, and a TLS
-/// client offering `h2, http/1.1` to the need's listener agrees `http/1.1`: never the dial offer,
-/// never the server config's own.
+/// offering `x-two, x-one` and listens offering `x-one` alone answers the two apart, and a TLS
+/// client offering `x-two, x-one` to the need's listener agrees `x-one`: never the dial offer,
+/// never the server config's own (v1.5.5's client offered two protocols, its listener one).
 #[test]
 fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -2013,19 +2013,19 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
         &[],
         crate::support::Knobs {
             secure_name: Some("localhost"),
-            offer: Some(b"\x02h2\x08http/1.1"),
-            accept_offer: Some(b"\x08http/1.1"),
+            offer: Some(b"\x05x-two\x05x-one"),
+            accept_offer: Some(b"\x05x-one"),
             ..crate::support::Knobs::default()
         },
     );
     assert_eq!(
         crate::framer::locate(&door, "127.0.0.1:443").unwrap().offer,
-        vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        vec![b"x-two".to_vec(), b"x-one".to_vec()],
         "the dial offer"
     );
     assert_eq!(
         crate::framer::accept_offer(&door).unwrap(),
-        vec![b"http/1.1".to_vec()],
+        vec![b"x-one".to_vec()],
         "the accept offer is the entry's own, and not its dial offer"
     );
     let kp = rcgen::KeyPair::generate().unwrap();
@@ -2071,7 +2071,7 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
             let mut cfg = rustls::ClientConfig::builder()
                 .with_root_certificates(roots)
                 .with_no_client_auth();
-            cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            cfg.alpn_protocols = vec![b"x-two".to_vec(), b"x-one".to_vec()];
             let tls = tokio_rustls::TlsConnector::from(Arc::new(cfg));
             let s = tokio::net::TcpStream::connect(addr).await.unwrap();
             let name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
@@ -2101,7 +2101,7 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
         let agreed = client.await.unwrap();
         assert_eq!(
             agreed.as_deref(),
-            Some(&b"http/1.1"[..]),
+            Some(&b"x-one"[..]),
             "the listener agreed off the entry's accept offer"
         );
     });

@@ -640,8 +640,8 @@ pub fn locate(door: &dyn FramerDoor, target: &str) -> Result<Located, Refused> {
 
 /// THE OFFER A LISTENER FRAMED BY `door` MAKES in the handshake (ALPN, most preferred first):
 /// `locate` asked for the ACCEPTING side (`LocateIn::accept`). The framer's, as a dial's offer is
-/// (`BUSBAR-1.6.0.md` l.477-478), and not the same one: v1.5.5's client offered `h2, http/1.1`,
-/// its listener `http/1.1` alone.
+/// (`BUSBAR-1.6.0.md` l.477-478), and not the same one: v1.5.5's client offered two protocols,
+/// its listener one of them alone.
 ///
 /// # Errors
 ///
