@@ -732,11 +732,10 @@ fn read_terms(t: &RendezvousTerms, frame: &[u8]) -> Result<Terms, Refused> {
         _ => return Err(fault("the framer's terms name no handshake role")),
     };
     let mut fingerprint = [0_u8; FINGERPRINT_BYTES as usize];
-    fingerprint.copy_from_slice(
-        span(t.peer_fingerprint)?
-            .get(..fingerprint.len())
-            .ok_or_else(|| fault("the far end's fingerprint is short"))?,
-    );
+    let stated = span(t.peer_fingerprint)?
+        .get(..fingerprint.len())
+        .ok_or_else(|| fault("the far end's fingerprint is short"))?;
+    fingerprint.copy_from_slice(stated);
     Ok(Terms {
         role,
         local: IceCredentials {
