@@ -166,10 +166,35 @@ fn the_legacy_table_spells_the_operator_credential_as_1_5_5_did() {
     assert_eq!(words.principal_id, "admin");
 }
 
+/// THE OPERATOR CREDENTIAL'S 1.5.5 WORDS AND LINES, as DATA (`fixtures/operator_1_5_5.json`, verbatim
+/// from the 1.5.5 binary): what the root's words must still read as, byte for byte.
+fn operator_1_5_5() -> serde_json::Value {
+    serde_json::from_str(include_str!("fixtures/operator_1_5_5.json"))
+        .expect("the 1.5.5 operator fixture is JSON")
+}
+
+/// A string field of the 1.5.5 operator fixture.
+fn word_1_5_5(key: &str) -> String {
+    operator_1_5_5()[key]
+        .as_str()
+        .unwrap_or_else(|| panic!("the 1.5.5 operator fixture states `{key}`"))
+        .to_string()
+}
+
 #[test]
 fn the_kernel_answers_to_the_root_words_once_handed_in() {
     hand_in_the_root_words();
     let words = operator_words();
+    assert_eq!(
+        words.provider,
+        word_1_5_5("provider"),
+        "1.5.5's operator word"
+    );
+    assert_eq!(
+        words.principal_id,
+        word_1_5_5("principal"),
+        "1.5.5's operator principal"
+    );
     assert_eq!(busbar_kernel::config::operator_provider(), words.provider);
     assert_eq!(
         busbar_kernel::config::operator_principal_id(),
@@ -187,8 +212,8 @@ fn the_kernel_answers_to_the_root_words_once_handed_in() {
 }
 
 /// The 1.5.3 hook-name word space, WHOLE: the kernel's frozen words and the root's operator word —
-/// every one reserved, and a word beside them not (v1.5.5:crates/busbar/src/config/mod.rs:1891; the
-/// bytes of the refusal a reserved name meets are the oracle's).
+/// every one reserved, a word beside them not, and the whole set 1.5.5's
+/// (v1.5.5:crates/busbar/src/config/mod.rs:1891, held as DATA).
 #[test]
 fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
     hand_in_the_root_words();
@@ -210,6 +235,17 @@ fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
     assert!(!busbar_kernel::config::is_reserved_hook_name(&format!(
         "{op}-2"
     )));
+    // Exactly 1.5.5's set (v1.5.5:crates/busbar/src/config/mod.rs:1891), as DATA.
+    let mut space: Vec<&str> = busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE.to_vec();
+    space.push(op);
+    space.sort_unstable();
+    let want: Vec<String> = operator_1_5_5()["hook_word_space"]
+        .as_array()
+        .expect("the 1.5.5 hook-name word space")
+        .iter()
+        .map(|w| w.as_str().expect("a word").to_string())
+        .collect();
+    assert_eq!(space, want, "1.5.5's whole hook-name word space");
 }
 
 /// Walk `path` down a migrated document.
@@ -235,7 +271,7 @@ fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
             .and_then(|v| v.as_sequence())
             .and_then(|s| s.first())
             .and_then(|v| v.as_str()),
-        Some(operator_words().provider)
+        Some(word_1_5_5("provider").as_str())
     );
     assert_eq!(
         dig(
@@ -270,7 +306,7 @@ fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
         .iter()
         .filter_map(|v| v.as_str())
         .collect();
-    assert_eq!(chain, [op]);
+    assert_eq!(chain, [word_1_5_5("provider").as_str()]);
     assert_eq!(
         dig(&doc, &["identity-providers", op, "token", "env"]).and_then(|v| v.as_str()),
         Some("BUSBAR_ADMIN_TOKEN")
@@ -303,8 +339,8 @@ fn the_shipped_config_needs_no_admin_token_to_boot() {
 }
 
 /// The operator credential's refusals name the root's operator word where 1.5.5 named it (its
-/// feature, its module, the chain entry an operator moves the token to); their bytes are the oracle
-/// cells' (v1.5.5:crates/busbar/src/config_validate/mod.rs:1175), never a pin of one distribution.
+/// feature, its module, the chain entry an operator moves the token to), and read as 1.5.5's lines
+/// byte for byte (v1.5.5:crates/busbar/src/config_validate/mod.rs:1175), held as DATA.
 #[test]
 fn the_operator_refusals_name_the_root_words() {
     let op = operator_words().provider;
@@ -317,7 +353,17 @@ fn the_operator_refusals_name_the_root_words() {
         unanswered.contains(&format!("`auth-{op}` feature")),
         "{unanswered}"
     );
+    assert_eq!(
+        unanswered,
+        word_1_5_5("unanswered_token"),
+        "1.5.5's line, byte for byte"
+    );
     let misplaced = busbar_kernel_identity::operator::misplaced_token(op, "keys");
+    assert_eq!(
+        misplaced,
+        word_1_5_5("misplaced_token"),
+        "1.5.5's line, byte for byte"
+    );
     assert!(
         misplaced.starts_with("auth chain entry 'keys' sets `token:`"),
         "{misplaced}"

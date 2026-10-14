@@ -25,7 +25,7 @@ fn blocks(help: &str) -> (&str, &str, &str) {
 /// block, each in the order the planes declare it; and the root's own text is all there around
 /// them. Read off the linked rows (a linked row's `cli-help` axis or a linked door's tail
 /// `cli_help`, as `--help` reads them), so a plane that stops declaring its rows fails this. The
-/// help's bytes are the oracle cells' (from the 1.5.5 binary), never a pin of one distribution.
+/// help's 1.5.5 bytes are the oracle golden cells `cli|--help` and `cli|-h` (from the 1.5.5 binary).
 #[test]
 fn every_linked_row_reaches_the_help_in_its_place() {
     let linked = help_rows();
