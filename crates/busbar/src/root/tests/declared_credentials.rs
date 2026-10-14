@@ -1030,3 +1030,99 @@ fn the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape() {
         ]
     );
 }
+
+/// LEGACY the retiring engine crate's `src/engine/tests/auth_style_tests.rs::each_dialects_declared_scheme_maps_to_its_recorded_binding`
+/// (coverage map v2 row 78). 1.5.5 (the plane's half of the declared-credential proof): every
+/// dialect's declared scheme maps to exactly the binding the shared fixture records for it
+/// (`testing/plane-copies/declared-credentials.json`, `bindings`): the style and the parameters,
+/// a signing style's region read from each recorded host by the dialect's own rule (the recorded
+/// region, else `us-east-1`); the `auth: api-key` override binds its style with no parameters of
+/// the dialect's; and exactly the six recorded dialects are mapped.
+///
+/// Read off what the served pools door STATES (its tail's per-dialect default style and
+/// parameters) and sealed the way the root seals a member's binding (`sealed_settings`), so the
+/// recorded bindings are held to the plane the root actually serves, not to test twins.
+///
+/// RED: a dialect's stated style or parameters drift from the recorded binding, a signing style
+/// reads another region from a recorded host, or the door states another set of dialects.
+#[cfg(linked_driver_proofs)]
+#[test]
+fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
+    use crate::root::door_steps::sealed_settings;
+    use crate::root::loader::dispatch::kinds::plane::Plane;
+    use crate::root::loader::dispatch::{
+        load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
+    };
+    let probe = Dispatcher::new(DispatchConfig::default());
+    let served = crate::LINKED
+        .plane_doors
+        .iter()
+        .map(|door| {
+            let row = LinkedRow::of(*door).expect("a linked door states itself");
+            load_linked::<Plane>(
+                &row,
+                Bind {
+                    instance: Arc::from("declared-bindings-probe"),
+                    max_inflight_cap: 64,
+                    sink: Arc::new(NoSink),
+                    dispatcher: probe.adopter(),
+                    conns: crate::root::loader::dispatch::ConnTable::Probe,
+                },
+            )
+            .expect("a linked door binds")
+            .served()
+        })
+        .find(|served| served.section == busbar_contract::section::RESERVED_POOLS_KEY)
+        .expect("the build links the door serving the `pools` map");
+    let bindings = fixture()["bindings"].as_object().expect("bindings");
+    let mut mapped = 0usize;
+    for (dialect, want) in bindings {
+        if dialect == "api-key-override" {
+            // The provider's own `auth:` binds its style alone: no dialect parameters, no statics.
+            let sealed = sealed_settings(&[], "https://upstream.internal", &serde_json::json!({}))
+                .expect("the override seals");
+            assert_eq!(want["style"], "api-key", "{dialect}");
+            assert_eq!(sealed, want["params"], "{dialect}");
+            continue;
+        }
+        let at = served
+            .dialects
+            .iter()
+            .position(|d| d == dialect)
+            .unwrap_or_else(|| panic!("{dialect} is a dialect the door states"));
+        let (_, style, params) = served
+            .dialect_auth
+            .iter()
+            .find(|(d, _, _)| *d as usize == at)
+            .unwrap_or_else(|| panic!("{dialect} states its default style"));
+        assert_eq!(*style, want["style"], "{dialect}");
+        for region in fixture()["regions"].as_array().expect("regions") {
+            let host = region["host"].as_str().expect("host");
+            let mut sealed =
+                sealed_settings(params, &format!("https://{host}"), &serde_json::json!({}))
+                    .expect("the dialect's parameters seal");
+            if *style == "sigv4" {
+                let read = sealed
+                    .as_object_mut()
+                    .and_then(|fields| {
+                        fields.remove("region_unread");
+                        fields.remove("region")
+                    })
+                    .expect("a signing binding names its region");
+                assert_eq!(
+                    read.as_str(),
+                    Some(region["region"].as_str().unwrap_or("us-east-1")),
+                    "{dialect} at {host}"
+                );
+            }
+            assert_eq!(sealed, want["params"], "{dialect} at {host}");
+        }
+        mapped += 1;
+    }
+    assert_eq!(mapped, 6, "every recorded dialect was mapped");
+    assert_eq!(
+        served.dialects.len(),
+        6,
+        "the door states exactly the recorded dialects"
+    );
+}

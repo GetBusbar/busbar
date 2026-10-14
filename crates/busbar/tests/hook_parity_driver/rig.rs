@@ -384,6 +384,8 @@ pub struct Hooks {
     pub policy: Option<ResolvedPolicy>,
     pub taps: StageTaps,
     pub callers: Callers,
+    /// The signals the deployment's hooks declare (`signals:`); none by default.
+    pub requested: RequestedSignals,
 }
 
 /// The process's one request-id counter, as the binder is handed it.
@@ -407,7 +409,7 @@ impl Hooks {
                 .into_iter()
                 .collect(),
             taps: self.taps,
-            requested: RequestedSignals::default(),
+            requested: self.requested,
             next_request_id: counter(),
             caller: Arc::new(self.callers),
             dialects,
