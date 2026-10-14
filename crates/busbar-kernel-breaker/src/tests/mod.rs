@@ -850,6 +850,92 @@ fn streak_bump_is_serialized_under_the_transition_lock() {
     assert!((36..=44).contains(&remaining), "got {remaining}s");
 }
 
+// ── A won probe given back ───────────────────────────────────────────────────────────────────────
+
+/// Park the default cell of `d` as a WON probe, exactly as an admission leaves it after winning the
+/// single-flight race: expired-Open, then the mutating admission moves it Open to HalfOpen. Answers
+/// the epoch the win was taken at.
+fn win_probe(unit: &BreakerUnit, d: DestinationId) -> u64 {
+    // Open with a cooldown that ended at NOW, so a day on it is long expired.
+    let _ = unit.cell("", d).hard_down(NOW, 0);
+    let admit = unit
+        .try_admit("", d, NOW + 86_400)
+        .expect("precondition: an expired-Open cell admits");
+    assert!(
+        matches!(unit.cell("", d).state(), BreakerState::HalfOpen),
+        "precondition: the won probe leaves the cell HalfOpen"
+    );
+    admit
+        .probe_epoch
+        .expect("precondition: this caller must WIN the single-flight probe")
+}
+
+/// F25 row 568: rehomed from crates/busbar-llm/src/engine/tests/probe_guard_tests.rs::dropping_armed_guard_releases_probe.
+/// A won probe given back without a dispatch (what an armed guard's drop does; the egress unit's
+/// `ProbeGuard` making exactly this call is pinned in busbar-kernel
+/// `src/tests/members/egress/route/probe_tests.rs`) releases it on the REAL breaker: the cell goes
+/// HalfOpen to Open, its flag cleared, and the next caller wins a fresh probe at once.
+#[test]
+fn dropping_armed_guard_releases_probe() {
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(0);
+    let epoch = win_probe(&unit, d);
+
+    unit.release_probe("", d, epoch, NOW + 86_400);
+
+    let cell = unit.cell("", d);
+    assert!(
+        matches!(cell.state(), BreakerState::Open { .. }),
+        "an armed guard's release must revert HalfOpen to Open, un-benching the lane; got {:?}",
+        cell.state()
+    );
+    assert!(!cell.probe_in_flight(), "the probe is no longer held");
+    let again = unit
+        .try_admit("", d, NOW + 86_400)
+        .expect("the released cell admits again");
+    assert_eq!(
+        again.probe_epoch,
+        Some(epoch + 1),
+        "and the next caller wins a fresh probe"
+    );
+}
+
+/// F25 row 570: rehomed from crates/busbar-llm/src/engine/tests/probe_guard_tests.rs::stalled_guard_does_not_release_a_newer_probe.
+/// A STALLED guard (it won an earlier probe, whose outcome was since recorded, and a newer probe
+/// was won on the re-opened cell) drops late: its owner-checked release is a no-op, and the current
+/// owner keeps its HalfOpen cell and its probe.
+#[test]
+fn stalled_guard_does_not_release_a_newer_probe() {
+    let unit = BreakerUnit::new();
+    let d = DestinationId::new(0);
+    // Guard A wins the first probe and captures its (older) epoch.
+    let stale = win_probe(&unit, d);
+    // The probe A won is CONSUMED by a recorded outcome (a success closes the cell), then the lane
+    // trips Open and expires again, so a fresh probe is won at a newer epoch.
+    assert!(
+        unit.cell("", d).record_success(NOW + 86_400),
+        "the success closes the probing cell"
+    );
+    assert!(matches!(unit.cell("", d).state(), BreakerState::Closed));
+    let fresh = win_probe(&unit, d);
+    assert_ne!(fresh, stale, "a NEW probe was won on the re-opened lane");
+
+    // Now the STALE guard A finally drops (late). The owner check makes it a no-op.
+    unit.release_probe("", d, stale, NOW + 86_400);
+
+    let cell = unit.cell("", d);
+    assert!(
+        matches!(cell.state(), BreakerState::HalfOpen),
+        "a stalled guard from a superseded probe must NOT revert the current probe owner's \
+         HalfOpen cell; got {:?}",
+        cell.state()
+    );
+    assert!(
+        cell.probe_in_flight(),
+        "the current owner still holds its probe"
+    );
+}
+
 /// A cell carried across a rebuild keeps its state, cooldown, streak and error count — and a
 /// snapshot taken mid-probe comes back Open, never as a HalfOpen whose probe nobody holds.
 #[test]
