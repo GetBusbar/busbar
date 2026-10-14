@@ -1991,7 +1991,7 @@ fn test_zero_weight_member_is_never_selected() {
 /// internals; an `Instant`-based in-crate bench measures the EXACT same code with no crate
 /// surgery — the honest, low-risk way to gate the default path.)
 #[test]
-#[ignore]
+#[ignore = "a timing bench: run with --release --ignored --nocapture"]
 fn bench_select_weighted_in_seam() {
     let store = Arc::new(HealthState::new(vec![
         make_lane_data(0, 100),

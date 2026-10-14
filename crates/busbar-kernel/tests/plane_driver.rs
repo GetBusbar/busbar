@@ -492,6 +492,14 @@ impl Double {
             *i.fields_buf = OutField { name, value };
             o.fields_written = 1;
             o.arena_written = at as u64;
+            // A plane whose usage tap could not read the answer (modes `tap-bad-json`,
+            // `tap-unknown`, the latter a byte outside the vocabulary): the fault rides the answer
+            // that opens the reply, once.
+            o.tap_fault = match u.mode.as_slice() {
+                b"tap-bad-json" => busbar_contract::abi::plane::TAP_FAULT_BAD_JSON,
+                b"tap-unknown" => 0xC8,
+                _ => busbar_contract::abi::plane::TAP_FAULT_NONE,
+            };
         }
         let n = u.pending.len().min(i.reply_cap);
         std::ptr::copy_nonoverlapping(u.pending.as_ptr(), i.reply_buf, n);

@@ -34,7 +34,7 @@
 //! ## 2. THE NAME IS RESOLVED ONCE, BY THE GUARD, AND THE JUDGED ADDRESS IS WHAT CONNECTS
 //!
 //! This module does not open its own client. It reuses [`super::fetch::guard_hop`], and through it
-//! [`busbar_kernel::net_guard::resolve_and_pin`] — the same
+//! [`busbar_kernel::proxy::egress_unit::trust::net::resolve_and_pin`] — the same
 //! guard the card fetch goes through — and hands the surviving address to the transport, which pins
 //! it. A relay that handed the URL to `reqwest` and let the client resolve the host would reinstate
 //! the second lookup, which is the whole of DNS rebinding, and would pass every test that does not
@@ -90,9 +90,8 @@
 use super::creds::{Lease, LeaseError};
 use super::fetch::{FetchPolicy, FetchRefusal, HttpResponse, Resolver};
 use super::task::TaskState;
-use busbar_kernel::{
-    breaker::normalize_raw_error, net_guard::PinnedTarget, plane_host::breaker as host_breaker,
-};
+use busbar_kernel::proxy::egress_unit::trust::net::PinnedTarget;
+use busbar_kernel::{breaker::normalize_raw_error, plane_host::breaker as host_breaker};
 
 /// The HTTP round trip the relay makes, as a seam.
 ///
@@ -1610,7 +1609,7 @@ fn prepare<'a>(
     admit_id: &mut busbar_contract::abi::hot::AdmissionId,
 ) -> Result<(url::Url, PinnedTarget, OutboundRelayRequest), RelayRefusal> {
     // ── THE GUARD. One resolution, every answered address judged, one pinned address out. It is
-    //    `busbar_kernel::net_guard`'s, reached through the card fetch's hop door, so a relayed submission
+    //    the egress unit's guard (`busbar_kernel::proxy::egress_unit::trust::net`)'s, reached through the card fetch's hop door, so a relayed submission
     //    and a card fetch cannot be guarded to two different standards.
     // `call.policy`, NOT `seam.policy()`. The seam answers with the plane's fail-closed default and
     // knows nothing about any registration; the call carries the one the operator's `allow_private:`

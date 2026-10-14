@@ -14,15 +14,6 @@ extern "C-unwind" fn host_entropy(_host: HostCtx, out: *mut u8, len: usize) -> S
 extern "C-unwind" fn host_clock(_host: HostCtx) -> u64 {
     1_700_000_000
 }
-extern "C-unwind" fn host_latch(
-    _host: HostCtx,
-    _protocol_ptr: *const u8,
-    protocol_len: usize,
-    _reason_ptr: *const u8,
-    reason_len: usize,
-) -> bool {
-    protocol_len == 5 && reason_len == 6
-}
 extern "C-unwind" fn host_cap(_host: HostCtx) -> u64 {
     4_096
 }
@@ -57,7 +48,6 @@ fn an_armed_image_reads_the_hosts_services_through_every_port() {
     static HOST: PlaneHostVtable = PlaneHostVtable {
         entropy_fill: Some(host_entropy),
         wall_clock: Some(host_clock),
-        tap_fault_latch: Some(host_latch),
         translate_cap: Some(host_cap),
         ..PlaneHostVtable::EMPTY
     };
@@ -66,11 +56,6 @@ fn an_armed_image_reads_the_hosts_services_through_every_port() {
     assert!(crate::codec::fill_entropy(&mut drawn));
     assert_eq!(drawn, [0xA5; 4], "the draw is the host's");
     assert_eq!(crate::codec::wall_clock_now(), Some(1_700_000_000));
-    assert!(crate::codec::usage_tap_fault_should_warn("proto", "reason"));
-    assert!(!crate::codec::usage_tap_fault_should_warn(
-        "proto",
-        "other-reason"
-    ));
     assert_eq!(crate::codec::max_translate_body_bytes(), 4_096);
 
     // The HOST side of the same seam: `SERVICES` answers from this image's (now armed) ports.
@@ -93,31 +78,6 @@ fn an_armed_image_reads_the_hosts_services_through_every_port() {
         (PlaneHostVtable::SERVICES.translate_cap.unwrap())(HostCtx::NULL),
         4_096
     );
-    let latch = PlaneHostVtable::SERVICES.tap_fault_latch.unwrap();
-    let (p, r) = ("proto", "reason");
-    assert!(latch(
-        HostCtx::NULL,
-        p.as_ptr(),
-        p.len(),
-        r.as_ptr(),
-        r.len()
-    ));
-    let invalid = [0xFFu8];
-    assert!(
-        !latch(HostCtx::NULL, p.as_ptr(), p.len(), invalid.as_ptr(), 1),
-        "not UTF-8"
-    );
-
-    // Past `REASON_CAP` distinct spellings, every new reason is kept as `UNLISTED_REASON`, so a
-    // plane cannot grow the host's memory or label set without bound. (Here, after every latch
-    // assertion above: the kept set is process-wide.)
-    for i in 0..REASON_CAP {
-        let _ = kept(&format!("reason-{i}"));
-    }
-    assert_eq!(kept("one-past-the-cap"), UNLISTED_REASON);
-    assert_eq!(
-        kept("reason-0"),
-        "reason-0",
-        "a kept spelling is still found"
-    );
+    // The usage-tap latch slot is RETIRED (row 155): `SERVICES` serves it no longer.
+    assert!(PlaneHostVtable::SERVICES.tap_fault_latch.is_none());
 }
