@@ -1155,7 +1155,7 @@ pub fn selftest<'a>(
     let axis_aliases: Vec<(String, String, String)> =
         registry_aliases(&cx.read(REGISTRY).unwrap_or_default())
             .into_iter()
-            .filter(|(k, _, _)| axes().iter().any(|a| *a == k.as_str()))
+            .filter(|(k, _, _)| axes().contains(&k.as_str()))
             .collect();
     let mut short_body = String::from(
         "pub extern \"C\" fn planted_one() {}\n\
