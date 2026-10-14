@@ -669,7 +669,7 @@ fn open_http(
     // own operator message, so it is the REDACTED one: a `user:pass@` in the target (refused below,
     // as every dial target here is) never rides the fault out (row 74, F25). A target with none comes
     // back verbatim.
-    let fault_url = crate::net_guard::redact_userinfo(&url);
+    let fault_url = busbar_kernel_egress::trust::net::redact_userinfo(&url);
 
     // The privilege scope this hop is JUDGED against is HOST authority (`allow_scope`), NOT the plane's
     // POD word: the FFI vtable entry passes `0` (a plane may not self-grant private/plaintext — FFI-F2),

@@ -167,7 +167,7 @@ pub(crate) fn lane_token_endpoint(
         return (None, None);
     };
     (
-        Some(crate::net_guard::strip_userinfo(written).into_owned()),
+        Some(busbar_kernel_egress::trust::net::strip_userinfo(written).into_owned()),
         crate::egress::engine::UrlUserinfo::of(written),
     )
 }
@@ -829,7 +829,9 @@ pub fn build_app_from_config(
             "  model {} via {} ({}) max {}{}",
             model,
             mc.provider,
-            crate::net_guard::strip_userinfo(provider_cfg.base_url.trim_end_matches('/')),
+            busbar_kernel_egress::trust::net::strip_userinfo(
+                provider_cfg.base_url.trim_end_matches('/')
+            ),
             // Show the operator-facing form: an omitted cap reads "unbounded", not 2^60.
             match mc.max_concurrent {
                 Some(n) => n.to_string(),
@@ -889,9 +891,10 @@ pub fn build_app_from_config(
         // egress-target build + SigV4 signed-host derivation), its userinfo stripped as 1.5.5 did
         // (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`; row 74, F25): every lane table, dial, signed
         // host and rendering downstream reads the `host[:port]` it dials, never the `user:pass@`.
-        let base_url =
-            crate::net_guard::strip_userinfo(provider_cfg.base_url.trim_end_matches('/'))
-                .into_owned();
+        let base_url = busbar_kernel_egress::trust::net::strip_userinfo(
+            provider_cfg.base_url.trim_end_matches('/'),
+        )
+        .into_owned();
         // ...and the Basic that userinfo spelled, held opaque for the kernel's hop to present as
         // 1.5.5 did (see `UrlUserinfo`): the plane never reads it.
         let url_userinfo = crate::egress::engine::UrlUserinfo::of(&provider_cfg.base_url);

@@ -264,7 +264,7 @@ impl super::RootCfg {
                 // carve-out matches the host the dial names rather than reading nothing.
                 std::iter::once(&p.base_url)
                     .chain(&p.token_url)
-                    .map(|url| crate::net_guard::strip_userinfo(url).into_owned())
+                    .map(|url| busbar_kernel_egress::trust::net::strip_userinfo(url).into_owned())
                     .map(|url| (url, p.allow_metadata_hosts.clone()))
             })
             .collect();

@@ -1548,7 +1548,8 @@ pub fn provider_routes(
             (
                 name.clone(),
                 ProviderRoute {
-                    base_url: busbar_kernel::net_guard::strip_userinfo(&p.base_url).into_owned(),
+                    base_url: busbar_kernel_egress::trust::net::strip_userinfo(&p.base_url)
+                        .into_owned(),
                     userinfo: busbar_kernel::egress::engine::UrlUserinfo::of(&p.base_url),
                     protocol: p.protocol.clone(),
                     error_map: p
@@ -1918,7 +1919,8 @@ fn endpoint_userinfo(
         let Some(written) = settings.get(key).and_then(serde_json::Value::as_str) else {
             continue;
         };
-        let std::borrow::Cow::Owned(stripped) = busbar_kernel::net_guard::strip_userinfo(written)
+        let std::borrow::Cow::Owned(stripped) =
+            busbar_kernel_egress::trust::net::strip_userinfo(written)
         else {
             continue;
         };
@@ -1999,7 +2001,7 @@ impl busbar_contract::conn::Conns for PresentingConns {
         need: busbar_contract::conn::NeedId,
         desc: &busbar_contract::conn::OpenDesc<'_>,
     ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
-        let target = busbar_kernel::net_guard::strip_userinfo(desc.target);
+        let target = busbar_kernel_egress::trust::net::strip_userinfo(desc.target);
         let led = self.userinfo.leading(desc.fields);
         let fields = led.as_deref().unwrap_or(desc.fields);
         self.inner.open(
