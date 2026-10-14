@@ -2415,3 +2415,9 @@ ops.scrape|reload|sink-removed	PASS	script scrape-after-reload.sh: status 200
 plugins.abi|json-contract|store-sqlite@1.5-line	PASS	capture	
 neutrality|models-empty|surface	PASS	capture	
 billing|budget|downgrade	PASS	script budget-downgrade.sh: status 200	
+llm|anthropic|anthropic|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|bedrock|bedrock|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|cohere|cohere|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|gemini|gemini|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+llm|openai|openai|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|responses|responses|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
