@@ -33,7 +33,7 @@
 //
 // AND THE ROUTER NOW RELAYS. [`relay`] is the hop `ingress::invoke` makes to the registered backend
 // agent: it guards and pins the target through the SAME `fetch::guard_hop` — and therefore the
-// same `busbar_kernel::net_guard` resolve-then-pin — the card fetch
+// same the egress unit's guard (`busbar_kernel::proxy::egress_unit::trust::net`) resolve-then-pin — the card fetch
 // uses, RE-ASKS the trust question against the live registry immediately before the socket so a
 // mid-flight demotion is not something an in-flight request escapes, presents BUSBAR'S OWN leased
 // credential or none, and turns every way the hop can fail into a busbar-attributed error rather

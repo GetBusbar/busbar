@@ -581,6 +581,10 @@ pub trait DriverSteps: Units {
     /// `dialect` (the one `arrive` answered): the previous release's translation counter counts an
     /// attempt whose far end speaks another dialect.
     fn attempting(&self, _ctx: &UnitCtx, _dialect: u32, _provider: &str) {}
+    /// The plane's answer for the unit, read in its `dialect`, carried a USAGE-TAP FAULT of
+    /// `reason` (`abi::plane::OnPieceOut::tap_fault`): the steps count it, once per answer that
+    /// carries it (`handlers::usage_tap_fault`).
+    fn usage_tap_fault(&self, _ctx: &UnitCtx, _dialect: u32, _reason: &'static str) {}
     /// THE STEPS' OWN WORDS for a refusal they decided with `reason`, handed to the plane's
     /// `refusal` as [`busbar_contract::abi::plane::RefusalIn::text`] (as a limit names the bucket
     /// that blocked); `None` = the reason's word. A `ROUTE_SCOPE` unit refused because several

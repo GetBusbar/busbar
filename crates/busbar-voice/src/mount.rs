@@ -45,6 +45,7 @@ use crate::topology::{
     StartError,
 };
 use busbar_kernel::config::RootCfg;
+use busbar_kernel::door::UnitKeyMint;
 use busbar_kernel::egress::{
     duplex_ws::{CredentialPlacement as WsPlacement, DialCredential},
     engine::{send_bounded, EngineClient},
@@ -63,7 +64,7 @@ use busbar_kernel::plane_host::{
 };
 use busbar_kernel::plane_host::{GauntletPlane, GauntletRequest};
 use busbar_kernel::plane_routes::PlaneRouteSpec;
-use busbar_kernel::{door::UnitKeyMint, net_guard::GuardPolicy};
+use busbar_kernel::proxy::egress_unit::trust::net::GuardPolicy;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use std::any::Any;
