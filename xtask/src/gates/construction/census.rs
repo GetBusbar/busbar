@@ -526,6 +526,41 @@ mod moveout_tests;
 mod tests {
     use super::*;
 
+    /// RED: A PINNED PLANE IS COUNTED FROM ITS CHECKOUT. A plane extracted to its own repo is laid
+    /// into the tree by the BASE layer only (ARCHITECT row 106 (A)); the kind census counted
+    /// directories with a disk-only `is_dir`, so `plane` matched 3 of its 5 crates and the floor
+    /// went red on a tree that had lost nothing. A census that silently stops seeing pinned planes
+    /// is the fault this gate exists to catch, so the base-only plane must count.
+    #[test]
+    fn a_pinned_plane_present_only_in_the_base_layer_is_counted() {
+        let cx = Ctx::workspace().expect("workspace").without_base();
+        let cfg = crate::gates::construction::ConstructionGate::cfg(&cx).expect("ceilings");
+        let globs = cfg.kind_globs("plane").expect("the plane kind");
+        let probe = "crates/busbar-plane-mcp".to_string();
+        assert!(
+            globs.contains(&probe),
+            "the control needs {probe} in [gate.plugin_kinds] plane: {globs:?}"
+        );
+        assert!(
+            !cx.abs(&probe).exists(),
+            "the control needs a plane that is not on disk"
+        );
+        let bare = dirs_for_globs(&cx, &globs);
+        assert!(!bare.contains(&probe), "{probe} counted with no base");
+        let mut base = crate::ctx::Overlay::new();
+        base.set(
+            format!("{probe}/Cargo.toml"),
+            "[package]\nname = \"busbar-plane-mcp\"\n",
+        );
+        base.set(format!("{probe}/src/lib.rs"), "");
+        let laid = dirs_for_globs(&cx.with_base(base), &globs);
+        assert!(
+            laid.contains(&probe),
+            "a plane laid only by the base layer is not counted: {laid:?}"
+        );
+        assert_eq!(laid.len(), bare.len() + 1, "{laid:?} against {bare:?}");
+    }
+
     const DOC: &str = "[gate.census]\nplane_crates = 4\n\n[gate.census.plugin_kinds]\nplane = 5\n";
 
     #[test]
