@@ -330,11 +330,18 @@
 # (red, never a fallback to another architecture's). The aarch64 asset is the oracle built from
 # release_ref on the aarch64 prover (release profile, LTO off, --locked: as dev-bin.yml builds it).
 #
+# 2026-10-14 (busbar rows 561, 562, 90): moved 7ab21912d664 -> 3365ddbc591e, busbar-release main after the
+# dev -> qa -> main promotion (#365, #366), which carries #364: the mock's `whole` control (a stream-intent request
+# answered the egress dialect's buffered body) and the 42 literal llm whole-answer cells, whose cells.json rows,
+# owed-baseline rows and goldens (busbar-release oracle-rerecord run 38509109820, recorded from the published
+# 1.5.5) land with this commit. The digests are dev-bin's busbar-oracle-linux-<arch>-<release_ref>.sha256, each
+# asset's .sig verified with the release key.
+#
 # To move the pin: set release_ref to the new busbar-release commit and each sha256_linux_<arch> to the
 # sha256 of its dev-bin busbar-oracle-linux-<arch>-<release_ref> asset (the .sha256 beside it).
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=7ab21912d664d11c7df6cc98fe78eed6b0119177
-sha256_linux_x86_64=8d1a34e8711e398b9fbcc72e97e47c98eab9804d0004d119466e9dece11001f1
-sha256_linux_aarch64=aa1ee2277d2bb04df451a90f6d4fb3b8eda377b397e3c8867e21b393a8fe06ef
+release_ref=3365ddbc591ec874d18aaa3ec5df650ba4b9bd3b
+sha256_linux_x86_64=d6be0604b5db12319f71d10cc0892765ed063ca7dd581623ce47950cd6998384
+sha256_linux_aarch64=04bf41bf6e2c027001c9a7b7de68c6e1cb753b7bed6fd866a1f96673b6b35201
 crate=busbar-release-oracle
 bin=busbar-oracle
