@@ -201,6 +201,8 @@ fn a_linked_dialect() -> String {
 /// model `plain` states none; pool `fast` overrides `patient` to 50 ms and leaves `plain` bare, and
 /// pool `slow` names `patient` with no override. Both models are also routable directly.
 fn sealed_timeouts() -> busbar_kernel::plane_driver::Egress {
+    // The deployment names `models:`/`pools:`, which config resolution hands a plane.
+    busbar_kernel::test_support::register_neutral_test_plane();
     let dialect = a_linked_dialect();
     let mut defs = std::collections::HashMap::new();
     defs.insert(

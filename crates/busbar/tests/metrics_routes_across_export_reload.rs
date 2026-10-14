@@ -312,7 +312,8 @@ fn a_reload_that_removes_the_scrape_sink_keeps_metrics_hooks_and_drops_metrics_a
 /// credential-less client still reaches the declared-open routes: `/healthz` answers with its own
 /// verdict (`200` or `503`, never the chain's `401`) and `GET /auth/token?logout=1` serves its
 /// signed-out page (`200`). The same scrape with a chain-admitted credential is `200` and carries
-/// `busbar_requests_total`.
+/// a series (the legacy test seeded the request counter in process; a spawned node with no traffic
+/// yet renders its scrape-time lane series, `busbar_lane_state`).
 ///
 /// RED: `/metrics` is re-exempted (a credential-less `200`), the chain shuts the declared-open
 /// routes too, or an admitted credential's scrape is refused.
@@ -373,7 +374,7 @@ fn test_metrics_requires_auth_in_chain_mode() {
         authed.body
     );
     assert!(
-        authed.body.contains("busbar_requests_total"),
+        authed.body.contains("busbar_lane_state"),
         "authed exposition should contain a metric; got:\n{}",
         authed.body
     );
