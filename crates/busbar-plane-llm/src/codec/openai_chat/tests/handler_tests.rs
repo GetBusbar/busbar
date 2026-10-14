@@ -403,6 +403,7 @@ fn embeddings_taps_usage_and_extract_usage_reads_prompt_tokens() {
     let body = br#"{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1,0.2]}],"usage":{"prompt_tokens":7,"total_tokens":7}}"#;
     let usage = OpenAiEmbeddings
         .extract_usage("openai", body)
+        .expect("the tap reads the body")
         .expect("token-metered embeddings yields usage");
     assert_eq!(usage.input, 7);
 }
@@ -643,6 +644,7 @@ fn image_response_usage_is_recorded_never_billed() {
         "openai",
         &serde_json::to_vec(&wire).unwrap(),
     )
+    .expect("the tap reads the body")
     .expect("the tap reads the answer");
     assert_eq!((tapped.input, tapped.output), (0, 0));
 }
