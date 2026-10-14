@@ -1,5 +1,6 @@
 use busbar_kernel::audit_ring;
 use busbar_kernel::governance::{GovState, MemoryStore, NewKeySpec};
+use busbar_kernel::proto::PROTO_ANTHROPIC;
 use busbar_kernel::test_support::warn_capture::WarnCapture;
 use std::sync::Arc;
 
@@ -143,12 +144,20 @@ async fn test_admin_v1_topology_reads_pools_models_providers() {
     let app = crate::new_test_app()
         .governance(gov)
         .lane(
-            LaneSpec::new("model-a", crate::linked_protocol(), "http://127.0.0.1:1/")
-                .provider("prov-x"),
+            LaneSpec::new(
+                "model-a",
+                busbar_kernel::proto::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1/",
+            )
+            .provider("prov-x"),
         )
         .lane(
-            LaneSpec::new("model-b", crate::linked_protocol(), "http://127.0.0.1:1/")
-                .provider("prov-y"),
+            LaneSpec::new(
+                "model-b",
+                busbar_kernel::proto::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1/",
+            )
+            .provider("prov-y"),
         )
         .pool("mypool", &[(0, 3), (1, 1)])
         .build();
@@ -341,7 +350,14 @@ async fn test_admin_v1_pool_detail_live_status() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let app = crate::new_test_app()
         .governance(gov)
-        .lane(LaneSpec::new("m1", crate::linked_protocol(), "http://127.0.0.1:1/").provider("p"))
+        .lane(
+            LaneSpec::new(
+                "m1",
+                busbar_kernel::proto::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1/",
+            )
+            .provider("p"),
+        )
         .pool("mypool", &[(0, 5)])
         .build();
     let router = crate::build_router(app);
@@ -443,7 +459,14 @@ async fn test_admin_v1_pool_detail_reports_the_per_pool_breaker_cell() {
     let gov = gov_with_signer(store, Some("admintok".to_string()));
     let mut app = crate::new_test_app()
         .governance(gov)
-        .lane(LaneSpec::new("m1", crate::linked_protocol(), "http://127.0.0.1:1/").provider("p"))
+        .lane(
+            LaneSpec::new(
+                "m1",
+                busbar_kernel::proto::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1/",
+            )
+            .provider("p"),
+        )
         .pool("fast", &[(0, 1)])
         .pool("cheap", &[(0, 1)])
         .build();
@@ -934,7 +957,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
     let mut app = crate::new_test_app()
         .lane(busbar_kernel::test_support::LaneSpec::new(
             "m0",
-            crate::linked_protocol(),
+            busbar_kernel::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -953,7 +976,7 @@ async fn test_admin_v1_config_apply_body_swaps_and_carries_health() {
 
     let body = serde_json::json!({
         "providers": {
-            "test-provider": {"protocol": crate::linked_protocol(), "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_APPLY_NO_KEY"}
+            "test-provider": {"protocol": PROTO_ANTHROPIC, "base_url": "http://127.0.0.1:1/", "api_key_env": "BUSBAR_TEST_APPLY_NO_KEY"}
         },
         "config": {
             "listen": "127.0.0.1:0",
@@ -1032,11 +1055,10 @@ async fn test_admin_v1_config_reload_swaps_disk_truth_and_carries_health() {
         &providers_path,
         format!(
             "test-provider:
-  protocol: {}
+  protocol: {PROTO_ANTHROPIC}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_RELOAD_NO_SUCH_KEY
-",
-            crate::linked_protocol()
+"
         ),
     )
     .unwrap();
@@ -1069,7 +1091,7 @@ pools:
     let mut app = crate::new_test_app()
         .lane(busbar_kernel::test_support::LaneSpec::new(
             "m0",
-            crate::linked_protocol(),
+            busbar_kernel::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -1891,7 +1913,7 @@ async fn test_admin_v1_config_apply_refused_on_locked_config() {
     let app = crate::new_test_app()
         .lane(busbar_kernel::test_support::LaneSpec::new(
             "m0",
-            crate::linked_protocol(),
+            busbar_kernel::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:1/",
         ))
         .pool("p", &[(0, 1)])
@@ -4470,7 +4492,14 @@ async fn test_admin_v1_config_effective_snapshot_no_secrets() {
     };
     let app = crate::new_test_app()
         .governance(gov)
-        .lane(LaneSpec::new("m", crate::linked_protocol(), "http://127.0.0.1:1/").provider("prov"))
+        .lane(
+            LaneSpec::new(
+                "m",
+                busbar_kernel::proto::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1/",
+            )
+            .provider("prov"),
+        )
         .pool("p", &[(0, 1)])
         .hook("g", gate)
         .global_hook("g")
@@ -5651,7 +5680,7 @@ fn test_create_key_unconfigured_allowed_pool_is_nonfatal_and_quiet() {
     let app = crate::new_test_app()
         .lane(busbar_kernel::test_support::LaneSpec::new(
             "m",
-            crate::linked_protocol(),
+            busbar_kernel::proto::PROTO_ANTHROPIC,
             "http://127.0.0.1:0",
         ))
         .pool("smart", &[(0, 1)])
@@ -9411,11 +9440,10 @@ fn write_reset_fixture(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, st
         &providers_path,
         format!(
             "test-provider:
-  protocol: {}
+  protocol: {PROTO_ANTHROPIC}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_RESET_NO_SUCH_KEY
-",
-            crate::linked_protocol()
+"
         ),
     )
     .unwrap();
@@ -10716,11 +10744,10 @@ async fn test_admin_v1_config_settings_persist_failure_does_not_rotate_gov_crede
         &providers_path,
         format!(
             "test-provider:
-  protocol: {}
+  protocol: {PROTO_ANTHROPIC}
   base_url: http://127.0.0.1:1/
   api_key_env: BUSBAR_TEST_GOV_ROTATE_NO_SUCH_KEY
-",
-            crate::linked_protocol()
+"
         ),
     )
     .unwrap();
