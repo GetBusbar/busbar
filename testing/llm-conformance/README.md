@@ -116,6 +116,23 @@ exactly `{"type":"ping"}`, an `error` must match the spec's own `ErrorResponse`,
 under its own SSE event name, and every other `type` still faces the published union. These rows
 are judged, not forgiven: there is no named gap for them (`selftest.sh` cases (v)-(v5)).
 
+**Streams that fail or end early.** `stream_upstream_error` (the upstream fails part way, with an
+in-band error) and `stream_upstream_cut` (the upstream drops the connection after the first event)
+ask for a stream and open 2xx, so both are judged as streams, and neither is held to a side of 2xx.
+An in-band error is judged against the shape the vendor defines for it:
+- Anthropic's `error` event: the spec's ErrorResponse.
+- Responses' `error` event and Bedrock's exception frames: members of the published stream union.
+  Bedrock's `:exception-type` is the union's member name.
+- Cohere: `message-end` with `finish_reason: ERROR`.
+- OpenAI chat and Gemini: the error is defined only by the official SDK, so `validate.py`
+  `STREAM_ERROR_ENVELOPE` cites it. openai-python `_streaming.py` raises on any `data:` object with
+  a truthy `error`, whose shape is the spec's ErrorResponse. python-genai `_api_client.py` raises on
+  a chunk that starts `{"error":`, whose shape is google.rpc.Status, as transcribed in
+  `schemas/google-rpc-status.json`.
+
+That event must be the stream's last, and a stream that ends on it owes no `[DONE]`.
+(`selftest.sh` cases (x)-(x5).)
+
 ## Running it
 
 ```

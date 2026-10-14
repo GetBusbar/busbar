@@ -434,6 +434,80 @@ else
 fi
 RUN_ARGS=""
 
+# ── STREAMS THAT FAIL OR END EARLY (stream_upstream_error, stream_upstream_cut) ─────────────────
+# The mock's in-band failure for each dialect, as a same-dialect relay hands it on, and a stream the
+# upstream cut after its first event. Both outcomes ask for a stream and open 2xx. The openai and
+# gemini in-stream errors exist only in the vendor's official SDK (validate.py STREAM_ERROR_ENVELOPE);
+# bedrock's is a member of the event-stream union, named by its member name.
+#   (x)  the four rows                                                   -> GREEN, judged, no SKIP
+#   (x2) an openai chunk AFTER the in-stream error                       -> RED on sse.error
+#   (x3) a gemini in-stream error whose code is not an integer           -> RED (google.rpc.Status)
+#   (x4) a bedrock exception frame naming no error member of the union   -> RED
+#   (x5) an openai stream with neither the error nor [DONE] at its end   -> RED on sse.sentinel
+FIX4="${here}/fixtures/stream-error-recording"
+SE_OAI="raw/llm__openai__openai__request__stream_upstream_error/body"
+SE_GEM="raw/llm__gemini__gemini__request__stream_upstream_error/body"
+SE_BED="raw/llm__bedrock__bedrock__request__stream_upstream_error/body"
+RUN_ARGS="--gaps $W/no-gaps.json"
+rc="$(run "$FIX4" "$W/x")"
+if [ "$rc" = 0 ] && [ "$(count "$W/x" PASS)" = 9 ] && [ "$(count "$W/x" FAIL)" = 0 ] && [ "$(count "$W/x" SKIP)" = 0 ]; then
+  say PASS "(x) in-stream errors (openai, gemini, bedrock) and an upstream cut -> GREEN, 8/8 rows judged"
+else
+  say FAIL "(x) stream errors rc=$rc pass=$(count "$W/x" PASS) fail=$(count "$W/x" FAIL) skip=$(count "$W/x" SKIP): $(fail_rows "$W/x")"
+fi
+se_mutate() {  # se_mutate <case> <body path> <python editing bytes b>
+  cp -R "$FIX4" "$W/$1-rec"
+  python3 - "$W/$1-rec/$2" "$3" <<'PY'
+import sys
+p, code = sys.argv[1], sys.argv[2]
+b = open(p, "rb").read(); n = {"b": b}; exec(code, n)
+assert n["b"] != b, "mutation changed nothing"
+open(p, "wb").write(n["b"])
+PY
+}
+se_mutate x2 "$SE_OAI" 'b = b + b"data: {\"choices\":[],\"created\":0,\"id\":\"chatcmpl-oracle\",\"model\":\"m-openai-chat\",\"object\":\"chat.completion.chunk\"}\n\n"'
+rc="$(run "$W/x2-rec" "$W/x2")"
+if [ "$rc" != 0 ] && [ "$(count "$W/x2" FAIL)" = 1 ] && grep -q 'sse.error' "$W/x2/ledger.tsv"; then
+  say PASS "(x2) an openai chunk after the in-stream error -> RED, the error ends the stream"
+else
+  say FAIL "(x2) chunk after error rc=$rc: $(fail_rows "$W/x2")"
+fi
+se_mutate x3 "$SE_GEM" 'b = b.replace(b"\"code\":500", b"\"code\":\"500\"")'
+rc="$(run "$W/x3-rec" "$W/x3")"
+if [ "$rc" != 0 ] && [ "$(count "$W/x3" FAIL)" = 1 ] && grep -q '/error/code' "$W/x3/ledger.tsv"; then
+  say PASS "(x3) a gemini in-stream error that is not a google.rpc.Status -> RED"
+else
+  say FAIL "(x3) malformed gemini error rc=$rc: $(fail_rows "$W/x3")"
+fi
+se_mutate x4 "$SE_BED" '
+import struct, zlib
+out, i = b"", 0
+while i < len(b):
+    total, hl = struct.unpack(">II", b[i:i + 8])
+    fr = b[i:i + total]; i += total
+    h, pl = fr[12:12 + hl], fr[12 + hl:total - 4]
+    if b":exception-type" in h:
+        h = h.replace(b"\x07\x00\x17internalServerException", b"\x07\x00\x1dserviceQuotaExceededException")
+        t = 12 + len(h) + len(pl) + 4
+        pre = struct.pack(">II", t, len(h)); pre += struct.pack(">I", zlib.crc32(pre))
+        fr = pre + h + pl; fr += struct.pack(">I", zlib.crc32(fr))
+    out += fr
+b = out'
+rc="$(run "$W/x4-rec" "$W/x4")"
+if [ "$rc" != 0 ] && [ "$(count "$W/x4" FAIL)" = 1 ] && grep -q 'not an error member of ConverseStreamOutput' "$W/x4/ledger.tsv"; then
+  say PASS "(x4) a bedrock exception frame naming no error member of the stream union -> RED"
+else
+  say FAIL "(x4) bedrock exception member rc=$rc: $(fail_rows "$W/x4")"
+fi
+se_mutate x5 "$SE_OAI" 'b = b[:b.rfind(b"data: {\"error\"")]'
+rc="$(run "$W/x5-rec" "$W/x5")"
+if [ "$rc" != 0 ] && [ "$(count "$W/x5" FAIL)" = 1 ] && grep -q 'sse.sentinel' "$W/x5/ledger.tsv"; then
+  say PASS "(x5) an openai stream ending on neither the error nor [DONE] -> RED on sse.sentinel"
+else
+  say FAIL "(x5) unterminated openai stream rc=$rc: $(fail_rows "$W/x5")"
+fi
+RUN_ARGS=""
+
 # ── THE SIDE OF 2xx THE OUTCOME ASKED FOR ───────────────────────────────────────────────────────
 # (p) a cell whose whole point is a REFUSAL — no credential at all — answered HTTP 200 with a
 # happy-path body. Every byte of that body satisfies the dialect's RESPONSE schema, so a check that
