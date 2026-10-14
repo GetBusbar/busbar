@@ -67,9 +67,9 @@ fn defs_for(deploy: &DeployCfg) -> HashMap<String, ProviderDef> {
         .providers
         .keys()
         .map(|name| {
-            let def: ProviderDef = serde_yaml::from_str(&format!(
-                "{{ protocol: proto-a, base_url: \"https://provider.invalid\" }}"
-            ))
+            let def: ProviderDef = serde_yaml::from_str(
+                "{ protocol: proto-a, base_url: \"https://provider.invalid\" }",
+            )
             .expect("the fixed ProviderDef literal parses");
             (name.clone(), def)
         })
