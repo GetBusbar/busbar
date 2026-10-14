@@ -853,21 +853,21 @@ pub const TRUST_RECOVERY_HELD: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// The anomaly breaker suspended a registration after repeated failures.
+/// RETIRED: no anomaly breaker suspends a trust registration (the one that was to raise this was
+/// never armed and is deleted). The number is kept so an operator's old logs stay resolvable.
 pub const TRUST_REGISTRATION_SUSPENDED: Diagnostic = Diagnostic {
     code: 4021,
     class: Class::Auth,
     slug: "trust-registration-suspended",
-    title: "Anomaly breaker suspended a trust registration",
+    title: "Anomaly breaker suspended a trust registration — RETIRED",
     severity: Severity::Actionable,
-    summary: "The trust anomaly breaker suspended a registration — accumulated failed contacts or \
-              drift crossed its threshold — so the registration stops serving until the condition \
-              clears or an operator intervenes. A transition event, emitted once per suspension.",
-    action: "Investigate the named subject's upstream (see the preceding contact-failure or drift \
-             diagnostics for the cause). Resolve the underlying fault; the registration recovers or \
-             requires re-approval depending on why it was suspended.",
+    summary: "RETIRED. Nothing emits this code: no anomaly breaker suspends a trust registration. \
+              The one breaker that was to raise it was never armed (no configuration set its \
+              thresholds) and is deleted, so a registration stops serving only on a drift \
+              (BUSBAR-4019) or an operator's suspension.",
+    action: "Nothing emits this code. See BUSBAR-4019.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 /// A scheduled trust sweep task panicked; the sweep job continues.

@@ -684,15 +684,15 @@ A scheduled trust sweep made a clean observation, but the recovery backoff since
 **What to do:** None — self-heals. The registration recovers automatically once enough consecutive clean observations accumulate past the recovery backoff.
 
 <a id="trust-registration-suspended"></a>
-### BUSBAR-4021 — Anomaly breaker suspended a trust registration
+### BUSBAR-4021 — Anomaly breaker suspended a trust registration — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `trust-registration-suspended`
 
-The trust anomaly breaker suspended a registration — accumulated failed contacts or drift crossed its threshold — so the registration stops serving until the condition clears or an operator intervenes. A transition event, emitted once per suspension.
+RETIRED. Nothing emits this code: no anomaly breaker suspends a trust registration. The one breaker that was to raise it was never armed (no configuration set its thresholds) and is deleted, so a registration stops serving only on a drift (BUSBAR-4019) or an operator's suspension.
 
-**What to do:** Investigate the named subject's upstream (see the preceding contact-failure or drift diagnostics for the cause). Resolve the underlying fault; the registration recovers or requires re-approval depending on why it was suspended.
+**What to do:** Nothing emits this code. See BUSBAR-4019.
 
 <a id="trust-sweep-panicked"></a>
 ### BUSBAR-4022 — Scheduled trust sweep panicked (job continues)
