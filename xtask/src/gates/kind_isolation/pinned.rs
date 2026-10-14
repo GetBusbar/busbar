@@ -98,7 +98,10 @@ pub(super) fn pinned_packages(cx: &Ctx) -> Resolved {
 }
 
 fn resolve(cx: &Ctx) -> Result<Vec<Pinned>, String> {
-    let meta = cx.cargo_metadata("Cargo.toml")?;
+    // Every feature on: a pinned plugin the binary links only behind a default-off feature (a
+    // transport such as `transport-webrtc`, once pinned) is otherwise no package of the answer, and
+    // the base layer would refuse it as unresolved ([`Ctx::cargo_metadata_all_features`]).
+    let meta = cx.cargo_metadata_all_features("Cargo.toml")?;
     let meta: serde_json::Value =
         serde_json::from_str(&meta).map_err(|e| format!("cargo metadata is not JSON: {e}"))?;
     let mut out: Vec<Pinned> = Vec::new();
@@ -272,12 +275,18 @@ fn mount(cx: &Ctx) -> Arc<Overlay> {
     ov
 }
 
-/// The plugin kind whose pinned checkouts are every gate's BASE layer ([`plane_base`]).
-const BASE_KIND: &str = "plane";
+/// The plugin kinds whose pinned checkouts are every gate's BASE layer ([`plane_base`]): the kinds
+/// `[gate.census.plugin_kinds]` (qa/construction.toml) floors above zero, so a census that counts
+/// them and every rule that reads their lines keeps READING a crate that left for its own repo.
+/// ARCHITECT P5 ruling 2026-10-14 (blocker 1): the base lays every pinned plugin crate of every kind
+/// the census floors, transport included, exactly as it lays the planes (row 106 (A)). The kinds the
+/// census floors at their documented zero (store, hook, auth, secret, export) are read by
+/// kind-isolation's own mount ([`mount`]) and by their plugin repos' CI.
+const BASE_KINDS: &[&str] = &["plane", "transport"];
 
-/// The root manifest's pinned git rows of the [`BASE_KIND`]: `(package, rev)` for every
-/// `[workspace.dependencies]` row naming a `git` source whose package resolves to that kind and is
-/// not a `-plugin` twin. Read off the manifest, not off `cargo metadata`, so a pin cargo cannot
+/// The root manifest's pinned git rows of the [`BASE_KINDS`]: `(package, rev)` for every
+/// `[workspace.dependencies]` row naming a `git` source whose package resolves to one of those
+/// kinds and is not a `-plugin` twin. Read off the manifest, not off `cargo metadata`, so a pin cargo cannot
 /// resolve is still NAMED in the refusal.
 fn pinned_base_rows(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
     let manifest = cx.read("Cargo.toml")?;
@@ -305,7 +314,7 @@ fn pinned_base_rows(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
         };
         let name = field("package").unwrap_or_else(|| key.trim().to_string());
         if name.ends_with(CDYLIB_SUFFIX)
-            || super::plugin_kind(&name) != Some(BASE_KIND)
+            || !super::plugin_kind(&name).is_some_and(|k| BASE_KINDS.contains(&k))
             || rows.iter().any(|(n, _): &(String, String)| *n == name)
         {
             continue;
@@ -339,15 +348,16 @@ fn plane_source_overrides() -> Result<Vec<(String, PathBuf)>, String> {
 
 static BASE_MEMO: OnceLock<Mutex<BTreeMap<String, Result<Overlay, String>>>> = OnceLock::new();
 
-/// THE PINNED PLANES, AS EVERY GATE'S BASE LAYER (ARCHITECT row 106 (A)): each pinned package of
-/// the [`BASE_KIND`] the root manifest names, laid at its [`mount_dir`] from the checkout `cargo
+/// THE PINNED PLANES AND TRANSPORTS, AS EVERY GATE'S BASE LAYER (ARCHITECT row 106 (A); widened to
+/// every kind the census floors by the ARCHITECT P5 ruling 2026-10-14): each pinned package of the
+/// [`BASE_KINDS`] the root manifest names, laid at its [`mount_dir`] from the checkout `cargo
 /// metadata` resolves for the rev `Cargo.lock` pins, exactly as [`mount`] lays it for this gate.
-/// Generic over the kind: no plane instance is named here, so each plane that leaves the tree is
-/// laid by the same code. Read, never written: nothing lands in the tree (spec #39).
+/// Generic over the kind: no plane or transport instance is named here, so each one that leaves the
+/// tree is laid by the same code. Read, never written: nothing lands in the tree (spec #39).
 ///
-/// FAILS CLOSED. A pinned plane `cargo metadata` does not resolve, or whose checkout reads no file,
-/// is an `Err` naming the package and the rev; the tree is never read as one that quietly lost a
-/// plane. A root that pins no plane lays nothing.
+/// FAILS CLOSED. A pinned crate of those kinds that `cargo metadata` does not resolve, or whose
+/// checkout reads no file, is an `Err` naming the package and the rev; the tree is never read as one
+/// that quietly lost a crate. A root that pins none lays nothing.
 ///
 /// # Errors
 /// As above, or the root manifest does not read.
@@ -383,7 +393,7 @@ fn build_plane_base(cx: &Ctx) -> Result<Overlay, String> {
     let resolved = pinned_packages(cx);
     let pinned = resolved.as_ref().as_ref().map_err(|e| {
         format!(
-            "the pinned {BASE_KIND}(s) {} cannot be read: cargo metadata does not answer ({e})",
+            "the pinned plugin crate(s) {} cannot be read: cargo metadata does not answer ({e})",
             named()
         )
     })?;
@@ -393,13 +403,13 @@ fn build_plane_base(cx: &Ctx) -> Result<Overlay, String> {
         .find(|(n, _)| !rows.iter().any(|(r, _)| r == n))
     {
         return Err(format!(
-            "{PLANE_SOURCE_ENV} names `{stray}`, which the root does not pin as a {BASE_KIND}"
+            "{PLANE_SOURCE_ENV} names `{stray}`, which the root does not pin as a base-laid crate"
         ));
     }
     let on_disk = disk_crate_names(cx.root());
     for (name, rev) in &rows {
         let p = pinned.iter().find(|p| p.name == *name).ok_or_else(|| {
-            format!("the pinned {BASE_KIND} `{name}` at {rev} does not resolve in cargo metadata")
+            format!("the pinned crate `{name}` at {rev} does not resolve in cargo metadata")
         })?;
         let at = mount_dir(&p.name);
         if on_disk.contains(&p.name) || cx.root().join(&at).exists() {
@@ -412,7 +422,7 @@ fn build_plane_base(cx: &Ctx) -> Result<Overlay, String> {
         let files = crate_files(dir);
         if files.is_empty() {
             return Err(format!(
-                "the pinned {BASE_KIND} `{name}` at {rev}: {} reads no file",
+                "the pinned crate `{name}` at {rev}: {} reads no file",
                 dir.display()
             ));
         }

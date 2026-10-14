@@ -1382,6 +1382,36 @@ impl Ctx {
             ],
         )
     }
+
+    /// [`Ctx::cargo_metadata`] resolved with EVERY feature of the workspace on (`--all-features`), and
+    /// planted under the same overlay key. The pinned plugin crates are read from this answer: a
+    /// plugin the binary links only behind a feature that is off by default (a transport such as
+    /// `transport-webrtc`, once pinned) is no package of the default resolution, yet it is a plugin
+    /// this tree pins and links, and its crate was read when it lived in `crates/` (ARCHITECT P5
+    /// ruling 2026-10-14: the gates keep READING extracted code).
+    ///
+    /// # Errors
+    /// As [`Ctx::cargo_metadata`].
+    pub fn cargo_metadata_all_features(&self, manifest_rel: &str) -> Result<String, String> {
+        let key = format!("cargo-metadata:{manifest_rel}");
+        if let Some(ov) = self.overlay() {
+            if let Some(out) = ov.commands.get(&key) {
+                return Ok(out.clone());
+            }
+        }
+        let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+        self.run_checked(
+            &cargo,
+            &[
+                "metadata".to_string(),
+                "--format-version".to_string(),
+                "1".to_string(),
+                "--all-features".to_string(),
+                "--manifest-path".to_string(),
+                self.abs(manifest_rel).display().to_string(),
+            ],
+        )
+    }
 }
 
 fn collect(dir: &Path, root: &Path, out: &mut Vec<PathBuf>) -> Result<(), WalkError> {

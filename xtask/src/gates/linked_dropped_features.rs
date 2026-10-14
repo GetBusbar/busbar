@@ -204,7 +204,10 @@ fn expand(table: &BTreeMap<String, Vec<String>>, seeds: &BTreeSet<String>) -> BT
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
     let mut findings = Vec::new();
     let mut errors = Vec::new();
-    let members = match one_abi::members(cx) {
+    // The workspace's members AND the pinned plugin crates (ARCHITECT P5 ruling 2026-10-14): a plugin
+    // that left for its own repo is still linked into the binary, built with the features the
+    // binary unifies into it, so it is scanned exactly as when it lived in `crates/`.
+    let members = match one_abi::members_with_pinned(cx) {
         Ok(m) => m,
         Err(e) => return (findings, vec![e]),
     };
@@ -318,15 +321,17 @@ impl Gate for LinkedDroppedFeaturesGate {
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let bin = "crates/busbar/Cargo.toml";
-        // The plants go into the one transport crate still in `crates/`: the stdio wire left for its
-        // own repo (P5, BUSBAR-1.6.0.md l.2220), and a pinned crate is no member this gate scans.
-        let plugin = "crates/busbar-transport-webrtc/Cargo.toml";
-        let edge =
-            "busbar-transport-webrtc = { path = \"../busbar-transport-webrtc\", optional = true }";
+        // THE PLANTS GO INTO A PINNED PLUGIN, AND THAT IS THE RED for reading pinned crates
+        // (ARCHITECT P5 ruling 2026-10-14): the stdio carrier left for its own repo (P5,
+        // BUSBAR-1.6.0.md l.2220), and the binary links it at a pinned rev. Its manifest reads at
+        // `crates/busbar-transport-stdio` (the base layer); a gate that read workspace members only
+        // would never see the plant, and both rows below would stay green.
+        let plugin = "crates/busbar-transport-stdio/Cargo.toml";
+        let edge = "busbar-transport-stdio = { workspace = true }";
         let own = {
             let b = cx.read(bin).unwrap_or_default().replacen(
                 edge,
-                "busbar-transport-webrtc = { path = \"../busbar-transport-webrtc\", optional = true, features = [\"planted-linked\"] }",
+                "busbar-transport-stdio = { workspace = true, features = [\"planted-linked\"] }",
                 1,
             );
             let p = cx.read(plugin).unwrap_or_default();

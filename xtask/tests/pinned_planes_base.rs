@@ -49,8 +49,8 @@ fn the_base_lays_each_pinned_plane_from_its_checkout_and_none_of_it_is_on_disk()
     );
     for p in &paths {
         assert!(
-            p.starts_with("crates/busbar-plane-"),
-            "{p} is not a plane's"
+            p.starts_with("crates/busbar-plane-") || p.starts_with("crates/busbar-transport-"),
+            "{p} is neither a plane's nor a transport's (the kinds the census floors)"
         );
         assert!(
             !root().join(p).exists(),
@@ -76,6 +76,64 @@ fn a_plant_wins_over_the_base_and_keeps_it_beneath() {
         pcx.read(&other),
         cx.read(&other),
         "the base stays beneath the plant"
+    );
+}
+
+/// RED: A PINNED TRANSPORT IS LAID, COUNTED AND READ (ARCHITECT P5 ruling 2026-10-14, blocker 1).
+/// The base layer lays every pinned plugin crate of a kind the census floors, transport included, so
+/// the stdio carrier, which left `crates/` for its own repo, is still a transport the census counts
+/// and whose lines the construction rules scan. Laid only for planes, the `transport` glob matched
+/// no pinned directory and `forbid-unsafe` owed the carrier no row: a transport extracted is a
+/// transport the gates stop reading.
+#[test]
+fn the_base_lays_a_pinned_transport_the_census_counts_and_the_rules_read() {
+    use xtask::gates::construction::{tree::dirs_for_globs, ConstructionGate};
+    let cx = workspace();
+    let probe = "crates/busbar-transport-stdio";
+    let lib = format!("{probe}/src/lib.rs");
+    assert!(
+        !root().join(probe).exists(),
+        "the control needs a transport that is not on disk"
+    );
+    let base = cx.base().expect("the base layer");
+    assert!(
+        base.paths().any(|p| p.to_string_lossy() == lib),
+        "the base does not lay {lib}"
+    );
+    let cfg = ConstructionGate::cfg(&cx).expect("ceilings");
+    let globs = cfg.kind_globs("transport").expect("the transport kind");
+    let laid = dirs_for_globs(&cx, &globs);
+    let bare = dirs_for_globs(&cx.without_base(), &globs);
+    assert!(
+        laid.iter().any(|d| d == probe),
+        "the census does not count {probe}: {laid:?}"
+    );
+    assert!(
+        !bare.iter().any(|d| d == probe),
+        "{probe} is counted with no base: {bare:?}"
+    );
+    let reg = gates::find("construction").expect("the construction gate");
+    let gate = (reg.build)();
+    let row = "forbid-unsafe:busbar-transport-stdio";
+    let ids = |v: &xtask::ledger::Verdict| -> BTreeSet<String> {
+        v.rows.iter().map(|r| r.id.clone()).collect()
+    };
+    let with = gates::execute(gate.as_ref(), &cx);
+    let passing: BTreeSet<String> = with
+        .rows
+        .iter()
+        .filter(|r| r.status == Status::Pass)
+        .map(|r| r.id.clone())
+        .collect();
+    assert!(
+        passing.contains(row),
+        "`{row}` does not pass over the laid carrier: {:?}",
+        ids(&with)
+    );
+    let without = gates::execute(gate.as_ref(), &cx.without_base());
+    assert!(
+        !ids(&without).contains(row),
+        "`{row}` is emitted with no base: the rule read a carrier that is not in the tree"
     );
 }
 
