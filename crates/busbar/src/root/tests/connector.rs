@@ -261,26 +261,43 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
     );
 }
 
-/// RED against busbar-auth-oauth b7d15c7137 and 2a776bd, which declared EGRESS_LOOPBACK_ALLOWED
-/// (lib.rs:137): the pinned plugin's two mint needs (`settings.token_url`, `settings.token_uri`)
-/// are operator infrastructure (BUSBAR-1.6.0.md l.609, ARCHITECT D1 MINT CLASS (B)), so a mint
-/// endpoint on a private host is reached as 1.5.5 reached it, not refused as non-loopback.
+/// RED against the pinned mint plugin's revisions b7d15c7137 and 2a776bd, which declared
+/// EGRESS_LOOPBACK_ALLOWED for its two mint needs (lib.rs:137): every outbound need a linked auth
+/// plugin's Statement declares is operator infrastructure (BUSBAR-1.6.0.md l.609, ARCHITECT D1 MINT
+/// CLASS (B)), so a mint endpoint on a private host is reached as 1.5.5 reached it, not refused as
+/// non-loopback. Read off every linked auth row's own Statement, never a plugin's name; a build whose
+/// linked auth rows declare no outbound need has nothing to prove, and says so.
+#[cfg(linked_axis_auths)]
 #[test]
-fn the_pinned_mint_needs_are_operator_infrastructure() {
-    let needs = busbar_auth_oauth::NEEDS;
-    assert_eq!(needs.len(), 2, "the plugin declares its two mint needs");
-    for (n, need) in needs.iter().enumerate() {
-        assert_eq!(
-            need.egress_class, EGRESS_OPERATOR_INFRASTRUCTURE,
-            "mint need {n} must be operator-infrastructure (BUSBAR-1.6.0.md l.609): 1.5.5 minted over \
-             plaintext to a private or loopback token endpoint, which loopback-allowed refuses"
-        );
+fn every_linked_auth_plugins_outbound_needs_are_operator_infrastructure() {
+    let mut outbound = 0usize;
+    for &(key, _, door) in crate::LINKED.auths {
+        let row = crate::root::loader::dispatch::LinkedRow::of(door)
+            .unwrap_or_else(|e| panic!("`{key}`'s door states itself: {e}"));
+        let read = busbar_contract::abi::mechanism::rendering::read(&row.statement)
+            .unwrap_or_else(|e| panic!("`{key}`'s Statement reads: {e:?}"));
+        for (n, need) in read.needs.iter().enumerate() {
+            if need.direction != busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND {
+                continue;
+            }
+            outbound += 1;
+            assert_eq!(
+                need.egress_class, EGRESS_OPERATOR_INFRASTRUCTURE,
+                "`{key}`'s outbound need {n} must be operator-infrastructure (BUSBAR-1.6.0.md \
+                 l.609): 1.5.5 minted over plaintext to a private or loopback token endpoint, which \
+                 loopback-allowed refuses"
+            );
+        }
     }
+    assert!(
+        outbound > 0,
+        "the linked auth rows declare an outbound need (the mint needs), so this cell proves one"
+    );
 }
 
 /// RED (ARCHITECT round 4 (e)): a plane's upstream need whose settings name a PROGRAM is dialled by
 /// the one connector over a linked transport door that frames a program's pipes LINE BY LINE (the
-/// stdio row's door, found by what it does, never by name): the connector spawns the program
+/// line row's door, found by what it does, never by name): the connector spawns the program
 /// (operator-infrastructure class; no shell, only its stated environment), its first line is one
 /// frame with the newline stripped, a message written is one line to its stdin, and it is killed
 /// on close.

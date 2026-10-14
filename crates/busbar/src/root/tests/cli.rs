@@ -7,64 +7,82 @@
 use super::{help_rows, is_plane_flag, render_help};
 use crate::root::linked::CliHelpRow;
 
-/// The default (every-plane) build prints the help byte for byte as it always has. The golden is
-/// fixture data (`fixtures/cli_help.txt`, the version as `<VERSION>`); every plane-owned line in it
-/// comes from a linked plane's rows (a linked row's `cli-help` axis or a linked door's tail
-/// `cli_help`, as `--help` reads them), so a plane that stops declaring its rows fails this.
-#[cfg(linked_every_plane)]
+/// The help's three plane-fed places, split out of a rendered help: its first line (the
+/// tagline's), its `Flags:` block and its `ENDPOINTS` block.
+fn blocks(help: &str) -> (&str, &str, &str) {
+    let first = help.lines().next().expect("the help has a first line");
+    let (_, rest) = help
+        .split_once("\nFlags:\n")
+        .expect("the help has its Flags: block");
+    let (flags, endpoints) = rest
+        .split_once("\nENDPOINTS (")
+        .expect("the Flags: block is followed by the ENDPOINTS block");
+    (first, flags, endpoints)
+}
+
+/// EVERY LINKED ROW REACHES THE HELP, IN ITS PLACE: the first tagline row closes the first line,
+/// every `Flags:` row lands in the `Flags:` block and every `ENDPOINTS` row in the `ENDPOINTS`
+/// block, each in the order the planes declare it; and the root's own text is all there around
+/// them. Read off the linked rows (a linked row's `cli-help` axis or a linked door's tail
+/// `cli_help`, as `--help` reads them), so a plane that stops declaring its rows fails this. The
+/// help's bytes are the oracle cells' (from the 1.5.5 binary), never a pin of one distribution.
 #[test]
-fn the_help_reads_as_it_always_has_from_the_linked_rows() {
-    assert_eq!(
-        render_help("<VERSION>", &help_rows()),
-        include_str!("fixtures/cli_help.txt")
-    );
+fn every_linked_row_reaches_the_help_in_its_place() {
+    let linked = help_rows();
+    let help = render_help("<VERSION>", &linked);
+    let (first, flags, endpoints) = blocks(&help);
+    let rows = || linked.iter().flat_map(|rows| rows.iter());
+    if let Some((_, tagline)) = rows().find(|(slot, _)| *slot == "tagline") {
+        assert_eq!(first, format!("busbar <VERSION> — {tagline}"));
+    } else {
+        assert_eq!(first, "busbar <VERSION>");
+    }
+    for (slot, block) in [("flag", flags), ("endpoint", endpoints)] {
+        let mut from = 0;
+        for (_, text) in rows().filter(|(s, _)| *s == slot) {
+            let at = block[from..]
+                .find(text)
+                .unwrap_or_else(|| panic!("the `{slot}` row {text:?} is in its block, in order"));
+            from += at + text.len();
+        }
+    }
+    let bare = render_help("<VERSION>", &[]);
+    let mut from = 0;
+    for line in bare.lines().skip(1) {
+        let at = help[from..]
+            .find(line)
+            .unwrap_or_else(|| panic!("the root's own line {line:?} is in the help, in order"));
+        from += at + line.len();
+    }
 }
 
 /// A plane compiled out takes its rows with it: a build whose linked planes declare no `Flags:` row
-/// prints the root's `Flags:` block alone (`fixtures/cli_help_without_flag_rows.txt`), and nothing
-/// else in the help moves.
+/// prints the root's `Flags:` block alone, and every row of the planes it keeps stays.
 #[test]
 fn a_plane_compiled_out_takes_its_help_rows_with_it() {
-    let rows: Vec<&[CliHelpRow]> = crate::LINKED
-        .cli_help
-        .iter()
-        .copied()
-        .filter(|rows| !rows.iter().any(|(slot, _)| *slot == "flag"))
-        .collect();
-    let tagline: Vec<&str> = rows
-        .iter()
-        .flat_map(|rows| rows.iter())
-        .filter(|(slot, _)| *slot == "tagline")
-        .map(|(_, text)| *text)
-        .collect();
-    let endpoints = rows
-        .iter()
-        .flat_map(|rows| rows.iter())
-        .any(|(slot, _)| *slot == "endpoint");
-    let mut want = include_str!("fixtures/cli_help_without_flag_rows.txt").to_owned();
-    if tagline.is_empty() {
-        // No tagline row linked either: the first line is the version alone.
-        let (_, rest) = want.split_once('\n').expect("the golden has a first line");
-        want = format!("busbar <VERSION>\n{rest}");
+    let linked = help_rows();
+    let has_flag = |rows: &[CliHelpRow]| rows.iter().any(|(slot, _)| *slot == "flag");
+    let kept: Vec<&[CliHelpRow]> = linked.iter().copied().filter(|r| !has_flag(r)).collect();
+    let help = render_help("<VERSION>", &kept);
+    let bare = render_help("<VERSION>", &[]);
+    assert_eq!(
+        blocks(&help).1,
+        blocks(&bare).1,
+        "the root's own Flags: rows alone"
+    );
+    // The first line is the first kept tagline's, if any (`every_linked_row_reaches_the_help...`).
+    for rows in &linked {
+        for (slot, text) in rows.iter() {
+            if *slot == "tagline" {
+                continue;
+            }
+            assert_eq!(
+                help.contains(text),
+                !has_flag(rows),
+                "a compiled-out plane's {slot} row leaves with it, a kept plane's stays: {text:?}"
+            );
+        }
     }
-    if !endpoints {
-        // No `ENDPOINTS` row linked either: the block holds the root's own row alone.
-        want = without_plane_endpoint_rows(&want);
-    }
-    assert_eq!(render_help("<VERSION>", &rows), want);
-}
-
-/// The golden with every plane-declared `ENDPOINTS` row dropped: the lines between the block's
-/// header and the root's own row, which closes the block.
-fn without_plane_endpoint_rows(golden: &str) -> String {
-    let (head, block) = golden
-        .split_once("\nENDPOINTS (")
-        .expect("the golden has an ENDPOINTS block");
-    let (header, rows) = block.split_once('\n').expect("the header is one line");
-    let (_, tail) = rows
-        .split_once("    GET  /stats")
-        .expect("the root's own row closes the block");
-    format!("{head}\nENDPOINTS ({header}\n    GET  /stats{tail}")
 }
 
 /// A plane's `ENDPOINTS` rows land inside the `ENDPOINTS` block, after its header and before the

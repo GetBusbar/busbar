@@ -169,47 +169,47 @@ fn the_legacy_table_spells_the_operator_credential_as_1_5_5_did() {
 #[test]
 fn the_kernel_answers_to_the_root_words_once_handed_in() {
     hand_in_the_root_words();
-    assert_eq!(busbar_kernel::config::operator_provider(), "admin-tokens");
-    assert_eq!(busbar_kernel::config::operator_principal_id(), "admin");
+    let words = operator_words();
+    assert_eq!(busbar_kernel::config::operator_provider(), words.provider);
+    assert_eq!(
+        busbar_kernel::config::operator_principal_id(),
+        words.principal_id
+    );
     // The `auth.admin_auth:` default: the operator credential, referenced bare.
     assert_eq!(
         busbar_kernel::config::default_admin_auth_names(),
-        ["admin-tokens"]
+        [words.provider]
     );
     assert_eq!(
         busbar_kernel::config::builtin_identity_providers(),
-        ["keys", "admin-tokens"]
+        ["keys", words.provider]
     );
 }
 
-/// The 1.5.3 hook-name word space, WHOLE: the kernel's frozen words and the root's operator word.
-/// Exactly 1.5.5's set (v1.5.5:crates/busbar/src/config/mod.rs:1891).
+/// The 1.5.3 hook-name word space, WHOLE: the kernel's frozen words and the root's operator word —
+/// every one reserved, and a word beside them not (v1.5.5:crates/busbar/src/config/mod.rs:1891; the
+/// bytes of the refusal a reserved name meets are the oracle's).
 #[test]
-fn the_frozen_hook_name_word_space_is_1_5_5_s() {
+fn the_hook_name_word_space_is_the_frozen_words_and_the_operator_word() {
     hand_in_the_root_words();
-    let mut space: Vec<&str> = busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE.to_vec();
-    space.push(busbar_kernel::config::operator_provider());
-    space.sort_unstable();
-    assert_eq!(
-        space,
-        [
-            "admin-tokens",
-            "cheapest",
-            "fastest",
-            "first",
-            "least_busy",
-            "nothing",
-            "reject",
-            "tokens",
-            "usage",
-            "weighted",
-        ]
+    let op = operator_words().provider;
+    for word in busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE
+        .iter()
+        .copied()
+        .chain([op])
+    {
+        assert!(
+            busbar_kernel::config::is_reserved_hook_name(word),
+            "`{word}` is reserved"
+        );
+    }
+    assert!(
+        !busbar_kernel::config::FROZEN_HOOK_NAME_WORD_SPACE.contains(&op),
+        "the operator word is the root's, never the kernel's"
     );
-    assert!(busbar_kernel::config::is_reserved_hook_name("admin-tokens"));
-    assert!(busbar_kernel::config::is_reserved_hook_name("tokens"));
-    assert!(!busbar_kernel::config::is_reserved_hook_name(
-        "admin-tokens-2"
-    ));
+    assert!(!busbar_kernel::config::is_reserved_hook_name(&format!(
+        "{op}-2"
+    )));
 }
 
 /// Walk `path` down a migrated document.
@@ -222,7 +222,7 @@ fn dig<'a>(doc: &'a serde_yaml::Value, path: &[&str]) -> Option<&'a serde_yaml::
 }
 
 /// 1.4.x `governance.admin_token: ${VAR}` migrates onto the operator credential as 1.5.5 wrote it:
-/// `auth.admin_auth: [admin-tokens]` and the secret ref on `identity-providers.admin-tokens`.
+/// `auth.admin_auth: [<operator word>]` and the secret ref on `identity-providers.<operator word>`.
 #[test]
 fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
     hand_in_the_root_words();
@@ -235,12 +235,17 @@ fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
             .and_then(|v| v.as_sequence())
             .and_then(|s| s.first())
             .and_then(|v| v.as_str()),
-        Some("admin-tokens")
+        Some(operator_words().provider)
     );
     assert_eq!(
         dig(
             &doc,
-            &["identity-providers", "admin-tokens", "token", "env"]
+            &[
+                "identity-providers",
+                operator_words().provider,
+                "token",
+                "env"
+            ]
         )
         .and_then(|v| v.as_str()),
         Some("BUSBAR_ADMIN_TOKEN")
@@ -252,9 +257,12 @@ fn migration_writes_the_14x_admin_token_as_1_5_5_did() {
 #[test]
 fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
     hand_in_the_root_words();
-    let raw = "auth:\n  admin_auth:\n    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n\
-               providers: {}\nmodels: {}\n";
-    let out = busbar_kernel::config::migrate::migrate_config(raw).expect("migrates");
+    let op = operator_words().provider;
+    let raw = format!(
+        "auth:\n  admin_auth:\n    - {op}: {{ token: {{ env: BUSBAR_ADMIN_TOKEN }} }}\n\
+         providers: {{}}\nmodels: {{}}\n"
+    );
+    let out = busbar_kernel::config::migrate::migrate_config(&raw).expect("migrates");
     let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("output is valid YAML");
     let chain: Vec<&str> = dig(&doc, &["auth", "admin_auth"])
         .and_then(|v| v.as_sequence())
@@ -262,13 +270,9 @@ fn migration_lifts_the_inline_operator_entry_as_1_5_5_did() {
         .iter()
         .filter_map(|v| v.as_str())
         .collect();
-    assert_eq!(chain, ["admin-tokens"]);
+    assert_eq!(chain, [op]);
     assert_eq!(
-        dig(
-            &doc,
-            &["identity-providers", "admin-tokens", "token", "env"]
-        )
-        .and_then(|v| v.as_str()),
+        dig(&doc, &["identity-providers", op, "token", "env"]).and_then(|v| v.as_str()),
         Some("BUSBAR_ADMIN_TOKEN")
     );
 }
@@ -298,22 +302,34 @@ fn the_shipped_config_needs_no_admin_token_to_boot() {
     );
 }
 
-/// The operator credential's refusals, byte for byte v1.5.5's, over the root's words (moved from the
-/// kernel's config_validate tests, which now assert the same text over the kernel's double).
-/// `git show v1.5.5:crates/busbar/src/config_validate/mod.rs`, 1175.
+/// The operator credential's refusals name the root's operator word where 1.5.5 named it (its
+/// feature, its module, the chain entry an operator moves the token to); their bytes are the oracle
+/// cells' (v1.5.5:crates/busbar/src/config_validate/mod.rs:1175), never a pin of one distribution.
 #[test]
-fn the_operator_refusals_are_1_5_5_s_bytes() {
+fn the_operator_refusals_name_the_root_words() {
     let op = operator_words().provider;
-    assert_eq!(
-        busbar_kernel_identity::operator::unanswered_token(op),
-        "an admin-tokens token is configured but this binary was built WITHOUT the \
-         `auth-admin-tokens` feature — the admin API would be silently disabled. Rebuild \
-         with default features or wire an external admin auth module."
+    let unanswered = busbar_kernel_identity::operator::unanswered_token(op);
+    assert!(
+        unanswered.starts_with(&format!("an {op} token is configured")),
+        "{unanswered}"
     );
-    assert_eq!(
-        busbar_kernel_identity::operator::misplaced_token(op, "keys"),
-        "auth chain entry 'keys' sets `token:`, which belongs to the built-in \
-         `admin-tokens` module only; move it, e.g.:\n\n    admin_auth:\n      - \
-         admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n"
+    assert!(
+        unanswered.contains(&format!("`auth-{op}` feature")),
+        "{unanswered}"
+    );
+    let misplaced = busbar_kernel_identity::operator::misplaced_token(op, "keys");
+    assert!(
+        misplaced.starts_with("auth chain entry 'keys' sets `token:`"),
+        "{misplaced}"
+    );
+    assert!(
+        misplaced.contains(&format!("built-in `{op}` module only")),
+        "{misplaced}"
+    );
+    assert!(
+        misplaced.contains(&format!(
+            "- {op}: {{ token: {{ env: BUSBAR_ADMIN_TOKEN }} }}"
+        )),
+        "{misplaced}"
     );
 }

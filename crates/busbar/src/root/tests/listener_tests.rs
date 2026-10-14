@@ -634,8 +634,8 @@ async fn total_deadline_trips_on_a_body_that_stays_above_the_floor_forever() {
 
 // ── ConnBalancer placement tests (thread-per-core accept-time rebalancing) ─────────────────────
 
-/// A connected (client, server-accepted) TCP pair on loopback, for feeding the placement seam.
-async fn tcp_pair(
+/// A connected (client, server-accepted) socket pair on loopback, for feeding the placement seam.
+async fn socket_pair(
     listener: &tokio::net::TcpListener,
 ) -> (
     tokio::net::TcpStream,
@@ -669,19 +669,19 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
 
     // Below the margin (0 vs 0): serve locally — no handoff.
-    let (_c1, s1, p1) = tcp_pair(&listener).await;
+    let (_c1, s1, p1) = socket_pair(&listener).await;
     let kept = b0.try_hand_off(admitted(s1, p1));
     assert!(kept.is_some(), "at equal load the connection stays local");
     let g1 = b0.place_local();
 
     // One more local: still below margin (1 vs 0 < 0+2).
-    let (_c2, s2, p2) = tcp_pair(&listener).await;
+    let (_c2, s2, p2) = socket_pair(&listener).await;
     assert!(b0.try_hand_off(admitted(s2, p2)).is_some());
     let g2 = b0.place_local();
 
     // Now 2 vs 0 == min+2: the margin is met — the next accept hands off to a least-loaded
     // worker, its count incremented by the SENDER.
-    let (_c3, s3, p3) = tcp_pair(&listener).await;
+    let (_c3, s3, p3) = socket_pair(&listener).await;
     assert!(
         b0.try_hand_off(admitted(s3, p3)).is_none(),
         "at min+2 the connection must be handed to the least-loaded worker"
@@ -719,14 +719,14 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
     // A full handoff channel rolls the increment back and serves locally: fill worker 1's
     // channel to capacity, then force a handoff attempt at margin.
     for _ in 0..2 {
-        let (_c, s, p) = tcp_pair(&listener).await;
+        let (_c, s, p) = socket_pair(&listener).await;
         b0.try_hand_off(admitted(s, p));
         b0.place_local();
     }
     // b1/b2 both at 0; drain nothing — fill b1's queue directly.
     let mut fillers = Vec::new();
     loop {
-        let (_c, s, p) = tcp_pair(&listener).await;
+        let (_c, s, p) = socket_pair(&listener).await;
         fillers.push(_c);
         match b0.txs[1].try_send(admitted(s, p)) {
             Ok(()) => continue,
@@ -740,7 +740,7 @@ async fn balancer_hands_off_only_past_margin_and_counts_exactly() {
     let before = b1.counts[b1.me]
         .0
         .load(std::sync::atomic::Ordering::Relaxed);
-    let (_c, s, p) = tcp_pair(&listener).await;
+    let (_c, s, p) = socket_pair(&listener).await;
     let kept = b0.try_hand_off(admitted(s, p));
     assert!(
         kept.is_some(),

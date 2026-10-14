@@ -158,31 +158,6 @@ pub fn billed_count_opt(
     }
 }
 
-/// A RECORDED count (one the ledger notes and never bills): absent or `null` is `Some(0)` (nothing
-/// reported, as [`billed_count`] reads it), a readable count is `Some(n)`, and a present count this
-/// build cannot read is UNKNOWN, `None`. It is never a zero, because a zero records no work for
-/// work that happened (#81, OWNER rule 21). It is never a refusal either, because a count nothing
-/// bills does not justify refusing an answer. The unreadable field is named on `warnings` and in a
-/// warning log line, so the gap is visible where the record is read.
-pub fn recorded_count(
-    usage: &serde_json::Value,
-    field: &'static str,
-    warnings: &mut Vec<String>,
-) -> Option<u64> {
-    match billed_count(usage, field) {
-        Ok(n) => Some(n),
-        Err(unreadable) => {
-            ::tracing::warn!(
-                field = unreadable.field,
-                spelling = %unreadable.spelling,
-                "a recorded usage count is unreadable: recorded as unknown, never as 0"
-            );
-            warnings.push(unreadable.to_string());
-            None
-        }
-    }
-}
-
 // ── THE USAGE TABLE WALK (#42) ───────────────────────────────────────────────────────────────
 
 /// Where one usage count lands in the IR.

@@ -315,11 +315,11 @@ fn transcription_egress_field_strips_crlf_injection() {
     assert_eq!(text.matches(&delim).count(), 3);
 }
 
-/// The audio part carries raw client-controlled bytes. A payload that embeds `\r\n--<boundary>`
-/// would close the file part early and append parts of its own — here a second `model` field, which
-/// a last-occurrence-wins parser upstream honours while busbar bills the model it chose. The
-/// boundary is 1.5.5's literal, so the client knows it: the writer refuses the body outright (an
-/// empty, fail-closed body), and no second `model` part is ever framed.
+/// The audio part carries raw client-controlled bytes. With a boundary the client can predict, a
+/// payload that embeds `\r\n--<boundary>` closes the file part early and appends parts of its own —
+/// here a second `model` field. Parsers that take the LAST occurrence then run the request against
+/// the client's model while the lane bills the model busbar chose. Fails pre-fix (the writer used a
+/// hard-coded boundary and spliced the audio bytes in unchecked): the body carried two `model` parts.
 #[test]
 fn transcription_egress_audio_cannot_smuggle_a_second_model_part() {
     let smuggled = b"RIFF\r\n------busbaraudioMIME\r\nContent-Disposition: form-data; \
@@ -334,20 +334,35 @@ fn transcription_egress_audio_cannot_smuggle_a_second_model_part() {
         ..Default::default()
     };
     let out = super::super::super::leaf_codec::transcription_write_request("openai", &ir);
-    assert!(
-        out.is_empty(),
-        "a payload carrying the live delimiter fails the body closed: {}",
-        String::from_utf8_lossy(&out)
+    let text = String::from_utf8_lossy(&out);
+    // The smuggled text may still sit INSIDE the audio bytes — harmless, since it is no longer
+    // introduced by a delimiter the upstream parser recognises. What must not exist is a SECOND
+    // part: exactly one `model` field may be framed by the live boundary.
+    let model_part = format!(
+        "--{}\r\nContent-Disposition: form-data; name=\"model\"",
+        transcription_boundary()
+    );
+    assert_eq!(
+        text.matches(&model_part).count(),
+        1,
+        "audio bytes must not be able to append a second model part: {text}"
     );
 }
 
-/// The boundary is 1.5.5's literal (v1.5.5 `crates/busbar/src/handlers/openai.rs:238`, `:281`), a
-/// constant the plugin holds no state for, and the Content-Type the engine sends upstream names the
-/// SAME boundary the body is framed with. RED while it was a per-process `OnceLock` draw.
+/// The boundary must not be the hard-coded literal a client could copy out of the source: it is
+/// drawn from the crate's entropy seam, is a legal RFC 2046 boundary, and the Content-Type the
+/// engine sends upstream must name the SAME boundary the body actually uses (otherwise the upstream
+/// cannot parse the form at all).
 #[test]
-fn transcription_boundary_is_1_5_5_s_literal_and_matches_the_declared_content_type() {
+fn transcription_boundary_is_entropy_drawn_and_matches_the_declared_content_type() {
     let b = transcription_boundary();
-    assert_eq!(b, "----busbaraudioMIME");
+    assert_ne!(b, "----busbaraudioMIME", "boundary must not be hard-coded");
+    assert!(b.len() >= 32 && b.len() <= 70, "boundary length: {b}");
+    assert!(
+        b.bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'),
+        "boundary charset: {b}"
+    );
     let ct = OpenAiTranscription.egress_request_content_type();
     assert_eq!(ct, format!("multipart/form-data; boundary={b}"));
 
@@ -366,8 +381,8 @@ fn transcription_boundary_is_1_5_5_s_literal_and_matches_the_declared_content_ty
     assert!(text.ends_with(&format!("--{b}--\r\n")), "body tail: {text}");
 }
 
-/// The delimiter check is the guarantee: a payload that DOES carry the live delimiter must be
-/// refused outright rather than emitted with the parts it
+/// Unpredictability alone is not the guarantee: a payload that DOES carry the live delimiter (a
+/// guess, or a broken CSPRNG) must be refused outright rather than emitted with the parts it
 /// smuggled. Both framings count — a delimiter mid-payload, and one at the very start (the `\r\n`
 /// that ends the part headers completes it).
 #[test]
@@ -606,12 +621,10 @@ fn multipart_single_char_boundary_parses_correctly() {
     assert!(r.audio.is_some());
 }
 
-// A gpt-image-1 response carries a token `usage` object. Its tokens are RECORDED (residual units,
-// the settle's `usage.residual` audit row) and bill NOTHING on the four token tiers, as in 1.5.5,
-// whose image reader read no `usage` (v1.5.5 `crates/busbar/src/handlers/openai.rs:731-758`) and
-// whose image op tapped no same-dialect body. RED while the reader token-billed 20 in / 10 out.
+// FIND-1 (money): a gpt-image-1 response carries a token `usage` object; the reader must surface it
+// so `billing()` token-meters the request instead of billing nothing. Fails pre-fix (usage unset).
 #[test]
-fn image_response_usage_is_recorded_never_billed() {
+fn image_response_with_usage_object_bills_tokens() {
     let wire = json!({
         "created": 1,
         "data": [{ "b64_json": "AAAA" }],
@@ -620,31 +633,11 @@ fn image_response_usage_is_recorded_never_billed() {
     let resp = super::read_image_response(&serde_json::to_vec(&wire).unwrap()).unwrap();
     match resp.billing() {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            assert_eq!(
-                (t.input, t.output, t.cache_read, t.cache_creation),
-                (0, 0, None, None),
-                "no image token bills: {t:?}"
-            );
-            assert!(t.open_units.is_empty(), "no open class bills: {t:?}");
-            assert_eq!(
-                t.residual_units,
-                std::collections::BTreeMap::from([
-                    ("image.input_tokens".to_string(), 20),
-                    ("image.output_tokens".to_string(), 10),
-                ]),
-                "the reported tokens are recorded"
-            );
+            assert_eq!(t.input, 20);
+            assert_eq!(t.output, 10);
         }
-        other => panic!("gpt-image-1 usage is recorded on a zero token line, got {other:?}"),
+        other => panic!("gpt-image-1 usage must token-bill, got {other:?}"),
     }
-    // The same-dialect tap reads the same zero bill.
-    let tapped = busbar_contract::codec::OperationHandler::extract_usage(
-        &super::OpenAiImage,
-        "openai",
-        &serde_json::to_vec(&wire).unwrap(),
-    )
-    .expect("the tap reads the answer");
-    assert_eq!((tapped.input, tapped.output), (0, 0));
 }
 
 // FIND-1 (money): a per-image (dall-e-style) response has NO usage object; the reader must record a

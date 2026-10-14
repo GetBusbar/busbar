@@ -571,7 +571,7 @@ fn a_configured_data_dir_opens_a_journal_on_disk() {
 /// The two branches build the same stack. A node without a data directory is not running a
 /// reduced ledger or a reduced audit chain; only the journal's backing differs.
 #[test]
-fn both_branches_build_the_same_ledger_and_audit_streams() {
+fn both_branches_build_the_same_ledger_and_audit_records() {
     let scratch = ScratchDir::new("same");
     let buffered = build(
         &DurabilityConfig { data_dir: None },
@@ -1811,7 +1811,7 @@ fn the_chain_holds_counts_and_an_epoch_and_the_rebuilt_book_prices_them() {
     );
 }
 
-/// A late settlement of `amount` (no hold behind it, as the LLM late arm posts), with its counts,
+/// A late settlement of `amount` (no hold behind it, as the node's late arm posts), with its counts,
 /// arriving at [`ARRIVED_MS`].
 fn late_counted(
     durability: &mut Durability,
@@ -3198,8 +3198,8 @@ fn a_driven_unit_killed_mid_stream_is_recovered_at_its_flushed_checkpoint() {
     let cfg = DurabilityConfig {
         data_dir: Some(scratch.path.clone()),
     };
-    let principal = PrincipalId::new("vk_streaming");
-    let balance = totals_key("vk_streaming");
+    let principal = PrincipalId::new("vk_session");
+    let balance = totals_key("vk_session");
     let unit = busbar_contract::UnitKey::new(9);
     let arrived = crate::root::plane_node::Arrived::at(ARRIVED_MS, 91);
     {

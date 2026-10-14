@@ -6,7 +6,7 @@
     "themselves are read off the linked table the root installs (`crate::LINKED.protocols`).",
     "protocol_order: the operator-visible provider protocol list, in order (metric-family index and the",
     "  config refusal's `must be one of:` tail; the published 1.5.5 binary's order).",
-    "streaming_content_types / array_stream_shim_keys / head_keys: the registry's folded sets.",
+    "event_content_types / array_stream_shim_keys / head_keys: the registry's folded sets.",
     "resolver: [path, [[header, value]...], [protocol, verb] or null] — detection then operation.",
     "body_resolver: [path, body, [protocol, verb]] — the operation needs the body.",
     "mandatory_header: [path, [[header, value]], protocol] — a mandatory header beats path ordering.",
@@ -15,7 +15,7 @@
     "residual_none: paths that name no dialect (the paths other planes mount at among them)."
   ],
   "protocol_order": ["anthropic", "openai", "gemini", "bedrock", "responses", "cohere"],
-  "streaming_content_types": ["application/vnd.amazon.eventstream", "text/event-stream"],
+  "event_content_types": ["application/vnd.amazon.eventstream", "text/event-stream"],
   "array_stream_shim_keys": ["__busbar_gemini_json_array"],
   "head_keys": ["__busbar_gemini_json_array", "model", "stream", "stream_options", "system"],
   "resolver": [
@@ -58,5 +58,5 @@
     ["/v1/models/gemini-pro:countTokens", "gemini"]
   ],
   "residual_live": ["/v1/models/gpt-4o", "openai"],
-  "residual_none": ["/", "/stats", "/mcp", "/mcp/anything", "/a2a", "/totally/unknown/path", "/model/foo/bar"]
+  "residual_none": ["/", "/stats", "/tools", "/tools/anything", "/agents", "/totally/unknown/path", "/model/foo/bar"]
 }

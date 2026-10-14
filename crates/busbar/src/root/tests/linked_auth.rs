@@ -149,11 +149,11 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
     );
 }
 
-/// `GET /api/v1/admin/info` `build.auth_modules` in the shipped build is 1.5.5's answer,
-/// `["keys", "admin-tokens"]` (oracle cell `admin.ops|GetInfo|ok`): the build also links the
-/// OUTBOUND-ONLY header auth plugin on the auth axis (ARCHITECT Q-L1-AUTH (A)), and a row that
-/// declares no inbound capability is not an auth-chain module an operator can name, so it is not
-/// listed. RED before the fix: `["keys", "admin-tokens", "busbar-auth-header"]`.
+/// `GET /api/v1/admin/info` `build.auth_modules` in the shipped build is 1.5.5's answer, `keys` and
+/// the operator credential's word (oracle cell `admin.ops|GetInfo|ok`): the build also links an
+/// OUTBOUND-ONLY auth plugin on the auth axis (ARCHITECT Q-L1-AUTH (A)), and a row that declares no
+/// inbound capability is not an auth-chain module an operator can name, so it is not listed. RED
+/// before the fix: the outbound-only row's name was listed third.
 #[cfg(feature = "auth-header")]
 #[test]
 fn the_info_auth_modules_are_the_inbound_rows_only() {
@@ -342,7 +342,7 @@ fn the_operator_token_ref_is_checked_by_shape_only() {
     };
     assert!(
         build(SecretRef {
-            module: "vault".to_string(),
+            module: "planted-plugin-secret-module".to_string(),
             settings: serde_json::Map::new(),
         })
         .is_ok(),
