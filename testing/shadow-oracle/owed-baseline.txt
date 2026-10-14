@@ -733,6 +733,8 @@ egress.auth|jwt-bearer|mint-refresh
 egress.auth|login-hop|oidc
 egress.auth|oauth-cc|mint-refresh
 egress.auth|sigv4|session-token
+egress.fetch|plugins|chunked-over-cap
+egress.fetch|plugins|declared-over-cap
 egress.fetch|plugins|url
 egress.headers|forwarded|anthropic-beta
 egress.headers|forwarded|anthropic-beta-cross

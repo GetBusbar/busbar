@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2582,
+    "total": 2584,
     "by_plane": {
       "a2a": 468,
-      "core": 1005,
+      "core": 1007,
       "llm": 197,
       "mcp": 912
     },
@@ -79,7 +79,7 @@
       "crosscut.traps": 5,
       "documented": 28,
       "egress.auth": 12,
-      "egress.fetch": 1,
+      "egress.fetch": 3,
       "egress.headers": 3,
       "egress.image-detail": 4,
       "export": 3,
@@ -21649,6 +21649,96 @@
         }
       },
       "why": "SigV4 with a SESSION token (`ACCESS:SECRET:TOKEN`): `x-amz-security-token` is sent AND signed (it is in SignedHeaders and the canonical request). Clock-bound parts masked and proven by re-derivation (`sigv4.signature_valid`); the canonical request is recorded so the header set, order and values the signature covers are pinned. KERNEL<>PLUGINS step 22's SigV4 vector is compared against this."
+    },
+    {
+      "id": "egress.fetch|plugins|chunked-over-cap",
+      "plane": "core",
+      "family": "egress.fetch",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\n  fetch:\n    - { url: \"{CAPTURE_URL}/releases/busbar-oracle-fetch-chunked-1.0.0.tar.gz\", sha256: \"1111111111111111111111111111111111111111111111111111111111111111\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-fetch-0001"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/releases/busbar-oracle-fetch-chunked-1.0.0.tar.gz",
+              "status": 200,
+              "content_type": "application/octet-stream",
+              "body": "",
+              "chunked_fill": 268500992
+            }
+          ]
+        },
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30
+        }
+      },
+      "why": "a `plugins.fetch` far end that declares NO length and streams a chunked body 64 KiB past 1.5.5's 268435456-byte download cap: 1.5.5's counted read stops at the cap and refuses (main.rs:2664-2671, \"response exceeded the ... plugins.fetch download cap; refusing to buffer a truncated download\"), and boot is refused fatal-on-miss. Busbar conformance gaps (owner rule 22)."
+    },
+    {
+      "id": "egress.fetch|plugins|declared-over-cap",
+      "plane": "core",
+      "family": "egress.fetch",
+      "driver": "capture",
+      "outcome": "ok",
+      "capture": {
+        "providers": "p:\n  protocol: openai\n  base_url: \"{CAPTURE_URL}\"\n",
+        "config": "listen: \"{LISTEN}\"\nadmin_listen: \"{ADMIN}\"\nproviders_file: \"{WORK}/providers.yaml\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{WORK}/signing.key\" }\n  admin_auth: [admin-tokens]\ngroups:\n  oracle:\n    limits:\n      - { budget: 1000000, per: day }\nproviders:\n  p:\n    api_key: { env: CAP_KEY }\nmodels:\n  m-cap:\n    provider: p\nrate_card:\n  m-cap: { input_utok: 100000, output_utok: 200000 }\nplugins:\n  enabled: true\n  dir: \"{WORK}/plugins\"\n  fetch:\n    - { url: \"{CAPTURE_URL}/releases/busbar-oracle-fetch-declared-1.0.0.tar.gz\", sha256: \"1111111111111111111111111111111111111111111111111111111111111111\" }\n",
+        "env": {
+          "CAP_KEY": "oracle-cred-fetch-0001"
+        },
+        "mock": {
+          "fixed": [
+            {
+              "path": "/releases/busbar-oracle-fetch-declared-1.0.0.tar.gz",
+              "status": 200,
+              "content_type": "application/octet-stream",
+              "body": "oracle: the declared length is over the cap",
+              "declared_length": 268435457
+            }
+          ]
+        },
+        "steps": [],
+        "mask": [
+          [
+            "\\] BUSBAR-[0-9]{4}: ",
+            "] "
+          ],
+          [
+            "\\x1b\\[[0-9;]*m",
+            ""
+          ],
+          [
+            "<TS> +",
+            "<TS> "
+          ]
+        ],
+        "boot": {
+          "expect": "exit",
+          "secs": 30
+        }
+      },
+      "why": "a `plugins.fetch` far end that DECLARES `Content-Length` one byte over 1.5.5's 268435456-byte download cap (config DEFAULT_PLUGIN_FETCH_MAX_BYTES) and sends only a short body: 1.5.5 refuses it from the header, before reading a body byte (main.rs:2652-2659, \"declared Content-Length ... exceeds the ... plugins.fetch download cap\"), and boot is refused fatal-on-miss. Busbar conformance gaps (owner rule 22): the declared-length seam #805 restores."
     },
     {
       "id": "egress.fetch|plugins|url",
