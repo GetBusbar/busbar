@@ -884,12 +884,10 @@ pub use busbar_kernel::config::pools::{
     STRATEGY_USAGE,
 };
 
-// The FAILOVER BUDGET numeric defaults/bounds are plain scalars with no config grammar attached, so
-// they live in the neutral `busbar_kernel::failover` (a plane names the per-request failover
-// budget without reaching into `busbar-core`); re-exported here at their historical
-// `crate::config::*` paths so every core call site (`appbuild`, `config_validate`, `test_support`,
-// the pools `default_failover_timeout`/`default_max_hops` serde defaults) resolves unchanged.
-pub use busbar_kernel::failover::{
+// The FAILOVER BUDGET numeric defaults/bounds live beside the `FailoverCfg` shape in `pools`;
+// re-exported here at their historical `crate::config::*` paths so every core call site
+// (`appbuild`, `config_validate`, `test_support`) resolves unchanged.
+pub use busbar_kernel::config::pools::{
     DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS, MAX_FAILOVER_DEADLINE_SECS,
 };
 
@@ -925,7 +923,7 @@ fn check_failover_pool(
     errors: &mut Vec<String>,
     section: &str,
     pool: &str,
-    def: &crate::failover::CandidatePoolCfg,
+    def: &pools::CandidatePoolCfg,
     on_this_plane: impl Fn(&str) -> bool,
     on_other_plane: impl Fn(&str) -> bool,
     this_registry: &str,
@@ -2256,7 +2254,7 @@ pub fn resolve(
             };
             let members = pool.members.iter().map(|m| m.model.clone()).collect();
             let repeatable = pool.repeatable.clone();
-            let candidates = crate::failover::CandidatePoolCfg {
+            let candidates = pools::CandidatePoolCfg {
                 members,
                 repeatable,
             };
