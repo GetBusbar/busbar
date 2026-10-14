@@ -327,6 +327,7 @@ dependencies = [
  "busbar-auth-oidc",
  "busbar-auth-oidc-plugin",
  "busbar-auth-sigv4",
+ "busbar-auth-webhook-signature",
  "busbar-contract",
  "busbar-core-admin",
  "busbar-core-connector",
@@ -516,6 +517,19 @@ source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=963df8e00421a57
 dependencies = [
  "busbar-contract",
  "hex",
+ "ring",
+ "serde",
+ "serde_json",
+ "zeroize",
+]
+
+[[package]]
+name = "busbar-auth-webhook-signature"
+version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-auth-webhook-signature?rev=ac7eabefd872599f2942fd44474fe40297e2ee93#ac7eabefd872599f2942fd44474fe40297e2ee93"
+dependencies = [
+ "base64 0.22.1",
+ "busbar-contract",
  "ring",
  "serde",
  "serde_json",

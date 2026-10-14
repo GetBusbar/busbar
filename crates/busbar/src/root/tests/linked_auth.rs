@@ -153,8 +153,11 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
 /// `["keys", "admin-tokens"]` (oracle cell `admin.ops|GetInfo|ok`): the build also links the
 /// OUTBOUND-ONLY header auth plugin on the auth axis (ARCHITECT Q-L1-AUTH (A)), and a row that
 /// declares no inbound capability is not an auth-chain module an operator can name, so it is not
-/// listed. RED before the fix: `["keys", "admin-tokens", "busbar-auth-header"]`.
-#[cfg(feature = "auth-header")]
+/// listed. RED before the fix: `["keys", "admin-tokens", "busbar-auth-header"]`. The default build
+/// also links the INBOUND webhook-signature row (ARCHITECT 2026-10-14, accepted difference
+/// `#64-class build.auth_modules lists the webhook-signature module`), an auth-chain module an
+/// operator names, so it is listed after 1.5.5's two.
+#[cfg(all(feature = "auth-header", feature = "auth-webhook-signature"))]
 #[test]
 fn the_info_auth_modules_are_the_inbound_rows_only() {
     link();
@@ -165,8 +168,13 @@ fn the_info_auth_modules_are_the_inbound_rows_only() {
     );
     assert_eq!(
         busbar_core_admin::v1::service::auth_modules_compiled_in(),
-        vec!["keys", config::operator_provider()],
-        "only inbound auth-chain modules are listed (linked rows: {linked:?})"
+        vec![
+            "keys",
+            config::operator_provider(),
+            "busbar-auth-webhook-signature"
+        ],
+        "only inbound auth-chain modules are listed, 1.5.5's two first and the default build's \
+         webhook-signature row after them (ARCHITECT 2026-10-14; linked rows: {linked:?})"
     );
 }
 

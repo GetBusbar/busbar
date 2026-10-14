@@ -594,6 +594,16 @@ drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis
 
 [[dep]]
 from    = "busbar"
+to      = "busbar-auth-webhook-signature"
+half    = "shipped"
+count   = "1"
+verdict = "allowed"
+cite    = "BUSBAR-1.6.0.md THE DESIGN, §6 step 3 and §11.11 R3 — the composition root links the auth plugin that serves a style; webhook signatures are verified by ONE mechanism-named inbound auth plugin (scheme `webhook-signature`, variants Twilio and Standard Webhooks)."
+why     = "busbar names busbar-auth-webhook-signature: declared optional (feature `auth-webhook-signature`, default-on) in the shipped graph, 1 declaration(s) at this commit — the webhook-signature auth plugin: a Twilio Media Streams upgrade or a Standard Webhooks delivery is verified through its `verify` over the shared signing secret. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack."
+drain   = "none: BUSBAR-1.6.0.md grants this class (the root names the auth axis). Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
+
+[[dep]]
+from    = "busbar"
 to      = "busbar-contract"
 half    = "shipped"
 count   = "1"

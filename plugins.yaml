@@ -589,7 +589,8 @@ plugins:
     declares: "auth-webhook-signature/declares.json"
     # THE DESIGN §9's auth roster; the repo is created by `busbar-release plugin new auth
     # webhook-signature` (PLUGIN-TEMPLATE, ARCHITECT 2026-10-02) with the template's skeleton crates;
-    # its door lands in it. First release with the core version that pins it.
+    # its door lands in it. busbar links the logic crate on its `auths` axis at a pinned rev (feature
+    # `auth-webhook-signature`, default-on). First release with the core version that pins it.
     released: false
     pending_crate: true
   - repo: busbar-auth-header

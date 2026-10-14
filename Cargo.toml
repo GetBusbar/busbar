@@ -101,6 +101,11 @@ busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", re
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin.
 busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "963df8e00421a574a7d68bd8371472ff59f345c8" }
+# THE WEBHOOK-SIGNATURE STYLE (kind: auth): the inbound verify of a webhook sender's HMAC (variants
+# Twilio and Standard Webhooks), linked on the root's `auths` axis (feature `auth-webhook-signature`,
+# default-on, ARCHITECT 2026-10-14: its inbound verify is an auth-chain module, so
+# `GET /api/v1/admin/info` `build.auth_modules` lists it, an `additive` accepted difference). One pin.
+busbar-auth-webhook-signature = { git = "https://github.com/GetBusbar/busbar-auth-webhook-signature", rev = "ac7eabefd872599f2942fd44474fe40297e2ee93" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
 # axis (feature `hooks-ranking`). The root alone takes it: the kernel's test build links its in-crate
 # R-FIX3 double (`busbar_kernel::test_support::ranking_double`) instead, and the root's

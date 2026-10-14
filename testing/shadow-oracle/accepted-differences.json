@@ -1493,6 +1493,57 @@
       "rationale": "Decision #64, quoted: \"#3: the `auth:` unknown-key error's 'expected one of' list gains `operator_pub` (a real new 1.6.0 auth field, D38 operator-sealing); exit code + main error unchanged — approved, oracle re-blesses `neutrality|NEUT-U-auth|validate`.\" MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66): after D-1's diagnostic-code rewrite the only stderr difference is `operator_pub` inserted into the backtick list after `signing_key`. kind=additive with text_list_growth, so the runner proves the list only GREW (a removed, reordered or respelled key stays red) rather than blanketing the stream; it carries D-1's own diagnostic-code rewrite (an additive entry's list proof reads its OWN transform, not D-1's). PREMISE (evaluated): the exit code is unchanged (1), which is the other half of what #64 approved. (#64's BOOT-135 half needs no entry: boot.refusal|BOOT-135|boot is byte-identical to 1.5.5 again, bd51e2cab.)"
     },
     {
+      "id": "#64-class build.auth_modules lists the webhook-signature module",
+      "kind": "additive",
+      "changelog": "1.6.0 Added: `GET /api/v1/admin/info` `build.auth_modules` lists `busbar-auth-webhook-signature`, the linked inbound auth module that verifies Twilio and Standard Webhooks signatures.",
+      "by": "ARCHITECT ruling 2026-10-14 (busbar-e1 relay), the class of OWNER-LOCKED #64 (additive list growth for a real new 1.6.0 surface); the owner's signature is pending",
+      "signoff": {
+        "who": "ARCHITECT ruling 2026-10-14, pending the owner's signature (an agent cannot sign; this entry's PR stays a draft until the owner signs)",
+        "when": "2026-10-14",
+        "ruling": "ARCHITECT 2026-10-14: link busbar-auth-webhook-signature default-on (option (a)); Twilio Media Streams, Standard Webhooks and the Responses webhook are signed 1.6.0 scope (BUSBAR-1.6.0.md l.847-852, l.4835) and useless if the shipped binary cannot authenticate them; register admin.ops|GetInfo|ok as additive, #64's class"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^admin\\.ops\\|GetInfo\\|ok$",
+      "expected_cells": 1,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "admin.ops|GetInfo|ok",
+            "status": 200
+          },
+          {
+            "cell": "admin.ops|GetInfo|ok",
+            "pointer": "/build/auth_modules/0",
+            "equals": "keys"
+          },
+          {
+            "cell": "admin.ops|GetInfo|ok",
+            "pointer": "/build/auth_modules/1",
+            "equals": "admin-tokens"
+          },
+          {
+            "cell": "admin.ops|GetInfo|ok",
+            "pointer": "/build/auth_modules/2",
+            "equals": "busbar-auth-webhook-signature"
+          },
+          {
+            "not": {
+              "cell": "admin.ops|GetInfo|ok",
+              "pointer": "/build/auth_modules/3",
+              "exists": true
+            }
+          }
+        ]
+      },
+      "rationale": "DECISION: the default build links busbar-auth-webhook-signature (BUSBAR-1.6.0.md l.818-823, OWNER Q99 four auth crates; l.845-852, webhook signatures are verified by ONE mechanism-named inbound auth plugin; l.4835, TWILIO inbound auth). Its door states an inbound capability without FACT_READS_CREDENTIALS, so it is an auth-chain module an operator names, and GET /api/v1/admin/info build.auth_modules (crates/busbar-core-admin/src/v1/service.rs auth_modules_compiled_in) lists it after 1.5.5's two. CELL: admin.ops|GetInfo|ok. BYTES MOVED (golden -> candidate): body /build/auth_modules [\"keys\",\"admin-tokens\"] -> [\"keys\",\"admin-tokens\",\"busbar-auth-webhook-signature\"]; every other member unchanged. kind=additive: 1.5.5's two names keep their place and value. PREMISE (evaluated): status 200 and the list is exactly 1.5.5's two followed by this one module, so any other change to the list withholds the entry. Not yet measured: no oracle run executes until #911 lands; the first post-#911 run confirms it."
+    },
+    {
       "id": "M-1 refund reaches the cell the charge reached",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a failed request's flat fee is refunded from the window bucket it was charged to, even when that bucket has rolled into the next window.",

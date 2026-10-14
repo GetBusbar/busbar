@@ -139,6 +139,9 @@ busbar-auth-header = { workspace = true, optional = true }
 # kernel holds no auth style). Each lives in its own repo, pulled at a pinned rev.
 busbar-auth-sigv4 = { workspace = true, optional = true }
 busbar-auth-oauth = { workspace = true, optional = true }
+# THE WEBHOOK-SIGNATURE STYLE: the inbound auth plugin that verifies a webhook sender's HMAC (Twilio,
+# Standard Webhooks), linked through the `auths` axis under its own feature (default-on).
+busbar-auth-webhook-signature = { workspace = true, optional = true }
 # THE REQUEST-LOG FILE SINK (`module: request-log-file`), a first-party EXPORT plugin linked through
 # the `exports` axis (K9b) — the same row a signed tarball of it registers when dropped in. It lives
 # in its own repo (GetBusbar/busbar-export-file) and is pulled at a PINNED rev; the workspace `[patch]`
@@ -230,7 +233,7 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
 # SAME default set the monolithic crate had; `root-admin` is the addition, and it is a path rather
 # than a surface — the operations, their bytes and their features are unchanged.
-default = ["auth-admin-tokens", "auth-header", "auth-sigv4", "auth-oauth", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp"]
+default = ["auth-admin-tokens", "auth-header", "auth-sigv4", "auth-oauth", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp", "auth-webhook-signature"]
 # A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
 # feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
 # be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
@@ -342,6 +345,11 @@ auth-header = ["dep:busbar-auth-header"]
 # serves binds only when a signed tarball of the module is dropped into `plugins/`.
 auth-sigv4 = ["dep:busbar-auth-sigv4"]
 auth-oauth = ["dep:busbar-auth-oauth"]
+# THE WEBHOOK-SIGNATURE ROW, default-on (ARCHITECT 2026-10-14): Twilio Media Streams, Standard Webhooks
+# and the OpenAI Responses webhook are verified by it (BUSBAR-1.6.0.md l.847-852, l.4835). It declares an
+# inbound capability, so `GET /api/v1/admin/info` `build.auth_modules` lists it after 1.5.5's
+# `["keys","admin-tokens"]` (accepted difference `#64-class build.auth_modules lists the webhook-signature module`).
+auth-webhook-signature = ["dep:busbar-auth-webhook-signature"]
 hooks-ranking = ["dep:busbar-hook-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
@@ -374,6 +382,7 @@ auth-admin-tokens = "busbar-auth-admin-tokens-plugin"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "busbar-auth-oauth"
+auth-webhook-signature = "busbar-auth-webhook-signature"
 # THE COLD-KIND AXIS's in-process rows: the default store (a required dependency: every build links
 # it) and the ranking hooks (under their feature).
 store-memory = "busbar-store-memory"
@@ -425,6 +434,7 @@ auth-admin-tokens = "auths"
 auth-header = "auths"
 auth-sigv4 = "auths"
 auth-oauth = "auths"
+auth-webhook-signature = "auths"
 store-memory = "stores"
 hooks-ranking = "hooks"
 secret-env = "secret-doors"
@@ -453,6 +463,7 @@ busbar-auth-admin-tokens-plugin = "busbar_auth_admin_tokens_plugin"
 busbar-auth-header = "busbar_auth_header::compiled_in"
 busbar-auth-sigv4 = "busbar_auth_sigv4::compiled_in"
 busbar-auth-oauth = "busbar_auth_oauth::compiled_in"
+busbar-auth-webhook-signature = "busbar_auth_webhook_signature::compiled_in"
 # A plane door row's entry is the module that exports its `door`.
 plane-decisions = "busbar_plane_decisions::plane_door"
 llm-on-driver = "busbar_plane_llm::plane_door"
@@ -483,6 +494,7 @@ auth-admin-tokens = "admin-tokens"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "busbar-auth-oauth"
+auth-webhook-signature = "busbar-auth-webhook-signature"
 
 # The CANONICAL name of an `auths` row whose key is not its manifest name: the name its signed
 # tarball's manifest states (plugins.yaml `manifest_name`, the repo). Config may name the row by
