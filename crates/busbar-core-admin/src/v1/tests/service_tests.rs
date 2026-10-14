@@ -4394,8 +4394,10 @@ fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
     }
     let app = crate::new_test_app().plugin_trust(refusing_root).build();
     assert_eq!(
-        super::operations::trust_policy(&app, "1.6.0").unwrap_err(),
-        "the root's refusal"
+        super::operations::trust_policy(&app, "1.6.0")
+            .err()
+            .as_deref(),
+        Some("the root's refusal")
     );
     let mut none = (*app).clone();
     none.plugin_trust = None;

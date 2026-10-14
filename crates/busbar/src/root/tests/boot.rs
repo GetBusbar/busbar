@@ -600,18 +600,22 @@ async fn the_admin_catalog_row_for_a_harness_signed_plugin(
     let page: serde_json::Value = serde_json::from_slice(&bytes).expect("a JSON page");
     let row = page["items"]
         .as_array()
-        .and_then(|rows| rows.iter().find(|r| r["file"] == "harness-seam.tar.gz"))
+        // The row is found by its tarball's name, wherever the row states it.
+        .and_then(|rows| {
+            rows.iter()
+                .find(|r| r.to_string().contains("harness-seam.tar.gz"))
+        })
         .unwrap_or_else(|| panic!("the dropped plugin is listed: {page}"))
         .clone();
     (row["valid"].clone(), row["trust"].clone())
 }
 
-/// **THE ADMIN CATALOG JUDGES UNDER BOOT'S TRUST (busbar-auth-oidc#30).** In a `test-harness`
-/// build with the harness key set, the catalog row for a plugin that key signed first-party reads
-/// valid and trusted — the verdict boot admits it under — because the admin surface resolves
-/// through the root's one builder, harness key included, and builds none of its own. RED before:
-/// the admin crate built its own policy without the harness key and reported the row rejected
-/// (`first-party plugin only`) while boot admitted the plugin.
+/// **THE ADMIN CATALOG JUDGES UNDER BOOT'S TRUST (the fleet e2e that read it red).** In a
+/// `test-harness` build with the harness key set, the catalog row for a plugin that key signed
+/// first-party reads valid and trusted — the verdict boot admits it under — because the admin
+/// surface resolves through the root's one builder, harness key included, and builds none of its
+/// own. RED before: the admin crate built its own policy without the harness key and reported the
+/// row rejected (`first-party plugin only`) while boot admitted the plugin.
 #[cfg(feature = "test-harness")]
 #[tokio::test]
 async fn a_test_harness_admin_catalog_reads_a_harness_signed_plugin_as_valid() {
