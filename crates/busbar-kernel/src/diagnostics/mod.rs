@@ -798,23 +798,22 @@ pub const TRUST_SWEEP_NOT_ATTEMPTED: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// A scheduled trust sweep could not authenticate the upstream; recorded as a failed contact.
+/// RETIRED: nothing emits it, and no anomaly breaker counts a failed contact. The number is kept so
+/// an operator's old logs stay resolvable.
 pub const TRUST_SWEEP_CONTACT_FAILED: Diagnostic = Diagnostic {
     code: 4018,
     class: Class::Auth,
     slug: "trust-sweep-contact-failed",
-    title: "Scheduled trust sweep could not authenticate the upstream (failed contact recorded)",
+    title: "Scheduled trust sweep could not authenticate the upstream (failed contact recorded) — \
+            RETIRED",
     severity: Severity::Actionable,
     summary:
-        "A scheduled trust sweep reached the upstream but could not authenticate it, so busbar \
-              records a failed contact against the registration. Repeated failed contacts feed the \
-              anomaly breaker toward suspension (see BUSBAR-4021).",
-    action:
-        "Investigate the named upstream's reachability and credentials for the logged subject. \
-             A transient failure is recorded and self-heals on a later clean sweep; persistent \
-             failures will suspend the registration.",
+        "RETIRED. Nothing emits this code, and no anomaly breaker counts a failed contact toward \
+              suspension (there is none). A registration stops serving only on a drift \
+              (BUSBAR-4019) or an operator's suspension.",
+    action: "Nothing emits this code. See BUSBAR-4019.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 /// The upstream DRIFTED from the approved pin; the registration is demoted until re-approved.

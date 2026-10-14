@@ -651,15 +651,15 @@ A scheduled trust sweep could not even be ATTEMPTED for a registration (a local 
 **What to do:** Investigate the logged reason for the named subject — typically a local resource or config problem preventing the sweep from starting. Trust state is preserved, not demoted; resolve the cause so the registration is re-verified on schedule.
 
 <a id="trust-sweep-contact-failed"></a>
-### BUSBAR-4018 — Scheduled trust sweep could not authenticate the upstream (failed contact recorded)
+### BUSBAR-4018 — Scheduled trust sweep could not authenticate the upstream (failed contact recorded) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `trust-sweep-contact-failed`
 
-A scheduled trust sweep reached the upstream but could not authenticate it, so busbar records a failed contact against the registration. Repeated failed contacts feed the anomaly breaker toward suspension (see BUSBAR-4021).
+RETIRED. Nothing emits this code, and no anomaly breaker counts a failed contact toward suspension (there is none). A registration stops serving only on a drift (BUSBAR-4019) or an operator's suspension.
 
-**What to do:** Investigate the named upstream's reachability and credentials for the logged subject. A transient failure is recorded and self-heals on a later clean sweep; persistent failures will suspend the registration.
+**What to do:** Nothing emits this code. See BUSBAR-4019.
 
 <a id="trust-upstream-drifted"></a>
 ### BUSBAR-4019 — Upstream drifted from the approved pin (registration demoted)
