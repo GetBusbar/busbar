@@ -1184,17 +1184,13 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         // hook chose the serving member, after the plane's own fields, as 1.5.5
                         // stamped them; nothing on the default path or when no hook chose.
                         let chosen = self.lock().route_policy;
-                        if let Some(name) = chosen.filter(|_| {
-                            !bufs.member.is_empty() && crate::proxy::route_policy_headers_enabled()
-                        }) {
-                            fields.push((
-                                crate::proxy::HDR_ROUTE_POLICY.as_bytes().to_vec(),
-                                name.as_bytes().to_vec(),
-                            ));
-                            fields.push((
-                                crate::proxy::HDR_ROUTE_TARGET.as_bytes().to_vec(),
-                                bufs.member.clone(),
-                            ));
+                        if chosen.is_some() {
+                            route_policy_fields(
+                                &mut fields,
+                                crate::proxy::route_policy_headers_enabled(),
+                                chosen,
+                                &bufs.member,
+                            );
                         }
                         self.caller.head(out.reply_status, fields);
                         // The answer's head is the `response` stage (1.5.5 fires it at head time,
@@ -1240,6 +1236,29 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             return Step::Answered(out.flags & EMIT_DONE != 0);
         }
+    }
+}
+
+/// THE ROUTE-POLICY TRANSPARENCY FIELDS (opt-in, `advanced.response_headers.route_policy`), as
+/// 1.5.5's `maybe_attach_route_policy_gated` gated them: the pair goes after the plane's own fields
+/// only when the operator opted in (`enabled`, the outer gate) AND a non-default policy chose the
+/// serving member (`policy`, the inner gate), naming the policy and the member; a local answer
+/// (no member) and every other combination add nothing.
+fn route_policy_fields(
+    fields: &mut HeadFields,
+    enabled: bool,
+    policy: Option<&str>,
+    member: &[u8],
+) {
+    if let Some(name) = policy.filter(|_| enabled && !member.is_empty()) {
+        fields.push((
+            crate::proxy::HDR_ROUTE_POLICY.as_bytes().to_vec(),
+            name.as_bytes().to_vec(),
+        ));
+        fields.push((
+            crate::proxy::HDR_ROUTE_TARGET.as_bytes().to_vec(),
+            member.to_vec(),
+        ));
     }
 }
 
