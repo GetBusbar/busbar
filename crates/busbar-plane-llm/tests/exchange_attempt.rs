@@ -586,3 +586,1093 @@ fn a_same_dialect_callers_accept_never_replaces_busbars_own() {
     let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
     assert_eq!(field(&r, "accept"), [b"text/event-stream".as_slice()]);
 }
+
+// ── rehomed from the legacy engine's request-assembly tests ─────────────────────────────────────
+
+use busbar_contract::codec::IngressReject;
+use busbar_contract::operation::OpVerb;
+use busbar_plane_llm::exchange::reply::whole::{self, WholeCtx, WholeEnd};
+use busbar_plane_llm::exchange::shaping::Lane;
+
+/// The six dialects a far end speaks.
+const DIALECTS: [&str; 6] = [
+    "openai",
+    "anthropic",
+    "gemini",
+    "cohere",
+    "bedrock",
+    "responses",
+];
+
+/// One provider of `dialect` serving one model `member` (sent as `wire` when given), in pool `p`;
+/// `provider_extra` are further provider settings (`path`, `path_base`, `organization`, ...).
+fn one_lane(
+    dialect: &str,
+    member: &str,
+    wire: Option<&str>,
+    provider_extra: &[(&str, &str)],
+) -> Shaping {
+    let mut provider = serde_json::Map::new();
+    provider.insert("protocol".into(), json!(dialect));
+    provider.insert("base_url".into(), json!("https://far.example"));
+    for (k, v) in provider_extra {
+        provider.insert((*k).to_string(), json!(v));
+    }
+    let mut model = serde_json::Map::new();
+    model.insert("provider".into(), json!("far"));
+    if let Some(w) = wire {
+        model.insert("upstream_model".into(), json!(w));
+    }
+    let mut models = serde_json::Map::new();
+    models.insert(member.to_string(), Value::Object(model));
+    Shaping::from_settings(&json!({
+        "providers": { "far": Value::Object(provider) },
+        "models": Value::Object(models),
+        "pools": { "p": { "members": [member] } }
+    }))
+    .expect("reads")
+}
+
+fn far_json(r: &FarRequest) -> Value {
+    busbar_plane_llm::codec::json::parse(&r.body).expect("the far body is JSON")
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs::same_dialect_anthropic_forwards_every_client_header`.
+/// 1.5.5 behaviour pinned: a same-dialect anthropic caller's `anthropic-version`
+/// `2020-01-01-clienttest` (not busbar's default `2023-06-01`), its one comma-joined
+/// `anthropic-beta` value and an arbitrary `x-client-trace` reach the far end verbatim.
+/// RED if busbar's default version wins, the beta value is split or rewritten, or the trace is
+/// dropped.
+#[test]
+fn a_same_dialect_anthropic_callers_own_version_beta_and_trace_go_out() {
+    let h = head(&[
+        ("content-type", "application/json"),
+        (
+            "anthropic-beta",
+            "prompt-caching-2024-07-31,message-batches-2024-09-24",
+        ),
+        ("anthropic-version", "2020-01-01-clienttest"),
+        ("x-client-trace", "abc"),
+    ]);
+    let a = arrived(
+        "/v1/messages",
+        &h,
+        r#"{"model":"claude","messages":[{"role":"user","content":"hi"}],"max_tokens":100}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    assert_eq!(
+        field(&r, "anthropic-version"),
+        [b"2020-01-01-clienttest".as_slice()],
+        "the caller's version wins over busbar's 2023-06-01"
+    );
+    assert_eq!(
+        field(&r, "anthropic-beta"),
+        [b"prompt-caching-2024-07-31,message-batches-2024-09-24".as_slice()]
+    );
+    assert_eq!(field(&r, "x-client-trace"), [b"abc".as_slice()]);
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs::same_dialect_openai_forwards_headers_and_unknown_body_fields`.
+/// 1.5.5 behaviour pinned: on a same-dialect OPENAI route the caller's `openai-beta: assistants=v2`,
+/// `x-client-trace: abc` and its own `user-agent: OpenAI/Python 9.9.9` (over busbar's native
+/// default) go out, and an unknown body member `x_vendor_flag: true` rides through.
+/// RED if any of the three fields is dropped or replaced, or the unknown member is lost.
+#[test]
+fn a_same_dialect_openai_callers_fields_and_unknown_member_go_out() {
+    let h = head(&[
+        ("content-type", "application/json"),
+        ("openai-beta", "assistants=v2"),
+        ("x-client-trace", "abc"),
+        ("user-agent", "OpenAI/Python 9.9.9"),
+    ]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"gpt","messages":[{"role":"user","content":"hi"}],"x_vendor_flag":true}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    assert_eq!(field(&r, "openai-beta"), [b"assistants=v2".as_slice()]);
+    assert_eq!(field(&r, "x-client-trace"), [b"abc".as_slice()]);
+    assert_eq!(
+        field(&r, "user-agent"),
+        [b"OpenAI/Python 9.9.9".as_slice()],
+        "the caller's user-agent wins over busbar's native default"
+    );
+    assert_eq!(far_json(&r)["x_vendor_flag"], json!(true));
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs::neutral_apply_replaces_then_appends`.
+/// 1.5.5 behaviour pinned: for a field busbar itself writes with a default, a caller that sends
+/// TWO values replaces the default with its first and appends the rest, in order: the far request
+/// carries exactly `["first", "second"]`, at busbar's position, and never busbar's default.
+/// RED if the default survives, a value is lost, or the order changes.
+#[test]
+fn a_callers_two_values_replace_busbars_default_then_append() {
+    let h = head(&[
+        ("content-type", "application/json"),
+        ("user-agent", "first"),
+        ("user-agent", "second"),
+    ]);
+    let a = arrived(
+        "/v1/messages",
+        &h,
+        r#"{"model":"claude","max_tokens":5,"messages":[]}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    assert_eq!(
+        field(&r, "user-agent"),
+        [b"first".as_slice(), b"second".as_slice()]
+    );
+    let names: Vec<&str> = r.fields.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "anthropic-version",
+            "content-type",
+            "user-agent",
+            "user-agent",
+            "accept"
+        ],
+        "busbar's position, the caller's values"
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs::the_tenant_comes_from_config_never_from_the_caller`.
+/// 1.5.5 behaviour pinned, all four legs, each with a caller sending `org-caller`/`proj-caller`:
+/// an openai caller to an openai lane configured `org-cfg`/`proj-cfg` sends those; an ANTHROPIC
+/// caller to that lane (translated) sends those too; an openai lane with no tenant configured sends
+/// neither; an ANTHROPIC lane configured with a tenant sends neither (it declares no selector).
+/// RED if the caller's selector ever goes out, or any leg sends the wrong pair.
+#[test]
+fn the_tenant_comes_from_config_on_every_route_and_never_from_the_caller() {
+    let caller = |ct: &'static str| {
+        head(&[
+            ("content-type", ct),
+            ("openai-organization", "org-caller"),
+            ("openai-project", "proj-caller"),
+        ])
+    };
+    let tenant = [("organization", "org-cfg"), ("project", "proj-cfg")];
+    let seen = |r: &FarRequest| {
+        (
+            field(r, "openai-organization")
+                .first()
+                .map(|v| String::from_utf8_lossy(v).into_owned()),
+            field(r, "openai-project")
+                .first()
+                .map(|v| String::from_utf8_lossy(v).into_owned()),
+        )
+    };
+    let configured = (Some("org-cfg".to_string()), Some("proj-cfg".to_string()));
+    let openai_body = r#"{"model":"test-model","messages":[{"role":"user","content":"hi"}]}"#;
+    let anthropic_body =
+        r#"{"model":"test-model","messages":[{"role":"user","content":"hi"}],"max_tokens":100}"#;
+    let h = caller("application/json");
+
+    let s = one_lane("openai", "test-model", None, &tenant);
+    let a = arrived("/v1/chat/completions", &h, openai_body);
+    let r = build(&a, &h, &s, "p", "test-model").expect("built");
+    assert_eq!(seen(&r), configured, "openai caller, openai lane");
+
+    let a = arrived("/v1/messages", &h, anthropic_body);
+    let r = build(&a, &h, &s, "p", "test-model").expect("built");
+    assert_eq!(seen(&r), configured, "anthropic caller, openai lane");
+
+    let s = one_lane("openai", "test-model", None, &[]);
+    let a = arrived("/v1/chat/completions", &h, openai_body);
+    let r = build(&a, &h, &s, "p", "test-model").expect("built");
+    assert_eq!(seen(&r), (None, None), "openai lane, no tenant configured");
+
+    let s = one_lane("anthropic", "test-model", None, &tenant);
+    let a = arrived("/v1/messages", &h, anthropic_body);
+    let r = build(&a, &h, &s, "p", "test-model").expect("built");
+    assert_eq!(
+        seen(&r),
+        (None, None),
+        "anthropic lane declares no selector"
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/egress_target_tests.rs::egress_targets_match_reference_composition_all_protocols`.
+/// 1.5.5 behaviour pinned: for a lane of each of the six dialects named `m-1`, a chat attempt's
+/// target is the dialect's released chat path for both stream intents (gemini
+/// `:generateContent` / `:streamGenerateContent`, bedrock `converse` / `converse-stream`), percent-
+/// encoded on the wire, and its signing path is the wire path encoded again (no query).
+/// RED if any of the twelve targets or signing paths differs.
+#[test]
+fn every_dialects_chat_target_is_its_released_path_both_stream_intents() {
+    let h = head(&[("content-type", "application/json")]);
+    let table: [(&str, bool, &str, &str); 12] = [
+        (
+            "openai",
+            false,
+            "/v1/chat/completions",
+            "/v1/chat/completions",
+        ),
+        (
+            "openai",
+            true,
+            "/v1/chat/completions",
+            "/v1/chat/completions",
+        ),
+        ("anthropic", false, "/v1/messages", "/v1/messages"),
+        ("anthropic", true, "/v1/messages", "/v1/messages"),
+        (
+            "gemini",
+            false,
+            "/v1beta/models/m-1%3AgenerateContent",
+            "/v1beta/models/m-1%253AgenerateContent",
+        ),
+        (
+            "gemini",
+            true,
+            "/v1beta/models/m-1%3AstreamGenerateContent",
+            "/v1beta/models/m-1%253AstreamGenerateContent",
+        ),
+        ("cohere", false, "/v2/chat", "/v2/chat"),
+        ("cohere", true, "/v2/chat", "/v2/chat"),
+        (
+            "bedrock",
+            false,
+            "/model/m-1/converse",
+            "/model/m-1/converse",
+        ),
+        (
+            "bedrock",
+            true,
+            "/model/m-1/converse-stream",
+            "/model/m-1/converse-stream",
+        ),
+        ("responses", false, "/v1/responses", "/v1/responses"),
+        ("responses", true, "/v1/responses", "/v1/responses"),
+    ];
+    for (dialect, stream, wire, canonical) in table {
+        let s = one_lane(dialect, "m-1", None, &[]);
+        let body = format!(
+            r#"{{"model":"m-1","stream":{stream},"messages":[{{"role":"user","content":"hi"}}]}}"#
+        );
+        let a = arrived("/v1/chat/completions", &h, &body);
+        let r = build(&a, &h, &s, "p", "m-1").unwrap_or_else(|e| panic!("{dialect}: {e:?}"));
+        assert_eq!(r.target, wire, "{dialect} stream {stream}");
+        let lane = s.lane("m-1").expect("the lane");
+        let path = upstream_path(lane, OpVerb::CHAT, stream).expect("a path");
+        assert_eq!(
+            wire_and_canonical_path(&path),
+            (wire.to_string(), canonical.to_string()),
+            "{dialect} stream {stream}"
+        );
+    }
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/egress_target_tests.rs::egress_targets_honor_azure_path_override_with_query`.
+/// 1.5.5 behaviour pinned: an openai lane whose provider path is
+/// `/openai/deployments/gpt-4o/chat/completions?api-version=2024-06-01` is sent exactly that
+/// (query kept verbatim, so the kernel's join is `base + path`), and its signing path is the path
+/// without the query. RED if the query is dropped or re-encoded, or the signing path keeps it.
+#[test]
+fn a_provider_path_with_a_query_is_the_target_verbatim() {
+    let fixed = "/openai/deployments/gpt-4o/chat/completions?api-version=2024-06-01";
+    let s = one_lane("openai", "gpt-4o", None, &[("path", fixed)]);
+    let h = head(&[("content-type", "application/json")]);
+    for stream in [false, true] {
+        let body = format!(r#"{{"model":"gpt-4o","stream":{stream},"messages":[]}}"#);
+        let a = arrived("/v1/chat/completions", &h, &body);
+        let r = build(&a, &h, &s, "p", "gpt-4o").expect("built");
+        assert_eq!(r.target, fixed, "stream {stream}");
+    }
+    let lane = s.lane("gpt-4o").expect("the lane");
+    let path = upstream_path(lane, OpVerb::CHAT, false).expect("a path");
+    assert_eq!(
+        wire_and_canonical_path(&path),
+        (
+            fixed.to_string(),
+            "/openai/deployments/gpt-4o/chat/completions".to_string()
+        )
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_egress_accept_matches_native_sdk`.
+/// 1.5.5 behaviour pinned: every far request carries the native SDK's `accept`: a bedrock far end
+/// `application/vnd.amazon.eventstream` streamed and `application/json` buffered; anthropic,
+/// openai, responses, gemini and cohere `text/event-stream` streamed and `application/json`
+/// buffered. The legacy table's unknown dialect cannot be a lane here: a provider naming one is
+/// refused when the tables are read, so no far request can go out without its accept.
+/// RED if any dialect's accept differs or a provider of an unknown dialect is accepted.
+#[test]
+fn every_far_end_reads_its_native_sdks_accept() {
+    let h = head(&[("content-type", "application/json")]);
+    for dialect in DIALECTS {
+        let s = one_lane(dialect, "m-1", None, &[]);
+        for stream in [false, true] {
+            let body = format!(
+                r#"{{"model":"m-1","stream":{stream},"messages":[{{"role":"user","content":"hi"}}]}}"#
+            );
+            let a = arrived("/v1/chat/completions", &h, &body);
+            let r = build(&a, &h, &s, "p", "m-1").expect("built");
+            let want: &[u8] = match (dialect, stream) {
+                ("bedrock", true) => b"application/vnd.amazon.eventstream",
+                (_, true) => b"text/event-stream",
+                (_, false) => b"application/json",
+            };
+            assert_eq!(field(&r, "accept"), [want], "{dialect} stream {stream}");
+        }
+    }
+    let refused = Shaping::from_settings(&json!({
+        "providers": { "far": { "protocol": "mystery", "base_url": "https://far.example" } },
+        "models": { "m-1": { "provider": "far" } }
+    }));
+    assert!(refused.is_err(), "an unknown dialect is never a lane");
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_forward_once_cross_protocol_strips_source_only_extra_keys`.
+/// 1.5.5 behaviour pinned: an openai caller's `logprobs`, `top_logprobs` and `n` never reach an
+/// anthropic far end; the translated request is written (the attempt goes out) and carries the
+/// messages. The served attempt has one path for the preferred and the degraded member alike.
+/// RED if any of the three keys reaches the anthropic body, or the attempt is refused.
+#[test]
+fn an_openai_callers_source_only_keys_never_reach_an_anthropic_far_end() {
+    let h = head(&[("content-type", "application/json")]);
+    let s = one_lane("anthropic", "claude-3", None, &[]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"leastbad","messages":[{"role":"user","content":"hi"}],"max_tokens":16,"logprobs":true,"top_logprobs":5,"n":1}"#,
+    );
+    let r = build(&a, &h, &s, "p", "claude-3").expect("the attempt goes out");
+    let v = far_json(&r);
+    let obj = v.as_object().expect("an object");
+    for key in ["logprobs", "top_logprobs", "n"] {
+        assert!(!obj.contains_key(key), "{key} leaked: {v}");
+    }
+    assert!(obj.contains_key("messages"), "{v}");
+}
+
+fn openai_ok_body() -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "id": "chatcmpl-x",
+        "object": "chat.completion",
+        "model": "glm-4.5",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": "hi there"},
+            "finish_reason": "stop"
+        }],
+        "usage": {"prompt_tokens": 5, "completion_tokens": 3}
+    }))
+    .expect("JSON")
+}
+
+fn anthropic_ok_body() -> Vec<u8> {
+    serde_json::to_vec(&json!({
+        "id": "msg_x",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-x",
+        "content": [{"type": "text", "text": "hi there"}],
+        "stop_reason": "end_turn",
+        "usage": {"input_tokens": 5, "output_tokens": 3}
+    }))
+    .expect("JSON")
+}
+
+fn whole_ctx<'a>(a: &'a Arrived, egress: &'a str, model: &'a str) -> WholeCtx<'a> {
+    WholeCtx {
+        ingress: a.dialect,
+        egress,
+        operation: a.operation,
+        model,
+        wants_stream: false,
+        json_array: false,
+        request: a.parsed.as_ref(),
+        now_s: 1_752_000_000,
+        elapsed_ms: Some(12),
+    }
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_cohere_ingress_to_openai_backend`.
+/// 1.5.5 behaviour pinned: a cohere caller (`/v2/chat`, model `co`) onto an openai lane
+/// `glm-4.5`: the far request is an OpenAI body with a `messages` array naming `glm-4.5`, the
+/// caller's own credential (`authorization: Bearer t`) never goes out (the kernel adds the lane's
+/// key after this request is written), and the far end's answer reaches the caller as a 200.
+/// RED if the far body is not OpenAI-shaped, the caller's credential is forwarded, or the round
+/// trip is not a delivered 200.
+#[test]
+fn a_cohere_caller_reaches_an_openai_far_end_and_back() {
+    let h = head(&[
+        ("content-type", "application/json"),
+        ("authorization", "Bearer t"),
+    ]);
+    let s = one_lane("openai", "glm-4.5", None, &[]);
+    let a = arrived(
+        "/v2/chat",
+        &h,
+        r#"{"model":"co","messages":[{"role":"user","content":"hello"}]}"#,
+    );
+    assert_eq!(a.dialect, "cohere");
+    let r = build(&a, &h, &s, "co", "glm-4.5").expect("built");
+    assert_eq!(r.target, "/v1/chat/completions");
+    let v = far_json(&r);
+    assert!(v.get("messages").is_some_and(Value::is_array), "{v}");
+    assert_eq!(v["model"], "glm-4.5");
+    assert!(
+        field(&r, "authorization").is_empty(),
+        "the caller's credential never goes out"
+    );
+    let w = whole::translate(&whole_ctx(&a, "openai", "glm-4.5"), 200, &openai_ok_body());
+    assert_eq!(w.end, WholeEnd::Delivered, "{:?}", w.refused);
+    assert_eq!(w.answer.status, 200);
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_responses_ingress_to_anthropic_backend`.
+/// 1.5.5 behaviour pinned: a responses caller (`/v1/responses`) onto an anthropic lane: the far
+/// request carries an anthropic `messages` array and the far end's answer reaches the caller as a
+/// 200. RED if the far body has no messages or the round trip is not a delivered 200.
+#[test]
+fn a_responses_caller_reaches_an_anthropic_far_end_and_back() {
+    let h = head(&[("content-type", "application/json")]);
+    let s = one_lane("anthropic", "claude-x", None, &[]);
+    let a = arrived(
+        "/v1/responses",
+        &h,
+        r#"{"model":"re","input":"hello","max_tokens":16}"#,
+    );
+    assert_eq!(a.dialect, "responses");
+    let r = build(&a, &h, &s, "re", "claude-x").expect("built");
+    assert_eq!(r.target, "/v1/messages");
+    let v = far_json(&r);
+    assert!(v.get("messages").is_some_and(Value::is_array), "{v}");
+    let w = whole::translate(
+        &whole_ctx(&a, "anthropic", "claude-x"),
+        200,
+        &anthropic_ok_body(),
+    );
+    assert_eq!(w.end, WholeEnd::Delivered, "{:?}", w.refused);
+    assert_eq!(w.answer.status, 200);
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_bedrock_same_protocol_passthrough_strips_shim_keys`.
+/// 1.5.5 behaviour pinned: a bedrock caller to a bedrock far end (provider path `/v1/messages`):
+/// the `model` and `stream` the arrival carried for routing never reach the far end, the native
+/// `messages` does, and the body is the caller's own bytes. RED if `model` or `stream` leaks.
+#[test]
+fn a_bedrock_same_dialect_relay_carries_no_routing_members() {
+    let h = head(&[("content-type", "application/json")]);
+    let s = one_lane("bedrock", "foo", None, &[("path", "/v1/messages")]);
+    let body = r#"{"messages":[{"role":"user","content":[{"text":"hello"}]}]}"#;
+    let a = arrived("/model/foo/converse", &h, body);
+    let r = build(&a, &h, &s, "foo", "foo").expect("built");
+    assert_eq!(r.target, "/v1/messages");
+    let v = far_json(&r);
+    assert!(v.get("model").is_none(), "{v}");
+    assert!(v.get("stream").is_none(), "{v}");
+    assert!(v.get("messages").is_some(), "{v}");
+    assert_eq!(String::from_utf8_lossy(&r.body), body);
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_gemini_json_array_shim_not_leaked_cross_protocol`.
+/// 1.5.5 behaviour pinned: a gemini `:streamGenerateContent` caller with no `alt=sse` (a JSON-array
+/// caller) onto an openai far end: busbar's array-stream key never reaches the far end, and the
+/// writer's `stream: true` does (the far end must stream). RED if the key leaks or `stream` is
+/// not true.
+#[test]
+fn a_gemini_json_array_callers_router_key_never_reaches_a_body_model_far_end() {
+    let h = head(&[("content-type", "application/json")]);
+    let s = one_lane("openai", "foo", None, &[]);
+    let a = arrived(
+        "/v1beta/models/foo:streamGenerateContent",
+        &h,
+        r#"{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}"#,
+    );
+    assert!(a.path_model.as_ref().is_some_and(|p| p.json_array));
+    let r = build(&a, &h, &s, "foo", "foo").expect("built");
+    let v = far_json(&r);
+    assert!(v.get("__busbar_gemini_json_array").is_none(), "{v}");
+    assert_eq!(v.get("stream").and_then(Value::as_bool), Some(true), "{v}");
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_reject_response_tests.rs::unsupported_sub_op_rejects_with_404_naming_op_and_model`.
+/// 1.5.5 behaviour pinned: a sub-operation the caller's dialect turns away is a 404
+/// `not_found_error` whose sentence names the operation by its published name (`image`) and the
+/// model (`dall-e-2`), never a Rust Debug shape. RED if the status, the kind or the naming differs.
+#[test]
+fn an_unsupported_sub_operation_is_a_404_naming_the_operation_and_the_model() {
+    let refused = ingress_reject(
+        "openai",
+        &IngressReject::UnsupportedSubOp {
+            op: OpVerb::IMAGE,
+            model: "dall-e-2".into(),
+        },
+    );
+    assert_eq!(refused.status, 404);
+    assert_eq!(refused.kind, "not_found_error");
+    let r = busbar_plane_llm::exchange::refuse::answered(&refused);
+    assert_eq!(r.status, 404);
+    let v: Value = serde_json::from_slice(&r.body).expect("JSON");
+    let detail = v["error"]["message"].as_str().unwrap_or_default();
+    assert!(
+        detail.contains("image") && detail.contains("dall-e-2"),
+        "{detail}"
+    );
+    assert!(
+        !detail.contains("Verb") && !detail.contains("OpShape") && !detail.contains("Invoke"),
+        "{detail}"
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_reject_response_tests.rs::bad_request_reject_keeps_the_unchanged_generic_400`.
+/// 1.5.5 behaviour pinned: a request the caller's dialect cannot read is a 400 reading exactly
+/// "We could not process the content of your request.", whatever the reader's own account.
+/// RED if the status or the sentence differs.
+#[test]
+fn a_bad_request_reject_is_the_generic_400() {
+    let refused = ingress_reject("openai", &IngressReject::BadRequest("x".into()));
+    assert_eq!(refused.status, 400);
+    let r = busbar_plane_llm::exchange::refuse::answered(&refused);
+    assert_eq!(r.status, 400);
+    let v: Value = serde_json::from_slice(&r.body).expect("JSON");
+    assert_eq!(
+        v["error"]["message"].as_str(),
+        Some("We could not process the content of your request.")
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/lazy_body_tests.rs::a_same_dialect_hop_is_the_callers_bytes_with_governed_splices`.
+/// 1.5.5 behaviour pinned, exact bytes, all eight legacy inputs: within one dialect only the
+/// governed members move (an alias model replaced where it stands, busbar's array-stream key
+/// removed, a path-model far end's `model` and `stream` removed); key order, spacing, number
+/// spelling and unknown members stay the caller's, and a non-object body goes out unchanged.
+/// RED if any other byte moves (a re-serialization would sort keys and print `1.50` as `1.5`).
+#[test]
+fn a_same_dialect_hop_is_the_callers_bytes_with_the_governed_splices_only() {
+    let cases: [(&str, &str, &str, &str, &str); 8] = [
+        (
+            "openai",
+            "alias",
+            "gpt-4o-real",
+            r#"{"z":1.50, "model":"alias","never_heard_of":{"y":1,"x":2},"messages":[]}"#,
+            r#"{"z":1.50, "model":"gpt-4o-real","never_heard_of":{"y":1,"x":2},"messages":[]}"#,
+        ),
+        (
+            "anthropic",
+            "claude-3",
+            "claude-3",
+            r#"{"max_tokens":7,"model":"claude-3","messages":[],"zz":{"b":1,"a":2}}"#,
+            r#"{"max_tokens":7,"model":"claude-3","messages":[],"zz":{"b":1,"a":2}}"#,
+        ),
+        (
+            "openai",
+            "gpt-4o",
+            "gpt-4o",
+            r#"{"model":"gpt-4o", "__busbar_gemini_json_array":true,"z":1.50,"a":[]}"#,
+            r#"{"model":"gpt-4o","z":1.50,"a":[]}"#,
+        ),
+        (
+            "gemini",
+            "url-model-x",
+            "url-model-x",
+            r#"{"model":"url-model-x","stream":false,"contents":[{"role":"user","parts":[{"text":"hi"}]}],"b":1,"a":2}"#,
+            r#"{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"b":1,"a":2}"#,
+        ),
+        (
+            "cohere",
+            "alias",
+            "command-r",
+            r#"{"zz_never_heard_of":[1.50,{"b":1,"a":2}], "model":"alias","messages":[]}"#,
+            r#"{"zz_never_heard_of":[1.50,{"b":1,"a":2}], "model":"command-r","messages":[]}"#,
+        ),
+        (
+            "responses",
+            "gpt-4o",
+            "gpt-4o",
+            r#"{"input":"hi", "model":"gpt-4o","zz_never_heard_of":{"b":1,"a":2}}"#,
+            r#"{"input":"hi", "model":"gpt-4o","zz_never_heard_of":{"b":1,"a":2}}"#,
+        ),
+        (
+            "bedrock",
+            "anthropic.claude",
+            "anthropic.claude",
+            r#"{"model":"anthropic.claude","stream":true,"messages":[{"role":"user","content":[{"text":"hi"}]}], "zz_never_heard_of":{"b":1,"a":2}}"#,
+            r#"{"messages":[{"role":"user","content":[{"text":"hi"}]}], "zz_never_heard_of":{"b":1,"a":2}}"#,
+        ),
+        ("openai", "m", "m", "[1,2,3]", "[1,2,3]"),
+    ];
+    for (dialect, member, wire, carried, want) in cases {
+        let s = one_lane(dialect, member, Some(wire), &[]);
+        let lane = s.lane(member).expect("the lane");
+        let out = relay_request(lane.shape(), "application/json", carried.as_bytes());
+        assert_eq!(
+            String::from_utf8_lossy(&out.bytes),
+            want,
+            "{dialect}: only the governed members move"
+        );
+    }
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/multi_candidate_degrade_tests.rs::openai_to_anthropic_n_gt_1_is_forwarded_not_rejected`.
+/// 1.5.5 behaviour pinned: an openai `n: 3` onto an anthropic far end is forwarded (the caller
+/// reads the first candidate at 200), never refused; `n` is not on the anthropic body and the
+/// messages are. RED if the attempt is refused or `n` crosses.
+#[test]
+fn an_openai_n_over_one_to_anthropic_is_forwarded_without_n() {
+    let h = head(&[("content-type", "application/json")]);
+    let s = one_lane("anthropic", "claude-3-5-sonnet", None, &[]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":16,"n":3}"#,
+    );
+    let r = build(&a, &h, &s, "p", "claude-3-5-sonnet").expect("forwarded, not refused");
+    let v = far_json(&r);
+    assert!(v.get("n").is_none(), "{v}");
+    assert!(v.get("messages").is_some(), "{v}");
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/multi_candidate_degrade_tests.rs::gemini_ingress_to_openai_candidate_count_gt_1_is_forwarded_not_rejected`.
+/// 1.5.5 behaviour pinned: a gemini `candidateCount: 2` onto an openai far end is forwarded, never
+/// refused, and the translated body carries the messages. RED if the attempt is refused.
+#[test]
+fn a_gemini_candidate_count_over_one_to_openai_is_forwarded() {
+    let h = head(&[("content-type", "application/json")]);
+    let s = one_lane("openai", "gpt-4o", None, &[]);
+    let a = arrived(
+        "/v1beta/models/gpt-4o:generateContent",
+        &h,
+        r#"{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"candidateCount":2}}"#,
+    );
+    let r = build(&a, &h, &s, "p", "gpt-4o").expect("forwarded, not refused");
+    assert!(far_json(&r).get("messages").is_some());
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/multi_candidate_degrade_tests.rs::openai_to_openai_n_gt_1_is_preserved_verbatim`.
+/// 1.5.5 behaviour pinned: a same-dialect openai `n: 3` is not refused and goes out with `n: 3`
+/// (every candidate asked), as the caller's bytes. RED if `n` changes or the attempt is refused.
+#[test]
+fn a_same_dialect_openai_n_over_one_is_relayed_unchanged() {
+    let h = head(&[("content-type", "application/json")]);
+    let s = one_lane("openai", "gpt-4o", None, &[]);
+    let body = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"n":3}"#;
+    let a = arrived("/v1/chat/completions", &h, body);
+    let r = build(&a, &h, &s, "p", "gpt-4o").expect("not refused");
+    assert_eq!(far_json(&r).get("n"), Some(&json!(3)));
+    assert_eq!(String::from_utf8_lossy(&r.body), body);
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/multi_candidate_degrade_tests.rs::multi_input_embeddings_to_gemini_embeds_first_not_rejected`.
+/// 1.5.5 behaviour pinned: openai embeddings with three inputs onto a gemini `:embedContent` far
+/// end embed the FIRST input (`content.parts[0].text == "alpha"`) and are never refused.
+/// RED if the attempt is refused or another input is embedded.
+#[test]
+fn multi_input_embeddings_to_gemini_embed_the_first() {
+    let h = head(&[("content-type", "application/json")]);
+    let s = one_lane("gemini", "text-embedding-004", None, &[]);
+    let a = arrived(
+        "/v1/embeddings",
+        &h,
+        r#"{"model":"text-embedding-3-small","input":["alpha","beta","gamma"]}"#,
+    );
+    assert_eq!(a.operation, OpVerb::EMBEDDINGS);
+    let r = build(&a, &h, &s, "p", "text-embedding-004").expect("forwarded, not refused");
+    assert_eq!(
+        far_json(&r).pointer("/content/parts/0/text"),
+        Some(&json!("alpha"))
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/multi_candidate_degrade_tests.rs::single_input_embeddings_to_gemini_is_allowed`.
+/// 1.5.5 behaviour pinned: a single-input openai embeddings request onto gemini is written.
+/// RED if it is refused.
+#[test]
+fn single_input_embeddings_to_gemini_are_written() {
+    let h = head(&[("content-type", "application/json")]);
+    let s = one_lane("gemini", "text-embedding-004", None, &[]);
+    let a = arrived(
+        "/v1/embeddings",
+        &h,
+        r#"{"model":"text-embedding-3-small","input":["alpha"]}"#,
+    );
+    assert!(build(&a, &h, &s, "p", "text-embedding-004").is_ok());
+}
+
+/// The seven family operations the legacy parity test walked, each with a label for the table.
+const OPS: [(OpVerb, &str); 7] = [
+    (OpVerb::CHAT, "chat"),
+    (OpVerb::EMBEDDINGS, "embeddings"),
+    (OpVerb::MODERATION, "moderation"),
+    (OpVerb::IMAGE, "image"),
+    (OpVerb::TRANSCRIPTION, "transcription"),
+    (OpVerb::SPEECH, "speech"),
+    (OpVerb::RERANK, "rerank"),
+];
+
+/// 1.5.5's far path for one dialect, operation and stream intent (v1.5.5
+/// `crates/busbar/src/handlers/{openai,anthropic,gemini,cohere,bedrock,responses}.rs`
+/// `upstream_path`, a provider `path` winning over all of them).
+fn released_path(
+    dialect: &str,
+    op: &str,
+    stream: bool,
+    model: &str,
+    path: Option<&str>,
+    base: Option<&str>,
+) -> String {
+    if let Some(p) = path {
+        return p.to_string();
+    }
+    match dialect {
+        "openai" => match op {
+            "chat" => "/v1/chat/completions",
+            "embeddings" => "/v1/embeddings",
+            "moderation" => "/v1/moderations",
+            "image" => "/v1/images/generations",
+            "transcription" => "/v1/audio/transcriptions",
+            "speech" => "/v1/audio/speech",
+            _ => "/v1/rerank",
+        }
+        .to_string(),
+        "anthropic" => match base {
+            Some(b) => {
+                let verb = if stream {
+                    "streamRawPredict"
+                } else {
+                    "rawPredict"
+                };
+                format!("{b}/{model}:{verb}")
+            }
+            None => "/v1/messages".to_string(),
+        },
+        "gemini" => {
+            let b = base.unwrap_or("/v1beta/models");
+            let action = match op {
+                "embeddings" => "embedContent",
+                "image" => "predict",
+                "chat" | "transcription" | "speech" if stream => "streamGenerateContent",
+                _ => "generateContent",
+            };
+            format!("{b}/{model}:{action}")
+        }
+        "cohere" => match op {
+            "chat" => "/v2/chat",
+            "rerank" => "/v2/rerank",
+            _ => "/v2/embed",
+        }
+        .to_string(),
+        "bedrock" => match (op, stream) {
+            ("chat", true) => format!("/model/{model}/converse-stream"),
+            ("chat", false) => format!("/model/{model}/converse"),
+            _ => format!("/model/{model}/invoke"),
+        },
+        _ => "/v1/responses".to_string(),
+    }
+}
+
+/// RFC 3986 percent-encoding of a path with `/` kept, as 1.5.5's `sign_and_wire_path_parts` did
+/// it: the wire path, and the signing path (encoded again, no query).
+fn released_wire(url_path: &str) -> (String, String) {
+    fn encode(p: &str) -> String {
+        p.bytes()
+            .map(|b| match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                    (b as char).to_string()
+                }
+                _ => format!("%{b:02X}"),
+            })
+            .collect()
+    }
+    let (path, query) = match url_path.split_once('?') {
+        Some((p, q)) => (p, Some(q)),
+        None => (url_path, None),
+    };
+    let wire_path = encode(path);
+    let canonical = if wire_path == path {
+        path.to_string()
+    } else {
+        encode(&wire_path)
+    };
+    let wire = match query {
+        Some(q) => format!("{wire_path}?{q}"),
+        None => wire_path,
+    };
+    (wire, canonical)
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/plane_attempt_parity_tests.rs::the_planes_attempt_path_is_the_engines_url_after_its_base`.
+/// 1.5.5 behaviour pinned: for six dialects x four lane shapes (plain, a provider path with a
+/// query, a path base, a wire model with a reserved `:`) x seven operations x both stream
+/// intents (336 cases), the far path is 1.5.5's and its wire and signing paths are 1.5.5's
+/// encoding of it. A few figures are spelled out in full so the table's reading is pinned too.
+/// RED if any of the 336 paths, wire paths or signing paths differs.
+#[test]
+fn every_dialect_operation_shape_and_stream_intent_reads_the_released_far_path() {
+    let shapes: [(&str, Option<&str>, Option<&str>); 4] = [
+        ("m-1", None, None),
+        (
+            "m-1",
+            Some("/openai/deployments/d/chat?api-version=2024-10-21"),
+            None,
+        ),
+        (
+            "m-1",
+            None,
+            Some("/v1/projects/x/locations/y/publishers/google"),
+        ),
+        ("anthropic.claude-3:0", None, None),
+    ];
+    let mut checked = 0;
+    for dialect in DIALECTS {
+        for (model, path, base) in shapes {
+            let lane = Lane {
+                model: model.to_string(),
+                provider: "p".to_string(),
+                dialect,
+                path: path.map(str::to_string),
+                path_base: base.map(str::to_string),
+                organization: None,
+                project: None,
+                upstream_model: None,
+                default_max_tokens: None,
+                context_max: None,
+                reasoning: false,
+                prompt_caching: false,
+                caps: Default::default(),
+                error_map: Default::default(),
+                statics: &[],
+            };
+            for (op, label) in OPS {
+                for stream in [false, true] {
+                    let want = released_path(dialect, label, stream, model, path, base);
+                    let have = upstream_path(&lane, op, stream).expect("the plane's path");
+                    let case =
+                        format!("{dialect} {label} stream {stream} {model} {path:?} {base:?}");
+                    assert_eq!(have, want, "{case}");
+                    assert_eq!(
+                        wire_and_canonical_path(&have),
+                        released_wire(&want),
+                        "{case}"
+                    );
+                    checked += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(checked, 6 * 4 * 7 * 2);
+    assert_eq!(
+        released_wire("/model/anthropic.claude-3:0/converse"),
+        (
+            "/model/anthropic.claude-3%3A0/converse".to_string(),
+            "/model/anthropic.claude-3%253A0/converse".to_string()
+        )
+    );
+    assert_eq!(
+        released_wire("/openai/deployments/d/chat?api-version=2024-10-21"),
+        (
+            "/openai/deployments/d/chat?api-version=2024-10-21".to_string(),
+            "/openai/deployments/d/chat".to_string()
+        )
+    );
+    assert_eq!(
+        released_path("gemini", "moderation", true, "m-1", None, None),
+        "/v1beta/models/m-1:generateContent",
+        "1.5.5: a gemini verb with no action of its own is generateContent whatever the stream"
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/request_short_circuit_tests.rs::pristine_same_proto_is_byte_identical_body_model`.
+/// 1.5.5 behaviour pinned: a same-dialect body that already names the lane's model goes out as the
+/// caller's exact bytes for anthropic, openai (with `temperature: 0.5`), cohere and responses.
+/// RED if any of the four is rewritten.
+#[test]
+fn a_pristine_same_dialect_body_is_byte_identical_for_four_body_model_dialects() {
+    let h = head(&[("content-type", "application/json")]);
+    for (dialect, target, model, body) in [
+        (
+            "anthropic",
+            "/v1/messages",
+            "claude-3",
+            r#"{"model":"claude-3","max_tokens":7,"messages":[{"role":"user","content":"hi"}]}"#,
+        ),
+        (
+            "openai",
+            "/v1/chat/completions",
+            "gpt-4o",
+            r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"temperature":0.5}"#,
+        ),
+        (
+            "cohere",
+            "/v2/chat",
+            "command-r",
+            r#"{"model":"command-r","messages":[{"role":"user","content":"hi"}]}"#,
+        ),
+        (
+            "responses",
+            "/v1/responses",
+            "gpt-4o",
+            r#"{"model":"gpt-4o","input":"hi"}"#,
+        ),
+    ] {
+        let s = one_lane(dialect, model, None, &[]);
+        let a = arrived(target, &h, body);
+        assert_eq!(a.dialect, dialect);
+        let r = build(&a, &h, &s, "p", model).expect("built");
+        assert!(r.pristine, "{dialect}");
+        assert_eq!(String::from_utf8_lossy(&r.body), body, "{dialect}");
+    }
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/request_short_circuit_tests.rs::claude_on_vertex_drops_model_and_injects_anthropic_version`.
+/// 1.5.5 behaviour pinned: an anthropic lane at a Vertex path base carries the model in the URL
+/// (`:rawPredict`), so the far body drops `model`, gains `anthropic_version: vertex-2023-10-16` and
+/// keeps the messages. RED if `model` stays, the version is missing or wrong, or messages are lost.
+#[test]
+fn claude_on_vertex_drops_the_model_and_names_the_vertex_version() {
+    let vbase = "/v1/projects/p/locations/us-central1/publishers/anthropic/models";
+    let s = one_lane(
+        "anthropic",
+        "claude-3-5-sonnet",
+        None,
+        &[("path_base", vbase)],
+    );
+    let h = head(&[("content-type", "application/json")]);
+    let a = arrived(
+        "/v1/messages",
+        &h,
+        r#"{"model":"claude-3-5-sonnet","max_tokens":7,"messages":[{"role":"user","content":"hi"}]}"#,
+    );
+    let r = build(&a, &h, &s, "p", "claude-3-5-sonnet").expect("built");
+    let v = far_json(&r);
+    assert!(v.get("model").is_none(), "{v}");
+    assert_eq!(
+        v.get("anthropic_version").and_then(Value::as_str),
+        Some("vertex-2023-10-16"),
+        "{v}"
+    );
+    assert!(v.get("messages").is_some(), "{v}");
+    assert_eq!(
+        r.target,
+        "/v1/projects/p/locations/us-central1/publishers/anthropic/models/claude-3-5-sonnet%3ArawPredict"
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/request_short_circuit_tests.rs::invalidator_2_stream_on_path_model_egress_forces_non_pristine`.
+/// 1.5.5 behaviour pinned: a gemini caller body carrying `stream: true` reaches a gemini far end
+/// without `stream` (it rides the URL), so the body is not the caller's bytes. RED if `stream`
+/// reaches the far body.
+#[test]
+fn a_stream_member_never_reaches_a_path_model_far_end() {
+    let h = head(&[("content-type", "application/json")]);
+    let s = one_lane("gemini", "url-model-x", None, &[]);
+    let body = r#"{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"stream":true}"#;
+    let a = arrived("/v1beta/models/url-model-x:generateContent", &h, body);
+    let r = build(&a, &h, &s, "p", "url-model-x").expect("built");
+    assert!(!r.pristine);
+    assert_ne!(String::from_utf8_lossy(&r.body), body);
+    assert!(
+        far_json(&r).get("stream").is_none(),
+        "{}",
+        String::from_utf8_lossy(&r.body)
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/request_short_circuit_tests.rs::invalidator_4_same_proto_model_shim_strip_forces_non_pristine`.
+/// 1.5.5 behaviour pinned: a same-dialect gemini or bedrock caller body carrying its own `model`
+/// reaches the far end without it (the model rides the URL), so the body is not the caller's bytes.
+/// RED if `model` reaches either far body.
+#[test]
+fn a_body_model_member_never_reaches_a_same_dialect_path_model_far_end() {
+    let h = head(&[("content-type", "application/json")]);
+    for (dialect, target, body) in [
+        (
+            "gemini",
+            "/v1beta/models/url-model-x:generateContent",
+            r#"{"model":"router-shim","contents":[{"role":"user","parts":[{"text":"hi"}]}]}"#,
+        ),
+        (
+            "bedrock",
+            "/model/url-model-x/converse",
+            r#"{"model":"router-shim","messages":[{"role":"user","content":[{"text":"hi"}]}]}"#,
+        ),
+    ] {
+        let s = one_lane(dialect, "url-model-x", None, &[]);
+        let a = arrived(target, &h, body);
+        let r = build(&a, &h, &s, "p", "url-model-x").expect("built");
+        assert!(!r.pristine, "{dialect}");
+        assert_ne!(String::from_utf8_lossy(&r.body), body, "{dialect}");
+        assert!(far_json(&r).get("model").is_none(), "{dialect}");
+    }
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/request_short_circuit_tests.rs::same_proto_gemini_thought_signature_round_trips_verbatim`.
+/// 1.5.5 behaviour pinned: a same-dialect gemini history whose `functionCall` part carries
+/// `thoughtSignature: "a-real-opaque-signature-token"` reaches the far end byte-identical, the
+/// signature present and the `skip_thought_signature_validator` sentinel absent.
+/// RED if a byte moves, the signature is lost, or the sentinel appears.
+#[test]
+fn a_same_dialect_gemini_thought_signature_relays_verbatim() {
+    let h = head(&[("content-type", "application/json")]);
+    let s = one_lane("gemini", "url-model-x", None, &[]);
+    let body = r#"{"contents":[{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"SF"}},"thoughtSignature":"a-real-opaque-signature-token"}]}]}"#;
+    let a = arrived("/v1beta/models/url-model-x:generateContent", &h, body);
+    let r = build(&a, &h, &s, "p", "url-model-x").expect("built");
+    let text = String::from_utf8_lossy(&r.body);
+    assert_eq!(text, body);
+    assert!(text.contains("a-real-opaque-signature-token"));
+    assert!(!text.contains("skip_thought_signature_validator"));
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/stop_sequence_cap_degrade_tests.rs::cohere_to_cohere_over_cap_stop_sequences_is_preserved_verbatim`.
+/// 1.5.5 behaviour pinned: a same-dialect cohere request with six `stop_sequences` (over cohere's
+/// cap of five) is not refused or clamped by busbar: all six go out, the body the caller's bytes.
+/// RED if the list is clamped or the attempt is refused.
+#[test]
+fn a_same_dialect_cohere_over_cap_stop_list_goes_out_whole() {
+    let h = head(&[("content-type", "application/json")]);
+    let s = one_lane("cohere", "command-r-plus", None, &[]);
+    let body = r#"{"model":"command-r-plus","messages":[{"role":"user","content":"hi"}],"stop_sequences":["a","b","c","d","e","f"]}"#;
+    let a = arrived("/v2/chat", &h, body);
+    let r = build(&a, &h, &s, "p", "command-r-plus").expect("not refused");
+    assert_eq!(
+        far_json(&r).get("stop_sequences"),
+        Some(&json!(["a", "b", "c", "d", "e", "f"]))
+    );
+    assert_eq!(String::from_utf8_lossy(&r.body), body);
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/translate_offload_tests.rs::huge_body_translates_via_offload_and_forwards`.
+/// 1.5.5 behaviour pinned: a body well over 128 KiB (a 300 KiB user turn) is written for the far
+/// end exactly as a small one is: the legacy openai lane, and an anthropic lane where it is
+/// translated, both carry the whole turn. RED if the large body is refused or its content is cut.
+#[test]
+fn a_huge_body_is_written_like_a_small_one() {
+    let h = head(&[("content-type", "application/json")]);
+    let big = "x".repeat(300 * 1024);
+    for content in [big.as_str(), "hi"] {
+        let body = serde_json::to_string(&json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": content}],
+            "max_tokens": 16,
+        }))
+        .expect("JSON");
+        assert!(content.len() < 1024 || body.len() >= 128 * 1024);
+        let a = arrived("/v1/chat/completions", &h, &body);
+        for dialect in ["openai", "anthropic"] {
+            let s = one_lane(dialect, "gpt-4o", None, &[]);
+            let r = build(&a, &h, &s, "p", "gpt-4o")
+                .unwrap_or_else(|e| panic!("{dialect} {}: {e:?}", content.len()));
+            let v = far_json(&r);
+            let carried = v
+                .pointer("/messages/0/content")
+                .map(|c| match c {
+                    Value::String(text) => text.len(),
+                    other => other
+                        .pointer("/0/text")
+                        .and_then(Value::as_str)
+                        .map_or(0, str::len),
+                })
+                .unwrap_or(0);
+            assert_eq!(
+                carried,
+                content.len(),
+                "{dialect}: the whole turn is carried"
+            );
+        }
+    }
+}
