@@ -241,6 +241,17 @@ fn the_lifecycle_names_no_plane_in_its_code() {
             rest.split('-').next().map(str::to_string)
         })
         .collect();
+    // A PLANE THAT LEFT FOR ITS OWN REPO is still a plane this tree links: the root pins it as a
+    // `git` row of `[workspace.dependencies]` (`busbar-plane-<key> = { git = …, rev = … }`), and
+    // its key is banned exactly as when its crate lived here (ARCHITECT row 106 (A)).
+    let root_manifest = std::fs::read_to_string(crates_dir.join("../Cargo.toml"))
+        .expect("the workspace's root Cargo.toml is readable");
+    plane_keys.extend(root_manifest.lines().filter_map(|l| {
+        let (name, spec) = l.trim().split_once('=')?;
+        let rest = name.trim().strip_prefix("busbar-plane-")?;
+        (spec.contains("git =") && !rest.ends_with("-plugin"))
+            .then(|| rest.split('-').next().map(str::to_string))?
+    }));
     plane_keys.sort();
     plane_keys.dedup();
     assert!(

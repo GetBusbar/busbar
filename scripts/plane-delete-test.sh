@@ -40,9 +40,13 @@
 #
 # WHAT IT MUTATES in the scratch, per plane P (the literal `git rm -r` + manifest fixups):
 #   (a) rm -rf  crates/busbar-<P>
-#   (b) drop    "crates/busbar-<P>"   from the workspace `members` in the root Cargo.toml
+#   (b) drop    "crates/busbar-<P>"   from the workspace `members` in the root Cargo.toml, and the
+#       plane's PIN, `busbar-<P> = { git = …, rev = … }` in `[workspace.dependencies]`. A plane that
+#       left for its own repo (P5; BUSBAR-1.6.0.md l.2220, #39: "plugin SOURCE never re-enters
+#       busbar") has no directory and no member here: deleting it IS dropping its pin and its feature.
 #   (c) in the bin (crates/busbar/Cargo.toml): delete the `busbar-<P> = { path = … , optional = true }`
-#       dependency, strip the `dep:busbar-<P>` token from the feature that names it (leaving any neutral
+#       dependency (a pinned plane's `busbar-<P> = { workspace = true, … }` row, normal or dev),
+#       strip the `dep:busbar-<P>` token from the feature that names it (leaving any neutral
 #       forward such as `busbar-kernel/plane-<P>` intact), and drop that feature from `default` so a
 #       default build of the bin is coherent without the plane.
 #   Then `cargo check` the NEUTRAL_PKGS crates (with the removed plane's feature off, the others kept)
@@ -275,12 +279,26 @@ make_scratch() {
 # remove_crate_dir  — the literal `git rm -r crates/busbar-<P>`.
 remove_crate_dir() { rm -rf "$1/crates/busbar-$2"; }
 
-# drop_member — delete the `"crates/busbar-<P>",` line from the root workspace members.
+# pinned_in <tree> <P> → 0 when <tree>'s root manifest PINS `busbar-<P>` as a git row and no
+# `crates/busbar-<P>` directory is on disk: the plane lives in its own repo (P5) and this tree links it
+# at a rev. A plane on disk is never read as pinned, whatever the root also says.
+pinned_in() {
+  [ ! -d "$1/crates/busbar-$2" ] \
+    && grep -Eq "^busbar-$2[[:space:]]*=[[:space:]]*\{[^}]*git[[:space:]]*=" "$1/Cargo.toml" 2>/dev/null
+}
+
+# plane_present <tree> <P> → 0 when the plane is a crate on disk OR a pinned plane of <tree>.
+plane_present() { [ -d "$1/crates/busbar-$2" ] || pinned_in "$1" "$2"; }
+
+# drop_member — delete the `"crates/busbar-<P>",` line from the root workspace members, and the
+# plane's pin row (`busbar-<P> = { git = …, rev = … }`) when it left for its own repo. The pin row is
+# matched on the exact key, so a `busbar-<P>-plugin` twin row is never taken with it.
 drop_member() {
   local s="$1" p="$2" f="$1/Cargo.toml" t
   t="$f.plane-delete.tmp"
-  awk -v pat="\"crates/busbar-$p\"" '
+  awk -v pat="\"crates/busbar-$p\"" -v pin="^busbar-$p[[:space:]]*=[[:space:]]*[{][^}]*git[[:space:]]*=" '
     index($0, pat) > 0 { next }   # the members entry (only place this exact token appears)
+    $0 ~ pin { next }             # the pin row of a plane in its own repo
     { print }
   ' "$f" >"$t" && mv "$t" "$f"
 }
@@ -357,7 +375,8 @@ neutralise_bin() {
       return line
     }
     BEGIN {
-      deppat  = "^busbar-" p "[[:space:]]*=[[:space:]]*\\{[[:space:]]*path[[:space:]]*=[[:space:]]*\"\\.\\./busbar-" p "\""
+      # The path row of a plane on disk, or the workspace row of a pinned one (normal or dev).
+      deppat  = "^busbar-" p "[[:space:]]*=[[:space:]]*\\{[[:space:]]*(path[[:space:]]*=[[:space:]]*\"\\.\\./busbar-" p "\"|workspace[[:space:]]*=[[:space:]]*true)"
       featpat = "^" feat "[[:space:]]*=[[:space:]]*\\["
       optpat  = "\"busbar-" p "\\??/[^\"]*\""   # a dep feature ref, either spelling: "busbar-<P>[?]/<feature>"
       deptok  = "\"dep:busbar-" p "\""
@@ -1102,7 +1121,11 @@ run_check() {
 remove_and_assert() {
   local s="$1" p="$2"
   local pre_dir pre_root pre_bin pre_dep
-  pre_dir="$([ -d "$s/crates/busbar-$p" ] && echo PRESENT || echo ABSENT)"
+  # PINNED: the plane left for its own repo, and the root links it at a rev (P5). Its removal is
+  # the pin row and the bin's rows, asserted below exactly as a directory's is.
+  if [ -d "$s/crates/busbar-$p" ]; then pre_dir=PRESENT
+  elif pinned_in "$s" "$p"; then pre_dir=PINNED
+  else pre_dir=ABSENT; fi
   pre_root="$s/.plane-delete-pre-root.toml"
   pre_bin="$s/.plane-delete-pre-bin.toml"
   cp "$s/Cargo.toml" "$pre_root" 2>/dev/null || { red "  cannot read the scratch's root manifest"; return 1; }
@@ -1111,14 +1134,15 @@ remove_and_assert() {
 
   apply_removal "$s" "$p"
 
-  local ev_dir ev_mem ev_dep
+  local ev_dir ev_mem ev_dep ev_pin
   ev_dir="$([ -d "$s/crates/busbar-$p" ] && echo PRESENT || echo GONE)"
   ev_mem="$(grep -c "\"crates/busbar-$p\"" "$s/Cargo.toml" 2>/dev/null)"; ev_mem="${ev_mem:-0}"
+  ev_pin="$(grep -Ec "^busbar-$p[[:space:]]*=[[:space:]]*\{[^}]*git[[:space:]]*=" "$s/Cargo.toml" 2>/dev/null)"; ev_pin="${ev_pin:-0}"
   ev_dep="$(grep -c "^busbar-${p}[[:space:]]*=[[:space:]]*{" "$s/crates/busbar/Cargo.toml" 2>/dev/null)"; ev_dep="${ev_dep:-0}"
-  note "removed: crate dir=$pre_dir->$ev_dir  members-refs=$ev_mem  bin-dep-lines=$pre_dep->$ev_dep"
+  note "removed: crate dir=$pre_dir->$ev_dir  members-refs=$ev_mem  pin-rows=$ev_pin  bin-dep-lines=$pre_dep->$ev_dep"
 
-  if [ "$pre_dir" != "PRESENT" ]; then
-    red "  crates/busbar-$p DID NOT EXIST before the removal — there was nothing to delete."
+  if [ "$pre_dir" = "ABSENT" ]; then
+    red "  crates/busbar-$p DID NOT EXIST before the removal, and the root pins no busbar-$p — there was nothing to delete."
     note "    \`rm -rf\` on an absent path succeeds, so this run would have compiled an UNMUTATED tree"
     note "    and reported it as proof that busbar-$p is removable. Renamed crate? Fix the plane key"
     note "    in scripts/plane-keys.sh; do not read this as a pass."
@@ -1128,8 +1152,12 @@ remove_and_assert() {
     red "  crates/busbar-$p is STILL PRESENT after apply_removal — the mutation did not take"
     return 1
   fi
-  if [ "$ev_mem" -ne 0 ] || [ "$ev_dep" -ne 0 ]; then
-    red "  a manifest still names busbar-$p after removal (members-refs=$ev_mem bin-dep-lines=$ev_dep)"
+  if [ "$ev_mem" -ne 0 ] || [ "$ev_pin" -ne 0 ] || [ "$ev_dep" -ne 0 ]; then
+    red "  a manifest still names busbar-$p after removal (members-refs=$ev_mem pin-rows=$ev_pin bin-dep-lines=$ev_dep)"
+    return 1
+  fi
+  if [ "$pre_dir" = "PINNED" ] && [ "$pre_dep" -eq 0 ]; then
+    red "  busbar-$p is pinned but the bin names it in no row — the pin links nothing this harness can take away"
     return 1
   fi
   if cmp -s "$pre_root" "$s/Cargo.toml"; then
@@ -1142,7 +1170,11 @@ remove_and_assert() {
     red "  the bin manifest declared busbar-$p and is BYTE-IDENTICAL after the removal — nothing was stripped."
     return 1
   fi
-  note "  removal ASSERTED: the crate existed, is gone, is named by no manifest, and the manifests changed"
+  if [ "$pre_dir" = "PINNED" ]; then
+    note "  removal ASSERTED: the plane was pinned, its pin and bin rows are gone, no manifest names it, and the manifests changed"
+  else
+    note "  removal ASSERTED: the crate existed, is gone, is named by no manifest, and the manifests changed"
+  fi
   rm -f "$pre_root" "$pre_bin"
   return 0
 }
@@ -1707,7 +1739,9 @@ run_selftest() {
   #      harness cannot name, or names wrongly, is a plane whose leg 1b does nothing.
   for p in $PLANES; do
     pc="$(plane_contract_crate "$p")"
-    if [ -n "$pc" ] && [ -d "$REPO/crates/$pc" ]; then
+    if [ -n "$pc" ] && [ "$pc" = "busbar-$p" ] && plane_present "$REPO" "$p"; then
+      note "PASS  contract plane crate($p): $pc is the whole plane ($( pinned_in "$REPO" "$p" && echo pinned || echo on disk )) — leg 1b says so"
+    elif [ -n "$pc" ] && [ -d "$REPO/crates/$pc" ]; then
       note "PASS  contract plane crate($p): $pc exists — leg 1b compiles it"
     else
       fail=1; note "FAIL  contract plane crate($p): '${pc:-<none>}' is not on disk — leg 1b would compile nothing for $p"
@@ -1736,17 +1770,17 @@ run_selftest() {
       note "PASS  roster coverage: 'streaming' is NOT reported as a gap (covered via its on-disk name 'voice')"
       ;;
   esac
-  # `decisions` is covered under its on-disk key `plane-decisions` (the one-crate plane
-  # `crates/busbar-plane-decisions`), which must be in $PLANES and must not be reported as a gap.
+  # `decisions` is covered under its key `plane-decisions` (the one-crate plane, pinned from
+  # GetBusbar/busbar-plane-decisions since P5), which must be in $PLANES and must not be reported as a gap.
   case " $LOCKED_GAPS " in
     *" decisions "*)
       fail=1; note "FAIL  roster coverage: 'decisions' reported as a GAP, but it is tested as 'plane-decisions'"
       ;;
     *)
-      if valid_plane plane-decisions && [ -d "$REPO/crates/busbar-plane-decisions" ]; then
-        note "PASS  roster coverage: 'decisions' is covered (tested as 'plane-decisions', crates/busbar-plane-decisions)"
+      if valid_plane plane-decisions && plane_present "$REPO" plane-decisions; then
+        note "PASS  roster coverage: 'decisions' is covered (tested as 'plane-decisions', $( pinned_in "$REPO" plane-decisions && echo "pinned busbar-plane-decisions" || echo crates/busbar-plane-decisions ))"
       else
-        fail=1; note "FAIL  roster coverage: 'decisions' is not a gap, yet 'plane-decisions' is not a runnable plane on disk"
+        fail=1; note "FAIL  roster coverage: 'decisions' is not a gap, yet 'plane-decisions' is neither a plane on disk nor a pinned one"
       fi
       ;;
   esac

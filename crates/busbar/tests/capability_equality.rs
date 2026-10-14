@@ -543,7 +543,7 @@ fn source_of(root: &Path, file: &str) -> PathBuf {
     door_cells_files()
         .into_iter()
         .find(|(cited, _)| cited == file)
-        .map_or_else(|| root.join(file), |(_, at)| at)
+        .map_or_else(|| common::pinned_planes::resolve(root, file), |(_, at)| at)
 }
 
 /// Whether `file` is a door plane's own root cells.
@@ -1199,7 +1199,9 @@ fn plane_keys_from_single_source(root: &Path) -> Vec<String> {
 }
 
 /// The workspace's `crates/busbar-plane-*` members, by directory suffix (`plane-decisions`), read off
-/// the root `Cargo.toml`'s `members` list — the list cargo builds, not a list somebody keeps.
+/// the root `Cargo.toml`'s `members` list — the list cargo builds, not a list somebody keeps — and
+/// the planes it PINS: a plane that left for its own repo is still a plane this workspace links
+/// (`common::pinned_planes`, ARCHITECT row 106 (A)), read from its checkout.
 fn workspace_pure_plane_crates(root: &Path) -> BTreeSet<String> {
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("the root Cargo.toml");
     let members = manifest
@@ -1212,6 +1214,11 @@ fn workspace_pure_plane_crates(root: &Path) -> BTreeSet<String> {
         .filter_map(|m| m.trim().trim_matches('"').strip_prefix("crates/busbar-"))
         .filter(|suffix| suffix.starts_with("plane-"))
         .map(str::to_string)
+        .chain(
+            common::pinned_planes::pinned_rows(root)
+                .into_iter()
+                .filter_map(|(name, _)| name.strip_prefix("busbar-").map(str::to_string)),
+        )
         .collect()
 }
 
@@ -1271,7 +1278,7 @@ fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
     let crates = workspace_plane_crates(&root);
     for key in &crates {
         // Every enumerated plane must be a crate on disk, or a source and the tree disagree.
-        let crate_dir = root.join(format!("crates/busbar-{key}"));
+        let crate_dir = common::pinned_planes::resolve(&root, &format!("crates/busbar-{key}"));
         assert!(
             crate_dir.is_dir(),
             "plane `{key}` is enumerated but crates/busbar-{key} does not exist; \
@@ -1878,5 +1885,50 @@ fn selftest_root_verdict_disagreeing_with_the_cell_or_an_unowned_column_is_red()
 
     for r in [root, root2, root3, root4] {
         let _ = std::fs::remove_dir_all(&r);
+    }
+}
+
+/// A PINNED PLANE'S EVIDENCE IS READ FROM ITS CHECKOUT, AND IS RED WITHOUT IT (ARCHITECT row 106
+/// (A), conditions 3 and 5). Every proven cell citing a test under `crates/<pinned plane>/` names a
+/// file the tree no longer has on disk: read where the tree has it, the cell's evidence is gone and
+/// the cell is RED; read through `common::pinned_planes`, it is the real test, in test code, that
+/// asserts. Both halves, so the resolution can neither be skipped nor be a no-op.
+#[test]
+fn a_pinned_planes_evidence_is_read_from_its_checkout_and_is_red_without_it() {
+    fn cited(v: &serde_json::Value, prefixes: &[String], out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, x) in m {
+                    match x.as_str() {
+                        Some(s) if k == "test" && prefixes.iter().any(|p| s.starts_with(p)) => {
+                            out.push(s.to_string());
+                        }
+                        _ => cited(x, prefixes, out),
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| cited(x, prefixes, out)),
+            _ => {}
+        }
+    }
+    let root = repo_root();
+    let prefixes: Vec<String> = common::pinned_planes::pinned_rows(&root)
+        .into_iter()
+        .map(|(name, _)| format!("crates/{name}/"))
+        .collect();
+    assert!(!prefixes.is_empty(), "the workspace pins a plane today");
+    let mut tests = Vec::new();
+    cited(&real_doc(), &prefixes, &mut tests);
+    assert!(
+        !tests.is_empty(),
+        "no proven cell cites a pinned plane's test, so this arm proves nothing"
+    );
+    for test in &tests {
+        let (file, _) = test.split_once("::").expect("`<file>::<fn>`");
+        assert!(
+            std::fs::read_to_string(root.join(file)).is_err(),
+            "{file} is on disk: a pinned plane's source re-entered the tree"
+        );
+        named_test_is_real(&root, "pinned", test, "cell").unwrap_or_else(|e| panic!("{e}"));
     }
 }

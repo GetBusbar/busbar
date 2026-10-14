@@ -400,17 +400,10 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     ("AuthChainEntry", SecretBearing::Walked),
     ("IdentityProviderCfg", SecretBearing::Walked),
     ("BrowserLoginCfg", SecretBearing::Walked),
-    // `tools.<name>.token_exchange.subject_token` — busbar's OWN token, the SUBJECT of an RFC 8693
-    // exchange, never the caller's.
-    (
-        "TokenExchangeCfg",
-        SecretBearing::DoorDeclared(
-            "the `tools:` door's section: its Statement declares \
-             `settings.*.token_exchange.subject_token` (and `settings.*.env.*` for a stdio child's \
-             referenced environment), and the folded row's section enumerates every reference at \
-             those paths",
-        ),
-    ),
+    // The `tools:` door's own credential type (`tools.<name>.token_exchange.subject_token`) left
+    // this tree with its plane (the pinned plugin repo, #39): its references are read at the door's
+    // declared `settings.*.token_exchange.subject_token` / `settings.*.env.*` paths through the
+    // `DoorSection` row below, so no type of it is listed here.
     // `agents.<name>.upstream_credential` — the `agents:` plane's LEASED outbound delegation
     // credential.
     (

@@ -980,7 +980,7 @@ pub struct SettingsLeakGate;
 /// The scan roots for this tree: the three fixed ones plus the resolved plane homes, relative to
 /// the workspace root.
 fn scan_roots(cx: &Ctx) -> Result<Vec<String>, String> {
-    let roots = PlaneRoots::at(cx.abs("crates"));
+    let roots = PlaneRoots::at(cx.abs("crates")).over(cx);
     let mut out: Vec<String> = FIXED_ROOTS.iter().map(|r| (*r).to_string()).collect();
     let (ok, errs) = roots.resolve_all(PLANE_KEYS);
     if !errs.is_empty() {

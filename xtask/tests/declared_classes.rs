@@ -19,13 +19,24 @@
 //! gains a caller it has to be declared first.
 
 use std::collections::BTreeSet;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+
+use xtask::ctx::{Ctx, WalkSpec};
 
 fn root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("xtask sits in the workspace")
         .to_path_buf()
+}
+
+/// The tree, as every gate reads it: the pinned planes laid at the directories they lived at
+/// (`Ctx::with_pinned_planes`, ARCHITECT row 106 (A)), so a plane that left for its own repo is
+/// scanned here exactly as it was when its crate lived in this tree.
+fn cx() -> Ctx {
+    Ctx::new(root())
+        .and_then(|cx| cx.with_pinned_planes())
+        .expect("the workspace opens with its pinned planes")
 }
 
 /// The crates whose non-test sources are scanned for report sites.
@@ -147,20 +158,22 @@ const SITES: &[Site] = &[
     },
 ];
 
-/// Every non-test `.rs` file under `dir`.
-fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
+/// Every non-test `.rs` file under `dir` (repo-relative), read through the tree `cx` shows. A
+/// directory the tree has not got contributes nothing.
+fn sources(cx: &Ctx, dir: &str, out: &mut Vec<String>) {
+    let Ok(listed) = cx.list(&WalkSpec::new([dir]).ext("rs").allow_empty()) else {
         return;
     };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        if path.is_dir() {
-            if name != "tests" && name != "fixtures" {
-                sources(&path, out);
-            }
-        } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") && name != "tests.rs" {
-            out.push(path);
+    for path in listed {
+        let rel = path.to_string_lossy().replace('\\', "/");
+        let below = rel.strip_prefix(&format!("{dir}/")).unwrap_or(&rel);
+        let mut parts: Vec<&str> = below.split('/').collect();
+        let name = parts.pop().unwrap_or("");
+        if parts.iter().any(|d| *d == "tests" || *d == "fixtures") {
+            continue;
+        }
+        if name.ends_with(".rs") && !name.ends_with("_tests.rs") && name != "tests.rs" {
+            out.push(rel);
         }
     }
 }
@@ -168,18 +181,17 @@ fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
 /// The literal a constant path names, read off the file that defines it:
 /// `busbar_plane_mcp::tool_meta::CLASS_BYTES` is `crates/busbar-plane-mcp/src/tool_meta.rs`'s
 /// `const CLASS_BYTES: … = MeterClassId::new("bytes")` (or `= "bytes"`).
-fn resolve(root: &Path, path: &str) -> Result<String, String> {
-    let (file, src, name) = defining(root, path)?;
+fn resolve(cx: &Ctx, path: &str) -> Result<String, String> {
+    let (file, src, name) = defining(cx, path)?;
     literal_of(&src, name).ok_or_else(|| format!("{path}: no `const {name}` literal in {file:?}"))
 }
 
 /// The file that defines the item a constant path names, its text, and the item's name.
-fn defining<'p>(root: &Path, path: &'p str) -> Result<(PathBuf, String, &'p str), String> {
+fn defining<'p>(cx: &Ctx, path: &'p str) -> Result<(PathBuf, String, &'p str), String> {
     let segments: Vec<&str> = path.split("::").collect();
     let (krate, rest) = segments.split_first().ok_or("an empty path")?;
     let (name, modules) = rest.split_last().ok_or("a path with no constant")?;
-    let dir = root
-        .join("crates")
+    let dir = PathBuf::from("crates")
         .join(krate.replace('_', "-"))
         .join("src");
     let candidates = if modules.is_empty() {
@@ -193,9 +205,9 @@ fn defining<'p>(root: &Path, path: &'p str) -> Result<(PathBuf, String, &'p str)
     };
     let file = candidates
         .iter()
-        .find(|f| f.exists())
+        .find(|f| cx.exists(f))
         .ok_or_else(|| format!("{path}: no defining file among {candidates:?}"))?;
-    let src = std::fs::read_to_string(file).map_err(|e| format!("{path}: {e}"))?;
+    let src = cx.read(file).map_err(|e| format!("{path}: {e}"))?;
     Ok((file.clone(), src, name))
 }
 
@@ -211,12 +223,12 @@ fn literal_of(src: &str, name: &str) -> Option<String> {
 }
 
 /// The classes a plane's `PlaneDeclaration::billable_classes` names, resolved.
-fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
+fn declared(cx: &Ctx, plane: &str) -> Result<BTreeSet<String>, String> {
     let (_, file) = DECLARATIONS
         .iter()
         .find(|(p, _)| *p == plane)
         .ok_or_else(|| format!("no declaration file for plane {plane}"))?;
-    let src = std::fs::read_to_string(root.join(file)).map_err(|e| format!("{file}: {e}"))?;
+    let src = cx.read(file).map_err(|e| format!("{file}: {e}"))?;
     let start = src
         .find("billable_classes: &")
         .ok_or_else(|| format!("{file}: no billable_classes"))?;
@@ -248,7 +260,7 @@ fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
             .rfind("use ")
             .ok_or("an OPEN_CLASSES import with no `use`")?;
         let module = block[line_start + 4..at].trim();
-        for class in open_classes(root, &format!("{module}::OPEN_CLASSES"))? {
+        for class in open_classes(cx, &format!("{module}::OPEN_CLASSES"))? {
             classes.insert(class);
         }
     }
@@ -267,7 +279,7 @@ fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
         classes.insert(if let Some(lit) = expr.strip_prefix('"') {
             lit.trim_end_matches('"').to_string()
         } else {
-            resolve(root, expr)?
+            resolve(cx, expr)?
         });
     }
     Ok(classes)
@@ -275,8 +287,8 @@ fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
 
 /// The class of every `(CLASS, family)` row of the `&[(&str, &str)]` table `path` names, each
 /// resolved off the table's own file.
-fn open_classes(root: &Path, path: &str) -> Result<Vec<String>, String> {
-    let (file, src, name) = defining(root, path)?;
+fn open_classes(cx: &Ctx, path: &str) -> Result<Vec<String>, String> {
+    let (file, src, name) = defining(cx, path)?;
     let at = src
         .find(&format!("const {name}:"))
         .ok_or_else(|| format!("{path}: no `const {name}` in {file:?}"))?;
@@ -318,7 +330,7 @@ fn open_classes(root: &Path, path: &str) -> Result<Vec<String>, String> {
                                 "{path}: row `{class}` is neither defined nor imported in {file:?}"
                             )
                         })?;
-                    resolve(root, &format!("{krate}::{import}"))?
+                    resolve(cx, &format!("{krate}::{import}"))?
                 }
             }
         });
@@ -331,7 +343,7 @@ fn open_classes(root: &Path, path: &str) -> Result<Vec<String>, String> {
 
 /// Every finding for `sites` over `found` (file -> shape -> count) — empty is the only good answer.
 fn findings(
-    root: &Path,
+    cx: &Ctx,
     sites: &[Site],
     found: &[(String, &'static str, usize)],
     callers_of: &dyn Fn(&str, &str) -> usize,
@@ -374,7 +386,7 @@ fn findings(
             }
             continue;
         }
-        let declared = match declared(root, site.plane) {
+        let declared = match declared(cx, site.plane) {
             Ok(d) => d,
             Err(e) => {
                 out.push(e);
@@ -382,7 +394,7 @@ fn findings(
             }
         };
         for path in site.emits {
-            match resolve(root, path) {
+            match resolve(cx, path) {
                 Ok(class) if declared.contains(&class) => {}
                 Ok(class) => out.push(format!(
                     "{}: reports `{class}` ({path}), which plane `{}` does not declare \
@@ -400,23 +412,18 @@ fn findings(
 type Found = Vec<(String, &'static str, usize)>;
 
 /// Every (file, shape, count) the scanned sources hold, and every scanned file's text.
-fn scan(root: &Path) -> (Found, Vec<(String, String)>) {
+fn scan(cx: &Ctx) -> (Found, Vec<(String, String)>) {
     let mut files = Vec::new();
     for dir in SCANNED {
-        sources(&root.join(dir), &mut files);
+        sources(cx, dir, &mut files);
     }
     files.sort();
     let mut found = Vec::new();
     let mut texts = Vec::new();
-    for file in files {
-        let Ok(src) = std::fs::read_to_string(&file) else {
+    for rel in files {
+        let Ok(src) = cx.read(&rel) else {
             continue;
         };
-        let rel = file
-            .strip_prefix(root)
-            .unwrap_or(&file)
-            .to_string_lossy()
-            .into_owned();
         for shape in SHAPES {
             let n = src.matches(shape).count();
             if n > 0 {
@@ -430,8 +437,8 @@ fn scan(root: &Path) -> (Found, Vec<(String, String)>) {
 
 #[test]
 fn every_class_an_in_tree_plane_reports_is_one_it_declares() {
-    let root = root();
-    let (found, texts) = scan(&root);
+    let cx = cx();
+    let (found, texts) = scan(&cx);
     let callers_of = |func: &str, defined_in: &str| {
         texts
             .iter()
@@ -446,7 +453,7 @@ fn every_class_an_in_tree_plane_reports_is_one_it_declares() {
             })
             .sum()
     };
-    let findings = findings(&root, SITES, &found, &callers_of);
+    let findings = findings(&cx, SITES, &found, &callers_of);
     assert!(findings.is_empty(), "{findings:#?}");
 }
 
@@ -454,7 +461,7 @@ fn every_class_an_in_tree_plane_reports_is_one_it_declares() {
 /// report site nobody listed, must find both.
 #[test]
 fn an_undeclared_class_and_an_unlisted_site_are_both_red() {
-    let root = root();
+    let cx = cx();
     let undeclared = [Site {
         plane: "llm",
         file: "crates/busbar-plane-llm/src/codec/wire_shim.rs",
@@ -476,11 +483,37 @@ fn an_undeclared_class_and_an_unlisted_site_are_both_red() {
             1,
         ),
     ];
-    let red = findings(&root, &undeclared, &found, &|_, _| 0);
+    let red = findings(&cx, &undeclared, &found, &|_, _| 0);
     assert!(
         red.iter()
             .any(|f| f.contains("tool_calls") && f.contains("does not declare")),
         "{red:#?}"
     );
     assert!(red.iter().any(|f| f.contains("new_site.rs")), "{red:#?}");
+}
+
+/// THE PINNED PLANES ARE READ, NOT SKIPPED (ARCHITECT row 106 (A), condition 3): the scan reads a
+/// pinned plane's sources through the BASE layer, and the same scan with the base removed reads
+/// none of them. A scan that quietly read nothing there would hold every class of that plane to
+/// nothing and stay green.
+#[test]
+fn the_scan_reads_the_pinned_planes_and_reads_none_without_the_base() {
+    let cx = cx();
+    let base = cx
+        .base()
+        .expect("the workspace pins a plane, laid as the base layer");
+    let laid = |file: &str| base.paths().any(|p| p.to_string_lossy() == file);
+    let (_, with) = scan(&cx);
+    let pinned: Vec<&String> = with.iter().map(|(f, _)| f).filter(|f| laid(f)).collect();
+    assert!(
+        !pinned.is_empty(),
+        "the scan read no source of a pinned plane: {SCANNED:?} names none of the base's crates"
+    );
+    let (_, without) = scan(&cx.without_base());
+    let still: Vec<&String> = without.iter().map(|(f, _)| f).filter(|f| laid(f)).collect();
+    assert!(
+        still.is_empty(),
+        "with the base removed the scan still read {still:?}: the pinned plane is not read through \
+         the base"
+    );
 }

@@ -254,7 +254,7 @@ timing = ["dep:libc"]
 sha2 = { workspace = true }
 # THIS CRATE'S OWN `test-support`, for its integration tests (`tests/*.rs` reach `test_support`
 # through the library, where `cfg(test)` is false) and the stand-in rows its unit tests build. The
-# crate names itself, as busbar-transport-stdio does; no plane crate rides in. The cross-plane cells
+# crate names itself, as busbar-transport-webrtc does; no plane crate rides in. The cross-plane cells
 # that need a real plane live in the composition root, which links every plane
 # (`crates/busbar/tests/`, its test-linked roster).
 busbar-kernel = { path = ".", default-features = false, features = ["test-support"] }

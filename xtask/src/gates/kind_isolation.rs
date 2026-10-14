@@ -156,6 +156,7 @@ mod debt_free;
 mod inputs;
 mod matrix;
 mod pinned;
+pub(crate) use pinned::{plane_base, PLANE_SOURCE_ENV};
 mod truths;
 
 pub use closure::ROW_CLOSURE;
@@ -1957,6 +1958,15 @@ pub fn plane_kind_src_roots(cx: &Ctx) -> Result<Vec<String>, String> {
         .filter(|c| c.family == Family::Plane && c.name != NEUTRAL_LEGACY)
         .map(|c| format!("{}/src", c.dir))
         .collect();
+    // A PINNED PLANE IS IN THE POPULATION WHETHER OR NOT ITS SOURCE WAS LAID: the census reads only
+    // the manifests the context holds, so a context without the base layer would drop the pinned
+    // planes from the population and every ban would read the remaining planes as the whole set.
+    // Named from the root manifest's pins, an unlaid plane is a root that does not exist.
+    out.extend(
+        pinned::pinned_plane_dirs(cx)?
+            .into_iter()
+            .map(|d| format!("{d}/src")),
+    );
     out.sort();
     out.dedup();
     if out.is_empty() {
@@ -2046,6 +2056,23 @@ pub fn plane_kind_crates(cx: &Ctx) -> Result<Vec<PlaneKindCrate>, String> {
              empty, and an empty population is the passing answer to every rule over it"
                 .to_string(),
         );
+    }
+    // A PINNED PLANE THE CENSUS CANNOT READ IS NOT A SMALLER POPULATION. The root manifest pins it,
+    // so it is served; with its source not laid it would leave every rule over this population
+    // answering for the remaining planes as the whole set.
+    let unread: Vec<String> = pinned::pinned_plane_dirs(cx)?
+        .into_iter()
+        .filter(|dir| {
+            !out.iter()
+                .any(|c| dir.strip_prefix("crates/") == Some(c.name.as_str()))
+        })
+        .collect();
+    if !unread.is_empty() {
+        return Err(format!(
+            "the root manifest pins plane crate(s) the census cannot read: {} — a pinned plane \
+             whose source is not laid is a plane every rule over this population skips",
+            unread.join(", ")
+        ));
     }
     Ok(out)
 }

@@ -17,12 +17,9 @@ members = [
     "crates/busbar-kernel-wal",
     "crates/busbar-kernel-audit",
     "crates/busbar-plane-llm",
-    "crates/busbar-plane-mcp",
     "crates/busbar-plane-a2a",
     "crates/busbar-plane-streaming",
-    "crates/busbar-plane-decisions",
     "crates/plugin-loader",
-    "crates/busbar-transport-stdio",
     "crates/busbar-transport-webrtc",
     "testing/ws-conformance/subject",
     "xtask",
@@ -106,12 +103,24 @@ busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", re
 # R-FIX3 double (`busbar_kernel::test_support::ranking_double`) instead, and the root's
 # `linked_hook_ranking` tests prove the double states what this door states.
 busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
+# THE STDIO TRANSPORT: the carrier of a spawned program's pipes (kind: transport), pulled at a pinned
+# rev; the logic crate the root links on the transport-door axis. Its dropped-in cdylib twin
+# (`busbar-transport-stdio-plugin`) and its gates live in that repo's plugin CI.
+busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "581c6459e48e48554360854271461b159a51a97e" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3
 # double (`busbar_kernel::test_support::store_double`), and the root's `linked_store_double` tests
 # prove the double states what this door states.
 busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory", rev = "848851e63ac7a454eb3d5daf9e11d739c48d738b" }
+# THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
+# door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
+# Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "a5e2ae355c138d8a57a4012225bf441c79bb84bd" }
+# THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
+# decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::plane_door::door`). Its
+# dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
+busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "d78c070da407c53d7235145fb76d69ed41b7046b" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
