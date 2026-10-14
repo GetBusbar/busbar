@@ -3666,6 +3666,983 @@ async fn the_pools_door_reads_a_session_from_the_pools_own_affinity_header() {
     );
 }
 
+// ── F25 REHOME: WHAT THE SERVED POOLS DOOR COUNTS, ROUTES, PROBES AND SHOWS ─────────────────────
+//
+// The previous release's engine tests of the scrape a served unit leaves (its request count, its
+// duration, its bounded pool label), of the routes a request may take (a fallback pool, an ad-hoc
+// provider route, a model named directly), of the queue and the recovery probe, of the signals the
+// ranking hooks are shown, and of the record an error end seals: each driven here through the
+// composed door to real far ends on loopback.
+#[cfg(linked_driver_proofs)]
+mod pools_door_counts_and_routes {
+    use super::*;
+
+    use std::sync::Arc;
+
+    use axum::http::StatusCode;
+    use busbar_contract::Signal;
+    use busbar_kernel::store::BreakerState;
+    use busbar_kernel::test_support::{metric_sum, MockResponse, MockServer, MockServerState};
+
+    use super::super::hook_seat_tests::DoorRig;
+
+    /// The store's clock.
+    fn now() -> u64 {
+        busbar_kernel::store::now()
+    }
+
+    /// A recording far end answering its requests with `replies`, in order.
+    async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
+        let state = Arc::new(MockServerState::new());
+        for reply in replies.into_iter().rev() {
+            state.push(reply);
+        }
+        let server = MockServer::new(Arc::clone(&state)).await;
+        (state, server)
+    }
+
+    /// The messages dialect's answer.
+    fn messages_answer() -> serde_json::Value {
+        serde_json::from_str(door_word("messages_answer")).expect("the answer is JSON")
+    }
+
+    /// A caller's request in the messages dialect naming `model`.
+    fn messages_naming(model: &str) -> serde_json::Value {
+        serde_json::json!({"model": model, "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}]})
+    }
+
+    /// One request through the door as the keyed caller, its body sent as these very bytes.
+    async fn send_bytes(rig: &DoorRig, path: &str, body: &str) -> u16 {
+        use tower::ServiceExt as _;
+        let req = axum::http::Request::builder()
+            .method("POST")
+            .uri(path)
+            .header("authorization", format!("Bearer {}", rig.token))
+            .header("content-type", "application/json")
+            .body(axum::body::Body::from(body.to_string()))
+            .expect("a request");
+        let response = rig
+            .router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("the router answers");
+        let status = response.status().as_u16();
+        let _ = axum::body::to_bytes(response.into_body(), 1 << 20).await;
+        status
+    }
+
+    /// The pre-routing refusals counted so far: `busbar_requests_total` under the bounded
+    /// `unresolved` pool label and the `client_error` outcome.
+    fn unresolved_client_errors() -> f64 {
+        metric_sum(
+            busbar_kernel::snapshot::REQUESTS_TOTAL,
+            &[("pool", "unresolved"), ("outcome", "client_error")],
+        )
+    }
+
+    /// A port nothing listens on.
+    fn refusing_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        listener.local_addr().expect("its address").port()
+    }
+
+    /// A rig over one far end that answers every request.
+    async fn serving(instance: &'static str) -> (DoorRig, super::super::hook_seat_tests::FarEnd) {
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        (rig, far)
+    }
+
+    /// A SERVED UNIT IS COUNTED, TIMED AND ITS ATTEMPT COUNTED (F25 rows 372 and 401; legacy
+    /// `ingress_integration_tests::test_finish_emits_request_metrics` and
+    /// `ingress_integration_tests::test_served_request_increments_hot_path_metrics`): a 200 chat on
+    /// pool `p` raises `busbar_requests_total{pool="p",outcome="ok"}`, the request-duration
+    /// histogram's count under `pool="p"`, and `busbar_upstream_attempts_total{pool="p",lane="m0"}`.
+    /// RED: a served request missing from any of the three series.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_counts_times_and_attributes_a_served_unit() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-count-served";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = serving(instance).await;
+        let duration_count = format!(
+            "{}_count",
+            busbar_kernel::snapshot::REQUEST_DURATION_SECONDS
+        );
+        let requests = || {
+            metric_sum(
+                busbar_kernel::snapshot::REQUESTS_TOTAL,
+                &[("pool", "p"), ("outcome", "ok")],
+            )
+        };
+        let timed = || metric_sum(&duration_count, &[("pool", "p")]);
+        let attempts = || {
+            metric_sum(
+                busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
+                &[("pool", "p"), ("lane", "m0")],
+            )
+        };
+        let before = (requests(), timed(), attempts());
+        assert_eq!(rig.chat().await.0, 200);
+        let _ = rig.ledger_after(1).await;
+        let after = (requests(), timed(), attempts());
+        assert!(
+            after.0 > before.0,
+            "outcome=ok counted: {before:?} -> {after:?}"
+        );
+        assert!(
+            after.1 > before.1,
+            "its duration observed: {before:?} -> {after:?}"
+        );
+        assert!(
+            after.2 > before.2,
+            "its attempt counted: {before:?} -> {after:?}"
+        );
+    }
+
+    /// AN UNKNOWN MODEL NEVER BECOMES A LABEL (F25 row 398; legacy
+    /// `ingress_integration_tests::test_unresolved_model_uses_bounded_pool_label_not_raw_string`):
+    /// a chat naming `zzz-unbounded-cardinality-probe-9f3a` is a 404, the scrape never carries that
+    /// string, and the request is counted under `pool="unresolved"`. RED: the caller's raw model
+    /// string on the scrape.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_counts_an_unknown_model_under_the_bounded_label() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-count-unknown-model";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = serving(instance).await;
+        let probe = "zzz-unbounded-cardinality-probe-9f3a";
+        let (status, _, _) = rig
+            .send(
+                "POST",
+                "/v1/chat/completions",
+                Some(serde_json::json!({"model": probe,
+                    "messages": [{"role": "user", "content": "hi"}]})),
+            )
+            .await;
+        assert_eq!(status, 404, "an unknown model is a 404");
+        let scrape = busbar_kernel::snapshot::render();
+        assert!(
+            !scrape.contains(probe),
+            "the raw model is never a label:\n{scrape}"
+        );
+        assert!(
+            scrape.contains("pool=\"unresolved\""),
+            "the bounded sentinel:\n{scrape}"
+        );
+    }
+
+    /// A MALFORMED BODY IS COUNTED (F25 row 399; legacy
+    /// `ingress_integration_tests::test_body_model_parse_error_is_observable`): a chat whose body is
+    /// `{ this is not json ` is a 400 and raises `busbar_requests_total{pool="unresolved",
+    /// outcome="client_error"}`. RED: a pre-routing refusal invisible to the scrape.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_counts_a_malformed_body() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-count-malformed";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = serving(instance).await;
+        let before = unresolved_client_errors();
+        assert_eq!(
+            send_bytes(&rig, "/v1/chat/completions", "{ this is not json ").await,
+            400
+        );
+        let after = unresolved_client_errors();
+        assert!(after > before, "{before} -> {after}");
+    }
+
+    /// AN UNRESOLVABLE INVOKE BODY IS COUNTED (F25 row 400; legacy
+    /// `ingress_integration_tests::test_bedrock_invoke_unresolvable_body_is_observable`): an invoke
+    /// on the converse dialect's model-scoped path whose body matches no known shape
+    /// (`{"nonsense":1}`) is a 400 and raises the `unresolved` / `client_error` count. RED: the
+    /// refusal invisible to the scrape.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_counts_an_unresolvable_invoke_body() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-count-invoke";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = serving(instance).await;
+        let before = unresolved_client_errors();
+        let (status, _, _) = rig
+            .send(
+                "POST",
+                door_word("invoke_path"),
+                Some(serde_json::json!({"nonsense": 1})),
+            )
+            .await;
+        assert_eq!(status, 400);
+        let after = unresolved_client_errors();
+        assert!(after > before, "{before} -> {after}");
+    }
+
+    /// A MISSING MODEL IS COUNTED (F25 row 404; legacy
+    /// `ingress_integration_tests::test_body_model_missing_model_is_observable`): a chat with no
+    /// `model` is a 400 and raises the `unresolved` / `client_error` count. RED: the refusal
+    /// invisible to the scrape.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_counts_a_missing_model() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-count-missing-model";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = serving(instance).await;
+        let before = unresolved_client_errors();
+        let (status, _, _) = rig
+            .send(
+                "POST",
+                "/v1/chat/completions",
+                Some(serde_json::json!({"messages": [{"role": "user", "content": "hi"}]})),
+            )
+            .await;
+        assert_eq!(status, 400);
+        let after = unresolved_client_errors();
+        assert!(after > before, "{before} -> {after}");
+    }
+
+    /// A NON-OBJECT BODY ON A PATH-MODEL DIALECT IS COUNTED (F25 row 405; legacy
+    /// `ingress_integration_tests::test_path_model_non_object_body_is_observable`): a converse
+    /// request whose body is `[1,2,3]` is a 400 and raises the `unresolved` / `client_error` count.
+    /// RED: the refusal invisible to the scrape.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_counts_a_non_object_body() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-count-non-object";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = serving(instance).await;
+        let before = unresolved_client_errors();
+        let (status, _, _) = rig
+            .send(
+                "POST",
+                door_word("converse_path"),
+                Some(serde_json::json!([1, 2, 3])),
+            )
+            .await;
+        assert_eq!(status, 400);
+        let after = unresolved_client_errors();
+        assert!(after > before, "{before} -> {after}");
+    }
+
+    /// AN ACTION THE DOOR DOES NOT SERVE IS COUNTED (F25 row 406; legacy
+    /// `ingress_integration_tests::test_gemini_unsupported_action_is_observable`): the generate
+    /// dialect's token-count action is a 404 and raises the `unresolved` / `client_error` count.
+    /// RED: the refusal invisible to the scrape.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_counts_an_unsupported_action() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-count-unsupported";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = serving(instance).await;
+        let before = unresolved_client_errors();
+        let (status, _, _) = rig
+            .send(
+                "POST",
+                door_word("count_tokens_path"),
+                Some(serde_json::json!({"contents": []})),
+            )
+            .await;
+        assert_eq!(status, 404);
+        let after = unresolved_client_errors();
+        assert!(after > before, "{before} -> {after}");
+    }
+
+    /// THE POOL LABEL IS BOUNDED (F25 row 407; legacy
+    /// `ingress_integration_tests::test_pool_label_bounds_cardinality`): a unit on configured pool
+    /// `p` is counted under `pool="p"`, one naming configured model `m0` directly under
+    /// `pool="m0"`, and one naming anything else, or nothing, under `pool="unresolved"`; neither
+    /// unconfigured spelling ever becomes a label. RED: a configured name relabelled, or a caller's
+    /// string on the scrape.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_bounds_its_pool_label_to_what_is_configured() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-count-label-bounds";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = serving(instance).await;
+        let counted =
+            |pool: &str| metric_sum(busbar_kernel::snapshot::REQUESTS_TOTAL, &[("pool", pool)]);
+        for (model, label) in [
+            ("p", "p"),
+            ("m0", "m0"),
+            ("anything-else", "unresolved"),
+            ("", "unresolved"),
+        ] {
+            let before = counted(label);
+            let _ = rig
+                .send(
+                    "POST",
+                    "/v1/chat/completions",
+                    Some(serde_json::json!({"model": model, "max_tokens": 16,
+                        "messages": [{"role": "user", "content": "hi"}]})),
+                )
+                .await;
+            let after = counted(label);
+            assert!(
+                after > before,
+                "`{model}` counts under `{label}`: {before} -> {after}"
+            );
+        }
+        let scrape = busbar_kernel::snapshot::render();
+        assert!(!scrape.contains("pool=\"anything-else\""), "{scrape}");
+        assert!(!scrape.contains("pool=\"\""), "{scrape}");
+    }
+
+    /// A FALLBACK POOL THE KEY MAY ALSO REACH SERVES (F25 row 460; legacy
+    /// `ingress_integration_tests::test_fallback_pool_acl_allows_key_permitted_on_both_pools`): a
+    /// key allowed pools `p` and `q`, pool `p` exhausted (its one member down) with `on_exhausted:
+    /// { fallback_pool: q }`: the request on `p` is answered 200 by `q`'s member; the fallback's
+    /// pool check does not refuse a key allowed on both. RED: a 403 on the fallback, or the
+    /// exhausted terminal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_serves_a_fallback_pool_the_key_may_reach() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-route-fallback-acl";
+        let _published = Withdrawn(instance);
+        let (state, server) = mock(vec![MockResponse::Ok {
+            status: StatusCode::OK,
+            body: messages_answer(),
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(refusing_port(), 1), (server.address().port(), 1)],
+                pooled: Some(1),
+                more_pools: &[("q", &[(1, 1)])],
+                pool_yaml: "on_exhausted: { fallback_pool: q }",
+                allowed_pools: Some(&["p", "q"]),
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_naming("p")),
+            )
+            .await;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+        assert!(
+            state.get_last_request_body().is_some(),
+            "the fallback's member served"
+        );
+    }
+
+    /// AN AD-HOC PROVIDER ROUTE ROUND-TRIPS (F25 row 461; legacy
+    /// `ingress_integration_tests::test_adhoc_success_round_trip_via_router`): a messages request on
+    /// `/<provider>/<model>/...` naming model `m0` under its own provider `oai0` resolves and is
+    /// served 2xx by that model's far end. RED: the ad-hoc route refused or unrouted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_serves_an_ad_hoc_provider_route() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-route-adhoc";
+        let _published = Withdrawn(instance);
+        let (state, server) = mock(vec![MockResponse::Ok {
+            status: StatusCode::OK,
+            body: messages_answer(),
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(server.address().port(), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                &format!("/oai0/m0{}", door_word("messages_path")),
+                Some(serde_json::json!({"model": "m0", "messages": [], "max_tokens": 16})),
+            )
+            .await;
+        assert!(
+            (200..300).contains(&status),
+            "{status}: {}",
+            String::from_utf8_lossy(&body)
+        );
+        assert!(
+            state.get_last_request_body().is_some(),
+            "the model's far end served"
+        );
+    }
+
+    /// A MODEL NAMED DIRECTLY ROUND-TRIPS (F25 row 470; legacy
+    /// `ingress_integration_tests::test_named_by_model_fallback_round_trip_via_router`): a messages
+    /// request on `/m0/...` naming `m0`, a configured model that is no pool, takes the model's
+    /// direct route: its far end receives the forwarded request and the caller has its 200. RED:
+    /// the direct route refused, or another member dialled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_serves_a_model_named_directly() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-route-direct-model";
+        let _published = Withdrawn(instance);
+        let (state, server) = mock(vec![MockResponse::Ok {
+            status: StatusCode::OK,
+            body: messages_answer(),
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(server.address().port(), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                &format!("/m0{}", door_word("messages_path")),
+                Some(serde_json::json!({"model": "m0", "messages": [], "max_tokens": 16})),
+            )
+            .await;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+        assert!(
+            state.get_last_request_body().is_some(),
+            "the model's far end received the forwarded request"
+        );
+    }
+
+    /// A rig over one member of the messages dialect at `port`, concurrency 1, its pool waiting
+    /// `max_ms` for a slot when the member is at capacity, under a long failover budget.
+    async fn queued(instance: &'static str, port: u16, max_ms: u64) -> Arc<DoorRig> {
+        let pool_yaml = format!("on_exhausted: {{ queue: {{ max_ms: {max_ms} }} }}");
+        Arc::new(
+            rig(
+                instance,
+                RigOpts {
+                    members: &[(port, 1)],
+                    dialect: Some(door_word("messages_dialect")),
+                    model_yaml: &["max_concurrent: 1"],
+                    pool_yaml: &pool_yaml,
+                    failover_timeout_secs: Some(300),
+                    ..RigOpts::default()
+                },
+            )
+            .await,
+        )
+    }
+
+    /// One messages request on pool `p`, in the background.
+    fn spawn_request(
+        rig: &Arc<DoorRig>,
+    ) -> tokio::task::JoinHandle<(u16, axum::http::HeaderMap, Vec<u8>)> {
+        let rig = Arc::clone(rig);
+        tokio::spawn(async move {
+            rig.send(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_naming("p")),
+            )
+            .await
+        })
+    }
+
+    /// A far-end answer whose body is held until `release`, `started` told when it is read.
+    fn gated(
+        status: StatusCode,
+        started: &Arc<tokio::sync::Notify>,
+        release: &Arc<tokio::sync::Notify>,
+    ) -> MockResponse {
+        MockResponse::Gated {
+            status,
+            body: serde_json::json!({"error": {"message": "boom"}}),
+            started: Arc::clone(started),
+            release: Arc::clone(release),
+        }
+    }
+
+    /// Wait (bounded) until the member's cell leaves HalfOpen.
+    async fn left_half_open(rig: &DoorRig, what: &str) {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while matches!(
+            rig.app.store.breaker_state_in("p", 0),
+            BreakerState::HalfOpen
+        ) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{what} left the cell stuck HalfOpen: the won probe leaked"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
+    /// A DROPPED QUEUED DISPATCH RELEASES ITS PROBE (F25 row 540; legacy
+    /// `on_exhausted_tests::queue_dropped_dispatch_future_releases_probe`): a request queued for the
+    /// member's only slot, the member's cell open with its cooldown spent, wins the recovery probe
+    /// when the slot frees (cell HalfOpen, its far end reading); dropped there, the cell leaves
+    /// HalfOpen within two seconds and is Open: the probe released, the member not benched. RED:
+    /// the cell stuck HalfOpen.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_releases_the_probe_of_a_dropped_queued_dispatch() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-probe-queued-drop";
+        let _published = Withdrawn(instance);
+        let (holding, holding_release) = (
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        let (probing, probing_release) = (
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        let (_state, server) = mock(vec![
+            gated(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &holding,
+                &holding_release,
+            ),
+            gated(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                &probing,
+                &probing_release,
+            ),
+        ])
+        .await;
+        let rig = queued(instance, server.address().port(), 30_000).await;
+        // The slot's holder: dispatched on the closed cell, its far end reading.
+        let holder = spawn_request(&rig);
+        tokio::time::timeout(std::time::Duration::from_secs(5), holding.notified())
+            .await
+            .expect("the holder reaches its far end");
+        rig.app.store.force_open_in("p", 0, 0);
+        let waiter = spawn_request(&rig);
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        holder.abort();
+        let _ = holder.await;
+        tokio::time::timeout(std::time::Duration::from_secs(5), probing.notified())
+            .await
+            .expect("the queued dispatch reaches its far end once the slot frees");
+        assert!(
+            matches!(
+                rig.app.store.breaker_state_in("p", 0),
+                BreakerState::HalfOpen
+            ),
+            "precondition: the queued dispatch won the recovery probe"
+        );
+        waiter.abort();
+        let _ = waiter.await;
+        left_half_open(&rig, "the dropped queued dispatch").await;
+        assert!(
+            matches!(
+                rig.app.store.breaker_state_in("p", 0),
+                BreakerState::Open { .. }
+            ),
+            "the probe released (HalfOpen to Open), the member not benched"
+        );
+        holding_release.notify_waiters();
+        probing_release.notify_waiters();
+    }
+
+    /// A QUEUE THAT NEVER GETS A SLOT TIMES OUT AT ITS BOUND (F25 row 543; legacy
+    /// `on_exhausted_tests::queue_times_out_to_503_when_capacity_never_frees`): a pool waiting at
+    /// most 300 ms for its member's only slot, the slot held for the whole request by another, sheds
+    /// the request 503 with a `Retry-After` after waiting at least 250 ms and under 2 s (the queue's
+    /// bound, not the 300 s failover budget), and the pool's queued depth is back to 0. RED: no
+    /// wait, an unbounded wait, no Retry-After, or a depth left raised.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_sheds_a_queued_request_at_the_queues_bound() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-queue-times-out";
+        let _published = Withdrawn(instance);
+        let answer = door_word("messages_answer");
+        let slow = far_end_scripted(SeatScript {
+            head: format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                 connection: close\r\n\r\n",
+                answer.len()
+            ),
+            pieces: vec![(3_000, answer.as_bytes().to_vec())],
+            finish: None,
+        })
+        .await;
+        let rig = queued(instance, slow.port, 300).await;
+        let holder = spawn_request(&rig);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while slow.served() == 0 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "the holder dispatches"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let started = std::time::Instant::now();
+        let (status, head, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(4),
+            rig.send(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_naming("p")),
+            ),
+        )
+        .await
+        .expect("the queue's wait is bounded and never hangs");
+        let waited = started.elapsed();
+        assert_eq!(status, 503, "a queue that never gets its slot sheds");
+        assert!(head.contains_key("retry-after"), "{head:?}");
+        assert!(
+            waited >= std::time::Duration::from_millis(250),
+            "it waited for the slot: {waited:?}"
+        );
+        assert!(
+            waited < std::time::Duration::from_secs(2),
+            "bounded by the queue's 300 ms, not the failover budget: {waited:?}"
+        );
+        assert_eq!(
+            rig.app.engine_tables_view().queued_depth("p"),
+            0,
+            "the depth is back to 0"
+        );
+        holder.abort();
+    }
+
+    /// A STALE RELEASE DOES NOT REVERT A NEWER PROBE (F25 row 571; legacy
+    /// `probe_release_owner_tests::a_stale_resume_does_not_revert_a_newer_probe`): while a request's
+    /// far end holds a 400 mid-read, the cell is closed, re-opened and a NEWER probe won (epoch
+    /// bumped, cell HalfOpen); the stale request then ends with its 400 relayed, and the cell is
+    /// STILL HalfOpen: the stale end's owner-checked release is a no-op against the newer epoch.
+    /// RED: the stale request reverting the newer probe's cell.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_never_reverts_a_newer_probe_on_a_stale_end() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-probe-stale-end";
+        let _published = Withdrawn(instance);
+        let (started, release) = (
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        let (_state, server) = mock(vec![MockResponse::Gated {
+            status: StatusCode::BAD_REQUEST,
+            body: serde_json::json!({"error": {"message": "malformed request"}}),
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+        }])
+        .await;
+        let rig = Arc::new(
+            rig(
+                instance,
+                RigOpts {
+                    members: &[(server.address().port(), 1)],
+                    dialect: Some(door_word("messages_dialect")),
+                    ..RigOpts::default()
+                },
+            )
+            .await,
+        );
+        let stale = spawn_request(&rig);
+        tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+            .await
+            .expect("the request reaches its far end");
+        let epoch_before = rig.app.store.probe_epoch_in("p", 0);
+        rig.app.store.record_success_in("p", 0);
+        rig.app.store.force_open_in("p", 0, 0);
+        assert!(
+            rig.app
+                .store
+                .acquire_for_dispatch_in("p", 0, now().saturating_add(86_400)),
+            "a NEW probe is won on the re-opened cell"
+        );
+        assert_ne!(
+            epoch_before,
+            rig.app.store.probe_epoch_in("p", 0),
+            "the second win bumps the epoch"
+        );
+        assert!(matches!(
+            rig.app.store.breaker_state_in("p", 0),
+            BreakerState::HalfOpen
+        ));
+        release.notify_one();
+        let (status, _, _) = stale.await.expect("the stale request ends");
+        assert_eq!(status, 400, "the held 400 relays through");
+        assert!(
+            matches!(
+                rig.app.store.breaker_state_in("p", 0),
+                BreakerState::HalfOpen
+            ),
+            "the stale end left the newer probe's cell HalfOpen"
+        );
+    }
+
+    /// A DROPPED DISPATCH RELEASES ITS WON PROBE (F25 row 572; legacy
+    /// `probe_release_owner_tests::a_dropped_main_path_future_releases_its_won_probe`): a request
+    /// that won the recovery probe on the member's open cell (cell HalfOpen, its far end reading a
+    /// 500) is dropped: within two seconds the cell is Open again, and a later dispatch can win the
+    /// probe again. RED: the cell stuck HalfOpen, the probe leaked.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_releases_the_probe_of_a_dropped_dispatch() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-probe-dropped";
+        let _published = Withdrawn(instance);
+        let (started, release) = (
+            Arc::new(tokio::sync::Notify::new()),
+            Arc::new(tokio::sync::Notify::new()),
+        );
+        let (_state, server) = mock(vec![gated(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &started,
+            &release,
+        )])
+        .await;
+        let rig = Arc::new(
+            rig(
+                instance,
+                RigOpts {
+                    members: &[(server.address().port(), 1)],
+                    dialect: Some(door_word("messages_dialect")),
+                    ..RigOpts::default()
+                },
+            )
+            .await,
+        );
+        rig.app.store.force_open_in("p", 0, 0);
+        let request = spawn_request(&rig);
+        tokio::time::timeout(std::time::Duration::from_secs(5), started.notified())
+            .await
+            .expect("the probing dispatch reaches its far end");
+        assert!(
+            matches!(
+                rig.app.store.breaker_state_in("p", 0),
+                BreakerState::HalfOpen
+            ),
+            "precondition: the dispatch won the recovery probe"
+        );
+        request.abort();
+        let _ = request.await;
+        left_half_open(&rig, "the dropped dispatch").await;
+        assert!(matches!(
+            rig.app.store.breaker_state_in("p", 0),
+            BreakerState::Open { .. }
+        ));
+        assert!(
+            rig.app
+                .store
+                .acquire_for_dispatch_in("p", 0, now().saturating_add(86_400)),
+            "a later dispatch can win the probe again"
+        );
+        release.notify_waiters();
+    }
+
+    /// A rig whose pool's ranking policy is shown its two members, the generation declaring
+    /// `declared` of the candidate catalog signals.
+    async fn ranked(
+        instance: &'static str,
+        declared: &[Signal],
+    ) -> (DoorRig, [super::super::hook_seat_tests::FarEnd; 2]) {
+        let fars = [
+            seat_far_end(200, SERVED_BY_TWIN).await,
+            seat_far_end(200, SERVED_BY_TWIN).await,
+        ];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(fars[0].port, 1), (fars[1].port, 1)],
+                described: true,
+                declared: Some(declared),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        (rig, fars)
+    }
+
+    /// Member `m<i>`'s signal bag as the ranking policy was last shown it.
+    fn bag_of(rig: &DoorRig, member: &str) -> String {
+        let bags = rig.gate_signals();
+        bags.iter()
+            .find(|line| line.split(' ').next() == Some(member))
+            .cloned()
+            .unwrap_or_else(|| panic!("the ranking policy was shown {member}: {bags:?}"))
+    }
+
+    /// AN UNDECLARED SIGNAL IS ABSENT (F25 row 606; legacy
+    /// `signal_catalog_tests::undeclared_signal_is_absent`): with only the breaker state declared,
+    /// the ranking policy's bag for a member holds that signal and no error rate. RED: an
+    /// undeclared signal computed and shown.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_shows_no_signal_nobody_declared() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-signal-undeclared";
+        let _published = Withdrawn(instance);
+        let (rig, _fars) = ranked(instance, &[Signal::CandidateBreakerState]).await;
+        assert_eq!(rig.chat().await.0, 200);
+        let bag = bag_of(&rig, "m0");
+        assert!(bag.contains("CandidateBreakerState="), "{bag}");
+        assert!(!bag.contains("CandidateErrorRate"), "never declared: {bag}");
+    }
+
+    /// AN OPEN BREAKER IS SHOWN OPEN (F25 row 608; legacy
+    /// `signal_catalog_tests::breaker_state_projects_open_after_a_trip`): member 0's cell forced
+    /// open for an hour, the breaker state declared: the ranking policy's bag for member 0 says
+    /// `CandidateBreakerState = "open"`. RED: a tripped member shown closed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_shows_a_tripped_members_breaker_open() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-signal-open";
+        let _published = Withdrawn(instance);
+        let (rig, _fars) = ranked(instance, &[Signal::CandidateBreakerState]).await;
+        rig.app.store.force_open_in("p", 0, now() + 3600);
+        let _ = rig.chat().await;
+        let bag = bag_of(&rig, "m0");
+        assert!(
+            bag.contains(r#"CandidateBreakerState=Str("open")"#),
+            "the tripped member's state: {bag}"
+        );
+    }
+
+    /// THE ERROR RATE IS THE WINDOW'S FRACTION (F25 row 609; legacy
+    /// `signal_catalog_tests::error_rate_projects_the_outcome_window_fraction`): one transient
+    /// failure and three successes recorded on member 0's cell, the error rate declared: the
+    /// ranking policy is shown exactly 0.25 for member 0. RED: any other figure, or none.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_shows_the_error_rate_as_the_windows_fraction() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-signal-error-rate";
+        let _published = Withdrawn(instance);
+        let (rig, _fars) = ranked(instance, &[Signal::CandidateErrorRate]).await;
+        let cfg = busbar_kernel::store::BreakerCfg::default();
+        rig.app
+            .store
+            .record_transient_in("p", 0, "test", &cfg, None);
+        for _ in 0..3 {
+            rig.app.store.record_success_in("p", 0);
+        }
+        let _ = rig.chat().await;
+        let bag = bag_of(&rig, "m0");
+        assert!(
+            bag.contains("CandidateErrorRate=F64(0.25)"),
+            "one failure in four outcomes: {bag}"
+        );
+    }
+
+    /// AN UNDECLARED P95 IS NEVER COLLECTED (F25 row 611; legacy
+    /// `signal_catalog_tests::undeclared_latency_p95_is_never_collected`): with only the error rate
+    /// declared, a served request records the lane's always-on latency figure, and the ranking
+    /// policy is never shown a p95 for any member, on that request or the next. RED: a p95
+    /// collected and shown though no hook declared it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_never_collects_an_undeclared_p95() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-signal-undeclared-p95";
+        let _published = Withdrawn(instance);
+        let (rig, _fars) = ranked(instance, &[Signal::CandidateErrorRate]).await;
+        assert_eq!(rig.chat().await.0, 200);
+        assert!(
+            (0..2).any(|lane| rig.app.store.lane_latency_ms(lane).is_some()),
+            "the latency figure is always on"
+        );
+        assert_eq!(rig.chat().await.0, 200);
+        let bags = rig.gate_signals();
+        assert!(
+            bags.iter()
+                .all(|bag| !bag.contains("CandidateLatencyP95Ms")),
+            "never declared, never shown: {bags:?}"
+        );
+    }
+
+    /// AN ERROR END SEALS ONE RECORD AS AN ERROR (F25 row 678; legacy
+    /// `audit::audit_matches_the_live_admitted_terminal`): a member of the messages dialect whose
+    /// far end cuts its whole answer becomes a client-facing 502 for a chat caller, in the caller's
+    /// own error envelope, and the unit seals exactly ONE audit record, under its operation class,
+    /// its finish `Error`. RED: no record, two, or the error end sealed as complete.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_seals_an_error_end_as_one_error_record() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-audit-error-end";
+        let _published = Withdrawn(instance);
+        let answer = door_word("messages_answer");
+        let far = far_end_scripted(SeatScript {
+            head: format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                 connection: close\r\n\r\n",
+                answer.len()
+            ),
+            pieces: vec![(0, answer.as_bytes()[..answer.len() / 2].to_vec())],
+            finish: None,
+        })
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = rig.chat().await;
+        assert_eq!(status, 502, "{}", String::from_utf8_lossy(&body));
+        let envelope: serde_json::Value =
+            serde_json::from_slice(&body).expect("the caller's JSON error envelope");
+        assert!(envelope.get("error").is_some(), "{envelope}");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while rig.audit_records() == 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let records = rig.records();
+        assert_eq!(records.len(), 1, "one record for the one unit: {records:?}");
+        assert!(!records[0].what.op_class.as_str().is_empty());
+        assert_eq!(
+            records[0].outcome.finish,
+            busbar_kernel_audit::FinishClass::Error,
+            "a client-facing 502 is sealed as an error end"
+        );
+    }
+
+    /// A PROBE BUMPS THE LANE'S OK ONCE, NOT ONCE PER POOL (F25 row 227; legacy
+    /// `health_tests::test_probe_success_bumps_lane_ok_once_not_per_cell`): an actively probed
+    /// member of three pools (`p`, `q`, `r`) answering every probe 200 counts exactly one `ok` per
+    /// probe on its lane snapshot (two probes, ok 2), never one per pool cell. RED: the lane's ok
+    /// running ahead of the probes its far end answered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_counts_one_ok_per_probe_not_per_pool() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-probe-ok-once";
+        let _published = Withdrawn(instance);
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                more_pools: &[("q", &[(0, 1)]), ("r", &[(0, 1)])],
+                provider_yaml: "health:\n  mode: active\n  interval_secs: 1",
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        loop {
+            // The lane's ok first: a probe is answered before it is counted, so a read in this
+            // order never sees ok ahead of the answered probes unless one probe counted twice.
+            let ok = rig.app.store.snapshot(0, now()).ok;
+            let probes = far.served() as u64;
+            assert!(
+                ok <= probes,
+                "ok {ok} ran ahead of the {probes} probes answered: counted per pool"
+            );
+            if probes >= 2 && ok == probes {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "two probes answered and counted: {probes} probes, ok {ok}"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+}
+
 // ── the core capabilities on the decisions plane (qa/capability-equality.json) ─────────────────
 //
 // The decisions plane is served only through its door on the kernel's plane driver, so each cell
