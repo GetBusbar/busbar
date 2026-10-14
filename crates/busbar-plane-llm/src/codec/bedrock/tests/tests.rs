@@ -6771,3 +6771,67 @@ fn the_tails_sigv4_parameters_restate_the_signing_scheme() {
         .as_str()
         .is_some_and(|w| w.contains("defaulting SigV4 scope to us-east-1")));
 }
+
+// ── F25 REHOME (row 108) ─────────────────────────────────────────────────────────────────────────
+
+/// The production request translate steps (reader → egress seam → writer → shim strip), with the
+/// prepared IR beside the written body.
+fn rehome_xreq(
+    ingress: &'static str,
+    egress: &str,
+    body: &serde_json::Value,
+) -> (crate::codec::ir::IrRequest, serde_json::Value) {
+    let ingress_p = crate::codec::proto_codec::protocol_for(ingress).expect("ingress");
+    let egress_p = crate::codec::proto_codec::protocol_for(egress).expect("egress");
+    let mut req = ingress_p.reader().read_request(body).expect("read_request");
+    crate::codec::chat_handle::chat_prepare_for_egress(
+        &mut req,
+        &busbar_contract::ir::egress_prep::EgressPrep {
+            thought_signature_fill: false,
+            ingress_protocol: ingress,
+            egress_requires_max_tokens: egress_p.decl().is_some_and(|d| d.requires_max_tokens),
+            lane_default_max_tokens: None,
+            global_default_max_tokens: 4096,
+            reasoning_allowed: true,
+            reasoning_budgets: crate::codec::ir::REASONING_BUDGET_DEFAULTS,
+            prompt_caching_allowed: true,
+            cache_control_cap: None,
+            lane_caps: Default::default(),
+        },
+    );
+    let mut out = egress_p.writer().write_request(&req);
+    crate::codec::wire_shim::strip_router_shim_keys(&mut out, egress);
+    (req, out)
+}
+
+/// F25 REHOME row 108, from `crates/busbar-llm/src/engine/tests/egress_dropped_controls_audit_tests.rs:89`
+/// (`openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded`): an OpenAI caller's tools plus
+/// `tool_choice: "none"` onto Bedrock still forwards (a non-empty body, the tool kept, `toolChoice`
+/// omitted: Converse has no "do not call a tool"), and the drop is reported as the control
+/// `tool_choice=none`, the name the caller's `egress.control_unrepresentable` audit row carries
+/// (`tool_choice=none on bedrock`).
+#[test]
+fn openai_tool_choice_none_onto_bedrock_forwards_and_reports_the_drop() {
+    let body = serde_json::json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{
+            "type": "function",
+            "function": {"name": "get_weather", "parameters": {"type": "object"}}
+        }],
+        "tool_choice": "none"
+    });
+    let (req, out) = rehome_xreq("openai", "bedrock", &body);
+    assert!(out.as_object().is_some_and(|o| !o.is_empty()), "{out}");
+    assert_eq!(
+        out.pointer("/toolConfig/tools/0/toolSpec/name"),
+        Some(&serde_json::json!("get_weather")),
+        "{out}"
+    );
+    assert!(out.pointer("/toolConfig/toolChoice").is_none(), "{out}");
+    let dropped = crate::codec::proto_codec::protocol_for("bedrock")
+        .expect("bedrock")
+        .writer()
+        .dropped_egress_controls(&req);
+    assert!(dropped.contains(&"tool_choice=none"), "{dropped:?}");
+}

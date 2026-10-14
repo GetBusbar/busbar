@@ -5081,3 +5081,53 @@ fn responses_failed_stream_bills_its_reported_usage() {
     assert!(none.usage().is_none());
     assert!(none.terminal_error().is_some());
 }
+
+/// F25 REHOME row 350, from `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs:2234`
+/// (`test_forward_once_cross_protocol_remaps_tool_call_id`): an Anthropic answer whose `tool_use` id
+/// is `toolu_origRAW123`, delivered to an OpenAI caller through the production ingress seam
+/// (`chat_prepare_for_ingress`, which every attempt path runs), carries an OpenAI-native `call_…`
+/// id, never the raw one, and the raw id appears nowhere in the client body. The client's echo of
+/// that id decodes back to the far end's original.
+#[test]
+fn an_anthropic_tool_call_id_reaches_an_openai_client_remapped_and_unleaked() {
+    let ir_resp = AnthropicReader
+        .read_response(&serde_json::json!({
+            "id": "msg_x",
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_origRAW123",
+                "name": "get_weather",
+                "input": {"city": "SF"}
+            }],
+            "model": "claude-3",
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 3, "output_tokens": 2}
+        }))
+        .expect("anthropic read");
+    let mut ir_resp = ir_resp;
+    crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir_resp, "openai", 1_752_000_000);
+    let body = crate::codec::proto_codec::protocol_for("openai")
+        .expect("openai")
+        .writer()
+        .write_response(&ir_resp);
+    let tool_id = body
+        .pointer("/choices/0/message/tool_calls/0/id")
+        .and_then(|s| s.as_str())
+        .unwrap_or_else(|| panic!("expected an OpenAI tool_calls id in: {body}"))
+        .to_string();
+    assert!(tool_id.starts_with("call_"), "{tool_id}");
+    assert_ne!(tool_id, "toolu_origRAW123");
+    let bytes = serde_json::to_vec(&body).expect("serializes");
+    assert!(
+        !bytes
+            .windows("toolu_origRAW123".len())
+            .any(|w| w == b"toolu_origRAW123"),
+        "the raw Anthropic tool id must not appear anywhere in the client body: {body}"
+    );
+    assert_eq!(
+        decode_native_tool_id("openai", &tool_id).as_deref(),
+        Some("toolu_origRAW123")
+    );
+}
