@@ -3537,6 +3537,879 @@ async fn the_pools_door_bills_a_non_stream_answer_the_caller_dropped_mid_relay()
     next.abort();
 }
 
+// ── F25 REHOME: THE MONEY A SERVED UNIT LEAVES ──────────────────────────────────────────────────
+//
+// The previous release's engine tests of what a unit bills: the tokens a whole, cut or dropped
+// answer reports, the fee a refused or failed unit keeps or never takes, the metering row a
+// streamed unit writes, and the limits the ledger then enforces. Each is driven here through the
+// composed door, its figures read off the key's ledger, the group's bucket, the metering series
+// and the unit's sealed audit record.
+#[cfg(linked_driver_proofs)]
+mod pools_door_money {
+    use super::*;
+
+    use std::sync::Arc;
+
+    use axum::http::StatusCode;
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+    use busbar_kernel::test_support::{metric_sum, MockResponse, MockServer, MockServerState};
+
+    use super::super::hook_seat_tests::DoorRig;
+
+    /// The store's clock.
+    fn now() -> u64 {
+        busbar_kernel::store::now()
+    }
+
+    /// A recording far end answering its requests with `replies`, in order.
+    async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
+        let state = Arc::new(MockServerState::new());
+        for reply in replies.into_iter().rev() {
+            state.push(reply);
+        }
+        let server = MockServer::new(Arc::clone(&state)).await;
+        (state, server)
+    }
+
+    /// One group limit of `amount` `metric` per `per`.
+    fn limit(metric: LimitMetric, amount: u64, per: LimitWindow) -> LimitCfg {
+        LimitCfg {
+            metric,
+            amount,
+            per: Some(per),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
+        }
+    }
+
+    /// The messages dialect's whole answer reporting 1500 + 90 tokens.
+    fn answer_1590() -> &'static str {
+        door_word("messages_answer_usage")
+    }
+
+    /// A far end that announces `body` whole but writes only its first `prefix` bytes, holds the
+    /// connection `hold_ms`, and closes (a cut).
+    fn cut_after(body: &str, prefix: usize, hold_ms: u64) -> SeatScript {
+        SeatScript {
+            head: format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                 connection: close\r\n\r\n",
+                body.len()
+            ),
+            pieces: vec![
+                (0, body.as_bytes()[..prefix].to_vec()),
+                (hold_ms, Vec::new()),
+            ],
+            finish: None,
+        }
+    }
+
+    /// A caller's request in the messages dialect on pool `p`.
+    fn messages_on_p(stream: bool) -> serde_json::Value {
+        serde_json::json!({"model": "p", "max_tokens": 50, "stream": stream,
+            "messages": [{"role": "user", "content": "hi"}]})
+    }
+
+    /// A rig over one member of the messages dialect at `port`.
+    async fn messages_member(instance: &'static str, port: u16) -> DoorRig {
+        rig(
+            instance,
+            RigOpts {
+                members: &[(port, 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await
+    }
+
+    /// The unit's sealed record whose finish is `finish`, once sealed (bounded).
+    async fn sealed_as(
+        rig: &DoorRig,
+        finish: busbar_kernel_audit::FinishClass,
+    ) -> busbar_kernel_audit::AuditRecord {
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if let Some(record) = rig
+                .records()
+                .into_iter()
+                .find(|record| record.outcome.finish == finish)
+            {
+                return record;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a record sealed {finish:?}: {:?}",
+                rig.records()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    }
+
+    /// The token figures a sealed record reports: each token line's class and quantity.
+    fn token_lines(record: &busbar_kernel_audit::AuditRecord) -> Vec<(String, u64)> {
+        record
+            .usage
+            .lines
+            .iter()
+            .filter(|line| {
+                let class = line.class.as_str();
+                class.starts_with("tokens_") || class.starts_with("cache_")
+            })
+            .map(|line| (line.class.as_str().to_string(), line.quantity))
+            .collect()
+    }
+
+    /// The tokens a sealed record reports, summed.
+    fn reported(record: &busbar_kernel_audit::AuditRecord) -> u64 {
+        token_lines(record)
+            .iter()
+            .map(|(_, quantity)| quantity)
+            .sum()
+    }
+
+    /// Start three requests well inside one minute's window.
+    async fn inside_one_minute() {
+        let into_window = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs()
+            % 60;
+        if into_window >= 55 {
+            tokio::time::sleep(std::time::Duration::from_secs(60 - into_window + 1)).await;
+        }
+    }
+
+    /// A WHOLE ANSWER DROPPED BY ITS CALLER BILLS ITS FLOOR, EXACTLY (F25 row 28; legacy
+    /// `nonstream_drop_billing_tests::a_same_protocol_nonstream_body_dropped_mid_relay_bills_what_it_relayed_not_zero`):
+    /// a same-dialect whole answer (usage 1500/90) whose caller goes after its first bytes, the
+    /// prefix before `"stop_reason"` relayed verbatim, bills EXACTLY the floor over the relayed bytes
+    /// (their length over the bytes-per-token divisor, at least 1), never 0; the unit ends Partial,
+    /// and its sealed record reports that same figure. RED: 0 billed, any other figure, or the
+    /// record disagreeing with the ledger.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_bills_the_floor_of_a_whole_answer_its_caller_dropped() {
+        use http_body_util::BodyExt as _;
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-money-dropped-floor";
+        let _published = Withdrawn(instance);
+        let whole = answer_1590();
+        let prefix = whole.find(r#""stop_reason""#).expect("a stop reason");
+        let far = far_end_scripted(cut_after(whole, prefix, 5_000)).await;
+        let rig = messages_member(instance, far.port).await;
+        let response = rig
+            .open(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_on_p(false)),
+                &[],
+            )
+            .await;
+        assert_eq!(response.status().as_u16(), 200);
+        let mut body = response.into_body();
+        let mut relayed: Vec<u8> = Vec::new();
+        while relayed.len() < prefix {
+            let piece = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+                .await
+                .expect("the prefix arrives before the far end's hold")
+                .expect("a frame")
+                .expect("relayed");
+            if let Some(bytes) = piece.data_ref() {
+                relayed.extend_from_slice(bytes);
+            }
+        }
+        assert_eq!(
+            relayed,
+            whole.as_bytes()[..prefix].to_vec(),
+            "the prefix relays verbatim"
+        );
+        // THE DISCONNECT: the caller goes before the answer's end.
+        drop(body);
+        let divisor: u64 = door_word("truncated_tail_bytes_per_token")
+            .parse()
+            .expect("a divisor");
+        let floor = (prefix as u64 / divisor).max(1);
+        // The driver finishes a buried unit at the start of its next one.
+        let rig = Arc::new(rig);
+        let next = {
+            let rig = Arc::clone(&rig);
+            tokio::spawn(async move { rig.chat().await })
+        };
+        let billed = rig.tokens_after().await;
+        next.abort();
+        assert_ne!(billed, 0, "a whole answer dropped mid-relay never bills 0");
+        assert_eq!(billed, floor, "the floor over the relayed bytes");
+        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
+        assert_eq!(
+            reported(&record),
+            floor,
+            "the record reports what the ledger accrued: {:?}",
+            token_lines(&record)
+        );
+    }
+
+    /// A WHOLE ANSWER RELAYED WHOLE BILLS ITS OWN USAGE ONCE (F25 row 29; legacy
+    /// `nonstream_drop_billing_tests::a_same_protocol_nonstream_body_relayed_whole_bills_its_own_usage_once`):
+    /// a same-dialect whole answer reporting 1500 + 90 reaches the caller as those very bytes, the
+    /// key's ledger holds exactly 1590 tokens (counted once), and the unit ends Complete. RED: a
+    /// rewritten body, a figure other than 1590, or the end not Complete.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_bills_a_whole_answer_its_own_usage_once() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-money-whole-once";
+        let _published = Withdrawn(instance);
+        let far = seat_far_end(200, answer_1590()).await;
+        let rig = messages_member(instance, far.port).await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_on_p(false)),
+            )
+            .await;
+        assert_eq!(status, 200);
+        assert_eq!(
+            body,
+            answer_1590().as_bytes(),
+            "relayed whole, as one answer"
+        );
+        assert_eq!(
+            rig.tokens_after().await,
+            1590,
+            "the far end's own figure, once"
+        );
+        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Complete).await;
+        assert_eq!(reported(&record), 1590);
+    }
+
+    /// A WHOLE ANSWER THE FAR END CUTS BEFORE ITS USAGE BILLS NOTHING (F25 row 31; legacy
+    /// `nonstream_drop_billing_tests::a_nonstream_body_cut_by_the_upstream_before_its_usage_bills_nothing`):
+    /// the far end closes before `"stop_reason"` (no usage reported): the ledger holds 0 tokens, the
+    /// unit ends Partial, and its record reports no tokens. RED: a floor or any figure billed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_bills_nothing_for_a_whole_answer_cut_before_its_usage() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-money-cut-before-usage";
+        let _published = Withdrawn(instance);
+        let whole = answer_1590();
+        let prefix = whole.find(r#""stop_reason""#).expect("a stop reason");
+        let far = far_end_scripted(cut_after(whole, prefix, 0)).await;
+        let rig = messages_member(instance, far.port).await;
+        let _ = rig
+            .send(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_on_p(false)),
+            )
+            .await;
+        assert_eq!(rig.tokens_after().await, 0, "no reported usage, no charge");
+        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
+        assert_eq!(
+            reported(&record),
+            0,
+            "the record reports no usage either: {:?}",
+            token_lines(&record)
+        );
+    }
+
+    /// A WHOLE ANSWER THE FAR END CUTS AFTER ITS USAGE BILLS WHAT IT REPORTED (F25 row 32; legacy
+    /// `nonstream_drop_billing_tests::a_nonstream_body_cut_by_the_upstream_after_its_usage_bills_what_it_reported`):
+    /// the far end closes one byte short of the end, after its usage (1500/90): the ledger holds
+    /// exactly 1590, and the unit ends Partial. RED: 0, a floor, or the end sealed Complete.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_bills_what_a_cut_whole_answer_reported() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-money-cut-after-usage";
+        let _published = Withdrawn(instance);
+        let whole = answer_1590();
+        let far = far_end_scripted(cut_after(whole, whole.len() - 1, 0)).await;
+        let rig = messages_member(instance, far.port).await;
+        let _ = rig
+            .send(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_on_p(false)),
+            )
+            .await;
+        assert_eq!(rig.tokens_after().await, 1590, "the far end's own report");
+        let _ = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
+    }
+
+    /// The far end's chat answer (usage 100 in, 60 out) the two token-limit cells are answered with.
+    fn chat_160() -> serde_json::Value {
+        serde_json::json!({
+            "model": "glm-4.5",
+            "choices": [{"index": 0, "message": {"role": "assistant",
+                "content": "Hello there friend"}, "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 60}
+        })
+    }
+
+    /// A rig whose key's group allows 30 tokens a minute, its one member (the default dialect)
+    /// answering `replies`.
+    async fn thirty_tokens_a_minute(
+        instance: &'static str,
+        replies: Vec<MockResponse>,
+    ) -> (DoorRig, MockServer) {
+        let (_state, server) = mock(replies).await;
+        let limits = [limit(LimitMetric::Tokens, 30, LimitWindow::Minute)];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(server.address().port(), 1)],
+                group: Some(("tpmgrp", &limits)),
+                allowed_pools: Some(&["p"]),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        (rig, server)
+    }
+
+    /// A TRANSLATED WHOLE ANSWER'S TOKENS ARE CHARGED, AND THE TOKEN LIMIT THEN REFUSES (F25 row
+    /// 133; legacy `forward_pool_integration_tests::test_cross_protocol_nonstream_records_tokens_for_tpm`):
+    /// a messages caller served by a member of another dialect reporting 160 tokens gets its 200,
+    /// the far end's model name preserved, and its key's group (30 tokens a minute) refuses the
+    /// next request 429. RED: the translated usage not charged, so the limit never refuses.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_charges_a_translated_answers_tokens_against_the_token_limit() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-money-tpm-whole";
+        let _published = Withdrawn(instance);
+        inside_one_minute().await;
+        let ok = || MockResponse::Ok {
+            status: StatusCode::OK,
+            body: chat_160(),
+        };
+        let (rig, _server) = thirty_tokens_a_minute(instance, vec![ok(), ok()]).await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_on_p(false)),
+            )
+            .await;
+        assert_eq!(
+            status,
+            200,
+            "under the limit: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let answer: serde_json::Value = serde_json::from_slice(&body).expect("JSON");
+        assert_eq!(answer["model"], "glm-4.5", "the far end's model preserved");
+        let _ = rig.tokens_after().await;
+        let (status, _, _) = rig
+            .send(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_on_p(false)),
+            )
+            .await;
+        assert_eq!(status, 429, "the charged tokens make the limit refuse");
+    }
+
+    /// A TRANSLATED STREAM'S TOKENS ARE CHARGED AT ITS END, AND THE TOKEN LIMIT THEN REFUSES (F25
+    /// row 134; legacy `forward_pool_integration_tests::test_cross_protocol_stream_records_tokens_for_tpm`):
+    /// a streamed messages caller served by a member of another dialect whose last frame reports
+    /// 160 tokens gets its 200 stream, and its key's group (30 tokens a minute) refuses the next
+    /// request 429. RED: the stream-end usage not charged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_charges_a_translated_stream_tokens_against_the_token_limit() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-money-tpm-stream";
+        let _published = Withdrawn(instance);
+        inside_one_minute().await;
+        let streamed = || {
+            MockResponse::Sse {
+            events: vec![
+                r#"{"choices":[{"delta":{"role":"assistant"}}]}"#.to_string(),
+                r#"{"choices":[{"delta":{"content":"Hello there friend"}}]}"#.to_string(),
+                r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":60}}"#.to_string(),
+            ],
+            abort_at_index: None,
+        }
+        };
+        let (rig, _server) = thirty_tokens_a_minute(instance, vec![streamed(), streamed()]).await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_on_p(true)),
+            )
+            .await;
+        assert_eq!(
+            status,
+            200,
+            "under the limit: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let _ = rig.tokens_after().await;
+        let (status, _, _) = rig
+            .send(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_on_p(true)),
+            )
+            .await;
+        assert_eq!(
+            status, 429,
+            "the charged stream-end tokens make the limit refuse"
+        );
+    }
+
+    /// AN OVER-CAP ANSWER KEEPS ITS BUDGET UNIT (F25 row 360; legacy
+    /// `ingress_indistinguishability_tests::test_truncated_body_does_not_refund_budget`): with the
+    /// translation cap at 4096 bytes, a member of another dialect (lifetime budget 1) answering a
+    /// body over the cap is a 500 to the messages caller, and the member's budget unit stays spent
+    /// (remaining 0): our cap, not the far end's fault, is never refunded. RED: the unit refunded
+    /// (remaining 1).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_keeps_the_budget_unit_of_an_over_cap_answer() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let _limits = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+        const CAP: usize = 4096;
+        let _cap = busbar_kernel::config::limits::InstallGuard::install(
+            &busbar_kernel::config::limits::LimitsResolved::with_request_body_max_bytes(CAP),
+        );
+        let instance = "rehome-money-over-cap";
+        let _published = Withdrawn(instance);
+        let (_state, server) = mock(vec![MockResponse::Ok {
+            status: StatusCode::OK,
+            body: serde_json::json!({
+                "id": "chatcmpl-huge",
+                "object": "chat.completion",
+                "created": 1234567890,
+                "model": "m0",
+                "choices": [{"index": 0, "message": {"role": "assistant",
+                    "content": "x".repeat(CAP + 1024)}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 5, "completion_tokens": 999999}
+            }),
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(server.address().port(), 1)],
+                lane_budget: Some(1),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        assert_eq!(rig.app.store.lane_budget_remaining(0), Some(1));
+        let (status, _, _) = rig
+            .send(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_on_p(false)),
+            )
+            .await;
+        assert_eq!(status, 500, "over the translation cap");
+        assert_eq!(
+            rig.app.store.lane_budget_remaining(0),
+            Some(0),
+            "an over-cap body is our cap, not the far end's fault: never refunded"
+        );
+    }
+
+    /// A POOL-ACCESS REFUSAL IS COUNTED AND CHARGES NO FEE (F25 row 424; legacy
+    /// `ingress_integration_tests::test_governance_rejection_is_counted_via_finish`): a key allowed
+    /// only another pool is refused 403 on `p`; the refusal raises `busbar_requests_total` under
+    /// `outcome="client_error"` and the request-duration count, and the key's ledger takes no fee
+    /// (spend 0, nothing billable). RED: the refusal invisible to the scrape, or a fee charged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_counts_a_pool_refusal_and_charges_no_fee() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-money-pool-refusal";
+        let _published = Withdrawn(instance);
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                allowed_pools: Some(&["denied-elsewhere"]),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let duration_count = format!(
+            "{}_count",
+            busbar_kernel::snapshot::REQUEST_DURATION_SECONDS
+        );
+        let counted = || {
+            (
+                metric_sum(
+                    busbar_kernel::snapshot::REQUESTS_TOTAL,
+                    &[("outcome", "client_error")],
+                ),
+                metric_sum(&duration_count, &[]),
+            )
+        };
+        let before = counted();
+        assert_eq!(rig.chat().await.0, 403, "a pool the key may not reach");
+        let after = counted();
+        assert!(
+            after.0 > before.0,
+            "outcome=client_error: {before:?} -> {after:?}"
+        );
+        assert!(
+            after.1 > before.1,
+            "its duration observed: {before:?} -> {after:?}"
+        );
+        let (_, spend, _, billable) = rig.ledger_after(0).await;
+        assert_eq!((spend, billable), (0, 0), "no fee for a refused request");
+        assert_eq!(far.served(), 0);
+    }
+
+    /// A ZERO BUDGET NAMES ITS GROUP AND CHARGES NOTHING (F25 row 472; legacy
+    /// `ingress_integration_tests::test_group_blocked_429_names_the_budget_group`): a key in group
+    /// `finance`, whose all-time budget is 0, is refused 429; the body carries `insufficient_quota`
+    /// and names the blocking bucket, `group 'finance' budget per total exhausted`, never the key's
+    /// id; and the key's recorded requests stay 0. RED: the bucket unnamed, the key id on the wire,
+    /// or the refused request recorded.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_names_the_blocking_group_and_records_nothing() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-money-finance-blocked";
+        let _published = Withdrawn(instance);
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let finance = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                group: Some(("finance", &finance)),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = rig.chat().await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(status, 429, "{text}");
+        assert!(text.contains("insufficient_quota"), "{text}");
+        assert!(
+            text.contains("group 'finance' budget per total exhausted"),
+            "the blocking bucket is named: {text}"
+        );
+        assert!(!text.contains(&rig.key_id), "never the key id: {text}");
+        let (requests, _, _, _) = rig.ledger_after(0).await;
+        assert_eq!(requests, 0, "the refused request is not recorded");
+    }
+
+    /// A STREAM WITH NO USAGE FRAME BILLS ZERO TOKENS IN EVERY DIALECT (F25 row 618; legacy
+    /// `stream_no_usage_bills_zero_tests::stream_without_usage_frame_bills_zero_on_every_dialect`):
+    /// for each of the six caller dialects, a streamed answer whose far end sends no usage frame is
+    /// served 200, the key's ledger holds 0 tokens and no token spend (its spend is the request fee
+    /// alone), and exactly one metering row is written for the key: model `m0`, requests 1, every
+    /// token tier (input, output, cache read, cache write) 0. RED: tokens invented, a second row,
+    /// or no row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_bills_zero_tokens_for_a_stream_with_no_usage_in_every_dialect() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let streamed = |mut body: serde_json::Value| {
+            body["stream"] = serde_json::Value::Bool(true);
+            body
+        };
+        let chat = serde_json::json!({"model": "p", "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}]});
+        let word_body = |key: &str| -> serde_json::Value {
+            serde_json::from_str(door_word(key)).expect("a JSON request body")
+        };
+        let dialects = [
+            (
+                "rehome-money-no-usage-chat",
+                "/v1/chat/completions",
+                streamed(chat.clone()),
+            ),
+            (
+                "rehome-money-no-usage-messages",
+                door_word("messages_path"),
+                streamed(chat.clone()),
+            ),
+            (
+                "rehome-money-no-usage-chat-v2",
+                door_word("chat_v2_path"),
+                streamed(word_body("chat_v2_body")),
+            ),
+            (
+                "rehome-money-no-usage-respond",
+                door_word("respond_path"),
+                streamed(word_body("respond_body")),
+            ),
+            (
+                "rehome-money-no-usage-generate",
+                door_word("generate_stream_path"),
+                word_body("generate_body"),
+            ),
+            (
+                "rehome-money-no-usage-converse",
+                door_word("converse_stream_path"),
+                word_body("converse_body"),
+            ),
+        ];
+        for (instance, path, request) in dialects {
+            let _published = Withdrawn(instance);
+            let (_state, server) = mock(vec![MockResponse::Sse {
+                events: vec![
+                    r#"{"id":"chatcmpl-nousage","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}"#.to_string(),
+                    r#"{"id":"chatcmpl-nousage","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#.to_string(),
+                ],
+                abort_at_index: None,
+            }])
+            .await;
+            let rig = rig(
+                instance,
+                RigOpts {
+                    members: &[(server.address().port(), 1)],
+                    ..RigOpts::default()
+                },
+            )
+            .await;
+            let charged_at = now();
+            let (status, _, body) = rig.send("POST", path, Some(request)).await;
+            assert_eq!(status, 200, "{path}: {}", String::from_utf8_lossy(&body));
+            let (requests, spend, _, billable) = rig.ledger_after(1).await;
+            assert_eq!(requests, 1, "{path}");
+            assert_eq!(
+                rig.tokens_after().await,
+                0,
+                "{path}: no usage frame, no tokens"
+            );
+            assert_eq!(
+                spend,
+                i64::try_from(billable).expect("a count"),
+                "{path}: the fee alone, no token spend"
+            );
+            rig.gov.flush_metering();
+            let rows = rig
+                .gov
+                .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+                .expect("metering read");
+            let mine: Vec<_> = rows.iter().filter(|row| row.key_id == rig.key_id).collect();
+            assert_eq!(mine.len(), 1, "{path}: one metering row: {rows:?}");
+            assert_eq!(mine[0].model, "m0", "{path}");
+            assert_eq!(mine[0].requests, 1, "{path}");
+            assert_eq!(
+                (
+                    mine[0].tokens_input,
+                    mine[0].tokens_output,
+                    mine[0].tokens_cache_read,
+                    mine[0].tokens_cache_write
+                ),
+                (0, 0, 0, 0),
+                "{path}: every token tier is zero"
+            );
+        }
+    }
+
+    /// A SPENT BUDGET REFUSES AND CHARGES NOTHING, SO NOTHING IS REFUNDED (F25 row 657; legacy
+    /// `admit::over_budget_refuses_with_no_charge_and_nothing_to_refund`): group `bgrp`'s all-time
+    /// bucket seeded with 250 requests at a one-cent fee (250 cents, over its 100-cent cap); its key
+    /// is refused 429, and afterwards the group's bucket still reads 250 requests, 250 cents, 250 on
+    /// its durable row and 250 billable, the key's own ledger 0 throughout; the refusal is sealed as
+    /// `OverBudget` at the Admit step. RED: any counter moved by the refusal, or the refusal stamped
+    /// at another step or reason.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_a_spent_budget_without_charging_anything() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-money-over-budget-untouched";
+        let _published = Withdrawn(instance);
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let limits = [limit(LimitMetric::Budget, 100, LimitWindow::Total)];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                group: Some(("bgrp", &limits)),
+                seed: &[("group:bgrp@total", 250)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let group_before = rig.bucket("group:bgrp@total");
+        assert_eq!(
+            group_before,
+            (250, 250, 250, 250),
+            "250 seeded requests at a one-cent fee: 250 cents over a 100-cent cap"
+        );
+        let key_before = rig.ledger_after(0).await;
+        assert_eq!(key_before, (0, 0, 0, 0), "the key has been charged nothing");
+        let (status, _, _) = rig.chat().await;
+        assert_eq!(status, 429, "an exhausted budget is a 429");
+        assert_eq!(
+            rig.bucket("group:bgrp@total"),
+            group_before,
+            "the refusal moved nothing on the blocking bucket"
+        );
+        assert_eq!(
+            rig.ledger_after(0).await,
+            key_before,
+            "nor on the key's own"
+        );
+        assert_eq!(far.served(), 0);
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while rig.audit_records() == 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let records = rig.records();
+        assert_eq!(records.len(), 1, "{records:?}");
+        assert_eq!(
+            records[0].outcome.unit_end,
+            busbar_contract::caps::Outcome::Refused(
+                busbar_contract::caps::StepName::Admit,
+                busbar_contract::caps::ReasonCode::OverBudget
+            ),
+            "refused at the door, for the budget"
+        );
+    }
+
+    /// THE STREAMED AND THE FAILED UNIT LEAVE THE MONEY WHERE 1.5.5 LEFT IT (F25 row 691; legacy
+    /// `chain::the_chain_leaves_the_money_where_the_legacy_plane_leaves_it`): a streamed unit whose
+    /// far end reports 11 in and 7 out accrues 18 tokens and one admitted request, and writes ONE
+    /// metering row for the key (model `m0`, in 11, out 7, cache 0 and 0, requests 1, billable 1);
+    /// a unit whose far end fails keeps its admitted request, accrues no tokens and writes no
+    /// metering row. RED: the stream's tokens not accrued or accrued twice, a failed unit's slot
+    /// refunded, or a row for a unit that delivered nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_leaves_a_streamed_and_a_failed_units_money_where_1_5_5_left_it() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-money-streamed-row";
+        let published = Withdrawn(instance);
+        let far = far_end_scripted(stream_pausing(0)).await;
+        let streamed = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let charged_at = now();
+        let (status, _, _) = streamed
+            .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+            .await;
+        assert_eq!(status, 200);
+        let (requests, _, _, _) = streamed.ledger_after(1).await;
+        assert_eq!(requests, 1, "one admitted request");
+        assert_eq!(
+            streamed.tokens_after().await,
+            18,
+            "the stream-end report, once"
+        );
+        streamed.gov.flush_metering();
+        let rows = streamed
+            .gov
+            .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+            .expect("metering read");
+        let mine: Vec<String> = rows
+            .iter()
+            .filter(|row| row.key_id == streamed.key_id)
+            .map(|row| {
+                format!(
+                    "{} in={} out={} cr={} cw={} req={} billable={}",
+                    row.model,
+                    row.tokens_input,
+                    row.tokens_output,
+                    row.tokens_cache_read,
+                    row.tokens_cache_write,
+                    row.requests,
+                    row.billable_requests
+                )
+            })
+            .collect();
+        assert_eq!(
+            mine,
+            vec!["m0 in=11 out=7 cr=0 cw=0 req=1 billable=1".to_string()]
+        );
+        drop(streamed);
+        drop(published);
+
+        let instance = "rehome-money-failed-row";
+        let _published = Withdrawn(instance);
+        let down = seat_far_end(503, OVERLOADED).await;
+        let failed = rig(
+            instance,
+            RigOpts {
+                members: &[(down.port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let charged_at = now();
+        assert_ne!(failed.chat().await.0, 200, "the far end fails");
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut ledger = failed.ledger_after(0).await;
+        while ledger.0 == 0 && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            ledger = failed.ledger_after(0).await;
+        }
+        assert_eq!(ledger.0, 1, "the failed unit keeps its admitted request");
+        assert_eq!(failed.tokens_after().await, 0, "and accrues no tokens");
+        failed.gov.flush_metering();
+        let rows = failed
+            .gov
+            .metering_for(busbar_kernel::governance::metering_bucket(charged_at))
+            .expect("metering read");
+        assert!(
+            rows.iter().all(|row| row.key_id != failed.key_id),
+            "no metering row for a unit that delivered nothing: {rows:?}"
+        );
+    }
+
+    /// A STREAM THAT DIED BILLS WHAT IT STREAMED AND KEEPS ITS FEE (F25 row 720; legacy
+    /// `meter::a_stream_that_died_bills_the_tokens_it_streamed_and_keeps_the_fee_it_earned`): a
+    /// streamed answer whose far end reports its usage (11 in, 7 out) and is then cut before its
+    /// end bills those 18 tokens, keeps its one fee (billable 1, the 200 that went out is not
+    /// reversed), and its sealed record reports one line per streamed tier: input 11, output 7. RED:
+    /// the streamed tokens dropped, the fee reversed, or the tiers merged.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_bills_a_dead_stream_tokens_and_keeps_its_fee() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-money-dead-stream";
+        let _published = Withdrawn(instance);
+        let far = far_end_scripted(SeatScript {
+            head: STREAM_HEAD.to_string(),
+            pieces: vec![
+                (0, frame(FRAMES[0])),
+                (0, frame(FRAMES[2])),
+                (50, Vec::new()),
+            ],
+            finish: None,
+        })
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, _) = rig
+            .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+            .await;
+        assert_eq!(status, 200, "the stream had begun");
+        assert_eq!(
+            rig.tokens_after().await,
+            18,
+            "the streamed tokens are the charge"
+        );
+        let (_, _, _, billable) = rig.ledger_after(1).await;
+        assert_eq!(billable, 1, "the fee it earned is kept");
+        let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
+        let mut lines = token_lines(&record);
+        lines.retain(|(_, quantity)| *quantity > 0);
+        lines.sort();
+        assert_eq!(
+            lines,
+            vec![("tokens_in".to_string(), 11), ("tokens_out".to_string(), 7)],
+            "one line per streamed tier"
+        );
+    }
+}
+
 /// SESSION AFFINITY (legacy rows 2-4; v1.5.5 `affinity_header_for` and the sticky position): the
 /// plane states the session key it reads (the pool's header, `x-session-id` by default, else chat's
 /// body `system`) and the kernel pins every unit with that key to one member; a unit without one
