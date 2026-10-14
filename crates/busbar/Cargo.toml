@@ -52,9 +52,10 @@ getrandom = { workspace = true }
 # detached signature with the inherent STRICT verify. Composition-root knowledge, used only by the
 # admin verb's effect half.
 ed25519-dalek = { workspace = true }
-# THE LLM PLANE'S LEGACY ENGINE, carried by `plane-llm` beside the plane's door: its routing tables
-# ride the door's row (`root::linked::doors_own_their_plane_keys`) until they move into the plane,
-# and the crate is then deleted (status row 155). Optional behind the plane's one switch, so the
+# THE LLM PLANE'S LEGACY ENGINE, carried by `plane-llm` beside the plane's door until it is retired
+# and the crate deleted (status row 83). It no longer rides the door's row: the route tables, their
+# view and the health probes are the kernel's (`root::linked::doors_own_their_plane_keys`;
+# BUSBAR-1.6.0.md l.639, l.2577, #7). Optional behind the plane's one switch, so the
 # deletion gate can build the binary WITHOUT the plane and watch it refuse that plane's config
 # rather than serve it (scripts/proto-deletion-gate.sh).
 busbar-llm = { path = "../busbar-llm", optional = true }
@@ -238,8 +239,8 @@ default = ["auth-admin-tokens", "auth-header", "auth-sigv4", "auth-oauth", "hook
 # served through its memory-ABI door (`plane-llm-door`): the door's claims are mounted as the data
 # routes, so every llm arrival is served through the plane driver (BUSBAR-1.6.0.md Part 3 section 12;
 # the fold's development-only switch is deleted, status row 155). The switch also links the legacy
-# engine crate's row, whose routing tables and node ride the door's row until they move into the
-# plane and the crate is deleted. The sigv4 and oauth rows sign the plane's members.
+# engine crate's row until it is retired and the crate deleted (status row 83); the route tables
+# and their view are the kernel's. The sigv4 and oauth rows sign the plane's members.
 plane-llm = ["plane-llm-door", "dep:busbar-llm", "auth-sigv4", "auth-oauth"]
 # THE MCP PLANE, ONE switch (spec #17: one feature per plane). Default-on: the shipped binary speaks
 # MCP. The plane is served through its memory-ABI door alone (`plane-mcp-door`): every word the root
