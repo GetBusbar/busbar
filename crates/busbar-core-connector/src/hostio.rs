@@ -27,14 +27,17 @@ use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll, Waker};
+use std::time::Duration;
 
 use busbar_contract::abi::host::io::{DIR_BOTH, DIR_READ, DIR_WRITE};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::Program;
 use busbar_contract::io_host::{IoHost, IoRefusal, IoResult, Spawn};
 
+use crate::compose::DEFAULT_OPEN_TIMEOUT;
 use crate::io::{self as reactor, Direction, Registered};
 use crate::socket::{self, Sock};
 
@@ -678,15 +681,23 @@ impl IoHost for HostIo {
 /// would quietly decide which address the guard gets to judge, and the guard judges all of them; a
 /// name answering one address under both a v4 and a v6 query is ONE fact.
 ///
-/// ## Why a thread of its own
+/// ## Why a thread of its own, and why it is never joined
 ///
 /// The seam is synchronous, so this runs `getaddrinfo` and waits. Not `Handle::current().block_on`
 /// and not `block_in_place`: both make assumptions about the caller (that there IS a runtime, that
 /// it is multi-threaded) that a synchronous seam cannot make, and its callers reach it from
 /// different postures — a foreign thread already inside `Runtime::block_on`, a boxed future on a
 /// shared worker, a plain `async fn`. A thread with its own current-thread runtime has no such
-/// precondition and cannot panic on the caller's behalf. (Moved verbatim from the kernel's deleted
+/// precondition and cannot panic on the caller's behalf. (Moved from the kernel's deleted
 /// `net_guard::SystemResolver`.)
+///
+/// The wait is BOUNDED by the dial's own bound, [`DEFAULT_OPEN_TIMEOUT`] (the open's bound when
+/// the caller states none; the seam carries no deadline, so this lookup states none): `getaddrinfo`
+/// can wedge, and a join with no bound would hold the caller for as long as it does. The answer
+/// comes back over a channel the caller waits on for at most that long; a lookup with no answer by
+/// then is a resolution FAILURE (`Err`), which the guard reads as an unresolvable name. The wedged
+/// thread is let go, never joined: it ends when its lookup does, and its answer, if one comes, has
+/// no one to hear it.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemNames;
 
@@ -696,29 +707,49 @@ impl busbar_kernel_egress::trust::net::Resolver for SystemNames {
         // by the caller that built the pin, so asking the resolver about one would be asking a
         // second question.
         let target = format!("{host}:0");
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| format!("name lookup: could not start a runtime: {e}"))?;
-                rt.block_on(async move {
-                    let answered = tokio::net::lookup_host(target)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    let mut out: Vec<IpAddr> = Vec::new();
-                    for sa in answered {
-                        let ip = sa.ip();
-                        if !out.contains(&ip) {
-                            out.push(ip);
-                        }
+        within(DEFAULT_OPEN_TIMEOUT, move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("name lookup: could not start a runtime: {e}"))?;
+            rt.block_on(async move {
+                let answered = tokio::net::lookup_host(target)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let mut out: Vec<IpAddr> = Vec::new();
+                for sa in answered {
+                    let ip = sa.ip();
+                    if !out.contains(&ip) {
+                        out.push(ip);
                     }
-                    Ok(out)
-                })
+                }
+                Ok(out)
             })
-            .join()
-            .map_err(|_| "name lookup: the worker thread panicked".to_string())?
         })
+    }
+}
+
+/// Runs one `lookup` on a thread of its own and waits for its answer at most `bound`: no answer by
+/// then, or a lookup that died without one, is an `Err`. The thread is never joined, so a lookup
+/// that never returns holds only itself.
+fn within<F>(bound: Duration, lookup: F) -> Result<Vec<IpAddr>, String>
+where
+    F: FnOnce() -> Result<Vec<IpAddr>, String> + Send + 'static,
+{
+    let (answer, answered) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("busbar-names".into())
+        .spawn(move || {
+            // The caller may have stopped waiting: then no one hears this, and that is fine.
+            let _ = answer.send(lookup());
+        })
+        .map_err(|e| format!("name lookup: could not start a thread: {e}"))?;
+    match answered.recv_timeout(bound) {
+        Ok(found) => found,
+        Err(RecvTimeoutError::Timeout) => Err(format!("name lookup: no answer within {bound:?}")),
+        Err(RecvTimeoutError::Disconnected) => {
+            Err("name lookup: the worker thread panicked".to_string())
+        }
     }
 }
 

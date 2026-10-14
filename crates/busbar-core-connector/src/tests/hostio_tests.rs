@@ -31,6 +31,32 @@ fn worker() -> tokio::runtime::Runtime {
         .unwrap()
 }
 
+/// A name lookup that wedges (`getaddrinfo` that never returns) answers `Err` within its bound: the
+/// caller is let go and the wedged thread is never joined. RED before the bound: the lookup was
+/// joined with none, and this call never returned. A lookup that answers in time is answered.
+#[test]
+fn a_wedged_name_lookup_fails_within_its_bound_and_an_answer_in_time_is_kept() {
+    let bound = std::time::Duration::from_millis(300);
+    let slack = std::time::Duration::from_secs(1);
+    let (release, wedge) = std::sync::mpsc::channel::<()>();
+    let began = std::time::Instant::now();
+    let answer = within(bound, move || {
+        // The planted wedge: blocks until the test lets it go, far past the bound.
+        let _ = wedge.recv_timeout(std::time::Duration::from_secs(600));
+        Ok(vec![IpAddr::from([127, 0, 0, 1])])
+    });
+    let took = began.elapsed();
+    drop(release);
+    let refused = answer.expect_err("a wedged lookup is a resolution failure");
+    assert!(refused.contains("no answer within"), "{refused}");
+    assert!(took >= bound, "waited its bound: {took:?}");
+    assert!(took < bound + slack, "returned within its bound: {took:?}");
+
+    let one = IpAddr::from([192, 0, 2, 7]);
+    assert_eq!(within(bound, move || Ok(vec![one])), Ok(vec![one]));
+    assert!(within(bound, || panic!("the lookup died")).is_err());
+}
+
 #[test]
 fn nothing_is_opened_bound_or_spawned_that_was_not_admitted() {
     worker().block_on(async {
