@@ -18,12 +18,12 @@ rest mean exactly what they meant before this collapse. Cite a row; never re-lit
 | Part | What it is | Who wrote it |
 |---|---|---|
 | 0 | Orientation — the whole release in one screen, and THE DESIGN (kernel and plugins) | new |
-| 1 | The Vision: Law 0 and Laws 1–7 | verbatim |
+| 1 | The Vision: Law 0 and Laws 1–~~7~~ 11 [STATUS 2026-10-14: Laws 8–11 sit at l.2038, l.2084, l.2110, l.2127] | verbatim |
 | 2 | The 85 Locked Decisions (LAW + enforcing gate) | verbatim + 79-85 new |
 | 3 | The plane-extraction seam, LOCKED v4 | verbatim |
 | 4 | The plane ABI neutral taxonomy, v5 | verbatim |
-| 5 | The DEV-GREEN definition and execution rulings (the plan itself is the TODO) | revised 2026-09-30 |
-| 6 | The release engine: branches, turnstile, train, Latchkey, cost | new |
+| 5 | The DEV-GREEN definition and execution rulings (the plan itself is the TODO); headed "THE EXECUTION PLAN" at l.2890 | revised 2026-09-30 |
+| 6 | The release engine: branches, ~~turnstile, train, Latchkey~~, cost [SUPERSEDED 2026-10-13 by Part 6, "BUSBAR-RELEASE RETIRED FROM BUSBAR" (l.3115; #829): ModernCI judges and trains every move] | new |
 | 7 | Current state → points at the TODO's PATH TO DEV-GREEN | revised 2026-09-30 |
 | A–E | Appendices: the memory ABI in detail; the dated ruling log; the plane driver; the boot loop; the transport/binding matrix | folded 2026-09-30 |
 
@@ -110,7 +110,7 @@ rest mean exactly what they meant before this collapse. Cite a row; never re-lit
 > plus the standard plugins compiled in, with more dropped in later. A build has to know which
 > plugins it ships with. So a **Cargo manifest, a feature name, a build script, and the composition
 > root's dependency list MAY name planes and transports** — that is packaging stating what is in the
-> box.
+> box. [SUPERSEDED 2026-10-14 by ARCHITECT ruling M1 (Appendix B, 2026-10-14): only the composition root's manifest may name a plugin, l.180-181 governs; a non-root crate's Cargo feature naming a plugin (e.g. `crates/busbar-kernel/Cargo.toml:162` `plane-mcp`, `plane-a2a`, `hooks-ranking`) is not allowed]
 >
 > **IN RUST SOURCE, ONLY THE THING ITSELF MAY NAME ITSELF.** `busbar-plane-llm` may say `llm` and may
 > name its own six dialects, because they are inside it. `busbar-transport-http` may say `http`.
@@ -330,8 +330,8 @@ decided before the verify loop runs; pending I/O is awaited, never answered 503.
 
 **A plugin catches its own panics; nothing unwinds across the door (ARCHITECT ruling 2026-09-27).**
 Every plugin builds with `panic = "unwind"` so the door macro's catch turns a panic into FAULT; a
-plugin built with `panic = "abort"` is refused at build (the fleet build config and
-`plugin-closure-deps` enforce it); a panic that escapes the catch aborts (§11.11 M3).
+plugin built with `panic = "abort"` is refused at build (~~the fleet build config and
+`plugin-closure-deps` enforce it~~ [STATUS 2026-10-14: the door macros enforce it with a compile-time assert, `crates/busbar-contract/src/abi/sdk/door.rs:722`, `:806`]); a panic that escapes the catch aborts (§11.11 M3).
 
 **Libraries (OWNER rulings 2026-09-28 and 2026-09-30).** A plugin may use whatever third-party
 libraries it needs. The walls that remain are the design: a plugin reaches busbar only over the ABI,
@@ -388,8 +388,8 @@ decisions before streaming.
   session → 405. Homes: the stdio supervisor is the stdio transport's; RFC 8693 exchange is the auth
   kind's `exchange()` (F7); the tools grammar is the plane's; the task store is host records.
 - *a2a (A2A-PUSH, FOLD-A2A; ARCHITECT rulings 2026-09-29/30):* a claim may be a path PATTERN (a `{…}`
-  segment is a variable), resolved under CG-62's precedence (§2). Push delivery retries at most three times
-  (250/500 ms ±20 %) on a transport error, 5xx or 429 only, on an async timer, holding no slot, and
+  segment is a variable), resolved under CG-62's precedence (§2). Push delivery ~~retries at most three times~~ makes three attempts
+  (two delays: 250/500 ms ±20 %) [SUPERSEDED 2026-10-14 by ARCHITECT ruling M2 (Appendix B, 2026-10-14): a2a has no 1.5.5 behaviour, so ARCHITECT 2026-09-29 governs; `crates/busbar-a2a/src/a2a/pushdeliver.rs:508` `MAX_DELIVERY_ATTEMPTS = 3`, `:519`] on a transport error, 5xx or 429 only, on an async timer, holding no slot, and
   re-runs the destination judge on every attempt; streaming-sink delivery is detached through a
   per-task ordered bounded queue (64, drop-oldest, counted). A gRPC binding reads `grpc-status` from
   the trailers (the 1.5.5 trailer drop applies to llm paths only).
@@ -455,7 +455,7 @@ The owner's four phases — read config, load plugins, register, serve — in de
 on restart, as in 1.5.5. Auth objects are rebuilt per generation, so a rotated API key applies on the
 next attempt. A validation refusal keeps the running generation. **`--validate`** runs stages 0–2
 and the validation half of 3g, and the guest-list refusals — nothing dials and no store opens. **`--list-plugins`** runs stages
-0–1. `crates/busbar/src/root/boot.rs` is the one source file that names the loader.
+0–1. ~~`crates/busbar/src/root/boot.rs` is the one source file that names the loader.~~ [SUPERSEDED by l.322-323 and ARCHITECT BOOT-CHAIN 2026-09-29 (l.4798): `root::loader` is the one module; `crates/busbar/src/root/loader.rs:8` `pub use busbar_plugin_loader::*;`]
 
 **Config-derived keys are leaked once** (CG-06, 2026-09-05). An id, name or other open-vocabulary
 key known only from config is turned into a `&'static str` exactly once, at the registration that
@@ -481,7 +481,7 @@ validation (amended 2026-09-30 by THE DESIGN §6: needs naming a configured list
 connector (the admin router stays separate; the root binds uncapped); `--validate` prints plugin
 listeners only. The connector's listening set is the one listener source: the root's stream hand-up
 is permanent for the admin listener and transitional for the data door until the plane driver serves
-it. Until then boot refuses a plugin's inbound need. ONE root `Connector` serves inbound and outbound,
+it. Until then boot refuses a plugin's inbound need. [STATUS 2026-10-14: the refusal is still live, `crates/busbar/src/root/boot.rs:447-468`; l.905-906 (OWNER-LOCKED 2026-09-30) is the end state; #886 (DRAFT) is the partial work] ONE root `Connector` serves inbound and outbound,
 built once at boot (a RED holds that both sides get the same instance).
 
 ### 4. Config
@@ -609,8 +609,8 @@ deregister}` on the per-worker reactor.
 | `operator-infrastructure` | databases, vault, ldap; auth mint endpoints (`token_url`, `token_uri`) | private, loopback and plaintext allowed; pinned; cloud metadata hosts refused (accepted difference, owner 2026-09-27) |
 | `open-web` | webhook; ~~auth mint endpoints (`token_url`, `token_uri`)~~ | public https only |
 
-~~auth mint endpoints in `open-web`~~ STRUCK 2026-10-05 by ARCHITECT (D1, MINT CLASS (B)): the mint need takes operator-infrastructure semantics. Law beats table: customer-visible behaviour stays 1.5.5 unless the owner signs (Part 1), and 1.5.5 minted over plaintext to a private or loopback token endpoint; the owner signed only the destination guard change below. `--validate` keeps refusing an http mint endpoint on a public host, as 1.5.5 did, and the ONE destination guard in the connector still applies on top. Proven byte-identical by the oracle cells `egress.auth|oauth-cc|mint-refresh` and `egress.auth|jwt-bearer|mint-refresh`.
 | `loopback-allowed` | otlp, webrequest | https, or loopback plaintext; the node's own ports refused |
+~~auth mint endpoints in `open-web`~~ STRUCK 2026-10-05 by ARCHITECT (D1, MINT CLASS (B)): the mint need takes operator-infrastructure semantics. Law beats table: customer-visible behaviour stays 1.5.5 unless the owner signs (Part 1), and 1.5.5 minted over plaintext to a private or loopback token endpoint; the owner signed only the destination guard change below. `--validate` keeps refusing an http mint endpoint on a public host, as 1.5.5 did, and the ONE destination guard in the connector still applies on top. Proven byte-identical by the oracle cells `egress.auth|oauth-cc|mint-refresh` and `egress.auth|jwt-bearer|mint-refresh`.
 
 **Destination guard — ONE check for every outbound connection (OWNER ruling, DESTINATION GUARD,
 2026-10-02; supersedes the Q130/Q131 detail).** Every outbound connection of any kind (providers,
@@ -621,13 +621,13 @@ pinned address), and an allowlist of hosts and CIDRs is always allowed. Every sc
 (`net_guard`, the SSRF helpers, per-plugin checks) is deleted in favour of it. The default-true change
 from 1.5.5 is signed off (a provider or IdP on an internal DNS name is now refused unless allowlisted);
 the allowlist is the escape hatch. This subsumes the class rows above wherever they allow a private
-address: such a target is reached through the allowlist. QUESTIONS Q130, Q131.
+address: such a target is reached through the allowlist. QUESTIONS Q130, Q131. [AMENDED 2026-10-14 by ARCHITECT ruling CRATES-14 (Appendix B, 2026-10-14): the refuse-unless-allowlisted default covers the provider and IdP classes only, matching 1.5.5 `config_validate` (:406, :430); code `crates/busbar-core-connector` guard.rs:55-62]
 
 **`/metrics` is not in core.** `/metrics` and `/metrics/hooks` are listener needs of the prometheus
 export plugin, fed by a kind-neutral snapshot service. The path, the 503 boot window, the
 first-party gate, the content-type and the series stay 1.5.5 bytes.
 
-**Drivers.** postgres runs over `connect_raw`; valkey over synchronous `redis` `ConnectionLike`
+**Drivers.** postgres runs over `connect_raw`; valkey ~~over synchronous `redis` `ConnectionLike`~~ [SUPERSEDED 2026-09-30 by ARCHITECT PORT R4, l.676-682: a driver is a sans-IO codec over the host stream]
 ~~on the blocking pull adapter~~ (SUPERSEDED 2026-09-27 by THE DESIGN §11.2: the store call returns
 not-ready and fires the wake on completion, never on a blocking thread; the store kind ABI fixes how) (no `aio`); vault, oidc, github, webrequest, webhook and otlp through a one-shot
 `exchange()`. webrequest's upstream bytes stay identical to 1.5.5.
@@ -1126,7 +1126,7 @@ list, naming the auth its guests must pass.
   agent refuses (#42); a hop refused before the socket ledgers nothing.
 
 *Proven by:* the oracle's billing, ledger and teller families; kill -9 during a stream; the
-cut-stream failover cell, which asserts the client's error frame and the one Abort line; the streaming
+~~cut-stream failover cell, which asserts the client's error frame and the one Abort line;~~ [2026-10-14: that cell stays byte-identical to 1.5.5's far-end cut (l.1020-1022), so the budget cut-stream proof is `crates/busbar-kernel/src/plane_driver/tests/money_tests.rs`] the streaming
 conformance rig's session legs (admit at open, checkpoints, one sealed line).
 
 ### 8. Cleanliness crates
@@ -1153,10 +1153,10 @@ the three cleanliness crates. Every plugin lives in its own repo, named `busbar-
 | Kind | Plugins |
 |---|---|
 | plane | llm, mcp, a2a, streaming, decisions |
-| transport | tcp, stdio, http, ws, grpc (grpc OWNER 2026-09-29; there is no unix transport, OWNER 2026-09-30, Q127) |
+| transport | tcp, stdio, http, ws, grpc (grpc OWNER 2026-09-29; there is no unix transport, OWNER 2026-09-30, Q127); webrtc (`plugins.yaml:538`, row 132) [STATUS 2026-10-14] |
 | store | memory, postgres, mysql, sqlite, valkey |
-| secret | env, file, vault |
-| auth | admin-tokens, github, ldap, oidc, webhook-signature; the connection-auth styles' crates are an owner question (§6) ~~outbound~~ |
+| secret | env, file, vault; c (the #84 C witness, `plugins.yaml:646`, unreleased) [STATUS 2026-10-14] |
+| auth | admin-tokens, github, ldap, oidc, webhook-signature; ~~the connection-auth styles' crates are an owner question (§6)~~ header, sigv4, oauth (Q99 ANSWERED 2026-10-01, l.822; `plugins.yaml:595-640`) [STATUS 2026-10-14] ~~outbound~~ |
 | hook | ranking, webrequest ~~headroom~~ (OWNER 2026-09-30: "Delete hook headroom 100% keep the repo but remove from website"; the repo stays, outside the fleet) |
 | export | prometheus, webhook, file, otlp |
 
@@ -1183,12 +1183,12 @@ suites, and test counts never fall; before any engine deletion a per-test covera
 home of every test, and no test retires without an ARCHITECT ruling (F25). Of two implementations,
 the SERVED one is the base and the unserved one merges in or is deleted, with proof (F11). A move that
 raises the destination crate's cells is accepted only when the pair nets down in the same commit
-(F12). Unit steps land in their kernel crates (admit → budget, meter/usage → ledger, audit → audit,
+(F12). Unit steps land in their kernel crates (~~admit → budget~~ admit → `busbar_kernel::door` [SUPERSEDED by l.1150: `busbar-kernel-budget` is deleted], meter/usage → ledger, audit → audit,
 verify/approve → scope, authenticate → identity). A plane reading its own declarations instead of the
 kernel's protocol registry is an accepted mechanical change. The hook projection is supplied by the
 plane (Part 3 §12), and 1.5.5's hook tests land verbatim. Health probers become the kernel breaker's
-probe units (Part 3 §12). A fold removes `tracing` from its plane in favour of #85 diagnostics under the
-library rule (§2). Folds stop at in-tree `crates/busbar-plane-*`; repo extraction is step 40. The plane
+probe units (Part 3 §12). ~~A fold removes `tracing` from its plane in favour of #85 diagnostics under the
+library rule (§2).~~ [SUPERSEDED 2026-09-28 by the owner's PLUGIN LIBRARIES ruling (l.4711) and l.1294-1301: a plugin keeps `tracing`; its output is captured as `DIAG_LOG`] Folds stop at in-tree `crates/busbar-plane-*`; repo extraction is step 40. The plane
 is `streaming` everywhere a plane is named (key, crate, feature, lanes, admin noun, pools, diagnostics);
 `voice` survives only as a dialect name inside it (OWNER 2026-09-28). The codecs fold into their planes
 (R7), and `DialectCodec`/`ProtocolDecl` move out of the contract into the llm plane, after which the
@@ -1254,7 +1254,7 @@ binds the design; the rows in `1.6.0-QUESTIONS.md` keep the options and the cost
   opt-in, `data_dir` or not.
 - **jemalloc purge crash — RULED 2026-09-27:** no 1.5.x hotfix; the fix ships in 1.6.0 only.
 - **Accepted differences ruled 2026-09-28 (OWNER):** D-1 "diagnostic codes" — the register's expected
-  cells go 480 → 481 for the extra `boot.refusal|BOOT-MCP-01|validate` cell (new 1.6.0 surface, no
+  cells go 480 → 481 [STATUS 2026-10-14: `expected_cells` is 495 after R2 widened D-1 (OWNER 2026-10-02), `testing/shadow-oracle/accepted-differences.json:22`] for the extra `boot.refusal|BOOT-MCP-01|validate` cell (new 1.6.0 surface, no
   1.5.5 golden, in accepted-gaps; it forgives nothing new); refund across a window (§7, M-1
   `breaking`); `STORE_OPID_CONFLICT` (§7, new surface); the three LDAP differences (§6); the door-only
   gate's +56 rows from the codec fold are relocated debt that drains with the legacy engine fold. The
@@ -1425,8 +1425,8 @@ top of this section) and the earlier text is struck in place citing §11.11.
 
 **What the review changed, going in.** Store: all ten 1.6.0 ledger operations become real store v3
 slots; additive writes carry an `op_id` and the store dedupes on it; record blobs use the tree's
-unit-map shapes plus the scale marker, not "1.5.5 serde bytes"; the migration read moves into the
-kernel. Auth: the inbound credential cache stayed in the kernel, unresolved until Q-INCACHE was
+unit-map shapes plus the scale marker, not "1.5.5 serde bytes"; ~~the migration read moves into the
+kernel~~ [SUPERSEDED 2026-09-29 by #33 (l.1096-1099): the engine holds no fold; each store plugin's `migrate()` upgrades its rows]. Auth: the inbound credential cache stayed in the kernel, unresolved until Q-INCACHE was
 answered below;
 caller-credential passthrough is restored; SigV4 gets its request inputs; before the first token mint
 a call returns READY with no fields, giving the upstream 401 as in 1.5.5; inbound SigV4 moves into an
@@ -1441,7 +1441,7 @@ cumulative units and `cancel` returns a disposition; backpressure uses `emitted`
 and `fees` are stripped before any blob reaches a plane. Crates: the contract crate loses all its
 statics; `busbar-llm`, `busbar-mcp`, `busbar-a2a` and `busbar-voice` fold into contract-only plane
 crates; the `plane-*`, `hooks-ranking` and `auth-admin-tokens` kernel features are deleted; transport
-http becomes a sans-IO rewrite. Retired outright: the cold symbols, `.init_array` registration, the
+~~http becomes a sans-IO rewrite~~ [SUPERSEDED 2026-09-28 by the owner's PLUGIN LIBRARIES ruling, l.4711-4720, and l.1563: the http transport uses prebuilt hyper/h2]. Retired outright: the cold symbols, `.init_array` registration, the
 `ABI_MAJOR`/`ABI_MINOR`/`POD_VERSION`/`TRANSPORT_DECL_MAJOR` constants, `STORE_ABI_FLOOR` and the
 `poll` slot.
 
@@ -1522,7 +1522,7 @@ each is a requirement, each carries the fix the review scoped for it:**
 | M10 (contract) | Plane crates depending on the codec crates conflicted with "only `busbar-contract` from busbar" | resolved by R7 above |
 | M2 (parity) | Quarantine had no exit rule and was not registered as a difference from 1.5.5 | resolved by R2 above |
 | M3 (parity, money) | 1.5.5 never bills a translate-abort; it bills only provider-reported usage, bills 0 for a non-stream partial, and refunds the budget unit separately — the draft bet "unless failed" | plane cancel billing is pinned to these four 1.5.5 rules; the budget refund is a separate act, never folded into the cancel billing call |
-| M4 (parity) | The http rewrite had no recorded 1.5.5 wire-byte oracle | step 20 (`1.6.0-TODO.md`) is re-scoped to the sans-IO http rewrite, gated by a recorded 1.5.5 h1/h2/grpc wire golden suite as its exit test |
+| M4 (parity) | The http rewrite had no recorded 1.5.5 wire-byte oracle | step 20 (`1.6.0-TODO.md`) is re-scoped to ~~the sans-IO http rewrite~~ the http transport, gated by a recorded 1.5.5 h1/h2/grpc wire golden suite as its exit test [SUPERSEDED 2026-09-28 by l.4711-4720 (OWNER, PLUGIN LIBRARIES) and l.1563: no sans-IO rewrite; prebuilt hyper/h2] |
 | M5 (parity) | The rewritten export, store and secret plugins had no golden suite against 1.5.5 output; `op_id` dedupe durability was unstated | a golden 1.5.5 suite is owed for each export stream and each store backend; dedupe retention must be durable (ties to H4) |
 | M6 (parity) | The hook view's budget and cost fields were not listed | every hook-view field is listed, each marked static or dynamic, in the hook kind's contract definition |
 | M7 (parity) | The 503-on-overload and the unbounded queue were unregistered | the 503 is registered under R8; the queue is bounded per H4 |
@@ -1533,7 +1533,7 @@ gates §11 already names:
   lane symbol exists.
 - `abi-location` — every ABI shape and version constant lives under `abi/` (sharpens §11.5's existing
   rule into its own named gate).
-- `contract-stateless` — no `static`, `OnceLock` or `thread_local` in `busbar-contract`.
+- `contract-stateless` — no `static`, `OnceLock` or `thread_local` in `busbar-contract`, except the one sanctioned per-thread capture slot `__BUSBAR_CAPTURE` (l.1297-1300) [ARCHITECT ruling M4, Appendix B, 2026-10-14].
 - `plugin-closure-deps` — a plugin depends only on `busbar-contract` from busbar. ~~with no runtime or
   subscriber dependency; extended per M4 above to deny `tracing`, `log`, `std::thread`, `std::net`,
   `std::fs` and `std::env`.~~ SUPERSEDED 2026-09-28 by owner ruling: plugins may use any third-party
@@ -1551,7 +1551,7 @@ Kernel features deleted: `jsonrpc-ingress`, `card-signing`, `relay`, `duplex-ws`
 **Migration order.** M0 ABI-SPEC (the §11.5 layout, the constants test, the gates above — report-only)
 → M1 DISPATCH (generation tickets, driver tickets, completion handles, deadline classes, the watchdog
 plus worker replacement) → M2 GATES → M3 TABLES, kinds smallest first: secret, store, hook, auth,
-export, transport, plane → M4 HOOK-PARITY (the 184 v1.5.5 hook tests: 70 of llm origin + 114 kernel/loader/ranking) / M4b AUTH-PARITY / M4c
+export, transport, plane → M4 HOOK-PARITY (~~the 184 v1.5.5 hook tests: 70 of llm origin + 114 kernel/loader/ranking~~ the v1.5.5 hook tests, the count the hook acceptance suite enumerates (`crates/busbar-kernel/src/hooks/tests/m4_acceptance_suite.rs`) [ARCHITECT ruling M9, Appendix B, 2026-10-14]) / M4b AUTH-PARITY / M4c
 STORE-MONEY → M5 ZERODEP, with PLANE-FOLD inside it and the http rewrite at step 20 → M6 COLD-DELETE,
 last. The full row-by-row order is `1.6.0-TODO.md`, KERNEL<>PLUGINS, THE PLUGIN ABI LOCK.
 
@@ -1559,10 +1559,10 @@ last. The full row-by-row order is `1.6.0-TODO.md`, KERNEL<>PLUGINS, THE PLUGIN 
 `abi/host/conn.rs`'s `read`/`wait` (landed at `d4671c960`) before anything builds on them; add no new
 kernel `OnceLock` seam beyond the two R6 exempts; nothing new on the cold/JSON lane; no new
 `LinkedEntry` variant or Rust registration table (`PLANE_HOOKS` and similar); no new `static`,
-`OnceLock` or `thread_local` in `busbar-contract`; ~~no tokio, hyper or `std::thread` in a plugin
+`OnceLock` or `thread_local` in `busbar-contract` (the one exemption: `__BUSBAR_CAPTURE`, l.1297-1300, ARCHITECT ruling M4 2026-10-14); ~~no tokio, hyper or `std::thread` in a plugin
 crate;~~ SUPERSEDED 2026-09-28 by owner ruling: plugins may use any third-party library; the
 busbar-contract-only closure and host-owned sockets/TLS stand;
-stop hyper-based http transport work; no new protocol-named kernel feature or `cfg` site; AUTH-ROW
+~~stop hyper-based http transport work;~~ [SUPERSEDED 2026-09-28 by l.4711-4720 (OWNER, PLUGIN LIBRARIES)]; no new protocol-named kernel feature or `cfg` site; AUTH-ROW
 (step 8, landed 658fe02e7..0e54934f3) removed the admin-tokens call but the inbound cache itself was
 correctly left alone until Q-INCACHE, now answered by R3; no further kernel dependency from a
 step-34 plane move.
@@ -1573,7 +1573,7 @@ connector sits in ONE table, `HostSlots`, in `abi/host/`, on the connector's cal
 service head and its completion handle; a service that cannot finish answers PENDING and wakes the
 handle's ticket, and on resume the plugin re-issues the SAME handle and receives the stored result —
 the host never runs a service twice. `HostTables.conns` is swapped to the connector table first;
-`HostSlots` is appended after it. Names obey the neutrality witness (Part 4).
+`HostSlots` is appended after it. Names obey the neutrality witness (Part 4). [STATUS 2026-10-14: the table below names the 2026-09-28 families; the code defines ops 0-28 (`crates/busbar-contract/src/abi/host/service.rs:110-170`, `SERVICES = 29`), adding `random.fill` 18, `need.admit` 19, `trust.verify` 20, `disk.append` 22, `snapshot.read` 23, `trust.sight_item` 24, `trust.serves` 25, `trust.decide` 26, `trust.state` 27, `session.emit` 28 (several are named at l.3829, l.5025); `auth.call` is a transport-side call, not a `HostSlots` op number]
 
 | Family | Ops | What it is |
 |---|---|---|
@@ -1656,7 +1656,7 @@ and a distinct message per arm; what follows binds every kind.
   included) runs under a host lock. `Kind::check` answers `Result<(), Fault>` and a fault is logged at
   warn with plugin, kind and slot, never the payload. Dropping a pending reply cancels every queued op
   on its ticket — a client drop (ARCHITECT, 2026-09-28).
-- **One kind-neutral SDK lifecycle (KIND-SHARE, ARCHITECT ruling 2026-09-30).** The SDK's door holds
+- **One kind-neutral SDK lifecycle (KIND-SHARE, ARCHITECT ruling 2026-09-30).** [STATUS 2026-10-14: landed under other names: `crates/busbar-contract/src/abi/sdk/life.rs` (`Life`, `Held<L>`, `Leases`) plus per-kind axis traits (`AuthAxis` auth_calls.rs:358, export_calls.rs:315, hook_calls.rs:119, secret.rs:193, store_calls.rs:225); no `KindAxis` or `RootAxis` type exists] The SDK's door holds
   the generic lifecycle slots once; each kind states only its own; one `KindAxis` (associated types)
   and a root `RootAxis<K>` serve every kind; the SDK writes the out pointers; a published arena lives
   until its generation retires; releasing an unknown lease is REFUSED; the drive, validate and cancel
@@ -1739,7 +1739,7 @@ prove, and each one names the failure that would refute it:
 | **C3** | LLM-only 1.6.0 is byte-identical to published 1.5.5. | One unexplained cell in the oracle diff against the real 1.5.5 binary. |
 | **C4** | Money is a view: `money = f(ledger, ratecard)`, nothing stores a dollar. | Any stored price; any float; any money finding that cannot name ledger-or-ratecard as the wrong one. |
 
-### MEASURED STATUS OF THE FOUR CLAIMS — 2026-09-23
+### MEASURED STATUS OF THE FOUR CLAIMS — 2026-09-23 [SUPERSEDED 2026-10-14: `INSTANCE_VOCAB_KINDS` is gone and `kind_isolation/matrix.rs:176-187` measures all 7 kinds; `EXPORT_MODULES`, `open_export` and the `root-llm` feature are gone; `billing|key-usage|after-upstream-down` was retired by the owner 2026-10-02 (`testing/shadow-oracle/golden/1.5.5/retired.tsv:34`). The table below is the 2026-09-23 record]
 
 The claims are the release's definition of done. Three of the four have now been MEASURED rather
 than asserted, and two are **refuted**. This table is the honest state; the refutations are not
