@@ -13,13 +13,14 @@
 pub use crate::abi::mechanism::check::{Fault, Rule};
 
 use super::{
-    AcceptOut, ArrivalOut, Claim, ConnFacts, FinishIn, FramePiece, FrameSpan, FramerOut, HeadSlots,
-    IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED,
-    CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FRAMING_DATAGRAM,
-    FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
-    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_CARRIER,
-    ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS,
-    UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    AcceptOut, ArrivalOut, Claim, ConnFacts, EmitIn, FinishIn, FramePiece, FrameSpan, FramerOut,
+    HeadSlots, IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail,
+    CANCEL_COMPLETED, CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH,
+    FRAMING_DATAGRAM, FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS,
+    PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
+    ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER,
+    STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    YIELD_STREAM_FULL,
 };
 use super::{
     DatagramRoute, KeyingMaterial, RendezvousTerms, FINGERPRINT_BYTES, HANDSHAKE_ANSWERS,
@@ -685,6 +686,24 @@ pub fn check_final_status(i: &FinishIn, rows: &[StatusRow], claim: u32) -> Resul
         range(u64::from(s.offset), u64::from(s.len), bound, field)?;
     }
     Ok(())
+}
+
+/// An `emit`'s STATUS ([`EmitIn::status`], INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.4913): stated on
+/// the emit that carries an ACCEPTED stream's answer head (`answers_head`), and on no other. The
+/// framer refuses the emit that breaks it, before any byte of it reaches the wire.
+///
+/// # Errors
+///
+/// The rule the emit breaks.
+pub fn check_emit_status(i: &EmitIn, answers_head: bool) -> Result<(), Fault> {
+    if i._status_reserved != 0 {
+        return Err(fault(Rule::UnknownCode, "emit._status_reserved"));
+    }
+    match (answers_head, i.status) {
+        (true, 0) => Err(fault(Rule::Missing, "emit.status")),
+        (false, s) if s != 0 => Err(fault(Rule::Contradiction, "emit.status")),
+        _ => Ok(()),
+    }
 }
 
 /// Every setting: a path and a known kind.
