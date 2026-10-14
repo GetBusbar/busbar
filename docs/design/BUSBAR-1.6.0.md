@@ -79,7 +79,7 @@ rest mean exactly what they meant before this collapse. Cite a row; never re-lit
 > **A customer running 1.6.0 with only the LLM plane must get byte-identical behaviour to published
 > 1.5.5.** Same config schema, same wire bytes, same everything — proven cell by cell against the
 > real 1.5.5 binary. The four new planes are purely additive and off by default. That oracle is
-> never waived, and a genuine divergence gets parked for the owner, never self-approved.
+> never waived, and a genuine divergence gets parked for the owner, never self-approved. [AMENDED 2026-10-14 by OWNER (Appendix B): a money divergence is never parked for the owner — money = ledger quantity × rate card, exact integer; where 1.5.5 differs it was wrong, and the fix registers the cell citing that ruling]
 >
 > **And money.** Two independent systems — the ledger and the ratecard. Money is a *view*:
 > `money = f(ledger, ratecard)`, computed when someone asks. Nothing ever stores a dollar amount.
