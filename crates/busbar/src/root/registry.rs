@@ -258,6 +258,9 @@ pub struct DroppedDoor {
     pub claims: Vec<&'static str>,
     /// The layers it declares.
     pub composes_over: Vec<&'static str>,
+    /// The auth points it offers, read off its Statement's `extensions` at load by the same reader
+    /// a linked door's are (`abi::transport::EXT_OFFERED_POINTS`; compiled-in = dropped-in).
+    pub offered: busbar_contract::abi::auth::AuthPoints,
     /// The entry, served.
     pub wire: Arc<dyn Transport>,
     /// The opened door the wire serves: the entry the connector serves for it, after the linked

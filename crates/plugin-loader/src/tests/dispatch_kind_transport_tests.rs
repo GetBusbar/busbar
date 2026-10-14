@@ -561,3 +561,80 @@ fn an_upgrade_line_is_a_claim_whose_unit_zero_opens_at_the_upgrade() {
         "RED: a claim that does not open at the upgrade is no upgrade line"
     );
 }
+
+/// RED (ARCHITECT ruling (c) on #953: compiled-in = dropped-in, one contract and one path): a
+/// DROPPED-IN transport's offered points are read off its Statement's `extensions` at load, through
+/// the same reader a linked door's are (`check_offered_points`, from `tail_facts`): a transport
+/// stating `{Peer}` offers `{Peer}`, one stating no record `{Head, HeadBody}`, and a record of
+/// another length refuses the load.
+#[test]
+fn a_dropped_in_transports_offered_points_are_read_off_its_statement() {
+    use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
+    use busbar_contract::abi::mechanism::call::{Blob, BLOB_OCTETS};
+    use busbar_contract::abi::mechanism::door::{KindTailHead, Statement};
+    use busbar_contract::abi::mechanism::extensions::encode;
+    use busbar_contract::abi::sdk::door::{abi_str, statement};
+    use busbar_contract::abi::transport::{Claim, TransportTail, EXT_OFFERED_POINTS, ROLE_FRAMER};
+
+    use crate::dispatch::kinds::transport::TransportFacts;
+
+    let offered = |extensions: &[u8]| -> Result<AuthPoints, String> {
+        let claims: [Claim; 1] = [Claim {
+            selector_forms: abi_str(""),
+            egress_selector_forms: abi_str(""),
+            facts: std::ptr::null(),
+            facts_len: 0,
+            status_namespace: abi_str(""),
+            session: 0,
+            session_bound: 0,
+            unit0_trigger: 0,
+            status_at: 0,
+            _reserved: 0,
+        }];
+        let mut tail: TransportTail = z();
+        tail.head = KindTailHead {
+            size: size_of::<TransportTail>() as u32,
+            _reserved: 0,
+        };
+        tail.role = ROLE_FRAMER;
+        tail.claim_rows = claims.as_ptr();
+        tail.claim_rows_len = 1;
+        let names = [abi_str("own")];
+        let st = Statement {
+            kind_tail: std::ptr::from_ref(&tail).cast::<KindTailHead>(),
+            claims: names.as_ptr(),
+            claims_len: names.len(),
+            extensions: Blob {
+                ptr: if extensions.is_empty() {
+                    std::ptr::null()
+                } else {
+                    extensions.as_ptr()
+                },
+                len: extensions.len(),
+                fmt: BLOB_OCTETS,
+                flags: 0,
+            },
+            ..statement("t", "0", 1)
+        };
+        let ctx = Transport::context(&st)?.expect("a context");
+        Ok(ctx
+            .downcast_ref::<TransportFacts>()
+            .expect("the transport facts")
+            .offered)
+    };
+    let record = |v: &[u8]| encode(&[(EXT_OFFERED_POINTS, v)]);
+    assert_eq!(
+        offered(&record(&POINT_PEER.to_le_bytes())),
+        Ok(AuthPoints::PEER),
+        "a transport stating {{Peer}} offers {{Peer}}"
+    );
+    assert_eq!(
+        offered(&[]),
+        Ok(AuthPoints(POINT_HEAD | POINT_HEAD_BODY)),
+        "no record offers {{Head, HeadBody}}"
+    );
+    assert!(
+        offered(&record(&[1, 0])).is_err(),
+        "a short record refuses the load"
+    );
+}

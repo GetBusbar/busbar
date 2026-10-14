@@ -337,3 +337,45 @@ fn a_none_line_is_neutral_to_the_peer_mix_and_sits_behind_the_peer_verdict() {
     .expect("no line needs Peer");
     assert!(!open.connection_gated(), "no Peer line, no connection gate");
 }
+
+/// RED (ARCHITECT ruling (a) on #953; THE DESIGN §6 step 3, §11 extensions-blob defaults): the
+/// offered set is what the transport's Statement `extensions` record states. A transport stating
+/// `{Peer}` only refuses a line that needs `Head`; a transport stating no record offers `{Head,
+/// HeadBody}`, so a `Head` line seals on it and a `Peer` line is refused: a transport offering
+/// `Peer` states the record.
+#[test]
+fn the_offered_points_record_decides_what_a_line_may_need() {
+    use busbar_contract::abi::mechanism::extensions::encode;
+    use busbar_contract::abi::transport::check::check_offered_points;
+    use busbar_contract::abi::transport::EXT_OFFERED_POINTS;
+    let peer_only =
+        check_offered_points(&encode(&[(EXT_OFFERED_POINTS, &POINT_PEER.to_le_bytes())]))
+            .expect("a {Peer} record reads");
+    let unstated = check_offered_points(&[]).expect("no record reads");
+    let on = |points: AuthPoints, offered: AuthPoints| Line {
+        offered,
+        ..authed("a", "/a", points)
+    };
+    let Err(GuestRefusal::PointNotOffered(refused)) =
+        GuestList::seal(vec![on(AuthPoints::HEAD, peer_only)])
+    else {
+        panic!("a Head line on a transport stating {{Peer}} only is refused");
+    };
+    assert_eq!(refused.route.path, "/a");
+    assert!(
+        GuestList::seal(vec![on(AuthPoints::PEER, peer_only)]).is_ok(),
+        "a Peer line on a transport stating {{Peer}} seals"
+    );
+    assert_eq!(unstated, AuthPoints(POINT_HEAD | POINT_HEAD_BODY));
+    assert!(
+        GuestList::seal(vec![on(AuthPoints::HEAD, unstated)]).is_ok(),
+        "no record offers Head"
+    );
+    assert!(
+        matches!(
+            GuestList::seal(vec![on(AuthPoints::PEER, unstated)]),
+            Err(GuestRefusal::PointNotOffered(_))
+        ),
+        "no record offers no Peer"
+    );
+}

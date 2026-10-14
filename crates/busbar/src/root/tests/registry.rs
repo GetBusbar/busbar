@@ -847,6 +847,11 @@ fn dropped_doors() -> &'static [DroppedDoor] {
     DOORS.get_or_init(|| {
         let (plugin, key) = neutral_frame_door()
             .unwrap_or_else(|| missing("neutral_frame_door", BUILD_LOADER_EXAMPLES));
+        // Read off its Statement as the boot reads a dropped-in door's (`boot::dropped_transports`).
+        let offered = plugin
+            .context::<crate::root::loader::dispatch::kinds::transport::TransportFacts>()
+            .expect("the transport facts")
+            .offered;
         let (door, wire) = crate::root::doors::served(
             plugin,
             &busbar_contract::transport::TransportSettings::default(),
@@ -857,10 +862,58 @@ fn dropped_doors() -> &'static [DroppedDoor] {
             key,
             claims: vec![key],
             composes_over: Vec::new(),
+            offered,
             wire,
             door,
         }]
     })
+}
+
+/// RED (ARCHITECT ruling (c) on #953: compiled-in = dropped-in, one contract and one path): a
+/// DROPPED-IN transport's offered points reach the guest-list seal as a linked row's do. The fixture
+/// states no record, so its claim offers `{Head, HeadBody}`; the same door stating `{Peer}` gives its
+/// claim `{Peer}`, and a line on that claim whose auth needs `Head` is refused at seal.
+#[test]
+fn a_dropped_in_transports_offered_points_reach_the_guest_list_seal() {
+    use busbar_contract::abi::auth::AuthPoints;
+    use busbar_kernel::guest::{Claimant, GuestList, GuestRefusal, Line, LineAuth, Route};
+    let fixture = &dropped_doors()[0];
+    assert_eq!(
+        crate::root::serve::transport_offers(&[], dropped_doors()),
+        [(fixture.key, crate::root::doors::offers_unstated())],
+        "a dropped-in door stating no record offers what an unstated record does"
+    );
+    let peer_only = DroppedDoor {
+        key: fixture.key,
+        claims: fixture.claims.clone(),
+        composes_over: Vec::new(),
+        offered: AuthPoints::PEER,
+        wire: fixture.wire.clone(),
+        door: fixture.door.clone(),
+    };
+    let offers = crate::root::serve::transport_offers(&[], std::slice::from_ref(&peer_only));
+    assert_eq!(offers, [(fixture.key, AuthPoints::PEER)]);
+    let line = Line {
+        route: Route {
+            methods: busbar_contract::abi::transport::route::METHOD_POST,
+            path_form: busbar_contract::abi::transport::route::PATH_EXACT,
+            path: "/a".into(),
+            fields: Vec::new(),
+            rung: 0,
+        },
+        claimant: Claimant::Plane("a".into()),
+        dialect: 0,
+        auth: LineAuth::Chain(vec!["chain".into()], AuthPoints::HEAD),
+        upgrade: None,
+        offered: offers[0].1,
+    };
+    assert!(
+        matches!(
+            GuestList::seal(vec![line]),
+            Err(GuestRefusal::PointNotOffered(_))
+        ),
+        "a Head line on a dropped-in transport stating {{Peer}} only is refused"
+    );
 }
 
 /// The linked row the dropped-in wire stands in for: its key, composing over nothing, built in

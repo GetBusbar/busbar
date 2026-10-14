@@ -2144,16 +2144,24 @@ pub fn upgrade_carriers(transports: &[crate::root::linked::LinkedTransport]) -> 
 /// ONE TRANSPORT CLAIM AND THE AUTH POINTS ITS LINES' TRANSPORT OFFERS (THE DESIGN §6 step 3).
 pub type TransportOffer = (&'static str, busbar_contract::abi::auth::AuthPoints);
 
-/// THE OFFERED POINTS OF EVERY LINKED TRANSPORT CLAIM, read off the doors' Statements: a claim's
-/// own transport's set; an upgrade claim's, the set of the claim it composes over, whose transport
-/// runs the line's auth on the upgrade request.
+/// THE OFFERED POINTS OF EVERY TRANSPORT CLAIM, linked or dropped in, read off each door's
+/// Statement by the one reader (compiled-in = dropped-in): a claim's own transport's set; a linked
+/// upgrade claim's, the set of the claim it composes over, whose transport runs the line's auth on
+/// the upgrade request.
 #[must_use]
 pub fn transport_offers(
     transports: &[crate::root::linked::LinkedTransport],
+    dropped: &[crate::root::registry::DroppedDoor],
 ) -> Vec<TransportOffer> {
+    let of_dropped = || {
+        dropped
+            .iter()
+            .flat_map(|d| d.claims.iter().map(move |c| (*c, d.offered)))
+    };
     let own: Vec<TransportOffer> = transports
         .iter()
         .flat_map(|t| (t.claims)().into_iter().map(move |c| (c, (t.offered)())))
+        .chain(of_dropped())
         .collect();
     transports
         .iter()
@@ -2165,6 +2173,7 @@ pub fn transport_offers(
                 _ => (c, (t.offered)()),
             })
         })
+        .chain(of_dropped())
         .collect()
 }
 
