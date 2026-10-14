@@ -133,7 +133,14 @@ pub struct RootInstall {
     /// the process's one dispatcher (ARCHITECT ruling 2026-09-29, the opener seam). `None` = no
     /// export module resolves.
     pub export_axis: Option<&'static dyn busbar_contract::export_calls::ExportAxis>,
+    /// The host's own counters every `/metrics` scrape exposes, one described family each: the
+    /// root's dispatcher's `bb_*` counters, read when the scrape is (`None` = none).
+    pub host_counters: Option<HostCounters>,
 }
+
+/// THE HOST'S OWN COUNTERS: each counter's family name, its HELP text and its cumulative value,
+/// read at scrape time ([`RootInstall::host_counters`]).
+pub type HostCounters = fn() -> Vec<(&'static str, &'static str, u64)>;
 
 /// THE ROOT'S HOOK AXIS over one plugin registry (each configuration's registry gets its own).
 ///
@@ -157,6 +164,7 @@ const STAND_IN: RootInstall = RootInstall {
     store_axis: Some(crate::test_support::store_axis_stand_in),
     secret_axis: Some(&crate::test_support::SecretsStandIn),
     export_axis: Some(&crate::test_support::export_axis::STAND_IN),
+    host_counters: None,
 };
 
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,

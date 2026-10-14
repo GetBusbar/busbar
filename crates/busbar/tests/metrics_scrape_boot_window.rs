@@ -233,6 +233,73 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// RED (coordinator ruling 2026-10-14, THE DESIGN A.4.3 / A.8): the process dispatcher's `bb_*`
+/// counters are on the real binary's `/metrics`, one family each with its `# HELP` and
+/// `# TYPE … counter` lines and a sample — `bb_deadline_without_wake_total` and
+/// `bb_plugin_quarantined_total`. Before the composition root handed the scrape its dispatcher's
+/// counters (`RootInstall::host_counters`) neither family was exported at all.
+#[test]
+fn the_dispatchers_bb_counters_are_scraped_with_help_and_type() {
+    let dir = fixture_dir();
+    let data_port = free_port();
+    let admin_port = free_port();
+    write_configs(&dir, data_port, admin_port);
+    let log_path = dir.join("out.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let log_err = log.try_clone().unwrap();
+    let mut child = Command::new(common::boot::exe())
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env("MOCK_KEY", "x")
+        .env("RUST_LOG", "warn")
+        .stdout(log)
+        .stderr(log_err)
+        .spawn()
+        .expect("spawn busbar");
+    let scrape = wait_for_full_scrape(data_port, Duration::from_secs(30));
+    let _ = child.kill();
+    let _ = child.wait();
+    let scrape = scrape.unwrap_or_else(|| {
+        panic!(
+            "busbar never answered a full /metrics exposition; log:\n{}",
+            read_to_string(&log_path)
+        )
+    });
+    for (name, help) in [
+        (
+            "bb_deadline_without_wake_total",
+            "Plugin operations that waited and were settled by their deadline without ever being \
+             woken; 0 while every plugin wakes what it parks",
+        ),
+        (
+            "bb_plugin_quarantined_total",
+            "Plugin instances the crossing watchdog quarantined for overrunning their call budget, \
+             summed over every plugin",
+        ),
+    ] {
+        let lines: Vec<&str> = scrape.body.lines().collect();
+        assert!(
+            lines.contains(&format!("# HELP {name} {help}").as_str()),
+            "{name}: no HELP line; exposition:\n{}",
+            scrape.body
+        );
+        assert!(
+            lines.contains(&format!("# TYPE {name} counter").as_str()),
+            "{name}: no TYPE counter line; exposition:\n{}",
+            scrape.body
+        );
+        assert!(
+            lines.iter().any(|l| l
+                .strip_prefix(name)
+                .and_then(|v| v.strip_prefix(' '))
+                .is_some_and(|v| v.parse::<u64>().is_ok())),
+            "{name}: no sample; exposition:\n{}",
+            scrape.body
+        );
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Extract the set of `# HELP <name> ...` metric names from a Prometheus exposition — the closed
 /// set `describe()` registers, independent of which series happen to have been emitted yet.
 fn help_names(body: &str) -> BTreeSet<String> {
