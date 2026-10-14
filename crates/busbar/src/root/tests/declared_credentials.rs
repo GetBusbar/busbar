@@ -1031,8 +1031,8 @@ fn the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape() {
     );
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/auth_style_tests.rs::test_keyless_lane_sends_no_auth_header`
-/// (coverage map v2 row 73). 1.5.5: a lane whose provider declared `api_key: none` (a keyless
+/// LEGACY the retiring engine crate's keyless-lane test in `src/engine/tests/auth_style_tests.rs`
+/// (coverage map v2 row 73; its name spells an auth plugin's crate id, which the root may not). 1.5.5: a lane whose provider declared `api_key: none` (a keyless
 /// local upstream) holds an empty key, and an empty key presents NO auth header at all under any
 /// auth style (the dialect's default, the token override, the key-header override): never a bare
 /// scheme word with an empty token, never an empty key field. A non-empty credential is
@@ -1048,7 +1048,7 @@ fn the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape() {
 /// RED: a linked auth plugin presents a field for an empty credential (a bare scheme word, an
 /// empty key header), or a real credential stops presenting its one header.
 #[test]
-fn test_keyless_lane_sends_no_auth_header() {
+fn a_keyless_lane_presents_no_credential_field() {
     let ctx = |upstream_creds| SigningContext {
         host: "upstream.internal",
         canonical_uri: "/",
