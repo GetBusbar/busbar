@@ -653,7 +653,7 @@ pub struct BuildCtx<'a> {
     /// handed the dialect facts of the providers its section references, as its served instance
     /// is; `None` = none (a test build that states none).
     pub providers:
-        Option<&'a std::collections::HashMap<String, crate::config::providers::ProviderCfg>>,
+        Option<&'a std::collections::HashMap<String, crate::config::providers::ResolvedProvider>>,
 }
 
 /// A PLANE BOOT HOOK — [`PlaneDecl::hydrate`] or [`PlaneDecl::start`]. Handed the [`PlaneBootCtx`] for
@@ -1078,7 +1078,7 @@ plane_behaviour! {
     /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])
     /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,
     /// [`crate::config::providers::ProviderDeploy`]) INTO THE RESOLVED
-    /// [`crate::config::providers::ProviderCfg`] a lane is built from — the providers/models/pools
+    /// [`crate::config::providers::ResolvedProvider`] a lane is built from — the providers/models/pools
     /// LOGIC seam (1.6.0 pools stage-B). `busbar_kernel::config::resolve` calls this at the EXACT point
     /// the per-deployment merge always ran (right after the catalog lookup, itself unconditional core
     /// orchestration — "provider referenced but not found in providers.yaml" stays a core error), so
@@ -1099,7 +1099,7 @@ plane_behaviour! {
         fn(
             &crate::config::providers::ProviderDef,
             &crate::config::providers::ProviderDeploy,
-        ) -> crate::config::providers::ProviderCfg,
+        ) -> crate::config::providers::ResolvedProvider,
     >,
 }
 

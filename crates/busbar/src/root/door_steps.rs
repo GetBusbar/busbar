@@ -1307,76 +1307,16 @@ pub fn kernel_sections(
             m.insert(key.to_string(), v);
         }
     }
-    fn output_key(k: busbar_kernel::ir::lane_caps::MaxOutputKeyCfg) -> &'static str {
-        use busbar_kernel::ir::lane_caps::MaxOutputKeyCfg;
-        match k {
-            MaxOutputKeyCfg::MaxTokens => "max_tokens",
-            MaxOutputKeyCfg::MaxCompletionTokens => "max_completion_tokens",
-        }
-    }
     let mut out = BTreeMap::new();
     let mut providers = Map::new();
     for (name, p) in &cfg.providers {
-        let mut m = Map::new();
-        m.insert("protocol".into(), json!(p.protocol));
+        // The provider's dialect keys are its table, as written and catalog-merged (row 155 B1b:
+        // the root names none of them); beside them the two destination facts a dialect composes
+        // its request path from and the auth style a dialect's default yields to.
+        let mut m = p.table.clone();
         opt(&mut m, "path", p.path.as_ref().map(|v| json!(v)));
         opt(&mut m, "path_base", p.path_base.as_ref().map(|v| json!(v)));
-        opt(
-            &mut m,
-            "organization",
-            p.organization.as_ref().map(|v| json!(v)),
-        );
-        opt(&mut m, "project", p.project.as_ref().map(|v| json!(v)));
-        m.insert("error_map".into(), json!(p.error_map));
         opt(&mut m, "auth", p.auth.map(style_word).map(|v| json!(v)));
-        opt(
-            &mut m,
-            "max_output_key",
-            p.max_output_key.map(output_key).map(|v| json!(v)),
-        );
-        opt(
-            &mut m,
-            "anthropic_adaptive_thinking",
-            p.anthropic_adaptive_thinking.map(|v| json!(v)),
-        );
-        opt(
-            &mut m,
-            "native_structured_output",
-            p.native_structured_output.map(|v| json!(v)),
-        );
-        let rules: Vec<Value> = p
-            .model_capabilities
-            .iter()
-            .map(|r| {
-                let mut c = Map::new();
-                c.insert("models".into(), json!(r.models));
-                opt(
-                    &mut c,
-                    "max_output_key",
-                    r.max_output_key.map(output_key).map(|v| json!(v)),
-                );
-                opt(
-                    &mut c,
-                    "anthropic_adaptive_thinking",
-                    r.anthropic_adaptive_thinking.map(|v| json!(v)),
-                );
-                opt(
-                    &mut c,
-                    "native_structured_output",
-                    r.native_structured_output.map(|v| json!(v)),
-                );
-                opt(&mut c, "reasoning_none", r.reasoning_none.map(|v| json!(v)));
-                opt(
-                    &mut c,
-                    "thinking_always_on",
-                    r.thinking_always_on.map(|v| json!(v)),
-                );
-                Value::Object(c)
-            })
-            .collect();
-        if !rules.is_empty() {
-            m.insert("model_capabilities".into(), Value::Array(rules));
-        }
         providers.insert(name.clone(), Value::Object(m));
     }
     let mut models = Map::new();
@@ -1529,16 +1469,47 @@ fn style_word(auth: busbar_kernel::config::ProviderAuth) -> &'static str {
     }
 }
 
+/// TRANSITIONAL (row 155 B1b; drains at B1c, where the plane states the default auth style its
+/// dialect implies per provider and the root reads that style, never the dialect): one resolved
+/// provider as [`provider_routes`] reads it, its kernel-owned keys through the provider itself and
+/// the two dialect facts [`ProviderRoute`] still carries read off its table.
+struct RouteFacts<'a> {
+    provider: &'a busbar_kernel::config::ResolvedProvider,
+    protocol: String,
+    error_map: BTreeMap<String, String>,
+}
+
+impl<'a> RouteFacts<'a> {
+    fn of(provider: &'a busbar_kernel::config::ResolvedProvider) -> Self {
+        Self {
+            provider,
+            protocol: provider.dialect().to_string(),
+            error_map: provider
+                .error_map()
+                .map(|(code, class)| (code.to_string(), class.to_string()))
+                .collect(),
+        }
+    }
+}
+
+impl std::ops::Deref for RouteFacts<'_> {
+    type Target = busbar_kernel::config::ResolvedProvider;
+    fn deref(&self) -> &Self::Target {
+        self.provider
+    }
+}
+
 /// THE DEPLOYMENT'S PROVIDERS as door planes' members reach them, by name (the catalog-merged
 /// `providers:` the configuration resolved), each under its metadata posture in the deployment's
 /// `security` (its own allow-overrides, then the global ones).
 #[must_use]
 pub fn provider_routes(
-    providers: &HashMap<String, busbar_kernel::config::ProviderCfg>,
+    providers: &HashMap<String, busbar_kernel::config::ResolvedProvider>,
     security: &busbar_kernel::config_validate::MetadataPosture,
 ) -> BTreeMap<String, ProviderRoute> {
     providers
         .iter()
+        .map(|(name, p)| (name, RouteFacts::of(p)))
         .map(|(name, p)| {
             (
                 name.clone(),
@@ -1558,7 +1529,7 @@ pub fn provider_routes(
                         scope: p.scope.clone(),
                         subject: p.subject.clone(),
                     },
-                    metadata: security.for_provider(p),
+                    metadata: security.for_provider(&p),
                 },
             )
         })

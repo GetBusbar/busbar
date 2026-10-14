@@ -1648,8 +1648,8 @@ pub use crate::egress::trust::{identity, spki, trust_anchor};
 
 pub use crate::plane_host::build_input::{
     AffinityInput, AuthReach, AuthStyleInput, BreakerInput, ClientSettingsInput, FailoverInput,
-    HealthInput, HealthModeInput, LaneInput, OnExhaustedInput, PlaneBuildInput, PoolInput,
-    PoolMemberInput, TripInput, TripModeInput,
+    HealthInput, HealthModeInput, LaneInput, LegacyLaneKeys, OnExhaustedInput, PlaneBuildInput,
+    PoolInput, PoolMemberInput, TripInput, TripModeInput,
 };
 pub use crate::plane_host::engine_view::{
     set_pool_queued_depth, ConfigTables, EmptyEngineTablesView, EngineTablesView, LaneView,

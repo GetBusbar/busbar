@@ -52,7 +52,10 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
         model_capabilities: Vec::new(),
     };
     let mut providers = std::collections::HashMap::new();
-    providers.insert("acme".to_string(), provider);
+    providers.insert(
+        "acme".to_string(),
+        crate::config::ResolvedProvider::from(provider),
+    );
     crate::config::RootCfg {
         tool_defs: crate::plane::config::ToolsSection::default().0,
         // No endpoint plane configured.

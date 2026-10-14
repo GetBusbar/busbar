@@ -3513,7 +3513,8 @@ mod disposition_matrix_tests {
                     anthropic_adaptive_thinking: None,
                     native_structured_output: None,
                     model_capabilities: Vec::new(),
-                },
+                }
+                .into(),
             );
             let mut models = HashMap::new();
             models.insert("m".to_string(), model.clone());

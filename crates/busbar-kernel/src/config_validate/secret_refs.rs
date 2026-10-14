@@ -30,7 +30,7 @@ use super::RootCfg;
 ///    apart with an EXHAUSTIVE destructure and no `..`, the idiom already used by
 ///    `RootSettings::is_empty` and `config::patch`. Adding a field to `RootCfg`, `TlsCfg`,
 ///    `AuthCfg`, `AuthChainEntry`, `AuthMethodCfg`, `BrowserLoginCfg`, `IdentityProviderCfg` or
-///    `ProviderCfg` fails to build with `E0027 pattern does not mention field` until somebody has
+///    `ResolvedProvider` fails to build with `E0027 pattern does not mention field` until somebody has
 ///    decided, here, whether it carries a secret.
 /// 2. A NEW SECRET-BEARING TYPE is a TEST failure. The compiler cannot help with a `SecretRef`
 ///    added to a struct this function never destructures, so
@@ -201,27 +201,21 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     }
 
     for (name, p) in providers {
-        let crate::config::ProviderCfg {
+        let crate::config::ResolvedProvider {
             api_key,
-            // Everything else on a provider is a URL, a protocol/auth-scheme selector, an error map
-            // or a host allowlist.
-            protocol: _,
+            // Everything else on a provider is a URL, an auth-scheme selector or its parameters, a
+            // health block, a host allowlist, or the plane's table (parsed without the credential:
+            // the credential is a kernel-owned key, never in the table).
             base_url: _,
             health: _,
-            error_map: _,
             path: _,
             path_base: _,
-            organization: _,
-            project: _,
             token_url: _,
             scope: _,
             subject: _,
             auth: _,
             allow_metadata_hosts: _,
-            max_output_key: _,
-            anthropic_adaptive_thinking: _,
-            native_structured_output: _,
-            model_capabilities: _,
+            table: _,
         } = p;
         refs.push((format!("providers.{name}.api_key"), api_key));
     }
@@ -395,7 +389,15 @@ fn push_browser_login_refs<'a>(
 #[cfg(test)]
 pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     ("TlsCfg", SecretBearing::Walked),
-    ("ProviderCfg", SecretBearing::Walked),
+    ("ResolvedProvider", SecretBearing::Walked),
+    (
+        "ProviderCfg",
+        SecretBearing::NotInResolvedConfig(
+            "the frozen whole-entry PARSE shape of a provider; it is never part of `RootCfg`. \
+             `resolve` lowers a catalog entry and its deployment into `ResolvedProvider`, which IS \
+             walked.",
+        ),
+    ),
     ("AuthCfg", SecretBearing::Walked),
     ("AuthChainEntry", SecretBearing::Walked),
     ("IdentityProviderCfg", SecretBearing::Walked),
@@ -468,15 +470,15 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         "ProviderDeploy",
         SecretBearing::NotInResolvedConfig(
             "the DESERIALIZE-side provider entry (providers.yaml). `resolve` lowers it into \
-             `ProviderCfg`, which IS walked.",
+             `ResolvedProvider`, which IS walked.",
         ),
     ),
     (
         "ProviderRoute",
         SecretBearing::NotInResolvedConfig(
-            "the composition root's copy of a RESOLVED `ProviderCfg` (`root::door_steps::\
-             provider_routes`), made for a door plane's members after the `ProviderCfg` it copies \
-             was walked; it is never part of `RootCfg`.",
+            "the composition root's copy of a `ResolvedProvider` (`root::door_steps::\
+             provider_routes`), made for a door plane's members after the `ResolvedProvider` it \
+             copies was walked; it is never part of `RootCfg`.",
         ),
     ),
 ];

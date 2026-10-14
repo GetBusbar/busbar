@@ -464,7 +464,9 @@ pub struct RootCfg {
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`).
     pub admin_tls: Option<TlsCfg>,
     pub auth: Option<AuthCfg>,
-    pub providers: HashMap<String, ProviderCfg>,
+    /// The resolved providers: each catalog definition merged with its deployment, the kernel-owned
+    /// keys typed and the plane's an opaque table ([`ResolvedProvider`]).
+    pub providers: HashMap<String, ResolvedProvider>,
     pub models: HashMap<String, ModelCfg>,
     pub pools: HashMap<String, PoolCfg>,
     /// The ALL-POOLS `upstream_credentials:` default, resolved from the reserved
@@ -841,10 +843,11 @@ pub const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
 
 // The `providers:` / `models:` config SHAPES — the catalog definition, the operator deployment, the
 // resolved provider the runtime reads, the active-health block and the per-model entry — are plain
-// serde data; the catalog/deployment MERGE that produces a `ProviderCfg` stays here (`resolve`).
+// serde data; the catalog/deployment MERGE that produces a `ResolvedProvider` runs here (`resolve`).
 // Moved to `busbar_kernel::config::providers`; re-exported at their historical `config::` path.
 pub use busbar_kernel::config::providers::{
-    neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef, ProviderDeploy,
+    neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef, ProviderDeploy, ProviderTable,
+    ResolvedProvider,
 };
 
 // ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is a plane-owned runtime config
@@ -1983,7 +1986,7 @@ fn default_plugins_dir() -> String {
 }
 
 /// Resolve DeployCfg + ProviderDef map into resolved RootCfg.
-/// For each deployed provider, look up its definition by name; produce a resolved ProviderCfg
+/// For each deployed provider, look up its definition by name; produce a resolved ResolvedProvider
 /// = def's protocol/base_url/error_map (with any config.yaml override applied) + the deployment's api_key_env.
 /// Build a runtime [`HookCfg`] registry entry from one top-level `hooks:` NAMED DEFINITION (1.5.3).
 /// `module:` names the `kind: hook` PLUGIN that backs the hook (by signed-manifest name/alias) and
@@ -2024,73 +2027,16 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
     })
 }
 
-/// THE CORE-RESIDENT FALLBACK for `PlaneDecl::resolve_provider` (1.6.0 pools stage-B) — byte-identical
-/// to `busbar_llm::engine::build_runtime::resolve_provider`, kept here for the build with no plane
-/// implementing the hook. `providers:`/`pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and
-/// merged UNCONDITIONALLY (never gated on plane presence, unlike `tools:`/`agents:`/`mcp:`), so an
-/// llm-plane-absent build must keep merging providers exactly as every prior release has rather than
-/// silently dropping configured providers out of `RootCfg::providers`. See
-/// `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for why this section never evicts.
-pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ProviderCfg {
-    // Merge error_map: def's map with deployment override taking precedence
-    let mut error_map = def.error_map.clone();
-    if let Some(override_map) = &deploy_cfg.error_map {
-        for (code, class) in override_map {
-            error_map.insert(code.clone(), class.clone());
-        }
-    }
-    ProviderCfg {
-        // Apply overrides from deployment (rarely used)
-        protocol: deploy_cfg
-            .protocol
-            .clone()
-            .unwrap_or_else(|| def.protocol.clone()),
-        base_url: deploy_cfg
-            .base_url
-            .clone()
-            .unwrap_or_else(|| def.base_url.clone()),
-        api_key: deploy_cfg.api_key.clone(),
-        // Deployment health config wins over the catalog default (mirrors path/auth), so
-        // the `health:` block documented in config.yaml actually takes effect.
-        health: deploy_cfg.health.clone().or_else(|| def.health.clone()),
-        error_map,
-        // deployment override wins over the catalog default
-        path: deploy_cfg.path.clone().or_else(|| def.path.clone()),
-        path_base: deploy_cfg
-            .path_base
-            .clone()
-            .or_else(|| def.path_base.clone()),
-        organization: deploy_cfg
-            .organization
-            .clone()
-            .or_else(|| def.organization.clone()),
-        project: deploy_cfg.project.clone().or_else(|| def.project.clone()),
-        token_url: deploy_cfg
-            .token_url
-            .clone()
-            .or_else(|| def.token_url.clone()),
-        scope: deploy_cfg.scope.clone().or_else(|| def.scope.clone()),
-        subject: deploy_cfg.subject.clone().or_else(|| def.subject.clone()),
-        auth: deploy_cfg.auth.or(def.auth),
-        // deployment override (Some) replaces the catalog default
-        allow_metadata_hosts: deploy_cfg
-            .allow_metadata_hosts
-            .clone()
-            .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
-        // Lane capabilities: each deployment value overrides the catalog's; a deployment rule list
-        // replaces the catalog's.
-        max_output_key: deploy_cfg.max_output_key.or(def.max_output_key),
-        anthropic_adaptive_thinking: deploy_cfg
-            .anthropic_adaptive_thinking
-            .or(def.anthropic_adaptive_thinking),
-        native_structured_output: deploy_cfg
-            .native_structured_output
-            .or(def.native_structured_output),
-        model_capabilities: deploy_cfg
-            .model_capabilities
-            .clone()
-            .unwrap_or_else(|| def.model_capabilities.clone()),
-    }
+/// THE CORE-RESIDENT FALLBACK for `PlaneDecl::resolve_provider`, kept for the build with no plane
+/// implementing the hook: [`ResolvedProvider::merge`], the neutral merge (the kernel-owned keys
+/// typed, the plane's table by [`busbar_kernel::config::providers::merge_tables`]). `providers:`/
+/// `pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and merged UNCONDITIONALLY (never gated
+/// on plane presence, unlike `tools:`/`agents:`/`mcp:`), so an llm-plane-absent build keeps merging
+/// providers exactly as every prior release has rather than silently dropping configured providers
+/// out of `RootCfg::providers`. See `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for
+/// why this section never evicts.
+pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ResolvedProvider {
+    ResolvedProvider::merge(def, deploy_cfg)
 }
 
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
@@ -2107,7 +2053,7 @@ pub fn resolve(
 
     // (A scrape sink's zero retention window — recording at full cost, reporting nothing — is its
     // own settings refusal, raised by the sink while `resolve_export` validates it.)
-    let mut resolved_providers: HashMap<String, ProviderCfg> = HashMap::new();
+    let mut resolved_providers: HashMap<String, ResolvedProvider> = HashMap::new();
 
     // THE PLANE HOOK (1.6.0 pools stage-B): the per-provider catalog/deployment MERGE is the LLM
     // plane's own logic (`PlaneDecl::resolve_provider`), resolved ONCE here — not per-provider — since
@@ -2521,12 +2467,12 @@ pub fn resolve(
                 }
                 Some(p) => {
                     if let Some(known) = section.known_dialects() {
-                        if !known.contains(&p.protocol.as_str()) {
+                        if !known.contains(&p.dialect()) {
                             errors.push(format!(
                                 "{path} '{provider_name}' resolves to protocol '{}', but this plane \
                                  speaks only: {}. Point it at a provider whose protocol resolves to \
                                  one of those, or remove the reference.",
-                                p.protocol,
+                                p.dialect(),
                                 known.join(", ")
                             ));
                         }
@@ -2763,6 +2709,12 @@ mod config_backcompat_corpus;
 #[cfg(test)]
 #[path = "tests/provider_refusal_pins.rs"]
 mod provider_refusal_pins;
+
+// The resolved provider: the kernel-owned keys typed, the plane's one table under the neutral merge
+// (row 155 B1b).
+#[cfg(test)]
+#[path = "tests/resolved_provider_tests.rs"]
+mod resolved_provider_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 

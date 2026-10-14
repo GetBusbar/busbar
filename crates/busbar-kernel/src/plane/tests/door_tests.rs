@@ -525,10 +525,12 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
         },
     );
     let decl = fold(reg).expect("folds");
-    let provider = |yaml: &str| -> crate::config::providers::ProviderCfg {
-        serde_yaml::from_str(yaml).expect("a provider")
+    let provider = |yaml: &str| -> crate::config::providers::ResolvedProvider {
+        serde_yaml::from_str::<crate::config::providers::ProviderCfg>(yaml)
+            .expect("a provider")
+            .into()
     };
-    let providers: std::collections::HashMap<String, crate::config::providers::ProviderCfg> = [
+    let providers: std::collections::HashMap<String, crate::config::providers::ResolvedProvider> = [
         (
             "eng-a".to_string(),
             provider("protocol: one\nbase_url: http://a\napi_key: {env: A}\nerror_map: {'429': rate_limited}\n"),
