@@ -327,7 +327,7 @@ pub fn snapshot_spec(dialects: &[u32]) -> SnapshotSpec {
 
 /// What a claimed arrival routes over: a model's dialect, and its `upstream_model`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Routed {
+pub struct ModelRoute {
     /// Its index in [`tail::DIALECTS`].
     pub dialect: u32,
     /// Its `upstream_model`.
@@ -346,7 +346,7 @@ pub struct Routed {
 pub fn routes(
     section: &DecisionsSection,
     protocols: &BTreeMap<String, String>,
-) -> Result<BTreeMap<String, Routed>, String> {
+) -> Result<BTreeMap<String, ModelRoute>, String> {
     section
         .models
         .iter()
@@ -365,7 +365,7 @@ pub fn routes(
             })?;
             Ok((
                 name.clone(),
-                Routed {
+                ModelRoute {
                     dialect,
                     upstream: model.upstream_model.clone(),
                 },
@@ -379,7 +379,7 @@ pub fn routes(
 /// models are listed, scope-filtered by the kernel; `/v1/models` appends them), in ascending name
 /// order.
 #[must_use]
-pub fn generation_spec(routes: &BTreeMap<String, Routed>) -> SnapshotSpec {
+pub fn generation_spec(routes: &BTreeMap<String, ModelRoute>) -> SnapshotSpec {
     let dialects: Vec<u32> = routes.values().map(|r| r.dialect).collect();
     SnapshotSpec {
         listed: routes.keys().cloned().collect(),
@@ -404,7 +404,7 @@ struct Unit {
     owed_flags: u32,
     /// The caller's fields the far end receives ([`driven::relayed_fields`]), kept from `arrive`
     /// (the caller's head crosses once) for every ATTEMPT of the unit.
-    caller: driven::Relayed,
+    caller: driven::RelayedFields,
     /// The ticket the unit's last piece crossed on: what a `cancel` names it by.
     ticket: Option<Ticket>,
     /// Its place in the instance's arrivals ([`DecisionsDoor::arrivals`]).
@@ -423,7 +423,7 @@ pub struct DecisionsDoor {
     units: Keyed<u64, Unit>,
     /// The models a claimed arrival routes over, directly, by name: every model the latest
     /// generation configures, each with its dialect and `upstream_model`.
-    models: Keyed<String, Routed>,
+    models: Keyed<String, ModelRoute>,
     /// How many arrivals the instance has kept: each unit's [`Unit::seq`]. The count is the
     /// SDK's per-instance keyed state, its one entry under `()`: the plane holds no interior
     /// state of its own.
@@ -434,7 +434,7 @@ pub struct DecisionsDoor {
 
 impl DecisionsDoor {
     /// Route claimed arrivals over `routes`.
-    fn route_over(&self, routes: BTreeMap<String, Routed>) {
+    fn route_over(&self, routes: BTreeMap<String, ModelRoute>) {
         self.models.with_all(|models| *models = routes);
     }
 }
@@ -811,7 +811,7 @@ fn far_end(
         // its fee; a usage member that is not a whole count fails the unit loudly, never a silent 0.
         let counts = match unit.reading.counts(unit.status) {
             Ok(counts) => counts,
-            Err(driven::Unreadable(pointer)) => {
+            Err(driven::UnreadableUsage(pointer)) => {
                 return (
                     out.fail(Refusal::failed(format!(
                         "the far end's answer carries `{pointer}`, which is not a whole count"

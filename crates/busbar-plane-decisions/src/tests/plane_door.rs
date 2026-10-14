@@ -2,7 +2,7 @@ use super::*;
 use crate::ops;
 
 /// `section`'s routes with no provider facts stated.
-fn routed(section: &DecisionsSection) -> BTreeMap<String, Routed> {
+fn routed(section: &DecisionsSection) -> BTreeMap<String, ModelRoute> {
     routes(section, &BTreeMap::new()).expect("every model's dialect is spoken")
 }
 
