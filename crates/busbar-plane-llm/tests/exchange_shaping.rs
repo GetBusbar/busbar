@@ -113,7 +113,7 @@ fn the_glob_takes_prefix_suffix_and_middle_wildcards() {
     assert!(glob_match("exact", "exact") && !glob_match("exact", "exactly"));
 }
 
-/// A MODEL'S OWN `protocol` OVERRIDES ITS PROVIDER'S (#51, THE DESIGN §2 BEDROCK-INVOKE ruling): the
+/// A MODEL'S OWN `protocol` OVERRIDES ITS PROVIDER'S (#51, THE DESIGN section 2, the BEDROCK-INVOKE ruling): the
 /// model is spoken in the dialect it names, a sibling model on the same provider keeps the
 /// provider's, and a dialect the plane does not serve is refused naming the model (fail-closed).
 /// RED: a plane that reads only the provider's `protocol` writes the overriding model's requests
