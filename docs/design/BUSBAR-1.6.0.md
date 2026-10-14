@@ -1462,9 +1462,11 @@ completes) — no verified-credential cache of its own. This supersedes the "sta
 unresolved until Q-INCACHE was answered" line above and closes Q-INCACHE.
 
 **R4 — Q-DISK.** A host-owned bounded disk lane is the ONE exception to "no blocking" (§11.2's rule
-otherwise holds absolutely): it exists solely for the SQLite store and the file export sink, both of
-which are inherently local-disk-bound and cannot be made sans-IO without becoming a different product.
-No other kind may claim this exception.
+otherwise holds absolutely): it exists solely for the SQLite store, the file export sink, and the
+secret kind's file source (config-time only; OWNER 2026-10-13), each inherently local-disk-bound and
+not sans-IO without becoming a different product. The secret kind's file source reads on the lane only
+at config time (boot, config apply, refresh) and is never reachable from a request path; a gate holds
+that. No other kind may claim this exception.
 
 **R5 — Q-MYSQL.** A sans-IO mysql store and a sans-IO ldap auth plugin are built (the `mysql-ldap-stream`
 ruling, Q82, patches both drivers to take a host-supplied stream); both ship in the default distribution.

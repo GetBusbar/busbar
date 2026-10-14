@@ -42,9 +42,9 @@ busbar-contract = { path = "../busbar-contract" }
 # THE ONE NETWORK JUDGE (#36: "the upstream leg — walk + swrr weighting + pre-dial guard; trust
 # folded in"). `busbar_kernel_egress::trust::net` is the single definition of the SSRF/metadata
 # guard — the metadata name list, the address predicates, the WHATWG host extraction, the
-# resolve-then-pin. `src/net_guard.rs` is a re-export shim over it, so every in-core call site and
-# all three plane crates keep naming `busbar_kernel::net_guard::…` unchanged and no plane→unit edge
-# is created. There WAS a second copy of that guard in this crate; it drifted, and the drift was a
+# resolve-then-pin. Every in-core call site names it in its unit home (the pure host atoms in
+# `busbar_contract::net`); the kernel resolves no name itself (row 130 E2: the resolver is the
+# connector's, behind the egress-trust capability). There WAS a second copy of that guard in this crate; it drifted, and the drift was a
 # live metadata bypass (`metadata.platformequinix.com` resolves and pins to a routable address, so
 # nothing but the NAME arm can refuse it, and the name arm read a two-entry list). One judge is the
 # fix; this edge is what makes one judge reachable from here.
@@ -86,14 +86,13 @@ busbar-kernel-scope = { path = "../busbar-kernel-scope" }
 # dump, and only under the non-default `timing` feature. The default build does not link it.
 libc = { workspace = true, optional = true }
 busbar-plugin-loader = { path = "../plugin-loader" }
-# THE STAND-IN LINKED ROWS (test-only edges): the composition root links the build's default store
-# and ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no
-# root, so these stand in, under `test-support` (which the dev-dependency cycle through the plane
-# crates turns on for this crate's own tests). The store is a fixture, renamed to the role it plays:
-# no source here names the plugin. The ranking row is no crate at all: it is the in-crate R-FIX3
-# double `test_support::ranking_double`, linked only, and the root proves it states what the real
-# ranking door states.
-fixture-store = { workspace = true, optional = true }
+# THE STAND-IN LINKED ROWS are no crate at all: the composition root links the build's store and
+# ranking hooks onto the cold-kind axis (`preflight::install_linked_rows`); a test build has no root,
+# so the in-crate R-FIX3 doubles stand in, linked only — `test_support::store_double` (the store row
+# and the `MemoryStore` the kernel's tests build a `GovState` over) and `test_support::ranking_double`.
+# The kernel names no store crate under any name (THE DESIGN Part 2 #2: the kernel reaches a store
+# only through the store kind's door), and the root proves each double states what the real door
+# states.
 axum = { workspace = true }
 tower = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "io-util", "io-std", "process"] }
@@ -242,7 +241,7 @@ loom-model = ["dep:loom"]
 # Exposes `test_support` to a DEPENDENT crate's tests (the bin's). Never on in a normal build;
 # the bin enables it from its [dev-dependencies] edge only. The contract's test double (its warn
 # capture) is always compiled (ARCHITECT SD-3 queue (4)), so nothing forwards there.
-test-support = ["dep:reqwest", "dep:rcgen", "dep:fixture-store", "busbar-kernel-identity/stand-in", "busbar-plugin-loader/test-support"]
+test-support = ["dep:reqwest", "dep:rcgen", "busbar-kernel-identity/stand-in", "busbar-plugin-loader/test-support"]
 # The debug-only per-method micro-timing in `src/timing` (folded from busbar-timing, OWNER Q70).
 # DEFAULT OFF: with this off, `timeit!` expands to `()` and the RAII guards it produces are
 # zero-sized no-ops, so the `drop(_guard)` calls that end a timed span are compiled in ONLY under this
