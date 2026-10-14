@@ -104,7 +104,11 @@ fn every_linked_plane_door_states_its_root_cells() {
 #[test]
 fn every_door_planes_not_applicable_cells_are_the_ledgers() {
     let ledger: Value = serde_json::from_str(LEDGER).expect("the ledger is JSON");
-    for &(krate, columns, declared) in super::DOOR_CELLS {
+    for &(krate, at, columns, declared) in super::DOOR_CELLS {
+        assert!(
+            std::path::Path::new(at).is_file(),
+            "`{krate}` states its cells at {at}, which is no file"
+        );
         not_applicable_agrees(krate, columns, declared, &ledger).unwrap_or_else(|e| panic!("{e}"));
     }
 }
