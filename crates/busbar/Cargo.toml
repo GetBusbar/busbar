@@ -179,7 +179,7 @@ busbar-transport-stdio = { workspace = true }
 # WebRTC: the datagram framer door (ICE, SRTP, SCTP) over the connector's datagram port and secure
 # layer. Optional and off by default: its linked row is the wire's one registration, and a build
 # that does not turn `transport-webrtc` on carries neither the crate nor its media stack.
-busbar-transport-webrtc = { path = "../busbar-transport-webrtc", optional = true }
+busbar-transport-webrtc = { workspace = true, optional = true }
 # The root's card is SWAPPED by a live config apply and PINNED by every unit that prices against it,
 # which is one atomic store against many lock-free readers — the same shape, and the same crate, the
 # engine already swaps its config snapshot with.

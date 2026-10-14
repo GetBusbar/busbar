@@ -1052,11 +1052,10 @@ dependencies = [
 [[package]]
 name = "busbar-transport-webrtc"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-transport-webrtc?rev=dda9bb39c4618b197028ef66b234730f19b7b0f7#dda9bb39c4618b197028ef66b234730f19b7b0f7"
 dependencies = [
  "aes",
  "busbar-contract",
- "busbar-plugin-loader",
- "busbar-transport-webrtc",
  "ring",
  "str0m",
  "zeroize",

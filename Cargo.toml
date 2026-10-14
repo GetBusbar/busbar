@@ -21,7 +21,6 @@ members = [
     "crates/busbar-plane-a2a",
     "crates/busbar-plane-streaming",
     "crates/plugin-loader",
-    "crates/busbar-transport-webrtc",
     "testing/ws-conformance/subject",
     "xtask",
 ]
@@ -107,6 +106,12 @@ busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking"
 # rev; the logic crate the root links on the transport-door axis. Its dropped-in cdylib twin
 # (`busbar-transport-stdio-plugin`) and its gates live in that repo's plugin CI.
 busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "604a5caf1349fd3024af80f3ee8a92353189149e" }
+# THE WEBRTC TRANSPORT: the datagram framer door (ICE, SRTP, SCTP; kind: transport), pulled at a
+# pinned rev; the logic crate the root links behind `transport-webrtc`. Its dropped-in cdylib twin
+# (`busbar-transport-webrtc-plugin`), the published suite's datagram script and its gates live in that
+# repo's plugin CI; busbar's gates read the pinned crate through the base layer. The media stack rows
+# below stay the fleet's table.
+busbar-transport-webrtc = { git = "https://github.com/GetBusbar/busbar-transport-webrtc", rev = "dda9bb39c4618b197028ef66b234730f19b7b0f7" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3
