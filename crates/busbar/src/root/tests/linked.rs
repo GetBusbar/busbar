@@ -263,7 +263,7 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 /// the hook table is the linked ranking DOOR, whose Statement claims each built-in strategy word
 /// (the root's hook axis binds it).
 ///
-/// RED by deleting the `store-memory` / `hooks-ranking` rows of `[package.metadata.busbar.linked]`:
+/// RED by deleting the store and ranking rows of `[package.metadata.busbar.linked]`:
 /// the tables carry no store (and no ranking row) to hand the kernel.
 #[test]
 fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
@@ -400,8 +400,8 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
 /// SEAM-L(s), THE ENGINE RIDES THE KEY: a door taking the key of the legacy row that is the fallback
 /// plane takes over that row's engine (the fallback flag, the runtime it builds and the view the
 /// core's own readers walk) and keeps every other word of its own. RED: the fold dropped the legacy
-/// row whole, so with a linked llm door the node had no fallback runtime and `/metrics` lost its lane
-/// gauges (`metrics_scrape_boot_window` under `--features llm-on-driver`).
+/// row whole, so with the node's plane linked as a door the node had no fallback runtime and
+/// `/metrics` lost its lane gauges (`metrics_scrape_boot_window` under the node plane's fold switch).
 #[test]
 fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
     let base = &native("seam-l-engine")[0];
