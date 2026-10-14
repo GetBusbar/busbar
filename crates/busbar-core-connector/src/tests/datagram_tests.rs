@@ -643,6 +643,8 @@ fn a_source_that_sent_no_verified_check_never_reaches_the_framer() {
     assert!(seen
         .iter()
         .any(|s| s.told.contains(&(1, r.far.addr.to_string()))));
+    // The check itself crossed on the clear lane, carrying the path number it was told under.
+    assert!(seen.iter().any(|s| s.lane == LANE_CLEAR && s.path == 1));
 }
 
 #[test]
