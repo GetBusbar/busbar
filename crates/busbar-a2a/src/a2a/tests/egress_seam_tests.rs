@@ -21,19 +21,17 @@ use std::net::{IpAddr, TcpListener};
 use std::sync::Arc;
 
 use crate::a2a::fetch::{FetchPolicy, Transport};
-use crate::a2a::relay::{ChunkFlow, RelayTransport};
+use crate::a2a::relay::{ChunkFlow, RelayTransport, StreamHead};
 use crate::a2a::transport::ReqwestTransport;
-use busbar_kernel::egress::seam::{HopSpec, HostlessEgress};
+use busbar_kernel::egress::seam::{Buffered, EgressFaultInfo, HopSpec, HostlessEgress};
 use busbar_kernel::egress::{build_pinned_client, RefuseSecondLookup};
 use busbar_kernel::proxy::{read_capped, ReadEnd};
 
-/// The installed hostless-egress driver — the engine's, bound by the transport's own test boot
-/// (`test_egress_boot`, the same binding the composition root makes) and read back through the ONE
-/// neutral seam the plane's production transport reads. Each verb on it runs the engine's
+/// The hostless-egress driver — the engine's, the one the App build hands the plane (and the one a
+/// transport its test built bare runs on, `test_egress_boot`). Each verb on it runs the engine's
 /// buffered / streaming egress bodies whole over one hostless scope.
 fn driver() -> &'static dyn HostlessEgress {
-    super::test_egress_boot::install();
-    busbar_kernel::egress::seam::hostless().expect("the hostless-egress driver is installed")
+    super::test_egress_boot::driver()
 }
 
 const LOOPBACK: &str = "127.0.0.1";
@@ -358,4 +356,84 @@ fn stream_adapter_concatenation_matches_post_stream() {
         "the concatenated event-stream body is byte-identical"
     );
     assert_eq!(seam_body, sse, "and equals what the upstream sent");
+}
+
+/// A driver double that answers every hop with its OWN `status` and dials nothing — so the status a
+/// hop reads back names the driver it ran on.
+struct Answers(u16);
+
+impl HostlessEgress for Answers {
+    fn buffered(&self, _spec: &HopSpec<'_>, _cap: usize) -> Result<Buffered, EgressFaultInfo> {
+        Ok(Buffered {
+            status: self.0,
+            location: None,
+            content_type: None,
+            peer_spki: None,
+            client_identity_offered: false,
+            body: Vec::new(),
+            end: ReadEnd::Complete,
+        })
+    }
+
+    fn stream(
+        &self,
+        spec: &HopSpec<'_>,
+        _cap: usize,
+        _on_chunk: &mut (dyn FnMut(&[u8]) -> ChunkFlow + Send),
+    ) -> Result<StreamHead, EgressFaultInfo> {
+        Err(EgressFaultInfo {
+            class: busbar_contract::abi::hot::EgressFailClass::Fault,
+            status: self.0,
+            cause: format!("driver {}", self.0),
+            url: spec.url.to_string(),
+        })
+    }
+}
+
+static FIRST: Answers = Answers(201);
+static SECOND: Answers = Answers(202);
+
+/// THE DRIVER IS THE PLANE'S, NOT THE PROCESS'S. Two planes built in one process over two build
+/// contexts' drivers each relay — unary and streamed — on the driver THEIR build was handed. Under
+/// the deleted process-wide `HOSTLESS` static the first install won for every plane, so one of these
+/// two would read the other's answer.
+#[test]
+fn each_plane_relays_on_the_driver_its_own_build_was_handed() {
+    let cfg = crate::testkit::agents_cfg_with_one_receiving_agent();
+    let plane_over = |driver: &'static Answers| {
+        crate::a2a::plane::A2aPlane::from_config_carrying(
+            &cfg,
+            None,
+            Arc::default(),
+            Arc::default(),
+            Arc::default(),
+            Some(driver),
+        )
+        .expect("one agent configured, so a plane")
+    };
+    let (first, second) = (plane_over(&FIRST), plane_over(&SECOND));
+    let url = url::Url::parse("http://127.0.0.1:9/").unwrap();
+    let pin = || super::transport_tests::reaching(LOOPBACK.parse().unwrap());
+    let unary = |plane: &crate::a2a::plane::A2aPlane| {
+        let seam = plane.relay_seam();
+        let sent = seam.transport().send("POST", &url, pin(), &[], b"{}");
+        sent.map(|r| r.status).map_err(|f| f.err)
+    };
+    let streamed = |plane: &crate::a2a::plane::A2aPlane| {
+        let seam = plane.relay_seam();
+        let mut sink = |_: &[u8]| ChunkFlow::Continue;
+        seam.transport()
+            .post_stream(&url, pin(), &[], b"{}", &mut sink)
+            .map(|h| h.status)
+    };
+    assert_eq!(
+        (unary(&first), unary(&second)),
+        (Ok(201), Ok(202)),
+        "each plane's unary hop ran on its own build's driver"
+    );
+    assert_eq!(
+        (streamed(&first), streamed(&second)),
+        (Err("driver 201".to_string()), Err("driver 202".to_string())),
+        "each plane's streamed hop ran on its own build's driver"
+    );
 }

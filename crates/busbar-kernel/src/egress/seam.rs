@@ -327,10 +327,10 @@ pub fn pump(
 }
 
 /// THE CORE-BACKED hostless-egress driver — the one production implementation of the neutral
-/// [`HostlessEgress`] trait, installed at boot by the composition root. It funnels each hop into the
-/// EXACT `with_hostless` + `buffered` / `stream_head` + `pump` bodies above (the `plane_host` FFI
-/// egress vtable), so a plane that drives `hostless()` runs byte-identical to the in-core callers that
-/// name these functions directly. A ZST unit struct, so `&CoreHostlessEgress` promotes to `'static`.
+/// [`HostlessEgress`] trait, handed to each plane on the App's build context. It funnels each hop
+/// into the EXACT `with_hostless` + `buffered` / `stream_head` + `pump` bodies above (the
+/// `plane_host` FFI egress vtable), so a plane that drives it runs byte-identical to the in-core
+/// callers that name these functions directly. A ZST unit struct, so `&CoreHostlessEgress` promotes to `'static`.
 pub struct CoreHostlessEgress;
 
 impl HostlessEgress for CoreHostlessEgress {
@@ -389,11 +389,11 @@ pub struct HopSpec<'a> {
 // The buffered / streamed RETURN shapes a plane reads back from one governed hop, plus the neutral
 // DRIVER trait an extracted plane calls to run that hop without naming core. The concrete driver
 // stays core's (`busbar_kernel::egress::seam::CoreHostlessEgress`, over the `plane_host` FFI egress
-// vtable) and is installed at boot; a plane holds only `&dyn HostlessEgress` off [`hostless`]. The
-// shapes below are field-neutral (they name only `std` + the substrate `ReadEnd` and the plugin
-// `EgressFailClass`), relocated from `busbar_kernel::egress::seam` / `busbar_kernel::plane_host::egress`
-// so a plane crate reads them without reaching into core; core re-exports them so its own call sites
-// resolve unchanged. Gated to the plane features, this seam's only consumers.
+// vtable) and is handed to a plane's `build` on its build context (`BuildCtx::hostless`); a plane
+// holds only that `&dyn HostlessEgress`. The shapes below are field-neutral (they name only `std` +
+// the substrate `ReadEnd` and the plugin `EgressFailClass`), relocated from
+// `busbar_kernel::egress::seam` / `busbar_kernel::plane_host::egress` so a plane crate reads them
+// without reaching into core; core re-exports them so its own call sites resolve unchanged. Gated to the plane features, this seam's only consumers.
 
 /// One buffered outbound round trip, reduced to what a caller reads back — the NEUTRAL projection every
 /// plane maps from (the [`Response`](super::Response) shape carries a subset; a dispatch caller reads
@@ -425,10 +425,10 @@ pub struct EgressFaultInfo {
     pub url: String,
 }
 
-/// THE NEUTRAL DRIVER an extracted plane runs a governed hop through — the trait `hostless()` hands
-/// back, whose only production implementation is core's `CoreHostlessEgress` (over the `plane_host`
-/// FFI egress vtable), installed once at boot. A plane names this trait, never the concrete driver, so
-/// the unsafe FFI half stays core's alone.
+/// THE NEUTRAL DRIVER an extracted plane runs a governed hop through — the trait a plane's build
+/// context hands it (`BuildCtx::hostless`), whose only production implementation is core's
+/// `CoreHostlessEgress` (over the `plane_host` FFI egress vtable). A plane names this trait, never
+/// the concrete driver, so the unsafe FFI half stays core's alone.
 ///
 /// [`stream`](HostlessEgress::stream) is `relay`-only: its one implementation drives the core
 /// `stream_head` + `pump` streaming path, which is itself `relay`-gated, and its one caller is the
@@ -450,34 +450,14 @@ pub trait HostlessEgress: Send + Sync {
     ) -> Result<super::StreamHead, EgressFaultInfo>;
 }
 
-/// THE PROCESS-WIDE hostless-egress driver, installed once by the composition root
-/// ([`install_hostless_egress`]). A plane reads it back through [`hostless`] and gets `None` in a
-/// build that installed none (a plane running without the core-backed driver behind it).
-#[cfg(any(feature = "dispatch", feature = "relay"))]
-static HOSTLESS: std::sync::OnceLock<&'static dyn HostlessEgress> = std::sync::OnceLock::new();
-
-/// Install the process hostless-egress driver — the composition root's one write, at boot, before any
-/// plane dispatches. Idempotent by `OnceLock`: a second install is a no-op (the first driver wins).
-#[cfg(any(feature = "dispatch", feature = "relay"))]
-pub fn install_hostless_egress(driver: &'static dyn HostlessEgress) {
-    let _ = HOSTLESS.set(driver);
-}
-
-/// The installed hostless-egress driver, or `None` when none was installed. A plane that gets `None`
-/// has no egress backend behind it and refuses the hop rather than inventing one.
-#[cfg(any(feature = "dispatch", feature = "relay"))]
-pub fn hostless() -> Option<&'static dyn HostlessEgress> {
-    HOSTLESS.get().copied()
-}
-
 // ── SEND AN ALREADY-PINNED HOP ───────────────────────────────────────────────────────────────────
 //
 // The POST-PIN send skeleton every extracted plane shares: build the neutral [`HopSpec`] for a hop the
-// plane has ALREADY resolved-then-pinned plane-side, run it on the installed hostless driver, and hand
+// plane has ALREADY resolved-then-pinned plane-side, run it on the plane's own hostless driver, and hand
 // back the buffered projection (or the streamed head). It names no protocol and no plane — the plane
 // keeps its own PRE-pin door (resolve/guard/pin, live-trust re-check, credential attach) and its own
 // POST-return interpretation (`ReadEnd`, SSE, redirect refusal); ONLY the identical
-// `HopSpec`-literal + `hostless()` null-check + `buffered`/`stream` call lives here now, so the "no
+// `HopSpec`-literal + driver null-check + `buffered`/`stream` call lives here now, so the "no
 // second lookup" posture of an already-judged hop is expressed in exactly one place.
 
 /// One ALREADY-PINNED outbound hop, as neutral data. The plane resolved-then-pinned and judged `addr`
@@ -529,7 +509,7 @@ impl PinnedHop<'_> {
     }
 }
 
-/// The neutral fault a build with NO installed driver refuses a pinned hop with — the same
+/// The neutral fault a plane holding NO driver refuses a pinned hop with — the same
 /// `Fault`-class, url-carrying shape the host's `egress_fault` produces, so a caller that keeps the
 /// `cause` and a caller that classifies the `class` both read exactly what they read before.
 #[cfg(any(feature = "dispatch", feature = "relay"))]
@@ -543,12 +523,16 @@ fn no_backend_fault(url: &str) -> EgressFaultInfo {
 }
 
 /// SEND ONE ALREADY-PINNED HOP, BUFFERED. Builds the neutral [`HopSpec`] for a hop the plane already
-/// pinned, runs it on the installed hostless driver, and hands back the [`Buffered`] projection (or the
-/// neutral [`EgressFaultInfo`] — a build with no driver refuses here rather than inventing a client).
-/// The caller keeps its own `ReadEnd` / SSE / redirect interpretation.
+/// pinned, runs it on `driver` (the plane's own, off its build context), and hands back the
+/// [`Buffered`] projection (or the neutral [`EgressFaultInfo`] — a plane holding no driver refuses here
+/// rather than inventing a client). The caller keeps its own `ReadEnd` / SSE / redirect interpretation.
 #[cfg(any(feature = "dispatch", feature = "relay"))]
-pub fn send_pinned_buffered(hop: &PinnedHop<'_>, cap: usize) -> Result<Buffered, EgressFaultInfo> {
-    hostless()
+pub fn send_pinned_buffered(
+    driver: Option<&dyn HostlessEgress>,
+    hop: &PinnedHop<'_>,
+    cap: usize,
+) -> Result<Buffered, EgressFaultInfo> {
+    driver
         .ok_or_else(|| no_backend_fault(hop.url))?
         .buffered(&hop.spec(), cap)
 }
@@ -558,11 +542,12 @@ pub fn send_pinned_buffered(hop: &PinnedHop<'_>, cap: usize) -> Result<Buffered,
 /// `on_chunk`. One hostless scope spans the head and the pump.
 #[cfg(feature = "relay")]
 pub fn send_pinned_stream(
+    driver: Option<&dyn HostlessEgress>,
     hop: &PinnedHop<'_>,
     cap: usize,
     on_chunk: &mut (dyn FnMut(&[u8]) -> super::ChunkFlow + Send),
 ) -> Result<super::StreamHead, EgressFaultInfo> {
-    hostless()
+    driver
         .ok_or_else(|| no_backend_fault(hop.url))?
         .stream(&hop.spec(), cap, on_chunk)
 }

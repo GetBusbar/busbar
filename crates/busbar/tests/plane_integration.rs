@@ -91,6 +91,7 @@ fn built_planes(cfg: &RootCfg) -> Vec<(&'static PlaneDecl, Arc<dyn std::any::Any
                 public_url: cfg.public_url.as_deref(),
                 prior: None,
                 providers: None,
+                hostless: busbar_kernel::plane::registry::EgressDriver::core(),
             };
             (decl.build)(&ctx).map(|obj| (decl, obj))
         })

@@ -646,6 +646,7 @@ async fn healthz_with_model_lanes_every_cell_open_stays_unready_beside_an_opened
         public_url: None,
         prior: None,
         providers: None,
+        hostless: Default::default(),
     })
     .expect("the configured door builds its generation's slot");
     assert!(

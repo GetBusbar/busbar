@@ -205,6 +205,7 @@ fn the_verb_layers_probe_fetches_a_mutual_tls_vendors_card_with_that_registratio
             ..FetchPolicy::default()
         },
         &identities,
+        None,
     )
     .trusting_root(server_ca.as_bytes());
 
@@ -290,7 +291,7 @@ fn each_registration_presents_its_own_certificate_and_not_another_registrations(
     );
     // THE PRODUCTION BUNDLE, built exactly as the re-verification job builds it, plus the one test
     // root that makes the peers' server certificates acceptable.
-    let live = LiveCardFetch::presenting(FetchPolicy::default(), &identities)
+    let live = LiveCardFetch::presenting(FetchPolicy::default(), &identities, None)
         .trusting_root(server_ca.as_bytes());
 
     // EACH AGENT AT ITS OWN PEER: accepted.

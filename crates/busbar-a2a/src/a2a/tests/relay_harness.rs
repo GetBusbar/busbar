@@ -260,7 +260,7 @@ impl RelayTransport for RecordingTransport {
             Outcome::AnswersThenStreams(_, _, frames) | Outcome::Streams(frames) => {
                 // THE SINK IS CALLED ON A BARE BLOCKING THREAD, exactly as production calls it.
                 //
-                // Production's `ReqwestTransport::post_stream` rides `seam::hostless().stream`,
+                // Production's `ReqwestTransport::post_stream` rides its plane's driver's `stream`,
                 // whose pump (the engine's egress pump) invokes `on_chunk` synchronously
                 // on the calling thread — a plain `spawn_blocking` thread, NO runtime context.
                 // This fixture matches that context by doing the same. An earlier revision wrapped

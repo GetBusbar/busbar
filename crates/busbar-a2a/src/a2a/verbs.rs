@@ -500,8 +500,9 @@ async fn look(subject: &A2aSubject) -> Result<ConnectPreview, PlaneVerbError> {
         .fetch_policy_for(&subject.registration.agent_id);
     let registration = subject.registration.clone();
     let pin_cfg = subject.pin_cfg.clone();
+    let egress = subject.plane.egress();
     tokio::task::spawn_blocking(move || {
-        let live = super::transport::LiveCardFetch::new(policy);
+        let live = super::transport::LiveCardFetch::new(policy, egress);
         let probe = live.probe(&registration, &pin_cfg);
         let seams = CardProbe {
             source: &probe,

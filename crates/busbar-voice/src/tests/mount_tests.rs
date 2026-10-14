@@ -166,6 +166,7 @@ fn slot_from_public_url(public_url: Option<&str>) -> Option<Arc<dyn std::any::An
         public_url,
         prior: None,
         providers: None,
+        hostless: Default::default(),
     };
     voice_build(&ctx)
 }

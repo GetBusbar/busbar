@@ -3492,6 +3492,7 @@ pub(crate) mod door_boundary {
             public_url: Some(PUBLIC_URL),
             prior: None,
             providers: None,
+            hostless: Default::default(),
         })
         .expect("the door builds from its section")
     }
