@@ -9,39 +9,44 @@ on_green: merge
 # The owner's approval on the pull request holds the merge too; q128-audit gates the move on the
 # audit's record for the commit (no open BLOCK).
 approve: true
-deadline: 6h
+# 8h: plane-delete --all (40-90 min), two LTO release builds and the workspace tests do not fit in 6h.
+deadline: 8h
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_INCREMENTAL: "0"
 on:
-  move: [gates, oracle, conformance, verify-done, q128-audit]
+  move: [gates, oracle, conformance, verify-done, q128-audit, test-gated]
 checks:
   gates:
-    # The rung inherits predev's boarded gates; here they are re-run on the commit, no worse than
-    # dev, as the predev file runs them.
+    # The rung re-runs every registered gate on the commit, ABSOLUTE (no `baseline`: every row
+    # green, not "no worse than dev"; dev holds no xtask and no ledgers to be measured against).
+    # The base-relative rules (new edges, minted rows) take predev's own last landed commit as their
+    # base: every lane move already judged its delta against predev, so dev is never the base.
     run: |
-      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
       cargo xtask gate --all --format=tsv
-    baseline: target
-    rules: ["qa/*.toml"]
-    # The ceiling ratchet reads the merge-base (XTASK_CEILING_BASE), as in .ci/default.yaml: only a
-    # backend with the repo's history may run this check.
+    # The base-relative rules read history: only a backend with the repo's history runs this check.
     requires: [git-history]
   oracle:
-    # busbar's own check tool, the pinned busbar-oracle (the backend's busbar-oracle tool sets
-    # BUSBAR_ORACLE_RUST_BIN): the judge is the one dev's oracle-rust.pin names, run only when its
-    # sha256 is that pin's for this host (a candidate never picks its own judge); the 1.5.5 golden is
-    # add-only from dev to this commit; then the candidate's release binary is recorded over the
-    # corpus and replayed against the committed 1.5.5 golden, strict: green is every cell byte-green
-    # or forgiven by an owner-signed accepted difference.
+    # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
+    # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
+    # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
+    # holds none: the first move) and runs it only at that pin's sha256 for this architecture, its
+    # .sig verified against busbar-release's release key; no line for this architecture is no judge.
+    # BUSBAR_RELEASE_TOKEN (a secret ModernCI gives this check) reads the private release. The 1.5.5
+    # golden is add-only from dev to this commit wherever dev holds it (none before the first move);
+    # then the candidate's release binary is recorded over the corpus and replayed against the
+    # committed 1.5.5 golden, strict: green is every cell byte-green or forgiven by an owner-signed
+    # accepted difference.
     run: |
-      pin=$(git show "$MODERNCI_TO_SHA:testing/shadow-oracle/oracle-rust.pin")
-      want=$(printf '%s\n' "$pin" | sed -n "s/^sha256_linux_$(uname -m)=//p")
-      [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "ORACLE-PIN: oracle-rust.pin at $MODERNCI_TO_SHA pins no linux $(uname -m) judge"; exit 1; }
-      echo "$want  $BUSBAR_ORACLE_RUST_BIN" | sha256sum -c -
-      "$BUSBAR_ORACLE_RUST_BIN" golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
+      ./bin/oracle tool-dir >/dev/null
+      if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
+        ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
+      else
+        echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
+      fi
       cargo build --locked --release -p busbar --bin busbar
       ./bin/oracle fetch-golden
       rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
@@ -92,9 +97,12 @@ checks:
     # backend probed to have all of these, and says which one is missing otherwise.
     requires: [docker, docker-compose, python3-venv, curl, git]
   verify-done:
-    # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer).
+    # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer). Its PARITY group
+    # obtains the judge through bin/oracle as the oracle check does (BUSBAR_RELEASE_TOKEN).
     run: bash scripts/verify-1.6.0-done.sh
     needs: [gates]
+    # It reads merge-bases and tags (the config-schema baseline is tag v1.5.3): full history and tags.
+    requires: [git-history]
   q128-audit:
     # DEV-GREEN item 5 (docs/design/BUSBAR-1.6.0.md l.2910-2912; 1.6.0-QUESTIONS.md Q128, option
     # A): one fresh, independent architecture audit on this commit with no open BLOCK, and a clean
@@ -103,4 +111,45 @@ checks:
     # BLOCK/HIGH/MEDIUM/LOW, scope, evidence) and exits 1 on any open BLOCK. An audit of another
     # tree, or none, is a BLOCK.
     run: cargo xtask q128 audit
+    needs: [gates]
+    # The audit is judged against this commit's history: full history and tags.
+    requires: [git-history]
+  test-gated:
+    # The feature-gated suites the `test` check never builds (row 164): `test` runs default features
+    # only. A, the busbar/kernel/core-admin gates at once (test-harness, llm-on-driver,
+    # transport-webrtc, openapi-schema, timing), filtered to the gated binaries and modules so the
+    # default suites do not run twice; B, the plugin-pack CLI (pack); C, the loom models in release.
+    run: |
+      meta=$(cargo metadata --format-version 1 --locked)
+      cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
+      # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
+      # door and the other door fixtures, which busbar's and the connector's tests load too) and
+      # busbar's test plane. A run scoped to `busbar` alone builds no other package's examples, and a
+      # test whose fixture is absent fails rather than skips; no variable tells this step the
+      # affected set, so the build does not wait on one.
+      cargo build --locked -p busbar-plugin-loader --examples
+      cargo build --locked -p busbar --examples
+      plugin() {
+        man=$(echo "$meta" | jq -r --arg p "$1" 'first(.packages[] | select(.name == $p) | .manifest_path) // empty')
+        if [ -z "$man" ]; then [ "$3" = optional ] && return 0; echo "busbar resolves no $1"; return 1; fi
+        ws="$(dirname "$man")/Cargo.toml"
+        pkgs=$(cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -r '.packages[].name')
+        if ! printf '%s\n' $pkgs | grep -qx "$2"; then [ "$3" = optional ] && return 0; echo "$1 has no $2"; return 1; fi
+        if [ "$3" = dropped-in ] && cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -e --arg p "$2" '.packages[] | select(.name == $p) | .features | has("dropped-in")' >/dev/null; then
+          cargo build --locked --manifest-path "$ws" -p "$2" --features dropped-in --target-dir "$PWD/target"
+        else
+          cargo build --locked --manifest-path "$ws" -p "$2" --target-dir "$PWD/target"
+        fi
+      }
+      plugin busbar-transport-tcp-plugin busbar-transport-tcp-plugin dropped-in
+      plugin busbar-transport-http busbar-transport-http-plugin dropped-in
+      plugin busbar-secret-env busbar-secret-env-plugin optional
+      plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
+      cargo build --workspace --locked
+      cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/llm-on-driver,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
+      cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
+      timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+    # Absolute at this rung, as every check of this move (no `baseline`: dev holds no suites to be
+    # measured against).
+    requires: [git-history]
     needs: [gates]
