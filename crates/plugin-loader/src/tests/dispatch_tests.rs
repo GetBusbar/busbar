@@ -176,7 +176,7 @@ fn a_plugin_handle_is_not_clone() {
     impl<T: ?Sized> NotClone<()> for T {}
     #[allow(dead_code)]
     struct WhenClone;
-    impl<T: ?Sized + Clone> NotClone<WhenClone> for T {}
+    impl<T: Clone> NotClone<WhenClone> for T {}
     assert_eq!(
         <Plugin<TestKind> as NotClone<_>>::verdict(),
         "a Plugin is not Clone"
