@@ -2635,7 +2635,7 @@ the `FROM_KERNEL` piece source; the ATTEMPT fields on `OnPieceIn` (member, attem
 answer's verdict on `OnPieceOut`; the `project` op; the plane's `drive` in/out with a host buffer for
 the ready sessions; a public flag on a snapshot route; the probe claim and the probe tail flag; a
 per-record-kind chain framing declaration in the tail (verify framing for plane record chains only). Each
-lands with its validator beside it and a RED test per rule.
+lands with its validator beside it and a RED test per rule. Two `OnPieceIn` flags join it (status row 155, ARCHITECT 2026-10-13): `PIECE_CUT`, on the far end's last piece only, says the far end's answer ended without completing; `PIECE_FINAL`, on the far end's first piece only, says the kernel will not fail this answer over.
 
 **The driver's contract, as landed and ruled (K1, K2, K5, K6, K7, H3, FOLD-LLM2; ARCHITECT rulings
 2026-09-28/30).**

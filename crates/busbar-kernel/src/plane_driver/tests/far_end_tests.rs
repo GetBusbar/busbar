@@ -42,6 +42,8 @@ enum Script {
     Answer(u32, Option<u64>, Vec<&'static [u8]>),
     /// An answer whose body is followed by the far end's trailers.
     Trailed(u32, Vec<&'static [u8]>, &'static [u8]),
+    /// An answer whose connection fails after its body's pieces, before it completes.
+    Broken(u32, Vec<&'static [u8]>),
     Silent,
     Refused,
 }
@@ -69,6 +71,8 @@ struct Table {
     texts: Mutex<Vec<bool>>,
     /// Every write: the connection, the bytes, and whether they completed the caller's message.
     written: Mutex<Vec<(u64, Vec<u8>, bool)>>,
+    /// The connections whose read fails once their scripted pieces are spent.
+    broken: Mutex<std::collections::HashSet<u64>>,
 }
 
 fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Piece {
@@ -136,6 +140,17 @@ impl Conns for Table {
                 bytes.push_back(Vec::new());
                 (pieces, bytes)
             }
+            Script::Broken(status, chunks) => {
+                self.broken.lock().unwrap().insert(id);
+                let mut pieces = VecDeque::new();
+                let mut bytes = VecDeque::new();
+                for (k, chunk) in chunks.iter().enumerate() {
+                    let s = (k == 0).then_some((status, None));
+                    pieces.push_back(piece(PieceKind::Body, chunk.len(), s));
+                    bytes.push_back(chunk.to_vec());
+                }
+                (pieces, bytes)
+            }
             Script::Answer(status, retry, chunks) => {
                 let mut pieces = VecDeque::new();
                 let mut bytes = VecDeque::new();
@@ -195,7 +210,11 @@ impl PollConns for Table {
             .get_mut(&conn.0)
             .and_then(VecDeque::pop_front)
         else {
-            // A silent far end never answers (and never wakes).
+            // A broken connection fails its next read; a silent far end never answers (and never
+            // wakes).
+            if self.broken.lock().unwrap().contains(&conn.0) {
+                return Poll::Ready(Err(ConnError::Refused));
+            }
             return Poll::Pending;
         };
         let b = self
@@ -1745,5 +1764,51 @@ async fn a_text_request_opens_bare_and_is_written_as_text() {
         r.table.written.lock().unwrap().len(),
         1,
         "no write of its own"
+    );
+}
+
+/// A CUT IS TOLD TO THE PLANE (`PIECE_CUT`): an answer whose connection fails after its head ends
+/// with a last piece marked cut, the member recorded a compensating transient failure as before;
+/// an answer that completes ends with a last piece that is not. RED: a cut ending in the same
+/// unmarked last piece a completion does, so the plane frames a truncated answer as complete.
+#[tokio::test]
+async fn an_answer_cut_after_its_head_ends_on_a_cut_piece_and_a_complete_one_does_not() {
+    let r = rig(
+        &[("a.test", Script::Broken(200, vec![b"data: one\n\n"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let Pick::Member { .. } = far.member(&t, 1).await else {
+        panic!("a member")
+    };
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    let last = pieces.last().expect("a last piece");
+    assert!(last.last && last.cut, "{pieces:?}");
+    assert!(
+        pieces[..pieces.len() - 1].iter().all(|p| !p.cut),
+        "only the last piece is cut: {pieces:?}"
+    );
+    assert!(r.book.observed.lock().unwrap().contains(&(
+        DestinationId::new(1),
+        Outcome::Transient { retry_after: None }
+    )));
+
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"whole"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let far = r.egress.unit(route());
+    let Pick::Member { .. } = far.member(&t, 1).await else {
+        panic!("a member")
+    };
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    assert!(
+        pieces.iter().all(|p| !p.cut),
+        "a complete answer is not cut: {pieces:?}"
     );
 }

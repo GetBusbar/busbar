@@ -1291,7 +1291,12 @@ impl EgressFarEnd<'_> {
                 }
             }
         }
-        self.end(false)
+        // The plane is told the answer did not complete (`PIECE_CUT`), so it ends the caller's
+        // answer as a cut rather than as a complete one.
+        FarPiece {
+            cut: true,
+            ..self.end(false)
+        }
     }
 
     /// The answer ended: `clean` keeps the budget unit its success spent.
@@ -1383,6 +1388,7 @@ impl EgressFarEnd<'_> {
                 fields: false,
                 head: Vec::new(),
                 relayed: live.degraded,
+                cut: false,
             };
         }
         let classified = e.breaker.classify(destination, status);
@@ -1426,6 +1432,7 @@ impl EgressFarEnd<'_> {
                     fields: false,
                     head: Vec::new(),
                     relayed,
+                    cut: false,
                 },
             );
             if piece.last {
