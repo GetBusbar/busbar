@@ -99,15 +99,17 @@ fn an_unset_body_cap_resolves_to_the_transport_default() {
 /// request timeout REBUILDS it, so the new timeout (here the prior + 7 s) takes effect without a
 /// restart.
 ///
-/// Held here on what the served egress is built from on each apply: the settings a transport door
-/// is opened with (`settings_blob`) and the connector's pool posture. An unchanged apply hands the
-/// doors byte-identical settings and the same posture (nothing to reopen, the warm pool carries); a
-/// changed timeout hands them a different blob carrying the new figure.
+/// This test pins only the SETTINGS half: what a transport door would be opened with
+/// (`settings_blob`) and the connector's pool posture. An unchanged apply hands the doors
+/// byte-identical settings and the same posture; a changed timeout hands them a different blob
+/// carrying the new figure. It does not prove the doors are reopened on a hot apply: the served
+/// connector is built once at boot (`root/connector.rs`), and that half (the row's rebuild) is the
+/// egress lane's, with its own RED (coordinator ruling 2026-10-14 ~02:55Z).
 ///
-/// RED: an apply that changed nothing reads as a change (the warm pool thrown away), or a changed
+/// RED: an apply that changed nothing reads as a change, or a changed
 /// `limits.upstream_request_timeout_secs` never reaches the settings a door is opened with.
 #[test]
-fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it() {
+fn a_changed_upstream_timeout_changes_the_door_settings_an_unrelated_apply_does_not() {
     const DECLARED: [&str; 2] = [
         "limits.upstream_request_timeout_secs",
         "limits.request_body_max_bytes",
