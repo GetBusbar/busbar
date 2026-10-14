@@ -1506,8 +1506,8 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       },
-      "cells": "^admin\\.ops\\|GetInfo\\|ok$",
-      "expected_cells": 1,
+      "cells": "^(admin\\.ops\\|GetInfo\\|ok|admin\\.plugins\\|type-auth@hooks-webrequest)$",
+      "expected_cells": 2,
       "classes": [
         "body"
       ],
@@ -1538,10 +1538,30 @@
               "pointer": "/build/auth_modules/3",
               "exists": true
             }
+          },
+          {
+            "cell": "admin.plugins|type-auth@hooks-webrequest",
+            "pointer": "/items/0/name",
+            "equals": "keys"
+          },
+          {
+            "cell": "admin.plugins|type-auth@hooks-webrequest",
+            "pointer": "/items/1/name",
+            "equals": "admin-tokens"
+          },
+          {
+            "cell": "admin.plugins|type-auth@hooks-webrequest",
+            "pointer": "/items/2/name",
+            "equals": "busbar-auth-webhook-signature"
+          },
+          {
+            "cell": "admin.plugins|type-auth@hooks-webrequest",
+            "pointer": "/items/2/loader",
+            "equals": "compiled-in"
           }
         ]
       },
-      "rationale": "DECISION: the default build links busbar-auth-webhook-signature (BUSBAR-1.6.0.md l.818-823, OWNER Q99 four auth crates; l.845-852, webhook signatures are verified by ONE mechanism-named inbound auth plugin; l.4835, TWILIO inbound auth). Its door states an inbound capability without FACT_READS_CREDENTIALS, so it is an auth-chain module an operator names, and GET /api/v1/admin/info build.auth_modules (crates/busbar-core-admin/src/v1/service.rs auth_modules_compiled_in) lists it after 1.5.5's two. CELL: admin.ops|GetInfo|ok. BYTES MOVED (golden -> candidate): body /build/auth_modules [\"keys\",\"admin-tokens\"] -> [\"keys\",\"admin-tokens\",\"busbar-auth-webhook-signature\"]; every other member unchanged. kind=additive: 1.5.5's two names keep their place and value. PREMISE (evaluated): status 200 and the list is exactly 1.5.5's two followed by this one module, so any other change to the list withholds the entry. Not yet measured: no oracle run executes until #911 lands; the first post-#911 run confirms it."
+      "rationale": "DECISION: the default build links busbar-auth-webhook-signature (BUSBAR-1.6.0.md l.818-823, OWNER Q99 four auth crates; l.845-852, webhook signatures are verified by ONE mechanism-named inbound auth plugin; l.4835, TWILIO inbound auth). Its door states an inbound capability without FACT_READS_CREDENTIALS, so it is an auth-chain module an operator names, and GET /api/v1/admin/info build.auth_modules (crates/busbar-core-admin/src/v1/service.rs auth_modules_compiled_in) lists it after 1.5.5's two. CELLS: admin.ops|GetInfo|ok and admin.plugins|type-auth@hooks-webrequest (GET /api/v1/admin/plugins?type=auth lists the same compiled-in modules, service_operations.rs list_plugins). BYTES MOVED (golden -> candidate): GetInfo body /build/auth_modules [\"keys\",\"admin-tokens\"] -> [\"keys\",\"admin-tokens\",\"busbar-auth-webhook-signature\"]; the plugins page gains a third item {name: busbar-auth-webhook-signature, loader: compiled-in, type: auth, active: false unless a chain names it} after 1.5.5's two; every other member unchanged. kind=additive: 1.5.5's two names keep their place and value. PREMISE (evaluated): status 200 and the list is exactly 1.5.5's two followed by this one module, so any other change to the list withholds the entry. Not yet measured: no oracle run executes until #911 lands; the first post-#911 run confirms it."
     },
     {
       "id": "M-1 refund reaches the cell the charge reached",

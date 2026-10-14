@@ -783,7 +783,8 @@ each dialect translates, field by field, is listed in the generated
   the key; that takes a head recorded off the node. **Migration:** none; every 1.5.5 audit field is
   unchanged.
 - 1.6.0 Added: `GET /api/v1/admin/info` `build.auth_modules` lists `busbar-auth-webhook-signature`, the linked inbound auth module that verifies Twilio and Standard Webhooks signatures.
-  It is listed after 1.5.5's `keys` and `admin-tokens`, both unchanged. An operator names it in an
+  It is listed after 1.5.5's `keys` and `admin-tokens`, both unchanged, there and in
+  `GET /api/v1/admin/plugins?type=auth` (a compiled-in item, active when a chain names it). An operator names it in an
   `identity-providers:` entry (`module: busbar-auth-webhook-signature`, `variant: twilio` or
   `standard-webhooks`) and puts that entry on `auth.chain`; a request carrying none of the variant's
   headers passes it untouched. **Migration:** none; a client that reads the list as a set of names
