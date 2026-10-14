@@ -2137,7 +2137,7 @@ governance:
   admin_token: '${PATH}'
 providers:
   upstream-a:
-    api_key_env: ANTHROPIC_KEY
+    api_key_env: UPSTREAM_A_KEY
 models:
   claude: { provider: upstream-a }
 pools:

@@ -1,6 +1,11 @@
 use super::*;
 use busbar_contract::records::ScopeRef;
 
+/// The protocol a test lane names. The kernel test binary registers no dialect (its built-ins are
+/// the neutral `proto-*` set), so a lane's protocol here is a name nothing resolves, exactly as the
+/// dialect word it replaces was: the neutral crate's tests spell no dialect.
+const LANE_PROTOCOL: &str = "unregistered-lane-protocol";
+
 /// Helper: a `RoleBindingCfg` from optional pool list / group / admin scope.
 fn binding(
     allowed_pools: Option<&[&str]>,
@@ -1175,12 +1180,8 @@ async fn test_audience_bound_token_is_rejected_on_the_data_plane() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "test-model",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .api_key("busbar-upstream-key"),
+            LaneSpec::new("test-model", LANE_PROTOCOL, &server.base_url())
+                .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
@@ -1289,12 +1290,8 @@ async fn test_governance_rejects_empty_token_even_if_empty_secret_key_exists() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "test-model",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .api_key("busbar-upstream-key"),
+            LaneSpec::new("test-model", LANE_PROTOCOL, &server.base_url())
+                .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
         .keys_chain()
@@ -1425,12 +1422,8 @@ async fn test_governance_active_with_admin_token_rejects_missing_vkey() {
 
     let app = TestApp::new()
         .lane(
-            LaneSpec::new(
-                "test-model",
-                crate::proto::PROTO_ANTHROPIC,
-                &server.base_url(),
-            )
-            .api_key("busbar-upstream-key"),
+            LaneSpec::new("test-model", LANE_PROTOCOL, &server.base_url())
+                .api_key("busbar-upstream-key"),
         )
         .pool("pa", &[(0, 1)])
         // Open static chain — but active governance supersedes it.
@@ -1628,7 +1621,7 @@ async fn test_1_5_2_keys_chain_disabled_vkey_rejected() {
     let key_id = gov.all_keys().unwrap()[0].id.clone();
     gov.update_key(&key_id, Some(false), None).unwrap(); // freeze it
     let app = TestApp::new()
-        .lane(LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url()).api_key("up"))
+        .lane(LaneSpec::new("m", LANE_PROTOCOL, &server.base_url()).api_key("up"))
         .pool("pa", &[(0, 1)])
         .keys_chain()
         .governance(gov)
@@ -2094,9 +2087,7 @@ async fn a_data_plane_door_without_a_verdict_answers_the_1_5_5_401_and_an_overlo
     let server = MockServer::new(dp_ok_state()).await;
     let ask = |auth: AuthMiddleware| {
         let app = TestApp::new()
-            .lane(
-                LaneSpec::new("m", crate::proto::PROTO_ANTHROPIC, &server.base_url()).api_key("up"),
-            )
+            .lane(LaneSpec::new("m", LANE_PROTOCOL, &server.base_url()).api_key("up"))
             .pool("pa", &[(0, 1)])
             .auth(std::sync::Arc::new(auth))
             .build();
