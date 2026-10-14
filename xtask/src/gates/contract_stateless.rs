@@ -7,6 +7,12 @@
 //! `open`. So the contract has no `static`, `OnceLock`, `LazyLock`, `OnceCell` or `thread_local!`
 //! outside test code.
 //!
+//! TEST CODE includes a module its parent declares behind the dev-only `test-seal` feature
+//! (`#[cfg(any(test, feature = "test-seal"))]` or `#[cfg(feature = "test-seal")]`, coordinator
+//! ruling 2026-10-14): `tests/test_seal_is_dev_only.rs` refuses every non-dev edge that enables the
+//! feature, so such a module is compiled only into tests and never into a shipped image. The same
+//! static behind any other gate, or none, is still a finding.
+//!
 //! REPORT-ONLY, armed at today's count as the drain-only ledger `qa/contract-stateless.toml` (see
 //! [`super::one_abi`]); the rows are the work list of the step that moves the registries into the
 //! kernel.
@@ -41,6 +47,50 @@ pub const SPEC: Spec = Spec {
 
 /// The once-cell spellings, each read as a word.
 const ONCE: &[&str] = &["OnceLock", "LazyLock", "OnceCell", "Lazy"];
+
+/// The attributes that confine a module to tests and the dev-only `test-seal` feature.
+const TEST_SEAL_GATES: &[&str] = &[
+    "#[cfg(any(test, feature = \"test-seal\"))]",
+    "#[cfg(feature = \"test-seal\")]",
+];
+
+/// Every module a file declares directly under a [`TEST_SEAL_GATES`] attribute, as the path its
+/// source lives at without the extension (`crates/busbar-contract/src/testkit`): the file
+/// `<path>.rs` and everything under `<path>/` are test code.
+fn test_seal_modules(files: &[crate::ctx::SourceFile]) -> Vec<String> {
+    let mut out = Vec::new();
+    for f in files {
+        let rel = f.rel_str();
+        let dir = match rel.rsplit_once('/') {
+            Some((d, "lib.rs" | "mod.rs" | "main.rs")) => d.to_string(),
+            _ => rel.trim_end_matches(".rs").to_string(),
+        };
+        let lines: Vec<&str> = f.text.lines().map(str::trim).collect();
+        for pair in lines.windows(2) {
+            if !TEST_SEAL_GATES.contains(&pair[0]) {
+                continue;
+            }
+            let Some(at) = pair[1].find("mod ") else {
+                continue;
+            };
+            let vis = pair[1][..at].trim();
+            if !(vis.is_empty() || vis.starts_with("pub")) {
+                continue;
+            }
+            if let Some(name) = pair[1][at + 4..].trim().strip_suffix(';') {
+                out.push(format!("{dir}/{}", name.trim()));
+            }
+        }
+    }
+    out
+}
+
+/// Whether `rel` is the source of one of `modules` ([`test_seal_modules`]).
+fn in_test_seal_module(rel: &str, modules: &[String]) -> bool {
+    modules
+        .iter()
+        .any(|m| rel == format!("{m}.rs") || rel.starts_with(&format!("{m}/")))
+}
 
 /// The name a `static` item declares on this (blanked) line, if it declares one. `'static` is a
 /// lifetime and never counts.
@@ -85,8 +135,12 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
             )],
         );
     }
+    let sealed = test_seal_modules(&files);
     for f in &files {
         let rel = f.rel_str();
+        if in_test_seal_module(&rel, &sealed) {
+            continue;
+        }
         for sl in one_abi::production(&f.text) {
             if let Some(name) = static_item(&sl.counted) {
                 findings.push(Finding::new(ROW_STATIC, &rel, name, sl.no));
@@ -160,6 +214,43 @@ impl Gate for ContractStatelessGate {
                 ),
             ],
         );
+        // THE TEST-SEAL MODULE (coordinator ruling 2026-10-14): a module declared behind the
+        // dev-only feature is test code, and the SAME static under any other declaration is RED.
+        let lib = "crates/busbar-contract/src/lib.rs";
+        let seal_file = "crates/busbar-contract/src/planted_seal/mod.rs";
+        let declared = |attr: &str| {
+            let mut ov = Overlay::new();
+            let text = cx.read(lib).unwrap_or_default();
+            ov.set(lib, format!("{text}\n{attr}pub mod planted_seal;\n"));
+            ov.set(
+                seal_file,
+                "pub static PLANTED_SEAL_STATE: u8 = 0;\n".to_string(),
+            );
+            ov
+        };
+        report.push(crate::gates::prove_rows_green(
+            cx,
+            self,
+            "a static in a module declared behind the dev-only test-seal feature is test code",
+            &[ROW_STATIC],
+            declared("#[cfg(any(test, feature = \"test-seal\"))]\n"),
+        ));
+        report.push(crate::gates::prove_rows_red(
+            cx,
+            self,
+            "the same static in a module declared with no test-seal gate is RED",
+            &[ROW_STATIC],
+            declared(""),
+            &[seal_file, "PLANTED_SEAL_STATE"],
+        ));
+        report.push(crate::gates::prove_rows_red(
+            cx,
+            self,
+            "the same static behind another feature is RED",
+            &[ROW_STATIC],
+            declared("#[cfg(feature = \"planted-feature\")]\n"),
+            &[seal_file, "PLANTED_SEAL_STATE"],
+        ));
         report.push(crate::gates::prove_rows_green(
             cx,
             self,

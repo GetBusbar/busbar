@@ -14,11 +14,6 @@ file = "crates/busbar-contract/src/codec.rs"
 item = "OnceLock"
 
 [[finding]]
-rule = "contract-stateless:once-cell"
-file = "crates/busbar-contract/src/testkit/warn_capture.rs"
-item = "OnceLock"
-
-[[finding]]
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/abi/hot/host.rs"
 item = "LIVE_GENERATIONS"
@@ -179,16 +174,6 @@ item = "USAGE_TAP_FAULT_REPORTER"
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/codec.rs"
 item = "WALL_CLOCK"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/testkit/warn_capture.rs"
-item = "GATE"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/testkit/warn_capture.rs"
-item = "ONCE"
 
 [[finding]]
 rule = "contract-stateless:static"
