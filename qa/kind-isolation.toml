@@ -1638,8 +1638,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-contract"
 axis  = "instance:secret"
-count = "133"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value"
+count = "131"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value; LOWERED 133 -> 131 by GetBusbar/busbar#904 (row 84): the cold lane's SDK side and its suites are deleted, and two secret-instance hits went with them (the gate's measure on #904: 131) (Law 9: the ceiling ratchets down)"
 
 [[law0]]
 crate = "busbar-contract"
