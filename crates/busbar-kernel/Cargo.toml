@@ -36,7 +36,9 @@ bumpalo = { workspace = true }
 # stays on the admin surface; only the neutral scope model lives here, so a non-admin core
 # consumer (router, the chain-verification module, config, config_validate) never has to name
 # "admin" to check a scope.
-busbar-contract = { path = "../busbar-contract" }
+# `yaml`: the host reads every plane's section (`plane::config`, `plane::door`) through the contract's
+# YAML readers; this edge is the one that turns them on for the workspace.
+busbar-contract = { path = "../busbar-contract", features = ["yaml"] }
 # (The HOT-lane plugin/plane ABI the kernel hosts — the `#[repr(C)] PlaneHostVtable` and its POD types
 # — is `busbar_contract::abi::hot` since the #84 merge; consumed HOST-side by `src/plane_host`.)
 # THE ONE NETWORK JUDGE (#36: "the upstream leg — walk + swrr weighting + pre-dial guard; trust

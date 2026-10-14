@@ -105,8 +105,11 @@ crate-type = ["cdylib"]
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-# The section-map split (`section`) reads a plane's section as YAML values, in insertion order.
-serde_yaml = { workspace = true }
+# The section-map split (`section::split_section`) and the door plane's provider list
+# (`plane_calls::dialect_facts`) read a plane's section as YAML values, in insertion order. Optional,
+# behind the `yaml` feature: the host and planes turn it on, so a plugin of another kind (store,
+# secret, auth, hook, export, transport) links no YAML parser and carries no RUSTSEC-2024-0449.
+serde_yaml = { workspace = true, optional = true }
 indexmap = { workspace = true }
 async-trait = { workspace = true }
 futures = { workspace = true }
@@ -149,6 +152,11 @@ hyper = { workspace = true }
 [features]
 dispatch = []
 runtime = []
+
+# THE YAML READERS (`section::split_section`, `plane_calls::dialect_facts`). OFF by default. On in
+# `busbar-kernel` (the host reads every plane section) and in every plane crate; every other
+# workspace crate that calls them reaches this feature through its `busbar-kernel` edge.
+yaml = ["dep:serde_yaml"]
 
 # The TEST-ONLY seal (#65). `plugin::TestKernelSeal` is the one implementor of the now-SEALED
 # `plugin::KernelSeal` that exists for fixtures rather than for the kernel, and it exists at all

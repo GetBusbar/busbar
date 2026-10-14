@@ -8,13 +8,16 @@
 //! which are lifted out first as the all-plane `hooks:` attach (a LIST, so ADDITIVE) and the
 //! all-plane `upstream_credentials:` default (a SCALAR, so OVERRIDE).
 //!
-//! [`split_section`] owns the ORDER and every SENTENCE, and a plane supplies the only three things
-//! that differ: the WORDS for its section (the section key and the noun an operator reads back, both
-//! off the plane's own declaration), the TYPE one registration parses into, and its own VALUE RULES.
+//! `split_section` (behind the `yaml` feature) owns the ORDER and every SENTENCE, and a plane
+//! supplies the only three things that differ: the WORDS for its section (the section key and the
+//! noun an operator reads back, both off the plane's own declaration), the TYPE one registration
+//! parses into, and its own VALUE RULES.
 //!
 //! No statics, no I/O and no registry: words and a deserializer in, a split section out. A plane
 //! reads its section through this without naming the kernel or another plane.
 
+// The section split alone reads YAML values; see the `yaml` feature in Cargo.toml.
+#[cfg(feature = "yaml")]
 use serde::Deserialize as _;
 
 /// THE TWO WORDS RESERVED AT EVERY PLANE SECTION'S TOP LEVEL: the all-plane `hooks:` attach list and
@@ -193,6 +196,10 @@ pub struct Section<T> {
 ///
 /// The deserializer's error carrying the refusal sentence: a reserved word used as a registration
 /// name, a malformed reserved knob, a registration that does not parse, or one `validate` refuses.
+///
+/// Behind the `yaml` feature: only the host (`busbar-kernel`) and planes read a section, so a
+/// plugin of another kind does not link a YAML parser.
+#[cfg(feature = "yaml")]
 pub fn split_section<'de, D, T>(
     deserializer: D,
     section: &'static str,

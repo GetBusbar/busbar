@@ -172,6 +172,10 @@ pub struct DialectFacts {
 /// the order first referenced, with the `protocol` and `error_map` `lookup` resolves it to (a name
 /// `lookup` does not know is skipped: the configuration's `resolve` refused it). An empty
 /// `error_map` is absent.
+///
+/// Behind the `yaml` feature: the section it reads is a YAML value, and only the host and door
+/// planes build this list.
+#[cfg(feature = "yaml")]
 pub fn dialect_facts(
     section: &serde_yaml::Value,
     lookup: impl Fn(&str) -> Option<(String, std::collections::BTreeMap<String, String>)>,
