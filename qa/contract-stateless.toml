@@ -21,11 +21,6 @@ drain = "none — mandated by SPEC 1297"
 
 [[finding]]
 rule = "contract-stateless:once-cell"
-file = "crates/busbar-contract/src/abi/hot/services.rs"
-item = "OnceLock"
-
-[[finding]]
-rule = "contract-stateless:once-cell"
 file = "crates/busbar-contract/src/codec.rs"
 item = "OnceLock"
 
@@ -58,16 +53,6 @@ item = "ARMED"
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/abi/hot/services.rs"
 item = "ARMED_SIZE"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/hot/services.rs"
-item = "FILLING"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/hot/services.rs"
-item = "KEPT"
 
 [[finding]]
 rule = "contract-stateless:static"
@@ -178,16 +163,6 @@ item = "ENTROPY_SOURCE"
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/codec.rs"
 item = "TRANSLATE_CAP_READER"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/codec.rs"
-item = "USAGE_TAP_FAULT_LATCH"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/codec.rs"
-item = "USAGE_TAP_FAULT_REPORTER"
 
 [[finding]]
 rule = "contract-stateless:static"
