@@ -722,35 +722,35 @@ jobs:
 }
 
 #[test]
-fn the_real_pipeline_workflow_parses_and_its_gate_call_sites_are_discoverable() {
-    let text = std::fs::read_to_string(repo_root().join(".github/workflows/promote.yml")).unwrap();
-    let wf = yaml_lite::parse_workflow(&text).expect("the real promote.yml parses");
-    assert!(
-        wf.job_names().len() >= 2,
-        "promote.yml carries the preflight and hop jobs: {:?}",
-        wf.job_names()
-    );
-    assert!(
-        wf.job_names()
-            .iter()
-            .any(|j| wf.job(j).unwrap().steps.iter().any(|s| s.run.is_some())),
-        "every job's `run:` steps must be visible to the reader"
-    );
-
-    // EVERY GATE THE PIPELINE CALLS BY NAME IS ONE THE REGISTRY ANSWERS TO: a `cargo xtask gate
-    // <typo>` is a step that exits 2 on every hop, and the registry is what can say so here rather
-    // than in a red run.
-    // promote.yml is a thin bootstrap: it runs busbar-release's `busbar-release ci hop` at
-    // RELEASE_REF, and the gate calls (the C header's `abi-header`, the registry's `--list`) live in
-    // that engine, not in this file. So the file names no gate today; the loop below keeps holding
-    // anything it ever does name to the registry.
-    let called = yaml_lite::xtask_gate_invocations(&text);
-    for name in &called {
-        assert!(
-            gates::find(name).is_some(),
-            "promote.yml calls `cargo xtask gate {name}`, which no registration answers to"
-        );
+fn every_gate_the_modernci_branch_files_call_is_registered() {
+    // THE PIPELINE IS `.ci/*.yaml` (OWNER 2026-10-12, "ModernCI only"): ModernCI runs each branch
+    // file's checks on every move, and promote.yml, the busbar-release hop, is deleted. EVERY GATE A
+    // BRANCH FILE CALLS BY NAME IS ONE THE REGISTRY ANSWERS TO: a `cargo xtask gate <typo>` is a
+    // check that exits 2 on every move, and the registry is what can say so here rather than in a
+    // red move. `.ci/default.yaml` calls `abi-header` by name, so the scan is never empty.
+    let dir = repo_root().join(".ci");
+    let mut files: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "yaml" || x == "yml"))
+        .collect();
+    files.sort();
+    let mut called_any = false;
+    for path in &files {
+        let text = std::fs::read_to_string(path).unwrap();
+        for name in yaml_lite::xtask_gate_invocations(&text) {
+            called_any = true;
+            assert!(
+                gates::find(&name).is_some(),
+                "{} calls `cargo xtask gate {name}`, which no registration answers to",
+                path.display()
+            );
+        }
     }
+    assert!(
+        called_any,
+        "no `.ci/*.yaml` calls a gate by name: the scan read nothing ({files:?})"
+    );
     assert_eq!(
         yaml_lite::xtask_gate_invocations("    run: |\n      cargo xtask gate plane-purity --selftest\n      cargo xtask gate plane-purity\n"),
         vec!["plane-purity".to_string()]

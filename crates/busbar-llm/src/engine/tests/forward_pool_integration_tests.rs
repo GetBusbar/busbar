@@ -49,17 +49,16 @@ use std::sync::Arc;
 /// Pre-release latency capture (opt-in). Drives N in-process requests through the full forward path
 /// against an instant mock upstream and reports the request-handling-time distribution — a
 /// reproducible latency regression metric that runs in the normal test build (no cert, no key, no
-/// external mock). It's a no-op unless `BUSBAR_CAPTURE_METRICS` is set, so it costs nothing in CI.
+/// external mock). A measurement, not a gate: `#[ignore]`d, so the default run neither spends it
+/// nor counts it as a pass (status row 114; it was an env-gated no-op that passed in 0s).
 ///
 /// For release-representative numbers, build under `--release`:
-/// BUSBAR_CAPTURE_METRICS=1 cargo test --release -p busbar capture_latency_metrics -- --nocapture
+/// cargo test --release -p busbar capture_latency_metrics -- --ignored --nocapture
 /// Emits a line the site metrics harness parses:  `BUSBAR_METRICS busbar.latency.inproc_handle_us ...`
 #[tokio::test]
+#[ignore = "a measurement: run with --ignored --nocapture (BUSBAR_CAPTURE_N sets the count)"]
 async fn capture_latency_metrics() {
     crate::testkit::install_test_seams();
-    if std::env::var("BUSBAR_CAPTURE_METRICS").is_err() {
-        return; // opt-in only — normal test runs skip this.
-    }
     let n: usize = std::env::var("BUSBAR_CAPTURE_N")
         .ok()
         .and_then(|s| s.parse().ok())
