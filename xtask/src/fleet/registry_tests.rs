@@ -48,6 +48,9 @@ fn a_duplicate_repo_row_is_refused() {
     assert!(err.contains("duplicate repo `busbar-secret-env`"), "{err}");
 }
 
+/// The plugin pin table, on segregation.rs's ORACLE_DATA_ALLOW (a read of data).
+const PLUGIN_DIGESTS: &str = "testing/shadow-oracle/plugin-digests.tsv";
+
 /// Every fault in `testing/shadow-oracle/plugin-digests.tsv`, read the way busbar-release's
 /// `recorder::plugin_build` reads it (one row per line, tab-separated): a published row is `name, tag,
 /// asset, 64-hex sha256[, line]`; a source row is `name, src:<40-hex commit>, build:<repo>, -, line`.
@@ -88,10 +91,7 @@ fn digest_row_faults(tsv: &str) -> Vec<String> {
 
 #[test]
 fn every_plugin_digest_row_parses_and_the_sans_io_plugins_are_pinned_on_the_1_6_line() {
-    let tsv = Ctx::workspace()
-        .unwrap()
-        .read("testing/shadow-oracle/plugin-digests.tsv")
-        .unwrap();
+    let tsv = Ctx::workspace().unwrap().read(PLUGIN_DIGESTS).unwrap();
     assert_eq!(digest_row_faults(&tsv), Vec::<String>::new());
     // /status row 129: the sans-IO postgres, valkey and ldap heads are each one 1.6 source pin.
     for name in ["store-postgres", "store-valkey", "auth-ldap"] {
