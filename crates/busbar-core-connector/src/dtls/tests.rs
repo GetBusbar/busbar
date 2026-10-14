@@ -571,3 +571,33 @@ fn red_heard_paths_and_probes_age_out_with_consent() {
     assert!(t.s.heard.is_empty(), "heard paths age out");
     assert!(t.s.probes.is_empty(), "unanswered probes age out");
 }
+
+#[test]
+fn an_admitted_candidate_takes_checks_only_and_binds_only_once_proven() {
+    let mut t = pair(false);
+    let cand = t.c_path;
+    let request = check(&creds(C_ICE.0, C_ICE.1), S_ICE.0, C_ICE.1);
+    // RED arm: an address the host never admitted gets nothing and cannot be bound.
+    assert!(!t.s.may_send_clear(cand, &request));
+    assert_eq!(t.s.bind_path(cand, t.now), Err(BindRefused::Unchecked));
+    assert!(t.s.admit_candidate(cand, t.now));
+    assert!(
+        t.s.may_send_clear(cand, &request),
+        "a check to an admitted candidate"
+    );
+    assert!(
+        !t.s.may_send_clear(cand, &[0x80, 0, 0, 0]),
+        "no media before the bind"
+    );
+    assert_eq!(t.s.bind_path(cand, t.now), Ok(Bind::WhenProven));
+    let (to, probe) =
+        t.s.poll_wire()
+            .expect("core probed the candidate at admission");
+    assert_eq!(to, cand);
+    assert_eq!(t.s.bound_path(), None, "admitted is not proven");
+    // An answer from another source proves nothing; one from the candidate binds it.
+    t.s.ingest(p("192.0.2.9:9"), &answer(&probe, C_ICE.1), t.now);
+    assert_eq!(t.s.bound_path(), None);
+    t.s.ingest(cand, &answer(&probe, C_ICE.1), t.now);
+    assert_eq!(t.s.bound_path(), Some(cand));
+}
