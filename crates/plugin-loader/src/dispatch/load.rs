@@ -317,6 +317,9 @@ pub enum LoadError {
         /// How many needs it declares.
         needs: usize,
     },
+    /// The host has minted every instance handle its handle can index (#74, `dispatch::handle`):
+    /// a bind is refused rather than a handle reused.
+    HandlesSpent,
 }
 
 /// What every refusal of a plugin built against an older contract tells the operator to do.
@@ -391,6 +394,10 @@ impl fmt::Display for LoadError {
             Self::NoConnectionTable { plugin, needs } => write!(
                 f,
                 "plugin '{plugin}' declares {needs} connection need(s) and was bound with no connection table"
+            ),
+            Self::HandlesSpent => write!(
+                f,
+                "the host has minted every instance handle it can index; restart the process"
             ),
         }
     }

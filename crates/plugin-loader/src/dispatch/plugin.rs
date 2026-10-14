@@ -329,8 +329,8 @@ impl Crossed {
 
 /// The host tables `open` is handed; immutable after construction.
 struct Tables(Box<HostTables>);
-// SAFETY: the tables are written once at bind and only read after; `ctx` points to a leaked,
-// `Sync` [`InstanceWake`].
+// SAFETY: the tables are written once at bind and only read after; `ctx` is a plain handle (#74)
+// and every pointer in them is to `'static` host tables.
 unsafe impl Send for Tables {}
 unsafe impl Sync for Tables {}
 
@@ -520,10 +520,10 @@ impl Instance {
         self.tables.0.conns
     }
 
+    /// The instance's handle (#74): what the plugin is handed and hands back, verified by the host
+    /// on every call ([`super::handle::resolve`]).
     pub(crate) fn ctx(&self) -> HostCtx {
-        HostCtx {
-            ptr: std::ptr::from_ref(self.wake).cast_mut().cast(),
-        }
+        self.tables.0.ctx
     }
 
     /// Whether the door states `ready` ([`slot::READY`]).
@@ -1350,6 +1350,8 @@ impl<K: Kind> Plugin<K> {
         // One small leak per instance: a plugin may call `wake` with this context at any time, even
         // late, so it must never dangle.
         let wake: &'static InstanceWake = Box::leak(Box::default());
+        // ITS HANDLE (#74): the context the plugin is handed is a tagged index, never this address.
+        let ctx = super::handle::mint(wake).ok_or(LoadError::HandlesSpent)?;
         // THE CONNECTION TABLE: minted an identity and declared on the host's one table, need by
         // need under its Statement index, when the Statement declares a need; otherwise none.
         let instance = mint_instance(&NEXT_INSTANCE);
@@ -1413,9 +1415,7 @@ impl<K: Kind> Plugin<K> {
         let tables = Tables(Box::new(HostTables {
             size: size_of::<HostTables>() as u32,
             _reserved: 0,
-            ctx: HostCtx {
-                ptr: std::ptr::from_ref(wake).cast_mut().cast(),
-            },
+            ctx,
             wake: Some(host_wake),
             conns,
             services: &super::services::HOST_SLOTS,

@@ -516,18 +516,13 @@ impl Inst {
         self.stats[s as usize].fetch_add(1, Ordering::SeqCst);
     }
     fn wake_later(&'static self, t: Ticket, ms: u64) {
-        let (wake, ctx) = (self.wake as usize, self.ctx.ptr as usize);
+        let (wake, ctx) = (self.wake as usize, self.ctx);
         self.count(Stat::HostCalls);
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(ms));
             // SAFETY: the host's wake, with the context it handed `open`.
             let wake: WakeFn = unsafe { std::mem::transmute::<usize, WakeFn>(wake) };
-            wake(
-                HostCtx {
-                    ptr: ctx as *mut c_void,
-                },
-                t,
-            );
+            wake(ctx, t);
         });
     }
 }

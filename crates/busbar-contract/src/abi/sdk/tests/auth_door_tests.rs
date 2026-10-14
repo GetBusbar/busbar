@@ -163,9 +163,7 @@ fn head<T>(op: u32) -> InHead {
         flags: 0,
         deadline_class: 0,
         _reserved: [0; 3],
-        host: HostCtx {
-            ptr: ptr::null_mut(),
-        },
+        host: HostCtx::NONE,
         ticket: Ticket::NONE,
         deadline_ns: 0,
         trace_id: [0; 16],

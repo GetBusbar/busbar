@@ -714,7 +714,7 @@ mod open_faults_on_its_resume {
     /// Crossings that were handed the freed box.
     static STALE: AtomicU32 = AtomicU32::new(0);
     /// The pended `open`'s wake, its context and its ticket.
-    static WAKE: Mutex<Option<(WakeFn, usize, Ticket)>> = Mutex::new(None);
+    static WAKE: Mutex<Option<(WakeFn, HostCtx, Ticket)>> = Mutex::new(None);
 
     fn real() -> OpsHead {
         REAL.lock().unwrap().expect("the door was restated")
@@ -749,7 +749,7 @@ mod open_faults_on_its_resume {
                 let ticket = (*input.cast::<InHead>()).ticket;
                 let tables = &*(*input.cast::<OpenIn>()).host;
                 let wake = tables.wake.expect("the host hands a wake");
-                *WAKE.lock().unwrap() = Some((wake, tables.ctx.ptr as usize, ticket));
+                *WAKE.lock().unwrap() = Some((wake, tables.ctx, ticket));
                 (*out.cast::<busbar_contract::abi::mechanism::call::OutHead>()).outcome =
                     RawOutcome::of(Outcome::Pending);
             }
@@ -824,12 +824,7 @@ mod open_faults_on_its_resume {
             .outcome;
 
         let (wake, ctx, ticket) = WAKE.lock().unwrap().take().expect("the open pended");
-        wake(
-            HostCtx {
-                ptr: ctx as *mut c_void,
-            },
-            ticket,
-        );
+        wake(ctx, ticket);
         let opened = reply.wait(WAIT).expect("the open answers");
         assert_eq!(opened.outcome, Outcome::Fault);
         assert_ne!(FREED.load(Ordering::SeqCst), 0, "the resume freed the box");
