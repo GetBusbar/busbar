@@ -79,6 +79,7 @@ fn dispatcher() -> Arc<Dispatcher> {
         workers: 2,
         budgets: Budgets::default(),
         watchdog_period: Duration::from_millis(20),
+        ..DispatchConfig::default()
     }))
 }
 

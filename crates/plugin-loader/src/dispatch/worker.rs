@@ -104,7 +104,21 @@ pub struct DispatchConfig {
     pub budgets: Budgets,
     /// How often the watchdog looks.
     pub watchdog_period: Duration,
+    /// THE QUARANTINE COUNT, N (THE DESIGN A.8): the breaches of the watch budget an instance
+    /// survives before it is quarantined. Every breach replaces its worker and settles the hung
+    /// op as FAULT; the Nth also quarantines the instance — every new call answers FAULT without a
+    /// crossing (a hook's caller goes to its `on_error`, and the hook door's timed trial brings a
+    /// fresh instance back, R2), with a diagnostic and `bb_plugin_quarantined_total`. Clamped to
+    /// at least 1; the default [`DEFAULT_QUARANTINE_AFTER`] quarantines on the first breach.
+    pub quarantine_after: u32,
 }
+
+/// The default [`DispatchConfig::quarantine_after`]: the first breach quarantines, as before the
+/// count existed.
+pub const DEFAULT_QUARANTINE_AFTER: u32 = 1;
+
+/// The quarantine counter's exposition name (THE DESIGN A.8), labelled by plugin.
+pub const QUARANTINED_TOTAL: &str = "bb_plugin_quarantined_total";
 
 impl Default for DispatchConfig {
     fn default() -> Self {
@@ -112,6 +126,7 @@ impl Default for DispatchConfig {
             workers: 1,
             budgets: Budgets::default(),
             watchdog_period: Duration::from_millis(50),
+            quarantine_after: DEFAULT_QUARANTINE_AFTER,
         }
     }
 }
@@ -123,6 +138,9 @@ pub struct DispatchStats {
     pub stale_wakes: u64,
     /// Workers the watchdog replaced.
     pub replacements: u64,
+    /// Instances the watchdog quarantined: `bb_plugin_quarantined_total` (THE DESIGN A.8), the
+    /// process's sum over every plugin.
+    pub quarantined: u64,
     /// WriteBehind ops that completed after their caller stopped waiting.
     pub write_behind_late: u64,
     /// Library unloads still running on their reapers, process-wide: a count that stays up names a
@@ -141,6 +159,7 @@ pub struct DispatchStats {
 pub(crate) struct Stats {
     stale_wakes: AtomicU64,
     pub(crate) replacements: AtomicU64,
+    pub(crate) quarantined: AtomicU64,
     write_behind_late: AtomicU64,
     driver_kept_high: AtomicU64,
     deadline_without_wake: AtomicU64,
@@ -149,6 +168,8 @@ pub(crate) struct Stats {
 /// What a worker thread needs besides its worker.
 pub(crate) struct Env {
     pub(crate) budgets: Budgets,
+    /// [`DispatchConfig::quarantine_after`], at least 1.
+    pub(crate) quarantine_after: u32,
     pub(crate) stats: Arc<Stats>,
     /// The host services' stored results.
     pub(crate) services: Arc<ServiceStore>,
@@ -1430,6 +1451,7 @@ impl Dispatcher {
         let n = config.workers.clamp(1, MAX_WORKERS - 1);
         let env = Arc::new(Env {
             budgets: config.budgets,
+            quarantine_after: config.quarantine_after.max(1),
             stats: Arc::default(),
             services: Arc::default(),
             provider,
@@ -1477,6 +1499,7 @@ impl Dispatcher {
         DispatchStats {
             stale_wakes: s.stale_wakes.load(Ordering::Relaxed),
             replacements: s.replacements.load(Ordering::Relaxed),
+            quarantined: s.quarantined.load(Ordering::Relaxed),
             write_behind_late: s.write_behind_late.load(Ordering::Relaxed),
             live_reapers: super::load::live_reapers(),
             driver_kept_high: s.driver_kept_high.load(Ordering::Relaxed),
