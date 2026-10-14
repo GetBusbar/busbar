@@ -3244,6 +3244,2164 @@ async fn the_pools_doors_hooks_see_each_candidates_standing() {
     );
 }
 
+// ── F25 REHOME: THE WALK AND THE BREAKER ON THE SERVED POOLS DOOR ───────────────────────────────
+//
+// The previous release's engine tests of the walk (failover, exhaustion, the first-byte boundary)
+// and of the far end's disposition (what a far answer records on the member's breaker cell), each
+// driven here as a keyed caller's request through the composed door to real far ends on loopback,
+// its figures read where the kernel keeps them: the lane store's snapshot and its pool cells.
+#[cfg(linked_driver_proofs)]
+mod pools_door_walk_and_breaker {
+    use super::*;
+
+    use std::sync::Arc;
+
+    use axum::http::StatusCode;
+    use busbar_kernel::test_support::{MockResponse, MockServer, MockServerState};
+
+    /// The store's clock.
+    fn now() -> u64 {
+        busbar_kernel::store::now()
+    }
+
+    /// A recording far end answering its requests with `replies`, in order.
+    async fn mock(replies: Vec<MockResponse>) -> (Arc<MockServerState>, MockServer) {
+        let state = Arc::new(MockServerState::new());
+        for reply in replies.into_iter().rev() {
+            state.push(reply);
+        }
+        let server = MockServer::new(Arc::clone(&state)).await;
+        (state, server)
+    }
+
+    /// The port a mock listens on.
+    fn port_of(server: &MockServer) -> u16 {
+        server.address().port()
+    }
+
+    /// The messages dialect's answer, its text `text`.
+    fn messages_answer_saying(text: &str) -> serde_json::Value {
+        let mut answer: serde_json::Value =
+            serde_json::from_str(door_word("messages_answer")).expect("the answer is JSON");
+        answer["content"][0]["text"] = serde_json::Value::from(text);
+        answer
+    }
+
+    /// A caller's request in the messages dialect on pool `p`, streamed when `stream`.
+    fn messages_request(stream: bool) -> serde_json::Value {
+        serde_json::json!({"model": "p", "max_tokens": 100, "stream": stream,
+            "messages": [{"role": "user", "content": "hi"}]})
+    }
+
+    /// One request in the messages dialect on pool `p`.
+    async fn send_messages(rig: &DoorRig, stream: bool) -> (u16, axum::http::HeaderMap, String) {
+        let (status, head, body) = rig
+            .send(
+                "POST",
+                door_word("messages_path"),
+                Some(messages_request(stream)),
+            )
+            .await;
+        (status, head, String::from_utf8_lossy(&body).to_string())
+    }
+
+    /// `n` raw event payloads `event-0` .. `event-<n-1>`.
+    fn events(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("event-{i}")).collect()
+    }
+
+    /// The far-end error map the previous release's tests configured: a billing code and a rate
+    /// limit code, as a provider states them.
+    const ERROR_MAP: &str = "error_map:\n  '1113': billing\n  '1302': rate_limit";
+
+    /// A port nothing listens on: every dial to it is refused.
+    fn refusing_port() -> u16 {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        listener.local_addr().expect("its address").port()
+    }
+
+    use super::super::hook_seat_tests::DoorRig;
+
+    /// A NULL `stream_options` IS UPGRADED (F25 row 2; legacy
+    /// `assemble::a_null_stream_options_is_upgraded_so_the_upstream_reports_usage`): a same-dialect
+    /// streamed chat spelling `"stream_options": null` reaches the far end carrying
+    /// `stream_options.include_usage: true` (1.5.5 upgraded it like an absent key, so the far end
+    /// reports usage and the ledger reads it), and the caller, who did not opt in, is served the
+    /// answer ("Hi", 200) without the usage chunk (`completion_tokens` never reaches it). RED: the
+    /// null forwarded verbatim, or the usage chunk relayed to the caller.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_upgrades_a_null_stream_options_and_keeps_the_usage_chunk_back() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-null-stream-options";
+        let _published = Withdrawn(instance);
+        let (state, server) = mock(vec![MockResponse::Sse {
+            events: vec![
+                r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}"#.to_string(),
+                r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#.to_string(),
+                r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":17,"total_tokens":24}}"#.to_string(),
+            ],
+            abort_at_index: None,
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                "/v1/chat/completions",
+                Some(serde_json::json!({"model": "p", "stream": true,
+                    "stream_options": null,
+                    "messages": [{"role": "user", "content": "hi"}]})),
+            )
+            .await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(status, 200, "the stream is served: {text}");
+        let egress: serde_json::Value = serde_json::from_slice(
+            &state
+                .get_last_request_body()
+                .expect("the far end received the request"),
+        )
+        .expect("the far end's request is JSON");
+        assert_eq!(
+            egress.pointer("/stream_options/include_usage"),
+            Some(&serde_json::Value::Bool(true)),
+            "a null stream_options asks the far end for its usage: {egress}"
+        );
+        assert!(text.contains("Hi"), "the answer reaches the caller: {text}");
+        assert!(
+            !text.contains("completion_tokens"),
+            "a caller that did not opt in is not sent the usage chunk: {text}"
+        );
+    }
+
+    /// THE CALLER'S CREDENTIALS NEVER CROSS (F25 row 81; legacy
+    /// `client_header_forwarding_tests::caller_credential_is_replaced_by_the_lane_credential`): a
+    /// caller presenting `authorization: Bearer busbar-caller-key` and the same key in `x-api-key`,
+    /// `x-goog-api-key` and `api-key` on a chat route is relayed to a far end that sees
+    /// `authorization: Bearer sk-seats` (the member's own key) and none of the other three
+    /// carriers. RED: any carrier of the caller's key reaching the far end.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_replaces_every_caller_credential_with_the_members() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-caller-credentials";
+        let _published = Withdrawn(instance);
+        let (state, server) = mock(vec![MockResponse::Ok {
+            status: StatusCode::OK,
+            body: serde_json::from_str(SERVED_BY_TWIN).expect("JSON"),
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                open_door: true,
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = rig
+            .send_bare(
+                "POST",
+                "/v1/chat/completions",
+                Some(serde_json::json!({"model": "p", "max_tokens": 16,
+                    "messages": [{"role": "user", "content": "hi"}]})),
+                &[
+                    ("authorization", "Bearer busbar-caller-key"),
+                    ("x-api-key", "busbar-caller-key"),
+                    ("x-goog-api-key", "busbar-caller-key"),
+                    ("api-key", "busbar-caller-key"),
+                ],
+            )
+            .await;
+        let seen = |name: &str| state.get_last_request_header(name);
+        assert_eq!(
+            seen("authorization"),
+            Some("Bearer sk-seats".to_string()),
+            "the member's own credential ({status}: {})",
+            String::from_utf8_lossy(&body)
+        );
+        for carrier in ["x-api-key", "x-goog-api-key", "api-key"] {
+            assert_eq!(
+                seen(carrier),
+                None,
+                "{carrier}: the caller's key never goes to the far end"
+            );
+        }
+    }
+
+    /// A POOL WHOSE DIALS ARE ALL REFUSED ANSWERS AS AN ALL-DOWN POOL (F25 row 97; legacy
+    /// `dial_refusal_failover_tests::an_all_refused_pool_answers_as_an_all_down_pool`): a pool of
+    /// two members whose dials the destination judge refuses answers the caller the SAME status
+    /// (503) and the same body (its request id aside) as a pool of two members whose ports refuse
+    /// the connection, and both members were tried in both (the same failures recorded), the
+    /// refused far ends never reached. RED: a judged refusal answering anything the all-down pool
+    /// does not, or stopping after one member.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_answers_an_all_refused_pool_as_an_all_down_pool() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let without_request_id = |body: &[u8]| {
+            let mut answer: serde_json::Value =
+                serde_json::from_slice(body).expect("a JSON error body");
+            if let Some(id) = answer.get_mut("request_id") {
+                *id = serde_json::Value::Null;
+            }
+            answer
+        };
+        let failures = |rig: &DoorRig| {
+            (0..2)
+                .map(|lane| rig.app.store.snapshot(lane, now()).err)
+                .sum::<u64>()
+        };
+
+        let instance = "rehome-walk-all-down";
+        let published = Withdrawn(instance);
+        let down = rig(
+            instance,
+            RigOpts {
+                members: &[(refusing_port(), 1), (refusing_port(), 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (down_status, _, down_body) = down.chat().await;
+        let down_failures = failures(&down);
+        drop(down);
+        drop(published);
+
+        let instance = "rehome-walk-all-refused";
+        let _published = Withdrawn(instance);
+        let (first, second) = (
+            seat_far_end(200, SERVED_BY_TWIN).await,
+            seat_far_end(200, SERVED_BY_TWIN).await,
+        );
+        let judged = rig(
+            instance,
+            RigOpts {
+                members: &[(first.port, 1), (second.port, 1)],
+                refuse_private: true,
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = judged.chat().await;
+        assert_eq!(
+            down_status, 503,
+            "the all-down baseline is the 503 terminal"
+        );
+        assert_eq!(status, down_status, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(
+            without_request_id(&body),
+            without_request_id(&down_body),
+            "the all-down body"
+        );
+        assert_eq!(
+            (first.served(), second.served()),
+            (0, 0),
+            "a refused dial never leaves"
+        );
+        assert_eq!(
+            failures(&judged),
+            down_failures,
+            "both members were tried, as both down members were"
+        );
+    }
+
+    /// AN UNMAPPED MEMBER IS AUDITED BY ITS WIRE PATH (F25 row 113; legacy
+    /// `egress_dropped_controls_audit_tests::openai_to_anthropic_unmapped_members_are_audited_by_wire_path`):
+    /// a chat caller setting `logit_bias` and sending a content part of a type no dialect knows
+    /// (`x_future_part`) onto a member of the messages dialect is forwarded with
+    /// `messages[0].content` holding ONE part (the unknown part dropped, not replaced), and two
+    /// `degraded` `egress.control_unrepresentable` rows are written for the caller:
+    /// `logit_bias on <dialect>` and `messages[].content[].type=x_future_part on <dialect>`. RED:
+    /// either row missing, or the request refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_audits_an_unmapped_content_part_by_its_wire_path() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-unmapped-part";
+        let _published = Withdrawn(instance);
+        let far_dialect = door_word("messages_dialect");
+        let (state, server) = mock(vec![MockResponse::Ok {
+            status: StatusCode::OK,
+            body: messages_answer_saying("hi"),
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                dialect: Some(far_dialect),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                "/v1/chat/completions",
+                Some(serde_json::json!({"model": "p", "max_tokens": 16,
+                "logit_bias": {"50256": -100},
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": "hi"},
+                    {"type": "x_future_part", "x": 1}
+                ]}]})),
+            )
+            .await;
+        assert_eq!(
+            status,
+            200,
+            "the dropped members do not refuse the request: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let rebuilt: serde_json::Value = serde_json::from_slice(
+            &state
+                .get_last_request_body()
+                .expect("the far end received the request"),
+        )
+        .expect("JSON");
+        assert_eq!(
+            rebuilt
+                .pointer("/messages/0/content")
+                .and_then(|parts| parts.as_array())
+                .map(Vec::len),
+            Some(1),
+            "the unknown part is dropped, not replaced: {rebuilt}"
+        );
+        for resource in [
+            format!("logit_bias on {far_dialect}"),
+            format!("messages[].content[].type=x_future_part on {far_dialect}"),
+        ] {
+            let rows = busbar_kernel::audit::auditlog::AUDIT_LOG
+                .list_filtered(
+                    0,
+                    1000,
+                    Some("egress.control_unrepresentable"),
+                    Some(resource.as_str()),
+                )
+                .into_iter()
+                .filter(|e| e.principal == rig.key_id && e.outcome == "degraded")
+                .count();
+            assert_eq!(rows, 1, "one degraded row names `{resource}`");
+        }
+    }
+
+    /// EVERY PIECE OF AN EVENT-STREAM ARRIVES (F25 row 152; legacy
+    /// `forward_pool_integration_tests::test_sse_incremental_arrival`): a member of the messages
+    /// dialect sending ten events `event-0` .. `event-9` answers the caller 200, its
+    /// content-type exactly `text/event-stream`, with exactly ten `data: event-` lines. RED: a
+    /// piece lost, merged or rewritten on the relay.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_relays_every_event_of_a_streamed_answer() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-ten-events";
+        let _published = Withdrawn(instance);
+        let (_state, server) = mock(vec![MockResponse::Sse {
+            events: events(10),
+            abort_at_index: None,
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, head, text) = send_messages(&rig, true).await;
+        assert_eq!(status, 200, "{text}");
+        assert_eq!(
+            head.get("content-type").and_then(|v| v.to_str().ok()),
+            Some("text/event-stream")
+        );
+        assert_eq!(
+            text.lines()
+                .filter(|line| line.starts_with("data: event-"))
+                .count(),
+            10,
+            "every event reached the caller: {text}"
+        );
+    }
+
+    /// A FAULT BEFORE THE FIRST BYTE FAILS OVER (F25 row 156; legacy
+    /// `forward_pool_integration_tests::test_pre_first_byte_failover`): member 0 answers HTTP 500
+    /// `{"error":"lane 0 failed"}` before any byte, member 1 streams `event-0` .. `event-2`: the
+    /// caller is served 200 and member 0's cell is in its transient cooldown (not ready). RED: the
+    /// 500 relayed, or member 0 left ready.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_fails_over_a_fault_before_the_first_byte_and_cools_the_member() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-pre-first-byte";
+        let _published = Withdrawn(instance);
+        let (_failing, down) = mock(vec![MockResponse::ServerError {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            body: serde_json::json!({ "error": "lane 0 failed" }),
+        }])
+        .await;
+        let (_serving, up) = mock(vec![MockResponse::Sse {
+            events: events(3),
+            abort_at_index: None,
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&down), 100), (port_of(&up), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, text) = send_messages(&rig, true).await;
+        assert_eq!(status, 200, "{text}");
+        assert!(
+            !rig.app.store.ready_in("p", 0, now()),
+            "member 0 is in its transient cooldown"
+        );
+    }
+
+    /// A CUT AFTER THE FIRST BYTE IS NOT FAILED OVER (F25 row 157; legacy
+    /// `forward_pool_integration_tests::test_midstream_abort_records_and_no_failover`): member 0
+    /// streams `event-0` of five and the stream aborts; member 1 would answer. The caller has its
+    /// 200 and an `event: error` frame, member 0's failure is recorded (err > 0, a cooldown), and
+    /// member 1 was never dialled (err 0). RED: a second attempt on member 1, or no failure
+    /// recorded on member 0.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_records_a_cut_after_the_first_byte_and_does_not_fail_over() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-midstream-abort";
+        let _published = Withdrawn(instance);
+        let (_cut, cutting) = mock(vec![MockResponse::Sse {
+            events: events(5),
+            abort_at_index: Some(1),
+        }])
+        .await;
+        let (sibling_state, sibling) = mock(vec![MockResponse::Sse {
+            events: vec!["lane1-ok".to_string()],
+            abort_at_index: None,
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&cutting), 100), (port_of(&sibling), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, text) = send_messages(&rig, true).await;
+        assert_eq!(status, 200, "{text}");
+        assert!(
+            text.contains("event: error"),
+            "the cut ends on an error event: {text}"
+        );
+        let first = rig.app.store.snapshot(0, now());
+        assert!(first.err > 0, "member 0's failure is recorded");
+        assert!(first.cooldown_remaining_s > 0, "and cools it");
+        assert_eq!(
+            rig.app.store.snapshot(1, now()).err,
+            0,
+            "member 1 is untouched"
+        );
+        assert!(
+            sibling_state.get_last_request_body().is_none(),
+            "member 1 was never dialled: no failover after the first byte"
+        );
+    }
+
+    /// A PASSTHROUGH 401 IS THE CALLER'S, AN OWN-CREDENTIAL 401 IS THE MEMBER'S (F25 row 158; legacy
+    /// `forward_pool_integration_tests::test_section6_passthrough_401_no_trip_vs_token_mode`): a
+    /// pool reaching its member with the caller's own credential relays the far end's 401 and
+    /// leaves the member untouched (ready, err 0, streak 0, not dead); the same 401 to a member
+    /// reached with its own credential is relayed as a 401 and takes the member down (not ready,
+    /// recoverable: not dead). RED: a passthrough 401 tripping the member, or an own-credential 401
+    /// leaving it ready.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_trips_on_an_own_credential_401_but_not_on_a_passthrough_one() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-passthrough-401";
+        let published = Withdrawn(instance);
+        let (_state, server) = mock(vec![MockResponse::Auth {
+            status: StatusCode::UNAUTHORIZED,
+        }])
+        .await;
+        let passthrough = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                pool_yaml: "upstream_credentials: passthrough",
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, text) = send_messages(&passthrough, false).await;
+        assert_eq!(status, 401, "the far end's 401 is relayed: {text}");
+        assert!(
+            passthrough.app.store.ready_in("p", 0, now()),
+            "a passthrough 401 trips nothing"
+        );
+        let snap = passthrough.app.store.snapshot(0, now());
+        assert_eq!((snap.err, snap.streak), (0, 0), "nothing recorded");
+        assert!(!snap.dead);
+        drop(passthrough);
+        drop(published);
+
+        let instance = "rehome-walk-own-401";
+        let _published = Withdrawn(instance);
+        let (_state, server) = mock(vec![MockResponse::Auth {
+            status: StatusCode::UNAUTHORIZED,
+        }])
+        .await;
+        let own = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, text) = send_messages(&own, false).await;
+        assert_eq!(status, 401, "{text}");
+        assert!(
+            !own.app.store.ready_in("p", 0, now()),
+            "the member's own credential failed: it is down"
+        );
+        assert!(
+            !own.app.store.snapshot(0, now()).dead,
+            "recoverable hard-down (long cooldown and probe), never permanently dead"
+        );
+    }
+
+    /// PASSTHROUGH FORWARDS THE CALLER'S TOKEN (F25 row 160; legacy
+    /// `forward_pool_integration_tests::test_passthrough_forwards_caller_token`): a pool whose
+    /// members are reached with the caller's own credential serves 200, and the far end's
+    /// `authorization` is the caller's token as a bearer credential, never the member's configured
+    /// key (`sk-seats`). RED: the configured key presented on a passthrough pool.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_forwards_the_callers_token_on_a_passthrough_pool() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-passthrough-token";
+        let _published = Withdrawn(instance);
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                pool_yaml: "upstream_credentials: passthrough",
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        assert_eq!(rig.chat().await.0, 200);
+        let seen = far.authorizations.lock().unwrap().clone();
+        assert_eq!(seen, vec![format!("Bearer {}", rig.token)]);
+        assert!(
+            !seen[0].contains("sk-seats"),
+            "the configured key never stands in"
+        );
+    }
+
+    /// EACH MEMBER IS TRIED ONCE (F25 row 161; legacy
+    /// `forward_pool_integration_tests::test_failover_exclusions`): a two-member pool whose far
+    /// ends answer every request 500 answers the caller 503, and the members' error counts sum to
+    /// exactly 2: each tried once, none retried within the request. RED: a tried member picked
+    /// again (a sum above 2), or the walk stopping early.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_tries_each_member_once_before_its_terminal() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-exclusions";
+        let _published = Withdrawn(instance);
+        let fars = [
+            seat_far_end(500, r#"{"error":"transient failure"}"#).await,
+            seat_far_end(500, r#"{"error":"transient failure"}"#).await,
+        ];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(fars[0].port, 1), (fars[1].port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        assert_eq!(rig.chat().await.0, 503);
+        let errs: u64 = (0..2)
+            .map(|lane| rig.app.store.snapshot(lane, now()).err)
+            .sum();
+        assert_eq!(errs, 2, "one attempt per distinct member, no retry");
+        assert_eq!((fars[0].served(), fars[1].served()), (1, 1));
+    }
+
+    /// THE HOP CAP BOUNDS THE WALK (F25 row 162; legacy
+    /// `forward_pool_integration_tests::test_failover_cap`): a three-member pool, every far answer
+    /// 500, under the default failover settings, answers 503 after exactly three attempts (the
+    /// members' error counts sum to 3, each member dialled once). RED: a walk past the cap or a
+    /// member retried.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_caps_the_walk_at_one_attempt_per_member() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-cap";
+        let _published = Withdrawn(instance);
+        let fars = [
+            seat_far_end(500, r#"{"error":"transient failure"}"#).await,
+            seat_far_end(500, r#"{"error":"transient failure"}"#).await,
+            seat_far_end(500, r#"{"error":"transient failure"}"#).await,
+        ];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(fars[0].port, 1), (fars[1].port, 1), (fars[2].port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        assert_eq!(rig.chat().await.0, 503);
+        let errs: u64 = (0..3)
+            .map(|lane| rig.app.store.snapshot(lane, now()).err)
+            .sum();
+        assert_eq!(errs, 3, "three members, three attempts");
+        assert!(fars.iter().all(|far| far.served() == 1));
+    }
+
+    /// One member of the messages dialect stating [`ERROR_MAP`], its far end answering `reply`.
+    async fn mapped_member(
+        instance: &'static str,
+        reply: MockResponse,
+    ) -> (DoorRig, (u16, axum::http::HeaderMap, String), MockServer) {
+        let (_state, server) = mock(vec![reply]).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                provider_yaml: ERROR_MAP,
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let answer = send_messages(&rig, false).await;
+        (rig, answer, server)
+    }
+
+    /// A MAPPED BILLING CODE IS A RECOVERABLE HARD-DOWN (F25 row 169; legacy
+    /// `forward_pool_integration_tests::test_disposition_hard_down_billing_code`): a provider
+    /// mapping code `1113` to `billing` whose far end answers 402 `{"error":{"code":"1113",
+    /// "message":"insufficient balance"}}` takes the member down (not ready), recoverable (not
+    /// dead), its reason `billing / insufficient balance`. RED: the member left ready, marked dead,
+    /// or its reason not the class and the far end's message.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_takes_a_member_down_on_a_mapped_billing_code() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-billing-code";
+        let _published = Withdrawn(instance);
+        let (rig, _, _server) = mapped_member(
+            instance,
+            MockResponse::Billing {
+                status: StatusCode::PAYMENT_REQUIRED,
+                code: "1113",
+                message: "insufficient balance",
+            },
+        )
+        .await;
+        assert!(!rig.app.store.ready_in("p", 0, now()), "down after billing");
+        let snap = rig.app.store.snapshot(0, now());
+        assert!(
+            !snap.dead,
+            "billing is recoverable (long cooldown and probe)"
+        );
+        assert_eq!(snap.dead_reason, "billing / insufficient balance");
+    }
+
+    /// A MAPPED RATE-LIMIT CODE IS TRANSIENT (F25 row 170; legacy
+    /// `forward_pool_integration_tests::test_disposition_transient_rate_limit_code`): a 429 whose
+    /// body carries the mapped code `1302` cools the member (not ready), counts one failure
+    /// (err > 0, streak exactly 1) and leaves it alive. RED: no failure recorded, a streak other
+    /// than 1, or the member marked dead.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_cools_a_member_on_a_mapped_rate_limit_code() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-rate-limit-code";
+        let _published = Withdrawn(instance);
+        let (rig, _, _server) = mapped_member(
+            instance,
+            MockResponse::RateLimit {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                provider_signal: Some("1302"),
+                retry_after: None,
+            },
+        )
+        .await;
+        assert!(!rig.app.store.ready_in("p", 0, now()), "cooling down");
+        let snap = rig.app.store.snapshot(0, now());
+        assert!(snap.err > 0, "the rate limit is counted");
+        assert_eq!(snap.streak, 1, "the first rate limit");
+        assert!(!snap.dead);
+    }
+
+    /// A BARE 429 IS TRANSIENT (F25 row 171; legacy
+    /// `forward_pool_integration_tests::test_disposition_transient_rate_limit_no_code`): a 429
+    /// with no provider code cools the member (not ready) and counts a failure (err > 0). RED: a
+    /// 429 recording nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_cools_a_member_on_a_bare_rate_limit() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-rate-limit-bare";
+        let _published = Withdrawn(instance);
+        let (rig, _, _server) = mapped_member(
+            instance,
+            MockResponse::RateLimit {
+                status: StatusCode::TOO_MANY_REQUESTS,
+                provider_signal: None,
+                retry_after: None,
+            },
+        )
+        .await;
+        assert!(!rig.app.store.ready_in("p", 0, now()), "cooling down");
+        assert!(rig.app.store.snapshot(0, now()).err > 0);
+    }
+
+    /// A SERVER ERROR IS TRANSIENT (F25 row 172; legacy
+    /// `forward_pool_integration_tests::test_disposition_transient_server_error`): a 500
+    /// `{"error":"server error"}` cools the member (not ready), counts a failure (err > 0) and
+    /// leaves it alive. RED: a 500 recording nothing or killing the member.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_cools_a_member_on_a_server_error() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-server-error";
+        let _published = Withdrawn(instance);
+        let (rig, _, _server) = mapped_member(
+            instance,
+            MockResponse::ServerError {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                body: serde_json::json!({ "error": "server error" }),
+            },
+        )
+        .await;
+        assert!(!rig.app.store.ready_in("p", 0, now()), "cooling down");
+        let snap = rig.app.store.snapshot(0, now());
+        assert!(snap.err > 0);
+        assert!(!snap.dead);
+    }
+
+    /// A REFUSED OWN CREDENTIAL IS A HARD-DOWN, ANSWERED IN THE CALLER'S OWN WORDS (F25 row 173;
+    /// legacy `forward_pool_integration_tests::test_disposition_hard_down_auth`): a far end
+    /// answering 401 to the member's own credential takes the member down (not ready),
+    /// recoverable (not dead), its reason naming `auth`; the caller gets a 401 in its own
+    /// dialect's envelope (`type: error`, `error.type: authentication_error`), the dialect's own
+    /// auth-failure sentence, never the far end's body and never the word `lane`. RED: the far
+    /// end's body relayed, internal vocabulary on the wire, or the member left ready.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_takes_a_member_down_on_a_refused_own_credential() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-auth-down";
+        let _published = Withdrawn(instance);
+        let (rig, (status, _, text), _server) = mapped_member(
+            instance,
+            MockResponse::Auth {
+                status: StatusCode::UNAUTHORIZED,
+            },
+        )
+        .await;
+        assert!(!rig.app.store.ready_in("p", 0, now()), "down after auth");
+        let snap = rig.app.store.snapshot(0, now());
+        assert!(!snap.dead, "recoverable (long cooldown and probe)");
+        assert!(
+            snap.dead_reason.contains("auth"),
+            "the reason names auth: {}",
+            snap.dead_reason
+        );
+        assert_eq!(status, 401, "{text}");
+        let answer: serde_json::Value = serde_json::from_str(&text).expect("a JSON envelope");
+        assert_eq!(answer["type"], "error", "{answer}");
+        assert_eq!(answer["error"]["type"], "authentication_error", "{answer}");
+        let message = answer["error"]["message"].as_str().unwrap_or("");
+        assert_eq!(
+            message,
+            busbar_kernel::proto::vendor_auth_failure_message(door_word("messages_dialect")),
+            "the dialect's own sentence: {answer}"
+        );
+        assert!(!message.contains("lane"), "{answer}");
+    }
+
+    /// THE PROVIDER'S CODE, NOT THE STATUS, DRIVES THE CLASS (F25 row 174; legacy
+    /// `forward_pool_integration_tests::test_disposition_code_drives_classification`): a member
+    /// mapping `1113` to `billing` answered 402 with code `1113` is taken down (not ready); a
+    /// member with no mapping answered 400 `{"error":"not a known error"}` relays the 400 and
+    /// stays ready (the caller's fault). RED: both read by their status alone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_classifies_by_the_mapped_code_not_the_status() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-code-drives-mapped";
+        let published = Withdrawn(instance);
+        let (_state, server) = mock(vec![MockResponse::Billing {
+            status: StatusCode::PAYMENT_REQUIRED,
+            code: "1113",
+            message: "insufficient balance",
+        }])
+        .await;
+        let mapped = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                provider_yaml: "error_map:\n  '1113': billing",
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let _ = send_messages(&mapped, false).await;
+        assert!(
+            !mapped.app.store.ready_in("p", 0, now()),
+            "the mapped billing code takes the member down"
+        );
+        drop(mapped);
+        drop(published);
+
+        let instance = "rehome-walk-code-drives-unmapped";
+        let _published = Withdrawn(instance);
+        let (_state, server) = mock(vec![MockResponse::Ok {
+            status: StatusCode::BAD_REQUEST,
+            body: serde_json::json!({ "error": "not a known error" }),
+        }])
+        .await;
+        let unmapped = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, text) = send_messages(&unmapped, false).await;
+        assert_eq!(status, 400, "the caller's fault is relayed: {text}");
+        assert!(
+            unmapped.app.store.ready_in("p", 0, now()),
+            "and records nothing against the member"
+        );
+    }
+
+    /// A CALLER'S FAULT IS RELAYED VERBATIM AND COUNTED APART (F25 row 177; legacy
+    /// `forward_pool_integration_tests::test_client_fault_400_relayed_verbatim_no_penalty`): a far
+    /// end of the caller's dialect answering 400 `{"error":"invalid_request","message":"bad
+    /// input"}` reaches the caller as that 400 with those very bytes; the member's cell stays
+    /// closed, err 0, streak 0, no cooldown, and its client-fault counter reads exactly 1. RED: a
+    /// penalty on the member, a rewritten body, or the fault not counted.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_relays_a_callers_fault_verbatim_and_counts_it_apart() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-client-fault";
+        let _published = Withdrawn(instance);
+        let (_state, server) = mock(vec![MockResponse::Ok {
+            status: StatusCode::BAD_REQUEST,
+            body: serde_json::json!({ "error": "invalid_request", "message": "bad input" }),
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, text) = send_messages(&rig, false).await;
+        assert_eq!(status, 400);
+        assert_eq!(
+            text, r#"{"error":"invalid_request","message":"bad input"}"#,
+            "relayed verbatim"
+        );
+        assert!(matches!(
+            rig.app.store.breaker_state_in("p", 0),
+            busbar_kernel::store::BreakerState::Closed
+        ));
+        let snap = rig.app.store.snapshot(0, now());
+        assert_eq!(
+            (snap.err, snap.streak, snap.cooldown_remaining_s),
+            (0, 0, 0)
+        );
+        assert_eq!(snap.client_fault, 1, "the caller's fault is counted apart");
+    }
+
+    /// EXHAUSTION IS A 503 NAMING ITS WAIT (F25 row 179; legacy
+    /// `forward_pool_integration_tests::test_exhaustion_status_503_with_retry_after`): a
+    /// two-member pool whose far ends both answer 429 (code `1302`) in one request answers 503
+    /// with a `Retry-After` of whole seconds, at least 1. RED: a relayed 429, or no Retry-After.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_sheds_an_exhausted_pool_with_a_retry_after() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-exhaustion";
+        let _published = Withdrawn(instance);
+        let limited = || MockResponse::RateLimit {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            provider_signal: Some("1302"),
+            retry_after: None,
+        };
+        let (_first_state, first) = mock(vec![limited()]).await;
+        let (_second_state, second) = mock(vec![limited()]).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&first), 1), (port_of(&second), 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, head, _) = rig.chat().await;
+        assert_eq!(status, 503, "the exhausted terminal");
+        let wait: u64 = head
+            .get("retry-after")
+            .expect("a Retry-After")
+            .to_str()
+            .expect("text")
+            .parse()
+            .expect("whole seconds");
+        assert!(wait >= 1, "at least one second: {wait}");
+    }
+
+    /// A SESSION PINNED TO A TRIPPED MEMBER YIELDS (F25 row 187; legacy
+    /// `forward_pool_integration_tests::test_sticky_yields_when_tripped`): with member 0's cell
+    /// open (cooldown 600 s) before the requests, every session is served 200 by the healthy member
+    /// 1, whichever member its key would pin, and member 0 receives nothing: affinity is a
+    /// preference, never a pin past an open breaker. RED: a session routed to the tripped member.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_yields_a_session_pinned_to_a_tripped_member() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-sticky-yields";
+        let _published = Withdrawn(instance);
+        let (tripped, healthy) = (
+            seat_far_end(200, SERVED_BY_TWIN).await,
+            seat_far_end(200, SERVED_BY_TWIN).await,
+        );
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(tripped.port, 1), (healthy.port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        rig.app.store.force_open_in("p", 0, now() + 600);
+        let chat = serde_json::json!({"model": "p", "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}]});
+        for session in [
+            "session-abc",
+            "session-1",
+            "session-2",
+            "session-3",
+            "session-4",
+            "session-5",
+            "session-6",
+            "session-7",
+        ] {
+            let response = rig
+                .open(
+                    "POST",
+                    "/v1/chat/completions",
+                    Some(chat.clone()),
+                    &[("x-session-id", session)],
+                )
+                .await;
+            assert_eq!(response.status().as_u16(), 200, "{session}");
+            let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+                .await
+                .expect("the body");
+            assert!(
+                String::from_utf8_lossy(&body).contains("served-by-the-twin"),
+                "{session} is served by the healthy member"
+            );
+        }
+        assert_eq!(tripped.served(), 0, "the tripped member receives nothing");
+        assert_eq!(healthy.served(), 8);
+    }
+
+    /// The messages dialect's context-length refusal naming a window of `window` tokens.
+    fn too_long(window: u64) -> MockResponse {
+        MockResponse::ServerError {
+            status: StatusCode::BAD_REQUEST,
+            body: serde_json::json!({"error": {"type": "invalid_request_error",
+                "message": format!("prompt is too long: 250000 tokens > {window} maximum")}}),
+        }
+    }
+
+    /// A CONTEXT-LENGTH REFUSAL FAILS OVER WITHOUT A PENALTY (F25 row 203; legacy
+    /// `forward_pool_integration_tests::test_context_length_failover_no_penalty`): two members of
+    /// the messages dialect with no stated window; member 0 answers 400 `prompt is too long:
+    /// 250000 tokens > 200000 maximum`, member 1 answers 200: the caller is served 200 and neither
+    /// member is in a cooldown. RED: the refusal relayed, or member 0 penalized for a request too
+    /// big for it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_fails_a_context_length_refusal_over_without_a_penalty() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-context-length";
+        let _published = Withdrawn(instance);
+        let (_refusing_state, refusing) = mock(vec![too_long(200_000)]).await;
+        let (_serving_state, serving) = mock(vec![MockResponse::Ok {
+            status: StatusCode::OK,
+            body: messages_answer_saying("ok"),
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&refusing), 100), (port_of(&serving), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, text) = send_messages(&rig, false).await;
+        assert_eq!(status, 200, "the context-length refusal fails over: {text}");
+        for lane in 0..2 {
+            assert_eq!(
+                rig.app.store.snapshot(lane, now()).cooldown_remaining_s,
+                0,
+                "member {lane} is not cooled for a request too big for it"
+            );
+        }
+    }
+
+    /// THE LARGER WINDOW SERVES (F25 row 204; legacy
+    /// `forward_pool_integration_tests::test_prefers_larger_context_max`): member 0 states
+    /// `context_max: 8000`, member 1 `context_max: 200000`; member 0 answers 400 `prompt is too
+    /// long: 250000 tokens > 8000 maximum`: member 1 serves the 200 and member 0 stays ready. RED:
+    /// no failover to the larger window, or the smaller member penalized.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_serves_a_too_long_request_from_the_larger_window() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-larger-window";
+        let _published = Withdrawn(instance);
+        let (_small_state, small) = mock(vec![too_long(8_000)]).await;
+        let (large_state, large) = mock(vec![MockResponse::Ok {
+            status: StatusCode::OK,
+            body: messages_answer_saying("ok"),
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&small), 100), (port_of(&large), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                member_yaml: &["context_max: 8000", "context_max: 200000"],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, text) = send_messages(&rig, false).await;
+        assert_eq!(status, 200, "{text}");
+        assert!(
+            large_state.get_last_request_body().is_some(),
+            "the larger window served"
+        );
+        assert!(
+            rig.app.store.ready_in("p", 0, now()),
+            "the smaller member stays ready"
+        );
+    }
+
+    /// NO LARGER WINDOW: THE TERMINAL, AND NO PENALTY (F25 row 205; legacy
+    /// `forward_pool_integration_tests::test_same_size_pool_exhausts`): two members both stating
+    /// `context_max: 8000`, both answering 400 `prompt is too long: 250000 tokens > 8000 maximum`:
+    /// the caller gets 503 and neither member is in a cooldown. RED: a member penalized, or the
+    /// walk answering anything but its terminal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_ends_a_too_long_request_at_its_terminal_without_a_penalty() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-same-window";
+        let _published = Withdrawn(instance);
+        let (_first_state, first) = mock(vec![too_long(8_000)]).await;
+        let (_second_state, second) = mock(vec![too_long(8_000)]).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&first), 1), (port_of(&second), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                member_yaml: &["context_max: 8000", "context_max: 8000"],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, text) = send_messages(&rig, false).await;
+        assert_eq!(status, 503, "{text}");
+        for lane in 0..2 {
+            assert_eq!(
+                rig.app.store.snapshot(lane, now()).cooldown_remaining_s,
+                0,
+                "member {lane} is not cooled"
+            );
+        }
+    }
+
+    /// A CLEAN STREAM END IS ONE SUCCESS (F25 row 206; legacy
+    /// `forward_pool_integration_tests::test_clean_sse_end_records_success_not_failure`): eight
+    /// clean streamed answers of the messages dialect (start, a `Hi` delta, usage 3/2, stop) on one
+    /// member leave its snapshot at err 0 and ok exactly 8, the member ready. RED: a clean end
+    /// recorded as a failure, or a success counted twice or not at all.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_records_one_success_per_clean_stream_end() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-clean-ends";
+        let _published = Withdrawn(instance);
+        const RUNS: usize = 8;
+        let clean = || {
+            MockResponse::Sse {
+            events: vec![
+                r#"{"type":"message_start"}"#.to_string(),
+                r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hi"}}"#.to_string(),
+                r#"{"type":"message_delta","usage":{"input_tokens":3,"output_tokens":2}}"#.to_string(),
+                r#"{"type":"message_stop"}"#.to_string(),
+            ],
+            abort_at_index: None,
+        }
+        };
+        let (_state, server) = mock((0..RUNS).map(|_| clean()).collect()).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        for _ in 0..RUNS {
+            let (status, _, text) = send_messages(&rig, true).await;
+            assert_eq!(status, 200, "{text}");
+        }
+        let snap = rig.app.store.snapshot(0, now());
+        assert_eq!(snap.err, 0, "a clean end records no failure");
+        assert_eq!(snap.ok, RUNS as u64, "one success per clean stream");
+        assert!(rig.app.store.ready_in("p", 0, now()));
+    }
+
+    /// PASSTHROUGH WITH NO CALLER CREDENTIAL PRESENTS NONE (F25 row 342; legacy
+    /// `ingress_indistinguishability_tests::test_passthrough_no_caller_token_selects_empty_not_lane_key`):
+    /// on an open front door, a passthrough pool whose provider HAS an operator key, reached by a
+    /// caller presenting no credential, serves 200 and the far end receives NO `authorization` at
+    /// all, never the operator's key. RED: the operator's key (or a bare `Bearer`) presented.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_presents_no_credential_for_a_passthrough_caller_with_none() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-passthrough-none";
+        let _published = Withdrawn(instance);
+        let (state, server) = mock(vec![MockResponse::Ok {
+            status: StatusCode::OK,
+            body: serde_json::from_str(SERVED_BY_TWIN).expect("JSON"),
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&server), 1)],
+                pool_yaml: "upstream_credentials: passthrough",
+                open_door: true,
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = rig
+            .send_bare(
+                "POST",
+                "/v1/chat/completions",
+                Some(serde_json::json!({"model": "p", "max_tokens": 50,
+                    "messages": [{"role": "user", "content": "hi"}]})),
+                &[],
+            )
+            .await;
+        assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+        if let Some(seen) = state.get_last_auth_header() {
+            let what = if seen.contains("sk-seats") {
+                "the operator's key (LEAK)"
+            } else {
+                "an unexpected credential"
+            };
+            panic!("a passthrough caller with no credential is forwarded none; got {what}");
+        }
+    }
+
+    /// A REAL MID-STREAM FAILURE STAYS WITH ITS MEMBER (F25 row 452; legacy
+    /// `ingress_integration_tests::test_real_mid_stream_failure_does_not_fail_over_to_second_member`):
+    /// member 1 of a streamed pool sends `MEMBER-1-REAL-FIRST-FRAME` and its connection then
+    /// fails: the caller has its 200, member 1's frame, never `MEMBER-2-MUST-NEVER-APPEAR`, and a
+    /// trailing frame that is the caller dialect's error envelope; member 1's error count rises by
+    /// exactly one. RED: a fresh attempt on member 2 after the first byte, no in-band error, or a
+    /// failure counted other than once.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_keeps_a_real_mid_stream_failure_with_its_member() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-real-midstream";
+        let _published = Withdrawn(instance);
+        let (_bad_state, bad) = mock(vec![MockResponse::SseTransportError {
+            ok_events: vec![
+                r#"{"choices":[{"delta":{"content":"MEMBER-1-REAL-FIRST-FRAME"}}]}"#.to_string(),
+            ],
+        }])
+        .await;
+        let (_good_state, good) = mock(vec![MockResponse::Sse {
+            events: vec![
+                r#"{"choices":[{"delta":{"content":"MEMBER-2-MUST-NEVER-APPEAR"}}]}"#.to_string(),
+            ],
+            abort_at_index: None,
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&bad), 100), (port_of(&good), 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let err_before = rig.app.store.snapshot(0, now()).err;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                "/v1/chat/completions",
+                Some(serde_json::json!({"model": "p", "stream": true,
+                    "messages": [{"role": "user", "content": "hi"}]})),
+            )
+            .await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(status, 200, "member 1's first byte began the answer");
+        assert!(text.contains("MEMBER-1-REAL-FIRST-FRAME"), "{text}");
+        assert!(!text.contains("MEMBER-2-MUST-NEVER-APPEAR"), "{text}");
+        let last_data = text
+            .split("\n\n")
+            .filter(|piece| !piece.trim().is_empty())
+            .last()
+            .and_then(|piece| piece.lines().find_map(|l| l.strip_prefix("data: ")))
+            .expect("a trailing data frame");
+        let terminal: serde_json::Value =
+            serde_json::from_str(last_data).expect("the caller dialect's JSON envelope");
+        assert!(
+            terminal.get("error").is_some(),
+            "the in-band terminal frame is an error envelope: {terminal}"
+        );
+        assert_eq!(
+            rig.app.store.snapshot(0, now()).err,
+            err_before + 1,
+            "member 1's cell records exactly one mid-stream failure"
+        );
+    }
+
+    /// A TRIPPED PRIMARY IS NEVER DIALLED; ITS TWIN SERVES (F25 row 586; legacy
+    /// `reroute_pool_tests::a_tripped_pool_primary_reroutes_the_request_to_its_twin_and_stays_untouched`):
+    /// a two-member pool whose primary's breaker is open before the request serves 200 `from the
+    /// twin`; the primary's far end receives NO request, the twin's receives it. RED: the tripped
+    /// primary dialled (even if it then fails over).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_reroutes_a_tripped_primary_to_its_twin_without_dialling_it() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-tripped-primary";
+        let _published = Withdrawn(instance);
+        let (primary_state, primary) = mock(vec![MockResponse::Ok {
+            status: StatusCode::OK,
+            body: messages_answer_saying("from the primary"),
+        }])
+        .await;
+        let (twin_state, twin) = mock(vec![MockResponse::Ok {
+            status: StatusCode::OK,
+            body: messages_answer_saying("from the twin"),
+        }])
+        .await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(port_of(&primary), 1), (port_of(&twin), 1)],
+                dialect: Some(door_word("messages_dialect")),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        rig.app.store.force_open_in("p", 0, now() + 1_000_000);
+        let (status, _, text) = send_messages(&rig, false).await;
+        assert_eq!(status, 200, "the twin is admissible: {text}");
+        assert!(text.contains("from the twin"), "{text}");
+        assert!(
+            primary_state.get_last_request_body().is_none(),
+            "the tripped primary is never dispatched to"
+        );
+        assert!(
+            twin_state.get_last_request_body().is_some(),
+            "the twin received the request"
+        );
+    }
+}
+
+// ── F25 REHOME: THE FRONT DOOR'S REFUSALS IN EVERY CALLER DIALECT ───────────────────────────────
+//
+// The previous release's engine tests of what a caller is told before any far end is dialled: a
+// credential the door refuses, a spent budget, a rate limit, a pool the key may not reach, a
+// misdirected ad-hoc route, each rendered in the caller's own dialect. Each is driven here through
+// the composed door, the refusal real (the governance book enforcing a configured group), the
+// dialects' paths and bodies the plane's own door words.
+#[cfg(linked_driver_proofs)]
+mod pools_door_refusals {
+    use super::*;
+
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow};
+
+    use super::super::hook_seat_tests::{DoorRig, FarEnd};
+
+    /// One group limit of `amount` `metric` per `per`.
+    fn limit(metric: LimitMetric, amount: u64, per: LimitWindow) -> LimitCfg {
+        LimitCfg {
+            metric,
+            amount,
+            per: Some(per),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
+        }
+    }
+
+    /// A door word that is a JSON request body.
+    fn body_word(key: &str) -> serde_json::Value {
+        serde_json::from_str(door_word(key)).expect("a JSON request body")
+    }
+
+    /// A chat-shaped request on pool `p`.
+    fn chat_on_p() -> serde_json::Value {
+        serde_json::json!({"model": "p", "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}]})
+    }
+
+    /// Every caller dialect's path onto pool `p` and a request in that dialect: chat, messages,
+    /// the second chat surface, the respond surface, generate, converse.
+    fn every_dialect() -> Vec<(&'static str, serde_json::Value)> {
+        vec![
+            ("/v1/chat/completions", chat_on_p()),
+            (door_word("messages_path"), chat_on_p()),
+            (door_word("chat_v2_path"), body_word("chat_v2_body")),
+            (door_word("respond_path"), body_word("respond_body")),
+            (door_word("generate_path"), body_word("generate_body")),
+            (door_word("converse_path"), body_word("converse_body")),
+        ]
+    }
+
+    /// A body as JSON.
+    fn json_of(body: &[u8]) -> serde_json::Value {
+        serde_json::from_slice(body)
+            .unwrap_or_else(|e| panic!("a JSON envelope ({e}): {}", String::from_utf8_lossy(body)))
+    }
+
+    /// A head field as text.
+    fn field<'h>(head: &'h axum::http::HeaderMap, name: &str) -> Option<&'h str> {
+        head.get(name).and_then(|v| v.to_str().ok())
+    }
+
+    /// A canonical UUID-v4: five dash-separated lowercase-hex groups 8-4-4-4-12, version nibble 4,
+    /// variant nibble 8, 9, a or b.
+    fn assert_uuid_v4_shaped(id: &str) {
+        let groups: Vec<&str> = id.split('-').collect();
+        assert_eq!(
+            groups.iter().map(|g| g.len()).collect::<Vec<_>>(),
+            vec![8, 4, 4, 4, 12],
+            "UUID-v4 shaped (8-4-4-4-12), got '{id}'"
+        );
+        assert!(
+            id.chars()
+                .all(|ch| ch == '-' || (ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())),
+            "lowercase hex with dashes only, got '{id}'"
+        );
+        assert_eq!(groups[2].chars().next(), Some('4'), "version 4: '{id}'");
+        assert!(
+            matches!(groups[3].chars().next(), Some('8' | '9' | 'a' | 'b')),
+            "variant nibble 8/9/a/b: '{id}'"
+        );
+    }
+
+    /// One request carrying `x-api-key: wrong-token` and the previous release's body.
+    async fn with_wrong_key(rig: &DoorRig, path: &str) -> (u16, axum::http::HeaderMap, Vec<u8>) {
+        rig.send_bare(
+            "POST",
+            path,
+            Some(serde_json::json!({"model": "p",
+                "messages": [{"role": "user", "content": "hi"}]})),
+            &[("x-api-key", "wrong-token")],
+        )
+        .await
+    }
+
+    /// A rig over one far end (which no refusal below may reach).
+    async fn keyed(instance: &'static str) -> (DoorRig, FarEnd) {
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        (rig, far)
+    }
+
+    /// THE REFUSED CREDENTIAL IN EVERY DIALECT'S OWN ENVELOPE (F25 row 64; legacy
+    /// `auth_native_envelope_tests::test_unauthorized_response_is_json_with_native_envelope`): a
+    /// caller presenting a wrong key is refused before routing, in its path's dialect: generate on
+    /// the beta and the stable path, 400 `application/json`, `error.code` 400, `error.status`
+    /// `INVALID_ARGUMENT`; messages 401, `type: error`, `error.type: authentication_error`; chat 401,
+    /// no top-level `type`, `error.type: authentication_error`, `error.code: invalid_api_key`; the
+    /// respond surface `error.code: invalid_api_key` with an `error.param`; the second chat
+    /// surface a bare top-level `message`, no `error`, no `type`; converse 403 with
+    /// `x-amzn-errortype: AccessDeniedException`, a UUID-v4 `x-amzn-requestid` and
+    /// `__type: AccessDeniedException`, no `error`. Nothing is dialled. RED: any dialect answered
+    /// in another's envelope, or with another status.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_a_wrong_key_in_every_dialects_own_envelope() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-wrong-key-envelopes";
+        let _published = Withdrawn(instance);
+        let (rig, far) = keyed(instance).await;
+
+        for path in [door_word("generate_path"), door_word("generate_v1_path")] {
+            let (status, head, body) = with_wrong_key(&rig, path).await;
+            assert_eq!(status, 400, "{path}");
+            assert_eq!(
+                field(&head, "content-type"),
+                Some("application/json"),
+                "{path}"
+            );
+            let answer = json_of(&body);
+            assert_eq!(answer["error"]["code"], 400, "{path}: {answer}");
+            assert_eq!(
+                answer["error"]["status"], "INVALID_ARGUMENT",
+                "{path}: {answer}"
+            );
+        }
+
+        let (status, _, body) = with_wrong_key(&rig, door_word("messages_path")).await;
+        assert_eq!(status, 401);
+        let answer = json_of(&body);
+        assert_eq!(answer["type"], "error", "{answer}");
+        assert_eq!(answer["error"]["type"], "authentication_error", "{answer}");
+
+        let (status, _, body) = with_wrong_key(&rig, "/v1/chat/completions").await;
+        assert_eq!(status, 401);
+        let answer = json_of(&body);
+        assert!(answer.get("type").is_none(), "no top-level type: {answer}");
+        assert_eq!(answer["error"]["type"], "authentication_error", "{answer}");
+        assert_eq!(answer["error"]["code"], "invalid_api_key", "{answer}");
+
+        let (_, _, body) = with_wrong_key(&rig, door_word("respond_path")).await;
+        let answer = json_of(&body);
+        assert_eq!(answer["error"]["type"], "authentication_error", "{answer}");
+        assert_eq!(answer["error"]["code"], "invalid_api_key", "{answer}");
+        assert!(answer["error"].get("param").is_some(), "{answer}");
+
+        let (_, _, body) = with_wrong_key(&rig, door_word("chat_v2_path")).await;
+        let answer = json_of(&body);
+        assert!(answer.get("message").is_some(), "a bare message: {answer}");
+        assert!(
+            answer.get("error").is_none() && answer.get("type").is_none(),
+            "no error, no type: {answer}"
+        );
+
+        let (status, head, body) = with_wrong_key(&rig, door_word("converse_path")).await;
+        assert_eq!(status, 403, "a signature-style auth failure is 403");
+        assert_eq!(
+            field(&head, "x-amzn-errortype"),
+            Some("AccessDeniedException")
+        );
+        assert_uuid_v4_shaped(field(&head, "x-amzn-requestid").expect("a request id"));
+        let answer = json_of(&body);
+        assert_eq!(answer["__type"], "AccessDeniedException", "{answer}");
+        assert!(answer.get("error").is_none(), "{answer}");
+        assert_eq!(far.served(), 0, "no refusal is dialled");
+    }
+
+    /// THE SECOND CHAT SURFACE AND THE RESPOND SURFACE REFUSE A WRONG KEY NATIVELY (F25 row 68;
+    /// legacy `auth_native_envelope_tests::test_cohere_and_responses_ingress_token_mode_native_401`):
+    /// `x-api-key: wrong-token` on the second chat surface is 401 `application/json`, a bare
+    /// top-level `message`, no `error` and no `type`; on the respond surface 401
+    /// `application/json`, `error.type: authentication_error`, `error.code: invalid_api_key`. RED:
+    /// either answered in another dialect's envelope.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_a_wrong_key_on_the_second_chat_and_respond_surfaces() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-wrong-key-chat-v2";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = keyed(instance).await;
+
+        let (status, head, body) = with_wrong_key(&rig, door_word("chat_v2_path")).await;
+        assert_eq!(status, 401);
+        assert_eq!(field(&head, "content-type"), Some("application/json"));
+        let answer = json_of(&body);
+        assert!(answer.get("message").is_some(), "{answer}");
+        assert!(
+            answer.get("error").is_none() && answer.get("type").is_none(),
+            "{answer}"
+        );
+
+        let (status, head, body) = with_wrong_key(&rig, door_word("respond_path")).await;
+        assert_eq!(status, 401);
+        assert_eq!(field(&head, "content-type"), Some("application/json"));
+        let answer = json_of(&body);
+        assert_eq!(answer["error"]["type"], "authentication_error", "{answer}");
+        assert_eq!(answer["error"]["code"], "invalid_api_key", "{answer}");
+    }
+
+    /// CONVERSE REFUSES A WRONG BEARER WITH A 403 (F25 row 69; legacy
+    /// `auth_native_envelope_tests::test_bedrock_ingress_wrong_token_is_403_native_envelope`):
+    /// `Authorization: Bearer wrong-token` on the converse path is 403 (never 401),
+    /// `x-amzn-errortype: AccessDeniedException`, a UUID-v4 `x-amzn-requestid`, content-type
+    /// `application/json`, body `__type: AccessDeniedException`. RED: a 401, or either head field
+    /// missing or another value.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_a_wrong_bearer_on_converse_with_a_403() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-wrong-bearer-converse";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = keyed(instance).await;
+        let (status, head, body) = rig
+            .send_bare(
+                "POST",
+                door_word("converse_path"),
+                Some(body_word("converse_body")),
+                &[("authorization", "Bearer wrong-token")],
+            )
+            .await;
+        assert_eq!(status, 403, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(
+            field(&head, "x-amzn-errortype"),
+            Some("AccessDeniedException")
+        );
+        assert_uuid_v4_shaped(field(&head, "x-amzn-requestid").expect("a request id"));
+        assert_eq!(field(&head, "content-type"), Some("application/json"));
+        assert_eq!(json_of(&body)["__type"], "AccessDeniedException");
+    }
+
+    /// GENERATE REFUSES A WRONG KEY AS A BAD ARGUMENT, ON BOTH ITS PATHS (F25 row 70; legacy
+    /// `auth_native_envelope_tests::test_gemini_ingress_wrong_token_is_native_bad_key_envelope`):
+    /// `x-goog-api-key: wrong-token` on the beta and the stable generate path is 400
+    /// `application/json`, `error.code` 400, `error.status: INVALID_ARGUMENT`. RED: either path
+    /// answered 401 or in another envelope.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_a_wrong_key_on_both_generate_paths_as_a_bad_argument() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-wrong-key-generate";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = keyed(instance).await;
+        for path in [door_word("generate_path"), door_word("generate_v1_path")] {
+            let (status, head, body) = rig
+                .send_bare(
+                    "POST",
+                    path,
+                    Some(body_word("generate_body")),
+                    &[("x-goog-api-key", "wrong-token")],
+                )
+                .await;
+            assert_eq!(status, 400, "{path}: {}", String::from_utf8_lossy(&body));
+            assert_eq!(
+                field(&head, "content-type"),
+                Some("application/json"),
+                "{path}"
+            );
+            let answer = json_of(&body);
+            assert_eq!(answer["error"]["code"], 400, "{path}: {answer}");
+            assert_eq!(
+                answer["error"]["status"], "INVALID_ARGUMENT",
+                "{path}: {answer}"
+            );
+        }
+    }
+
+    /// A rig whose key's group `bgrp` caps its all-time budget at 100 cents with 250 cents (250
+    /// requests at a one-cent fee) already spent and hydrated.
+    async fn over_budget(instance: &'static str) -> (DoorRig, FarEnd) {
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let limits = [limit(LimitMetric::Budget, 100, LimitWindow::Total)];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                group: Some(("bgrp", &limits)),
+                seed: &[("group:bgrp@total", 250)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        (rig, far)
+    }
+
+    /// A rig whose key's group admits no request a minute.
+    async fn over_rpm(instance: &'static str) -> (DoorRig, FarEnd) {
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let limits = [limit(LimitMetric::Requests, 0, LimitWindow::Minute)];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                group: Some(("rl0", &limits)),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        (rig, far)
+    }
+
+    /// A SPENT GROUP BUDGET IN THE MESSAGES DIALECT (F25 row 140; legacy
+    /// `forward_pool_integration_tests::test_governance_budget_over_quota`): a key in group `bgrp`,
+    /// its 100-cent all-time cap spent (250 cents seeded and hydrated), posting on the messages path
+    /// is refused 429 before any far dial, `application/json`, body `type: error`, `error.type:
+    /// billing_error` (the dialect's own billing word, never another dialect's quota token). RED:
+    /// the request admitted, another status, or another error type.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_a_spent_budget_in_the_messages_dialect() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-budget-messages";
+        let _published = Withdrawn(instance);
+        let (rig, far) = over_budget(instance).await;
+        let (status, head, body) = rig
+            .send("POST", door_word("messages_path"), Some(chat_on_p()))
+            .await;
+        assert_eq!(status, 429, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(field(&head, "content-type"), Some("application/json"));
+        let answer = json_of(&body);
+        assert_eq!(answer["type"], "error", "{answer}");
+        assert_eq!(answer["error"]["type"], "billing_error", "{answer}");
+        assert_eq!(far.served(), 0, "refused before any far dial");
+    }
+
+    /// A SPENT BUDGET ON CHAT (F25 row 141; legacy
+    /// `forward_pool_integration_tests::test_budget_over_quota_openai_envelope`): 429,
+    /// `application/json`, `error.type: insufficient_quota`. RED: another status or type.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_a_spent_budget_on_chat() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-budget-chat";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = over_budget(instance).await;
+        let (status, head, body) = rig.chat().await;
+        assert_eq!(status, 429);
+        assert_eq!(field(&head, "content-type"), Some("application/json"));
+        let answer = json_of(&body);
+        assert_eq!(answer["error"]["type"], "insufficient_quota", "{answer}");
+    }
+
+    /// A SPENT BUDGET ON THE RESPOND SURFACE (F25 row 142; legacy
+    /// `forward_pool_integration_tests::test_budget_over_quota_responses_envelope`): 429,
+    /// `error.type` and `error.code` both `insufficient_quota` (the code never null). RED: a null
+    /// code, another type or status.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_a_spent_budget_on_the_respond_surface() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-budget-respond";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = over_budget(instance).await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                door_word("respond_path"),
+                Some(body_word("respond_body")),
+            )
+            .await;
+        assert_eq!(status, 429);
+        let answer = json_of(&body);
+        assert_eq!(answer["error"]["type"], "insufficient_quota", "{answer}");
+        assert_eq!(answer["error"]["code"], "insufficient_quota", "{answer}");
+    }
+
+    /// A SPENT BUDGET ON THE SECOND CHAT SURFACE (F25 row 143; legacy
+    /// `forward_pool_integration_tests::test_budget_over_quota_cohere_envelope`): 429, a string
+    /// top-level `message`, no `error`, no `type`. RED: a wrapped envelope.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_a_spent_budget_on_the_second_chat_surface() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-budget-chat-v2";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = over_budget(instance).await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                door_word("chat_v2_path"),
+                Some(body_word("chat_v2_body")),
+            )
+            .await;
+        assert_eq!(status, 429);
+        let answer = json_of(&body);
+        assert!(answer["message"].is_string(), "{answer}");
+        assert!(
+            answer.get("error").is_none() && answer.get("type").is_none(),
+            "{answer}"
+        );
+    }
+
+    /// A SPENT BUDGET ON GENERATE (F25 row 144; legacy
+    /// `forward_pool_integration_tests::test_budget_over_quota_gemini_envelope`): 429,
+    /// `error.code` 429, `error.status: RESOURCE_EXHAUSTED`. RED: another code or status word.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_a_spent_budget_on_generate() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-budget-generate";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = over_budget(instance).await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                door_word("generate_path"),
+                Some(body_word("generate_body")),
+            )
+            .await;
+        assert_eq!(status, 429);
+        let answer = json_of(&body);
+        assert_eq!(answer["error"]["code"], 429, "{answer}");
+        assert_eq!(answer["error"]["status"], "RESOURCE_EXHAUSTED", "{answer}");
+    }
+
+    /// A SPENT BUDGET ON CONVERSE (F25 row 145; legacy
+    /// `forward_pool_integration_tests::test_budget_over_quota_bedrock_envelope`): 400,
+    /// `x-amzn-errortype: ServiceQuotaExceededException`, an `x-amzn-requestid`, body `__type:
+    /// ServiceQuotaExceededException`. RED: a 429, or either field missing or another value.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_a_spent_budget_on_converse() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-budget-converse";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = over_budget(instance).await;
+        let (status, head, body) = rig
+            .send(
+                "POST",
+                door_word("converse_path"),
+                Some(body_word("converse_body")),
+            )
+            .await;
+        assert_eq!(status, 400, "{}", String::from_utf8_lossy(&body));
+        assert_eq!(
+            field(&head, "x-amzn-errortype"),
+            Some("ServiceQuotaExceededException")
+        );
+        assert!(head.contains_key("x-amzn-requestid"));
+        assert_eq!(json_of(&body)["__type"], "ServiceQuotaExceededException");
+    }
+
+    /// THE REQUESTS-A-MINUTE LIMIT (F25 row 146; legacy
+    /// `forward_pool_integration_tests::test_governance_rate_limit_429`): a key in a group allowing
+    /// 2 requests a minute is let through twice (each served), and its third request is refused 429
+    /// with a `Retry-After`. RED: a third admission, or a refusal without its wait.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_the_request_past_its_groups_rate() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-rate-two";
+        let _published = Withdrawn(instance);
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let limits = [limit(LimitMetric::Requests, 2, LimitWindow::Minute)];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                group: Some(("rl2", &limits)),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        // Not across a minute's roll: start the three requests well inside one window.
+        let into_window = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs()
+            % 60;
+        if into_window >= 57 {
+            tokio::time::sleep(std::time::Duration::from_secs(60 - into_window + 1)).await;
+        }
+        for n in 0..2 {
+            assert_eq!(rig.chat().await.0, 200, "request {n} is under the rate");
+        }
+        let (status, head, _) = rig.chat().await;
+        assert_eq!(status, 429, "the third request is over the rate");
+        assert!(
+            head.contains_key("retry-after"),
+            "with a Retry-After: {head:?}"
+        );
+        assert_eq!(far.served(), 2);
+    }
+
+    /// AN EXHAUSTED RATE ON CHAT (F25 row 147; legacy
+    /// `forward_pool_integration_tests::test_rate_limit_429_openai_native_envelope`): 429,
+    /// `application/json`, a `Retry-After`, `error.type: rate_limit_error`. RED: another type, or
+    /// no wait.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_an_exhausted_rate_on_chat() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-rate-chat";
+        let _published = Withdrawn(instance);
+        let (rig, far) = over_rpm(instance).await;
+        let (status, head, body) = rig.chat().await;
+        assert_eq!(status, 429);
+        assert_eq!(field(&head, "content-type"), Some("application/json"));
+        assert!(head.contains_key("retry-after"));
+        assert_eq!(json_of(&body)["error"]["type"], "rate_limit_error");
+        assert_eq!(far.served(), 0);
+    }
+
+    /// AN EXHAUSTED RATE ON THE RESPOND SURFACE (F25 row 148; legacy
+    /// `forward_pool_integration_tests::test_rate_limit_429_responses_native_envelope`): 429, a
+    /// `Retry-After`, `error.type: rate_limit_error`. RED: another type, or no wait.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_an_exhausted_rate_on_the_respond_surface() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-rate-respond";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = over_rpm(instance).await;
+        let (status, head, body) = rig
+            .send(
+                "POST",
+                door_word("respond_path"),
+                Some(body_word("respond_body")),
+            )
+            .await;
+        assert_eq!(status, 429);
+        assert!(head.contains_key("retry-after"));
+        assert_eq!(json_of(&body)["error"]["type"], "rate_limit_error");
+    }
+
+    /// AN EXHAUSTED RATE ON THE SECOND CHAT SURFACE (F25 row 149; legacy
+    /// `forward_pool_integration_tests::test_rate_limit_429_cohere_native_envelope`): 429, a
+    /// `Retry-After`, a string top-level `message`, no `error`, no `type`. RED: a wrapped
+    /// envelope, or no wait.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_an_exhausted_rate_on_the_second_chat_surface() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-rate-chat-v2";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = over_rpm(instance).await;
+        let (status, head, body) = rig
+            .send(
+                "POST",
+                door_word("chat_v2_path"),
+                Some(body_word("chat_v2_body")),
+            )
+            .await;
+        assert_eq!(status, 429);
+        assert!(head.contains_key("retry-after"));
+        let answer = json_of(&body);
+        assert!(answer["message"].is_string(), "{answer}");
+        assert!(
+            answer.get("error").is_none() && answer.get("type").is_none(),
+            "{answer}"
+        );
+    }
+
+    /// AN EXHAUSTED RATE ON GENERATE (F25 row 150; legacy
+    /// `forward_pool_integration_tests::test_rate_limit_429_gemini_native_envelope`): 429, a
+    /// `Retry-After`, `error.code` 429, `error.status: RESOURCE_EXHAUSTED`. RED: another code or
+    /// status word, or no wait.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_an_exhausted_rate_on_generate() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-rate-generate";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = over_rpm(instance).await;
+        let (status, head, body) = rig
+            .send(
+                "POST",
+                door_word("generate_path"),
+                Some(body_word("generate_body")),
+            )
+            .await;
+        assert_eq!(status, 429);
+        assert!(head.contains_key("retry-after"));
+        let answer = json_of(&body);
+        assert_eq!(answer["error"]["code"], 429, "{answer}");
+        assert_eq!(answer["error"]["status"], "RESOURCE_EXHAUSTED", "{answer}");
+    }
+
+    /// AN EXHAUSTED RATE ON CONVERSE (F25 row 151; legacy
+    /// `forward_pool_integration_tests::test_rate_limit_429_bedrock_native_envelope`): 429, a
+    /// `Retry-After`, `x-amzn-errortype: ThrottlingException`, an `x-amzn-requestid`, body
+    /// `__type: ThrottlingException`. RED: either field missing or another value, or no wait.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_an_exhausted_rate_on_converse() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-rate-converse";
+        let _published = Withdrawn(instance);
+        let (rig, _far) = over_rpm(instance).await;
+        let (status, head, body) = rig
+            .send(
+                "POST",
+                door_word("converse_path"),
+                Some(body_word("converse_body")),
+            )
+            .await;
+        assert_eq!(status, 429, "{}", String::from_utf8_lossy(&body));
+        assert!(head.contains_key("retry-after"));
+        assert_eq!(
+            field(&head, "x-amzn-errortype"),
+            Some("ThrottlingException")
+        );
+        assert!(head.contains_key("x-amzn-requestid"));
+        assert_eq!(json_of(&body)["__type"], "ThrottlingException");
+    }
+
+    /// NO INTERNAL PREFIX ON A FORWARD-LAYER ERROR, IN ANY DIALECT (F25 row 354; legacy
+    /// `ingress_indistinguishability_tests::test_forward_layer_errors_carry_no_router_prefix`): in
+    /// every caller dialect, a pool whose members are all down, and (for the dialects naming their
+    /// model in the body) a pool that does not exist, answer a body that never carries the
+    /// internal `router:` prefix. RED: the prefix on any of them.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_puts_no_internal_prefix_on_a_forward_layer_error() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-no-router-prefix";
+        let _published = Withdrawn(instance);
+        let closed = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+            listener.local_addr().expect("its address").port()
+        };
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(closed, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        for (path, request) in every_dialect() {
+            let (status, _, body) = rig.send("POST", path, Some(request.clone())).await;
+            let text = String::from_utf8_lossy(&body);
+            assert!(
+                !text.contains("router:"),
+                "all members down on {path} ({status}) leaked the prefix: {text}"
+            );
+            if request.get("model").is_some() {
+                let mut missing = request;
+                missing["model"] = serde_json::Value::from("missingpool");
+                let (status, _, body) = rig.send("POST", path, Some(missing)).await;
+                let text = String::from_utf8_lossy(&body);
+                assert!(
+                    !text.contains("router:"),
+                    "a missing pool on {path} ({status}) leaked the prefix: {text}"
+                );
+            }
+        }
+    }
+
+    /// The previous release's leak check: a governance refusal body never says `virtual key`, the
+    /// key's id, the pool's name or the product's name.
+    fn assert_leak_free(body: &str, key_id: &str, pool: &str) {
+        assert!(!body.contains("virtual key"), "{body}");
+        assert!(!body.contains(key_id), "the key id: {body}");
+        assert!(!body.contains(pool), "the pool name: {body}");
+        assert!(!body.to_lowercase().contains("busbar"), "{body}");
+    }
+
+    /// GOVERNANCE REFUSALS LEAK NO INTERNAL VOCABULARY (F25 row 427; legacy
+    /// `ingress_integration_tests::test_governance_rejection_bodies_leak_no_internal_vocab`): a key
+    /// restricted to another pool is refused 403; a key whose group has a zero all-time budget is
+    /// refused 429 on chat and 400 `ServiceQuotaExceededException` on converse; a key whose group
+    /// allows no request a minute is refused 429 with a `Retry-After`; and none of those bodies
+    /// says `virtual key`, the key's id, the pool's name or the product's name. RED: a refusal of
+    /// another status, or any of those words on the wire.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_doors_governance_refusals_leak_no_internal_vocabulary() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let pool = "any-pool";
+        let request = serde_json::json!({"model": pool, "max_tokens": 16,
+            "messages": [{"role": "user", "content": "hi"}]});
+
+        let instance = "rehome-gate-leak-restricted";
+        let published = Withdrawn(instance);
+        let restricted = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                more_pools: &[(pool, &[(0, 1)])],
+                allowed_pools: Some(&["allowed-only"]),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = restricted
+            .send("POST", "/v1/chat/completions", Some(request.clone()))
+            .await;
+        assert_eq!(status, 403, "a pool the key may not reach");
+        assert_leak_free(&String::from_utf8_lossy(&body), &restricted.key_id, pool);
+        drop(restricted);
+        drop(published);
+
+        let empty = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
+        let instance = "rehome-gate-leak-broke";
+        let published = Withdrawn(instance);
+        let broke = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                more_pools: &[(pool, &[(0, 1)])],
+                group: Some(("empty", &empty)),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = broke
+            .send("POST", "/v1/chat/completions", Some(request.clone()))
+            .await;
+        assert_eq!(status, 429, "a zero budget");
+        assert_leak_free(&String::from_utf8_lossy(&body), &broke.key_id, pool);
+        let converse_on_pool = door_word("converse_path").replacen("/p/", &format!("/{pool}/"), 1);
+        let (status, _, body) = broke
+            .send("POST", &converse_on_pool, Some(body_word("converse_body")))
+            .await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(status, 400, "a zero budget on converse: {text}");
+        assert!(text.contains("ServiceQuotaExceededException"), "{text}");
+        assert_leak_free(&text, &broke.key_id, pool);
+        drop(broke);
+        drop(published);
+
+        let closed = [limit(LimitMetric::Requests, 0, LimitWindow::Minute)];
+        let instance = "rehome-gate-leak-throttled";
+        let _published = Withdrawn(instance);
+        let throttled = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                more_pools: &[(pool, &[(0, 1)])],
+                group: Some(("closed", &closed)),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, head, body) = throttled
+            .send("POST", "/v1/chat/completions", Some(request))
+            .await;
+        assert_eq!(status, 429, "no request a minute");
+        assert!(head.contains_key("retry-after"), "{head:?}");
+        assert_leak_free(&String::from_utf8_lossy(&body), &throttled.key_id, pool);
+        assert_eq!(far.served(), 0, "no refusal is dialled");
+    }
+
+    /// A PROVIDER SEGMENT THAT IS NOT THE MODEL'S IS A 400 IN THE CALLER'S ENVELOPE (F25 row 462;
+    /// legacy `ingress_integration_tests::test_adhoc_provider_mismatch_400_anthropic_envelope_via_router`):
+    /// an ad-hoc messages route `/<provider>/<model>/...` naming model `m0` under provider `oai1`
+    /// (not the model's) is refused 400, content-type starting `application/json`, body `type:
+    /// error`, `error.type: invalid_request_error`. RED: the model served anyway, or another
+    /// status or envelope.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_an_ad_hoc_route_naming_the_wrong_provider() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-adhoc-mismatch";
+        let _published = Withdrawn(instance);
+        let (first, second) = (
+            seat_far_end(200, SERVED_BY_TWIN).await,
+            seat_far_end(200, SERVED_BY_TWIN).await,
+        );
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(first.port, 1), (second.port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, head, body) = rig
+            .send(
+                "POST",
+                &format!("/oai1/m0{}", door_word("messages_path")),
+                Some(serde_json::json!({"model": "m0", "messages": [], "max_tokens": 16})),
+            )
+            .await;
+        assert_eq!(status, 400, "{}", String::from_utf8_lossy(&body));
+        assert!(
+            field(&head, "content-type").is_some_and(|ct| ct.starts_with("application/json")),
+            "{head:?}"
+        );
+        let answer = json_of(&body);
+        assert_eq!(answer["type"], "error", "{answer}");
+        assert_eq!(answer["error"]["type"], "invalid_request_error", "{answer}");
+        assert_eq!((first.served(), second.served()), (0, 0));
+    }
+
+    /// AN EXHAUSTED RATE ON EVERY CALLER DIALECT (F25 row 468; legacy
+    /// `ingress_integration_tests::test_governance_rate_limit_429_native_envelope_all_ingress`): a
+    /// key whose group allows no request a minute is refused 429 with a `Retry-After` on all six
+    /// caller dialects; generate's `error.status` is `RESOURCE_EXHAUSTED`, converse carries
+    /// `x-amzn-errortype` and `x-amzn-requestid`. RED: any dialect answered otherwise.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_an_exhausted_rate_in_every_dialect() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-rate-every-dialect";
+        let _published = Withdrawn(instance);
+        let (rig, far) = over_rpm(instance).await;
+        for (path, request) in every_dialect() {
+            let (status, head, body) = rig.send("POST", path, Some(request)).await;
+            assert_eq!(status, 429, "{path}: {}", String::from_utf8_lossy(&body));
+            assert!(head.contains_key("retry-after"), "{path}: {head:?}");
+            if path == door_word("generate_path") {
+                assert_eq!(json_of(&body)["error"]["status"], "RESOURCE_EXHAUSTED");
+            }
+            if path == door_word("converse_path") {
+                assert!(head.contains_key("x-amzn-errortype"), "{head:?}");
+                assert!(head.contains_key("x-amzn-requestid"), "{head:?}");
+            }
+        }
+        assert_eq!(far.served(), 0);
+    }
+
+    /// A SPENT BUDGET ON EVERY CALLER DIALECT (F25 row 469; legacy
+    /// `ingress_integration_tests::test_governance_over_budget_native_envelope_all_ingress`): a key
+    /// over its group's all-time budget is refused 429 on chat, messages, the second chat surface,
+    /// the respond surface and generate, and 400 with body `__type:
+    /// ServiceQuotaExceededException` on converse. RED: any dialect answered otherwise.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_refuses_a_spent_budget_in_every_dialect() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-budget-every-dialect";
+        let _published = Withdrawn(instance);
+        let (rig, far) = over_budget(instance).await;
+        for (path, request) in every_dialect() {
+            let (status, _, body) = rig.send("POST", path, Some(request)).await;
+            if path == door_word("converse_path") {
+                assert_eq!(status, 400, "{path}: {}", String::from_utf8_lossy(&body));
+                assert_eq!(json_of(&body)["__type"], "ServiceQuotaExceededException");
+            } else {
+                assert_eq!(status, 429, "{path}: {}", String::from_utf8_lossy(&body));
+            }
+        }
+        assert_eq!(far.served(), 0);
+    }
+
+    /// A KEY NAMING A GROUP NOBODY CONFIGURED FAILS CLOSED (F25 row 473; legacy
+    /// `ingress_integration_tests::test_missing_group_fails_closed_at_ingress`): a governed key whose
+    /// group `ghost` is not configured is refused 429 (never admitted uncapped), and the body names
+    /// the fix: `group 'ghost' is not configured`. RED: the request served, or the missing group
+    /// not named.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_fails_closed_on_a_key_naming_an_unconfigured_group() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-gate-ghost-group";
+        let _published = Withdrawn(instance);
+        let far = seat_far_end(200, SERVED_BY_TWIN).await;
+        let finance = [limit(LimitMetric::Budget, 0, LimitWindow::Total)];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                group: Some(("finance", &finance)),
+                key_group: Some("ghost"),
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = rig.chat().await;
+        let text = String::from_utf8_lossy(&body);
+        assert_eq!(status, 429, "{text}");
+        assert!(text.contains("group 'ghost' is not configured"), "{text}");
+        assert_eq!(far.served(), 0);
+    }
+}
+
 // ── what only the plane reads, the kernel routes on (ARCHITECT Q1 ArriveOut, 2026-10-05) ────────
 
 /// A streamed far end's head: chunked, so a far end that closes before its last chunk CUT it.
