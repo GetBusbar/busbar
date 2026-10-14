@@ -65,12 +65,12 @@ fn only_a_minted_handle_names_an_instance() {
             std::ptr::from_ref(wake) as usize as u64,
         ),
     ] {
-        let at = forged();
+        let at = latch.forged();
         assert!(
             resolve_in(HostCtx { handle }, &latch, None).is_none(),
             "{why}"
         );
-        assert!(forged() > at, "{why} was not counted");
+        assert_eq!(latch.forged(), at + 1, "{why} was not counted");
     }
 }
 
@@ -83,12 +83,15 @@ fn a_revoked_handle_names_nothing_and_is_no_forgery() {
     let ctx = mint(wake).expect("the host mints a handle");
     assert!(resolve_in(ctx, &latch, None).is_some());
     wake.revoked.store(true, Ordering::Release);
-    let at = forged();
     assert!(
         resolve_in(ctx, &latch, None).is_none(),
         "a revoked handle resolved"
     );
-    assert_eq!(forged(), at, "a revoked handle was counted as a forgery");
+    assert_eq!(
+        latch.forged(),
+        0,
+        "a revoked handle was counted as a forgery"
+    );
 }
 
 /// THE LATCH: off-crossing forgeries name no instance to quarantine, so they count; at

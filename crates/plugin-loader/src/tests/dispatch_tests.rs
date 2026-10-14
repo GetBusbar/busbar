@@ -2713,6 +2713,43 @@ fn a_closed_a_dropped_and_a_watchdog_faulted_instance_name_nothing() {
     );
 }
 
+/// #74, REVOCATION ON THE WATCHDOG'S TICKET-LESS PATH: an instance adopted by the dispatcher whose
+/// ticket-less call hangs past its budget is faulted by the watchdog (`ticketless`), and its handle
+/// names nothing from then on, with no forgery counted.
+#[test]
+fn a_ticketless_hang_faulted_by_the_watchdog_revokes_the_handle() {
+    let d = Dispatcher::new(config());
+    let bind_adopted = || Bind {
+        dispatcher: d.adopter(),
+        ..bind(Arc::new(Recorder::default()))
+    };
+    let hung = load_linked::<TestKind>(&row(), bind_adopted()).expect("the linked door loads");
+    assert_eq!(open(&d, &hung, 0), Outcome::Ready);
+    let ctx = hung.inner.ctx();
+    let latch = crate::dispatch::handle::Latch::new();
+    assert!(crate::dispatch::handle::resolve_in(ctx, &latch, None).is_some());
+    std::thread::scope(|scope| {
+        let caller = scope.spawn(|| hung.call(TICK, &mut frame(b"hang:ticketless")).outcome);
+        until("the watchdog faults the ticket-less hang", || {
+            hung.is_faulted()
+        });
+        assert!(
+            crate::dispatch::handle::resolve_in(ctx, &latch, None).is_none(),
+            "a watchdog-faulted instance's handle still names it"
+        );
+        let releaser =
+            load_linked::<TestKind>(&row(), bind_adopted()).expect("the linked door loads");
+        assert_eq!(open(&d, &releaser, 0), Outcome::Ready);
+        let _ = releaser.call(TICK, &mut frame(b"unhang:ticketless"));
+        let _ = caller.join();
+    });
+    assert_eq!(
+        latch.forged(),
+        0,
+        "a revoked handle was counted as a forgery"
+    );
+}
+
 /// #74, THE KEY AT BOOT: a loader boot whose OS random source cannot answer is refused
 /// (`LoadError::Entropy`), the dispatcher never built; there is no fallback key. Driven through the
 /// test seam, which makes this thread's draw a fresh one against a failing source.
