@@ -343,7 +343,12 @@ FIX
     fail=1; note "FAILED: the noun floor refuses this tree's own decls (resolved $ncount: $nouns)"
   fi
   # ── RED: a SHORT noun set — the way this meter reads zero debt over nouns it never searched for. ──
-  if ( require_nouns "tools agents pools" ) >/dev/null 2>&1; then
+  # The short set is THIS tree's resolved set less its last noun: one short of the plane count,
+  # whatever that count is. It was the literal "tools agents pools" — three nouns, short of four
+  # planes — and when mcp left PLANE_KEYS the count became three, the literal became a full set, and
+  # this case went FAILED on a floor that still refuses a short set.
+  local short; short="$(printf '%s\n' $nouns | sed '$d' | tr '\n' ' ')"
+  if ( require_nouns "$short" ) >/dev/null 2>&1; then
     fail=1; note "FAILED: a noun set short of the plane count was accepted (the debt would undercount silently)"
   else
     note "RED noun-floor: a noun set short of the plane count is refused, not scanned as partial"
