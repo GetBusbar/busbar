@@ -1498,14 +1498,15 @@ fn test_response_identity_roundtrip_preserves_id_and_model() {
 /// F2 conformance: a foreign / novel IR stop_reason (`refusal` from Responses, `error` from
 /// Cohere) must NOT upper-case-leak into `finishReason` (e.g. "REFUSAL"/"ERROR" are outside
 /// Gemini's `FinishReason` enum and a strict google-genai client rejects them). `error`/`other` map
-/// to the native `OTHER` member and a `refusal` to its policy stop `SAFETY` (IR audit GEM-14), on
-/// both the whole-body and streamed paths.
+/// to the native `OTHER` member, and so does a `refusal` (Gemini has no refusal stop; 1.5.5 wrote
+/// `OTHER`, v1.5.5 `crates/busbar/src/proto/gemini/mod.rs:771`), on both the whole-body and streamed
+/// paths.
 #[test]
 fn foreign_stop_reason_maps_to_other_not_verbatim() {
     use crate::codec::ir::IrStopReason as S;
     let writer = GeminiWriter;
     for (foreign, native) in [
-        (S::Refusal, "SAFETY"),
+        (S::Refusal, "OTHER"),
         (S::Error, "OTHER"),
         (S::Other, "OTHER"),
     ] {
@@ -5305,14 +5306,17 @@ fn a_finish_reason_inside_tool_args_is_not_the_stop_reason() {
         }],
         "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5}
     });
-    let parsed = GeminiReader.read_response(&body).expect("read_response");
+    // The raw scan reads the CANDIDATE's own token (`STOP`), never the args' copy, which would map
+    // to a failed generation. `read_response` then promotes a tool-call `STOP` to `ToolUse` from
+    // the content, which a token-only scan cannot see and the fault check does not need.
     assert_eq!(
         GeminiReader.raw_stop_reason(body.to_string().as_bytes()),
-        parsed.stop_reason
+        Some(crate::codec::ir::IrStopReason::EndTurn)
     );
-    assert_ne!(
-        GeminiReader.raw_stop_reason(body.to_string().as_bytes()),
-        Some(crate::codec::ir::IrStopReason::Error)
+    let parsed = GeminiReader.read_response(&body).expect("read_response");
+    assert_eq!(
+        parsed.stop_reason,
+        Some(crate::codec::ir::IrStopReason::ToolUse)
     );
     assert!(!crate::exchange::reply::wire::generation_failed(
         "gemini", &body

@@ -2,7 +2,7 @@
 # busbar-core into its own sibling crate.
 #
 # ONE-WAY DEPENDENCY (Cargo-enforced): this crate depends on busbar-core (to reach `CoreRouter`,
-# `App`/`AppHandle`, `net_guard`, the diagnostics macros, and the `oauth_as::config` types the
+# `App`/`AppHandle`, the diagnostics macros, and the `oauth_as::config` types the
 # single-document config pipeline still owns). busbar-core depends on NOTHING here — naming this
 # crate from core would be a dependency cycle, which Cargo refuses outright. Core reaches this
 # plane's runtime object only through the small seam in `busbar_core::oauth_as::seam`
