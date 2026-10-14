@@ -2218,6 +2218,31 @@
       }
     },
     {
+      "id": "R21 an OpenAI transcription answered in its own dialect is metered",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: an OpenAI transcription answered in its own dialect is now metered as a translated one always was (whisper's duration as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it nothing.",
+      "by": "owner (Matthew Jackson), queue rule 21 (OWNER 2026-10-14: \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\")",
+      "cells": "^llm\\|openai\\|openai\\|request\\|transcription_metered$",
+      "expected_cells": 0,
+      "classes": [
+        "effects.usage"
+      ],
+      "rationale": "v1.5.5 crates/busbar/src/handlers/mod.rs:140 gave a same-dialect OpenAI transcription answer no usage reader, so the request billed no tokens and no duration, while the same answer translated to another caller dialect was metered. Owner rule 21 (2026-10-14): money is ledger quantity times rate card, exact integer; where 1.5.5 differs from that, 1.5.5 was wrong, and the cell is registered citing the ruling. 1.6.0's llm plane reads the transcription's reported usage on the same-dialect path too: whisper's `usage.seconds` as `audio_ms` (whole milliseconds, x 1000), a token-metered model's tokens under the token classes; each is priced by the rate card (an absent card prices 0). No oracle cell sends a transcription: the cells are OWED, `cells` names them and expected_cells is 0, the way the client-cancel entry below writes its owed cell. Pinned by the llm plane's conformance case for `audio_ms` (crates/busbar-plane-llm/tests/conformance.json) and the codec's same-dialect transcription metering test. The premise probes the existing same-dialect openai cell.",
+      "premise": {
+        "cell": "llm|openai|openai|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-14",
+        "ruling": "queue rule 21 (MONEY, OWNER 2026-10-14): never an owner question; fix to ledger x rate card and register the cell citing the ruling"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
       "id": "#62 a stream the client cancels after its first byte keeps its charge",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a streamed answer the client cancels after its first byte keeps its charge. It is billed for what streamed and its request-budget unit is no longer given back; 1.5.5 gave the unit back. A mid-stream cut is not a refund.",
