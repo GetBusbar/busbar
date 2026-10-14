@@ -87,8 +87,17 @@ pub struct DeclaredBuilder {
 }
 
 impl CredentialProvider for DeclaredBuilder {
+    /// The plane's field pairs as headers, in order; a pair that is not a legal header is dropped.
     fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
         (self.headers_for)(key, ctx)
+            .into_iter()
+            .filter_map(|(name, value)| {
+                Some((
+                    HeaderName::from_bytes(name.as_bytes()).ok()?,
+                    HeaderValue::from_bytes(&value).ok()?,
+                ))
+            })
+            .collect()
     }
     fn is_lane_constant(&self) -> bool {
         self.lane_constant
