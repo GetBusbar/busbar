@@ -126,15 +126,20 @@ enum Resolved {
 }
 
 /// True when the segment begins with a word, i.e. an optional run of whitespace, then at most one
-/// backtick, then an ASCII letter. The Python matches a regex here and then uses only whether it
-/// matched, so this reproduces the decision the regex actually makes.
+/// backtick, then an ASCII letter OR DIGIT.
+///
+/// A DIGIT STARTS A WORD (X-1203). The Python's regex demanded a letter, and so did this port, while
+/// the alias table carries `1.5.5-behaviour`: the one alias that begins with a digit could never
+/// resolve, so PB-72 and PB-92 (`1.5.5-BEHAVIOUR …`) returned "names no inventory file" and their
+/// file was never checked — renaming `qa/evidence/1.5.5-BEHAVIOUR.md` away left every row green. A
+/// digit-led segment that is no alias is now an unrecognized prefix, the finding it always was.
 fn starts_with_word(segment: &str) -> bool {
     let mut chars = segment.chars().skip_while(|c| c.is_whitespace());
     let mut first = chars.next();
     if first == Some('`') {
         first = chars.next();
     }
-    matches!(first, Some(c) if c.is_ascii_alphabetic())
+    matches!(first, Some(c) if c.is_ascii_alphanumeric())
 }
 
 /// Resolve one segment. `None` means the segment names no inventory file at all — a bare backtick
@@ -686,6 +691,38 @@ mod tests {
             ))
         );
         assert_eq!(resolve_prefix("`src/lib.rs:12`"), None);
+    }
+
+    /// X-1203: the digit-led alias resolves, and its file is CHECKED — the RED is the file renamed
+    /// away, which this gate used to read as two bindings citing nothing.
+    #[test]
+    fn the_digit_led_alias_resolves_and_its_file_is_checked() {
+        assert_eq!(
+            resolve_prefix("1.5.5-BEHAVIOUR precedence"),
+            Some(Resolved::Alias(
+                "1.5.5-behaviour",
+                "qa/evidence/1.5.5-BEHAVIOUR.md"
+            ))
+        );
+        assert_eq!(
+            resolve_prefix(" `1.5.5-BEHAVIOUR` trap"),
+            Some(Resolved::Alias(
+                "1.5.5-behaviour",
+                "qa/evidence/1.5.5-BEHAVIOUR.md"
+            ))
+        );
+        assert_eq!(
+            resolve_prefix("2026-10-14 note"),
+            Some(Resolved::Unrecognized)
+        );
+
+        let cx = cx();
+        let mut ov = Overlay::new();
+        ov.remove(alias_path("1.5.5-behaviour"));
+        let v = InventoryRefGate.run(&cx.with_overlay(ov));
+        let row = v.rows.iter().find(|r| r.id == ROW_FILE).expect("file row");
+        assert_eq!(row.status, crate::ledger::Status::Fail, "{}", row.detail);
+        assert!(row.detail.contains("1.5.5-behaviour"), "{}", row.detail);
     }
 
     #[test]

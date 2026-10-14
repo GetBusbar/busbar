@@ -782,15 +782,44 @@ fn redirect_findings(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
             )]
         }
     };
-    for f in &files {
-        let rel = f.rel_str();
+    // X-1221: THE CARGO CONFIGS ARE READ BY NAME. The walk skips every dotdir (ctx.rs `collect`),
+    // so the `.cargo/config.toml` arm below tested a path the walk can never return and a
+    // `[source]` replacement there was invisible. Cargo reads `.cargo/config.toml` (and its legacy
+    // spelling `.cargo/config`) from the directory it runs in and every ancestor, so the root and
+    // every manifest's own directory are read through the `Ctx` (an overlay can plant one).
+    let mut manifests: Vec<(String, String)> = files
+        .iter()
+        .map(|f| (f.rel_str(), f.text.clone()))
+        .collect();
+    let mut dirs: BTreeSet<String> = BTreeSet::from([String::new()]);
+    for (rel, _) in &manifests {
+        if let Some((dir, "Cargo.toml")) = rel.rsplit_once('/') {
+            dirs.insert(format!("{dir}/"));
+        }
+    }
+    for dir in &dirs {
+        for leaf in [".cargo/config.toml", ".cargo/config"] {
+            let rel = format!("{dir}{leaf}");
+            // An overlay plant is already in the walk (the overlay is merged after the disk
+            // listing); read it once.
+            if manifests.iter().any(|(r, _)| *r == rel) {
+                continue;
+            }
+            if let Ok(text) = cx.read(&rel) {
+                manifests.push((rel, text));
+            }
+        }
+    }
+    for (rel, text) in &manifests {
+        let rel = rel.clone();
         let name = rel.rsplit('/').next().unwrap_or(&rel);
         let is_cargo_toml = name == "Cargo.toml";
-        let is_cargo_config = name == "config.toml" && rel.contains(".cargo/");
+        let is_cargo_config =
+            (name == "config.toml" || name == "config") && rel.contains(".cargo/");
         if !is_cargo_toml && !is_cargo_config {
             continue;
         }
-        for (i, raw) in f.text.lines().enumerate() {
+        for (i, raw) in text.lines().enumerate() {
             let t = raw.trim().trim_start_matches('\u{feff}');
             let t = match t.split_once('#') {
                 Some((head, _)) => head.trim(),
@@ -823,9 +852,9 @@ fn redirect_findings(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     }
     // A ROW THAT COVERS NOTHING IS A STANDING HOLE. The allowance expires with the entry it names.
     for a in &reg.patch_allows {
-        let live = files.iter().any(|f| {
-            f.rel_str() == a.file
-                && f.text.lines().any(|l| {
+        let live = manifests.iter().any(|(rel, text)| {
+            *rel == a.file
+                && text.lines().any(|l| {
                     let t = l.trim();
                     t.starts_with('[') && t.trim_matches(['[', ']']).trim() == a.entry
                 })
@@ -1147,6 +1176,57 @@ pub fn rule_inputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// X-1221 RED: a `[source]` redirect in a `.cargo/config.toml` ON DISK is found. The walk skips
+    /// every dotdir, so the old arm only ever saw an OVERLAY plant (the overlay is merged after the
+    /// listing) and the real file was invisible; this tree is a real directory with no overlay.
+    #[test]
+    fn a_source_redirect_in_a_cargo_config_on_disk_is_found() {
+        let root = std::env::temp_dir().join(format!(
+            "xtask-x1221-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_nanos())
+        ));
+        std::fs::create_dir_all(root.join(".cargo")).expect("mkdir");
+        std::fs::create_dir_all(root.join("crates/a/.cargo")).expect("mkdir");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/a\"]\n",
+        )
+        .expect("write");
+        std::fs::write(
+            root.join("crates/a/Cargo.toml"),
+            "[package]\nname = \"a\"\n",
+        )
+        .expect("write");
+        std::fs::write(
+            root.join(".cargo/config.toml"),
+            "[source.crates-io]\nreplace-with = \"vendored\"\n",
+        )
+        .expect("write");
+        std::fs::write(
+            root.join("crates/a/.cargo/config"),
+            "[patch.crates-io]\nx = { path = \"y\" }\n",
+        )
+        .expect("write");
+        let cx = Ctx::at(&root, root.join("scratch")).expect("ctx");
+        let found = redirect_findings(&cx, &super::super::KindRegistry::default());
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            found
+                .iter()
+                .any(|f| f.starts_with("redirect\t.cargo/config.toml:1")),
+            "{found:?}"
+        );
+        assert!(
+            found
+                .iter()
+                .any(|f| f.starts_with("redirect\tcrates/a/.cargo/config:1")),
+            "{found:?}"
+        );
+    }
 
     #[test]
     fn a_path_leaves_its_crate_or_it_does_not() {
