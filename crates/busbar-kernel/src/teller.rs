@@ -97,7 +97,7 @@ impl Kernel {
     /// Take the seal. Boot only.
     pub fn new() -> Self {
         Kernel {
-            seal: KernelSeal::acquire_for_kernel(),
+            seal: crate::seal::acquire(),
             call_gen: AtomicU64::new(0),
         }
     }

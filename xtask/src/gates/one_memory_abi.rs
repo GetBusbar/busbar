@@ -30,6 +30,14 @@ pub const ROW_C_UNWIND: &str = "one-memory-abi:c-unwind";
 
 /// The one symbol a plugin exports.
 pub const DOOR_SYMBOL: &str = "busbar_plugin_door";
+/// THE KERNEL'S SEAL SYMBOL (#65, ARCHITECT ruling 2026-10-14): the contract declares it and the
+/// kernel defines it, so the kernel seal reaches the kernel and nothing else
+/// (`crates/busbar-kernel/src/seal.rs`). It is no plugin's export — the kernel is in no plugin's
+/// closure — and it is excused at exactly its one home: the same name defined anywhere else (a
+/// plugin catching the seal) is a finding like any other export.
+pub const KERNEL_ROOT_SYMBOL: &str = "__busbar_kernel_root";
+/// The one file that may define [`KERNEL_ROOT_SYMBOL`].
+pub const KERNEL_ROOT_HOME: &str = "crates/busbar-kernel/src/seal.rs";
 /// The cold lane's own home; references inside it are the lane itself, deleted whole in M6.
 const COLD_HOME: &str = "crates/busbar-contract/src/abi/cold/";
 /// The cold lane's names.
@@ -126,7 +134,8 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
                 }
                 if is_export_attr(&sl.counted) {
                     let sym = exported_symbol(&all, idx);
-                    if sym != DOOR_SYMBOL {
+                    let kernel_root = sym == KERNEL_ROOT_SYMBOL && rel == KERNEL_ROOT_HOME;
+                    if sym != DOOR_SYMBOL && !kernel_root {
                         findings.push(Finding::new(ROW_EXPORTED, &rel, sym, sl.no));
                     }
                 }
@@ -209,6 +218,15 @@ impl Gate for OneMemoryAbiGate {
                         "#[unsafe(no_mangle)]\npub extern \"C\" fn busbar_planted_call() {}\n",
                     ),
                     vec![file, "busbar_planted_call"],
+                ),
+                (
+                    ROW_EXPORTED,
+                    "the kernel's seal symbol defined anywhere but its one home is RED",
+                    plant(
+                        loader,
+                        "#[no_mangle]\npub fn __busbar_kernel_root(seal: Seal) -> Box<dyn Any> {}\n",
+                    ),
+                    vec![loader, KERNEL_ROOT_SYMBOL],
                 ),
                 (
                     ROW_COLD,

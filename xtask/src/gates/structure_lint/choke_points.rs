@@ -206,6 +206,10 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     &[
                         "crates/busbar-contract/src/abi/sdk/mod.rs".into(),
                         "crates/busbar-contract/src/abi/sdk/door.rs".into(),
+                        // Not a plugin export: the kernel's seal symbol (#65, ARCHITECT ruling
+                        // 2026-10-14), the one symbol the contract hands the kernel seal to.
+                        // one-memory-abi pins it to this file by name.
+                        "crates/busbar-kernel/src/seal.rs".into(),
                     ],
                 ),
                 BanRule::new(
