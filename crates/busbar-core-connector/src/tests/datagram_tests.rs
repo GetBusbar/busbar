@@ -356,8 +356,8 @@ impl FramerDoor for Scripted {
                         }
                     }
                     LANE_CLEAR if is_request(&bytes) => {
-                        st.routes
-                            .push((lane.path, LANE_CLEAR, answer(&bytes, st.local.1)));
+                        let pwd = st.local.1;
+                        st.routes.push((lane.path, LANE_CLEAR, answer(&bytes, pwd)));
                         if lane.bound == 0 {
                             st.request = (PATH_REQUEST_BIND, 0, lane.path);
                         } else if self.knobs.rebind_new && lane.path != lane.bound {
