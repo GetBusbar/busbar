@@ -23020,7 +23020,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23138,7 +23138,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23192,7 +23192,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23246,7 +23246,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23300,7 +23300,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23354,7 +23354,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23408,7 +23408,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23487,7 +23487,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23605,7 +23605,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23659,7 +23659,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23713,7 +23713,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23767,7 +23767,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23821,7 +23821,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23875,7 +23875,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -23941,7 +23941,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24059,7 +24059,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24113,7 +24113,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24167,7 +24167,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24221,7 +24221,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_array_whole_answer",
-      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives, its array written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives (the published 1.5.5 answers it a one-element JSON array) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24238,7 +24238,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24292,7 +24292,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_array_whole_answer",
-      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives, its array written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives (the published 1.5.5 answers it a one-element JSON array) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24309,7 +24309,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24363,7 +24363,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_array_whole_answer",
-      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives, its array written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives (the published 1.5.5 answers it a one-element JSON array) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24380,7 +24380,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24458,7 +24458,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_array_whole_answer",
-      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives, its array written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives (the published 1.5.5 answers it a one-element JSON array) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24475,7 +24475,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24606,7 +24606,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_array_whole_answer",
-      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives, its array written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives (the published 1.5.5 answers it a one-element JSON array) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24623,7 +24623,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24677,7 +24677,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_array_whole_answer",
-      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives, its array written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a gemini JSON-array stream caller (:streamGenerateContent without alt=sse) answered one WHOLE buffered body by its far end (the mock's `whole`): what the caller receives (the published 1.5.5 answers it a one-element JSON array) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24694,7 +24694,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24748,7 +24748,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24802,7 +24802,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24856,7 +24856,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24910,7 +24910,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -24976,7 +24976,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -25094,7 +25094,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -25148,7 +25148,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -25202,7 +25202,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -25256,7 +25256,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -25310,7 +25310,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -25364,7 +25364,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
@@ -25446,7 +25446,7 @@
       "transport": "http",
       "op": "chat",
       "outcome": "ok_stream_whole_answer",
-      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives, its own stream frames written from the buffered answer, and what is billed for it. A fresh boot each.",
+      "why": "a caller that asked to STREAM, answered one WHOLE buffered body by its far end (the mock's `whole`: the egress dialect's healthy application/json answer to a stream-intent request; gemini's :streamGenerateContent and bedrock's /converse-stream answer what :generateContent and /converse answer): what the caller receives in its own dialect (the published 1.5.5 answers most callers one whole JSON body, and a cross-dialect bedrock caller its eventstream) and what is billed for it. A fresh boot each.",
       "fresh": true,
       "stream": true,
       "mock_control": {
