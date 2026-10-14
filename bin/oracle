@@ -267,11 +267,14 @@ shim_dir="$root/tool"
 mkdir -p "$root"
 
 # ── obtain the Rust engine ──────────────────────────────────────────────────────────────────────
-# Precedence (soundest first, per the Phase C ruling "prefer `cargo build --release` from the pinned
-# busbar-release checkout"):
-#   1. BUSBAR_ORACLE_RUST_BIN=<path>   a prebuilt binary (CI builds it once, passes it here).
-#   2. BUSBAR_RELEASE_CHECKOUT=<dir>   a busbar-release checkout to `cargo build --release` from.
-#   3. else                            git clone busbar-release at the pinned ref, then build.
+# Precedence:
+#   1. BUSBAR_ORACLE_RUST_BIN=<path>   a prebuilt binary chosen by the operator (verify-1.6.0-done.sh
+#                                      refuses a DONE run with it set).
+#   2. on Linux: THE FETCHED JUDGE      busbar-release's published `busbar-oracle-linux-<arch>-<ref>`,
+#                                      run only when its sha256 is the BASE pin's line for this
+#                                      architecture (fetch_judge, below). No line: no judge, refused.
+#   3. elsewhere (a laptop): BUSBAR_RELEASE_CHECKOUT=<dir>, a busbar-release checkout to
+#      `cargo build --release` from, else git clone busbar-release at the pinned ref, then build.
 # ── the engine clone: a token is USED, never STORED (Q128 WARN, ARCHITECT 2026-10-05) ──────────────
 # The token (the first of BUSBAR_RELEASE_TOKEN / GH_TOKEN / GITHUB_TOKEN that is set) reaches git as a
 # one-shot `http.<github>.extraheader` through git's environment config (GIT_CONFIG_COUNT/KEY/VALUE):
@@ -352,10 +355,175 @@ if [ "${1:-}" = "token-selftest" ]; then
   [ "$fail" = 0 ] && { echo "oracle token-selftest: the engine clone stores no credential"; exit 0; }
   echo "oracle token-selftest: FAILED"; exit 1
 fi
+# ── the pinned judge, FETCHED (OWNER 2026-10-13: no hand-installed tools; ModernCI installs no judge) ──
+# On Linux the judge is the binary busbar-release's dev-bin.yml built and published from the pinned
+# commit: `busbar-oracle-linux-<arch>-<release_ref>` on the `dev-bin` release, run only when its
+# sha256 is the pin's `sha256_linux_<arch>` line. The pin read is the BASE's: $MODERNCI_TO_SHA's
+# testing/shadow-oracle/oracle-rust.pin when ModernCI names a base that holds one (a candidate never
+# picks its own judge; a pin bump judges from the commit after it lands), else this tree's (the first
+# predev -> dev move: dev holds no pin; .ci/predev.yaml says so). A pin with no line for this host's
+# architecture has NO JUDGE (red, never another architecture's, never a source build). A `.sig` beside
+# the asset is verified against busbar-release's release key (Ed25519 over "<asset name>\n<sha256>\n",
+# busbar-release-cli update.rs RELEASE_KEY_SPKI) before the bytes are ever made executable; a
+# `.sha256` beside it must agree with the pin. The verified binary is cached by its sha256 and
+# re-hashed on every use, so a cache cannot substitute a judge. The token (BUSBAR_RELEASE_TOKEN, else
+# GH_TOKEN, else GITHUB_TOKEN) reaches curl on stdin as a config line: never on an argv, never on disk.
+ORACLE_RELEASE_API="https://api.github.com/repos/GetBusbar/busbar-release"
+ORACLE_RELEASE_KEY_PEM='-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAT8gl0GhaEpxYXdRqfeNZ6KU8KgmI+8qbtP8UZPNPJiU=
+-----END PUBLIC KEY-----'
+_pin_in() { awk -F= -v k="$1" '$1==k{sub(/^[^=]*=/,"");print;exit}'; }
+sha256_of() {  # sha256_of <file> — the hex digest, or nothing
+  if command -v sha256sum >/dev/null 2>&1; then sha256sum -- "$1" | cut -c1-64
+  else shasum -a 256 -- "$1" | cut -c1-64; fi
+}
+judge_arch() { local a; a="$(uname -m)"; [ "$a" = arm64 ] && a=aarch64; printf '%s' "$a"; }
+judge_pin_text() {  # judge_pin_text <repo> — the BASE pin's text (see above)
+  local repo="$1" rel="testing/shadow-oracle/oracle-rust.pin"
+  if [ -n "${MODERNCI_TO_SHA:-}" ] && git -C "$repo" cat-file -e "$MODERNCI_TO_SHA:$rel" 2>/dev/null; then
+    git -C "$repo" show "$MODERNCI_TO_SHA:$rel"
+  else
+    cat "$repo/$rel"
+  fi
+}
+release_api() {  # release_api <url> [<accept> [<out>]] — an authenticated GET; the token never on an argv
+  local tok="${BUSBAR_RELEASE_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
+  [ -n "$tok" ] || { echo "oracle: no token to read busbar-release's dev-bin release (BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN)" >&2; return 1; }
+  local accept="${2:-application/vnd.github+json}"
+  if [ -n "${3:-}" ]; then
+    printf 'header = "Authorization: Bearer %s"\n' "$tok" | curl -fsSL --retry 3 -K - -H "Accept: $accept" -o "$3" "$1"
+  else
+    printf 'header = "Authorization: Bearer %s"\n' "$tok" | curl -fsSL --retry 3 -K - -H "Accept: $accept" "$1"
+  fi
+}
+judge_assets() {  # judge_assets <out tsv> — every dev-bin asset as `<id>\t<name>`
+  local out="$1" rid page n
+  rid="$(release_api "$ORACLE_RELEASE_API/releases/tags/dev-bin" | jq -r '.id')" || return 1
+  [[ "$rid" =~ ^[0-9]+$ ]] || { echo "oracle: busbar-release has no dev-bin release" >&2; return 1; }
+  : >"$out"
+  for page in $(seq 1 20); do
+    n="$(release_api "$ORACLE_RELEASE_API/releases/$rid/assets?per_page=100&page=$page" \
+      | jq -r '.[] | "\(.id)\t\(.name)"' | tee -a "$out" | wc -l)" || return 1
+    [ "$n" -lt 100 ] && break
+  done
+  return 0
+}
+fetch_asset() {  # fetch_asset <source> <name> <out> — <source>: a directory (the selftest) or an asset list
+  local src="$1" name="$2" out="$3" id
+  if [ -d "$src" ]; then [ -f "$src/$name" ] && cp "$src/$name" "$out"; return; fi
+  id="$(awk -F'\t' -v n="$name" '$2==n{print $1; exit}' "$src")"
+  [ -n "$id" ] || return 1
+  release_api "$ORACLE_RELEASE_API/releases/assets/$id" application/octet-stream "$out"
+}
+verify_judge_sig() {  # verify_judge_sig <pubkey pem> <asset name> <sha256> <sig file (base64)>
+  local pem="$1" name="$2" hex="$3" sig="$4" d rc=0
+  command -v openssl >/dev/null 2>&1 || { echo "oracle: refusing the judge: $name has a .sig and there is no openssl to verify it" >&2; return 1; }
+  d="$(mktemp -d)"
+  printf '%s\n' "$pem" >"$d/key.pem"
+  printf '%s\n%s\n' "$name" "$hex" >"$d/msg"
+  if ! tr -d '\n\r ' <"$sig" | base64 -d >"$d/sig" 2>/dev/null; then rc=1
+  elif ! openssl pkeyutl -verify -pubin -inkey "$d/key.pem" -rawin -in "$d/msg" -sigfile "$d/sig" >/dev/null 2>&1; then rc=1; fi
+  rm -rf "$d"
+  [ "$rc" = 0 ] || echo "oracle: refusing the judge: $name's .sig is not busbar-release's release key's signature of it" >&2
+  return "$rc"
+}
+fetch_judge() {  # fetch_judge <pin text> <cache dir> <source|api> [<pubkey pem>] — prints the verified judge
+  local text="$1" cache="$2" src="$3" pem="${4:-$ORACLE_RELEASE_KEY_PEM}" arch ref want name bin tmp got side
+  arch="$(judge_arch)"
+  ref="$(printf '%s\n' "$text" | _pin_in release_ref)"
+  want="$(printf '%s\n' "$text" | _pin_in "sha256_linux_$arch")"
+  [[ "$ref" =~ ^[0-9a-f]{40}$ ]] || { echo "oracle: no judge: the pin names no full 40-hex release_ref" >&2; return 1; }
+  [[ "$want" =~ ^[0-9a-f]{64}$ ]] || { echo "oracle: no judge: the pin has no sha256_linux_$arch line, and a host whose architecture the pin does not name has no judge" >&2; return 1; }
+  name="busbar-oracle-linux-$arch-$ref"
+  bin="$cache/$want/busbar-oracle"
+  if [ -x "$bin" ] && [ "$(sha256_of "$bin")" = "$want" ]; then printf '%s\n' "$bin"; return 0; fi
+  tmp="$(mktemp -d)"
+  if [ "$src" = api ]; then judge_assets "$tmp/assets.tsv" || { rm -rf "$tmp"; return 1; }; src="$tmp/assets.tsv"; fi
+  fetch_asset "$src" "$name" "$tmp/$name" || { echo "oracle: no judge: $name is not on busbar-release's dev-bin release" >&2; rm -rf "$tmp"; return 1; }
+  got="$(sha256_of "$tmp/$name")"
+  [ "$got" = "$want" ] || { echo "oracle: refusing the judge: $name has sha256 $got, the pin says $want" >&2; rm -rf "$tmp"; return 1; }
+  if fetch_asset "$src" "$name.sha256" "$tmp/$name.sha256" 2>/dev/null; then
+    side="$(cut -c1-64 <"$tmp/$name.sha256")"
+    [ "$side" = "$want" ] || { echo "oracle: refusing the judge: its published .sha256 ($side) is not the pin's $want" >&2; rm -rf "$tmp"; return 1; }
+  fi
+  if fetch_asset "$src" "$name.sig" "$tmp/$name.sig" 2>/dev/null; then
+    verify_judge_sig "$pem" "$name" "$got" "$tmp/$name.sig" || { rm -rf "$tmp"; return 1; }
+  fi
+  mkdir -p "$cache/$want"
+  mv "$tmp/$name" "$bin.part" && chmod +x "$bin.part" && mv -f "$bin.part" "$bin"
+  rm -rf "$tmp"
+  printf '%s\n' "$bin"
+}
+if [ "${1:-}" = "fetch-selftest" ]; then
+  # RED-before-green for the fetched judge, offline: a fixture "release" directory stands in for the
+  # dev-bin API (fetch_asset's directory source), and a throwaway Ed25519 key for busbar-release's.
+  st="$(mktemp -d)"; trap 'rm -rf "$st"' EXIT
+  fail=0 arch="$(judge_arch)" ref="0123456789abcdef0123456789abcdef01234567"
+  name="busbar-oracle-linux-$arch-$ref"
+  mkdir -p "$st/rel" "$st/cache"
+  printf '#!/bin/sh\necho planted-judge\n' >"$st/rel/$name"
+  good="$(sha256_of "$st/rel/$name")"
+  pin_ok="release_ref=$ref
+sha256_linux_$arch=$good"
+  if p="$(fetch_judge "$pin_ok" "$st/cache" "$st/rel" 2>/dev/null)" && [ "$("$p")" = planted-judge ]; then
+    echo "  [ok]     the pinned digest's judge is fetched, cached and runs"
+  else echo "  [FAILED] the pinned digest's judge was not fetched"; fail=1; fi
+  rm -f "$st/rel/$name"
+  if p="$(fetch_judge "$pin_ok" "$st/cache" "$st/rel" 2>/dev/null)" && [ "$("$p")" = planted-judge ]; then
+    echo "  [ok]     a cached judge is reused by its digest, with no source"
+  else echo "  [FAILED] the cached judge was not reused"; fail=1; fi
+  printf '#!/bin/sh\necho planted-judge\n' >"$st/rel/$name"
+  pin_wrong="release_ref=$ref
+sha256_linux_$arch=$(printf 'f%.0s' $(seq 1 64))"
+  if fetch_judge "$pin_wrong" "$st/cache2" "$st/rel" >/dev/null 2>"$st/err"; then
+    echo "  [FAILED] a judge whose sha256 is not the pin's ran"; fail=1
+  elif grep -q "refusing the judge" "$st/err"; then echo "  [ok]     a wrong sha256 refuses the judge"
+  else echo "  [FAILED] the wrong-sha refusal did not say so: $(cat "$st/err")"; fail=1; fi
+  if fetch_judge "release_ref=$ref" "$st/cache3" "$st/rel" >/dev/null 2>"$st/err"; then
+    echo "  [FAILED] a pin with no line for this architecture produced a judge"; fail=1
+  elif grep -q "no judge" "$st/err"; then echo "  [ok]     a pin with no sha256_linux_$arch line has no judge"
+  else echo "  [FAILED] the missing-line refusal did not say \"no judge\": $(cat "$st/err")"; fail=1; fi
+  printf 'e%.0s' $(seq 1 64) >"$st/rel/$name.sha256"
+  if fetch_judge "$pin_ok" "$st/cache4" "$st/rel" >/dev/null 2>/dev/null; then
+    echo "  [FAILED] a published .sha256 disagreeing with the pin was accepted"; fail=1
+  else echo "  [ok]     a published .sha256 disagreeing with the pin refuses"; fi
+  printf '%s  %s\n' "$good" "$name" >"$st/rel/$name.sha256"
+  if command -v openssl >/dev/null 2>&1 && openssl genpkey -algorithm ed25519 -out "$st/k.pem" 2>/dev/null \
+     && openssl pkey -in "$st/k.pem" -pubout -out "$st/pub.pem" 2>/dev/null; then
+    printf '%s\n%s\n' "$name" "$good" >"$st/msg"
+    openssl pkeyutl -sign -inkey "$st/k.pem" -rawin -in "$st/msg" -out "$st/sig.bin" 2>/dev/null
+    base64 <"$st/sig.bin" | tr -d '\n' >"$st/rel/$name.sig"
+    if fetch_judge "$pin_ok" "$st/cache5" "$st/rel" "$(cat "$st/pub.pem")" >/dev/null 2>&1; then
+      echo "  [ok]     a .sig made by the release key is accepted"
+    else echo "  [FAILED] a good .sig was refused"; fail=1; fi
+    if fetch_judge "$pin_ok" "$st/cache6" "$st/rel" >/dev/null 2>"$st/err"; then
+      echo "  [FAILED] a .sig made by another key was accepted under busbar-release's key"; fail=1
+    elif grep -q "release key" "$st/err"; then echo "  [ok]     a .sig made by another key refuses"
+    else echo "  [FAILED] the bad-.sig refusal did not say so: $(cat "$st/err")"; fail=1; fi
+  else echo "  [FAILED] no openssl with Ed25519 here: the .sig check cannot be proven"; fail=1; fi
+  # THE BASE PIN wins over the tree's when ModernCI names a base that holds one.
+  git init -q "$st/repo" && mkdir -p "$st/repo/testing/shadow-oracle" \
+    && printf 'release_ref=base\n' >"$st/repo/testing/shadow-oracle/oracle-rust.pin" \
+    && git -C "$st/repo" add -A && git -C "$st/repo" -c user.name=t -c user.email=t@t.invalid \
+         -c commit.gpgsign=false -c core.hooksPath=/dev/null commit -q -m pin \
+    && printf 'release_ref=head\n' >"$st/repo/testing/shadow-oracle/oracle-rust.pin" \
+    || { echo "  [FAILED] could not build the base-pin fixture"; fail=1; }
+  b="$(git -C "$st/repo" rev-parse HEAD 2>/dev/null)"
+  if [ "$(MODERNCI_TO_SHA="$b" judge_pin_text "$st/repo")" = "release_ref=base" ] \
+     && [ "$(MODERNCI_TO_SHA= judge_pin_text "$st/repo")" = "release_ref=head" ]; then
+    echo "  [ok]     the base's pin is read when ModernCI names a base, the tree's otherwise"
+  else echo "  [FAILED] the judge's pin was not read from the base"; fail=1; fi
+  [ "$fail" = 0 ] && { echo "oracle fetch-selftest: the judge is the pinned digest's, or there is none"; exit 0; }
+  echo "oracle fetch-selftest: FAILED"; exit 1
+fi
 resolve_bin() {
   if [ -n "${BUSBAR_ORACLE_RUST_BIN:-}" ]; then
     [ -x "$BUSBAR_ORACLE_RUST_BIN" ] || { echo "oracle: BUSBAR_ORACLE_RUST_BIN is not executable: $BUSBAR_ORACLE_RUST_BIN" >&2; exit 1; }
     printf '%s\n' "$BUSBAR_ORACLE_RUST_BIN"; return 0
+  fi
+  if [ "$(uname -s)" = Linux ]; then
+    fetch_judge "$(judge_pin_text "$here")" "${XDG_CACHE_HOME:-$HOME/.cache}/busbar-oracle-judge" api || exit 1
+    return 0
   fi
   local built="$root/checkout/target/release/$BINNAME"
   if [ -x "$built" ]; then printf '%s\n' "$built"; return 0; fi

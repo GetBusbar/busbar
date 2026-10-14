@@ -15,7 +15,7 @@ use super::*;
 /// fixture config carries this one.
 pub fn stand_in_store() -> crate::config::StoreCfg {
     crate::config::StoreCfg {
-        module: fixture_store::linked::STORE.0.to_string(),
+        module: crate::test_support::store_double::STORE.0.to_string(),
         settings: serde_json::Map::new(),
     }
 }
