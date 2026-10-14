@@ -74,6 +74,9 @@ pub struct TransportFacts {
     /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
     /// has (`TransportTail::status_rows`); a stream's final status is judged against them.
     pub status_rows: Vec<(u32, u32, u32)>,
+    /// Its tail states `FRAMING_DATAGRAM`: a framer over the host's datagram port, whose calls
+    /// carry the datagram lane, never a stream's framer.
+    pub datagram: bool,
 }
 
 /// A plugin string, interned.
@@ -150,6 +153,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         unsafe { std::slice::from_raw_parts(tail.status_rows, tail.status_rows_len) }
     };
     Ok(TransportFacts {
+        datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
         status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
         role: tail.role,
         claims,
