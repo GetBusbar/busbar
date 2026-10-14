@@ -27,8 +27,8 @@ use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
     check_accept, check_arrival, check_cancel, check_claims, check_composes_over, check_framer,
-    check_framer_fields, check_head_slots, check_io, check_listen, check_locate, check_settings,
-    check_tail,
+    check_framer_fields, check_head_slots, check_io, check_listen, check_locate,
+    check_offered_points, check_settings, check_tail,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
@@ -74,6 +74,9 @@ pub struct TransportFacts {
     /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
     /// has (`TransportTail::status_rows`); a stream's final status is judged against them.
     pub status_rows: Vec<(u32, u32, u32)>,
+    /// The auth points it offers, its Statement's `extensions` record
+    /// (`abi::transport::EXT_OFFERED_POINTS`): `{Head, HeadBody}` when it states none.
+    pub offered: busbar_contract::abi::transport::AuthPoints,
 }
 
 /// A plugin string, interned.
@@ -126,6 +129,13 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         unsafe { std::slice::from_raw_parts(tail.settings, tail.settings_len) }
     };
     check_settings(settings).map_err(broke)?;
+    let extensions: &[u8] = if st.extensions.ptr.is_null() {
+        &[]
+    } else {
+        // SAFETY: a non-NULL Statement blob is `'static` plugin data of its stated length.
+        unsafe { std::slice::from_raw_parts(st.extensions.ptr, st.extensions.len) }
+    };
+    let offered = check_offered_points(extensions).map_err(broke)?;
     let claims: Vec<&'static str> = names
         .iter()
         .map(|c| owned(*c, "claim"))
@@ -151,6 +161,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     };
     Ok(TransportFacts {
         status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
+        offered,
         role: tail.role,
         claims,
         upgrades,

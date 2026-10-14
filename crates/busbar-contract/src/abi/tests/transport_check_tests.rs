@@ -917,3 +917,28 @@ fn a_streams_final_status_is_judged_against_its_claims_numbering() {
         f(Rule::NullWithCount, "finish.final_bytes")
     );
 }
+
+/// The offered-points record: unstated is `{Head, HeadBody}`; a stated set reads back; a record of
+/// another length or naming another bit refuses the load.
+#[test]
+fn the_offered_points_record_reads_or_refuses() {
+    use crate::abi::mechanism::extensions::encode;
+    let record = |v: &[u8]| encode(&[(EXT_OFFERED_POINTS, v)]);
+    assert_eq!(
+        check_offered_points(&[]),
+        Ok(AuthPoints(POINT_HEAD | POINT_HEAD_BODY))
+    );
+    let peer_head = (POINT_PEER | POINT_HEAD).to_le_bytes();
+    assert_eq!(
+        check_offered_points(&record(&peer_head)),
+        Ok(AuthPoints(POINT_PEER | POINT_HEAD))
+    );
+    assert_eq!(
+        check_offered_points(&record(&[1, 0])),
+        Err(fault(Rule::Foreign, "offered_points.len"))
+    );
+    assert_eq!(
+        check_offered_points(&record(&POINT_FRAME.to_le_bytes())),
+        Err(fault(Rule::UnknownCode, "offered_points.unknown_flags"))
+    );
+}

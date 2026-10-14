@@ -4,9 +4,10 @@
 //! A guest list's order and its match: CG-62 precedence first, predicates above none at an equal
 //! path, a claimant's rung among its own lines; two claimants meeting at an equal precedence refused;
 //! a path hit on another method is a method miss, not no-route; a listener mixing lines that need
-//! `Peer` with lines that do not refused.
+//! `Peer` with lines that do not refused; a line needing a point its transport does not offer
+//! refused.
 
-use busbar_contract::abi::auth::AuthPoints;
+use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use busbar_contract::abi::transport::route::{
     FIELD_PRESENT, FIELD_VALUE_PREFIX, METHOD_GET, METHOD_POST, PATH_EXACT, PATH_PATTERN,
     PATH_PREFIX,
@@ -31,6 +32,7 @@ fn line(claimant: &str, route: Route) -> Line {
         dialect: 0,
         auth: LineAuth::None,
         upgrade: None,
+        offered: AuthPoints(POINT_PEER | POINT_HEAD | POINT_HEAD_BODY),
     }
 }
 
@@ -255,5 +257,38 @@ fn a_listener_mixing_peer_and_non_peer_lines_is_refused() {
         ])
         .is_ok(),
         "no line needs Peer"
+    );
+}
+
+/// RED (THE DESIGN §6 step 3, boot refusals): a line whose auth needs a point its transport does
+/// not offer is refused, naming the line; one whose points its transport offers seals.
+#[test]
+fn an_auth_needing_a_point_its_transport_does_not_offer_is_refused() {
+    let head_only = AuthPoints::HEAD;
+    let on = |points: AuthPoints, offered: AuthPoints| Line {
+        offered,
+        ..authed("a", "/a", points)
+    };
+    let Err(GuestRefusal::PointNotOffered(refused)) =
+        GuestList::seal(vec![on(AuthPoints::HEAD_BODY, head_only)])
+    else {
+        panic!("a point the transport does not offer is refused");
+    };
+    assert_eq!(refused.route.path, "/a");
+    assert!(
+        matches!(
+            GuestList::seal(vec![on(AuthPoints::PEER, head_only)]),
+            Err(GuestRefusal::PointNotOffered(_))
+        ),
+        "Peer on a transport offering only Head"
+    );
+    assert!(
+        GuestList::seal(vec![on(AuthPoints::HEAD, head_only)]).is_ok(),
+        "a point the transport offers seals"
+    );
+    let offered = AuthPoints(POINT_PEER | POINT_HEAD);
+    assert!(
+        GuestList::seal(vec![on(AuthPoints(POINT_PEER | POINT_HEAD), offered)]).is_ok(),
+        "every needed point offered"
     );
 }

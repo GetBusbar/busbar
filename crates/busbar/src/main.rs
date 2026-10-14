@@ -1057,6 +1057,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
         &root::serve::upgrade_carriers(LINKED.transports),
+        &root::serve::transport_offers(LINKED.transports),
     )
     .unwrap_or_else(|e| die(e));
     let (data_router, admin_router, app_handle) = build_split_routers_serving_doors(

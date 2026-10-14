@@ -873,6 +873,7 @@ fn the_wires_linked_row(wire: &DroppedDoor) -> LinkedTransport {
         build: |_, _| dropped_doors()[0].wire.clone(),
         claims: || vec![dropped_doors()[0].key],
         upgrades: Vec::new,
+        offered: crate::root::doors::offers_unstated,
     }
 }
 

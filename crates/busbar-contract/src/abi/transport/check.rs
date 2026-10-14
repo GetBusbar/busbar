@@ -21,6 +21,7 @@ use super::{
     ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS,
     UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
+use super::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use super::{
     DatagramRoute, KeyingMaterial, RendezvousTerms, FINGERPRINT_BYTES, HANDSHAKE_ANSWERS,
     HANDSHAKE_NONE, LANE_CLEAR, LANE_SECURED, MAX_KEYING_BYTES, MAX_ROUTES, PATH_REQUEST_BIND,
@@ -707,6 +708,27 @@ pub fn check_settings(settings: &[SettingDecl]) -> Result<(), Fault> {
         )?;
     }
     Ok(())
+}
+
+/// The auth points a transport offers, read from its Statement's `extensions`
+/// ([`super::EXT_OFFERED_POINTS`]): `{Head, HeadBody}` when it states no record; else exactly four
+/// bytes of [`POINT_PEER`] | [`POINT_HEAD`] | [`POINT_HEAD_BODY`] bits.
+///
+/// # Errors
+///
+/// The record is not four bytes ([`Rule::Foreign`]) or names another bit ([`Rule::UnknownCode`]).
+pub fn check_offered_points(extensions: &[u8]) -> Result<AuthPoints, Fault> {
+    let Some(value) = crate::abi::mechanism::extensions::get(extensions, super::EXT_OFFERED_POINTS)
+    else {
+        return Ok(AuthPoints(POINT_HEAD | POINT_HEAD_BODY));
+    };
+    let bits = <[u8; 4]>::try_from(value)
+        .map(u32::from_le_bytes)
+        .map_err(|_| fault(Rule::Foreign, "offered_points.len"))?;
+    if bits & !(POINT_PEER | POINT_HEAD | POINT_HEAD_BODY) != 0 {
+        return Err(fault(Rule::UnknownCode, "offered_points.unknown_flags"));
+    }
+    Ok(AuthPoints(bits))
 }
 
 /// The most field predicates one route may carry.

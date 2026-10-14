@@ -185,10 +185,16 @@ pub struct LinkedTransport {
     /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
     /// upgrade lines (`crate::root::serve::upgrade_carriers`; ARCHITECT ruling Q128 U7).
     pub upgrades: ClaimsOf,
+    /// The auth points it offers, read off the door's Statement (`abi::transport::
+    /// EXT_OFFERED_POINTS`): a guest-list line's auth may need no other (THE DESIGN §6 step 3).
+    pub offered: OfferedOf,
 }
 
 /// A row's claims, read when the seal runs.
 pub type ClaimsOf = fn() -> Vec<&'static str>;
+
+/// A row's offered auth points, read when the guest lists seal.
+pub type OfferedOf = fn() -> busbar_contract::abi::auth::AuthPoints;
 
 /// A wire's build: handed the layer built beneath it, where one is, and the deployment's settings.
 pub type BuildTransport = fn(

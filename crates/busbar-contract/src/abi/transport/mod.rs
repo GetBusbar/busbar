@@ -323,6 +323,15 @@ pub const FACT_SIGNS_NOTHING_AFTER_AUTH: u32 = 1;
 /// [`TransportTail::facts`]: the framer decodes the payload.
 pub const FACT_DECODES_PAYLOAD: u32 = 2;
 
+/// THE OFFERED-POINTS RECORD: the key under which a transport's Statement `extensions` states
+/// the auth points it offers (THE DESIGN, "Auth points and guest lists"; the blob's bytes are
+/// [`crate::abi::mechanism::extensions`]'s keyed entries, so no layout changes). The value is four
+/// bytes, a little-endian [`AuthPoints`] set of [`POINT_PEER`] | [`POINT_HEAD`] |
+/// [`POINT_HEAD_BODY`]; another length or bit refuses the load ([`check::check_offered_points`]).
+/// A transport that states no record offers `{Head, HeadBody}`, the request points 1.5.5's chain
+/// was called at. Boot refuses a line whose auth needs a point its transport does not offer.
+pub const EXT_OFFERED_POINTS: &str = "offered-points";
+
 /// `side`: the accepting end.
 pub const SIDE_ACCEPT: u32 = 0;
 /// `side`: the dialing end.
