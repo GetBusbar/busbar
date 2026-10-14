@@ -512,6 +512,41 @@ fn running_past_the_reservation_posts_the_overdraft_rather_than_refusing() {
     }
 }
 
+/// ONE FIGURE SETTLES THE HOLD (TODO L1689). The exit spent the hold by the rig's meter and settled
+/// it by the reported `amount`: two numbers, so an end that settled 80 inside a reservation of 100
+/// posted an OVERDRAFT of 50 the meter alone ran up. The hold is now spent by the figure it settles
+/// at, so a second count — whatever it reads — cannot move the posting.
+#[test]
+fn the_hold_is_spent_by_the_figure_it_settles_at_not_by_a_second_count() {
+    let kernel = Kernel::new();
+    let units = TestUnits {
+        door: Door::Own(100),
+        spend: 150,
+        evidence: Evidence {
+            reported: Some(80),
+            ..Evidence::default()
+        },
+        ..TestUnits::default()
+    };
+    let cell = cell(&kernel);
+    let canary = Canary::new();
+    match run(&units, &kernel, &cell, &canary) {
+        Ended::Settled { end, .. } => {
+            let posted = end.posted().expect("value was delivered, so it posts");
+            assert_eq!(posted.reserved(), 100);
+            assert_eq!(posted.settled(), 80);
+            assert_eq!(posted.released(), 20);
+            assert_eq!(
+                posted.overdraft(),
+                0,
+                "settled inside its reservation, so nothing went unbacked"
+            );
+            assert!(!posted.flags().contains(PostingFlags::OVERDRAFT));
+        }
+        other => panic!("expected a settled end, got {other:?}"),
+    }
+}
+
 #[test]
 fn the_leases_go_back_on_every_end_whatever_it_was() {
     let kernel = Kernel::new();

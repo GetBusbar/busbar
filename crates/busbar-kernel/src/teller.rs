@@ -248,20 +248,18 @@ pub struct UnitCtx {
     pub kernel_verb_only: bool,
 }
 
-/// The kernel's running total of what a unit has spent, in nano-units.
+/// A running count a test rig keeps of what its unit spent, in nano-units.
 ///
-/// The hold itself lives inside the cell where nothing can borrow it mutably, so the loop counts
-/// here as the unit accrues and applies the total to the hold at the exit, where the hold is out of
-/// the cell and owned. An accrual is never lost by this: the total is atomic and the exit reads it
-/// after the compare-and-set that took the hold.
+/// NOT a money figure the exit reads. The exit spends and settles the hold by the settlement
+/// writer's one `amount` (TODO L1689); a second figure here could only disagree with it. No
+/// production leg accrues onto this.
 #[derive(Debug, Default)]
 pub struct AccrualMeter {
     spent: AtomicU64,
-    headroom: AtomicU64,
 }
 
 impl AccrualMeter {
-    /// A meter reading zero, with no headroom offered.
+    /// A meter reading zero.
     pub fn new() -> Self {
         AccrualMeter::default()
     }
@@ -274,25 +272,6 @@ impl AccrualMeter {
     /// What the unit has spent so far.
     pub fn total(&self) -> u64 {
         self.spent.load(Ordering::Acquire)
-    }
-
-    /// Say how far the unit's reservation may still be grown, in nano-units.
-    ///
-    /// The loop cannot work this out: it is what the principal's slice has left in the window, and
-    /// only the plane's own leg holds the chain that answers. So the leg offers it here, while it is
-    /// running, and the exit reads it when it applies the accrual to the hold. A leg that offers
-    /// nothing gets the safe answer — the reservation does not grow and the excess is carried —
-    /// which is a unit that still runs and still posts, never one that is refused.
-    ///
-    /// Offered rather than added: the last word wins, because the figure is a reading of the window
-    /// and not a quantity that accumulates.
-    pub fn offer_headroom(&self, nanos: u64) {
-        self.headroom.store(nanos, Ordering::Release);
-    }
-
-    /// What the leg said the reservation may still grow by.
-    pub fn headroom(&self) -> u64 {
-        self.headroom.load(Ordering::Acquire)
     }
 }
 
@@ -437,8 +416,8 @@ pub trait Units {
 ///
 /// Route is the one step of the ten that dials, sends and relays, so it is the one step whose answer
 /// is not already in hand when the loop asks for it. Meter folds what Route observed and the exit
-/// settles what the meter counted; neither waits on anything, so neither is here and neither needs
-/// to be. This trait is that single seam, stated: one method, one future, one place the loop yields.
+/// settles what the settlement writer reported; neither waits on anything, so neither is here and
+/// neither needs to be. This trait is that single seam, stated: one method, one future, one place the loop yields.
 ///
 /// A plane whose Route answers in place does not implement this at all — [`run_unit`] supplies a leg
 /// that is ready on its first poll, over that plane's own [`Units::route`], and the loop body it
@@ -545,7 +524,7 @@ pub struct Run<'r> {
     pub gauge: &'r ConcurrencyGauge,
     /// The counts the node balances.
     pub canary: &'r Canary,
-    /// What the unit has spent so far.
+    /// A test rig's spend count. The exit does not read it: it settles by the one reported figure.
     pub meter: &'r AccrualMeter,
 }
 
@@ -1313,12 +1292,13 @@ pub fn exit<U: Units>(
             let Written { amount, flags, fee } = settle_written(&outcome, &evidence);
             let drawn = requests_drawn(ctx.origin, evidence.upstream_candidate);
             let requests = requests_settled(reached_admitted, drawn);
-            // What the unit spent while it ran is applied to the hold here, where the hold is
-            // owned. The spend lands in full: past the end of the reservation it grows out of
-            // whatever headroom the leg offered while it ran, and whatever nothing can back is
-            // carried out as an overdraft. There is no arm on this path that refuses — value was
-            // delivered, so the only question left is which column it lands in.
-            let _spend = hold.spend(run.meter.total(), run.meter.headroom());
+            // ONE FIGURE (TODO L1689): the hold is spent by the same `amount` the posting settles,
+            // so the overdraft counter and the settled figure can never disagree. Spending one
+            // number and settling another posted an OVERDRAFT on an end that settled inside its
+            // reservation. The spend lands in full and whatever nothing backs is carried out as an
+            // overdraft — no arm on this path refuses, value was delivered. Headroom is zero: no
+            // leg draws a slice at the exit, so the reservation does not grow here.
+            let _spend = hold.spend(amount, 0);
             let class = evidence.class.unwrap_or(KERNEL_ACCRUAL_CLASS);
             let lines = vec![UsageLine {
                 class,
