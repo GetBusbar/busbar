@@ -65,8 +65,8 @@ use busbar_contract::abi::plane::{
     CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
     PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE, ROUTE_DIRECT,
-    ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, TAP_FAULT_NONE,
-    UNITS_FLOOR, UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
+    ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR,
+    UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
@@ -798,9 +798,10 @@ fn to_caller(piece: Piece<'_>) -> Answer {
         units: counts(&piece.units),
         verdict: verdict(piece.verdict),
         fault,
-        tap_fault: piece
-            .tap_fault
-            .map_or(TAP_FAULT_NONE, busbar_contract::codec::UsageTapFault::code),
+        tap_fault: piece.tap_fault.map_or(
+            busbar_contract::abi::plane::TAP_FAULT_NONE,
+            busbar_contract::codec::UsageTapFault::code,
+        ),
         done: piece.done,
         ..Answer::default()
     }
