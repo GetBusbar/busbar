@@ -232,6 +232,7 @@ fn serve(mut stream: TcpStream, peak: &AtomicUsize, arrived: &(Mutex<usize>, Con
     *n += 1;
     peak.fetch_max(*n, Ordering::SeqCst);
     if *n >= STREAMS {
+        drop(n);
         all.notify_all();
     } else {
         let _ = all.wait_timeout_while(n, ARRIVAL_WAIT, |n| *n < STREAMS);
