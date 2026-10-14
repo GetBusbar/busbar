@@ -508,13 +508,14 @@ auth-admin-tokens = "busbar-auth-admin-tokens"
 [package.metadata.busbar.served-witness]
 plane-streaming = "busbar-voice"
 
-# THE DOOR PLANES' OWN ROOT CELLS: cargo feature -> the plane crate whose `tests/root/mod.rs` holds
-# the cases that drive its door through this composition's door path, written in the plane's own words.
-# Test builds only: `build.rs` emits `$OUT_DIR/door_cells.rs` (one `#[path]` module per enabled row,
-# which `root/serve.rs` includes), so the composition root's sources name no plane (ARCHITECT ruling
-# on #464, applied to every door plane's root leg).
-[package.metadata.busbar.door-cells]
-plane-a2a-door = "busbar-plane-a2a"
+# THE DOOR PLANES' OWN ROOT CELLS (ARCHITECT ruling on #464, applied to every door plane's root leg):
+# every linked plane door's crate holds, at its `tests/root/mod.rs`, the cases that drive its door
+# through this composition's door path, written in the plane's own words, and states that path under
+# its `links` name `busbar-door-cells-<crate>` (its `build.rs` prints `cargo::metadata=cells=<path>`).
+# Test builds only: `build.rs` reads `DEP_BUSBAR_DOOR_CELLS_<CRATE>_CELLS` for every enabled
+# plane-door row and emits `$OUT_DIR/door_cells.rs` (one `#[path]` module per door, which
+# `root/serve.rs` includes), so the composition root's sources name no plane and the list is the
+# linked table's; a door whose crate states none fails the root's tests, naming it.
 
 # THE DRIVER PROOFS of a development-only fold switch (a `<plane>-on-driver` feature, BUSBAR-1.6.0.md
 # Part 3 section 12 "The switch"): cargo feature -> the plane crate whose `tests/on_driver/` holds the

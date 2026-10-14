@@ -3969,3 +3969,8 @@ mod framed_tests;
 #[cfg(all(test, linked_axis_node, linked_axis_plane_door))]
 #[path = "tests/secret_source.rs"]
 mod secret_source_tests;
+
+// The door planes' own root cells, held to the linked roster and to the capability-equality ledger.
+#[cfg(all(test, linked_axis_node))]
+#[path = "tests/door_cells.rs"]
+mod door_cells_tests;
