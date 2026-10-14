@@ -553,6 +553,7 @@ struct Answer {
     metric_pool: Span,
     metric_lane: Span,
     wait_member: Span,
+    tap_fault: u8,
 }
 
 impl Answer {
@@ -581,7 +582,14 @@ impl Answer {
             metric_pool: o.metric_pool,
             metric_lane: o.metric_lane,
             wait_member: o.wait_member,
+            tap_fault: o.tap_fault,
         }
+    }
+
+    /// The usage-tap fault this answer carries, as the reason the kernel counts it under; `None`
+    /// only for an answer that carries none. A byte outside the vocabulary is `unknown`, counted.
+    fn usage_tap_fault(&self) -> Option<&'static str> {
+        busbar_contract::codec::UsageTapFault::reason_of(self.tap_fault)
     }
 }
 
@@ -915,11 +923,16 @@ async fn until(left: Option<Duration>) {
 pub trait AttemptSteps {
     /// An attempt starts on a member of `provider`, the unit's request read in `dialect`.
     fn attempting(&self, _ctx: &UnitCtx, _dialect: u32, _provider: &str) {}
+    /// The plane's answer carried a usage-tap fault of `reason` for the unit read in `dialect`.
+    fn usage_tap_fault(&self, _ctx: &UnitCtx, _dialect: u32, _reason: &'static str) {}
 }
 
 impl<S: super::DriverSteps> AttemptSteps for S {
     fn attempting(&self, ctx: &UnitCtx, dialect: u32, provider: &str) {
         super::DriverSteps::attempting(self, ctx, dialect, provider);
+    }
+    fn usage_tap_fault(&self, ctx: &UnitCtx, dialect: u32, reason: &'static str) {
+        super::DriverSteps::usage_tap_fault(self, ctx, dialect, reason);
     }
 }
 
@@ -1299,6 +1312,12 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 drop(st);
                 self.driver.money.checkpoint(run.ctx, units)
             };
+            // THE USAGE-TAP FAULT the plane returned beside its units (row 155): counted here, once
+            // per answer that carries it (the plane writes it on one window of the answer).
+            if let Some(reason) = out.usage_tap_fault() {
+                self.steps
+                    .usage_tap_fault(run.ctx, run.bufs.dialect, reason);
+            }
             // THE UNIT'S LEDGER LANE, where the answer names one (SEAM-L(j)): the money steps
             // lane the unit by it from here. A lane that is not UTF-8 is a plane fault.
             let lane = run.bufs.arena(out.lane);

@@ -1855,6 +1855,7 @@ fn compute_layout() -> String {
             target,
             need,
             fault,
+            tap_fault,
             _fault_reserved,
             lane,
             final_status,

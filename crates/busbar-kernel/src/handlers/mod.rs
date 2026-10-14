@@ -50,9 +50,9 @@
 // `busbar_mcp::PROTO_DECL` directly (dev-dependency). NOTE THE SCOPE: this was MCP the PROTOCOL; the
 // `mcp/` PLANE (`crate::mcp`) never travelled with the codec and is still core's.
 
-// THE USAGE-TAP FAULT HOST SERVICES the protocol install arms for every codec cell (#83a HOST):
-// the warn-once latch and the decode reporter, both counting on
-// `busbar_kernel::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL`.
+// THE USAGE-TAP FAULT COUNT (row 155): a plane returns a usage-tap fault as data on its door's
+// answer (`abi::plane::OnPieceOut::tap_fault`), and the kernel counts it here on
+// `busbar_kernel::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL`, warning once per `(protocol, reason)`.
 
 /// Process-lifetime warn-once latch for the usage-tap decode fault class, keyed `protocol:reason`. A
 /// live protocol/dialect the tap reader cannot decode fails on EVERY 2xx body of that shape, so an
@@ -72,30 +72,25 @@ pub fn usage_tap_decode_fail_should_warn(protocol: &str, reason: &'static str) -
     seen.insert(format!("{protocol}:{reason}"))
 }
 
-/// THE HOST'S USAGE-TAP FAULT REPORTER — what [`OperationHandler::extract_usage`](busbar_contract::codec::OperationHandler::extract_usage)'s default reports
-/// through when a cell's own reader refuses a same-protocol 2xx body (the request bills 0 tokens).
-/// Counted on [`BILLING_TAP_DECODE_FAIL_TOTAL`](crate::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL) and warned once per `(protocol, reason)`, exactly as
-/// the default did inline before the trait moved into the contract, which takes no logging or metrics
-/// dependency. Installed by [`crate::proto::install_protocols`] and the test registration seams, so
-/// it is armed before any cell is reachable.
-pub fn report_usage_tap_decode_failure(
-    ingress_protocol: &str,
-    e: &busbar_contract::codec::CodecError,
-) {
-    if usage_tap_decode_fail_should_warn(ingress_protocol, "decode") {
+/// COUNT ONE USAGE-TAP FAULT a plane's answer carried for a unit read in `protocol`: one increment
+/// of [`BILLING_TAP_DECODE_FAIL_TOTAL`](crate::snapshot::BILLING_TAP_DECODE_FAIL_TOTAL) under
+/// `reason`, warned the first time the `(protocol, reason)` is seen and logged at debug after. The
+/// request billed 0 tokens for its tap; the plane names the fault, the kernel counts it.
+pub fn usage_tap_fault(protocol: &str, reason: &'static str) {
+    if usage_tap_decode_fail_should_warn(protocol, reason) {
         crate::diagnostics::diag_warn!(
             crate::diagnostics::USAGE_TAP_DECODE_FAILED,
-            protocol = ingress_protocol,
-            error = ?e,
-            "usage tap: read_response failed to decode a same-protocol 2xx body; \
+            protocol = protocol,
+            reason = reason,
+            "usage tap: a same-protocol 2xx body's usage could not be read; \
              billing 0 tokens for this request"
         );
     } else {
         crate::diagnostics::diag_debug!(
             crate::diagnostics::USAGE_TAP_DECODE_FAILED,
-            protocol = ingress_protocol,
-            error = ?e,
-            "usage tap: read_response still failing to decode a same-protocol 2xx body; \
+            protocol = protocol,
+            reason = reason,
+            "usage tap: a same-protocol 2xx body's usage still could not be read; \
              billing 0 tokens for this request"
         );
     }
@@ -192,7 +187,8 @@ impl OpDispatch {
         &self,
         ingress_protocol: &str,
         body: &[u8],
-    ) -> Option<busbar_contract::billing::TokenUsage> {
+    ) -> Result<Option<busbar_contract::billing::TokenUsage>, busbar_contract::codec::UsageTapFault>
+    {
         self.op_handler.extract_usage(ingress_protocol, body)
     }
     pub fn egress_accept(&self, egress_protocol: &str, wants_stream: bool) -> &'static str {

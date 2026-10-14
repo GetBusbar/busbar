@@ -444,6 +444,9 @@ struct Answer {
     verdict: u32,
     /// `FAULT_*`: the breaker's reading of this answer, written once, on its first window.
     fault: u8,
+    /// `TAP_FAULT_*`: why the usage tap could not read the body, beside the units; written once,
+    /// on the first window, for the kernel to count (row 155).
+    tap_fault: u8,
     /// The caller's reply is complete.
     done: bool,
     /// The unit's audit rows, `(action, resource)`, each written as a degraded `RECORD_AUDIT`:
@@ -797,6 +800,10 @@ fn to_caller(piece: Piece<'_>) -> Answer {
         units: counts(&piece.units),
         verdict: verdict(piece.verdict),
         fault,
+        tap_fault: piece.tap_fault.map_or(
+            busbar_contract::abi::plane::TAP_FAULT_NONE,
+            busbar_contract::codec::UsageTapFault::code,
+        ),
         done: piece.done,
         ..Answer::default()
     }
@@ -1052,6 +1059,7 @@ fn deliver(
     out.set(|o| &o.verdict, p.answer.verdict);
     // Once per answer: a reading recorded on every window of a long answer would count it again.
     out.set(|o| &o.fault, std::mem::take(&mut p.answer.fault));
+    out.set(|o| &o.tap_fault, std::mem::take(&mut p.answer.tap_fault));
     out.set(|o| &o.flags, far | if done { EMIT_DONE } else { 0 });
     if !more {
         unit.pending = None;

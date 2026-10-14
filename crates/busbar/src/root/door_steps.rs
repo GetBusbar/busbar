@@ -517,7 +517,8 @@ pub struct DoorFacts {
     pub keeps: Vec<busbar_kernel::plane_driver::ResponseKeep>,
     /// The plane's dialect names, by the index `arrive` answers, and each provider's dialect: an
     /// attempt whose far end speaks another dialect than the caller's is counted as a translation
-    /// (`busbar_translations_total`), as the previous release counted it. Empty = none counted.
+    /// (`busbar_translations_total`), as the previous release counted it, and a usage-tap fault
+    /// an answer carries is counted under the unit's dialect. Empty = none counted.
     pub translations: (Arc<[String]>, Arc<BTreeMap<String, String>>),
     /// The plane's declared breaker fact (`declares.breaker`, ARCHITECT Q4): whether a transient
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
@@ -892,6 +893,13 @@ impl DriverSteps for DoorSteps<'_> {
             if from != to {
                 busbar_kernel::telemetry::translation(from, to);
             }
+        }
+    }
+
+    fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
+        // The unit's dialect is the ingress protocol its tap read the body as (row 155).
+        if let Some(protocol) = self.facts.translations.0.get(dialect as usize) {
+            busbar_kernel::handlers::usage_tap_fault(protocol, reason);
         }
     }
 

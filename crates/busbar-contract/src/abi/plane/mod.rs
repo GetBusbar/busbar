@@ -384,6 +384,16 @@ pub const UNITS_REPORTED: u32 = 1;
 /// [`UNITS_REPORTED`]; the plane decides when it applies, the kernel adds no floor of its own.
 pub const UNITS_FLOOR: u32 = 2;
 
+/// [`OnPieceOut::tap_fault`]: no usage-tap fault.
+pub const TAP_FAULT_NONE: u8 = 0;
+/// [`OnPieceOut::tap_fault`]: the cell's own reader refused the body (`reason="decode"`).
+pub const TAP_FAULT_DECODE: u8 = 1;
+/// [`OnPieceOut::tap_fault`]: the body is not JSON (`reason="bad_json"`).
+pub const TAP_FAULT_BAD_JSON: u8 = 2;
+/// [`OnPieceOut::tap_fault`]: the caller's dialect is not one the tap reads
+/// (`reason="unknown_protocol"`).
+pub const TAP_FAULT_UNKNOWN_PROTOCOL: u8 = 3;
+
 /// THE ONE BILLING RULE ON A COUNT'S SOURCE: [`UNITS_REPORTED`] and [`UNITS_FLOOR`] bill;
 /// [`UNITS_ESTIMATED`] (and any other value) never does. Every kernel site that ledgers, meters or
 /// reads a fee unit from a plane's counts asks this, never a source compare of its own.
@@ -1853,8 +1863,17 @@ pub struct OnPieceOut {
     /// the padding after
     /// `need` (pre-tag v1).
     pub fault: u8,
+    /// THE UNIT'S USAGE-TAP FAULT (`TAP_FAULT_*`), beside the units this answer reports: why the
+    /// plane's usage tap could not read a same-protocol 2xx body, so the request billed 0 tokens
+    /// ([`crate::codec::UsageTapFault`]). The kernel counts it, once per answer that carries it, on
+    /// `busbar_billing_tap_decode_fail_total{protocol,reason}` under the unit's dialect, and warns
+    /// once per `(protocol, reason)`: the fault crosses as data, never as a host call. A CLOSED
+    /// enum: [`TAP_FAULT_NONE`] = none, then the named reasons; any other value is counted under
+    /// `reason="unknown"` (and warned once), never ignored and never read as none. Laid in the
+    /// padding after `fault` (pre-release, at the unchanged plane ABI version).
+    pub tap_fault: u8,
     /// Alignment padding.
-    pub _fault_reserved: [u8; 3],
+    pub _fault_reserved: [u8; 2],
     /// THE UNIT'S LEDGER LANE, in the arena; a zero length = none named. The billing identity the
     /// unit's units are priced, ledgered and metered under, which is not the route entry the walk
     /// picked (a call of one tool on a pooled server is the tool's lane, not the server's). The
