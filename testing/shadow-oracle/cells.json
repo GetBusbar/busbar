@@ -23064,7 +23064,7 @@
       "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
     },
     {
-      "id": "llm|anthropic|anthropic|request|stream_upstream_error",
+      "id": "llm|anthropic|anthropic|request|stream_upstream_error@fixture",
       "plane": "llm",
       "family": "llm.wire",
       "ingress_dialect": "anthropic",
@@ -23453,7 +23453,7 @@
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
     },
     {
-      "id": "llm|bedrock|bedrock|request|ok_cachepoint_document",
+      "id": "llm|bedrock|bedrock|request|ok_cachepoint_document@fixture",
       "plane": "llm",
       "family": "llm.wire",
       "ingress_dialect": "bedrock",
@@ -23530,7 +23530,7 @@
       "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
     },
     {
-      "id": "llm|bedrock|bedrock|request|stream_upstream_error",
+      "id": "llm|bedrock|bedrock|request|stream_upstream_error@fixture",
       "plane": "llm",
       "family": "llm.wire",
       "ingress_dialect": "bedrock",
@@ -23984,7 +23984,7 @@
       "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
     },
     {
-      "id": "llm|cohere|cohere|request|stream_upstream_error",
+      "id": "llm|cohere|cohere|request|stream_upstream_error@fixture",
       "plane": "llm",
       "family": "llm.wire",
       "ingress_dialect": "cohere",
@@ -24482,7 +24482,7 @@
       }
     },
     {
-      "id": "llm|gemini|gemini|request|ok_tool_use_tokens",
+      "id": "llm|gemini|gemini|request|ok_tool_use_tokens@fixture",
       "plane": "llm",
       "family": "llm.wire",
       "ingress_dialect": "gemini",
@@ -24533,7 +24533,7 @@
       "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
     },
     {
-      "id": "llm|gemini|gemini|request|stream_upstream_error",
+      "id": "llm|gemini|gemini|request|stream_upstream_error@fixture",
       "plane": "llm",
       "family": "llm.wire",
       "ingress_dialect": "gemini",
@@ -25021,7 +25021,7 @@
       "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
     },
     {
-      "id": "llm|openai|openai|request|stream_upstream_error",
+      "id": "llm|openai|openai|request|stream_upstream_error@fixture",
       "plane": "llm",
       "family": "llm.wire",
       "ingress_dialect": "openai",
@@ -25410,7 +25410,7 @@
       "why": "happy path: authenticated, in-scope, under budget, upstream healthy"
     },
     {
-      "id": "llm|responses|responses|request|ok_citation",
+      "id": "llm|responses|responses|request|ok_citation@fixture",
       "plane": "llm",
       "family": "llm.wire",
       "ingress_dialect": "responses",
@@ -25490,7 +25490,7 @@
       "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
     },
     {
-      "id": "llm|responses|responses|request|stream_upstream_error",
+      "id": "llm|responses|responses|request|stream_upstream_error@fixture",
       "plane": "llm",
       "family": "llm.wire",
       "ingress_dialect": "responses",

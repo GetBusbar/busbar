@@ -26,7 +26,7 @@
     "twin. scripts/verify-1.6.0-done.sh (assert_golden_bookkeeping, run by its --selftest over this",
     "tree) refuses an in-scope cell the golden does not owe and no entry here names.",
     "The three entries from `admin-kernel-verbs-new-in-1.6.0` onward name the 89 admin.ops cells the admin corpus gained when it was reconciled against the served router: operations 1.5.5 never had, so the 1.5.5 golden cannot owe them. Each regex enumerates its operations; none is a family blanket.",
-    "2026-10-14 (owner rule 22; busbar-release #369, pin 99470fba7c96): stream-upstream-error, gemini-tool-use-token-term, bedrock-cachepoint-before-document and responses-url-citation are retired: the recorder records those nine cells, owed-baseline.txt owes them and their 1.5.5 goldens are committed (oracle-rerecord, add-only)."
+    "2026-10-14 (owner rule 22; busbar-release #369 and #372; coordinator ruling 2026-10-14, conformance-gaps D): stream-upstream-error, gemini-tool-use-token-term, bedrock-cachepoint-before-document and responses-url-citation are retired: the recorder records those nine cells as new `<old id>@fixture` ids (the bare ids' SKIP rows are retired whole in golden/1.5.5/retired.tsv), owed-baseline.txt owes them and their 1.5.5 goldens are committed (oracle-rerecord, add-only)."
   ],
   "accepted": [
     {

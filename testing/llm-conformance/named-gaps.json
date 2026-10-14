@@ -102,7 +102,7 @@
     "to close, not this rig's; when a fixture lands, the cell records, the rows go PASS or FAIL on",
     "their merits, and the entry and the count come off.",
     "",
-    "2026-10-14 (owner rule 22; busbar-release #369, pin 99470fba7c96): the recorder records all sixteen rows these three entries named (stream_upstream_error x6, ok_cachepoint_document, ok_citation); their 1.5.5 goldens are committed and they are judged on their merits, so the entries are struck and `expected` is 0."
+    "2026-10-14 (owner rule 22; busbar-release #369 and #372; coordinator ruling 2026-10-14, conformance-gaps D): the recorder records the cells behind all sixteen rows these three entries named, as the new ids `llm|<d>|<d>|request|stream_upstream_error@fixture` x6, `llm|bedrock|bedrock|request|ok_cachepoint_document@fixture` and `llm|responses|responses|request|ok_citation@fixture` (the bare ids are retired whole in golden/1.5.5/retired.tsv); their 1.5.5 goldens are committed and they are judged on their merits, so the entries are struck and `expected` is 0."
   ],
   "expected": 0,
   "accepted": []
