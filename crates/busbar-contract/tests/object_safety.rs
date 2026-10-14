@@ -39,6 +39,24 @@ use busbar_contract::wire::{
     StatusAt, TransportError, Unit0Trigger,
 };
 
+/// The codec host every context this fixture builds hands its plane: a fixed, non-zero entropy fill
+/// and no clock of its own (the context carries the clock). A context cannot be built without one.
+pub struct FixtureCodecHost;
+
+impl busbar_contract::codec::CodecHost for FixtureCodecHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        out.fill(0x5A);
+        true
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// The handle every context here is built with.
+pub const CODEC_HOST: &dyn busbar_contract::codec::CodecHost = &FixtureCodecHost;
+
 // ── the fixture per kind: each of these only compiles if the trait is object-safe ─────────────
 
 const _PLANE: Option<&dyn Plane> = None;
@@ -449,6 +467,7 @@ fn a_plane_call_runs_under_a_context() {
         &stack,
         &labels,
         &arena,
+        CODEC_HOST,
     );
 
     let plane = FixturePlane;

@@ -474,7 +474,9 @@ pub trait TransportView: Send + Sync {
 ///
 /// The context carries exactly one resource — the arena — and the rest are borrowed views. There
 /// is no handle here that reaches the kernel, no way to mount a route, and no way to open a
-/// connection.
+/// connection. The host's codec services (its entropy and wall clock) arrive here as a borrowed
+/// [`CodecHost`](crate::codec::CodecHost): a plane holds no random source of its own, so a codec it
+/// drives mints from the host the context hands it, and a context cannot be built without one.
 pub struct Ctx<'u> {
     clock: Clock,
     config: &'u dyn ConfigView,
@@ -482,10 +484,11 @@ pub struct Ctx<'u> {
     transport: &'u dyn TransportView,
     labels: &'u Labels<'u>,
     arena: &'u dyn crate::bounded::PlaneAlloc,
+    host: &'u dyn crate::codec::CodecHost,
 }
 
 impl<'u> Ctx<'u> {
-    /// Assemble a context. The kernel builds every one of these.
+    /// Assemble a context. The kernel builds every one of these, handing its own codec host.
     #[must_use]
     pub fn new(
         clock: Clock,
@@ -494,6 +497,7 @@ impl<'u> Ctx<'u> {
         transport: &'u dyn TransportView,
         labels: &'u Labels<'u>,
         arena: &'u dyn crate::bounded::PlaneAlloc,
+        host: &'u dyn crate::codec::CodecHost,
     ) -> Self {
         Self {
             clock,
@@ -502,7 +506,14 @@ impl<'u> Ctx<'u> {
             transport,
             labels,
             arena,
+            host,
         }
+    }
+
+    /// The host's codec services for this call: the entropy a minted identifier is drawn from.
+    #[must_use]
+    pub fn host(&self) -> &'u dyn crate::codec::CodecHost {
+        self.host
     }
 
     /// The node's clock reading for this call.

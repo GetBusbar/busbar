@@ -265,6 +265,7 @@ fn the_answer_does_not_move_with_the_clock() {
             &scaffold.transport,
             &scaffold.labels,
             &scaffold.arena,
+            common::CODEC_HOST,
         );
         assert_eq!(ctx.clock().unix_secs, unix_secs);
         let frames = vec![frame(body)];

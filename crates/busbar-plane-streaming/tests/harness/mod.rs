@@ -95,6 +95,24 @@ impl TransportView for WsStack {
 /// The type system stops a plugin now, not the manifest allow-list alone.
 pub use busbar_contract::plugin::TestKernelSeal as TestSeal;
 
+/// The codec host every context this fixture builds hands its plane: a fixed, non-zero entropy fill
+/// and no clock of its own (the context carries the clock). A context cannot be built without one.
+pub struct FixtureCodecHost;
+
+impl busbar_contract::codec::CodecHost for FixtureCodecHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        out.fill(0x5A);
+        true
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// The handle every context here is built with.
+pub const CODEC_HOST: &dyn busbar_contract::codec::CodecHost = &FixtureCodecHost;
+
 /// Build a context over the pieces above.
 #[must_use]
 pub fn ctx<'u>(
@@ -113,6 +131,7 @@ pub fn ctx<'u>(
         transport,
         labels,
         arena,
+        CODEC_HOST,
     )
 }
 

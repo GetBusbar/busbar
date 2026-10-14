@@ -79,24 +79,31 @@ fn minted_id_entropy(ctx: &Ctx<'_>) -> [u8; 24] {
     bytes
 }
 
-/// THE CODEC HOST A PLANE CALL HANDS ITS CODECS: the context's own clock reading, and no random
-/// source — a plane holds none and the context carries none (see [`minted_id_entropy`]), so a codec
-/// reached through this trait takes its own entropy-unavailable branch.
-struct CtxHost(u64);
+/// THE CODEC HOST A PLANE CALL HANDS ITS CODECS: the host's entropy, as the context hands it
+/// ([`Ctx::host`]), and the context's own clock reading — the one clock this crate reads. A plane
+/// holds no random source, so an identifier a codec mints on this path is the host's bytes; there is
+/// no path that mints without them.
+struct CtxHost<'u> {
+    entropy: &'u dyn busbar_contract::codec::CodecHost,
+    unix_secs: u64,
+}
 
-impl CtxHost {
-    fn of(ctx: &Ctx<'_>) -> Self {
-        Self(ctx.clock().unix_secs)
+impl<'u> CtxHost<'u> {
+    fn of(ctx: &Ctx<'u>) -> Self {
+        Self {
+            entropy: ctx.host(),
+            unix_secs: ctx.clock().unix_secs,
+        }
     }
 }
 
-impl busbar_contract::codec::CodecHost for CtxHost {
-    fn fill_entropy(&self, _out: &mut [u8]) -> bool {
-        false
+impl busbar_contract::codec::CodecHost for CtxHost<'_> {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        self.entropy.fill_entropy(out)
     }
 
     fn wall_clock_now(&self) -> Option<u64> {
-        Some(self.0)
+        Some(self.unix_secs)
     }
 }
 

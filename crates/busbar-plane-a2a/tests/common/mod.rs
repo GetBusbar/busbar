@@ -225,6 +225,24 @@ impl SessionView for TestSession {
 #[allow(unused_imports)]
 pub use busbar_contract::plugin::TestKernelSeal as TestSeal;
 
+/// The codec host every context this fixture builds hands its plane: a fixed, non-zero entropy fill
+/// and no clock of its own (the context carries the clock). A context cannot be built without one.
+pub struct FixtureCodecHost;
+
+impl busbar_contract::codec::CodecHost for FixtureCodecHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        out.fill(0x5A);
+        true
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// The handle every context here is built with.
+pub const CODEC_HOST: &dyn busbar_contract::codec::CodecHost = &FixtureCodecHost;
+
 /// A clock frozen at a readable instant, so nothing here varies with when it ran.
 pub const CLOCK: Clock = Clock {
     unix_secs: 1_700_000_000,
@@ -286,6 +304,7 @@ impl Scaffold {
             &self.transport,
             &self.labels,
             &self.arena,
+            CODEC_HOST,
         )
     }
 
@@ -304,6 +323,7 @@ impl Scaffold {
             &self.transport,
             &self.labels,
             &self.arena,
+            CODEC_HOST,
         )
     }
 
@@ -330,6 +350,7 @@ impl Scaffold {
             &self.transport,
             &self.labels,
             &self.arena,
+            CODEC_HOST,
         )
     }
 }

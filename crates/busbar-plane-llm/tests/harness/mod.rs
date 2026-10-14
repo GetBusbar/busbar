@@ -142,8 +142,52 @@ pub fn ctx_at<'u>(
         transport,
         labels,
         arena,
+        HOST,
     )
 }
+
+/// The same context, with the codec host chosen by the caller: a test that asks where a minted
+/// identifier's bytes came from hands the host whose bytes it then looks for.
+#[must_use]
+pub fn ctx_with_host<'u>(
+    arena: &'u LeakPlaneAlloc,
+    config: &'u EmptyConfig,
+    transport: &'u HttpStack,
+    labels: &'u Labels<'u>,
+    host: &'u dyn busbar_contract::codec::CodecHost,
+) -> Ctx<'u> {
+    Ctx::new(
+        Clock {
+            unix_secs: 1_752_000_000,
+            monotonic_nanos: 0,
+        },
+        config,
+        None,
+        transport,
+        labels,
+        arena,
+        host,
+    )
+}
+
+/// A codec host whose entropy is one repeated, non-zero byte: what a minted identifier is built
+/// from is then visible in the identifier. It holds no clock (the context carries the clock).
+pub struct PatternHost(pub u8);
+
+impl busbar_contract::codec::CodecHost for PatternHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        out.fill(self.0);
+        true
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        None
+    }
+}
+
+/// The host every context [`ctx`] and [`ctx_at`] build hands the plane: a fixed, non-zero pattern,
+/// so the answers these tests compare are still a function of their inputs.
+pub const HOST: &dyn busbar_contract::codec::CodecHost = &PatternHost(0x5A);
 
 /// One inbound frame carrying a whole body.
 #[must_use]
