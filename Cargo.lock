@@ -996,7 +996,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-grpc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=e9abdda9bcd445adb0c606a6250b8e6ca42d5dd4#e9abdda9bcd445adb0c606a6250b8e6ca42d5dd4"
+source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=4f44683894e99f1f7e285bfe9ece1b2f06e96dd6#4f44683894e99f1f7e285bfe9ece1b2f06e96dd6"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -1009,7 +1009,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=c63752d5bae31b77e3a39389caaabcd370fd6b48#c63752d5bae31b77e3a39389caaabcd370fd6b48"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=0ff8635b8321dc713cd453ff09ba557c17440610#0ff8635b8321dc713cd453ff09ba557c17440610"
 dependencies = [
  "busbar-contract",
  "bytes",
