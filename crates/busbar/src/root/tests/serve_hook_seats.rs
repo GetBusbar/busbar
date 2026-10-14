@@ -650,19 +650,21 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     // connector.
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let row = LinkedRow::of(pools_door()).expect("the door states itself");
-    let plane = load_linked::<Plane>(
-        &row,
-        Bind {
-            instance: Arc::from(instance),
-            max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: crate::root::loader::dispatch::ConnTable::Host(
-                Arc::clone(&connector) as Arc<dyn DeclaredConns>
-            ),
-        },
-    )
-    .expect("the linked door binds");
+    let plane = Arc::new(
+        load_linked::<Plane>(
+            &row,
+            Bind {
+                instance: Arc::from(instance),
+                max_inflight_cap: 64,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                conns: crate::root::loader::dispatch::ConnTable::Host(
+                    Arc::clone(&connector) as Arc<dyn DeclaredConns>
+                ),
+            },
+        )
+        .expect("the linked door binds"),
+    );
 
     // THE DEPLOYMENT: one provider per member (in the members' dialect), one model per provider,
     // pool `p` over them.

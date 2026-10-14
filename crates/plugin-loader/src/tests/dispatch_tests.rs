@@ -162,6 +162,27 @@ fn stated_with(f: ManifestFacts) -> Vec<u8> {
     b
 }
 
+/// RED (THE DESIGN C.1, `BUSBAR-1.6.0.md` l.3868: "`Plugin<K>` is `!Clone`"): a loaded plugin's
+/// handle cannot be copied; a holder that shares the instance shares an `Arc<Plugin<K>>`. The
+/// probe below is AMBIGUOUS, and so does not compile, exactly when `Plugin<K>` implements `Clone`
+/// (both impls of `NotClone` apply); with no `Clone` impl only the first applies.
+#[test]
+fn a_plugin_handle_is_not_clone() {
+    trait NotClone<A> {
+        fn verdict() -> &'static str {
+            "a Plugin is not Clone"
+        }
+    }
+    impl<T: ?Sized> NotClone<()> for T {}
+    #[allow(dead_code)]
+    struct WhenClone;
+    impl<T: ?Sized + Clone> NotClone<WhenClone> for T {}
+    assert_eq!(
+        <Plugin<TestKind> as NotClone<_>>::verdict(),
+        "a Plugin is not Clone"
+    );
+}
+
 fn row() -> LinkedRow {
     LinkedRow::of(plug::busbar_plugin_door).expect("the linked row states its Statement")
 }
@@ -1866,7 +1887,9 @@ fn red_a_hung_ticketless_call_faults_its_instance() {
     let d = Dispatcher::new(config());
     let (p, _sink) = opened(&d);
     let (p2, _s2) = opened(&d);
-    let hung = p.clone();
+    // One instance, shared with the hung caller (a `Plugin` is `!Clone`).
+    let p = Arc::new(p);
+    let hung = Arc::clone(&p);
     let caller =
         std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:ticketless")).outcome);
     until("the watchdog faults the instance", || p.is_faulted());
@@ -2108,7 +2131,8 @@ fn red_a_hung_ticketless_open_is_watched_from_bind() {
         },
     )
     .unwrap();
-    let hung = p.clone();
+    let p = Arc::new(p);
+    let hung = Arc::clone(&p);
     let caller = std::thread::spawn(move || {
         let mut f = open_frame();
         let settings = b"hang:open";

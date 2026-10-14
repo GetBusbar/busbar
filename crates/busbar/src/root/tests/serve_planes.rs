@@ -74,20 +74,22 @@ pub(super) fn bound(instance: &str, dispatcher: &Arc<Dispatcher>) -> crate::root
     let stated = rendering_of_library(&path)
         .expect("the test plane's library reads")
         .expect("the test plane states its Statement");
-    load_dropped(
-        &path,
-        &stated,
-        Bind {
-            instance: Arc::from(instance),
-            max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            // These rows never dial (the plane's far end is not reached): its need is not
-            // declared, bound as a probe.
-            conns: crate::root::loader::dispatch::ConnTable::Probe,
-        },
+    Arc::new(
+        load_dropped(
+            &path,
+            &stated,
+            Bind {
+                instance: Arc::from(instance),
+                max_inflight_cap: 64,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                // These rows never dial (the plane's far end is not reached): its need is not
+                // declared, bound as a probe.
+                conns: crate::root::loader::dispatch::ConnTable::Probe,
+            },
+        )
+        .expect("the dropped-in door binds"),
     )
-    .expect("the dropped-in door binds")
 }
 
 pub(crate) fn composed_services() -> Arc<LateServices> {

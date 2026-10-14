@@ -252,19 +252,21 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
-    let plane = load_linked::<Plane>(
-        &row,
-        Bind {
-            instance: Arc::from(instance),
-            max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: crate::root::loader::dispatch::ConnTable::Host(
-                Arc::clone(&connector) as Arc<dyn DeclaredConns>
-            ),
-        },
-    )
-    .expect("the linked door binds");
+    let plane = Arc::new(
+        load_linked::<Plane>(
+            &row,
+            Bind {
+                instance: Arc::from(instance),
+                max_inflight_cap: 64,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                conns: crate::root::loader::dispatch::ConnTable::Host(
+                    Arc::clone(&connector) as Arc<dyn DeclaredConns>
+                ),
+            },
+        )
+        .expect("the linked door binds"),
+    );
     let section_key = plane.served().section;
 
     // THE MONEY: a signing governance book with one minted key, the node's book bound.
@@ -453,19 +455,21 @@ async fn the_data_router_built_with_the_door_serves_only_its_claims() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
-    let plane = load_linked::<Plane>(
-        &row,
-        Bind {
-            instance: Arc::from(instance),
-            max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            // This row only routes (no request reaches the provider): the plane's need is not
-            // declared, bound as a probe.
-            conns: crate::root::loader::dispatch::ConnTable::Probe,
-        },
-    )
-    .expect("the linked door binds");
+    let plane = Arc::new(
+        load_linked::<Plane>(
+            &row,
+            Bind {
+                instance: Arc::from(instance),
+                max_inflight_cap: 64,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                // This row only routes (no request reaches the provider): the plane's need is not
+                // declared, bound as a probe.
+                conns: crate::root::loader::dispatch::ConnTable::Probe,
+            },
+        )
+        .expect("the linked door binds"),
+    );
     let section = plane.served().section;
     let mut sections = BTreeMap::new();
     sections.insert(
@@ -528,19 +532,21 @@ async fn a_door_claiming_one_path_over_two_carriers_mounts_it_once() {
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
-    let plane = load_linked::<Plane>(
-        &row,
-        Bind {
-            instance: Arc::from(instance),
-            max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            // This row only routes (no request reaches the provider): the plane's need is not
-            // declared, bound as a probe.
-            conns: crate::root::loader::dispatch::ConnTable::Probe,
-        },
-    )
-    .expect("the linked door binds");
+    let plane = Arc::new(
+        load_linked::<Plane>(
+            &row,
+            Bind {
+                instance: Arc::from(instance),
+                max_inflight_cap: 64,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                // This row only routes (no request reaches the provider): the plane's need is not
+                // declared, bound as a probe.
+                conns: crate::root::loader::dispatch::ConnTable::Probe,
+            },
+        )
+        .expect("the linked door binds"),
+    );
     let section = plane.served().section;
     let mut sections = BTreeMap::new();
     sections.insert(
@@ -2469,19 +2475,21 @@ async fn serve_configured(
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     crate::root::connector::install_io(&dispatcher);
     let row = LinkedRow::of(decisions_door).expect("the door states its Statement");
-    let plane = load_linked::<Plane>(
-        &row,
-        Bind {
-            instance: Arc::from(instance),
-            max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: crate::root::loader::dispatch::ConnTable::Host(
-                Arc::clone(&connector) as Arc<dyn DeclaredConns>
-            ),
-        },
-    )
-    .expect("the linked door binds");
+    let plane = Arc::new(
+        load_linked::<Plane>(
+            &row,
+            Bind {
+                instance: Arc::from(instance),
+                max_inflight_cap: 64,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                conns: crate::root::loader::dispatch::ConnTable::Host(
+                    Arc::clone(&connector) as Arc<dyn DeclaredConns>
+                ),
+            },
+        )
+        .expect("the linked door binds"),
+    );
     let section_key = plane.served().section;
 
     let signer = TokenSigner::from_secret_bytes(&[7u8; 32], DEFAULT_KID);

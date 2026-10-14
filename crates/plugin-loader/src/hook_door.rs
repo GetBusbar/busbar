@@ -191,8 +191,8 @@ type Rebind = Box<dyn Fn() -> Result<Plugin<Hook>, String> + Send + Sync>;
 
 /// Where an instance stands.
 enum State {
-    /// Opened and callable.
-    Live(Plugin<Hook>),
+    /// Opened and callable: the instance every call in flight shares (a [`Plugin`] is `!Clone`).
+    Live(Arc<Plugin<Hook>>),
     /// Faulted: no call reaches a plugin before `trial_at`; the trial then opens a fresh instance.
     /// `window` is the wait that set `trial_at`; a failed trial doubles it.
     Quarantined { trial_at: Instant, window: Duration },
@@ -221,13 +221,13 @@ impl Inner {
 
     /// The instance to call before `deadline`: the live one, or — once the trial window opens
     /// within `deadline` — a fresh one. `Err` says why there is none.
-    async fn live(&self, deadline: Instant) -> Result<Plugin<Hook>, String> {
+    async fn live(&self, deadline: Instant) -> Result<Arc<Plugin<Hook>>, String> {
         loop {
             let (wait, retired, trial) = {
                 let mut state = self.lock();
                 let now = Instant::now();
                 match &*state {
-                    State::Live(p) if !p.is_faulted() => return Ok(p.clone()),
+                    State::Live(p) if !p.is_faulted() => return Ok(Arc::clone(p)),
                     State::Live(_) => {
                         let State::Live(p) = std::mem::replace(
                             &mut *state,
@@ -281,7 +281,7 @@ impl Inner {
     /// THE QUARANTINE'S TRIAL, run by the one caller that moved the state to `Trialing`: bind a
     /// fresh instance and `open` it outside the lock, then swap the answer in. A failed trial
     /// doubles the window.
-    fn trial(&self, window: Duration) -> Result<Plugin<Hook>, String> {
+    fn trial(&self, window: Duration) -> Result<Arc<Plugin<Hook>>, String> {
         let opened = (self.rebind)().and_then(|p| {
             open(&p, &self.settings)?;
             Ok(p)
@@ -289,7 +289,8 @@ impl Inner {
         let mut state = self.lock();
         match opened {
             Ok(p) => {
-                *state = State::Live(p.clone());
+                let p = Arc::new(p);
+                *state = State::Live(Arc::clone(&p));
                 Ok(p)
             }
             Err(e) => {
@@ -381,7 +382,7 @@ impl Inner {
                 // call's budget rides the op, so a hook slower than the Call class budget but inside
                 // its own `timeout_ms` is never quarantined, as in 1.5.5.
                 let reply = self.dispatcher.submit_watched(
-                    &plugin,
+                    &*plugin,
                     ticket,
                     s,
                     make(),
@@ -499,7 +500,7 @@ async fn hold_refused_until_faulted_for_tests(
 
 /// What one submitted op answered (READY or FAILED, with its `out`).
 struct Submitted<O> {
-    plugin: Plugin<Hook>,
+    plugin: Arc<Plugin<Hook>>,
     outcome: Outcome,
     out: O,
     error: Option<String>,
@@ -544,7 +545,7 @@ impl Drop for Inner {
     fn drop(&mut self) {
         // The last owner: nothing else can reach the state, so no lock is taken to close it.
         if let State::Live(p) = self.state.get_mut().unwrap_or_else(|p| p.into_inner()) {
-            close(p);
+            close(&**p);
         }
     }
 }
@@ -568,7 +569,7 @@ impl HookInstance {
                 dispatcher,
                 rebind: Box::new(rebind),
                 settings: settings.to_vec(),
-                state: Mutex::new(State::Live(plugin)),
+                state: Mutex::new(State::Live(Arc::new(plugin))),
                 next_worker: AtomicU32::new(0),
             }),
         })

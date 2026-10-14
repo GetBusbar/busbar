@@ -800,9 +800,15 @@ pub fn load<K: Kind>(s: &Subject, leg: Leg, b: Bind) -> Result<Plugin<K>, LoadEr
 /// The crossings `p` has made, by the dispatcher's own crossing gate: every crossing, and of them
 /// the RESUME re-invocations, counted apart (Q-P4-5).
 pub(crate) fn crossings<K: Kind>(p: &Plugin<K>) -> Counts<'_> {
+    crossings_of(&p.inner)
+}
+
+/// The crossings the instance `inner` has made ([`crossings`], read off the instance itself): for a
+/// fold that hands its plugin on by value (a `Plugin` is `!Clone`) and keeps reading the gate.
+pub(crate) fn crossings_of(inner: &crate::dispatch::plugin::Instance) -> Counts<'_> {
     Counts {
-        total: &p.inner.crossings,
-        resumes: &p.inner.resumes,
+        total: &inner.crossings,
+        resumes: &inner.resumes,
     }
 }
 
@@ -1636,8 +1642,8 @@ pub fn red_ready(s: &Subject) {
             load_linked::<Store>(&row, s.bind(&d, "red-ready")).expect("the restated door loads");
         assert!(p.has_ready());
         let name = p.name().to_owned();
-        let held = p.clone();
-        let (before, _) = crossings(&held).read();
+        let held = Arc::clone(&p.inner);
+        let (before, _) = crossings_of(&held).read();
         let minted = store::LegMint::take(0);
         let refused =
             crate::store_v3::LoadedStore::open(p, Arc::clone(&d), &settings, minted.mint())
@@ -1648,7 +1654,7 @@ pub fn red_ready(s: &Subject) {
             format!("plugin '{name}' ready failed: {READY_FAILURE}")
         );
         assert_eq!(
-            crossings(&held).read().0 - before,
+            crossings_of(&held).read().0 - before,
             2,
             "one open and one ready, first invocations, the ready not retried"
         );
