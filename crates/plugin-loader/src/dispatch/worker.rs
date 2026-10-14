@@ -697,7 +697,11 @@ impl WakeRoute for Pool {
     /// Route a wake to the worker its slot names. Never blocks on the plugin: a channel push.
     fn wake(&self, t: Ticket, supplier: Option<&'static super::ticket::InstanceWake>) {
         if super::inline::is_inline(t) {
-            self.env.inline.wake(t);
+            // Judged with the inline table's lock let go (#74): a generation it never minted is
+            // the supplier's forgery.
+            if self.env.inline.wake(t) == super::inline::Judged::Forged {
+                super::handle::forged_ticket(supplier, self.env.latch());
+            }
             return;
         }
         let (w, _) = decode(t.slot);
@@ -708,7 +712,10 @@ impl WakeRoute for Pool {
                 let _ = slot.get().tx.send(Msg::Wake(t, supplier));
             }
             None => {
+                // A worker this dispatcher does not run minted nothing: a forgery (#74), judged
+                // here, under no lock.
                 self.env.stats.stale_wakes.fetch_add(1, Ordering::Relaxed);
+                super::handle::forged_ticket(supplier, self.env.latch());
             }
         }
     }
@@ -1583,7 +1590,7 @@ impl Dispatcher {
             provider,
             runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
-            inline: Arc::default(),
+            inline: Arc::new(super::inline::InlineTickets::new(ticket_key)),
             ticket_key,
             latch: std::sync::OnceLock::new(),
         });
@@ -1713,6 +1720,12 @@ impl Dispatcher {
         let st = w.lock();
         let e = &st.entries[idx as usize];
         (e.live, st.free.contains(&idx), e.count)
+    }
+
+    /// TEST ONLY: the inline tickets, for a test that seeds a slot's counter.
+    #[cfg(test)]
+    pub(crate) fn inline_tickets(&self) -> &super::inline::InlineTickets {
+        &self.pool.env.inline
     }
 
     /// TEST ONLY: the dispatcher's ticket key.

@@ -108,7 +108,9 @@ struct Caller {
 }
 
 impl Caller {
-    /// The waker of `ticket`'s op: an inline ticket's task, or the dispatcher's route.
+    /// The waker of `ticket`'s op: a held inline ticket's task, or the dispatcher's route, which
+    /// judges any other ticket when the wake fires (#74: a generation never minted, inline or not,
+    /// quarantines this caller, the supplier the waker carries).
     fn waker(&self, ticket: Ticket) -> Waker {
         if let Some(w) = self
             .waking

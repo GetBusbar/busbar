@@ -35,15 +35,6 @@ pub(crate) fn decode(slot: u32) -> (u32, u32) {
     (slot >> INDEX_BITS, slot & MAX_INDEX)
 }
 
-/// A recycled ticket slot's generation: the one after `g`, never `0` (a ticket generation, not
-/// a configuration generation).
-pub(crate) fn recycled_generation(g: u32) -> u32 {
-    match g.wrapping_add(1) {
-        0 => 1,
-        n => n,
-    }
-}
-
 /// Where an instance's wakes go: the dispatcher that holds its tickets.
 pub(crate) trait WakeRoute: Send + Sync {
     /// Push `t` to the worker that owns it, with `supplier` the instance whose context handed the

@@ -2905,6 +2905,129 @@ fn red_an_off_crossing_forged_ticket_counts_toward_the_latch() {
     d.recycle(t);
 }
 
+/// A test latch of the test's own, judged against by `d`.
+fn own_latch(d: &Dispatcher) -> &'static crate::dispatch::handle::Latch {
+    let latch: &'static crate::dispatch::handle::Latch =
+        Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
+    d.judge_against(latch);
+    latch
+}
+
+/// RED (#74, INLINE TICKETS): an inline ticket's generation is the keyed permutation of its slot's
+/// counter, as a worker slot's, so a plugin that guesses `encode(INLINE_WORKER, i)` with a small
+/// generation (what the plain counter from 1 handed out) does not hit a held ticket, and its miss is
+/// a FORGERY: the supplier is quarantined, the latch unmoved. A guess at an inline slot no ticket
+/// ever used is a forgery too.
+#[test]
+fn red_a_guessed_inline_ticket_quarantines_its_supplier() {
+    use crate::dispatch::inline::INLINE_WORKER;
+    use crate::dispatch::ticket::encode;
+    let d = Dispatcher::new(config());
+    let latch = own_latch(&d);
+    let held = d.inline_ticket().expect("an inline ticket");
+    let live = held.ticket();
+    assert!(
+        (1..=1024).all(|g| g != live.generation),
+        "a held inline ticket's generation is a small counter"
+    );
+    let guesser = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &guesser, 0), Outcome::Ready);
+    let prober = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &prober, 0), Outcome::Ready);
+    crate::dispatch::ticket::host_wake(
+        guesser.inner.ctx(),
+        Ticket {
+            slot: live.slot,
+            generation: 1,
+        },
+    );
+    assert!(
+        guesser.is_faulted(),
+        "a guessed inline generation was not judged a forgery"
+    );
+    assert!(
+        !prober.is_faulted(),
+        "the quarantine reached another instance"
+    );
+    assert_eq!((latch.forged(), latch.unattributed()), (1, 0));
+
+    crate::dispatch::ticket::host_wake(
+        prober.inner.ctx(),
+        Ticket {
+            slot: encode(INLINE_WORKER, 999),
+            generation: 1,
+        },
+    );
+    assert!(
+        prober.is_faulted(),
+        "a wake for an inline slot never used was not a forgery"
+    );
+    assert_eq!((latch.forged(), latch.unattributed()), (2, 0));
+    drop(held);
+}
+
+/// RED (#74, INLINE WRAP AND LATE WAKES): an inline slot whose counter is spent is RETIRED, never
+/// handed out again, and a late wake for a generation it really minted is not a forgery.
+#[test]
+fn red_an_inline_slot_whose_counter_is_spent_is_retired() {
+    let d = Dispatcher::new(config());
+    let latch = own_latch(&d);
+    let waker = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &waker, 0), Outcome::Ready);
+    let held = d.inline_ticket().expect("an inline ticket");
+    let seeded = d.inline_tickets().seed_count(held.ticket(), u32::MAX - 1);
+    drop(held);
+    let last = d.inline_ticket().expect("an inline ticket");
+    assert_eq!(
+        last.ticket().slot,
+        seeded.slot,
+        "the slot's last count is handed out"
+    );
+    let last_ticket = last.ticket();
+    drop(last);
+    let mut kept = Vec::new();
+    for _ in 0..8 {
+        let fresh = d.inline_ticket().expect("a fresh inline slot");
+        assert_ne!(
+            fresh.ticket().slot,
+            seeded.slot,
+            "a retired inline slot was handed out again"
+        );
+        kept.push(fresh);
+    }
+    for late in [seeded, last_ticket] {
+        crate::dispatch::ticket::host_wake(waker.inner.ctx(), late);
+    }
+    assert!(
+        !waker.is_faulted(),
+        "a late wake for a minted inline generation was judged a forgery"
+    );
+    assert_eq!(latch.forged(), 0);
+}
+
+/// RED (#74, A WORKER THE DISPATCHER DOES NOT RUN): a wake for `encode(n, 0)`, `n` past the
+/// dispatcher's workers and short of the inline worker, names a slot nothing minted: a forgery,
+/// blamed on its supplier, not merely a stale wake.
+#[test]
+fn red_a_wake_for_a_worker_the_dispatcher_does_not_run_is_a_forgery() {
+    let d = Dispatcher::new(config());
+    let latch = own_latch(&d);
+    let forger = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
+    crate::dispatch::ticket::host_wake(
+        forger.inner.ctx(),
+        Ticket {
+            slot: crate::dispatch::ticket::encode(d.workers(), 0),
+            generation: 1,
+        },
+    );
+    assert!(
+        forger.is_faulted(),
+        "a wake for a worker no one runs was not a forgery"
+    );
+    assert_eq!((latch.forged(), latch.unattributed()), (1, 0));
+}
+
 /// RED (#74, COUNTER WRAP): a slot whose mint counter is spent is RETIRED, never handed out again:
 /// a counter that wrapped would re-mint generations the slot already handed out, and a plugin that
 /// kept one would wake the slot's next op. Seeded one short of `u32::MAX`; the slot's last mint is
