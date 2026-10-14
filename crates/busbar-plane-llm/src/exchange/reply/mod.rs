@@ -27,6 +27,7 @@ use busbar_contract::upstream::{Disposition, StatusClass};
 
 use super::arrive::Arrived;
 use super::attempt::StreamIntent;
+use super::invoke;
 use super::refuse::Rendered;
 use super::shaping::Lane;
 use crate::codec::DECLS;
@@ -185,6 +186,9 @@ enum State {
 /// ONE ATTEMPT'S ANSWER.
 pub struct Reply {
     state: State,
+    /// A streamed answer over the invoke envelope, re-framed into its carried dialect's events
+    /// before it is read ([`invoke::Transcoder`]).
+    invoke: Option<invoke::Transcoder>,
 }
 
 impl std::fmt::Debug for Reply {
@@ -257,9 +261,21 @@ impl Reply {
                     head: head.iter().map(|(n, v)| (n.to_vec(), v.to_vec())).collect(),
                     body: Vec::new(),
                 },
+                invoke: None,
             };
         }
         let far_ct = wire::head_value(head, "content-type");
+        // A STREAM OVER THE INVOKE ENVELOPE is read as its carried dialect's stream: its frames are
+        // re-framed into that dialect's events before any byte is read.
+        let invoke_stream = ctx.lane.invoke
+            && far_ct
+                .and_then(wire::head_text)
+                .is_some_and(|ct| ct.starts_with(invoke::EVENTSTREAM));
+        let far_ct = if invoke_stream {
+            Some(busbar_contract::protocol::TEXT_EVENT_STREAM.as_bytes())
+        } else {
+            far_ct
+        };
         let far_is_stream = far_ct
             .and_then(wire::head_text)
             .is_some_and(wire::is_stream_content_type);
@@ -272,6 +288,7 @@ impl Reply {
                     body: Vec::new(),
                     head: Vec::new(),
                 },
+                invoke: None,
             };
         };
         // Only a translated answer is taken whole, and a translated answer relays no far head; a
@@ -283,6 +300,7 @@ impl Reply {
                     body: Vec::new(),
                     head: Vec::new(),
                 },
+                invoke: None,
             };
         }
         let mut fields = Vec::new();
@@ -322,6 +340,7 @@ impl Reply {
                 head: Some(Head { status, fields }),
                 units: Units::default(),
             },
+            invoke: invoke_stream.then(invoke::Transcoder::new),
         }
     }
 
@@ -333,6 +352,24 @@ impl Reply {
         last: bool,
         at: At,
     ) -> Piece<'a> {
+        let Some(transcoder) = self.invoke.as_mut() else {
+            return self.read(ctx, bytes, last, at);
+        };
+        let framed = transcoder.feed(bytes);
+        let p = self.read(ctx, &framed, last, at);
+        Piece {
+            head: p.head,
+            bytes: Cow::Owned(p.bytes.into_owned()),
+            units: p.units,
+            verdict: p.verdict,
+            fault: p.fault,
+            done: p.done,
+            dropped: p.dropped,
+        }
+    }
+
+    /// READ one piece in the answer's own framing.
+    fn read<'a>(&mut self, ctx: &ReplyCtx<'_>, bytes: &'a [u8], last: bool, at: At) -> Piece<'a> {
         match &mut self.state {
             State::Done => pending(),
             State::Error { body, .. } => {
@@ -472,6 +509,12 @@ impl Reply {
             .iter()
             .map(|(n, v)| (n.as_slice(), v.as_slice()))
             .collect();
+        // A refusal over the invoke envelope is read in its carried dialect's error envelope.
+        let body = if ctx.lane.invoke {
+            invoke::error_body(&pairs, &body)
+        } else {
+            body
+        };
         let far = failure::FarError {
             status,
             head: &pairs,

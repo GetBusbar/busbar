@@ -79,6 +79,9 @@ pub struct Lane {
     /// dialect's scheme (`api-key`, `jwt-bearer`, `oauth-client-credentials`), whose declaration
     /// carries none, as the previous release wrote them.
     pub statics: &'static [(&'static str, &'static str)],
+    /// The model is served over the invoke envelope ([`super::invoke`]): its dialect is the one the
+    /// envelope carries, its target, body edits, stream framing and refusals the envelope's.
+    pub invoke: bool,
 }
 
 impl Lane {
@@ -426,6 +429,14 @@ impl Shaping {
                 .as_deref()
                 .or(p.protocol.as_deref())
                 .unwrap_or(DEFAULT_PROTOCOL);
+            // The invoke envelope is a MODEL's choice alone: a provider defaulting to it states an
+            // unknown protocol, refused below in the previous release's words.
+            let invoke = m.protocol.as_deref() == Some(super::invoke::PROTOCOL);
+            let asked = if invoke {
+                super::invoke::CARRIED
+            } else {
+                asked
+            };
             let decl = DECLS
                 .iter()
                 .find(|d| d.name == asked && d.codec.is_some())
@@ -435,6 +446,7 @@ impl Shaping {
                 })?;
             let dialect = decl.name;
             let statics = match p.auth.as_deref() {
+                _ if invoke => &[][..],
                 Some(AUTH_API_KEY | AUTH_JWT_BEARER | AUTH_OAUTH_CLIENT_CREDENTIALS) => &[][..],
                 _ => decl.static_headers,
             };
@@ -455,6 +467,7 @@ impl Shaping {
                 caps: lane_caps(p, wire),
                 error_map: p.error_map.clone(),
                 statics,
+                invoke,
             };
             lanes.insert(name, lane);
         }

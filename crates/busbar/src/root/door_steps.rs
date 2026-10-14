@@ -2248,18 +2248,19 @@ pub fn member_routes(
             .iter()
             .find_map(|k| entry_text(member, k))
             .unwrap_or(&provider.protocol);
-        let default = served
-            .dialects
-            .iter()
-            .position(|d| *d == dialect)
-            .and_then(|at| {
-                let at = u32::try_from(at).ok()?;
-                served
-                    .dialect_auth
-                    .iter()
-                    .find(|(d, _, _)| *d == at)
-                    .map(|(_, style, params)| ((*style).to_string(), *params))
-            });
+        let default_of = |dialect: &str| {
+            let at = served.dialects.iter().position(|d| *d == dialect)?;
+            let at = u32::try_from(at).ok()?;
+            served
+                .dialect_auth
+                .iter()
+                .find(|(d, _, _)| *d == at)
+                .map(|(_, style, params)| ((*style).to_string(), *params))
+        };
+        // A member whose own protocol states no default style (one its plane serves over another
+        // dialect's envelope) rides its provider's protocol's default: the credential is the
+        // provider's.
+        let default = default_of(dialect).or_else(|| default_of(&provider.protocol));
         // The provider's own `auth:` binds its style alone; the dialect's default carries its
         // declared parameters (Q-L6-AUTHPARAMS).
         let (style, params) = match (&provider.style, default) {
