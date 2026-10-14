@@ -1203,20 +1203,22 @@ fn red_a_stale_generation_wake_is_dropped() {
         crate::dispatch::handle::ticket_count(0, idx, old.generation) + 1
     );
     assert_ne!(t.generation, old.generation);
-    let forged0 = crate::dispatch::handle::forged();
     let reply = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
     until("the held op", || d.is_pending(t));
     let stale0 = d.stats().stale_wakes;
     let crossings0 = p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst);
-    crate::dispatch::ticket::host_wake(p.inner.ctx(), old);
+    // Woken from INSIDE a crossing of `p`, so a forgery would have someone to quarantine.
+    crate::dispatch::plugin::with_crossing(Some(&*p.inner), || {
+        crate::dispatch::ticket::host_wake(p.inner.ctx(), old);
+    });
     until("the stale wake is counted", || {
         d.stats().stale_wakes > stale0
     });
-    // A generation the slot really minted is a late wake, not a forgery (#74).
-    assert_eq!(
-        crate::dispatch::handle::forged(),
-        forged0,
-        "a stale wake for a generation the host minted was counted as a forgery"
+    // A generation the slot really minted is a late wake, not a forgery (#74): the instance that
+    // woke it is not quarantined.
+    assert!(
+        !p.is_faulted(),
+        "a stale wake for a generation the host minted was judged a forgery"
     );
     // The wake was processed (counted) and resumed nothing: no crossing happened.
     assert_eq!(
@@ -2741,7 +2743,6 @@ fn a_forged_ticket_generation_quarantines_the_instance_that_woke_it() {
     assert_eq!(open(&d, &honest, 0), Outcome::Ready);
     let forger = linked(Arc::new(Recorder::default()));
     assert_eq!(open(&d, &forger, 0), Outcome::Ready);
-    let before = crate::dispatch::handle::forged();
     let t = d.mint(0).expect("a ticket");
     let _ = d
         .submit(
@@ -2755,11 +2756,8 @@ fn a_forged_ticket_generation_quarantines_the_instance_that_woke_it() {
         .wait(WAIT);
     d.recycle(t);
     until("the forger is quarantined", || forger.is_faulted());
-    assert!(
-        crate::dispatch::handle::forged() > before,
-        "the forgery was not counted"
-    );
-    assert!(crate::dispatch::handle::resolve(forger.inner.ctx()).is_none());
+    let latch = crate::dispatch::handle::Latch::new();
+    assert!(crate::dispatch::handle::resolve_in(forger.inner.ctx(), &latch, None).is_none());
     assert_eq!(
         forger.call(TICK, &mut frame(plug::COUNT)).outcome,
         Outcome::Fault
