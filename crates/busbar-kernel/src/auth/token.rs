@@ -34,7 +34,8 @@ use busbar_contract::auth::{BeginLogin, CompleteLogin, LoginOutcome, Principal};
 use busbar_contract::auth_calls::{AuthCalls, LoginCallback};
 
 use super::self_keys::{
-    issue_key, resolve_exchange, DeterministicEd25519Keys, ExchangeError, HandleProvisioner,
+    admit_self_mint, issue_key, DeterministicEd25519Keys, ExchangeError, HandleProvisioner,
+    SelfMint,
 };
 use super::ChainVerdict;
 use crate::config::AuthCfg;
@@ -597,7 +598,7 @@ async fn callback(
 }
 
 /// The SHARED identify→admit→mint→render tail used by BOTH the redirect callback and the credential
-/// POST (`credential_submit`): builds the `Identified` verdict, runs `resolve_exchange`, and mints via
+/// POST (`credential_submit`): builds the `Identified` verdict, runs `admit_self_mint`, and mints via
 /// the ONE `issue_key` seam (`refresh` rotates — the "Refresh key" action). Returns the key-issued
 /// page or a typed refusal; it NEVER clears the cookie (the caller wraps the result in `clear_and`).
 async fn issue_and_render(
@@ -612,9 +613,26 @@ async fn issue_and_render(
         principal,
         resolved: None,
     };
-    let (principal, team, pools) =
-        match resolve_exchange(&verdict, &app.role_bindings, app.mint_policy.self_mint) {
+    let SelfMint {
+        principal,
+        team,
+        pools,
+        ttl,
+    } =
+        match admit_self_mint(
+            &verdict,
+            &app.role_bindings,
+            &app.mint_policy,
+            app.self_key_ttl_secs,
+        ) {
             Ok(v) => v,
+            // The mint ceiling refused the key this identity would mint (X-1001).
+            Err(ExchangeError::OverCeiling(_)) => return error_page(
+                StatusCode::FORBIDDEN,
+                "Key not permitted",
+                "Your Busbar policy does not allow the key your account would be issued. Ask your \
+                 Busbar admin to review your access.",
+            ),
             Err(_) => return error_page(
                 StatusCode::FORBIDDEN,
                 "No access yet",
@@ -629,7 +647,6 @@ async fn issue_and_render(
             "Busbar can't issue keys right now. Please contact your Busbar admin.",
         );
     };
-    let ttl = Duration::from_secs(app.self_key_ttl_secs);
     // Auto-provision the `user:<sub>` leaf under `team` (from the team's `child_default`) before the
     // mint, so the browser-issued key is usable immediately (no 429 MissingGroup).
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
