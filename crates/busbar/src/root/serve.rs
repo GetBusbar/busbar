@@ -2132,48 +2132,79 @@ fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) ->
 /// The claimant the kernel's own data routes are lines of.
 const CORE_CLAIMANT: &str = "core";
 
-/// THE UPGRADE CARRIERS: every linked claim whose unit 0 opens at an UPGRADE, read off the door
-/// Statements (ARCHITECT ruling Q128 U7; never a layer list: no transport names another). Their
-/// lines are handed over after the head and served as sessions; the handoff target on an upgrade
-/// is the claim that owns the requested scheme.
+/// THE UPGRADE CARRIERS: every claim, linked or dropped in, whose unit 0 opens at an UPGRADE, read
+/// off the door Statements (ARCHITECT ruling Q128 U7; never a layer list: no transport names
+/// another). Their lines are handed over after the head and served as sessions; the handoff target
+/// on an upgrade is the claim that owns the requested scheme.
 #[must_use]
-pub fn upgrade_carriers(transports: &[crate::root::linked::LinkedTransport]) -> Vec<&'static str> {
-    transports.iter().flat_map(|t| (t.upgrades)()).collect()
+pub fn upgrade_carriers(
+    transports: &[crate::root::linked::LinkedTransport],
+    dropped: &[crate::root::registry::DroppedDoor],
+) -> Vec<&'static str> {
+    transport_rows(transports, dropped)
+        .into_iter()
+        .flat_map(|r| r.upgrades)
+        .collect()
 }
 
 /// ONE TRANSPORT CLAIM AND THE AUTH POINTS ITS LINES' TRANSPORT OFFERS (THE DESIGN §6 step 3).
 pub type TransportOffer = (&'static str, busbar_contract::abi::auth::AuthPoints);
 
+/// One transport row as the guest lists read it, linked or dropped in (compiled-in = dropped-in,
+/// one path): what its door's Statement states, read by the one reader at link or at load.
+struct TransportRow {
+    /// Every claim, its own first.
+    claims: Vec<&'static str>,
+    /// The claims that open at an upgrade.
+    upgrades: Vec<&'static str>,
+    /// The layer it composes over first, where it composes over one.
+    under: Option<&'static str>,
+    /// The auth points it offers.
+    offered: busbar_contract::abi::auth::AuthPoints,
+}
+
+/// Every transport row, the linked ones first, then the ones dropped into `plugins.dir`.
+fn transport_rows(
+    transports: &[crate::root::linked::LinkedTransport],
+    dropped: &[crate::root::registry::DroppedDoor],
+) -> Vec<TransportRow> {
+    let linked = transports.iter().map(|t| TransportRow {
+        claims: (t.claims)(),
+        upgrades: (t.upgrades)(),
+        under: t.composes_over.first().copied(),
+        offered: (t.offered)(),
+    });
+    let dropped = dropped.iter().map(|d| TransportRow {
+        claims: d.claims.clone(),
+        upgrades: d.upgrades.clone(),
+        under: d.composes_over.first().copied(),
+        offered: d.offered,
+    });
+    linked.chain(dropped).collect()
+}
+
 /// THE OFFERED POINTS OF EVERY TRANSPORT CLAIM, linked or dropped in, read off each door's
-/// Statement by the one reader (compiled-in = dropped-in): a claim's own transport's set; a linked
-/// upgrade claim's, the set of the claim it composes over, whose transport runs the line's auth on
-/// the upgrade request.
+/// Statement by the one reader (compiled-in = dropped-in): a claim's own transport's set; an upgrade
+/// claim's, the set of the claim it composes over, whose transport runs the line's auth on the
+/// upgrade request.
 #[must_use]
 pub fn transport_offers(
     transports: &[crate::root::linked::LinkedTransport],
     dropped: &[crate::root::registry::DroppedDoor],
 ) -> Vec<TransportOffer> {
-    let of_dropped = || {
-        dropped
-            .iter()
-            .flat_map(|d| d.claims.iter().map(move |c| (*c, d.offered)))
-    };
-    let own: Vec<TransportOffer> = transports
+    let rows = transport_rows(transports, dropped);
+    let own: Vec<TransportOffer> = rows
         .iter()
-        .flat_map(|t| (t.claims)().into_iter().map(move |c| (c, (t.offered)())))
-        .chain(of_dropped())
+        .flat_map(|r| r.claims.iter().map(move |c| (*c, r.offered)))
         .collect();
-    transports
-        .iter()
-        .flat_map(|t| {
-            let upgrades = (t.upgrades)();
-            let under = t.composes_over.first().map(|l| offered_by(&own, l));
-            (t.claims)().into_iter().map(move |c| match under {
-                Some(under) if upgrades.contains(&c) => (c, under),
-                _ => (c, (t.offered)()),
+    rows.iter()
+        .flat_map(|r| {
+            let under = r.under.map(|l| offered_by(&own, l));
+            r.claims.iter().map(move |c| match under {
+                Some(under) if r.upgrades.contains(c) => (*c, under),
+                _ => (*c, r.offered),
             })
         })
-        .chain(of_dropped())
         .collect()
 }
 
