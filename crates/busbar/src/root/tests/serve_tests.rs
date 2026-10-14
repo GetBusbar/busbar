@@ -4239,3 +4239,38 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
         none.listed
     );
 }
+
+/// AN UNTRANSLATABLE 2XX BILLS NO TOKENS (F25 row 333, `$`; legacy
+/// `ingress_indistinguishability_tests::test_untranslatable_2xx_does_not_charge_tokens`): a far end
+/// in another dialect answers 2xx with usage stated (7 in, 3 out), but its reader refuses the answer
+/// (a role no answer has), so it cannot be written in the caller's dialect. The caller gets its own
+/// dialect's 500 with no completion in it, and the key's ledger holds 0 tokens: 1.5.5 billed tokens
+/// only for an answer it delivered. RED: the stated usage (10 tokens) billed, or a floor estimate
+/// standing in for it.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_bills_no_tokens_for_an_answer_it_cannot_translate() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-untranslatable-2xx";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, door_word("unreadable_answer")).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some(door_word("untranslatable_dialect")),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.chat().await;
+    assert_eq!(status, 500, "{}", String::from_utf8_lossy(&body));
+    let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON error body");
+    assert!(answer.get("error").is_some(), "the caller's own error: {answer}");
+    assert!(
+        answer.get("choices").is_none(),
+        "no completion reaches the caller: {answer}"
+    );
+    assert_eq!(far.served(), 1, "the far end answered once");
+    assert_eq!(rig.tokens_after().await, 0, "an untranslated answer bills no tokens");
+}

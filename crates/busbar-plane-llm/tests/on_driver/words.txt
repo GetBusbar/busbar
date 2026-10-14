@@ -12,3 +12,6 @@ dialect = openai
 # caller's dialect has no form for.
 untranslatable_dialect = anthropic
 untranslatable_answer = {"id":"msg_1","type":"message","role":"assistant","model":"m0","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":1,"output_tokens":1,"output_tokens_details":{"reasoning_tokens":0}}}
+# That far dialect's 2xx answer its reader refuses (a role no answer has), with usage stated (7 in,
+# 3 out): untranslatable to the caller's dialect, so the caller gets its own 500 and no tokens bill.
+unreadable_answer = {"id":"msg_1","type":"message","role":"wizard","model":"m0","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","stop_sequence":null,"usage":{"input_tokens":7,"output_tokens":3}}
