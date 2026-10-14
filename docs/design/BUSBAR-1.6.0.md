@@ -1551,7 +1551,7 @@ Kernel features deleted: `jsonrpc-ingress`, `card-signing`, `relay`, `duplex-ws`
 **Migration order.** M0 ABI-SPEC (the §11.5 layout, the constants test, the gates above — report-only)
 → M1 DISPATCH (generation tickets, driver tickets, completion handles, deadline classes, the watchdog
 plus worker replacement) → M2 GATES → M3 TABLES, kinds smallest first: secret, store, hook, auth,
-export, transport, plane → M4 HOOK-PARITY (the 184 v1.5.5 hook tests: 70 of llm origin + 114 kernel/loader/ranking) / M4b AUTH-PARITY / M4c
+export, transport, plane → M4 HOOK-PARITY (the 181 v1.5.5 hook tests: 69 of llm origin + 112 kernel/loader/ranking) / M4b AUTH-PARITY / M4c
 STORE-MONEY → M5 ZERODEP, with PLANE-FOLD inside it and the http rewrite at step 20 → M6 COLD-DELETE,
 last. The full row-by-row order is `1.6.0-TODO.md`, KERNEL<>PLUGINS, THE PLUGIN ABI LOCK.
 
@@ -2682,8 +2682,8 @@ declines with 405. The order at the door is route →
 - *The switch.* The production composition of the driver and the kernel's host services is in ONE
   place, the serve path; a fold adds only its door rows. A development-only cargo feature flips a
   plane onto the driver during its fold and is deleted when the fold completes; both paths are
-  oracle-proven while it exists. The llm flip's gate is every hook test green on the driver — 184:
-  the 70 of llm origin through `project`, the 114 of kernel, loader and ranking origin (ARCHITECT,
+  oracle-proven while it exists. The llm flip's gate is every hook test green on the driver — 181:
+  the 69 of llm origin through `project`, the 112 of kernel, loader and ranking origin (ARCHITECT,
   2026-09-30).
 
 *Proven by:* the plane conformance suite (compiled-in and dropped-in through one table); zero

@@ -40,6 +40,7 @@ pub mod documented_claims;
 pub mod door_only;
 pub mod duplex_ws_default_edge;
 pub mod field_inventory;
+pub mod hook_parity_count;
 pub mod hot_path_alloc;
 pub mod hot_path_perf;
 pub mod instance_noun_neutrality;
@@ -3188,6 +3189,13 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(deferral_words::DeferralWordsGate),
         summary: "DECISIONS #15 banned-word shapes over the 1.6.0 docs (report-only) + the pinned positive control",
+    },
+    Registration {
+        name: "hook-parity-count",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(hook_parity_count::HookParityCountGate),
+        summary: "every writing of the v1.5.5 hook parity suite's size is the enumeration's (m4_acceptance_suite.rs)",
     },
     Registration {
         name: "design-docs-allowlist",
