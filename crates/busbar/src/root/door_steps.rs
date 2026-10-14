@@ -1832,7 +1832,7 @@ impl OutboundAuths {
                 let written = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
                 let presenting = userinfo
                     .as_ref()
-                    .map(|u| u.leading(&[]))
+                    .and_then(|u| u.leading(&[]))
                     .unwrap_or_default();
                 let presenting = presenting
                     .first()
