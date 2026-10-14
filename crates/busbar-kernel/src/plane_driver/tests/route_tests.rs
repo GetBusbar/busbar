@@ -85,8 +85,9 @@ fn only_the_answers_first_piece_lends_the_kept_head() {
 
 /// THE USAGE-TAP FAULT IS READ OFF THE ANSWER (row 155): a plane's answer carrying a usage-tap
 /// fault beside its units reads as the reason the kernel counts it under, and one carrying none
-/// reads as nothing to count. The steps count each answer's fault once, and a plane writes it on
-/// one window of its answer.
+/// reads as nothing to count. A byte outside the vocabulary reads as `unknown`: counted, never
+/// ignored and never read as none. The steps count each answer's fault once, and a plane writes it
+/// on one window of its answer.
 #[test]
 fn an_answers_usage_tap_fault_reads_as_the_reason_the_kernel_counts() {
     use busbar_contract::abi::plane::{
@@ -99,6 +100,8 @@ fn an_answers_usage_tap_fault_reads_as_the_reason_the_kernel_counts() {
         (TAP_FAULT_DECODE, Some("decode")),
         (TAP_FAULT_BAD_JSON, Some("bad_json")),
         (TAP_FAULT_UNKNOWN_PROTOCOL, Some("unknown_protocol")),
+        (TAP_FAULT_UNKNOWN_PROTOCOL + 1, Some("unknown")),
+        (u8::MAX, Some("unknown")),
     ] {
         o.tap_fault = code;
         assert_eq!(Answer::of(&o).usage_tap_fault(), reason, "{code}");

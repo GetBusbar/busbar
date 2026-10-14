@@ -174,8 +174,24 @@ impl UsageTapFault {
         }
     }
 
+    /// The reason the kernel counts a door's answer code under, the byte read as the CLOSED enum
+    /// it is: `None` only for [`crate::abi::plane::TAP_FAULT_NONE`]; a named code's
+    /// [`Self::reason`]; and every other value [`Self::UNKNOWN_REASON`]. A byte outside the
+    /// vocabulary is never ignored and never read as none: it is counted, and warned once.
+    #[must_use]
+    pub const fn reason_of(code: u8) -> Option<&'static str> {
+        match Self::of_code(code) {
+            Some(fault) => Some(fault.reason()),
+            None if code == crate::abi::plane::TAP_FAULT_NONE => None,
+            None => Some(Self::UNKNOWN_REASON),
+        }
+    }
+
+    /// The `reason` a tap-fault byte outside the vocabulary is counted under.
+    pub const UNKNOWN_REASON: &'static str = "unknown";
+
     /// The fault a door's answer code names; `None` for [`crate::abi::plane::TAP_FAULT_NONE`] and
-    /// for a code outside the vocabulary.
+    /// for a code outside the vocabulary (which [`Self::reason_of`] counts as `unknown`).
     #[must_use]
     pub const fn of_code(code: u8) -> Option<Self> {
         match code {

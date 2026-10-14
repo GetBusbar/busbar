@@ -1798,8 +1798,10 @@ pub struct OnPieceOut {
     /// plane's usage tap could not read a same-protocol 2xx body, so the request billed 0 tokens
     /// ([`crate::codec::UsageTapFault`]). The kernel counts it, once per answer that carries it, on
     /// `busbar_billing_tap_decode_fail_total{protocol,reason}` under the unit's dialect, and warns
-    /// once per `(protocol, reason)`: the fault crosses as data, never as a host call.
-    /// [`TAP_FAULT_NONE`] = none. Laid in the padding after `fault` (pre-tag v1).
+    /// once per `(protocol, reason)`: the fault crosses as data, never as a host call. A CLOSED
+    /// enum: [`TAP_FAULT_NONE`] = none, then the named reasons; any other value is counted under
+    /// `reason="unknown"` (and warned once), never ignored and never read as none. Laid in the
+    /// padding after `fault` (pre-release, at the unchanged plane ABI version).
     pub tap_fault: u8,
     /// Alignment padding.
     pub _fault_reserved: [u8; 2],
