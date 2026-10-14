@@ -18,8 +18,9 @@
 //! - [`Hold`], [`HoldCell`], [`HoldAccrual`] — the reservation, the slot it lives in, and a child's
 //!   spend against a parent's.
 //! - [`Posted`], [`DurabilityLost`], [`Usage`] — what closes a hold, and what it is closed against.
-//! - [`VerifiedDestination`], [`AuthDecoration`], [`SecretSlot`], [`TransportKeyHandle`],
-//!   [`SecretOnce`] — the capabilities on the way out.
+//! - [`VerifiedDestination`], [`TransportKeyHandle`] — the capabilities on the way out. The
+//!   outbound decoration and both secret placeholders are the destination module's alone
+//!   ([`crate::AuthDecoration`], [`crate::SecretSlot`], [`crate::SecretOnce`]).
 //! - [`Origin`], [`SessionId`], [`IdempotencyKey`], [`UnitEnd`] — the kernel's own.
 //! - The [canary] the kernel balances.
 //!
@@ -81,7 +82,7 @@ pub use capability::{
     AdminVerb, Admittance, Capability, Consumption, Dial, DurableWrite, Exit, KeyHandle, Recover,
     Sign, WriteMoney,
 };
-pub use egress::{AuthDecoration, SecretOnce, SecretSlot, TransportKeyHandle, VerifiedDestination};
+pub use egress::{TransportKeyHandle, VerifiedDestination};
 pub use hold::{
     Accrual, AccrualRefused, Admission, AdmitRejected, CellError, DurabilityLost, Hold,
     HoldAccrual, HoldCell, HoldCellState, Posted, PostingFlags, Spend,

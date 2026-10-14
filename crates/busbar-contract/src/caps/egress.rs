@@ -1,15 +1,36 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The capabilities on the way out: the sealed destination, the decoration that authenticates an
-//! outbound request, the handle that stands for key material, and the one-shot secret placeholder.
+//! The capabilities on the way out: the sealed destination and the handle that stands for key
+//! material.
 //!
-//! Everything here has the same shape as everything else in the crate — a private constructor and a
-//! token that opens it — but these four are the ones that touch secrets, so their `Debug` output
-//! never shows what they carry.
+//! The decoration that authenticates an outbound request ([`AuthDecoration`](crate::AuthDecoration)),
+//! its secret placeholder ([`SecretSlot`](crate::SecretSlot)) and the one-shot secret placeholder
+//! ([`SecretOnce`](crate::SecretOnce)) have ONE home, the destination module (`dest.rs`), and one
+//! spelling, the crate root (#73, X-1802). This module once carried a second, differently-shaped
+//! copy of each; nothing here re-spells them:
+//!
+//! ```compile_fail,E0432
+//! use busbar_contract::caps::SecretOnce;
+//! ```
+//!
+//! ```compile_fail,E0432
+//! use busbar_contract::caps::AuthDecoration;
+//! ```
+//!
+//! ```compile_fail,E0432
+//! use busbar_contract::caps::SecretSlot;
+//! ```
+//!
+//! The one spelling each has:
+//!
+//! ```
+//! use busbar_contract::{AuthDecoration, SecretOnce, SecretSlot};
+//! let _: Option<(AuthDecoration<'static>, SecretOnce, SecretSlot)> = None;
+//! ```
 
-use crate::caps::capability::{AdminVerb, Dial, Sign};
-use crate::caps::step::{LaneId, UnitKey};
+use crate::caps::capability::Dial;
+use crate::caps::step::LaneId;
 use crate::caps::token::Grant;
 
 /// A destination the trust unit judged and sealed.
@@ -34,93 +55,13 @@ impl VerifiedDestination {
     /// at the sealing site. That is what lets a deployment's own lanes be sealed at all, and it is
     /// why this signature does not take a `String`: a lane id minted per unit would be a leak per
     /// request, which is the one thing the interning rule exists to forbid.
-    pub fn seal(_token: &crate::caps::token::Grant<Dial>, lane: LaneId) -> Self {
+    pub fn seal(_token: &Grant<Dial>, lane: LaneId) -> Self {
         VerifiedDestination { lane }
     }
 
     /// The priced axis this destination sits on.
     pub fn lane(&self) -> &LaneId {
         &self.lane
-    }
-}
-
-/// A place in an outbound request where a secret has to be substituted.
-///
-/// The slot names the location; it never carries the secret. The egress-auth unit substitutes every
-/// slot itself, which is why the secret never exists anywhere a plane could see it.
-#[derive(Clone, PartialEq, Eq)]
-pub struct SecretSlot {
-    location: String,
-}
-
-impl SecretSlot {
-    /// Declare a slot. Egress-auth unit only.
-    pub fn declare(_token: &Grant<Sign>, location: impl Into<String>) -> Self {
-        SecretSlot {
-            location: location.into(),
-        }
-    }
-
-    /// Where the substitution happens.
-    pub fn location(&self) -> &str {
-        &self.location
-    }
-}
-
-impl std::fmt::Debug for SecretSlot {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SecretSlot")
-            .field("location", &self.location)
-            .finish()
-    }
-}
-
-/// How an outbound request is authenticated.
-///
-/// Either the request is decorated in place — envelope fields from a closed allow-list, an optional
-/// body signature, and the slots to substitute — or the scheme needs a handshake of its own, in
-/// which case the decoration says how many frames and bytes it may take.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum AuthDecoration {
-    /// Decorate the request in place.
-    Decorate {
-        /// The envelope fields to set. Never a field the lane locator reads.
-        fields: Vec<(String, String)>,
-        /// Whether the body is signed.
-        body_signature: bool,
-        /// The secret slots the egress-auth unit will substitute.
-        slots: Vec<SecretSlot>,
-    },
-    /// Run a bounded handshake before the request goes.
-    Handshake {
-        /// The most frames the handshake may take.
-        max_frames: u32,
-        /// The most bytes it may take.
-        max_bytes: u32,
-    },
-}
-
-impl AuthDecoration {
-    /// Build a decoration. Egress-auth unit only.
-    pub fn decorate(
-        _token: &Grant<Sign>,
-        fields: Vec<(String, String)>,
-        body_signature: bool,
-        slots: Vec<SecretSlot>,
-    ) -> Self {
-        AuthDecoration::Decorate {
-            fields,
-            body_signature,
-            slots,
-        }
-    }
-
-    /// Build a handshake decoration. Egress-auth unit only.
-    pub fn handshake(_token: &Grant<Sign>, max_frames: u32, max_bytes: u32) -> Self {
-        AuthDecoration::Handshake {
-            max_frames,
-            max_bytes,
-        }
     }
 }
 
@@ -131,56 +72,3 @@ impl AuthDecoration {
 /// its [`Grant`](crate::caps::Grant)`<KeyHandle>` by the loop. `TransportKeyHandle::issue` takes that grant, so this is
 /// one type with one constructor rather than two types that nothing bridges.
 pub use crate::TransportKeyHandle;
-
-/// A minted secret that may appear exactly once, at one declared place, in one unit.
-///
-/// The nonce is bound to the unit that minted it and to the location it is allowed to appear at. If
-/// the encoded bytes do not contain it exactly once at that location, the unit fails and the mint
-/// is reversed — which is the whole point: a credential-minting verb cannot leak its output into a
-/// log, a fact, or a second copy of the response.
-#[derive(Clone, PartialEq, Eq)]
-pub struct SecretOnce {
-    nonce: u128,
-    unit: UnitKey,
-    target: String,
-}
-
-impl SecretOnce {
-    /// Mint the placeholder. Verbs unit only.
-    pub fn mint(
-        _token: &Grant<AdminVerb>,
-        nonce: u128,
-        unit: UnitKey,
-        target: impl Into<String>,
-    ) -> Self {
-        SecretOnce {
-            nonce,
-            unit,
-            target: target.into(),
-        }
-    }
-
-    /// The unit the placeholder is bound to.
-    pub fn unit(&self) -> UnitKey {
-        self.unit
-    }
-
-    /// The one location it may appear at.
-    pub fn target(&self) -> &str {
-        &self.target
-    }
-
-    /// Whether a nonce seen in the encoded bytes is this one.
-    pub fn matches(&self, nonce: u128) -> bool {
-        self.nonce == nonce
-    }
-}
-
-impl std::fmt::Debug for SecretOnce {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SecretOnce")
-            .field("unit", &self.unit)
-            .field("target", &self.target)
-            .finish_non_exhaustive()
-    }
-}

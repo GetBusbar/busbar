@@ -529,43 +529,6 @@ fn a_sealed_destination_carries_the_lane_the_money_side_reads() {
         LaneId::new("vendor-a:gpt-4o"),
     );
     assert_eq!(dest.lane().as_str(), "vendor-a:gpt-4o");
-
-    let decoration = AuthDecoration::decorate(
-        &Grant::<Sign>::mint(&k.seal),
-        vec![("authorization".into(), "Scheme {slot}".into())],
-        true,
-        vec![SecretSlot::declare(
-            &Grant::<Sign>::mint(&k.seal),
-            "header:authorization",
-        )],
-    );
-    match decoration {
-        AuthDecoration::Decorate { slots, .. } => {
-            assert_eq!(slots[0].location(), "header:authorization")
-        }
-        AuthDecoration::Handshake { .. } => panic!("built a decoration, got a handshake"),
-    }
-}
-
-/// The handshake leg is not wired to a transport yet, so the only thing that can go wrong with it
-/// silently is its two bounds being built the wrong way round — a frame count into the byte bound
-/// and a byte bound into the frame count reads the same at every call site and means something
-/// entirely different at the one that enforces it. So the order is pinned here, before there is a
-/// caller that could inherit the mistake.
-#[test]
-fn a_handshake_decoration_carries_its_two_bounds_in_the_order_it_declares_them() {
-    let k = Kernel::new();
-    let token = Grant::<Sign>::mint(&k.seal);
-    match AuthDecoration::handshake(&token, 7, 4096) {
-        AuthDecoration::Handshake {
-            max_frames,
-            max_bytes,
-        } => {
-            assert_eq!(max_frames, 7);
-            assert_eq!(max_bytes, 4096);
-        }
-        AuthDecoration::Decorate { .. } => panic!("asked for a handshake, got a decoration"),
-    }
 }
 
 /// The journal spelling of an origin is a wire fact: it is what a metering row and an audit entry
