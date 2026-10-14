@@ -468,9 +468,9 @@ pub const CONFIG_OPEN_ADMIN_MINT: Diagnostic = Diagnostic {
         "The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly \
               empty, so the admin API has no credential gating it — ANYONE can mint virtual keys \
               through it. Acceptable only for local development.",
-    action: "Configure `auth.admin_auth` (an `admin-tokens` entry with a `token:`, or an admin \
-             module granting `mint`/`full`) before exposing busbar's admin API to any untrusted \
-             network, so key minting is gated by an operator credential.",
+    action: "Configure `auth.admin_auth` (an admin credential entry, or an admin module granting \
+             `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key \
+             minting is gated by an operator credential.",
     since: "1.6.0",
     retired: false,
 };
@@ -485,8 +485,8 @@ pub const CONFIG_PASSTHROUGH_UNUSED_APIKEY: Diagnostic = Diagnostic {
     summary: "A provider is configured with a NON-EMPTY api_key while `upstream_credentials` is \
               `passthrough`, under which the upstream key is the caller's own token (or empty), so \
               the configured api_key is NEVER forwarded — it is inert dead config. A legitimate \
-              passthrough provider that itself signs per-request via SigV4 and needs no static \
-              key, hence a warning rather than a hard reject.",
+              passthrough provider may itself sign each request and need no static key, hence a \
+              warning rather than a hard reject.",
     action: "If you intended static-key gating, use `upstream_credentials: own` (plus an auth \
              chain). Otherwise clear the referenced provider secret so the config reflects that no \
              static key is used on that passthrough provider.",
@@ -525,8 +525,8 @@ pub const LOGIN_OFFLOAD_SATURATED: Diagnostic = Diagnostic {
               window because the offload budget is fully in flight — a login plugin is wedged and \
               not returning. busbar rejects the login fail-closed rather than complete a login it \
               never ran. Warned once on entry to the saturated state; recurrence logs at debug.",
-    action: "Investigate the login plugin (LDAP/AD bind, an OIDC token/userinfo round-trip) — it \
-             is blocking past its timeout. Restore or restart it; the saturation clears once calls \
+    action: "Investigate the login plugin (its directory bind or identity-provider round-trip) — \
+             it is blocking past its timeout. Restore or restart it; the saturation clears once calls \
              return within budget.",
     since: "1.6.0",
     retired: false,
@@ -905,21 +905,21 @@ pub const OAUTH_AS_SWEEP_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// HMAC-SHA256 init failed during SigV4 signing — documented unreachable.
+/// HMAC-SHA256 init failed during request signing — RETIRED: request signing left the host, and no
+/// plugin raises this code. The number is kept so a log line from a pre-release build still
+/// resolves.
 pub const REQUEST_SIGNING_HMAC_INIT_FAILED: Diagnostic = Diagnostic {
     code: 4024,
     class: Class::Auth,
-    slug: "sigv4-hmac-init-failed",
-    title: "SigV4 HMAC-SHA256 init failed (documented unreachable)",
+    slug: "request-signing-hmac-init-failed",
+    title: "Request-signing HMAC-SHA256 init failed — RETIRED",
     severity: Severity::Actionable,
-    summary: "Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as \
-              unreachable — HMAC-SHA256 accepts a key of any length — so reaching it indicates a \
-              serious crypto-library inconsistency. busbar returns an empty signature, which the \
-              upstream rejects.",
-    action: "Capture the logged error and file a bug; this should not be possible. SigV4-signed \
-             egress fails to authenticate until it is resolved.",
+    summary: "RETIRED. Initializing HMAC-SHA256 for per-request egress signing failed, which was \
+              documented as unreachable (HMAC-SHA256 accepts a key of any length). Request signing \
+              is no longer the host's, and nothing raises this code.",
+    action: "Nothing emits this code.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 /// oauth_as has no configured signing_key, so an EPHEMERAL ES256 key was generated at boot.
@@ -2497,8 +2497,8 @@ pub const ADMIN_AUTH_CHAIN_EMPTY: Diagnostic = Diagnostic {
               at boot — never flipped open by one unnoticed API call.",
     action: "Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set \
              `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an \
-             `admin-tokens` entry with a `token:`, or an admin module) before exposing the admin API \
-             to any untrusted network.",
+             admin credential entry, or an admin module) before exposing the admin API to any \
+             untrusted network.",
     since: "1.6.0",
     retired: false,
 };

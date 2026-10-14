@@ -338,7 +338,7 @@ An auth chain entry sets `max_admin_scope: full`, so every principal identified 
 
 The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty, so the admin API has no credential gating it — ANYONE can mint virtual keys through it. Acceptable only for local development.
 
-**What to do:** Configure `auth.admin_auth` (an `admin-tokens` entry with a `token:`, or an admin module granting `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key minting is gated by an operator credential.
+**What to do:** Configure `auth.admin_auth` (an admin credential entry, or an admin module granting `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key minting is gated by an operator credential.
 
 <a id="config-passthrough-unused-apikey"></a>
 ### BUSBAR-3013 — passthrough provider has a non-empty api_key that is never forwarded (inert config)
@@ -347,7 +347,7 @@ The auth chain names the built-in `keys` verifier while `auth.admin_auth` is exp
 - **Since:** 1.6.0
 - **Slug:** `config-passthrough-unused-apikey`
 
-A provider is configured with a NON-EMPTY api_key while `upstream_credentials` is `passthrough`, under which the upstream key is the caller's own token (or empty), so the configured api_key is NEVER forwarded — it is inert dead config. A legitimate passthrough provider that itself signs per-request via SigV4 and needs no static key, hence a warning rather than a hard reject.
+A provider is configured with a NON-EMPTY api_key while `upstream_credentials` is `passthrough`, under which the upstream key is the caller's own token (or empty), so the configured api_key is NEVER forwarded — it is inert dead config. A legitimate passthrough provider may itself sign each request and need no static key, hence a warning rather than a hard reject.
 
 **What to do:** If you intended static-key gating, use `upstream_credentials: own` (plus an auth chain). Otherwise clear the referenced provider secret so the config reflects that no static key is used on that passthrough provider.
 
@@ -483,7 +483,7 @@ An authenticated, authorized token-exchange request could not be completed becau
 
 A login-plugin call could not obtain a blocking-offload permit within the wait window because the offload budget is fully in flight — a login plugin is wedged and not returning. busbar rejects the login fail-closed rather than complete a login it never ran. Warned once on entry to the saturated state; recurrence logs at debug.
 
-**What to do:** Investigate the login plugin (LDAP/AD bind, an OIDC token/userinfo round-trip) — it is blocking past its timeout. Restore or restart it; the saturation clears once calls return within budget.
+**What to do:** Investigate the login plugin (its directory bind or identity-provider round-trip) — it is blocking past its timeout. Restore or restart it; the saturation clears once calls return within budget.
 
 <a id="login-plugin-panicked"></a>
 ### BUSBAR-4003 — Login plugin call panicked (login rejected fail-closed)
@@ -716,16 +716,16 @@ The oauth_as authorization-server sweep of expired records failed for a tick —
 
 **What to do:** None if it clears on the next tick. Sustained failures indicate an oauth_as store problem worth investigating; expired records accumulate until a sweep succeeds.
 
-<a id="sigv4-hmac-init-failed"></a>
-### BUSBAR-4024 — SigV4 HMAC-SHA256 init failed (documented unreachable)
+<a id="request-signing-hmac-init-failed"></a>
+### BUSBAR-4024 — Request-signing HMAC-SHA256 init failed — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
-- **Slug:** `sigv4-hmac-init-failed`
+- **Slug:** `request-signing-hmac-init-failed`
 
-Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as unreachable — HMAC-SHA256 accepts a key of any length — so reaching it indicates a serious crypto-library inconsistency. busbar returns an empty signature, which the upstream rejects.
+RETIRED. Initializing HMAC-SHA256 for per-request egress signing failed, which was documented as unreachable (HMAC-SHA256 accepts a key of any length). Request signing is no longer the host's, and nothing raises this code.
 
-**What to do:** Capture the logged error and file a bug; this should not be possible. SigV4-signed egress fails to authenticate until it is resolved.
+**What to do:** Nothing emits this code.
 
 <a id="oauth-as-ephemeral-signing-key"></a>
 ### BUSBAR-4025 — oauth_as generated an ephemeral ES256 signing key (tokens die on restart)
@@ -747,7 +747,7 @@ The oauth_as authorization server has no `signing_key` configured, so busbar gen
 
 An EMPTY admin_auth chain was seen: the admin API's open dev posture admits every admin request anonymously with FULL authority. The live `PUT /api/v1/admin/admin-auth` REFUSES to apply an empty chain (and an admin-scope dry-run reports it as no earned grant, never full), so this posture can only be entered deliberately via config.yaml at boot — never flipped open by one unnoticed API call.
 
-**What to do:** Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an `admin-tokens` entry with a `token:`, or an admin module) before exposing the admin API to any untrusted network.
+**What to do:** Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an admin credential entry, or an admin module) before exposing the admin API to any untrusted network.
 
 <a id="admin-createkey-malformed-body"></a>
 ### BUSBAR-4027 — create_key request body failed to parse (client 400)

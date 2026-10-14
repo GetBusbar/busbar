@@ -117,26 +117,6 @@ item = "ranking"
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "admin-tokens"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "ldap"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "oidc"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "sigv4"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
 item = "streaming"
 
 [[finding]]
