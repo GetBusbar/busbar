@@ -11,7 +11,6 @@
 //! default, one lane-constant and one request-signing egress builder, and one SigV4-ingress row
 //! claiming the `/model/` residual path. THE ORDER IS FIXED: tests read these rows by position.
 
-use axum::http::{header::AUTHORIZATION, HeaderName, HeaderValue, StatusCode};
 use busbar_contract::billing::TokenUsage;
 use busbar_contract::codec::{
     CodecError, CodecHost, EgressCtx, IngressReject, OperationHandler, RequestHandler,
@@ -70,13 +69,13 @@ impl DialectCodec for Passthrough {
         false
     }
     fn inject_response_metrics(&self, _value: &mut Value, _elapsed_ms: Option<u64>) {}
-    fn attach_error_response_headers(
+    fn error_response_fields(
         &self,
         _: &dyn CodecHost,
-        _: &mut axum::http::HeaderMap,
         _: &str,
         _: &Value,
-    ) {
+    ) -> Vec<(String, Vec<u8>)> {
+        Vec::new()
     }
     fn extract_error(&self, status: u16, _body: &[u8]) -> RawUpstreamError {
         RawUpstreamError::from_status(status)
@@ -133,25 +132,22 @@ impl RequestHandler for Handler {
 }
 
 /// A static scheme: the credential in one header, whatever the request.
-fn static_header(cred: &str, _: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
+fn static_header(cred: &str, _: &SigningContext) -> Vec<(String, Vec<u8>)> {
     vec![(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {cred}")).expect("header"),
+        "authorization".to_string(),
+        format!("Bearer {cred}").into_bytes(),
     )]
 }
 
 /// A request signer: the header covers the body, the time and the path.
-fn signed_header(cred: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
+fn signed_header(cred: &str, ctx: &SigningContext) -> Vec<(String, Vec<u8>)> {
     let sig = format!(
         "{cred}/{}/{}/{}",
         ctx.body.len(),
         ctx.timestamp_epoch,
         ctx.canonical_uri
     );
-    vec![(
-        HeaderName::from_static("x-test-signature"),
-        HeaderValue::from_str(&sig).expect("header"),
-    )]
+    vec![("x-test-signature".to_string(), sig.into_bytes())]
 }
 
 fn claims_model_prefix(path: &str) -> Option<ClaimStrength> {
@@ -193,7 +189,7 @@ static B: ProtocolDecl = ProtocolDecl {
 static C: ProtocolDecl = codec_row("proto-c", &Handler("proto-c", CHAT));
 static D: ProtocolDecl = ProtocolDecl {
     ingress_auth: IngressAuth::SigV4,
-    auth_failure_status_and_kind: (StatusCode::FORBIDDEN, ERR_TYPE_PERMISSION),
+    auth_failure_status_and_kind: (403, ERR_TYPE_PERMISSION),
     egress_auth_headers: Some(signed_header),
     residual_claims: Some(claims_model_prefix),
     ..codec_row("proto-d", &Handler("proto-d", CHAT))

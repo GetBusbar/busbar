@@ -51,7 +51,7 @@ pub fn protocol() -> Protocol {
 /// THE RESPONSES ROUTER DETECTION — its single rung of the old core `protocol_id` ladder:
 /// `/v1/responses` (rung 10).
 fn claims(
-    _h: &busbar_contract::http::HeaderMap,
+    _h: busbar_contract::protocol::HeadFields<'_>,
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
     if path.ends_with("/v1/responses") {
@@ -96,7 +96,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
@@ -108,7 +108,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
         busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,

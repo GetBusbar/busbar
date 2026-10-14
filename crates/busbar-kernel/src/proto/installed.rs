@@ -437,12 +437,17 @@ pub fn registry() -> &'static Registry {
 /// THE GENERIC ROUTER DETECTION FOLD — `(path, headers)` → which registered protocol a request
 /// speaks, or `None` for a path that names none. Folds every registered protocol's
 /// [`ProtocolDecl::claims`] predicate in REGISTRATION ORDER and keeps the TIGHTEST claim (lowest
-/// [`ClaimStrength`]); a tie breaks by registration order. Byte-identical to the old ladder.
+/// [`ClaimStrength`]); a tie breaks by registration order. Byte-identical to the old ladder. The
+/// head crosses the seam as neutral field pairs, in the map's order (a name's first value first).
 pub fn detect_protocol(path: &str, headers: &http::HeaderMap) -> Option<&'static str> {
+    let fields: Vec<(&[u8], &[u8])> = headers
+        .iter()
+        .map(|(n, v)| (n.as_str().as_bytes(), v.as_bytes()))
+        .collect();
     registry()
         .decls()
         .iter()
-        .filter_map(|d| d.claims.and_then(|c| c(headers, path)).map(|s| (s, d.name)))
+        .filter_map(|d| d.claim_over(path, &fields).map(|s| (s, d.name)))
         .min_by(|a, b| a.0.cmp(&b.0))
         .map(|(_, name)| name)
 }

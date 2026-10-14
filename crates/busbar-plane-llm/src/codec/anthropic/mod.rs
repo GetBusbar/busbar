@@ -115,14 +115,14 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// Anthropic's alone among the six (rung 4, catching curl users who omit the version header), then
 /// the `/v1/messages` path (rung 11). Lower strength binds tighter — the shared ladder positions.
 fn claims(
-    h: &busbar_contract::http::HeaderMap,
+    h: busbar_contract::protocol::HeadFields<'_>,
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::ClaimStrength;
-    if h.contains_key(HDR_ANTHROPIC_VERSION) || h.contains_key("anthropic-beta") {
+    use busbar_contract::protocol::{head_field, ClaimStrength};
+    if head_field(h, HDR_ANTHROPIC_VERSION).is_some() || head_field(h, "anthropic-beta").is_some() {
         return Some(ClaimStrength(2));
     }
-    if h.contains_key(HDR_X_API_KEY) {
+    if head_field(h, HDR_X_API_KEY).is_some() {
         return Some(ClaimStrength(4));
     }
     if path.contains("/v1/messages") {
@@ -189,7 +189,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: Some(ANTHROPIC_PING_SSE_FRAME),
     reshapes_body_at_path_base: true,
     max_cache_control_breakpoints: Some(4),
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: Some(1),
@@ -203,7 +203,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "Anthropic/Python 0.39.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
         busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
