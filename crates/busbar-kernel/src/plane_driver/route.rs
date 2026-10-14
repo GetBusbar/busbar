@@ -540,10 +540,9 @@ impl Answer {
     }
 
     /// The usage-tap fault this answer carries, as the reason the kernel counts it under; `None`
-    /// for an answer that carries none.
+    /// only for an answer that carries none. A byte outside the vocabulary is `unknown`, counted.
     fn usage_tap_fault(&self) -> Option<&'static str> {
-        busbar_contract::codec::UsageTapFault::of_code(self.tap_fault)
-            .map(busbar_contract::codec::UsageTapFault::reason)
+        busbar_contract::codec::UsageTapFault::reason_of(self.tap_fault)
     }
 }
 

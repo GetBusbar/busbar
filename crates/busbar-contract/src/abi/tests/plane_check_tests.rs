@@ -1680,11 +1680,11 @@ fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
     );
 }
 
-/// THE USAGE-TAP FAULT rides the answer as data (row 155): a known `TAP_FAULT_*` on a READY answer,
-/// beside the breaker reading and separate from it. RED arms: past `TAP_FAULT_UNKNOWN_PROTOCOL`, and
-/// on an answer that is not READY.
+/// THE USAGE-TAP FAULT rides the answer as data (row 155), beside the breaker reading and separate
+/// from it, on a READY answer only. A value past the vocabulary is ADMITTED: the kernel counts it
+/// as `unknown` rather than refusing the answer it rides. RED arm: a fault on a non-READY answer.
 #[test]
-fn a_usage_tap_fault_is_a_known_code_on_a_ready_answer() {
+fn a_usage_tap_fault_rides_only_a_ready_answer() {
     use crate::abi::plane::{
         TAP_FAULT_BAD_JSON, TAP_FAULT_DECODE, TAP_FAULT_NONE, TAP_FAULT_UNKNOWN_PROTOCOL,
     };
@@ -1701,7 +1701,8 @@ fn a_usage_tap_fault_is_a_known_code_on_a_ready_answer() {
     o.tap_fault = TAP_FAULT_UNKNOWN_PROTOCOL + 1;
     assert_eq!(
         piece(&o, &[], &[], &[]),
-        f(Rule::UnknownCode, "on_piece.tap_fault")
+        Ok(()),
+        "counted as unknown, never refused"
     );
     o.tap_fault = TAP_FAULT_DECODE;
     assert_eq!(

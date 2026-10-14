@@ -414,7 +414,10 @@ where
                     // THE USAGE-TAP FAULT the relay's tap returned as data (row 155): the kernel
                     // counts it, under the caller's dialect the tap read the body as.
                     if let Some(fault) = end.tap_fault {
-                        usage_tap_fault(this.relay.ingress(), fault.reason());
+                        busbar_kernel::handlers::usage_tap_fault(
+                            this.relay.ingress(),
+                            fault.reason(),
+                        );
                     }
                     // The stream's drops (design F3 "Drops"), already warned once each: one audit row
                     // per wire path, the twin of the buffered answer's rows.
