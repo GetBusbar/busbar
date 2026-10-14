@@ -1043,6 +1043,15 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let line_served = (stdio_serve_requested(std::env::args())
         && root::serve::lines::line_claim(&served).is_some())
     .then(|| std::mem::take(&mut served));
+    // Each data-chain auth with the points its opened instance declares (THE DESIGN §6): a line's
+    // point set is their union, and the guest list's seal judges it.
+    let data_chain: Vec<root::serve::ChainAuth> = data_chain
+        .into_iter()
+        .map(|provider| {
+            let points = app.auth.position_points(&provider);
+            (provider, points)
+        })
+        .collect();
     let (doors, sessions, refusals) = root::serve::data_mounts(
         served,
         &data_chain,

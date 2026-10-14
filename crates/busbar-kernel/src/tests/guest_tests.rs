@@ -3,8 +3,10 @@
 
 //! A guest list's order and its match: CG-62 precedence first, predicates above none at an equal
 //! path, a claimant's rung among its own lines; two claimants meeting at an equal precedence refused;
-//! a path hit on another method is a method miss, not no-route.
+//! a path hit on another method is a method miss, not no-route; a listener mixing lines that need
+//! `Peer` with lines that do not refused.
 
+use busbar_contract::abi::auth::AuthPoints;
 use busbar_contract::abi::transport::route::{
     FIELD_PRESENT, FIELD_VALUE_PREFIX, METHOD_GET, METHOD_POST, PATH_EXACT, PATH_PATTERN,
     PATH_PREFIX,
@@ -206,4 +208,52 @@ fn a_path_hit_on_another_method_is_a_method_miss() {
         panic!("the later line admits POST");
     };
     assert_eq!(l.claimant, Claimant::Plane("any".into()));
+}
+
+/// A line whose auth is a one-auth chain over `points`.
+fn authed(claimant: &str, path: &str, points: AuthPoints) -> Line {
+    Line {
+        auth: LineAuth::Chain(vec!["chain".into()], points),
+        ..line(claimant, route(METHOD_POST, PATH_EXACT, path))
+    }
+}
+
+/// RED (THE DESIGN §6 step 3, boot refusals): a listener where some lines need `Peer` and others do
+/// not is refused, naming the lines on each side; a listener whose lines all need `Peer`, and one
+/// where none does, seal.
+#[test]
+fn a_listener_mixing_peer_and_non_peer_lines_is_refused() {
+    let both = AuthPoints(AuthPoints::PEER.bits() | AuthPoints::HEAD.bits());
+    let Err(GuestRefusal::PeerMix(mix)) = GuestList::seal(vec![
+        authed("a", "/a", both),
+        authed("b", "/b", AuthPoints::HEAD),
+        line("c", route(METHOD_GET, PATH_EXACT, "/c")),
+    ]) else {
+        panic!("a mixed listener is refused");
+    };
+    let paths = |lines: &[Line]| -> Vec<String> {
+        let mut p: Vec<String> = lines.iter().map(|l| l.route.path.clone()).collect();
+        p.sort();
+        p
+    };
+    assert_eq!(paths(&mix.0), ["/a"], "the lines that need Peer");
+    assert_eq!(paths(&mix.1), ["/b", "/c"], "the lines that do not");
+
+    assert!(
+        GuestList::seal(vec![
+            authed("a", "/a", AuthPoints::PEER),
+            authed("b", "/b", both),
+        ])
+        .is_ok(),
+        "every line needs Peer"
+    );
+    assert!(
+        GuestList::seal(vec![
+            authed("a", "/a", AuthPoints::HEAD),
+            authed("b", "/b", AuthPoints::HEAD_BODY),
+            line("c", route(METHOD_GET, PATH_EXACT, "/c")),
+        ])
+        .is_ok(),
+        "no line needs Peer"
+    );
 }

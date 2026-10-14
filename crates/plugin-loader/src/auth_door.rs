@@ -710,6 +710,10 @@ impl AuthCalls for AuthInstance {
         self.facts.carriers.clone()
     }
 
+    fn inbound_points(&self) -> busbar_contract::abi::auth::AuthPoints {
+        self.facts.inbound_points
+    }
+
     fn verify_now(&self, request: &VerifyRequest) -> Option<VerifyAnswer> {
         let presented = request.credential.is_some();
         let plugin = &self.shared.plugin;

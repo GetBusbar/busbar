@@ -11,6 +11,10 @@
 //! own lines. Two different claimants' lines that could match one request at an equal key are
 //! refused ([`GuestRefusal::EqualPrecedence`]).
 //!
+//! POINTS. A line's point set is the union of its auths' sets. A listener whose lines need `Peer`
+//! must need it on every line: some lines needing `Peer` and others not is refused
+//! ([`GuestRefusal::PeerMix`]; THE DESIGN §6 step 3, boot refusals).
+//!
 //! MATCH. The first line whose path and predicates hold AND whose method set holds the method wins.
 //! When some line's path and predicates hold but none admits the method, the answer is a method
 //! miss on the first such line (405, never no-route). Otherwise there is no line (the listener's
@@ -18,6 +22,7 @@
 
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+use busbar_contract::abi::auth::{AuthPoint, AuthPoints};
 use busbar_contract::abi::transport::route::{
     Interner, RouteView, FIELD_VALUE_PREFIX, PATH_CONTAINS, PATH_EXACT, PATH_PATTERN, PATH_PREFIX,
     PATH_SUFFIX,
@@ -150,8 +155,20 @@ impl Route {
 pub enum LineAuth {
     /// Anyone (e.g. `/healthz`).
     None,
-    /// The resolved chain, tried in order by 1.5.5's chain rule.
-    Chain(Vec<String>),
+    /// The resolved chain, tried in order by 1.5.5's chain rule, and the line's point set: the
+    /// union of its auths' declared sets.
+    Chain(Vec<String>, AuthPoints),
+}
+
+impl LineAuth {
+    /// The line's point set: the union of its auths' sets; empty for [`LineAuth::None`].
+    #[must_use]
+    pub fn points(&self) -> AuthPoints {
+        match self {
+            Self::None => AuthPoints::EMPTY,
+            Self::Chain(_, points) => *points,
+        }
+    }
 }
 
 /// One line on a guest list.
@@ -174,6 +191,9 @@ pub struct Line {
 pub enum GuestRefusal {
     /// Two claimants' lines could match one request at an equal precedence (CG-62).
     EqualPrecedence(Box<(Line, Line)>),
+    /// Some lines need `Peer` and others do not: the lines that need it, then the lines that do
+    /// not, each in the order they are tried.
+    PeerMix(Box<(Vec<Line>, Vec<Line>)>),
 }
 
 /// What a request matched.
@@ -194,11 +214,13 @@ pub struct GuestList {
 }
 
 impl GuestList {
-    /// Order `lines` and refuse two claimants' lines that could meet at an equal precedence.
+    /// Order `lines` and refuse two claimants' lines that could meet at an equal precedence, and a
+    /// list where some lines need `Peer` and others do not.
     ///
     /// # Errors
     ///
-    /// [`GuestRefusal::EqualPrecedence`], naming both lines.
+    /// [`GuestRefusal::EqualPrecedence`], naming both lines; [`GuestRefusal::PeerMix`], naming
+    /// the lines on each side.
     pub fn seal(mut lines: Vec<Line>) -> Result<Self, GuestRefusal> {
         // Stable: equal keys keep the declared order, and a claimant's rung orders its own lines.
         lines.sort_by(|a, b| {
@@ -219,6 +241,11 @@ impl GuestList {
                     ))));
                 }
             }
+        }
+        let peer = |l: &Line| l.auth.points().has(AuthPoint::Peer);
+        if lines.iter().any(peer) && !lines.iter().all(peer) {
+            let mix: (Vec<Line>, Vec<Line>) = lines.iter().cloned().partition(peer);
+            return Err(GuestRefusal::PeerMix(Box::new(mix)));
         }
         Ok(Self { lines })
     }
