@@ -319,8 +319,8 @@ fn send_and_read(
             }
             Poll::Pending => return Poll::Pending,
         };
-        // A replayed read answers its stored result; it was applied on the entry that first saw it
-        // (its bytes are no longer in the buffer).
+        // A replayed read answers its stored result (its piece and bytes written again); it was
+        // applied on the entry that first saw it, unless this exchange is that op's fresh re-call.
         let fresh = this >= state.applied;
         if fresh {
             state.applied = this + 1;
@@ -347,7 +347,7 @@ fn send_and_read(
         }
         // The terminal piece ends the reads, on the entry that first saw it and on every replay
         // of that read. A replayed earlier read never does: the piece descriptor is the op's one
-        // parked slot, so a replay finds the LATEST read's piece there, not its own.
+        // parked slot, rewritten by each replayed read: only `ended` marks the terminal one.
         if fresh && matches!(p.kind, REPLY_ACK | REPLY_END) {
             state.ended = Some(this);
         }
