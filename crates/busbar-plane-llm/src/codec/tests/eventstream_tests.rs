@@ -864,95 +864,99 @@ fn a_malformed_prelude_after_valid_frames_still_clears_and_reports_the_prefix() 
     assert!(buf.is_empty(), "the WHOLE buffer clears, prefix included");
 }
 
+/// A buffer of `n` complete small frames.
+fn frames_buffer(n: usize) -> Vec<u8> {
+    let mut buf = Vec::new();
+    for i in 0..n {
+        let payload = format!("{{\"i\":{i}}}");
+        buf.extend_from_slice(&encode_frame("contentBlockDelta", payload.as_bytes()));
+    }
+    buf
+}
+
+/// The drain's work grew linearly from `n` to `4n` frames: under 8× — the log-scale midpoint of
+/// linear's ~4× and quadratic's ~16× — in COUNTED work units, so no scheduler, cache or neighbour
+/// load can move the verdict (Law 8).
+fn scales_linearly(small: DrainWork, big: DrainWork) -> bool {
+    big.total() < small.total() * 8
+}
+
+/// The drain as it was before the index-tracking rewrite: one front `drain` PER FRAME, each
+/// memmoving the whole remaining tail. The deliberately quadratic reference the checker must reject.
+fn per_frame_drain(buf: &mut Vec<u8>) -> DrainWork {
+    let mut work = DrainWork::default();
+    while buf.len() >= PRELUDE_LEN {
+        let total_len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+        if buf.len() < total_len {
+            break;
+        }
+        work.frames += 1;
+        work.scanned += total_len;
+        consume_front(buf, total_len, &mut work);
+    }
+    work
+}
+
 /// Complexity regression: `drain_frames_checked` used `Vec::drain(..total_len)` PER FRAME, which
-/// memmoves the entire remaining tail on every call — O(frames × bytes) for a buffer of many
-/// small frames. The index-tracking rewrite does ONE buffer edit for the whole pass, O(bytes).
-/// A ratio test (not an absolute threshold) of CPU time (not wall clock, which contention
-/// inflates) so it stays machine-independent: quadratic predicts ~16× for a 4× frame-count increase; linear predicts ~4×.
+/// memmoves the entire remaining tail on every call — O(frames × bytes) for a buffer of many small
+/// frames. The index-tracking rewrite does ONE buffer edit for the whole pass, O(bytes).
 ///
-/// WEAKEST TEST IN THIS FILE: if `t(1000)` is too fast to be
-/// above timer-granularity noise, the ratio is meaningless. The assertion checks that floor first
-/// and panics with a clear message rather than silently passing on noise.
-///
-/// MIN-OF-`TRIALS`, not a single sample: contention from other tests running concurrently in the
-/// same `cargo test --workspace` invocation can only ever ADD delay to one `Instant::now()` /
-/// `elapsed()` pair — a scheduler preemption, a cache eviction from a neighboring thread, GC-style
-/// jemalloc housekeeping — never subtract below the true uncontended cost of the drain. So the
-/// MINIMUM across several independent trials converges toward that true cost regardless of how
-/// loaded the machine is, while a single sample has no such guarantee and can land on an
-/// arbitrarily contended instant for either data point, skewing the ratio in either
-/// direction. This is a structural hardening of the MEASUREMENT, not a widened tolerance: the
-/// asserted ratio, its rationale, and the floor check are all unchanged.
+/// COUNTED, NOT TIMED. The previous form compared wall-clock times of 1M- and 4M-frame drains and
+/// flaked under shared CI load (ModernCI quarantined it): a ratio of two timings measures the
+/// machine as much as the code. The drain now counts its own buffer work ([`DrainWork`]: bytes
+/// walked as frames, buffer edits, bytes those edits moved), and every buffer edit goes through the
+/// counting [`consume_front`] / [`clear_all`]. So: one pass makes exactly ONE edit, moves nothing
+/// when it consumes whole frames, walks every byte once, and its total work grows ~4× from n to 4n
+/// frames — while the per-frame drain makes n edits, moves O(n²) bytes and fails the same check.
 #[test]
 fn drain_frames_checked_scales_linearly_in_frame_count() {
-    /// Independent trials per data point; the reported duration is the minimum observed. Three
-    /// (not more) because at 1M/4M frames each measurement is hundreds of milliseconds of
-    /// DRAM-bound work — scheduler blips that dominate a microsecond sample are relative
-    /// rounding error here, and min-of-N only needs ONE uncontended trial to converge.
-    const TRIALS: u32 = 3;
-
-    /// This thread's own CPU time, in nanoseconds: the first field of `/proc/thread-self/schedstat`
-    /// (time spent on a CPU). Contention makes the drain WAIT, which this clock does not count, so
-    /// a busy machine no longer reads as a dearer drain (Law 8: an instrument must not report by
-    /// noise; the same unit the xtask selftest budget moved to). `std` has no CPU clock, and a
-    /// plane crate takes no `libc`, so the kernel's own account is read as a file.
-    fn thread_cpu_ns() -> Option<u64> {
-        std::fs::read_to_string("/proc/thread-self/schedstat")
-            .ok()?
-            .split_whitespace()
-            .next()?
-            .parse()
-            .ok()
-    }
-
-    /// One drain of `n` frames, as a duration: CPU time where the kernel reports it (Linux, where
-    /// every run that gates this tree runs), else the wall clock of the same window (macOS), which
-    /// is why the minimum across trials stays.
-    fn bench(n: usize) -> std::time::Duration {
-        let mut best: Option<std::time::Duration> = None;
-        for _ in 0..TRIALS {
-            let mut buf = Vec::new();
-            for i in 0..n {
-                let payload = format!("{{\"i\":{i}}}");
-                buf.extend_from_slice(&encode_frame("contentBlockDelta", payload.as_bytes()));
-            }
-            let wall = std::time::Instant::now();
-            let cpu = thread_cpu_ns();
-            let (_, status, _) = drain_frames_checked(&mut buf, None);
-            assert_eq!(status, DrainStatus::Ok);
-            let elapsed = match (cpu, thread_cpu_ns()) {
-                (Some(before), Some(after)) => std::time::Duration::from_nanos(after - before),
-                _ => wall.elapsed(),
-            };
-            best = Some(match best {
-                Some(b) if b <= elapsed => b,
-                _ => elapsed,
-            });
-        }
-        best.expect("TRIALS is a nonzero constant, so the loop runs at least once")
-    }
-    // 1M and 4M frames (~30 MB and ~120 MB of buffer): BOTH data points are far past every
-    // cache level, so the whole measurement lives in one memory regime (DRAM). The earlier
-    // 8k/32k sizing straddled the L2→L3 boundary, which made genuinely linear code measure
-    // 6.4–8.9x on real CI runners and forced arbitrary threshold tuning; at these sizes the
-    // linear prediction really is ~4x and quadratic really is ~16x, with nothing in between
-    // to hand-wave about.
-    let t1m = bench(1_000_000);
+    let run = |n: usize| {
+        let mut buf = frames_buffer(n);
+        let bytes = buf.len();
+        let mut work = DrainWork::default();
+        let (frames, status, consumed) = drain_frames_counted(&mut buf, None, &mut work);
+        assert_eq!(status, DrainStatus::Ok);
+        assert_eq!(frames.len(), n);
+        assert_eq!(consumed, bytes);
+        assert!(buf.is_empty());
+        assert_eq!(work.frames, n);
+        assert_eq!(work.scanned, bytes, "every byte is walked once");
+        assert_eq!(work.edits, 1, "one buffer edit for the whole pass");
+        assert_eq!(work.shifted, 0, "consuming whole frames moves nothing");
+        work
+    };
+    let (small, big) = (run(1_000), run(4_000));
     assert!(
-        t1m >= std::time::Duration::from_millis(1),
-        "min-of-{TRIALS} t(1M) = {t1m:?} is too fast to be above timer-granularity noise; \
-             the ratio below would be meaningless, so this assertion is WITHDRAWN rather than \
-             tuned"
+        scales_linearly(small, big),
+        "drain_frames_checked did {} work units for 1k frames and {} for 4k (ratio {:.1}x; linear \
+         predicts ~4x, quadratic ~16x)",
+        small.total(),
+        big.total(),
+        big.total() as f64 / small.total() as f64
     );
-    let t4m = bench(4_000_000);
-    // < 8x: the log-scale midpoint of linear's ~4x and quadratic's ~16x — equal headroom to
-    // both hypotheses, not a constant tuned to any particular runner's measurement.
+
+    // A trailing partial frame is kept and moved once, not once per frame.
+    let mut buf = frames_buffer(1_000);
+    buf.extend_from_slice(&frames_buffer(1)[..PRELUDE_LEN + 2]);
+    let mut work = DrainWork::default();
+    let (_, status, _) = drain_frames_counted(&mut buf, None, &mut work);
+    assert_eq!(status, DrainStatus::Ok);
+    assert_eq!(work.edits, 1);
+    assert_eq!(work.shifted, PRELUDE_LEN + 2, "only the partial tail moves");
+}
+
+/// The RED arm: the per-frame drain this test exists to catch makes one edit per frame and moves a
+/// quadratic number of bytes, and the same linearity check rejects it.
+#[test]
+fn the_linearity_check_rejects_a_per_frame_drain() {
+    let small = per_frame_drain(&mut frames_buffer(1_000));
+    let big = per_frame_drain(&mut frames_buffer(4_000));
+    assert_eq!((small.edits, big.edits), (1_000, 4_000));
     assert!(
-        t4m < t1m * 8,
-        "drain_frames_checked scaled worse than linear: min-of-{TRIALS} t(1M)={t1m:?} \
-             min-of-{TRIALS} t(4M)={t4m:?} (ratio {:.1}x, quadratic predicts ~16x, linear \
-             predicts ~4x)",
-        t4m.as_secs_f64() / t1m.as_secs_f64()
+        !scales_linearly(small, big),
+        "a per-frame drain must fail the check: {} vs {} work units",
+        small.total(),
+        big.total()
     );
 }
 
