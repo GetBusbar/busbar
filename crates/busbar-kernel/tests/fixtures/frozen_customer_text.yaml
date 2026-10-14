@@ -23,6 +23,7 @@ legacy_rows:
   export_trace_instance: "traces"
   export_trace_module: "otlp"
   export_type_keys: "prometheus:metrics:prometheus | request-log-webhook:req-log:request-log-webhook | request-log-file:req-log-file:request-log-file | generic-webhook:req-log-audit:request-log-webhook"
+  login_brands: "microsoft entra azure msft aad login.microsoftonline : Microsoft : squares | github : GitHub : octocat | google accounts.google : Google : g-mark"
   renamed_display: Valkey
   retired_url_scheme: redis
   gov14_module: sqlite

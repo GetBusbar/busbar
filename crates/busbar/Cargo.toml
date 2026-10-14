@@ -713,6 +713,7 @@ required-features = ["auth-admin-tokens"]
 "gov14_change" = "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
 "gov14_db_path" = "busbar-governance.db"
 "gov14_module" = "sqlite"
+"login_brands" = "microsoft entra azure msft aad login.microsoftonline : Microsoft : squares | github : GitHub : octocat | google accounts.google : Google : g-mark"
 "module_examples" = "sqlite | postgres | valkey"
 "name_1_5_5.busbar-auth-github" = "busbar-auth-github-plugin"
 "name_1_5_5.busbar-auth-ldap" = "busbar-auth-ldap-plugin"
