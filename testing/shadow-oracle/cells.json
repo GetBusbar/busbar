@@ -55,11 +55,11 @@
     }
   ],
   "counts": {
-    "total": 2519,
+    "total": 2525,
     "by_plane": {
       "a2a": 468,
       "core": 990,
-      "llm": 149,
+      "llm": 155,
       "mcp": 912
     },
     "by_family": {
@@ -87,7 +87,7 @@
       "hooks": 11,
       "http.crosscut": 23,
       "ledger": 5,
-      "llm.wire": 142,
+      "llm.wire": 148,
       "mcp": 913,
       "money.reserved-tier": 2,
       "neutrality": 22,
@@ -23058,6 +23058,23 @@
       "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
     },
     {
+      "id": "llm|anthropic|anthropic|request|stream_upstream_cut",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "anthropic",
+      "egress_dialect": "anthropic",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "stream_upstream_cut",
+      "why": "the upstream connection drops after the FIRST event of a streamed answer (the mock's `cut`: the head and the first frame, then the socket closes; bedrock's eventstream, which has no blank-line frame, half its body): what the caller receives after its first byte, and what is billed for what streamed. A fresh boot: the cut records a breaker failure on the lane.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "cut": true
+      }
+    },
+    {
       "id": "llm|anthropic|anthropic|request|stream_upstream_error",
       "plane": "llm",
       "family": "llm.wire",
@@ -23394,6 +23411,23 @@
       "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
     },
     {
+      "id": "llm|bedrock|bedrock|request|stream_upstream_cut",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "bedrock",
+      "egress_dialect": "bedrock",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "stream_upstream_cut",
+      "why": "the upstream connection drops after the FIRST event of a streamed answer (the mock's `cut`: the head and the first frame, then the socket closes; bedrock's eventstream, which has no blank-line frame, half its body): what the caller receives after its first byte, and what is billed for what streamed. A fresh boot: the cut records a breaker failure on the lane.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "cut": true
+      }
+    },
+    {
       "id": "llm|bedrock|bedrock|request|stream_upstream_error",
       "plane": "llm",
       "family": "llm.wire",
@@ -23715,6 +23749,23 @@
       "op": "chat",
       "outcome": "over_budget_total",
       "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
+    },
+    {
+      "id": "llm|cohere|cohere|request|stream_upstream_cut",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "cohere",
+      "egress_dialect": "cohere",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "stream_upstream_cut",
+      "why": "the upstream connection drops after the FIRST event of a streamed answer (the mock's `cut`: the head and the first frame, then the socket closes; bedrock's eventstream, which has no blank-line frame, half its body): what the caller receives after its first byte, and what is billed for what streamed. A fresh boot: the cut records a breaker failure on the lane.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "cut": true
+      }
     },
     {
       "id": "llm|cohere|cohere|request|stream_upstream_error",
@@ -24053,6 +24104,23 @@
       "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
     },
     {
+      "id": "llm|gemini|gemini|request|stream_upstream_cut",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "gemini",
+      "egress_dialect": "gemini",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "stream_upstream_cut",
+      "why": "the upstream connection drops after the FIRST event of a streamed answer (the mock's `cut`: the head and the first frame, then the socket closes; bedrock's eventstream, which has no blank-line frame, half its body): what the caller receives after its first byte, and what is billed for what streamed. A fresh boot: the cut records a breaker failure on the lane.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "cut": true
+      }
+    },
+    {
       "id": "llm|gemini|gemini|request|stream_upstream_error",
       "plane": "llm",
       "family": "llm.wire",
@@ -24374,6 +24442,23 @@
       "op": "chat",
       "outcome": "over_budget_total",
       "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
+    },
+    {
+      "id": "llm|openai|openai|request|stream_upstream_cut",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "openai",
+      "egress_dialect": "openai",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "stream_upstream_cut",
+      "why": "the upstream connection drops after the FIRST event of a streamed answer (the mock's `cut`: the head and the first frame, then the socket closes; bedrock's eventstream, which has no blank-line frame, half its body): what the caller receives after its first byte, and what is billed for what streamed. A fresh boot: the cut records a breaker failure on the lane.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "cut": true
+      }
     },
     {
       "id": "llm|openai|openai|request|stream_upstream_error",
@@ -24713,6 +24798,23 @@
       "op": "chat",
       "outcome": "over_budget_total",
       "why": "group BUDGET total already exhausted, no per-day request cap on the bucket -> refused at Admit (native 429, metric: budget, names the bucket) -- distinct from `over_budget`'s requests-cap refusal; the Anthropic-dialect projection is `billing_error`, not `rate_limit_error`"
+    },
+    {
+      "id": "llm|responses|responses|request|stream_upstream_cut",
+      "plane": "llm",
+      "family": "llm.wire",
+      "ingress_dialect": "responses",
+      "egress_dialect": "responses",
+      "cross_protocol": false,
+      "transport": "http",
+      "op": "chat",
+      "outcome": "stream_upstream_cut",
+      "why": "the upstream connection drops after the FIRST event of a streamed answer (the mock's `cut`: the head and the first frame, then the socket closes; bedrock's eventstream, which has no blank-line frame, half its body): what the caller receives after its first byte, and what is billed for what streamed. A fresh boot: the cut records a breaker failure on the lane.",
+      "fresh": true,
+      "stream": true,
+      "mock_control": {
+        "cut": true
+      }
     },
     {
       "id": "llm|responses|responses|request|stream_upstream_error",
