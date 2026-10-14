@@ -321,10 +321,11 @@ struct Far {
     declared: Mutex<Vec<serde_json::Value>>,
     carried: Mutex<Vec<serde_json::Value>>,
     read: Mutex<HashMap<ConnId, u8>>,
-    /// The connections whose reply is held, and the ticket each read registered interest under.
-    stalled: Mutex<HashMap<ConnId, u64>>,
+    /// The connections whose reply is held, and the caller and ticket each read registered interest
+    /// under.
+    stalled: Mutex<HashMap<ConnId, (InstanceId, u64)>>,
     released: std::sync::atomic::AtomicBool,
-    waker: OnceLock<Arc<dyn Fn(u64) + Send + Sync>>,
+    waker: OnceLock<busbar_contract::conn::ConnWake>,
 }
 
 impl Far {
@@ -351,7 +352,7 @@ impl Far {
     fn release(&self) {
         self.released
             .store(true, std::sync::atomic::Ordering::SeqCst);
-        let held: Vec<u64> = self
+        let held: Vec<(InstanceId, u64)> = self
             .stalled
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
@@ -359,7 +360,7 @@ impl Far {
             .map(|(_, t)| t)
             .collect();
         if let Some(wake) = self.waker.get() {
-            held.into_iter().for_each(|t| wake(t));
+            held.into_iter().for_each(|(owner, t)| wake(owner, t));
         }
     }
 }
@@ -441,7 +442,7 @@ impl Conns for Far {
             self.stalled
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .insert(id, 0);
+                .insert(id, (caller, 0));
         }
         let fields: Vec<(String, String)> = desc
             .fields
@@ -483,7 +484,7 @@ impl Conns for Far {
         {
             let mut stalled = self.stalled.lock().unwrap_or_else(PoisonError::into_inner);
             if let Some(waiting) = stalled.get_mut(&conn) {
-                *waiting = ticket;
+                *waiting = (caller, ticket);
                 return Err(ConnError::Pending);
             }
         }

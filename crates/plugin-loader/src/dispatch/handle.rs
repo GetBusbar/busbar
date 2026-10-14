@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 use busbar_contract::abi::mechanism::ticket::HostCtx;
+use busbar_contract::conn::InstanceId;
 
 use super::load::LoadError;
 use super::ticket::InstanceWake;
@@ -219,6 +220,25 @@ pub(crate) fn mint(wake: &'static InstanceWake) -> Result<HostCtx, LoadError> {
     Ok(HostCtx {
         handle: (tag_of(key, id) << HANDLE_ID_BITS) | id,
     })
+}
+
+/// THE INSTANCE'S IDENTITY ON THE CONNECTION TABLE: its handle's id. Never `0` (ids are minted from
+/// 1), which is the composition root's own identity on the one connector, and never reused in one
+/// process. One numbering, so a table's wake names its caller's entry with no second registry (#74).
+pub(crate) fn instance_id(ctx: HostCtx) -> InstanceId {
+    InstanceId(ctx.handle & ID_MASK)
+}
+
+/// The entry the connection table's caller `owner` is ([`instance_id`]), revoked or not; `None` for
+/// the root's own identity (`0`) or an id the host never minted. Host-side only: `owner` is the
+/// identity the table registered a ticket under, never a plugin's word.
+pub(crate) fn supplier_of(owner: InstanceId) -> Option<&'static InstanceWake> {
+    let i = usize::try_from(owner.0.checked_sub(1)?).ok()?;
+    INSTANCES
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(i)
+        .copied()
 }
 
 /// THE ONE CHECK: the instance `ctx` names, when the host minted it, it is live, and (inside a

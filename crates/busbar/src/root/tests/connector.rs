@@ -23,7 +23,7 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
         || entries(doors, &TransportSettings::default()),
         judge(),
         &[],
-        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
         PoolPosture::NONE,
     );
     let built = built.expect("the linked doors build a connector");
@@ -34,7 +34,7 @@ fn the_process_has_one_connector_and_every_path_takes_it() {
         || entries(doors, &TransportSettings::default()),
         judge(),
         &[],
-        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
         PoolPosture::NONE,
     )
     .expect("a second one builds");
@@ -306,7 +306,7 @@ fn a_program_need_is_dialled_through_the_linked_line_framing_door() {
             || entries(doors, &TransportSettings::default()),
             judge(),
             &[],
-            Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
             PoolPosture::NONE,
         )
         .expect("the linked doors build a connector");

@@ -291,7 +291,7 @@ fn connector(settings: &TransportSettings, trust: &EgressTrust) -> Connector {
         view,
         process::judge(dest, &[]),
         Some(Arc::new(tls)),
-        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
     )
     .pooling(crate::root::connector::pool_posture(settings));
     c.declare_need(OWNER, NEED, "http", DEFAULT_CLASS)

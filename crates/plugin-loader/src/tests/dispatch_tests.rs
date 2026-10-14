@@ -2862,10 +2862,10 @@ fn red_a_completion_fired_in_another_crossing_quarantines_its_supplier() {
     d.recycle(t);
 }
 
-/// RED (#74, NO ONE TO BLAME): a forged generation the HOST wakes (the connector's readiness, which
-/// no instance's context named) counts toward the latch and quarantines no one; a plugin's own wake
-/// from its own thread, outside any crossing, names its supplier and quarantines it, the latch
-/// unmoved. Judged against this test's own latch.
+/// RED (#74, NO ONE TO BLAME): a forged generation the HOST wakes for itself (the connector's
+/// readiness under the root's own identity, which no instance's context named) counts toward the
+/// latch and quarantines no one; a plugin's own wake from its own thread, outside any crossing,
+/// names its supplier and quarantines it, the latch unmoved. Judged against this test's own latch.
 #[test]
 fn red_an_off_crossing_forged_ticket_counts_toward_the_latch() {
     let d = Dispatcher::new(config());
@@ -2878,9 +2878,11 @@ fn red_an_off_crossing_forged_ticket_counts_toward_the_latch() {
     assert_eq!(open(&d, &forger, 0), Outcome::Ready);
     let t = d.mint(0).expect("a ticket");
 
-    (d.conn_waker())(crate::dispatch::conn_services::conn_ticket(
-        forged_generation(t),
-    ));
+    // The root's own identity on the connector: no instance supplied the ticket.
+    (d.conn_waker())(
+        busbar_contract::conn::InstanceId(0),
+        crate::dispatch::conn_services::conn_ticket(forged_generation(t)),
+    );
     until("the host's forged wake is counted", || {
         latch.unattributed() == 1
     });
@@ -2931,7 +2933,10 @@ fn red_a_slot_whose_counter_is_spent_is_retired() {
         assert_ne!(n.slot, last.slot, "a retired slot was handed out again");
     }
     let stale0 = d.stats().stale_wakes;
-    (d.conn_waker())(crate::dispatch::conn_services::conn_ticket(last));
+    (d.conn_waker())(
+        busbar_contract::conn::InstanceId(0),
+        crate::dispatch::conn_services::conn_ticket(last),
+    );
     until("the late wake is counted", || {
         d.stats().stale_wakes > stale0
     });

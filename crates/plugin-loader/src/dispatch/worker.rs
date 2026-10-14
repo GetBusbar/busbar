@@ -1517,14 +1517,18 @@ impl Dispatcher {
     }
 
     /// The connection table's wake: its wake number ([`super::conn_services::conn_ticket`]) routed to
-    /// the worker whose ticket it names. The root hands it to its one connector.
+    /// the worker whose ticket it names, with the caller the table registered it for as the
+    /// ticket's supplier (#74: a forged generation quarantines that instance; the root's own
+    /// identity names none). The root hands it to its one connector.
     #[must_use]
-    pub fn conn_waker(&self) -> Arc<dyn Fn(u64) + Send + Sync> {
+    pub fn conn_waker(&self) -> busbar_contract::conn::ConnWake {
         let pool = Arc::downgrade(&self.pool);
-        Arc::new(move |n| {
+        Arc::new(move |owner, n| {
             if let Some(pool) = pool.upgrade() {
-                // The connector's wake: the host's own, blamed on no instance (#74).
-                pool.wake(super::conn_services::ticket_of(n), None);
+                pool.wake(
+                    super::conn_services::ticket_of(n),
+                    super::handle::supplier_of(owner),
+                );
             }
         })
     }

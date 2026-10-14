@@ -162,7 +162,7 @@ fn serving(wakes: Arc<AtomicU64>) -> Connector {
         view,
         loopback_literals(),
         None,
-        Arc::new(move |_| {
+        Arc::new(move |_, _| {
             wakes.fetch_add(1, Ordering::SeqCst);
         }),
     )
@@ -223,6 +223,59 @@ fn a_need_over_a_served_transport_reaches_a_real_far_end() {
     });
 }
 
+/// RED (#74): the connector's wake names the caller the read registered its ticket for, never
+/// only the ticket: the host blames the instance that supplied a ticket it never minted, whichever
+/// thread the wake fires on. Every wake of a read parked by `OWNER` on ticket 7 is `(OWNER, 7)`.
+#[test]
+fn a_parked_reads_wake_names_the_caller_it_parked_for() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 5];
+            s.read_exact(&mut buf).await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            s.write_all(b"answer").await.unwrap();
+        });
+        let woke: Arc<std::sync::Mutex<Vec<(InstanceId, u64)>>> = Arc::default();
+        let seen = woke.clone();
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(TestDoor::identity("bytes")),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(
+            view,
+            loopback_literals(),
+            None,
+            Arc::new(move |owner, t| seen.lock().unwrap().push((owner, t))),
+        );
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"first",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let piece = loop {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                other => break other.unwrap(),
+            }
+        };
+        assert_eq!(&buf[..piece.len], b"answer");
+        let woke = woke.lock().unwrap().clone();
+        assert!(!woke.is_empty(), "the ticket was woken");
+        assert!(
+            woke.iter().all(|w| *w == (OWNER, 7)),
+            "a wake named another caller or ticket: {woke:?}"
+        );
+    });
+}
+
 /// RED (C19-TAIL U5 write): a write through the table stated as text reaches the framer as a text
 /// emit (`EMIT_TEXT`), held through the dial like any early write.
 #[test]
@@ -251,7 +304,7 @@ fn a_text_write_through_the_table_reaches_the_framer_as_text() {
             },
         ])
         .unwrap();
-        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_: Ticket| {}));
+        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _: Ticket| {}));
         c.declare_over(OWNER, NeedId(0), "bytes")
             .expect("a served scheme declares");
         let desc = OpenDesc {
@@ -324,7 +377,7 @@ fn a_need_in_a_restricted_class_is_refused_a_target_that_class_forbids() {
                 (_, got) => got,
             })
         };
-        let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_| {}));
+        let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_, _| {}));
         c.declare_over(OWNER, NeedId(0), "bytes")
             .expect("a served scheme declares");
         c.declare_need(OWNER, NeedId(1), "bytes", RESTRICTED)
@@ -359,7 +412,7 @@ fn writes_held_for_a_pending_judgement_are_capped() {
         std::mem::forget(done);
         None
     };
-    let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_| {}));
+    let c = Connector::serving(view, Arc::new(judge), None, Arc::new(|_, _| {}));
     c.declare_over(OWNER, NeedId(0), "bytes")
         .expect("a served scheme declares");
     let desc = OpenDesc {
@@ -402,7 +455,7 @@ fn literal_connector() -> Connector {
         alpn: Vec::new(),
     }])
     .unwrap();
-    Connector::serving(view, loopback_literals(), None, Arc::new(|_| {}))
+    Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}))
 }
 
 /// RED: a need whose config names its target (`target_from`) dials that target and no other: an
@@ -1080,7 +1133,7 @@ fn scheme_connector() -> Connector {
         view,
         loopback_literals(),
         Some(Arc::new(tls)),
-        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
     )
 }
 
@@ -1624,7 +1677,7 @@ mod transport_pin {
             view,
             loopback_literals(),
             Some(Arc::new(tls)),
-            Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
         );
         c.declare_over(OWNER, NeedId(0), "sec").unwrap();
         c.declare_over(OWNER, NeedId(1), "plain").unwrap();
@@ -1804,7 +1857,7 @@ fn a_registrations_private_reach_admits_its_own_opens_and_nothing_else() {
         }])
         .unwrap();
         let strict = Arc::new(crate::LiteralsOnly(crate::guard::Guard::default()));
-        let c = Connector::serving(view, strict, None, Arc::new(|_| {}));
+        let c = Connector::serving(view, strict, None, Arc::new(|_, _| {}));
         for need in [0, 1] {
             c.declare_need(
                 OWNER,
@@ -1901,7 +1954,7 @@ fn plain_and_secure_connector() -> Connector {
         },
     ])
     .unwrap();
-    Connector::serving(view, loopback_literals(), None, Arc::new(|_| {}))
+    Connector::serving(view, loopback_literals(), None, Arc::new(|_, _| {}))
 }
 
 /// A config-targeted outbound need over `transport` in `class`.

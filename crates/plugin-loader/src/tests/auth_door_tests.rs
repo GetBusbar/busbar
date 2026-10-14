@@ -706,7 +706,7 @@ static SERVING_TABLE: std::sync::OnceLock<Arc<crate::tcp_conns::TcpConns>> =
 
 fn serving_table() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
     SERVING_TABLE
-        .get_or_init(|| Arc::new(crate::tcp_conns::TcpConns::new(Arc::new(|_| {}))))
+        .get_or_init(|| Arc::new(crate::tcp_conns::TcpConns::new(Arc::new(|_, _| {}))))
         .clone()
 }
 
