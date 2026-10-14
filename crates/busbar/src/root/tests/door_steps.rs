@@ -1003,7 +1003,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         // ROW 74 (F25): the endpoint as the plugin was handed it is the stripped one (its need is
         // pinned there and its mint dialled there, above), and a `user:pass@` the operator wrote rides
         // each mint FIRST as `authorization: Basic`, as 1.5.5's reqwest POST sent it (v1.5.5
-        // `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`); a plain endpoint's mint
+        // `oauth_client_credentials.rs:119-126` in its egress-auth tree); a plain endpoint's mint
         // carries none.
         let fields = table.fields.lock().unwrap();
         assert_eq!(fields.len(), 2);
@@ -1285,7 +1285,8 @@ async fn a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it() 
 /// plane built its binding (`appbuild`), so the settings the axis is handed name the stripped
 /// endpoint and the Basic value arrives beside them ([`super::OutboundAuths::serving_with`]). The
 /// mint need is pinned to the stripped endpoint and every mint leads with the Basic value, as
-/// 1.5.5's reqwest POST sent it (v1.5.5 `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`).
+/// 1.5.5's reqwest POST sent it (v1.5.5 `oauth_client_credentials.rs:119-126` in its egress-auth
+/// tree).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_mint() {
     use base64::Engine as _;
@@ -1299,7 +1300,8 @@ async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_m
     .expect("the userinfo, held by the host");
     let table = std::sync::Arc::new(TokenEndpoint::default());
     let auths = linked_mint_plugin(&table);
-    let style = super::style_word(busbar_kernel::config::ProviderAuth::OAuthClientCredentials);
+    use busbar_kernel::config::ProviderAuth as Style;
+    let style = super::style_word(Style::OAuthClientCredentials);
     // What the plane built its binding from: the stripped endpoint.
     let settings = serde_json::json!({
         "token_url": TOKEN_URL,

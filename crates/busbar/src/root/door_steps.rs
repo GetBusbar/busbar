@@ -1895,7 +1895,7 @@ const TOKEN_ENDPOINT_SETTINGS: [&str; 2] = ["token_url", "token_uri"];
 
 /// A TOKEN ENDPOINT SPELLED `user:pass@`, AS 1.5.5 REACHED IT (row 74, F25). 1.5.5 POSTed the client
 /// credentials with reqwest to `token_url` as written (v1.5.5
-/// `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`, `.post(&self.token_url)
+/// `oauth_client_credentials.rs:119-126` in its egress-auth tree, `.post(&self.token_url)
 /// .form(..)`), and reqwest 0.12.28's builder took the userinfo out of the URL and sent it FIRST as
 /// `authorization: Basic base64(user:pass)` (`src/async_impl/request.rs:169-182`,
 /// `extract_authority` `:581-605`, `util::basic_auth` `src/util.rs:4-25`); the form named no

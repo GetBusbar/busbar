@@ -26,8 +26,8 @@ use crate::store::{HealthState, LaneData};
 use crate::{
     admin, audit, auth, billing, breaker, catalogue, config, config_validate, core_routes, cost,
     durable, endpoints, export, failover, governance, handlers, hooks, ingress, ir, json, limits,
-    net_guard, oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy,
-    ratelimit, snapshot, state, store, telemetry, tls, transport, trust,
+    oauth_as, observability, operation, plane, plugin_routes, profile, proto, proxy, ratelimit,
+    snapshot, state, store, telemetry, tls, transport, trust,
 };
 use busbar_kernel::plane_host::{
     AffinityInput, AuthStyleInput, ClientSettingsInput, FailoverInput, HealthInput,
@@ -158,7 +158,7 @@ pub fn stateful_plane_ephemeral_store_warn(
 /// THE TOKEN ENDPOINT AS A PLANE MAY SEE IT (row 74, F25): `token_url` with its userinfo stripped,
 /// and the `Authorization: Basic` value that userinfo spelled, held opaque for the host to present
 /// on the mint as 1.5.5's reqwest POST did (v1.5.5
-/// `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`). A plane never receives a
+/// `oauth_client_credentials.rs:119-126` in its egress-auth tree). A plane never receives a
 /// URL carrying `user:pass@`.
 pub(crate) fn lane_token_endpoint(
     written: Option<&str>,

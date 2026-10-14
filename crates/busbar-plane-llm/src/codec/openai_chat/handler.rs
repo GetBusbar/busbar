@@ -249,58 +249,29 @@ leaf_op! {
     TranscriptionReqHandle = read_transcription_request,
     TranscriptionRespHandle = read_transcription_response;
     fn egress_request_content_type(&self) -> &'static str {
-        // write_request rebuilds the multipart form around `transcription_boundary()`, which is
-        // drawn from entropy rather than hard-coded. Both sides read the same value, so the header
-        // always names the boundary the body is actually framed with.
-        static CT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-        CT.get_or_init(|| format!("multipart/form-data; boundary={}", transcription_boundary()))
-            .as_str()
+        // write_request rebuilds the multipart form around `TRANSCRIPTION_BOUNDARY`.
+        TRANSCRIPTION_CONTENT_TYPE
     }
 }
 
-/// The multipart boundary the transcription egress form is framed with.
+/// The multipart boundary the transcription egress form is framed with: 1.5.5's literal (v1.5.5
+/// `crates/busbar/src/handlers/openai.rs:238`, `:281`), a constant, so the plugin keeps no
+/// process-global state for it (BUSBAR-1.6.0.md THE DESIGN §2: "A plugin holds no process-global
+/// state"; the per-process `OnceLock` draw it replaces was such state) and the upstream receives the
+/// bytes 1.5.5 sent.
 ///
-/// It CANNOT be a literal in the source. The audio part carries raw client-controlled bytes, so a
-/// client that knows the delimiter can embed `\r\n--<boundary>` in its audio, close the file part
-/// early, and append parts of its own — e.g. a second `model` field, which a last-occurrence-wins
-/// multipart parser upstream honours while busbar bills the model the lane resolved. That reaches
-/// busbar cross-protocol (a Gemini-dialect transcription ingress accepts base64 audio and this
-/// writer re-frames it for OpenAI egress), so the bytes are attacker-chosen in practice.
-///
-/// So the suffix is drawn from the crate's entropy seam ([`crate::codec::synth_rng::fill_entropy`], the
-/// same OS-CSPRNG pool the synthesized wire ids use). 16 random bytes → 32 hex chars, giving a
-/// 42-char boundary: inside RFC 2046's 70-char limit and drawn only from its `bchars` set.
-///
-/// PER PROCESS, NOT PER REQUEST. [`OperationHandler::egress_request_content_type`] declares the
-/// Content-Type as a `&'static str` and is called by the engine independently of the body write, so
-/// the two can only agree on a boundary that outlives the request — and if they disagree the
-/// upstream cannot parse the form at all. A per-process draw already denies the attacker a
-/// delimiter they can compute from the source; unpredictability is not the guarantee, though —
-/// [`part_carries_delimiter`] fails the request closed even if the value were somehow known.
+/// A client that knows the delimiter cannot use it: the audio part carries raw client-controlled
+/// bytes, so a payload embedding `\r\n--<boundary>` could close the file part early and append a
+/// second `model` field — and [`part_carries_delimiter`] refuses exactly that, failing the whole body
+/// closed. That check, not the delimiter's secrecy, is the guarantee.
+pub const TRANSCRIPTION_BOUNDARY: &str = "----busbaraudioMIME";
+
+/// The Content-Type the transcription egress form is declared with; names [`TRANSCRIPTION_BOUNDARY`].
+const TRANSCRIPTION_CONTENT_TYPE: &str = "multipart/form-data; boundary=----busbaraudioMIME";
+
+/// The transcription egress boundary ([`TRANSCRIPTION_BOUNDARY`]).
 pub fn transcription_boundary() -> &'static str {
-    static BOUNDARY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    BOUNDARY
-        .get_or_init(|| {
-            let mut raw = [0u8; 16];
-            // Entropy failure is not fatal here: the delimiter check below is what makes the body
-            // safe, and this value's only other job is to be a legal, unlikely-to-collide token.
-            // Mix the clock in so a broken CSPRNG does not pin every process to one known string.
-            if !crate::codec::synth_rng::fill_entropy(&mut raw) {
-                let nanos = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos())
-                    .unwrap_or(0);
-                raw.copy_from_slice(&nanos.to_le_bytes());
-            }
-            let mut s = String::with_capacity(42);
-            s.push_str("----busbar");
-            for b in raw {
-                s.push(char::from_digit((b >> 4) as u32, 16).unwrap_or('0'));
-                s.push(char::from_digit((b & 0x0f) as u32, 16).unwrap_or('0'));
-            }
-            s
-        })
-        .as_str()
+    TRANSCRIPTION_BOUNDARY
 }
 
 /// Does `part` contain the multipart delimiter, i.e. can splicing it into a body framed with
@@ -321,7 +292,7 @@ fn part_carries_delimiter(part: &[u8], boundary: &str) -> bool {
 
 /// IR → openai multipart transcription request wire (the body of
 /// [`OpenAiTranscription::write_request`], moved behind the `(transcription, openai)` key — G6 A4b
-/// option-a). OpenAI-as-egress rebuilds the multipart form around [`transcription_boundary`]; not on
+/// option-a). OpenAI-as-egress rebuilds the multipart form around [`TRANSCRIPTION_BOUNDARY`]; not on
 /// the harness path (openai is always ingress there), kept for cross-protocol symmetry.
 ///
 /// Returns an EMPTY body if any part carries the delimiter. The seam types this write as infallible
@@ -652,11 +623,9 @@ leaf_op! {
     OpenAiImage: super::VENDOR_NAME,
     ImageReqHandle = read_image_request,
     ImageRespHandle = read_image_response;
-    // Token-metered for gpt-image-1: buffer the same-protocol non-stream 2xx body so the default
-    // `extract_usage` can read the `usage` object and bill the virtual key's TPM/spend. The
-    // cross-protocol path already bills via `translate_response`; this closes the same-protocol gap
-    // (mirrors the embeddings cell). Per-image models return no `usage`, so the tap bills 0 tokens
-    // and the request still meters once — unchanged for them.
+    // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` runs this op's
+    // reader: a gpt-image-1 answer's reported tokens are RECORDED (never billed, as in 1.5.5; see
+    // `ImageResp::billing`), and a per-image answer with no `usage` bills its `images` count.
     fn taps_usage(&self) -> bool {
         true
     }
@@ -739,12 +708,20 @@ pub fn write_image_response(r: &ImageResp) -> WireBody {
     // gpt-image-1 returns a token `usage` object; the reader parses it (for billing) but the writer
     // dropped it, so a same-/cross-protocol image hop lost the usage the client should see. Re-emit
     // it in OpenAI's own image-usage shape when present.
+    // An UNKNOWN count (one the reader could not read) is left out rather than written as 0, and
+    // so is the total it would have summed into.
     if let Some(u) = &r.usage {
-        body[keys::USAGE] = json!({
-            (keys::INPUT_TOKENS): u.input,
-            (keys::OUTPUT_TOKENS): u.output,
-            (keys::TOTAL_TOKENS): u.input.saturating_add(u.output),
-        });
+        let mut usage = serde_json::Map::new();
+        if let Some(n) = u.input {
+            usage.insert(keys::INPUT_TOKENS.into(), json!(n));
+        }
+        if let Some(n) = u.output {
+            usage.insert(keys::OUTPUT_TOKENS.into(), json!(n));
+        }
+        if let (Some(i), Some(o)) = (u.input, u.output) {
+            usage.insert(keys::TOTAL_TOKENS.into(), json!(i.saturating_add(o)));
+        }
+        body[keys::USAGE] = Value::Object(usage);
     }
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
@@ -1365,24 +1342,24 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
         })
         .unwrap_or_default();
     // gpt-image-1 returns a token `usage` object (`{total_tokens,input_tokens,output_tokens}`);
-    // per-image models (dall-e, etc.) return no usage body at all. Without this the response was
-    // billed nothing — `ImageResp::billing()` returns `None` when BOTH `usage` and `cost_basis`
-    // are unset. Parse the token object when present so `billing()` yields `Billing::Tokens`.
+    // per-image models (dall-e, etc.) return no usage body at all. The tokens are RECORDED, never
+    // billed (`ImageResp::billing`, 1.5.5 parity: v1.5.5
+    // `crates/busbar/src/handlers/openai.rs:731-758` billed none).
+    // A recorded count is still a ledger row, so it is read through the one count seam
+    // (`usage_count::recorded_count`): absent is zero; a present count this build cannot read is
+    // UNKNOWN, left out of the record and named on `warnings` and in the log. It is never a 0
+    // (#81, OWNER rule 21) and never a refusal: 1.5.5 served the answer whatever its usage said.
+    let mut warnings = Vec::new();
     let usage = v
         .get(keys::USAGE)
-        .map(
-            |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
-                // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42).
-                Ok(busbar_contract::billing::TokenUsage {
-                    input: crate::codec::usage_count::billed_count(u, keys::INPUT_TOKENS)
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    output: crate::codec::usage_count::billed_count(u, keys::OUTPUT_TOKENS)
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    ..Default::default()
-                })
-            },
-        )
-        .transpose()?;
+        .map(|u| crate::codec::ir::image::ImageTokens {
+            input: crate::codec::usage_count::recorded_count(u, keys::INPUT_TOKENS, &mut warnings),
+            output: crate::codec::usage_count::recorded_count(
+                u,
+                keys::OUTPUT_TOKENS,
+                &mut warnings,
+            ),
+        });
     // Per-image (dall-e-style) providers carry no `usage` — record the per-image cost basis so the
     // op is billed as `Billing::Images` rather than nothing. The billable COUNT is recoverable from
     // the response itself (one image per `data` entry). The size/quality TIERS live on the request
@@ -1400,6 +1377,7 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
         images,
         usage,
         cost_basis,
+        warnings,
         ..Default::default()
     })
 }

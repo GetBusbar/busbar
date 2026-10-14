@@ -1553,11 +1553,14 @@ fn the_pack_time_rendering_of_a_library_is_its_door_s() {
     );
 }
 
-/// The child half of the abort test: runs only when its parent sets the variable.
+/// The child half of the abort test: runs only when its parent sets the variable. Ignored so the
+/// default run never counts it as a pass: alone it proves nothing, and run without the variable it
+/// fails (status row 114).
 #[test]
+#[ignore = "child process of red_a_panic_in_a_hand_written_slot_aborts, which runs it with --ignored"]
 fn panic_child() {
     let Ok(origin) = std::env::var("BUSBAR_M1_PANIC_CHILD") else {
-        return;
+        panic!("panic_child is the child half of red_a_panic_in_a_hand_written_slot_aborts");
     };
     let p = if origin == "dropped" {
         dropped(quiet())
@@ -1581,6 +1584,7 @@ fn red_a_panic_in_a_hand_written_slot_aborts() {
             .args([
                 "--exact",
                 "dispatch_tests::panic_child",
+                "--ignored",
                 "--test-threads=1",
                 "--nocapture",
             ])

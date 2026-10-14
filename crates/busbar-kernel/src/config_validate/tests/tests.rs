@@ -3268,12 +3268,13 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
         );
     }
     // The token endpoint (row 74, F25): accepted as 1.5.5 accepted it, and repeated redacted.
+    use config::ProviderAuth as Style;
     let with_token_url = |token_url: String| {
         let mut providers = HashMap::new();
         let mut p = make_provider(proto_b(), "https://api.example.com", "API_KEY");
         p.token_url = Some(token_url);
         p.scope = Some("api://x/.default".into());
-        p.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+        p.auth = Some(Style::OAuthClientCredentials);
         providers.insert("myprovider".to_string(), p);
         let mut models = HashMap::new();
         models.insert("m".to_string(), make_model("myprovider", 10));
