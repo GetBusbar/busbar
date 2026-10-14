@@ -505,10 +505,11 @@ fn rsp11_error_stop_reason_message_delta_writes_response_failed() {
 
 // ─────────────────────────────────────── RSP-12 ───────────────────────────────────────
 
-/// RSP-12: the Responses stream's top-level `error` event surfaces as a stream error — the breaker
-/// sees `terminal_error`, and an Anthropic client gets an `error` event instead of a clean close.
+/// RSP-12, held to 1.5.5: the Responses stream's top-level `error` event is not a stream error
+/// (v1.5.5 proto/openai_responses/reader.rs:542-1103 had no arm for it). The reader emits nothing for
+/// it, so `terminal_error` stays clear and the stream ends and bills as 1.5.5's did (row 155).
 #[test]
-fn rsp12_top_level_error_event_is_a_stream_error() {
+fn rsp12_top_level_error_event_is_not_a_stream_error() {
     let raw = sse(&[
         responses_created(),
         (
@@ -520,12 +521,8 @@ fn rsp12_top_level_error_event_is_a_stream_error() {
             serde_json::json!({"type":"error","code":"server_error","message":"The server had an error.","param":null}),
         ),
     ]);
-    let (out, terminal_error) = xstream("responses", "anthropic", &raw);
-    assert_eq!(terminal_error.as_deref(), Some("server_error"));
-    assert!(
-        sse_payloads(&out).iter().any(|p| p["type"] == "error"),
-        "no error event reached the client: {out}"
-    );
+    let (_, terminal_error) = xstream("responses", "anthropic", &raw);
+    assert_eq!(terminal_error, None);
 }
 
 // ─────────────────────────────────────── RSP-14 ───────────────────────────────────────

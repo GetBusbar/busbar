@@ -1104,3 +1104,52 @@ fn a_responses_stream_that_fails_bills_no_tokens_and_agrees_with_its_buffered_tw
         whole.units
     );
 }
+
+/// A RESPONSES STREAM'S TOP-LEVEL `error` EVENT ENDS NOTHING AND FAILS NOTHING, as in 1.5.5 (`$`;
+/// ARCHITECT 2026-10-13, codec L3#10 routed to row 155): v1.5.5's Responses reader had no arm for
+/// it (proto/openai_responses/reader.rs:542-1103, `_ => {}`), so the reader emitted no `Error`,
+/// `terminal_error` stayed clear and the stream billed at its end as a clean one
+/// (proxy/response_body.rs:550-575, `if !billing_failed`). The frames after it are relayed and the
+/// usage its `response.completed` states (5 in, 2 out) is billed. RED: the event read as a terminal
+/// failure, which ends the stream there, faults the far end and bills nothing.
+#[test]
+fn a_responses_streams_top_level_error_event_is_neither_terminal_nor_a_failure() {
+    let mut arrived = arrival("responses", true);
+    arrived.path = "/v1/responses".to_string();
+    let body = serde_json::json!({"model": "p", "stream": true, "input": "hi"});
+    arrived.body = serde_json::to_vec(&body).unwrap();
+    arrived.parsed = Some(body);
+    let lane = lane("responses");
+    let ctx = ReplyCtx {
+        arrived: &arrived,
+        lane: &lane,
+        intent: stream_intent(chat_handler("responses"), arrived.parsed.as_ref()),
+        passthrough: false,
+    };
+    let stream = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"sequence_number\":0,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"in_progress\",\"model\":\"m-1\",\"output\":[]}}\n\n",
+        "event: response.output_text.delta\n",
+        "data: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_1\",\"output_index\":0,\"content_index\":0,\"delta\":\"hel\"}\n\n",
+        "event: error\n",
+        "data: {\"type\":\"error\",\"sequence_number\":2,\"code\":\"server_error\",\"message\":\"boom\",\"param\":null}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"sequence_number\":3,\"response\":{\"id\":\"resp_1\",\"object\":\"response\",\"created_at\":1,\"status\":\"completed\",\"model\":\"m-1\",\"output\":[],\"usage\":{\"input_tokens\":5,\"output_tokens\":2,\"total_tokens\":7}}}\n\n",
+    );
+    let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
+    let mut reply = Reply::new(&ctx, 200, head);
+    let end = reply.feed(&ctx, stream.as_bytes(), true, AT);
+    assert!(end.done, "{end:?}");
+    assert!(end.fault.is_none(), "no far-end fault: {end:?}");
+    assert_eq!(end.verdict, Verdict::Ok, "{end:?}");
+    assert!(
+        String::from_utf8_lossy(&end.bytes).contains("response.completed"),
+        "the frames after the event reach the caller: {end:?}"
+    );
+    assert_eq!(
+        (end.units.tokens_in, end.units.tokens_out),
+        (5, 2),
+        "billed as a clean stream: {:?}",
+        end.units
+    );
+}

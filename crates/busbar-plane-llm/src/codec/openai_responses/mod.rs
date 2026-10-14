@@ -286,9 +286,6 @@ const EVT_REASONING_SUMMARY_PART_DONE: &str = "response.reasoning_summary_part.d
 const EVT_RESPONSE_COMPLETED: &str = "response.completed";
 const EVT_RESPONSE_FAILED: &str = "response.failed";
 const EVT_RESPONSE_INCOMPLETE: &str = "response.incomplete";
-/// The Responses stream's TOP-LEVEL mid-stream failure event (`{"type":"error","code","message",
-/// "param"}`), distinct from the terminal `response.failed`.
-const EVT_ERROR: &str = keys::ERROR_WORD;
 /// The `include` entry that asks a Responses backend for per-token logprobs on every `output_text`
 /// part — the Responses spelling of the Chat Completions `logprobs: true` switch.
 const INCLUDE_OUTPUT_TEXT_LOGPROBS: &str = "message.output_text.logprobs";
