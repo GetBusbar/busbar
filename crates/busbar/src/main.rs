@@ -110,11 +110,11 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
 /// its spelling, and the root reads it off the plane's declared rows. A scanner like
 /// `safe_mode_requested` rather than a `handle_cli_flags` exit arm, because it modifies how `run()`
 /// serves rather than replacing the run.
-fn stdio_serve_requested(args: impl Iterator<Item = String>) -> bool {
+fn line_flag_passed(args: impl Iterator<Item = String>) -> bool {
     line_serve_requested(&root::cli::help_rows(), args)
 }
 
-/// [`stdio_serve_requested`] over the `Flags:` rows `planes` declare.
+/// [`line_flag_passed`] over the `Flags:` rows `planes` declare.
 fn line_serve_requested(
     planes: &[&[root::linked::CliHelpRow]],
     mut args: impl Iterator<Item = String>,
@@ -370,8 +370,8 @@ fn main() {
     register_planes();
     // HOST-SELECTION SEAM INSTALL (loop unification, DECISIONS #28), after the planes are registered
     // and mirroring `busbar_admin::install()`: inject the kernel-loop runners into the neutral
-    // per-capability-keyed seam. LIVE — it flips every plane in the build (mcp, a2a, llm-native,
-    // voice) onto the unified kernel loop, whose runner opens a zero hold and reports no evidence, so
+    // per-capability-keyed seam. LIVE — it flips every plane in the build onto the unified kernel
+    // loop, whose runner opens a zero hold and reports no evidence, so
     // each plane's own metering inside `drive` stays what settles (item 125, measured money-neutral).
     root::gauntlet_install::install();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
@@ -600,8 +600,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // as `Server-Timing: busbar` above, so they too default off and are gated by ONE process-wide
     // decision read at every emission site (`proxy::wire::maybe_attach_route_policy`).
     busbar_kernel::proxy::configure_route_policy_headers(response_headers_cfg.route_policy);
-    // METRICS OPT-IN, read here and nowhere else: 1.5.3 the switch is the built-in `prometheus`
-    // EXPORTER (`export.prometheus`) — present ⇒ install the recorder (COLLECTION) with the operator's
+    // METRICS OPT-IN, read here and nowhere else: 1.5.3 the switch is the built-in scrape
+    // EXPORTER (its `export:` entry) — present ⇒ install the recorder (COLLECTION) with the operator's
     // REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay off for the life of the
     // process. Called before the App/router is built so the `/metrics` plugin route (DISTRIBUTION, via
     // the built-in exporter) sees a settled recorder decision.
@@ -634,9 +634,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // request-path logging is captured.
     // A plane's line-serve flag reserves stdout for the plane's channel, so its logs move to
     // stderr — see `init_logging`'s `stdout_reserved`.
-    if let Err(e) =
-        busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()))
-    {
+    if let Err(e) = busbar_kernel::observability::init_logging(line_flag_passed(std::env::args())) {
         eprintln!("busbar: tracing subscriber already initialized: {e}");
     }
 
@@ -721,7 +719,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
-    // THE MONEY THE ROOT-DRIVEN LLM NODE PRICES WITH is not captured here and handed over once. It
+    // THE MONEY THE ROOT-DRIVEN PLANE NODE PRICES WITH is not captured here and handed over once. It
     // arrives through the engine's rate-apply seam, installed a few lines down and raised by the ONE
     // place a deployment's rates are resolved — which runs at boot AND on every live apply/reload. A
     // reading taken here instead would be the boot's rates forever: the usage projection would
@@ -829,7 +827,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // `serve_listener` below, so neither listener has been bound, let alone is accepting.
     //
     // The marker sits DIRECTLY above the call it exempts, and must: the lint carries an allow across
-    // the comment block that starts it and no further, so the voice-credential capture that used to
+    // the comment block that starts it and no further, so the session-credential capture that used to
     // stand between the two silently ate this exemption and left the build itself flagged.
     let (boot_app, _boot_gov_rotate, boot_limits) = build_app_from_config(
         cfg,
@@ -860,8 +858,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // (the pre-any-mutation state).
     busbar_kernel::admin::seam::record_boot(&app);
 
-    // DURABLE STATE HYDRATION — the audit ring, the A2A task table, the MCP per-call log and
-    // the MCP demotion/spent-approval records, restored from the configured governance store
+    // DURABLE STATE HYDRATION — the audit ring, the planes' task tables, per-call logs and
+    // demotion/spent-approval records, restored from the configured governance store
     // BEFORE a listener is bound. One boot entry point (`busbar_kernel::boot::hydrate_all`)
     // rather than four widened statics: the sinks (`AUDIT`, `TASKS`, `CALLS`) and their
     // restore verbs stay crate-private in core, so nothing outside the engine can swap a sink
@@ -1032,15 +1030,20 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
     // guest-list lines beside the kernel's own, onto the data router at its construction.
     // Every config apply refreshes each served door plane onto the generation it installed
-    // (ARCHITECT Q-DEL-A2A-APPLY), bound on the handle once the routers are built.
+    // (the ARCHITECT ruling on a served door plane's apply), bound on the handle once the routers are built.
     let door_appliers = served.appliers();
     #[cfg(linked_axis_node)]
     let door_post = served.post.clone();
-    // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with the stdio serve mode asked for and a
-    // served plane claiming the stdio transport, the served planes are kept for the process's own
+    // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with a plane's line-serve flag passed and a
+    // served plane claiming the line carrier, the served planes are kept for the process's own
     // stdin/stdout, and the data router is built with none of them (it is never bound in this mode).
+    // The line carrier is the one linked claim whose row opens on its first line; a build whose
+    // transports state two is refused here, before anything is served.
+    if let Some(refusal) = root::serve::lines::refusal() {
+        die(refusal);
+    }
     let mut served = served;
-    let line_served = (stdio_serve_requested(std::env::args())
+    let line_served = (line_flag_passed(std::env::args())
         && root::serve::lines::line_claim(&served).is_some())
     .then(|| std::mem::take(&mut served));
     let (doors, sessions, refusals) = root::serve::data_mounts(
@@ -1138,7 +1141,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
     // and out through the one exit. Off, this line does not exist and the surface is the one it was.
-    // THE PROCESS'S ONE BOOK. The LLM plane's exit arm settles onto it (its root unit's book step,
+    // THE PROCESS'S ONE BOOK. The node plane's exit arm settles onto it (its root unit's book step,
     // below) and the administrative ledger views read it; no other plane binds an exit arm to it.
     // It is ONE book, and that matters: a mount that opened its own would post
     // onto books nothing serves and serve books nothing posts to, and both halves of that would look
@@ -1315,18 +1318,18 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         ));
     }
 
-    // START EVERY PLANE'S BACKGROUND WORK — the MCP tool-list refresh sweep and the A2A
-    // re-verification job — through ONE boot entry point that folds over the plane registry and calls
-    // each plane's declared `start` hook (MCP before A2A, the order they have always started in). Each
+    // START EVERY PLANE'S BACKGROUND WORK — a plane's refresh sweep, a plane's re-verification
+    // job — through ONE boot entry point that folds over the plane registry and calls each plane's
+    // declared `start` hook, in the registry's order (the order they have always started in). Each
     // job MOVED into its plane's own hook beside the code it starts, so the sweeper types, the
     // live-fetch transport and the identity resolver stay crate-private in their planes rather than
     // being reached here by name. Spawned ONCE, here, rather than on apply, for the reason the flusher
     // is: a second job against the same registry would double every fetch and race every ledger stamp.
-    // Fatal if an A2A outbound client identity does not resolve, exactly as before — the refusal text
+    // Fatal if a plane's outbound client identity does not resolve, exactly as before — the refusal text
     // is the plane hook's, propagated through `start_planes`.
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
 
-    // THE STDIO SERVE MODE (a plane's declared line-serve flag). The SAME boot ran above — config load, plugin
+    // THE LINE SERVE MODE (a plane's declared line-serve flag). The SAME boot ran above — config load, plugin
     // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve
     // every frame; what changes is only the transport: busbar is somebody's CHILD PROCESS here, so
     // it binds no listener at all (a child that opened ports would be a network server its
@@ -1362,8 +1365,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         // The WORKER-SHUTDOWN WATCH: the broadcast, refolded into a level (a `watch<bool>`) so
         // detached work spawned at any moment — including after the signal — can still observe
         // that shutdown has fired. Each data worker registers a clone
-        // (`busbar_kernel::detached::set_worker_shutdown`) beside its detached tracker, and an MCP task
-        // runner selects on it to write its CANCELLED terminal status within the drain grace
+        // (`busbar_kernel::detached::set_worker_shutdown`) beside its detached tracker, and a plane's
+        // task runner selects on it to write its CANCELLED terminal status within the drain grace
         // instead of being aborted with a caller left polling forever.
         let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(false);
         {
@@ -1516,7 +1519,7 @@ const ROOT_BIND_LIMITS: AcceptLimits = AcceptLimits {
     handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
 };
 
-/// Bind a TCP listener or `die` with a clear, address-named message. Shared by the data and admin
+/// Bind a listener or `die` with a clear, address-named message. Shared by the data and admin
 /// listeners so both fail fast and identically on a bad bind.
 #[cfg(not(unix))]
 async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
@@ -1617,13 +1620,13 @@ fn serve_thread_per_core(
                 // stripes per worker (the egress client shard today; SWRR/breaker scratch in later
                 // stages) indexes by this id. Set after the pin, before the runtime serves.
                 busbar_kernel::topology::set_worker_id(i);
-                // Detached-work tracker (request-outliving spawns: webhook/tap deliveries, MCP
-                // runners, A2A watchers) — the post-drain grace below waits on it so a graceful
+                // Detached-work tracker (request-outliving spawns: webhook/tap deliveries, plane
+                // task runners and watchers) — the post-drain grace below waits on it so a graceful
                 // stop gives such work a bounded window instead of an instant abort.
                 let detached = busbar_kernel::detached::DetachedTasks::new();
                 busbar_kernel::detached::set_worker_detached(detached.clone());
                 // The shutdown level, registered beside the tracker: detached work spawned on
-                // this worker captures it and can settle its own terminal state (an MCP task
+                // this worker captures it and can settle its own terminal state (a plane's task
                 // runner writes CANCELLED) inside the drain grace below instead of being aborted
                 // silently when the runtime drops.
                 busbar_kernel::detached::set_worker_shutdown(worker_shutdown);
