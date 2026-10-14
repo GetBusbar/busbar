@@ -63,6 +63,42 @@ fn path_base_reshapes_the_gemini_url_for_vertex() {
         );
 }
 
+/// Moderation and rerank (no Gemini cell) answer `:generateContent` whether or not the request
+/// streams, as 1.5.5 did (v1.5.5 `crates/busbar/src/handlers/gemini.rs:62-63`); only chat,
+/// transcription and speech are stream-aware (`:52-58`). RED while every fallback verb took
+/// `:streamGenerateContent` on a streamed request.
+#[test]
+fn moderation_and_rerank_always_use_generate_content() {
+    let h = GeminiRequestHandler;
+    let model = "gemini-2.0-flash";
+    for operation in [OpVerb::MODERATION, OpVerb::RERANK] {
+        for stream in [false, true] {
+            assert_eq!(
+                h.upstream_path(&EgressCtx {
+                    operation,
+                    model,
+                    stream,
+                    path_base: None,
+                }),
+                "/v1beta/models/gemini-2.0-flash:generateContent",
+                "{operation:?} stream={stream}"
+            );
+        }
+    }
+    for operation in [OpVerb::CHAT, OpVerb::TRANSCRIPTION, OpVerb::SPEECH] {
+        assert_eq!(
+            h.upstream_path(&EgressCtx {
+                operation,
+                model,
+                stream: true,
+                path_base: None,
+            }),
+            "/v1beta/models/gemini-2.0-flash:streamGenerateContent",
+            "{operation:?}"
+        );
+    }
+}
+
 #[test]
 fn transcription_read_request_captures_inline_audio() {
     // A generateContent body with a valid-base64 inline_data audio part → IR Transcription
