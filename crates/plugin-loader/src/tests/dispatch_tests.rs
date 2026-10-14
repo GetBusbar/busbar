@@ -550,7 +550,11 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
         .outcome;
     let p2 = load(sink.clone());
     let fresh = d.mint(1).expect("the fresh worker mints");
-    let fresh_stale = fresh.generation > 1;
+    let fresh_stale = crate::dispatch::handle::ticket_count(
+        1,
+        crate::dispatch::ticket::decode(fresh.slot).1,
+        fresh.generation,
+    ) > 1;
     d.recycle(fresh);
     let opened2 = open(&d, &p2, 1);
     let unhang = p2.call(TICK, &mut frame(b"unhang:script")).outcome;
@@ -1192,7 +1196,14 @@ fn red_a_stale_generation_wake_is_dropped() {
             break t;
         }
     };
-    assert_eq!(t.generation, old.generation + 1);
+    // One mint on: the generation is the slot's next COUNT, permuted (#74), never the next integer.
+    let idx = crate::dispatch::ticket::decode(t.slot).1;
+    assert_eq!(
+        crate::dispatch::handle::ticket_count(0, idx, t.generation),
+        crate::dispatch::handle::ticket_count(0, idx, old.generation) + 1
+    );
+    assert_ne!(t.generation, old.generation);
+    let forged0 = crate::dispatch::handle::forged();
     let reply = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
     until("the held op", || d.is_pending(t));
     let stale0 = d.stats().stale_wakes;
@@ -1201,6 +1212,12 @@ fn red_a_stale_generation_wake_is_dropped() {
     until("the stale wake is counted", || {
         d.stats().stale_wakes > stale0
     });
+    // A generation the slot really minted is a late wake, not a forgery (#74).
+    assert_eq!(
+        crate::dispatch::handle::forged(),
+        forged0,
+        "a stale wake for a generation the host minted was counted as a forgery"
+    );
     // The wake was processed (counted) and resumed nothing: no crossing happened.
     assert_eq!(
         p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst),
@@ -2567,5 +2584,45 @@ fn a_boot_whose_entropy_fails_is_refused() {
         matches!(refused, Err(crate::dispatch::LoadError::Entropy(_))),
         "a failing entropy source did not refuse the bind: {:?}",
         refused.err()
+    );
+}
+
+/// #74, THE TICKET HALF: a wake for a generation the host never minted is a FORGERY. The generation
+/// is a keyed permutation of the slot's counter, so the worker names the mint it would be by the
+/// inverse and finds none; the instance that woke it from inside its crossing is quarantined (its
+/// handle revoked, every later op FAULT). The control: an honest instance stays unfaulted.
+#[test]
+fn a_forged_ticket_generation_quarantines_the_instance_that_woke_it() {
+    let d = Dispatcher::new(config());
+    let honest = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &honest, 0), Outcome::Ready);
+    let forger = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
+    let before = crate::dispatch::handle::forged();
+    let t = d.mint(0).expect("a ticket");
+    let _ = d
+        .submit(
+            &forger,
+            t,
+            TICK,
+            frame(plug::FORGE_TICKET),
+            DeadlineClass::Call,
+            0,
+        )
+        .wait(WAIT);
+    d.recycle(t);
+    until("the forger is quarantined", || forger.is_faulted());
+    assert!(
+        crate::dispatch::handle::forged() > before,
+        "the forgery was not counted"
+    );
+    assert!(crate::dispatch::handle::resolve(forger.inner.ctx()).is_none());
+    assert_eq!(
+        forger.call(TICK, &mut frame(plug::COUNT)).outcome,
+        Outcome::Fault
+    );
+    assert!(
+        !honest.is_faulted(),
+        "the quarantine reached another instance"
     );
 }

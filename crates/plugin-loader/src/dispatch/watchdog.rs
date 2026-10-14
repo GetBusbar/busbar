@@ -103,7 +103,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
         let gens: Vec<u32> = st
             .entries
             .iter()
-            .map(|e| recycled_generation(e.generation))
+            .map(|e| recycled_generation(e.count))
             .collect();
         (Worker::fault_all(&mut st), gens, faulted)
     };

@@ -50,7 +50,7 @@ pub const PEND_AFTER: &[u8] = b"pend:after";
 pub const PEND_BEFORE: &[u8] = b"pend:before";
 /// `tick` mode: a spurious wake at once, the real one later.
 pub const PEND_SPURIOUS: &[u8] = b"pend:spurious";
-/// `tick` mode: wakes for stale generations of the ticket, the real one later.
+/// `tick` mode: wakes for two recycled tickets this plugin held before, the real one later.
 pub const PEND_STALE: &[u8] = b"pend:stale";
 /// `tick` mode: no wake; `wake_at_ns = now_ns + 30ms`.
 pub const PEND_TIMER: &[u8] = b"pend:timer";
@@ -103,6 +103,9 @@ pub const PANIC: &[u8] = b"panic";
 /// `tick`: hand the host's `wake` a context one tag bit off the one this crossing was handed (#74:
 /// the host refuses it and quarantines this instance), then answer READY.
 pub const FORGE: &[u8] = b"forge";
+/// `tick`, on a ticket: wake this ticket's slot at a generation the host never minted (#74: a
+/// forged ticket generation; the host quarantines this instance), then answer READY.
+pub const FORGE_TICKET: &[u8] = b"forgeticket";
 
 /// Family index of the `invocations` gauge.
 pub const GAUGE_INVOCATIONS: u32 = 2;
@@ -520,6 +523,17 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
             hang_until(key);
             return say(out, Outcome::Ready);
         }
+        if mode == FORGE_TICKET {
+            let t = tin.head.ticket;
+            (me.wake)(
+                tin.head.host,
+                Ticket {
+                    slot: t.slot,
+                    generation: t.generation ^ 0x5a5a_5a5a,
+                },
+            );
+            return say(out, Outcome::Ready);
+        }
         if mode == FORGE {
             let forged = HostCtx {
                 handle: tin.head.host.handle ^ (1 << 24),
@@ -692,11 +706,19 @@ unsafe fn pend(me: &Inst, tin: &TickIn, mode: &[u8], out: *mut c_void) -> RawOut
                 later(w, t, ready, 60);
             }
             PEND_STALE => {
-                for g in [t.generation.wrapping_sub(1), t.generation.wrapping_add(1)] {
-                    w.wake(Ticket {
-                        slot: t.slot,
-                        generation: g,
-                    });
+                // Two tickets this plugin was handed before, each recycled since: late wakes for
+                // generations the host really minted (H2), never a generation it did not (#74: a
+                // ticket generation is a keyed permutation of the slot's counter, so a guessed one
+                // is a forgery and quarantines the instance).
+                let stale: Vec<Ticket> = st
+                    .tickets
+                    .keys()
+                    .filter(|k| **k != t && k.generation != 0)
+                    .take(2)
+                    .copied()
+                    .collect();
+                for old in stale {
+                    w.wake(old);
                 }
                 later(w, t, ready, 60);
             }

@@ -155,3 +155,53 @@ fn a_failing_entropy_source_is_a_refusal_not_a_weaker_key() {
         Some((0x0101_0101_0101_0101, 0x0101_0101_0101_0101))
     );
 }
+
+/// THE TICKET PERMUTATION IS A BIJECTION, exhausted at a reduced width (8-bit domain, 4-bit
+/// halves): every nonzero value maps to a distinct nonzero value and back, so uniqueness per slot
+/// is exact, as the counter's was, under every key and tweak tried.
+#[test]
+fn the_ticket_permutation_is_a_bijection_of_the_nonzero_values() {
+    for (key, tweak) in [
+        ((1, 2), (0, 0)),
+        ((0xdead_beef, 7), (3, 9)),
+        ((0, 0), (1, 1)),
+    ] {
+        let mut seen = std::collections::BTreeSet::new();
+        for x in 1u64..256 {
+            let y = nonzero_permutation(key, tweak, 4, x, false);
+            assert!(y != 0 && y < 256, "{x} -> {y} left the nonzero domain");
+            assert!(seen.insert(y), "{x} -> {y} collides");
+            assert_eq!(
+                nonzero_permutation(key, tweak, 4, y, true),
+                x,
+                "the inverse of {y}"
+            );
+        }
+        assert_eq!(seen.len(), 255);
+    }
+}
+
+/// UNPREDICTABLE: consecutive mints of one slot do not show their counter (no run of +1 steps, no
+/// constant stride), while the inverse names each count exactly.
+#[test]
+fn consecutive_ticket_generations_hide_their_counter() {
+    let gens: Vec<u32> = (1..=64).map(|c| ticket_generation(0, 0, c)).collect();
+    for (c, g) in (1..=64).zip(&gens) {
+        assert_ne!(*g, 0);
+        assert_eq!(ticket_count(0, 0, *g), c, "the inverse of mint {c}");
+    }
+    let steps: std::collections::BTreeSet<i64> = gens
+        .windows(2)
+        .map(|w| i64::from(w[1]) - i64::from(w[0]))
+        .collect();
+    assert!(
+        steps.len() > 32,
+        "the generations step by a few strides: {steps:?}"
+    );
+    assert!(!steps.contains(&1) || steps.len() > 1);
+    assert_ne!(
+        ticket_generation(0, 0, 1),
+        ticket_generation(0, 1, 1),
+        "two slots share a sequence"
+    );
+}

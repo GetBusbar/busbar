@@ -404,6 +404,24 @@ impl Instance {
     }
 }
 
+/// THE ONE GUESS, judged after the crossing (#74): the instance whose handle `wake` is, quarantined
+/// as [`quarantine_crossing`] quarantines a crossing's (a forged ticket generation is judged on the
+/// worker, after the wake that carried it returned).
+pub(crate) fn quarantine_entry(wake: &'static InstanceWake) {
+    wake.revoked.store(true, Ordering::Release);
+    let Some(inst) = wake.instance.get().and_then(std::sync::Weak::upgrade) else {
+        return;
+    };
+    inst.revoke();
+    if let Some((id, table)) = inst.wake.conn.get() {
+        super::conn_services::purge(*id, table);
+    }
+    tracing::warn!(
+        plugin = %inst.name,
+        "a plugin woke a ticket generation the host never minted; the instance is quarantined"
+    );
+}
+
 /// One family's shape, copied from the Statement: its kind and its label count.
 #[derive(Debug, Clone, Copy)]
 struct FamilyShape {
@@ -1569,6 +1587,11 @@ impl<K: Kind> Plugin<K> {
             }),
             _k: PhantomData,
         };
+        let _ = plugin
+            .inner
+            .wake
+            .instance
+            .set(Arc::downgrade(&plugin.inner));
         bind.dispatcher.adopt(&plugin.inner);
         Ok(plugin)
     }

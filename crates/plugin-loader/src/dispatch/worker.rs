@@ -584,6 +584,9 @@ enum Action {
 
 #[derive(Default)]
 pub(crate) struct Entry {
+    /// The slot's mint counter (#74): how many times it has been handed out, from 1.
+    pub(crate) count: u32,
+    /// The ticket generation of mint `count`: `handle::ticket_generation(worker, idx, count)`.
     pub(crate) generation: u32,
     live: bool,
     latched: bool,
@@ -623,7 +626,8 @@ pub(crate) enum Msg {
         meta: Meta,
         job: Box<dyn Job>,
     },
-    Wake(Ticket),
+    /// A wake for `.0`, from inside the crossing of the instance whose handle `.1` is, if any.
+    Wake(Ticket, Option<&'static super::ticket::InstanceWake>),
     DropClient(Ticket),
     Recycle(Ticket),
     Stop,
@@ -678,7 +682,10 @@ impl WakeRoute for Pool {
         let (w, _) = decode(t.slot);
         match self.slots.get(w as usize) {
             Some(slot) => {
-                let _ = slot.get().tx.send(Msg::Wake(t));
+                // The instance crossing on this thread, if any: the one a forged generation in
+                // `t` quarantines when the worker judges it (#74).
+                let culprit = super::plugin::crossing_wake();
+                let _ = slot.get().tx.send(Msg::Wake(t, culprit));
             }
             None => {
                 self.env.stats.stale_wakes.fetch_add(1, Ordering::Relaxed);
@@ -713,15 +720,17 @@ impl Pool {
 }
 
 impl Worker {
-    /// A fresh incarnation at `index`, its slab's generations `gens` (every slot free).
-    pub(crate) fn new(index: u32, gens: Vec<u32>) -> (Arc<Self>, Receiver<Msg>) {
+    /// A fresh incarnation at `index`, its slab's mint counters `counts` (every slot free).
+    pub(crate) fn new(index: u32, counts: Vec<u32>) -> (Arc<Self>, Receiver<Msg>) {
         let (tx, rx) = channel();
-        let n = gens.len() as u32;
+        let n = counts.len() as u32;
         let state = WorkerState {
-            entries: gens
+            entries: counts
                 .into_iter()
-                .map(|generation| Entry {
-                    generation,
+                .zip(0u32..)
+                .map(|(count, idx)| Entry {
+                    count,
+                    generation: super::handle::ticket_generation(index, idx, count),
                     ..Entry::default()
                 })
                 .collect(),
@@ -756,8 +765,10 @@ impl Worker {
         let idx = match st.free.pop() {
             Some(i) => i,
             None if (st.entries.len() as u32) < MAX_INDEX => {
+                let idx = st.entries.len() as u32;
                 st.entries.push(Entry {
-                    generation: 1,
+                    count: 1,
+                    generation: super::handle::ticket_generation(self.index, idx, 1),
                     ..Entry::default()
                 });
                 st.entries.len() as u32 - 1
@@ -772,6 +783,19 @@ impl Worker {
         e.driver = driver;
         let generation = e.generation;
         Some(self.ticket(idx, generation))
+    }
+
+    /// Whether `t` is a ticket this worker's slab ever handed out: its slot exists and its generation
+    /// is the image of a count the slot has reached (`NONE`, generation 0, is a stale wake by rule).
+    fn ever_minted(st: &WorkerState, index: u32, t: Ticket) -> bool {
+        if t.generation == 0 {
+            return true;
+        }
+        let (_, idx) = decode(t.slot);
+        st.entries.get(idx as usize).is_some_and(|e| {
+            let c = super::handle::ticket_count(index, idx, t.generation);
+            c >= 1 && c <= e.count
+        })
     }
 
     /// The live entry `t` names on this worker, if its generation is current.
@@ -823,9 +847,15 @@ impl Worker {
                 // A stale or foreign ticket: `meta` drops and settles FAULT.
                 _ => drop(meta),
             },
-            Msg::Wake(t) => match self.entry(st, t) {
+            Msg::Wake(t, culprit) => match self.entry(st, t) {
                 None => {
                     env.stats.stale_wakes.fetch_add(1, Ordering::Relaxed);
+                    // A generation this slot really minted is a late wake (H2: dropped, never an
+                    // error). One it never minted is a forgery (#74): the generation is a keyed
+                    // permutation of the slot's counter, so its inverse names the mint it would be.
+                    if !Self::ever_minted(st, self.index, t) {
+                        super::handle::forged_ticket(culprit);
+                    }
                 }
                 Some((idx, e)) => {
                     if e.driver.is_some() {
@@ -880,7 +910,8 @@ impl Worker {
         for id in e.conns.drain(..) {
             super::conn_services::forget(id, ticket);
         }
-        e.generation = recycled_generation(e.generation);
+        e.count = recycled_generation(e.count);
+        e.generation = super::handle::ticket_generation(self.index, idx, e.count);
         e.live = false;
         e.latched = false;
         e.client_dropped = false;
