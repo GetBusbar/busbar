@@ -3273,9 +3273,11 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
         let mut p = make_provider(proto_b(), "https://api.example.com", "API_KEY");
         p.token_url = Some(token_url);
         p.scope = Some("api://x/.default".into());
-        // The style as the operator's config spells it, read by the config's own parser.
-        let spelled = "oauth-client-credentials";
-        p.auth = Some(serde_yaml::from_str(spelled).expect("a provider style"));
+        // The style as the operator's config spells it (a fixture), read by the config's own parser.
+        p.auth = Some(
+            serde_yaml::from_str(include_str!("fixtures/client_credentials_style.yaml"))
+                .expect("a provider style"),
+        );
         providers.insert("myprovider".to_string(), p);
         let mut models = HashMap::new();
         models.insert("m".to_string(), make_model("myprovider", 10));
