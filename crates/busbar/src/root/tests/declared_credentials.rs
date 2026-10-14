@@ -1030,3 +1030,61 @@ fn the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape() {
         ]
     );
 }
+
+/// LEGACY the retiring engine crate's `src/engine/tests/auth_style_tests.rs::test_keyless_lane_sends_no_auth_header`
+/// (coverage map v2 row 73). 1.5.5: a lane whose provider declared `api_key: none` (a keyless
+/// local upstream) holds an empty key, and an empty key presents NO auth header at all under any
+/// auth style (the dialect's default, `bearer`, `api-key`): never `Authorization: Bearer ` with an
+/// empty token, never an empty `api-key` field. A non-empty credential is unaffected and presents
+/// its one header.
+///
+/// Here every non-signing binding the fixture records (each dialect's default and the `auth:
+/// api-key` override) and the `auth: bearer` override are bound on the linked auth plugins with
+/// the empty key, in both credential modes, and asked for their fields.
+///
+/// RED: a linked auth plugin presents a field for an empty credential (a bare `Bearer`, an empty
+/// key header), or a real credential stops presenting its one header.
+#[test]
+fn test_keyless_lane_sends_no_auth_header() {
+    let ctx = |upstream_creds| SigningContext {
+        host: "upstream.internal",
+        canonical_uri: "/",
+        body: b"{}",
+        timestamp_epoch: 0,
+        upstream_creds,
+    };
+    let bearer = StyleBinding {
+        style: "bearer".to_string(),
+        params: serde_json::json!({}),
+        uses_key: true,
+        statics: &[],
+        sent: Vec::new(),
+    };
+    let mut bindings: Vec<(String, StyleBinding)> = fixture()["bindings"]
+        .as_object()
+        .expect("bindings")
+        .keys()
+        .map(|name| (name.clone(), binding_of(name, "upstream.internal", &[])))
+        .filter(|(_, binding)| binding.style != "sigv4")
+        .collect();
+    bindings.push(("bearer override".to_string(), bearer.clone()));
+    assert!(
+        bindings.len() >= 3,
+        "the default, `bearer` and `api-key` styles are all bound"
+    );
+    for (name, binding) in &bindings {
+        for mode in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
+            assert_eq!(
+                present_bound(binding, "", &ctx(mode)),
+                Vec::<(String, String)>::new(),
+                "an empty credential must send NO auth header ({name}, style {}, {mode:?})",
+                binding.style
+            );
+        }
+    }
+    assert_eq!(
+        present_bound(&bearer, "SECRETKEY", &ctx(UpstreamCreds::Own)).len(),
+        1,
+        "a real credential still sends its header"
+    );
+}

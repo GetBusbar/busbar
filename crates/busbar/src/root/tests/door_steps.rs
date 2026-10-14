@@ -151,6 +151,50 @@ fn the_grant_is_judged_over_the_named_pool_then_its_fallback() {
     );
 }
 
+/// LEGACY the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_adhoc_governance_pool_acl_403_via_router`
+/// (coverage map v2 row 463). 1.5.5: the ad-hoc (direct) route runs the same governance guard,
+/// keyed on the resolved MODEL: a key allowed only on `other-pool` that names the configured model
+/// directly is refused 403 (a permission refusal, the dialect's own `permission_error` envelope).
+///
+/// Held here on the door's grant over a direct route and the refusal the seat answers for it: the
+/// grant is denied, the seat refuses it as `ScopeDenied`, and the driver's status for that reason
+/// is 403 (the plane renders it as its dialect's permission refusal; its own suite holds that).
+///
+/// RED: a direct route escapes the key's pool grant (the model served to a key scoped elsewhere),
+/// or its refusal stops being a 403.
+#[test]
+fn test_adhoc_governance_pool_acl_403_via_router() {
+    use busbar_contract::records::{ScopeRef, VirtualKey};
+    let p = pools("models:\n  configured-model: {provider: p}\npools:\n  other-pool:\n    members: [configured-model]");
+    let elsewhere = VirtualKey {
+        allowed_scopes: Some(vec![ScopeRef::pool("other-pool")]),
+        ..VirtualKey::default()
+    };
+    assert!(
+        !p.granted(
+            Some("pool"),
+            Some(&elsewhere),
+            ROUTE_DIRECT,
+            Some(b"configured-model")
+        ),
+        "a key allowed only on `other-pool` may not name the configured model directly"
+    );
+    assert!(
+        p.granted(
+            Some("pool"),
+            Some(&elsewhere),
+            ROUTE_POOL,
+            Some(b"other-pool")
+        ),
+        "the same key is served on the pool it is granted"
+    );
+    assert_eq!(
+        busbar_kernel::plane_driver::refusal_status(busbar_contract::caps::ReasonCode::ScopeDenied),
+        403,
+        "ad-hoc governance pool-ACL => 403"
+    );
+}
+
 /// THE MEMBER'S TIER (the core-owned per-member `tier`, `BUSBAR-1.6.0.md` l.4196 (b), R2-G
 /// l.4285): read off a member written `{name, tier}`, `0` for a bare name, for one with no tier, and
 /// for a tier that is no unsigned integer; a pool's entries are its members' names either way.

@@ -112,3 +112,54 @@ fn the_glob_takes_prefix_suffix_and_middle_wildcards() {
     assert!(!glob_match("a*c*e", "abde"));
     assert!(glob_match("exact", "exact") && !glob_match("exact", "exactly"));
 }
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/attempt_timeout_precedence_tests.rs::effective_reasoning_member_override_wins`
+/// (coverage map v2 row 43). 1.5.5: the pool member's `reasoning` override wins over the model's
+/// flag in both directions (true over false AND false over true); a member with no override
+/// inherits the model's flag, true or false; a pool or member with no candidate row uses the
+/// model's flag.
+///
+/// RED: a member's `reasoning: false` stops beating a model's `reasoning: true` (the arm the
+/// neighbouring test never drives), or a route with no member row stops reading the model's flag.
+#[test]
+fn effective_reasoning_member_override_wins() {
+    let mut v = settings();
+    // `claude` states `reasoning: true` at the model level; `quiet` turns it off in its pool only.
+    v["pools"]["quiet"] = json!({ "members": [ { "model": "claude", "reasoning": false } ] });
+    let s = Shaping::from_settings(&v).expect("reads");
+    assert_eq!(
+        s.reasoning("main", "gpt"),
+        Some(true),
+        "member true beats model false"
+    );
+    assert_eq!(
+        s.reasoning("quiet", "claude"),
+        Some(false),
+        "member false beats model true"
+    );
+    assert_eq!(
+        s.reasoning("main", "claude"),
+        Some(true),
+        "no member override inherits model true"
+    );
+    assert_eq!(
+        s.reasoning("alt", "gpt"),
+        Some(false),
+        "no member override inherits model false"
+    );
+    assert_eq!(
+        s.reasoning("alt", "claude"),
+        Some(true),
+        "a pool with no row for the member uses the model flag"
+    );
+    assert_eq!(
+        s.reasoning("no-such-pool", "gpt"),
+        Some(false),
+        "no candidate row uses the model flag"
+    );
+    assert_eq!(
+        s.reasoning("no-such-pool", "claude"),
+        Some(true),
+        "no candidate row uses the model flag"
+    );
+}

@@ -92,3 +92,61 @@ fn an_unset_body_cap_resolves_to_the_transport_default() {
         "the transport's own default body cap is the 32 MiB this deployment has always had"
     );
 }
+
+/// LEGACY the retiring engine crate's `src/engine/tests/runtime_carry_tests.rs::a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it`
+/// (coverage map v2 row 603). 1.5.5: a hot config apply that changes nothing client-relevant REUSES
+/// the prior upstream client (its warm connection pool), and an apply that changes the upstream
+/// request timeout REBUILDS it, so the new timeout (here the prior + 7 s) takes effect without a
+/// restart.
+///
+/// Held here on what the served egress is built from on each apply: the settings a transport door
+/// is opened with (`settings_blob`) and the connector's pool posture. An unchanged apply hands the
+/// doors byte-identical settings and the same posture (nothing to reopen, the warm pool carries); a
+/// changed timeout hands them a different blob carrying the new figure.
+///
+/// RED: an apply that changed nothing reads as a change (the warm pool thrown away), or a changed
+/// `limits.upstream_request_timeout_secs` never reaches the settings a door is opened with.
+#[test]
+fn a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it() {
+    const DECLARED: [&str; 2] = [
+        "limits.upstream_request_timeout_secs",
+        "limits.request_body_max_bytes",
+    ];
+    let limits = LimitsResolved::default();
+    // Reuse half: an apply with an identical client-affecting snapshot.
+    let prior = client_settings(&limits);
+    let unchanged = client_settings(&LimitsResolved::default());
+    assert_eq!(
+        crate::root::doors::settings_blob(&DECLARED, &prior),
+        crate::root::doors::settings_blob(&DECLARED, &unchanged),
+        "an apply that changes no client-affecting setting must REUSE the prior client's warm pool"
+    );
+    assert_eq!(
+        crate::root::connector::pool_posture(&prior),
+        crate::root::connector::pool_posture(&unchanged)
+    );
+    // Rebuild half: bump the upstream request timeout and re-apply.
+    let changed = LimitsResolved {
+        upstream_request_timeout_secs: limits.upstream_request_timeout_secs + 7,
+        ..limits
+    };
+    let rebuilt = client_settings(&changed);
+    assert_ne!(
+        crate::root::doors::settings_blob(&DECLARED, &prior),
+        crate::root::doors::settings_blob(&DECLARED, &rebuilt),
+        "an apply that changes upstream_request_timeout_secs must REBUILD the client so the new \
+         timeout takes effect"
+    );
+    assert_eq!(
+        rebuilt.request_timeout_secs,
+        prior.request_timeout_secs + 7,
+        "the rebuilt client's carried settings snapshot must reflect the new timeout"
+    );
+    let blob: serde_json::Value =
+        serde_json::from_slice(&crate::root::doors::settings_blob(&DECLARED, &rebuilt))
+            .expect("the settings blob is JSON");
+    assert_eq!(
+        blob["limits.upstream_request_timeout_secs"],
+        serde_json::json!(prior.request_timeout_secs + 7)
+    );
+}
