@@ -144,10 +144,10 @@ impl Conns for Table {
                 self.broken.lock().unwrap().insert(id);
                 let mut pieces = VecDeque::new();
                 let mut bytes = VecDeque::new();
-                for (k, c) in chunks.iter().enumerate() {
+                for (k, chunk) in chunks.iter().enumerate() {
                     let s = (k == 0).then_some((status, None));
-                    pieces.push_back(piece(PieceKind::Body, c.len(), s));
-                    bytes.push_back(c.to_vec());
+                    pieces.push_back(piece(PieceKind::Body, chunk.len(), s));
+                    bytes.push_back(chunk.to_vec());
                 }
                 (pieces, bytes)
             }
