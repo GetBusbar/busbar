@@ -33,13 +33,14 @@
 #          (closed object, no "error" property), so a PASS here is proof the checker judged it
 #          against the dialect's ERROR envelope, not the success schema
 #
-# The named-gap list (named-gaps.json) is the one thing here that can turn a red row green, so its
-# every arm is planted on a REAL violation the validator made:
+# The named-gap list (named-gaps.json) was the one thing here that could turn a red row green. Owner
+# rule 22 (2026-10-14) makes it admit nothing, and every arm is planted on a REAL violation the
+# validator made to prove that:
 #
-#   (i) a gap naming that violation      -> the row leaves the owed set as a gap, never as a PASS,
-#                                           carrying the owner and the reason
-#   (j) a SECOND, unnamed violation on the same row -> still RED (a gap forgives what it names)
-#   (k) the same gap where the row is clean        -> RED as stale, before the verdict
+#   OWNER RULE 22 (2026-10-14): named conformance gaps are zero, so EVERY arm is RED:
+#   (i) a gap naming that violation      -> REFUSED at load; nothing is judged
+#   (j) the same gap over a second violation -> REFUSED at load
+#   (k) the same gap where the row is clean        -> REFUSED at load
 #   (l) an entry with no owner and no reason       -> REFUSED at load; nothing is judged
 #   (m) an entry whose cell carries a wildcard     -> REFUSED at load; nothing is judged
 #   (m3) an entry naming a row the production cell universe does not owe -> REFUSED at load
@@ -161,14 +162,14 @@ RUN_ARGS="--gaps $W/no-gaps.json"
 rc="$(run "$W/f-rec" "$W/f")"
 RUN_ARGS=""
 if [ "$rc" != 0 ] && [ "$(count "$W/f" SKIP)" = 2 ] && [ "$(count "$W/f" PASS)" = 4 ] && grep -q 'named gap' "$W/f/ledger.tsv" \
-   && [ "$(wc -l <"$W/f/owed-gaps.txt" | tr -d ' ')" = 2 ] && grep -q 'is a gap NO entry names' "$W/f/ledger.tsv"; then
-  say PASS "(f) unrecorded cell -> 2 named SKIP rows (never PASS), and RED because no entry admits them"
+   && [ "$(wc -l <"$W/f/owed-gaps.txt" | tr -d ' ')" = 2 ] && grep -q 'owner rule 22' "$W/f/ledger.tsv"; then
+  say PASS "(f) unrecorded cell -> 2 named SKIP rows (never PASS), and RED: owner rule 22, no gap is admitted"
 else
   say FAIL "(f) unrecorded cell rc=$rc pass=$(count "$W/f" PASS) skip=$(count "$W/f" SKIP) gaps=$(wc -l <"$W/f/owed-gaps.txt" 2>/dev/null | tr -d ' ')"; tail -8 "$W/f.log"
 fi
 
-# (f2) the SAME two gaps, named with an owner and a rationale and counted -> GREEN, gap still a gap.
-# The rows stay SKIP and stay out of the owed set; what changed is that somebody signed for them.
+# (f2) the SAME two gaps, named with an owner and a rationale and counted -> still RED. Owner rule 22
+# (2026-10-14): named conformance gaps are zero, so signing for a gap admits nothing.
 cat >"$W/gaps-f.json" <<'EOF'
 {"gaps": [],
  "expected": 2,
@@ -179,8 +180,9 @@ EOF
 RUN_ARGS="--gaps $W/gaps-f.json"
 rc="$(run "$W/f-rec" "$W/f2")"
 RUN_ARGS=""
-if [ "$rc" = 0 ] && [ "$(count "$W/f2" SKIP)" = 2 ] && [ "$(count "$W/f2" PASS)" = 5 ] && grep -q 'each named by' "$W/f2/ledger.tsv"; then
-  say PASS "(f2) the same two gaps, named and counted -> GREEN, still SKIP, still out of the owed set"
+if [ "$rc" != 0 ] && [ "$(count "$W/f2" SKIP)" = 2 ] && grep -q '`accepted` names 1 entry: owner rule 22' "$W/f2/ledger.tsv" \
+   && grep -q '`expected` is 2: owner rule 22' "$W/f2/ledger.tsv"; then
+  say PASS "(f2) the same two gaps, named and counted -> RED: owner rule 22 admits no named gap"
 else
   say FAIL "(f2) named gaps rc=$rc pass=$(count "$W/f2" PASS) skip=$(count "$W/f2" SKIP)"; tail -8 "$W/f2.log"
 fi
@@ -199,7 +201,7 @@ EOF
 RUN_ARGS="--gaps $W/gaps-f3.json"
 rc="$(run "$W/f3-rec" "$W/f3")"
 RUN_ARGS=""
-if [ "$rc" != 0 ] && [ "$(count "$W/f3" SKIP)" = 4 ] && grep -q '4 gap(s) observed, 2 declared' "$W/f3/ledger.tsv"; then
+if [ "$rc" != 0 ] && [ "$(count "$W/f3" SKIP)" = 4 ] && grep -q '4 gap(s) observed, 2 declared' "$W/f3/ledger.tsv" && grep -q 'owner rule 22' "$W/f3/ledger.tsv"; then
   say PASS "(f3) a gap inside an entry that already names it, beyond the declared count -> RED on the count"
 else
   say FAIL "(f3) gap count rc=$rc skip=$(count "$W/f3" SKIP): $(awk -F'\t' '$1 ~ /named-gaps/{print $2" "$4}' "$W/f3/ledger.tsv")"; tail -8 "$W/f3.log"
@@ -249,20 +251,19 @@ GAP_OK='{"gaps":[{"id":"selftest-cohere-usage","owner":"the selftest","rule":"ty
   "accepted":[{"cells":"^llm\\|cohere\\|cohere\\|request\\|ok#response$","owner":"the selftest",
                "rationale":"the one row the planted gap above forgives; declared here so the forgiven row is inside the ceiling as well as named"}]}'
 
-# (i) a gap naming the one real violation -> that row is a named gap, the run is GREEN, and the
-#     reason and owner travel with it
+# (i) a gap naming the one real violation -> REFUSED at load, nothing judged: owner rule 22
+#     (2026-10-14) admits no named gap, however well it is written
 g="$(gapfile ok "$GAP_OK")"
 rc="$(run_gaps "$W/b-rec" "$W/i" "$W/b-rec/cells.json" "$g")"
-if [ "$rc" = 0 ] && [ "$(count "$W/i" FAIL)" = 0 ] && [ "$(count "$W/i" SKIP)" = 1 ] \
-   && grep -q 'selftest-cohere-usage (the selftest)' "$W/i/ledger.tsv" \
-   && grep -qx 'llm|cohere|cohere|request|ok#response' "$W/i/owed-gaps.txt"; then
-  say PASS "(i) a named gap on a real violation -> GREEN, the row is a gap (never a PASS), owner and reason carried"
+if [ "$rc" != 0 ] && grep -q 'REFUSED named gap.*owner rule 22' "$W/i.log" \
+   && [ "$(awk 'NF{n++} END{print n+0}' "$W/i/ledger.tsv")" = 0 ]; then
+  say PASS "(i) a well-formed named gap on a real violation -> REFUSED at load (owner rule 22), nothing judged"
 else
   say FAIL "(i) named gap rc=$rc fail=$(count "$W/i" FAIL) skip=$(count "$W/i" SKIP)"; tail -10 "$W/i.log"
 fi
 
-# (j) THE SAME GAP, plus a SECOND violation on the same row it does not name -> still FAIL. A gap
-#     forgives what it names and nothing else, which is the difference between a gap and a mute.
+# (j) THE SAME GAP, plus a SECOND violation on the same row it does not name -> REFUSED at load
+#     too: no list carrying a gap is loaded at all.
 cp -R "$W/b-rec" "$W/j-rec"
 python3 - "$W/j-rec/raw/llm__cohere__cohere__request__ok/body" <<'EOF'
 import json,sys
@@ -270,9 +271,9 @@ p=sys.argv[1]; d=json.load(open(p)); d["id"]=12345
 open(p,"w").write(json.dumps(d,separators=(",",":")))
 EOF
 rc="$(run_gaps "$W/j-rec" "$W/j" "$W/j-rec/cells.json" "$g")"
-if [ "$rc" != 0 ] && [ "$(count "$W/j" FAIL)" = 1 ] && grep -q '/id type' "$W/j/ledger.tsv" \
-   && ! grep -q 'input_tokens' "$W/j/ledger.tsv"; then
-  say PASS "(j) an UNNAMED violation on the same row -> still RED; only the named one is forgiven"
+if [ "$rc" != 0 ] && grep -q 'REFUSED named gap.*owner rule 22' "$W/j.log" \
+   && [ "$(awk 'NF{n++} END{print n+0}' "$W/j/ledger.tsv")" = 0 ]; then
+  say PASS "(j) the same gap over a second violation -> REFUSED at load (owner rule 22), nothing judged"
 else
   say FAIL "(j) partial gap rc=$rc fails=$(count "$W/j" FAIL): $(fail_rows "$W/j")"
 fi
@@ -297,9 +298,9 @@ GAP_GAPS_ONLY='{"gaps":[{"id":"selftest-cohere-usage-gapsonly","owner":"the self
   "accepted":[]}'
 g="$(gapfile gapsonly "$GAP_GAPS_ONLY")"
 rc="$(run_gaps "$W/b-rec" "$W/i2" "$W/b-rec/cells.json" "$g")"
-if [ "$rc" = 0 ] && [ "$(count "$W/i2" FAIL)" = 0 ] && [ "$(count "$W/i2" SKIP)" = 1 ] \
-   && grep -q 'each named by' "$W/i2/ledger.tsv"; then
-  say PASS "(i2) a gaps-named SKIP with no matching accepted entry -> GREEN, reconciled against gaps not accepted"
+if [ "$rc" != 0 ] && grep -q 'REFUSED named gap.*owner rule 22' "$W/i2.log" \
+   && [ "$(awk 'NF{n++} END{print n+0}' "$W/i2/ledger.tsv")" = 0 ]; then
+  say PASS "(i2) a gaps-only list -> REFUSED at load (owner rule 22), nothing judged"
 else
   say FAIL "(i2) gaps-only reconciliation rc=$rc fail=$(count "$W/i2" FAIL) skip=$(count "$W/i2" SKIP)"; tail -10 "$W/i2.log"
 fi
@@ -310,18 +311,17 @@ fi
 RUN_ARGS="--gaps $W/no-gaps.json"
 rc="$(run "$W/f-rec" "$W/j2")"
 RUN_ARGS=""
-if [ "$rc" != 0 ] && [ "$(count "$W/j2" SKIP)" = 2 ] && grep -q 'is a gap NO entry names' "$W/j2/ledger.tsv"; then
+if [ "$rc" != 0 ] && [ "$(count "$W/j2" SKIP)" = 2 ] && grep -q 'is a gap NO entry names' "$W/j2/ledger.tsv" && grep -q 'owner rule 22' "$W/j2/ledger.tsv"; then
   say PASS "(j2) an unrecorded-cell SKIP (neither gaps nor accepted names it) -> still RED"
 else
   say FAIL "(j2) unnamed SKIP rc=$rc skip=$(count "$W/j2" SKIP)"; tail -8 "$W/j2.log"
 fi
 
-# (k) the same gap against the UNMUTATED fixture: the row is judged and comes back clean, so the
-#     entry forgives nothing -> STALE, and stale is RED. This is what stops a fixed gap from sitting
-#     in the file as the place a future real failure would land unseen.
+# (k) the same gap against the UNMUTATED fixture, where it would be STALE -> REFUSED at load before
+#     staleness is reached (owner rule 22). Either way it is RED.
 rc="$(run_gaps "$FIX" "$W/k" "$FIX/cells.json" "$g")"
-if [ "$rc" != 0 ] && grep -q 'selftest-cohere-usage' "$W/k/stale-gaps.txt" && grep -q 'STALE NAMED GAPS' "$W/k.log"; then
-  say PASS "(k) a gap whose named row comes back clean -> RED as stale, before the verdict"
+if [ "$rc" != 0 ] && grep -q 'REFUSED named gap.*owner rule 22' "$W/k.log"; then
+  say PASS "(k) a gap whose named row would come back clean -> REFUSED at load (owner rule 22)"
 else
   say FAIL "(k) stale gap rc=$rc stale=$(cat "$W/k/stale-gaps.txt" 2>/dev/null)"; tail -8 "$W/k.log"
 fi
