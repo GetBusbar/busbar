@@ -63,8 +63,7 @@ pub const FIRST_PARTY_PUBLISHER: &str = "busbar";
 /// The plugin kinds this binary understands. ONE plugin subsystem: `kind` only selects which kind's
 /// table the door answers and which engine subsystem consumes it; discovery/trust/validation are
 /// shared. Each kind's manifest `abi_version` is that kind's one version (`supported_abi`, THE DESIGN
-/// §11.2). `plane` and `transport` images that have not moved to their door still ride the HOT-tier
-/// `#[repr(C)]` decls (`busbar_contract::abi::hot`), whose airlock is checked at load, apart.
+/// §11.2). Every kind, `plane` and `transport` included, loads only through its door.
 // One line, as it always was: the kind list is one statement, not seven.
 #[rustfmt::skip]
 pub const KNOWN_KINDS: &[&str] = &["store", "auth", "hook", "secret", "export", "plane", "transport"];

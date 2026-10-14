@@ -1283,10 +1283,6 @@ known_sites = [
   # `diagnostics/emit.rs::site` (the interned field set).
   #   The plane axis's installed row list: one slice of row references, made once at boot.
   "crates/busbar/src/root/linked.rs::register_planes",
-  #   The HOT-lane planes and the rows read off them, kept once at boot for the process's life.
-  "crates/busbar/src/root/linked.rs::plane_rows",
-  #   A HOT-lane plane's declaration words and tables, copied once per plane as its row is built.
-  "crates/busbar/src/root/linked.rs::hot_plane_row",
   #   The declared-diagnostics catalogue, installed once at boot.
   "crates/busbar/src/root/linked.rs::register_diagnostics",
   #   A door plane's registration words, folded once per key (bounded by MAX_DOOR_PLANES).

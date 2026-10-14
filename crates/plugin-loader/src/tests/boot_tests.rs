@@ -371,7 +371,7 @@ fn red_an_instance_that_will_not_bind_is_named() {
 /// into the build and the same plane dropped into `plugins/` (an admitted tarball whose manifest
 /// states its Statement) are discovered by `open_planes` as door candidates stating the same
 /// rendering, and `load_planes` binds each through the one load — the dropped one over its verified
-/// bytes. A dropped plane with no Statement stays on the HOT lane, never a door candidate.
+/// bytes. A dropped plane with no Statement is refused (`plane_conformance_tests`).
 #[test]
 fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     let path = example_cdylib("plane_door_plugin");
@@ -427,7 +427,6 @@ fn a_linked_and_a_dropped_plane_door_load_through_the_same_path() {
     )
     .unwrap();
     let bind = |set: crate::boot::PlaneSet| {
-        assert!(set.hot.is_empty(), "a door plane is never a HOT-lane plane");
         let stated: Vec<Vec<u8>> = set.doors.iter().map(|c| c.stated.clone()).collect();
         let bound = load_planes(
             &set.doors,

@@ -58,11 +58,9 @@
 //! | crossing | frequency | routed |
 //! |---|---|---|
 //! | `dlopen` (runs `.init_array`) | per load | yes |
-//! | `busbar_abi`, `busbar_plugin_kind` | per load | yes |
 //! | `dlclose` (runs `.fini_array`) | per unload | yes |
 //! | `busbar_plugin_door` (the memory-ABI entry, every kind, linked or dropped) | per load | yes |
 //! | a door table's `validate`, `open`, `refresh`, `retire`, `close`, `ready` | per load / reload / unload | yes |
-//! | a plane's `hydrate`, `start`, `claims`, `admission` | per load | yes |
 //! | a door table's request ops, `tick`, `drive`, `cancel` | **per request** | no — inline |
 //!
 //! Every routed crossing asserts, in debug builds, that it is on a permanent worker
@@ -227,8 +225,7 @@ fn acquire(pool: &'static Mutex<Pool>) -> Lease {
 ///
 /// The `catch_unwind` lives on the WORKER, not the caller: a panic that escaped the trampoline would
 /// unwind past the `done` send and hang the caller forever, so the guard is what makes the
-/// rendezvous total. This also preserves [`crate::ffi_guard`]'s existing contract exactly — it used
-/// to catch here itself — so no call site changes meaning.
+/// rendezvous total: a panic comes back as `Err`, never as an unwind on the caller.
 ///
 /// Neither `F` nor `R` is `Send`, deliberately: the closures capture raw plugin handles and the
 /// returns include raw pointers. Soundness comes from the caller blocking for the entire window (see

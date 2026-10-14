@@ -194,7 +194,3 @@ rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/test_support/export_axis.rs"
 item = "webhook"
 
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/plugin-loader/src/plane.rs"
-item = "openapi"

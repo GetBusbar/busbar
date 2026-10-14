@@ -16,9 +16,7 @@
 use std::sync::Arc;
 
 use super::linked::{linked_exports, Linked};
-use super::loader::{
-    boot::*, dispatch::LoadError, dispatch::ManifestFacts, DynPlane, PluginRegistry,
-};
+use super::loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::config_validate::deal::{Document, Seat};
@@ -489,21 +487,6 @@ pub fn refuse_unserved_inbound(
     refuse_inbound(&candidates, &select(&Uses::of(&doc), &candidates))
 }
 
-/// THE PLANES DROPPED INTO `dir`: every tarball the loader's three-phase scan admits under `policy`
-/// whose signed kind is `plane`, loaded over the HOT-tier ABI from its verified bytes, in the scan's
-/// (filename) order. A scan the loader refuses yields no plane here — the plugins preflight reads the
-/// same directory under the same policy later in boot and refuses it there with every problem named;
-/// a trusted plane that will not LOAD is a refusal here, as a linked plane's would be.
-pub fn dropped_planes(
-    dir: &std::path::Path,
-    policy: &crate::root::loader::sign::TrustPolicy,
-) -> Result<Vec<DynPlane>, String> {
-    let Ok(registry) = crate::root::loader::scan_and_validate(dir, policy) else {
-        return Ok(Vec::new());
-    };
-    registry.open_planes(&[]).map(|set| set.hot)
-}
-
 /// THE PLUGINS DROPPED INTO THE CONFIGURED `plugins.dir`, scanned ONCE before any axis is installed —
 /// so before the configuration is parsed, which needs those axes — and kept for the process, whose
 /// dropped-in planes and export modules are opened from it. Only the kernel-owned `plugins:` block is
@@ -587,13 +570,9 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
 
 /// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]) AND THE LINKED PLANE DOORS: every
 /// plane that states itself through a door is discovered here and bound by [`load_door_planes`] once
-/// the process's dispatcher is built; every HOT-lane plane (M6-HOT-PLANE) is opened here and
-/// returned for the plane axis. A trusted plane that will not state itself or LOAD refuses the boot,
-/// as a linked plane's would.
-pub fn dropped_planes_of(
-    linked: &Linked,
-    dropped: Option<&crate::root::loader::PluginRegistry>,
-) -> Vec<DynPlane> {
+/// the process's dispatcher is built. A trusted plane that will not state itself, or has no door,
+/// refuses the boot, as a linked plane's would.
+pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::PluginRegistry>) {
     let set = match dropped {
         Some(registry) => registry.open_planes(linked.plane_doors),
         None => crate::root::loader::PluginRegistry::empty().open_planes(linked.plane_doors),
@@ -603,10 +582,9 @@ pub fn dropped_planes_of(
         std::process::exit(2);
     });
     let _ = DOOR_CANDIDATES.set(set.doors);
-    set.hot
 }
 
-/// The door planes [`dropped_planes_of`] discovered, waiting for the dispatcher.
+/// The door planes [`discover_planes`] discovered, waiting for the dispatcher.
 pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
     std::sync::OnceLock::new();
 
@@ -618,7 +596,7 @@ pub type DoorPlane =
     crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>;
 
 /// THE DOOR PLANES' ONE LOAD, run once the process's dispatcher is built
-/// ([`crate::root::dispatch::boot`]): every plane [`dropped_planes_of`] discovered, linked and
+/// ([`crate::root::dispatch::boot`]): every plane [`discover_planes`] discovered, linked and
 /// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
 /// under the configured `plugins.logs`, each declaring its needs on the process's one connection
 /// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).

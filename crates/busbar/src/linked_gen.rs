@@ -40,8 +40,8 @@
 pub(crate) const NODE_UNIT: &str = "node";
 
 /// A registration axis: its manifest name, the `LINKED` field it fills, and the entry item a crate
-/// that registers on it exports. The plane axis is the one exception, built below (two items, joined),
-/// and its HOT lane (`hot-plane`: the entry's `#[repr(C)]` `PLANE_DECL`, referenced) beside it.
+/// that registers on it exports. The plane axis is the one exception, built below (two items,
+/// joined); a plane's door is its own axis ([`PLANE_DOOR_AXIS`]).
 pub(crate) const AXES: &[(&str, &str, &str)] = &[
     ("protocols", "protocols", "PROTOCOLS"),
     ("path-ingress", "path_ingress", "PATH_INGRESS"),
@@ -89,7 +89,7 @@ pub(crate) const CONNECTOR_DOOR_AXIS: &str = "connector-door";
 
 /// The plane door axis (#2, THE DESIGN §11.4): the row's entry exports its plane kind's memory-ABI
 /// `door`, and the root hands it to the loader beside every dropped-in plane door
-/// (`crate::root::boot::dropped_planes_of`), so a compiled-in plane is bound through the same table
+/// (`crate::root::boot::discover_planes`), so a compiled-in plane is bound through the same table
 /// as a dropped-in one. It needs no `plane` beside it: the door states the plane.
 pub(crate) const PLANE_DOOR_AXIS: &str = "plane-door";
 /// The export axis on the export kind's MEMORY ABI: each row's crate states its plugin `NAME`,
@@ -271,7 +271,6 @@ pub(crate) fn linked_source(
         for axis in &list {
             assert!(
                 axis == "plane"
-                    || axis == "hot-plane"
                     || axis == TRANSPORT_AXIS
                     || axis == DOOR_AXIS
                     || axis == CONNECTOR_DOOR_AXIS
@@ -350,11 +349,6 @@ pub(crate) fn linked_source(
          static LINKED: crate::root::linked::Linked = crate::root::linked::Linked {\n    \
          planes: &LINKED_PLANES,\n",
     );
-    out.push_str("    hot_planes: &[");
-    for e in on_axis("hot-plane") {
-        out.push_str(&format!("&{e}::PLANE_DECL, "));
-    }
-    out.push_str("],\n");
     out.push_str("    plane_doors: &[");
     for e in on_axis(PLANE_DOOR_AXIS) {
         out.push_str(&format!("{e}::door, "));

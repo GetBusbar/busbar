@@ -4,14 +4,12 @@
 //! THE PLUGIN LOADER: discovery, trust and the registry ([`registry`], [`sign`], [`tarball`]); the
 //! ONE loading path and the ONE dispatcher of the memory ABI ([`dispatch`]: `load_linked` /
 //! `load_dropped`), through which every store, secret, auth, hook and export plugin loads,
-//! compiled in or dropped in (`BUSBAR-1.6.0.md` THE DESIGN §11); and the HOT lane the planes that
-//! have not moved to their door still ride ([`plane`]). Every transport loads through its door.
+//! compiled in or dropped in (`BUSBAR-1.6.0.md` THE DESIGN §11). Every plane and every transport
+//! loads through its door too.
 //!
-//! No plugin of any kind loads through a JSON lane: the COLD/JSON lane is gone. What remains of
-//! its symbols here is the HOT lane's handshake (`abi_handshake`, `read_plugin_kind`), deleted with
-//! the HOT lane.
+//! No plugin of any kind loads through a JSON lane or the HOT `#[repr(C)]` decl lane: both are gone
+//! (row 84), with the handshake they shared (`busbar_abi`, `busbar_plugin_kind`).
 
-use busbar_contract::abi::cold::{symbol, PluginKindFn, TRANSPORT_VERSION};
 use libloading::Library;
 use std::path::Path;
 
@@ -20,7 +18,6 @@ pub mod auth_door;
 /// THE BOOT STAGES the loader owns: what config uses, Discover, Select and the one load
 /// (`BUSBAR-1.6.0.md` THE DESIGN, §3).
 pub mod boot;
-pub mod carrier;
 /// THE PUBLISHED CONFORMANCE SUITE (TODO ABI-b4): what every real plugin repo runs against the busbar
 /// commit it pins, linked and dropped in, through the one loader. Behind `conformance`: a plugin's
 /// dev-dependency turns it on; no busbar build ships it. This crate's own tests drive the shipped
@@ -52,7 +49,6 @@ mod host;
 pub mod https_conns;
 pub mod observe;
 pub mod open_once;
-pub mod plane;
 pub mod registry;
 /// THE SECRET AXIS over the one dispatcher: every admitted secret plugin, linked or dropped in.
 pub mod secret_calls;
@@ -105,12 +101,8 @@ impl LinkedPlugin {
     }
 }
 
-pub use carrier::{HotReply, ReplyStream, RequestHead, MAX_PLANE_REPLY_LEN};
 pub use fetch::{fetch_plugins, FetchOutcome, FetchSpec};
 pub use highwater::{HighWaterMarks, HIGH_WATER_FILE};
-pub use plane::{
-    link_plane, load_plane, load_plane_from_bytes, DynPlane, HotClaim, HotDeclaration, ServedPlane,
-};
 pub use registry::{
     inventory as inventory_tarballs, scan_and_validate, supported_abi, InventoryEntry, LinkedEntry,
     LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
@@ -196,7 +188,8 @@ pub fn intern_name(name: &str) -> &'static str {
 
 /// `dlopen` on a worker that never retires. Mapping an image RUNS ITS ELF `.init_array` — that is
 /// plugin code, on whatever thread called it, and it is as capable of arming the plugin's
-/// `pthread_key` TLS destructor as any ABI symbol. Routed for the same reason [`ffi_guard`] is.
+/// `pthread_key` TLS destructor as any ABI symbol, so it runs where every routed crossing runs
+/// (`ffi_thread`).
 pub(crate) fn dlopen_on_worker(path: &std::ffi::OsStr) -> Result<Library, String> {
     // SAFETY (unchanged from the direct call this replaces): loading an operator-placed library runs
     // its init code, which is the same trust as compiling it in. Callers apply the trust gate first.
@@ -237,166 +230,6 @@ thread_local! {
     /// the red state. `dlclose_on_worker` is called on the routing thread (only the drop moves to
     /// the worker), so a per-thread count sees exactly this caller's unloads and nobody else's.
     pub(crate) static UNLOADS_ON_WORKER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// Run an FFI call `f` across the plugin ABI boundary under `catch_unwind`, converting a panic that
-/// unwinds out of `f` into a fail-closed `Err` string. `op` names the crossing
-/// (`open`/`call`/`close`/`free`/`abi`/`kind`) for the diagnostic. Every host-side ABI call site
-/// routes through this so no crossing is unguarded.
-///
-/// WHAT IT CAN AND CANNOT CATCH — measured, not assumed (`loader_seam_tests`):
-///
-/// - An unwind raised by THIS process's Rust runtime — a compiled-in module, or host code on the
-///   far side of the fn pointer — is caught and becomes `Err`. The ABI fn pointers are
-///   `extern "C-unwind"`, so such an unwind is defined and reaches this frame.
-/// - An unwind raised by a DLOPENED plugin's own panic runtime is NOT. A plugin cdylib statically
-///   links its own copy of std, and std's `catch_unwind` recognises only exceptions its own copy
-///   threw: anything else is a foreign exception, and the runtime ABORTS the process ("Rust cannot
-///   catch foreign exceptions"). So for a dropped-in plugin, failing closed on a panic is the
-///   PLUGIN's obligation, discharged on the plugin side of the boundary — the SDK's dispatchers
-///   catch every panic in plugin code and answer `STATUS_PANIC`. A plugin not built with the SDK
-///   that lets a panic escape its exported fns takes the engine down with it, and nothing on this
-///   side of the seam can prevent that.
-fn ffi_guard<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).map_err(|_| {
-        format!("plugin '{path}' panicked across the ABI boundary in {op} (treated as failure)")
-    })
-}
-
-/// [`ffi_guard`], but the crossing runs on a worker thread that NEVER retires.
-///
-/// THE COST MODEL, which is why this is a separate function rather than the default. Confining a
-/// crossing costs a synchronous thread handoff — measured at ~41 us against ~0.9 us inline on a
-/// 2-vCPU VM. That is irrelevant for a crossing that happens once per LOAD and unacceptable for one
-/// that happens once per REQUEST, so the rare crossings are confined and the hot ones are not.
-///
-/// A crossing belongs here when it can plausibly be the FIRST thing to touch a plugin-side
-/// `thread_local!` with a destructor on the calling thread, because that is what arms the plugin's
-/// `pthread_key` and puts a destructor inside the image on that thread. See `ffi_thread` for the
-/// full mechanism and `where_the_plugin_arms_its_tls_key` for the measurement that decided the split.
-/// The library's `busbar_abi` entry, or the refusal that names a library without one.
-pub(crate) fn abi_symbol(
-    lib: &Library,
-    display: &str,
-) -> Result<busbar_contract::abi::cold::AbiFn, String> {
-    unsafe { lib.get::<busbar_contract::abi::cold::AbiFn>(symbol::ABI) }
-        .map(|f| *f)
-        .map_err(|_| format!("'{display}' is not a busbar plugin (no busbar_abi symbol)"))
-}
-
-/// THE PLUGIN-ABI HANDSHAKE, one home for every load path that still answers it: the JSON lane's
-/// residue, the upload vet and the HOT plane loader. Calls `busbar_abi()` under
-/// the ffi guard (it runs plugin code, so a panic fails the load closed) and refuses a plugin whose
-/// plugin-ABI version is not the engine's, answering the version it verified. `noun` is how the
-/// refusal names it (`plugin`, `plane`), so each path's text is unchanged byte for
-/// byte.
-pub(crate) fn abi_handshake(
-    abi: busbar_contract::abi::cold::AbiFn,
-    display: &str,
-    noun: &str,
-) -> Result<u32, String> {
-    let abi_version = ffi_guard_confined(display, "abi", || unsafe { abi() })?;
-    if abi_version != TRANSPORT_VERSION {
-        return Err(format!(
-            "{noun} '{display}' targets transport ABI v{abi_version}, engine speaks v{TRANSPORT_VERSION}"
-        ));
-    }
-    Ok(abi_version)
-}
-
-fn ffi_guard_confined<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<R, String> {
-    ffi_thread::on_plugin_thread(|| {
-        ffi_thread::debug_assert_permanent(op);
-        f()
-    })
-    .map_err(|_| {
-        format!("plugin '{path}' panicked across the ABI boundary in {op} (treated as failure)")
-    })
-}
-
-/// Read the kind a mapped library states into an owned `String`. A memory-ABI image states it in
-/// its door's head ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`],
-/// [`dispatch::load::kind_of_door`]): the SDK's `busbar_plugin_kind` answers for no door it
-/// registered (a null kind). A plane image registered through its decl answers
-/// `busbar_plugin_kind()`. Any other library with no door is a 1.5.5-era JSON-contract plugin: its
-/// kind symbol only CLASSIFIES it, and it is REFUSED here, naming the rebuild (no legacy loading,
-/// THE DESIGN §11.8, ruling C21/ABI-o1), so no upload vet, inventory or kind gate takes it as valid.
-fn read_plugin_kind(lib: &Library, display: &str) -> Result<String, String> {
-    // SAFETY: `DOOR_SYMBOL` is typed `DoorFn` by the mechanism; the symbol is copied out as a plain
-    // fn pointer and `lib` outlives every use of it here.
-    let door = unsafe {
-        lib.get::<busbar_contract::abi::mechanism::door::DoorFn>(
-            busbar_contract::abi::mechanism::DOOR_SYMBOL,
-        )
-        .map(|s| *s)
-    };
-    if let Ok(door) = door {
-        // Guarded: the door function is plugin code; a panic fails the read CLOSED.
-        let kind = ffi_guard_confined(display, "door", || dispatch::load::kind_of_door(door))?
-            .map_err(|e| format!("plugin '{display}' states no kind the host has: {e}"))?;
-        return Ok(kind.word().to_string());
-    }
-    let f = unsafe { lib.get::<PluginKindFn>(symbol::PLUGIN_KIND) }.map_err(|_| {
-        format!("'{display}' is not a busbar plugin (no busbar_plugin_kind symbol)")
-    })?;
-    let kind = kind_from_fn(*f, display)?;
-    use busbar_contract::abi::mechanism::kind::{PLANE, TRANSPORT};
-    if kind != PLANE && kind != TRANSPORT {
-        return Err(format!(
-            "plugin '{display}' states kind '{kind}' and exports no busbar_plugin_door — a plugin \
-             built against the 1.5.5 JSON contract; {}",
-            dispatch::load::REBUILD
-        ));
-    }
-    Ok(kind)
-}
-
-/// Call a plugin's `busbar_plugin_kind()` — looked up or linked — and read the kind it names.
-fn kind_from_fn(f: PluginKindFn, display: &str) -> Result<String, String> {
-    // Guarded: `busbar_plugin_kind()` runs plugin code; a panic fails the load CLOSED, not an abort.
-    let ptr = ffi_guard_confined(display, "kind", || unsafe { f() })?;
-    // SAFETY: `ptr` came from the plugin's `busbar_plugin_kind()`, whose contract is a 'static
-    // string; `kind_from_ptr` reads at most `MAX_PLUGIN_KIND_LEN + 1` bytes of it.
-    unsafe { kind_from_ptr(ptr, display) }
-}
-
-/// Hard cap on the `busbar_plugin_kind()` string, NUL excluded. The kind is the ONE plugin-supplied
-/// buffer in this ABI that crosses without a length, so the loader cannot cap a length the way it
-/// caps a response (`MAX_PLUGIN_RESPONSE_LEN`), an open error, a plane vocabulary string or a log
-/// record — it caps the SCAN instead. Every kind is a short closed-set identifier (`store`,
-/// `secret`, ...); a pointer with no NUL inside this many bytes is not a kind, and is refused rather
-/// than walked until some zero byte or an unmapped page turns up (the hand-written
-/// `kind::EXPORT.as_ptr()` trap `busbar_contract::abi::cold` warns about).
-const MAX_PLUGIN_KIND_LEN: usize = 32;
-
-/// Read a plugin kind string from `ptr`, scanning at most [`MAX_PLUGIN_KIND_LEN`] + 1 bytes for its
-/// NUL. Refuses a null pointer, a string with no NUL inside the cap, and non-UTF-8 bytes.
-///
-/// # Safety
-/// `ptr`, when non-null, must address readable bytes up to its NUL or up to
-/// `MAX_PLUGIN_KIND_LEN + 1` bytes, whichever comes first.
-unsafe fn kind_from_ptr(ptr: *const u8, display: &str) -> Result<String, String> {
-    if ptr.is_null() {
-        return Err(format!("plugin '{display}' returned a null kind string"));
-    }
-    let mut len = 0;
-    // SAFETY: the caller's contract covers every byte up to the NUL or the cap; the loop stops at
-    // the first of the two, so it never reads past either.
-    while unsafe { *ptr.add(len) } != 0 {
-        len += 1;
-        if len > MAX_PLUGIN_KIND_LEN {
-            return Err(format!(
-                "plugin '{display}' kind string has no NUL terminator within \
-                 {MAX_PLUGIN_KIND_LEN} bytes — refusing to load (a kind is a short \
-                 NUL-terminated identifier)"
-            ));
-        }
-    }
-    // SAFETY: `len` bytes from `ptr` were just read one by one above.
-    let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
-    std::str::from_utf8(bytes)
-        .map(str::to_string)
-        .map_err(|_| format!("plugin '{display}' kind string is not valid UTF-8"))
 }
 
 /// The platform-native filename for a store plugin built from `crate_name` (e.g. `store_sqlite_plugin`
@@ -473,12 +306,6 @@ pub fn list_plugin_files(dir: &Path) -> Vec<String> {
 #[path = "tests/lib_tests.rs"]
 mod tests;
 
-/// The loader's own crossings pinned against in-test fakes: the bounded kind read, the secret
-/// deadline on the wire, and what the panic guard can and cannot catch.
-#[cfg(test)]
-#[path = "tests/loader_seam_tests.rs"]
-mod loader_seam_tests;
-
 /// DECISIONS #11's real test: ONE crate built both ways must be observationally identical. Declared
 /// at the crate root rather than under `export` because it is not a test OF the export seam — it is
 /// a test of the equivalence the two build shapes are supposed to have, and the export kind is
@@ -530,6 +357,12 @@ mod dispatch_tests;
 #[cfg(test)]
 #[path = "../tests/fixtures/plane_door_plugin.rs"]
 mod plane_door_plugin;
+
+/// `kind: plane`: the plane door both ways, the plane kind's one version, and the refusal of a
+/// plane with no door.
+#[cfg(test)]
+#[path = "tests/plane_conformance_tests.rs"]
+mod plane_conformance_tests;
 
 /// The secret and export kind's answer checks, through the dispatcher's `Kind` adapter.
 #[cfg(test)]
