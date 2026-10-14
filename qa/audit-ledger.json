@@ -2432,14 +2432,35 @@
    "paths": [
     "crates/busbar-secret-file/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "6c2f6846c5cb6369f32b372342e23df4bf599f61fc1ae33613ee4064118f0dd0",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The file secret source's declares document states only the superseded contract range, and it names the secret kind's one version, two, at the shipping host and at the plugin's own pinned host alike. The loader no longer reads the range at admission, and the pinned host's pack check admits it. The source's Statement names no transport need and the plugin raises no metric or diagnostic, so nothing is missing. Read fully.",
+   "auditor": "opus-lane-q128-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-lane-q128-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "6c2f6846c5cb6369f32b372342e23df4bf599f61fc1ae33613ee4064118f0dd0",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The file secret source's declares document states only the superseded contract range, and it names the secret kind's one version, two, at the shipping host and at the plugin's own pinned host alike. The loader no longer reads the range at admission, and the pinned host's pack check admits it. The source's Statement names no transport need and the plugin raises no metric or diagnostic, so nothing is missing. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-store-memory/declares.json",
