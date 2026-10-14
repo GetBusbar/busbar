@@ -410,6 +410,11 @@ where
                     if let Some(reason) = end.stream_fault {
                         this.record_transient(reason);
                     }
+                    // THE USAGE-TAP FAULT the relay's tap returned as data (row 155): the kernel
+                    // counts it, under the caller's dialect the tap read the body as.
+                    if let Some(fault) = end.tap_fault {
+                        usage_tap_fault(this.relay.ingress(), fault.reason());
+                    }
                     // The stream's drops (design F3 "Drops"), already warned once each: one audit row
                     // per wire path, the twin of the buffered answer's rows.
                     if let (Some(host), Some(rt)) = (this.host.as_ref(), this.rt.as_ref()) {
