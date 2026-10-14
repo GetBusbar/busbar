@@ -50,7 +50,7 @@ use busbar_contract::conn::InstanceId;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
 use super::services::{HostServices, Served, ServiceStore};
-use super::ticket::{decode, encode, recycled_generation, WakeRoute, MAX_INDEX, MAX_WORKERS};
+use super::ticket::{decode, encode, WakeRoute, MAX_INDEX, MAX_WORKERS};
 use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
 /// The longest a crossing may take before the watchdog faults it, per class. A crossing never
@@ -174,6 +174,21 @@ pub(crate) struct Env {
     pub(crate) io: std::sync::OnceLock<Arc<dyn busbar_contract::io_host::IoHost>>,
     /// The tickets of ops driven inline on the calling thread (a carrier's connection sides).
     pub(crate) inline: Arc<super::inline::InlineTickets>,
+    /// The key every worker's ticket generations are permuted under (#74), drawn at the
+    /// dispatcher's boot: no worker exists without it.
+    pub(crate) ticket_key: super::handle::TicketKey,
+    /// The latch a forged ticket with no supplier counts against: the process's, but in a test
+    /// that names its own ([`Dispatcher::judge_against`]).
+    latch: std::sync::OnceLock<&'static super::handle::Latch>,
+}
+
+impl Env {
+    fn latch(&self) -> &'static super::handle::Latch {
+        self.latch
+            .get()
+            .copied()
+            .unwrap_or_else(super::handle::process_latch)
+    }
 }
 
 /// One op's completion.
@@ -586,7 +601,7 @@ enum Action {
 pub(crate) struct Entry {
     /// The slot's mint counter (#74): how many times it has been handed out, from 1.
     pub(crate) count: u32,
-    /// The ticket generation of mint `count`: `handle::ticket_generation(worker, idx, count)`.
+    /// The ticket generation of mint `count`: `handle::ticket_generation(key, worker, idx, count)`.
     pub(crate) generation: u32,
     live: bool,
     latched: bool,
@@ -618,6 +633,10 @@ pub(crate) struct WorkerState {
     pub(crate) entries: Vec<Entry>,
     free: Vec<u32>,
     runnable: VecDeque<u32>,
+    /// The supplier of each forged ticket generation [`Worker::apply`] found, judged by
+    /// [`Worker::judge_forgeries`] once the lock is let go (#74): a quarantine takes the
+    /// instance's own locks and never runs under the worker's.
+    forged: Vec<Option<&'static super::ticket::InstanceWake>>,
 }
 
 pub(crate) enum Msg {
@@ -626,7 +645,7 @@ pub(crate) enum Msg {
         meta: Meta,
         job: Box<dyn Job>,
     },
-    /// A wake for `.0`, from inside the crossing of the instance whose handle `.1` is, if any.
+    /// A wake for `.0`, supplied by the instance whose handle `.1` is (`None`: the host's own).
     Wake(Ticket, Option<&'static super::ticket::InstanceWake>),
     DropClient(Ticket),
     Recycle(Ticket),
@@ -644,6 +663,8 @@ pub(crate) struct CrossingRecord {
 /// index.
 pub(crate) struct Worker {
     pub(crate) index: u32,
+    /// The dispatcher's ticket key ([`Env::ticket_key`]).
+    key: super::handle::TicketKey,
     tx: Sender<Msg>,
     pub(crate) state: Mutex<WorkerState>,
     pub(crate) crossing: Mutex<Option<CrossingRecord>>,
@@ -674,7 +695,7 @@ pub(crate) struct Pool {
 
 impl WakeRoute for Pool {
     /// Route a wake to the worker its slot names. Never blocks on the plugin: a channel push.
-    fn wake(&self, t: Ticket) {
+    fn wake(&self, t: Ticket, supplier: Option<&'static super::ticket::InstanceWake>) {
         if super::inline::is_inline(t) {
             self.env.inline.wake(t);
             return;
@@ -682,10 +703,9 @@ impl WakeRoute for Pool {
         let (w, _) = decode(t.slot);
         match self.slots.get(w as usize) {
             Some(slot) => {
-                // The instance crossing on this thread, if any: the one a forged generation in
-                // `t` quarantines when the worker judges it (#74).
-                let culprit = super::plugin::crossing_wake();
-                let _ = slot.get().tx.send(Msg::Wake(t, culprit));
+                // The supplier the caller carried, never the thread's crossing (#74): a wake fires
+                // on whatever thread completes it, inside whichever instance's crossing that is.
+                let _ = slot.get().tx.send(Msg::Wake(t, supplier));
             }
             None => {
                 self.env.stats.stale_wakes.fetch_add(1, Ordering::Relaxed);
@@ -720,25 +740,42 @@ impl Pool {
 }
 
 impl Worker {
-    /// A fresh incarnation at `index`, its slab's mint counters `counts` (every slot free).
-    pub(crate) fn new(index: u32, counts: Vec<u32>) -> (Arc<Self>, Receiver<Msg>) {
+    /// A fresh incarnation at `index`, its slab's next mint counters `counts`: every slot free
+    /// but a RETIRED one (`None`, [`next_count`]), which is never handed out again.
+    pub(crate) fn new(
+        index: u32,
+        counts: Vec<Option<u32>>,
+        key: super::handle::TicketKey,
+    ) -> (Arc<Self>, Receiver<Msg>) {
         let (tx, rx) = channel();
-        let n = counts.len() as u32;
+        let free = counts
+            .iter()
+            .zip(0u32..)
+            .filter_map(|(c, idx)| c.map(|_| idx))
+            .rev()
+            .collect();
         let state = WorkerState {
             entries: counts
                 .into_iter()
                 .zip(0u32..)
-                .map(|(count, idx)| Entry {
-                    count,
-                    generation: super::handle::ticket_generation(index, idx, count),
-                    ..Entry::default()
+                .map(|(count, idx)| match count {
+                    Some(count) => Entry {
+                        count,
+                        generation: super::handle::ticket_generation(key, index, idx, count),
+                        ..Entry::default()
+                    },
+                    None => Entry {
+                        count: u32::MAX,
+                        ..Entry::default()
+                    },
                 })
                 .collect(),
-            free: (0..n).rev().collect(),
+            free,
             ..WorkerState::default()
         };
         let w = Arc::new(Self {
             index,
+            key,
             tx,
             state: Mutex::new(state),
             crossing: Mutex::new(None),
@@ -768,7 +805,7 @@ impl Worker {
                 let idx = st.entries.len() as u32;
                 st.entries.push(Entry {
                     count: 1,
-                    generation: super::handle::ticket_generation(self.index, idx, 1),
+                    generation: super::handle::ticket_generation(self.key, self.index, idx, 1),
                     ..Entry::default()
                 });
                 st.entries.len() as u32 - 1
@@ -787,13 +824,13 @@ impl Worker {
 
     /// Whether `t` is a ticket this worker's slab ever handed out: its slot exists and its generation
     /// is the image of a count the slot has reached (`NONE`, generation 0, is a stale wake by rule).
-    fn ever_minted(st: &WorkerState, index: u32, t: Ticket) -> bool {
+    fn ever_minted(&self, st: &WorkerState, t: Ticket) -> bool {
         if t.generation == 0 {
             return true;
         }
         let (_, idx) = decode(t.slot);
         st.entries.get(idx as usize).is_some_and(|e| {
-            let c = super::handle::ticket_count(index, idx, t.generation);
+            let c = super::handle::ticket_count(self.key, self.index, idx, t.generation);
             c >= 1 && c <= e.count
         })
     }
@@ -847,14 +884,14 @@ impl Worker {
                 // A stale or foreign ticket: `meta` drops and settles FAULT.
                 _ => drop(meta),
             },
-            Msg::Wake(t, culprit) => match self.entry(st, t) {
+            Msg::Wake(t, supplier) => match self.entry(st, t) {
                 None => {
                     env.stats.stale_wakes.fetch_add(1, Ordering::Relaxed);
                     // A generation this slot really minted is a late wake (H2: dropped, never an
                     // error). One it never minted is a forgery (#74): the generation is a keyed
                     // permutation of the slot's counter, so its inverse names the mint it would be.
-                    if !Self::ever_minted(st, self.index, t) {
-                        super::handle::forged_ticket(culprit);
+                    if !self.ever_minted(st, t) {
+                        st.forged.push(supplier);
                     }
                 }
                 Some((idx, e)) => {
@@ -910,8 +947,11 @@ impl Worker {
         for id in e.conns.drain(..) {
             super::conn_services::forget(id, ticket);
         }
-        e.count = recycled_generation(e.count);
-        e.generation = super::handle::ticket_generation(self.index, idx, e.count);
+        let next = next_count(e.count);
+        if let Some(count) = next {
+            e.count = count;
+            e.generation = super::handle::ticket_generation(self.key, self.index, idx, count);
+        }
         e.live = false;
         e.latched = false;
         e.client_dropped = false;
@@ -919,7 +959,29 @@ impl Worker {
         e.short_slot = None;
         e.next = None;
         e.driver = None;
-        st.free.push(idx);
+        // A slot whose counter is spent is RETIRED: never handed out again, so no generation of
+        // it is ever re-minted; the next mint takes a fresh slot.
+        if next.is_some() {
+            st.free.push(idx);
+        }
+    }
+
+    /// Judge the forged ticket generations [`Worker::apply`] found, with the worker's lock let go
+    /// (#74): each supplier quarantined, a wake with none counted against the process's latch.
+    fn judge_forgeries<'a>(
+        &'a self,
+        mut st: MutexGuard<'a, WorkerState>,
+        env: &Env,
+    ) -> MutexGuard<'a, WorkerState> {
+        if st.forged.is_empty() {
+            return st;
+        }
+        let forged = std::mem::take(&mut st.forged);
+        drop(st);
+        for supplier in forged {
+            super::handle::forged_ticket(supplier, env.latch());
+        }
+        self.lock()
     }
 
     /// The op on `idx` is over: answer it, give back what it held, start the next.
@@ -1276,6 +1338,13 @@ impl Worker {
     }
 }
 
+/// A slot's mint counter after `count`; `None` once it is spent (#74): the generation is a
+/// permutation of the counter, so a counter that wrapped would re-mint a generation the slot
+/// already handed out. A spent slot is RETIRED instead, never handed out again.
+pub(crate) fn next_count(count: u32) -> Option<u32> {
+    count.checked_add(1)
+}
+
 /// THE WORKER LOOP: messages, then timers, then one runnable action; sleep until the next timer
 /// or message.
 pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
@@ -1296,6 +1365,7 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
         while let Ok(m) = rx.try_recv() {
             stop |= !w.apply(&mut st, m, &env);
         }
+        st = w.judge_forgeries(st, &env);
         if stop {
             st.dead = true;
             let gone = Worker::fault_all(&mut st);
@@ -1323,6 +1393,7 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
                     drop(gone);
                     return;
                 }
+                st = w.judge_forgeries(st, &env);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
@@ -1441,8 +1512,8 @@ impl Dispatcher {
     ///
     /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
     pub fn try_new(config: DispatchConfig) -> Result<Self, super::LoadError> {
-        super::handle::arm()?;
-        Ok(Self::build(config, None))
+        let key = super::handle::ticket_key()?;
+        Ok(Self::build(config, None, key))
     }
 
     /// The connection table's wake: its wake number ([`super::conn_services::conn_ticket`]) routed to
@@ -1452,7 +1523,8 @@ impl Dispatcher {
         let pool = Arc::downgrade(&self.pool);
         Arc::new(move |n| {
             if let Some(pool) = pool.upgrade() {
-                pool.wake(super::conn_services::ticket_of(n));
+                // The connector's wake: the host's own, blamed on no instance (#74).
+                pool.wake(super::conn_services::ticket_of(n), None);
             }
         })
     }
@@ -1489,11 +1561,15 @@ impl Dispatcher {
         config: DispatchConfig,
         provider: Arc<dyn HostServices>,
     ) -> Result<Self, super::LoadError> {
-        super::handle::arm()?;
-        Ok(Self::build(config, Some(provider)))
+        let key = super::handle::ticket_key()?;
+        Ok(Self::build(config, Some(provider), key))
     }
 
-    fn build(config: DispatchConfig, provider: Option<Arc<dyn HostServices>>) -> Self {
+    fn build(
+        config: DispatchConfig,
+        provider: Option<Arc<dyn HostServices>>,
+        ticket_key: super::handle::TicketKey,
+    ) -> Self {
         // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
         let n = config.workers.clamp(1, MAX_WORKERS - 1);
         let env = Arc::new(Env {
@@ -1504,11 +1580,13 @@ impl Dispatcher {
             runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
             inline: Arc::default(),
+            ticket_key,
+            latch: std::sync::OnceLock::new(),
         });
         let mut started = Vec::new();
         let slots = (0..n)
             .map(|i| {
-                let (w, rx) = Worker::new(i, Vec::new());
+                let (w, rx) = Worker::new(i, Vec::new(), ticket_key);
                 started.push((w.clone(), rx));
                 WorkerSlot {
                     current: RwLock::new(w),
@@ -1599,6 +1677,44 @@ impl Dispatcher {
     #[cfg(test)]
     pub(crate) fn service_store(&self) -> Arc<ServiceStore> {
         Arc::clone(&self.pool.env.services)
+    }
+
+    /// TEST ONLY: a forged ticket with no supplier counts against `latch`, not the process's.
+    #[cfg(test)]
+    pub(crate) fn judge_against(&self, latch: &'static super::handle::Latch) {
+        assert!(
+            self.pool.env.latch.set(latch).is_ok(),
+            "one latch per dispatcher"
+        );
+    }
+
+    /// TEST ONLY: live ticket `t`'s slot as if handed out `count` times; its ticket at that count.
+    #[cfg(test)]
+    pub(crate) fn seed_count(&self, t: Ticket, count: u32) -> Ticket {
+        let (wi, idx) = decode(t.slot);
+        let w = self.worker(wi).expect("the ticket's worker");
+        let mut st = w.lock();
+        let e = &mut st.entries[idx as usize];
+        assert!(e.live, "a live ticket");
+        e.count = count;
+        e.generation = super::handle::ticket_generation(w.key, wi, idx, count);
+        w.ticket(idx, e.generation)
+    }
+
+    /// TEST ONLY: `t`'s slot as `(live, free, count)` (test witness of a recycle and a retirement).
+    #[cfg(test)]
+    pub(crate) fn slot_state(&self, t: Ticket) -> (bool, bool, u32) {
+        let (wi, idx) = decode(t.slot);
+        let w = self.worker(wi).expect("the ticket's worker");
+        let st = w.lock();
+        let e = &st.entries[idx as usize];
+        (e.live, st.free.contains(&idx), e.count)
+    }
+
+    /// TEST ONLY: the dispatcher's ticket key.
+    #[cfg(test)]
+    pub(crate) fn ticket_key(&self) -> super::handle::TicketKey {
+        self.pool.env.ticket_key
     }
 
     /// Whether an op on `t` is pending (test witness: it has crossed and answered PENDING).

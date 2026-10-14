@@ -19,7 +19,7 @@
 use std::ffi::c_void;
 use std::mem::size_of;
 use std::panic::{catch_unwind, AssertUnwindSafe};
-use std::sync::{Arc, Weak};
+use std::sync::Arc;
 use std::task::{Poll, Wake, Waker};
 
 use busbar_contract::abi::host::io::{
@@ -31,7 +31,7 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 
-use super::ticket::WakeRoute;
+use super::ticket::Waking;
 
 /// The table every instance is handed.
 pub static IO_SLOTS: IoSlots = IoSlots {
@@ -102,18 +102,24 @@ impl Answer {
 /// The calling instance as the host knows it: its identity, its route, and the I/O it is served.
 struct Caller {
     owner: u64,
-    route: Weak<dyn WakeRoute>,
+    /// The route, and the instance as the supplier of every ticket it hands the I/O (#74).
+    waking: Waking,
     io: Arc<dyn IoHost>,
 }
 
 impl Caller {
     /// The waker of `ticket`'s op: an inline ticket's task, or the dispatcher's route.
     fn waker(&self, ticket: Ticket) -> Waker {
-        if let Some(w) = self.route.upgrade().and_then(|r| r.inline_waker(ticket)) {
+        if let Some(w) = self
+            .waking
+            .route
+            .upgrade()
+            .and_then(|r| r.inline_waker(ticket))
+        {
             return w;
         }
         Waker::from(Arc::new(Routed {
-            route: self.route.clone(),
+            waking: self.waking.clone(),
             ticket,
         }))
     }
@@ -121,25 +127,22 @@ impl Caller {
 
 /// A wake through the dispatcher's route, as the host's own `wake` makes it.
 struct Routed {
-    route: Weak<dyn WakeRoute>,
+    waking: Waking,
     ticket: Ticket,
 }
 
 impl Wake for Routed {
     fn wake(self: Arc<Self>) {
-        if let Some(r) = self.route.upgrade() {
-            r.wake(self.ticket);
-        }
+        self.waking.wake(self.ticket);
     }
 }
 
 fn caller(ctx: HostCtx) -> Option<Caller> {
-    let wake = super::handle::resolve(ctx)?;
-    let route = wake.route.get()?.clone();
-    let io = route.upgrade()?.io()?;
+    let waking = Waking::of(super::handle::resolve(ctx)?)?;
+    let io = waking.route.upgrade()?.io()?;
     Some(Caller {
         owner: ctx.handle,
-        route,
+        waking,
         io,
     })
 }

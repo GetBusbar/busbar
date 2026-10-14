@@ -1166,24 +1166,22 @@ fn auth_request(
 /// A waker that wakes `ticket` on the instance `ctx` names: a request waiting on its auth call is
 /// read again when the call answers.
 fn ticket_waker(ctx: HostCtx, ticket: Ticket) -> Option<std::task::Waker> {
+    /// The route, and the instance `ctx` named as the ticket's supplier (#74).
     struct TicketWaker {
-        route: std::sync::Weak<dyn super::ticket::WakeRoute>,
+        waking: super::ticket::Waking,
         ticket: Ticket,
     }
     impl std::task::Wake for TicketWaker {
         fn wake(self: Arc<Self>) {
-            if let Some(route) = self.route.upgrade() {
-                route.wake(self.ticket);
-            }
+            self.waking.wake(self.ticket);
         }
     }
     if ticket.is_none() {
         return None;
     }
-    let wake = super::handle::resolve(ctx)?;
-    let route = wake.route.get()?.clone();
+    let waking = super::ticket::Waking::of(super::handle::resolve(ctx)?)?;
     Some(std::task::Waker::from(Arc::new(TicketWaker {
-        route,
+        waking,
         ticket,
     })))
 }

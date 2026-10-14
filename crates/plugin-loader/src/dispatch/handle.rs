@@ -87,8 +87,9 @@ impl Latch {
         if n >= LATCH_AT && !self.tripped.swap(true, Ordering::AcqRel) {
             tracing::error!(
                 forgeries = n,
-                "plugins handed the host {n} contexts it did not mint from outside any crossing; \
-                 every host call made outside a crossing is refused for the rest of the process"
+                "plugins handed the host {n} contexts or tickets it did not mint with no instance \
+                 to blame; every host call made outside a crossing is refused for the rest of the \
+                 process"
             );
         }
     }
@@ -297,15 +298,22 @@ fn count_forgery(latch: &Latch, crossing: Option<&'static InstanceWake>) {
     }
 }
 
-/// A ticket generation the host never minted (#74, the ticket half): counted; the instance that
-/// woke it from inside its crossing, if any, quarantined; with none to blame, counted against the
-/// process's latch.
-pub(crate) fn forged_ticket(culprit: Option<&'static InstanceWake>) {
+/// A ticket generation the host never minted (#74, the ticket half), judged against `latch`:
+/// counted; its SUPPLIER (the instance whose context handed the host the ticket, carried with the
+/// wake, never read off the thread it fires on) quarantined; a wake with no supplier (the host's
+/// own) counted against `latch`.
+pub(crate) fn forged_ticket(supplier: Option<&'static InstanceWake>, latch: &Latch) {
     FORGED.fetch_add(1, Ordering::Relaxed);
-    match culprit {
+    latch.forged.fetch_add(1, Ordering::AcqRel);
+    match supplier {
         Some(wake) => super::plugin::quarantine_entry(wake),
-        None => LATCH.count(),
+        None => latch.count(),
     }
+}
+
+/// The process's latch, which every dispatcher judges against but in a test that names its own.
+pub(crate) fn process_latch() -> &'static Latch {
+    &LATCH
 }
 
 // ── THE TICKET GENERATION: a keyed permutation of the slot's counter ───────────────────────────
@@ -350,30 +358,38 @@ fn nonzero_permutation(
     y
 }
 
-/// The key tickets are permuted under: the handle key. Before it can be drawn no plugin binds (the
-/// loader refuses: `LoadError::Entropy`), so no ticket a plugin could see is ever minted under the
-/// zero key this falls to.
-fn ticket_key() -> (u64, u64) {
-    drawn_key().unwrap_or((0, 0))
+/// The key tickets are permuted under: the handle key, held by the dispatcher that drew it. Only
+/// [`ticket_key`] makes one, so no ticket is ever minted under a key that was not drawn.
+#[derive(Clone, Copy)]
+pub(crate) struct TicketKey((u64, u64));
+
+/// THE DISPATCHER'S BOOT: the ticket key, drawn now ([`arm`]'s draw). A failure is the boot's
+/// refusal; there is no fallback key.
+///
+/// # Errors
+///
+/// [`LoadError::Entropy`] when the OS random source cannot answer.
+pub(crate) fn ticket_key() -> Result<TicketKey, LoadError> {
+    key().map(TicketKey)
 }
 
 /// THE GENERATION of worker `worker`'s slot `idx` at its `count`-th mint (`count` >= 1):
 /// `PRP_k(count)`, a bijection of the nonzero 32-bit values for each slot, so uniqueness per slot is
 /// exact (as the bare counter it replaces) and no generation tells a plugin the next.
-pub(crate) fn ticket_generation(worker: u32, idx: u32, count: u32) -> u32 {
+pub(crate) fn ticket_generation(key: TicketKey, worker: u32, idx: u32, count: u32) -> u32 {
     let tweak = (u64::from(worker), u64::from(idx));
-    nonzero_permutation(ticket_key(), tweak, 16, u64::from(count), false) as u32
+    nonzero_permutation(key.0, tweak, 16, u64::from(count), false) as u32
 }
 
 /// The count `generation` is the image of, for worker `worker`'s slot `idx`: the inverse of
 /// [`ticket_generation`]. A generation the slot minted maps to a count it has reached; one it never
 /// minted maps, but for a 1-in-2^32 chance, past it.
-pub(crate) fn ticket_count(worker: u32, idx: u32, generation: u32) -> u32 {
+pub(crate) fn ticket_count(key: TicketKey, worker: u32, idx: u32, generation: u32) -> u32 {
     if generation == 0 {
         return 0;
     }
     let tweak = (u64::from(worker), u64::from(idx));
-    nonzero_permutation(ticket_key(), tweak, 16, u64::from(generation), true) as u32
+    nonzero_permutation(key.0, tweak, 16, u64::from(generation), true) as u32
 }
 
 /// Whether the process's off-crossing latch has tripped ([`LATCH_AT`]).

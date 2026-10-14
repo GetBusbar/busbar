@@ -166,14 +166,20 @@ fn the_ticket_permutation_is_a_bijection_of_the_nonzero_values() {
     }
 }
 
+/// The dispatcher's ticket key, as a dispatcher draws it at boot.
+fn tkey() -> TicketKey {
+    ticket_key().expect("the OS random source answers")
+}
+
 /// UNPREDICTABLE: consecutive mints of one slot do not show their counter (no run of +1 steps, no
 /// constant stride), while the inverse names each count exactly.
 #[test]
 fn consecutive_ticket_generations_hide_their_counter() {
-    let gens: Vec<u32> = (1..=64).map(|c| ticket_generation(0, 0, c)).collect();
+    let k = tkey();
+    let gens: Vec<u32> = (1..=64).map(|c| ticket_generation(k, 0, 0, c)).collect();
     for (c, g) in (1..=64).zip(&gens) {
         assert_ne!(*g, 0);
-        assert_eq!(ticket_count(0, 0, *g), c, "the inverse of mint {c}");
+        assert_eq!(ticket_count(k, 0, 0, *g), c, "the inverse of mint {c}");
     }
     let steps: std::collections::BTreeSet<i64> = gens
         .windows(2)
@@ -185,8 +191,62 @@ fn consecutive_ticket_generations_hide_their_counter() {
     );
     assert!(!steps.contains(&1) || steps.len() > 1);
     assert_ne!(
-        ticket_generation(0, 0, 1),
-        ticket_generation(0, 1, 1),
+        ticket_generation(k, 0, 0, 1),
+        ticket_generation(k, 0, 1, 1),
         "two slots share a sequence"
+    );
+}
+
+/// RED (#74, WORKER-TWEAK SEPARATION): the same slot index on two workers runs two unrelated
+/// sequences, and a generation one worker minted inverts, on the other, to no count it reached. A
+/// tweak that left the worker out would give every worker's slot `idx` one sequence: a ticket a
+/// plugin held on worker 0, re-addressed to worker 1's slot, would pass there as a stale wake.
+#[test]
+fn red_two_workers_share_no_ticket_sequence() {
+    let k = tkey();
+    let w0: Vec<u32> = (1..=64).map(|c| ticket_generation(k, 0, 5, c)).collect();
+    let w1: Vec<u32> = (1..=64).map(|c| ticket_generation(k, 1, 5, c)).collect();
+    let same = w0.iter().zip(&w1).filter(|(a, b)| a == b).count();
+    assert!(
+        same <= 1,
+        "worker 0 and worker 1 share slot 5's sequence at {same} of 64 mints"
+    );
+    // Worker 0's first 64 generations, judged on worker 1's slot 5 having reached count 64: each
+    // inverts past 64 (a forgery there), but for a 64-in-2^32 chance per generation.
+    let passed = w0
+        .iter()
+        .filter(|g| (1..=64).contains(&ticket_count(k, 1, 5, **g)))
+        .count();
+    assert!(
+        passed <= 1,
+        "{passed} of worker 0's generations pass as minted on worker 1"
+    );
+}
+
+/// RED (#74, NO SUPPLIER): a forged ticket generation the host itself woke (a connector's
+/// readiness: no instance supplied it) counts toward the latch; one an instance supplied
+/// quarantines that instance and does NOT count toward it. Judged against this test's own latch.
+#[test]
+fn red_a_forged_ticket_with_no_supplier_counts_toward_the_latch() {
+    let latch = Latch::new();
+    forged_ticket(None, &latch);
+    assert_eq!(
+        (latch.forged(), latch.unattributed()),
+        (1, 1),
+        "a supplier-less forged ticket was not counted toward the latch"
+    );
+    let wake: &'static InstanceWake = Box::leak(Box::default());
+    forged_ticket(Some(wake), &latch);
+    assert_eq!(
+        (latch.forged(), latch.unattributed()),
+        (2, 1),
+        "a supplied forged ticket was counted as unattributed"
+    );
+    for _ in 2..LATCH_AT {
+        forged_ticket(None, &latch);
+    }
+    assert!(
+        latch.tripped(),
+        "{LATCH_AT} supplier-less forged tickets did not trip the latch"
     );
 }

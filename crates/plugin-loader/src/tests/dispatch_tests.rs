@@ -551,6 +551,7 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
     let p2 = load(sink.clone());
     let fresh = d.mint(1).expect("the fresh worker mints");
     let fresh_stale = crate::dispatch::handle::ticket_count(
+        d.ticket_key(),
         1,
         crate::dispatch::ticket::decode(fresh.slot).1,
         fresh.generation,
@@ -1199,8 +1200,8 @@ fn red_a_stale_generation_wake_is_dropped() {
     // One mint on: the generation is the slot's next COUNT, permuted (#74), never the next integer.
     let idx = crate::dispatch::ticket::decode(t.slot).1;
     assert_eq!(
-        crate::dispatch::handle::ticket_count(0, idx, t.generation),
-        crate::dispatch::handle::ticket_count(0, idx, old.generation) + 1
+        crate::dispatch::handle::ticket_count(d.ticket_key(), 0, idx, t.generation),
+        crate::dispatch::handle::ticket_count(d.ticket_key(), 0, idx, old.generation) + 1
     );
     assert_ne!(t.generation, old.generation);
     let reply = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
@@ -2771,7 +2772,7 @@ fn a_boot_whose_entropy_fails_is_refused() {
 
 /// #74, THE TICKET HALF: a wake for a generation the host never minted is a FORGERY. The generation
 /// is a keyed permutation of the slot's counter, so the worker names the mint it would be by the
-/// inverse and finds none; the instance that woke it from inside its crossing is quarantined (its
+/// inverse and finds none; the instance whose context woke it (its supplier) is quarantined (its
 /// handle revoked, every later op FAULT). The control: an honest instance stays unfaulted.
 #[test]
 fn a_forged_ticket_generation_quarantines_the_instance_that_woke_it() {
@@ -2802,5 +2803,141 @@ fn a_forged_ticket_generation_quarantines_the_instance_that_woke_it() {
     assert!(
         !honest.is_faulted(),
         "the quarantine reached another instance"
+    );
+}
+
+/// A generation of `t`'s slot the host never minted, but for a 1-in-2^32 chance.
+fn forged_generation(t: Ticket) -> Ticket {
+    Ticket {
+        slot: t.slot,
+        generation: t.generation ^ 0x5a5a_5a5a,
+    }
+}
+
+/// RED (#74, ATTRIBUTION CARRIED, NEVER READ OFF THE THREAD): instance A takes a service call on a
+/// forged ticket; its completion fires from inside instance B's crossing. The completer carries A
+/// as the ticket's supplier, so A is quarantined and B, the crossing the wake happened to fire in,
+/// is not. A wake that read the thread's crossing would blame B.
+#[test]
+fn red_a_completion_fired_in_another_crossing_quarantines_its_supplier() {
+    use crate::dispatch::services::{serve, Ran, Stored};
+    use busbar_contract::abi::host::service::{op, ServiceHead};
+    use busbar_contract::abi::mechanism::ticket::CompletionHandle;
+
+    let d = Dispatcher::new(config());
+    let supplier = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &supplier, 0), Outcome::Ready);
+    let bystander = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &bystander, 0), Outcome::Ready);
+    let t = d.mint(0).expect("a ticket");
+    let head = ServiceHead {
+        size: 0,
+        op: op::RECORDS_GET,
+        handle: CompletionHandle {
+            ticket: forged_generation(t),
+            seq: 0,
+            _reserved: 0,
+        },
+    };
+    let waking = crate::dispatch::ticket::Waking::of(supplier.inner.wake)
+        .expect("the supplier is bound to the dispatcher");
+    let held = Mutex::new(None);
+    // SAFETY: no buffers; the service pends.
+    let pended = unsafe {
+        serve(&d.service_store(), &waking, &head, None, |c| {
+            *held.lock().unwrap() = c;
+            Ran::Later
+        })
+    };
+    assert_eq!(pended.outcome, Outcome::Pending);
+    let completer = held.lock().unwrap().take().expect("the call's completer");
+    crate::dispatch::plugin::with_crossing(Some(&*bystander.inner), || {
+        completer.complete(Stored::ready(1));
+    });
+    until("the supplier is quarantined", || supplier.is_faulted());
+    assert!(
+        !bystander.is_faulted(),
+        "the instance whose crossing the completion fired in was blamed"
+    );
+    d.recycle(t);
+}
+
+/// RED (#74, NO ONE TO BLAME): a forged generation the HOST wakes (the connector's readiness, which
+/// no instance's context named) counts toward the latch and quarantines no one; a plugin's own wake
+/// from its own thread, outside any crossing, names its supplier and quarantines it, the latch
+/// unmoved. Judged against this test's own latch.
+#[test]
+fn red_an_off_crossing_forged_ticket_counts_toward_the_latch() {
+    let d = Dispatcher::new(config());
+    let latch: &'static crate::dispatch::handle::Latch =
+        Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
+    d.judge_against(latch);
+    let honest = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &honest, 0), Outcome::Ready);
+    let forger = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
+    let t = d.mint(0).expect("a ticket");
+
+    (d.conn_waker())(crate::dispatch::conn_services::conn_ticket(
+        forged_generation(t),
+    ));
+    until("the host's forged wake is counted", || {
+        latch.unattributed() == 1
+    });
+    assert!(
+        !honest.is_faulted() && !forger.is_faulted(),
+        "the host's own wake blamed an instance"
+    );
+
+    crate::dispatch::ticket::host_wake(forger.inner.ctx(), forged_generation(t));
+    until("the supplier is quarantined", || forger.is_faulted());
+    assert_eq!(
+        (latch.forged(), latch.unattributed()),
+        (2, 1),
+        "a supplied forged ticket was counted toward the latch"
+    );
+    assert!(
+        !honest.is_faulted(),
+        "the quarantine reached another instance"
+    );
+    d.recycle(t);
+}
+
+/// RED (#74, COUNTER WRAP): a slot whose mint counter is spent is RETIRED, never handed out again:
+/// a counter that wrapped would re-mint generations the slot already handed out, and a plugin that
+/// kept one would wake the slot's next op. Seeded one short of `u32::MAX`; the slot's last mint is
+/// at `u32::MAX`; after it the worker takes fresh slots, and a wake on the retired slot's last
+/// generation is a late wake, not a forgery.
+#[test]
+fn red_a_slot_whose_counter_is_spent_is_retired() {
+    let d = Dispatcher::new(config());
+    let latch: &'static crate::dispatch::handle::Latch =
+        Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
+    d.judge_against(latch);
+    let t = d.mint(0).expect("a ticket");
+    let t = d.seed_count(t, u32::MAX - 1);
+    d.recycle(t);
+    until("the recycle lands", || d.slot_state(t).1);
+    let last = d.mint(0).expect("a ticket");
+    assert_eq!(last.slot, t.slot, "the slot's last count is handed out");
+    assert_eq!(d.slot_state(last).2, u32::MAX);
+    d.recycle(last);
+    until("the last recycle lands", || !d.slot_state(last).0);
+    let (_, free, count) = d.slot_state(last);
+    assert!(!free, "a spent slot went back on the free list");
+    assert_eq!(count, u32::MAX, "a spent counter wrapped");
+    for _ in 0..8 {
+        let n = d.mint(0).expect("a fresh slot");
+        assert_ne!(n.slot, last.slot, "a retired slot was handed out again");
+    }
+    let stale0 = d.stats().stale_wakes;
+    (d.conn_waker())(crate::dispatch::conn_services::conn_ticket(last));
+    until("the late wake is counted", || {
+        d.stats().stale_wakes > stale0
+    });
+    assert_eq!(
+        latch.forged(),
+        0,
+        "a retired slot's own generation was judged a forgery"
     );
 }
