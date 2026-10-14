@@ -558,14 +558,14 @@ fn client_and_scope_of(target: &str) -> Option<(String, String, String)> {
 /// the credential, and a full URI puts an attacker-chosen path and query on the screen next to it,
 /// which is room to write text that argues with the page around it.
 ///
-/// Read by the one shared URL reader ([`busbar_kernel::net_guard::parse_url`], WHATWG rules for
+/// Read by the one shared URL reader ([`busbar_contract::net::parse_url`], WHATWG rules for
 /// `https`), so the host named here is the host the browser contacts: a userinfo before the last
 /// `@` is dropped (`https://client.example@evil.example/cb` names `evil.example`), and a `\` ends the
 /// authority (`https://evil.example\@trusted.example/cb` names `evil.example`, not the
 /// `trusted.example` a reader splitting only at `/` showed). A URI with no readable host names
 /// nothing, and the screen says so.
 fn host_of(redirect_uri: &str) -> String {
-    let Ok(parts) = busbar_kernel::net_guard::parse_url(redirect_uri) else {
+    let Ok(parts) = busbar_contract::net::parse_url(redirect_uri) else {
         return String::new();
     };
     let host = if parts.host.contains(':') {

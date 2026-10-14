@@ -188,8 +188,8 @@ pub enum Transport {
     /// property the transport can assume. ARMED under the `runtime` capability: the neutral WS
     /// transport is real on both legs — the ingress WS-upgrade acceptor (`crate::ingress::duplex_ws`)
     /// presents an upgraded socket as the `serve_messages` channel, and the egress WS dialer
-    /// (`crate::egress::duplex_ws`) dials an upstream `wss://` THROUGH `net_guard` and hands back the
-    /// same channel. A duplex caller selects this variant and lets the transport open the socket.
+    /// (`crate::egress::duplex_ws`) dials an upstream `wss://` THROUGH the egress unit's guard and
+    /// hands back the same channel. A duplex caller selects this variant and lets the transport open the socket.
     WebSocket,
 }
 

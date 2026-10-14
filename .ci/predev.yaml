@@ -1,7 +1,9 @@
-# What predev must pass to move into dev: busbar-release's `dev` rung (crates/busbar-release-cli/
-# ladder.json: gates inherit, oracle, conformance; verdict absolute), the 1.6.0 done-oracle, and the
-# Q128 architecture audit (`cargo xtask q128 audit`). ModernCI names a branch file for the branch
-# being moved, so the move predev -> dev reads this file. Shadow while busbar-release still decides.
+# What predev must pass to move into dev: the `dev` rung (gates, oracle, conformance), the 1.6.0
+# done-oracle, and the Q128 architecture audit (`cargo xtask q128 audit`). ModernCI names a branch
+# file for the branch being moved, so the move predev -> dev reads this file, and ModernCI alone
+# judges it: promote.yml, the busbar-release hop that judged it before, is deleted (OWNER
+# 2026-10-12, "ModernCI only"; docs/design/BUSBAR-1.6.0.md Part 6, "BUSBAR-RELEASE RETIRED FROM
+# BUSBAR"). Its green landing is DEV-GREEN.
 to: dev
 on_green: merge
 # The owner's approval on the pull request holds the merge too; q128-audit gates the move on the
@@ -14,7 +16,7 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_INCREMENTAL: "0"
 on:
-  move: [gates, oracle, conformance, verify-done, q128-audit]
+  move: [gates, oracle, conformance, verify-done, q128-audit, test-gated]
 checks:
   gates:
     # The rung inherits predev's boarded gates; here they are re-run on the commit, no worse than
@@ -24,6 +26,9 @@ checks:
       cargo xtask gate --all --format=tsv
     baseline: target
     rules: ["qa/*.toml"]
+    # The ceiling ratchet reads the merge-base (XTASK_CEILING_BASE), as in .ci/default.yaml: only a
+    # backend with the repo's history may run this check.
+    requires: [git-history]
   oracle:
     # busbar's own check tool, the pinned busbar-oracle (the backend's busbar-oracle tool sets
     # BUSBAR_ORACLE_RUST_BIN): the judge is the one dev's oracle-rust.pin names, run only when its
@@ -98,4 +103,42 @@ checks:
     # BLOCK/HIGH/MEDIUM/LOW, scope, evidence) and exits 1 on any open BLOCK. An audit of another
     # tree, or none, is a BLOCK.
     run: cargo xtask q128 audit
+    needs: [gates]
+  test-gated:
+    # The feature-gated suites the `test` check never builds (row 164): `test` runs default features
+    # only. A, the busbar/kernel/core-admin gates at once (test-harness, llm-on-driver,
+    # transport-webrtc, openapi-schema, timing), filtered to the gated binaries and modules so the
+    # default suites do not run twice; B, the plugin-pack CLI (pack); C, the loom models in release.
+    run: |
+      meta=$(cargo metadata --format-version 1 --locked)
+      cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
+      # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
+      # door and the other door fixtures, which busbar's and the connector's tests load too) and
+      # busbar's test plane. A run scoped to `busbar` alone builds no other package's examples, and a
+      # test whose fixture is absent fails rather than skips; no variable tells this step the
+      # affected set, so the build does not wait on one.
+      cargo build --locked -p busbar-plugin-loader --examples
+      cargo build --locked -p busbar --examples
+      plugin() {
+        man=$(echo "$meta" | jq -r --arg p "$1" 'first(.packages[] | select(.name == $p) | .manifest_path) // empty')
+        if [ -z "$man" ]; then [ "$3" = optional ] && return 0; echo "busbar resolves no $1"; return 1; fi
+        ws="$(dirname "$man")/Cargo.toml"
+        pkgs=$(cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -r '.packages[].name')
+        if ! printf '%s\n' $pkgs | grep -qx "$2"; then [ "$3" = optional ] && return 0; echo "$1 has no $2"; return 1; fi
+        if [ "$3" = dropped-in ] && cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -e --arg p "$2" '.packages[] | select(.name == $p) | .features | has("dropped-in")' >/dev/null; then
+          cargo build --locked --manifest-path "$ws" -p "$2" --features dropped-in --target-dir "$PWD/target"
+        else
+          cargo build --locked --manifest-path "$ws" -p "$2" --target-dir "$PWD/target"
+        fi
+      }
+      plugin busbar-transport-tcp-plugin busbar-transport-tcp-plugin dropped-in
+      plugin busbar-transport-http busbar-transport-http-plugin dropped-in
+      plugin busbar-secret-env busbar-secret-env-plugin optional
+      plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
+      cargo build --workspace --locked
+      cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/llm-on-driver,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
+      cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
+      timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+    baseline: target
+    requires: [git-history]
     needs: [gates]
