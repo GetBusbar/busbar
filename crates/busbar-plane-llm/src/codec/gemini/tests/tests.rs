@@ -5306,14 +5306,17 @@ fn a_finish_reason_inside_tool_args_is_not_the_stop_reason() {
         }],
         "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5}
     });
-    let parsed = GeminiReader.read_response(&body).expect("read_response");
+    // The raw scan reads the CANDIDATE's own token (`STOP`), never the args' copy, which would map
+    // to a failed generation. `read_response` then promotes a tool-call `STOP` to `ToolUse` from
+    // the content, which a token-only scan cannot see and the fault check does not need.
     assert_eq!(
         GeminiReader.raw_stop_reason(body.to_string().as_bytes()),
-        parsed.stop_reason
+        Some(crate::codec::ir::IrStopReason::EndTurn)
     );
-    assert_ne!(
-        GeminiReader.raw_stop_reason(body.to_string().as_bytes()),
-        Some(crate::codec::ir::IrStopReason::Error)
+    let parsed = GeminiReader.read_response(&body).expect("read_response");
+    assert_eq!(
+        parsed.stop_reason,
+        Some(crate::codec::ir::IrStopReason::ToolUse)
     );
     assert!(!crate::exchange::reply::wire::generation_failed(
         "gemini", &body

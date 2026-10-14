@@ -224,21 +224,18 @@ pub fn write_transcription_response(r: &crate::codec::ir::audio::TranscriptionRe
             (FIELD_FINISH_REASON): GEMINI_FINISH_STOP,
         }],
     });
-    match &r.usage {
-        Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            body[FIELD_USAGE_METADATA] = json!({
-                (FIELD_PROMPT_TOKEN_COUNT): t.input,
-                (FIELD_CANDIDATES_TOKEN_COUNT): t.output,
-                (FIELD_TOTAL_TOKEN_COUNT): t.input.saturating_add(t.output),
-            });
-        }
-        // A duration-billed answer (whisper-1's `Billing::Duration`, an openai->gemini hop) has no
-        // member in Gemini's token-shaped `usageMetadata`: it is written without one, exactly as
-        // 1.5.5 wrote it (v1.5.5 `crates/busbar/src/handlers/gemini.rs:259-265` wrote
-        // `usageMetadata` only for `Billing::Tokens`). The billed seconds are read off the EGRESS
-        // reader, never off these bytes, so nothing billed is lost; an invented
-        // `audioDurationSeconds` member is not Gemini's wire.
-        _ => {}
+    // Only a token-billed answer writes `usageMetadata`. A duration-billed answer (whisper-1's
+    // `Billing::Duration`, an openai->gemini hop) has no member in Gemini's token-shaped
+    // `usageMetadata`: it is written without one, exactly as 1.5.5 wrote it (v1.5.5
+    // `crates/busbar/src/handlers/gemini.rs:259-265` wrote `usageMetadata` only for
+    // `Billing::Tokens`). The billed seconds are read off the EGRESS reader, never off these bytes,
+    // so nothing billed is lost; an invented `audioDurationSeconds` member is not Gemini's wire.
+    if let Some(busbar_contract::billing::Billing::Tokens(t)) = &r.usage {
+        body[FIELD_USAGE_METADATA] = json!({
+            (FIELD_PROMPT_TOKEN_COUNT): t.input,
+            (FIELD_CANDIDATES_TOKEN_COUNT): t.output,
+            (FIELD_TOTAL_TOKEN_COUNT): t.input.saturating_add(t.output),
+        });
     }
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
