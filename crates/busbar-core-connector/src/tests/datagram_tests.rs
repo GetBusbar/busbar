@@ -511,7 +511,7 @@ fn rig(knobs: Knobs) -> Rig {
 }
 
 impl Rig {
-    fn into_host(&mut self, from: SocketAddr, d: &[u8]) {
+    fn deliver(&mut self, from: SocketAddr, d: &[u8]) {
         let y = self
             .host
             .datagram(from, d, self.now)
@@ -540,14 +540,14 @@ impl Rig {
                     // The far end's ICE agent answers the host's probe under its own password.
                     let a = answer(&d, FAR_PWD);
                     let from = self.far.addr;
-                    self.into_host(from, &a);
+                    self.deliver(from, &a);
                 }
             }
             let _ = self.far.a.bind_path(self.host_addr, self.now);
             while let Some((to, d)) = self.far.a.poll_wire() {
                 assert_eq!(to, self.host_addr);
                 let from = self.far.addr;
-                self.into_host(from, &d);
+                self.deliver(from, &d);
             }
             while let Some(u) = self.far.a.poll_up() {
                 self.far.ups.push(u);
@@ -558,7 +558,7 @@ impl Rig {
     fn first_check(&mut self) {
         let c = check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 1);
         let from = self.far.addr;
-        self.into_host(from, &c);
+        self.deliver(from, &c);
     }
 
     fn seen(&self) -> Vec<Seen> {
@@ -636,11 +636,11 @@ fn a_source_that_sent_no_verified_check_never_reaches_the_framer() {
     let spoof = p("192.0.2.66:4444");
     let before = r.seen().len();
     // A check under the wrong password, and media, from a source the far end never was.
-    r.into_host(
+    r.deliver(
         spoof,
         &check(HOST_UFRAG, FAR_UFRAG, "wrong-password-012345", 2),
     );
-    r.into_host(spoof, &[0x80, 0, 0, 1, 2, 3]);
+    r.deliver(spoof, &[0x80, 0, 0, 1, 2, 3]);
     let seen = r.seen();
     assert_eq!(seen.len(), before, "nothing crossed for the spoofed source");
     assert!(seen
@@ -669,7 +669,7 @@ fn a_rebind_to_a_path_that_never_answered_the_probe_is_not_applied() {
     // A verified check from a new source that never answers core's probe (the password leaked; the
     // address is not the far end's).
     let spoof = p("192.0.2.77:5555");
-    r.into_host(spoof, &check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 3));
+    r.deliver(spoof, &check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 3));
     r.pump(100);
     assert_eq!(
         r.host.bound(),
@@ -694,7 +694,7 @@ fn a_rebind_to_a_path_that_never_answered_the_probe_is_not_applied() {
         .find(|(_, d)| d[0..2] == [0, 1])
         .map(|(_, d)| d.clone())
         .expect("core probed the new path");
-    r.into_host(spoof, &answer(&probe, FAR_PWD));
+    r.deliver(spoof, &answer(&probe, FAR_PWD));
     assert_eq!(r.host.bound(), Some(spoof), "a proven path is bound");
 }
 
@@ -800,13 +800,13 @@ fn dialling_an_admitted_candidate_never_binds_unverified() {
     // Answers to every request it was sent, from ANOTHER source, prove nothing.
     let unanswered = std::mem::take(&mut r.unanswered);
     for d in &unanswered {
-        r.into_host(p("192.0.2.88:6666"), &answer(d, FAR_PWD));
+        r.deliver(p("192.0.2.88:6666"), &answer(d, FAR_PWD));
     }
     assert_eq!(r.host.bound(), None, "an answer from elsewhere is no proof");
     // RED arm: answered from the candidate itself, the bind applies.
     let from = r.far.addr;
     for d in &unanswered {
-        r.into_host(from, &answer(d, FAR_PWD));
+        r.deliver(from, &answer(d, FAR_PWD));
     }
     r.answers = true;
     r.pump(200);
