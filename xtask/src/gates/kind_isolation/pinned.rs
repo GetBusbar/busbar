@@ -315,6 +315,22 @@ fn pinned_base_rows(cx: &Ctx) -> Result<Vec<(String, String)>, String> {
     Ok(rows)
 }
 
+/// THE PINNED PLANES' DIRECTORIES, read off the root manifest's pinned rows (never off the base
+/// layer): `crates/<package>` for every pinned plane-kind crate, laid or not. The plane population
+/// ([`super::plane_kind_src_roots`]) unions these with the census, so a pinned plane the base did
+/// not lay is a listed root that does not exist, which `plane-purity:roots` refuses by name, and
+/// never a plane the population quietly forgot (ARCHITECT row 106 (A), condition 3).
+///
+/// # Errors
+/// The root manifest does not read.
+pub(crate) fn pinned_plane_dirs(cx: &Ctx) -> Result<Vec<String>, String> {
+    Ok(pinned_base_rows(cx)?
+        .into_iter()
+        .filter(|(name, _)| super::plugin_kind(name) == Some("plane"))
+        .map(|(name, _)| mount_dir(&name))
+        .collect())
+}
+
 /// THE PLANE'S OWN REPO JUDGES ITS SOURCE WITH BUSBAR'S GATES (ARCHITECT row 106 (A), condition 7):
 /// `BUSBAR_PLANE_SOURCE=<package>=<dir>[,<package>=<dir>…]` lays `<dir>` — the plane repo's logic
 /// crate, at the change under test — in place of the pinned checkout of `<package>`. plugin-ci.yml's
