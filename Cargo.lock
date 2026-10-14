@@ -580,6 +580,7 @@ dependencies = [
  "base64 0.22.1",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-kernel-egress",
  "busbar-plugin-loader",
  "busbar-transport-tcp-plugin",
  "bytes",

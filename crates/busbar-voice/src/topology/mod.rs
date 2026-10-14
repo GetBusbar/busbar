@@ -34,12 +34,12 @@ use crate::runtime::VoiceRuntime;
 use busbar_contract::transport::transport::{Transport, UpstreamWireKind};
 use busbar_contract::upstream::{CanonicalSignal, StatusClass};
 use busbar_kernel::egress::duplex_ws::{self, DialCredential, DialError, DialTarget};
-use busbar_kernel::net_guard::GuardPolicy;
 use busbar_kernel::plane::handle_engine::HandleEngineError;
 use busbar_kernel::plane_host::{
     breaker, run_gauntlet_session, BreakerHost, DispatchScope, GauntletPlane, GauntletRequest,
     VerifyOutcome,
 };
+use busbar_kernel::proxy::egress_unit::trust::net::GuardPolicy;
 use futures::{Sink, Stream};
 use std::sync::Arc;
 
