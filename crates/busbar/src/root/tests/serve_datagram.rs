@@ -93,3 +93,102 @@ async fn a_plane_that_falls_behind_its_caller_ends_the_session() {
     assert_eq!(rx.recv().await.unwrap(), b"m");
     assert!(rx.recv().await.is_none(), "the session's caller side ended");
 }
+
+/// A door that states only its facts.
+struct Stated(busbar_core_connector::framer::DoorFacts);
+
+impl busbar_core_connector::framer::FramerDoor for Stated {
+    fn facts(&self) -> &busbar_core_connector::framer::DoorFacts {
+        &self.0
+    }
+    fn cross(
+        &self,
+        _call: busbar_core_connector::framer::Call<'_>,
+    ) -> busbar_core_connector::framer::Crossed {
+        busbar_core_connector::framer::Crossed {
+            outcome: busbar_contract::abi::mechanism::call::Outcome::Refused,
+            error: None,
+        }
+    }
+}
+
+fn stated(
+    name: &'static str,
+    datagram: bool,
+) -> Arc<dyn busbar_core_connector::framer::FramerDoor> {
+    Arc::new(Stated(busbar_core_connector::framer::DoorFacts {
+        name: name.into(),
+        claims: vec![name],
+        role: busbar_contract::abi::transport::ROLE_FRAMER,
+        composes_over: Vec::new(),
+        ported: false,
+        status_rows: Vec::new(),
+        duplex: vec![name],
+        datagram,
+    }))
+}
+
+fn need(transport: &str, listen: &str) -> crate::root::loader::boot::InboundBind {
+    crate::root::loader::boot::InboundBind {
+        owner: crate::root::loader::boot::BindOwner::Need {
+            instance: "streams".into(),
+            kind: busbar_contract::abi::mechanism::KindCode::Plane,
+            need: 0,
+        },
+        transport: transport.into(),
+        at: format!("streams.{transport}"),
+        listen: listen.parse().unwrap(),
+        tls: None,
+        max_conns: 1024,
+    }
+}
+
+fn framers(scheme: &str) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>> {
+    match scheme {
+        "dg" => Some(stated("dg", true)),
+        "lp" => Some(stated("lp", false)),
+        _ => None,
+    }
+}
+
+/// Ruling (d): a claim door is bound for every inbound listener whose transport a datagram framer
+/// answers, on its `{listen}` address, and for no other listener. RED arms: a wildcard address
+/// (no candidate to advertise) and a second door for one claim are refused, naming the setting.
+#[tokio::test]
+async fn boot_binds_a_claim_door_for_each_datagram_listener_and_no_other() {
+    let root = crate::root::loader::boot::InboundBind {
+        owner: crate::root::loader::boot::BindOwner::Root,
+        transport: String::new(),
+        at: "listen".into(),
+        listen: "127.0.0.1:0".parse().unwrap(),
+        tls: None,
+        max_conns: u64::MAX,
+    };
+    let doors = ClaimDoors::bind(
+        &[root, need("lp", "127.0.0.1:0"), need("dg", "127.0.0.1:0")],
+        framers,
+    )
+    .expect("the claim doors bind");
+    let dg = doors
+        .get("dg")
+        .expect("the datagram listener is a claim door");
+    assert_eq!(dg.local().ip(), std::net::IpAddr::from([127, 0, 0, 1]));
+    assert_ne!(dg.local().port(), 0, "bound");
+    assert!(
+        doors.get("lp").is_none(),
+        "a stream listener is no claim door"
+    );
+    assert!(
+        doors.get("").is_none(),
+        "the root's own listener is no claim door"
+    );
+
+    let wild = ClaimDoors::bind(&[need("dg", "0.0.0.0:0")], framers).expect_err("a wildcard");
+    assert!(wild.contains("streams.dg.listen"), "{wild}");
+    let twice = ClaimDoors::bind(
+        &[need("dg", "127.0.0.1:0"), need("dg", "127.0.0.1:0")],
+        framers,
+    )
+    .expect_err("one claim, two doors");
+    assert!(twice.contains("a second claim door"), "{twice}");
+}

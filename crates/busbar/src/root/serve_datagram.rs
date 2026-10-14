@@ -57,6 +57,44 @@ impl ClaimDoors {
     pub fn get(&self, claim: &str) -> Option<Arc<ClaimDoor>> {
         self.0.get(claim).cloned()
     }
+
+    /// THE CLAIM DOORS BOOT BINDS (ARCHITECT ruling, row 132 seam (d)): one for every inbound
+    /// listener in the one list of listeners whose transport a DATAGRAM framer answers, bound on
+    /// the address its `{listen}` block names, its task on the calling worker. A listener over any
+    /// other transport is no claim door (the data listener and the stream listeners bind those);
+    /// two claim doors for one claim are refused.
+    ///
+    /// # Errors
+    ///
+    /// The setting that names an address the port cannot bind (a wildcard included: a claim
+    /// door's address is the one candidate its associations advertise), or a claim bound twice.
+    pub fn bind(
+        binds: &[crate::root::loader::boot::InboundBind],
+        framer_for: impl Fn(&str) -> Option<Arc<dyn busbar_core_connector::framer::FramerDoor>>,
+    ) -> Result<Self, String> {
+        let mut doors = ClaimDoors::default();
+        for b in binds {
+            if b.transport.is_empty()
+                || !framer_for(&b.transport).is_some_and(|d| d.facts().datagram)
+            {
+                continue;
+            }
+            if doors.0.contains_key(&b.transport) {
+                return Err(format!(
+                    "{}: a second claim door for `{}`",
+                    b.listen_setting(),
+                    b.transport
+                ));
+            }
+            let port = busbar_core_connector::udp::bind(&b.listen.to_string())
+                .and_then(ReadyPort::open)
+                .map_err(|e| {
+                    format!("{}: {} cannot be bound: {e}", b.listen_setting(), b.listen)
+                })?;
+            doors.insert(&b.transport, ClaimDoor::serve(port));
+        }
+        Ok(doors)
+    }
 }
 
 /// ONE CLAIM DOOR: one bound datagram port, every accepted association on it, and each one's
