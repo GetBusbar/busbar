@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2566,
+    "total": 2582,
     "by_plane": {
       "a2a": 468,
-      "core": 989,
+      "core": 1005,
       "llm": 197,
       "mcp": 912
     },
@@ -69,12 +69,12 @@
       "auth.lifecycle": 3,
       "billing": 15,
       "boot.deprecated-env": 5,
-      "boot.refusal": 209,
+      "boot.refusal": 223,
       "boot.warning": 31,
       "cli": 14,
       "concurrency": 3,
       "config": 1,
-      "config.migrate": 156,
+      "config.migrate": 158,
       "cooldown": 1,
       "crosscut.traps": 5,
       "documented": 28,
@@ -16312,6 +16312,244 @@
       "needs_fixture": false
     },
     {
+      "id": "boot.refusal|LAW0-EXP-SET-FILE-TYPE|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-EXP-SET-FILE-TYPE",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b export.file.settings: invalid type: integer `7`, expected a string",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-EXP-SET-OTLP-UNKNOWN|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-EXP-SET-OTLP-UNKNOWN",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b export.trace.settings: unknown field `bogus`, expected `url`",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-EXP-SET-PROM-MISSING|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-EXP-SET-PROM-MISSING",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b export.metrics.settings: missing field `buffer_seconds`",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-EXP-SET-PROM-UNKNOWN|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-EXP-SET-PROM-UNKNOWN",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b export.metrics.settings: unknown field `bogus`, expected `buffer_seconds` or `ke",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-EXP-UNKNOWN|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-EXP-UNKNOWN",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b export.x.module: unknown exporter 'nosuch'; the built-in export modules are prom",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-HOOKWORD-admin-tokens|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-HOOKWORD-admin-tokens",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b hooks.admin-tokens: 'admin-tokens' is a reserved name",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-HOOKWORD-cheapest|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-HOOKWORD-cheapest",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b hooks.cheapest: 'cheapest' is a reserved name",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-HOOKWORD-fastest|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-HOOKWORD-fastest",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b hooks.fastest: 'fastest' is a reserved name",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-HOOKWORD-first|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-HOOKWORD-first",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b hooks.first: 'first' is a reserved name",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-HOOKWORD-least_busy|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-HOOKWORD-least_busy",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b hooks.least_busy: 'least_busy' is a reserved name",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-HOOKWORD-nothing|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-HOOKWORD-nothing",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b hooks.nothing: 'nothing' is a reserved name",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-HOOKWORD-reject|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-HOOKWORD-reject",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b hooks.reject: 'reject' is a reserved name",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-HOOKWORD-tokens|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-HOOKWORD-tokens",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b hooks.tokens: 'tokens' is a reserved name",
+      "needs_fixture": false
+    },
+    {
+      "id": "boot.refusal|LAW0-HOOKWORD-usage|validate",
+      "plane": "core",
+      "family": "boot.refusal",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [
+          "--validate"
+        ],
+        "mode": "validate",
+        "config": "mutation:LAW0-HOOKWORD-usage",
+        "env": {}
+      },
+      "why": "expect exit 1; stderr \u220b hooks.usage: 'usage' is a reserved name",
+      "needs_fixture": false
+    },
+    {
       "id": "boot.warning|BOOT-W01|validate",
       "plane": "core",
       "family": "boot.warning",
@@ -17081,6 +17319,36 @@
       },
       "why": "8 parallel requests against an UNBOUNDED lane: all 200, usage = 8x \u2014 concurrency alone must never perturb billing",
       "fresh": true
+    },
+    {
+      "id": "config.migrate|LAW0-MIG-OPERATOR-14X|boot",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [],
+        "mode": "boot",
+        "config": "mutation:LAW0-MIG-OPERATOR-14X",
+        "env": {}
+      },
+      "why": "expect exit 0; stderr \u220b None",
+      "needs_fixture": false
+    },
+    {
+      "id": "config.migrate|LAW0-MIG-OPERATOR-INLINE|boot",
+      "plane": "core",
+      "family": "config.migrate",
+      "driver": "exec",
+      "outcome": "ok",
+      "exec": {
+        "args": [],
+        "mode": "boot",
+        "config": "mutation:LAW0-MIG-OPERATOR-INLINE",
+        "env": {}
+      },
+      "why": "expect exit 0; stderr \u220b None",
+      "needs_fixture": false
     },
     {
       "id": "config.migrate|v0.10.0|migrate",
