@@ -230,8 +230,11 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         serde_json::from_slice(&first).expect("the usage response is JSON");
 
     // PB-16, the additive half: the legacy response carries the 1.5.5 shape and nothing the ledger
-    // put there. Checked as a key set rather than by eye, because an additive field is exactly the
-    // kind of change that reads as harmless in a diff and breaks somebody's export script.
+    // put there, but the ONE member the owner ruled onto it: `rate_card_version` (Q93, OWNER ANSWERS
+    // 2026-09-27, option A: "serve the rate-card version on the usage and audit responses as an
+    // `additive` register entry"; accepted difference `Q93 ...`). Checked as a key set rather than
+    // by eye, because an additive field is exactly the kind of change that reads as harmless in a
+    // diff and breaks somebody's export script.
     let top: Vec<&str> = usage
         .as_object()
         .expect("an object")
@@ -248,6 +251,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
             "by_key_truncated",
             "by_model",
             "currency",
+            "rate_card_version",
             "total",
             "window"
         ],
@@ -258,6 +262,7 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         "\"window\"",
         "\"as_of\"",
         "\"currency\"",
+        "\"rate_card_version\"",
         "\"total\"",
         "\"by_model\"",
         "\"by_key\"",
@@ -284,7 +289,6 @@ fn the_ledger_and_the_legacy_rows_reconcile_on_the_shipped_binary() {
         "residual",
         "posting",
         "nanos",
-        "rate_card_version",
     ] {
         assert!(
             !body.contains(forbidden),
