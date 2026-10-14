@@ -3156,8 +3156,13 @@ impl DataRoutes {
             .instrument(span.clone())
             .await
         };
+        // A budget downgrade re-pooled the unit: its span, like its request count below, names the
+        // pool the charge landed on (1.5.5 `ingress::dispatch`).
+        let downgraded = steps.downgraded();
         if let Some(decoded) = units.decoded() {
-            if let Some(pool) = decoded.pool.as_ref() {
+            if let Some(pool) = downgraded.as_deref() {
+                span.record("pool", pool);
+            } else if let Some(pool) = decoded.pool.as_ref() {
                 span.record("pool", String::from_utf8_lossy(pool).as_ref());
             }
             if let Some(dialect) = served.dialects.get(decoded.dialect as usize) {
@@ -3197,9 +3202,12 @@ impl DataRoutes {
                     },
                     |d| d.dialect,
                 );
-                let pool = decoded
-                    .and_then(|d| d.pool)
-                    .map(|p| String::from_utf8_lossy(&p).into_owned())
+                let pool = downgraded
+                    .or_else(|| {
+                        decoded
+                            .and_then(|d| d.pool)
+                            .map(|p| String::from_utf8_lossy(&p).into_owned())
+                    })
                     .filter(|name| {
                         live.pools.pools().contains_key(name)
                             || live.pools.entries().iter().any(|e| e == name)
