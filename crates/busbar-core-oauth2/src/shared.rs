@@ -310,9 +310,10 @@ impl Shared {
         }
     }
 
-    /// SWAP the cell `(kind_name, id)`: `f` reads the current value and says what to write; the
-    /// write lands only under the version this call redeemed, and a lost version reads again.
-    async fn swap<T, R>(
+    /// COMPARE-AND-SET the store cell `(kind_name, id)`, never an `AppHandle`: `f` reads the current
+    /// value and says what to write; the write lands only under the version this call redeemed, and
+    /// a lost version reads again.
+    async fn cas_cell<T, R>(
         &self,
         kind_name: &str,
         id: &str,
@@ -366,7 +367,7 @@ impl Shared {
         client_id: &str,
         mut f: impl FnMut(&mut Bucket) -> Result<Swap<R>, StorageError>,
     ) -> Result<R, StorageError> {
-        self.swap("bucket", &digest(client_id), |b: &mut Bucket| {
+        self.cas_cell("bucket", &digest(client_id), |b: &mut Bucket| {
             b.id = client_id.to_string();
             f(b)
         })
@@ -435,7 +436,7 @@ impl Shared {
         normalized: &str,
         device_code: &str,
     ) -> Result<(), StorageError> {
-        self.swap::<Option<String>, ()>("uc", &digest(normalized), |held| {
+        self.cas_cell::<Option<String>, ()>("uc", &digest(normalized), |held| {
             let owner = held.clone();
             match owner.as_deref() {
                 Some(owner) if owner != device_code => Err(StorageError::new(
@@ -456,7 +457,7 @@ impl Shared {
         normalized: &str,
         device_code: &str,
     ) -> Result<(), StorageError> {
-        self.swap::<Option<String>, ()>("uc", &digest(normalized), |held| {
+        self.cas_cell::<Option<String>, ()>("uc", &digest(normalized), |held| {
             if held.as_deref() == Some(device_code) {
                 *held = None;
                 Ok(Swap::Write(()))
@@ -1159,7 +1160,7 @@ impl Storage for SharedStorage {
         let s = &self.shared;
         // The barrier first, then the cascade over every client the family's index names.
         let id = digest(family_id);
-        s.swap::<FamilyBar, ()>("family", &id, |bar| {
+        s.cas_cell::<FamilyBar, ()>("family", &id, |bar| {
             bar.id.clone_from(&id);
             Times::merge(&mut bar.times, window);
             Ok(Swap::Write(()))
@@ -1449,7 +1450,7 @@ impl Shared {
                 continue;
             }
             removed += self
-                .swap::<FamilyBar, u64>("family", &cell.b.id.clone(), |bar| {
+                .cas_cell::<FamilyBar, u64>("family", &cell.b.id.clone(), |bar| {
                     Ok(match bar.times {
                         Some(t) if now >= t.until => {
                             bar.times = None;
