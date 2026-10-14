@@ -394,6 +394,17 @@ pub(crate) fn quarantine_crossing() -> bool {
     true
 }
 
+/// A minted handle whose bind has not completed: revoked when dropped still holding it (#74).
+struct Unbound(Option<&'static InstanceWake>);
+
+impl Drop for Unbound {
+    fn drop(&mut self) {
+        if let Some(wake) = self.0 {
+            wake.revoked.store(true, Ordering::Release);
+        }
+    }
+}
+
 impl Instance {
     /// FAULT AND REVOKE (#74): the instance is never called again on any worker, and its handle
     /// names nothing any more. The watchdog's fault and the forged-context quarantine both land
@@ -1454,6 +1465,9 @@ impl<K: Kind> Plugin<K> {
         let wake: &'static InstanceWake = Box::leak(Box::default());
         // ITS HANDLE (#74): the context the plugin is handed is a tagged index, never this address.
         let ctx = super::handle::mint(wake)?;
+        // A bind refused after this point leaves no live handle behind: the entry is revoked unless
+        // the bind completes (#74).
+        let mut unbound = Unbound(Some(wake));
         // THE CONNECTION TABLE: minted an identity and declared on the host's one table, need by
         // need under its Statement index, when the Statement declares a need; otherwise none.
         let instance = mint_instance(&NEXT_INSTANCE);
@@ -1593,6 +1607,7 @@ impl<K: Kind> Plugin<K> {
             .instance
             .set(Arc::downgrade(&plugin.inner));
         bind.dispatcher.adopt(&plugin.inner);
+        unbound.0 = None;
         Ok(plugin)
     }
 

@@ -45,9 +45,8 @@ fn only_a_minted_handle_names_an_instance() {
         "the handle is not the instance's address"
     );
 
-    let before = forged();
     assert!(resolve_in(HostCtx::NONE, &latch, None).is_none());
-    assert_eq!(forged(), before, "no context is not a forgery");
+    assert_eq!(latch.forged(), 0, "no context is not a forgery");
 
     let id = ctx.handle & ID_MASK;
     let unminted = (1u64 << HANDLE_ID_BITS) - 2;
@@ -90,23 +89,6 @@ fn a_revoked_handle_names_nothing_and_is_no_forgery() {
         "a revoked handle resolved"
     );
     assert_eq!(forged(), at, "a revoked handle was counted as a forgery");
-}
-
-/// Inside a crossing a context must name the crossing's own instance: another instance's handle,
-/// its tag the host's own, is refused and counted (the cheap bound on a library holding two
-/// instances' handles).
-#[test]
-fn inside_a_crossing_only_its_own_handle_resolves() {
-    let latch = Latch::new();
-    let (mine, other) = (leaked(), leaked());
-    let (my_ctx, other_ctx) = (mint(mine).unwrap(), mint(other).unwrap());
-    assert!(std::ptr::eq(
-        resolve_in(my_ctx, &latch, Some(mine)).expect("its own"),
-        mine
-    ));
-    let at = forged();
-    assert!(resolve_in(other_ctx, &latch, Some(mine)).is_none());
-    assert!(forged() > at, "another instance's handle was not counted");
 }
 
 /// THE LATCH: off-crossing forgeries name no instance to quarantine, so they count; at
