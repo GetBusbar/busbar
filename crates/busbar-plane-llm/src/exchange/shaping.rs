@@ -13,7 +13,7 @@
 //! | `upstream_model`, `default_max_tokens`, `reasoning`, `prompt_caching` | the model |
 //! | `context_max` (one value per model across every pool), a member's own `reasoning` | the pools |
 //! | the global `default_max_tokens` and the effort → thinking-budget table | `limits` |
-//! | the translation cap, `request_body_max_bytes` (the kernel hands the operator's one knob) | `limits` |
+//! | the translation cap, `request_body_max_bytes` (the operator's one knob) | `limits` |
 //!
 //! Each derivation is the previous release's (its boot build of the same tables), so a request is
 //! written the same way whichever build holds the tables. The grammar was already judged by the

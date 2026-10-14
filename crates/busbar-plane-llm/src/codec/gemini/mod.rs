@@ -1747,8 +1747,9 @@ pub struct GeminiWriter {
     stream_text: std::sync::Mutex<GeminiStreamText>,
     /// THIS STREAM'S TRANSLATION CAP: the byte ceiling one open tool's streamed `args` may reach
     /// (see the `InputJsonDelta` arm of `write_response_event`). The plane hands it from its own
-    /// settings when it opens the stream ([`crate::codec::proto_codec::ProtocolWriter::set_translate_cap`]);
-    /// until then, [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`].
+    /// settings when it opens the stream
+    /// ([`crate::codec::proto_codec::ProtocolWriter::set_translate_cap`]); until then,
+    /// [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`].
     translate_cap: std::sync::atomic::AtomicUsize,
 }
 

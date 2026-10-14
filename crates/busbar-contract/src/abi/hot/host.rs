@@ -539,10 +539,10 @@ pub type CounterAddFn = extern "C-unwind" fn(
 //    the contract, whose ports nothing armed, so it read the failure path of every one. These slots
 //    carry the host's own services across the seam; the dropped-in door arms the plane image's ports
 //    over them (`services::arm`) when the host opens the door. The usage-tap fault latch is RETIRED
-//    (row 155): the fault crosses as data on the plane's answer (`abi::plane::OnPieceOut::tap_fault`).
-//    So is the translate cap: the kernel hands it in the settings the plane is opened and refreshed
-//    with. No host serves either slot and no plane calls them. Process-wide, so `host` may be
-//    `HostCtx::NULL`. ──
+//    (row 155): the fault crosses as data on the plane's answer
+//    (`abi::plane::OnPieceOut::tap_fault`). So is the translate cap: the kernel hands it in the
+//    settings the plane is opened and refreshed with. No host serves either slot and no plane calls
+//    them. Process-wide, so `host` may be `HostCtx::NULL`. ──
 /// Fill `out_len` bytes at `out` from the host's entropy source (its CSPRNG). [`StatusClass::Ok`]
 /// when every byte was written; [`StatusClass::Refused`] when the host has no entropy to give or
 /// `out` is NULL with a non-zero length (the bytes are then unspecified); [`StatusClass::Fault`] on

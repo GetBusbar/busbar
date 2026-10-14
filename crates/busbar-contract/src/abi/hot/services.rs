@@ -27,7 +27,7 @@ use super::pod::StatusClass;
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-// ── HOST SIDE: the two slots, served from this image's armed contract ports ─────────────────────────
+// ── HOST SIDE: the two slots, served from this image's armed contract ports ───────────────────────
 
 /// `entropy_fill` — fill `out_len` bytes at `out` through [`crate::codec::fill_entropy`].
 pub(crate) extern "C-unwind" fn entropy_fill(
