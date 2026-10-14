@@ -99,8 +99,8 @@ pub use trust::{ClientIdentity, EgressTrust};
 /// `busbar_contract::transport::<name>` resolves exactly as `busbar_contract::transport::<name>` did.
 pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
-    Encode, FrameMeta, Framing, Handoff, HandshakeTrigger, Listener, ListenerHandle, RawIo,
-    RawStream, StatusAt, TransportError, Unit0Trigger, WireStatus, WireStatusClass,
+    Encode, FrameMeta, Framing, Handoff, HandshakeTrigger, RawIo, RawStream, StatusAt,
+    TransportError, Unit0Trigger, WireStatus, WireStatusClass,
 };
 
 /// Everything a transport declares about itself.

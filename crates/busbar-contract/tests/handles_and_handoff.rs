@@ -3,9 +3,9 @@
 
 //! The opaque handles, and the one value that crosses an in-band upgrade.
 //!
-//! A listener, a connection and a detached stream are all "a handle plus the few facts the layer
-//! above is allowed to read". Every one of those facts was reachable and none of them was read back
-//! by a test: the bound address a listener reports, the peer a connection names, and — the one that
+//! A connection and a detached stream are each "a handle plus the few facts the layer above is
+//! allowed to read". Every one of those facts was reachable and none of them was read back by a
+//! test: the peer a connection names, and — the one that
 //! decides whether a session happens at all — the layer a detached stream says handed it up. A
 //! handoff is only admissible between the layers that declared it, so a stream that forgot which
 //! layer made it is a session adopted by whoever dialled it.
@@ -13,15 +13,8 @@
 //! The `Debug` renderings are proofs too, not decoration: they are what a transport author reads off
 //! a log line while an upgrade is failing, and each of these types hand-rolls one.
 
-use busbar_contract::transport::{Conn, ConnHandle, Listener, ListenerHandle, RawStream};
+use busbar_contract::transport::{Conn, ConnHandle, RawStream};
 use std::sync::Arc;
-
-struct Bound(&'static str);
-impl ListenerHandle for Bound {
-    fn local_addr(&self) -> String {
-        self.0.to_string()
-    }
-}
 
 struct Socket {
     id: u64,
@@ -34,31 +27,6 @@ impl ConnHandle for Socket {
     fn peer(&self) -> String {
         self.peer.to_string()
     }
-}
-
-#[test]
-fn a_listener_reports_the_address_its_own_handle_is_bound_to() {
-    // The address comes from the transport's handle, not from the contract: a listener that
-    // answered with something of its own would have the kernel reporting a socket nobody is on.
-    let listener = Listener::new(Arc::new(Bound("127.0.0.1:8443")));
-    assert_eq!(listener.local_addr(), "127.0.0.1:8443");
-    let rendered = format!("{listener:?}");
-    assert!(rendered.contains("127.0.0.1:8443"), "{rendered}");
-    assert!(rendered.contains("Listener"), "{rendered}");
-}
-
-#[test]
-fn listener_identities_are_minted_here_and_never_repeat() {
-    // Two listeners on one address are still two listeners, and the identity is what tells them
-    // apart. Minted at construction, monotonic, and never handed to a transport to choose.
-    let first = Listener::new(Arc::new(Bound("0.0.0.0:0")));
-    let second = Listener::new(Arc::new(Bound("0.0.0.0:0")));
-    assert!(
-        second.id() > first.id(),
-        "identities go forward: {} then {}",
-        first.id(),
-        second.id()
-    );
 }
 
 #[test]
