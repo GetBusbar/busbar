@@ -44,6 +44,8 @@ pub struct Knobs {
     pub text: bool,
     /// `locate` answers this protocol offer (ProtocolNameList bytes).
     pub offer: Option<&'static [u8]>,
+    /// `locate` asked for the ACCEPTING side (`LocateIn::accept`) answers this offer instead.
+    pub accept_offer: Option<&'static [u8]>,
     /// Every frame piece the framing yields holds at most this many bytes, so one frame arrives
     /// in several pieces (the last ends it), as a line framer cuts a line its sink cannot hold.
     pub piece: Option<usize>,
@@ -295,7 +297,12 @@ impl FramerDoor for TestDoor {
                     }
                     o.name_written = name.len() as u64;
                 }
-                if let Some(offer) = self.knobs.offer {
+                let offer = if i.accept == 1 {
+                    self.knobs.accept_offer
+                } else {
+                    self.knobs.offer
+                };
+                if let Some(offer) = offer {
                     // SAFETY: host buffer of `alpn_cap` bytes; the test's offers fit.
                     unsafe {
                         std::ptr::copy_nonoverlapping(

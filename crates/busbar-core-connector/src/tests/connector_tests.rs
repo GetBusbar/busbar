@@ -1997,3 +1997,112 @@ fn a_pinned_metadata_literal_is_refused_at_declare() {
         Some(Err(ConnError::Refused))
     );
 }
+
+/// RED (INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.477-478; v1.5.5 `crates/busbar/src/tls.rs`:242): THE
+/// LISTENER'S PROTOCOL OFFER IS THE ENTRY'S OFFER FOR ITS ACCEPTING SIDE. An entry that dials
+/// offering `h2, http/1.1` and listens offering `http/1.1` alone answers the two apart, and a TLS
+/// client offering `h2, http/1.1` to the need's listener agrees `http/1.1`: never the dial offer,
+/// never the server config's own.
+#[test]
+fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    crate::tls::install_crypto_provider();
+    let door = TestDoor::new(
+        "sec",
+        &["sec"],
+        &[],
+        crate::support::Knobs {
+            secure_name: Some("localhost"),
+            offer: Some(b"\x02h2\x08http/1.1"),
+            accept_offer: Some(b"\x08http/1.1"),
+            ..crate::support::Knobs::default()
+        },
+    );
+    assert_eq!(
+        crate::framer::locate(&door, "127.0.0.1:443").unwrap().offer,
+        vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        "the dial offer"
+    );
+    assert_eq!(
+        crate::framer::accept_offer(&door).unwrap(),
+        vec![b"http/1.1".to_vec()],
+        "the accept offer is the entry's own, and not its dial offer"
+    );
+    let kp = rcgen::KeyPair::generate().unwrap();
+    let mut ca_params = rcgen::CertificateParams::new(Vec::new()).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca = ca_params.clone().self_signed(&kp).unwrap();
+    let issuer = rcgen::Issuer::new(ca_params, &kp);
+    let leaf = rcgen::CertificateParams::new(vec!["localhost".to_owned()])
+        .unwrap()
+        .signed_by(&kp, &issuer)
+        .unwrap();
+    let mut server = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![leaf.der().to_vec().into()],
+            rustls_pki_types::PrivateKeyDer::try_from(kp.serialize_der()).unwrap(),
+        )
+        .unwrap();
+    // The operator's config may pin its own offer; the listener's is the entry's.
+    server.alpn_protocols = vec![b"x-config".to_vec()];
+    let ca = ca.der().to_vec();
+    worker().block_on(async move {
+        let view = Transports::new(vec![Entry {
+            door: Arc::new(door),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_| {}));
+        c.declare_over(OWNER, NeedId(0), "sec")
+            .expect("a served scheme declares");
+        let addr = c
+            .listen(
+                OWNER,
+                NeedId(0),
+                "127.0.0.1:0",
+                Some(Arc::new(server)),
+                crate::listen::AcceptLimits::default(),
+            )
+            .expect("listens");
+        let client = tokio::spawn(async move {
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(ca.into()).unwrap();
+            let mut cfg = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            cfg.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+            let tls = tokio_rustls::TlsConnector::from(Arc::new(cfg));
+            let s = tokio::net::TcpStream::connect(addr).await.unwrap();
+            let name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+            let mut s = tls.connect(name, s).await.expect("the handshake completes");
+            let agreed = s.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
+            s.write_all(b"knock").await.unwrap();
+            let mut got = [0_u8; 1];
+            let _ = s.read(&mut got).await;
+            agreed
+        });
+        let id = loop {
+            match c.accept(OWNER, NeedId(0), 3) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                other => break other.expect("accepted").0,
+            }
+        };
+        let mut buf = [0_u8; 64];
+        let mut got = 0;
+        while got < 5 {
+            match c.read(OWNER, id, 3, &mut buf) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                Ok(p) => got += p.len,
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+        c.close(OWNER, id).unwrap();
+        let agreed = client.await.unwrap();
+        assert_eq!(
+            agreed.as_deref(),
+            Some(&b"http/1.1"[..]),
+            "the listener agreed off the entry's accept offer"
+        );
+    });
+}

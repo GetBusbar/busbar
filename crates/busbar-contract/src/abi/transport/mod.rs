@@ -938,6 +938,14 @@ pub struct LocateIn {
     pub alpn_buf: *mut u8,
     /// Its capacity.
     pub alpn_cap: usize,
+    /// `1` = answer the protocol offer an ACCEPTING listener makes in the handshake, for a listener
+    /// framed by this entry (`target` may be empty: a listener names no far end); `0` = the
+    /// offer a dial to `target` makes, as before. THE ALPN OFFER IS THE FRAMER'S on both sides
+    /// (`BUSBAR-1.6.0.md` l.477-478), and the two may differ (v1.5.5's client offered `h2,
+    /// http/1.1`, its listener `http/1.1` alone). A tail addition (pre-tag v1).
+    pub accept: u32,
+    /// Alignment padding.
+    pub _accept_reserved: u32,
 }
 
 /// `locate`'s `out`.
