@@ -3,6 +3,9 @@
   "requires": {
     "sections": [
       "agents"
+    ],
+    "features": [
+      "auth-admin-tokens"
     ]
   },
   "credentials": {
