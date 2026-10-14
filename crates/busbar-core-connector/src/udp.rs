@@ -106,6 +106,68 @@ impl UdpPort {
     }
 }
 
+/// A [`UdpPort`] on the calling worker's reactor (`io.register`): the port the connector drives.
+/// A read waits for the port's readiness, never a thread; a send that would block drops the
+/// datagram (a datagram is never queued: the far end's own retransmission is the recovery).
+#[derive(Debug)]
+pub struct ReadyPort {
+    socket: crate::io::Registered<UdpSocket>,
+    local: SocketAddr,
+}
+
+impl ReadyPort {
+    /// Put `port` on the calling worker's reactor.
+    ///
+    /// # Errors
+    ///
+    /// Not on a worker ([`crate::io::NOT_ON_A_WORKER`]), or the reactor refused it.
+    pub fn open(port: UdpPort) -> io::Result<ReadyPort> {
+        let local = port.local;
+        Ok(ReadyPort {
+            socket: crate::io::register(port.socket)?,
+            local,
+        })
+    }
+
+    /// The address the port is bound to.
+    #[must_use]
+    pub fn local_addr(&self) -> SocketAddr {
+        self.local
+    }
+
+    /// The next datagram into `buf` and the peer it came from; Pending with `cx`'s waker
+    /// registered until one arrives.
+    ///
+    /// # Errors
+    ///
+    /// The socket or the reactor failed.
+    pub fn poll_recv_from(
+        &self,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut [u8],
+    ) -> std::task::Poll<io::Result<(usize, SocketAddr)>> {
+        self.socket
+            .poll_io(crate::io::Direction::Read, cx, |s| s.recv_from(buf))
+    }
+
+    /// Send `datagram` to `to` now; `false` = the send buffer was full and it was dropped.
+    ///
+    /// # Errors
+    ///
+    /// The socket failed, or the datagram was sent short.
+    pub fn send_to(&self, datagram: &[u8], to: SocketAddr) -> io::Result<bool> {
+        match self.socket.get_ref().send_to(datagram, to) {
+            Ok(n) if n == datagram.len() => Ok(true),
+            Ok(_) => Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "datagram sent short",
+            )),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => Ok(false),
+            Err(e) => Err(e),
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/udp_tests.rs"]
 mod tests;
