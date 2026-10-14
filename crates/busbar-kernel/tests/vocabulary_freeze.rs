@@ -20,9 +20,9 @@
 //! Its own test binary on purpose: the freeze is a property of the process, so a test that takes it
 //! must not share a process with a test that needs the vocabulary open.
 
-use busbar_contract::Registration;
+use busbar_kernel::Registration;
 
-/// A registration built AFTER the freeze — the plugin-side one this is all about — resolves what
+/// A registration built AFTER the freeze — the late caller this is all about — resolves what
 /// boot registered and refuses everything else.
 #[test]
 fn a_registration_built_after_the_freeze_resolves_but_never_interns() {

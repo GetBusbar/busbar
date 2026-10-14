@@ -1437,7 +1437,7 @@ fn meter_class_of(class: &str) -> Option<busbar_contract::caps::MeterClassId> {
         .into_iter()
         .find(|reserved| *reserved == class)
         .map(busbar_contract::caps::MeterClassId::new)
-        .or_else(|| busbar_contract::Registration::meter_class(class))
+        .or_else(|| busbar_kernel::Registration::meter_class(class))
 }
 
 /// What one journalled posting leaves for the read-time totals.
@@ -2238,7 +2238,7 @@ pub fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>, Strin
     if record.class != RecordClass::Transaction {
         return Ok(None);
     }
-    from_journal_body(&record.body, &busbar_contract::Registration::meter_class)
+    from_journal_body(&record.body, &busbar_kernel::Registration::meter_class)
 }
 
 /// The journal body of a sealed checkpoint.

@@ -178,8 +178,8 @@ pub use grammar::{
 pub use ids::{
     AdminVerbId, BucketChain, BucketRef, BucketScope, CapDimension, ClaimKey, ClassDirection,
     ClassEstimate, CorrelationRef, CorrelationValue, Estimate, LaneId, MeterClassDecl,
-    MeterClassId, OpClassId, PrincipalId, RecordSchemaId, Registration, SchemeAlt, SchemeKey,
-    SessionId, StreamId, TransportId, UnitKey, UpstreamIdx, MAX_VOCABULARY,
+    MeterClassId, OpClassId, PrincipalId, RecordSchemaId, SchemeAlt, SchemeKey, SessionId,
+    StreamId, TransportId, UnitKey, UpstreamIdx,
 };
 pub use kinds::{
     Ack, Challenge, ChallengeState, ContentFacts, CredentialLocator, EnvelopeFields, Head,

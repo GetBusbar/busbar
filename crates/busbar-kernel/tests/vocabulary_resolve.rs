@@ -8,7 +8,8 @@
 //! must allocate nothing for a name nobody registered, with the vocabulary open or closed. Its own
 //! test binary, because the vocabulary is the process's.
 
-use busbar_contract::{MeterClassId, Registration};
+use busbar_contract::MeterClassId;
+use busbar_kernel::Registration;
 
 #[test]
 fn resolving_answers_what_registration_holds_and_interns_nothing() {

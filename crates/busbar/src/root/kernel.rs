@@ -5,7 +5,7 @@
 //!
 //! Three things the design draws have, until now, existed in the tree only as test doubles: an
 //! implementor of `busbar_kernel::teller::Units`, an implementor of
-//! `busbar_kernel::inflight::ArrivalDoor`, and a live `busbar_contract::Registration`. This file is
+//! `busbar_kernel::inflight::ArrivalDoor`, and a live `busbar_kernel::Registration`. This file is
 //! where the production ones live, and it is the only place in the workspace entitled to name all
 //! fourteen units at once.
 //!
@@ -81,12 +81,12 @@ pub fn new_kernel() -> busbar_kernel::teller::Kernel {
 /// Config-derived open-vocabulary keys — a lane, a pool, a model, a provider host, a dialect name,
 /// a loaded plugin's key — are leaked into `&'static str` exactly once, here, at registration. The
 /// resulting allocation is fixed and countable; a leak per connection or per dial is a defect
-/// rather than a variant of the rule. [`busbar_contract::Registration`] enforces the "exactly
+/// rather than a variant of the rule. [`busbar_kernel::Registration`] enforces the "exactly
 /// once, and never after boot" half itself: it is idempotent, and it refuses a new key once the
 /// image's vocabulary is frozen.
 #[must_use]
-pub fn new_registration() -> busbar_contract::Registration {
-    busbar_contract::Registration::new()
+pub fn new_registration() -> busbar_kernel::Registration {
+    busbar_kernel::Registration::new()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -973,7 +973,7 @@ pub(crate) fn card_from_raw(
 /// apply, both of which are registration time (config is finite). The reserved four, every installed
 /// plane's declared billable classes, and every open class a lane's `units:` names go into the
 /// process vocabulary, so a unit's one line can resolve the classes
-/// it reports by lookup ([`busbar_contract::Registration::resolve`]) and never intern one per unit.
+/// it reports by lookup ([`busbar_kernel::Registration::resolve`]) and never intern one per unit.
 pub(crate) fn register_classes(rates: &busbar_kernel::rate_apply::RawRates<'_>) {
     let mut registration = new_registration();
     for class in busbar_contract::records::RESERVED_UNITS {

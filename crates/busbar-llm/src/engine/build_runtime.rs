@@ -125,7 +125,7 @@ pub(crate) fn build_runtime(
     // registered, and interns a name the root has not reached yet at most once for the image. What
     // it buys is that the lane table is seated with its static names at BUILD time, off the request
     // path, and therefore before this generation can be published.
-    let mut registration = busbar_contract::Registration::new();
+    let mut registration = busbar_kernel::Registration::new();
 
     // ── lanes (one per model, in the carrier's deterministic sorted order — `lanes[i]` IS lane `i`) ──
     let mut lanes: Vec<Lane> = Vec::with_capacity(input.lanes.len());

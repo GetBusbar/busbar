@@ -101,7 +101,7 @@ pub use register::{plane_for_root, CAP_KEY};
 ///
 /// Borrowed for the life of the program, the same way `busbar-plane-llm::Upstream` is: the
 /// composition root interns every config-derived key once through
-/// [`busbar_contract::ids::Registration`] and hands over names that outlive it.
+/// the host's word interner (its `Registration`) and hands over names that outlive it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Upstream {
     /// The priced lane this upstream is reached on.
