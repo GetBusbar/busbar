@@ -33,8 +33,9 @@ use super::{
     MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
     RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL,
     ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM,
-    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES,
-    TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
+    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TAP_FAULT_NONE,
+    TAP_FAULT_UNKNOWN_PROTOCOL, TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH,
+    UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -449,7 +450,8 @@ fn verdict(outcome: Outcome, v: u32) -> Result<(), Fault> {
 }
 
 /// `on_piece`'s breaker fault reading: a known `FAULT_*` (the transport kind's one vocabulary), none
-/// on an answer that is not READY, and its padding zero.
+/// on an answer that is not READY, and its padding zero. Its usage-tap fault likewise: a known
+/// `TAP_FAULT_*`, none on an answer that is not READY.
 fn fault_reading(outcome: Outcome, out: &OnPieceOut) -> Result<(), Fault> {
     use crate::abi::transport::{FAULT_HARD, FAULT_NONE};
     code(
@@ -461,7 +463,16 @@ fn fault_reading(outcome: Outcome, out: &OnPieceOut) -> Result<(), Fault> {
     if out.fault != FAULT_NONE && outcome != Outcome::Ready {
         return Err(fault(Rule::Contradiction, "on_piece.fault_not_ready"));
     }
-    if out._fault_reserved != [0; 3] {
+    code(
+        u64::from(out.tap_fault),
+        0,
+        u64::from(TAP_FAULT_UNKNOWN_PROTOCOL),
+        "on_piece.tap_fault",
+    )?;
+    if out.tap_fault != TAP_FAULT_NONE && outcome != Outcome::Ready {
+        return Err(fault(Rule::Contradiction, "on_piece.tap_fault_not_ready"));
+    }
+    if out._fault_reserved != [0; 2] {
         return Err(fault(Rule::Contradiction, "on_piece.fault_reserved"));
     }
     Ok(())

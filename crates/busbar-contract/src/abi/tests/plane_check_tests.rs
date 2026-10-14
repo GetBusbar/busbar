@@ -1673,10 +1673,40 @@ fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
         f(Rule::Contradiction, "on_piece.fault_not_ready")
     );
     o.fault = FAULT_NONE;
-    o._fault_reserved = [0, 1, 0];
+    o._fault_reserved = [0, 1];
     assert_eq!(
         piece(&o, &[], &[], &[]),
         f(Rule::Contradiction, "on_piece.fault_reserved")
+    );
+}
+
+/// THE USAGE-TAP FAULT rides the answer as data (row 155): a known `TAP_FAULT_*` on a READY answer,
+/// beside the breaker reading and separate from it. RED arms: past `TAP_FAULT_UNKNOWN_PROTOCOL`, and
+/// on an answer that is not READY.
+#[test]
+fn a_usage_tap_fault_is_a_known_code_on_a_ready_answer() {
+    use crate::abi::plane::{
+        TAP_FAULT_BAD_JSON, TAP_FAULT_DECODE, TAP_FAULT_NONE, TAP_FAULT_UNKNOWN_PROTOCOL,
+    };
+    let mut o: OnPieceOut = z();
+    for code in [
+        TAP_FAULT_NONE,
+        TAP_FAULT_DECODE,
+        TAP_FAULT_BAD_JSON,
+        TAP_FAULT_UNKNOWN_PROTOCOL,
+    ] {
+        o.tap_fault = code;
+        assert_eq!(piece(&o, &[], &[], &[]), Ok(()), "{code}");
+    }
+    o.tap_fault = TAP_FAULT_UNKNOWN_PROTOCOL + 1;
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::UnknownCode, "on_piece.tap_fault")
+    );
+    o.tap_fault = TAP_FAULT_DECODE;
+    assert_eq!(
+        check_on_piece(Pending, &o, (&[], &[], &[]), &caps(), &bounds()),
+        f(Rule::Contradiction, "on_piece.tap_fault_not_ready")
     );
 }
 

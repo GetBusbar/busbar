@@ -65,8 +65,8 @@ use busbar_contract::abi::plane::{
     CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
     PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE, ROUTE_DIRECT,
-    ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR,
-    UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
+    ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, TAP_FAULT_NONE,
+    UNITS_FLOOR, UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
@@ -442,6 +442,9 @@ struct Answer {
     verdict: u32,
     /// `FAULT_*`: the breaker's reading of this answer, written once, on its first window.
     fault: u8,
+    /// `TAP_FAULT_*`: why the usage tap could not read the body, beside the units; written once,
+    /// on the first window, for the kernel to count (row 155).
+    tap_fault: u8,
     /// The caller's reply is complete.
     done: bool,
     /// The unit's audit rows, `(action, resource)`, each written as a degraded `RECORD_AUDIT`:
@@ -795,6 +798,9 @@ fn to_caller(piece: Piece<'_>) -> Answer {
         units: counts(&piece.units),
         verdict: verdict(piece.verdict),
         fault,
+        tap_fault: piece
+            .tap_fault
+            .map_or(TAP_FAULT_NONE, busbar_contract::codec::UsageTapFault::code),
         done: piece.done,
         ..Answer::default()
     }
@@ -1050,6 +1056,7 @@ fn deliver(
     out.set(|o| &o.verdict, p.answer.verdict);
     // Once per answer: a reading recorded on every window of a long answer would count it again.
     out.set(|o| &o.fault, std::mem::take(&mut p.answer.fault));
+    out.set(|o| &o.tap_fault, std::mem::take(&mut p.answer.tap_fault));
     out.set(|o| &o.flags, far | if done { EMIT_DONE } else { 0 });
     if !more {
         unit.pending = None;
