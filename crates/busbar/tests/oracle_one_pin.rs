@@ -108,6 +108,29 @@ fn the_engine_clone_stores_no_token_and_builds_locked() {
     );
 }
 
+/// THE JUDGE IS THE PINNED DIGEST'S OR THERE IS NONE (OWNER 2026-10-13: no hand-installed tools).
+/// On Linux `bin/oracle` fetches busbar-release's published `busbar-oracle-linux-<arch>-<ref>` and
+/// runs it only when its sha256 is the BASE pin's line for this architecture; a `.sig` beside it must
+/// be the release key's. `bin/oracle fetch-selftest` proves, offline: the pinned judge is fetched and
+/// cached, a wrong sha256 refuses, a pin with no line for this architecture has "no judge", a
+/// disagreeing `.sha256` and another key's `.sig` refuse, and the base's pin wins over the tree's.
+#[test]
+fn the_fetched_judge_is_the_pinned_digests_or_none() {
+    let shim = repo_root().join("bin/oracle");
+    let out = std::process::Command::new("bash")
+        .arg(&shim)
+        .arg("fetch-selftest")
+        .current_dir(repo_root())
+        .output()
+        .expect("run bin/oracle fetch-selftest");
+    assert!(
+        out.status.success(),
+        "bin/oracle fetch-selftest failed:\n{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 /// NO ARM EXECS AN ENGINE SUBCOMMAND THE PIN NO LONGER HAS: busbar-release #272 deleted the
 /// engine's `owed-baseline` and `replay` subcommands, so `bin/oracle owed-baseline` and the generated
 /// `$BUSBAR_ORACLE_TOOL_DIR/replay.sh` (`exec busbar-oracle replay`) could only end in clap's

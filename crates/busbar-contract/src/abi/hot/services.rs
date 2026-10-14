@@ -4,19 +4,20 @@
 //! THE HOST SERVICES ACROSS THE HOT SEAM (minor 30; ARCHITECT SD-3 queue (6), DEC-SERVE G2).
 //!
 //! The contract ports a codec reaches — [`fill_entropy`](crate::codec::fill_entropy),
-//! [`wall_clock_now`](crate::codec::wall_clock_now),
-//! [`usage_tap_fault_should_warn`](crate::codec::usage_tap_fault_should_warn) and
+//! [`wall_clock_now`](crate::codec::wall_clock_now) and
 //! [`max_translate_body_bytes`](crate::codec::max_translate_body_bytes) — are process-wide
 //! `OnceLock`s the host arms in ITS image. A plane LINKED into the host shares that image, so it
 //! reads the host's services. A plane DROPPED IN as a `cdylib` carries its own copy of this crate,
 //! whose ports nothing armed: it read the failure path of every one (a synthesized id with no
-//! entropy, an unstamped time, a latch that never warns, the default cap instead of the operator's).
+//! entropy, an unstamped time, the default cap instead of the operator's). A usage-tap fault is no
+//! port: the plane returns it as data on its answer (`abi::plane::OnPieceOut::tap_fault`), and the
+//! `tap_fault_latch` slot is served and armed by no one.
 //!
 //! Two halves, one file, because they are one contract:
 //!
-//! * **HOST side** — `entropy_fill`, `wall_clock`, `tap_fault_latch`, `translate_cap`: the
-//!   four slots of [`PlaneHostVtable::SERVICES`], each answering from THIS image's own ports, which
-//!   the host armed. A host that builds its table over `SERVICES` adds no code of its own.
+//! * **HOST side** — `entropy_fill`, `wall_clock`, `translate_cap`: the three service slots of
+//!   [`PlaneHostVtable::SERVICES`], each answering from THIS image's own ports, which the host
+//!   armed. A host that builds its table over `SERVICES` adds no code of its own.
 //! * **PLANE side** — [`arm`]: run in a dropped-in plane's image (the door's `busbar_plane_arm`
 //!   symbol, which the host calls when it opens the door), it installs that image's ports over the
 //!   host's slots, so a codec in the plane reads the host's services exactly as a linked codec does.
@@ -26,7 +27,7 @@ use super::pod::StatusClass;
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-// ── HOST SIDE: the four slots, served from this image's armed contract ports ────────────────────────
+// ── HOST SIDE: the three slots, served from this image's armed contract ports ───────────────────────
 
 /// `entropy_fill` — fill `out_len` bytes at `out` through [`crate::codec::fill_entropy`].
 pub(crate) extern "C-unwind" fn entropy_fill(
@@ -59,76 +60,10 @@ pub(crate) extern "C-unwind" fn wall_clock(_host: HostCtx) -> u64 {
     catch_unwind(|| crate::codec::wall_clock_now().unwrap_or(0)).unwrap_or(0)
 }
 
-/// `tap_fault_latch` — [`crate::codec::usage_tap_fault_should_warn`] over the two borrowed ranges.
-/// The port takes the reason as `&'static str` (a codec names its reasons as constants), so a
-/// reason crossing from a plane image is kept once per distinct spelling, up to [`REASON_CAP`];
-/// past the cap every new spelling counts as [`UNLISTED_REASON`], so a plane cannot grow the host's
-/// memory or its label set without bound.
-pub(crate) extern "C-unwind" fn tap_fault_latch(
-    _host: HostCtx,
-    protocol_ptr: *const u8,
-    protocol_len: usize,
-    reason_ptr: *const u8,
-    reason_len: usize,
-) -> bool {
-    catch_unwind(|| {
-        // SAFETY (both): each range is live and initialized for the call (the slot's discipline).
-        let (Some(protocol), Some(reason)) =
-            (unsafe { utf8(protocol_ptr, protocol_len) }, unsafe {
-                utf8(reason_ptr, reason_len)
-            })
-        else {
-            return false;
-        };
-        crate::codec::usage_tap_fault_should_warn(protocol, kept(reason))
-    })
-    .unwrap_or(false)
-}
-
 /// `translate_cap` — [`crate::codec::max_translate_body_bytes`].
 pub(crate) extern "C-unwind" fn translate_cap(_host: HostCtx) -> u64 {
     catch_unwind(|| crate::codec::max_translate_body_bytes() as u64)
         .unwrap_or(crate::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT as u64)
-}
-
-/// How many distinct usage-tap reasons the host keeps for planes (a codec declares a handful).
-pub const REASON_CAP: usize = 64;
-
-/// The reason every spelling past [`REASON_CAP`] counts as.
-pub const UNLISTED_REASON: &str = "unlisted";
-
-/// `reason`, kept for the life of the process (once per spelling; see [`tap_fault_latch`]), in a
-/// fixed table of [`REASON_CAP`] process-lifetime slots — nothing is leaked, and the table cannot grow.
-fn kept(reason: &str) -> &'static str {
-    static KEPT: [std::sync::OnceLock<String>; REASON_CAP] =
-        [const { std::sync::OnceLock::new() }; REASON_CAP];
-    static FILLING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let _filling = FILLING
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    for slot in &KEPT {
-        match slot.get() {
-            Some(kept) if kept == reason => return kept.as_str(),
-            Some(_) => {}
-            None => return slot.get_or_init(|| reason.to_owned()).as_str(),
-        }
-    }
-    UNLISTED_REASON
-}
-
-/// A borrowed range as UTF-8; `None` for a NULL range with a length, or bytes that are not UTF-8.
-///
-/// # Safety
-/// A non-null `ptr` must address `len` live, initialized bytes for `'a`.
-unsafe fn utf8<'a>(ptr: *const u8, len: usize) -> Option<&'a str> {
-    if len == 0 {
-        return Some("");
-    }
-    if ptr.is_null() {
-        return None;
-    }
-    // SAFETY: the caller's obligation.
-    std::str::from_utf8(unsafe { core::slice::from_raw_parts(ptr, len) }).ok()
 }
 
 // ── PLANE SIDE: arm this image's ports over the host's slots ────────────────────────────────────────
@@ -168,15 +103,12 @@ pub unsafe fn arm(host: *const PlaneHostVtable) -> StatusClass {
     }
     ARMED_SIZE.store(size, Ordering::Release);
     ARMED.store(host.cast_mut(), Ordering::Release);
-    // SAFETY (all four): `host`/`size` are what `check` just validated.
+    // SAFETY (all three): `host`/`size` are what `check` just validated.
     if crate::host_slot!(host, size, entropy_fill).is_some() {
         crate::codec::install_entropy_source(armed_entropy);
     }
     if crate::host_slot!(host, size, wall_clock).is_some() {
         crate::codec::install_wall_clock(armed_wall_clock);
-    }
-    if crate::host_slot!(host, size, tap_fault_latch).is_some() {
-        crate::codec::install_usage_tap_fault_latch(armed_tap_fault_latch);
     }
     if crate::host_slot!(host, size, translate_cap).is_some() {
         crate::codec::install_translate_cap_reader(armed_translate_cap);
@@ -208,22 +140,6 @@ fn armed_wall_clock() -> u64 {
     armed()
         .and_then(|(host, size)| crate::host_slot!(host, size, wall_clock))
         .map_or(0, |now| now(HostCtx::NULL))
-}
-
-/// The usage-tap latch port, forwarded through the host's `tap_fault_latch`.
-fn armed_tap_fault_latch(protocol: &str, reason: &'static str) -> bool {
-    // SAFETY: as `armed_entropy`.
-    armed()
-        .and_then(|(host, size)| crate::host_slot!(host, size, tap_fault_latch))
-        .is_some_and(|latch| {
-            latch(
-                HostCtx::NULL,
-                protocol.as_ptr(),
-                protocol.len(),
-                reason.as_ptr(),
-                reason.len(),
-            )
-        })
 }
 
 /// The translate-cap port, forwarded through the host's `translate_cap`.
