@@ -4,70 +4,11 @@
 //! Tests for `crates/plugin-loader/src/lib.rs`.
 
 use super::*;
-use busbar_contract::abi::cold::TRANSPORT_VERSION;
 
 /// The 1.5.5 store payload schema (v2). No loaded plugin states it since THE DESIGN §11.8 (the
 /// registry refuses it at boot, ruling C21/ABI-o1); the store adapter's shim suites bind an adapter
 /// at it to pin the schema-keyed shim rule.
 const PUBLISHED_STORE_SCHEMA: u32 = 2;
-
-/// The REAL plugin the loader-MECHANISM tests below dlopen (validation, inventory): the `auth` row
-/// of `[package.metadata.busbar.both-ways]`, the token-verifying OIDC module's dropped-in `cdylib`.
-/// It is on the auth kind's memory ABI (its row is a door row, and the table names its logic crate,
-/// so its cdylib is `<logic>_plugin`); every SDK-built library answers the plugin-ABI handshake
-/// these tests drive (`busbar_abi`, `busbar_plugin_kind` and the operational symbols). A missing
-/// cdylib is a hard failure naming the command that builds it ([`super::both_ways::cdylib`]), never
-/// a silent skip.
-fn handshake_plugin_path() -> std::path::PathBuf {
-    let (logic, _) = super::both_ways::door_fixture("auth");
-    super::both_ways::cdylib(&format!("{logic}_plugin"))
-}
-
-/// `validate_plugin` accepts the real handshake fixture cdylib (transport version 1) without constructing an
-/// instance, and `inventory` finds it in a plugins directory as valid.
-///
-/// The directory is a fresh one holding a copy of the fixture, not the fixture's own directory: the
-/// in-tree fixture lives in cargo's profile dir (or its `deps/`), where `inventory` would dlopen
-/// every proc-macro and dependency dylib cargo put there.
-#[test]
-fn validate_and_inventory() {
-    let path = handshake_plugin_path();
-    assert_eq!(validate_plugin(&path).expect("validate"), TRANSPORT_VERSION);
-
-    let file = path.file_name().unwrap().to_owned();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-validate-inventory-{}-{}",
-        std::process::id(),
-        {
-            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            format!(
-                "{}-{}-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_nanos()),
-                line!(),
-                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            )
-        }
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::copy(&path, dir.join(&file)).unwrap();
-    let inv = inventory(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
-    let fixture = inv
-        .iter()
-        .find(|p| std::ffi::OsStr::new(&p.file) == file)
-        .expect("the handshake fixture in inventory");
-    assert!(fixture.valid);
-    assert_eq!(fixture.abi_version, Some(TRANSPORT_VERSION));
-    assert!(fixture.error.is_none());
-}
-
-/// `inventory` of a missing directory is empty, not an error.
-#[test]
-fn inventory_missing_dir_is_empty() {
-    assert!(inventory(Path::new("/no/such/plugins/dir")).is_empty());
-}
 
 /// `intern_name` reuses the SAME allocation for repeated sightings of the same name (that's the
 /// whole point - bounding the leak to one per distinct name), while two DIFFERENT names get
@@ -121,8 +62,8 @@ fn is_library_file_matches_only_this_platforms_extension() {
 }
 
 /// `list_plugin_files` lists only library-extension files, sorted, and NEVER dlopens anything
-/// (so it must return real filenames even for a garbage/non-plugin library file that would fail
-/// `validate_plugin`).
+/// (so it must return real filenames even for a garbage/non-plugin library file no loader would
+/// take).
 #[test]
 fn list_plugin_files_filters_to_libraries_only_and_sorts() {
     let dir = std::env::temp_dir().join(format!(
@@ -208,112 +149,29 @@ fn the_library_extension_match_uses_this_filesystems_case_rule() {
     );
 }
 
-/// `inventory` reports BOTH a real valid plugin AND a garbage same-extension file in the same
-/// directory, correctly distinguishing valid=true/false rather than silently dropping the
-/// invalid one or crashing on it.
-#[test]
-fn inventory_reports_valid_and_invalid_libraries_in_the_same_directory() {
-    let real_plugin = handshake_plugin_path();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-inventory-mixed-{}-{}",
-        std::process::id(),
-        {
-            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            format!(
-                "{}-{}-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_nanos()),
-                line!(),
-                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            )
-        }
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    let ext = if cfg!(target_os = "windows") {
-        ".dll"
-    } else if cfg!(target_os = "macos") {
-        ".dylib"
-    } else {
-        ".so"
-    };
-    std::fs::copy(&real_plugin, dir.join(format!("real{ext}"))).unwrap();
-    std::fs::write(dir.join(format!("garbage{ext}")), b"not a real library").unwrap();
-    std::fs::write(dir.join("readme.txt"), b"ignored: not a library extension").unwrap();
-    let mut items = inventory(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
-    items.sort_by(|a, b| a.file.cmp(&b.file));
-    assert_eq!(
-        items.len(),
-        2,
-        "readme.txt must be excluded entirely: {items:?}"
-    );
-    let garbage = items
-        .iter()
-        .find(|i| i.file.starts_with("garbage"))
-        .unwrap();
-    assert!(!garbage.valid);
-    assert!(garbage.error.is_some());
-    let real = items.iter().find(|i| i.file.starts_with("real")).unwrap();
-    assert!(real.valid, "the real plugin must validate: {real:?}");
-    assert_eq!(real.abi_version, Some(TRANSPORT_VERSION));
-}
-
 /// NO LEGACY LOADING at the loader-mechanism paths (THE DESIGN §11.8, ruling C21/ABI-o1): a library
 /// with no `busbar_plugin_door` that states a JSON-contract kind by its `busbar_plugin_kind` symbol
-/// alone is a 1.5.5-era plugin. The symbol only CLASSIFIES it: the upload vet refuses it and the
-/// plugins inventory lists it invalid, each naming the missing door and the rebuild. (No JSON-lane
-/// kind gate is left to admit it: a library loads only through its door.)
+/// alone is a 1.5.5-era plugin. The symbol only CLASSIFIES it: the kind read refuses it, naming the
+/// missing door, the kind it states and the rebuild. (No JSON-lane kind gate is left to admit it: a
+/// library loads only through its door.)
 ///
-/// RED against a loader that takes a kind symbol on its word: every handshake and kind check
-/// passes, so the vet answers `Ok` and the inventory lists it valid.
+/// RED against a loader that takes a kind symbol on its word: the read answers the kind it states.
 #[test]
 fn a_door_less_json_contract_library_is_refused_naming_the_rebuild() {
     let path = super::both_ways::example_cdylib("json_contract_auth");
-    let names_the_rebuild = |why: &str| {
-        assert!(
-            why.contains("busbar_plugin_door"),
-            "names the missing door: {why}"
-        );
-        assert!(why.contains("'auth'"), "names the kind it states: {why}");
-        assert!(
-            why.contains(crate::dispatch::load::REBUILD),
-            "names the rebuild: {why}"
-        );
-    };
-
-    // The upload vet.
-    let vet = validate_plugin(&path).expect_err("the upload vet refuses a door-less library");
-    names_the_rebuild(&vet);
-
-    // The plugins inventory.
-    let file = path.file_name().unwrap().to_owned();
-    let dir = std::env::temp_dir().join(format!(
-        "busbar-inventory-json-contract-{}-{}",
-        std::process::id(),
-        {
-            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-            format!(
-                "{}-{}-{}",
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |d| d.as_nanos()),
-                line!(),
-                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            )
-        }
-    ));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::copy(&path, dir.join(&file)).unwrap();
-    let inv = inventory(&dir);
-    let _ = std::fs::remove_dir_all(&dir);
-    let listed = inv
-        .iter()
-        .find(|p| std::ffi::OsStr::new(&p.file) == file)
-        .expect("the door-less library is listed");
-    assert!(!listed.valid, "listed invalid: {listed:?}");
-    assert_eq!(listed.abi_version, None, "{listed:?}");
-    names_the_rebuild(listed.error.as_deref().expect("listed with its refusal"));
+    let lib = dlopen_on_worker(path.as_os_str()).expect("the fixture maps");
+    let why = read_plugin_kind(&lib, &path.display().to_string())
+        .expect_err("a door-less library's kind symbol is refused");
+    dlclose_on_worker(lib);
+    assert!(
+        why.contains("busbar_plugin_door"),
+        "names the missing door: {why}"
+    );
+    assert!(why.contains("'auth'"), "names the kind it states: {why}");
+    assert!(
+        why.contains(crate::dispatch::load::REBUILD),
+        "names the rebuild: {why}"
+    );
 }
 
 #[test]
@@ -326,33 +184,6 @@ fn plugin_library_filename_matches_this_platforms_naming_convention() {
     } else {
         assert_eq!(name, "libbusbar_foo_plugin.so");
     }
-}
-
-/// `validate_plugin` must UNLOAD on a plugin worker, not on the caller's thread.
-///
-/// It `dlopen`s to run the ABI handshake and then has to unmap again. An implicit drop of the
-/// `Library` local does that `dlclose` on the CALLER's thread, which runs the image's `.fini_array`
-/// there; a `.fini_array` that touches a plugin-side `thread_local!` with a destructor arms the
-/// plugin's `pthread_key` on that thread, and when that thread retires (libtest spawns and retires
-/// one per test; Tokio does the same with blocking workers) `__nptl_deallocate_tsd` calls the
-/// destructor inside the image validation just unmapped. That is the exact crash `ffi_thread`
-/// exists to make impossible, and this admin-facing path — `GET /admin/plugins` inventory and the
-/// upload vet — is reached per scrape, not once per boot.
-///
-/// The routed-unload COUNT is the assertion because the return value cannot see any of this: a
-/// caller-thread unload validates just as successfully as a worker unload, right up until a thread
-/// exits.
-#[test]
-fn validate_plugin_unloads_on_a_worker_not_the_callers_thread() {
-    let path = handshake_plugin_path();
-    let before = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
-    validate_plugin(&path).expect("the handshake fixture validates");
-    let after = UNLOADS_ON_WORKER.with(std::cell::Cell::get);
-    assert!(
-        after > before,
-        "validate_plugin unloaded the library WITHOUT routing it through dlclose_on_worker, so the \
-         image's .fini_array ran on the caller's thread"
-    );
 }
 
 #[path = "ffi_guard_tests.rs"]
