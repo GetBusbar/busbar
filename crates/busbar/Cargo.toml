@@ -105,7 +105,7 @@ busbar-plane-streaming = { path = "../busbar-plane-streaming" }
 # registry row is the door's own Statement folded by the kernel and the composition root writes no
 # declaration of its own. Optional, so `--no-default-features` installs no plane at all, which is the
 # property the strong-form deletion test is written about.
-busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
+busbar-plane-decisions = { workspace = true, optional = true }
 # THE DEFAULT STORE (`governance.store: memory`), linked in every build through the `stores` axis —
 # the same row a dropped-in store takes, opened in process. The kernel names no store.
 busbar-store-memory = { workspace = true }
@@ -279,7 +279,7 @@ transport-tcp = []
 # compiles it out. On, the plane's door (`busbar_plane_decisions::plane_door::door`) is a `plane-door`
 # row: the root hands it to the loader beside every dropped-in plane door and binds it through the one
 # load on the one dispatcher, so the compiled-in plane is called through the same table as its
-# dropped-in cdylib (`decisions_door`; #2, #30; THE DESIGN section 11.4), its Statement folds into the
+# dropped-in cdylib (`busbar-plane-decisions-plugin`; #2, #30; THE DESIGN section 11.4), its Statement folds into the
 # plane's registry row (the `decisions:` section judged by the door's own `validate`), and the serve
 # path hands it its arrivals through the plane driver.
 plane-decisions = ["dep:busbar-plane-decisions"]

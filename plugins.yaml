@@ -476,10 +476,9 @@ plugins:
     gate: suite
     description: "First-party signed kind:plane plugin cdylib: the decisions plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "plane-decisions/declares.json"
-    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
-    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    # Moved out of busbar into its own repo (P5); busbar LINKS it at a pinned rev. Its first release
+    # is cut with the core version that pins it.
     released: false
-    pending_crate: true
   - repo: busbar-transport-http
     kind: transport
     alias: http
