@@ -230,7 +230,7 @@ fn a_listener_mixing_peer_and_non_peer_lines_is_refused() {
     let Err(GuestRefusal::PeerMix(mix)) = GuestList::seal(vec![
         authed("a", "/a", both),
         authed("b", "/b", AuthPoints::HEAD),
-        line("c", route(METHOD_GET, PATH_EXACT, "/c")),
+        line("open", route(METHOD_GET, PATH_EXACT, "/open")),
     ]) else {
         panic!("a mixed listener is refused");
     };
@@ -258,7 +258,7 @@ fn a_listener_mixing_peer_and_non_peer_lines_is_refused() {
         GuestList::seal(vec![
             authed("a", "/a", AuthPoints::HEAD),
             authed("b", "/b", AuthPoints::HEAD_BODY),
-            line("c", route(METHOD_GET, PATH_EXACT, "/c")),
+            line("open", route(METHOD_GET, PATH_EXACT, "/open")),
         ])
         .is_ok(),
         "no line needs Peer"
