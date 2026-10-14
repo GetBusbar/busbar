@@ -47,8 +47,10 @@ pub const PLANE_KEYS: [&str; 2] = ["llm", "a2a"];
 /// `busbar-plane-<key>` and is located by its door row ([`door_planes`]). Twin of
 /// `scripts/plane-keys.sh`'s `PLANE_KEYS_KIND_ONLY`. A roster that must notice a plane VANISHING
 /// (structure-lint's plane-roots row) reads these beside [`PLANE_KEYS`]: leaving the legacy roster
-/// must not take a plane off the roster that refuses an unlocatable plane.
-pub const PLANE_KEYS_KIND_ONLY: [&str; 1] = ["mcp"];
+/// must not take a plane off the roster that refuses an unlocatable plane. `streaming` joined when
+/// FLIP-STREAMING took `voice` off [`PLANE_KEYS`]: `crates/busbar-voice` is deleted and the plane is
+/// `busbar-plane-streaming`, located by its `plane-streaming` door row.
+pub const PLANE_KEYS_KIND_ONLY: [&str; 2] = ["mcp", "streaming"];
 
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.

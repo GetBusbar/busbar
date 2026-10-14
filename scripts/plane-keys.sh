@@ -57,10 +57,11 @@
 PLANE_KEYS="llm a2a"
 
 # PLANE_KEYS_KIND_ONLY — plane keys whose plane has NO legacy-engine crate any more and lives only in
-# its plane-kind crate `crates/busbar-plane-<key>` (P3 DEL-MCP, ARCHITECT 2026-10-05: `mcp`). Never a
+# its plane-kind crate `crates/busbar-plane-<key>` (P3 DEL-MCP, ARCHITECT 2026-10-05: `mcp`;
+# FLIP-STREAMING: `streaming`, whose legacy crate was `crates/busbar-voice`). Never a
 # `crates/busbar-<key>` root; STILL a plane noun, so a needle gate that bans the other planes' keys
 # keeps banning it (`plane_noun_keys_other`). Leaving PLANE_KEYS must not let the word in.
-PLANE_KEYS_KIND_ONLY="mcp"
+PLANE_KEYS_KIND_ONLY="mcp streaming"
 
 # The protocol subset: every plane key except `llm`. Derived from PLANE_KEYS so adding a plane in
 # one place flows here automatically.

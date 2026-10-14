@@ -326,6 +326,32 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         ),
     }
 
+    // The same for STREAMING since FLIP-STREAMING: `voice` left the legacy roster with
+    // `crates/busbar-voice`, and the plane's door row is all that locates it. Without `streaming` on
+    // the kind-only roster, taking that row's `plane-door` axis off would drop the plane from the
+    // roster in silence.
+    match cx.read(&manifest_rel) {
+        Ok(text) if text.contains("plane-streaming = \"plane-door\"") => {
+            let mut ov = Overlay::new();
+            ov.set(
+                &manifest_rel,
+                text.replace("plane-streaming = \"plane-door\"", "plane-streaming = \"\""),
+            );
+            report.push(tree_case(
+                cx,
+                gate,
+                "the streaming plane whose door row left the manifest is refused, not silently unscanned",
+                &[roots::ROW_PLANE_ROOTS],
+                ov,
+                &["PLANE-ROOT-MISSING", "streaming"],
+            ));
+        }
+        _ => report.note_infra_failure(
+            "structure-lint selftest: the manifest carries no `plane-streaming = \"plane-door\"` row, \
+             so the streaming plane's plane-root rule has nothing to plant against",
+        ),
+    }
+
     // A PLANE THE OLD CONSTANT NEVER NAMED (item 224). `PLANES` was `["mcp", "a2a"]`, so a second
     // home for voice could not be reported: the row "every plane resolves to exactly one home" was
     // true of the two planes it had been given. A second declaration of voice, in a directory named
