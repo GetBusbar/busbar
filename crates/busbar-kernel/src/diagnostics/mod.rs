@@ -710,39 +710,38 @@ pub const SELF_SUBJECT_UNSAFE: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// A configured egress API key contains bytes invalid for an HTTP header value.
+/// A configured egress API key contains bytes invalid for a header value — RETIRED: nothing in the
+/// tree raises it. The number is kept so a log line from a pre-release build still resolves.
 pub const EGRESS_APIKEY_INVALID_BYTES: Diagnostic = Diagnostic {
     code: 4013,
     class: Class::Auth,
     slug: "egress-apikey-invalid-bytes",
-    title: "Egress API key contains invalid header bytes (auth header omitted)",
+    title: "Egress API key contains invalid header bytes (auth header omitted) — RETIRED",
     severity: Severity::Actionable,
-    summary: "A configured egress credential (a static `api-key`/`x-goog-api-key`) contains bytes \
-              that are invalid in an HTTP header value (typically an ASCII control character), so \
-              busbar omits the auth header entirely and the upstream will reject with 401. The \
-              credential is misconfigured.",
-    action: "Fix the configured egress credential — remove stray whitespace/control characters \
-             (often a trailing newline from how the secret was pasted or injected). Requests to \
-             that upstream 401 until the key is a valid header value.",
+    summary:
+        "RETIRED. A configured static egress credential contained bytes that are invalid in a \
+              header value, so the auth header was omitted and the upstream rejected the request. \
+              Nothing raises this code.",
+    action: "Nothing emits this code.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
-/// A minted OAuth token contains bytes invalid for an HTTP header value.
+/// A minted OAuth token contains bytes invalid for a header value — RETIRED: nothing in the tree
+/// raises it. The number is kept so a log line from a pre-release build still resolves.
 pub const EGRESS_OAUTH_TOKEN_INVALID_BYTES: Diagnostic = Diagnostic {
     code: 4014,
     class: Class::Auth,
     slug: "egress-oauth-token-invalid-bytes",
-    title: "Minted OAuth token contains invalid header bytes (auth header omitted)",
+    title: "Minted OAuth token contains invalid header bytes (auth header omitted) — RETIRED",
     severity: Severity::Actionable,
-    summary: "An OAuth token minted for egress contains bytes invalid in an HTTP header value, so \
-              busbar omits the `Bearer` auth header and the upstream will reject with 401. Fires on \
-              mint (per refresh), not per request, and is near-unreachable for a well-formed token \
-              endpoint.",
-    action: "Investigate the OAuth token endpoint — it returned an access token with control or \
-             non-ASCII bytes. Requests to that upstream 401 until it mints a header-safe token.",
+    summary:
+        "RETIRED. An OAuth token minted for egress contained bytes invalid in a header value, \
+              so the `Bearer` auth header was omitted and the upstream rejected the request. Nothing \
+              raises this code.",
+    action: "Nothing emits this code.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 /// The OAuth token endpoint returned a 200 with an empty access_token. Warn-once (latched).
@@ -2426,7 +2425,7 @@ pub const ADMIN_STORE_OPERATION_FAILED: Diagnostic = Diagnostic {
     severity: Severity::Actionable,
     summary: "An admin API CRUD or read operation against the governance/durable store returned an \
               error, so busbar answers the admin request with a generic 500. The store's own error \
-              (which may embed SQL fragments or backend paths) is logged server-side only — the HTTP \
+              (which may embed SQL fragments or backend paths) is logged server-side only — the response \
               body carries no store internals. The `operation` field names which call failed.",
     action: "Investigate the durable/governance store's health and reachability for the named \
              operation. A transient store hiccup self-heals on retry; sustained failures mean the \
@@ -2906,7 +2905,7 @@ pub const CONFIG_RATE_CARD_ALL_ZERO: Diagnostic = Diagnostic {
 };
 
 /// A provider `error_map` entry names a status class busbar does not recognize; the mapping is
-/// ignored and classification falls through to the HTTP status.
+/// ignored and classification falls through to the upstream status.
 pub const CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED: Diagnostic = Diagnostic {
     code: 3022,
     class: Class::Config,
@@ -2916,12 +2915,12 @@ pub const CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED: Diagnostic = Diagnostic {
     summary: "A provider's `error_map` maps an upstream error code or structured type to a string \
               that is not one of busbar's status classes (rate_limit, overloaded, server_error, \
               timeout, network, auth, billing, client_error, context_length). The mapping is \
-              IGNORED and the error is classified from its HTTP status instead, so a typo'd entry \
+              IGNORED and the error is classified from its upstream status instead, so a typo'd entry \
               (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized \
               value for the life of the process, on the first error that reaches it — never at \
               boot, so a deployment whose providers never fail never sees this line.",
     action: "Correct the named `error_map` value to one of the nine status classes, or remove the \
-             entry if the built-in HTTP-status classification is what you want.",
+             entry if the built-in status classification is what you want.",
     since: "1.6.0",
     retired: false,
 };

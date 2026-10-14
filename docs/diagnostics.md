@@ -68,7 +68,7 @@ A durable-chain sequence number is no longer in the in-memory ring (it was prune
 - **Since:** 1.6.0
 - **Slug:** `admin-store-operation-failed`
 
-An admin API CRUD or read operation against the governance/durable store returned an error, so busbar answers the admin request with a generic 500. The store's own error (which may embed SQL fragments or backend paths) is logged server-side only — the HTTP body carries no store internals. The `operation` field names which call failed.
+An admin API CRUD or read operation against the governance/durable store returned an error, so busbar answers the admin request with a generic 500. The store's own error (which may embed SQL fragments or backend paths) is logged server-side only — the response body carries no store internals. The `operation` field names which call failed.
 
 **What to do:** Investigate the durable/governance store's health and reachability for the named operation. A transient store hiccup self-heals on retry; sustained failures mean the store backend is unhealthy and admin mutations/reads cannot complete.
 
@@ -446,9 +446,9 @@ One of the 1.5.x environment overrides (BUSBAR_PROVIDERS, BUSBAR_CONFIG_OVERLAY,
 - **Since:** 1.6.0
 - **Slug:** `config-error-map-class-unrecognized`
 
-A provider's `error_map` maps an upstream error code or structured type to a string that is not one of busbar's status classes (rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length). The mapping is IGNORED and the error is classified from its HTTP status instead, so a typo'd entry (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized value for the life of the process, on the first error that reaches it — never at boot, so a deployment whose providers never fail never sees this line.
+A provider's `error_map` maps an upstream error code or structured type to a string that is not one of busbar's status classes (rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length). The mapping is IGNORED and the error is classified from its upstream status instead, so a typo'd entry (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized value for the life of the process, on the first error that reaches it — never at boot, so a deployment whose providers never fail never sees this line.
 
-**What to do:** Correct the named `error_map` value to one of the nine status classes, or remove the entry if the built-in HTTP-status classification is what you want.
+**What to do:** Correct the named `error_map` value to one of the nine status classes, or remove the entry if the built-in status classification is what you want.
 
 <a id="config-overlay-rejected"></a>
 ### BUSBAR-3023 — Config overlay rejected at read (the reason, naming the key and the file)
@@ -596,26 +596,26 @@ A token-exchange request presented a principal id that is unsafe as a self-serve
 **What to do:** None — self-heals; the client must present a valid subject id. If a legitimate identity is being rejected, its id needs to be reshaped to avoid the reserved prefixes and separators.
 
 <a id="egress-apikey-invalid-bytes"></a>
-### BUSBAR-4013 — Egress API key contains invalid header bytes (auth header omitted)
+### BUSBAR-4013 — Egress API key contains invalid header bytes (auth header omitted) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `egress-apikey-invalid-bytes`
 
-A configured egress credential (a static `api-key`/`x-goog-api-key`) contains bytes that are invalid in an HTTP header value (typically an ASCII control character), so busbar omits the auth header entirely and the upstream will reject with 401. The credential is misconfigured.
+RETIRED. A configured static egress credential contained bytes that are invalid in a header value, so the auth header was omitted and the upstream rejected the request. Nothing raises this code.
 
-**What to do:** Fix the configured egress credential — remove stray whitespace/control characters (often a trailing newline from how the secret was pasted or injected). Requests to that upstream 401 until the key is a valid header value.
+**What to do:** Nothing emits this code.
 
 <a id="egress-oauth-token-invalid-bytes"></a>
-### BUSBAR-4014 — Minted OAuth token contains invalid header bytes (auth header omitted)
+### BUSBAR-4014 — Minted OAuth token contains invalid header bytes (auth header omitted) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `egress-oauth-token-invalid-bytes`
 
-An OAuth token minted for egress contains bytes invalid in an HTTP header value, so busbar omits the `Bearer` auth header and the upstream will reject with 401. Fires on mint (per refresh), not per request, and is near-unreachable for a well-formed token endpoint.
+RETIRED. An OAuth token minted for egress contained bytes invalid in a header value, so the `Bearer` auth header was omitted and the upstream rejected the request. Nothing raises this code.
 
-**What to do:** Investigate the OAuth token endpoint — it returned an access token with control or non-ASCII bytes. Requests to that upstream 401 until it mints a header-safe token.
+**What to do:** Nothing emits this code.
 
 <a id="egress-oauth-empty-token"></a>
 ### BUSBAR-4015 — OAuth token endpoint returned a 200 with an empty access_token
