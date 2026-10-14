@@ -1300,8 +1300,9 @@ async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_m
     .expect("the userinfo, held by the host");
     let table = std::sync::Arc::new(TokenEndpoint::default());
     let auths = linked_mint_plugin(&table);
-    use busbar_kernel::config::ProviderAuth as Style;
-    let style = super::style_word(Style::OAuthClientCredentials);
+    // The style as the operator's config spells it, read by the config's own parser.
+    let spelled = "oauth-client-credentials";
+    let style = super::style_word(serde_yaml::from_str(spelled).expect("a provider style"));
     // What the plane built its binding from: the stripped endpoint.
     let settings = serde_json::json!({
         "token_url": TOKEN_URL,
