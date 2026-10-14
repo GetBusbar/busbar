@@ -1615,7 +1615,8 @@ fn a_hold_the_book_writes_carries_counts_never_a_figure() {
         "the book wrote a hold that is not counts: {:?}",
         holds[0].held
     );
-    let mut tag = BodyReader::new(&holds[0].body());
+    let body = holds[0].body();
+    let mut tag = BodyReader::new(&body);
     assert_eq!(tag.text(), Some("hold.open.v2"));
 }
 
