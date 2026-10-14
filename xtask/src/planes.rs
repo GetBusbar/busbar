@@ -46,7 +46,11 @@ pub const PLANE_KEYS: [&str; 3] = ["llm", "a2a", "voice"];
 /// `scripts/plane-keys.sh`'s `PLANE_KEYS_KIND_ONLY`. A roster that must notice a plane VANISHING
 /// (structure-lint's plane-roots row) reads these beside [`PLANE_KEYS`]: leaving the legacy roster
 /// must not take a plane off the roster that refuses an unlocatable plane.
-pub const PLANE_KEYS_KIND_ONLY: [&str; 1] = ["mcp"];
+///
+/// `decisions` (#48, the fifth plane) has never had a legacy-engine crate: it is one plane-kind
+/// crate, `busbar-plane-decisions`, located by its door row alone (`plane-decisions`, FLIP-DECISIONS).
+/// Off this list, a door row that vanished took it off structure-lint's roster with no finding.
+pub const PLANE_KEYS_KIND_ONLY: [&str; 2] = ["mcp", "decisions"];
 
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.
