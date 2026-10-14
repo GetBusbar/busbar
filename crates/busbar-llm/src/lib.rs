@@ -210,7 +210,12 @@ const LLM_BILLABLE_COUNT: usize = 4 + busbar_plane_llm::codec::ir::open_class::O
 
 /// THE LLM PLANE'S BILLABLE CLASSES, in the tail's order: the four reserved token tiers, then every
 /// open class the codec declares (`open_class::OPEN_CLASSES`, the same table the plane's tail
-/// states). `search_units` keeps the `count` family this declaration always gave it.
+/// states), each in the family that table gives it. ONE SOURCE (ARCHITECT, `$` meter classes): the
+/// door's billable classes (`busbar_plane_llm::plane_door::TOKEN_CLASSES` and `OPEN_CLASSES`) are
+/// the source, and this declaration states them class for class and family for family; a test holds
+/// it to the door's tail. `search_units` used to be re-familied `count` here against the tail's
+/// `units`: the one place the two lists disagreed, on a family no token cap reads, so nothing billed
+/// differently.
 const LLM_BILLABLE_CLASSES: [BillableClass; LLM_BILLABLE_COUNT] = {
     use busbar_plane_llm::codec::ir::open_class::{OPEN_CLASSES, OPEN_CLASS_COUNT};
     const EMPTY: BillableClass = BillableClass {
@@ -234,11 +239,7 @@ const LLM_BILLABLE_CLASSES: [BillableClass; LLM_BILLABLE_COUNT] = {
         class: busbar_contract::records::UNIT_CACHE_WRITE,
         family: TOKEN_FAMILY,
     };
-    out[4] = BillableClass {
-        class: OPEN_CLASSES[0].0,
-        family: "count",
-    };
-    let mut k = 1;
+    let mut k = 0;
     while k < OPEN_CLASS_COUNT {
         out[4 + k] = BillableClass {
             class: OPEN_CLASSES[k].0,

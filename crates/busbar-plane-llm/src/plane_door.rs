@@ -140,9 +140,13 @@ const fn op(i: usize) -> OpClass {
     OpClass { op: name, name }
 }
 
-/// THE TOKEN CLASSES' CARD NAMES, in [`METER`]'s order: the classes 1.5.5's `rate_card:` prices
-/// (`input`, `output`, `cache_read`, `cache_write`), which the previous release's plane declaration
-/// ledgered its four token tiers under, so a door-served count is priced by the card as written.
+/// THE TOKEN CLASSES, THE ONE SOURCE of this plane's token class names (ARCHITECT, `$` meter
+/// classes: "The door's billable classes, which are what the dispatcher checks, are the source"):
+/// the first four of the tail's billable classes, and every key of the plane's `MeterClassDecl` list
+/// ([`crate::meta`]'s `CLASS_*`, read from here, never spelled there). They are 1.5.5's own names,
+/// byte for byte: the tiers its `rate_card:` prices (`input_utok`, `output_utok`, `cache_read_utok`,
+/// `cache_write_utok`), its ledger's `TierTokens` fields and its spend metrics' `tier` label, so a
+/// door-served count is priced by the card as written and ledgered under the tier 1.5.5 wrote.
 pub const TOKEN_CLASSES: [&str; 4] = [
     busbar_contract::records::UNIT_INPUT,
     busbar_contract::records::UNIT_OUTPUT,
@@ -153,9 +157,31 @@ pub const TOKEN_CLASSES: [&str; 4] = [
 const fn billable(i: usize) -> BillableClass {
     BillableClass {
         class: abi_str(TOKEN_CLASSES[i]),
-        family: abi_str(METER[i].family),
+        family: abi_str(busbar_contract::plane::TOKEN_FAMILY),
     }
 }
+
+/// The plane's `MeterClassDecl` list is DERIVED from the token classes above: the same keys, in the
+/// same order, in the token family. A second spelling of a class is refused at compile time.
+const fn meter_derives_from_the_tail() -> bool {
+    if METER.len() != TOKEN_CLASSES.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < METER.len() {
+        if !const_eq(METER[i].key.as_str(), TOKEN_CLASSES[i])
+            || !const_eq(METER[i].family, busbar_contract::plane::TOKEN_FAMILY)
+        {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+const _: () = assert!(
+    meter_derives_from_the_tail(),
+    "the plane's meter classes are the door's token classes, one source"
+);
 
 const DIALECT_NAMES: &[AbiStr] = &[
     dialect(0),
@@ -185,7 +211,7 @@ const fn open_class(k: usize) -> BillableClass {
 /// the ONE fee decider). It is the last of the tail's billable classes, and never usage.
 pub const FEE_CLASS: &str = busbar_contract::plane::PER_REQUEST;
 /// [`FEE_CLASS`]'s index in the tail's billable classes.
-pub const FEE_CLASS_INDEX: u32 = (METER.len() + OPEN_CLASSES.len()) as u32;
+pub const FEE_CLASS_INDEX: u32 = (TOKEN_CLASSES.len() + OPEN_CLASSES.len()) as u32;
 
 const BILLABLE_CLASSES: &[BillableClass] = &[
     billable(0),
@@ -217,7 +243,7 @@ const FEE_UNITS: &[AbiStr] = &[abi_str(FEE_CLASS)];
 const _: () = assert!(
     DIALECTS.len() == DIALECT_NAMES.len()
         && OPS.len() == OP_CLASSES.len()
-        && METER.len() + OPEN_CLASSES.len() + 1 == BILLABLE_CLASSES.len(),
+        && TOKEN_CLASSES.len() + OPEN_CLASSES.len() + 1 == BILLABLE_CLASSES.len(),
     "the tail states every dialect, op class and token class the plane declares"
 );
 
@@ -688,7 +714,7 @@ pub fn counts(units: &Units) -> Vec<UnitCount> {
             .position(|(class, _)| *class == name.as_str())
         {
             Some(k) => out.push(UnitCount {
-                class: u32::try_from(METER.len() + k).unwrap_or(u32::MAX),
+                class: u32::try_from(TOKEN_CLASSES.len() + k).unwrap_or(u32::MAX),
                 source: UNITS_REPORTED,
                 amount,
             }),

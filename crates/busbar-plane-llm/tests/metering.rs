@@ -124,8 +124,8 @@ fn a_cached_prefix_is_counted_once() {
     assert_eq!(
         lines,
         vec![
-            ("tokens_in".to_string(), Some(20)),
-            ("tokens_out".to_string(), Some(10)),
+            ("input".to_string(), Some(20)),
+            ("output".to_string(), Some(10)),
             ("cache_read".to_string(), Some(80)),
         ],
         "the cached prefix was not subtracted from the wire input total"
@@ -143,8 +143,8 @@ fn an_unreported_class_is_absent_rather_than_zero() {
     assert_eq!(
         lines,
         vec![
-            ("tokens_in".to_string(), Some(12)),
-            ("tokens_out".to_string(), Some(4)),
+            ("input".to_string(), Some(12)),
+            ("output".to_string(), Some(4)),
         ]
     );
 }
@@ -218,8 +218,8 @@ fn a_streamed_usage_frame_meters_the_tokens_it_reports() {
     assert_eq!(
         lines,
         vec![
-            ("tokens_in".to_string(), Some(20)),
-            ("tokens_out".to_string(), Some(10)),
+            ("input".to_string(), Some(20)),
+            ("output".to_string(), Some(10)),
             ("cache_read".to_string(), Some(80)),
         ],
         "a streamed answer metered nothing"
@@ -307,4 +307,57 @@ fn every_declared_class_is_a_class_the_metering_step_emits() {
         declared, emitted,
         "a class is declared that no answer can make the plane report, or reported that none declares"
     );
+}
+
+/// ONE DECLARATION, ONE SOURCE (ARCHITECT, `$` meter classes: "Money is ledger x ratecard, so there
+/// must be ONE declaration and one source. The door's billable classes, which are what the
+/// dispatcher checks, are the source; MeterClassDecl derives from them").
+///
+/// Every class the plane's `MeterClassDecl` list names is the door tail's billable class at the same
+/// index, in the same family, and each is 1.5.5's own name for the tier, byte for byte: the
+/// `rate_card:` tiers `input_utok`/`output_utok`/`cache_read_utok`/`cache_write_utok`, the ledger's
+/// `TierTokens { input, output, cache_read, cache_write }` and the spend metrics' `tier` label. RED
+/// while the list spelled its own `tokens_in`/`tokens_out`, names no card prices and no tier carries.
+#[test]
+fn the_meter_classes_are_the_doors_billable_classes_by_their_1_5_5_names() {
+    use busbar_contract::plane::PlaneMeta;
+    use busbar_plane_llm::plane_door::{TAIL, TOKEN_CLASSES};
+    let declared: Vec<(&str, &str)> = <LlmPlane as PlaneMeta>::METER_CLASSES
+        .iter()
+        .map(|c| (c.key.as_str(), c.family))
+        .collect();
+    // SAFETY: the tail's billable classes are a `'static` list of `billable_classes_len` entries.
+    let stated =
+        unsafe { std::slice::from_raw_parts(TAIL.billable_classes, TAIL.billable_classes_len) };
+    let door: Vec<(&str, &str)> = stated[..declared.len()]
+        .iter()
+        .map(|b| {
+            // SAFETY: each `AbiStr` names a `'static` string of `len` bytes.
+            let (c, f) = unsafe {
+                (
+                    std::slice::from_raw_parts(b.class.ptr, b.class.len),
+                    std::slice::from_raw_parts(b.family.ptr, b.family.len),
+                )
+            };
+            (
+                std::str::from_utf8(c).expect("a class is UTF-8"),
+                std::str::from_utf8(f).expect("a family is UTF-8"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        declared, door,
+        "the meter classes and the door's billable classes are one list"
+    );
+    assert_eq!(
+        declared,
+        vec![
+            ("input", "token"),
+            ("output", "token"),
+            ("cache_read", "token"),
+            ("cache_write", "token"),
+        ],
+        "1.5.5's tier names, byte for byte"
+    );
+    assert_eq!(TOKEN_CLASSES.len(), declared.len());
 }

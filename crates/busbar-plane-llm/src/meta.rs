@@ -7,16 +7,11 @@
 use busbar_contract::ids::{
     AdminVerbId, ClassDirection, MeterClassDecl, MeterClassId, OpClassId, RecordSchemaId,
 };
-use busbar_contract::plane::{PlaneMeta, ServedOpClass};
+use busbar_contract::plane::{PlaneMeta, ServedOpClass, TOKEN_FAMILY};
 
 use crate::claims;
+use crate::plane_door::TOKEN_CLASSES;
 use crate::LlmPlane;
-
-/// The family every token-shaped meter class rolls up into.
-///
-/// A card may price a class and may change its divisor; it may never move a class to another
-/// family, because a cap written over the family would then be counting something else.
-const TOKEN_FAMILY: &str = "token";
 
 /// Bytes per token, as the default divisor.
 ///
@@ -31,6 +26,16 @@ const BYTES_PER_TOKEN: u32 = 4;
 /// than off a raw pointer: the dialects that report a cached count inside their prompt total have
 /// already had it subtracted by the time the value reaches here, so the four partition the input
 /// bytes without double-counting.
+///
+/// ONE DECLARATION, ONE SOURCE (ARCHITECT, `$` meter classes: "Money is ledger x ratecard, so there
+/// must be ONE declaration and one source"). The door's billable classes
+/// ([`crate::plane_door::TOKEN_CLASSES`], the classes the dispatcher checks a reported count against)
+/// are the source; every key and family below is READ from them, never spelled here. They are
+/// 1.5.5's own names, byte for byte: the `rate_card:` tiers (`input_utok`, `output_utok`,
+/// `cache_read_utok`, `cache_write_utok`), the ledger's `TierTokens { input, output, cache_read,
+/// cache_write }` and the spend metrics' `tier` label. This list used to spell its own keys
+/// (`tokens_in`, `tokens_out`), names no card prices and no ledger tier carries; a count emitted under
+/// one of them could only post unpriced or be refused.
 ///
 /// THE LIST IS WHAT THE METERING STEP EMITS, exactly. A declaration is an invitation to a rate card:
 /// an operator who sees a class here prices it, and a class the card prices but the plane never
@@ -54,26 +59,26 @@ const BYTES_PER_TOKEN: u32 = 4;
 ///
 /// EXPORTED BECAUSE THE CLASS LABEL IS WHAT SELECTS A UNIT PRICE, and a second spelling of one is a
 /// count emitted under a class no card can name — silently unpriced, or a boot refusal under
-/// #77(5), and in neither case anything that points at the line that misspelled it. Declaring the
-/// class here and RE-SPELLING it at the emit site is two strings that agree today; a const is one
-/// value the compiler checks. Every sibling plane carries its classes this way.
-pub const CLASS_TOKENS_IN: MeterClassId = MeterClassId::new("tokens_in");
-/// See [`CLASS_TOKENS_IN`].
-pub const CLASS_TOKENS_OUT: MeterClassId = MeterClassId::new("tokens_out");
-/// See [`CLASS_TOKENS_IN`].
-pub const CLASS_CACHE_READ: MeterClassId = MeterClassId::new("cache_read");
-/// See [`CLASS_TOKENS_IN`].
-pub const CLASS_CACHE_WRITE: MeterClassId = MeterClassId::new("cache_write");
+/// #77(5), and in neither case anything that points at the line that misspelled it. Each const is
+/// the door's billable class at its index, so the class a count is emitted under, the class this
+/// plane declares and the class the door states are one value the compiler checks.
+pub const CLASS_INPUT: MeterClassId = MeterClassId::new(TOKEN_CLASSES[0]);
+/// See [`CLASS_INPUT`].
+pub const CLASS_OUTPUT: MeterClassId = MeterClassId::new(TOKEN_CLASSES[1]);
+/// See [`CLASS_INPUT`].
+pub const CLASS_CACHE_READ: MeterClassId = MeterClassId::new(TOKEN_CLASSES[2]);
+/// See [`CLASS_INPUT`].
+pub const CLASS_CACHE_WRITE: MeterClassId = MeterClassId::new(TOKEN_CLASSES[3]);
 
 const METER_CLASSES: &[MeterClassDecl] = &[
     MeterClassDecl {
-        key: CLASS_TOKENS_IN,
+        key: CLASS_INPUT,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Input,
         default_divisor: BYTES_PER_TOKEN,
     },
     MeterClassDecl {
-        key: CLASS_TOKENS_OUT,
+        key: CLASS_OUTPUT,
         family: TOKEN_FAMILY,
         direction: ClassDirection::Response,
         default_divisor: BYTES_PER_TOKEN,
