@@ -171,11 +171,6 @@ item = "openapi"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane_host/egress.rs"
-item = "streaming"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
 item = "jsonrpc"
 
