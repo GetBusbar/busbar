@@ -140,6 +140,7 @@ pub mod pump;
 pub mod recovery;
 pub mod registry;
 pub mod scratch;
+pub mod seal;
 mod settlement;
 pub mod teller;
 pub mod tick;

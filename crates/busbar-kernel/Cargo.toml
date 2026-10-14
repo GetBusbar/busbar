@@ -258,6 +258,10 @@ sha2 = { workspace = true }
 # that need a real plane live in the composition root, which links every plane
 # (`crates/busbar/tests/`, its test-linked roster).
 busbar-kernel = { path = ".", default-features = false, features = ["test-support"] }
+# THE CONTRACT'S TEST SEAL (#65): `KernelSeal::acquire_for_kernel` exists only under the contract's
+# dev-only `test-seal` feature, so this crate's own tests (which mint tokens to show a step's
+# shape) reach it through this dev edge. The release build takes its seal through `seal::acquire`.
+busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # 1.5.5's recorder, as the REFERENCE the observation source is proven against byte for byte
 # (`tests/metrics_source_tests.rs`). A test edge only: the kernel ships no exposition renderer.
 # (No plugin crate is a dev-dependency here, R-FIX3: the export and auth proofs this crate's tests
