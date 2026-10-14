@@ -2670,6 +2670,52 @@ mod dated_rate_card_history {
         );
     }
 
+    // ── PROOF 1a: the response NAMES the card that priced it (#44, Q93) ──────────────────────
+
+    /// RED (Q93, ANSWERED 2026-09-27: "serve the rate-card version on the usage and audit
+    /// responses"; #44 "rate_card_version surfaced on usage+audit endpoints"): each window's
+    /// response names the history seq of the card that priced it, PAYG 0, month-to-month 1,
+    /// prepaid 2, while the CURRENT card is 2. Asking `?as_of=<that seq>` re-derives the same
+    /// figure, which is what makes the version an invoice's provenance. A node with no dated
+    /// history names none (`null`), never a zero: seq 0 is a real opening entry.
+    #[tokio::test]
+    async fn the_usage_response_names_the_rate_card_version_that_priced_it() {
+        let (payg, monthly, prepaid) = windows();
+        let src = source(payg_then_monthly_then_prepaid(monthly, prepaid));
+        let gov = gov_with_rows(&[
+            (payg, 0),
+            (monthly, monthly * 1_000),
+            (prepaid, prepaid * 1_000),
+        ]);
+        for (bucket, seq) in [(payg, 0), (monthly, 1), (prepaid, 2)] {
+            let live = read(gov.clone(), src, bucket).await;
+            assert_eq!(
+                live.rate_card_version,
+                Some(seq),
+                "the window at {bucket} is priced by history entry {seq}"
+            );
+            let pinned = read_as_of(gov.clone(), src, bucket, Some(seq))
+                .await
+                .expect("the named version is a snapshot this history holds");
+            assert_eq!(
+                pinned.total.spend_micros, live.total.spend_micros,
+                "`?as_of=<rate_card_version>` re-derives the figure the version was served beside"
+            );
+            assert_eq!(pinned.rate_card_version, Some(seq));
+            let wire = serde_json::to_value(&live).expect("a usage view serializes");
+            assert_eq!(wire["rate_card_version"], serde_json::json!(seq));
+        }
+        let none = read_no_source_as_of(gov, payg, None)
+            .await
+            .expect("a node with no dated history still reads");
+        assert_eq!(none.rate_card_version, None);
+        let wire = serde_json::to_value(&none).expect("a usage view serializes");
+        assert!(
+            wire["rate_card_version"].is_null(),
+            "no history: the version is null, never a zero"
+        );
+    }
+
     // ── PROOF 1b: a HOLE in the dated history REFUSES the read (#42, item 374) ───────────────
 
     /// A history whose only entry starts at `monthly` leaves the PAYG window in a HOLE: no entry

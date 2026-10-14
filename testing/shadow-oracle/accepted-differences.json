@@ -1368,7 +1368,7 @@
         "body",
         "effects.script"
       ],
-      "rationale": "RE-MEASURED 2026-09-28 against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green): the five premise figures reproduce to the digit — history-mid-window 2,500,000 / 27,500,000 / 277,530,000 (1.5.5: 25,000,000 / 500,060,000 / 750,090,000), epoch-mid-window total 257,530,000 (1.5.5: 1,000,120,000), rate-history|as-of total 257,530,000 with as_of 0 (1.5.5: 1,000,120,000) — and the three cells score ACCEPTED under this entry. RE-ADJUDICATED 2026-09-24 (items 47/52, P3A-register) under decision #79 (price in force at arrival) and owner ruling Q19/Q32. MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66), against the committed 1.5.5 golden: (1) billing|rate-card|history-mid-window reads 2,500,000 / 27,500,000 / 277,530,000 where 1.5.5 read 25,000,000 / 500,060,000 / 750,090,000 — every read, not only the last, because 1.5.5 repriced chat1 at each read-time card; the moves are in `body` and `effects.script` (the three /usage reads), none in effects.usage. (2) billing|rate-card|epoch-mid-window reads 257,530,000 total where 1.5.5 read 1,000,120,000 — exactly the cell's own 'priced per row at charge time' hypothesis. (3) ledger|rate-history|as-of reads the SAME 257,530,000 and still echoes as_of 0: the move is arrival pricing, NOT the as_of selector (1.6.0 does not honour ?as_of on /admin/usage today; the earlier claim that it does was false). The 2026-09-21 AUDIT NOTE (\"reprice-on-read, M6 not landed\") is superseded by the measurement: arrival pricing is live on GET /admin/usage. PREMISE (evaluated): the five figures above, exactly — a build whose figures differ in any digit withholds this entry, so it cannot forgive a money move the ruling does not describe. OUT OF SCOPE here: ledger|currency|minor-unit-rounding also moves by arrival pricing (rows 18/18/18, total 54 -> 2,500,000/18/2,500,000, total 5,000,018); it is carried by its own owner-signed entry under spec #79, not by this one. PRIOR RATIONALE (2026-09-06/22) is superseded by the above; see git history.",
+      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, bank-auditor grade; where 1.5.5 differs from ledger x card, 1.5.5 was wrong): history-mid-window's right figure is each row's ledger quantity priced at the card in force at that row's arrival, 2,500,000 (chat1 at the boot card) / 27,500,000 (+ chat2 at card A, 25,000,000) / 277,530,000 (+ chat3 at card B, 250,030,000), which is the candidate's figure to the digit. 1.5.5's 25,000,000 / 500,060,000 / 750,090,000 re-priced every earlier row at the card in force at READ time, so 1.5.5 was wrong and this entry registers the fix (PARITY-SCOPE lane, 2026-10-14). The cell definition's sentence \"ONLY the final read moves\" is false arithmetic: all three reads move, as the figures above show. RE-MEASURED 2026-09-28 against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green): the five premise figures reproduce to the digit — history-mid-window 2,500,000 / 27,500,000 / 277,530,000 (1.5.5: 25,000,000 / 500,060,000 / 750,090,000), epoch-mid-window total 257,530,000 (1.5.5: 1,000,120,000), rate-history|as-of total 257,530,000 with as_of 0 (1.5.5: 1,000,120,000) — and the three cells score ACCEPTED under this entry. RE-ADJUDICATED 2026-09-24 (items 47/52, P3A-register) under decision #79 (price in force at arrival) and owner ruling Q19/Q32. MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66), against the committed 1.5.5 golden: (1) billing|rate-card|history-mid-window reads 2,500,000 / 27,500,000 / 277,530,000 where 1.5.5 read 25,000,000 / 500,060,000 / 750,090,000 — every read, not only the last, because 1.5.5 repriced chat1 at each read-time card; the moves are in `body` and `effects.script` (the three /usage reads), none in effects.usage. (2) billing|rate-card|epoch-mid-window reads 257,530,000 total where 1.5.5 read 1,000,120,000 — exactly the cell's own 'priced per row at charge time' hypothesis. (3) ledger|rate-history|as-of reads the SAME 257,530,000 and still echoes as_of 0: the move is arrival pricing, NOT the as_of selector (1.6.0 does not honour ?as_of on /admin/usage today; the earlier claim that it does was false). The 2026-09-21 AUDIT NOTE (\"reprice-on-read, M6 not landed\") is superseded by the measurement: arrival pricing is live on GET /admin/usage. PREMISE (evaluated): the five figures above, exactly — a build whose figures differ in any digit withholds this entry, so it cannot forgive a money move the ruling does not describe. OUT OF SCOPE here: ledger|currency|minor-unit-rounding also moves by arrival pricing (rows 18/18/18, total 54 -> 2,500,000/18/2,500,000, total 5,000,018); it is carried by its own owner-signed entry under spec #79, not by this one. PRIOR RATIONALE (2026-09-06/22) is superseded by the above; see git history.",
       "premise": {
         "all": [
           {
@@ -1412,6 +1412,45 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "Q93 the usage response names the rate-card version that priced it",
+      "kind": "additive",
+      "changelog": "1.6.0 Added: `GET /api/v1/admin/usage` names the rate-card version that priced it, `rate_card_version`.",
+      "by": "owner (Matthew Jackson), OWNER ANSWERS 2026-09-27 Q93 (rate-card-version-visible), option A as recommended",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-27",
+        "ruling": "docs/design/1.6.0-QUESTIONS.md Q93 (OWNER ANSWERS 2026-09-27: Q79-Q95 \"as recommended\"): A, serve the rate-card version on the usage and audit responses as an `additive` register entry (#44, #10); BUSBAR-1.6.0.md l.1248-1249"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^(admin\\.ops\\|GetUsage\\|(ok|no-usage-after-mutation)|billing\\|admin-usage\\|(after-2|past-day)|billing\\|rate-card\\|(epoch|history)-mid-window|ledger\\|rate-history\\|as-of|ledger\\|currency\\|minor-unit-rounding|money\\.reserved-tier\\|absent\\|(anthropic-cache|openai-cached)|plugins\\.abi\\|json-contract\\|store-sqlite@1\\.5-line|usage\\.gemini\\|(stream-truncated\\|recovery|tool-use\\|total-billed|cached-content\\|subtractive|stream-grounded\\|no-tool-use-count|tool-use\\|total-not-a-sum))$",
+      "expected_cells": 16,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "admin.ops|GetUsage|ok",
+            "status": 200
+          },
+          {
+            "cell": "admin.ops|GetUsage|ok",
+            "pointer": "/rate_card_version",
+            "exists": true
+          },
+          {
+            "cell": "admin.ops|GetUsage|ok",
+            "pointer": "/currency",
+            "equals": "USD"
+          }
+        ]
+      },
+      "rationale": "DECISION: Q93 (owner, 2026-09-27, option A) and #44 (\"rate_card_version surfaced on usage+audit endpoints\"). GET /api/v1/admin/usage gains one top-level member, `rate_card_version`: the highest dated rate-card history seq among the cards that priced the response's rows (crates/busbar-core-admin/src/v1/service_operations.rs get_usage, recorded as each row's card resolves; never a pricing input, #79), or null when no history entry priced a row. Asking `?as_of=<it>` re-derives the same figures. CELLS: the 16 golden cells whose recorded body is a GET /api/v1/admin/usage response. BYTES MOVED (golden -> candidate): body gains /rate_card_version; every 1.5.5 member keeps its place and value. Where another entry already forgives a cell's body (D-3, #79 warm-up, S-5, 576, LEDGER-SIMPLE, ABI-o1), that entry's own premise still decides it. The audit half is already served: every audit-chain record GET /api/v1/admin/audit/range returns carries the digest field `rate_card_version` (crates/busbar-kernel-audit/src/expose.rs push_record over recipe.rs:245), a 1.6.0 route with no 1.5.5 golden; GET /api/v1/admin/audit is the admin-action log, which carries no usage and no card. PREMISE (evaluated): the usage read answers 200, still carries 1.5.5's `currency`, and carries the member. Not yet measured: no oracle run executes until #911 lands."
     },
     {
       "id": "F-016 a provider api_key that does not resolve refuses boot",

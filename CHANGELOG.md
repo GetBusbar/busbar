@@ -635,6 +635,12 @@ Busbar no longer lists, builds, tests, bundles or release-notifies it; its repos
 (`GetBusbar/busbar-hook-headroom`) stays where it is. A tarball you already installed is an ordinary
 `kind: hook` plugin and loads under the same trust rules as any other.
 
+**A store plugin refuses an `op_id` replayed with different value fields** with the diagnostic
+`STORE_OPID_CONFLICT` (new in the 1.6.0 store ABI, owner ruling 2026-09-28): nothing is applied, and
+the first write under that `op_id` stands. The same `op_id` with the same fields is answered as the
+original write, never applied twice. **Migration:** none; a store built against the 1.6.0 SDK
+answers it through the SDK's store door.
+
 **A plugin declares the contract-ABI range it supports** (`contract_abi: {min, max}` in its signed
 `declares` section), and Busbar refuses at load a plugin whose range shares no version with its own,
 naming both ranges. A manifest packed before the field existed is judged on its `abi_version` alone,
@@ -782,6 +788,12 @@ each dialect translates, field by field, is listed in the generated
   the node sealed the record. It does not prove the chain was never rewritten by someone holding
   the key; that takes a head recorded off the node. **Migration:** none; every 1.5.5 audit field is
   unchanged.
+- 1.6.0 Added: `GET /api/v1/admin/usage` names the rate-card version that priced it, `rate_card_version`.
+  It is the seq of the newest dated rate-card history entry that priced a row of the response, so
+  asking `GET /api/v1/admin/usage?as_of=<rate_card_version>` re-derives the same figures, and an
+  invoice cut from the response names the card behind it. `null` when no history entry priced a
+  row (no rows, or no rate card). Every 1.5.5 member is unchanged. The per-record version is on
+  each audit-chain record served by `GET /api/v1/admin/audit/range`. **Migration:** none.
 - 1.6.0 Added: `GET /api/v1/admin/ledger/checkpoints` lists sealed checkpoints, sealed every 10,000 journal records or every 60 seconds with a change, whichever comes first.
   The read serves the latest 1,024 seals, oldest first; the journal keeps every seal. A node that
   has not reached either threshold serves an empty list. **Migration:** none.

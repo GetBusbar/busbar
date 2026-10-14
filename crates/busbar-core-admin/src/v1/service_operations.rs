@@ -1410,6 +1410,8 @@ impl AdminService {
             window,
             as_of: now,
             currency: (),
+            // No row was read, so no card priced one.
+            rate_card_version: None,
             total: UsageBreakdown::default(),
             by_model: Vec::new(),
             by_key: Vec::new(),
@@ -1471,6 +1473,11 @@ impl AdminService {
         // journal sealed, read ONCE for the whole response. Each row prices its counts AS CORRECTED
         // (`row_count_corrections`), never a money figure a correction carried — it carries none.
         let corrections = amend::node_corrections();
+        // THE VERSION THE RESPONSE WAS PRICED AT (#44, Q93): the highest history seq among the
+        // cards that priced its rows. It is RECORDED as each row's card resolves and never read back
+        // by the pricing: a row's card is resolved by its own instant (#79). `?as_of=<it>` re-derives
+        // every figure below, and a card published after these rows were earned leaves it as it was.
+        let mut priced_by: Option<u64> = None;
         // Aggregate in memory — a bucket is bounded by (keys × models) accumulation rows.
         let mut total = UsageBreakdown::default();
         let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =
@@ -1554,9 +1561,12 @@ impl AdminService {
             let classes: &std::collections::BTreeMap<String, u64> = &corrected_classes;
             let row_spend = match view.as_ref() {
                 Some(v) => match v.card_at(at) {
-                    Some((_card_seq, card)) => derive_spend_micros_row_classes_at_card(
-                        v, at, card, &cost, &lane, &row_view, classes,
-                    ),
+                    Some((card_seq, card)) => {
+                        priced_by = priced_by.max(Some(card_seq.get()));
+                        derive_spend_micros_row_classes_at_card(
+                            v, at, card, &cost, &lane, &row_view, classes,
+                        )
+                    }
                     None => Err(busbar_kernel::cost::MoneyError::NoCardInForce { at }),
                 },
                 None => derive_spend_micros_row_classes(&cost, &lane, &row_view, classes),
@@ -1698,6 +1708,7 @@ impl AdminService {
             window,
             as_of: now,
             currency: (),
+            rate_card_version: priced_by,
             total,
             by_model,
             by_key,

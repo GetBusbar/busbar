@@ -4249,6 +4249,15 @@
             ],
             "description": "The summed remainder BEYOND the `by_key` cap, present exactly when `by_key_truncated`, so\nevery unit of consumption is attributable at least to \"others\" (FinOps completeness:\n`total == sum(by_key) + others`)."
           },
+          "rate_card_version": {
+            "description": "THE RATE-CARD VERSION THIS READ WAS PRICED AT (#44, Q93): the seq of the dated rate-card\nhistory snapshot every row of this response resolved its card through: the `?as_of` the caller\nnamed, else the history's head when the read was taken. Asking `?as_of=<this>` again re-derives\nthe same figures, so an invoice cut from this response names the card that priced it. `null`\nwhen this node has resolved no rate-card history. New in 1.6.0; pricing provenance only, never a\npricing input (#79).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "total": {
             "$ref": "#/components/schemas/UsageBreakdown"
           },
