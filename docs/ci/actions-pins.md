@@ -63,8 +63,8 @@ PR that preserves the trailing tag comment.
 
 ## Every action currently in the tree
 
-Every `uses:` in `.github/workflows/` (`promote.yml` and the reusable `plugin-*.yml` workflows) is one
-of the nine distinct `(action, ref)` pairs above, pinned to a commit SHA with its tag kept as a
+Every `uses:` in `.github/workflows/` (the reusable `plugin-*.yml` workflows; `promote.yml` is deleted)
+is one of the distinct `(action, ref)` pairs above, pinned to a commit SHA with its tag kept as a
 trailing comment. This table is the independent re-verification of that state. There is no
 `.github/actions` composite action beyond `cargo-home`, and `R14` is proven able to catch a floating
 tag inside one by `r14_reads_uses_out_of_a_composite_action_too_not_only_workflows` in

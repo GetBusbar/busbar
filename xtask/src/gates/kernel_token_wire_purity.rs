@@ -233,7 +233,7 @@ impl Gate for KernelTokenWirePurityGate {
 
         let mut offenders = Vec::new();
         for f in &files {
-            let mut in_block = false;
+            let mut in_block = scan::LexState::default();
             for (i, raw) in f.text.lines().enumerate() {
                 // Comments stripped, string literals INTACT — the same rule the shell's
                 // `strip_comments` awk applied. A wire field name inside a literal is still the
@@ -291,6 +291,24 @@ impl Gate for KernelTokenWirePurityGate {
                 "pub fn class_of(v: &Value) -> i64 {{\n    v[\"{raw_field}\"].as_i64()\n}}\n"
             )),
             &[&raw_field],
+        ));
+
+        // A `/*` INSIDE A CONTINUED STRING IS STRING. The scanner reset its in-string flag on every
+        // line, so the `{root}/*"` continuation opened a block comment that never closed and every
+        // later line of the file read as comment: `crates/busbar-kernel/src/plugin_routes.rs` hid
+        // 292 of its 564 lines from this gate that way (audit xtask A2 HIGH 1, H1 HIGH 2).
+        report.push(plant(
+            cx,
+            self,
+            "a raw wire field after a `/*` inside a continued string is still read",
+            &[ROW_NO_RAW_FIELD],
+            &format!("{KERNEL_SRC}/planted_wire_read.rs"),
+            Edit::Create(format!(
+                "pub fn confine(root: &str) -> String {{\n    format!(\"routes are confined to \
+                 \\\n             {{root}}/*\")\n}}\npub fn class_of(v: &Value) -> i64 {{\n    \
+                 v[\"{raw_field}\"].as_i64()\n}}\n"
+            )),
+            &["planted_wire_read.rs:6", &raw_field],
         ));
 
         // A COMMENT-ONLY MENTION IS PROSE. The rule that exempts it is the rule that lets the
