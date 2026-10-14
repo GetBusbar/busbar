@@ -44,13 +44,12 @@ fn a_prefix_slice_of_an_interned_name_resolves_its_own_declaration() {
     );
 }
 
-/// THE USAGE-TAP COUNT, HOST STEP (#83a SD-3, architect ruling R-USAGE): the host services the
-/// protocol registration arms count every usage-tap fault a codec reports — through the latch (a
-/// codec's own reason) or through the decode reporter (a cell's default tap) — as ONE increment of
-/// `busbar_billing_tap_decode_fail_total{protocol,reason}`, and warn once per `(protocol, reason)`.
-/// The LLM plane's suite pins which reports each tap path makes; this pins what one report counts.
+/// THE USAGE-TAP COUNT, KERNEL STEP (#83a SD-3, architect ruling R-USAGE; row 155): every usage-tap
+/// fault a plane's answer carries is counted by the kernel as ONE increment of
+/// `busbar_billing_tap_decode_fail_total{protocol,reason}`, and warned once per `(protocol, reason)`.
+/// The LLM plane's suite pins which fault each tap path returns; this pins what one fault counts.
 #[test]
-fn an_armed_usage_tap_report_counts_one_increment_under_its_reason() {
+fn a_usage_tap_fault_counts_one_increment_under_its_reason() {
     use metrics::{
         Counter, CounterFn, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
     };
@@ -86,17 +85,12 @@ fn an_armed_usage_tap_report_counts_one_increment_under_its_reason() {
             Histogram::noop()
         }
     }
-    // What registration and `install_protocols` run to arm the host's services.
-    arm_host_services();
     let counts = Counts::default();
     let proto = "sd3-armed-tap-protocol";
     let (first, second) = metrics::with_local_recorder(&Local(Arc::clone(&counts)), || {
-        let first = busbar_contract::codec::usage_tap_fault_should_warn(proto, "bad_json");
-        let second = busbar_contract::codec::usage_tap_fault_should_warn(proto, "bad_json");
-        busbar_contract::codec::report_usage_tap_decode_failure(
-            proto,
-            &busbar_contract::codec::CodecError::Malformed("x".into()),
-        );
+        let first = crate::handlers::usage_tap_decode_fail_should_warn(proto, "bad_json");
+        let second = crate::handlers::usage_tap_decode_fail_should_warn(proto, "bad_json");
+        crate::handlers::usage_tap_fault(proto, "decode");
         (first, second)
     });
     assert!(
