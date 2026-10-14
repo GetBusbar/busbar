@@ -1550,8 +1550,9 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
                     // refuses every hit; a configuration carrying one is refused here, whole.
                     errors.push(format!(
                         "{path}.{tier} = {v} micro-units per token is a rate the card \
-                         cannot hold (non-zero rates run from 0.0005 to about 1.8e16), so the class \
-                         would bill as unpriced; configure 0 to make it free, or a rate in range"
+                         cannot hold (a non-zero rate is a whole number of nano-units, at most three \
+                         decimal places, up to about 1.8e16; it is never rounded), so the class \
+                         would bill as unpriced; configure 0 to make it free, or an exact rate"
                     ));
                 }
             }
