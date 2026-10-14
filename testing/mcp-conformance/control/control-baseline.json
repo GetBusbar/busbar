@@ -33,7 +33,7 @@
       "observed": "When the fake server sends a forbidden server-initiated JSON-RPC request (method elicitation/create, id \"server-initiated-1\"), the control client replies on the server's stdin with {\"jsonrpc\":\"2.0\",\"id\":\"server-initiated-1\",\"error\":{\"code\":-32601,\"message\":\"Method not found\",\"data\":\"elicitation/create\"}}.",
       "judgement": "DEFECT IN THE CONTROL. The stdio binding states the client MUST NOT write JSON-RPC responses, without qualification, and the message-patterns page states that clients do not send JSON-RPC responses at all. Replying 'Method not found' is well intentioned but it is exactly the wire behaviour the 2026-07-28 revision removed. A server still on the pre-2026 pattern will read the reply as a normal response and stay in legacy mode, which is the interoperability failure the MUST NOT exists to prevent.",
       "counterArgument": "One could argue an error reply is a courtesy to a misbehaving peer and that the MUST NOT targets well-formed request/response flow rather than error signalling. The spec text carries no such carve-out, so we treat the plain reading as authoritative and record the disagreement here rather than weakening the test.",
-      "upstreamReference": "not yet reported upstream as of 2026-08-08"
+      "upstreamReference": "drafted 2026-10-14 in testing/upstream-issue-drafts.txt; filing held for the owner's OK"
     }
   ],
   "pinnedObservations": [
