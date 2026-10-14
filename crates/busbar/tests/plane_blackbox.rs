@@ -64,6 +64,9 @@ struct Requires {
     sections: Vec<String>,
     axes: Vec<String>,
     features: Vec<String>,
+    /// The axes whose ABSENCE the case is about (the case's top-level `unless`): a build linking
+    /// any of them does not apply to it.
+    unless: Vec<String>,
 }
 
 /// The credential rigs a case asks for.
@@ -187,6 +190,7 @@ impl Step {
             "boot" => &[
                 "args",
                 "expect",
+                "exit",
                 "within_secs",
                 "listening",
                 "output_contains",
@@ -221,6 +225,12 @@ impl Step {
             other => return Err(format!("steps[{at}]: `{other}` is no step")),
         };
         object(body, &what, known)?;
+        if kind == "boot"
+            && body.get("exit").is_some()
+            && body.get("expect").and_then(Value::as_str) == Some("listening")
+        {
+            return Err(format!("{what}: `exit` is stated for `expect: exit` only"));
+        }
         Ok(match kind.as_str() {
             "validate" => Step::Validate(body.clone()),
             "boot" => Step::Boot(body.clone()),
@@ -318,6 +328,7 @@ impl Case {
                 "case",
                 "oracle",
                 "requires",
+                "unless",
                 "files",
                 "vars",
                 "unset",
@@ -356,8 +367,13 @@ impl Case {
                     sections: strings(r.get("sections"), "requires.sections")?,
                     axes: strings(r.get("axes"), "requires.axes")?,
                     features: strings(r.get("features"), "requires.features")?,
+                    unless: Vec::new(),
                 }
             }
+        };
+        let requires = Requires {
+            unless: strings(map.get("unless"), "unless")?,
+            ..requires
         };
         let credentials = match map.get("credentials") {
             None => Credentials::default(),
@@ -442,7 +458,6 @@ impl Case {
     fn not_applicable(&self) -> Option<String> {
         let have = |list: &str, word: &str| list.split_whitespace().any(|w| w == word);
         let sections = env!("BUSBAR_LINKED_SECTIONS");
-        let axes = env!("BUSBAR_LINKED_AXES");
         let features = env!("BUSBAR_ENABLED_FEATURES");
         self.requires
             .sections
@@ -453,8 +468,15 @@ impl Case {
                 self.requires
                     .axes
                     .iter()
-                    .find(|a| !have(axes, a))
+                    .find(|a| !axis_linked(a))
                     .map(|a| format!("the build carries no `{a}` axis"))
+            })
+            .or_else(|| {
+                self.requires
+                    .unless
+                    .iter()
+                    .find(|a| axis_linked(a))
+                    .map(|a| format!("the build carries the `{a}` axis this case runs without"))
             })
             .or_else(|| {
                 self.requires
@@ -464,6 +486,45 @@ impl Case {
                     .map(|f| format!("the build enables no `{f}` feature"))
             })
     }
+}
+
+/// Whether this build links `axis`, named as the manifest's `linked-axes` rows name it
+/// (`body-ingress`); `BUSBAR_LINKED_AXES` states each as its cfg (`linked_axis_body_ingress`).
+fn axis_linked(axis: &str) -> bool {
+    let cfg = format!("linked_axis_{}", axis.replace('-', "_"));
+    env!("BUSBAR_LINKED_AXES")
+        .split_whitespace()
+        .any(|w| w == cfg)
+}
+
+/// A JSON-RPC reply answers the request it was sent for: a request (a `method` with an `id`) is
+/// answered under its own `id`. A notification, or a reply that is no JSON-RPC response, holds.
+fn reply_id_held(request: &Value, reply: &Value) -> Result<(), String> {
+    let (Some(id), Some(_)) = (request.get("id"), request.get("method")) else {
+        return Ok(());
+    };
+    if reply.get("result").is_none() && reply.get("error").is_none() {
+        return Ok(());
+    }
+    match reply.get("id") {
+        Some(got) if got == id => Ok(()),
+        got => Err(format!(
+            "the reply's id is {} where its request's is {id}: {reply}",
+            got.map_or_else(|| "absent".to_string(), Value::to_string)
+        )),
+    }
+}
+
+/// Every JSON-RPC response in an HTTP answer: the body as one message, or each `data:` line of an
+/// event stream.
+fn responses_in(text: &str) -> Vec<Value> {
+    if let Ok(one) = serde_json::from_str::<Value>(text) {
+        return vec![one];
+    }
+    text.lines()
+        .filter_map(|l| l.strip_prefix("data:"))
+        .filter_map(|d| serde_json::from_str::<Value>(d.trim()).ok())
+        .collect()
 }
 
 // ── the cited 1.5.5 cell, held ──────────────────────────────────────────────────────────────────
@@ -960,6 +1021,7 @@ fn run_script(
                             line = child.try_recv(bound).map_err(|e| format!("{what}: {e}"))?;
                         }
                     }
+                    reply_id_held(&send, &line).map_err(|e| format!("{what} round {n}: {e}"))?;
                     if line.pointer(served_has).is_some() {
                         served += 1;
                         hold(
@@ -1053,11 +1115,13 @@ fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
             cmd.stdout(Stdio::from(file.try_clone().map_err(|e| e.to_string())?))
                 .stderr(Stdio::from(file));
             let mut child = cmd.spawn().map_err(|e| format!("spawn the binary: {e}"))?;
-            match s
-                .get("expect")
-                .and_then(Value::as_str)
-                .unwrap_or("listening")
-            {
+            // A boot that states its `exit` expects one.
+            let default = if s.get("exit").is_some() {
+                "exit"
+            } else {
+                "listening"
+            };
+            match s.get("expect").and_then(Value::as_str).unwrap_or(default) {
                 "exit" => {
                     let code = common::lines::try_wait_bounded(&mut child, secs(s, 120))?;
                     let text = read_file(&log);
@@ -1217,6 +1281,12 @@ fn run_step(world: &mut World, step: &Step) -> Result<(), String> {
             if let Some(want) = s.get("status").and_then(Value::as_u64) {
                 if u64::from(status) != want {
                     return Err(format!("answered {status}, {want} was expected: {text}"));
+                }
+            }
+            // Every reply answers its own request (on for every call, no opt-out).
+            if let Some(request) = &body {
+                for reply in responses_in(&text) {
+                    reply_id_held(request, &reply)?;
                 }
             }
             hold(
@@ -1646,4 +1716,121 @@ fn the_scripted_far_end_answers_what_the_case_states_and_counts_it() {
     assert_eq!(counts.get("m/one"), Some(&2));
     assert_eq!(counts.get("m/two"), Some(&1));
     assert_eq!(counts.get("m/three"), Some(&1));
+}
+
+/// A BOOT STEP STATES ITS EXIT: a boot that exits is held to the `exit` it states — a config that
+/// does not read exits nonzero and holds `"nonzero"` (the control), and fails a stated `0`, naming
+/// the plane crate, the case and the step; `exit` beside `expect: listening` is refused.
+#[test]
+fn a_boot_step_is_held_to_the_exit_it_states() {
+    let case = |name: &str, exit: &str| {
+        Case::parse(&format!(
+            r#"{{"schema": "blackbox/1", "case": "{name}",
+                "files": {{"config.yaml": "listen: [unclosed\n", "providers.yaml": "{{}}\n"}},
+                "steps": [{{"boot": {{"expect": "exit", "exit": {exit}, "within_secs": 120}}}}]}}"#
+        ))
+        .expect("the planted case reads")
+    };
+    assert_eq!(
+        run_case("planted-plane", &case("boot-exit-nonzero", "\"nonzero\"")),
+        Ok(None),
+        "the control holds"
+    );
+    let failure =
+        run_case("planted-plane", &case("boot-exit-zero", "0")).expect_err("a wrong exit fails");
+    assert!(
+        failure.contains("`planted-plane`")
+            && failure.contains("case `boot-exit-zero`")
+            && failure.contains("step 0 (boot)")
+            && failure.contains("0 was expected"),
+        "{failure}"
+    );
+    let refusal = Step::parse(&json!({"boot": {"expect": "listening", "exit": 0}}), 0)
+        .expect_err("`exit` beside `expect: listening` is refused");
+    assert!(refusal.contains("`exit`"), "{refusal}");
+}
+
+/// `unless` NAMES AN AXIS WHOSE ABSENCE THE CASE IS ABOUT: a build linking it does not apply to
+/// the case, a build without it does; `requires.axes` names an axis as the manifest does and
+/// applies exactly when the build links it.
+#[test]
+fn unless_runs_a_case_only_where_the_axis_is_absent() {
+    let case = |field: &str| {
+        Case::parse(&format!(
+            r#"{{"schema": "blackbox/1", "case": "axis", {field},
+                "steps": [{{"validate": {{"args": ["--version"], "exit": 0}}}}]}}"#
+        ))
+        .expect("the planted case reads")
+    };
+    assert!(!axis_linked("no-such-axis"));
+    assert_eq!(case(r#""unless": ["no-such-axis"]"#).not_applicable(), None);
+    assert!(case(r#""requires": {"axes": ["no-such-axis"]}"#)
+        .not_applicable()
+        .is_some());
+    for cfg in env!("BUSBAR_LINKED_AXES").split_whitespace() {
+        let name = cfg.trim_start_matches("linked_axis_").replace('_', "-");
+        assert!(axis_linked(&name), "{name}");
+        let without = case(&format!(r#""unless": [{name:?}]"#)).not_applicable();
+        assert!(without.is_some_and(|why| why.contains(&name)), "{name}");
+        assert_eq!(
+            case(&format!(r#""requires": {{"axes": [{name:?}]}}"#)).not_applicable(),
+            None,
+            "{name}"
+        );
+    }
+}
+
+/// EVERY REPLY ANSWERS ITS OWN REQUEST: a call's JSON-RPC reply carries the request's `id` — the
+/// scripted far end does (the control); a far end that answers under a foreign id fails the call.
+#[test]
+fn a_reply_under_a_foreign_id_fails_the_call() {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+    let foreign = listener.local_addr().expect("its address").port();
+    std::thread::spawn(move || {
+        for mut conn in listener.incoming().flatten() {
+            if common::upstream::read_request(&mut conn).is_some() {
+                common::upstream::respond(
+                    &mut conn,
+                    200,
+                    &json!({"jsonrpc": "2.0", "id": "not-yours", "result": {}}),
+                );
+            }
+        }
+    });
+    let scripted = Responder::start(BTreeMap::from([(
+        "m/x".to_string(),
+        Answer::Result(json!({})),
+    )]));
+    let step = Step::parse(
+        &json!({"call": {"path": "/rpc", "status": 200,
+                         "body": {"jsonrpc": "2.0", "id": "mine", "method": "m/x"}}}),
+        0,
+    )
+    .expect("the step reads");
+    let world = |port: u16| World {
+        dir: case_dir("reply-id"),
+        data_port: port,
+        admin_port: port,
+        admin_token: String::new(),
+        signing: None,
+        minted: None,
+        responder: None,
+        counts_mark: BTreeMap::new(),
+        counts_start: BTreeMap::new(),
+        node: None,
+        vars: BTreeMap::new(),
+        unset: Vec::new(),
+        issuer: false,
+    };
+    run_step(&mut world(scripted.port), &step).expect("the request's own id holds");
+    let failure = run_step(&mut world(foreign), &step).expect_err("a foreign id fails");
+    assert!(
+        failure.contains("\"not-yours\"") && failure.contains("\"mine\""),
+        "{failure}"
+    );
+    assert!(reply_id_held(
+        &json!({"jsonrpc": "2.0", "method": "note"}),
+        &json!({"jsonrpc": "2.0", "id": 9, "result": {}})
+    )
+    .is_ok());
 }
