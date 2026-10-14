@@ -333,6 +333,7 @@ fn answer(
             _reserved: 0,
             flags,
             retry_after_secs: 0,
+            declared_len: 0,
         });
         if !whole {
             p.bytes.drain(..n);

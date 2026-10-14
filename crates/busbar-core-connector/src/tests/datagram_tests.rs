@@ -281,6 +281,7 @@ fn write_answer(st: &mut St, sink: &FramerSink, lane: Option<&DatagramLane>, o: 
                 _reserved: 0,
                 flags: PIECE_END_OF_FRAME,
                 retry_after_secs: 0,
+                declared_len: 0,
             });
         }
         n += 1;

@@ -523,6 +523,7 @@ extern "C" {
 #define BB_TRANSPORT_PIECE_FIELDS UINT16_C(16) /* [`FramePiece::flags`]: the piece's bytes are a FIELD BLOCK (the far end's head or its trailers), */
 #define BB_TRANSPORT_PIECE_CONTINUED UINT16_C(32) /* [`FramePiece::flags`], with [`PIECE_FIELDS`]: the piece's first byte CONTINUES a line an earlier */
 #define BB_TRANSPORT_PIECE_TEXT UINT16_C(64) /* [`FramePiece::flags`]: the piece's bytes belong to a TEXT message, not a binary one, on a wire */
+#define BB_TRANSPORT_PIECE_HAS_DECLARED_LEN UINT16_C(128) /* [`FramePiece::flags`], with [`PIECE_FIELDS`]: `declared_len` is present, the body length the */
 #define BB_TRANSPORT_PIECE_WRITABLE UINT16_C(256) /* [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with */
 #define BB_TRANSPORT_EMIT_TEXT UINT32_C(1) /* [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are */
 #define BB_TRANSPORT_WRITE_END_OF_FRAME UINT32_C(1) /* [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that */
@@ -3117,6 +3118,7 @@ struct bb_transport_FramePiece {
     uint8_t _reserved;
     uint16_t flags;
     uint64_t retry_after_secs;
+    uint64_t declared_len;
 };
 
 /* The HOST buffers every framer op writes into, and the host's clock at the call. */
@@ -5545,7 +5547,7 @@ BB_ASSERT(offsetof(bb_transport_ConnFacts, peer_issuer) == 56, "bb_transport_Con
 BB_ASSERT(offsetof(bb_transport_ConnFacts, peer_fingerprint) == 72, "bb_transport_ConnFacts.peer_fingerprint: offset");
 BB_ASSERT(offsetof(bb_transport_ConnFacts, claim) == 88, "bb_transport_ConnFacts.claim: offset");
 BB_ASSERT(offsetof(bb_transport_ConnFacts, local_certificate) == 104, "bb_transport_ConnFacts.local_certificate: offset");
-BB_ASSERT(sizeof(bb_transport_FramePiece) == 40, "bb_transport_FramePiece: size");
+BB_ASSERT(sizeof(bb_transport_FramePiece) == 48, "bb_transport_FramePiece: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FramePiece) == 8, "bb_transport_FramePiece: alignment");
 BB_ASSERT(offsetof(bb_transport_FramePiece, stream) == 0, "bb_transport_FramePiece.stream: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, offset) == 8, "bb_transport_FramePiece.offset: offset");
@@ -5555,6 +5557,7 @@ BB_ASSERT(offsetof(bb_transport_FramePiece, status_class) == 28, "bb_transport_F
 BB_ASSERT(offsetof(bb_transport_FramePiece, _reserved) == 29, "bb_transport_FramePiece._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, flags) == 30, "bb_transport_FramePiece.flags: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, retry_after_secs) == 32, "bb_transport_FramePiece.retry_after_secs: offset");
+BB_ASSERT(offsetof(bb_transport_FramePiece, declared_len) == 40, "bb_transport_FramePiece.declared_len: offset");
 BB_ASSERT(sizeof(bb_transport_FrameSpan) == 16, "bb_transport_FrameSpan: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FrameSpan) == 8, "bb_transport_FrameSpan: alignment");
 BB_ASSERT(offsetof(bb_transport_FrameSpan, offset) == 0, "bb_transport_FrameSpan.offset: offset");

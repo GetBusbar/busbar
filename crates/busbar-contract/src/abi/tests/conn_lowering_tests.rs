@@ -77,6 +77,8 @@ impl Conns for Echo {
             status_code: Some(200),
             status_namespace: Some("numbering".into()),
             retry_after_secs: None,
+            // The first answer states a declared body length, as a head may.
+            declared_len: (next == b"hellokv").then_some(4096),
             reason,
         })
     }
@@ -147,6 +149,8 @@ fn every_operation_crosses_the_lowering() {
     // The reason crosses the lowering as a range of the caller's buffer, and reads back.
     assert_eq!(piece.reason, Some(7..9));
     assert_eq!(&buf[7..9], b"OK");
+    // The declared body length crosses the lowering untouched.
+    assert_eq!(piece.declared_len, Some(4096));
     assert_eq!(
         (
             piece.kind,
@@ -169,6 +173,10 @@ fn every_operation_crosses_the_lowering() {
     let text = pa.read(conn, 0, &mut buf).unwrap();
     assert_eq!(&buf[..text.len], b"text:{}", "a text write crosses as text");
     assert_eq!(again.reason, None);
+    assert_eq!(
+        again.declared_len, None,
+        "a piece stating none reads back none"
+    );
     assert_eq!(
         pa.read(conn, 0, &mut buf),
         Err(ConnError::Pending),

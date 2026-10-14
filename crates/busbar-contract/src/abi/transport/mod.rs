@@ -440,6 +440,10 @@ pub const PIECE_CONTINUED: u16 = 32;
 /// it into `FrameMeta::text`, the bit's one home above the ABI.
 pub const PIECE_TEXT: u16 = 64;
 
+/// [`FramePiece::flags`], with [`PIECE_FIELDS`]: `declared_len` is present, the body length the
+/// message's head declared on the wire. Never on any other piece.
+pub const PIECE_HAS_DECLARED_LEN: u16 = 128;
+
 /// [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with
 /// [`YIELD_STREAM_FULL`] drained below the framer's low-water mark, and the host may emit on the
 /// stream again. Always an EMPTY piece, with no other flag: it ends no frame and no stream.
@@ -649,6 +653,10 @@ pub struct FramePiece {
     pub flags: u16,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: u64,
+    /// With [`PIECE_HAS_DECLARED_LEN`], on a head's field block: the body length the message's
+    /// head declared on the wire, as the framer read it. A statement, never a count of the body
+    /// bytes the pieces carry; the field block itself never holds it. A tail addition (pre-tag v1).
+    pub declared_len: u64,
 }
 
 /// A byte range of a host buffer a piece's bytes were written into; `len == 0` = absent. A
@@ -664,7 +672,7 @@ pub struct FrameSpan {
 
 // The piece's size and its flags' place are fixed: a framer built against another layout is refused
 // at compile time, never read wrong at run time.
-const _: () = assert!(core::mem::size_of::<FramePiece>() == 40);
+const _: () = assert!(core::mem::size_of::<FramePiece>() == 48);
 const _: () = assert!(core::mem::offset_of!(FramePiece, flags) == 30);
 
 /// The HOST buffers every framer op writes into, and the host's clock at the call.

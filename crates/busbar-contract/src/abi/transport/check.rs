@@ -17,9 +17,10 @@ use super::{
     IoOut, ListenOut, LocateOut, SettingDecl, StatusRow, TransportTail, CANCEL_COMPLETED,
     CANCEL_NOTHING_MOVED, FACT_DECODES_PAYLOAD, FACT_SIGNS_NOTHING_AFTER_AUTH, FRAMING_DATAGRAM,
     FRAMING_STREAM, MAX_ADDR, PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
-    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE, ROLE_CARRIER,
-    ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER, STATUS_SUCCESS,
-    UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, PIECE_WRITABLE,
+    ROLE_CARRIER, ROLE_FRAMER, SETTING_FLAG, SETTING_TEXT, STATUS_AT_TERMINAL, STATUS_OTHER,
+    STATUS_SUCCESS, UNIT0_HANDSHAKE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    YIELD_STREAM_FULL,
 };
 use super::{
     DatagramRoute, KeyingMaterial, RendezvousTerms, FINGERPRINT_BYTES, HANDSHAKE_ANSWERS,
@@ -233,6 +234,7 @@ pub fn check_framer(
                     | PIECE_FIELDS
                     | PIECE_CONTINUED
                     | PIECE_TEXT
+                    | PIECE_HAS_DECLARED_LEN
                     | PIECE_WRITABLE,
             ),
             "framer.piece.flags",
@@ -255,6 +257,13 @@ pub fn check_framer(
             return Err(fault(
                 Rule::Contradiction,
                 "framer.piece.continued_not_fields",
+            ));
+        }
+        // A declared body length is a head's statement: a field block carries it, nothing else.
+        if p.flags & PIECE_HAS_DECLARED_LEN != 0 && p.flags & PIECE_FIELDS == 0 {
+            return Err(fault(
+                Rule::Contradiction,
+                "framer.piece.declared_len_not_fields",
             ));
         }
         // A field block is never a failure's reason.
