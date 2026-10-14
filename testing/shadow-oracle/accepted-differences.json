@@ -2218,6 +2218,32 @@
       }
     },
     {
+      "id": "Q33c a streamed chat whose stream_options is not an object is refused 400",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a streamed chat request whose `stream_options` is not a JSON object (a string, number, boolean or array) is refused with a 400 naming the field. 1.5.5 forwarded it to the upstream unchanged.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md l.3897 Q33c (OWNER RULINGS 2026-09-24, second batch)",
+      "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_options_not_object$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "rationale": "v1.5.5 crates/busbar/src/proxy/engine/mod.rs:2367-2386 (the include_usage injector) left a non-object `stream_options` untouched and the request went upstream as written. 1.6.0's llm plane refuses it before any send with a 400 carrying DETAIL_STREAM_OPTIONS_NOT_OBJECT (crates/busbar-plane-llm/src/exchange/attempt.rs, `inject_stream_usage`), because usage cannot be asked for on a value that is not an object and an unmetered stream would bill zero tokens. The owner ruled it, verbatim (BUSBAR-1.6.0.md l.3897): \"Q33c: KEEP the 400 for a wrong-typed stream_options (W2.28, 822d3f2b0).\" (answered in 1.6.0-QUESTIONS.md Q35: \"keep the stream_options 400\"). No oracle cell sends a wrong-typed stream_options: the cells are OWED, `cells` names them and expected_cells is 0, the way the client-cancel entry below writes its owed cell. Pinned by exchange_attempt::every_wrong_typed_stream_options_is_refused_before_any_send (string, number, boolean and array; F25 rows 3 and 25). The premise probes the existing same-dialect stream cell.",
+      "premise": {
+        "cell": "llm|openai|openai|request|ok_stream",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-24",
+        "ruling": "BUSBAR-1.6.0.md l.3897 Q33c (OWNER RULINGS 2026-09-24, second batch); 1.6.0-QUESTIONS.md Q35"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
       "id": "#62 a stream the client cancels after its first byte keeps its charge",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a streamed answer the client cancels after its first byte keeps its charge. It is billed for what streamed and its request-budget unit is no longer given back; 1.5.5 gave the unit back. A mid-stream cut is not a refund.",
