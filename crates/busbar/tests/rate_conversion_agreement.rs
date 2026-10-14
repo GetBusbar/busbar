@@ -106,10 +106,10 @@ fn the_two_conversions_agree_on_ten_thousand_generated_rates() {
 /// is useful: as the tripwire for a second copy of those three lines coming back.
 ///
 /// The expected column is derived from the rule, not read off the implementation: multiply the
-/// configured DECIMAL by a thousand, round half away from zero (#44), and take it only if it is
-/// positive and fits a `u64`. The decimal, not the double: `0.5005` is an exact half nano-unit and
-/// rounds UP to 501, where the binary product `0.5005 * 1000.0` is `500.4999…` and rounded DOWN to
-/// 500 (#81: no binary float on the money path).
+/// configured DECIMAL by a thousand, exactly, and take it only if it is a positive whole number of
+/// nano-units that fits a `u64` (#81: no binary float on the money path). A rate with any digit past
+/// the third decimal is NOT rounded — not up, not down, not to 1.5.5's figure — it is a rate the
+/// card cannot hold, and it converts to nothing here and is refused at boot (OWNER rule 21).
 ///
 /// THE CEILING IS AN INTEGER ONE. The conversion used to cast a float, and `u64::MAX as f64` rounds
 /// UP to `2^64`, so a guard spelled against it let a cast SATURATE to `u64::MAX` — an astronomical
@@ -119,24 +119,40 @@ fn the_two_conversions_agree_on_ten_thousand_generated_rates() {
 fn every_boundary_value_converts_to_its_named_integer_and_both_readers_agree() {
     let cases: [(f64, u64, &str); 25] = [
         (0.0, 0, "zero is not a rate"),
-        (0.0004, 0, "below the half-nano-unit boundary: floors to nothing"),
-        (0.0005, 1, "exactly a half nano-unit: rounds AWAY from zero"),
-        (0.0014, 1, "one and four tenths: floors to one"),
-        (0.0015, 2, "one and a half: rounds to two"),
+        (
+            0.0004,
+            0,
+            "four tenths of a nano-unit: refused, never rounded",
+        ),
+        (
+            0.0005,
+            0,
+            "half a nano-unit: refused, never rounded up to one",
+        ),
+        (
+            0.0014,
+            0,
+            "one and four tenths: refused, never rounded to one",
+        ),
+        (0.0015, 0, "one and a half: refused, never rounded to two"),
         (0.001, 1, "exactly one nano-unit"),
         (1.0, 1_000, "one micro-unit is a thousand nano-units"),
         (
             0.5005,
-            501,
-            "an exact half the binary product (`500.4999…`) rounded DOWN to 500: the decimal says 501",
+            0,
+            "500.5 nano-units: neither 1.5.5's float-rounded 500 nor a half-away 501 — refused",
+        ),
+        (0.3, 300, "a three-decimal rate is exactly its nano-units"),
+        (
+            10_000.0,
+            10_000_000,
+            "ten thousand micro-units, converted flat",
         ),
         (
-            0.5015,
-            502,
-            "the same, one nano-unit up: `501.4999…` rounded to 501, the decimal says 502",
+            f64::MIN_POSITIVE,
+            0,
+            "the smallest positive f64 rounds to nothing",
         ),
-        (10_000.0, 10_000_000, "ten thousand micro-units, converted flat"),
-        (f64::MIN_POSITIVE, 0, "the smallest positive f64 rounds to nothing"),
         (-0.0, 0, "negative zero is still not a rate"),
         (-1.0, 0, "a negative rate is not a discount"),
         (f64::NAN, 0, "cannot be ordered, so cannot be priced"),
@@ -153,7 +169,11 @@ fn every_boundary_value_converts_to_its_named_integer_and_both_readers_agree() {
             0,
             "one past what a u64 of nano-units holds: nothing, never u64::MAX",
         ),
-        (1e15, 1_000_000_000_000_000_000, "x1000 is 1e18: comfortably inside"),
+        (
+            1e15,
+            1_000_000_000_000_000_000,
+            "x1000 is 1e18: comfortably inside",
+        ),
         (
             1e16,
             10_000_000_000_000_000_000,
@@ -161,8 +181,16 @@ fn every_boundary_value_converts_to_its_named_integer_and_both_readers_agree() {
         ),
         (1e17, 0, "x1000 is 1e20: finite and past the ceiling"),
         (1e18, 0, "the config-typo case the clamp was written for"),
-        (-1e18, 0, "and its negative twin, which is not a discount either"),
-        (1e12, 1_000_000_000_000_000, "an ordinary large rate, unmoved"),
+        (
+            -1e18,
+            0,
+            "and its negative twin, which is not a discount either",
+        ),
+        (
+            1e12,
+            1_000_000_000_000_000,
+            "an ordinary large rate, unmoved",
+        ),
     ];
 
     for (micro, expected, why) in cases {
@@ -216,6 +244,12 @@ fn the_conversion_is_the_integer_the_card_holds() {
             rates.nanos_per_unit("input"),
             expected,
             "case {case}: the rate moved at {micro} micro-units per unit"
+        );
+        // A rate the card cannot hold is an UNPRICED cell, never a priced zero (item 22).
+        assert_eq!(
+            rates.class_priced("input"),
+            micro == 0.0 || expected != 0,
+            "case {case}: {micro} micro-units per unit"
         );
         // And the kernel's projection, which is the same one function, still gives that
         // same integer.

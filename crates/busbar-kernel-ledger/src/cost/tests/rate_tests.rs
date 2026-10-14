@@ -7,25 +7,41 @@
 use super::*;
 use crate::cost::{nano_rate, History, LaneClass, RateCard, STANDARD_TIER_BP};
 
-/// The conversion rounds to NEAREST, half away from zero — it does not truncate. Fifteen
-/// ten-thousandths of a micro-unit is one and a half nano-units and must become two; fourteen is
-/// one and four tenths and must become one. A truncating conversion would silently under-price the
-/// finest rate an operator can configure.
+/// $ RED (OWNER rule 21, #81): THE CONVERSION NEVER ROUNDS. The card holds integer nano-units, so
+/// a configured rate is either a whole number of them — at most three decimal places of
+/// micro-units — or a rate the card cannot hold. Fifteen ten-thousandths of a micro-unit is one and
+/// a half nano-units: not 2, not 1, REFUSED. `0.5005` (500.5) likewise — the case a float round took
+/// DOWN to 500 and a half-away rule would take UP to 501; neither is the configured rate. And the
+/// double `0.1 + 0.2` is `0.30000000000000004`, not `0.3`: it is refused rather than passed off as
+/// 300. Every whole-nano rate converts to exactly the integer it always did.
 #[test]
-fn nano_rate_rounds_to_nearest_at_the_nano_boundary() {
-    assert_eq!(nano_rate(0.0015), 2, "one and a half rounds away from zero");
-    assert_eq!(nano_rate(0.0014), 1, "one and four tenths floors to one");
-    // THE HALF IS THE DECIMAL'S, NOT THE DOUBLE'S (#81). `0.5005` is an exact half nano-unit; its
-    // double times a thousand is `500.4999…`, which a float round took DOWN to 500.
-    assert_eq!(
-        nano_rate(0.5005),
-        501,
-        "an exact decimal half rounds away from zero"
-    );
-    assert_eq!(nano_rate(0.5015), 502, "and the next one up");
-    // A fractional-cent sum (0.1 + 0.2 micro-units) is the decimal `0.30000000000000004`: three
-    // hundred nano-units exactly, with no drift carried into the card.
-    assert_eq!(nano_rate(0.1 + 0.2), 300);
+fn nano_rate_refuses_a_rate_that_is_not_a_whole_number_of_nano_units() {
+    for refused in [0.0015, 0.0014, 0.0005, 0.5005, 0.5015, 0.1 + 0.2, 1.0001] {
+        assert_eq!(
+            nano_rate(refused),
+            0,
+            "{refused} µ/unit has no integer nano-rate"
+        );
+        assert_eq!(
+            crate::cost::representable_nano_rate(refused),
+            None,
+            "{refused} µ/unit is a rate the card cannot hold — never rounded to one it can"
+        );
+    }
+    for (micro, nanos) in [
+        (0.001, 1),
+        (0.3, 300),
+        (0.1, 100),
+        (0.2, 200),
+        (2.5, 2_500),
+        (3.125, 3_125),
+    ] {
+        assert_eq!(
+            nano_rate(micro),
+            nanos,
+            "{micro} µ/unit is exactly {nanos} nano-units"
+        );
+    }
 }
 
 /// The clamp is "finite AND positive", not "finite OR positive". An infinite rate — reachable from
@@ -139,7 +155,7 @@ fn fee_line_unit_price_is_cents_lifted_to_nano_units() {
 
 /// ITEM 22: A RATE THE CARD CANNOT HOLD IS NOT A RATE OF ZERO.
 ///
-/// `0.0004` micro-units a unit is below the half-nano-unit quantum; `$0.10/GB` priced per byte is
+/// `0.0004` micro-units a unit is not a whole number of nano-units; `$0.10/GB` priced per byte is
 /// `0.00009313`. `nano_rate` maps both to `0` (it has no error channel), and the card used to record
 /// that `0` as a PRICED cell — so the class billed as nothing while the card claimed to price it, and
 /// #42's refusal could never fire. The card now records it UNPRICED: the lane is named, the class is
@@ -185,9 +201,12 @@ fn a_sub_quantum_rate_is_unpriced_on_the_card_and_refuses_never_priced_at_zero()
         "#42: a hit class the card cannot price REFUSES; got {one:?}"
     );
 
-    // And a representable rate is byte-identical to the quantisation it always had (#44).
-    assert_eq!(crate::cost::representable_nano_rate(0.0005), Some(1));
-    assert_eq!(crate::cost::representable_nano_rate(0.0015), Some(2));
+    // A rate that is a whole number of nano-units is held exactly; one that is not is refused,
+    // never rounded (OWNER rule 21).
+    assert_eq!(crate::cost::representable_nano_rate(0.001), Some(1));
+    assert_eq!(crate::cost::representable_nano_rate(0.002), Some(2));
+    assert_eq!(crate::cost::representable_nano_rate(0.0005), None);
+    assert_eq!(crate::cost::representable_nano_rate(0.0015), None);
     assert_eq!(crate::cost::representable_nano_rate(0.0004), None);
     assert_eq!(crate::cost::representable_nano_rate(0.0), Some(0));
     assert_eq!(crate::cost::representable_nano_rate(f64::MAX), None);

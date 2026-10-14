@@ -32,60 +32,61 @@ use std::collections::BTreeMap;
 /// it could be quantised at and nothing to choose between. A denomination-dependent conversion would
 /// be a cross-rate by another name.
 ///
-/// Multiply by a thousand and round to nearest, half away from zero, exactly once — IN DECIMAL, never
-/// in binary floating point (#81, #77(8)). The configured figure arrives as the double the config
-/// parser read, and that double is NOT the number the operator wrote: `0.3` is held as
-/// `0.299999999999999988898…` and `0.5005` as `0.500499999999999944…`, so `(v * 1000.0).round()`
-/// rounded the exact half-nano `0.5005` DOWN to 500 where #44's half-away-from-zero says 501. The
-/// conversion therefore reads back the DECIMAL the operator wrote — `Display` prints the shortest
-/// text that reads back as this double, never in exponent form, so `0.3` is `"0.3"` — and does
-/// the multiply and the rounding on its digits: the first three decimals are the nano-units, the
-/// fourth alone decides the half. Every rate of up to three decimals converts to exactly the integer
-/// it always did; the only rates that move are exact halves the binary product had pushed below the
-/// half, and they move to #44's answer.
+/// MULTIPLY BY A THOUSAND, EXACTLY, AND NEVER ROUND (OWNER rule 21, 2026-10-14: "money is bank
+/// auditor grade. its either right or its wrong"; #81: no binary float on the money path). The card
+/// holds integer nano-units, so a configured rate either IS a whole number of nano-units — at most
+/// three decimal places of micro-units — or the card cannot hold it. There is no third answer: a
+/// rate like `0.5005` micro-units (500.5 nano-units) is not rounded to anything, it is not a rate
+/// this card can price, and it converts to `0` here and to `None` in [`representable_nano_rate`],
+/// which boot validation refuses naming the model, the class and the value.
 ///
-/// A value that is not finite, not positive, or too large for a `u64` of nano-units becomes zero:
-/// config validation should already have refused it, and a rate of zero is the safe reading of a
-/// value nobody can price. There is no saturating cast to guard against here — a whole part past
-/// the integer is a failed parse or a failed checked multiply, both of which are the zero.
+/// The arithmetic is on the DECIMAL the operator wrote, never on a binary product: the configured
+/// figure arrives as the double the config parser read, and `Display` prints the shortest text that
+/// reads back as that double, never in exponent form (`0.3` is `"0.3"`, not
+/// `0.299999999999999988898…`). The first three decimals are the nano-units; any digit past them is
+/// a fraction of a nano-unit, and the rate is refused. Every rate the card can hold converts to
+/// exactly the integer 1.5.5's `(utok * 1000.0).round()` gave it.
+///
+/// A value that is not finite, not positive, finer than one nano-unit, or too large for a `u64` of
+/// nano-units becomes zero: there is no error channel here, and [`representable_nano_rate`] is the
+/// question that tells a configured zero from a refusal. There is no saturating cast — a whole part
+/// past the integer is a failed parse or a failed checked multiply, both of which are the zero.
 pub fn nano_rate(micro_per_unit: f64) -> u64 {
     if !micro_per_unit.is_finite() || micro_per_unit <= 0.0 {
         return 0;
     }
     let text = micro_per_unit.to_string();
     let (whole, frac) = text.split_once('.').unwrap_or((text.as_str(), ""));
+    if frac.len() > 3 {
+        return 0;
+    }
     let digit = |i: usize| frac.as_bytes().get(i).map_or(0, |d| u64::from(d - b'0'));
     whole
         .parse::<u64>()
         .ok()
         .and_then(|whole| whole.checked_mul(1000))
         .and_then(|nanos| nanos.checked_add(digit(0) * 100 + digit(1) * 10 + digit(2)))
-        .and_then(|nanos| nanos.checked_add(u64::from(digit(3) >= 5)))
         .unwrap_or(0)
 }
 
 /// **THE CARD-BUILD QUESTION**: can the card hold this configured rate as what it says it is?
 ///
-/// `Some(n)` — the rate the card records, which is [`nano_rate`]'s quantisation, unchanged (#44:
-/// card-build quantisation stays half-away-from-zero, byte-identical). `Some(0)` only for a rate
-/// CONFIGURED at zero, which is #77(5)'s explicit zero row: legitimately free.
+/// `Some(n)` — the rate the card records, [`nano_rate`]'s exact conversion. `Some(0)` only for a
+/// rate CONFIGURED at zero, which is #77(5)'s explicit zero row: legitimately free.
 ///
-/// `None` — the card CANNOT represent it, and must not claim to (item 22). [`nano_rate`] maps every
-/// value it cannot hold onto `0`, which is the right answer for a conversion with no error channel
-/// and the WRONG answer for a card: a configured positive rate below the half-nano-unit quantum
-/// (`0.0004` micro-units — a rate of `0.10` per GiB is `0.00009313` micro-units a byte) became `0`
-/// while the card reported the class PRICED, so every unit of it billed as nothing and #42's
-/// refusal could never fire. The same is true of a rate too large for the integer (it was a clamp
-/// to `0`), and of a value that is not a rate at all (negative, NaN, infinite — config validation
-/// refuses those first; this is the card's own statement of the same rule). Each of those is now an
-/// UNPRICED cell, so a hit on it REFUSES (#42) instead of pricing at a zero nobody configured.
+/// `None` — the card CANNOT represent it, and must not claim to (item 22, OWNER rule 21): a
+/// positive rate that is not a whole number of nano-units (`0.0005`, `0.5005`, or `0.10` per GiB,
+/// which is `0.00009313` micro-units a byte), a rate too large for the integer, or a value that is
+/// not a rate at all (negative, NaN, infinite). Boot validation refuses every one of them, naming the
+/// model, the class and the value; a card built without that check holds each as an UNPRICED cell,
+/// so a hit on it REFUSES (#42) instead of pricing at a figure nobody configured.
 pub fn representable_nano_rate(micro_per_unit: f64) -> Option<u64> {
     if micro_per_unit == 0.0 {
         // An explicit zero (`-0.0` included): the operator configured this class free.
         return Some(0);
     }
     match nano_rate(micro_per_unit) {
-        // A non-zero configured value that quantises to nothing is a value the card cannot hold.
+        // A non-zero configured value with no exact integer nano-rate is one the card cannot hold.
         0 => None,
         n => Some(n),
     }

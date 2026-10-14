@@ -296,7 +296,7 @@ impl CostModel {
         groups_cfg: &std::collections::BTreeMap<String, crate::config::GroupCfg>,
     ) -> Self {
         // rate_card is the ONLY cost source: no per-entry cost override lives anywhere else in
-        // config. Each rate was quantised ONCE at the intake (`raw_tier_rates`, #44); the card is
+        // config. Each rate was converted ONCE, exactly, at the intake (`raw_tier_rates`); the card is
         // built by the one constructor that owns card-building — the class fan-out, the unpriced
         // placement of an unrepresentable rate (item 22) and the fee's clamp are all
         // `RateCard::from_config`'s, so the door and the bill hold ONE card.

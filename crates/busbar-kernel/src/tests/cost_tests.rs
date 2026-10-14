@@ -597,22 +597,34 @@ fn derived_spend_lands_exactly_on_an_integer_budget_cap() {
     );
 }
 
-/// `RateNanos::from_cfg` converts config micro-units to nano-units by `(_utok * 1000).round()` —
-/// ROUND TO NEAREST (half away from zero), not truncation. 0.0015 utok = 1.5 nano must round to 2;
-/// 0.0014 utok = 1.4 nano must floor to 1. A truncating conversion would make the first case 1,
-/// silently under-pricing the finest-grained rates an operator can configure.
+/// $ RED (OWNER rule 21): `0.0015` µ/token is one and a half nano-units and `0.0014` one and four
+/// tenths. Neither is a rate the card can hold, so the intake REFUSES both (`None`, which boot
+/// validation turns into an error naming the model, class and value) — 1.5.5 rounded them to 2 and
+/// 1, and a bank-auditor-grade card rounds nothing.
 #[test]
-fn rate_nanos_from_cfg_rounds_to_nearest_at_the_nano_boundary() {
-    let half_up = RateEntryCfg {
+fn rate_nanos_from_cfg_refuses_a_rate_finer_than_one_nano_unit() {
+    let sub_nano = RateEntryCfg {
         input_utok: 0.0015,
         output_utok: 0.0014,
-        cache_read_utok: 0.0,
+        cache_read_utok: 0.002,
         cache_write_utok: 0.0,
         ..Default::default()
     };
-    let rn = crate::cost::RateNanos::from_cfg(&half_up);
-    assert_eq!(rn.input, 2, "1.5 nano rounds to 2 (half away from zero)");
-    assert_eq!(rn.output, 1, "1.4 nano floors to 1");
+    let raw = sub_nano.raw_tier_rates();
+    assert_eq!(
+        raw.input, None,
+        "1.5 nano-units is refused, never rounded to 2"
+    );
+    assert_eq!(
+        raw.output, None,
+        "1.4 nano-units is refused, never rounded to 1"
+    );
+    assert_eq!(
+        raw.cache_read,
+        Some(2),
+        "a whole nano-rate converts exactly"
+    );
+    assert_eq!(raw.cache_write, Some(0), "an explicit zero is the free row");
 }
 
 /// `RateNanos::from_cfg`'s inner `nanos()` clamp is `is_finite() && v > 0.0`, not `||`: a
@@ -907,10 +919,10 @@ fn the_one_function_is_byte_identical_to_the_unguarded_sum_wherever_that_sum_fit
 fn from_raw_is_byte_identical_to_the_unclamped_projection_for_every_in_range_rate() {
     // THE 1.5.5 EQUIVALENCE FOR THE RATE PROJECTION ($). The reference is 1.5.5's conversion
     // (`crates/busbar/src/cost.rs:99` at v1.5.5): multiply the double by a thousand, round half
-    // away from zero, cast. The intake now does the same multiply and rounding on the configured
-    // DECIMAL (#81), so it must agree with 1.5.5 on every in-range rate, bar exactly one signed
-    // class: an exact decimal half nano-unit (`x.xxx5`) whose binary product fell below the half,
-    // which 1.5.5 rounded DOWN and #44 rounds UP — one nano-unit more, and only there.
+    // away from zero, cast. Two arms, and nothing between them (OWNER rule 21):
+    //   * a rate that IS a whole number of nano-units converts to EXACTLY 1.5.5's integer;
+    //   * a rate that is not — any digit past the third decimal — is REFUSED at the intake (`None`),
+    //     never rounded to 1.5.5's integer or to any other.
     fn unclamped_reference(utok: f64) -> Option<u64> {
         let v = (utok * 1000.0).round();
         // The in-range test is `< 2^64`, NOT `<= u64::MAX as f64`. `u64::MAX` is `2^64 - 1` and no
@@ -930,6 +942,7 @@ fn from_raw_is_byte_identical_to_the_unclamped_projection_for_every_in_range_rat
     };
 
     let mut agreed = 0usize;
+    let mut refused = 0usize;
     for i in 0..10_000 {
         // Real rate cards are small decimals of micro-units per token; sweep that range densely
         // and a few decades either side of it.
@@ -946,27 +959,37 @@ fn from_raw_is_byte_identical_to_the_unclamped_projection_for_every_in_range_rat
             cache_write_utok: utok,
             ..crate::config::RateEntryCfg::default()
         };
-        if let Some(want) = unclamped_reference(utok) {
-            let got = RateNanos::from_cfg(&cfg).input;
-            // The one signed divergence: the configured decimal is an EXACT half nano-unit.
-            let decimal = utok.to_string();
-            let exact_half = decimal
-                .split_once('.')
-                .is_some_and(|(_, frac)| frac.len() == 4 && frac.ends_with('5'));
-            if got != want {
-                assert!(
-                    exact_half && got == want + 1,
-                    "the intake moved a rate 1.5.5 priced exactly: utok={utok}, 1.5.5 {want}, \
-                     now {got}"
-                );
-            }
+        let Some(want) = unclamped_reference(utok) else {
+            continue;
+        };
+        let decimal = utok.to_string();
+        let whole_nanos = decimal
+            .split_once('.')
+            .is_none_or(|(_, frac)| frac.len() <= 3);
+        let raw = cfg.raw_tier_rates();
+        if whole_nanos {
+            assert_eq!(
+                (raw.input, RateNanos::from_cfg(&cfg).input),
+                (Some(want), want),
+                "the intake moved a rate 1.5.5 priced exactly: utok={utok}"
+            );
             agreed += 1;
+        } else {
+            assert_eq!(
+                raw.input, None,
+                "utok={utok} is not a whole number of nano-units: REFUSED, never rounded to {want}"
+            );
+            refused += 1;
         }
     }
-    println!("from_raw equivalence: {agreed} in-range rate projections agreed exactly");
+    println!("from_raw equivalence: {agreed} rates agreed exactly, {refused} refused");
     assert!(
-        agreed > 7_000,
-        "expected the in-range agreement arm to run in bulk, ran {agreed}"
+        agreed > 4_500,
+        "expected the whole-nano agreement arm to run in bulk, ran {agreed}"
+    );
+    assert!(
+        refused > 2_000,
+        "expected the refusal arm to run in bulk, ran {refused}"
     );
 }
 
@@ -1008,25 +1031,39 @@ fn the_one_function_does_not_wrap_an_astronomical_bill_down_to_nearly_free() {
     );
 }
 
-/// $ RED (#81): A FRACTIONAL-CENT RATE PRICES EXACTLY, through the live intake. `0.1 + 0.2`
-/// micro-units per token is the double `0.30000000000000004`, and times a million tokens it is
-/// `300000.00000000006` in floats. The intake reads the decimal and carries 300 nano-units, so every
-/// count prices to the integer `count × 300`, with no float digit anywhere past the config.
+/// $ RED (#81): FRACTIONAL-CENT RATES PRICE EXACTLY, through the live intake. `0.1` and `0.2`
+/// micro-units per token (0.1 and 0.2 units per Mtok) are 100 and 200 nano-units; a token of each
+/// is 300 nano-units, where `0.1 + 0.2` in floats is `0.30000000000000004`. And that double,
+/// configured as ONE rate, is not `0.3`: the intake refuses it rather than pass it off as 300.
 #[test]
 fn a_fractional_cent_rate_prices_exactly_through_the_live_intake() {
-    let c = card(&[("m", 0.1 + 0.2, 0.1)]);
+    let c = card(&[("m", 0.1, 0.2)]);
     let cm = resolve_card_fee(Some(&c), 0);
     let r = cm.rate_for("m").expect("the lane is priced");
     assert_eq!(
         (r.input, r.output),
-        (300, 100),
+        (100, 200),
         "the intake carries exact nano-units"
     );
-    assert_eq!(one_nanos(&r, &toks(3, 7)), Ok(3 * 300 + 7 * 100));
+    assert_eq!(
+        one_nanos(&r, &toks(1, 1)),
+        Ok(300),
+        "0.1 + 0.2 is exactly 0.3"
+    );
+    assert_eq!(one_nanos(&r, &toks(3, 7)), Ok(3 * 100 + 7 * 200));
     assert_eq!(
         cm.derive_spend_micros([("m", &toks(1_000_000, 1_000_000))].into_iter(), 0, false),
-        Ok(400_000),
-        "0.3 + 0.1 units per Mtok over a million of each is 400 000 micro-units exactly"
+        Ok(300_000),
+        "0.1 + 0.2 units per Mtok over a million of each is 300 000 micro-units exactly"
+    );
+    let drifted = RateEntryCfg {
+        input_utok: 0.1 + 0.2,
+        ..Default::default()
+    };
+    assert_eq!(
+        drifted.raw_tier_rates().input,
+        None,
+        "the double 0.30000000000000004 is not a whole nano-rate: refused, never rounded to 300"
     );
 }
 
@@ -1053,13 +1090,14 @@ fn a_large_count_times_a_rate_has_no_float_drift() {
 
 /// $ 1.5.5 PARITY: every rate the 1.5.5 golden's money fixtures configure (busbar-oracle's rate
 /// cards: 0, 1, 100 000, 200 000, 1e6, 2e6, 1e7 and 2e7 micro-units per token) and this file's own
-/// card fixtures converts at the intake to exactly 1.5.5's integer (`(utok * 1000.0).round()`,
-/// `crates/busbar/src/cost.rs:99` at v1.5.5) and prices a count to exactly 1.5.5's figure.
+/// card fixtures — every one a whole number of nano-units — converts at the intake to exactly
+/// 1.5.5's integer (`(utok * 1000.0).round()`, `crates/busbar/src/cost.rs:99` at v1.5.5) and prices
+/// a count to exactly 1.5.5's figure.
 #[test]
 fn the_intake_prices_every_money_fixture_rate_at_its_1_5_5_figure() {
     for utok in [
-        0.0, 1.0, 100_000.0, 200_000.0, 1e6, 2e6, 1e7, 2e7, 2.5, 10.0, 3.125, 0.0015, 0.0014, 15.0,
-        0.075, 3.75, 0.3, 1.25,
+        0.0, 1.0, 100_000.0, 200_000.0, 1e6, 2e6, 1e7, 2e7, 2.5, 10.0, 3.125, 15.0, 0.075, 3.75,
+        0.3, 1.25, 0.001,
     ] {
         let v155 = (utok * 1000.0_f64).round() as u64;
         let c = card(&[("m", utok, utok)]);

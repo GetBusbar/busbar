@@ -29,9 +29,9 @@
 //!
 //! 1. **Rates.** Config carries micro-units per quantity as a decimal. The one
 //!    conversion to the integer nano-unit rate happens once, at the config intake: multiply by a
-//!    thousand and round to nearest, half away from zero, on the decimal's own digits (#81: never a
-//!    binary float); anything not finite or not positive clamps to zero. See [`nano_rate`]. After
-//!    that point no decimal number touches money again — the card is built from the integers.
+//!    thousand, exactly, on the decimal's own digits (#81: never a binary float). A rate that is not
+//!    a whole number of nano-units is REFUSED, never rounded (OWNER rule 21). See [`nano_rate`].
+//!    After that point no decimal number touches money again — the card is built from the integers.
 //! 2. **Storage.** A posting stores QUANTITIES and the instant they happened, and nothing priced.
 //!    See [`Posting`].
 //! 3. **Projections.** Minor units and micro-units are read-only views of the summed nano-units,

@@ -164,11 +164,11 @@ pub struct Usage {
 /// …), NOT any plane's config grammar (`rate_card:`'s `input_utok:` etc.).
 ///
 /// NO FLOAT CROSSES THIS SEAM (#81, #77(8)). The configured decimal is converted ONCE, at the config
-/// intake (`RateEntryCfg::raw_tier_rates`, through the ledger's `representable_nano_rate`, #44), and
+/// intake (`RateEntryCfg::raw_tier_rates`, through the ledger's `representable_nano_rate`), and
 /// every hop after it — the rate-apply seam, the root's relay, the card — carries these integers
-/// unchanged. `None` is a configured rate the card CANNOT hold (item 22: a positive rate below the
-/// half-nano quantum, or past a `u64`), which the card records UNPRICED so a hit refuses (#42); it
-/// is never read as zero.
+/// unchanged. `None` is a configured rate the card CANNOT hold (item 22: a positive rate that is not
+/// a whole number of nano-units, or past a `u64`; never rounded, OWNER rule 21), which boot
+/// validation refuses and the card records UNPRICED so a hit refuses (#42); it is never read as zero.
 ///
 /// THE REUSABLE PATTERN: each evictable numeric config section (S3 `limits`, S4 `models`-caps) gets
 /// its own neutral view of this shape — a small POD of the section's values in a canonical order —
