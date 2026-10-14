@@ -2112,8 +2112,9 @@ fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) ->
             pair.0.claimant, pair.0.route.path, pair.1.claimant, pair.1.route.path
         ),
         GuestRefusal::PeerMix(mix) => format!(
-            "{listener}: the lines {} need the Peer auth point and the lines {} do not; a \
-             listener's lines all need Peer or none does",
+            "{listener}: the lines {} need the Peer auth point and the lines {} need a \
+             per-request point without it; on one listener, every line that needs a point needs \
+             Peer or none does",
             named(mix.0.as_slice()),
             named(mix.1.as_slice())
         ),

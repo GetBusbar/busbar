@@ -4,7 +4,8 @@
 //! A guest list's order and its match: CG-62 precedence first, predicates above none at an equal
 //! path, a claimant's rung among its own lines; two claimants meeting at an equal precedence refused;
 //! a path hit on another method is a method miss, not no-route; a listener mixing lines that need
-//! `Peer` with lines that do not refused.
+//! `Peer` with lines that need a per-request point refused, a `none` line neutral to that rule and
+//! gated by the listener's `Peer` verdict.
 
 use busbar_contract::abi::auth::AuthPoints;
 use busbar_contract::abi::transport::route::{
@@ -218,9 +219,9 @@ fn authed(claimant: &str, path: &str, points: AuthPoints) -> Line {
     }
 }
 
-/// RED (THE DESIGN §6 step 3, boot refusals): a listener where some lines need `Peer` and others do
-/// not is refused, naming the lines on each side; a listener whose lines all need `Peer`, and one
-/// where none does, seal.
+/// RED (THE DESIGN §6 step 3, boot refusals): a listener where some lines need `Peer` and others
+/// need a per-request point without it is refused, naming the lines on each side (a `none` line on
+/// neither); a listener whose lines all need `Peer`, and one where none does, seal.
 #[test]
 fn a_listener_mixing_peer_and_non_peer_lines_is_refused() {
     let both = AuthPoints(AuthPoints::PEER.bits() | AuthPoints::HEAD.bits());
@@ -237,7 +238,11 @@ fn a_listener_mixing_peer_and_non_peer_lines_is_refused() {
         p
     };
     assert_eq!(paths(&mix.0), ["/a"], "the lines that need Peer");
-    assert_eq!(paths(&mix.1), ["/b", "/c"], "the lines that do not");
+    assert_eq!(
+        paths(&mix.1),
+        ["/b"],
+        "the lines that need a per-request point only"
+    );
 
     assert!(
         GuestList::seal(vec![
@@ -256,4 +261,44 @@ fn a_listener_mixing_peer_and_non_peer_lines_is_refused() {
         .is_ok(),
         "no line needs Peer"
     );
+}
+
+/// RED (THE DESIGN §6 step 3, l.926-927; step 7, l.969-970): a `none` line needs no point, so it is
+/// neutral to the `Peer` mix rule: a `Peer` chain and a `none` line on one listener seal, and the
+/// sealed list is connection-gated, so the `none` line sits behind the connection's `Peer` verdict.
+/// A `Peer` chain and a `Head` chain on one listener are still refused. A list with no `Peer` line
+/// is not gated.
+#[test]
+fn a_none_line_is_neutral_to_the_peer_mix_and_sits_behind_the_peer_verdict() {
+    let gated = GuestList::seal(vec![
+        authed("a", "/a", AuthPoints::PEER),
+        line("h", route(METHOD_GET, PATH_EXACT, "/healthz")),
+    ])
+    .expect("a Peer chain and a none line seal");
+    assert!(
+        gated.connection_gated(),
+        "the none line sits behind the Peer verdict"
+    );
+
+    let Err(GuestRefusal::PeerMix(mix)) = GuestList::seal(vec![
+        authed("a", "/a", AuthPoints::PEER),
+        authed("b", "/b", AuthPoints::HEAD),
+        line("h", route(METHOD_GET, PATH_EXACT, "/healthz")),
+    ]) else {
+        panic!("a Peer chain and a Head chain on one listener are refused");
+    };
+    assert_eq!(mix.0.len(), 1, "the Peer line");
+    assert_eq!(
+        mix.1.len(),
+        1,
+        "the Head line; the none line is on neither side"
+    );
+    assert_eq!(mix.1[0].route.path, "/b");
+
+    let open = GuestList::seal(vec![
+        authed("b", "/b", AuthPoints::HEAD),
+        line("h", route(METHOD_GET, PATH_EXACT, "/healthz")),
+    ])
+    .expect("no line needs Peer");
+    assert!(!open.connection_gated(), "no Peer line, no connection gate");
 }
