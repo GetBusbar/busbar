@@ -46,6 +46,8 @@ pub enum Decline {
     ProviderMismatch = 9,
     /// A dialect path hit with a method other than POST.
     MethodNotAllowed = 10,
+    /// A webhook delivery whose body does not read ([`super::webhook::read_event`]).
+    WebhookBody = 11,
 }
 
 impl Decline {
