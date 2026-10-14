@@ -4418,7 +4418,7 @@ mod pools_door_walk_and_breaker {
             )
             .await;
         assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
-        if let Some(seen) = state.get_last_auth_header() {
+        if let Some(seen) = state.get_last_request_header("authorization") {
             let what = if seen.contains("sk-seats") {
                 "the operator's key (LEAK)"
             } else {
