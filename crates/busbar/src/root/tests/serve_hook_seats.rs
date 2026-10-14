@@ -1124,3 +1124,225 @@ async fn candidate_tap_fires_after_an_abstaining_gate_and_a_served_request_bills
         "a served request keeps its one billable request (1-cent flat fee)"
     );
 }
+
+// ── ONE ACCRUAL PER SERVED UNIT (coverage map rows 694 and 722, F25 REHOME) ────────────────────
+
+/// The token figures the far end reports on a delivered answer: eleven input, seven output.
+const SPLIT_INPUT: u64 = 11;
+const SPLIT_OUTPUT: u64 = 7;
+
+/// The far end's whole answer, in the door words' `dialect`, reporting [`SPLIT_INPUT`] and
+/// [`SPLIT_OUTPUT`].
+const SPLIT_ANSWER: &str = r#"{"id":"chatcmpl-split","object":"chat.completion","created":0,"model":"m0","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}"#;
+
+/// The same answer streamed: a delta, the stop, the usage, the end.
+const SPLIT_FRAMES: [&str; 4] = [
+    r#"{"id":"chatcmpl-split","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}"#,
+    r#"{"id":"chatcmpl-split","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+    r#"{"id":"chatcmpl-split","object":"chat.completion.chunk","created":0,"model":"m0","choices":[],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}"#,
+    "[DONE]",
+];
+
+/// A far end on loopback answering [`SPLIT_FRAMES`] as one chunked stream, to its end.
+async fn far_end_with_the_split_streamed() -> FarEnd {
+    far_end_scripted(Script {
+        head: "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\n\
+               transfer-encoding: chunked\r\nconnection: close\r\n\r\n"
+            .to_string(),
+        pieces: SPLIT_FRAMES
+            .iter()
+            .map(|frame| (0, chunk(format!("data: {frame}\n\n").as_bytes())))
+            .collect(),
+        finish: Some(b"0\r\n\r\n".to_vec()),
+    })
+    .await
+}
+
+/// What a served unit left on the key's books, once its money settled: the admissions on the
+/// key's bucket, the tokens it accrued, the durable ledger row's per-class counts for `m0`, and
+/// every metering row the key holds (`model in= out= cr= cw= req= billable=`; the provider column
+/// is the rig's own provider name and is not pinned here).
+struct Accrued {
+    requests: u64,
+    tokens: u64,
+    durable: BTreeMap<String, u64>,
+    metering: Vec<String>,
+}
+
+/// Read [`Accrued`] off `rig` once its last unit's money settled (bounded).
+async fn accrued(rig: &DoorRig) -> Accrued {
+    let (requests, _, _, _) = rig.ledger_after(1).await;
+    let tokens = rig.tokens_after().await;
+    let gov = rig
+        .app
+        .governance
+        .clone()
+        .expect("the rig keeps a governance book");
+    gov.flush_budgets();
+    gov.flush_metering();
+    let durable = gov
+        .store()
+        .get_usage(&rig.key_id, 0)
+        .expect("the durable ledger row")
+        .models
+        .iter()
+        .find(|row| row.model == "m0")
+        .map(|row| {
+            row.usage_units
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(class, count)| (class.clone(), *count))
+                .collect()
+        })
+        .unwrap_or_default();
+    let metering = gov
+        .metering_for(busbar_kernel::governance::metering_bucket(
+            busbar_kernel::store::now(),
+        ))
+        .expect("metering read")
+        .into_iter()
+        .filter(|row| row.key_id == rig.key_id)
+        .map(|row| {
+            format!(
+                "{} in={} out={} cr={} cw={} req={} billable={}",
+                row.model,
+                row.tokens_input,
+                row.tokens_output,
+                row.tokens_cache_read,
+                row.tokens_cache_write,
+                row.requests,
+                row.billable_requests
+            )
+        })
+        .collect();
+    Accrued {
+        requests,
+        tokens,
+        durable,
+        metering,
+    }
+}
+
+/// THE WALK'S TAP AND THE METER STEP MAKE ONE POSTING BETWEEN THEM, BUFFERED AND STREAMED.
+///
+/// Legacy: the retiring engine crate's `src/unit/tests/chain.rs::the_walks_tap_and_the_meter_step_make_one_posting_between_them`
+/// (coverage map row 694, REHOME). 1.5.5 behaviour pinned, for BOTH the buffered and the streamed
+/// answer through the door serving the `pools` map: the unit's consumption is posted exactly once —
+/// one metering row `m0 in=11 out=7 cr=0 cw=0 req=1 billable=1`, one admission on the key's bucket,
+/// and the key's tokens accrued once (11 + 7 = 18), however the answer was delivered. The old home
+/// pinned one buffered request's requests, billable count and spend.
+///
+/// RED: a second posting of the unit (two metering rows, req=2, or 36 tokens), a streamed answer
+/// whose usage frame is never accrued (0 tokens, no row), or a split posted under the wrong tiers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_walks_tap_and_the_meter_step_make_one_posting_between_them() {
+    let _one = PUBLISHING.lock().await;
+    let row = format!("m0 in={SPLIT_INPUT} out={SPLIT_OUTPUT} cr=0 cw=0 req=1 billable=1");
+    for (instance, streamed) in [
+        ("serve-hook-seats-one-posting-buffered", false),
+        ("serve-hook-seats-one-posting-streamed", true),
+    ] {
+        let _published = Published(instance);
+        let far = if streamed {
+            far_end_with_the_split_streamed().await
+        } else {
+            far_end_answering(200, SPLIT_ANSWER).await
+        };
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(far.port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        let (status, _, body) = rig
+            .send(
+                "POST",
+                "/v1/chat/completions",
+                Some(
+                    serde_json::json!({"model": "p", "stream": streamed, "max_tokens": 16,
+                    "messages": [{"role": "user", "content": "hi"}]}),
+                ),
+            )
+            .await;
+        assert_eq!(
+            status,
+            200,
+            "{instance}: served: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let books = accrued(&rig).await;
+        assert_eq!(books.requests, 1, "{instance}: one admission");
+        assert_eq!(
+            books.tokens,
+            SPLIT_INPUT + SPLIT_OUTPUT,
+            "{instance}: the tokens accrued once"
+        );
+        assert_eq!(
+            books.metering,
+            vec![row.clone()],
+            "{instance}: exactly one metering row, posted once"
+        );
+    }
+}
+
+/// THE SERVED UNIT'S USAGE IS ACCRUED EXACTLY ONCE (the posting the meter step's posted-or-sealed
+/// flag protected).
+///
+/// Legacy: the retiring engine crate's `src/unit/tests/meter.rs::the_step_says_whether_it_posted_or_only_sealed`
+/// (coverage map row 722, REHOME). The posted-versus-sealed flag was the deleted meter step's own;
+/// the 1.5.5 behaviour it protected, pinned here on the served unit: a delivered answer whose usage
+/// the far end reported accrues its tokens exactly once — 11 + 7 = 18 tokens on the key, the durable
+/// ledger row holding `{input: 11, output: 7}` for the lane, and exactly one metering row for the key
+/// — and nothing posts a second time once the unit has ended (the books read the same after a
+/// further settle).
+///
+/// RED: a second accrual of the same unit (36 tokens, `{input: 22, output: 14}`, a second metering
+/// row), or none at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_served_units_usage_is_accrued_exactly_once() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-hook-seats-accrued-once";
+    let _published = Published(instance);
+    let far = far_end_answering(200, SPLIT_ANSWER).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, _) = rig.chat().await;
+    assert_eq!(status, 200, "the live lane serves the request");
+    let books = accrued(&rig).await;
+    let split = BTreeMap::from([
+        ("input".to_string(), SPLIT_INPUT),
+        ("output".to_string(), SPLIT_OUTPUT),
+    ]);
+    assert_eq!(
+        books.tokens,
+        SPLIT_INPUT + SPLIT_OUTPUT,
+        "the unit's tokens, once"
+    );
+    assert_eq!(
+        books.durable, split,
+        "the durable ledger row holds the split once"
+    );
+    assert_eq!(
+        books.metering.len(),
+        1,
+        "exactly one metering row for the key: {:?}",
+        books.metering
+    );
+    // Nothing posts behind the unit's end: the books read the same after a further settle.
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let again = accrued(&rig).await;
+    assert_eq!(
+        (again.tokens, again.durable, again.metering),
+        (books.tokens, books.durable.clone(), books.metering.clone()),
+        "no second posting once the unit has ended"
+    );
+    assert_eq!(far.served(), 1, "one far-end request served");
+}
