@@ -162,11 +162,19 @@ mod test_seams {
                 (seam.install)();
             }
             super::install();
+            // The linked hook rows' names, as a composition root hands them in: this crate's tests
+            // link no hook plugin, so a stand-in row's name stands for one.
+            crate::v1::service::install_hook_plugins(TEST_LINKED_HOOKS);
         });
     }
+
+    /// The hook rows this test binary reports as linked (what a root's `LINKED_HOOK_NAMES` is).
+    pub(crate) const TEST_LINKED_HOOKS: &[&str] = &["stand-in-row"];
 }
 #[cfg(test)]
 use test_seams::ensure_seam;
+#[cfg(test)]
+pub(crate) use test_seams::TEST_LINKED_HOOKS;
 
 /// Build a `TestApp` after ensuring the process-wide test seams (planes, protocols, runtimes, mount
 /// seam) are installed — moved admin tests use this in place of `TestApp::new()` so the seams are in

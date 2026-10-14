@@ -342,7 +342,7 @@ auth-header = ["dep:busbar-auth-header"]
 # serves binds only when a signed tarball of the module is dropped into `plugins/`.
 auth-sigv4 = ["dep:busbar-auth-sigv4"]
 auth-oauth = ["dep:busbar-auth-oauth"]
-hooks-ranking = ["dep:busbar-hook-ranking", "busbar-kernel/hooks-ranking", "busbar-core-admin/hooks-ranking"]
+hooks-ranking = ["dep:busbar-hook-ranking", "busbar-kernel/hooks-ranking"]
 openapi-schema = ["busbar-kernel/openapi-schema", "busbar-core-admin/openapi-schema", "busbar-llm?/openapi-schema", "busbar-a2a?/openapi-schema", "busbar-voice?/openapi-schema"]
 loom-model = ["busbar-kernel/loom-model"]
 
@@ -478,11 +478,14 @@ plane-mcp-door = "tools"
 plane-decisions = "decisions"
 
 # The key an `auths` row answers on the auth axis — the name its signed tarball's manifest states.
+# A `hooks` row's is the name the admin surface prints for it (`build.hook_plugins`, the hooks
+# catalogue): plugins.yaml's alias, the name 1.5.5 printed. The admin crate names no hook.
 [package.metadata.busbar.linked-name]
 auth-admin-tokens = "admin-tokens"
 auth-header = "busbar-auth-header"
 auth-sigv4 = "busbar-auth-sigv4"
 auth-oauth = "busbar-auth-oauth"
+hooks-ranking = "ranking"
 
 # The CANONICAL name of an `auths` row whose key is not its manifest name: the name its signed
 # tarball's manifest states (plugins.yaml `manifest_name`, the repo). Config may name the row by

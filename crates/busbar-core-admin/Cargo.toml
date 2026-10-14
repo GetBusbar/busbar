@@ -50,10 +50,7 @@ flate2 = { workspace = true }
 schemars = { workspace = true, optional = true }
 
 [features]
-default = ["hooks-ranking", "plane-mcp", "plane-a2a"]
-# The moved v1 service has a `#[cfg(feature = "hooks-ranking")]` site; declare the feature (forwarded
-# to busbar-core) so the cfg is recognized, mirroring busbar-core's own default.
-hooks-ranking = ["busbar-kernel/hooks-ranking"]
+default = ["plane-mcp", "plane-a2a"]
 plane-mcp = ["busbar-kernel/plane-mcp"]
 plane-a2a = ["busbar-kernel/plane-a2a"]
 # Pulls busbar-core's `test-support` so a SIBLING crate can build an admin-configured `TestApp`, and

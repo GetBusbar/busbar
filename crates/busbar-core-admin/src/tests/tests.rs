@@ -100,9 +100,9 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
         "info must report the build version"
     );
     // The `weighted_floor` is ALWAYS true (non-removable). `keys` is engine-handled and always
-    // present; the operator credential is present iff its auth row is linked, `ranking` iff its
-    // feature is compiled in - so the compliance-by-compilation proof holds under
-    // `--no-default-features` too.
+    // present; the operator credential is present iff its auth row is linked, and the hook plugins
+    // are exactly the linked hook rows the composition root installed - so the
+    // compliance-by-compilation proof holds under `--no-default-features` too.
     assert_eq!(body["build"]["weighted_floor"], serde_json::json!(true));
     let auth_modules = body["build"]["auth_modules"].as_array().unwrap();
     assert!(
@@ -115,11 +115,11 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
             .contains(&busbar_kernel::config::operator_provider()),
         "auth_modules must contain `admin-tokens` iff its row is linked: {auth_modules:?}"
     );
-    let hook_plugins = body["build"]["hook_plugins"].as_array().unwrap();
+    // RED with a hook name spelled here rather than installed by the root (Law 1).
     assert_eq!(
-        hook_plugins.iter().any(|m| m == "ranking"),
-        cfg!(feature = "hooks-ranking"),
-        "hook_plugins must contain `ranking` iff the hooks-ranking feature is compiled in: {hook_plugins:?}"
+        body["build"]["hook_plugins"],
+        serde_json::json!(crate::TEST_LINKED_HOOKS),
+        "hook_plugins must be exactly the linked hook rows the root installed"
     );
     // Topology keys are present and numeric (exact counts depend on the TestApp fixture).
     assert!(body["topology"]["pools"].is_number());
@@ -4170,18 +4170,21 @@ async fn test_admin_v1_plugins_catalog_by_type() {
         assert_eq!(admin_tokens["type"], "auth");
     }
 
-    // hooks: the weighted floor is ALWAYS compiled-in; ranking iff the feature is on; plus the
-    // external myhook.
+    // hooks: the weighted floor is ALWAYS compiled-in; each linked hook row the root installed is
+    // compiled-in; plus the external myhook.
     let hooks: serde_json::Value = get("hooks").await.json().await.unwrap();
     let h_items = hooks["items"].as_array().unwrap();
     assert!(h_items
         .iter()
         .any(|p| p["name"] == "weighted" && p["loader"] == "compiled-in"));
-    assert_eq!(
-        h_items.iter().any(|p| p["name"] == "ranking"),
-        cfg!(feature = "hooks-ranking"),
-        "ranking listed iff compiled in"
-    );
+    for linked in crate::TEST_LINKED_HOOKS {
+        assert!(
+            h_items
+                .iter()
+                .any(|p| p["name"] == *linked && p["loader"] == "compiled-in"),
+            "the linked hook row `{linked}` is listed compiled-in: {h_items:?}"
+        );
+    }
     let ext = h_items
         .iter()
         .find(|p| p["name"] == "myhook")
