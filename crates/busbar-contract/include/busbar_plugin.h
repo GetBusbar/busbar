@@ -3262,6 +3262,8 @@ struct bb_transport_LocateIn {
     size_t name_cap;
     uint8_t *alpn_buf;
     size_t alpn_cap;
+    uint32_t accept;
+    uint32_t _accept_reserved;
 };
 
 /* `locate`'s `out`. */
@@ -5662,7 +5664,7 @@ BB_ASSERT(offsetof(bb_transport_ArrivalOut, peer_written) == 96, "bb_transport_A
 BB_ASSERT(offsetof(bb_transport_ArrivalOut, peer_needed) == 104, "bb_transport_ArrivalOut.peer_needed: offset");
 BB_ASSERT(offsetof(bb_transport_ArrivalOut, local_port) == 112, "bb_transport_ArrivalOut.local_port: offset");
 BB_ASSERT(offsetof(bb_transport_ArrivalOut, _reserved) == 116, "bb_transport_ArrivalOut._reserved: offset");
-BB_ASSERT(sizeof(bb_transport_LocateIn) == 152, "bb_transport_LocateIn: size");
+BB_ASSERT(sizeof(bb_transport_LocateIn) == 160, "bb_transport_LocateIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_LocateIn) == 8, "bb_transport_LocateIn: alignment");
 BB_ASSERT(offsetof(bb_transport_LocateIn, head) == 0, "bb_transport_LocateIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_LocateIn, target) == 88, "bb_transport_LocateIn.target: offset");
@@ -5672,6 +5674,8 @@ BB_ASSERT(offsetof(bb_transport_LocateIn, name_buf) == 120, "bb_transport_Locate
 BB_ASSERT(offsetof(bb_transport_LocateIn, name_cap) == 128, "bb_transport_LocateIn.name_cap: offset");
 BB_ASSERT(offsetof(bb_transport_LocateIn, alpn_buf) == 136, "bb_transport_LocateIn.alpn_buf: offset");
 BB_ASSERT(offsetof(bb_transport_LocateIn, alpn_cap) == 144, "bb_transport_LocateIn.alpn_cap: offset");
+BB_ASSERT(offsetof(bb_transport_LocateIn, accept) == 152, "bb_transport_LocateIn.accept: offset");
+BB_ASSERT(offsetof(bb_transport_LocateIn, _accept_reserved) == 156, "bb_transport_LocateIn._accept_reserved: offset");
 BB_ASSERT(sizeof(bb_transport_LocateOut) == 152, "bb_transport_LocateOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_LocateOut) == 8, "bb_transport_LocateOut: alignment");
 BB_ASSERT(offsetof(bb_transport_LocateOut, head) == 0, "bb_transport_LocateOut.head: offset");
