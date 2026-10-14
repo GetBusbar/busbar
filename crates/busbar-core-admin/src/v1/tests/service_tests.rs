@@ -2379,7 +2379,7 @@ plugins:
         serde_yaml::from_str(&yaml).expect("test DeployCfg yaml must parse");
     let def: busbar_kernel::config::ProviderDef = serde_yaml::from_str(&format!(
         "protocol: {}\nbase_url: https://upstream.example\nerror_map:\n  \"400\": client_error\n",
-        busbar_kernel::proto::PROTO_ANTHROPIC
+        crate::linked_protocol()
     ))
     .unwrap();
     let defs = std::collections::HashMap::from([("upstream".to_string(), def)]);
@@ -2427,7 +2427,7 @@ store:
     .expect("test DeployCfg yaml must parse");
     let def: busbar_kernel::config::ProviderDef = serde_yaml::from_str(&format!(
         "protocol: {}\nbase_url: https://upstream.example\nerror_map:\n  \"400\": client_error\n",
-        busbar_kernel::proto::PROTO_ANTHROPIC
+        crate::linked_protocol()
     ))
     .unwrap();
     let defs = std::collections::HashMap::from([("upstream".to_string(), def)]);

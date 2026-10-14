@@ -176,6 +176,18 @@ pub(crate) fn new_test_app() -> busbar_kernel::test_support::TestApp {
     ensure_seam();
     busbar_kernel::test_support::TestApp::new()
 }
+
+/// The first codec protocol this test binary links, read off the protocol registry the linked
+/// planes' test seams installed (their own declarations) rather than spelled here: an admin test
+/// needs a provider protocol the validator accepts, never a particular dialect.
+#[cfg(test)]
+pub(crate) fn linked_protocol() -> &'static str {
+    ensure_seam();
+    busbar_kernel::proto::known_protocols()
+        .first()
+        .copied()
+        .expect("this test binary links a codec protocol")
+}
 #[cfg(all(not(test), feature = "test-support"))]
 fn ensure_seam() {
     static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
