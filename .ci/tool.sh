@@ -5,7 +5,7 @@
 # ${MODERNCI_CACHE_DIR:-$HOME/.cache}/busbar-ci-tools/<tool>-<version>/.
 # `rust` is the exception: if cargo is already on PATH it is left alone, else rustup-init is
 # fetched, verified and run with RUSTUP_HOME/CARGO_HOME under the same root, and
-# $CARGO_HOME/bin goes on PATH (rust-toolchain.toml picks the toolchain on the first cargo call).
+# $CARGO_HOME/bin goes on PATH and `rustup toolchain install` installs what rust-toolchain.toml names.
 # Assumes only Linux (or darwin), sh, git, curl, tar and CA certificates.
 # No sudo, no package manager. Unknown tool, unsupported platform or sha mismatch: message, return 1.
 
@@ -80,6 +80,10 @@ _bbt_rust() {
     rm -rf "$_tmp"
   fi
   PATH="$CARGO_HOME/bin:$PATH"; export PATH
+  # rustup 1.28.0 dropped the implicit install of the rust-toolchain.toml channel: install what it
+  # names (toolchain and components) from the repo root. A no-op once installed.
+  _root=$(git rev-parse --show-toplevel 2>/dev/null) || _root=.
+  (cd "$_root" && rustup toolchain install) || { echo "tool.sh: rustup toolchain install failed" >&2; return 1; }
 }
 
 # _bbt_ensure <tool>
