@@ -23,6 +23,14 @@ legacy_rows:
   export_trace_instance: "traces"
   export_trace_module: "otlp"
   export_type_keys: "prometheus:metrics:prometheus | request-log-webhook:req-log:request-log-webhook | request-log-file:req-log-file:request-log-file | generic-webhook:req-log-audit:request-log-webhook"
+  hook_1x_url_transport: webhook
+  metrics_type_key: prometheus
+  observability_home: "the `export:` NAMED map — a `module: prometheus` / `module: request-log-webhook` / `module: otlp` instance (all telemetry egress is now the single `export:` surface)"
+  observability_log_change: "observability.request_log_webhook_url (+ webhook limits) -> export.request-log-webhook.settings (built-in exporter)"
+  observability_log_keys: "request_log_webhook_url:url | max_inflight_webhook_deliveries:max_inflight_deliveries | webhook_delivery_timeout_secs:delivery_timeout_secs"
+  observability_log_type_key: request-log-webhook
+  observability_trace_key: otlp_url
+  observability_trace_key_1_4: otlp_endpoint
   renamed_display: Valkey
   retired_url_scheme: redis
   gov14_module: sqlite

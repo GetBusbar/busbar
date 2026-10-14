@@ -95,6 +95,109 @@ fn retired_word_3_meets_its_1_5_5_bytes() {
     retired_word_meets_its_1_5_5_bytes(2);
 }
 
+/// The observability lift-out and the 1.x hook registry golden, beside the oracle's other 1.5.5
+/// bytes (`testing/shadow-oracle/fixtures/migrate-observability-1.5.5.yaml`).
+fn observability_golden() -> serde_yaml::Value {
+    serde_yaml::from_str(include_str!(
+        "../../../../../testing/shadow-oracle/fixtures/migrate-observability-1.5.5.yaml"
+    ))
+    .expect("the golden parses")
+}
+
+/// The golden's `key` list, each entry a string.
+fn lines(g: &serde_yaml::Value, key: &str) -> Vec<String> {
+    g[key]
+        .as_sequence()
+        .unwrap_or_else(|| panic!("golden `{key}` is a list"))
+        .iter()
+        .map(|v| v.as_str().expect("a golden line is a string").to_string())
+        .collect()
+}
+
+/// The scalar at a dot-separated `path` of `doc`, as text; `None` when absent or not a scalar.
+fn scalar_at(doc: &serde_yaml::Value, path: &str) -> Option<String> {
+    let v = path.split('.').try_fold(doc, |v, k| v.get(k))?;
+    match v {
+        serde_yaml::Value::String(s) => Some(s.clone()),
+        serde_yaml::Value::Number(n) => Some(n.to_string()),
+        serde_yaml::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+/// KN-2b: the kernel spells none of the words of the 1.5.3 observability lift-out or the 1.x hook
+/// registry's URL transport; the root's table hands them in. With the table installed,
+/// `--migrate-config`'s change lines, TODOs and rewritten document, boot's 1.x refusal and the typed
+/// parse's unknown-field hints are the bytes 1.5.5 printed, each cited in the golden.
+#[test]
+fn the_observability_lift_out_meets_its_1_5_5_bytes() {
+    install();
+    let g = observability_golden();
+    let raw = g["config"].as_str().expect("golden `config`");
+
+    let out = busbar_kernel::config::migrate::migrate_config(raw).expect("migrates");
+    for want in lines(&g, "changes") {
+        assert!(
+            out.changes.contains(&want),
+            "no 1.5.5 change line `{want}`:\n{:#?}",
+            out.changes
+        );
+    }
+    for want in lines(&g, "todos") {
+        assert!(
+            out.todos.contains(&want),
+            "no 1.5.5 TODO `{want}`:\n{:#?}",
+            out.todos
+        );
+    }
+    let doc: serde_yaml::Value = serde_yaml::from_str(&out.yaml).expect("the output parses");
+    for row in g["migrated"].as_sequence().expect("golden `migrated`") {
+        let (path, want) = (field(row, "path"), field(row, "value"));
+        assert_eq!(
+            scalar_at(&doc, &path).as_deref(),
+            Some(want.as_str()),
+            "`{path}` of the migrated document is not 1.5.5's:\n{}",
+            out.yaml
+        );
+    }
+
+    let dir = std::env::temp_dir().join(format!(
+        "busbar-legacy-obs-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos())
+    ));
+    std::fs::create_dir_all(&dir).expect("scratch dir");
+    let path = dir.join("config.yaml");
+    std::fs::write(&path, raw).expect("write config");
+    let refused = busbar_kernel::load_config_from_disk(
+        &path,
+        None,
+        false,
+        busbar_kernel::config::EnvSubst::Strict,
+    )
+    .err()
+    .expect("a 1.x config refuses boot");
+    let _ = std::fs::remove_dir_all(&dir);
+    for marker in lines(&g, "markers") {
+        assert!(
+            refused.contains(&format!("  - {marker}\n")),
+            "the boot refusal does not carry 1.5.5's marker `{marker}`:\n{refused}"
+        );
+    }
+
+    for row in g["hints"].as_sequence().expect("golden `hints`") {
+        let (old, hint) = (field(row, "field"), field(row, "hint"));
+        let msg = format!("unknown field `{old}`");
+        assert_eq!(
+            busbar_kernel::config::augment_config_error(&msg),
+            format!("{msg}{hint}"),
+            "the `{old}` hint is not 1.5.5's"
+        );
+    }
+}
+
 /// Every retired row of the table has its golden entry, so a word added to `plugins.yaml` without
 /// its 1.5.5 bytes fails here rather than shipping unproven.
 #[test]

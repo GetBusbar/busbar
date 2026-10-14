@@ -137,19 +137,19 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     }
     // A top-level `hooks:` key is AMBIGUOUS and must be distinguished by SHAPE, not mere presence
     // (1.5.3): the NEW named-definition map (every entry names a non-empty `module:` and carries no
-    // legacy `socket:`/`webhook:` transport) is VALID and passes straight through to the typed parse;
-    // a genuine 1.x REGISTRY (a `socket:`/`webhook:` entry, or any entry lacking `module:`) still
-    // LOUD-FAILS here, because booting it under 1.5.x rules would silently drop the retired transport.
+    // legacy 1.x transport key) is VALID and passes straight through to the typed parse; a genuine
+    // 1.x REGISTRY (a transport entry, or any entry lacking `module:`) still LOUD-FAILS here,
+    // because booting it under 1.5.x rules would silently drop the retired transport.
     // `is_new_hook_defs` is the SAME shape check the migrator uses to stay idempotent, so the two
-    // cannot drift.
+    // cannot drift. The URL transport's key is the root legacy table's (`hook_1x_url_transport`).
     if let Some(Value::Mapping(hooks)) = get(root, Kind::Hook.root()) {
         if !is_new_hook_defs(&hooks) {
-            markers.push(
-                "top-level `hooks:` REGISTRY block with legacy socket:/webhook: entries (1.x \
+            markers.push(format!(
+                "top-level `hooks:` REGISTRY block with legacy socket:/{}: entries (1.x \
                  transports removed; a 1.5.3 `hooks:` DEFINITION entry names a `module:` — a \
-                 `kind: hook` plugin — and carries `groups:`/`phase:` scope)"
-                    .into(),
-            );
+                 `kind: hook` plugin — and carries `groups:`/`phase:` scope)",
+                super::legacy::text("hook_1x_url_transport")
+            ));
         }
     }
     // The removed top-level `global_hooks:` list (1.5.0/1.5.2): a real config carrying it would
@@ -162,24 +162,23 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
                 .into(),
         );
     }
-    // 1.5.3 observability→export lift-out: the top-level `metrics:` block and the
-    // `observability.request_log_webhook_url` / `max_inflight_webhook_deliveries` /
-    // `webhook_delivery_timeout_secs` keys are RETIRED into the built-in exporters. An un-migrated
-    // config carrying any of them LOUD-FAILS here (before the typed parse) with the migrate
-    // breadcrumb, so a lifted-out sink is never silently lost. Uses the SHARED
-    // `crate::config::RETIRED_OBSERVABILITY_KEYS` table so the marker, the migrator, and the
+    // 1.5.3 observability→export lift-out: the top-level `metrics:` block and the request-log
+    // `observability.*` keys (the root legacy table's `observability_log_keys`) are RETIRED into the
+    // exporters. An un-migrated config carrying any of them LOUD-FAILS here (before the typed parse)
+    // with the migrate breadcrumb, so a lifted-out sink is never silently lost. Uses the SHARED
+    // `crate::config::retired_observability_keys` table so the marker, the migrator, and the
     // `augment_config_error` hint cannot drift.
     if get(root, "metrics").is_some() {
-        markers.push(
-            "top-level `metrics:` block (retired 1.5.3 → export.prometheus.settings.{buffer_seconds, \
-             key_gauge_limit})"
-                .into(),
-        );
+        markers.push(format!(
+            "top-level `metrics:` block (retired 1.5.3 → export.{}.settings.{{buffer_seconds, \
+             key_gauge_limit}})",
+            super::legacy::text("metrics_type_key")
+        ));
     }
     if let Some(obs) = get(root, "observability").and_then(|v| v.as_mapping().cloned()) {
-        for (old, new) in crate::config::RETIRED_OBSERVABILITY_KEYS {
+        for (old, new) in crate::config::retired_observability_keys() {
             // `metrics` is the top-level block handled just above; the rest are `observability.*` keys.
-            if *old != "metrics" && get(&obs, old).is_some() {
+            if old != "metrics" && get(&obs, old).is_some() {
                 markers.push(format!("`observability.{old}:` (retired 1.5.3 → {new})"));
             }
         }
@@ -189,20 +188,20 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
     // rejection with no upgrade breadcrumb (or, for `observability:`, as a whole block whose
     // deletion would silently drop a trace sink). Detected HERE, before the typed parse, so the
     // operator gets the named key + its new home + the `--migrate-config` pointer. Uses the SHARED
-    // `crate::config::RETIRED_CONFIG_KEYS_1_5_3` table so the marker, the migrator and the
+    // `crate::config::retired_config_keys_1_5_3` table so the marker, the migrator and the
     // `augment_config_error` hint cannot drift.
-    let retired_home = |key: &str| -> &'static str {
-        crate::config::RETIRED_CONFIG_KEYS_1_5_3
-            .iter()
+    let retired_home = |key: &str| -> String {
+        crate::config::retired_config_keys_1_5_3()
+            .into_iter()
             .find(|(old, _)| *old == key)
-            .map_or("its 1.5.3 replacement", |(_, new)| new)
+            .map_or_else(|| "its 1.5.3 replacement".to_string(), |(_, new)| new)
     };
     // The `observability:` BLOCK is DELETED outright. Its last field folded into `export:`.
     if get(root, "observability").is_some() {
         markers.push(format!(
             "top-level `observability:` block (DELETED 1.5.3 → {}); all telemetry egress is now the \
              single `export:` surface",
-            retired_home("otlp_url")
+            retired_home(super::legacy::text("observability_trace_key"))
         ));
     }
     // The boot-guard flag inverted.
@@ -242,8 +241,8 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             }
         }
     }
-    // The TYPE-KEYED `export:` block (`export: { prometheus: { settings: … } }`) became a NAMED
-    // map (`export: { metrics: { module: prometheus, settings: … } }`). Distinguished by SHAPE, not
+    // The TYPE-KEYED `export:` block (`export: { <type>: { settings: … } }`) became a NAMED map
+    // (`export: { <name>: { module: <module>, settings: … } }`). Distinguished by SHAPE, not
     // presence: an entry naming a `module:` is already the new form and passes through (idempotent).
     if let Some(Value::Mapping(export)) = get(root, Kind::Export.root()) {
         if export.values().any(|v| {
@@ -380,14 +379,14 @@ pub fn migrate_config(raw: &str) -> Result<MigrateOutput, String> {
     migrate_hook_def_keys(&mut root, &mut changes);
     migrate_observability(&mut root, &mut changes);
     migrate_response_headers(&mut root, &mut changes, &mut todos);
-    // 1.5.3 observability→export lift-out. Runs AFTER migrate_observability (otlp rename) and
-    // migrate_response_headers (emit_server_timing move) so this only sees the retired webhook +
-    // metrics keys, and rewrites them into the new `export:` surface in place.
+    // 1.5.3 observability→export lift-out. Runs AFTER migrate_observability (trace-URL rename) and
+    // migrate_response_headers (emit_server_timing move) so this only sees the retired request-log
+    // + metrics keys, and rewrites them into the new `export:` surface in place.
     migrate_observability_export(&mut root, &mut changes);
     // ── the 1.5.3 GRAMMAR-LOCK migrations ────────────────────────────────────────────────────────
     // Order matters: `migrate_export_named_map` runs AFTER `migrate_observability_export` (which
-    // writes the TYPE-KEYED `export.request-log-webhook` / `export.prometheus` this then renames into
-    // the NAMED map) and BEFORE `migrate_observability_block` folds `otlp_url` in as a named
+    // writes the TYPE-KEYED request-log / metrics entries this then renames into the NAMED map)
+    // and BEFORE `migrate_observability_block` folds the trace URL in as a named
     // instance, so a single run of the migrator lands a 1.4.x config directly in the 1.5.3 shape.
     super::migrate_export::migrate_export_named_map(&mut root, &mut changes);
     super::migrate_export::migrate_observability_block(&mut root, &mut changes);
@@ -1477,17 +1476,24 @@ fn at_to_phase(at: &Value) -> Option<Value> {
 }
 
 /// Build a 1.5.3 hook DEFINITION mapping (`{ module, settings, kind, phase, … }`) from an OLD hook
-/// entry — either a 1.x REGISTRY entry (a `socket:`/`webhook:` transport) or a 1.5.0/1.5.2 INLINE
-/// ref (`{ module: … }`). `module:` is derived (webhook→`webhook`+`settings.url`,
-/// socket→`socket`+`settings.path`, else the entry's own `module:`/`plugin:`); the tap `at:` becomes
-/// the renamed `phase:` list; the retired `global:`/`default:`/`signals:` flags are dropped with a
-/// todo. Total: an unrecognized shape still yields a best-effort def.
+/// entry — either a 1.x REGISTRY entry (a URL or `socket:` transport) or a 1.5.0/1.5.2 INLINE ref
+/// (`{ module: … }`). `module:` is derived (the URL transport → the module of the same word +
+/// `settings.url`, socket→`socket`+`settings.path`, else the entry's own `module:`/`plugin:`); the
+/// URL transport's word is the root legacy table's `hook_1x_url_transport` row (frozen 1.5.5 text:
+/// the kernel names no hook plugin). The tap `at:` becomes the renamed `phase:` list; the retired
+/// `global:`/`default:`/`signals:` flags are dropped with a todo. Total: an unrecognized shape
+/// still yields a best-effort def.
 fn hook_entry_to_def(name: &str, entry: &Value, todos: &mut Vec<String>) -> Value {
     let m = entry.as_mapping().cloned().unwrap_or_default();
     let mut def = Mapping::new();
     let mut settings = as_map(m.get(Value::from("settings")).cloned().unwrap_or_default());
-    if let Some(url) = m.get(Value::from("webhook")).and_then(|v| v.as_str()) {
-        def.insert("module".into(), "webhook".into());
+    let url_transport = super::legacy::text("hook_1x_url_transport");
+    if let Some(url) = m
+        .get(Value::from(url_transport))
+        .filter(|_| !url_transport.is_empty())
+        .and_then(|v| v.as_str())
+    {
+        def.insert("module".into(), url_transport.into());
         settings.insert("url".into(), url.into());
     } else if let Some(path) = m.get(Value::from("socket")).and_then(|v| v.as_str()) {
         def.insert("module".into(), "socket".into());
@@ -1498,10 +1504,10 @@ fn hook_entry_to_def(name: &str, entry: &Value, todos: &mut Vec<String>) -> Valu
         def.insert("module".into(), plugin.into());
     } else {
         todos.push(format!(
-            "hook '{name}': no module/socket/webhook/plugin transport found; set `module:` to a \
-             `kind: hook` plugin"
+            "hook '{name}': no module/socket/{url_transport}/plugin transport found; set `module:` \
+             to a `kind: hook` plugin"
         ));
-        def.insert("module".into(), "webhook".into());
+        def.insert("module".into(), url_transport.into());
     }
     if !settings.is_empty() {
         def.insert("settings".into(), Value::Mapping(settings));
@@ -1550,7 +1556,7 @@ fn hook_entry_to_def(name: &str, entry: &Value, todos: &mut Vec<String>) -> Valu
 }
 
 /// Whether a `hooks:` map is ALREADY the 1.5.3 named-definition shape (every entry is a map naming a
-/// non-empty `module:` and carrying NO legacy `socket:`/`webhook:` transport). Used to make the
+/// non-empty `module:` and carrying NO legacy 1.x transport key). Used to make the
 /// migration IDEMPOTENT (a config already in the new shape passes through untouched) and to preserve
 /// the 1.x-vs-1.5.3 distinction the loud-fail detector also uses.
 fn is_new_hook_defs(hooks: &Mapping) -> bool {
@@ -1561,7 +1567,7 @@ fn is_new_hook_defs(hooks: &Mapping) -> bool {
                     .and_then(|v| v.as_str())
                     .is_some_and(|s| !s.trim().is_empty())
                     && !em.contains_key(Value::from("socket"))
-                    && !em.contains_key(Value::from("webhook"))
+                    && !em.contains_key(Value::from(super::legacy::text("hook_1x_url_transport")))
             })
         })
 }
@@ -1584,7 +1590,7 @@ fn uniq_def_name(defs: &Mapping, base: &str) -> String {
 /// 1.5.3 NAMED-HOOKS migration: converge the OLD hook surfaces onto the new shape — the top-level
 /// `hooks:` NAMED-DEFINITION map plus the reserved `pools.hooks:` all-pools attach and per-pool
 /// bare-name references. Handles three legacy sources, idempotently:
-///   * a 1.x `hooks:` REGISTRY (socket:/webhook: entries) → named definitions (same names).
+///   * a 1.x `hooks:` REGISTRY (socket: / URL transport entries) → named definitions (same names).
 ///   * `global_hooks:` (bare registry names OR 1.5.0/1.5.2 inline instances) → the reserved
 ///     `pools.hooks:` all-pools list (inline instances lifted to a named def first, with a todo).
 ///   * inline pool-hook instances (`pools.X.hooks: [{ module: … }]`) → a named def + a bare-name
@@ -1969,24 +1975,33 @@ fn migrate_on_exhausted(
     ));
 }
 
-/// `observability.otlp_endpoint` -> `otlp_url`.
+/// The 1.4.x trace-URL key -> its 1.5.0 spelling, inside `observability:` (both the root legacy
+/// table's frozen 1.5.5 rows: `observability_trace_key_1_4` -> `observability_trace_key`).
 fn migrate_observability(root: &mut Mapping, changes: &mut Vec<String>) {
     let Some(Value::Mapping(obs)) = root.get_mut(Value::from("observability")) else {
         return;
     };
-    if let Some(v) = take(obs, "otlp_endpoint") {
-        obs.insert("otlp_url".into(), v);
-        changes.push("observability.otlp_endpoint -> otlp_url".into());
+    let (old, new) = (
+        super::legacy::text("observability_trace_key_1_4"),
+        super::legacy::text("observability_trace_key"),
+    );
+    if old.is_empty() || new.is_empty() {
+        return;
+    }
+    if let Some(v) = take(obs, old) {
+        obs.insert(new.into(), v);
+        changes.push(format!("observability.{old} -> {new}"));
     }
 }
 
-/// 1.5.3 observability→export lift-out: mechanically rewrite the retired
-/// `observability.request_log_webhook_url` (+ `max_inflight_webhook_deliveries` /
-/// `webhook_delivery_timeout_secs`) → `export.request-log-webhook.settings.*`, and the top-level
-/// `metrics:` block → `export.prometheus.settings.*`. Because the exporters are BUILT-IN (not
+/// 1.5.3 observability→export lift-out: mechanically rewrite the retired request-log
+/// `observability.*` keys (the root legacy table's `observability_log_keys`: retired key → its
+/// settings key) → `export.<observability_log_type_key>.settings.*`, and the top-level `metrics:`
+/// block → `export.<metrics_type_key>.settings.*`. Because the 1.5.5 exporters were BUILT-IN (not
 /// tarball plugins), this is a full mechanical rewrite (not just a printed TODO) — the config breaks
-/// ONCE and the sink is preserved, not lost. Idempotent: a config already in the new shape has no
-/// retired keys to move, so a second run is a no-op.
+/// ONCE and the sink is preserved, not lost. The type keys and the change line are frozen 1.5.5 text
+/// the root hands in; the kernel names no export instance. Idempotent: a config already in the new
+/// shape has no retired keys to move, so a second run is a no-op.
 fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
     // Ensure `export` exists as a mapping, returning a handle to splice a sub-exporter into.
     fn export_mut(root: &mut Mapping) -> &mut Mapping {
@@ -2002,36 +2017,33 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
         }
     }
 
-    // (a) request-log webhook keys off `observability:`.
-    let mut webhook_settings = Mapping::new();
+    // (a) the request-log keys off `observability:`.
+    let mut log_settings = Mapping::new();
     if let Some(Value::Mapping(obs)) = root.get_mut(Value::from("observability")) {
-        if let Some(url) = take(obs, "request_log_webhook_url") {
-            webhook_settings.insert("url".into(), url);
-        }
-        if let Some(v) = take(obs, "max_inflight_webhook_deliveries") {
-            webhook_settings.insert("max_inflight_deliveries".into(), v);
-        }
-        if let Some(v) = take(obs, "webhook_delivery_timeout_secs") {
-            webhook_settings.insert("delivery_timeout_secs".into(), v);
+        for (old, leaf) in super::legacy::pairs("observability_log_keys") {
+            if let Some(v) = take(obs, old) {
+                log_settings.insert(leaf.into(), v);
+            }
         }
         // An `observability:` mapping emptied to nothing is dropped so the migrated doc has no bare
-        // `observability: {}` (which is valid but noise). Keep it if `otlp_url` (or anything) remains.
+        // `observability: {}` (which is valid but noise). Keep it if the trace URL (or anything)
+        // remains.
         if obs.is_empty() {
             root.remove(Value::from("observability"));
         }
     }
-    if webhook_settings.contains_key(Value::from("url")) {
+    if log_settings.contains_key(Value::from("url")) {
         let mut body = Mapping::new();
-        body.insert("settings".into(), Value::Mapping(webhook_settings));
-        export_mut(root).insert("request-log-webhook".into(), Value::Mapping(body));
-        changes.push(
-            "observability.request_log_webhook_url (+ webhook limits) -> \
-             export.request-log-webhook.settings (built-in exporter)"
-                .into(),
+        body.insert("settings".into(), Value::Mapping(log_settings));
+        export_mut(root).insert(
+            super::legacy::text("observability_log_type_key").into(),
+            Value::Mapping(body),
         );
+        changes.push(super::legacy::text("observability_log_change").into());
     }
 
-    // (b) the top-level `metrics:` block -> export.prometheus.settings.
+    // (b) the top-level `metrics:` block -> export.<metrics_type_key>.settings.
+    let metrics_type_key = super::legacy::text("metrics_type_key");
     let removed_metrics = root.remove(Value::from("metrics"));
     if let Some(Value::Mapping(mut metrics)) = removed_metrics {
         let mut settings = Mapping::new();
@@ -2047,15 +2059,17 @@ fn migrate_observability_export(root: &mut Mapping, changes: &mut Vec<String>) {
         }
         let mut body = Mapping::new();
         body.insert("settings".into(), Value::Mapping(settings));
-        export_mut(root).insert("prometheus".into(), Value::Mapping(body));
-        changes.push("metrics: block -> export.prometheus.settings (built-in exporter)".into());
+        export_mut(root).insert(metrics_type_key.into(), Value::Mapping(body));
+        changes.push(format!(
+            "metrics: block -> export.{metrics_type_key}.settings (built-in exporter)"
+        ));
     } else if let Some(other) = removed_metrics {
         // Same class as the `observability:` arm above: the key IS retired, so a
         // malformed block is still deleted — but `root.remove` already took it, so the deletion must
         // be RECORDED or it happened invisibly.
         changes.push(format!(
             "metrics: block removed (RETIRED in 1.5.3; it was not a mapping — the value `{}` \
-             carried no settings foldable into export.prometheus)",
+             carried no settings foldable into export.{metrics_type_key})",
             one_line(&other)
         ));
     }

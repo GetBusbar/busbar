@@ -1752,8 +1752,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "export"
-count = "28"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -5 for R-FIX3: the kernel's tests drop the export-prometheus dev-dependency and run on the stand-in axis's scrape double"
+count = "20"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -5 for R-FIX3: the kernel's tests drop the export-prometheus dev-dependency and run on the stand-in axis's scrape double; LOWERED 28 -> 20: KN-2b: the migration's export/observability words are the root legacy table's rows (measured)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1770,8 +1770,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "instance:export"
-count = "67"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1 for R-FIX3 (the kernel's export tests run on the scrape double)"
+count = "61"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1 for R-FIX3 (the kernel's export tests run on the scrape double); LOWERED 67 -> 61: KN-2b: the migration's export/observability words are the root legacy table's rows (measured)"
 
 [[law0]]
 crate = "busbar-kernel"

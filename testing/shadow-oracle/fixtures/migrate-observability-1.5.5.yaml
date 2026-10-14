@@ -1,0 +1,82 @@
+# THE 1.5.5 BYTES of the 1.5.3 observability lift-out and the 1.x hook registry, which the kernel now
+# prints from the root legacy table's rows (plugins.yaml `legacy:`; crates/busbar/src/root/tests/legacy.rs holds
+# `--migrate-config`, boot's 1.x refusal and the unknown-field hints to these). Every line is
+# verbatim from the v1.5.5 source cited above it; a value here never changes.
+config: |
+  hooks:
+    audit:
+      webhook: "https://sidecar.internal/audit"
+      kind: tap
+    bare:
+      kind: tap
+  observability:
+    otlp_endpoint: "http://otel:4318/v1/traces"
+    request_log_webhook_url: "https://logs.example.com/busbar"
+    max_inflight_webhook_deliveries: 32
+    webhook_delivery_timeout_secs: 5
+  metrics:
+    buffer_seconds: 60
+  providers: {}
+  models: {}
+  pools: {}
+# `--migrate-config`'s change lines.
+changes:
+  # v1.5.5:crates/busbar/src/config/migrate.rs:1807
+  - "observability.otlp_endpoint -> otlp_url"
+  # v1.5.5:crates/busbar/src/config/migrate.rs:1856
+  - "observability.request_log_webhook_url (+ webhook limits) -> export.request-log-webhook.settings (built-in exporter)"
+  # v1.5.5:crates/busbar/src/config/migrate.rs:1879
+  - "metrics: block -> export.prometheus.settings (built-in exporter)"
+  # v1.5.5:crates/busbar/src/config/migrate_export.rs:253
+  - "observability.otlp_url -> export.traces: { module: otlp } (the `observability:` block is DELETED in 1.5.3; `export:` is the single telemetry-egress surface)"
+# `--migrate-config`'s TODOs.
+todos:
+  # v1.5.5:crates/busbar/src/config/migrate.rs:1380
+  - "hook 'bare': no module/socket/webhook/plugin transport found; set `module:` to a `kind: hook` plugin"
+# The migrated document: `path` (dot-separated) and the value 1.5.5 wrote there.
+migrated:
+  # v1.5.5:crates/busbar/src/config/migrate.rs:1369 (the URL transport's module) and :1370
+  - { path: hooks.audit.module, value: webhook }
+  - { path: hooks.audit.settings.url, value: "https://sidecar.internal/audit" }
+  # v1.5.5:crates/busbar/src/config/migrate.rs:1383 (the fallback module)
+  - { path: hooks.bare.module, value: webhook }
+  # v1.5.5:crates/busbar/src/config/migrate.rs:1836-1843, renamed by migrate_export.rs:32
+  - { path: export.req-log.module, value: request-log-webhook }
+  - { path: export.req-log.settings.url, value: "https://logs.example.com/busbar" }
+  - { path: export.req-log.settings.max_inflight_deliveries, value: "32" }
+  - { path: export.req-log.settings.delivery_timeout_secs, value: "5" }
+  # v1.5.5:crates/busbar/src/config/migrate.rs:1878, renamed by migrate_export.rs:31
+  - { path: export.metrics.module, value: prometheus }
+  - { path: export.metrics.settings.buffer_seconds, value: "60" }
+  # v1.5.5:crates/busbar/src/config/migrate_export.rs:249
+  - { path: export.traces.module, value: otlp }
+  - { path: export.traces.settings.url, value: "http://otel:4318/v1/traces" }
+# Boot's 1.x refusal: each marker is one `  - <marker>` line.
+markers:
+  # v1.5.5:crates/busbar/src/config/migrate.rs:142
+  - "top-level `hooks:` REGISTRY block with legacy socket:/webhook: entries (1.x transports removed; a 1.5.3 `hooks:` DEFINITION entry names a `module:` — a `kind: hook` plugin — and carries `groups:`/`phase:` scope)"
+  # v1.5.5:crates/busbar/src/config/migrate.rs:168
+  - "top-level `metrics:` block (retired 1.5.3 → export.prometheus.settings.{buffer_seconds, key_gauge_limit})"
+  # v1.5.5:crates/busbar/src/config/migrate.rs:177 over config/mod.rs:1030-1039
+  - "`observability.request_log_webhook_url:` (retired 1.5.3 → export.request-log-webhook.settings.url)"
+  - "`observability.max_inflight_webhook_deliveries:` (retired 1.5.3 → export.request-log-webhook.settings.max_inflight_deliveries)"
+  - "`observability.webhook_delivery_timeout_secs:` (retired 1.5.3 → export.request-log-webhook.settings.delivery_timeout_secs)"
+  # v1.5.5:crates/busbar/src/config/migrate.rs:197 over config/mod.rs:1012
+  - "top-level `observability:` block (DELETED 1.5.3 → an `export:` instance with `module: otlp` and `settings.url`); all telemetry egress is now the single `export:` surface"
+# The typed parse's unknown-field hints: `field` and the full text appended to the serde error.
+hints:
+  # v1.5.5:crates/busbar/src/config/mod.rs:969 over :1030
+  - field: request_log_webhook_url
+    hint: "\n  hint: `request_log_webhook_url` was retired in 1.5.3 — the observability sink moved to the built-in EXPORTERS (`export.request-log-webhook.settings.url`). Run `busbar --migrate-config <config.yaml>` or move the field yourself"
+  # v1.5.5:crates/busbar/src/config/mod.rs:969 over :1043
+  - field: metrics
+    hint: "\n  hint: `metrics` was retired in 1.5.3 — the observability sink moved to the built-in EXPORTERS (`export.prometheus.settings (buffer_seconds / key_gauge_limit)`). Run `busbar --migrate-config <config.yaml>` or move the field yourself"
+  # v1.5.5:crates/busbar/src/config/mod.rs:982 over :1002
+  - field: observability
+    hint: "\n  hint: `observability` was retired in 1.5.3 — it is now `the `export:` NAMED map — a `module: prometheus` / `module: request-log-webhook` / `module: otlp` instance (all telemetry egress is now the single `export:` surface)`. Run `busbar --migrate-config <config.yaml>` to rewrite it in place"
+  # v1.5.5:crates/busbar/src/config/mod.rs:982 over :1012
+  - field: otlp_url
+    hint: "\n  hint: `otlp_url` was retired in 1.5.3 — it is now `an `export:` instance with `module: otlp` and `settings.url``. Run `busbar --migrate-config <config.yaml>` to rewrite it in place"
+  # v1.5.5:crates/busbar/src/config/mod.rs:982 over :1013
+  - field: otlp_endpoint
+    hint: "\n  hint: `otlp_endpoint` was retired in 1.5.3 — it is now `an `export:` instance with `module: otlp` and `settings.url``. Run `busbar --migrate-config <config.yaml>` to rewrite it in place"
