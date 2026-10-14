@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE CONNECTION TABLE, lowered: [`crate::conn::Conns`] as a `#[repr(C)]` table of
-//! `extern "C-unwind"` slots, ONE SLOT PER METHOD, named for it ([`ConnSlots`]). The witness
+//! `extern "C"` slots, ONE SLOT PER METHOD, named for it ([`ConnSlots`]). The witness
 //! `tests/conn_slot_coverage.rs` holds the list to the trait.
 //!
 //! Two halves, one file, because they are one contract:
@@ -15,9 +15,10 @@
 //! * **PLUGIN side** — [`HostConns`], a plugin's view of the table it was handed: the same six
 //!   operations, without the caller.
 //!
-//! Every slot catches its own panics and answers [`ConnOutcome::Fault`]. What a slot hands back that
-//! borrows the host — a piece's status numbering, a connection's facts — stays valid until that
-//! connection is closed.
+//! Every slot catches its own panics and answers [`ConnOutcome::Fault`]; nothing unwinds across the
+//! table (THE DESIGN §11.11 M3), and a panic that escaped a slot would abort, never unwind. What a
+//! slot hands back that borrows the host — a piece's status numbering, a connection's facts — stays
+//! valid until that connection is closed.
 
 use std::collections::HashMap;
 use std::os::raw::c_void;
@@ -213,6 +214,7 @@ pub const PIECE_HAS_RETRY_AFTER: u8 = 2;
 pub const WRITE_TEXT: u8 = 2;
 
 slot_table! {
+extern "C";
 /// THE CONNECTION TABLE: one slot per [`Conns`] method, named for it.
 pub struct ConnSlots lowers Conns -> RawConnOutcome {
     /// [`Conns::open`]: writes the connection.
@@ -381,7 +383,7 @@ fn range(s: &str) -> DeclStr {
     }
 }
 
-extern "C-unwind" fn host_open(
+extern "C" fn host_open(
     ctx: ConnCtx,
     need: u32,
     desc: *const WireOpenDesc,
@@ -435,7 +437,7 @@ extern "C-unwind" fn host_open(
     })
 }
 
-extern "C-unwind" fn host_write(
+extern "C" fn host_write(
     ctx: ConnCtx,
     conn: u64,
     buf: *const u8,
@@ -458,7 +460,7 @@ extern "C-unwind" fn host_write(
     })
 }
 
-extern "C-unwind" fn host_read(
+extern "C" fn host_read(
     ctx: ConnCtx,
     conn: u64,
     ticket: u64,
@@ -528,7 +530,7 @@ extern "C-unwind" fn host_read(
     })
 }
 
-extern "C-unwind" fn host_wait(
+extern "C" fn host_wait(
     ctx: ConnCtx,
     set_ptr: *const u64,
     set_len: usize,
@@ -549,11 +551,7 @@ extern "C-unwind" fn host_wait(
     })
 }
 
-extern "C-unwind" fn host_facts(
-    ctx: ConnCtx,
-    conn: u64,
-    out_facts: *mut WireConnFacts,
-) -> RawConnOutcome {
+extern "C" fn host_facts(ctx: ConnCtx, conn: u64, out_facts: *mut WireConnFacts) -> RawConnOutcome {
     hosted(ctx, |host| {
         let facts = host.conns.facts(host.instance, ConnId(conn))?;
         let mut held = host.held();
@@ -580,7 +578,7 @@ extern "C-unwind" fn host_facts(
     })
 }
 
-extern "C-unwind" fn host_close(ctx: ConnCtx, conn: u64) -> RawConnOutcome {
+extern "C" fn host_close(ctx: ConnCtx, conn: u64) -> RawConnOutcome {
     hosted(ctx, |host| {
         host.conns.close(host.instance, ConnId(conn))?;
         host.held().remove(&ConnId(conn));

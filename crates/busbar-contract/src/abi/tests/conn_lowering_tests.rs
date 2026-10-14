@@ -440,3 +440,96 @@ fn the_open_descriptor_appends_its_head_words() {
     assert_eq!(core::mem::offset_of!(WireOpenDesc, head_target), 80);
     assert_eq!(core::mem::size_of::<WireOpenDesc>(), 96);
 }
+
+/// A host whose every operation panics.
+struct Panics;
+
+impl Conns for Panics {
+    fn open(&self, _: InstanceId, _: NeedId, _: &OpenDesc<'_>) -> Result<ConnId, ConnError> {
+        panic!("open panicked")
+    }
+    fn write(
+        &self,
+        _: InstanceId,
+        _: ConnId,
+        _: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, ConnError> {
+        panic!("write panicked")
+    }
+    fn read(&self, _: InstanceId, _: ConnId, _: Ticket, _: &mut [u8]) -> Result<Piece, ConnError> {
+        panic!("read panicked")
+    }
+    fn wait(&self, _: InstanceId, _: &[ConnId], _: Ticket) -> Result<usize, ConnError> {
+        panic!("wait panicked")
+    }
+    fn facts(&self, _: InstanceId, _: ConnId) -> Result<ConnFacts, ConnError> {
+        panic!("facts panicked")
+    }
+    fn close(&self, _: InstanceId, _: ConnId) -> Result<(), ConnError> {
+        panic!("close panicked")
+    }
+}
+
+/// RED (THE DESIGN §11.11 M3, `BUSBAR-1.6.0.md` l.1515): every slot of the host's table is
+/// `extern "C"`, never `extern "C-unwind"` — the bindings below are typed `extern "C"`, and a
+/// `C-unwind` slot does not coerce to them, so this does not compile against one — and a host that
+/// panics in every operation answers [`ConnOutcome::Fault`] from each of the six slots. Nothing
+/// unwinds across the table: a panic escaping an `extern "C"` slot aborts the process, so this test
+/// reaching its end is the proof that each slot caught its own.
+#[test]
+fn a_panicking_slot_answers_fault_without_unwinding() {
+    let slots = host_slots();
+    let open: extern "C" fn(ConnCtx, u32, *const WireOpenDesc, *mut u64) -> RawConnOutcome =
+        slots.open.unwrap();
+    let write: extern "C" fn(ConnCtx, u64, *const u8, usize, u8, *mut usize) -> RawConnOutcome =
+        slots.write.unwrap();
+    let read: extern "C" fn(ConnCtx, u64, u64, *mut u8, usize, *mut WirePiece) -> RawConnOutcome =
+        slots.read.unwrap();
+    let wait: extern "C" fn(ConnCtx, *const u64, usize, u64, *mut usize) -> RawConnOutcome =
+        slots.wait.unwrap();
+    let facts: extern "C" fn(ConnCtx, u64, *mut WireConnFacts) -> RawConnOutcome =
+        slots.facts.unwrap();
+    let close: extern "C" fn(ConnCtx, u64) -> RawConnOutcome = slots.close.unwrap();
+
+    let host = Box::new(ConnHost::new(Arc::new(Panics), InstanceId(1)));
+    let ctx = host.ctx();
+    let desc = WireOpenDesc {
+        size: core::mem::size_of::<WireOpenDesc>() as u32,
+        _reserved: 0,
+        target: DeclStr {
+            ptr: b"panic.test".as_ptr(),
+            len: 10,
+        },
+        fields: std::ptr::null(),
+        fields_len: 0,
+        body: std::ptr::null(),
+        body_len: 0,
+        timeout_ms: 0,
+        method: DeclStr::NONE,
+        head_target: DeclStr::NONE,
+    };
+    let (mut conn, mut n, mut ready) = (0_u64, 0_usize, 0_usize);
+    let mut buf = [0_u8; 8];
+    // SAFETY: an all-zero `WirePiece`/`WireConnFacts` is a valid out-slot (integers, null ranges).
+    let mut piece: WirePiece = unsafe { core::mem::zeroed() };
+    // SAFETY: as above.
+    let mut out_facts: WireConnFacts = unsafe { core::mem::zeroed() };
+    let fault = RawConnOutcome(ConnOutcome::Fault as u8);
+    let answered = [
+        ("open", open(ctx, NEED.0, &desc, &mut conn)),
+        ("write", write(ctx, 1, b"x".as_ptr(), 1, 0, &mut n)),
+        (
+            "read",
+            read(ctx, 1, 0, buf.as_mut_ptr(), buf.len(), &mut piece),
+        ),
+        ("wait", wait(ctx, std::ptr::null(), 0, 0, &mut ready)),
+        ("facts", facts(ctx, 1, &mut out_facts)),
+        ("close", close(ctx, 1)),
+    ];
+    for (slot, outcome) in answered {
+        assert_eq!(outcome, fault, "the {slot} slot's panic must answer FAULT");
+        assert_eq!(outcome.result(), Err(ConnError::Fault), "{slot}");
+    }
+}
