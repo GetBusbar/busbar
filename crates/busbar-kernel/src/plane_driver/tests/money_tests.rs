@@ -1062,3 +1062,136 @@ fn a_unit_with_no_new_counts_writes_nothing() {
     );
     assert!(site.taken().is_empty());
 }
+
+// ── F25 rows 380, 626, 718: the arrival window and the fee unit, rehomed from the legacy engine's
+// money tests onto the served money seam (the rule the root opens every LLM unit under:
+// `FeeRefund::PlaneFeeUnits`, door_steps.rs).
+
+/// The rig's group `g` month bucket (its budget window), read at `at`: its tokens and its spend in
+/// cents, the flat fee included.
+fn group_month(r: &Rig, at: u64) -> (u64, i64) {
+    let u = r
+        .gov
+        .derived_bucket_usage(
+            &r.cost,
+            "group:g@month",
+            crate::governance::WINDOW_MONTH,
+            true,
+            at,
+        )
+        .expect("usage");
+    (u.tokens, u.spend_cents)
+}
+
+/// The wall clock, asserted to fall in a different budget window than the unit's arrival, or the
+/// window attribution under test is masked.
+fn a_later_window() -> u64 {
+    let today = crate::store::now();
+    assert_ne!(
+        crate::governance::budget_window(crate::governance::WINDOW_MONTH, NOW),
+        crate::governance::budget_window(crate::governance::WINDOW_MONTH, today),
+        "test precondition: the arrival must be a different window than now"
+    );
+    today
+}
+
+/// F25 row 380: rehomed from crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::
+/// test_flat_fee_charge_and_refund_use_charged_at_window (#29, flat-fee side). The admission
+/// charges the 30-cent flat fee into the ARRIVAL (`charged_at`) window; a non-2xx end refunds it in
+/// that SAME window (net 0 there), and nothing ever lands in the wall clock's window.
+#[test]
+fn test_flat_fee_charge_and_refund_use_charged_at_window() {
+    let r = rig_with(
+        Some(1_000_000),
+        30,
+        ExhaustionMode::FinishUnit,
+        plane_fees(),
+    );
+    let today = a_later_window();
+    admit(&r);
+    assert_eq!(
+        group_month(&r, NOW).1,
+        30,
+        "admission charged the flat fee into the charged_at window"
+    );
+    assert_eq!(usage(&r).1, 30, "and onto the key");
+    assert_eq!(group_month(&r, today).1, 0, "nothing in the now window");
+
+    r.money.settle_end(UnitKey::new(1), 503);
+    assert_eq!(
+        group_month(&r, NOW).1,
+        0,
+        "non-2xx refund must land in the charged_at window (net 0)"
+    );
+    assert_eq!(usage(&r).1, 0);
+    assert_eq!(
+        group_month(&r, today).1,
+        0,
+        "neither charge nor refund may leak into the wall-clock 'now' window (#29)"
+    );
+}
+
+/// F25 row 626: rehomed from crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::
+/// test_nonstream_token_fee_uses_charged_at_window_not_clock (#29, token side). A completion's
+/// 600 input + 400 output tokens ledger into the ARRIVAL (`charged_at`) window of the bound group's
+/// windowed bucket, never the wall clock's, and the key's all-time bucket holds all 1000.
+#[test]
+fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
+    let r = rig_with(Some(1_000_000), 0, ExhaustionMode::FinishUnit, plane_fees());
+    let today = a_later_window();
+    let report = [
+        UnitCount {
+            class: INPUT,
+            source: UNITS_REPORTED,
+            amount: 600,
+        },
+        UnitCount {
+            class: 1,
+            source: UNITS_REPORTED,
+            amount: 400,
+        },
+        fee_reported(1),
+    ];
+    let _ = r.money.checkpoint(&ctx(1), &report);
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert_eq!(
+        group_month(&r, NOW).0,
+        1000,
+        "token accrual must be attributed to the charged_at (header-arrival) window"
+    );
+    assert_eq!(
+        group_month(&r, today).0,
+        0,
+        "token accrual must NOT leak into the wall-clock 'now' window (the #29 split bug)"
+    );
+    assert_eq!(
+        usage(&r).0,
+        1000,
+        "the key's all-time bucket sees the tokens"
+    );
+}
+
+/// F25 row 718: rehomed from crates/busbar-llm/src/unit/tests/meter.rs::
+/// the_fee_unit_is_one_per_delivered_request_that_routed_upstream. One flat fee per delivered
+/// request that routed upstream, at the ledger: a delivered 2xx whose plane reported its fee unit
+/// keeps the 5 cents; delivered with no upstream leg (no fee unit reported), routed but
+/// undelivered (502, 404) and neither (503, nothing reported) each end at 0.
+#[test]
+fn the_fee_unit_is_one_per_delivered_request_that_routed_upstream() {
+    for (status, report, fee, why) in [
+        (200u32, Some(1u64), 5i64, "delivered and routed upstream"),
+        (200, Some(0), 0, "delivered, but no upstream leg"),
+        (502, Some(0), 0, "routed upstream, but undelivered (502)"),
+        (404, Some(0), 0, "routed upstream, but undelivered (404)"),
+        (503, None, 0, "neither delivered nor routed"),
+    ] {
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+        admit(&r);
+        assert_eq!(usage(&r).1, 5, "{why}: the admission charged the fee");
+        if let Some(n) = report {
+            let _ = r.money.checkpoint(&ctx(1), &[fee_reported(n)]);
+        }
+        r.money.settle_end(UnitKey::new(1), status);
+        assert_eq!(usage(&r).1, fee, "{why}");
+    }
+}
