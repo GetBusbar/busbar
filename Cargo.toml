@@ -23,7 +23,6 @@ members = [
     "crates/busbar-plane-streaming",
     "crates/busbar-plane-decisions",
     "crates/plugin-loader",
-    "crates/busbar-transport-stdio",
     "crates/busbar-transport-webrtc",
     "testing/ws-conformance/subject",
     "xtask",
@@ -106,6 +105,10 @@ busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", re
 # R-FIX3 double (`busbar_kernel::test_support::ranking_double`) instead, and the root's
 # `linked_hook_ranking` tests prove the double states what this door states.
 busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking", rev = "7e1285e2e3293627723ab2754b9ddbfddeba9c46" }
+# THE STDIO TRANSPORT: the carrier of a spawned program's pipes (kind: transport), pulled at a pinned
+# rev; the logic crate the root links on the transport-door axis. Its dropped-in cdylib twin
+# (`busbar-transport-stdio-plugin`) and its gates live in that repo's plugin CI.
+busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "604a5caf1349fd3024af80f3ee8a92353189149e" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3

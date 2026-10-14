@@ -175,7 +175,7 @@ busbar-transport-grpc = { workspace = true }
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
 # exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-streaming` carries the edge.
 busbar-transport-ws = { workspace = true, optional = true }
-busbar-transport-stdio = { path = "../busbar-transport-stdio" }
+busbar-transport-stdio = { workspace = true }
 # WebRTC: the datagram framer door (ICE, SRTP, SCTP) over the connector's datagram port and secure
 # layer. Optional and off by default: its linked row is the wire's one registration, and a build
 # that does not turn `transport-webrtc` on carries neither the crate nor its media stack.

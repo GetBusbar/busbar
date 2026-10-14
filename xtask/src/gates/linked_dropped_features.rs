@@ -318,12 +318,15 @@ impl Gate for LinkedDroppedFeaturesGate {
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let bin = "crates/busbar/Cargo.toml";
-        let plugin = "crates/busbar-transport-stdio/Cargo.toml";
-        let edge = "busbar-transport-stdio = { path = \"../busbar-transport-stdio\" }";
+        // The plants go into the one transport crate still in `crates/`: the stdio wire left for its
+        // own repo (P5, BUSBAR-1.6.0.md l.2220), and a pinned crate is no member this gate scans.
+        let plugin = "crates/busbar-transport-webrtc/Cargo.toml";
+        let edge =
+            "busbar-transport-webrtc = { path = \"../busbar-transport-webrtc\", optional = true }";
         let own = {
             let b = cx.read(bin).unwrap_or_default().replacen(
                 edge,
-                "busbar-transport-stdio = { path = \"../busbar-transport-stdio\", features = [\"planted-linked\"] }",
+                "busbar-transport-webrtc = { path = \"../busbar-transport-webrtc\", optional = true, features = [\"planted-linked\"] }",
                 1,
             );
             let p = cx.read(plugin).unwrap_or_default();
