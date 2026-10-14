@@ -4146,8 +4146,9 @@ fn a_correction_that_would_cut_inside_a_stored_row_is_refused() {
 }
 
 /// THE CONTROLS FOR #32: a correction whose boundaries every row already splits at applies — whole
-/// UTC days, an open end, a future window inside one day, and the instant a config apply started a
-/// new price era (every unit from it on accrued under that era).
+/// UTC days, an open end, and the instant a config apply started a new price era (every unit from it
+/// on accrued under that era). A window that opens after the arrival is not a correction at all
+/// (TODO M28): [`a_future_dated_correction_is_refused_and_appends_nothing`].
 #[test]
 fn a_correction_on_row_boundaries_applies() {
     let arrival = 2 * DAY_MS + 10 * HOUR_MS;
@@ -4155,7 +4156,6 @@ fn a_correction_on_row_boundaries_applies() {
         (DAY_MS, Some(2 * DAY_MS)),
         (DAY_MS, None),
         (0, Some(3 * DAY_MS)),
-        (2 * DAY_MS + 12 * HOUR_MS, Some(2 * DAY_MS + 18 * HOUR_MS)),
     ] {
         let history = a_seeded_history();
         let (result, records) = amend_at(&history, &a_window_correction(from, until), arrival);
@@ -4177,6 +4177,91 @@ fn a_correction_on_row_boundaries_applies() {
     assert!(
         result.is_ok(),
         "a correction from the instant a config apply opened an era cuts no row: {result:?}"
+    );
+}
+
+/// **A CORRECTION IS BACK-DATED OR IT IS REFUSED** (TODO M28; #79: a correction is "an entry whose
+/// `effective_from` lies in the past"). A signed window that opens after the call arrived prices a
+/// future no booked line has reached: a forward price under an amendment's signature, standing in
+/// for a configuration write. Refused at the shape, and nothing is recorded or appended — including a
+/// window of whole future days and one inside one future day, both of which cut no row and applied
+/// before this refusal. The control: the whole-day window, arriving after it closed, applies.
+#[test]
+fn a_future_dated_correction_is_refused_and_appends_nothing() {
+    let arrival = 2 * DAY_MS + 10 * HOUR_MS;
+    let future = (3 * DAY_MS, Some(4 * DAY_MS));
+    for (from, until) in [
+        future,
+        (2 * DAY_MS + 12 * HOUR_MS, Some(2 * DAY_MS + 18 * HOUR_MS)),
+        (2 * DAY_MS + 10 * HOUR_MS + 1_000, None),
+    ] {
+        let history = a_seeded_history();
+        let (result, records) = amend_at(&history, &a_window_correction(from, until), arrival);
+        assert!(
+            matches!(result, Err(busbar_core_admin::GovernanceError::Validation)),
+            "[{from}, {until:?}) opens after the arrival at {arrival} and must be refused: {result:?}"
+        );
+        assert_eq!(history.len(), 1, "[{from}, {until:?}): nothing appended");
+        assert_eq!(records, 0, "[{from}, {until:?}): nothing recorded");
+    }
+
+    let history = a_seeded_history();
+    let (result, records) = amend_at(
+        &history,
+        &a_window_correction(future.0, future.1),
+        4 * DAY_MS + HOUR_MS,
+    );
+    assert!(
+        result.is_ok(),
+        "the same window, once past, applies: {result:?}"
+    );
+    assert_eq!((history.len(), records), (2, 1));
+}
+
+/// **A SIGNED CORRECTION APPLIES ONCE** (TODO M28). The signature covers the window, the figures and
+/// the reason, and nothing that tells one submission from the next, so the same signed bytes sent
+/// again after a later correction would put the earlier price back with no new operator act. The
+/// replay is refused `Conflict`, nothing is recorded and nothing appended, and the later correction
+/// still prices the window.
+#[test]
+fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
+    let book = a_memory_book();
+    let journal = a_journal_over(&book);
+    let history = a_seeded_history();
+    let first = a_priced_correction(5, serde_json::json!(1.5));
+    let apply = |body: &[u8], arrival_secs: u64| {
+        amend_rate_history_effect(
+            &history,
+            Some(&journal),
+            body,
+            arrival_secs,
+            a_sealed_operator(),
+            &an_attribution(),
+        )
+    };
+    apply(&first, 6).expect("the first correction applies");
+    apply(&a_priced_correction(9, serde_json::json!(3.0)), 7)
+        .expect("a later correction of the same window applies");
+    assert_eq!(history.len(), 3);
+
+    let replayed = apply(&first, 8);
+    assert!(
+        matches!(replayed, Err(busbar_core_admin::GovernanceError::Conflict)),
+        "the first correction's signed bytes, sent again, must be refused: {replayed:?}"
+    );
+    assert_eq!(history.len(), 3, "a replay appends nothing");
+    assert_eq!(
+        replayed_amendments(&book.lock().unwrap()).len(),
+        2,
+        "a replay records nothing"
+    );
+    let pinned = history.pin().expect("pinned");
+    let (seq, card) = pinned.view().card_at(1_000).expect("the window is priced");
+    assert_eq!(seq, busbar_kernel_ledger::cost::HistorySeq(2));
+    assert_eq!(
+        card.fee(),
+        9,
+        "the later correction still prices the window"
     );
 }
 
@@ -4379,12 +4464,13 @@ fn a_thousand_later_amendments_do_not_erase_the_first() {
             &an_attribution(),
         )
         .expect("the first correction applies");
-        let later = a_priced_correction(1, serde_json::json!(1.0));
-        for _ in 0..1_000 {
+        // A thousand DIFFERENT corrections: the same signed body twice is a replay and is refused
+        // (TODO M28), so each later one moves the fee.
+        for fee in 8..1_008 {
             amend_rate_history_effect(
                 &history,
                 Some(&journal),
-                &later,
+                &a_priced_correction(fee, serde_json::json!(1.0)),
                 7,
                 a_sealed_operator(),
                 &an_attribution(),
