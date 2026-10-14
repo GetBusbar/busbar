@@ -349,11 +349,19 @@
 # busbar-oracle-linux-<arch>-<release_ref>.sha256; each asset's .sig verifies (Ed25519, over
 # `<asset name>\n<sha256>\n`) against .github/release-key.pub.pem.
 #
+# 2026-10-14 (busbar owner rule 22, conformance gaps; egress lane): moved 4c47cad0385d -> f6c22cb4160c, busbar-release
+# main after #376 / #377, which carries #375: the capture mock's per-path h1 framing for a fixed answer (a declared
+# over-cap Content-Length, an unbuffered chunked fill) and the literal cells egress.fetch|plugins|declared-over-cap
+# and egress.fetch|plugins|chunked-over-cap, which pin 1.5.5's two plugins.fetch download-cap refusals. Their
+# cells.json rows, owed-baseline rows and add-only 1.5.5 goldens land with this commit. The digests are dev-bin's
+# busbar-oracle-linux-<arch>-<release_ref>.sha256; each asset's .sig verifies (Ed25519, over
+# `<asset name>\n<sha256>\n`) against .github/release-key.pub.pem.
+#
 # To move the pin: set release_ref to the new busbar-release commit and each sha256_linux_<arch> to the
 # sha256 of its dev-bin busbar-oracle-linux-<arch>-<release_ref> asset (the .sha256 beside it).
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=4c47cad0385dc9727b15fea8486cba3afd1308a1
-sha256_linux_x86_64=ef06fc0cb87b732ef620dbf2156baf417336d29e1ca3ba9baa7915914aa21121
-sha256_linux_aarch64=4507255e6e619d00544c59a1ec6cd481b60eab4ca3cf8ffe7d1feaa49a7ca521
+release_ref=f6c22cb4160c14fc3958dee4f022daa7a6298f96
+sha256_linux_x86_64=621af9bda981c3a067c281a135d0e8b3ba8ab6aafd70610c5350687867bed4b9
+sha256_linux_aarch64=17e94fbe9b6b9c94e22d6c41f7b19fff9969f71cb1bac5fac2f5784ef28989bd
 crate=busbar-release-oracle
 bin=busbar-oracle
