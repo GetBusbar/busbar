@@ -182,11 +182,6 @@ item = "WALL_CLOCK"
 
 [[finding]]
 rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/records.rs"
-item = "REGISTERED"
-
-[[finding]]
-rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/testkit/warn_capture.rs"
 item = "GATE"
 

@@ -833,10 +833,8 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     r.line("usage at the end", LEASED, || ans(b.get_usage(ub, w)));
 
-    // ── the scope-kind round trip (DECISIONS #11): the engine registers the plane kinds in ITS
-    // process; a dropped-in store never does, and must hand the key back byte-identically ──
-    busbar_contract::records::register_scope_kind(plane_kind("server"));
-    busbar_contract::records::register_scope_kind(plane_kind("tool"));
+    // ── the scope-kind round trip (DECISIONS #11): a plane's kinds are the key's own data, and a
+    // dropped-in store must hand the key back byte-identically ──
     let sk = scoped_key();
     r.line("scope-kind put", 1, || ans(b.put_key(&sk)));
     let back = r.step("scope-kind get", LEASED, || match b.get_key(&sk.id) {
