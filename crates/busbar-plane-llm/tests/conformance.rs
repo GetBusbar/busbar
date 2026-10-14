@@ -544,3 +544,16 @@ fn red_a_door_that_stops_counting_the_far_ends_units_answers_differently() {
     assert_ne!(Some(red_line), far_end(&honest));
     assert_ne!(red, honest);
 }
+
+// THE PUBLISHED CONFORMANCE SUITE, run over this plane (TODO ABI-b4; OWNER 2026-10-03: plugins
+// test themselves against busbar's published suite): the linked door and the `llm_door` cdylib,
+// driven by busbar-plugin-loader's plane script over `conformance.json`, every step at its pinned
+// crossing count, the two folds equal. Its sessions are the far ends' own answers, one per dialect
+// that reports a class (Anthropic server tools, an OpenAI stated total, Cohere billed units, three
+// Bedrock guardrail traces, an OpenAI per-image answer, a whisper duration), each wanting its
+// counts exactly, so every billable class the tail declares is reported by a case (TODO L-R22).
+busbar_plugin_loader::conformance_suite! {
+    door: busbar_plane_llm::plane_door::door,
+    cdylib: "llm_door",
+    inputs: include_str!("conformance.json"),
+}

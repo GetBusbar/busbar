@@ -248,6 +248,15 @@ leaf_op! {
     OpenAiTranscription: super::VENDOR_NAME,
     TranscriptionReqHandle = read_transcription_request,
     TranscriptionRespHandle = read_transcription_response;
+    // METERED IN ITS OWN DIALECT AS ACROSS ONE (owner rule 21: money = ledger quantity x rate
+    // card; LEDGER-100). A same-dialect transcription's body is buffered so the relay reads the
+    // usage the answer reports: whisper's duration as `audio_ms`, a token-metered model's tokens
+    // under the token classes, exactly what the translated path already ledgers. 1.5.5 never tapped
+    // a transcription (v1.5.5 crates/busbar/src/handlers/mod.rs:140 answers `false`; only embeddings
+    // override it, handlers/openai.rs:464), so its same-dialect transcription billed nothing.
+    fn taps_usage(&self) -> bool {
+        true
+    }
     fn egress_request_content_type(&self) -> &'static str {
         // write_request rebuilds the multipart form around `transcription_boundary()`, which is
         // drawn from entropy rather than hard-coded. Both sides read the same value, so the header

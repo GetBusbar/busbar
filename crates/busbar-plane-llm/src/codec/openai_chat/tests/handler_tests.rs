@@ -422,6 +422,34 @@ fn embeddings_taps_usage_and_extract_usage_reads_prompt_tokens() {
     assert_eq!(usage.input, 7);
 }
 
+/// RED before this lane: a same-dialect transcription was never tapped (1.5.5's default `false`),
+/// so its relay billed nothing while the translated path ledgered the same answer. It taps usage, a
+/// token-metered answer surfaces its tokens, and whisper's duration reaches the reply as its
+/// billing (`Billing::Duration`, ledgered as `audio_ms`).
+#[test]
+fn transcription_taps_usage_in_its_own_dialect() {
+    assert!(OpenAiTranscription.taps_usage());
+    let tokens = br#"{"text":"hi","usage":{"type":"tokens","input_tokens":14,"output_tokens":3,"total_tokens":17}}"#;
+    let usage = OpenAiTranscription
+        .extract_usage("openai", tokens)
+        .expect("a token-metered transcription yields usage");
+    assert_eq!((usage.input, usage.output), (14, 3));
+    let whisper = br#"{"text":"hi","usage":{"type":"duration","seconds":3}}"#;
+    assert!(OpenAiTranscription
+        .extract_usage("openai", whisper)
+        .is_none());
+    let billed = super::read_transcription_response(whisper)
+        .expect("whisper's answer reads")
+        .billing();
+    assert!(
+        matches!(
+            billed,
+            Some(busbar_contract::billing::Billing::Duration { .. })
+        ),
+        "{billed:?}"
+    );
+}
+
 #[test]
 fn embeddings_integer_input_is_rejected_not_silently_emptied() {
     // Pre-tokenized integer input does not translate cross-protocol; it must 400 loudly rather

@@ -48,6 +48,9 @@
 //!     "empty":  { "unit": 10, "outcome": "Refused" },        // optional: a caller body that ended empty
 //!     "sessions": [                          // optional: units driven step by step
 //!       { "name": "<unique>", "unit": 20, "claim": 2,
+//!         "member": "<the pool member>",     // optional: the member its ATTEMPT names (else
+//!                                            // `plane.member`), so a plane serving several far
+//!                                            // ends shows each one's answer
 //!         "stream": 20,                      // optional: a live session's stream (0 = a request unit)
 //!         "reply_cap": 65536,                // optional
 //!         "ticket": true,                    // optional: it cancels on its ticket
@@ -796,6 +799,8 @@ enum Act {
 struct Session {
     name: String,
     unit: u64,
+    /// The pool member its ATTEMPT names, when not `plane.member`.
+    member: Option<Vec<u8>>,
     stream: u64,
     claim: u32,
     reply_cap: usize,
@@ -860,6 +865,7 @@ impl Session {
         Self {
             name,
             unit,
+            member: optional(&s["member"], &format!("{what}.member")),
             stream: num_or(&s["stream"], &format!("{what}.stream"), 0),
             claim,
             reply_cap: usize::try_from(num_or(
@@ -1078,6 +1084,13 @@ fn sessions(
 ) {
     for s in all {
         let unit = Unit::mint(d, s.reply_cap);
+        // The session's own member, when it names one: its ATTEMPT names that far end.
+        let own = s.member.as_ref().map(|member| Carried {
+            member: member.clone(),
+            pool: c.pool.clone(),
+            caller_ref: c.caller_ref.clone(),
+        });
+        let c = own.as_ref().unwrap_or(c);
         for (label, act) in &s.steps {
             let label = format!("{} {label}", s.name);
             match act {

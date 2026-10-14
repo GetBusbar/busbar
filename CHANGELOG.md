@@ -710,8 +710,11 @@ each dialect translates, field by field, is listed in the generated
   (`unitemized_tokens`), a per-image answer's `images`, a transcription's reported duration
   (`audio_ms`, whole milliseconds) and each Bedrock guardrail policy-unit count (`guardrail_*`),
   each priced by the rate card (absent card: 0). The token classes, their figures and every
-  `tokens:` cap count exactly what 1.5.5 counted. A Bedrock guardrail usage count that is present
-  but not a count is refused, like every other billed count.
+  `tokens:` cap count exactly what 1.5.5 counted, with one correction: an OpenAI transcription
+  answered in its own dialect is now metered as a translated one always was (whisper's duration
+  as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it
+  nothing. A Bedrock guardrail usage count that is present but not a count is refused, like every
+  other billed count.
 - **`busbar --migrate-config` leaves your 1.5.5 pool members exactly as written.** Only the four
   retired spellings named under [Breaking](#breaking) above are rewritten; nothing else in a pool,
   provider or model block is touched.
