@@ -586,3 +586,209 @@ fn a_same_dialect_callers_accept_never_replaces_busbars_own() {
     let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
     assert_eq!(field(&r, "accept"), [b"text/event-stream".as_slice()]);
 }
+
+// ── the usage opt-in, rehomed from the legacy injector and assembly tests ───────────────────────
+
+/// Rehomes `crates/busbar-llm/src/engine/attempt/tests/assemble.rs::a_wrong_typed_stream_options_is_refused_before_any_send`.
+/// 1.5.5 behaviour pinned: a streamed openai request whose `stream_options` is present but cannot
+/// hold `include_usage` (a string, a number, a bool or an array) cannot be metered, so it is
+/// refused with a 400 naming the field and nothing reaches the far end (owner ruling Q33c keeps
+/// the 400). Every one of the four wrong types is driven, not one standing in for the rest.
+/// RED if any of the four is forwarded, or refused with another status or sentence.
+#[test]
+fn every_wrong_typed_stream_options_is_refused_before_any_send() {
+    let h = head(&[("content-type", "application/json")]);
+    for wrong in [r#""x""#, "1", "true", "[]"] {
+        let body =
+            format!(r#"{{"model":"gpt","stream":true,"stream_options":{wrong},"messages":[]}}"#);
+        let a = arrived("/v1/chat/completions", &h, &body);
+        let refused = build(&a, &h, &shaping(), "p", "gpt")
+            .expect_err("a wrong-typed stream_options is refused, never forwarded");
+        assert_eq!(refused.status, 400, "stream_options = {wrong}");
+        assert_eq!(refused.envelope, "openai", "stream_options = {wrong}");
+        assert_eq!(
+            refused.kind, "invalid_request_error",
+            "stream_options = {wrong}"
+        );
+        assert_eq!(
+            refused.message, DETAIL_STREAM_OPTIONS_NOT_OBJECT,
+            "stream_options = {wrong}"
+        );
+        let rendered = busbar_plane_llm::exchange::refuse::answered(&refused);
+        assert_eq!(rendered.status, 400);
+        let text = String::from_utf8_lossy(&rendered.body);
+        assert!(
+            text.contains("Invalid type for 'stream_options': expected an object."),
+            "the refusal names the field: {text}"
+        );
+    }
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/attempt/tests/assemble.rs::the_injector_answers_err_on_a_wrong_typed_stream_options`.
+/// 1.5.5 behaviour pinned: the injector's refusal hands the caller's bytes back verbatim.
+/// RED if the `Err` carries anything but the exact bytes it was given.
+#[test]
+fn the_injector_hands_the_callers_bytes_back_on_a_wrong_typed_stream_options() {
+    let body: &[u8] = br#"{"stream":true,"stream_options":"x"}"#;
+    assert_eq!(
+        try_inject_stream_include_usage(body.to_vec()),
+        Err(body.to_vec())
+    );
+}
+
+fn count_of(haystack: &[u8], needle: &[u8]) -> usize {
+    haystack
+        .windows(needle.len())
+        .filter(|w| *w == needle)
+        .count()
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs::injector_idempotent_when_stream_options_already_present`.
+/// 1.5.5 behaviour pinned (billing safety): a body already carrying `stream_options` with
+/// `include_usage: false` comes out with `include_usage` forced true and exactly ONE
+/// `stream_options` member, never a duplicate key a last-wins reader would read as no usage.
+/// Driven through the injector and through a whole attempt.
+/// RED if the flag stays false or the member appears twice.
+#[test]
+fn an_existing_stream_options_is_set_in_place_never_duplicated() {
+    let body = br#"{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false},"messages":[]}"#;
+    let out = try_inject_stream_include_usage(body.to_vec()).expect("asked");
+    let v: Value = busbar_plane_llm::codec::json::parse(&out).expect("still JSON");
+    assert_eq!(
+        v.pointer("/stream_options/include_usage"),
+        Some(&json!(true))
+    );
+    assert_eq!(
+        count_of(&out, br#""stream_options""#),
+        1,
+        "{}",
+        String::from_utf8_lossy(&out)
+    );
+
+    let h = head(&[("content-type", "application/json")]);
+    let a = arrived(
+        "/v1/chat/completions",
+        &h,
+        r#"{"model":"gpt","stream":true,"stream_options":{"include_usage":false},"messages":[]}"#,
+    );
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("still JSON");
+    assert_eq!(
+        v.pointer("/stream_options/include_usage"),
+        Some(&json!(true))
+    );
+    assert_eq!(count_of(&r.body, br#""stream_options""#), 1);
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs::injector_tolerates_leading_whitespace`.
+/// 1.5.5 behaviour pinned: leading spaces, a newline and a tab before the opening brace are
+/// tolerated; the member still lands and the caller's `model` is kept.
+/// RED if the splice misses the object behind mixed whitespace.
+#[test]
+fn the_usage_ask_lands_behind_mixed_leading_whitespace() {
+    let out = try_inject_stream_include_usage(b"  \n\t{\"model\":\"m\",\"stream\":true}".to_vec())
+        .expect("asked");
+    let v: Value = busbar_plane_llm::codec::json::parse(&out).expect("valid JSON");
+    assert_eq!(
+        v.pointer("/stream_options/include_usage"),
+        Some(&json!(true))
+    );
+    assert_eq!(v.pointer("/model"), Some(&json!("m")));
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs::injector_falls_back_on_empty_or_non_object`.
+/// 1.5.5 behaviour pinned: an empty object `{}` (no first member) gains the member; a body that
+/// is not an object (`[1,2,3]`) goes out byte-identical.
+/// RED if `{}` is left without the ask or the array is reshaped.
+#[test]
+fn an_empty_object_gains_the_ask_and_a_non_object_passes() {
+    let out = try_inject_stream_include_usage(b"{}".to_vec()).expect("asked");
+    let v: Value = busbar_plane_llm::codec::json::parse(&out).expect("valid JSON");
+    assert_eq!(
+        v.pointer("/stream_options/include_usage"),
+        Some(&json!(true)),
+        "{v}"
+    );
+    let out = try_inject_stream_include_usage(b"[1,2,3]".to_vec()).expect("unchanged");
+    assert_eq!(out, b"[1,2,3]");
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs::injector_does_not_overrun_an_all_whitespace_body`.
+/// 1.5.5 behaviour pinned: a body of whitespace only passes through untouched and never reads past
+/// its end. RED if it panics or the bytes change.
+#[test]
+fn an_all_whitespace_body_passes_the_injector_untouched() {
+    let out = try_inject_stream_include_usage(b"   \n\t ".to_vec()).expect("unchanged");
+    assert_eq!(out, b"   \n\t ");
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs::upgrades_existing_stream_options_preserving_siblings`.
+/// 1.5.5 behaviour pinned: `{"include_usage":false,"foo":1}` comes out with `include_usage` true
+/// and `foo` still 1. RED if the flag stays false or a sibling option is dropped.
+#[test]
+fn an_existing_false_is_overwritten_and_its_siblings_kept() {
+    let body = br#"{"model":"gpt-4o","stream":true,"stream_options":{"include_usage":false,"foo":1},"messages":[]}"#;
+    let out = try_inject_stream_include_usage(body.to_vec()).expect("asked");
+    let v: Value = busbar_plane_llm::codec::json::parse(&out).expect("valid JSON");
+    assert_eq!(
+        v.pointer("/stream_options/include_usage"),
+        Some(&json!(true)),
+        "{v}"
+    );
+    assert_eq!(v.pointer("/stream_options/foo"), Some(&json!(1)), "{v}");
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs::keeps_existing_true`.
+/// 1.5.5 behaviour pinned: a caller already opted in stays opted in; through a whole attempt the
+/// caller's own ask means busbar asks nothing, so the body goes out as the caller's bytes and is
+/// not refused. RED if the opt-in is lost, or the attempt is refused or reshaped.
+#[test]
+fn a_caller_already_opted_in_stays_opted_in() {
+    let out = try_inject_stream_include_usage(
+        br#"{"stream":true,"stream_options":{"include_usage":true}}"#.to_vec(),
+    )
+    .expect("asked");
+    let v: Value = busbar_plane_llm::codec::json::parse(&out).expect("valid JSON");
+    assert_eq!(
+        v.pointer("/stream_options/include_usage"),
+        Some(&json!(true))
+    );
+
+    let h = head(&[("content-type", "application/json")]);
+    let body =
+        r#"{"model":"gpt","stream":true,"stream_options":{"include_usage":true},"messages":[]}"#;
+    let a = arrived("/v1/chat/completions", &h, body);
+    let r = build(&a, &h, &shaping(), "p", "gpt").expect("an opted-in caller is not refused");
+    assert_eq!(r.body, body.as_bytes(), "the caller's own bytes");
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs::an_existing_stream_options_is_edited_in_place`.
+/// 1.5.5 behaviour pinned (DIALECT FIDELITY), exact bytes: an existing `include_usage:false` is set
+/// true where it stands; a leading-space inner object gains the member after its brace with its
+/// spacing kept; a `null` with a sibling becomes `{"include_usage":true}` in place.
+/// RED if any byte other than the governed member moves.
+#[test]
+fn the_usage_ask_edits_an_existing_stream_options_in_place_byte_for_byte() {
+    for (input, want) in [
+        (
+            &br#"{"model":"gpt-4o", "stream":true,"stream_options":{"foo":1, "include_usage":false},"messages":[]}"#[..],
+            &br#"{"model":"gpt-4o", "stream":true,"stream_options":{"foo":1, "include_usage":true},"messages":[]}"#[..],
+        ),
+        (
+            &br#"{"stream":true,"stream_options":{ "foo":1 },"z":1}"#[..],
+            &br#"{"stream":true,"stream_options":{"include_usage":true, "foo":1 },"z":1}"#[..],
+        ),
+        (
+            &br#"{"stream":true,"stream_options":null,"z":1}"#[..],
+            &br#"{"stream":true,"stream_options":{"include_usage":true},"z":1}"#[..],
+        ),
+    ] {
+        let out = try_inject_stream_include_usage(input.to_vec()).expect("asked");
+        assert_eq!(
+            String::from_utf8_lossy(&out),
+            String::from_utf8_lossy(want),
+            "{}",
+            String::from_utf8_lossy(input)
+        );
+    }
+}
