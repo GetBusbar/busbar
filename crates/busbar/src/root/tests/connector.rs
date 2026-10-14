@@ -265,9 +265,10 @@ fn a_provider_without_an_allowlist_entry_is_refused_a_private_address() {
 /// EGRESS_LOOPBACK_ALLOWED for its two mint needs (lib.rs:137): every outbound need a linked auth
 /// plugin's Statement declares is operator infrastructure (BUSBAR-1.6.0.md l.609, ARCHITECT D1 MINT
 /// CLASS (B)), so a mint endpoint on a private host is reached as 1.5.5 reached it, not refused as
-/// non-loopback. Read off every linked auth row's own Statement, never a plugin's name; a build whose
-/// linked auth rows declare no outbound need has nothing to prove, and says so.
-#[cfg(linked_axis_auths)]
+/// non-loopback. Read off every linked auth row's own Statement, never a plugin's name. It rides
+/// EVERY linked auth row (`linked_every_auth`, build.rs), so the mint plugin's needs are among them
+/// and the cell always proves one; a build missing an auth row does not run it.
+#[cfg(linked_every_auth)]
 #[test]
 fn every_linked_auth_plugins_outbound_needs_are_operator_infrastructure() {
     let mut outbound = 0usize;
