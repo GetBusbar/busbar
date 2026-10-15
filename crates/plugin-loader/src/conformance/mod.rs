@@ -1383,6 +1383,18 @@ pub fn both_ways(s: &Subject) {
     }
 }
 
+/// RED (TODO L-R22): a plane declaring a billable class no conformance case reports is refused by
+/// the plane script's class contract. Nothing to plant for a door of another kind.
+///
+/// # Panics
+/// When a declared class no case reports passes the comparator.
+pub fn red_unreported_class(s: &Subject) {
+    s.apply_env();
+    if s.kind() == KindCode::Plane {
+        plane::red_unreported_class(s);
+    }
+}
+
 /// **RED: the exact comparator refuses a moved count.** The linked leg's real fold passes it; the
 /// same fold with any one step's pinned count moved by one does not, nor does a fold whose every
 /// count doubled (the "above zero" check a loose comparator would wave through).
@@ -1939,6 +1951,13 @@ macro_rules! conformance_suite {
         #[test]
         fn red_a_moved_crossing_count_is_refused() {
             $crate::conformance::red_count(&__busbar_conformance_subject());
+        }
+
+        /// RED: a plane declaring a billable class no case reports is refused (a door of another
+        /// kind has nothing to plant).
+        #[test]
+        fn red_a_declared_class_no_case_reports_is_refused() {
+            $crate::conformance::red_unreported_class(&__busbar_conformance_subject());
         }
 
         /// RED: the door at its kind ABI ± 1 is refused, linked and dropped in.
