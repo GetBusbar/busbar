@@ -3600,19 +3600,19 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     let body = body_string(*resp).await;
     assert_leak_free(&body, &key2.id, "any-pool");
 
-    // Bedrock ingress maps the same over-budget condition to a 400-class
-    // ServiceQuotaExceededException (the native AWS shape), NOT 429.
+    // Bedrock ingress maps the same over-budget condition to 429 ThrottlingException, an error
+    // Converse declares (1.5.5's 400 ServiceQuotaExceededException is one it does not).
     let (app2b, key2b) = governed_app_over_budget();
     let gov2b = busbar_contract::records::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key2b.clone())),
     };
     let resp = admit_check(&app2b, &gov2b, "bedrock", "", busbar_kernel::store::now())
         .expect_err("a zero-budget group ⇒ over-budget response (bedrock)");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     let body = body_string(*resp).await;
     assert!(
-        body.contains("ServiceQuotaExceededException"),
-        "bedrock over-budget body carries native quota exception: {body}"
+        body.contains("ThrottlingException"),
+        "bedrock over-budget body carries the declared Converse exception: {body}"
     );
     assert_leak_free(&body, &key2b.id, "any-pool");
     let _ = &app2b;
@@ -3822,8 +3822,8 @@ fn test_bedrock_errortype_header_matches_body_and_others_omit() {
         ),
         (
             crate::engine::KIND_INSUFFICIENT_QUOTA,
-            StatusCode::BAD_REQUEST,
-            "ServiceQuotaExceededException",
+            StatusCode::TOO_MANY_REQUESTS,
+            "ThrottlingException",
         ),
     ] {
         let resp = ingress_error("bedrock", status, kind, "m");
@@ -6220,8 +6220,8 @@ async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
 
 /// Each first-class ingress route: an over-budget virtual key is rejected with the protocol's
 /// native quota shape before resolution. The over-quota `kind` is `insufficient_quota`; the
-/// status is 429 for every protocol EXCEPT bedrock (whose native `ServiceQuotaExceededException`
-/// is a 400-class error — see `budget_check`). Closes the ingress gap the 403-only set left on
+/// status is 429 for every protocol, bedrock included (`ThrottlingException`, an error Converse
+/// declares — see `budget_check`). Closes the ingress gap the 403-only set left on
 /// the `budget_check` guard.
 #[tokio::test]
 async fn test_governance_over_budget_native_envelope_all_ingress() {
@@ -6250,7 +6250,7 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
         handle.abort();
     }
 
-    // bedrock: native ServiceQuotaExceededException is a 400-class error, not 429.
+    // bedrock: 429 ThrottlingException, an error Converse declares.
     {
         let (addr, handle, secret) = governed_limit_router("budget").await;
         let resp = reqwest::Client::new()
@@ -6260,12 +6260,12 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status().as_u16(), 400, "bedrock over-budget ⇒ 400");
+        assert_eq!(resp.status().as_u16(), 429, "bedrock over-budget ⇒ 429");
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(
             body.get("__type").and_then(|t| t.as_str()),
-            Some("ServiceQuotaExceededException"),
-            "bedrock over-budget body __type is ServiceQuotaExceededException; got {body}"
+            Some("ThrottlingException"),
+            "bedrock over-budget body __type is ThrottlingException; got {body}"
         );
         handle.abort();
     }
