@@ -3697,13 +3697,26 @@ mod rehomed_metering {
         assert_eq!(read.tokens().0 + read.tokens().1, 1000);
     }
 
+    /// How many times the usage tap's copy of a same-dialect chat body, fed in 512-byte pieces under
+    /// `cap`, overflowed: the plane's `busbar_billing_truncated_total` signal, once per response.
+    fn truncations(body: &[u8], cap: usize) -> usize {
+        let mut ctx = super::relay_ctx("openai", "openai", false);
+        ctx.translate_cap = cap;
+        let mut relay = Relay::new(ctx);
+        body.chunks(512).filter(|piece| relay.feed(piece).1).count()
+    }
+
     /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage`
-    /// (map row 336). 1.5.5: under a 4096-byte cap, a same-dialect body three caps long whose
-    /// `usage` (600 + 400) trails it reaches the caller whole and still bills 1000 tokens: the
-    /// billing copy keeps the tail, not the head.
-    /// RED: a head-truncated billing copy never reaches the trailing usage and bills 0.
+    /// (map row 336), HELD TO 1.5.5 (coordinator ruling 2026-10-15; the legacy test pinned a
+    /// post-1.5.5 tail copy). v1.5.5 `crates/busbar/src/proxy/response_body.rs:229-262` kept a copy
+    /// of a same-dialect body capped at `MAX_TRANSLATED_BODY_BYTES`, dropped the overflow, counted
+    /// it once on `BILLING_TRUNCATED_TOTAL` and warned that the tokens were undercounted; a `usage`
+    /// past the cap was never read. Under a 4096-byte cap, a body three caps long whose `usage`
+    /// (600 + 400) trails it reaches the caller whole, bills 0 tokens, and the overflow is counted
+    /// once.
+    /// RED: the trailing usage billed (1000), a floor billed, or the overflow not counted.
     #[test]
-    fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
+    fn a_same_dialect_body_past_the_cap_bills_no_trailing_usage_as_in_1_5_5() {
         const CAP: usize = 4096;
         let (arrived, lane) = ask("openai", "openai", false);
         let ctx = reply_ctx_capped(&arrived, &lane, CAP);
@@ -3715,17 +3728,25 @@ mod rehomed_metering {
         let pieces: Vec<&[u8]> = body.as_bytes().chunks(512).collect();
         let read = answer(&ctx, 200, JSON_HEAD, &pieces, false);
         assert_eq!(read.body, body.as_bytes(), "the whole body, verbatim");
-        assert_eq!(read.tokens(), (600, 400));
-        assert_eq!(read.tokens().0 + read.tokens().1, 1000);
+        assert_eq!(read.tokens(), (0, 0), "no usage past the cap bills");
+        assert_eq!(read.end().units, Units::default(), "nothing billed");
+        assert_eq!(
+            truncations(body.as_bytes(), CAP),
+            1,
+            "the overflow, counted once"
+        );
     }
 
     /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_truncated_beyond_recovery_bills_nonzero_floor_not_zero`
-    /// (map row 337). 1.5.5 (C2): under a 4096-byte cap, a same-dialect body whose `usage` sits at
-    /// its front, pushed out of the kept tail by the filler, bills the floor over the 4096 kept
-    /// bytes: 4096 / 4 = 1024 output tokens, never 0.
-    /// RED: an unrecoverable usage billed as zero tokens (only the flat fee lands).
+    /// (map row 337), HELD TO 1.5.5 (coordinator ruling 2026-10-15; the legacy test pinned a
+    /// post-1.5.5 floor). v1.5.5 `crates/busbar/src/proxy/response_body.rs:229-262`: a same-dialect
+    /// body past the usage tap's cap is counted once on `BILLING_TRUNCATED_TOTAL` and its tokens go
+    /// unbilled; 1.5.5 billed no floor for it. Under a 4096-byte cap, a body whose `usage` sits at
+    /// its front, three caps long, reaches the caller whole, bills 0 tokens (never the 1024-token
+    /// floor over the kept bytes), and the overflow is counted once.
+    /// RED: a floor (or the stated 600 / 400) billed, or the overflow not counted.
     #[test]
-    fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
+    fn a_same_dialect_body_truncated_past_the_cap_bills_no_floor_as_in_1_5_5() {
         const CAP: usize = 4096;
         let (arrived, lane) = ask("openai", "openai", false);
         let ctx = reply_ctx_capped(&arrived, &lane, CAP);
@@ -3736,9 +3757,13 @@ mod rehomed_metering {
         let pieces: Vec<&[u8]> = body.as_bytes().chunks(512).collect();
         let read = answer(&ctx, 200, JSON_HEAD, &pieces, false);
         assert_eq!(read.body, body.as_bytes(), "the whole body, verbatim");
-        let floor = CAP as u64 / TRUNCATED_TAIL_BYTES_PER_TOKEN;
-        assert_eq!(floor, 1024);
-        assert_eq!(read.tokens(), (0, floor));
+        assert_eq!(read.tokens(), (0, 0), "no floor past the cap");
+        assert_eq!(read.end().units, Units::default(), "nothing billed");
+        assert_eq!(
+            truncations(body.as_bytes(), CAP),
+            1,
+            "the overflow, counted once"
+        );
     }
 
     /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cross_protocol_stream_delivers_trailing_usage_gemini_json_array`
@@ -3896,10 +3921,14 @@ mod rehomed_metering {
     }
 
     /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_streaming_translate_abort_trips_breaker_and_skips_billing`
-    /// (map row 367). 1.5.5 (#62): a translated stream whose reframing gives up after its first
-    /// byte records a transient fault on the far end (the optimistic success reversed) and still
-    /// bills the 600 / 400 (1000 tokens) read before it.
-    /// RED: an abort that records no fault, or one that refunds what streamed.
+    /// (map row 367), HELD TO 1.5.5 (coordinator ruling 2026-10-15). v1.5.5's own
+    /// `test_streaming_translate_abort_trips_breaker_and_skips_billing`
+    /// (`crates/busbar/src/proxy/tests/ingress_indistinguishability_tests.rs:3091`, over
+    /// `crates/busbar/src/proxy/response_body.rs`'s `billing_failed` gate): a translated stream
+    /// whose reframing gives up after its first byte records a transient on the far end (the
+    /// optimistic success reversed, the breaker cell trips Open) and is NOT token-billed, though
+    /// 600 / 400 had been captured before the abort.
+    /// RED: an abort that records no fault, or one that bills what it captured.
     #[test]
     fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
         let (arrived, lane) = ask("anthropic", "openai", true);
@@ -3910,9 +3939,17 @@ mod rehomed_metering {
         assert!(end.done);
         assert_eq!(end.verdict, Verdict::Hard);
         assert_eq!(end.fault, Some(Fault::Transient("stream-translate-abort")));
-        assert_eq!(breaker_fault(end.fault.as_ref()), FAULT_TRANSIENT);
-        assert_eq!(read.tokens(), (600, 400));
-        assert_eq!(read.tokens().0 + read.tokens().1, 1000);
+        assert_eq!(
+            breaker_fault(end.fault.as_ref()),
+            FAULT_TRANSIENT,
+            "the far end's breaker reads a transient: the cell trips Open"
+        );
+        assert_eq!(
+            read.tokens(),
+            (0, 0),
+            "an aborted stream is not token-billed"
+        );
+        assert_eq!(end.units, Units::default(), "nothing billed");
     }
 
     /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cancel_drop_bills_partial_tokens`
