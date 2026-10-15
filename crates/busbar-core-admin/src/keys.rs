@@ -222,7 +222,7 @@ fn is_valid_label_name(name: &str) -> bool {
 fn json_response(status: StatusCode, body: Value) -> Response {
     (
         status,
-        [(CONTENT_TYPE, busbar_kernel::proxy::APPLICATION_JSON)],
+        [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
         body.to_string(),
     )
         .into_response()
