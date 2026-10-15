@@ -1019,3 +1019,722 @@ async fn request_id_is_recorded_as_native_u64_tracing_field() {
         "the unit's span records the SAME id the response tap carries, as a native u64"
     );
 }
+
+// ── F25 REHOME: the hook seam rows the coverage map (v2) homes on the driver ─────────────────────
+
+/// The 503 body a decision gate that could not complete answers (1.5.5's literal).
+const GATE_COULD_NOT_COMPLETE: &str = "A required gate could not complete. Please retry shortly.";
+/// The 503 body a decision gate's restriction leaving no lane answers.
+const GATE_RESTRICT_EMPTY: &str =
+    "No upstream satisfies a required gate's restriction. Please retry shortly.";
+/// The 503 body a base routing policy that could not select answers.
+const POLICY_COULD_NOT_SELECT: &str =
+    "The routing policy could not select an upstream. Please retry shortly.";
+/// The 503 body a base policy's restriction leaving no lane answers.
+const POLICY_RESTRICT_EMPTY: &str =
+    "No upstream satisfies the routing policy's restriction. Please retry shortly.";
+
+/// A hook that either fails outright or restricts to a tag no lane carries.
+#[derive(Clone, Copy)]
+enum Fault {
+    Error,
+    RestrictToNothing,
+}
+
+struct FaultyHook(Fault);
+
+#[async_trait::async_trait]
+impl busbar_contract::hooks::RoutingPolicy for FaultyHook {
+    async fn decide(
+        &self,
+        _req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _candidates: &[busbar_contract::hooks::Candidate<'_>],
+        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
+        _budget: Duration,
+    ) -> busbar_contract::hooks::PolicyResult {
+        match self.0 {
+            Fault::Error => Err("deliberately broken".into()),
+            Fault::RestrictToNothing => Ok(busbar_contract::hooks::RoutingDecision::Restrict {
+                tags_any: vec!["a-tag-no-lane-carries".to_string()],
+            }),
+        }
+    }
+    fn name(&self) -> &'static str {
+        "faulty"
+    }
+}
+
+/// The faulty hook, resolved fail-closed on the restriction axis with the operator's `on_error`.
+fn faulty(fault: Fault, on_error: PolicyOnError) -> ResolvedPolicy {
+    ResolvedPolicy::Policy {
+        policy: Arc::new(FaultyHook(fault)),
+        on_error,
+        on_error_chain: Vec::new(),
+        timeout: Duration::from_millis(50),
+        send_prompt: false,
+        send_user: false,
+        on_empty: PolicyOnError::Reject,
+    }
+}
+
+/// Where the faulty hook is seated.
+#[derive(Clone, Copy)]
+enum Seat {
+    DecisionGate,
+    BasePolicy,
+}
+
+/// The chat-completions caller's own spelling of busbar's overloaded 503 kind, read off the plane's
+/// own refusal renderer, so the test pins "the same kind as every other busbar 503" and no literal.
+fn overloaded_kind_on_chat_completions() -> String {
+    let rendered = busbar_plane_llm::exchange::refuse::render(
+        "openai",
+        503,
+        busbar_contract::protocol::KIND_OVERLOADED,
+        "x",
+        0,
+    );
+    let v: Value = serde_json::from_slice(&rendered.body).expect("a refusal is JSON");
+    v["error"]["type"].as_str().unwrap_or_default().to_string()
+}
+
+/// One chat-completions request at a two-lane pool with the faulty hook in `seat`: (status, error
+/// kind, error message) off the caller's envelope, and whether a far end was reached.
+async fn fire_faulty(
+    seat: Seat,
+    fault: Fault,
+    on_error: PolicyOnError,
+) -> (u32, String, String, bool) {
+    let hook = faulty(fault, on_error);
+    let hooks = match seat {
+        Seat::DecisionGate => gates(vec![(0, hook)]),
+        Seat::BasePolicy => Hooks {
+            policy: Some(hook),
+            ..Hooks::default()
+        },
+    };
+    let rig = Rig::new(
+        pool(vec![
+            member("m0", "m0").provider("oai").tags(&["eu"]),
+            member("m1", "m1").provider("oai").tags(&["us"]),
+        ]),
+        None,
+        hooks,
+    );
+    let answer = rig
+        .fire_with(
+            &crate::common::TestUnits::passing(),
+            "/v1/chat/completions",
+            &[("content-type", "application/json")],
+            &serde_json::to_vec(&chat_body()).unwrap(),
+        )
+        .await;
+    let v = answer.json();
+    (
+        answer.status,
+        v["error"]["type"].as_str().unwrap_or_default().to_string(),
+        v["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .to_string(),
+        !answer.sent.is_empty(),
+    )
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::decision_gate_that_cannot_complete_has_its_own_503_body`
+/// (coverage map v2 row 213). 1.5.5: a load-bearing decision gate that could not complete answers
+/// 503, busbar's overloaded kind, and its own words: "A required gate could not complete. Please
+/// retry shortly."
+///
+/// RED: the failed gate's refusal collapses into another 503 body, another status or kind.
+#[tokio::test]
+async fn decision_gate_that_cannot_complete_has_its_own_503_body() {
+    let (status, kind, message, _) =
+        fire_faulty(Seat::DecisionGate, Fault::Error, PolicyOnError::Reject).await;
+    assert_eq!((status, kind), (503, overloaded_kind_on_chat_completions()));
+    assert_eq!(message, GATE_COULD_NOT_COMPLETE);
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::decision_gate_restriction_leaving_no_lane_has_its_own_503_body`
+/// (coverage map v2 row 214). 1.5.5: a decision gate whose restriction leaves no lane answers 503,
+/// the overloaded kind, and "No upstream satisfies a required gate's restriction. Please retry
+/// shortly."
+///
+/// RED: the restriction's refusal wears another body (a policy's, or a generic exhaustion).
+#[tokio::test]
+async fn decision_gate_restriction_leaving_no_lane_has_its_own_503_body() {
+    let (status, kind, message, _) = fire_faulty(
+        Seat::DecisionGate,
+        Fault::RestrictToNothing,
+        PolicyOnError::Reject,
+    )
+    .await;
+    assert_eq!((status, kind), (503, overloaded_kind_on_chat_completions()));
+    assert_eq!(message, GATE_RESTRICT_EMPTY);
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::base_policy_that_cannot_select_has_its_own_503_body`
+/// (coverage map v2 row 215). 1.5.5: the pool's base routing policy that could not select answers
+/// 503, the overloaded kind, and "The routing policy could not select an upstream. Please retry
+/// shortly."
+///
+/// RED: a policy's fault is served under a gate's body, or under another status or kind.
+#[tokio::test]
+async fn base_policy_that_cannot_select_has_its_own_503_body() {
+    let (status, kind, message, _) =
+        fire_faulty(Seat::BasePolicy, Fault::Error, PolicyOnError::Reject).await;
+    assert_eq!((status, kind), (503, overloaded_kind_on_chat_completions()));
+    assert_eq!(message, POLICY_COULD_NOT_SELECT);
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::base_policy_restriction_leaving_no_lane_has_its_own_503_body`
+/// (coverage map v2 row 216). 1.5.5: a base policy whose restriction leaves no lane answers 503,
+/// the overloaded kind, and "No upstream satisfies the routing policy's restriction. Please retry
+/// shortly."
+///
+/// RED: the policy's restriction refusal collapses into the gate's words or another body.
+#[tokio::test]
+async fn base_policy_restriction_leaving_no_lane_has_its_own_503_body() {
+    let (status, kind, message, _) = fire_faulty(
+        Seat::BasePolicy,
+        Fault::RestrictToNothing,
+        PolicyOnError::Reject,
+    )
+    .await;
+    assert_eq!((status, kind), (503, overloaded_kind_on_chat_completions()));
+    assert_eq!(message, POLICY_RESTRICT_EMPTY);
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::decision_gate_that_cannot_complete_only_refuses_when_declared_load_bearing`
+/// (coverage map v2 row 217). 1.5.5: the SAME failed gate under `on_error: weighted` refuses
+/// nothing: the unit proceeds to a route, and the "could not complete" body belongs to
+/// `on_error: reject` alone.
+///
+/// RED: a gate the operator did not declare load-bearing still refuses with its 503 body, or the
+/// unit never reaches a far end.
+#[tokio::test]
+async fn decision_gate_that_cannot_complete_only_refuses_when_declared_load_bearing() {
+    let (_status, _kind, message, dispatched) =
+        fire_faulty(Seat::DecisionGate, Fault::Error, PolicyOnError::Weighted).await;
+    assert_ne!(
+        message, GATE_COULD_NOT_COMPLETE,
+        "`on_error: weighted` proceeds past a gate that could not answer; the refusal body belongs \
+         to `on_error: reject` alone"
+    );
+    assert!(dispatched, "the unit proceeded to the walk");
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::reject_kind_mapping_matches_status_semantics`
+/// (coverage map v2 row 311). 1.5.5: the refusal a load-bearing hook's FAILED call produces
+/// (`REQUIRED_HOOK_UNAVAILABLE_STATUS`, 503) reads as RETRYABLE, the overloaded kind: on the
+/// Anthropic envelope `error.type` is `overloaded_error`, never a client error.
+///
+/// RED: the required-hook-unavailable 503 renders as an invalid request (or any non-retryable
+/// kind), so an SDK caller never retries a transient hook outage.
+#[tokio::test]
+async fn reject_kind_mapping_matches_status_semantics_required_hook_unavailable() {
+    assert_eq!(busbar_kernel::hooks::REQUIRED_HOOK_UNAVAILABLE_STATUS, 503);
+    let rig = Rig::new(
+        one(),
+        None,
+        gates(vec![(0, faulty(Fault::Error, PolicyOnError::Reject))]),
+    );
+    let answer = rig.fire(&chat_body()).await;
+    assert_eq!(answer.status, 503);
+    assert_eq!(answer.json()["type"], "error");
+    assert_eq!(answer.json()["error"]["type"], "overloaded_error");
+    assert!(answer.sent.is_empty(), "refused before any dispatch");
+}
+
+/// A response-stage tap that counts its deliveries and keeps the last payload.
+#[derive(Default)]
+struct CountingTap {
+    fired: std::sync::atomic::AtomicUsize,
+    last: Mutex<Option<Value>>,
+}
+
+#[async_trait::async_trait]
+impl busbar_contract::hooks::RoutingPolicy for CountingTap {
+    async fn decide(
+        &self,
+        _req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _cands: &[busbar_contract::hooks::Candidate<'_>],
+        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
+        _budget: Duration,
+    ) -> busbar_contract::hooks::PolicyResult {
+        Ok(busbar_contract::hooks::RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        "counting-tap"
+    }
+    async fn notify(
+        &self,
+        tap: Arc<busbar_contract::abi::host::hook::NotifyFrame>,
+        _budget: Duration,
+    ) {
+        *self.last.lock().unwrap() = Some(tap.projection_json());
+        self.fired.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// A counting tap and its entry, scoped to `groups` (empty: every caller).
+fn counting_tap(groups: Vec<String>) -> (Arc<CountingTap>, busbar_kernel::hooks::TapEntry) {
+    let tap = Arc::new(CountingTap::default());
+    let policy: Arc<dyn busbar_contract::hooks::RoutingPolicy> = tap.clone();
+    (tap, (Duration::from_millis(500), false, policy, groups))
+}
+
+/// Give detached taps room to deliver, then read how many did.
+async fn settled_count(tap: &CountingTap) -> usize {
+    for _ in 0..50 {
+        if tap.fired.load(std::sync::atomic::Ordering::SeqCst) > 0 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    // And a little longer, so a SECOND (wrong) delivery has the chance to land too.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    tap.fired.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::substrate_fire_stage_taps_honors_group_scope_via_host_seam`
+/// (coverage map v2 row 279). 1.5.5: a stage tap scoped to a group fires for a caller inside the
+/// group and does NOT fire for a caller outside it.
+///
+/// RED: the served driver fires a group-scoped tap for an out-of-group caller (a governance or
+/// audit tap mis-firing), or drops it for an in-group one.
+#[tokio::test]
+async fn substrate_fire_stage_taps_honors_group_scope_via_host_seam() {
+    async fn fired_for(groups_of_caller: &[&str]) -> usize {
+        let (tap, entry) = counting_tap(vec!["engineering".to_string()]);
+        let mut callers = Callers::default();
+        callers.groups.insert(
+            PRINCIPAL.to_string(),
+            groups_of_caller.iter().map(|g| (*g).to_string()).collect(),
+        );
+        let mut hooks = Hooks {
+            callers,
+            ..Hooks::default()
+        };
+        hooks.taps.response = vec![entry];
+        let rig = Rig::new(pool(vec![member("m0", "served")]), None, hooks);
+        let answer = rig.fire(&chat_body()).await;
+        assert_eq!(answer.status, 200);
+        settled_count(&tap).await
+    }
+    assert_eq!(
+        fired_for(&["user:bob", "engineering"]).await,
+        1,
+        "the in-group caller's group-scoped stage tap must fire"
+    );
+    assert_eq!(
+        fired_for(&["user:sue", "sales"]).await,
+        0,
+        "an out-of-group caller must NOT fire a group-scoped stage tap"
+    );
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::unreadable_content_reaches_the_gate_and_is_forwarded`
+/// (coverage map v2 row 317). 1.5.5: a valid-JSON request carrying a block type the reader does not
+/// model reaches a content gate, which is shown the turns busbar CAN read, and is forwarded to the
+/// far end byte for byte; unreadable content contributes nothing and never refuses the request.
+/// (Rewritten with an unknown block type only: an unknown role is a 400 since
+/// `hook_ir_differential`.)
+///
+/// RED: the request is refused for content the reader cannot model, it reaches the far end
+/// altered, or the gate is shown an empty or invented turn.
+#[tokio::test]
+async fn unreadable_content_reaches_the_gate_and_is_forwarded() {
+    let (seen, gate) = capturing(true, false, None);
+    let rig = Rig::new(one(), None, gates(vec![(0, gate)]));
+    let body = r#"{"model":"m0","max_tokens":10,"messages":[{"role":"user","content":[{"type":"text","text":"READABLE"},{"type":"never_heard_of","x":1}]}]}"#;
+    let answer = rig
+        .fire_with(
+            &crate::common::TestUnits::passing(),
+            crate::proofs::wire::FIRE_TARGET,
+            crate::proofs::wire::FIRE_FIELDS,
+            body.as_bytes(),
+        )
+        .await;
+    assert_eq!(
+        answer.status, 200,
+        "never refused for content it cannot read"
+    );
+    let sent = answer
+        .sent
+        .last()
+        .expect("the far end received the request");
+    assert_eq!(
+        String::from_utf8_lossy(&sent.body),
+        body,
+        "forwarded byte for byte"
+    );
+    let captured = seen.lock().unwrap().clone().expect("the gate ran");
+    let (_, turns) = captured.prompt.expect("the gate was handed the prompt");
+    assert!(
+        turns
+            .iter()
+            .any(|(r, t)| r == "user" && t.contains("READABLE")),
+        "the gate sees what busbar can read: {turns:?}"
+    );
+    assert!(
+        turns.iter().all(|(r, _)| !r.is_empty()),
+        "an unreadable block contributes no turn of its own: {turns:?}"
+    );
+}
+
+/// A rewrite seat answering a fixed rewrite, and recording what it was shown and how often.
+struct FixedRewrite {
+    name: &'static str,
+    reply: busbar_contract::hooks::TransformOutcome,
+    calls: std::sync::atomic::AtomicUsize,
+    shown: Mutex<Vec<(String, String)>>,
+}
+
+impl FixedRewrite {
+    fn new(name: &'static str, reply: busbar_contract::hooks::TransformOutcome) -> Arc<Self> {
+        Arc::new(FixedRewrite {
+            name,
+            reply,
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            shown: Mutex::new(Vec::new()),
+        })
+    }
+    fn rewriting(name: &'static str, messages: Vec<Value>, tools: Vec<Value>) -> Arc<Self> {
+        Self::new(
+            name,
+            busbar_contract::hooks::TransformOutcome::Rewrite(
+                busbar_contract::hooks::RewriteReply { messages, tools },
+            ),
+        )
+    }
+    fn calls(&self) -> usize {
+        self.calls.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl busbar_contract::hooks::RoutingPolicy for FixedRewrite {
+    async fn decide(
+        &self,
+        _req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _cands: &[busbar_contract::hooks::Candidate<'_>],
+        _ctx: &busbar_contract::hooks::RoutingContext<'_>,
+        _budget: Duration,
+    ) -> busbar_contract::hooks::PolicyResult {
+        Ok(busbar_contract::hooks::RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    async fn transform(
+        &self,
+        req: &busbar_contract::hooks::RoutingRequest<'_>,
+        _budget: Duration,
+    ) -> busbar_contract::hooks::TransformOutcome {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(prompt) = req.prompt.as_ref() {
+            *self.shown.lock().unwrap() = prompt
+                .messages
+                .iter()
+                .map(|(r, t)| (r.to_string(), t.to_string()))
+                .collect();
+        }
+        self.reply.clone()
+    }
+}
+
+/// A rewrite seat as the rig seats one.
+fn seated(hook: &Arc<FixedRewrite>) -> (Duration, Arc<dyn busbar_contract::hooks::RoutingPolicy>) {
+    let policy: Arc<dyn busbar_contract::hooks::RoutingPolicy> = hook.clone();
+    (Duration::from_millis(500), policy)
+}
+
+/// One chat-completions unit at a one-member chat-completions pool.
+async fn fire_chat_completions(rig: &Rig, body: &Value) -> crate::rig::Answered {
+    rig.fire_with(
+        &crate::common::TestUnits::passing(),
+        "/v1/chat/completions",
+        &[("content-type", "application/json")],
+        &serde_json::to_vec(body).unwrap(),
+    )
+    .await
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::apply_rewrite_to_body_swaps_messages_and_is_fail_safe`
+/// (coverage map v2 row 622). 1.5.5: a rewrite on an openai chat body replaces `messages` with the
+/// hook's (`[{"role":"user","content":"compressed"}]`), injects the hook's tool BESIDE the caller's
+/// (2 tools), and leaves every unrelated field (the model) untouched; a body with no `messages`
+/// array is left untouched (fail-safe, not applied), and an empty rewrite changes nothing.
+///
+/// RED: the rewrite drops the caller's tool or the model, writes a non-chat body it cannot frame,
+/// or an empty rewrite alters the request.
+#[tokio::test]
+async fn apply_rewrite_to_body_swaps_messages_and_is_fail_safe() {
+    let hook = FixedRewrite::rewriting(
+        "rewrite-tool-injector",
+        vec![json!({"role": "user", "content": "compressed"})],
+        vec![json!({"type": "function", "function": {"name": "rewriter_retrieve"}})],
+    );
+    let rig = Rig::new(
+        pool(vec![member("m0", "m0").provider("oai")]),
+        None,
+        Hooks {
+            rewrites: vec![seated(&hook)],
+            ..Hooks::default()
+        },
+    );
+    let answer = fire_chat_completions(
+        &rig,
+        &json!({
+            "model": "m0",
+            "messages": [{"role": "user", "content": "a very long original prompt"}],
+            "tools": [{"type": "function", "function": {"name": "existing"}}]
+        }),
+    )
+    .await;
+    assert_eq!(answer.status, 200);
+    let sent = sent_body(&answer);
+    assert_eq!(
+        sent["messages"],
+        json!([{"role": "user", "content": "compressed"}])
+    );
+    let tools = sent["tools"].as_array().expect("tools");
+    assert_eq!(tools.len(), 2, "tool injected, existing kept: {sent}");
+    assert_eq!(sent["model"], "m0", "unrelated fields untouched");
+
+    // The fail-safe arms, through the plane's own apply step: a body with no `messages` array and
+    // an empty rewrite both leave the arrival untouched.
+    use busbar_plane_llm::exchange::arrive::arrive;
+    use busbar_plane_llm::exchange::project::apply_rewrite;
+    let head: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
+    let rewrite = br#"{"messages":[{"role":"user","content":"compressed"}],"tools":[]}"#;
+    let non_chat = br#"{"model":"m0","contents":[{"parts":[]}]}"#;
+    if let Ok(mut arrived) = arrive("POST", "/v1/chat/completions", head, non_chat, &()) {
+        let before = arrived.body.clone();
+        assert_eq!(
+            apply_rewrite(&mut arrived, rewrite),
+            None,
+            "non-chat body left untouched (fail-safe)"
+        );
+        assert_eq!(arrived.body, before);
+    }
+    let chat = br#"{"model":"m0","messages":[{"role":"user","content":"x"}]}"#;
+    let mut arrived = arrive("POST", "/v1/chat/completions", head, chat, &()).expect("arrives");
+    let before = arrived.body.clone();
+    assert_eq!(
+        apply_rewrite(&mut arrived, br#"{"messages":[],"tools":[]}"#),
+        None,
+        "an empty rewrite changes nothing"
+    );
+    assert_eq!(arrived.body, before);
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::apply_global_rewrites_chains_in_order`
+/// (coverage map v2 row 625). 1.5.5: global rewrites fire in order and each sees the prior's
+/// output: hook A rewrites to "A", hook B (shown A's output) rewrites to "B", and "B" is what the
+/// far end is sent; the order reversed ends at "A".
+///
+/// RED: the chain runs out of order, a later hook is shown the caller's original body, or only one
+/// rewrite of the chain is applied.
+#[tokio::test]
+async fn apply_global_rewrites_chains_in_order() {
+    async fn chained(first: &'static str, second: &'static str) -> (Value, Vec<(String, String)>) {
+        let hook = |text: &'static str| {
+            FixedRewrite::rewriting(
+                "mock-rewrite",
+                vec![json!({"role": "user", "content": text})],
+                vec![],
+            )
+        };
+        let (head, tail) = (hook(first), hook(second));
+        let rig = Rig::new(
+            one(),
+            None,
+            Hooks {
+                rewrites: vec![seated(&head), seated(&tail)],
+                ..Hooks::default()
+            },
+        );
+        let answer = rig.fire(&chat_body()).await;
+        assert_eq!(answer.status, 200);
+        let shown = tail.shown.lock().unwrap().clone();
+        (sent_body(&answer), shown)
+    }
+    let (sent, shown_to_b) = chained("A", "B").await;
+    assert_eq!(
+        sent["messages"][0]["content"], "B",
+        "the last hook in the chain wins"
+    );
+    assert_eq!(
+        shown_to_b,
+        vec![("user".to_string(), "A".to_string())],
+        "B ran on A's rewritten body"
+    );
+    let (sent, _) = chained("B", "A").await;
+    assert_eq!(sent["messages"][0]["content"], "A");
+}
+
+/// LEGACY `crates/busbar-llm/src/unit/tests/approve.rs::with_no_seat_installed_the_step_is_a_no_op_exactly_as_the_live_path_is`
+/// (coverage map v2 row 659). 1.5.5: with no hook seated, a unit passes the hook stage unchanged:
+/// nothing refused, nothing added, and the far end is sent exactly the caller's bytes.
+///
+/// RED: an empty hook stage alters the request (a re-serialization, an added field) or refuses.
+#[tokio::test]
+async fn with_no_seat_installed_the_step_is_a_no_op_exactly_as_the_live_path_is() {
+    let rig = Rig::new(one(), None, Hooks::default());
+    let body =
+        br#"{"model":"m0","max_tokens":10,"messages":[{"role":"user","content":"untouched"}]}"#;
+    let answer = rig
+        .fire_with(
+            &crate::common::TestUnits::passing(),
+            crate::proofs::wire::FIRE_TARGET,
+            crate::proofs::wire::FIRE_FIELDS,
+            body,
+        )
+        .await;
+    assert_eq!(
+        answer.status, 200,
+        "nothing is seated, so nothing can refuse"
+    );
+    assert!(answer.outcome.is_completed(), "{:?}", answer.outcome);
+    let sent = answer.sent.last().expect("the far end was reached");
+    assert_eq!(
+        sent.body.as_slice(),
+        body.as_slice(),
+        "the far body is the caller's bytes"
+    );
+}
+
+/// LEGACY `crates/busbar-llm/src/unit/tests/approve.rs::the_first_veto_wins_and_nothing_after_it_is_consulted`
+/// (coverage map v2 row 662). 1.5.5: of two ordered request seats, the first one's veto wins, the
+/// unit is refused as a hook veto, and the seat after it is never consulted (its call counter stays
+/// 0). Seated as the request stage's ordered rewrite seats (the decision gates are consulted
+/// together, as 1.5.5 fanned them out).
+///
+/// RED: a seat after the veto is still asked, or the refusal is not the hook veto.
+#[tokio::test]
+async fn the_first_veto_wins_and_nothing_after_it_is_consulted() {
+    let vetoing = FixedRewrite::new(
+        "vetoing-seat",
+        busbar_contract::hooks::TransformOutcome::Reject {
+            status: 451,
+            message: "vetoed".to_string(),
+        },
+    );
+    let after = FixedRewrite::rewriting(
+        "seat-after",
+        vec![json!({"role": "user", "content": "never"})],
+        vec![],
+    );
+    let rig = Rig::new(
+        one_dead(),
+        None,
+        Hooks {
+            rewrites: vec![seated(&vetoing), seated(&after)],
+            ..Hooks::default()
+        },
+    );
+    let answer = rig.fire(&chat_body()).await;
+    assert_eq!(answer.status, 451, "the first seat vetoed");
+    assert!(
+        matches!(
+            answer.outcome,
+            busbar_contract::caps::Outcome::Refused(_, busbar_contract::caps::ReasonCode::HookVeto)
+        ),
+        "{:?}",
+        answer.outcome
+    );
+    assert_eq!(vetoing.calls(), 1);
+    assert_eq!(after.calls(), 0, "the seat after the veto was never asked");
+    assert!(answer.sent.is_empty());
+}
+
+/// LEGACY `crates/busbar-llm/src/unit/tests/route.rs::completion_tap_fires_once_on_the_walk_and_never_on_a_pre_forward_refusal`
+/// (coverage map v2 row 727). 1.5.5: a served unit fires the completion (response-stage) tap
+/// exactly ONCE, with the response payload (`at: response`, `outcome: ok`, `status: 200`); a unit
+/// refused before the walk (an unknown model, 404) fires it zero times.
+///
+/// RED: the completion tap fires twice for one unit, or a pre-forward 404 fires one.
+#[tokio::test]
+async fn completion_tap_fires_once_on_the_walk_and_never_on_a_pre_forward_refusal() {
+    let (tap, entry) = counting_tap(Vec::new());
+    let mut hooks = Hooks::default();
+    hooks.taps.response = vec![entry];
+    let rig = Rig::new(pool(vec![member("m0", "served")]), None, hooks);
+    let answer = rig.fire(&chat_body()).await;
+    assert_eq!(answer.status, 200);
+    assert_eq!(
+        settled_count(&tap).await,
+        1,
+        "the completion tap fires exactly once"
+    );
+    let payload = tap.last.lock().unwrap().clone().expect("the tap fired");
+    assert_eq!(payload["stage"]["at"], "response");
+    assert_eq!(payload["stage"]["outcome"], "ok");
+    assert_eq!(payload["stage"]["status"], 200);
+
+    // The pre-forward refusal: no destination, so no walk and no completion tap.
+    let (missed, entry) = counting_tap(Vec::new());
+    let mut hooks = Hooks::default();
+    hooks.taps.response = vec![entry];
+    let rig = Rig::new(pool(vec![member("m0", "served")]), None, hooks);
+    let mut body = chat_body();
+    body["model"] = json!("missing");
+    let answer = rig
+        .fire_with(
+            &crate::common::TestUnits::refusing(
+                busbar_contract::caps::StepName::Verify,
+                busbar_contract::caps::ReasonCode::NoDestination,
+            ),
+            crate::proofs::wire::FIRE_TARGET,
+            crate::proofs::wire::FIRE_FIELDS,
+            &serde_json::to_vec(&body).unwrap(),
+        )
+        .await;
+    assert_eq!(answer.status, 404);
+    assert_eq!(
+        settled_count(&missed).await,
+        0,
+        "a pre-forward refusal fires no completion tap"
+    );
+}
+
+/// LEGACY `crates/busbar-llm/src/unit/tests/route.rs::completion_tap_carries_response_tokens_out_when_declared`
+/// (coverage map v2 row 728). 1.5.5: a deployment that declares the `response_tokens_out` signal
+/// reads the unit's reported output count on the `response` stage tap (`request.
+/// response_tokens_out`, here the far end's 1 output token); one that declares nothing gets a
+/// payload with no such key.
+///
+/// RED: a declared `response_tokens_out` is missing from the completion tap (or wrong), or an
+/// undeclared one appears.
+#[tokio::test]
+async fn completion_tap_carries_response_tokens_out_when_declared() {
+    async fn tapped(declared: bool) -> Value {
+        let (tap, entry) = counting_tap(Vec::new());
+        let mut hooks = Hooks::default();
+        hooks.taps.response = vec![entry];
+        if declared {
+            hooks
+                .requested
+                .insert(busbar_contract::Signal::ResponseTokensOut);
+        }
+        let rig = Rig::new(pool(vec![member("m0", "served")]), None, hooks);
+        let answer = rig.fire(&chat_body()).await;
+        assert_eq!(answer.status, 200, "the answer was delivered");
+        settled_count(&tap).await;
+        let payload = tap.last.lock().unwrap().clone();
+        payload.expect("the completion tap fired")
+    }
+    let declared = tapped(true).await;
+    assert_eq!(declared["stage"]["at"], "response");
+    assert_eq!(
+        declared["request"]["response_tokens_out"], 1,
+        "a declared response_tokens_out carries the unit's output count"
+    );
+    let undeclared = tapped(false).await;
+    assert!(
+        undeclared["request"].get("response_tokens_out").is_none(),
+        "an undeclared signal adds no key to the payload"
+    );
+}

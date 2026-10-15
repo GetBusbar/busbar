@@ -764,3 +764,173 @@ async fn apply_rewrite_to_body_echoes_redacted_marker_as_visible_text() {
     assert_eq!(msgs[0]["content"].as_str(), Some(MARKER));
     assert!(!sent.to_string().contains("OPAQUE_CIPHERTEXT_BYTES"));
 }
+
+// ── F25 REHOME: the projection rows the coverage map (v2) homes on the driver ────────────────────
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/hook_opt_in_projection_tests.rs::max_tokens_signal_is_dialect_aware_for_responses`
+/// (coverage map v2 row 254), its Bedrock arm. 1.5.5 (the fix it pinned): Bedrock Converse spells
+/// the cap `inferenceConfig.maxTokens`, and the size signal a hook is shown carries it: a body with
+/// `{"inferenceConfig":{"maxTokens":128}}` projects `max_tokens` 128.
+///
+/// RED: a Bedrock caller's cap projects `None` again, blinding a policy keyed on the size signal.
+#[tokio::test]
+async fn max_tokens_signal_reads_the_bedrock_inference_config() {
+    let c = seen(
+        "bedrock",
+        json!({
+            "inferenceConfig": {"maxTokens": 128},
+            "messages": [{"role": "user", "content": [{"text": "hello"}]}]
+        }),
+    )
+    .await;
+    assert_eq!(c.max_tokens, Some(128));
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/hook_opt_in_projection_tests.rs::responses_reasoning_reader_rejects_malformed_encrypted_content`
+/// (coverage map v2 row 264). 1.5.5: a Responses body whose only item is a reasoning item with an
+/// EMPTY `encrypted_content` projects no content at all: every turn a hook is shown is empty text
+/// (no marker, no blob).
+///
+/// RED: a malformed blob reads as opaque content (the marker) or leaks into a turn.
+#[tokio::test]
+async fn responses_reasoning_reader_rejects_malformed_encrypted_content() {
+    let c = seen(
+        "responses",
+        json!({"input": [{"type": "reasoning", "encrypted_content": ""}]}),
+    )
+    .await;
+    let (_, messages) = prompt(&c);
+    assert!(
+        messages.iter().all(|(_, text)| text.is_empty()),
+        "an item carrying neither text nor a usable blob contributes no content: {messages:?}"
+    );
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/hook_opt_in_projection_tests.rs::size_signal_and_projection_agree_on_tool_role_content`
+/// (coverage map v2 row 271). 1.5.5: an openai body of a user turn, the assistant turn that CALLED
+/// a tool (arguments `{"q":"x"}`) and the tool-role result "TOOL RESULT PAYLOAD" projects 3 turns:
+/// the third exactly `("tool", "TOOL RESULT PAYLOAD")`, the second carrying the call's arguments
+/// (`"q"`), and the size signal equal to the projected characters; a block-array tool result
+/// projects "TOOL RESULT PAYLOAD" with a size signal of 19.
+///
+/// RED: a screening hook is not shown the tool result or the call's arguments, a turn is dropped,
+/// or the size signal and the projection disagree.
+#[tokio::test]
+async fn size_signal_and_projection_agree_on_tool_role_content() {
+    let c = seen(
+        "openai",
+        json!({
+            "messages": [
+                {"role": "user", "content": "run it"},
+                {"role": "assistant", "content": null,
+                 "tool_calls": [{"id": "c1", "type": "function",
+                                 "function": {"name": "f", "arguments": "{\"q\":\"x\"}"}}]},
+                {"role": "tool", "tool_call_id": "c1", "content": "TOOL RESULT PAYLOAD"}
+            ]
+        }),
+    )
+    .await;
+    let (_, messages) = prompt(&c);
+    assert_eq!(messages.len(), 3, "no turn is dropped");
+    assert_eq!(
+        messages[2],
+        ("tool".to_string(), "TOOL RESULT PAYLOAD".to_string())
+    );
+    assert!(
+        messages[1].1.contains("\"q\""),
+        "the tool call's ARGUMENTS are projected: {:?}",
+        messages[1].1
+    );
+    let projected: usize = messages.iter().map(|(_, t)| t.chars().count()).sum();
+    assert_eq!(
+        projected, c.total_chars,
+        "SIZE signal and CONTENT projection must agree on a tool-role turn"
+    );
+
+    let c = seen(
+        "openai",
+        json!({
+            "messages": [{"role": "tool", "tool_call_id": "c1",
+                          "content": [{"type": "text", "text": "TOOL RESULT PAYLOAD"}]}]
+        }),
+    )
+    .await;
+    assert_eq!(prompt(&c).1[0].1, "TOOL RESULT PAYLOAD");
+    assert_eq!(c.total_chars, 19);
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/hook_opt_in_projection_tests.rs::hook_content_uncapped_by_default_and_omits_whole_when_opted_in`
+/// (coverage map v2 row 273). 1.5.5: the hook content ceiling (`limits.hook_content_max_bytes`) is
+/// UNLIMITED by default (0): a 200000-character turn is projected in FULL. Opted in (64 KiB),
+/// over-cap content is OMITTED WHOLE, never truncated: the granted hook is shown a present-but-EMPTY
+/// prompt (no turn, no system) while the size signal still reports the real 200000.
+///
+/// RED: the default caps (a redaction gate handed an empty view while the body sails upstream), or
+/// an opted-in ceiling truncates mid-value, withholds the grant, or hides the real size.
+#[tokio::test]
+async fn hook_content_uncapped_by_default_and_omits_whole_when_opted_in() {
+    // The ceiling is process-global: hold the lock every limits installer in the binary holds.
+    let _lock = busbar_kernel::config::limits::LIMITS_TEST_LOCK.lock().await;
+    let big = "x".repeat(200_000);
+    let body = json!({"messages": [{"role": "user", "content": big}]});
+
+    assert_eq!(
+        busbar_kernel::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES,
+        0,
+        "the prompt projection default is UNLIMITED (0); anything else is a fail-open regression"
+    );
+    busbar_kernel::proxy::set_hook_content_max_bytes(
+        busbar_kernel::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES,
+    );
+    let c = seen("openai", body.clone()).await;
+    let (_, messages) = prompt(&c);
+    assert_eq!(
+        messages.len(),
+        1,
+        "with the cap OFF the body is projected in FULL"
+    );
+    assert_eq!(messages[0].1.len(), 200_000, "content sent uncapped");
+
+    busbar_kernel::proxy::set_hook_content_max_bytes(64 * 1024);
+    let c = seen("openai", body).await;
+    busbar_kernel::proxy::set_hook_content_max_bytes(
+        busbar_kernel::proxy::DEFAULT_HOOK_CONTENT_MAX_BYTES,
+    );
+    let (system, messages) = c
+        .prompt
+        .clone()
+        .expect("the grant is honoured: an over-cap projection is EMPTY, never absent");
+    assert!(messages.is_empty(), "content omitted whole");
+    assert_eq!(system, None);
+    assert_eq!(
+        c.total_chars, 200_000,
+        "the size signal still reports the real total, so the omission is visible"
+    );
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/lazy_body_tests.rs::ensure_ir_reads_the_body_through_the_ingress_reader`
+/// (coverage map v2 row 492). 1.5.5: an openai chat body's in-band system turn is a TURN of the hook
+/// view, not the system field: `[system "be terse", user "hi"]` is 2 turns, no system, and a size
+/// signal of `"be terse".len() + "hi".len()`.
+///
+/// RED: the in-band system turn is folded into the system field (or dropped), or its text leaves
+/// the size signal.
+#[tokio::test]
+async fn ensure_ir_reads_the_body_through_the_ingress_reader() {
+    let c = seen(
+        "openai",
+        json!({"messages": [
+            {"role": "system", "content": "be terse"},
+            {"role": "user", "content": "hi"}
+        ]}),
+    )
+    .await;
+    let (system, messages) = prompt(&c);
+    assert_eq!(c.message_count, 2, "the system turn counts as a wire turn");
+    assert_eq!(
+        system, None,
+        "an in-band system turn is a turn, not the system field"
+    );
+    assert_eq!(messages, turns(&[("system", "be terse"), ("user", "hi")]));
+    assert_eq!(c.total_chars, "be terse".len() + "hi".len());
+}

@@ -579,3 +579,201 @@ async fn responses_instructions_are_system_and_a_system_item_is_a_turn() {
     assert_eq!(messages, turns(&[("system", "S"), ("user", "hi")]));
     assert_eq!(c.message_count, 2);
 }
+
+// ── F25 REHOME: the per-dialect rewrite write-back (coverage map v2) ─────────────────────────────
+
+/// A rw hook answering a fixed rewrite.
+struct FixedRewrite(Vec<Value>);
+
+#[async_trait::async_trait]
+impl RoutingPolicy for FixedRewrite {
+    async fn decide(
+        &self,
+        _: &RoutingRequest<'_>,
+        _: &[Candidate<'_>],
+        _: &RoutingContext<'_>,
+        _: Duration,
+    ) -> PolicyResult {
+        Ok(RoutingDecision::Abstain)
+    }
+    fn name(&self) -> &'static str {
+        "fixed-rewrite"
+    }
+    async fn transform(&self, _: &RoutingRequest<'_>, _: Duration) -> TransformOutcome {
+        TransformOutcome::Rewrite(RewriteReply {
+            messages: self.0.clone(),
+            tools: vec![],
+        })
+    }
+}
+
+/// `v` posted to `path` in a same-dialect pool served by `provider`, under a rw hook answering
+/// `messages`: the body the far end was sent.
+async fn rewritten(path: &str, provider: &'static str, v: Value, messages: Vec<Value>) -> Value {
+    let rig = Rig::new(
+        Pool {
+            name: "p",
+            members: vec![member("m0", "m0").provider(provider)],
+        },
+        None,
+        Hooks {
+            rewrites: vec![(Duration::from_millis(500), Arc::new(FixedRewrite(messages)))],
+            ..Hooks::default()
+        },
+    );
+    let answer: Answered = rig
+        .fire_with(
+            &crate::common::TestUnits::passing(),
+            path,
+            &[("content-type", "application/json")],
+            &serde_json::to_vec(&v).expect("body serializes"),
+        )
+        .await;
+    let sent = answer
+        .sent
+        .last()
+        .expect("the rewritten request was dispatched");
+    serde_json::from_slice(&sent.body).expect("the far end's body is JSON")
+}
+
+/// The plane's own rewrite step over `body` arriving at `target`: the rewritten body, `None` when
+/// the rewrite leaves the arrival untouched (and then the arrival's body is unchanged).
+fn applied(target: &str, body: &[u8], rewrite: &Value) -> Option<Value> {
+    use busbar_plane_llm::exchange::arrive::arrive;
+    use busbar_plane_llm::exchange::project::apply_rewrite;
+    let head: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
+    let mut arrived = arrive("POST", target, head, body, &()).expect("the body arrives");
+    let before = arrived.body.clone();
+    let rewrite = serde_json::to_vec(rewrite).expect("serializes");
+    match apply_rewrite(&mut arrived, &rewrite) {
+        Some(bytes) => Some(serde_json::from_slice(&bytes).expect("the rewritten body is JSON")),
+        None => {
+            assert_eq!(
+                arrived.body, before,
+                "an unapplied rewrite leaves the body untouched"
+            );
+            None
+        }
+    }
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::apply_rewrite_renders_per_dialect`
+/// (coverage map v2 row 623). 1.5.5: a rewrite is written back in the caller's own dialect:
+/// Bedrock re-frames each message into content BLOCKS (`messages[0].content[0].text` "compressed",
+/// `messages[1].content[0].text` "prior"), Gemini into `contents`/`parts` with the assistant role
+/// mapped to `model`, Responses into its `input` list (a string `input` replaced); a rewrite message
+/// whose content is not text aborts a re-framing dialect untouched.
+///
+/// RED: a re-framing dialect gets the rewrite inserted verbatim (corrupting its shape), Gemini's
+/// assistant turn reaches the far end as another role, or a non-text rewrite is half-applied.
+#[tokio::test]
+async fn apply_rewrite_renders_per_dialect() {
+    let rewrite = vec![
+        json!({"role": "user", "content": "compressed"}),
+        json!({"role": "assistant", "content": "prior"}),
+    ];
+    let b = rewritten(
+        "/model/m0/converse",
+        "brk",
+        json!({"messages": [{"role": "user", "content": [{"text": "orig"}]}]}),
+        rewrite.clone(),
+    )
+    .await;
+    assert_eq!(b["messages"][0]["content"][0]["text"], "compressed");
+    assert_eq!(b["messages"][1]["content"][0]["text"], "prior");
+
+    let g = rewritten(
+        "/v1beta/models/m0:generateContent",
+        "goo",
+        json!({"contents": [{"role": "user", "parts": [{"text": "orig"}]}]}),
+        rewrite.clone(),
+    )
+    .await;
+    assert_eq!(g["contents"][0]["parts"][0]["text"], "compressed");
+    assert_eq!(g["contents"][1]["role"], "model");
+
+    let r = applied(
+        "/v1/responses",
+        br#"{"model":"m0","input":"orig"}"#,
+        &json!({"messages": rewrite, "tools": []}),
+    )
+    .expect("the responses rewrite applies");
+    assert_eq!(r["input"][0]["content"], "compressed");
+
+    let blocky =
+        json!({"messages": [{"role": "user", "content": [{"type": "text"}]}], "tools": []});
+    assert_eq!(
+        applied(
+            "/model/m0/converse",
+            br#"{"messages":[{"role":"user","content":[{"text":"orig"}]}]}"#,
+            &blocky,
+        ),
+        None,
+        "a non-text rewrite leaves bedrock untouched"
+    );
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::gemini_rewrite_role_round_trips_model_and_assistant`
+/// (coverage map v2 row 624). 1.5.5: Gemini's native `model` role is shown to a hook as the
+/// canonical `assistant`, and the write-back accepts BOTH: a hook echoing `model` writes `model`
+/// back (never `user`), and a canonical `assistant` writes `model` too.
+///
+/// RED: a hook is shown `model` (a leaked dialect role), or an echoed `model`/`assistant` turn is
+/// written back as a user turn.
+#[tokio::test]
+async fn gemini_rewrite_role_round_trips_model_and_assistant() {
+    let (seen, policy) = capturing(true, false, None);
+    let rig = Rig::new(
+        Pool {
+            name: "p",
+            members: vec![member("m0", "m0").provider("goo")],
+        },
+        None,
+        Hooks {
+            policy: Some(policy),
+            ..Hooks::default()
+        },
+    );
+    rig.fire_with(
+        &crate::common::TestUnits::passing(),
+        "/v1beta/models/m0:generateContent",
+        &[("content-type", "application/json")],
+        &serde_json::to_vec(&json!({
+            "contents": [
+                {"role": "user", "parts": [{"text": "hi"}]},
+                {"role": "model", "parts": [{"text": "hello"}]}
+            ]
+        }))
+        .unwrap(),
+    )
+    .await;
+    let c = seen.lock().unwrap().clone().expect("the hook was shown it");
+    let (_, messages) = c.prompt.expect("prompt shown");
+    assert_eq!(
+        messages[1].0, "assistant",
+        "a gemini `model` turn must project as canonical `assistant`, not leak `model`"
+    );
+
+    let echoed = rewritten(
+        "/v1beta/models/m0:generateContent",
+        "goo",
+        json!({"contents": [{"role": "user", "parts": [{"text": "orig"}]}]}),
+        vec![
+            json!({"role": "user", "content": "u"}),
+            json!({"role": "model", "content": "m"}),
+        ],
+    )
+    .await;
+    assert_eq!(
+        echoed["contents"][1]["role"], "model",
+        "a hook echoing `model` must round-trip to `model`, not corrupt to `user`"
+    );
+    let canonical = rewritten(
+        "/v1beta/models/m0:generateContent",
+        "goo",
+        json!({"contents": [{"role": "user", "parts": [{"text": "orig"}]}]}),
+        vec![json!({"role": "assistant", "content": "a"})],
+    )
+    .await;
+    assert_eq!(canonical["contents"][0]["role"], "model");
+}
