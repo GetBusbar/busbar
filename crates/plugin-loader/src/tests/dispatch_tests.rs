@@ -2558,7 +2558,9 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
         crate::dispatch::load::kind_tail(&st(2, KindCode::Transport)),
         Err(LoadError::KindTail(why)) if why.contains("tail.claim_rows")
     ));
-    assert!(crate::dispatch::load::kind_tail(&st(0, KindCode::Plane)).is_ok());
+    // A kind with no tail rule at admit (a plane's states its answer layout, judged below in
+    // `a_plane_built_against_another_answer_layout_is_refused_at_load`).
+    assert!(crate::dispatch::load::kind_tail(&st(0, KindCode::Hook)).is_ok());
     // A transport naming claims with no tail at all has no rows: refused, not skipped.
     let untailed = Statement {
         kind_tail: std::ptr::null(),
@@ -2654,6 +2656,84 @@ fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
             host,
         }),
         "a tail that predates the piece size is refused, never read past its end"
+    );
+}
+
+/// THE PLANE'S ANSWER LAYOUT AT LOAD: a plane writes every `out` at its own layout (`OnPieceOut`
+/// grew 240 -> 248 bytes and `ArriveOut`'s padding became `refusal_flags` under plane ABI v1), and
+/// the host reads them at its own. RED: a plane whose tail states another `ANSWER_LAYOUT` than the
+/// host's, or none (a tail that predates the word), is refused at load, naming the plugin, both
+/// layouts and the rebuild. GREEN: the host's layout loads.
+#[test]
+fn a_plane_built_against_another_answer_layout_is_refused_at_load() {
+    use busbar_contract::abi::plane::{PlaneTail, ANSWER_LAYOUT};
+    let host = ANSWER_LAYOUT;
+    let tail = |size: usize, layout: u32| {
+        // SAFETY: an all-zero PlaneTail is a valid value; its size and layout are set.
+        let mut t: PlaneTail = unsafe { std::mem::zeroed() };
+        t.head.size = size as u32;
+        t.answer_layout = layout;
+        (Box::leak(Box::new(t)) as *const PlaneTail).cast::<KindTailHead>()
+    };
+    // Through the load path's own Statement read (`validate`, the pack tool's rendering and
+    // `statement_of` all go through it), on a plane door.
+    let load = |kind_tail: *const KindTailHead| {
+        let st: &'static Statement = Box::leak(Box::new(Statement {
+            size: std::mem::size_of::<Statement>() as u32,
+            kind: KindCode::Plane as u32,
+            kind_abi: KindCode::Plane.abi_version(),
+            kind_tail,
+            ..busbar_contract::abi::sdk::door::statement("tools", "1.0.0", 1)
+        }));
+        let door = Door {
+            magic: DOOR_MAGIC,
+            mechanism_version: MECHANISM_VERSION,
+            size: std::mem::size_of::<Door>() as u32,
+            kind: KindCode::Plane as u32,
+            kind_abi: KindCode::Plane.abi_version(),
+            statement: st,
+            ops: std::ptr::null(),
+            ready: None,
+        };
+        crate::dispatch::load::statement(&door).map(|_| ())
+    };
+    let whole = std::mem::size_of::<PlaneTail>();
+
+    // GREEN: the host's layout loads.
+    assert_eq!(load(tail(whole, host)), Ok(()), "the host's layout loads");
+
+    // RED: a plane built against another contract's answers is refused, older and newer alike.
+    for other in [host - 1, host + 1] {
+        let refused = load(tail(whole, other)).expect_err("another answer layout is refused");
+        assert_eq!(
+            refused,
+            LoadError::PlaneLayout {
+                plugin: "tools".into(),
+                stated: other,
+                host,
+            }
+        );
+        let said = refused.to_string();
+        assert!(
+            said.contains("'tools'")
+                && said.contains(&format!("plane layout {other}"))
+                && said.contains(&format!("plane layout {host}"))
+                && said.contains("rebuild against this busbar-contract"),
+            "{said}"
+        );
+    }
+
+    // RED: a tail that stops short of the word (built before it) states no layout: refused the
+    // same, never read past its end.
+    let before = std::mem::offset_of!(PlaneTail, answer_layout);
+    assert_eq!(
+        load(tail(before, host)),
+        Err(LoadError::PlaneLayout {
+            plugin: "tools".into(),
+            stated: 0,
+            host,
+        }),
+        "a tail that predates the answer layout is refused, never read past its end"
     );
 }
 

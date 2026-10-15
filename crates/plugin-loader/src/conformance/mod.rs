@@ -70,7 +70,9 @@
 //! linked (`WrongKind`) and dropped in (`ManifestKind`); its instance's connection over a need it
 //! never declared is refused (`UndeclaredNeed`), and one instance's use of another's connection is
 //! refused (`NotOwner`); a transport door whose tail states another frame piece size than the
-//! host's is refused, linked and by the pack tool (`FramePieceSize`) (`red.rs`); the door with a `ready` that fails refuses the boot with the
+//! host's is refused, linked and by the pack tool (`FramePieceSize`); a plane door whose tail
+//! states another answer layout than the host's is refused, linked and by the pack tool
+//! (`PlaneLayout`) (`red.rs`); the door with a `ready` that fails refuses the boot with the
 //! plugin's text; a networked door (the real one, or restated with a stream need) bound to serve with
 //! no connection table is refused at bind, naming the plugin. And `BUSBAR_CONFORMANCE_RED=count` perturbs the both-ways arm itself, so the CI
 //! step can require that the suite FAILS when a count moves.
@@ -1479,6 +1481,8 @@ static VERSIONED: Restated = Restated::new();
 static CONNECTED: Restated = Restated::new();
 /// `red.rs`'s transport door whose tail states another frame piece size.
 static PIECED: Restated = Restated::new();
+/// `red.rs`'s plane door whose tail states another answer layout.
+static LAID: Restated = Restated::new();
 
 extern "C" fn abi_up_door() -> *const Door {
     ABI_UP.get()
@@ -1487,10 +1491,10 @@ extern "C" fn abi_down_door() -> *const Door {
     ABI_DOWN.get()
 }
 /// The door function of restated door `I`: [`NETWORKED`] (0), [`VERSIONED`] (1), [`CONNECTED`]
-/// (2), [`PIECED`] (3). One generic entry rather than one `extern` per door: `kind-isolation:law0` reads each ABI
+/// (2), [`PIECED`] (3), [`LAID`] (4). One generic entry rather than one `extern` per door: `kind-isolation:law0` reads each ABI
 /// string literal as the secret instance `c`.
 extern "C" fn restated_door<const I: usize>() -> *const Door {
-    [&NETWORKED, &VERSIONED, &CONNECTED, &PIECED][I].get()
+    [&NETWORKED, &VERSIONED, &CONNECTED, &PIECED, &LAID][I].get()
 }
 extern "C" fn ready_fails_door() -> *const Door {
     READY_FAILS.get()
@@ -1590,7 +1594,8 @@ macro_rules! by_kind {
 // The admission and connection arms every kind's run carries (`red.rs`), after `by_kind!`.
 mod red;
 pub use red::{
-    red_cross_instance_conn, red_frame_piece, red_statement, red_undeclared_need, red_wrong_kind,
+    red_cross_instance_conn, red_frame_piece, red_plane_layout, red_statement, red_undeclared_need,
+    red_wrong_kind,
 };
 
 /// **RED: a door at another kind ABI is refused, both ways.** The real door restated at its kind
@@ -1991,6 +1996,13 @@ macro_rules! conformance_suite {
         #[test]
         fn red_a_transport_built_against_another_frame_piece_is_refused() {
             $crate::conformance::red_frame_piece(&__busbar_conformance_subject());
+        }
+
+        /// RED: a plane door whose tail states another answer layout is refused at load (a door
+        /// of another kind writes no plane answers).
+        #[test]
+        fn red_a_plane_built_against_another_layout_is_refused() {
+            $crate::conformance::red_plane_layout(&__busbar_conformance_subject());
         }
 
         /// RED: the door under a row or manifest stating another Statement is refused, both ways.

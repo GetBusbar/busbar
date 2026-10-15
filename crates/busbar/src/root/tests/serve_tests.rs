@@ -1814,9 +1814,23 @@ pub(super) mod session_door {
     /// A provider on loopback speaking WebSocket: it accepts each dial's upgrade, speaks first
     /// ([`FAR_OPENING`]), as the provider does, and reports every TEXT frame it is sent on the
     /// channel, in order. A far end is held for a session's next turns once it has answered
-    /// (`plane_driver::session`): its opening event is that answer, so a provider that never spoke
-    /// would hold every turn after the first.
+    /// (`plane_driver::session`); its switching response is that answer (HEAD-FIELDS: the ws
+    /// transport hands it up as the stream's head), its opening event the first message after it.
     async fn far_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        far_socket_opening(Some(FAR_OPENING)).await
+    }
+
+    /// [`far_socket`], but a provider that answers the upgrade and does NOT speak first: it sends
+    /// nothing until it is spoken to.
+    async fn far_socket_silent() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        far_socket_opening(None).await
+    }
+
+    /// The provider [`far_socket`] and [`far_socket_silent`] start: `opening`, where it names one,
+    /// is the event it sends the moment its upgrade is answered.
+    async fn far_socket_opening(
+        opening: Option<&'static str>,
+    ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("a loopback port");
@@ -1844,7 +1858,11 @@ pub(super) mod session_door {
                     if socket.write_all(reply.as_bytes()).await.is_err() {
                         return;
                     }
-                    if socket.write_all(&server_text(FAR_OPENING)).await.is_err() {
+                    let spoke = match opening {
+                        Some(opening) => socket.write_all(&server_text(opening)).await.is_ok(),
+                        None => true,
+                    };
+                    if !spoke {
                         return;
                     }
                     while let Some((opcode, payload)) = read_frame(&mut socket).await {
@@ -1957,6 +1975,76 @@ pub(super) mod session_door {
             next.contains("input_audio_buffer.commit"),
             "the next event carried is the readable one after it: {next}"
         );
+    }
+
+    /// HEAD-FIELDS (`BUSBAR-1.6.0.md` l.736: a transport always hands the response head up as the
+    /// first `Fields` piece), at the session door's root leg: a provider that answers the upgrade
+    /// (`101`) and does NOT speak first has ANSWERED, so the session's far end is held from its
+    /// switching response and every turn the caller sends reaches it, in order, though the
+    /// provider never says a word. RED ARM: on the ws transport that discarded the switching
+    /// response the far end counted as answered only once it spoke, so every turn after the first
+    /// waited on a provider that never would, and the second event never arrived.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_door_carries_turns_to_a_provider_that_does_not_speak_first() {
+        let _one = PUBLISHING.lock().await;
+        let far_end = far_socket_silent().await;
+        let mut s = session_with(
+            "serve-door-session-silent",
+            Opts {
+                far_end: Some(far_end),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let (router, plain) = (s.router.clone(), s.plain.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let addr = listener.local_addr().expect("its address");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router.into_make_service()).await;
+        });
+
+        let route = SIDEBAND.replace("{call_id}", "call-silent");
+        let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
+        let open = format!(
+            "GET {route} HTTP/1.1\r\nhost: {addr}\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\
+             sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\
+             authorization: Bearer {plain}\r\n\r\n"
+        );
+        caller.write_all(open.as_bytes()).await.expect("the open");
+        let head = tokio::time::timeout(std::time::Duration::from_secs(10), read_head(&mut caller))
+            .await
+            .expect("the door answers the open")
+            .expect("a head");
+        assert!(
+            head.starts_with("HTTP/1.1 101"),
+            "the session opens: {head}"
+        );
+
+        for (event, kind) in [
+            (
+                r#"{"type":"input_audio_buffer.append","audio":"AAAA"}"#,
+                "input_audio_buffer.append",
+            ),
+            (
+                r#"{"type":"input_audio_buffer.commit"}"#,
+                "input_audio_buffer.commit",
+            ),
+        ] {
+            caller
+                .write_all(&client_text(event))
+                .await
+                .expect("a readable event");
+            let carried = next_heard(&mut s.heard).await.unwrap_or_else(|| {
+                panic!("{kind} reaches a provider that answered the upgrade and never spoke")
+            });
+            assert!(
+                carried.contains(kind),
+                "the turns arrive in order: {kind}, carried: {carried}"
+            );
+        }
     }
 }
 

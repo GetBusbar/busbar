@@ -38,10 +38,10 @@ use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, OpClass, OutField, PlaneDriveIn,
     PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn,
-    ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_ABORTED,
-    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, PIECE_LAST, PRINCIPAL_NONE, RECORD_PUT, SHAPE_PIECEWISE,
-    UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_OK,
+    ProjectOut, RecordWrite, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, ANSWER_LAYOUT,
+    CANCEL_ABORTED, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, PIECE_LAST, PRINCIPAL_NONE, RECORD_PUT,
+    SHAPE_PIECEWISE, UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_OK,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
@@ -81,7 +81,8 @@ const TAIL: &PlaneTail = &PlaneTail {
     flags: 0,
     ingress: INGRESS_REQUEST_RESPONSE | INGRESS_DUPLEX_SESSION,
     dispatch_shape: SHAPE_PIECEWISE,
-    _reserved: 0,
+    // The layout this plane writes its answers in: the contract's it was built against.
+    answer_layout: ANSWER_LAYOUT,
     scope: abi_str("door"),
     label: abi_str("Door"),
     subject_noun: abi_str("door"),

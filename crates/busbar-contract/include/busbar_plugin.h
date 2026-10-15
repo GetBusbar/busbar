@@ -373,6 +373,7 @@ extern "C" {
 #define BB_PLANE_INGRESS_ACCEPT_LOOP UINT32_C(16) /* [`PlaneTail::ingress`]: many concurrent stateful connections. */
 #define BB_PLANE_SHAPE_WHOLE UINT32_C(0) /* [`PlaneTail::dispatch_shape`]: the kernel gathers the caller's whole body and pushes it as one */
 #define BB_PLANE_SHAPE_PIECEWISE UINT32_C(1) /* [`PlaneTail::dispatch_shape`]: the kernel pushes the caller's bytes piece by piece as they */
+#define BB_PLANE_ANSWER_LAYOUT UINT32_C(1) /* The layout of this kind's answers, as one number: the revision of every plane `out` struct the */
 #define BB_PLANE_UNITS_ESTIMATED UINT32_C(0) /* [`UnitCount::source`]: the plane's own estimate; never billed. */
 #define BB_PLANE_UNITS_REPORTED UINT32_C(1) /* [`UnitCount::source`]: the far end reported it; it bills. */
 #define BB_PLANE_UNITS_FLOOR UINT32_C(2) /* [`UnitCount::source`]: the plane's floor for a delivered reply whose far-end usage could not be */
@@ -2597,7 +2598,7 @@ struct bb_plane_PlaneTail {
     uint32_t flags;
     uint32_t ingress;
     uint32_t dispatch_shape;
-    uint32_t _reserved;
+    uint32_t answer_layout;
     bb_mech_AbiStr scope;
     bb_mech_AbiStr label;
     bb_mech_AbiStr subject_noun;
@@ -5148,7 +5149,7 @@ BB_ASSERT(offsetof(bb_plane_PlaneTail, head) == 0, "bb_plane_PlaneTail.head: off
 BB_ASSERT(offsetof(bb_plane_PlaneTail, flags) == 8, "bb_plane_PlaneTail.flags: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, ingress) == 12, "bb_plane_PlaneTail.ingress: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, dispatch_shape) == 16, "bb_plane_PlaneTail.dispatch_shape: offset");
-BB_ASSERT(offsetof(bb_plane_PlaneTail, _reserved) == 20, "bb_plane_PlaneTail._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneTail, answer_layout) == 20, "bb_plane_PlaneTail.answer_layout: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, scope) == 24, "bb_plane_PlaneTail.scope: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, label) == 40, "bb_plane_PlaneTail.label: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, subject_noun) == 56, "bb_plane_PlaneTail.subject_noun: offset");

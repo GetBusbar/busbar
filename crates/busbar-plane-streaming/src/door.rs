@@ -64,10 +64,10 @@ use busbar_contract::abi::plane::{
     class_of, reason_of, ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut,
     OpClass, OutField, PlaneCancelIn, PlaneCancelOut, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
     PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn, ProjectOut, RefusalClass,
-    RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, CANCEL_FAILED, CLAIM_EXACT, CLAIM_OPEN,
-    EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, ROUTE_DIRECT,
-    SHAPE_PIECEWISE, SPAN_ABSENT, UNITS_ESTIMATED, UNITS_REPORTED,
+    RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, ANSWER_LAYOUT, CANCEL_FAILED, CLAIM_EXACT,
+    CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
+    ROUTE_DIRECT, SHAPE_PIECEWISE, SPAN_ABSENT, UNITS_ESTIMATED, UNITS_REPORTED,
 };
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
@@ -284,7 +284,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     flags: 0,
     ingress: INGRESS_REQUEST_RESPONSE | INGRESS_DUPLEX_SESSION,
     dispatch_shape: SHAPE_PIECEWISE,
-    _reserved: 0,
+    // The layout this plane writes its answers in: the contract's it was built against.
+    answer_layout: ANSWER_LAYOUT,
     scope: abi_str(SCOPE),
     label: abi_str(LABEL),
     subject_noun: abi_str(SUBJECT_NOUN),

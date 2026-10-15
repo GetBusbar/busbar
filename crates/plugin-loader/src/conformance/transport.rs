@@ -25,6 +25,9 @@
 //!                                                       request) states them */
 //!         "answer":  "<far bytes before the emit>", /* optional: the far side's opening answer
 //!                                                       (ws's 101), read before the first frame */
+//!         "answer_frames": ["<what it yields>", ...], /* optional, default none: the frames the
+//!                                                       answer yields (ws: the switching
+//!                                                       response's head, HEAD-FIELDS) */
 //!         "emit":   "<one frame the host emits>",   "wire":   "<the wire bytes it becomes>",
 //!         "ingest": "<bytes from the far side>",    "frames": ["<the frames they are>", ...],
 //!         "ingest_wire": "<what reading them writes>", /* optional: the far side closed in them
@@ -725,15 +728,22 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         (y.line(), y.framing)
     });
     want.push(("begin dial".into(), begin_dial_want(dial, armed("begin"))));
-    // The far side's opening answer, read before the first frame: it writes and yields nothing.
+    // The far side's opening answer, read before the first frame: it writes nothing, and yields
+    // exactly the frames `answer_frames` states (a wire that hands its answer's head up, HEAD-FIELDS:
+    // ws's switching response), none where it states none.
     if !dial["answer"].is_null() {
         let answer = text(&dial["answer"], "dial.answer");
-        r.line("dial answer", 1, || {
+        let heard = if dial["answer_frames"].is_null() {
+            Vec::new()
+        } else {
+            texts(&dial["answer_frames"], "dial.answer_frames")
+        };
+        r.line("dial answer", frame_sinkfuls(&heard), || {
             pump(&p, token, Op::Ingest(&answer, false), &mut tight).line()
         });
         want.push((
             "dial answer".into(),
-            Want::Is(yielded_line(&[], &[], &[], 0, false)),
+            Want::Is(yielded_line(&[], &heard, &[], 0, false)),
         ));
     }
     r.line("emit", sinkfuls(wire.len(), TIGHT_WIRE), || {

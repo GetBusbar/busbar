@@ -375,6 +375,35 @@ pub const SHAPE_WHOLE: u32 = 0;
 /// arrive.
 pub const SHAPE_PIECEWISE: u32 = 1;
 
+/// The layout of this kind's answers, as one number: the revision of every plane `out` struct the
+/// host reads back ([`ArriveOut`], [`OnPieceOut`], [`RefusalOut`], [`ServeOut`], [`ProjectOut`],
+/// [`PlaneOpenOut`], [`PlaneRefreshOut`], [`PlaneDriveOut`], [`PlaneCancelOut`]).
+/// [`PlaneTail::answer_layout`] states it, so a plane built against another answer layout is
+/// refused at load, never read wrong. `1`: [`OnPieceOut`] is 248 bytes, ending in
+/// [`OnPieceOut::fault_reason`], and [`ArriveOut::refusal_flags`] holds what was padding. Any move
+/// of a field of one of those structs (a size, an offset, a padding word given a meaning) moves it.
+pub const ANSWER_LAYOUT: u32 = 1;
+
+// The answers [`ANSWER_LAYOUT`] `1` names, pinned: a struct that moves fails this build until the
+// layout moves with it (and these with it), so a plane built against another contract states
+// another `answer_layout` and is refused at load, never read wrong.
+#[cfg(target_pointer_width = "64")]
+const _: () = {
+    use core::mem::{offset_of, size_of};
+    assert!(ANSWER_LAYOUT == 1);
+    assert!(size_of::<ArriveOut>() == 232);
+    assert!(offset_of!(ArriveOut, refusal_flags) == 124);
+    assert!(size_of::<OnPieceOut>() == 248);
+    assert!(offset_of!(OnPieceOut, fault_reason) == 240);
+    assert!(size_of::<RefusalOut>() == 152);
+    assert!(size_of::<ServeOut>() == 152);
+    assert!(size_of::<ProjectOut>() == 328);
+    assert!(size_of::<PlaneOpenOut>() == 120);
+    assert!(size_of::<PlaneRefreshOut>() == 104);
+    assert!(size_of::<PlaneDriveOut>() == 104);
+    assert!(size_of::<PlaneCancelOut>() == 120);
+};
+
 /// [`UnitCount::source`]: the plane's own estimate; never billed.
 pub const UNITS_ESTIMATED: u32 = 0;
 /// [`UnitCount::source`]: the far end reported it; it bills.
@@ -1299,8 +1328,10 @@ pub struct PlaneTail {
     pub ingress: u32,
     /// `SHAPE_*`.
     pub dispatch_shape: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// [`ANSWER_LAYOUT`] as the plugin was built: the layout it writes its answers in. The loader
+    /// refuses a plane whose number is not the host's (a tail that predates the word states `0`,
+    /// the padding it was), naming the rebuild.
+    pub answer_layout: u32,
     /// The scope label.
     pub scope: AbiStr,
     /// The human label.

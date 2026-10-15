@@ -1694,7 +1694,7 @@ fn compute_layout() -> String {
             flags,
             ingress,
             dispatch_shape,
-            _reserved,
+            answer_layout,
             scope,
             label,
             subject_noun,

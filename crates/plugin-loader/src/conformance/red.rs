@@ -18,7 +18,9 @@
 //! * [`red_cross_instance_conn`]: one instance writing, reading or closing a connection another
 //!   instance of the door opened is refused (`NotOwner`), and the owner's connection is untouched;
 //! * [`red_frame_piece`]: a transport door restated with a tail stating another frame piece size
-//!   than the host's is refused, linked and by the pack tool ([`LoadError::FramePieceSize`]).
+//!   than the host's is refused, linked and by the pack tool ([`LoadError::FramePieceSize`]);
+//! * [`red_plane_layout`]: a plane door restated with a tail stating another answer layout than
+//!   the host's is refused, linked and by the pack tool ([`LoadError::PlaneLayout`]).
 //!
 //! The connection arms bind the door restated with one outbound need of its own (as
 //! [`super::red_no_table`] restates it, [`super::connection_fixture`]), over the loader's test table
@@ -34,12 +36,13 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::door::{Door, DoorFn, KindTailHead, Statement};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::plane::{PlaneTail, ANSWER_LAYOUT};
 use busbar_contract::abi::transport::{FramePiece, TransportTail};
 use busbar_contract::conn::{ConnError, DeclaredConns};
 
 use super::{
     bind, connection_fixture, dispatcher, load, real_door, restated_door, with_an_outbound_need,
-    Auth, Export, Hook, Leg, Plane, Secret, Store, Subject, Transport, CONNECTED, PIECED,
+    Auth, Export, Hook, Leg, Plane, Secret, Store, Subject, Transport, CONNECTED, LAID, PIECED,
     VERSIONED,
 };
 use crate::dispatch::conn_services::CONN_SLOTS;
@@ -52,6 +55,8 @@ const VERSIONED_DOOR: DoorFn = restated_door::<1>;
 const CONNECTED_DOOR: DoorFn = restated_door::<2>;
 /// The door function of [`PIECED`].
 const PIECED_DOOR: DoorFn = restated_door::<3>;
+/// The door function of [`LAID`].
+const LAID_DOOR: DoorFn = restated_door::<4>;
 
 /// Every kind the host has.
 const KINDS: [KindCode; 7] = [
@@ -184,6 +189,85 @@ pub fn red_frame_piece(s: &Subject) {
     let linked = LinkedRow::of(PIECED_DOOR)
         .and_then(|row| load_linked::<Transport>(&row, s.bind(&d, "red-piece")).map(|_| ()))
         .expect_err("a linked transport at another piece is refused");
+    assert_eq!(linked, refused, "the same refusal, linked");
+}
+
+/// The real plane door restated with a tail stating answer layout `stated`.
+fn with_another_layout(real: Door, stated: u32) -> Door {
+    // SAFETY: a door's Statement is `'static`.
+    let st: Statement = unsafe { real.statement.read_unaligned() };
+    // The honest door loaded, so its kind tail is `'static` plugin data of its stated size, at
+    // least up to its answer layout. Its bytes are copied over zeros (a tail ending before a subsequent
+    // field reads it absent, as the host reads it), its stated size kept; only the layout is
+    // restated.
+    // SAFETY: a non-NULL kind tail leads with a `KindTailHead`.
+    let size = unsafe { st.kind_tail.read_unaligned() }.size as usize;
+    // SAFETY: an all-zero `PlaneTail` is a valid value (integers and pointers).
+    let mut tail: PlaneTail = unsafe { std::mem::zeroed() };
+    // SAFETY: at most the plugin's stated size and at most a `PlaneTail` is copied.
+    unsafe {
+        std::ptr::copy_nonoverlapping(
+            st.kind_tail.cast::<u8>(),
+            std::ptr::from_mut(&mut tail).cast::<u8>(),
+            size.min(std::mem::size_of::<PlaneTail>()),
+        );
+    }
+    let tail: &'static PlaneTail = Box::leak(Box::new(PlaneTail {
+        answer_layout: stated,
+        ..tail
+    }));
+    let st: &'static Statement = Box::leak(Box::new(Statement {
+        kind_tail: std::ptr::from_ref(tail).cast::<KindTailHead>(),
+        ..st
+    }));
+    Door {
+        statement: st,
+        ..real
+    }
+}
+
+/// **RED: a plane built against another answer layout is refused at load.** The host reads every
+/// `out` a plane writes at its own layout (`OnPieceOut` 248 bytes ending in `fault_reason`,
+/// `ArriveOut::refusal_flags` where padding was); one built against another contract would be read
+/// wrong. The honest door loads linked and dropped in; the door restated with a tail stating the
+/// layout before this host's is refused by the pack tool and by the linked row, naming the plugin,
+/// both layouts and the rebuild ([`LoadError::PlaneLayout`]). A door of another kind writes no
+/// plane answers: the arm passes.
+///
+/// # Panics
+/// When the restated door loads, or the honest one does not.
+pub fn red_plane_layout(s: &Subject) {
+    if s.kind() != KindCode::Plane {
+        return;
+    }
+    let host = ANSWER_LAYOUT;
+    let stated = host - 1;
+    let d = dispatcher();
+    load::<Plane>(s, Leg::Linked, s.bind(&d, "honest-linked"))
+        .expect("the honest door loads linked");
+    load::<Plane>(s, Leg::Dropped, s.bind(&d, "honest-dropped"))
+        .expect("the honest library loads dropped in");
+    let _held = LAID.hold(with_another_layout(real_door(s), stated));
+    let refused =
+        rendering_of(LAID_DOOR).expect_err("the pack tool signs no door at another layout");
+    let LoadError::PlaneLayout {
+        stated: said,
+        host: read,
+        ..
+    } = &refused
+    else {
+        panic!("the restated door is refused for its layout: {refused:?}");
+    };
+    assert_eq!((*said, *read), (stated, host), "both layouts, named");
+    assert!(
+        refused
+            .to_string()
+            .contains("rebuild against this busbar-contract"),
+        "{refused}"
+    );
+    let linked = LinkedRow::of(LAID_DOOR)
+        .and_then(|row| load_linked::<Plane>(&row, s.bind(&d, "red-layout")).map(|_| ()))
+        .expect_err("a linked plane at another layout is refused");
     assert_eq!(linked, refused, "the same refusal, linked");
 }
 

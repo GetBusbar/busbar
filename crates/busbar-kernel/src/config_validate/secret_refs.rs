@@ -477,8 +477,8 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     (
         "SpawnEnv",
         SecretBearing::NotInResolvedConfig(
-            "the connector's HELD environment of one member program \
-             (`busbar_core_connector::spawn_env`, #865, row 166): a runtime CARRIER built from a \
+            "the connector's HELD environment of one member program (its spawn environment, \
+             #865, row 166): a runtime CARRIER built from a \
              `Program`'s `env_refs` when its need is declared, resolved there and on the \
              refresher's lease and never at a spawn; it is never part of `RootCfg`.",
         ),
