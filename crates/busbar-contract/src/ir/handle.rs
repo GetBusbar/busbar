@@ -125,6 +125,12 @@ pub mod handle_impl {
         /// actually provided (only replace `None`). Default no-op (non-chat handles carry no model).
         fn fill_response_model_if_absent(&mut self, _model: &str) {}
 
+        /// Hand this response the TRANSLATION CAP its plane enforces (the one the kernel handed the
+        /// plane in its settings, `limits.request_body_max_bytes`), called once before the response
+        /// is written onto the caller's dialect, so a writer that bounds what it accumulates bounds
+        /// it there. Default no-op (a handle whose writers accumulate nothing).
+        fn apply_translate_cap(&mut self, _cap: usize) {}
+
         /// CROSS-PROTOCOL ingress preparation — reshape this response for delivery in the caller's
         /// `ingress_protocol`. Default no-op; chat overrides.
         fn prepare_for_ingress(&mut self, _ingress_protocol: &str, _now_epoch: u64) {}

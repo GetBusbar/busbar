@@ -44,10 +44,10 @@ fn builds_a_full_vtable_with_frozen_preamble() {
     // linked one does (ARCHITECT SD-3 queue (6)).
     assert!(vt.entropy_fill.is_some());
     assert!(vt.wall_clock.is_some());
-    assert!(vt.translate_cap.is_some());
-    // RETIRED (row 155): the usage-tap fault is data on the plane's answer, counted by the kernel;
-    // no host serves the latch slot.
+    // RETIRED (row 155): the usage-tap fault is data on the plane's answer, counted by the kernel,
+    // and the translate cap reaches a plane in its settings; no host serves either slot.
     assert!(vt.tap_fault_latch.is_none());
+    assert!(vt.translate_cap.is_none());
 }
 
 #[test]

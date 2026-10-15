@@ -14,6 +14,12 @@ fn model_part_frame(part: serde_json::Value) -> (String, serde_json::Value) {
 }
 
 impl ProtocolWriter for GeminiWriter {
+    /// Latch the stream's translation cap, the one its plane's settings carry.
+    fn set_translate_cap(&self, cap: usize) {
+        self.translate_cap
+            .store(cap, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// No image-fidelity slot: an image's `detail` is dropped, with the seam's warn.
     fn carries_image_detail(&self) -> bool {
         false
@@ -1014,17 +1020,17 @@ impl ProtocolWriter for GeminiWriter {
                 // per-connection memory-amplification DoS distinct from `MAX_GEMINI_TOOL_FRAMES`, which
                 // only bounds the COUNT of distinct open blocks, not one block's accumulated size).
                 //
-                // The cap is `busbar_contract::codec::max_translate_body_bytes()` — the neutral twin of
-                // core's `limits::translate_body_max_bytes()`, the SAME operator-tunable,
+                // The cap is this stream's `translate_cap`, the one the plane's settings carry: the
+                // kernel hands `limits.request_body_max_bytes`, the SAME operator-tunable,
                 // live-reconfigurable limit (default 32 MiB, coupled to `limits.request_body_max_bytes`)
                 // that already bounds a buffered cross-protocol NON-STREAM completion body elsewhere
                 // (`proxy::wire::max_translated_body_bytes`), whose own doc comment names "big tool-call
                 // arguments" as exactly why that cap must be generous. Reusing it here — rather than a
                 // new hardcoded constant — means an operator who raises the one knob to admit larger
                 // tool payloads gets that same headroom on this streaming path too, instead of the two
-                // paths silently diverging. Read through the translate-cap reader the host installs
-                // (the host's live value, #83a SD-3) so this plugin never reaches the host crate. A
-                // read per fragment is cheap (a function-pointer call over an atomic load).
+                // paths silently diverging. Read from the writer's own state (the plane's settings,
+                // row 155) so this plugin never reaches the host. A read per fragment is one atomic
+                // load.
                 //
                 // Once appending a fragment would cross the cap, that fragment (and every subsequent one
                 // for this block) is dropped whole rather than sliced at the boundary: the buffer is
@@ -1039,7 +1045,9 @@ impl ProtocolWriter for GeminiWriter {
                         if let Some(GeminiOpenTool { args, .. }) =
                             guard.iter_mut().find(|t| t.index == *index)
                         {
-                            let cap = busbar_contract::codec::max_translate_body_bytes();
+                            let cap = self
+                                .translate_cap
+                                .load(std::sync::atomic::Ordering::Relaxed);
                             if args.len().saturating_add(json_str.len()) <= cap {
                                 args.push_str(json_str);
                             }

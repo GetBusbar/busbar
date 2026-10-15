@@ -148,11 +148,6 @@ item = "ENTROPY_SOURCE"
 [[finding]]
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/codec.rs"
-item = "TRANSLATE_CAP_READER"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/codec.rs"
 item = "WALL_CLOCK"
 
 [[finding]]

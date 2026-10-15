@@ -250,14 +250,13 @@ static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
 /// [`registry`]'s initializer.
 static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::OnceLock::new();
 
-/// Arm the HOST SERVICES a protocol cell reaches through the contract: the translate-body cap reader
-/// (`proxy::max_translate_body_bytes`, the live operator knob), the host entropy source (the OS
-/// CSPRNG) and the host wall clock (`store::now`). Called wherever protocols become reachable —
+/// Arm the HOST SERVICES a protocol cell reaches through the contract: the host entropy source (the
+/// OS CSPRNG) and the host wall clock (`store::now`). Called wherever protocols become reachable —
 /// [`install_protocols`] and the test registration seams — so no cell can be dispatched before they
 /// are armed. Idempotent. A usage-tap fault is no service: the plane returns it on its answer and
-/// the kernel counts it (`handlers::usage_tap_fault`).
+/// the kernel counts it (`handlers::usage_tap_fault`). Nor is the translate cap: the kernel hands it
+/// to a plane in its settings (`limits.request_body_max_bytes`).
 fn arm_host_services() {
-    busbar_contract::codec::install_translate_cap_reader(crate::proxy::max_translate_body_bytes);
     busbar_contract::codec::install_entropy_source(os_entropy);
     busbar_contract::codec::install_wall_clock(crate::store::now);
 }

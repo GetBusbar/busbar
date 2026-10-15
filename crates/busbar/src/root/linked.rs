@@ -1010,7 +1010,7 @@ fn hot_answer_inline(ctx: &PlaneReqCtx) -> PlaneResponse {
         head: None,
         chunks: Vec::new(),
         held: 0,
-        cap: busbar_contract::codec::max_translate_body_bytes(),
+        cap: busbar_kernel::proxy::max_translate_body_bytes(),
     };
     let reply = hot_dispatch(ctx, &mut held);
     let (Some((status, headers)), StatusClass::Ok) = (held.head, reply.class) else {

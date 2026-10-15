@@ -38,7 +38,7 @@ pub fn install_test_seams() {
     // routes through this installed pointer in a `test-support`/plugin test binary (where core's
     // `cfg(test)` is FALSE), so without it every cross-protocol streaming forward falls back to raw
     // passthrough — the exact composition-root write `main.rs::run` makes in production. Set-once.
-    proto::install_stream_translator_factory(crate::proto_stream::new_stream_translator);
+    proto::install_stream_translator_factory(crate::engine::stream_translator);
 }
 
 /// THIS PLANE'S LINKED-TEST-SEAM ENTRY — what a test binary that links this crate without naming it

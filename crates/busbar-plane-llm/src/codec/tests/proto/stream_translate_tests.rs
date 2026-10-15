@@ -5016,8 +5016,12 @@ fn test_buffered_as_stream_remaps_tool_ids_exactly_once() {
         "precondition: the prepared answer already carries a once-encoded native id"
     );
 
-    let bytes = StreamTranslate::synthesize_from_response("anthropic", &ir)
-        .expect("anthropic is SSE-framed, so the shared synthesizer answers");
+    let bytes = StreamTranslate::synthesize_from_response(
+        "anthropic",
+        &ir,
+        busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+    )
+    .expect("anthropic is SSE-framed, so the shared synthesizer answers");
     let out = String::from_utf8(bytes).expect("utf-8 SSE");
     let emitted = data_payloads(&out)
         .into_iter()

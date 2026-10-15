@@ -247,6 +247,16 @@ impl StreamTranslate {
         self
     }
 
+    /// The translator whose ingress writer bounds each of its per-item accumulators at `cap`: the
+    /// TRANSLATION CAP the plane enforces, the one the kernel handed it in its settings
+    /// (`limits.request_body_max_bytes`). A translator never handed one holds
+    /// [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`].
+    #[must_use]
+    pub fn with_translate_cap(self, cap: usize) -> Self {
+        self.ingress.writer().set_translate_cap(cap);
+        self
+    }
+
     /// Record whether the ORIGINAL client request opted into streaming usage
     /// (`stream_options.include_usage == true`), forwarding it to the ingress framing.
     /// Only the OpenAI-ingress framing acts on it (its `include_usage` un-fold/strip); every other
@@ -617,15 +627,17 @@ impl StreamTranslate {
     /// terminal-usage fold, the `[DONE]` terminator — so the synthesized bytes are what the live path
     /// would have produced for the equivalent stream. The SSE-framed dialects all take this path; a
     /// native binary-eventstream ingress (Bedrock) keeps its own writer-side synthesizer and gets
-    /// `None` here. `None` also for an unknown ingress.
+    /// `None` here. `None` also for an unknown ingress. `translate_cap` is the plane's translation
+    /// cap ([`Self::with_translate_cap`]).
     pub fn synthesize_from_response(
         ingress: &str,
         ir: &crate::codec::ir::IrResponse,
+        translate_cap: usize,
     ) -> Option<Vec<u8>> {
         // Built with the ingress on both sides: the egress reader is never consulted (the events come
         // from the IR, not from wire frames), and `same_proto = false` keeps the writer path live —
         // the verbatim re-emit needs original bytes this path does not have.
-        let mut st = Self::build(ingress, ingress, false)?;
+        let mut st = Self::build(ingress, ingress, false)?.with_translate_cap(translate_cap);
         if st.ingress_eventstream {
             return None;
         }
@@ -1400,21 +1412,31 @@ pub fn response_to_ir_events(
 /// same-protocol builds the verbatim same-proto translator (byte-exact re-emit + IR usage A-tap);
 /// cross-protocol builds the reframing translator. Returns `None` (legacy raw passthrough) when the
 /// response is not an incremental stream (`!is_sse`), or for an unknown protocol with no reader to
-/// drive the IR. Byte-identical to the two inlined `StreamTranslate::new*` sites it replaces.
+/// drive the IR. Byte-identical to the two inlined `StreamTranslate::new*` sites it replaces. Its
+/// writer is bounded at [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`]; a caller that
+/// holds the plane's translation cap builds through [`new_stream_translator_on`].
 pub fn new_stream_translator(
     ingress: &str,
     egress: &str,
     is_sse: bool,
 ) -> Option<Box<dyn StreamTranslator>> {
-    new_stream_translator_on(ingress, egress, is_sse, std::time::Instant::now)
+    new_stream_translator_on(
+        ingress,
+        egress,
+        is_sse,
+        std::time::Instant::now,
+        busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+    )
 }
 
-/// [`new_stream_translator`], its stream timed on `clock` ([`StreamTranslate::with_clock`]).
+/// [`new_stream_translator`], its stream timed on `clock` ([`StreamTranslate::with_clock`]) and its
+/// writer bounded at the plane's `translate_cap` ([`StreamTranslate::with_translate_cap`]).
 pub fn new_stream_translator_on(
     ingress: &str,
     egress: &str,
     is_sse: bool,
     clock: fn() -> std::time::Instant,
+    translate_cap: usize,
 ) -> Option<Box<dyn StreamTranslator>> {
     if !is_sse {
         // A buffered (non-stream) body. Cross-protocol never reaches here (the forward path buffers
@@ -1427,7 +1449,9 @@ pub fn new_stream_translator_on(
     } else {
         StreamTranslate::new(ingress, egress)
     }?;
-    Some(Box::new(st.with_clock(clock)))
+    Some(Box::new(
+        st.with_clock(clock).with_translate_cap(translate_cap),
+    ))
 }
 
 /// Rewrite a same-protocol OpenAI SSE frame's bytes with its top-level `usage` member removed,

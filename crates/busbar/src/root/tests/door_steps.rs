@@ -6092,3 +6092,24 @@ done
         );
     }
 }
+
+/// THE TRANSLATE CAP RIDES THE SETTINGS (row 155): the `limits` section a door plane is opened and
+/// refreshed with carries the operator's `request_body_max_bytes`, the kernel's resolved value (its
+/// 32 MiB default when the deployment names none), so the plane enforces the kernel's cap from its
+/// own settings.
+#[test]
+fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
+    let handed = |yaml: &str| {
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("a deployment");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        super::kernel_sections(&cfg)["limits"]["request_body_max_bytes"].as_u64()
+    };
+    assert_eq!(
+        handed("providers: {}\nmodels: {}\nlimits:\n  request_body_max_bytes: 131072\n"),
+        Some(131_072)
+    );
+    assert_eq!(
+        handed("providers: {}\nmodels: {}\n"),
+        Some(busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT as u64)
+    );
+}
