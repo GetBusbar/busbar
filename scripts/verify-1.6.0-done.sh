@@ -592,6 +592,18 @@ print(d)
 ' "$1" "$2"
 }
 
+# How many cells a cells.json carries (its `cells` array). Non-zero rc when it cannot be read.
+json_cell_count() {  # $1 = cells.json
+  command -v python3 >/dev/null 2>&1 || { echo "python3 is not on PATH" >&2; return 2; }
+  python3 -c '
+import json, sys
+try:
+    print(len(json.load(open(sys.argv[1]))["cells"]))
+except Exception as e:
+    sys.stderr.write("unreadable cells.json %s: %s\n" % (sys.argv[1], e)); sys.exit(2)
+' "$1"
+}
+
 # The path the build named must be a real, executable, NON-SYMLINK file. The symlink arm is not
 # tidiness: a stray link at the recorder's path is exactly how a foreign build got in front of this
 # instrument on this checkout, and it is the one shape that satisfies `-x` while pointing at another
@@ -654,8 +666,8 @@ assert_golden_is_pinned() {  # $1 = golden recording dir ; $2 = the committed di
 
 # The verdict, taken from the report the differ wrote rather than from its exit status, and printed
 # with the scope attached so a green can never be read as more than it is.
-assert_parity_verdict() {  # $1 = report dir
-  local rep="${1:-}" owed diverging accepted unbaselined scope
+assert_parity_verdict() {  # $1 = report dir ; $2 = owed-baseline.txt ; $3 = cells.json
+  local rep="${1:-}" base="${2:-}" cells="${3:-}" owed diverging accepted unbaselined scope want_owed want_scope
   if ! owed="$(json_field "$rep/report.json" totals.owed 2>/dev/null)"; then
     echo "no readable report at $rep/report.json — the replay left no verdict to read, so there is none"; return 1
   fi
@@ -665,10 +677,40 @@ assert_parity_verdict() {  # $1 = report dir
   scope="$(json_field "$rep/report.json" totals.cells_in_scope 2>/dev/null)" || return 1
   case "$owed"      in ''|*[!0-9]*) echo "totals.owed is not a count ('$owed')"; return 1 ;; esac
   case "$diverging" in ''|*[!0-9]*) echo "totals.diverging is not a count ('$diverging')"; return 1 ;; esac
+  case "$unbaselined" in ''|*[!0-9]*) echo "totals.unbaselined is not a count ('$unbaselined')"; return 1 ;; esac
+  case "$scope"     in ''|*[!0-9]*) echo "totals.cells_in_scope is not a count ('$scope')"; return 1 ;; esac
   echo "compared $owed owed cell(s) of a $scope-cell corpus: $diverging diverging, $accepted accepted, $unbaselined unbaselined"
   if [ "$owed" -eq 0 ]; then
     echo "the replay compared ZERO cells. A run that measured nothing and a run that found nothing"
     echo "print the same zero; this one measured nothing — refusing"
+    return 1
+  fi
+  # THE DENOMINATOR IS EVERY OWED CELL, NOT ONE (TODO l.2750 item 7). Refusing only a zero left the
+  # floor at ONE: a replay whose id filter kept 1 owed cell of 1,015 printed green. The owed count
+  # must EQUAL the golden's PASS set (owed-baseline.txt, which assert_golden_bookkeeping holds to the
+  # golden), the scope must equal the committed corpus (cells.json), and the engine's own partition
+  # must close (owed + unbaselined = scope; busbar-release run.rs splits the selected cells exactly
+  # so). Any owed cell the replay did not judge is a refusal.
+  if [ -z "$base" ] || [ -z "$cells" ]; then
+    echo "no owed-baseline / cells.json was named, so the owed denominator cannot be checked — refusing"; return 1
+  fi
+  if ! want_owed="$(grep -cv -e '^[[:space:]]*$' -e '^[[:space:]]*#' "$base" 2>/dev/null)"; then
+    echo "the owed baseline $base is unreadable or empty — refusing"; return 1
+  fi
+  if ! want_scope="$(json_cell_count "$cells")"; then
+    echo "the corpus $cells is unreadable — refusing"; return 1
+  fi
+  if [ "$owed" -ne "$want_owed" ]; then
+    echo "the replay judged $owed owed cell(s), but the golden owes $want_owed ($base):"
+    echo "$((want_owed - owed)) owed cell(s) went unjudged — a partial replay is not a parity verdict — refusing"
+    return 1
+  fi
+  if [ "$scope" -ne "$want_scope" ]; then
+    echo "the replay's scope is $scope cell(s), but the committed corpus holds $want_scope ($cells) — refusing"
+    return 1
+  fi
+  if [ $((owed + unbaselined)) -ne "$scope" ]; then
+    echo "owed $owed + unbaselined $unbaselined != scope $scope: the report does not account for every cell — refusing"
     return 1
   fi
   if [ "$diverging" -ne 0 ]; then
@@ -982,10 +1024,17 @@ if [ "$SELFTEST" -eq 1 ]; then
   printf '{"binary_sha256":"%s","recorded":3}\n' "$st_sha"   > "$st_tmp/rec-good/meta.json"
   printf '{"binary_sha256":"%s","recorded":3}\n' "$st_other" > "$st_tmp/rec-wrong/meta.json"
   printf '# version\tasset\tsha256\n%s\tbusbar-selftest\t%s\n' "$PARITY_BASELINE_VERSION" "$st_sha" > "$st_tmp/digests.tsv"
-  mkdir -p "$st_tmp/rep-green" "$st_tmp/rep-diverging" "$st_tmp/rep-nothing"
-  printf '{"totals":{"owed":913,"diverging":0,"accepted":289,"unbaselined":1405,"cells_in_scope":2318}}\n' > "$st_tmp/rep-green/report.json"
-  printf '{"totals":{"owed":913,"diverging":8,"accepted":289,"unbaselined":1405,"cells_in_scope":2318}}\n' > "$st_tmp/rep-diverging/report.json"
-  printf '{"totals":{"owed":0,"diverging":0,"accepted":0,"unbaselined":0,"cells_in_scope":0}}\n'           > "$st_tmp/rep-nothing/report.json"
+  mkdir -p "$st_tmp/rep-green" "$st_tmp/rep-diverging" "$st_tmp/rep-nothing" "$st_tmp/rep-one" "$st_tmp/rep-short" "$st_tmp/rep-scope" "$st_tmp/rep-open"
+  # A five-cell corpus, three owed (the golden's PASS set) and two unbaselined.
+  printf '# owed\na|1\nb|2\n\nc|3\n' > "$st_tmp/par-base.txt"
+  printf '{"cells":[{"id":"a|1"},{"id":"b|2"},{"id":"c|3"},{"id":"d|4"},{"id":"e|5"}]}\n' > "$st_tmp/par-cells.json"
+  printf '{"totals":{"owed":3,"diverging":0,"accepted":1,"unbaselined":2,"cells_in_scope":5}}\n' > "$st_tmp/rep-green/report.json"
+  printf '{"totals":{"owed":3,"diverging":2,"accepted":1,"unbaselined":2,"cells_in_scope":5}}\n' > "$st_tmp/rep-diverging/report.json"
+  printf '{"totals":{"owed":0,"diverging":0,"accepted":0,"unbaselined":0,"cells_in_scope":0}}\n' > "$st_tmp/rep-nothing/report.json"
+  printf '{"totals":{"owed":1,"diverging":0,"accepted":0,"unbaselined":0,"cells_in_scope":1}}\n' > "$st_tmp/rep-one/report.json"
+  printf '{"totals":{"owed":2,"diverging":0,"accepted":0,"unbaselined":3,"cells_in_scope":5}}\n' > "$st_tmp/rep-short/report.json"
+  printf '{"totals":{"owed":3,"diverging":0,"accepted":0,"unbaselined":1,"cells_in_scope":4}}\n' > "$st_tmp/rep-scope/report.json"
+  printf '{"totals":{"owed":3,"diverging":0,"accepted":0,"unbaselined":1,"cells_in_scope":5}}\n' > "$st_tmp/rep-open/report.json"
   st_expect accept "a real, unlinked, executable artefact is the subject"        assert_candidate_bin_sane "$st_tmp/busbar"
   st_expect refuse "a SYMLINK standing where the candidate binary should be"     assert_candidate_bin_sane "$st_tmp/busbar-link"
   st_expect refuse "a candidate path that does not exist"                        assert_candidate_bin_sane "$st_tmp/absent"
@@ -998,10 +1047,16 @@ if [ "$SELFTEST" -eq 1 ]; then
   st_expect accept "a golden whose digest this repository commits"               assert_golden_is_pinned "$st_tmp/rec-good"  "$st_tmp/digests.tsv" "$PARITY_BASELINE_VERSION"
   st_expect refuse "a golden whose digest this repository does not commit"       assert_golden_is_pinned "$st_tmp/rec-wrong" "$st_tmp/digests.tsv" "$PARITY_BASELINE_VERSION"
   st_expect refuse "a golden checked against a digest table that is not there"   assert_golden_is_pinned "$st_tmp/rec-good"  "$st_tmp/no-such.tsv" "$PARITY_BASELINE_VERSION"
-  st_expect accept "a report with cells compared and none diverging"             assert_parity_verdict "$st_tmp/rep-green"
-  st_expect refuse "a report carrying unaccepted divergences"                    assert_parity_verdict "$st_tmp/rep-diverging"
-  st_expect refuse "a report that compared ZERO cells (the zero that is not one)" assert_parity_verdict "$st_tmp/rep-nothing"
-  st_expect refuse "no report at all"                                            assert_parity_verdict "$st_tmp/rep-missing"
+  st_pv() { assert_parity_verdict "$1" "$st_tmp/par-base.txt" "$st_tmp/par-cells.json"; }
+  st_expect accept "a report that judged every owed cell and none diverging"     st_pv "$st_tmp/rep-green"
+  st_expect refuse "a report carrying unaccepted divergences"                    st_pv "$st_tmp/rep-diverging"
+  st_expect refuse "a report that compared ZERO cells (the zero that is not one)" st_pv "$st_tmp/rep-nothing"
+  st_expect refuse "no report at all"                                            st_pv "$st_tmp/rep-missing"
+  st_expect refuse "a replay that judged ONE owed cell (the floor of one, item 7)" st_pv "$st_tmp/rep-one"
+  st_expect refuse "a replay that judged all but one owed cell"                  st_pv "$st_tmp/rep-short"
+  st_expect refuse "a replay over a corpus short of the committed cells.json"    st_pv "$st_tmp/rep-scope"
+  st_expect refuse "a report whose owed + unbaselined does not close the scope"  st_pv "$st_tmp/rep-open"
+  st_expect refuse "a verdict asked with no owed baseline to hold the count to"  assert_parity_verdict "$st_tmp/rep-green"
 
   # ── PARITY RECORDS BOTH LEGS (item 38) ────────────────────────────────────────────────────────
   st_legs_named() { case " $PARITY_LEGS " in *" default "*) ;; *) return 1 ;; esac
@@ -1532,7 +1587,7 @@ elif [ -x bin/oracle ]; then
       # ...and the same two facts re-derived from the report the differ wrote, so the claim does not
       # rest on one flag in one pinned engine. A green is a statement about the OWED cells only.
       step "[$PARITY_LEG] the report's own numbers: cells were compared, and none diverged" \
-        assert_parity_verdict "$REPORT"
+        assert_parity_verdict "$REPORT" testing/shadow-oracle/owed-baseline.txt testing/shadow-oracle/cells.json
     else
       absent_step "[$PARITY_LEG] the parity recording and its verdict" \
         "a candidate binary this run can prove it built — nothing was recorded, so nothing is proven; the release build above is where to start"
@@ -1573,14 +1628,15 @@ if [ -f qa/audit-ledger.json ]; then
   # The `audit-ledger` GATE was deleted with the old register; what survives, and what
   # judges a restored register, is `cargo xtask ledger`. Its rules' own RED proofs are its unit
   # tests, declared by count so a filter that drifts off them is RED rather than vacuously green.
-  # 27 = the 11 audit rule tests (xtask/src/audit.rs) + the 11 audit_cmd tests (hygiene_tests 4,
-  # move_tests 7) + the five pinned-scope tests (xtask/src/audit_pinned/pinned_tests.rs: a moved pin
+  # 28 = the 11 audit rule tests (xtask/src/audit.rs) + the 12 audit_cmd tests (hygiene_tests 4,
+  # move_tests 8, the eighth L-R23's: `sync --write` keeps a gone scope with an open HIGH/MEDIUM
+  # unless `--drop` names it) + the five pinned-scope tests (xtask/src/audit_pinned/pinned_tests.rs: a moved pin
   # reads stale, a byte-identical pin carries the record, an unproducible pin is RED naming it, a
   # twin / non-plugin git dep is not mounted, the tree wins). THE FILTER NAMES THE THREE MODULES, not
   # the bare substring `audit`: that substring also selected q128's two `an_audit_of_*` tests and the
   # construction gate's two `no_response_escapes_audit_tests`, so the run passed 31 against a declared
   # 29 and this step was RED on tests that are not the ledger's rules (they run in TEST).
-  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 27 cargo test -p xtask --lib -- audit:: audit_cmd:: audit_pinned::
+  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 28 cargo test -p xtask --lib -- audit:: audit_cmd:: audit_pinned::
   step "audit-ledger --check"  cargo xtask ledger --check
 else
   absent_step "audit ledger" "qa/audit-ledger.json"
