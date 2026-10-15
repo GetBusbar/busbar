@@ -984,6 +984,15 @@ impl ProtocolWriter for AnthropicWriter {
                     keys::ERROR_WORD.to_string(),
                     serde_json::Value::Object(error_obj),
                 );
+                // The event's body is Anthropic's ErrorResponse, whose published schema REQUIRES a
+                // top-level `request_id` (nullable); Anthropic's error bodies carry one, and this
+                // writer's buffered error envelope already mints it (`error_envelope`). The
+                // in-stream event now carries one too (v1.5.5 omitted it: OWNER rule 22, the llm
+                // spec-conformance rig judges this event against ErrorResponse).
+                data_obj.insert(
+                    super::REQUEST_ID.to_string(),
+                    serde_json::json!(synth_request_id()),
+                );
                 Some((
                     keys::ERROR_WORD.to_string(),
                     serde_json::Value::Object(data_obj),
