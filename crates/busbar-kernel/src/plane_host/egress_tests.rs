@@ -287,8 +287,8 @@ fn open_and_poll_fail_closed_on_null_and_bad_kind() {
                 StatusClass::Unsupported
             );
         }
-        // Subprocess IS wired (the pipe tier), so a non-command target is REFUSED at the host command
-        // allowlist (undecodable blob / not an absolute program), never spawned.
+        // Subprocess is REFUSED at the seam: the host authorizes no plane-driven program (FFI-F3), so
+        // nothing on the descriptor is decoded, resolved or spawned.
         {
             let url = b"http://example.test/".to_vec();
             let mut d = http_desc(&url);
