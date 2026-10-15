@@ -501,9 +501,10 @@
         "status": "mapped",
         "note": "testing/voice-conformance/legs/session-scope.sh; K3 -- the session scope kind is a gate, not vocabulary",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-streaming",
-          "note": "no streaming-door cell mints a key short of the mint's grant; the door's two root cells drive an admitted key and a spent one"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_key_short_of_the_doors_grant_is_refused_before_any_dial",
+          "note": "on the streaming door's served leg: a key whose grant does not reach the door's pool is refused at approval, before the provider is dialled, charged nothing, no line written; a key with the grant is served (the mint cell)"
         }
       },
       "admit": {

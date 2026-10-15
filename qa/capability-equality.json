@@ -995,11 +995,12 @@
     {
       "capability": "breaker-trip",
       "plane": "streaming-client",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_failing_provider_opens_the_breaker_cell_of_the_doors_route",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-voice",
-        "reason": "no streaming-door cell dials a failing provider and asserts the trip of the core breaker cell; the door's served cells reach a live loopback provider only"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_failing_provider_opens_the_breaker_cell_of_the_doors_route"
       }
     },
     {
@@ -1015,11 +1016,12 @@
     {
       "capability": "breaker-fastfail",
       "plane": "streaming-client",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_tripped_provider_is_refused_at_the_session_door_before_the_dial_at_once",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-voice",
-        "reason": "no streaming-door cell trips the provider's breaker cell before the mint; the served mint and the spent-key refusal are the door's two cells, neither drives a tripped upstream"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_tripped_provider_is_refused_at_the_session_door_before_the_dial_at_once"
       }
     },
     {
@@ -1077,47 +1079,52 @@
     {
       "capability": "hooks-gate",
       "plane": "streaming-client",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_gate_hook_refuses_the_mint_before_the_provider_is_dialled",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-voice",
-        "reason": "no streaming-door cell composes an operator gate; the refusals the door's root cells meet are the audience check and the spent budget, never hooks::gate::decide"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_gate_hook_refuses_the_mint_before_the_provider_is_dialled"
       }
     },
     {
       "capability": "hooks-gate",
       "plane": "streaming-server",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_gate_hook_refuses_the_mint_before_the_provider_is_dialled",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-voice",
-        "reason": "the served mint and the spent-key refusal reach the door with no gate hook composed, so a gate refusal before dispatch is driven by no root cell on this leg"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_gate_hook_refuses_the_mint_before_the_provider_is_dialled"
       }
     },
     {
       "capability": "audit-chain",
       "plane": "streaming-client",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::every_session_door_mint_served_or_refused_seals_one_record_on_one_chain",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-voice",
-        "reason": "the served mint's one line lands on the node's book, but no streaming-door cell reads the tamper-evident chain back and verifies its link"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::every_session_door_mint_served_or_refused_seals_one_record_on_one_chain"
       }
     },
     {
       "capability": "audit-chain",
       "plane": "streaming-server",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::every_session_door_mint_served_or_refused_seals_one_record_on_one_chain",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-voice",
-        "reason": "no root cell on the streaming door verifies the audit record chain across the mint's line or the spent-key refusal; the chain's own cells live on the durability tests"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::every_session_door_mint_served_or_refused_seals_one_record_on_one_chain"
       }
     },
     {
       "capability": "governance-budget",
       "plane": "streaming-client",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential",
       "root": {
         "state": "proven",
         "leg": "root-voice",
@@ -1127,7 +1134,8 @@
     {
       "capability": "governance-budget",
       "plane": "streaming-server",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_spent_key_is_refused_at_the_session_door_before_any_dial",
       "root": {
         "state": "proven",
         "leg": "root-voice",
@@ -1157,21 +1165,23 @@
     {
       "capability": "metrics",
       "plane": "streaming-client",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_served_mint_counts_its_upstream_attempt_under_the_doors_route",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-voice",
-        "reason": "no streaming-door cell scrapes the metrics registry after the mint; the door's root cells assert the money and the wire, not the plane-labelled counters"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_served_mint_counts_its_upstream_attempt_under_the_doors_route"
       }
     },
     {
       "capability": "metrics",
       "plane": "streaming-server",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_served_mint_counts_its_upstream_attempt_under_the_doors_route",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-voice",
-        "reason": "the door's served cells build no metrics recorder, so no session or mint counter under the plane's label is observed on this leg"
+        "test": "crates/busbar/src/root/tests/serve_tests.rs::a_served_mint_counts_its_upstream_attempt_under_the_doors_route"
       }
     },
     {
@@ -1217,7 +1227,8 @@
     {
       "capability": "egress-auth",
       "plane": "streaming-client",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_mint_is_served_under_the_providers_credential",
       "root": {
         "state": "proven",
         "leg": "root-voice",
