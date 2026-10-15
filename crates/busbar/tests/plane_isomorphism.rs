@@ -86,6 +86,8 @@ const MIN_HOOK_FIELDS: usize = 15;
 /// merged with FLIP-A2A: the streaming plane is door-only too, so llm is the one installed decl and
 /// a single plane has no sibling to be asymmetric against; those four rows left with the streaming
 /// decl, and the measured count is 0.
+/// Read only by the gate cell below, which runs where the build carries the plane axis.
+#[cfg(linked_axis_plane)]
 const MIN_ASYMMETRIES: usize = 0;
 
 /// The doctrine map: each INSTALLED plane crate key → the directional ledger column(s) it answers to

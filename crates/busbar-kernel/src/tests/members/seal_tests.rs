@@ -3,32 +3,15 @@
 
 //! #65: the kernel's seal reaches the kernel and nothing else (`crate::seal`).
 //!
-//! Two witnesses. The first is the real one: the seal the release path hands the kernel opens,
-//! and the box `KernelSeal::deliver` hands any OTHER caller does not open as a seal. The second
-//! builds the mechanism's exact shape with `rustc` — a contract crate that declares the root
-//! symbol, a kernel crate that defines it beside its `#[inline(never)]` minter, and a program
-//! that links both — and proves the property the design leans on: the honest program links and
+//! Two witnesses. The first is the real one, in the integration test
+//! `tests/seal_release_path.rs` (the library built without `cfg(test)`, where the release path is
+//! the only one): the seal it hands the kernel opens, and the box `KernelSeal::deliver` hands any
+//! OTHER caller does not open as a seal. The second, here, builds the mechanism's exact shape with
+//! `rustc` — a contract crate that declares the root symbol, a kernel crate that defines it beside
+//! its `#[inline(never)]` minter, and a program that links both — and proves the property the
+//! design leans on: the honest program links and
 //! gets its seal, and a program that defines the root symbol itself, to catch the seal on its way
 //! to the kernel, does NOT link.
-
-use busbar_contract::caps::KernelSeal;
-
-#[test]
-fn the_release_path_hands_the_kernel_a_seal_and_anyone_else_an_unopenable_box() {
-    // The kernel's own path: a seal it can mint with.
-    let seal = crate::seal::acquire();
-    let _pass: busbar_contract::caps::Pass<busbar_contract::caps::Admit> =
-        busbar_contract::caps::Pass::mint(&seal);
-
-    // Anyone else's: the box the contract hands back is the kernel's private wrapper, and it is
-    // not a seal (nor a box of one) to anything outside `crate::seal`.
-    let boxed = KernelSeal::deliver();
-    assert!(
-        !boxed.is::<KernelSeal>(),
-        "deliver() handed a caller a bare seal: the seal is reachable outside the kernel"
-    );
-    assert!(boxed.downcast::<Box<KernelSeal>>().is_err());
-}
 
 const CONTRACT: &str = r#"
 pub struct Seal(());
