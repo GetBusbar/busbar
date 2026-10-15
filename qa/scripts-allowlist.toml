@@ -874,6 +874,21 @@ class = "oracle-driver"
 reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
 
 [[script]]
+path = "testing/voice-conformance/legs/twilio-media.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/twilio-metering.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/voice-conformance/legs/twilio-route.sh"
+class = "oracle-driver"
+reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
 path = "testing/voice-conformance/lib/conform-bin.sh"
 class = "oracle-driver"
 reason = "a conformance suite runner that writes a conformance/verdicts artifact: becomes Rust, identical verdicts proven first HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"

@@ -1652,6 +1652,11 @@ mod tests {
 /// Two legs over two planes, one leg per plane, with a planted root file per leg. `leg-a` proves its
 /// one non-n/a cell; `leg-b` proves one and names one honest gap.
 fn root_fixture(root: &Path) -> serde_json::Value {
+    root_fixture_citing(root, "crates/busbar/src/root/units_a.rs")
+}
+
+/// [`root_fixture`], its `leg-a` citing `leg_a` as its evidence file.
+fn root_fixture_citing(root: &Path, leg_a: &str) -> serde_json::Value {
     let dir = root.join(ROOT_DIR);
     std::fs::create_dir_all(&dir).expect("fixture root dir");
     // A ROOT LEG IS A PRODUCTION FILE that carries its own test module, which is exactly why the
@@ -1663,7 +1668,7 @@ fn root_fixture(root: &Path) -> serde_json::Value {
         "capabilities": { "cap-a": ARG, "cap-b": ARG },
         "planes": { "p1": "first fixture plane", "p2": "second fixture plane" },
         "root_legs": {
-            "leg-a": { "file": "crates/busbar/src/root/units_a.rs", "columns": ["p1"], "note": ARG },
+            "leg-a": { "file": leg_a, "columns": ["p1"], "note": ARG },
             "leg-b": { "file": "crates/busbar/src/root/units_b.rs", "columns": ["p2"], "note": ARG }
         },
         "cells": [
@@ -1731,13 +1736,12 @@ fn selftest_root_evidence_that_vanished_or_came_from_another_leg_is_red() {
 #[test]
 fn selftest_a_pinned_doors_cells_resolve_and_a_citation_into_them_verifies() {
     let root = scratch("root-pinned-cells");
-    let mut doc = root_fixture(&root);
     let checkout = scratch("root-pinned-checkout");
     std::fs::create_dir_all(checkout.join("tests/root")).unwrap();
     let cells = checkout.join("tests/root/mod.rs");
     std::fs::write(&cells, GREEN_ROOT_FIXTURE_LEG).unwrap();
     let cited = "crates/busbar-plane-pinned-fixture/tests/root/mod.rs";
-    doc["root_legs"]["leg-a"]["file"] = cited.into();
+    let mut doc = root_fixture_citing(&root, cited);
     doc["cells"][0]["root"]["test"] = format!("{cited}::the_loop_cell").into();
     assert!(!root.join(cited).exists(), "the cells are outside the repo");
 

@@ -276,13 +276,13 @@ fn only_the_refused_piece_lends_its_reason() {
     assert_eq!(refused.continuation().reason, 0, "its re-call carries none");
 }
 
-/// THE FINAL MARK AND THE FAILOVER DECISION READ ONE PREDICATE: for every (streamed, relayed) the
+/// THE FINAL MARK AND THE FAILOVER VERDICT READ ONE PREDICATE: for every (streamed, relayed) the
 /// first far-end piece is marked `PIECE_FINAL` exactly when a retry verdict would NOT fail the
 /// answer over. And every flag set the pump builds for a far-end piece is one the contract admits
 /// (`check_piece_in`): the cut mark only on a last piece, the final mark only on the status piece.
 /// RED: a final mark computed apart from `fails_over`, or a cut marked on a piece that is not last.
 #[test]
-fn the_final_mark_agrees_with_the_failover_decision_and_every_far_flag_set_is_admitted() {
+fn the_final_mark_agrees_with_the_failover_verdict_and_every_far_flag_set_is_admitted() {
     use busbar_contract::abi::plane::check::check_piece_in;
     for streamed in [false, true] {
         for relayed in [false, true] {

@@ -367,9 +367,9 @@ pub struct ResolvedProvider {
     pub path: Option<String>,
     /// The path-BASE override composed onto `base_url` (a destination fact).
     pub path_base: Option<String>,
-    /// OAuth token endpoint for `auth: oauth-client-credentials`.
+    /// The token endpoint of the client-credentials auth style (see [`ProviderDef::token_url`]).
     pub token_url: Option<String>,
-    /// OAuth scope for `auth: oauth-client-credentials`.
+    /// The scope of the client-credentials auth style (see [`ProviderDef::scope`]).
     pub scope: Option<String>,
     /// JWT-bearer assertion `sub` claim for `auth: jwt-bearer`.
     pub subject: Option<String>,

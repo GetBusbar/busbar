@@ -27,6 +27,8 @@ use std::time::{Duration, Instant};
 
 /// The configured probe interval, in seconds.
 const INTERVAL_SECS: u64 = 1;
+/// The probed member's catalog entry, `{upstream_port}` and `{interval_secs}` filled in per run.
+const PROVIDERS: &str = include_str!("../../../testing/root-fixtures/health-probe-providers.yaml");
 /// The counting window, in ticks of [`INTERVAL_SECS`].
 const WINDOW_TICKS: u64 = 6;
 
@@ -119,11 +121,13 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16) {
+    // The catalog entry, kept as data beside the other root fixtures: the dialect the mock speaks is
+    // the fixture's word, never the composition root's.
     std::fs::write(
         dir.join("providers.yaml"),
-        format!(
-            "mock:\n  protocol: openai\n  base_url: \"http://127.0.0.1:{upstream_port}\"\n  api_key_env: MOCK_KEY\n  health:\n    mode: active\n    interval_secs: {INTERVAL_SECS}\n"
-        ),
+        PROVIDERS
+            .replace("{upstream_port}", &upstream_port.to_string())
+            .replace("{interval_secs}", &INTERVAL_SECS.to_string()),
     )
     .unwrap();
     std::fs::write(

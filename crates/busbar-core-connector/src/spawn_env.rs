@@ -14,7 +14,7 @@
 //! refused, never handed a stale value; a running child keeps the environment it was spawned with.
 //!
 //! A ROTATED SECRET REACHES THE FIRST NEW CHILD AFTER THE NEXT REFRESH (at most one
-//! [`SPAWN_ENV_LEASE`] after the rotation, or at the next config apply). Stdio members are new in
+//! [`SPAWN_ENV_LEASE`] after the rotation, or at the next config apply). Program members are new in
 //! 1.6.0: there is no 1.5.5 timing to keep (ARCHITECT, 2026-10-13).
 //!
 //! The values live here, in the host's records, and in the child's environment: never in the table

@@ -157,8 +157,8 @@ pub fn stateful_plane_ephemeral_store_warn(
 /// is bound under, on the auth plugin serving that style.
 /// THE TOKEN ENDPOINT AS A PLANE MAY SEE IT (row 74, F25): `token_url` with its userinfo stripped,
 /// and the `Authorization: Basic` value that userinfo spelled, held opaque for the host to present
-/// on the mint as 1.5.5's reqwest POST did (v1.5.5
-/// `oauth_client_credentials.rs:119-126` in its egress-auth tree). A plane never receives a
+/// on the mint as 1.5.5's reqwest POST did (v1.5.5's client-credentials mint, lines 119-126 of
+/// its egress-auth tree). A plane never receives a
 /// URL carrying `user:pass@`. TRANSITIONAL: deleted with the legacy lane plane (row 155 C) (the stripping stays: no plane sees a userinfo URL).
 pub(crate) fn lane_token_endpoint(
     written: Option<&str>,
@@ -599,6 +599,7 @@ impl RootRules for AcceptAll {
 
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
+#[allow(clippy::too_many_arguments)] // the build's whole input, one argument each; #1001 added the root's rules
 pub fn build_app_from_config(
     cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,

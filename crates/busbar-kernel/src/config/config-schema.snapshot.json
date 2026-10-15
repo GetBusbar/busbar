@@ -417,6 +417,10 @@
           "optional": true,
           "type": "AdvancedCfg"
         },
+        "agent_push": {
+          "optional": true,
+          "type": "serde_yaml::Value"
+        },
         "agents": {
           "optional": true,
           "type": "AgentsSection"
@@ -1866,6 +1870,25 @@
       "kind": "struct",
       "transparent": false
     },
+    "ProviderLaneCaps": {
+      "deny_unknown_fields": false,
+      "fields": {
+        "anthropic_adaptive_thinking": {
+          "optional": true,
+          "type": "bool"
+        },
+        "max_output_key": {
+          "optional": true,
+          "type": "MaxOutputKeyCfg"
+        },
+        "native_structured_output": {
+          "optional": true,
+          "type": "bool"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "QueueBody": {
       "deny_unknown_fields": true,
       "fields": {
@@ -2715,6 +2738,10 @@
     "type PlaneRateCards": {
       "kind": "alias",
       "target": "std::collections::BTreeMap<String, std::collections::BTreeMap<String, RateEntryCfg>>"
+    },
+    "type ProviderTable": {
+      "kind": "alias",
+      "target": "serde_json::Map<String, Value>"
     },
     "type RoleBindings": {
       "kind": "alias",

@@ -187,7 +187,7 @@ pub fn member_program(target_from: &str) -> bool {
     target_from == MEMBER_PROGRAM
 }
 
-/// THE OWNED-SECTION PATH of a need's `trust_from` (ARCHITECT ruling on the a2a push trust,
+/// THE OWNED-SECTION PATH of a need's `trust_from` (ARCHITECT ruling on a plane's push trust,
 /// 2026-10-14): `owned.<section>.<key>[...]` names a value in one of the plane's OTHER OWNED
 /// SECTIONS (the Statement's sections beside its declaring one, lifted raw and handed at `open` in
 /// `PlaneOpenIn::owned` and at `refresh` under `abi::plane::EXT_OWNED`), never in its own settings:

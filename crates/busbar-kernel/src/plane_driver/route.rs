@@ -74,7 +74,7 @@ pub struct FarPiece {
 
 /// WHETHER A RETRY VERDICT FAILS THE ANSWER OVER: only while nothing has streamed to the caller,
 /// and never for a relayed answer (a terminal's dispatch). The ONE predicate both the failover
-/// decision and the `PIECE_FINAL` mark read, so the plane is told an answer is final exactly when a
+/// verdict and the `PIECE_FINAL` mark read, so the plane is told an answer is final exactly when a
 /// retry verdict would not fail it over.
 #[must_use]
 pub(crate) fn fails_over(streamed: bool, relayed: bool) -> bool {

@@ -891,9 +891,15 @@ fn parse_struct(
             // operator writes; a one-key carrier or field of the same struct keeps its own entry.
             let bare = inner.rsplit("::").next().unwrap_or(&inner).trim();
             if name == RAW_CARRIER {
+                // Each section it holds is recorded as the map's VALUE type: what the operator
+                // writes under that key, held as written.
+                let value = inner
+                    .strip_suffix('>')
+                    .and_then(|t| t.rsplit_once(','))
+                    .map_or(inner.as_str(), |(_, v)| v.trim());
                 for key in &lifted.raw {
                     if !fields.contains_key(key) {
-                        fields.insert(key.clone(), field_value(&inner, true));
+                        fields.insert(key.clone(), field_value(value, true));
                         carried.insert(key.clone());
                     }
                 }

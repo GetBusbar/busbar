@@ -228,9 +228,8 @@ fn a_disk_source_with_no_lane_refuses_every_resolve() {
 fn a_linked_declares_section_that_does_not_read_is_refused() {
     let mut rows = SecretRows::new(dispatcher, || None);
     rows.link(door).expect("the env source's door links");
-    let refused = rows
-        .declare_linked(door, r#"{"disk": "yes"}"#)
-        .err()
-        .expect("`disk` is a bool");
+    let Err(refused) = rows.declare_linked(door, r#"{"disk": "yes"}"#) else {
+        panic!("`disk` is a bool");
+    };
     assert!(refused.contains(NAME), "{refused}");
 }
