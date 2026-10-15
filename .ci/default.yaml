@@ -156,6 +156,8 @@ env:
     done
 checks:
   preflight:
+    # cargo links with the system C linker: only a backend with a C compiler may run this check.
+    requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo fmt --all -- --check
@@ -173,15 +175,19 @@ checks:
     rules: ["qa/*.toml"]
     # The ceiling ratchet reads the merge-base (XTASK_CEILING_BASE): a shallow checkout cannot
     # judge it, so only a backend with the repo's history may run this check.
-    requires: [git-history]
+    requires: [cc, git-history]
     needs: [preflight]
   clippy:
+    # cargo links with the system C linker: only a backend with a C compiler may run this check.
+    requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
     baseline: target
     needs: [gates]
   compile:
+    # cargo links with the system C linker: only a backend with a C compiler may run this check.
+    requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo check --workspace --all-targets --locked
@@ -228,7 +234,7 @@ checks:
     scope: affected
     baseline: target
     # The selftests run the gates over the real tree, merge-base included.
-    requires: [git-history]
+    requires: [cc, git-history]
     needs: [gates]
   test-gated:
     # The feature-gated suites the `test` check never builds (row 164): `test` runs default features
@@ -267,9 +273,11 @@ checks:
       cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
       timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
     baseline: target
-    requires: [git-history]
+    requires: [cc, git-history]
     needs: [gates]
   doctest:
+    # cargo links with the system C linker: only a backend with a C compiler may run this check.
+    requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo test --workspace --doc --locked --no-fail-fast
@@ -277,6 +285,8 @@ checks:
     baseline: target
     needs: [test]
   deletion-matrix:
+    # cargo links with the system C linker: only a backend with a C compiler may run this check.
+    requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       cargo build -p busbar-kernel -p busbar-contract --no-default-features --features plane-a2a --locked
@@ -293,6 +303,8 @@ checks:
   # ON-DEMAND ONLY (not in on.move): the predev->dev oracle, measurable on a PR head that changes the
   # served LLM path (e.g. a plane default flip), so claim C3 is proven before landing, not only at the move.
   oracle:
+    # cargo links with the system C linker: only a backend with a C compiler may run this check.
+    requires: [cc]
     # busbar's own check tool, the pinned busbar-oracle (the backend's busbar-oracle tool sets
     # BUSBAR_ORACLE_RUST_BIN): the judge is the one dev's oracle-rust.pin names, run only when its
     # sha256 is that pin's for this host (a candidate never picks its own judge); the 1.5.5 golden is
