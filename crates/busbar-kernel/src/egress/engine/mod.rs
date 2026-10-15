@@ -485,6 +485,10 @@ fn strip_userinfo_into_basic_auth(uri: http::Uri, headers: &mut http::HeaderMap)
 /// A PROVIDER BASE URL'S USERINFO, AS 1.5.5 PRESENTED IT (row 74, F25): the `Authorization: Basic`
 /// value its `user[:pass]@` spells, held core-side and presented at the egress hop alone.
 ///
+/// TRANSITIONAL: deleted with the legacy lane plane (row 155 C). It serves the legacy in-process lane plane alone; the door path, the one that ships,
+/// holds no userinfo bytes in any kernel type: the composition root reads them into a basic
+/// credential of the auth kind (`root::userinfo`) and the kernel carries only the binding's handle.
+///
 /// 1.5.5 built every provider request with reqwest over `{base_url}{path}`, its credential after
 /// (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1669-1670`, `proxy/engine/walk.rs:583-584`,
 /// `health.rs:313-314`). reqwest 0.12.28's `RequestBuilder::new`
@@ -496,9 +500,8 @@ fn strip_userinfo_into_basic_auth(uri: http::Uri, headers: &mut http::HeaderMap)
 /// `authorization` and left it in place otherwise. So: the Basic field rides, first, exactly when
 /// the request's own credential names no `authorization`.
 ///
-/// The value is read outside the kernel only by the composition root's own connection opens
-/// ([`UrlUserinfo::leading`]); `Debug` prints a marker and the header is sensitive. A plane that
-/// carries one never reads it: it hands it back to the kernel's hop as an opaque request extension
+/// `Debug` prints a marker and the header is sensitive. The legacy lane plane that carries one
+/// never reads it: it hands it back to the kernel's hop as an opaque request extension
 /// ([`present_url_userinfo`]).
 #[derive(Clone)]
 pub struct UrlUserinfo(http::HeaderValue);
@@ -544,39 +547,6 @@ impl UrlUserinfo {
     pub(crate) fn value(&self) -> &http::HeaderValue {
         &self.0
     }
-
-    /// The value as it crosses from the kernel to the composition root's auth axis
-    /// ([`busbar_contract::auth_calls::AuthAxis::serving_presenting`]), and back: `None` for bytes
-    /// no field value can carry. Sensitive, like every value this type holds.
-    #[must_use]
-    pub fn from_value(bytes: &[u8]) -> Option<Self> {
-        let mut value = http::HeaderValue::from_bytes(bytes).ok()?;
-        value.set_sensitive(true);
-        Some(Self(value))
-    }
-
-    /// A host-side connection open's head `fields` with this value LEADING them under
-    /// `authorization`, or `None` when they already name `authorization` (the value then rides
-    /// nowhere): 1.5.5's order and condition, for the composition root's own opens (a minting auth
-    /// plugin's token endpoint). Never handed to a plane.
-    #[must_use]
-    pub fn leading<'a>(
-        &'a self,
-        fields: &[(&'a str, &'a [u8])],
-    ) -> Option<Vec<(&'a str, &'a [u8])>> {
-        const AUTHORIZATION: &str = "authorization";
-        if fields
-            .iter()
-            .any(|(n, _)| n.eq_ignore_ascii_case(AUTHORIZATION))
-        {
-            return None;
-        }
-        Some(
-            std::iter::once((AUTHORIZATION, self.0.as_bytes()))
-                .chain(fields.iter().copied())
-                .collect(),
-        )
-    }
 }
 
 impl std::fmt::Debug for UrlUserinfo {
@@ -608,6 +578,8 @@ fn percent_decoded(text: &str) -> Option<String> {
     String::from_utf8(out).ok()
 }
 
+/// TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
+///
 /// THE HOP THAT PRESENTS A BASE URL'S USERINFO: a request carrying a [`UrlUserinfo`] extension
 /// goes out with `authorization: Basic …` as its FIRST field when, and only when, it names no
 /// `authorization` of its own — 1.5.5's order and condition (see [`UrlUserinfo`]). The extension is

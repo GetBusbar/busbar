@@ -384,6 +384,7 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
     let mut req = crate::engine::egress_request(uri, headers, bytes::Bytes::from(body));
     // The base URL's userinfo rides the probe as it rides organic traffic (row 74; 1.5.5's probe
     // was the same reqwest build over `{base_url}{path}`, v1.5.5 `crates/busbar/src/health.rs:313`).
+    // TRANSITIONAL: deleted with busbar-llm (row 155 C).
     if let Some(userinfo) = &lane.url_userinfo {
         req.extensions_mut().insert(userinfo.clone());
     }

@@ -697,6 +697,7 @@ impl LaneSpec {
             provider: self.provider.clone(),
             protocol: self.protocol.to_string(),
             // As `appbuild` seats it: the userinfo stripped, its Basic held opaque beside it.
+            // TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
             base_url: busbar_kernel_egress::trust::net::strip_userinfo(
                 self.base_url.trim_end_matches('/'),
             )

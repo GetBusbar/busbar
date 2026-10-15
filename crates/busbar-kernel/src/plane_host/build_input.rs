@@ -94,6 +94,7 @@ pub struct LaneInput {
     /// The `Authorization: Basic` the operator's base URL spelled as `user:pass@` (row 74, F25),
     /// opaque: the plane hands it back to the kernel's hop on each request it sends to this lane,
     /// and the hop presents it as 1.5.5 did. `None` when the base URL spelled no userinfo.
+    /// TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
     pub url_userinfo: Option<crate::egress::engine::UrlUserinfo>,
     /// Optional upstream request-path override.
     pub path: Option<String>,
@@ -124,6 +125,7 @@ pub struct LaneInput {
     /// The `Authorization: Basic` the operator's `token_url` spelled as `user:pass@`, opaque: the
     /// plane hands it back to the kernel's bind, and the host presents it on the mint as 1.5.5 did.
     /// `None` when the endpoint spelled no userinfo.
+    /// TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
     pub token_userinfo: Option<crate::egress::engine::UrlUserinfo>,
     /// JWT-bearer `sub` claim (`auth: jwt-bearer`).
     pub subject: Option<String>,

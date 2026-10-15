@@ -1691,9 +1691,10 @@ pub struct ProviderRoute {
     /// sent and signed the host after it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`; row 74, F25),
     /// so the member's route, its sealed reach, its binding and every dial read that host alone.
     pub base_url: String,
-    /// The `Authorization: Basic` that userinfo spelled, held opaque for the member's route: its
-    /// attempts carry it as 1.5.5 sent it (see `busbar_kernel::egress::engine::UrlUserinfo`).
-    pub userinfo: Option<busbar_kernel::egress::engine::UrlUserinfo>,
+    /// The basic credential that userinfo spelled, read at configuration time and held by the root:
+    /// the member's binding is led by it as 1.5.5 sent it ([`crate::root::userinfo::lead_with`]);
+    /// the kernel holds the binding's handle, never these bytes.
+    pub userinfo: Option<crate::root::userinfo::UserinfoBasic>,
     /// The default wire protocol (#51).
     pub protocol: String,
     /// The `error_map`, catalog-merged; empty = none stated.
@@ -1774,7 +1775,7 @@ pub fn provider_routes(
                 ProviderRoute {
                     base_url: busbar_kernel_egress::trust::net::strip_userinfo(&p.base_url)
                         .into_owned(),
-                    userinfo: busbar_kernel::egress::engine::UrlUserinfo::of(&p.base_url),
+                    userinfo: crate::root::userinfo::UserinfoBasic::of(&p.base_url),
                     protocol: p.protocol.clone(),
                     error_map: p
                         .error_map
@@ -2030,7 +2031,7 @@ impl OutboundAuths {
         &self,
         style: &str,
         settings: &serde_json::Value,
-        presented: Option<busbar_kernel::egress::engine::UrlUserinfo>,
+        presented: Option<crate::root::userinfo::UserinfoBasic>,
     ) -> Result<Option<Serving>, String> {
         use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
         // A token endpoint spelled `user:pass@` (row 74, F25): the plugin is opened over, and its
@@ -2057,10 +2058,8 @@ impl OutboundAuths {
                 let presenting = userinfo
                     .as_ref()
                     .and_then(|u| u.leading(&[]))
-                    .unwrap_or_default();
-                let presenting = presenting
-                    .first()
-                    .map(|(_, value)| String::from_utf8_lossy(value).into_owned())
+                    .and_then(|led| led.first().map(|(_, value)| value.to_vec()))
+                    .map(|value| String::from_utf8_lossy(&value).into_owned())
                     .unwrap_or_default();
                 format!(
                     "{}\0{}\0{presenting}",
@@ -2135,7 +2134,7 @@ fn endpoint_userinfo(
     settings: &serde_json::Value,
 ) -> Option<(
     serde_json::Value,
-    Option<busbar_kernel::egress::engine::UrlUserinfo>,
+    Option<crate::root::userinfo::UserinfoBasic>,
 )> {
     let mut stripped_settings: Option<serde_json::Value> = None;
     let mut userinfo = None;
@@ -2148,7 +2147,7 @@ fn endpoint_userinfo(
         else {
             continue;
         };
-        userinfo = userinfo.or_else(|| busbar_kernel::egress::engine::UrlUserinfo::of(written));
+        userinfo = userinfo.or_else(|| crate::root::userinfo::UserinfoBasic::of(written));
         stripped_settings.get_or_insert_with(|| settings.clone())[key] =
             serde_json::Value::String(stripped);
     }
@@ -2200,7 +2199,7 @@ impl busbar_contract::auth_calls::OutboundAuth for EndpointStripped {
 /// userinfo left in the open's target taken out. A table that grants no need stays as it is.
 fn presenting(
     conns: crate::root::loader::dispatch::ConnTable,
-    userinfo: &busbar_kernel::egress::engine::UrlUserinfo,
+    userinfo: &crate::root::userinfo::UserinfoBasic,
 ) -> crate::root::loader::dispatch::ConnTable {
     use crate::root::loader::dispatch::ConnTable;
     match conns {
@@ -2215,7 +2214,7 @@ fn presenting(
 /// See [`presenting`]: every call but `open` is the inner table's own.
 struct PresentingConns {
     inner: Arc<dyn busbar_contract::conn::DeclaredConns>,
-    userinfo: busbar_kernel::egress::engine::UrlUserinfo,
+    userinfo: crate::root::userinfo::UserinfoBasic,
 }
 
 impl busbar_contract::conn::Conns for PresentingConns {
@@ -3338,7 +3337,6 @@ pub fn member_routes(
                     .collect(),
                 need,
                 base_url,
-                userinfo: None,
                 auth,
                 provider: entry,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
@@ -3356,7 +3354,6 @@ pub fn member_routes(
                 rides: Vec::new(),
                 need,
                 base_url: entry.clone(),
-                userinfo: None,
                 auth: None,
                 provider: entry,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
@@ -3412,9 +3409,10 @@ pub fn member_routes(
             MemberRoute {
                 need,
                 base_url: r.provider.base_url.clone(),
-                userinfo: r.provider.userinfo.clone(),
+                // The provider URL's basic credential leads the binding's answers (row 74): the
+                // kernel is handed the binding, never the bytes.
                 auth: Some(AuthBinding {
-                    auth,
+                    auth: crate::root::userinfo::lead_with(auth, r.provider.userinfo.clone()),
                     handle,
                     style_flags: decl.flags,
                     points: busbar_contract::abi::auth::AuthPoints(decl.points),
