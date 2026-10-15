@@ -261,7 +261,8 @@ impl SelfGroupProvisioner for HandleProvisioner {
 }
 
 /// Why an exchange was refused. Mapped to a status by the HTTP handler: `StaticKeyPresented`
-/// → 400, `Unauthorized` → 401, `SelfMintDisabled`/`Unbound`/`BadSubject` → 403, `MintFailed` → 500.
+/// → 400, `Unauthorized` → 401, `SelfMintDisabled`/`Unbound`/`BadSubject`/`OverCeiling` → 403,
+/// `MintFailed` → 500.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExchangeError {
     /// A static busbar key was presented (`resolved.is_some()`), not an IdP identity → 400.
@@ -278,6 +279,10 @@ pub(crate) enum ExchangeError {
     Unbound,
     /// The principal id is not a safe self-serve subject (reserved/ambiguous) → 403.
     BadSubject,
+    /// The key this identity would mint is over the deployment's mint ceiling (`auth.policy`: the
+    /// block `max_ttl`/`binding_modes` and the per-role `mint_ceilings`) → 403. The detail is the
+    /// policy's own message, naming the ceiling that bit.
+    OverCeiling(String),
     /// The mint itself failed (no signing key, store error) → 500.
     MintFailed(String),
 }
@@ -307,6 +312,53 @@ fn sanitize_self_sub(sub: &str) -> Result<(), ExchangeError> {
         return Err(ExchangeError::BadSubject);
     }
     Ok(())
+}
+
+/// A self-serve mint the policy admitted: the verified principal, the TEAM it charges through, the
+/// pools it grants, and the lifetime the mint ceiling allows.
+pub(crate) struct SelfMint<'a> {
+    /// The verified principal (from the verdict, never a body).
+    pub principal: &'a Principal,
+    /// The bound TEAM group the `user:<sub>` leaf is provisioned under.
+    pub team: String,
+    /// The pool union across every granting binding (`None` = all).
+    pub pools: Option<Vec<String>>,
+    /// The key's lifetime: the self-serve default, clamped to the ceiling.
+    pub ttl: Duration,
+}
+
+/// THE ONE DOOR EVERY SELF-SERVE MINT PASSES (X-1001): [`resolve_exchange`] and then the mint
+/// ceiling, the same `MintPolicy::check_mint` the admin `POST /keys` mint is held to. The ceiling is
+/// a kernel valve (`BUSBAR-1.6.0.md:157`, "the valves: ... the mint ceiling"), so it binds every
+/// mint path: without this `POST /auth/token` and the browser flow minted at `self_key_ttl` whatever
+/// `auth.policy.max_ttl` or the caller's role ceiling said.
+///
+/// The lifetime is the self-serve DEFAULT, never an explicit ask, so a ceiling below it CLAMPS the
+/// key's lifetime rather than refusing the mint (`apply_mint_ttl_ceiling`'s default arm). The pools
+/// are the bindings' union; a role ceiling that does not admit them refuses the mint
+/// ([`ExchangeError::OverCeiling`], 403), as it refuses the same pools on the admin path.
+pub(crate) fn admit_self_mint<'a>(
+    verdict: &'a ChainVerdict,
+    role_bindings: &RoleBindings,
+    policy: &crate::governance::mint_policy::MintPolicy,
+    default_ttl_secs: u64,
+) -> Result<SelfMint<'a>, ExchangeError> {
+    let (principal, team, pools) = resolve_exchange(verdict, role_bindings, policy.self_mint)?;
+    let ttl_secs = policy
+        .check_mint(&crate::governance::mint_policy::MintRequest {
+            roles: &principal.roles,
+            requested_pools: pools.as_deref(),
+            requested_ttl_secs: default_ttl_secs,
+            explicit_ttl: false,
+            requested_mode: None,
+        })
+        .map_err(ExchangeError::OverCeiling)?;
+    Ok(SelfMint {
+        principal,
+        team,
+        pools,
+        ttl: Duration::from_secs(ttl_secs),
+    })
 }
 
 /// Decide whether a chain verdict may mint a self-serve key, and resolve the TEAM + pools to mint
