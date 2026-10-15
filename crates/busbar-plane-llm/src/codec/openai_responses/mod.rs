@@ -2210,10 +2210,13 @@ fn write_text_format(rf: &crate::codec::ir::IrResponseFormat) -> serde_json::Val
 }
 
 /// THE RESPONSES API'S USAGE COUNTS, AS DATA (#42). `input_tokens` is a TOTAL that already INCLUDES
-/// the cached prefix (`input_tokens_details.cached_tokens`) and the cache-write slice
-/// (`input_tokens_details.cache_write_tokens`, "the number of input tokens that were written to
-/// the cache"), so both are subtracted (saturating) to leave the uncached input and carried as the
-/// IR's ADDITIVE cache read / cache creation; `None` when absent, never a spurious `Some(0)`.
+/// the cached prefix (`input_tokens_details.cached_tokens`), so that is subtracted (saturating) to
+/// leave the uncached input and carried as the IR's ADDITIVE cache read; `None` when absent, never a
+/// spurious `Some(0)`. The cache-write slice (`input_tokens_details.cache_write_tokens`) is NOT
+/// split out: it stays inside the input count, billed at the input tier, exactly as 1.5.5 billed it
+/// (v1.5.5 `crates/busbar/src/proto/openai_responses/reader.rs:1022` stream and `:1341` buffered,
+/// `cache_creation_input_tokens: None`). No owner ruling signs moving it to the cache-write tier
+/// (BUSBAR-1.6.0.md, THE LLM DIALECT FIDELITY RULE: "Billing never moves").
 /// `output_tokens_details.reasoning_tokens` is a SLICE of `output_tokens`, carried as attribution.
 /// The buffered response, the stream's terminal usage and a truncated-body recovery read this one
 /// table.
@@ -2223,15 +2226,7 @@ const USAGE: &[UsageCount] = &[
         CountSlot::Input,
         CountRead::Less(&[INPUT_TOKENS_DETAILS, keys::CACHED_TOKENS]),
     ),
-    (
-        CountSlot::Input,
-        CountRead::Less(&[INPUT_TOKENS_DETAILS, keys::CACHE_WRITE_TOKENS]),
-    ),
     (CountSlot::Output, CountRead::Zero(&[keys::OUTPUT_TOKENS])),
-    (
-        CountSlot::CacheWrite,
-        CountRead::Opt(&[INPUT_TOKENS_DETAILS, keys::CACHE_WRITE_TOKENS]),
-    ),
     (
         CountSlot::CacheRead,
         CountRead::Opt(&[INPUT_TOKENS_DETAILS, keys::CACHED_TOKENS]),
@@ -2251,9 +2246,9 @@ const RESPONSES_USAGE_IDENTITY: &str = "openai_responses.usage";
 ///
 /// EVERY COUNT THE PINNED WIRE LOCK (`testing/llm-conformance/wire/responses.wire.json`) DECLARES
 /// UNDER `usage` IS EITHER LEDGERED OR A SLICE OF A LEDGERED TOTAL: `input_tokens` (input, less its
-/// cached and cache-write slices), `cached_tokens` (cache read), `cache_write_tokens` (cache
-/// write), `output_tokens` (output); `output_tokens_details.reasoning_tokens` is a slice of
-/// `output_tokens`. `total_tokens` is OpenAI's sum, never a unit: it is cross-checked against the
+/// cached slice), `cached_tokens` (cache read), `output_tokens` (output);
+/// `input_tokens_details.cache_write_tokens` is a slice of `input_tokens` and bills as input, as in
+/// 1.5.5, and `output_tokens_details.reasoning_tokens` is a slice of `output_tokens`. `total_tokens` is OpenAI's sum, never a unit: it is cross-checked against the
 /// ledgered classes, a gap is WARN-logged and carried as the usage identity note, and a total ABOVE
 /// the itemized classes is the open class `unitemized_tokens` (owner LEDGER-100).
 fn read_responses_usage(
