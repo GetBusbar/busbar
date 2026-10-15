@@ -85,6 +85,7 @@ pub mod keyset;
 pub mod ledger_identity;
 pub mod legacy;
 pub mod linked;
+pub mod listener;
 pub(crate) mod loader;
 pub mod migration;
 pub mod model_egress;
@@ -95,6 +96,7 @@ pub mod plane_node;
 pub mod policy;
 pub mod registry;
 pub mod serve;
+pub mod shutdown;
 pub mod transports;
 #[cfg(feature = "root-admin")]
 pub mod units_admin;

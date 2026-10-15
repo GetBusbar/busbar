@@ -33,7 +33,7 @@ use super::{
     MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
     RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL,
     ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SESSION, ROUTE_STREAM,
-    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES,
+    SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TAP_FAULT_NONE,
     TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
@@ -449,7 +449,9 @@ fn verdict(outcome: Outcome, v: u32) -> Result<(), Fault> {
 }
 
 /// `on_piece`'s breaker fault reading: a known `FAULT_*` (the transport kind's one vocabulary), none
-/// on an answer that is not READY, and its padding zero.
+/// on an answer that is not READY, and its padding zero. Its usage-tap fault rides only a READY
+/// answer; any value is admitted there, because the kernel counts a value outside the `TAP_FAULT_*`
+/// vocabulary as `unknown` rather than refusing the answer it rides.
 fn fault_reading(outcome: Outcome, out: &OnPieceOut) -> Result<(), Fault> {
     use crate::abi::transport::{FAULT_HEALTHY, FAULT_NONE};
     code(
@@ -461,7 +463,10 @@ fn fault_reading(outcome: Outcome, out: &OnPieceOut) -> Result<(), Fault> {
     if out.fault != FAULT_NONE && outcome != Outcome::Ready {
         return Err(fault(Rule::Contradiction, "on_piece.fault_not_ready"));
     }
-    if out._fault_reserved != [0; 3] {
+    if out.tap_fault != TAP_FAULT_NONE && outcome != Outcome::Ready {
+        return Err(fault(Rule::Contradiction, "on_piece.tap_fault_not_ready"));
+    }
+    if out._fault_reserved != [0; 2] {
         return Err(fault(Rule::Contradiction, "on_piece.fault_reserved"));
     }
     Ok(())

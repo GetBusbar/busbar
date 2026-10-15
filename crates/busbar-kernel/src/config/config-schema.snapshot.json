@@ -1236,6 +1236,10 @@
           "optional": true,
           "type": "String"
         },
+        "refresh_token_ttl_secs": {
+          "optional": true,
+          "type": "u64"
+        },
         "signing_key": {
           "optional": true,
           "type": "SecretRef"
@@ -2637,7 +2641,7 @@
     },
     "type AdminChainAnswer": {
       "kind": "alias",
-      "target": "Result<(ChainVerdict, Option<busbar_contract::authz::Scope>), AdminUnavailable>"
+      "target": "(ChainVerdict, Option<busbar_contract::authz::Scope>)"
     },
     "type Anchored": {
       "kind": "alias",
@@ -2706,6 +2710,10 @@
     "type Shard": {
       "kind": "alias",
       "target": "Mutex<HashMap<PoolKey, Vec<Entry>>>"
+    },
+    "type SpawnSecretFn": {
+      "kind": "alias",
+      "target": "fn(&busbar_contract::secret_ref::SecretRef) -> Result<String, String>"
     },
     "type Verdict": {
       "kind": "alias",

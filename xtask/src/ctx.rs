@@ -79,51 +79,6 @@ impl Overlay {
         self.files.remove(rel.as_ref());
     }
 
-    /// THE FLOOR PLANT'S CUT: the overlay that takes a walk of `live` files to exactly
-    /// `floor - 1`, however far the tree has grown past `floor`.
-    ///
-    /// A plant that removes ONE file only goes red while the tree sits at its floor. The day the
-    /// tree gains a file, `live - 1 == floor`, the plant stays green, and every open PR running
-    /// the selftest has to re-pin the floor by one. So the cut is computed from the live count —
-    /// `live - floor + 1` files, taken from `removable` in order — and the walk always lands one
-    /// under the floor. The floor still catches a scanner that silently sees fewer files; only the
-    /// plant stopped depending on the tree's exact size.
-    ///
-    /// `live` must be counted by the same walker the gate's floor judges, and `removable` must be
-    /// members of that walk (a caller that must not drain a crate, or must not take the subject
-    /// with it, passes only the files it may cut). `Err` when the walk is already under its floor
-    /// (the cut would be zero files, and a plant that removes nothing proves nothing) or when
-    /// `removable` holds fewer files than the cut needs.
-    pub fn below_floor<P: AsRef<Path>>(
-        live: usize,
-        floor: usize,
-        removable: impl IntoIterator<Item = P>,
-    ) -> Result<Overlay, String> {
-        let cut = (live + 1).saturating_sub(floor);
-        if cut == 0 {
-            return Err(format!(
-                "the walk holds {live} file(s), already under its floor of {floor}: there is no \
-                 cut that takes it to floor - 1"
-            ));
-        }
-        let mut ov = Overlay::new();
-        for rel in removable {
-            if ov.files.len() == cut {
-                break;
-            }
-            ov.remove(rel);
-        }
-        // Counted as DISTINCT paths: a path named twice is one file out of the walk, not two.
-        let taken = ov.files.len();
-        if taken < cut {
-            return Err(format!(
-                "a walk of {live} file(s) needs {cut} removed to land under its floor of {floor}, \
-                 and only {taken} may be removed"
-            ));
-        }
-        Ok(ov)
-    }
-
     /// The path stays in every walk and every read of it fails with `why`.
     pub fn unreadable(&mut self, rel: impl AsRef<Path>, why: impl Into<String>) {
         self.files
@@ -345,6 +300,113 @@ impl WalkSpec {
     pub fn roots(&self) -> &[String] {
         &self.roots
     }
+
+    /// THE EXT AND EXCLUDE FILTERS, as the one predicate [`Ctx::list`] keeps a path by. The
+    /// tracked set a scan is reconciled against ([`Ctx::tracked`]) is cut by the same predicate,
+    /// so "the whole" and "the scan" can only differ about which files are THERE, never about
+    /// which files count.
+    fn filters_keep(&self, rel: &str) -> bool {
+        if let Some(ext) = &self.ext {
+            if !rel.ends_with(&format!(".{ext}")) {
+                return false;
+            }
+        }
+        let probe = format!("/{rel}");
+        !self
+            .exclude
+            .iter()
+            .any(|frag| probe.contains(frag.as_str()))
+    }
+
+    /// Is `rel` under one of this spec's roots? `.` is the whole tree.
+    fn under_a_root(&self, rel: &str) -> bool {
+        self.roots.iter().any(|r| {
+            let r = r.trim_end_matches('/');
+            r == "." || r.is_empty() || rel == r || rel.starts_with(&format!("{r}/"))
+        })
+    }
+}
+
+/// THE OVERLAY COMMAND THAT PLANTS THE INDEX — every tracked path, one per line — for
+/// [`Ctx::tracked`].
+///
+/// A PLANTED INDEX IS TAKEN VERBATIM: the overlay's file claims describe the working tree the
+/// scanner reads, the planted index describes what git tracks, and the gap between the two is
+/// exactly the case a reconciliation exists to refuse. Unplanted, the index is git's own, with
+/// the overlay's file claims laid on top (see [`Ctx::index`]).
+pub const INDEX_KEY: &str = "git-ls-files-index";
+
+/// A SCAN RECONCILED AGAINST THE WHOLE IT CLAIMS TO HAVE READ (docs/design/BUSBAR-1.6.0.md, Law 8:
+/// "a census reports the LIST it scanned, not the count, and coverage is computed as the union of
+/// those lists reconciled against the whole").
+///
+/// It replaces the hand-kept file-count floor. A floor pinned at the measured count had to be
+/// re-pinned by every change that added or removed a source file, so every such change conflicted
+/// with every other on one line; and a count that matched said nothing about WHICH files were
+/// read. The whole is derived from the tree (the tracked set under the scan's own scope and
+/// filters), so a file added tomorrow is owed tomorrow and nobody edits anything.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Coverage {
+    /// How many files the scan read.
+    pub scanned: usize,
+    /// How many tracked files are in scope.
+    pub tracked: usize,
+    /// Tracked and in scope, and the scan did not read it.
+    pub missing: Vec<String>,
+    /// The scan read it, and it is not in the tracked set.
+    pub extra: Vec<String>,
+}
+
+impl Coverage {
+    /// Reconcile the scanned `list` against the tracked `whole`, by path.
+    pub fn of<I, J>(list: I, whole: J) -> Coverage
+    where
+        I: IntoIterator<Item = String>,
+        J: IntoIterator<Item = String>,
+    {
+        let list: std::collections::BTreeSet<String> = list.into_iter().collect();
+        let whole: std::collections::BTreeSet<String> = whole.into_iter().collect();
+        Coverage {
+            scanned: list.len(),
+            tracked: whole.len(),
+            missing: whole.difference(&list).cloned().collect(),
+            extra: list.difference(&whole).cloned().collect(),
+        }
+    }
+
+    /// The scan read exactly the tracked set: nothing owed went unread, nothing unowed was read.
+    pub fn is_whole(&self) -> bool {
+        self.missing.is_empty() && self.extra.is_empty()
+    }
+
+    /// One sentence for a row's detail, pass or fail, naming every path on either side of the gap.
+    pub fn census(&self) -> String {
+        if self.is_whole() {
+            return format!(
+                "{} file(s) scanned, exactly the {} tracked file(s) in scope",
+                self.scanned, self.tracked
+            );
+        }
+        let mut parts = vec![format!(
+            "{} file(s) scanned against {} tracked file(s) in scope",
+            self.scanned, self.tracked
+        )];
+        if !self.missing.is_empty() {
+            parts.push(format!(
+                "{} tracked file(s) were NOT scanned: {}",
+                self.missing.len(),
+                self.missing.join(", ")
+            ));
+        }
+        if !self.extra.is_empty() {
+            parts.push(format!(
+                "{} scanned file(s) are NOT tracked: {}",
+                self.extra.len(),
+                self.extra.join(", ")
+            ));
+        }
+        parts.join("; ")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -483,6 +545,9 @@ pub struct Ctx {
     /// read as, so an overlaid path never consults it and a plain path never reads its own bytes
     /// off disk twice in one process.
     read_memo: Arc<std::sync::Mutex<std::collections::BTreeMap<PathBuf, Arc<ReadResult>>>>,
+    /// `git ls-files`, read once and shared the same way: the index does not move during a run,
+    /// and a battery reconciles hundreds of planted scans against it. A failed read is not kept.
+    index_memo: Arc<std::sync::Mutex<Option<Arc<Vec<String>>>>>,
 }
 
 /// One file's disk read, memoized — named so [`Ctx`]'s `read_memo` field does not trip clippy's
@@ -514,6 +579,7 @@ impl Ctx {
             ignore_memo: Arc::default(),
             walk_memo: Arc::default(),
             read_memo: Arc::default(),
+            index_memo: Arc::default(),
         })
     }
 
@@ -531,6 +597,7 @@ impl Ctx {
             ignore_memo: Arc::default(),
             walk_memo: Arc::default(),
             read_memo: Arc::default(),
+            index_memo: Arc::default(),
         })
     }
 
@@ -793,20 +860,9 @@ impl Ctx {
         let mut kept: Vec<PathBuf> = Vec::new();
         for rel in rels {
             let s = rel.to_string_lossy().replace('\\', "/");
-            if let Some(ext) = &spec.ext {
-                if !s.ends_with(&format!(".{ext}")) {
-                    continue;
-                }
+            if spec.filters_keep(&s) {
+                kept.push(rel);
             }
-            let probe = format!("/{s}");
-            if spec
-                .exclude
-                .iter()
-                .any(|frag| probe.contains(frag.as_str()))
-            {
-                continue;
-            }
-            kept.push(rel);
         }
         let mut kept = self.drop_ignored(kept);
         kept.sort();
@@ -992,6 +1048,103 @@ impl Ctx {
 
     pub fn git_lines(&self, args: &[&str]) -> Result<Vec<String>, String> {
         gitp::git_lines(&self.root, args)
+    }
+
+    /// EVERY TRACKED PATH, as the tree this context shows would have it.
+    ///
+    /// A planted [`INDEX_KEY`] is the index, verbatim. Otherwise it is `git ls-files` with the
+    /// overlay's file claims laid on top — a planted file is tracked unless the tree's ignore rules
+    /// claim it (a commit of the planted tree could not add it without `-f`), a removed one is not
+    /// — so an ordinary plant moves the scan and the whole together and only a scanner that went
+    /// blind (or read a file nobody tracks) separates them. `Err` when git cannot answer: an index
+    /// that would not read is a whole nobody can reconcile against, never an empty one.
+    pub fn index(&self) -> Result<std::collections::BTreeSet<String>, String> {
+        if let Some(planted) = self.overlay_command(INDEX_KEY) {
+            return Ok(planted
+                .lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect());
+        }
+        let mut index: std::collections::BTreeSet<String> =
+            self.index_listing()?.iter().cloned().collect();
+        if let Some(ov) = self.overlay() {
+            let mut added = Vec::new();
+            for (path, change) in &ov.files {
+                let p = path.to_string_lossy().replace('\\', "/");
+                match change {
+                    Change::Absent => {
+                        index.remove(&p);
+                    }
+                    Change::Content(_) | Change::Unreadable(_) => {
+                        if !index.contains(&p) {
+                            added.push(p);
+                        }
+                    }
+                }
+            }
+            let ignored = self.ignored(&added);
+            index.extend(added.into_iter().filter(|p| !ignored.contains(p)));
+        }
+        Ok(index)
+    }
+
+    fn index_listing(&self) -> Result<Arc<Vec<String>>, String> {
+        if let Some(hit) = self
+            .index_memo
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
+            return Ok(Arc::clone(hit));
+        }
+        let raw = self.git(&["ls-files", "-z"])?;
+        let listing: Arc<Vec<String>> = Arc::new(
+            raw.split('\0')
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect(),
+        );
+        *self.index_memo.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::clone(&listing));
+        Ok(listing)
+    }
+
+    /// THE WHOLE A SCAN OVER `spec` OWES: the tracked paths under its roots that pass its own ext
+    /// and exclude filters — the same predicate [`Ctx::list`] keeps by — sorted. A gate with a
+    /// further filter of its own applies it to this list exactly as it applies it to its walk.
+    pub fn tracked(&self, spec: &WalkSpec) -> Result<Vec<String>, String> {
+        Ok(self
+            .index()?
+            .into_iter()
+            .filter(|p| spec.under_a_root(p) && spec.filters_keep(p))
+            .collect())
+    }
+
+    /// THE COVERAGE PLANT: `rels` hidden from every walk while the index still lists them — the
+    /// shape of a scanner that went blind to a file the tree tracks. Every gate that reconciles
+    /// its scan against [`Ctx::tracked`] must refuse it and name the files. `Err` when a path is
+    /// not tracked (hiding an untracked file proves nothing) or when there is nothing to hide.
+    pub fn hide_from_scan<P: AsRef<Path>>(
+        &self,
+        rels: impl IntoIterator<Item = P>,
+    ) -> Result<Overlay, String> {
+        let index = self.index()?;
+        let mut ov = Overlay::new();
+        for rel in rels {
+            let p = rel.as_ref().to_string_lossy().replace('\\', "/");
+            if !index.contains(&p) {
+                return Err(format!(
+                    "{p} is not tracked, so hiding it from the scan proves nothing"
+                ));
+            }
+            ov.remove(rel.as_ref());
+        }
+        if ov.files.is_empty() {
+            return Err("the coverage plant was given no file to hide".to_string());
+        }
+        ov.set_command(INDEX_KEY, index.into_iter().collect::<Vec<_>>().join("\n"));
+        Ok(ov)
     }
 
     /// Does `r` name a commit this repository can resolve?
@@ -1326,87 +1479,36 @@ mod read_write_memo_tests {
 }
 
 #[cfg(test)]
-mod below_floor_tests {
-    use super::{Ctx, Overlay, WalkError, WalkSpec};
-    use std::path::PathBuf;
+mod coverage_tests {
+    use super::Coverage;
 
-    const FLOOR: usize = 12;
-
-    /// A temp tree of `n` `.rs` files under `crates/`, and a context over it.
-    fn tree(tag: &str, n: usize) -> (PathBuf, Ctx) {
-        let root = std::env::temp_dir().join(format!(
-            "xtask-below-floor-{tag}-{}-{:?}",
-            std::process::id(),
-            std::thread::current().id()
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-        let src = root.join("crates").join("a").join("src");
-        let scratch = root.join(".fix").join("xtask");
-        std::fs::create_dir_all(&src).expect("src dir creates");
-        std::fs::create_dir_all(&scratch).expect("scratch dir creates");
-        for i in 0..n {
-            std::fs::write(src.join(format!("f{i:03}.rs")), "// x\n").expect("seed write");
-        }
-        let cx = Ctx::at(&root, &scratch).expect("ctx opens over the temp root");
-        (root, cx)
+    fn of(list: &[&str], whole: &[&str]) -> Coverage {
+        Coverage::of(
+            list.iter().map(|s| s.to_string()),
+            whole.iter().map(|s| s.to_string()),
+        )
     }
 
-    fn spec() -> WalkSpec {
-        WalkSpec::new(["crates"]).ext("rs")
-    }
-
-    fn plant(cx: &Ctx) -> Overlay {
-        let live = cx.list(&spec()).expect("the base tree lists");
-        Overlay::below_floor(live.len(), FLOOR, live.iter().rev()).expect("the cut plants")
-    }
-
-    /// THE RED ARM: a tree five files past its floor. A one-file cut leaves floor + 4 and the walk
-    /// green; the computed cut removes six and the walk lands at floor - 1, refused.
+    /// THE CONTROL: a scan that read exactly the tracked set is whole, and says how many.
     #[test]
-    fn a_tree_grown_past_its_floor_is_still_cut_to_one_under_it() {
-        let (root, cx) = tree("grown", FLOOR + 5);
-        assert!(
-            cx.walk(&spec().min_files(FLOOR)).is_ok(),
-            "the base tree clears its floor"
-        );
-        let ov = plant(&cx);
-        assert_eq!(ov.paths().count(), 6, "live - floor + 1 files are removed");
-        match cx.with_overlay(ov).walk(&spec().min_files(FLOOR)) {
-            Err(WalkError::BelowFloor { found, floor, .. }) => {
-                assert_eq!((found, floor), (FLOOR - 1, FLOOR));
-            }
-            other => panic!("the planted walk must be BelowFloor at floor - 1, got {other:?}"),
-        }
-        let _ = std::fs::remove_dir_all(&root);
+    fn a_scan_of_exactly_the_tracked_set_is_whole() {
+        let c = of(&["a.rs", "b.rs"], &["b.rs", "a.rs"]);
+        assert!(c.is_whole());
+        assert_eq!((c.scanned, c.tracked), (2, 2));
     }
 
-    /// THE CONTROL: a tree exactly at its floor is green, and the cut there is the one file that
-    /// takes it under.
+    /// THE RED ARMS, BOTH DIRECTIONS: a tracked file the scan never read, and a file the scan read
+    /// that nothing tracks, each refused and each named.
     #[test]
-    fn a_tree_at_its_floor_is_green_and_the_cut_is_one_file() {
-        let (root, cx) = tree("at", FLOOR);
-        let walked = cx
-            .walk(&spec().min_files(FLOOR))
-            .expect("a tree at its floor is green");
-        assert_eq!(walked.len(), FLOOR);
-        let ov = plant(&cx);
-        assert_eq!(ov.paths().count(), 1);
-        assert!(matches!(
-            cx.with_overlay(ov).walk(&spec().min_files(FLOOR)),
-            Err(WalkError::BelowFloor { found, .. }) if found == FLOOR - 1
-        ));
-        let _ = std::fs::remove_dir_all(&root);
-    }
+    fn a_file_on_either_side_of_the_gap_is_named() {
+        let missing = of(&["a.rs"], &["a.rs", "hidden.rs"]);
+        assert!(!missing.is_whole());
+        assert_eq!(missing.missing, vec!["hidden.rs".to_string()]);
+        assert!(missing.census().contains("NOT scanned: hidden.rs"));
 
-    /// A walk already under its floor has no cut (removing nothing proves nothing), and a cut
-    /// larger than the removable set is refused rather than planted short.
-    #[test]
-    fn no_cut_under_the_floor_and_no_short_cut() {
-        assert!(Overlay::below_floor(FLOOR - 1, FLOOR, ["a.rs"]).is_err());
-        assert!(Overlay::below_floor(FLOOR + 2, FLOOR, ["a.rs", "b.rs"]).is_err());
-        assert!(Overlay::below_floor(FLOOR + 2, FLOOR, ["a.rs", "a.rs", "b.rs"]).is_err());
-        let ov = Overlay::below_floor(FLOOR + 2, FLOOR, ["a.rs", "b.rs", "c.rs", "d.rs"])
-            .expect("three of four removable files are cut");
-        assert_eq!(ov.paths().count(), 3);
+        let extra = of(&["a.rs", "stray.rs"], &["a.rs"]);
+        assert!(!extra.is_whole());
+        assert_eq!(extra.extra, vec!["stray.rs".to_string()]);
+        assert!(extra.census().contains("NOT tracked: stray.rs"));
     }
 }

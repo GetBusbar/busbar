@@ -6,7 +6,7 @@
 //! The host OWNS every outbound byte. A plane never holds a client, a socket, a resolver, or a
 //! credential in plaintext; it holds an opaque [`EgressId`] and asks the host to open, pump, write
 //! and close. That is the whole point of routing egress through this seam: the SSRF resolve-then-pin
-//! ([`crate::net_guard`]), the SPKI observation, the mTLS client-identity, the breaker and the meter
+//! ([`busbar_kernel_egress::trust::net`]), the SPKI observation, the mTLS client-identity, the breaker and the meter
 //! are all ONE chokepoint the host controls, applied identically whatever the plane is dispatching.
 //!
 //! ## What is wired here, and what is a faithful Phase-2 note
@@ -15,7 +15,7 @@
 //!   built from the [`EgressDesc`] outbound tail (the `verb`, the packed header set, and the one-shot
 //!   request `body`), the credential is INJECTED host-side (the resolved credential the plane named by
 //!   ref, never plaintext the plane held — see [`inject_credential`]), then resolve-then-pin over
-//!   [`crate::net_guard::resolve_and_pin`], a per-hop PINNED client (the a2a lesson — a pooled
+//!   [`busbar_kernel_egress::trust::net::resolve_and_pin`], a per-hop PINNED client (the a2a lesson — a pooled
 //!   client re-resolves and reopens the DNS-rebind window, so a governed hop pins the address and
 //!   refuses a second lookup), the post-connect observed peer identity handed back in the
 //!   [`EgressHead`], a background streaming task that pumps `resp.chunk().await` into a bounded
@@ -82,7 +82,7 @@ const CHUNK_CHANNEL_DEPTH: usize = 16;
 // wired. The guard stays FAIL-CLOSED by default: a scope of 0 reaches neither.
 
 /// This allowlist scope permits private / loopback / CGNAT addresses (cloud-metadata stays refused —
-/// that is the guard, not a policy the scope can speak for; see [`crate::net_guard`]).
+/// that is the guard, not a policy the scope can speak for; see [`busbar_kernel_egress::trust::net`]).
 const SCOPE_ALLOW_PRIVATE: u32 = 1 << 0;
 /// This allowlist scope permits a plaintext `http://` endpoint.
 const SCOPE_ALLOW_PLAINTEXT: u32 = 1 << 1;
@@ -256,12 +256,12 @@ fn close_and_remove(id: u64) -> bool {
 
 /// The observed peer identity: the SubjectPublicKeyInfo PIN of the leaf certificate the
 /// (already-verified) TLS handshake produced, in the ONE canonical spelling
-/// (`sha256/<base64>` — [`super::spki::pin`]). Empty on a plaintext hop (nothing was proved) and
+/// (`sha256/<base64>` — [`crate::egress::trust::spki::pin`]). Empty on a plaintext hop (nothing was proved) and
 /// empty where the certificate cannot be walked — reported honestly as absent rather than softened
 /// into a pass, exactly as `a2a::transport::peer_spki_of` reports `None`.
 ///
 /// This is the SAME pin the plane would compute itself: the host and the plane share one DER walk
-/// (lifted to [`super::spki`]), so a governed hop hands back the string the plane's own spelling
+/// (lifted to [`crate::egress::trust::spki`]), so a governed hop hands back the string the plane's own spelling
 /// yields, byte for byte — and it survives a certificate renewal because it pins the KEY, not the
 /// leaf bytes.
 fn observed_identity(resp: &http::Response<hyper::body::Incoming>) -> Vec<u8> {
@@ -274,11 +274,11 @@ fn observed_identity(resp: &http::Response<hyper::body::Incoming>) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// Build the [`crate::net_guard::GuardPolicy`] for a hop from the host's allowlist-scope stance. Only
+/// Build the [`busbar_kernel_egress::trust::net::GuardPolicy`] for a hop from the host's allowlist-scope stance. Only
 /// the private/plaintext arms are the scope's to relax; the cloud-metadata and obfuscated-encoding
 /// refusals are the guard and no scope can speak for them.
-fn guard_policy(scope: u32) -> crate::net_guard::GuardPolicy {
-    crate::net_guard::GuardPolicy {
+fn guard_policy(scope: u32) -> busbar_kernel_egress::trust::net::GuardPolicy {
+    busbar_kernel_egress::trust::net::GuardPolicy {
         allow_private: scope & SCOPE_ALLOW_PRIVATE != 0,
         allow_plaintext: scope & SCOPE_ALLOW_PLAINTEXT != 0,
         // Unused by the resolve-then-pin path (it judges names and addresses); the streaming read is
@@ -579,7 +579,9 @@ impl OperatorDestinations {
         fn walk(v: &serde_yaml::Value, out: &mut Vec<(bool, String, u16)>) {
             match v {
                 serde_yaml::Value::String(s) => {
-                    if let Ok((https, host, port, _)) = crate::net_guard::split_url(s.trim()) {
+                    if let Ok((https, host, port, _)) =
+                        busbar_kernel_egress::trust::net::split_url(s.trim())
+                    {
                         out.push((https, host.to_ascii_lowercase(), port));
                     }
                 }
@@ -609,7 +611,7 @@ impl OperatorDestinations {
         {
             return 0;
         }
-        let local = crate::net_guard::host_is_private_or_loopback(&host);
+        let local = busbar_kernel_egress::trust::net::host_is_private_or_loopback(&host);
         match (https, local) {
             (_, true) => SCOPE_ALLOW_PRIVATE | SCOPE_ALLOW_PLAINTEXT,
             (true, false) if !pinned => SCOPE_ALLOW_PRIVATE,
@@ -630,7 +632,7 @@ fn host_scope(state: &HostState, d: &EgressDesc) -> u32 {
     // SAFETY: `(target_ptr, target_len)` is a live borrowed range for the call (ABI discipline).
     let bytes = unsafe { std::slice::from_raw_parts(d.target_ptr, d.target_len) };
     let Ok(Ok((https, host, port, _))) =
-        std::str::from_utf8(bytes).map(crate::net_guard::split_url)
+        std::str::from_utf8(bytes).map(busbar_kernel_egress::trust::net::split_url)
     else {
         return 0;
     };
@@ -683,7 +685,7 @@ fn open_http(
     // Strict-recognise the URL (structural: scheme/host/port — no resolution), so a malformed /
     // non-http(s) target fails fast without spawning a thread. The host uses the URL HOST for SNI /
     // certificate-name / mTLS whether or not it also resolves it.
-    let (https, host_name, port, _path) = match crate::net_guard::split_url(&url) {
+    let (https, host_name, port, _path) = match busbar_kernel_egress::trust::net::split_url(&url) {
         Ok(parts) => parts,
         Err(refusal) => {
             stash_fault(
@@ -699,7 +701,7 @@ fn open_http(
 
     // THE SCHEME JUDGEMENT runs UNCONDITIONALLY — a plane-supplied pinned address does NOT let a hop
     // skip it (FFI-F1). A `http://` downgrade is refused unless the HOST scope admits plaintext.
-    if let Err(refusal) = crate::net_guard::judge_scheme(&url, https, policy) {
+    if let Err(refusal) = busbar_kernel_egress::trust::net::judge_scheme(&url, https, policy) {
         stash_fault(
             scope,
             EgressFailClass::Refused,
@@ -723,7 +725,9 @@ fn open_http(
         ip_from_resolved(kind, bytes).map(|ip| std::net::SocketAddr::new(ip, port))
     };
     if let Some(addr) = pinned {
-        if let Err(refusal) = crate::net_guard::judge_address(&host_name, addr.ip(), policy) {
+        if let Err(refusal) =
+            busbar_kernel_egress::trust::net::judge_address(&host_name, addr.ip(), policy)
+        {
             stash_fault(
                 scope,
                 EgressFailClass::Refused,
@@ -739,14 +743,14 @@ fn open_http(
     // never sees a key. An unknown/zero ref resolves to `None`, which is the honest mTLS outcome: the
     // hop presents no certificate and an mTLS peer closes the handshake itself rather than the host
     // forging one (the a2a `presenting`/no-identity posture, restated at the seam). See
-    // [`super::identity`].
-    let identity = super::identity::resolve(d.client_identity_ref);
+    // [`crate::egress::trust::identity`].
+    let identity = crate::egress::trust::identity::resolve(d.client_identity_ref);
     // THE EXTRA TRUST ANCHORS, resolved host-side from the opaque ref the plane named — the plane never
     // holds certificate bytes. A zero/unknown ref resolves to no extra roots (the ordinary public-CA
     // hop); a real ref adds the private-CA roots the registration parsed at boot (the a2a `trusting_root`
     // path). The sized-struct guard means a sender that predates the field leaves it `0` → no extra
-    // roots. See [`super::trust_anchor`].
-    let extra_roots = super::trust_anchor::resolve(
+    // roots. See [`crate::egress::trust::trust_anchor`].
+    let extra_roots = crate::egress::trust::trust_anchor::resolve(
         read_sized_field!(d, d.size, EgressDesc, trust_anchor_ref).unwrap_or(0),
     );
     // BUSBAR'S OWN END OF THE HANDSHAKE, decided HERE — before the streaming thread MOVES `identity`.
@@ -955,7 +959,7 @@ fn run_http_stream(
     host_name: &str,
     port: u16,
     https: bool,
-    policy: crate::net_guard::GuardPolicy,
+    policy: busbar_kernel_egress::trust::net::GuardPolicy,
     spec: &ReqSpec,
     identity: (u64, Option<busbar_kernel::egress::engine::ClientIdentity>),
     extra_roots: (u64, Vec<Vec<u8>>),
@@ -985,11 +989,11 @@ fn run_http_stream(
         // address judged, the survivor pinned.
         let socket_addr = match pinned {
             Some(addr) => addr,
-            None => match crate::net_guard::resolve_and_pin(
+            None => match busbar_kernel_egress::trust::net::resolve_and_pin(
                 host_name,
                 port,
                 https,
-                &crate::net_guard::SystemResolver,
+                &crate::egress::trust::InstalledResolver,
                 policy,
             ) {
                 Ok(pin) => pin.socket_addr(),
@@ -1504,7 +1508,7 @@ pub(crate) struct OpenedHead {
     /// The observed status/response code.
     pub status: u16,
     /// The observed peer SPKI pin (`sha256/…`), or `None` on a plaintext hop / an unwalkable cert.
-    /// Decoded from the SAME bytes `crate::plane_host::spki::pin` produced, so it is byte-identical to
+    /// Decoded from the SAME bytes `crate::egress::trust::spki::pin` produced, so it is byte-identical to
     /// the pin a plane's own `peer_spki_of` would compute (they share that one function).
     pub peer_spki: Option<String>,
     /// The response `Location`, verbatim, when the head surfaced one (a redirect).

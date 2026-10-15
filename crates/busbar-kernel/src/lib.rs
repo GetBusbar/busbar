@@ -203,10 +203,6 @@ pub mod billing;
 /// crate-private. See the module header.
 pub mod boot;
 pub mod breaker;
-/// THE DURABLE PER-CALL LOG: one hash-chained record per recorded call. A plane supplies the RECORD
-/// SHAPE for core's one audit chain — named at the crate root rather than under the
-/// neutral `plane::` namespace. See the module header.
-pub mod calllog;
 pub mod catalogue;
 pub mod config;
 pub mod config_validate;
@@ -220,7 +216,7 @@ pub use busbar_plugin_loader::durable;
 // The host-owned outbound surface: the neutral SSRF-pinned client (re-exported wholesale from
 // busbar-substrate) plus the host-mediated `seam` adapter that drives egress through the
 // `plane_host` FFI vtable, gated behind the neutral `egress-seam` capability feature rather than
-// any one plane. Always compiled, like `net_guard`, because the host owns every outbound byte
+// any one plane. Always compiled, because the host owns every outbound byte
 // whether or not a plane needing the seam is built. See the module header.
 /// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
 pub mod bound_credential;
@@ -250,7 +246,6 @@ pub mod host_services;
 pub mod json;
 pub mod limits;
 pub mod lineage;
-pub mod net_guard;
 pub mod oauth_as;
 pub mod observability;
 pub mod snapshot;

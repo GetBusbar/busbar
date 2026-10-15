@@ -14,6 +14,11 @@
 #                  2026-10-02): porting it would re-stamp the 1.5.5 golden, which is forbidden
 
 [[script]]
+path = ".ci/tool.sh"
+class = "keep"
+reason = "checks provision their own pinned toolchain; owner ruling 2026-10-14: the tenant owns its CI toolchain and ModernCI runs what the YAML says, so the sourced POSIX sh that fetches rust, nextest, deny and jq (sha256-pinned) is glue Rust cannot replace before cargo exists"
+
+[[script]]
 path = ".github/scripts/bump_cargo.py"
 class = "port"
 reason = "release step in RELEASE.md (version bump, changelog roll): becomes a busbar-release subcommand on the CLI-AUDIT tree"
@@ -122,16 +127,6 @@ reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes t
 path = "scripts/capability-equality-summary.py"
 class = "port"
 reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
-
-[[script]]
-path = "scripts/ci-branch-protection.sh"
-class = "port"
-reason = "writes the qa/main branch-protection floor (RELEASE.md): becomes a busbar-release subcommand over the shared GitHub crate"
-
-[[script]]
-path = "scripts/cost-watch.py"
-class = "port"
-reason = "the CI cost gate BUSBAR-1.6.0.md #78 requires: becomes a busbar-release subcommand"
 
 [[script]]
 path = "scripts/fleet/pin-check.sh"

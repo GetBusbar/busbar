@@ -355,6 +355,224 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
     assert!(records.get(8).is_none(), "a refused unit writes no record");
 }
 
+// ── budget downgrade (`on_exhaust: downgrade`, 1.5.5 `ingress::admit_check`) ──────────────────────
+
+/// A budget limit on `pool` that downgrades to `to` once `amount` minor units are spent in a day.
+fn downgrading(pool: &str, amount: u64, to: &str) -> busbar_kernel::config::groups::LimitCfg {
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow, OnExhaust};
+    LimitCfg {
+        metric: LimitMetric::Budget,
+        amount,
+        per: Some(LimitWindow::Day),
+        scope: Some(busbar_contract::records::ScopeRef::pool(pool)),
+        on_exhaust: Some(OnExhaust::Downgrade),
+        downgrade_to: Some(busbar_contract::records::ScopeRef::pool(to)),
+        admission: None,
+        on_exhaustion: None,
+    }
+}
+
+/// A governed generation whose group `team` holds `limits` at a flat 10-minor-unit fee per request,
+/// and a key in that group granted `allowed_pools` (`None`: every pool).
+fn downgrade_book(
+    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+    allowed_pools: Option<Vec<String>>,
+) -> (
+    std::sync::Arc<busbar_kernel::state::App>,
+    std::sync::Arc<busbar_contract::records::VirtualKey>,
+) {
+    use busbar_kernel::test_support::engine_kit::{EngineTestKit as _, CORE_ENGINE_KIT};
+    let gov = CORE_ENGINE_KIT
+        .governance(CORE_ENGINE_KIT.scratch_store(), None, None)
+        .expect("governance");
+    let groups = std::collections::BTreeMap::from([(
+        "team".to_string(),
+        busbar_kernel::config::groups::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits,
+            ..Default::default()
+        },
+    )]);
+    let cost = CORE_ENGINE_KIT.cost_parts(None, 10, &groups);
+    let (key, _secret) = gov
+        .create_key(
+            busbar_kernel::governance::NewKeySpec {
+                name: "dev".to_string(),
+                allowed_pools,
+                group: Some("team".to_string()),
+                ..Default::default()
+            },
+            1_700_000_000,
+        )
+        .expect("a key");
+    let app = busbar_kernel::test_support::TestApp::new()
+        .governance_kit(gov)
+        .keys_chain()
+        .cost_kit(cost)
+        .build();
+    (app, std::sync::Arc::new(key))
+}
+
+/// What one keyed unit of the plane serving the `pools` map did at its `$` door, routed to `pool`:
+/// its admission (`Ok(())`, or the refusal's reason and words), the route its walk takes, and the
+/// pool a downgrade sent it to.
+struct Charged {
+    admitted: Result<(), (busbar_contract::caps::ReasonCode, Option<String>)>,
+    routed: Option<(String, Vec<String>)>,
+    downgraded: Option<String>,
+}
+
+fn charge_once(
+    app: &std::sync::Arc<busbar_kernel::state::App>,
+    key: &std::sync::Arc<busbar_contract::records::VirtualKey>,
+    pools: &DoorPools,
+    pool: &str,
+    unit: u64,
+) -> Charged {
+    use busbar_kernel::plane_driver::{DriverSteps as _, EndPost, PlaneMoney};
+    let facts = super::door_facts("", &["pool"], &[], &[], "door", Vec::new());
+    let gov = std::sync::Arc::clone(app.governance.as_ref().expect("a governed generation"));
+    let post = std::sync::Arc::new(crate::root::plane_node::NodeEndPost::new(
+        std::sync::Arc::new(crate::root::plane_node::Node::new()),
+    ));
+    let money = PlaneMoney::new(gov, post as std::sync::Arc<dyn EndPost>);
+    let steps = super::DoorSteps::new(
+        &facts,
+        pools,
+        std::sync::Arc::new(|_: &str| None),
+        std::sync::Arc::clone(app),
+        Some(&money),
+        super::DoorCaller {
+            principal: busbar_contract::caps::PrincipalId::new(key.id.as_str()),
+            key: Some(std::sync::Arc::clone(key)),
+            open: false,
+            arrived: busbar_kernel::store::now(),
+            records: None,
+            depth: 0,
+            credential: None,
+        },
+    );
+    steps.lock().routed = pools.resolve(ROUTE_POOL, Some(pool.as_bytes()));
+    let ctx = busbar_kernel::teller::UnitCtx {
+        key: busbar_contract::UnitKey::new(unit),
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let admitted = steps
+        .charge(&ctx, key)
+        .map(|_| ())
+        .map_err(|refusal| (refusal.reason(), steps.refused_words().1));
+    Charged {
+        admitted,
+        routed: steps.routed(),
+        downgraded: steps.downgraded(),
+    }
+}
+
+const DOWNGRADE_SECTION: &str = "models:\n  big: {}\n  small: {}\n  tiny: {}\n\
+     pools:\n  frontier:\n    members: [big]\n  value:\n    members: [small]\n\
+     \x20 first:\n    members: [big]\n  second:\n    members: [small]\n  third:\n    members: [tiny]";
+
+/// BUDGET DOWNGRADE ON THE DOOR PATH (1.5.5 `test_budget_exhaustion_downgrades_pool`): exhausting
+/// the `frontier` budget re-admits the unit through `value` instead of refusing it; the charge lands
+/// there and the unit's walk routes over `value`'s members. RED: a door that refuses a budget block
+/// carrying `downgrade_to` answers the third unit `OverBudget` and never re-pools it.
+#[test]
+fn an_exhausted_budget_re_pools_the_unit_through_its_downgrade_pool() {
+    let (app, key) = downgrade_book(vec![downgrading("frontier", 25, "value")], None);
+    let pools = pools(DOWNGRADE_SECTION);
+    // fee 10, cap 25: two frontier admissions spend 20; the third would reach 30.
+    for unit in 1..=2 {
+        let charged = charge_once(&app, &key, &pools, "frontier", unit);
+        assert_eq!(
+            charged.admitted,
+            Ok(()),
+            "unit {unit} is under the frontier cap"
+        );
+        assert_eq!(charged.downgraded, None, "no downgrade while under the cap");
+        assert_eq!(charged.routed, owned("frontier", &["big"]));
+    }
+    let charged = charge_once(&app, &key, &pools, "frontier", 3);
+    assert_eq!(charged.admitted, Ok(()), "downgraded, not refused");
+    assert_eq!(
+        charged.downgraded.as_deref(),
+        Some("value"),
+        "the charge landed on the downgrade pool"
+    );
+    assert_eq!(
+        charged.routed,
+        owned("value", &["small"]),
+        "the walk follows the charge to the downgrade pool"
+    );
+}
+
+/// A DOWNGRADE CYCLE TERMINATES (1.5.5 `test_downgrade_cycle_terminates_via_the_revisit_guard`):
+/// `first` -> `second` -> `third` -> `second` walks to `third` and stops at the revisit, refusing
+/// with `third`'s bucket named in the previous release's words; a guard that refused one hop early
+/// names `second`.
+#[test]
+fn a_downgrade_cycle_ends_in_the_plain_refusal_naming_the_last_pool_walked() {
+    let (app, key) = downgrade_book(
+        vec![
+            downgrading("first", 10, "second"),
+            downgrading("second", 0, "third"),
+            downgrading("third", 0, "second"),
+        ],
+        None,
+    );
+    let pools = pools(DOWNGRADE_SECTION);
+    let first = charge_once(&app, &key, &pools, "first", 1);
+    assert_eq!(first.admitted, Ok(()), "under the first pool's cap");
+    assert_eq!(first.downgraded, None);
+    let second = charge_once(&app, &key, &pools, "first", 2);
+    let (reason, words) = second
+        .admitted
+        .expect_err("a cyclic downgrade chain ends in a refusal");
+    assert_eq!(reason, busbar_contract::caps::ReasonCode::OverBudget);
+    let words = words.expect("the plane serving the `pools` map renders 1.5.5's words");
+    assert!(
+        words.contains("pool 'third'"),
+        "the chain walked first -> second -> third before the revisit guard: {words}"
+    );
+    assert_eq!(
+        second.downgraded, None,
+        "a refused unit is re-pooled nowhere"
+    );
+}
+
+/// A DOWNGRADE NEVER BYPASSES THE KEY'S POOL GRANT (1.5.5 `test_downgrade_never_bypasses_pool_acl`):
+/// a key granted only `frontier` is refused the plain budget refusal, never routed into `value`.
+#[test]
+fn a_downgrade_never_routes_a_key_into_a_pool_it_may_not_use() {
+    let (app, key) = downgrade_book(
+        vec![downgrading("frontier", 25, "value")],
+        Some(vec!["frontier".to_string()]),
+    );
+    let pools = pools(DOWNGRADE_SECTION);
+    for unit in 1..=2 {
+        assert_eq!(
+            charge_once(&app, &key, &pools, "frontier", unit).admitted,
+            Ok(())
+        );
+    }
+    let charged = charge_once(&app, &key, &pools, "frontier", 3);
+    assert_eq!(
+        charged.admitted.map_err(|(reason, _)| reason),
+        Err(busbar_contract::caps::ReasonCode::OverBudget),
+        "the plain budget refusal, not a leaked pool"
+    );
+    assert_eq!(charged.downgraded, None);
+    assert_eq!(
+        charged.routed,
+        owned("frontier", &["big"]),
+        "the route is unchanged"
+    );
+}
+
 // ── the members' routes (THE DESIGN §6 steps 2-3) ──────────────────────────────────────────────
 
 /// The decisions-shaped plane facts: one dialect `d` whose default style is `bearer`, one outbound
