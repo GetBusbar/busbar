@@ -13,7 +13,7 @@
 
 use serde_json::{json, Map, Value};
 
-use crate::identity::TASK_ID_MEMBERS;
+use crate::task_identity::TASK_ID_MEMBERS;
 
 /// The JSON-RPC binding's card word.
 pub const BINDING_JSONRPC: &str = "JSONRPC";
@@ -31,7 +31,7 @@ pub enum Binding {
     /// HTTP+JSON (A2A section 11.3): the operation's request line, its params as the body.
     HttpJson,
     /// gRPC: the rpc's path under the service, its params as the rpc's request message, carried
-    /// over the grpc transport ([`crate::door::NEED_GRPC`]).
+    /// over the grpc transport ([`crate::door_statement::NEED_GRPC`]).
     Grpc,
 }
 

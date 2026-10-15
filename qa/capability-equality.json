@@ -298,12 +298,14 @@
     {
       "capability": "failover-reroute",
       "plane": "a2a-client",
-      "state": "missing",
+      "state": "proven",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-a2a",
-        "reason": "no door-path cell registers an agent pool with a second member, so no unit the agent door serves is rerouted; the kernel's one selection walk runs on every door unit's route step but is unwitnessed here for a second candidate"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stays_untouched"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_tripped_pool_primary_reroutes_a_fresh_submission_to_the_twin_and_stays_untouched",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector"
     },
     {
       "capability": "failover-reroute",
@@ -703,17 +705,21 @@
     {
       "capability": "metrics",
       "plane": "a2a-client",
-      "state": "missing",
+      "state": "proven",
       "root": {
-        "state": "none",
+        "state": "proven",
         "leg": "root-a2a",
-        "reason": "no door-path cell reads the real /metrics scrape after a unit the agent door relayed, so the upstream-attempt series under this plane's label is unwitnessed over the door"
-      }
+        "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to"
+      },
+      "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_task_counts_an_upstream_attempt_naming_the_agent_it_was_issued_to",
+      "note": "the agent plane served through its door (busbar-plane-a2a, linked and bound through the loader's one load) on the root's data router: the unit admitted and charged by the door steps, its egress the kernel's connector; the relayed unit counts busbar_upstream_attempts_total under the agent it was issued to as its pool and the binding the hop went out on as its lane, the model plane's series shape. Its twin a_backend_that_cannot_be_reached_is_counted_as_a_transient_upstream_failure covers the failure half."
     },
     {
       "capability": "metrics",
       "plane": "a2a-server",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar/tests/plane_integration.rs::mounted_plane_traffic_appears_on_a_real_metrics_scrape",
+      "note": "the agents: section's owner is the a2a door row (door:busbar-plane-a2a in the test-linked list, folded from its Statement as the composition root folds it); an agent-plane task driven through the real router lands on busbar_plane_requests_total and busbar_plane_request_duration_seconds, labelled with the plane it arrived on, on a real /metrics scrape",
       "root": {
         "state": "none",
         "leg": "root-a2a",
@@ -842,7 +848,9 @@
     {
       "capability": "net-guard",
       "plane": "a2a-server",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar-plane-a2a/src/tests/push_door_tests.rs::a_callback_that_became_internal_after_registration_is_refused_at_delivery",
+      "note": "this role's own outbound is webhook push delivery, and the door judges its destination afresh on every attempt through the host's destination judge: a callback that resolves internal at delivery is refused before anything is framed or sent, and never retried.",
       "root": {
         "state": "none",
         "leg": "root-a2a",
@@ -908,7 +916,9 @@
     {
       "capability": "egress-auth",
       "plane": "a2a-server",
-      "state": "missing",
+      "state": "proven",
+      "test": "crates/busbar-plane-a2a/src/tests/push_door_tests.rs::the_callers_own_webhook_credential_is_presented_on_the_delivery",
+      "note": "ported from the deleted engine's pushdeliver_tests.rs: the caller's own webhook credential, registered with its push config, is presented on the delivery the door's judge admits, as one authorization field, and that delivery is the one sent.",
       "root": {
         "state": "none",
         "leg": "root-a2a",

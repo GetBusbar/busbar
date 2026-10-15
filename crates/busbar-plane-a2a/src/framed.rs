@@ -13,7 +13,7 @@
 //!    rules ([`crate::proto::Normal`]) and written as its ProtoJSON, framed as the
 //!    v1.0 JSON-RPC request the unit then serves exactly as the JSON-RPC line serves its own: the
 //!    same arrival, catalogue, admission, task store and relay, nothing skipped and nothing added.
-//! 2. [`answer`]: the JSON-RPC answer the unit wrote, transcoded back to the rpc's response
+//! 2. [`answer_message`]: the JSON-RPC answer the unit wrote, transcoded back to the rpc's response
 //!    message, or its `error` member turned into the status A2A section 5.4 binds it to, with the
 //!    `google.rpc.ErrorInfo` the error carries as the status details (section 10.6).
 //! 3. [`event`]: one event of an answer in events, as the `StreamResponse` message a
@@ -21,7 +21,7 @@
 //!
 //! No A2A wire fact is hand-written here: the messages, the method names and the ProtoJSON mapping
 //! are generated from the a2aproject's own `a2a.proto` ([`crate::proto::pb`]). The status a call ends with is the gRPC numbering ([`Code`]) and its details the
-//! `google.rpc.Status` message carrying the error's `google.rpc.ErrorInfo` ([`Status::details`]),
+//! `google.rpc.Status` message carrying the error's `google.rpc.ErrorInfo` ([`CallStatus::details`]),
 //! the bytes the engine's status carried as its details.
 
 use crate::proto::{pb, Normal};
@@ -59,17 +59,17 @@ pub enum Code {
 /// HOW A CALL ENDS when it ends with no message: its code, its message, and its details (the
 /// encoded `google.rpc.Status`, empty when the error carries no `ErrorInfo`).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Status {
+pub struct CallStatus {
     code: Code,
     message: String,
     details: Vec<u8>,
 }
 
-impl Status {
+impl CallStatus {
     /// A status with no details.
     #[must_use]
     pub fn new(code: Code, message: impl Into<String>) -> Self {
-        Status {
+        CallStatus {
             code,
             message: message.into(),
             details: Vec::new(),
@@ -89,7 +89,7 @@ impl Status {
             }],
         }
         .encode_to_vec();
-        Status {
+        CallStatus {
             code,
             message,
             details,
@@ -97,11 +97,11 @@ impl Status {
     }
 
     fn internal(message: impl Into<String>) -> Self {
-        Status::new(Code::Internal, message)
+        CallStatus::new(Code::Internal, message)
     }
 
     fn invalid_argument(message: impl Into<String>) -> Self {
-        Status::new(Code::InvalidArgument, message)
+        CallStatus::new(Code::InvalidArgument, message)
     }
 
     /// The code.
@@ -263,8 +263,8 @@ impl Rpc {
 /// The answer to a method the service does not have: `UNIMPLEMENTED` with no message, as the
 /// generated service answered it.
 #[must_use]
-pub fn unimplemented() -> Status {
-    Status::new(Code::Unimplemented, "")
+pub fn unimplemented() -> CallStatus {
+    CallStatus::new(Code::Unimplemented, "")
 }
 
 /// PROTOBUF IN, the JSON-RPC request OUT: `message` decoded as `rpc`'s request message and framed
@@ -276,7 +276,7 @@ pub fn unimplemented() -> Status {
 /// # Errors
 ///
 /// The status the call is answered with instead.
-pub fn compose(rpc: Rpc, message: &[u8]) -> Result<Vec<u8>, Status> {
+pub fn compose(rpc: Rpc, message: &[u8]) -> Result<Vec<u8>, CallStatus> {
     let params = match rpc {
         Rpc::SendMessage | Rpc::SendStreamingMessage => {
             to_params::<pb::SendMessageRequest>(message)?
@@ -356,32 +356,32 @@ pub fn with_message_id(envelope: &Value, id: &str) -> Value {
 
 /// PROTOBUF IN, CANONICAL JSON OUT: `message` decoded as `M` (a parse error is `INTERNAL` with the
 /// decoder's words), carried through the model's rules, written as its ProtoJSON.
-fn to_params<M>(message: &[u8]) -> Result<Value, Status>
+fn to_params<M>(message: &[u8]) -> Result<Value, CallStatus>
 where
     M: prost::Message + Default + Normal + serde::Serialize,
 {
-    let mut m = M::decode(message).map_err(|e| Status::internal(e.to_string()))?;
+    let mut m = M::decode(message).map_err(|e| CallStatus::internal(e.to_string()))?;
     m.normal()
-        .map_err(|e| Status::invalid_argument(format!("the request could not be read: {e}")))?;
+        .map_err(|e| CallStatus::invalid_argument(format!("the request could not be read: {e}")))?;
     serde_json::to_value(&m).map_err(|e| {
-        Status::invalid_argument(format!(
+        CallStatus::invalid_argument(format!(
             "the request could not be read: ProtoJSON error: {e}"
         ))
     })
 }
 
 /// CANONICAL JSON IN, PROTOBUF OUT: the same mapping in the other direction.
-fn from_result<M>(result: Value) -> Result<Vec<u8>, Status>
+fn from_result<M>(result: Value) -> Result<Vec<u8>, CallStatus>
 where
     M: prost::Message + Normal + serde::de::DeserializeOwned,
 {
     let mut m: M = serde_json::from_value(result).map_err(|e| {
-        Status::internal(format!(
+        CallStatus::internal(format!(
             "the answer could not be rendered: ProtoJSON error: {e}"
         ))
     })?;
     m.normal()
-        .map_err(|e| Status::internal(format!("the answer could not be rendered: {e}")))?;
+        .map_err(|e| CallStatus::internal(format!("the answer could not be rendered: {e}")))?;
     Ok(m.encode_to_vec())
 }
 
@@ -394,7 +394,7 @@ where
 /// # Errors
 ///
 /// The status the call ends with instead of a message.
-pub fn answer(rpc: Rpc, status: u32, body: &[u8]) -> Result<Vec<u8>, Status> {
+pub fn answer_message(rpc: Rpc, status: u32, body: &[u8]) -> Result<Vec<u8>, CallStatus> {
     let Ok(envelope) = serde_json::from_slice::<Value>(body) else {
         return Err(status_for_http(status));
     };
@@ -430,7 +430,7 @@ pub fn answer(rpc: Rpc, status: u32, body: &[u8]) -> Result<Vec<u8>, Status> {
 /// comment, a keep-alive, a frame the relay passed through unread), which the stream skips; an
 /// `error` member ends the stream with that error's status.
 #[must_use]
-pub fn event(frame: &str) -> Option<Result<Vec<u8>, Status>> {
+pub fn event(frame: &str) -> Option<Result<Vec<u8>, CallStatus>> {
     let data = crate::sse::sse_data(frame)?;
     let envelope: Value = serde_json::from_str(&data).ok()?;
     if let Some(error) = envelope.get("error") {
@@ -461,7 +461,7 @@ pub fn on_service(target: &str) -> bool {
 /// line's own numbering (`0` = `OK`), the bytes (the response message on `OK`; the status message
 /// otherwise), and the details field's value when the status carries details.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Reply {
+pub struct FramedReply {
     /// The gRPC code.
     pub code: u32,
     /// The response message, or the status message.
@@ -470,12 +470,12 @@ pub struct Reply {
     pub details: Option<String>,
 }
 
-impl From<Status> for Reply {
-    fn from(status: Status) -> Self {
+impl From<CallStatus> for FramedReply {
+    fn from(status: CallStatus) -> Self {
         use base64::Engine as _;
         let details = (!status.details.is_empty())
             .then(|| base64::engine::general_purpose::STANDARD_NO_PAD.encode(&status.details));
-        Reply {
+        FramedReply {
             code: status.code as u32,
             body: status.message.into_bytes(),
             details,
@@ -483,11 +483,11 @@ impl From<Status> for Reply {
     }
 }
 
-impl Reply {
+impl FramedReply {
     /// An `OK` reply carrying `message`.
     #[must_use]
     pub fn ok(message: Vec<u8>) -> Self {
-        Reply {
+        FramedReply {
             code: Code::Ok as u32,
             body: message,
             details: None,
@@ -495,11 +495,11 @@ impl Reply {
     }
 }
 
-/// The whole JSON-RPC answer `body` at neutral `status`, as the rpc's reply ([`answer`]).
+/// The whole JSON-RPC answer `body` at neutral `status`, as the rpc's reply ([`answer_message`]).
 #[must_use]
-pub fn reply(rpc: Rpc, status: u32, body: &[u8]) -> Reply {
-    match answer(rpc, status, body) {
-        Ok(message) => Reply::ok(message),
+pub fn framed_reply(rpc: Rpc, status: u32, body: &[u8]) -> FramedReply {
+    match answer_message(rpc, status, body) {
+        Ok(message) => FramedReply::ok(message),
         Err(status) => status.into(),
     }
 }
@@ -507,7 +507,7 @@ pub fn reply(rpc: Rpc, status: u32, body: &[u8]) -> Reply {
 /// A refusal the plane rendered as its JSON-RPC error envelope at neutral `status`, as the status
 /// the call ends with (the engine's bridge read the envelope its ingress answered the same way).
 #[must_use]
-pub fn refusal(envelope: &[u8], status: u32) -> Reply {
+pub fn refusal(envelope: &[u8], status: u32) -> FramedReply {
     let error = serde_json::from_slice::<Value>(envelope)
         .ok()
         .and_then(|v| v.get("error").cloned());
@@ -523,7 +523,7 @@ pub fn refusal(envelope: &[u8], status: u32) -> Reply {
 /// message is percent-encoded as tonic encoded it: every control byte, every byte past ASCII, the
 /// space and each of `` "#%<>`?{}``, upper-case hex.
 #[must_use]
-pub fn status_block(reply: &Reply) -> Vec<u8> {
+pub fn status_block(reply: &FramedReply) -> Vec<u8> {
     let mut out = format!("grpc-status: {}\r\n", reply.code).into_bytes();
     if !reply.body.is_empty() {
         out.extend_from_slice(b"grpc-message: ");
@@ -548,7 +548,7 @@ pub fn status_block(reply: &Reply) -> Vec<u8> {
 /// answered in events was not a JSON-RPC answer to the engine's bridge: it ends with the status
 /// gRPC's HTTP mapping gives a `200`.
 #[must_use]
-pub fn events(rpc: Rpc, buf: &[u8]) -> (Vec<Vec<u8>>, Option<Status>) {
+pub fn event_messages(rpc: Rpc, buf: &[u8]) -> (Vec<Vec<u8>>, Option<CallStatus>) {
     if !rpc.streams() {
         return (Vec::new(), Some(status_for_http(200)));
     }
@@ -594,7 +594,7 @@ const STATUS_INTERNAL: u32 = 500;
 /// backend's own extension, relayed) falls back to `http`'s mapping. The `google.rpc.ErrorInfo`
 /// the error carries rides as the status details (section 10.6; TCK `GRPC-ERR-001`).
 #[must_use]
-pub fn status_for_error(error: &Value, http: u32) -> Status {
+pub fn status_for_error(error: &Value, http: u32) -> CallStatus {
     let message = error
         .get("message")
         .and_then(Value::as_str)
@@ -609,8 +609,8 @@ pub fn status_for_error(error: &Value, http: u32) -> Status {
         None => status_for_http(http).code(),
     };
     match error_info_of(error) {
-        Some(info) => Status::with_error_info(code, message, info),
-        None => Status::new(code, message),
+        Some(info) => CallStatus::with_error_info(code, message, info),
+        None => CallStatus::new(code, message),
     }
 }
 
@@ -666,7 +666,7 @@ fn error_info_of(error: &Value) -> Option<ErrorInfo> {
 /// The status an HTTP status means, as the gRPC specification's own HTTP-to-status table defines
 /// it: what an answer that is not a JSON-RPC answer ends the call with.
 #[must_use]
-pub fn status_for_http(status: u32) -> Status {
+pub fn status_for_http(status: u32) -> CallStatus {
     let code = match status {
         400 => Code::Internal,
         401 => Code::Unauthenticated,
@@ -676,7 +676,7 @@ pub fn status_for_http(status: u32) -> Status {
         413 => Code::ResourceExhausted,
         _ => Code::Unknown,
     };
-    Status::new(code, format!("busbar answered HTTP {status}"))
+    CallStatus::new(code, format!("busbar answered HTTP {status}"))
 }
 
 /// THE MEMBERS OF BUSBAR'S OWN AGENT CARD THAT THE NORMATIVE `a2a.proto` DOES NOT MODEL, as

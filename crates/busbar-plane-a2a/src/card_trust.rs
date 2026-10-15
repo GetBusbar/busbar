@@ -10,7 +10,7 @@
 //!
 //! * **The card** is fetched at the agent origin's two well-known paths, canonical first; the
 //!   legacy path is tried only when the canonical one produced no document ([`read_card`]).
-//! * **The verification** is the registration's declared mechanism ([`verify`]): a signed card is
+//! * **The verification** is the registration's declared mechanism ([`verify_card`]): a signed card is
 //!   verified against the operator's out-of-band issuer key by the KERNEL (`trust.verify`, this
 //!   plane only hands it the payload and the signatures and words the verdict, [`jws_refusal`]);
 //!   a transport-pinned mechanism (`cert_spki`, `mtls`) is the key the hop that served the card
@@ -26,7 +26,7 @@
 //!   verdict kept) and READS the book's verdict (`trust.serves`). A first sighting is refused until
 //!   the operator approves the key on the generic core-admin `/admin/trust`; a changed card is
 //!   quarantined. The plane holds no approval of its own.
-//! * **The state** an operator reads off `connect` is the kernel's verdict in words ([`state_of`]);
+//! * **The state** an operator reads off `connect` is the kernel's verdict in words ([`verdict_state`]);
 //!   a failed contact is `error`.
 
 use std::collections::BTreeMap;
@@ -88,85 +88,40 @@ impl CardPin {
 /// What a verified card presented: its identity, and its skills by id, each at the digest of its
 /// canonical form.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Observation {
+pub struct CardObservation {
     /// The identity.
     pub pin: CardPin,
     /// `skill id -> digest`.
     pub skills: BTreeMap<String, String>,
 }
 
-/// The last contact. `Never` is not a failure: an agent nobody looked at has not been contacted.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum Sighting {
-    /// Never contacted.
-    #[default]
-    Never,
-    /// The fetch or the verification failed, with the operator-visible reason.
-    Failed(String),
-    /// Contacted and verified, and this is what the card presented.
-    Seen(Observation),
+/// The last contact with an agent: the SDK's one shape of a sighting
+/// ([`busbar_contract::abi::sdk::trust::Sighting`]), over what a verified card presented. `Never`
+/// is not a failure: an agent nobody looked at has not been contacted.
+pub type Sighting = busbar_contract::abi::sdk::trust::Sighting<CardObservation>;
+
+/// The mechanism the OBSERVED identity of `sighting` names, or `unpinned` where nothing was
+/// observed: what the endpoint proved, never the operator's own input echoed back.
+fn sighted_mechanism(sighting: &Sighting) -> &'static str {
+    sighting
+        .seen()
+        .map_or(PinMechanism::Unpinned.token(), |o| o.pin.mechanism())
 }
 
-impl Sighting {
-    /// What the card presented, when the contact succeeded and verified.
-    #[must_use]
-    pub fn seen(&self) -> Option<&Observation> {
-        match self {
-            Sighting::Seen(o) => Some(o),
-            _ => None,
-        }
-    }
-
-    fn failure(&self) -> Option<&str> {
-        match self {
-            Sighting::Failed(reason) => Some(reason),
-            _ => None,
-        }
-    }
-
-    /// The mechanism the OBSERVED identity names, or `unpinned` where nothing was observed: what
-    /// the endpoint proved, never the operator's own input echoed back.
-    fn mechanism(&self) -> &'static str {
-        self.seen()
-            .map_or(PinMechanism::Unpinned.token(), |o| o.pin.mechanism())
-    }
-
-    fn skill_count(&self) -> usize {
-        self.seen().map_or(0, |o| o.skills.len())
-    }
+/// How many skills the last verified card of `sighting` offered.
+fn sighted_skills(sighting: &Sighting) -> usize {
+    sighting.seen().map_or(0, |o| o.skills.len())
 }
 
-/// The derived trust state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum State {
-    /// Nothing locked: nothing served.
-    Pending,
-    /// The lock holds against the last sighting (or nothing was sighted since). Serves.
-    Approved,
-    /// The last sighting differs from the lock.
-    Quarantined,
-    /// The last contact failed.
-    Error,
-}
-
-impl State {
-    /// The wire word a UI branches on.
-    #[must_use]
-    pub fn word(self) -> &'static str {
-        match self {
-            State::Pending => "pending",
-            State::Approved => "approved",
-            State::Quarantined => "quarantined",
-            State::Error => "error",
-        }
-    }
-}
+/// The derived trust state: the SDK's one state word of a trust view
+/// ([`busbar_contract::abi::sdk::trust::State`]).
+pub use busbar_contract::abi::sdk::trust::State;
 
 /// ONE REGISTRATION'S TRUST, as the plane holds it in memory: the last sighting, the
 /// re-verification ledger verify-on-call keeps, and the skills of the card `approve` held.
 /// What the registration is trusted to SERVE is not here: it is the kernel's trust book.
 #[derive(Debug, Clone, Default, PartialEq)]
-pub struct Standing {
+pub struct TrustStanding {
     /// The last sighting.
     pub sighting: Sighting,
     /// When verify-on-call last looked.
@@ -233,7 +188,7 @@ impl Cadence {
 /// Serving is `approved`; a key never sighted or never approved is `pending`; a quarantined key,
 /// or one offered at another digest than approved, is `quarantined`.
 #[must_use]
-pub fn state_of(distrust: u64) -> State {
+pub fn verdict_state(distrust: u64) -> State {
     match distrust {
         svc::DISTRUST_NONE => State::Approved,
         svc::DISTRUST_QUARANTINED | svc::DISTRUST_CHANGED => State::Quarantined,
@@ -247,13 +202,17 @@ pub fn state_of(distrust: u64) -> State {
 /// serving is in no caller's catalogue, so none reaches: `400`, `-32004`). The kernel's trust
 /// refusal is [`UNTRUSTED_STATUS`].
 #[must_use]
-pub fn not_serving(addressed: Option<&str>, state: State, status: u32) -> crate::arrival::Refusal {
+pub fn not_serving(
+    addressed: Option<&str>,
+    state: State,
+    status: u32,
+) -> crate::agent_arrival::AgentRefusal {
     match addressed {
-        Some(agent) => crate::arrival::kernel_refusal(
+        Some(agent) => crate::agent_arrival::kernel_refusal(
             status,
             &format!("fronted agent `{agent}` is not serving ({state:?})"),
         ),
-        None => crate::arrival::scope_refusal(""),
+        None => crate::agent_arrival::scope_refusal(""),
     }
 }
 
@@ -639,12 +598,12 @@ pub fn jws_refusal(verdict: u64, named: &str, card: &Value) -> Option<String> {
 /// # Errors
 ///
 /// Why the card is not accepted as the registration's.
-pub fn verify(
+pub fn verify_card(
     pin: &AgentPinCfg,
     card: &Value,
     hop: &Handshake,
     signed: impl FnOnce() -> Result<(), String>,
-) -> Result<Observation, String> {
+) -> Result<CardObservation, String> {
     let key = pin.key.as_deref().map(str::trim).filter(|k| !k.is_empty());
     let mechanism = pin.mechanism;
     let fingerprint = |card: &Value| card::fingerprint(card).map_err(|e: CardError| e.to_string());
@@ -695,7 +654,7 @@ pub fn verify(
         (PinMechanism::Unpinned, None) => CardPin::Unpinned,
     };
     let skills = card::skill_digests(card).map_err(|e| e.to_string())?;
-    Ok(Observation { pin, skills })
+    Ok(CardObservation { pin, skills })
 }
 
 // ── THE VERBS' ANSWERS ───────────────────────────────────────────────────────────────────────────
@@ -706,9 +665,9 @@ pub fn verify(
 /// (`added`, `changed`, `removed`) is the served engine's drift (predev
 /// `busbar-kernel/src/trust/mod.rs:310-327`, read by `busbar-a2a/src/a2a/verbs.rs:229,726`): the
 /// sighted card's skills against the skills of the card the operator approved, which the plane
-/// holds for this view only ([`Standing::approved`]; coordinator ruling Q2, 2026-10-07).
+/// holds for this view only ([`TrustStanding::approved`]; coordinator ruling Q2, 2026-10-07).
 #[derive(serde::Serialize)]
-struct TrustView<'a> {
+struct AgentTrustView<'a> {
     name: &'a str,
     state: &'static str,
     pin_mechanism: &'static str,
@@ -726,7 +685,7 @@ struct TrustView<'a> {
 /// skill-id order), then each approved skill the card no longer offers `removed`. Nothing approved
 /// (`approved` is `None`) approves no skill, so every sighted skill is `added`; a sighting that
 /// presented no card has no queue.
-fn drift(
+fn skill_drift(
     approved: Option<&BTreeMap<String, String>>,
     sighting: &Sighting,
 ) -> (Vec<String>, Vec<String>, Vec<String>) {
@@ -754,7 +713,7 @@ fn drift(
 /// The view, `state` being the state the verb answers and `kernel` the kernel's own verdict: a key
 /// the kernel holds no approval for (`pending`) has approved nothing, whatever skills the plane
 /// last held for it.
-fn view(
+fn agent_view(
     name: &str,
     state: State,
     kernel: State,
@@ -767,17 +726,17 @@ fn view(
         state
     };
     let approved = approved.filter(|_| kernel != State::Pending);
-    let (added, changed, removed) = drift(approved, sighting);
-    serde_json::to_string(&TrustView {
+    let (added, changed, removed) = skill_drift(approved, sighting);
+    serde_json::to_string(&AgentTrustView {
         name,
         state: state.word(),
-        pin_mechanism: sighting.mechanism(),
+        pin_mechanism: sighted_mechanism(sighting),
         fingerprint: sighting.seen().and_then(|o| o.pin.fingerprint()),
         pin_changed: state == State::Quarantined,
         added,
         changed,
         removed,
-        observed_skills: sighting.skill_count(),
+        observed_skills: sighted_skills(sighting),
         failure: sighting.failure(),
     })
     .unwrap_or_default()
@@ -799,7 +758,7 @@ pub fn connect_view(
         State::Approved => State::Pending,
         other => other,
     };
-    view(name, shown, state, sighting, approved)
+    agent_view(name, shown, state, sighting, approved)
 }
 
 /// `approve`'s answer: the registration as it now stands on the kernel's trust book (`state`), its
@@ -811,7 +770,7 @@ pub fn registration_view(
     sighting: &Sighting,
     approved: Option<&BTreeMap<String, String>>,
 ) -> String {
-    view(name, state, state, sighting, approved)
+    agent_view(name, state, state, sighting, approved)
 }
 
 /// DOES WHAT THE ENDPOINT SERVES NOW AGREE WITH WHAT THE OPERATOR SAYS THEY APPROVED? Every arm
@@ -939,5 +898,5 @@ impl<'de> serde::de::Visitor<'de> for ApproveSeed<'_> {
 }
 
 #[cfg(test)]
-#[path = "tests/trust_tests.rs"]
+#[path = "tests/card_trust_tests.rs"]
 mod tests;

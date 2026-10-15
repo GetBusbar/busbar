@@ -171,7 +171,7 @@ struct Use {
 }
 
 #[derive(Debug)]
-struct Event {
+struct SessionEvent {
     seq: u64,
     /// Session-wide write order, so the oldest event in any stream is found without a clock.
     order: u64,
@@ -184,7 +184,7 @@ struct Stream {
     next_seq: u64,
     /// The highest seq ever trimmed away, or 0 when nothing was trimmed.
     trimmed_through: u64,
-    events: VecDeque<Event>,
+    events: VecDeque<SessionEvent>,
 }
 
 #[derive(Debug)]
@@ -476,7 +476,7 @@ impl SessionTable {
         let seq = st.next_seq;
         st.next_seq += 1;
         let cost = data.len() + EVENT_OVERHEAD;
-        st.events.push_back(Event {
+        st.events.push_back(SessionEvent {
             seq,
             order,
             data: data.to_string(),

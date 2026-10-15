@@ -95,8 +95,8 @@ fn dialled(
     envelope: &serde_json::Value,
     translated: Option<&serde_json::Value>,
     events: bool,
-) -> (Relay, Attempt, Vec<u8>) {
-    let mut r = Relay::new(json!(7), "1.0");
+) -> (HopRelay, Attempt, Vec<u8>) {
+    let mut r = HopRelay::new(json!(7), "1.0");
     if events {
         r.expect_events();
     }
@@ -104,15 +104,15 @@ fn dialled(
         r.send_instead(serde_json::to_vec(t).expect("json"));
     }
     r.bind(Binding::Grpc, envelope);
-    let Answer::Attempt(attempt) = r.on_piece(kernel(Some(URL))) else {
+    let PieceAnswer::Attempt(attempt) = r.on_piece(kernel(Some(URL))) else {
         panic!("no attempt on the gRPC binding");
     };
     let bytes = serde_json::to_vec(envelope).expect("json");
     // A request message whose every field is its default is zero bytes: nothing to send beside the
     // head (the grpc transport frames the empty message).
     let message = match r.on_piece(caller(&bytes)) {
-        Answer::ToFarEnd(message) => message,
-        Answer::Nothing => Vec::new(),
+        PieceAnswer::ToFarEnd(message) => message,
+        PieceAnswer::Nothing => Vec::new(),
         other => panic!("no message for the far end: {other:?}"),
     };
     (r, attempt, message)
@@ -120,7 +120,7 @@ fn dialled(
 
 /// The far end's answer, piece by piece as the grpc transport hands it: its head (no status of
 /// its own: `0`), `messages`, its trailers (stating `code`), then the end.
-fn answer(r: &mut Relay, messages: &[Vec<u8>], code: Option<u32>) -> Vec<Answer> {
+fn answer(r: &mut HopRelay, messages: &[Vec<u8>], code: Option<u32>) -> Vec<PieceAnswer> {
     let mut answers = vec![r.on_piece(far(Some(0), &[], false))];
     for m in messages {
         answers.push(r.on_piece(far(None, m, false)));
@@ -130,17 +130,17 @@ fn answer(r: &mut Relay, messages: &[Vec<u8>], code: Option<u32>) -> Vec<Answer>
     answers
 }
 
-fn whole(answers: Vec<Answer>) -> Reply {
+fn whole(answers: Vec<PieceAnswer>) -> RelayReply {
     answers
         .into_iter()
         .find_map(|a| match a {
-            Answer::ToCaller(reply) => Some(reply),
+            PieceAnswer::ToCaller(reply) => Some(reply),
             _ => None,
         })
         .expect("the caller is answered")
 }
 
-fn body(reply: &Reply) -> serde_json::Value {
+fn body(reply: &RelayReply) -> serde_json::Value {
     serde_json::from_slice(&reply.body).expect("the answer is JSON")
 }
 
@@ -200,7 +200,7 @@ fn a_grpc_answer_about_a_task_leaves_under_busbars_identity() {
     assert_eq!(body(&reply)["result"]["task"]["id"], "busbar-t");
     assert_eq!(
         r.take_settled(),
-        vec![Settled::Reported {
+        vec![TaskSettled::Reported {
             state: TaskState::Completed,
             backend_id: Some(BACKEND.into()),
         }]
@@ -252,7 +252,7 @@ fn grpc_client_issues_send_stream_message() {
     let parts: Vec<Part> = answers
         .into_iter()
         .filter_map(|a| match a {
-            Answer::Part(p) => Some(p),
+            PieceAnswer::Part(p) => Some(p),
             _ => None,
         })
         .collect();
@@ -273,8 +273,8 @@ fn a_streamed_message_is_read_once_whole_whatever_the_pieces() {
     let _ = r.on_piece(far(Some(0), &[], false));
     let first = stream_event(pb::TaskState::Working);
     let (a, b) = first.split_at(7);
-    assert_eq!(r.on_piece(far(None, a, false)), Answer::Nothing);
-    let Answer::Part(part) = r.on_piece(far(None, b, false)) else {
+    assert_eq!(r.on_piece(far(None, a, false)), PieceAnswer::Nothing);
+    let PieceAnswer::Part(part) = r.on_piece(far(None, b, false)) else {
         panic!("the whole message is an event");
     };
     assert!(part.head);
@@ -283,7 +283,7 @@ fn a_streamed_message_is_read_once_whole_whatever_the_pieces() {
         stream_event(pb::TaskState::Completed),
     ]
     .concat();
-    let Answer::Part(part) = r.on_piece(far(None, &two, false)) else {
+    let PieceAnswer::Part(part) = r.on_piece(far(None, &two, false)) else {
         panic!("two events");
     };
     assert_eq!(
@@ -306,7 +306,7 @@ fn grpc_client_issues_subscribe_to_task() {
     let answers = answer(&mut r, &[stream_event(pb::TaskState::Working)], Some(0));
     assert!(answers
         .iter()
-        .any(|a| matches!(a, Answer::Part(p) if p.head)));
+        .any(|a| matches!(a, PieceAnswer::Part(p) if p.head)));
 }
 
 /// `grpc_client_issues_get_extended_agent_card`: a task-less hop; the card the far end answers is
@@ -397,9 +397,9 @@ fn params_that_are_not_the_request_message_are_refused_before_the_hop() {
         "jsonrpc": "2.0", "id": 7, "method": "message/send",
         "params": { "message": { "kind": "message", "role": "user", "parts": [] } }
     });
-    let mut r = Relay::new(json!(7), "0.3");
+    let mut r = HopRelay::new(json!(7), "0.3");
     r.bind(Binding::Grpc, &v03);
-    let Answer::ToCaller(reply) = r.on_piece(kernel(Some(URL))) else {
+    let PieceAnswer::ToCaller(reply) = r.on_piece(kernel(Some(URL))) else {
         panic!("refused before the hop");
     };
     assert_eq!(reply.status, 502);
@@ -410,7 +410,7 @@ fn params_that_are_not_the_request_message_are_refused_before_the_hop() {
 /// body is ignored. RED: the trailers were appended to the body, which then was not JSON.
 #[test]
 fn trailers_after_a_json_rpc_answer_are_not_read_as_its_body() {
-    let mut r = Relay::new(json!(7), "1.0");
+    let mut r = HopRelay::new(json!(7), "1.0");
     let _ = r.on_piece(kernel(Some(URL)));
     let _ = r.on_piece(caller(br#"{"jsonrpc":"2.0","id":7,"method":"GetTask"}"#));
     let _ = r.on_piece(far(
@@ -420,9 +420,9 @@ fn trailers_after_a_json_rpc_answer_are_not_read_as_its_body() {
     ));
     assert_eq!(
         r.on_far_fields(b"x-trailer: 1\r\n", None, false),
-        Answer::Nothing
+        PieceAnswer::Nothing
     );
-    let Answer::ToCaller(reply) = r.on_piece(far(None, &[], true)) else {
+    let PieceAnswer::ToCaller(reply) = r.on_piece(far(None, &[], true)) else {
         panic!("the caller is answered");
     };
     assert_eq!(reply.status, 200);
@@ -432,8 +432,11 @@ fn trailers_after_a_json_rpc_answer_are_not_read_as_its_body() {
 /// (the member's own).
 #[test]
 fn a_grpc_attempt_rides_the_doors_grpc_need() {
-    use crate::plane_door::attempt_need;
-    assert_eq!(attempt_need(Binding::Grpc), crate::door::NEED_GRPC + 1);
+    use crate::agent_door::attempt_need;
+    assert_eq!(
+        attempt_need(Binding::Grpc),
+        crate::door_statement::NEED_GRPC + 1
+    );
     assert_eq!(attempt_need(Binding::JsonRpc), 0);
     assert_eq!(attempt_need(Binding::HttpJson), 0);
 }
@@ -447,7 +450,7 @@ fn a_grpc_attempt_rides_the_doors_grpc_need() {
 /// carry (RED: the details' own `google.rpc.Status` code was read as the call's status).
 #[test]
 fn a_status_handed_on_with_the_last_trailers_ends_the_call() {
-    use crate::framed::{Code, ErrorInfo, Status, DETAILS_FIELD};
+    use crate::framed::{CallStatus, Code, ErrorInfo, DETAILS_FIELD};
     use base64::Engine as _;
     use busbar_contract::abi::transport::fields::{LINE_END, SEPARATOR};
     let asked =
@@ -460,11 +463,11 @@ fn a_status_handed_on_with_the_last_trailers_ends_the_call() {
             addressed: true,
             skill: None,
         });
-        assert_eq!(r.on_piece(far(Some(0), &[], false)), Answer::Nothing);
+        assert_eq!(r.on_piece(far(Some(0), &[], false)), PieceAnswer::Nothing);
         r
     };
-    let answered = |a: Answer| match a {
-        Answer::ToCaller(reply) => reply,
+    let answered = |a: PieceAnswer| match a {
+        PieceAnswer::ToCaller(reply) => reply,
         other => panic!("the last trailers answer the caller: {other:?}"),
     };
     // NOT_FOUND: TaskNotFound, the destination answering.
@@ -478,7 +481,7 @@ fn a_status_handed_on_with_the_last_trailers_ends_the_call() {
     let _ = answered(r.on_far_fields(&[], Some(Code::Unauthenticated as u32), true));
     assert_eq!(r.take_reading(), Some(Reading::Hard));
     // Details naming NOT_FOUND, handed on with no status: no code is read off them.
-    let details = Status::with_error_info(
+    let details = CallStatus::with_error_info(
         Code::NotFound,
         "no such task",
         ErrorInfo {

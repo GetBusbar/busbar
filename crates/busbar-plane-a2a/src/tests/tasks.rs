@@ -192,7 +192,7 @@ impl Book {
     }
 
     /// Put `held` as `caller`'s task, as a write would.
-    pub(crate) fn hold(&mut self, caller: &str, held: &Held) {
+    pub(crate) fn hold(&mut self, caller: &str, held: &HeldTask) {
         self.apply(&[Write {
             kind: KIND_TASK,
             key: task_key(caller, &held.row.task_id),
@@ -245,8 +245,8 @@ pub(crate) fn row(task: &str, now: u64) -> TaskRow {
 }
 
 /// `caller`'s step at `now`.
-pub(crate) fn step(caller: &str, now: u64) -> Step<'_> {
-    Step {
+pub(crate) fn step(caller: &str, now: u64) -> Stamp<'_> {
+    Stamp {
         caller,
         request_id: "req-1",
         now,
@@ -536,7 +536,7 @@ fn the_sweep_tombstones_the_expired_and_leaves_the_idle_active() {
     }]);
     let now = 101 + 86_400;
     let mut out = Vec::new();
-    sweep(&mut book, now, 64, &mut out).unwrap();
+    retention_sweep(&mut book, now, 64, &mut out).unwrap();
     book.apply(&out);
     assert!(book.value(KIND_TASK, &task_key(ALICE, "t1")).is_none());
     assert!(book
@@ -574,7 +574,7 @@ fn an_idle_active_task_survives_the_sweep_with_its_push_token() {
     let token = tokens.mint(ALICE, "idle", b"sig").unwrap();
     let now = 100 + 86_400 * 30;
     let mut out = Vec::new();
-    sweep(&mut book, now, 64, &mut out).unwrap();
+    retention_sweep(&mut book, now, 64, &mut out).unwrap();
     book.apply(&out);
     let held = get(&mut book, ALICE, "idle", now).unwrap().unwrap();
     assert_eq!(
@@ -602,7 +602,7 @@ fn the_sweep_holds_the_cap_with_terminal_tasks_only() {
     let held = |task: String, state: &str, at: u64| {
         let mut row = row(&task, at);
         row.state = state.to_string();
-        Held { row, next_seq: 2 }
+        HeldTask { row, next_seq: 2 }
     };
     for i in 0..5 {
         book.hold(ALICE, &held(format!("act{i}"), "working", 5));
@@ -613,7 +613,7 @@ fn the_sweep_holds_the_cap_with_terminal_tasks_only() {
     book.hold(ALICE, &held("old".into(), "completed", 10));
     book.hold(ALICE, &held("new".into(), "completed", 20));
     let mut out = Vec::new();
-    sweep(&mut book, 30, 1, &mut out).unwrap();
+    retention_sweep(&mut book, 30, 1, &mut out).unwrap();
     book.apply(&out);
     assert!(
         book.value(KIND_TASK, &task_key(ALICE, "old")).is_none(),
@@ -624,7 +624,7 @@ fn the_sweep_holds_the_cap_with_terminal_tasks_only() {
         "the budget was one"
     );
     let mut out = Vec::new();
-    sweep(&mut book, 30, 64, &mut out).unwrap();
+    retention_sweep(&mut book, 30, 64, &mut out).unwrap();
     book.apply(&out);
     assert!(book.value(KIND_TASK, &task_key(ALICE, "new")).is_none());
     assert_eq!(
@@ -972,7 +972,7 @@ fn the_sweep_drops_an_expired_tasks_chain_whole() {
     submitted(&mut book, ALICE, "t1", 100);
     moved_to(&mut book, "t1", TaskState::Completed, 100);
     let mut out = Vec::new();
-    sweep(&mut book, 101 + TERMINAL_TTL_SECS, 64, &mut out).unwrap();
+    retention_sweep(&mut book, 101 + TERMINAL_TTL_SECS, 64, &mut out).unwrap();
     let dropped: Vec<&Write> = out.iter().filter(|w| w.kind == KIND_TASK_EVENT).collect();
     assert_eq!(dropped.len(), 1);
     assert_eq!(

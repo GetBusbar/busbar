@@ -45,7 +45,9 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON};
-use crate::abi::plane::{AdminRoute, Claim, PlaneSnapshot};
+use crate::abi::plane::{AdminRoute, Claim, PlaneSnapshot, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
+use crate::abi::sdk::door::abi_str;
+use crate::ids::OpClassId;
 
 /// The storage one published generation points into. Only the SDK makes one and writes into it;
 /// its contents never move (every piece is its own heap allocation) and are freed only when the
@@ -517,6 +519,76 @@ impl<K: Ord, V> Keyed<K, V> {
     {
         self.lock().get(key).cloned()
     }
+}
+
+/// ONE ROW OF A PLANE'S ROUTE TABLE: the verb, the target, the transport claim it arrives over, and
+/// whether the route admits a caller with no inbound credential at all. A plane states its routes
+/// as a `const` table of these; the claim each row publishes is [`ServedRoute::claim_spec`], so
+/// every plane spells a route's claim flags one way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServedRoute {
+    /// The verb.
+    pub verb: &'static str,
+    /// The target path; a `{name}` segment is a path variable.
+    pub target: &'static str,
+    /// The transport claim it arrives over.
+    pub carrier: &'static str,
+    /// No inbound credential: a discovery document, or a callback that carries its own token.
+    pub open: bool,
+}
+
+impl ServedRoute {
+    /// The claim flags the route states: a target with a path variable is a pattern
+    /// ([`CLAIM_PATTERN`], one level per variable), any other target matches exactly
+    /// ([`CLAIM_EXACT`]); an open route adds [`CLAIM_OPEN`].
+    #[must_use]
+    pub fn claim_flags(&self) -> u32 {
+        let mut flags = if self.target.contains('{') {
+            CLAIM_PATTERN
+        } else {
+            CLAIM_EXACT
+        };
+        if self.open {
+            flags |= CLAIM_OPEN;
+        }
+        flags
+    }
+
+    /// The route as a snapshot claim, its refusal dialect `0`.
+    #[must_use]
+    pub fn claim_spec(&self) -> ClaimSpec {
+        ClaimSpec::new(self.verb, self.target, self.carrier, self.claim_flags())
+    }
+}
+
+/// One admin route in the ABI's spelling, over `'static` strings: `route` is `(verb, target)`
+/// relative to the kernel's admin mount, `flags` its route flags (`0`, or `ROUTE_PUBLIC` and what
+/// rides beside it), `audit_verb` the word the kernel audits it under (empty = never audited). A
+/// `const fn`, so a plane states its admin routes as a `const` table.
+#[must_use]
+pub const fn admin_route(
+    route: (&'static str, &'static str),
+    flags: u32,
+    audit_verb: &'static str,
+) -> AdminRoute {
+    AdminRoute {
+        verb: abi_str(route.0),
+        target: abi_str(route.1),
+        flags,
+        _reserved: 0,
+        audit_verb: abi_str(audit_verb),
+    }
+}
+
+/// The index of `op` in a plane's operation-class list `classes`, in the order its Statement
+/// tail's class table states them, which is the number `arrive` names a class by; `None` when the
+/// list does not hold it.
+#[must_use]
+pub fn class_index(classes: &[OpClassId], op: OpClassId) -> Option<u32> {
+    classes
+        .iter()
+        .position(|c| *c == op)
+        .and_then(|i| u32::try_from(i).ok())
 }
 
 #[cfg(test)]

@@ -9,7 +9,7 @@
 //! assert the operation class and the request id it reads; the door itself is then driven op by op,
 //! linked and dropped in, by `both_ways`.
 
-use busbar_plane_a2a::arrival::{self, Disposition};
+use busbar_plane_a2a::agent_arrival::{self, AgentDisposition};
 use busbar_plane_a2a::ops;
 
 /// The rig's own vocabulary table, read out of the file the rig imports it from.
@@ -52,8 +52,8 @@ fn request(id: &str, method: &str) -> Vec<u8> {
 /// Drive one body through the door's arrival (the JSON-RPC line, no head fields) and hand back the
 /// method row it classed the request under and the request id it read.
 fn decode(body: &[u8]) -> Result<(ops::MethodRow, serde_json::Value), String> {
-    match arrival::decide(body, |_| None) {
-        Disposition::Request { row, id, .. } => Ok((*row, id)),
+    match agent_arrival::decide_arrival(body, |_| None) {
+        AgentDisposition::Request { row, id, .. } => Ok((*row, id)),
         other => Err(format!("{other:?}")),
     }
 }
@@ -147,7 +147,7 @@ fn every_local_verb_of_the_codec_is_carried() {
 
 /// THE DOOR, BOTH WAYS (BUSBAR-1.6.0.md Part 2 #2 steps (4) and (5); Part 3 section 12 "Proven
 /// by": the plane conformance suite, compiled-in and dropped-in through one table). The plane's
-/// `plane_door::door` is loaded LINKED (`load_linked`) and DROPPED (this crate's `a2a_door`
+/// `agent_door::door` is loaded LINKED (`load_linked`) and DROPPED (this crate's `a2a_door`
 /// example, `load_dropped`) on one dispatcher, and ONE script drives every op through the loader's
 /// plane kind: the lifecycle (`validate` in the grammar's own sentence, `open` and `refresh` with
 /// their snapshots read through the loader's own copy, `retire`, `tick`, `drive`, `cancel`), the
@@ -169,8 +169,10 @@ mod both_ways {
         RefusalIn, RefusalOut, REFUSAL_ARRIVE, REFUSAL_GATE, REFUSAL_KERNEL,
     };
     use busbar_contract::abi::sdk::door::abi_str;
-    use busbar_plane_a2a::door::{self, DIALECT_DOCUMENT, DIALECT_FRAMED, DIALECT_TARGET};
-    use busbar_plane_a2a::{plane_door, MOUNT_PATH};
+    use busbar_plane_a2a::door_statement::{
+        self, DIALECT_DOCUMENT, DIALECT_FRAMED, DIALECT_TARGET,
+    };
+    use busbar_plane_a2a::{agent_door, MOUNT_PATH};
     use busbar_plugin_loader::dispatch::kinds::plane::{OwnedSnapshot, Plane};
     use busbar_plugin_loader::dispatch::{
         in_head, load_dropped, load_linked, out_head, rendering_of, Bind, DispatchConfig,
@@ -255,7 +257,7 @@ mod both_ways {
 
     /// The route index of `(verb, target)` in the door's table, the claim an arrival carries.
     fn claim(verb: &str, target: &str) -> u32 {
-        let i = door::ROUTES
+        let i = door_statement::ROUTES
             .iter()
             .position(|r| r.verb == verb && r.target == target)
             .unwrap_or_else(|| panic!("the door routes {verb} {target}"));
@@ -639,7 +641,7 @@ mod both_ways {
     // ── the doors ────────────────────────────────────────────────────────────────────────────────
 
     fn linked(d: &Dispatcher) -> Plugin<Plane> {
-        let row = LinkedRow::of(plane_door::door).expect("the linked door states its Statement");
+        let row = LinkedRow::of(agent_door::door).expect("the linked door states its Statement");
         load_linked(&row, bind(d)).expect("the linked door loads")
     }
 
@@ -657,7 +659,7 @@ mod both_ways {
             .into_iter()
             .find(|p| p.exists())
             .unwrap_or_else(|| panic!("the a2a_door example ({file}) is not built"));
-        let stated = rendering_of(plane_door::door).expect("the door renders its Statement");
+        let stated = rendering_of(agent_door::door).expect("the door renders its Statement");
         load_dropped(&path, &stated, bind(d)).expect("the dropped door loads")
     }
 
@@ -689,14 +691,14 @@ mod both_ways {
     /// door's own rendered Statement. RED: the door stated two needs and no grpc transport.
     #[test]
     fn the_door_states_its_agents_over_http_and_over_grpc_alike() {
-        let rendered = rendering_of(plane_door::door).expect("the door renders its Statement");
+        let rendered = rendering_of(agent_door::door).expect("the door renders its Statement");
         let read =
             busbar_contract::abi::mechanism::rendering::read(&rendered).expect("it reads back");
         let needs = read.needs;
         assert_eq!(needs.len(), 3);
         let (http, grpc) = (
-            &needs[door::NEED_AGENT as usize],
-            &needs[door::NEED_GRPC as usize],
+            &needs[door_statement::NEED_AGENT as usize],
+            &needs[door_statement::NEED_GRPC as usize],
         );
         assert_eq!(http.transport, "http");
         assert_eq!(grpc.transport, busbar_plane_a2a::claims::FRAMED_TRANSPORT);
@@ -705,9 +707,9 @@ mod both_ways {
             (grpc.direction, grpc.egress_class, grpc.auth.as_str()),
             (http.direction, http.egress_class, http.auth.as_str())
         );
-        assert_eq!(grpc.target_from, door::MEMBER_TARGET);
+        assert_eq!(grpc.target_from, door_statement::MEMBER_TARGET);
         assert_eq!(grpc.target_from, http.target_from);
-        assert_eq!(grpc.trust_from, door::CLIENT_IDENTITY_FROM);
+        assert_eq!(grpc.trust_from, door_statement::CLIENT_IDENTITY_FROM);
         assert_eq!(grpc.trust_from, http.trust_from);
     }
 

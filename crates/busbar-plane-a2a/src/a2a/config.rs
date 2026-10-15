@@ -337,7 +337,7 @@ pub struct AgentsCfg {
     /// THE FAILOVER POOLS the host hands the section at its reserved `pools` key (the neutral
     /// top-level `pools:` whose members are `agents:` registrations): each pool's members, in the
     /// order declared, the first the primary. Lifted off the section before it is read
-    /// ([`crate::door::read_settings`]); empty when it states none.
+    /// ([`crate::door_statement::read_agents_section`]); empty when it states none.
     pub pools: indexmap::IndexMap<String, Vec<String>>,
 }
 

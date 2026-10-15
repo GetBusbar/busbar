@@ -101,7 +101,7 @@ pub fn request(
     method: &str,
     params: &Value,
 ) -> Option<busbar_contract::abi::sdk::exchange::Request> {
-    use crate::relay::{Answer, From, Piece, Relay};
+    use crate::relay::{From, HopRelay, Piece, PieceAnswer};
     let envelope = json!({
         "jsonrpc": "2.0",
         "id": ORIGINATED_RPC_ID,
@@ -109,7 +109,7 @@ pub fn request(
         "params": params,
     });
     let body = serde_json::to_vec(&envelope).ok()?;
-    let mut relay = Relay::new(Value::String(ORIGINATED_RPC_ID.into()), version);
+    let mut relay = HopRelay::new(Value::String(ORIGINATED_RPC_ID.into()), version);
     relay.bind(binding, &envelope);
     let piece = |from| Piece {
         from,
@@ -117,12 +117,12 @@ pub fn request(
         status: None,
         last: false,
     };
-    let Answer::Attempt(attempt) = relay.on_piece(piece(From::Kernel(Some(url)))) else {
+    let PieceAnswer::Attempt(attempt) = relay.on_piece(piece(From::Kernel(Some(url)))) else {
         return None;
     };
     let body = match relay.on_piece(piece(From::Caller)) {
-        Answer::ToFarEnd(bytes) => bytes,
-        Answer::ToFarEndLent => body.clone(),
+        PieceAnswer::ToFarEnd(bytes) => bytes,
+        PieceAnswer::ToFarEndLent => body.clone(),
         _ => Vec::new(),
     };
     Some(busbar_contract::abi::sdk::exchange::Request {
@@ -372,7 +372,7 @@ pub fn listed_states(
             let state = entry
                 .pointer("/status/state")
                 .and_then(Value::as_str)
-                .and_then(crate::identity::wire_state)?;
+                .and_then(crate::task_identity::wire_state)?;
             Some((busbar.clone(), state))
         })
         .collect()

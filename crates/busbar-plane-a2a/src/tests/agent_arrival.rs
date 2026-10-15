@@ -29,9 +29,9 @@ fn with_origin<'a>(
     }
 }
 
-fn refused(d: Disposition) -> Refusal {
+fn refused(d: AgentDisposition) -> AgentRefusal {
     match d {
-        Disposition::Refused(r) => r,
+        AgentDisposition::Refused(r) => r,
         other => panic!("expected a refusal, got {other:?}"),
     }
 }
@@ -42,7 +42,10 @@ const SEND: &[u8] = br#"{"jsonrpc":"2.0","id":7,"method":"SendMessage","params":
 fn the_media_type_is_judged_before_the_body_and_the_version() {
     // A wrong media type over a body that is not JSON and an unspoken version: the header is the
     // thing to fix, so the header is what is said.
-    let r = refused(decide(b"not json", head(Some("text/plain"), Some("9.9"))));
+    let r = refused(decide_arrival(
+        b"not json",
+        head(Some("text/plain"), Some("9.9")),
+    ));
     assert_eq!(r.status, 415);
     assert_eq!(r.code, CODE_CONTENT_TYPE_NOT_SUPPORTED);
     assert_eq!(r.id, None);
@@ -63,23 +66,23 @@ fn a_json_media_type_in_any_spelling_is_read() {
     ] {
         assert!(
             matches!(
-                decide(SEND, head(Some(ct), None)),
-                Disposition::Request { .. }
+                decide_arrival(SEND, head(Some(ct), None)),
+                AgentDisposition::Request { .. }
             ),
             "{ct}"
         );
     }
     // No media type at all is not a wrong one.
     assert!(matches!(
-        decide(SEND, head(None, None)),
-        Disposition::Request { .. }
+        decide_arrival(SEND, head(None, None)),
+        AgentDisposition::Request { .. }
     ));
 }
 
 #[test]
 fn the_version_is_negotiated_on_major_minor_and_absent_is_0_3() {
-    let version = |v: Option<&str>| match decide(SEND, head(None, v)) {
-        Disposition::Request { version, .. } => version,
+    let version = |v: Option<&str>| match decide_arrival(SEND, head(None, v)) {
+        AgentDisposition::Request { version, .. } => version,
         other => panic!("{other:?}"),
     };
     assert_eq!(version(None), "0.3");
@@ -88,7 +91,7 @@ fn the_version_is_negotiated_on_major_minor_and_absent_is_0_3() {
     assert_eq!(version(Some("1.0")), "1.0");
     assert_eq!(version(Some("1.0.7")), "1.0");
     assert_eq!(version(Some(" 0.3 ")), "0.3");
-    let r = refused(decide(SEND, head(None, Some(" 2.1 "))));
+    let r = refused(decide_arrival(SEND, head(None, Some(" 2.1 "))));
     assert_eq!(
         (r.status, r.code, r.id.clone()),
         (400, CODE_VERSION_NOT_SUPPORTED, None)
@@ -101,10 +104,10 @@ fn the_version_is_negotiated_on_major_minor_and_absent_is_0_3() {
 
 #[test]
 fn a_body_that_is_not_json_is_a_parse_refusal_with_no_id() {
-    let r = refused(decide(b"{", head(None, None)));
+    let r = refused(decide_arrival(b"{", head(None, None)));
     assert_eq!(
         r,
-        Refusal {
+        AgentRefusal {
             status: 400,
             id: None,
             code: -32700,
@@ -115,9 +118,9 @@ fn a_body_that_is_not_json_is_a_parse_refusal_with_no_id() {
 
 #[test]
 fn an_envelope_the_reader_refuses_echoes_the_id_it_could_read() {
-    let batch = refused(decide(b"[]", head(None, None)));
+    let batch = refused(decide_arrival(b"[]", head(None, None)));
     assert_eq!((batch.status, batch.code, batch.id), (400, -32600, None));
-    let wrong_version = refused(decide(
+    let wrong_version = refused(decide_arrival(
         br#"{"jsonrpc":"1.0","id":"a","method":"SendMessage"}"#,
         head(None, None),
     ));
@@ -136,11 +139,11 @@ fn an_envelope_the_reader_refuses_echoes_the_id_it_could_read() {
 #[test]
 fn a_notification_is_acknowledged_and_never_answered() {
     assert_eq!(
-        decide(
+        decide_arrival(
             br#"{"jsonrpc":"2.0","method":"SendMessage"}"#,
             head(None, None)
         ),
-        Disposition::Notice {
+        AgentDisposition::Notice {
             method: "SendMessage".to_string()
         }
     );
@@ -148,8 +151,8 @@ fn a_notification_is_acknowledged_and_never_answered() {
 
 #[test]
 fn a_request_is_classed_by_its_row_and_an_unlisted_method_is_kept_verbatim() {
-    match decide(SEND, head(None, Some("1.0"))) {
-        Disposition::Request { row, id, version } => {
+    match decide_arrival(SEND, head(None, Some("1.0"))) {
+        AgentDisposition::Request { row, id, version } => {
             assert_eq!(row.op, crate::ops::OP_MESSAGE_SEND);
             assert_eq!(id, serde_json::json!(7));
             assert_eq!(version, "1.0");
@@ -157,11 +160,11 @@ fn a_request_is_classed_by_its_row_and_an_unlisted_method_is_kept_verbatim() {
         other => panic!("{other:?}"),
     }
     assert_eq!(
-        decide(
+        decide_arrival(
             br#"{"jsonrpc":"2.0","id":"x","method":"vendor/Thing"}"#,
             head(None, None)
         ),
-        Disposition::Unlisted {
+        AgentDisposition::Unlisted {
             method: "vendor/Thing".to_string(),
             id: serde_json::json!("x"),
             version: "0.3",
@@ -172,34 +175,37 @@ fn a_request_is_classed_by_its_row_and_an_unlisted_method_is_kept_verbatim() {
 #[test]
 fn a_refused_arrivals_words_read_back_as_the_same_refusal() {
     for r in [
-        Refusal {
+        AgentRefusal {
             status: 415,
             id: None,
             code: -32005,
             message: "m `x`".to_string(),
         },
-        Refusal {
+        AgentRefusal {
             status: 400,
             id: Some(serde_json::json!("id-1")),
             code: -32600,
             message: "bad".to_string(),
         },
-        Refusal {
+        AgentRefusal {
             status: 400,
             id: Some(serde_json::json!(3)),
             code: -32600,
             message: String::new(),
         },
     ] {
-        assert_eq!(Refusal::from_words(r.words().as_bytes()), Some(r.clone()));
+        assert_eq!(
+            AgentRefusal::from_words(r.words().as_bytes()),
+            Some(r.clone())
+        );
     }
-    assert_eq!(Refusal::from_words(b"not the plane's words"), None);
-    assert_eq!(Refusal::from_words(br#"{"status":-1}"#), None);
+    assert_eq!(AgentRefusal::from_words(b"not the plane's words"), None);
+    assert_eq!(AgentRefusal::from_words(br#"{"status":-1}"#), None);
 }
 
 #[test]
 fn the_json_rpc_rendering_is_the_one_envelope_with_error_info_for_an_a2a_code() {
-    let r = Refusal {
+    let r = AgentRefusal {
         status: 415,
         id: None,
         code: -32005,
@@ -226,7 +232,7 @@ fn the_json_rpc_rendering_is_the_one_envelope_with_error_info_for_an_a2a_code() 
         })
     );
     // A JSON-RPC code of its own carries no ErrorInfo.
-    let parse = refused(decide(b"{", head(None, None)));
+    let parse = refused(decide_arrival(b"{", head(None, None)));
     let doc: serde_json::Value =
         serde_json::from_slice(&render(Dialect::JsonRpc, &parse, true).body).expect("json");
     assert!(doc["error"].get("data").is_none());
@@ -234,7 +240,7 @@ fn the_json_rpc_rendering_is_the_one_envelope_with_error_info_for_an_a2a_code() 
 
 #[test]
 fn the_rest_rendering_is_the_aip193_document() {
-    let r = Refusal {
+    let r = AgentRefusal {
         status: 400,
         id: Some(serde_json::json!(1)),
         code: -32009,
@@ -256,7 +262,7 @@ fn the_rest_rendering_is_the_aip193_document() {
         }})
     );
     // A code with no status of its own takes the HTTP status's name.
-    let odd = Refusal {
+    let odd = AgentRefusal {
         status: 429,
         id: None,
         code: -1,
@@ -289,8 +295,8 @@ fn the_words_of_a_head_refusal_echoing_the_largest_admitted_field_line_fit_the_a
     };
     let (quotes, slashes) = (line(H_CONTENT_TYPE, '"'), line(H_VERSION, '\\'));
     for r in [
-        refused(decide(b"", head(Some(&quotes), None))),
-        refused(decide(b"", head(None, Some(&slashes)))),
+        refused(decide_arrival(b"", head(Some(&quotes), None))),
+        refused(decide_arrival(b"", head(None, Some(&slashes)))),
     ] {
         let words = r.words();
         assert!(
@@ -298,7 +304,7 @@ fn the_words_of_a_head_refusal_echoing_the_largest_admitted_field_line_fit_the_a
             "{} > {MAX_REFUSAL_TEXT}",
             words.len()
         );
-        assert_eq!(Refusal::from_words(words.as_bytes()), Some(r));
+        assert_eq!(AgentRefusal::from_words(words.as_bytes()), Some(r));
     }
 }
 
@@ -313,13 +319,13 @@ fn an_origin_that_is_not_loopback_is_refused_before_every_other_rule() {
         "file://x",
         "https://localhost.evil.example",
     ] {
-        let r = refused(decide(
+        let r = refused(decide_arrival(
             b"not json",
             with_origin(Some(origin), Some("text/plain"), Some("9.9")),
         ));
         assert_eq!(
             r,
-            Refusal {
+            AgentRefusal {
                 status: STATUS_FORBIDDEN,
                 id: None,
                 code: CODE_UNSUPPORTED_OPERATION,
@@ -335,8 +341,8 @@ fn an_origin_that_is_not_loopback_is_refused_before_every_other_rule() {
     ] {
         assert!(
             matches!(
-                decide(SEND, with_origin(Some(origin), None, None)),
-                Disposition::Request { .. }
+                decide_arrival(SEND, with_origin(Some(origin), None, None)),
+                AgentDisposition::Request { .. }
             ),
             "{origin}"
         );
@@ -358,14 +364,14 @@ fn an_unlisted_method_is_classed_as_the_hop_the_engine_relays_it_on() {
         let notice = format!(r#"{{"jsonrpc":"2.0","method":"{method}"}}"#);
         for body in [request, notice] {
             assert_eq!(
-                decide(body.as_bytes(), head(None, None)).op_class(),
+                decide_arrival(body.as_bytes(), head(None, None)).op_class(),
                 Some(op),
                 "{body}"
             );
         }
     }
     assert_eq!(
-        Disposition::Refused(refused(decide(b"{", head(None, None)))).op_class(),
+        AgentDisposition::Refused(refused(decide_arrival(b"{", head(None, None)))).op_class(),
         None
     );
 }
@@ -374,7 +380,7 @@ fn an_unlisted_method_is_classed_as_the_hop_the_engine_relays_it_on() {
 /// the grpc transport maps to `grpc-status`; a kernel refusal keeps the kernel's status.
 #[test]
 fn the_grpc_rendering_is_the_envelope_at_the_neutral_status() {
-    let own = refused(decide(b"", head(Some("text/plain"), None)));
+    let own = refused(decide_arrival(b"", head(Some("text/plain"), None)));
     assert_eq!(
         render(Dialect::Framed, &own, true),
         render(Dialect::JsonRpc, &own, true)
@@ -442,7 +448,7 @@ fn a_breaker_refusal_names_the_task_it_rejected_on_every_line() {
 #[test]
 fn an_ungranted_caller_is_told_the_scope_it_does_not_hold() {
     assert_eq!(
-        not_granted("agent:probe"),
+        not_granted_sentence("agent:probe"),
         "this key is not granted `agent:probe`"
     );
 }
@@ -451,7 +457,7 @@ fn an_ungranted_caller_is_told_the_scope_it_does_not_hold() {
 /// keys are not live (disabled, tombstoned, past its row's `expires_at`, reaching the expiry being
 /// expired) is the kernel's identity step, pinned there
 /// (`host_services_tests::a_dead_or_expired_key_sees_nothing`), which the door asks at the attempt
-/// (`plane_door::stands`); this pins what the door answers: `401`, `-32004`, no id, its sentence
+/// (`agent_door::caller_stands`); this pins what the door answers: `401`, `-32004`, no id, its sentence
 /// naming `this key` (a plane never sees the raw principal, BUSBAR-1.6.0.md l.2639-2641; ruling
 /// (B), coordinator 2026-10-07).
 /// Ported from busbar-a2a a2a/tests/inbound_tests.rs::a_key_that_is_not_live_is_refused_401_however_it_is_not_live.
@@ -486,7 +492,7 @@ fn an_unknown_agent_is_a_404_in_1_5_5_words() {
 #[test]
 fn a_null_id_is_never_answered_with_a_success_result() {
     let body = br#"{"jsonrpc":"2.0","id":null,"method":"SendMessage","params":{}}"#;
-    let disposition = decide(body, head(None, None));
+    let disposition = decide_arrival(body, head(None, None));
     assert_eq!(
         disposition.op_class(),
         None,
@@ -513,13 +519,13 @@ fn a_null_id_is_never_answered_with_a_success_result() {
 /// Ported from busbar-a2a a2a/tests/envelope_id_tests.rs::a_request_method_with_no_id_is_a_notification_and_gets_no_response_body.
 #[test]
 fn a_request_method_with_no_id_is_a_notification_and_gets_no_response_body() {
-    let d = decide(
+    let d = decide_arrival(
         br#"{"jsonrpc":"2.0","method":"SendMessage","params":{}}"#,
         head(None, None),
     );
     assert_eq!(
         d,
-        Disposition::Notice {
+        AgentDisposition::Notice {
             method: "SendMessage".to_string()
         }
     );

@@ -101,7 +101,7 @@ fn busbars_own_card_publishes_every_binding_at_every_version_newest_first() {
         ]
     );
     assert_eq!(card["skills"], json!([]));
-    assert_eq!(card["version"], crate::plane_door::VERSION);
+    assert_eq!(card["version"], crate::agent_door::VERSION);
     assert!(self_card_document("not a url", Vec::new()).is_none());
 }
 
@@ -180,7 +180,7 @@ fn the_served_endpoint_and_the_mounted_path_are_one_derivation() {
         .strip_prefix(PUBLIC)
         .expect("the endpoint is under the public base");
     for verb in ["GET", "POST"] {
-        let claimed = crate::door::ROUTES
+        let claimed = crate::door_statement::ROUTES
             .iter()
             .find(|r| r.verb == verb && r.target.contains("{agent_id}"))
             .unwrap_or_else(|| panic!("a claimed {verb} route names an agent"));
@@ -674,8 +674,8 @@ fn the_signature_is_taken_over_the_document_that_is_actually_served() {
 #[test]
 fn the_card_signing_domain_derives_the_exact_pinned_bytes() {
     assert_eq!(
-        crate::door::CARD_SIGNING_DOMAIN,
+        crate::door_statement::CARD_SIGNING_DOMAIN,
         "a2a/agent-card-signing/v1"
     );
-    assert_eq!(crate::door::CARD_KID_PREFIX, "busbar-a2a-card-");
+    assert_eq!(crate::door_statement::CARD_KID_PREFIX, "busbar-a2a-card-");
 }

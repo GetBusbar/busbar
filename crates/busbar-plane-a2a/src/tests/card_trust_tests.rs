@@ -31,7 +31,7 @@ fn signed_root() -> AgentPinCfg {
 
 fn seen(card: &Value) -> Sighting {
     Sighting::Seen(
-        verify(&signed_root(), card, &Handshake::default(), || Ok(())).expect("verifies"),
+        verify_card(&signed_root(), card, &Handshake::default(), || Ok(())).expect("verifies"),
     )
 }
 
@@ -88,20 +88,20 @@ fn a_card_read_refuses_what_is_not_a_card_in_the_engine_s_words() {
 #[test]
 fn each_mechanism_verifies_as_the_engine_did() {
     let c = card("plans");
-    let rooted = verify(&signed_root(), &c, &Handshake::default(), || Ok(())).unwrap();
+    let rooted = verify_card(&signed_root(), &c, &Handshake::default(), || Ok(())).unwrap();
     assert_eq!(
         rooted.pin.fingerprint(),
         Some(card::fingerprint(&c).unwrap().as_str())
     );
     assert_eq!(rooted.skills.len(), 1);
     assert_eq!(
-        verify(&signed_root(), &c, &Handshake::default(), || Err(
+        verify_card(&signed_root(), &c, &Handshake::default(), || Err(
             "not by the key".to_string()
         ))
         .unwrap_err(),
         "not by the key"
     );
-    assert!(verify(
+    assert!(verify_card(
         &pin(PinMechanism::JwsIssuerKey, None),
         &c,
         &Handshake::default(),
@@ -109,7 +109,7 @@ fn each_mechanism_verifies_as_the_engine_did() {
     )
     .unwrap_err()
     .contains("carries no `pin.key:`"));
-    assert!(verify(
+    assert!(verify_card(
         &pin(PinMechanism::CertKeyPin, Some("sha256/K=")),
         &c,
         &Handshake::default(),
@@ -118,7 +118,7 @@ fn each_mechanism_verifies_as_the_engine_did() {
     .unwrap_err()
     .contains("this fetch observed none"));
     assert_eq!(
-        verify(
+        verify_card(
             &pin(PinMechanism::Unpinned, None),
             &c,
             &Handshake::default(),
@@ -128,7 +128,7 @@ fn each_mechanism_verifies_as_the_engine_did() {
         .pin,
         CardPin::Unpinned
     );
-    assert!(verify(
+    assert!(verify_card(
         &pin(PinMechanism::Unpinned, Some("k")),
         &c,
         &Handshake::default(),
@@ -161,17 +161,21 @@ fn the_kernel_s_signature_verdicts_are_worded_as_the_engine_worded_them() {
 
 #[test]
 fn the_kernel_s_verdict_reads_as_the_admission_s_state() {
-    assert_eq!(state_of(svc::DISTRUST_NONE), State::Approved);
+    assert_eq!(verdict_state(svc::DISTRUST_NONE), State::Approved);
     for pending in [
         svc::DISTRUST_UNKNOWN,
         svc::DISTRUST_UNSIGHTED,
         svc::DISTRUST_NOT_APPROVED,
         svc::DISTRUST_UNKNOWN_ITEM,
     ] {
-        assert_eq!(state_of(pending), State::Pending, "{pending}");
+        assert_eq!(verdict_state(pending), State::Pending, "{pending}");
     }
     for quarantined in [svc::DISTRUST_QUARANTINED, svc::DISTRUST_CHANGED] {
-        assert_eq!(state_of(quarantined), State::Quarantined, "{quarantined}");
+        assert_eq!(
+            verdict_state(quarantined),
+            State::Quarantined,
+            "{quarantined}"
+        );
     }
 }
 
@@ -246,7 +250,7 @@ fn the_connect_view_is_a_preview_of_the_card_under_the_key_s_state() {
 #[test]
 fn the_records_trust_answers_are_the_machines_answers_and_not_a_second_opinion() {
     let seen_at = |skills: &[(&str, &str)]| {
-        Sighting::Seen(Observation {
+        Sighting::Seen(CardObservation {
             pin: CardPin::Rooted {
                 mechanism: PinMechanism::JwsIssuerKey,
                 key: "MCowBQYDK2VwAyEAKEY".to_string(),
@@ -389,7 +393,7 @@ fn the_drift_lists_are_the_sighted_skills_against_the_approved_ones() {
 fn an_unpinned_registration_presents_no_fingerprint_to_sight() {
     let c = card("plans");
     let unpinned = Sighting::Seen(
-        verify(
+        verify_card(
             &pin(PinMechanism::Unpinned, None),
             &c,
             &Handshake::default(),
@@ -685,7 +689,7 @@ fn a_transport_pin_is_observed_approvable_and_enforced_as_the_engine_judged_it()
     let c = card("plans");
     let key = "R2V0IHRoZSBrZXkgcmlnaHQ=";
     let spki = pin(PinMechanism::CertKeyPin, Some(&format!(" {key} ")));
-    let seen = verify(&spki, &c, &hop(Some(key), false), || unreachable!()).unwrap();
+    let seen = verify_card(&spki, &c, &hop(Some(key), false), || unreachable!()).unwrap();
     assert_eq!(
         seen.pin,
         CardPin::Rooted {
@@ -700,14 +704,14 @@ fn a_transport_pin_is_observed_approvable_and_enforced_as_the_engine_judged_it()
     );
 
     assert_eq!(
-        verify(&spki, &c, &hop(None, false), || Ok(())).unwrap_err(),
+        verify_card(&spki, &c, &hop(None, false), || Ok(())).unwrap_err(),
         "`pin.mechanism: cert_spki` binds the CARD ENDPOINT's certificate, and this fetch observed \
          none — the hop was plaintext, or the peer's certificate yielded no \
          subject-public-key-info. Refused rather than recorded as satisfied: a fetch that \
          succeeded is not a transport binding that was checked."
     );
     assert_eq!(
-        verify(&spki, &c, &hop(Some("b3RoZXI="), false), || Ok(())).unwrap_err(),
+        verify_card(&spki, &c, &hop(Some("b3RoZXI="), false), || Ok(())).unwrap_err(),
         format!(
             "`pin.mechanism: cert_spki`: the card endpoint served a certificate whose \
              subject-public-key-info is `b3RoZXI=`, and the operator pinned `{key}`. The endpoint \
@@ -716,20 +720,20 @@ fn a_transport_pin_is_observed_approvable_and_enforced_as_the_engine_judged_it()
     );
     // Base64 is case-significant: a key in another case is another key.
     assert!(
-        verify(&spki, &c, &hop(Some(&key.to_lowercase()), false), || Ok(()))
+        verify_card(&spki, &c, &hop(Some(&key.to_lowercase()), false), || Ok(()))
             .unwrap_err()
             .contains("the operator pinned")
     );
 
     let mutual = pin(PinMechanism::MutualTls, Some(key));
-    let both = verify(&mutual, &c, &hop(Some(key), true), || unreachable!()).unwrap();
+    let both = verify_card(&mutual, &c, &hop(Some(key), true), || unreachable!()).unwrap();
     assert_eq!(both.pin.mechanism(), "mtls");
-    assert!(verify(&mutual, &c, &hop(Some(key), false), || Ok(()))
+    assert!(verify_card(&mutual, &c, &hop(Some(key), false), || Ok(()))
         .unwrap_err()
         .starts_with("`pin.mechanism: mtls` requires busbar to present a client certificate"));
     // The peer half first: a mismatched endpoint is a mismatch, not a missing identity.
     assert!(
-        verify(&mutual, &c, &hop(Some("b3RoZXI="), false), || Ok(()))
+        verify_card(&mutual, &c, &hop(Some("b3RoZXI="), false), || Ok(()))
             .unwrap_err()
             .starts_with("`pin.mechanism: mtls`: the card endpoint served a certificate")
     );
@@ -826,7 +830,7 @@ fn the_cadence_grammar_has_no_knob_that_slows_detection_or_delays_demotion() {
     };
     for (rel, src) in [
         ("a2a/config.rs", include_str!("../a2a/config.rs")),
-        ("trust.rs", include_str!("../trust.rs")),
+        ("card_trust.rs", include_str!("../card_trust.rs")),
     ] {
         let src = code(src);
         for banned in [
@@ -861,7 +865,7 @@ fn a_transport_pinned_registration_with_no_pin_material_is_refused_rather_than_d
     for mechanism in [PinMechanism::CertKeyPin, PinMechanism::MutualTls] {
         // Absent, and present-but-blank, are the same: nothing to compare against.
         for key in [None, Some("   ")] {
-            let refusal = verify(
+            let refusal = verify_card(
                 &pin(mechanism, key),
                 &c,
                 &hop(Some("c29tZSBrZXk="), true),

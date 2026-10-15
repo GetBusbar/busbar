@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The door's declarations pass the dispatcher's own validators, and `read_settings` judges a
+//! The door's declarations pass the dispatcher's own validators, and `read_agents_section` judges a
 //! section with the grammar's words.
 
 use super::*;
 use busbar_contract::abi::plane::check::{
     check_admin_routes, check_record_chains, check_tail, check_trust_keys,
 };
+use busbar_contract::abi::plane::{CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
 use busbar_contract::plane::TrustRole;
 
 /// A fixture endpoint: the secure scheme and a reserved example host, spelled once for every test.
@@ -151,7 +152,7 @@ fn the_abi_trust_keys_are_the_grammars_trust_keys() {
 
 #[test]
 fn an_open_route_claims_open_and_a_templated_target_claims_a_pattern() {
-    let spec = snapshot_spec(Some(&endpoint("gw", "")), true);
+    let spec = agents_snapshot_spec(Some(&endpoint("gw", "")), true);
     for (c, r) in spec.claims.iter().zip(ROUTES) {
         let templated = r.target.contains('{');
         assert_eq!((c.verb.as_str(), c.target.as_str()), (r.verb, r.target));
@@ -177,7 +178,7 @@ fn the_tail_states_the_sentence_that_refuses_a_forwarded_caller_credential() {
 
 #[test]
 fn an_admitted_generation_claims_every_route_and_states_its_audience() {
-    let spec = snapshot_spec(Some(&endpoint("gw", "/base?x=1")), true);
+    let spec = agents_snapshot_spec(Some(&endpoint("gw", "/base?x=1")), true);
     assert_eq!(spec.claims.len(), ROUTES.len());
     assert_eq!(spec.audience, Some(endpoint("gw", "/a2a")));
     assert_eq!(
@@ -194,7 +195,7 @@ fn an_admitted_generation_claims_every_route_and_states_its_audience() {
 #[test]
 fn a_generation_with_no_readable_public_base_claims_nothing() {
     for public in [None, Some("not a url")] {
-        let spec = snapshot_spec(public, true);
+        let spec = agents_snapshot_spec(public, true);
         assert!(spec.claims.is_empty());
         assert_eq!((spec.audience, spec.resource_metadata), (None, None));
         assert_eq!(spec.admin_routes.len(), ADMIN_ROUTES.len());
@@ -211,10 +212,10 @@ fn a_generation_with_no_readable_public_base_claims_nothing() {
 #[test]
 fn a_section_carrying_only_the_reserved_keys_states_no_route_and_no_card() {
     use busbar_contract::abi::plane::ROUTE_PUBLIC;
-    let cfg = read_settings(br#"{"hooks": ["audit"], "upstream_credentials": "own"}"#)
+    let cfg = read_agents_section(br#"{"hooks": ["audit"], "upstream_credentials": "own"}"#)
         .expect("the reserved keys alone are a section");
     assert!(cfg.agents.is_empty(), "it registers no agent");
-    let spec = snapshot_spec(Some(&endpoint("gw", "")), !cfg.agents.is_empty());
+    let spec = agents_snapshot_spec(Some(&endpoint("gw", "")), !cfg.agents.is_empty());
     assert!(
         spec.claims.is_empty(),
         "it claims no route: {:?}",
@@ -349,15 +350,18 @@ fn the_admin_openapi_blob_states_every_body_its_verbs_name() {
 
 #[test]
 fn an_empty_blob_is_the_empty_section() {
-    assert_eq!(read_settings(b"").expect("empty"), AgentsCfg::default());
+    assert_eq!(
+        read_agents_section(b"").expect("empty"),
+        AgentsCfg::default()
+    );
 }
 
 #[test]
 fn a_valid_section_reads_and_a_bad_entry_is_refused_in_the_grammars_words() {
     let ok = one_agent("vendor", &endpoint("vendor", "/a2a"));
-    assert_eq!(read_settings(&ok).expect("valid").agents.len(), 1);
+    assert_eq!(read_agents_section(&ok).expect("valid").agents.len(), 1);
     let bad = one_agent("vendor", "ftp://vendor.example");
-    let err = read_settings(&bad).expect_err("refused");
+    let err = read_agents_section(&bad).expect_err("refused");
     assert!(err.contains("`agents.vendor`: `url:` must be an"), "{err}");
 }
 
@@ -379,7 +383,7 @@ fn the_hosts_failover_pools_are_lifted_off_the_section_in_declared_order() {
                                     "repeatable": [], "member_granted": true}}}},
             "planner-a": {{"url": "{a}", "pin": {{"mechanism": "unpinned"}}}}}}"#
     );
-    let cfg = read_settings(section.as_bytes()).expect("the section reads");
+    let cfg = read_agents_section(section.as_bytes()).expect("the section reads");
     assert_eq!(
         cfg.agents.keys().collect::<Vec<_>>(),
         ["planner-b", "planner-a"],
@@ -396,7 +400,7 @@ fn the_hosts_failover_pools_are_lifted_off_the_section_in_declared_order() {
     assert_eq!(cfg.pool_of("vendor"), None);
     // A section with no pools reads as it always did.
     let plain = one_agent("vendor", &endpoint("vendor", "/a2a"));
-    assert!(read_settings(&plain).expect("valid").pools.is_empty());
+    assert!(read_agents_section(&plain).expect("valid").pools.is_empty());
 }
 
 #[test]
@@ -433,7 +437,8 @@ fn the_tail_declares_the_op_class_of_every_method_arrive_can_name() {
         assert_eq!(class.op.len, crate::ops::OP_CLASSES[i].as_str().len());
     }
     for row in crate::ops::METHODS {
-        let i = op_class_index(row.op).expect("declared");
+        let i = busbar_contract::abi::sdk::publish::class_index(crate::ops::OP_CLASSES, row.op)
+            .expect("declared");
         assert_eq!(crate::ops::OP_CLASSES[i as usize], row.op);
     }
 }
@@ -445,14 +450,17 @@ fn a_dealt_validate_blob_is_unwrapped_to_its_section() {
     let dealt =
         br#"{"agents":{"probe":{"url":"https://a.example/","pin":{"mechanism":"unpinned"}}}}"#;
     let section: serde_json::Value =
-        serde_json::from_slice(&crate::door::dealt_section(dealt)).expect("JSON");
+        serde_json::from_slice(&crate::door_statement::dealt_section(dealt)).expect("JSON");
     assert_eq!(
         section,
         serde_json::json!({"probe": {"url": "https://a.example/", "pin": {"mechanism": "unpinned"}}})
     );
     let bare = br#"{"probe":{"url":"https://a.example/"},"hooks":[]}"#;
-    assert_eq!(&*crate::door::dealt_section(bare), &bare[..]);
-    assert!(crate::door::read_settings(&crate::door::dealt_section(dealt)).is_ok());
+    assert_eq!(&*crate::door_statement::dealt_section(bare), &bare[..]);
+    assert!(
+        crate::door_statement::read_agents_section(&crate::door_statement::dealt_section(dealt))
+            .is_ok()
+    );
 }
 
 /// Two constants, and both are wire-visible: the credential kind appears on a stored credential row
@@ -546,13 +554,15 @@ fn a_named_header_placement_reads_through_the_section() {
                 "secret": { "env": "PLANNER_KEY" }, "placement": placement, "lease_ttl_ms": 1000
             },
         } });
-        crate::door::read_settings(&serde_json::to_vec(&section).unwrap()).map(|cfg| {
-            cfg.agents["planner"]
-                .upstream_credential
-                .clone()
-                .unwrap()
-                .placement
-        })
+        crate::door_statement::read_agents_section(&serde_json::to_vec(&section).unwrap()).map(
+            |cfg| {
+                cfg.agents["planner"]
+                    .upstream_credential
+                    .clone()
+                    .unwrap()
+                    .placement
+            },
+        )
     };
     assert_eq!(
         placed(serde_json::json!({ "header": "X-API-Key" })),
@@ -580,7 +590,7 @@ fn the_registry_follows_config_order_rather_than_hash_order() {
             .collect::<Vec<_>>()
             .join(",")
     );
-    let cfg = read_settings(blob.as_bytes()).expect("a valid section");
+    let cfg = read_agents_section(blob.as_bytes()).expect("a valid section");
     let ids: Vec<&str> = cfg.agents.keys().map(String::as_str).collect();
     assert_eq!(
         ids,
@@ -643,7 +653,7 @@ fn the_plane_declares_its_published_identity_and_its_claims_speak_its_wire_forma
     assert_eq!(TAIL.dialects_len, 3);
 
     // Its claims: an admitted generation claims doors at exactly the plane's two mounts.
-    let spec = snapshot_spec(Some(&endpoint("gw", "")), true);
+    let spec = agents_snapshot_spec(Some(&endpoint("gw", "")), true);
     assert!(!spec.claims.is_empty());
     for c in &spec.claims {
         assert!(
@@ -661,5 +671,5 @@ fn the_plane_declares_its_published_identity_and_its_claims_speak_its_wire_forma
         );
     }
     // A generation with no public base (a delegation-only plane) claims nothing.
-    assert!(snapshot_spec(None, true).claims.is_empty());
+    assert!(agents_snapshot_spec(None, true).claims.is_empty());
 }

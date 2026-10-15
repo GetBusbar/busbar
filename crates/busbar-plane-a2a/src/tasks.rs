@@ -17,7 +17,7 @@
 //!   writer that loses re-reads and tries the next one.
 //! * THE HASH CHAIN IS THE HOST'S (ARCHITECT ruling B1, 2026-10-07; `BUSBAR-1.6.0.md` Part 3, the chain section):
 //!   the task-event kind is declared chained, length-prefixed with its scope digested
-//!   (`crate::door`'s `RECORD_CHAINS`; B1 ruling 1, coordinator 2026-10-07). An event is an APPEND
+//!   (`crate::door_statement`'s `RECORD_CHAINS`; B1 ruling 1, coordinator 2026-10-07). An event is an APPEND
 //!   to the chain keyed `<caller>/<task>` (`<caller>` the kernel's opaque caller reference, never
 //!   the principal) carrying only its own fields ([`suffix`]); the host frames `prev, scope, seq`
 //!   ahead of them,
@@ -30,7 +30,7 @@
 //!   on the chained kind it drops the whole chain.
 //! * RETENTION bounds only SETTLED handles ([`TERMINAL_TTL_SECS`], [`MAX_RETAINED`]; spec
 //!   docs/design/BUSBAR-1.6.0.md :198-203, Q128 K2-H5, coordinator 2026-10-07): a read never answers
-//!   a terminal task past its window, and [`sweep`] tombstones it and holds the cap over terminal
+//!   a terminal task past its window, and [`retention_sweep`] tombstones it and holds the cap over terminal
 //!   tasks. An active task is never evicted however long it sits idle; live tasks are bounded at
 //!   admission by the kernel's `work.max_live`.
 
@@ -155,7 +155,7 @@ pub struct Write {
 /// A TASK AS IT IS HELD: the row, and the sequence its chain's next event takes (the host holds the
 /// chain itself; the sequence is what a change claims).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Held {
+pub struct HeldTask {
     /// The row.
     #[serde(flatten)]
     pub row: TaskRow,
@@ -203,7 +203,7 @@ pub fn expired(row: &TaskRow, now: u64) -> bool {
     terminal(&row.state) && now.saturating_sub(row.updated_at) > TERMINAL_TTL_SECS
 }
 
-fn decode(bytes: &[u8]) -> Option<Held> {
+fn decode(bytes: &[u8]) -> Option<HeldTask> {
     serde_json::from_slice(bytes).ok()
 }
 
@@ -239,7 +239,13 @@ pub fn suffix(ev: &TaskEventRow) -> Vec<u8> {
 
 /// Event `kind` over `row` at `held`'s chain position, stamped `ts`; its chain fields are the
 /// host's.
-fn seal(held: &Held, row: &TaskRow, kind: &str, request_id: &str, ts: u64) -> TaskEventRow {
+fn seal_event(
+    held: &HeldTask,
+    row: &TaskRow,
+    kind: &str,
+    request_id: &str,
+    ts: u64,
+) -> TaskEventRow {
     TaskEventRow {
         task_id: row.task_id.clone(),
         seq: held.next_seq,
@@ -266,7 +272,7 @@ pub fn get(
     caller: &str,
     task: &str,
     now: u64,
-) -> Result<Option<Held>, Halt> {
+) -> Result<Option<HeldTask>, Halt> {
     if !is_caller(caller) {
         return Ok(None);
     }
@@ -348,7 +354,7 @@ pub fn restore(rec: &mut dyn Records) -> Result<Restored, Halt> {
 
 /// Who writes, for which request, and when: what every change of a task is stamped with.
 #[derive(Debug, Clone, Copy)]
-pub struct Step<'a> {
+pub struct Stamp<'a> {
     /// The caller's reference: the key prefix.
     pub caller: &'a str,
     /// The request the change belongs to (joins the event to its records; not chained).
@@ -361,18 +367,18 @@ pub struct Step<'a> {
 /// over it. The task as now held, or `None` when another writer won the sequence first.
 fn commit(
     rec: &mut dyn Records,
-    at: &Step<'_>,
-    held: &Held,
+    at: &Stamp<'_>,
+    held: &HeldTask,
     row: TaskRow,
     kind: &str,
     out: &mut Vec<Write>,
-) -> Result<Option<Held>, Halt> {
+) -> Result<Option<HeldTask>, Halt> {
     let key = event_key(at.caller, &row.task_id, held.next_seq);
     if !rec.claim(KIND_TASK_EVENT, &key, CLAIM_TTL_MS)? {
         return Ok(None);
     }
-    let ev = seal(held, &row, kind, at.request_id, at.now);
-    let next = Held {
+    let ev = seal_event(held, &row, kind, at.request_id, at.now);
+    let next = HeldTask {
         next_seq: held.next_seq.saturating_add(1),
         row,
     };
@@ -396,7 +402,7 @@ fn commit(
 /// [`Halt`]; `Failed` when there is no caller or the task id is already taken.
 pub fn submit(
     rec: &mut dyn Records,
-    at: &Step<'_>,
+    at: &Stamp<'_>,
     mut row: TaskRow,
     out: &mut Vec<Write>,
 ) -> Result<TaskRow, Halt> {
@@ -404,11 +410,11 @@ pub fn submit(
         return Err(Halt::Failed("no caller to hold the task under".into()));
     }
     row.principal = at.caller.to_string();
-    let genesis = Held {
+    let genesis = HeldTask {
         row: row.clone(),
         next_seq: 1,
     };
-    let at = Step {
+    let at = Stamp {
         now: row.created_at,
         ..*at
     };
@@ -418,11 +424,11 @@ pub fn submit(
 /// The genesis commit of [`submit`], answering the task as held.
 fn submit_held(
     rec: &mut dyn Records,
-    at: &Step<'_>,
-    genesis: &Held,
+    at: &Stamp<'_>,
+    genesis: &HeldTask,
     row: TaskRow,
     out: &mut Vec<Write>,
-) -> Result<Held, Halt> {
+) -> Result<HeldTask, Halt> {
     let id = row.task_id.clone();
     commit(rec, at, genesis, row, EV_SUBMITTED, out)?
         .ok_or_else(|| Halt::Failed(format!("task `{id}` already exists")))
@@ -437,7 +443,7 @@ fn submit_held(
 /// As [`submit`].
 pub fn open(
     rec: &mut dyn Records,
-    at: &Step<'_>,
+    at: &Stamp<'_>,
     mut row: TaskRow,
     agent_id: &str,
     out: &mut Vec<Write>,
@@ -446,11 +452,11 @@ pub fn open(
         return Err(Halt::Failed("no caller to hold the task under".into()));
     }
     row.principal = at.caller.to_string();
-    let genesis = Held {
+    let genesis = HeldTask {
         row: row.clone(),
         next_seq: 1,
     };
-    let stamped = Step {
+    let stamped = Stamp {
         now: row.created_at,
         ..*at
     };
@@ -479,7 +485,7 @@ pub type Plan<'p> = dyn FnMut(&TaskRow) -> Planned + 'p;
 /// [`Halt`]; `Failed` for no such task, a refused plan, or a sequence lost [`TRIES`] times.
 pub fn change(
     rec: &mut dyn Records,
-    at: &Step<'_>,
+    at: &Stamp<'_>,
     task: &str,
     plan: &mut Plan<'_>,
     out: &mut Vec<Write>,
@@ -506,7 +512,7 @@ pub fn change(
 /// As [`change`]; an illegal move is `Failed` in the state machine's words.
 pub fn transition(
     rec: &mut dyn Records,
-    at: &Step<'_>,
+    at: &Stamp<'_>,
     task: &str,
     to: TaskState,
     out: &mut Vec<Write>,
@@ -521,7 +527,7 @@ pub fn transition(
 /// As [`change`].
 pub fn dispatch(
     rec: &mut dyn Records,
-    at: &Step<'_>,
+    at: &Stamp<'_>,
     task: &str,
     agent_id: &str,
     out: &mut Vec<Write>,
@@ -543,7 +549,7 @@ pub fn dispatch(
 /// [`Halt`].
 pub fn set_callback(
     rec: &mut dyn Records,
-    at: &Step<'_>,
+    at: &Stamp<'_>,
     task: &str,
     callback: &str,
     out: &mut Vec<Write>,
@@ -568,7 +574,7 @@ pub fn set_callback(
 /// As [`change`].
 pub fn advance_cursor(
     rec: &mut dyn Records,
-    at: &Step<'_>,
+    at: &Stamp<'_>,
     task: &str,
     cursor: u64,
     out: &mut Vec<Write>,
@@ -593,7 +599,7 @@ pub fn advance_cursor(
 /// As [`change`].
 pub fn bump_cursor(
     rec: &mut dyn Records,
-    at: &Step<'_>,
+    at: &Stamp<'_>,
     task: &str,
     out: &mut Vec<Write>,
 ) -> Result<Option<TaskRow>, Halt> {
@@ -612,7 +618,7 @@ pub fn bump_cursor(
 /// As [`change`].
 pub fn record_push_delivery(
     rec: &mut dyn Records,
-    at: &Step<'_>,
+    at: &Stamp<'_>,
     task: &str,
     kind: &'static str,
     out: &mut Vec<Write>,
@@ -629,7 +635,7 @@ pub fn record_push_delivery(
 ///
 /// # Errors
 /// [`Halt`].
-pub fn sweep(
+pub fn retention_sweep(
     rec: &mut dyn Records,
     now: u64,
     budget: usize,

@@ -6,17 +6,17 @@
 use super::*;
 use serde_json::{json, Value};
 
-fn reply(status: u32, doc: &Value) -> Answer {
-    Answer::ToCaller(relay::Reply {
+fn reply(status: u32, doc: &Value) -> PieceAnswer {
+    PieceAnswer::ToCaller(relay::RelayReply {
         status,
-        content_type: crate::arrival::JSON_MEDIA_TYPE,
+        content_type: crate::agent_arrival::JSON_MEDIA_TYPE,
         body: serde_json::to_vec(doc).unwrap(),
     })
 }
 
-fn body_of(answer: Answer) -> (u32, Value) {
+fn body_of(answer: PieceAnswer) -> (u32, Value) {
     match answer {
-        Answer::ToCaller(r) => (r.status, serde_json::from_slice(&r.body).unwrap()),
+        PieceAnswer::ToCaller(r) => (r.status, serde_json::from_slice(&r.body).unwrap()),
         other => panic!("not the caller's answer: {other:?}"),
     }
 }
@@ -36,7 +36,7 @@ fn the_target_line_answers_the_bare_result_and_an_aip193_refusal() {
     });
     let (status, doc) = body_of(for_line(reply(404, &refused), true));
     assert_eq!(status, 404);
-    assert_eq!(doc, crate::arrival::aip193(404, &refused["error"]));
+    assert_eq!(doc, crate::agent_arrival::aip193(404, &refused["error"]));
 }
 
 /// On the JSON-RPC line the answer is the relay's, byte for byte; and a piece that is not the
@@ -45,9 +45,9 @@ fn the_target_line_answers_the_bare_result_and_an_aip193_refusal() {
 fn the_document_line_and_a_partial_answer_are_left_alone() {
     let ok = json!({ "jsonrpc": "2.0", "id": 7, "result": { "kind": "task" } });
     assert_eq!(for_line(reply(200, &ok), false), reply(200, &ok));
-    let to_far = Answer::ToFarEnd(b"{}".to_vec());
+    let to_far = PieceAnswer::ToFarEnd(b"{}".to_vec());
     assert_eq!(for_line(to_far.clone(), true), to_far);
-    assert_eq!(for_line(Answer::Nothing, true), Answer::Nothing);
+    assert_eq!(for_line(PieceAnswer::Nothing, true), PieceAnswer::Nothing);
 }
 
 /// On the HTTP+JSON line each event of an answer in events leaves as its bare result.
@@ -55,7 +55,7 @@ fn the_document_line_and_a_partial_answer_are_left_alone() {
 fn the_target_line_answers_each_event_as_its_bare_result() {
     let event = b"data: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"kind\":\"task\"}}\n\n".to_vec();
     let part = |body: Vec<u8>| {
-        Answer::Part(relay::Part {
+        PieceAnswer::Part(relay::Part {
             head: true,
             body,
             last: false,
@@ -68,8 +68,8 @@ fn the_target_line_answers_each_event_as_its_bare_result() {
     assert_eq!(for_line(part(event.clone()), false), part(event));
 }
 
-fn request(method: &str) -> Disposition {
-    Disposition::Request {
+fn request(method: &str) -> AgentDisposition {
+    AgentDisposition::Request {
         row: crate::ops::row_for(method).expect("a listed method"),
         id: json!(7),
         version: "1.0",
@@ -91,7 +91,7 @@ fn a_request_whose_answer_is_events_gets_an_events_hop() {
         assert!(hop.opening.is_some(), "{method}: about a task");
         assert_eq!(hop.subscribe, method == "tasks/resubscribe", "{method}");
     }
-    let unlisted = Disposition::Unlisted {
+    let unlisted = AgentDisposition::Unlisted {
         method: "vendor/stream".into(),
         id: json!(7),
         version: "1.0",
@@ -120,8 +120,8 @@ fn a_request_whose_answer_is_events_gets_an_events_hop() {
 /// no ceiling and no arrival stated a stream, so a stalled caller held its unit forever.
 #[test]
 fn a_streamed_hop_states_a_stream_and_the_tail_predevs_600_second_ceiling() {
-    assert_eq!(crate::door::TAIL.stream_ceiling_secs, 600);
-    assert_eq!(crate::door::STREAM_CEILING_SECS, 600);
+    assert_eq!(crate::door_statement::TAIL.stream_ceiling_secs, 600);
+    assert_eq!(crate::door_statement::STREAM_CEILING_SECS, 600);
     for method in [
         "message/stream",
         "tasks/resubscribe",
@@ -131,7 +131,7 @@ fn a_streamed_hop_states_a_stream_and_the_tail_predevs_600_second_ceiling() {
         let hop = hop_of(&request(method), false, Some(envelope(method))).expect(method);
         assert!(hop.streams(), "{method}: its answer streams");
     }
-    let unlisted = Disposition::Unlisted {
+    let unlisted = AgentDisposition::Unlisted {
         method: "vendor/stream".into(),
         id: json!(7),
         version: "1.0",
@@ -222,7 +222,7 @@ fn a_rewrite_replaces_the_params_by_the_invoke_contract() {
 fn the_target_line_keeps_the_rewritten_params_as_its_body() {
     let route = |verb: &str, suffix: &str| {
         let target = format!("{}{suffix}", crate::MOUNT_PATH);
-        door::ROUTES
+        door_statement::ROUTES
             .iter()
             .find(|r| r.verb == verb && r.target == target)
             .unwrap_or_else(|| panic!("{verb} {target}"))
@@ -395,7 +395,7 @@ fn the_framed_line_answers_messages_and_statuses() {
         json!({ "id": "t-1", "contextId": "c-1", "status": { "state": "TASK_STATE_COMPLETED" } });
     let ok = json!({ "jsonrpc": "2.0", "id": 1, "result": task });
     let ob = Outbox::framed(reply(200, &ok), Rpc::GetTask).expect("an outbox");
-    assert!(matches!(ob.head, Some(Head::Framed)) && ob.final_status.is_none());
+    assert!(matches!(ob.head, Some(AnswerHead::Framed)) && ob.final_status.is_none());
     assert!(ob.done && ob.queue.is_empty());
     let decoded = crate::proto::pb::Task::decode(ob.bytes.as_slice()).expect("a Task");
     assert_eq!(decoded.id, "t-1");
@@ -407,7 +407,7 @@ fn the_framed_line_answers_messages_and_statuses() {
             "reason": "TASK_NOT_FOUND" }] },
     });
     let ob = Outbox::framed(reply(404, &refused), Rpc::GetTask).expect("an outbox");
-    assert!(matches!(ob.head, Some(Head::Framed)), "{:?}", ob.head);
+    assert!(matches!(ob.head, Some(AnswerHead::Framed)), "{:?}", ob.head);
     assert!(
         ob.bytes.is_empty() && !ob.messages,
         "a status's text is no message"
@@ -434,13 +434,13 @@ fn the_framed_line_answers_messages_and_statuses() {
         event("TASK_STATE_WORKING"),
         event("TASK_STATE_COMPLETED")
     );
-    let part = Answer::Part(relay::Part {
+    let part = PieceAnswer::Part(relay::Part {
         head: true,
         body: body.into_bytes(),
         last: true,
     });
     let ob = Outbox::framed(part, Rpc::SubscribeToTask).expect("an outbox");
-    assert!(matches!(ob.head, Some(Head::Framed)) && ob.final_status.is_none());
+    assert!(matches!(ob.head, Some(AnswerHead::Framed)) && ob.final_status.is_none());
     assert_eq!(
         ob.queue.len(),
         1,
@@ -453,14 +453,14 @@ fn the_framed_line_answers_messages_and_statuses() {
         "data: {}\n\n",
         json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32001, "message": "gone" } })
     );
-    let part = Answer::Part(relay::Part {
+    let part = PieceAnswer::Part(relay::Part {
         head: true,
         body: failed.into_bytes(),
         last: false,
     });
     let ob = Outbox::framed(part, Rpc::SubscribeToTask).expect("an outbox");
     assert!(
-        matches!(ob.head, Some(Head::Framed))
+        matches!(ob.head, Some(AnswerHead::Framed))
             && ob.done
             && ob.final_status.as_ref().map(|f| f.code) == Some(5),
         "an error before any message ends the call with its status: {:?}",
@@ -473,8 +473,8 @@ fn the_framed_line_answers_messages_and_statuses() {
 /// details field where there are details. A refusal before any message is that block alone.
 #[test]
 fn a_framed_status_closes_as_its_block() {
-    use crate::framed::{status_block, Reply};
-    let reply = Reply {
+    use crate::framed::{status_block, FramedReply};
+    let reply = FramedReply {
         code: 5,
         body: b"no task {x}%".to_vec(),
         details: Some("CAE".to_string()),
@@ -484,7 +484,7 @@ fn a_framed_status_closes_as_its_block() {
         b"grpc-status: 5\r\ngrpc-message: no%20task%20%7Bx%7D%25\r\ngrpc-status-details-bin: CAE\r\n"
             .to_vec()
     );
-    let bare = Reply {
+    let bare = FramedReply {
         code: 13,
         body: Vec::new(),
         details: None,
@@ -526,7 +526,7 @@ fn the_framed_line_marks_its_messages_and_a_late_failure() {
         "data: {}\n\n",
         json!({ "jsonrpc": "2.0", "id": 1, "error": { "code": -32603, "message": "boom" } })
     );
-    let part = Answer::Part(relay::Part {
+    let part = PieceAnswer::Part(relay::Part {
         head: true,
         body: format!("{event}{failed}").into_bytes(),
         last: false,
@@ -539,7 +539,7 @@ fn the_framed_line_marks_its_messages_and_a_late_failure() {
     assert_eq!(end.code, crate::framed::Code::Internal as u32);
     assert_eq!(end.body, b"boom");
     // A later part that fails with no message of its own ends the stream the same way.
-    let part = Answer::Part(relay::Part {
+    let part = PieceAnswer::Part(relay::Part {
         head: false,
         body: failed.into_bytes(),
         last: false,
@@ -628,7 +628,8 @@ fn a_committed_rewrite_busbar_cannot_read_back_is_refused_rather_than_silently_u
 fn the_unreadable_rewrite_refusal_is_a_conformant_a2a_internal_error() {
     let id = json!("req-7");
     let refusal = unreadable_rewrite(Some(id.clone()));
-    let rendered = crate::arrival::render(crate::arrival::Dialect::JsonRpc, &refusal, true);
+    let rendered =
+        crate::agent_arrival::render(crate::agent_arrival::Dialect::JsonRpc, &refusal, true);
     assert_eq!(
         rendered.status, 500,
         "the status the refusal answers is its row's own"
@@ -648,7 +649,8 @@ fn the_unreadable_rewrite_refusal_is_a_conformant_a2a_internal_error() {
         }),
         "predev's `rpcerror::body(&rpc_id, A2aError::Internal, ..)`, member for member"
     );
-    let rest = crate::arrival::render(crate::arrival::Dialect::RestJson, &refusal, true);
+    let rest =
+        crate::agent_arrival::render(crate::agent_arrival::Dialect::RestJson, &refusal, true);
     assert_eq!(rest.status, 500);
     let doc: Value = serde_json::from_slice(&rest.body).expect("an AIP-193 document");
     assert_eq!(doc["error"]["code"], 500, "{doc}");
@@ -681,7 +683,7 @@ fn the_rewrite_apply_site_never_falls_back_to_the_caller_s_original_params() {
         })
     }
 
-    let src = include_str!("../plane_door.rs");
+    let src = include_str!("../agent_door.rs");
     let site = src
         .split_once("let rewrite = input.field(|i| &i.rewrite).bytes();")
         .map(|(_, rest)| rest)
@@ -732,7 +734,7 @@ fn the_rewrite_apply_site_never_falls_back_to_the_caller_s_original_params() {
 /// fix: a notification was kept as a relayed unit with no hop and REFUSED at its piece.
 #[test]
 fn a_notification_is_acknowledged_here_with_a_202_and_no_body() {
-    let notice = Disposition::Notice {
+    let notice = AgentDisposition::Notice {
         method: "message/send".to_string(),
     };
     assert!(answered_here(&notice, true), "addressed to an agent");
@@ -743,9 +745,9 @@ fn a_notification_is_acknowledged_here_with_a_202_and_no_body() {
     assert!(!answered_here(&request("SendMessage"), false));
     assert_eq!(
         crate::task_door::notice_answer(),
-        (crate::arrival::STATUS_ACCEPTED, &b""[..])
+        (crate::agent_arrival::STATUS_ACCEPTED, &b""[..])
     );
-    assert_eq!(crate::arrival::STATUS_ACCEPTED, 202);
+    assert_eq!(crate::agent_arrival::STATUS_ACCEPTED, 202);
 }
 /// `jsonrpc_client_issues_get_extended_agent_card`: a caller that addresses ONE agent and asks for
 /// the extended card is asking for THAT agent's, and the door relays it as a TASK-LESS hop (a card
@@ -755,7 +757,7 @@ fn a_notification_is_acknowledged_here_with_a_202_and_no_body() {
 fn an_addressed_extended_card_read_is_relayed_as_a_task_less_hop() {
     let row = crate::ops::row_for("GetExtendedAgentCard").expect("a row");
     let envelope = json!({ "jsonrpc": "2.0", "id": 7, "method": "GetExtendedAgentCard" });
-    let asked = Disposition::Request {
+    let asked = AgentDisposition::Request {
         row,
         id: json!(7),
         version: "1.0",
@@ -767,7 +769,7 @@ fn an_addressed_extended_card_read_is_relayed_as_a_task_less_hop() {
     let mut hop = hop_of(&asked, true, Some(envelope.clone())).expect("a hop to the agent");
     assert!(hop.opening.is_none(), "a card read opens no task");
     hop.relay.bind(crate::binding::Binding::JsonRpc, &envelope);
-    let Answer::Attempt(attempt) = hop.relay.on_piece(relay::Piece {
+    let PieceAnswer::Attempt(attempt) = hop.relay.on_piece(relay::Piece {
         from: relay::From::Kernel(Some("https://backend.agent.test/a2a")),
         bytes: &[],
         status: None,
@@ -784,7 +786,7 @@ fn an_addressed_extended_card_read_is_relayed_as_a_task_less_hop() {
             status: None,
             last: true,
         }),
-        Answer::ToFarEndLent,
+        PieceAnswer::ToFarEndLent,
         "the caller's envelope, verbatim: the piece itself, lent"
     );
 }

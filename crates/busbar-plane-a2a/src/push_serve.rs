@@ -31,8 +31,8 @@ use busbar_contract::abi::sdk::{Instance, Lent, Out};
 use serde_json::{json, Value};
 
 use crate::a2a::task::Task;
-use crate::plane_door::A2aDoor;
-use crate::tasks::{self, Halt, Step, Write};
+use crate::agent_door::A2aDoor;
+use crate::tasks::{self, Halt, Stamp, Write};
 
 /// The ceiling on a pushed body: one task document (the engine's `MAX_PUSH_BODY`).
 pub const MAX_PUSH_BODY: usize = 64 * 1024;
@@ -44,7 +44,7 @@ pub const UNAUTHORISED: &str =
 /// The sentence a spent push-volume budget answers with.
 pub const RATE_LIMITED: &str = "this task's push volume has exceeded its window budget";
 
-const JSON_FIELDS: &[(&str, &str)] = &[("content-type", crate::arrival::JSON_MEDIA_TYPE)];
+const JSON_FIELDS: &[(&str, &str)] = &[("content-type", crate::agent_arrival::JSON_MEDIA_TYPE)];
 
 /// A refusal in the one shape this endpoint speaks: `{"error":{"message":...}}`, not a JSON-RPC
 /// envelope (the caller is an HTTP webhook client).
@@ -64,12 +64,12 @@ fn refused(
 /// `202`, with no document: the report was taken, the move it recorded written to the task's
 /// chain with the answer (SEAM-L(t)).
 fn accepted(input: &Lent<'_, ServeIn>, out: &mut Out<'_, ServeOut>, writes: &[Write]) -> Outcome {
-    answer(input, out, (202, &[], b""), writes)
+    serve_answer(input, out, (202, &[], b""), writes)
 }
 
 /// A whole serve answer: `status`, the head `fields`, `body`, and the record `writes` it carries,
 /// every span in the one arena; a short buffer answers FAILED with what each needs.
-fn answer(
+fn serve_answer(
     input: &Lent<'_, ServeIn>,
     out: &mut Out<'_, ServeOut>,
     (status, head, body): (u32, &[(&str, &str)], &[u8]),
@@ -245,12 +245,12 @@ pub(crate) fn serve(
         );
     };
     // 6. THE MOVE, through the one transition table, read by the one reader of a task's state.
-    let reported = crate::identity::reported_task_state(&document);
+    let reported = crate::task_identity::reported_task_state(&document);
     let mut writes = Vec::new();
     let moved = if reported == task.state {
         held.row
     } else {
-        let at = Step {
+        let at = Stamp {
             caller: &caller,
             request_id: "",
             now,

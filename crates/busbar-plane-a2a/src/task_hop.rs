@@ -6,16 +6,16 @@
 //! unary hop (`busbar-a2a` `receive`: `addressed_task`, `resumable_task`, the mint, the submit and
 //! `record_dispatch`, `record_state`, `end_task`), in its order and with its answers.
 //!
-//! * ADDRESSED: the request's `params` name a task the caller holds ([`identity::named_tasks`]):
+//! * ADDRESSED: the request's `params` name a task the caller holds ([`task_identity::named_tasks`]):
 //!   the hop reuses its identity and opens nothing.
 //! * RESUMED: the caller's message names a `contextId` under which one of its tasks on this agent
 //!   is interrupted: the newest moves back to `working` (refused `409` when it cannot).
-//! * FRESH: busbar mints the id from eight random bytes ([`identity::mint`]), the `contextId` is the
+//! * FRESH: busbar mints the id from eight random bytes ([`task_identity::mint`]), the `contextId` is the
 //!   caller's or the id, and the task is submitted and dispatched to the agent before the hop
 //!   (refused `503` when it cannot be recorded).
 //!
 //! Task ids the caller holds and whose far-end id busbar learnt are sent on as the far end's
-//! ([`identity::translate_request`]). On the answer, the reported state is recorded (nothing for
+//! ([`task_identity::translate_request`]). On the answer, the reported state is recorded (nothing for
 //! `submitted`), and a failed hop ends a task it opened as `failed`.
 //!
 //! A push callback the request carries INLINE (its `configuration`, in any of the three spellings
@@ -31,13 +31,13 @@ use busbar_contract::abi::sdk::publish::Keyed;
 use serde_json::Value;
 
 use crate::a2a::task::{plan_transition, Direction, Task, TaskState};
-use crate::arrival::{Refusal, JSON_MEDIA_TYPE};
-use crate::identity::{self, MINT_BYTES};
+use crate::agent_arrival::{AgentRefusal, JSON_MEDIA_TYPE};
 use crate::local::{self, Reach};
 use crate::push::DeliveryAuth;
-use crate::relay::{Reply, Settled, TaskHop};
+use crate::relay::{RelayReply, TaskHop, TaskSettled};
 use crate::skill::CALLBACK_CONFIG_POINTERS;
-use crate::tasks::{self, Halt, Planned, Records, Step, Write};
+use crate::task_identity::{self, MINT_BYTES};
+use crate::tasks::{self, Halt, Planned, Records, Stamp, Write};
 use crate::TaskRow;
 
 /// `-32002`: the task cannot be moved.
@@ -116,15 +116,15 @@ pub enum Opened {
         /// ([`TASK_UNRECORDED`]); a resumed one: `409`, `-32002` ([`TASK_UNRESUMED`]). `None` for an
         /// addressed task, whose hop the engine sent whether or not its callback was recorded
         /// (`busbar-a2a` `receive.rs:2080-2096`).
-        unrecorded: Option<Refusal>,
+        unrecorded: Option<AgentRefusal>,
     },
     /// The hop does not go ahead: the caller's whole answer.
-    Refused(Reply),
+    Refused(RelayReply),
 }
 
 /// The refusal an opening gives, echoing `rpc_id`.
-fn refusal(status: u32, rpc_id: &Value, code: i64, message: &str) -> Refusal {
-    Refusal {
+fn refusal(status: u32, rpc_id: &Value, code: i64, message: &str) -> AgentRefusal {
+    AgentRefusal {
         status,
         id: Some(rpc_id.clone()),
         code,
@@ -135,7 +135,7 @@ fn refusal(status: u32, rpc_id: &Value, code: i64, message: &str) -> Refusal {
 /// The answer a refused opening gives, in the engine's `rpcerror::body` words.
 fn refused(status: u32, rpc_id: &Value, code: i64, message: &str) -> Opened {
     let answer = refusal(status, rpc_id, code, message);
-    Opened::Refused(Reply {
+    Opened::Refused(RelayReply {
         status,
         content_type: JSON_MEDIA_TYPE,
         body: serde_json::to_vec(&answer.envelope()).unwrap_or_default(),
@@ -182,12 +182,12 @@ pub fn holder(
     now: u64,
     members: &[String],
 ) -> Result<Option<String>, Halt> {
-    for named in identity::named_tasks(envelope) {
+    for named in task_identity::named_tasks(envelope) {
         if let Some(held) = or_absent(tasks::get(reach, caller, named, now), None)? {
             return Ok(Some(held.row.agent_id));
         }
     }
-    let context = identity::context_of(envelope);
+    let context = task_identity::context_of(envelope);
     if context.is_empty() {
         return Ok(None);
     }
@@ -228,13 +228,13 @@ pub fn open(
     };
     let url = callback.as_ref().map(|c| c.url.as_str());
     let mut addressed = None;
-    for named in identity::named_tasks(req.envelope) {
+    for named in task_identity::named_tasks(req.envelope) {
         if let Some(held) = or_absent(tasks::get(reach, req.caller, named, req.now), None)? {
             addressed = Some(held.row);
             break;
         }
     }
-    let context = identity::context_of(req.envelope);
+    let context = task_identity::context_of(req.envelope);
     let resumed = match (&addressed, context.is_empty()) {
         (None, false) => resumable(
             or_absent(tasks::list(reach, req.caller, req.now), Vec::new())?,
@@ -246,7 +246,7 @@ pub fn open(
     let (task, unrecorded) = match (addressed, resumed) {
         (Some(row), _) => {
             if let Some(url) = url {
-                let at = Step {
+                let at = Stamp {
                     caller: req.caller,
                     request_id: &row.task_id,
                     now: req.now,
@@ -266,7 +266,7 @@ pub fn open(
             (task, None)
         }
         (None, Some(row)) => {
-            let at = Step {
+            let at = Stamp {
                 caller: req.caller,
                 request_id: &row.task_id,
                 now: req.now,
@@ -308,13 +308,13 @@ pub fn open(
         (None, None) => {
             let mut random = [0u8; MINT_BYTES];
             reach.random(&mut random)?;
-            let task_id = identity::mint(req.addressed.unwrap_or(req.member), random);
+            let task_id = task_identity::mint(req.addressed.unwrap_or(req.member), random);
             let context_id = if context.is_empty() {
                 task_id.clone()
             } else {
                 context.to_string()
             };
-            let at = Step {
+            let at = Stamp {
                 caller: req.caller,
                 request_id: &task_id,
                 now: req.now,
@@ -407,7 +407,7 @@ fn translated(
 ) -> Result<Option<Vec<u8>>, Halt> {
     let mut owned = BTreeMap::new();
     let relayed = req.relayed.unwrap_or(req.envelope);
-    for id in identity::translatable(relayed) {
+    for id in task_identity::translatable(relayed) {
         if owned.contains_key(id) {
             continue;
         }
@@ -421,7 +421,7 @@ fn translated(
     if owned.is_empty() {
         return Ok(None);
     }
-    Ok(identity::translate_request(relayed, &|id| {
+    Ok(task_identity::translate_request(relayed, &|id| {
         owned.get(id).cloned()
     }))
 }
@@ -462,7 +462,7 @@ macro_rules! latched {
 
 /// A record write the store refused, reported and never fatal: the hop SUCCEEDED, the caller is
 /// owed its answer, and the stream keeps flowing. The words are predev's, line for line.
-pub(crate) enum Refused {
+pub(crate) enum WriteRefused {
     /// The unary hop's reported state (predev `receive.rs` `record_state`, l.3239).
     Relayed,
     /// A streamed event's state (predev l.2965).
@@ -473,7 +473,7 @@ pub(crate) enum Refused {
     Cursor,
 }
 
-impl Refused {
+impl WriteRefused {
     pub(crate) fn report(&self, latches: &Latches, task: &str, error: &str) {
         use crate::diagnostics::{A2A_FAILURE_UNRECORDED, A2A_RELAYED_OUTCOME_UNRECORDED};
         match self {
@@ -520,24 +520,24 @@ impl Refused {
 ///
 /// # Errors
 /// [`Halt::Pending`] when a records call pends.
-pub fn settle(
+pub fn settle_on_answer(
     rec: &mut dyn Records,
     task: &TaskHop,
-    settled: &Settled,
+    settled: &TaskSettled,
     caller: &str,
     now: u64,
     out: &mut Vec<Write>,
     latches: &Latches,
 ) -> Result<Option<TaskRow>, Halt> {
     let (to, artifact) = match settled {
-        Settled::Reported { state, .. } if *state == TaskState::Submitted => return Ok(None),
-        Settled::Reported { state, .. } => (Some(*state), false),
-        Settled::Failed => (Some(TaskState::Failed), false),
-        Settled::Event {
+        TaskSettled::Reported { state, .. } if *state == TaskState::Submitted => return Ok(None),
+        TaskSettled::Reported { state, .. } => (Some(*state), false),
+        TaskSettled::Failed => (Some(TaskState::Failed), false),
+        TaskSettled::Event {
             state, artifact, ..
         } => (*state, *artifact),
     };
-    let at = Step {
+    let at = Stamp {
         caller,
         request_id: &task.task_id,
         now,
@@ -553,9 +553,9 @@ pub fn settle(
             Err(Halt::Pending) => return Err(Halt::Pending),
             Err(Halt::Failed(words)) => {
                 let refused = match settled {
-                    Settled::Failed => Refused::Failure,
-                    Settled::Reported { .. } => Refused::Relayed,
-                    Settled::Event { .. } => Refused::Streamed(to),
+                    TaskSettled::Failed => WriteRefused::Failure,
+                    TaskSettled::Reported { .. } => WriteRefused::Relayed,
+                    TaskSettled::Event { .. } => WriteRefused::Streamed(to),
                 };
                 refused.report(latches, &task.task_id, &words);
             }
@@ -573,7 +573,7 @@ pub fn settle(
         };
         match bumped {
             Err(Halt::Pending) => return Err(Halt::Pending),
-            Err(Halt::Failed(words)) => Refused::Cursor.report(latches, &task.task_id, &words),
+            Err(Halt::Failed(words)) => WriteRefused::Cursor.report(latches, &task.task_id, &words),
             Ok(_) => out.extend(step),
         }
     }

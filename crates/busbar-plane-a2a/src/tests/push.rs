@@ -72,19 +72,19 @@ fn a_failing_receiver_gets_three_attempts_at_250_then_500_ms_and_no_fourth() {
     // The low end of the first wait (250 - 20 %), then the high end of the second (500 + 20 %).
     assert_eq!(
         d.settle("t1", Attempted::Status(503), 0, 0),
-        Settled::Retry(200 * MS)
+        DeliverySettled::Retry(200 * MS)
     );
     assert!(d.due(199 * MS).is_empty(), "nothing before its time");
     assert_eq!(d.next_tick_ns(), 200 * MS);
     assert_eq!(d.due(200 * MS).len(), 1);
     assert_eq!(
         d.settle("t1", Attempted::Transport, 200 * MS, 255),
-        Settled::Retry(800 * MS)
+        DeliverySettled::Retry(800 * MS)
     );
     assert_eq!(d.due(800 * MS).len(), 1);
     assert_eq!(
         d.settle("t1", Attempted::Status(429), 800 * MS, 0),
-        Settled::Done(vocab::EV_PUSH_FAILED)
+        DeliverySettled::Done(vocab::EV_PUSH_FAILED)
     );
     assert!(d.due(u64::MAX).is_empty(), "no fourth attempt");
     assert_eq!((d.depth("t1"), d.next_tick_ns()), (0, 0));
@@ -99,17 +99,20 @@ fn a_refused_destination_or_a_4xx_ends_the_delivery_at_once() {
     assert_eq!(d.due(0).len(), 3);
     assert_eq!(
         d.settle("a", Attempted::Judged(DEST_METADATA), 0, 0),
-        Settled::Done(vocab::EV_PUSH_REFUSED)
+        DeliverySettled::Done(vocab::EV_PUSH_REFUSED)
     );
     assert_eq!(
         d.settle("b", Attempted::Status(404), 0, 0),
-        Settled::Done(vocab::EV_PUSH_FAILED)
+        DeliverySettled::Done(vocab::EV_PUSH_FAILED)
     );
     assert_eq!(
         d.settle("c", Attempted::Delivered, 0, 0),
-        Settled::Done(vocab::EV_PUSH_DELIVERED)
+        DeliverySettled::Done(vocab::EV_PUSH_DELIVERED)
     );
-    assert_eq!(d.settle("c", Attempted::Delivered, 0, 0), Settled::Unknown);
+    assert_eq!(
+        d.settle("c", Attempted::Delivered, 0, 0),
+        DeliverySettled::Unknown
+    );
     assert_eq!(d.next_tick_ns(), 0);
 }
 
@@ -167,7 +170,7 @@ fn a_full_queue_drops_its_oldest_waiting_notification_and_counts_it() {
     assert_eq!(d.dropped(), 2);
     assert_eq!(
         d.settle("t1", Attempted::Delivered, 0, 0),
-        Settled::Done(vocab::EV_PUSH_DELIVERED)
+        DeliverySettled::Done(vocab::EV_PUSH_DELIVERED)
     );
     assert_eq!(d.due(0)[0].body, b"3");
 }
@@ -328,12 +331,12 @@ fn the_push_volume_bound_is_one_point_five_point_fives() {
 
 #[test]
 fn the_statement_declares_its_open_web_need_and_its_agent_member_need() {
-    use crate::door::{MEMBER_TARGET, NEEDS, NEED_AGENT, NEED_OPEN_WEB};
+    use crate::door_statement::{MEMBER_TARGET, NEEDS, NEED_AGENT, NEED_OPEN_WEB};
     use busbar_contract::abi::host::conn::connector::{
         DIRECTION_OUTBOUND, EGRESS_OPEN_WEB, EGRESS_PROVIDER,
     };
     use busbar_contract::abi::mechanism::check::check_needs;
-    let st = &crate::plane_door::STATEMENT;
+    let st = &crate::agent_door::STATEMENT;
     assert!(!st.needs.is_null());
     // The open web, the agents over http, the agents over grpc.
     assert_eq!((st.needs_len, NEEDS.len()), (3, 3));
@@ -500,7 +503,7 @@ fn the_next_due_is_one_head_at_a_time_the_longest_waiting_first() {
     );
     assert_eq!(
         d.settle("t2", Attempted::Delivered, 11 * MS, 0),
-        Settled::Done(vocab::EV_PUSH_DELIVERED)
+        DeliverySettled::Done(vocab::EV_PUSH_DELIVERED)
     );
     assert_eq!(d.next_due(11 * MS).map(|x| x.task_id), Some("t2".into()));
 }

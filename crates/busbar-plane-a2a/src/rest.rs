@@ -9,7 +9,7 @@
 //! the operation differs between the two lines but where the method NAME comes from (the request
 //! line) and how the answer is wrapped. This module is the first half: [`compose`] builds the
 //! envelope the served engine's `rest.rs` composed (member for member, the same fixed id), and the
-//! door decides it with [`crate::arrival::decide`] under the caller's own head fields, which is the
+//! door decides it with [`crate::agent_arrival::decide_arrival`] under the caller's own head fields, which is the
 //! order the engine ran (its route handler composed, then `receive::invoke` judged the head and
 //! parsed the composed body). The one refusal composing can earn, a `POST /tasks/{id}:<verb>`
 //! naming no verb, comes first, as it did in the engine's handler.
@@ -18,8 +18,8 @@ use std::collections::HashMap;
 
 use serde_json::{json, Map, Value};
 
-use crate::arrival::Refusal;
-use crate::door::Route;
+use crate::agent_arrival::AgentRefusal;
+use crate::door_statement::Route;
 
 /// THE JSON-RPC ID OF A COMPOSED ENVELOPE. A JSON-RPC id is a correlation handle for a channel
 /// that multiplexes requests; one HTTP request has none, so the id is a fixed string that says
@@ -212,8 +212,8 @@ pub fn json_body(body: &[u8]) -> Value {
 /// The refusal for a `POST /tasks/…` that names no verb this binding defines: `404` +
 /// `MethodNotFound`, in the engine's words.
 #[must_use]
-pub fn not_a_verb(addressed: &str) -> Refusal {
-    Refusal {
+pub fn not_a_verb(addressed: &str) -> AgentRefusal {
+    AgentRefusal {
         status: STATUS_NOT_FOUND,
         id: None,
         code: CODE_METHOD_NOT_FOUND,
@@ -261,7 +261,7 @@ fn query_of(target: &str) -> Option<&str> {
 ///
 /// [`not_a_verb`] for a `POST /tasks/{id}` naming no verb. `Ok(None)` for a route that is not one of
 /// the line's, or a target that does not fit it, which the door answers as unserved.
-pub fn compose(route: &Route, target: &str, body: &[u8]) -> Result<Option<Vec<u8>>, Refusal> {
+pub fn compose(route: &Route, target: &str, body: &[u8]) -> Result<Option<Vec<u8>>, AgentRefusal> {
     let Some(vars) = captures(route, target) else {
         return Ok(None);
     };
@@ -286,7 +286,7 @@ pub fn compose_from(
     var: impl Fn(&str) -> String,
     query: Option<&str>,
     body: &[u8],
-) -> Result<Option<Vec<u8>>, Refusal> {
+) -> Result<Option<Vec<u8>>, AgentRefusal> {
     let query = query_map(query);
     let rel = route
         .target
@@ -361,7 +361,7 @@ pub fn compose_from(
 
 /// RE-FRAME A JSON-RPC ANSWER for the HTTP+JSON line, by what it is (the engine's `rest::reframe`):
 /// a `result` becomes the body VERBATIM; an `error` becomes the AIP-193 document at `status`
-/// ([`crate::arrival::aip193`]); anything else (not JSON, or neither member) passes untouched.
+/// ([`crate::agent_arrival::aip193`]); anything else (not JSON, or neither member) passes untouched.
 #[must_use]
 pub fn reframe(status: u32, body: &[u8]) -> Vec<u8> {
     let Ok(envelope) = serde_json::from_slice::<Value>(body) else {
@@ -369,7 +369,7 @@ pub fn reframe(status: u32, body: &[u8]) -> Vec<u8> {
     };
     let reframed = match (envelope.get("result"), envelope.get("error")) {
         (Some(result), _) => result.clone(),
-        (None, Some(error)) if !error.is_null() => crate::arrival::aip193(status, error),
+        (None, Some(error)) if !error.is_null() => crate::agent_arrival::aip193(status, error),
         _ => return body.to_vec(),
     };
     serde_json::to_vec(&reframed).unwrap_or_default()

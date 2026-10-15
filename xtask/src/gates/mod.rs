@@ -415,9 +415,10 @@ pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
     // and collapse each second spelling. Strike each line in the commit that turns its row green.
     // `structure-lint:axis:purity` STRUCK 2026-10-02 (GATE-GREEN, ee06655df0): the contract asks no
     // claim its transport and the ABI handshake has one home, so the row is green.
-    // `structure-lint:plane-dup:unledgered` STRUCK at #787 (ARCHITECT ruling): the a2a engine's
-    // deletion moved pre-existing door code into busbar-plane-a2a, and the row is ARMED at the
-    // measured count (`plane_dups::UNLEDGERED_ARMED`, Law 9), green at it and red above or below.
+    // `structure-lint:plane-dup:unledgered` STRUCK at #787 (ARCHITECT ruling): the row is ARMED at
+    // the measured count (`plane_dups::UNLEDGERED_ARMED`, Law 9): predev's carried findings and the
+    // a2a plane's pre-existing files its home move made visible, the door code #787 added drained
+    // through the SDK or renamed; green at it and red above or below.
 ];
 
 /// One entry of [`REPORT_ONLY`].

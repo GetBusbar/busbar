@@ -13,7 +13,7 @@
 //!   under it; one that names a different request is an error, and the hop is refused.
 //! * An `error` frame is relayed as it stands under the caller's id: mid-stream, the status is
 //!   already spent and the far end's error is content the caller is owed.
-//! * A `result` frame leaves under busbar's task identity ([`identity::rewrite_identity`]); the
+//! * A `result` frame leaves under busbar's task identity ([`task_identity::rewrite_identity`]); the
 //!   state it reports, whether it carried an artifact and the far end's own task id are read off it
 //!   first, through the v1.0 wrappers as well as the v0.3 bare shape.
 
@@ -21,8 +21,8 @@ use busbar_contract::jsonrpc::{read_response, Reply};
 use serde_json::{json, Value};
 
 use crate::a2a::task::TaskState;
-use crate::identity;
 use crate::sse::sse_data;
+use crate::task_identity;
 
 /// The media type of an event stream: what a relayed stream's answer is.
 pub const EVENTS_MEDIA_TYPE: &str = "text/event-stream";
@@ -44,7 +44,7 @@ pub struct Event {
 }
 
 /// One JSON value as a complete event.
-fn frame(value: &Value) -> Vec<u8> {
+fn json_event(value: &Value) -> Vec<u8> {
     format!("data: {value}\n\n").into_bytes()
 }
 
@@ -85,7 +85,7 @@ pub fn read_event(
     }
     let Reply::Result(_) = reply else {
         return Ok(Event {
-            sse: frame(&envelope),
+            sse: json_event(&envelope),
             state: None,
             artifact: false,
             backend_task_id: None,
@@ -94,18 +94,18 @@ pub fn read_event(
     let Some(result) = envelope.get_mut("result") else {
         return verbatim();
     };
-    let payload = identity::payload_of(result);
+    let payload = task_identity::payload_of(result);
     let artifact = payload.get("artifact").is_some()
         || payload.get("artifacts").is_some()
         || result.get("artifactUpdate").is_some();
     let state = payload
         .pointer("/status/state")
         .and_then(Value::as_str)
-        .and_then(identity::wire_state);
-    let backend_task_id = identity::backend_task_id(result);
-    identity::rewrite_identity(result, task_id, context_id, skill);
+        .and_then(task_identity::wire_state);
+    let backend_task_id = task_identity::backend_task_id(result);
+    task_identity::rewrite_identity(result, task_id, context_id, skill);
     Ok(Event {
-        sse: frame(&envelope),
+        sse: json_event(&envelope),
         state,
         artifact,
         backend_task_id,

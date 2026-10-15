@@ -2,10 +2,10 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The `agents:` section's grammar, and the value rules that make the object pin worth having,
-//! read as the door reads them: through [`crate::door::read_settings`] over the section's JSON.
+//! read as the door reads them: through [`crate::door_statement::read_agents_section`] over the section's JSON.
 
 use super::*;
-use crate::door::read_settings;
+use crate::door_statement::read_agents_section;
 use busbar_contract::config::UpstreamCreds;
 use busbar_contract::secret_ref::{SecretRef, SECRET_MODULE_FILE};
 use serde_json::json;
@@ -33,7 +33,7 @@ fn def(url: &str, pin: PinMechanism) -> AgentDefCfg {
 
 /// Parse a section document the way the door does.
 fn parse(section: &serde_json::Value) -> Result<AgentsCfg, String> {
-    read_settings(section.to_string().as_bytes())
+    read_agents_section(section.to_string().as_bytes())
 }
 
 const ALL: [PinMechanism; 4] = [

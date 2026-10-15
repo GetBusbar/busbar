@@ -8,11 +8,11 @@
 //! * A relayed task that MOVES queues its notification ([`queue`]): to the push_config host record
 //!   the caller registered for it, or else to the callback its row carries (an inline config). A
 //!   task with neither queues nothing.
-//! * The lifecycle `tick` ([`tick`]) attempts ONE due notification per op: the kernel's random
+//! * The lifecycle `tick` ([`tick_deliveries`]) attempts ONE due notification per op: the kernel's random
 //!   byte for the retry's jitter, then the destination judge over the callback, its name resolved,
 //!   then predev's anti-rebinding rule over the judged addresses
 //!   ([`crate::push::Deliveries::rebound`]), then one exchange over the plane's outbound `open-web`
-//!   need ([`crate::door::NEED_OPEN_WEB`]) landing only on those addresses. An attempt whose
+//!   need ([`crate::door_statement::NEED_OPEN_WEB`]) landing only on those addresses. An attempt whose
 //!   exchange pends ends its `tick` PENDING (a driver ticket's op is never resumed) and goes on
 //!   through `drive` ([`drive`]), held in plane memory across the entries, each making the same host
 //!   calls in the same order (the replay rule). Its end settles the queue and is OWED to the task's
@@ -40,12 +40,12 @@ use busbar_contract::abi::sdk::publish::Keyed;
 use busbar_contract::abi::sdk::{Instance, Services};
 
 use crate::a2a::task::Task;
-use crate::door::NEED_OPEN_WEB;
+use crate::agent_door::A2aDoor;
+use crate::door_statement::NEED_OPEN_WEB;
 use crate::local::{self, PushConfig};
-use crate::plane_door::A2aDoor;
 use crate::push::{Attempted, Deliveries, Delivery, Owed};
 use crate::records::KIND_PUSH_CONFIG;
-use crate::tasks::{self, Halt, Records, Step, Write};
+use crate::tasks::{self, Halt, Records, Stamp, Write};
 use crate::TaskRow;
 
 /// Room for the judged addresses of one callback.
@@ -123,7 +123,7 @@ pub fn file_owed(
 ) -> Result<(), Halt> {
     for o in owed.iter().filter(|o| o.caller == caller) {
         // No inbound request originates a delivery: the request id is empty, as the engine's.
-        let at = Step {
+        let at = Stamp {
             caller,
             request_id: "",
             now: now_s,
@@ -333,7 +333,11 @@ pub(crate) fn next_tick_ns(deliveries: &Deliveries, attempting: &Attempting) -> 
 /// no other and makes no host call: the delivery's one request is the held attempt's, and it goes
 /// on only through `drive`, so a delivery is never sent by both paths. A door opened without host
 /// tables, or a tick that may not pend, attempts nothing.
-pub(crate) fn tick(plane: &A2aDoor, instance: &Instance<'_, A2aDoor>, now_ns: u64) -> Outcome {
+pub(crate) fn tick_deliveries(
+    plane: &A2aDoor,
+    instance: &Instance<'_, A2aDoor>,
+    now_ns: u64,
+) -> Outcome {
     let Some((ticket, mut calls)) = calls_of(plane, instance) else {
         return Outcome::Ready;
     };
@@ -372,7 +376,7 @@ fn calls_of<'p>(
     ))
 }
 
-/// [`tick`] over `line`.
+/// [`tick_deliveries`] over `line`.
 fn tick_over(
     line: &mut dyn Line,
     deliveries: &Deliveries,
@@ -400,7 +404,7 @@ fn tick_over(
         return Outcome::Ready;
     }
     match deliveries.next_due(now_ns) {
-        Some(delivery) => advance(
+        Some(delivery) => advance_attempt(
             line,
             deliveries,
             attempting,
@@ -417,14 +421,14 @@ fn tick_over(
 /// [`drive`] over `line`.
 fn drive_over(line: &mut dyn Line, deliveries: &Deliveries, attempting: &Attempting) -> Outcome {
     match attempting.take() {
-        Some((flight, now_ns)) => advance(line, deliveries, attempting, flight, now_ns),
+        Some((flight, now_ns)) => advance_attempt(line, deliveries, attempting, flight, now_ns),
         None => Outcome::Ready,
     }
 }
 
 /// One entry of `flight`'s attempt, begun at `now_ns`: held again while its exchange pends, else
 /// settled.
-fn advance(
+fn advance_attempt(
     line: &mut dyn Line,
     deliveries: &Deliveries,
     attempting: &Attempting,

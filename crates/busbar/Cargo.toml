@@ -296,7 +296,7 @@ llm-on-driver = ["proto-llm", "dep:busbar-plane-llm", "auth-sigv4", "auth-oauth"
 plane-mcp-door = ["dep:busbar-plane-mcp"]
 # THE A2A PLANE'S DOOR ROW, carried by `plane-a2a` and never set on its own (the a2a fold's switch
 # is gone: the plane is flipped onto the driver, BUSBAR-1.6.0.md Part 3 section 12). The plane's
-# memory-ABI door (`busbar_plane_a2a::plane_door::door`) is a `plane-door` row, bound through the
+# memory-ABI door (`busbar_plane_a2a::agent_door::door`) is a `plane-door` row, bound through the
 # loader's one load beside every dropped-in plane door, the same table as its dropped-in cdylib
 # (`a2a_door`; #2, #30; THE DESIGN section 11.4). It is complete on its own: no linked row of the
 # plane's key stands beside it.
@@ -461,7 +461,7 @@ busbar-auth-oauth = "busbar_auth_oauth::compiled_in"
 plane-decisions = "busbar_plane_decisions::plane_door"
 llm-on-driver = "busbar_plane_llm::plane_door"
 plane-mcp-door = "busbar_plane_mcp::plane_door"
-plane-a2a-door = "busbar_plane_a2a::plane_door"
+plane-a2a-door = "busbar_plane_a2a::agent_door"
 # A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
 busbar-export-prometheus = "busbar_export_prometheus::door"
 busbar-export-otlp = "busbar_export_otlp::door"

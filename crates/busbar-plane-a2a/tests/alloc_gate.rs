@@ -17,7 +17,7 @@
 //! constant in the same commit, with the reason.
 
 use busbar_plane_a2a::binding::Binding;
-use busbar_plane_a2a::relay::{Answer, From, Piece, Relay};
+use busbar_plane_a2a::relay::{From, HopRelay, Piece, PieceAnswer};
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
@@ -70,15 +70,15 @@ const URL: &str = "https://agent.example/a2a";
 /// Two, as the retired engine's relay: the attempt's field list, which takes its buffer on its
 /// first field, and its target (the agent url's path). Every field the plane spells is borrowed
 /// from its constant, the journal's url is the one the backend was named with, and the body is
-/// LENT ([`Answer::ToFarEndLent`]): the door writes the caller's own piece, so the envelope is never
+/// LENT ([`PieceAnswer::ToFarEndLent`]): the door writes the caller's own piece, so the envelope is never
 /// copied.
 const RELAY_ALLOCS: u64 = 2;
 
 /// A JSON-RPC hop for [`BODY`], bound and named as the door binds and names one before its first
 /// attempt (outside any measured window).
-fn hop() -> Relay {
+fn hop() -> HopRelay {
     let envelope: serde_json::Value = serde_json::from_slice(BODY).expect("the request is JSON");
-    let mut relay = Relay::new(serde_json::json!("1"), "0.3");
+    let mut relay = HopRelay::new(serde_json::json!("1"), "0.3");
     relay.bind(Binding::JsonRpc, &envelope);
     relay.name_backend("planner", URL);
     relay
@@ -86,7 +86,7 @@ fn hop() -> Relay {
 
 /// The relay's loop for one attempt: the kernel's ATTEMPT, then the caller's body, `plant` more
 /// allocations made in the loop (the RED arm's).
-fn relay_once(relay: &mut Relay, plant: usize) -> (Answer, Answer) {
+fn relay_once(relay: &mut HopRelay, plant: usize) -> (PieceAnswer, PieceAnswer) {
     let attempt = relay.on_piece(Piece {
         from: From::Kernel(Some(URL)),
         bytes: &[],
@@ -110,10 +110,10 @@ fn an_unrewritten_envelope_is_relayed_without_a_copy() {
     // One warm hop outside the window, so nothing a first call sets up for the process is charged
     // to the measured one.
     let (warm, warm_body) = relay_once(&mut hop(), 0);
-    assert!(matches!(warm, Answer::Attempt(_)), "{warm:?}");
+    assert!(matches!(warm, PieceAnswer::Attempt(_)), "{warm:?}");
     assert_eq!(
         warm_body,
-        Answer::ToFarEndLent,
+        PieceAnswer::ToFarEndLent,
         "with no task identifier to rewrite, the agent gets the caller's own bytes, lent"
     );
 
@@ -122,13 +122,13 @@ fn an_unrewritten_envelope_is_relayed_without_a_copy() {
     let count = allocations_of(|| measured = Some(relay_once(&mut relay, 0)));
     println!("unrewritten relay allocations: {count}");
     let (attempt, body) = measured.expect("the hop ran");
-    let Answer::Attempt(attempt) = attempt else {
+    let PieceAnswer::Attempt(attempt) = attempt else {
         panic!("an attempt: {attempt:?}");
     };
     assert_eq!((attempt.verb, attempt.target.as_str()), ("POST", "/a2a"));
     assert_eq!(
         body,
-        Answer::ToFarEndLent,
+        PieceAnswer::ToFarEndLent,
         "with no task identifier to rewrite, the agent gets the caller's own bytes, lent"
     );
     assert_eq!(

@@ -56,7 +56,7 @@ fn call(desk: &mut Desk, method: &str, params: Value, caller: &str) -> (u32, Val
     let verb = verb_of(method).expect("a local verb");
     let envelope = json!({ "jsonrpc": "2.0", "id": 7, "method": method, "params": params });
     let mut out = Vec::new();
-    let answer = answer(desk, verb, &envelope, caller, 300, &mut out)
+    let answer = answer_local(desk, verb, &envelope, caller, 300, &mut out)
         .unwrap()
         .expect("answered here");
     desk.book.apply(&out);
@@ -324,7 +324,7 @@ fn a_subscribe_is_refused_only_where_busbar_knows_better() {
     desk.book.apply(&out);
     let envelope = |id: &str| json!({ "jsonrpc": "2.0", "id": 1, "method": "SubscribeToTask", "params": { "id": id } });
     let refused = |desk: &mut Desk, id: &str| {
-        answer(
+        answer_local(
             desk,
             LocalVerb::Subscribe,
             &envelope(id),
@@ -490,7 +490,7 @@ fn subscribe_is_relayed_for_the_owner_and_is_an_absent_task_for_everybody_else()
     let mut desk = desk();
     let envelope = |id: &str| json!({ "jsonrpc": "2.0", "id": 1, "method": "SubscribeToTask", "params": { "id": id } });
     let mut refusal = |id: &str, caller: &str| {
-        answer(
+        answer_local(
             &mut desk,
             LocalVerb::Subscribe,
             &envelope(id),

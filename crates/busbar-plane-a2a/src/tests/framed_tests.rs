@@ -15,7 +15,7 @@ fn the_service_path_is_the_generated_services() {
         Some(crate::proto::SERVICE_NAME)
     );
     assert_eq!(
-        crate::door::ROUTES
+        crate::door_statement::ROUTES
             .iter()
             .filter(|r| r.carrier == crate::claims::FRAMED_TRANSPORT)
             .map(|r| r.target)
@@ -75,14 +75,14 @@ fn a_result_answers_the_rpcs_response_message() {
         "id": COMPOSED_ID,
         "result": { "id": "t-1", "contextId": "c-1", "status": { "state": "TASK_STATE_COMPLETED" } },
     });
-    let bytes = answer(Rpc::GetTask, 200, body.to_string().as_bytes()).expect("answers");
+    let bytes = answer_message(Rpc::GetTask, 200, body.to_string().as_bytes()).expect("answers");
     let task = pb::Task::decode(bytes.as_slice()).expect("a Task");
     assert_eq!(task.id, "t-1");
     assert_eq!(task.context_id, "c-1");
     // `google.protobuf.Empty` answers nothing.
     let deleted = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": null });
     assert_eq!(
-        answer(
+        answer_message(
             Rpc::DeleteTaskPushNotificationConfig,
             200,
             deleted.to_string().as_bytes()
@@ -100,7 +100,8 @@ fn a_json_rpc_error_takes_its_status_from_its_code() {
     assert_eq!(status.code(), Code::FailedPrecondition);
     assert_eq!(status.message(), "the task is terminal");
     let body = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "error": err });
-    let refused = answer(Rpc::CancelTask, 409, body.to_string().as_bytes()).expect_err("an error");
+    let refused =
+        answer_message(Rpc::CancelTask, 409, body.to_string().as_bytes()).expect_err("an error");
     assert_eq!(refused.code(), Code::FailedPrecondition);
 }
 
@@ -151,7 +152,7 @@ fn an_http_refusal_takes_the_grpc_specifications_own_mapping() {
         assert_eq!(status_for_http(http).code(), want, "HTTP {http}");
     }
     assert_eq!(
-        answer(Rpc::GetTask, 502, b"not json")
+        answer_message(Rpc::GetTask, 502, b"not json")
             .expect_err("refused")
             .code(),
         Code::Unavailable
@@ -315,7 +316,7 @@ fn the_extended_card_is_served_over_grpc_at_the_path_the_proto_defines() {
         })
         .expect("busbar's extended card");
     let envelope = serde_json::json!({ "jsonrpc": "2.0", "id": 1, "result": card });
-    let bytes = answer(
+    let bytes = answer_message(
         Rpc::GetExtendedAgentCard,
         200,
         envelope.to_string().as_bytes(),

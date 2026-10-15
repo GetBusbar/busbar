@@ -113,7 +113,7 @@ pub fn session_scope_allowed(key: &busbar_contract::records::VirtualKey) -> bool
 /// The refusal a key without session scope gets: the plane's own fail-closed answer, in the same
 /// plain-text shape every other voice refusal takes, and BEFORE any hook, account, durable row or dial.
 fn session_scope_refusal() -> axum::response::Response {
-    refusal(
+    plain_refusal(
         axum::http::StatusCode::FORBIDDEN,
         "streaming session-open refused: the presenting key holds no session scope for this streaming pool \
          (fail closed)",
@@ -1078,7 +1078,7 @@ async fn hook_tap(
                          params whose output busbar could not read back; the session-open is REFUSED \
                          rather than opened with the params the hook said it had replaced"
                     );
-                    Err(Box::new(refusal(
+                    Err(Box::new(plain_refusal(
                         axum::http::StatusCode::INTERNAL_SERVER_ERROR,
                         "a rewrite hook attached to this deployment committed a rewrite of the streaming \
                          session-open params that busbar could not read back. The session-open is \
@@ -1228,7 +1228,7 @@ fn egress_client() -> EngineClient {
 /// session opened and was governed, but the inbound WS-accept seam that upgrades the socket lands
 /// separately, so no bare `on_upgrade` is taken here.
 fn sideband_pending() -> axum::response::Response {
-    refusal(
+    plain_refusal(
         axum::http::StatusCode::NOT_IMPLEMENTED,
         "streaming session governed-open succeeded; the inbound WS-accept seam that upgrades the browser \
          sideband / telephony media socket lands separately",
@@ -1239,15 +1239,15 @@ fn sideband_pending() -> axum::response::Response {
 /// at the route layer (a gate refusal is `403` with zero charge).
 fn start_refusal(e: &StartError) -> axum::response::Response {
     match e {
-        StartError::DestinationRefused => refusal(
+        StartError::DestinationRefused => plain_refusal(
             axum::http::StatusCode::FORBIDDEN,
             "streaming session destination refused at the open-pass gate (fail closed)",
         ),
-        StartError::BudgetRefused => refusal(
+        StartError::BudgetRefused => plain_refusal(
             axum::http::StatusCode::PAYMENT_REQUIRED,
             "streaming session budget refused (fail closed)",
         ),
-        StartError::Durable(_) => refusal(
+        StartError::Durable(_) => plain_refusal(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "streaming session durable open failed",
         ),
@@ -1256,7 +1256,7 @@ fn start_refusal(e: &StartError) -> axum::response::Response {
 
 /// A finished plain-text response — the shape both a governed-but-uncomposed answer and a fail-closed
 /// refusal are framed in, so a handler names no `IntoResponse` machinery.
-fn refusal(status: axum::http::StatusCode, msg: &'static str) -> axum::response::Response {
+fn plain_refusal(status: axum::http::StatusCode, msg: &'static str) -> axum::response::Response {
     axum::response::Response::builder()
         .status(status)
         .body(axum::body::Body::from(msg))
@@ -1309,7 +1309,7 @@ async fn serve(
     ingress: Ingress,
 ) -> axum::response::Response {
     let Some(mount) = ctx.slot.downcast_ref::<VoiceMount>() else {
-        return refusal(
+        return plain_refusal(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "streaming route reached without its dispatch slot",
         );
@@ -1420,7 +1420,7 @@ where
     C: DuplexReader + DuplexWriter + Send + Sync + 'static,
 {
     let Some(mount) = arrival.slot.downcast_ref::<VoiceMount>() else {
-        return refusal(
+        return plain_refusal(
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
             "streaming WS-accept reached without its dispatch slot",
         );

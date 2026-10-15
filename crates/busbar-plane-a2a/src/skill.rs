@@ -127,11 +127,11 @@ pub const STATUS_UNFIT: u32 = 403;
 /// THE REFUSAL of a request an agent's held card does not fit (the engine's catalogue exclusion):
 /// `403`, `-32004`, no id, the exclusion's own name as the message.
 #[must_use]
-pub fn refusal(unfit: &Unfit) -> crate::arrival::Refusal {
-    crate::arrival::Refusal {
+pub fn refusal(unfit: &Unfit) -> crate::agent_arrival::AgentRefusal {
+    crate::agent_arrival::AgentRefusal {
         status: STATUS_UNFIT,
         id: None,
-        code: crate::arrival::CODE_UNSUPPORTED_OPERATION,
+        code: crate::agent_arrival::CODE_UNSUPPORTED_OPERATION,
         message: format!("{unfit:?}"),
     }
 }

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! ONE ARRIVAL ON THE JSON-RPC LINE, decided once and purely: a reader over the request's head
-//! fields and the body in, a [`Disposition`] out. The door's `arrive` states the disposition in the
+//! fields and the body in, a [`AgentDisposition`] out. The door's `arrive` states the disposition in the
 //! plane ABI's words, and its `refusal` renders a refused one ([`render`]); this module is the
 //! disposition and the words, so both are tested without a door.
 //!
@@ -83,7 +83,7 @@ pub const STATUS_ACCEPTED: u32 = 202;
 /// A refusal decided at arrival, or rendered for the kernel: its status, the id it echoes, its code
 /// and its sentence.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Refusal {
+pub struct AgentRefusal {
     /// The status.
     pub status: u32,
     /// The request id the body echoes; `None` = `null`.
@@ -94,10 +94,10 @@ pub struct Refusal {
     pub message: String,
 }
 
-impl Refusal {
+impl AgentRefusal {
     /// A refusal before any id could be read.
     fn unnamed(status: u32, code: i64, message: impl Into<String>) -> Self {
-        Refusal {
+        AgentRefusal {
             status,
             id: None,
             code,
@@ -105,7 +105,7 @@ impl Refusal {
         }
     }
 
-    /// The words a refused `arrive` carries in its `head.error`, read back by [`Refusal::from_words`]:
+    /// The words a refused `arrive` carries in its `head.error`, read back by [`AgentRefusal::from_words`]:
     /// `<status> <code> <id as JSON>`, a newline, then the message AS IS. The message is never
     /// escaped, so words that echo a field line the caller sent are that line plus a fixed sentence,
     /// and stay under `MAX_REFUSAL_TEXT` for every field line a transport admits.
@@ -127,7 +127,7 @@ impl Refusal {
         let status = head.next()?.parse().ok()?;
         let code = head.next()?.parse().ok()?;
         let id: Value = serde_json::from_str(head.next()?).ok()?;
-        Some(Refusal {
+        Some(AgentRefusal {
             status,
             id: (!id.is_null()).then_some(id),
             code,
@@ -235,7 +235,7 @@ fn status_name_of_http(status: u32) -> &'static str {
 
 /// What one arrival on the JSON-RPC line is.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Disposition {
+pub enum AgentDisposition {
     /// A request whose method the vocabulary classes.
     Request {
         /// Its row.
@@ -260,7 +260,7 @@ pub enum Disposition {
         method: String,
     },
     /// Refused at arrival.
-    Refused(Refusal),
+    Refused(AgentRefusal),
     /// A read of a card busbar serves on its open line ([`crate::served_card`]).
     Card(CardAsk),
 }
@@ -277,19 +277,19 @@ pub enum CardAsk {
     Extended,
 }
 
-impl Disposition {
+impl AgentDisposition {
     /// The operation class an admitted arrival is a unit of: its row's, or for a method the
     /// vocabulary does not list, the class the engine relays it as ([`crate::ops::relay_class`]).
     /// `None` for a refused arrival.
     #[must_use]
     pub fn op_class(&self) -> Option<busbar_contract::ids::OpClassId> {
         match self {
-            Disposition::Request { row, .. } => Some(row.op),
-            Disposition::Unlisted { method, .. } | Disposition::Notice { method } => {
+            AgentDisposition::Request { row, .. } => Some(row.op),
+            AgentDisposition::Unlisted { method, .. } | AgentDisposition::Notice { method } => {
                 Some(ops::relay_class(method))
             }
-            Disposition::Refused(_) => None,
-            Disposition::Card(_) => Some(ops::OP_AGENT_CARD),
+            AgentDisposition::Refused(_) => None,
+            AgentDisposition::Card(_) => Some(ops::OP_AGENT_CARD),
         }
     }
 }
@@ -319,11 +319,13 @@ fn major_minor(asked: &str) -> String {
 /// # Errors
 ///
 /// The refusal the head earns.
-pub fn head_refusal<'a>(field: impl Fn(&str) -> Option<&'a str>) -> Result<&'static str, Refusal> {
+pub fn head_refusal<'a>(
+    field: impl Fn(&str) -> Option<&'a str>,
+) -> Result<&'static str, AgentRefusal> {
     if let Some(ct) = field(H_CONTENT_TYPE) {
         let media = ct.split(';').next().unwrap_or_default().trim();
         if !is_json_media_type(media) {
-            return Err(Refusal::unnamed(
+            return Err(AgentRefusal::unnamed(
                 STATUS_UNSUPPORTED_MEDIA_TYPE,
                 CODE_CONTENT_TYPE_NOT_SUPPORTED,
                 format!(
@@ -340,7 +342,7 @@ pub fn head_refusal<'a>(field: impl Fn(&str) -> Option<&'a str>) -> Result<&'sta
     let wanted = major_minor(asked);
     match SUPPORTED_VERSIONS.iter().copied().find(|v| *v == wanted) {
         Some(v) => Ok(v),
-        None => Err(Refusal::unnamed(
+        None => Err(AgentRefusal::unnamed(
             STATUS_BAD_REQUEST,
             CODE_VERSION_NOT_SUPPORTED,
             format!(
@@ -357,10 +359,10 @@ pub fn head_refusal<'a>(field: impl Fn(&str) -> Option<&'a str>) -> Result<&'sta
 /// # Errors
 ///
 /// The refusal the origin earns.
-pub fn origin_refusal<'a>(field: impl Fn(&str) -> Option<&'a str>) -> Result<(), Refusal> {
+pub fn origin_refusal<'a>(field: impl Fn(&str) -> Option<&'a str>) -> Result<(), AgentRefusal> {
     match field(H_ORIGIN) {
         Some(origin) if !busbar_contract::jsonrpc::origin_admitted(origin, &[]) => Err(
-            Refusal::unnamed(STATUS_FORBIDDEN, CODE_UNSUPPORTED_OPERATION, ORIGIN_REFUSED),
+            AgentRefusal::unnamed(STATUS_FORBIDDEN, CODE_UNSUPPORTED_OPERATION, ORIGIN_REFUSED),
         ),
         _ => Ok(()),
     }
@@ -368,31 +370,38 @@ pub fn origin_refusal<'a>(field: impl Fn(&str) -> Option<&'a str>) -> Result<(),
 
 /// DECIDE ONE ARRIVAL on the JSON-RPC line. `field` reads a request head field by its lower-case
 /// name (the first, as sent; one that is not UTF-8 reads as absent).
-pub fn decide<'a>(body: &[u8], field: impl Fn(&str) -> Option<&'a str> + Copy) -> Disposition {
+pub fn decide_arrival<'a>(
+    body: &[u8],
+    field: impl Fn(&str) -> Option<&'a str> + Copy,
+) -> AgentDisposition {
     if let Err(refusal) = origin_refusal(field) {
-        return Disposition::Refused(refusal);
+        return AgentDisposition::Refused(refusal);
     }
     let version = match head_refusal(field) {
         Ok(v) => v,
-        Err(refusal) => return Disposition::Refused(refusal),
+        Err(refusal) => return AgentDisposition::Refused(refusal),
     };
     let Ok(value) = serde_json::from_slice::<Value>(body) else {
-        return Disposition::Refused(Refusal::unnamed(STATUS_BAD_REQUEST, CODE_PARSE, NOT_JSON));
+        return AgentDisposition::Refused(AgentRefusal::unnamed(
+            STATUS_BAD_REQUEST,
+            CODE_PARSE,
+            NOT_JSON,
+        ));
     };
     match busbar_contract::jsonrpc::read(&value) {
-        Err(invalid) => Disposition::Refused(Refusal {
+        Err(invalid) => AgentDisposition::Refused(AgentRefusal {
             status: STATUS_BAD_REQUEST,
             id: (!invalid.id.is_null()).then_some(invalid.id),
             code: invalid.code,
             message: invalid.message.to_string(),
         }),
         Ok(busbar_contract::jsonrpc::Envelope::Notification { method }) => {
-            Disposition::Notice { method }
+            AgentDisposition::Notice { method }
         }
         Ok(busbar_contract::jsonrpc::Envelope::Request { id, method }) => {
             match ops::row_for(&method) {
-                Some(row) => Disposition::Request { row, id, version },
-                None => Disposition::Unlisted {
+                Some(row) => AgentDisposition::Request { row, id, version },
+                None => AgentDisposition::Unlisted {
                     method,
                     id,
                     version,
@@ -430,7 +439,7 @@ pub enum Dialect {
 /// Render `refusal` in `dialect`. `own_status` is whether the status is the plane's own (a refused
 /// arrival's) rather than the kernel's.
 #[must_use]
-pub fn render(dialect: Dialect, refusal: &Refusal, own_status: bool) -> Rendered {
+pub fn render(dialect: Dialect, refusal: &AgentRefusal, own_status: bool) -> Rendered {
     let doc = match dialect {
         Dialect::JsonRpc | Dialect::Framed => refusal.envelope(),
         Dialect::RestJson => refusal.aip193(),
@@ -446,8 +455,8 @@ pub fn render(dialect: Dialect, refusal: &Refusal, own_status: bool) -> Rendered
 /// `rpcerror::about_task` did: its `ResourceInfo` after the `ErrorInfo` in `error.data`, which the
 /// HTTP+JSON line carries as `details`.
 #[must_use]
-pub fn render_about_task(dialect: Dialect, refusal: &Refusal, task_id: &str) -> Rendered {
-    let doc = crate::identity::about_task(refusal, task_id);
+pub fn render_about_task(dialect: Dialect, refusal: &AgentRefusal, task_id: &str) -> Rendered {
+    let doc = crate::task_identity::about_task(refusal, task_id);
     let doc = match dialect {
         Dialect::JsonRpc | Dialect::Framed => doc,
         Dialect::RestJson => aip193(refusal.status, &doc["error"]),
@@ -467,15 +476,15 @@ pub const BUDGET_SPENT: &str = "this key's budget is spent";
 /// the plane words it: the engine's admission rendering, `-32004` with the kernel's text and no id,
 /// at the kernel's status.
 #[must_use]
-pub fn kernel_refusal(status: u32, text: &str) -> Refusal {
-    Refusal::unnamed(status, CODE_UNSUPPORTED_OPERATION, text)
+pub fn kernel_refusal(status: u32, text: &str) -> AgentRefusal {
+    AgentRefusal::unnamed(status, CODE_UNSUPPORTED_OPERATION, text)
 }
 
 /// THE UNGRANTED CALLER'S SENTENCE (1.5.5's `InboundRefusal::NotInScope`): the caller's grant does
 /// not reach `resource` (`agent:<id>`). 1.5.5 named the key's id where this says `this key`: the
 /// refusal the kernel hands a plane carries no principal.
 #[must_use]
-pub fn not_granted(resource: &str) -> String {
+pub fn not_granted_sentence(resource: &str) -> String {
     format!("this key is not granted `{resource}`")
 }
 
@@ -485,7 +494,7 @@ pub const STATUS_NO_SUCH_AGENT: u32 = 404;
 /// THE UNKNOWN AGENT'S REFUSAL (1.5.5's `InboundRefusal::NoSuchAgent`): `404`, `-32004`, no id,
 /// "no fronted agent `<agent>`".
 #[must_use]
-pub fn no_such_agent(agent: &str) -> Refusal {
+pub fn no_such_agent(agent: &str) -> AgentRefusal {
     kernel_refusal(STATUS_NO_SUCH_AGENT, &format!("no fronted agent `{agent}`"))
 }
 
@@ -494,9 +503,9 @@ pub const STATUS_NOT_LIVE: u32 = 401;
 
 /// THE CALLER WHOSE KEY IS NO LONGER LIVE (1.5.5's `InboundRefusal::KeyNotLive`): `401`, `-32004`,
 /// no id. 1.5.5 named the key's id where this says `this key`: a plane never sees the raw principal
-/// (BUSBAR-1.6.0.md l.2639-2641; ruling (B), coordinator 2026-10-07), as [`not_granted`] words it.
+/// (BUSBAR-1.6.0.md l.2639-2641; ruling (B), coordinator 2026-10-07), as [`not_granted_sentence`] words it.
 #[must_use]
-pub fn not_live() -> Refusal {
+pub fn not_live() -> AgentRefusal {
     kernel_refusal(STATUS_NOT_LIVE, "this key is not live")
 }
 
@@ -508,8 +517,8 @@ pub const STATUS_UNAVAILABLE: u32 = 503;
 /// and the caller is told the seconds until it may be, `retry_after_s` (the same figure the
 /// `Retry-After` field carries); `503`, `-32004`, echoing the request id `id`.
 #[must_use]
-pub fn breaker_refusal(agent: &str, id: Option<Value>, retry_after_s: u32) -> Refusal {
-    Refusal {
+pub fn breaker_refusal(agent: &str, id: Option<Value>, retry_after_s: u32) -> AgentRefusal {
+    AgentRefusal {
         status: STATUS_UNAVAILABLE,
         id,
         code: CODE_UNSUPPORTED_OPERATION,
@@ -525,8 +534,8 @@ pub fn breaker_refusal(agent: &str, id: Option<Value>, retry_after_s: u32) -> Re
 /// distinct backends that may each present a different extended card, so there is no one card to
 /// relay; `400`, `-32004`, echoing the request id `id`.
 #[must_use]
-pub fn pooled_card(id: Value) -> Refusal {
-    Refusal {
+pub fn pooled_card(id: Value) -> AgentRefusal {
+    AgentRefusal {
         status: STATUS_BAD_REQUEST,
         id: (!id.is_null()).then_some(id),
         code: CODE_UNSUPPORTED_OPERATION,
@@ -541,9 +550,9 @@ pub fn pooled_card(id: Value) -> Refusal {
 /// member's grant, `resource` (`agent:<id>`), and one the caller's key does not reach (or a key
 /// that is no longer live) is refused before the socket: `403`, `-32004`, echoing the request id
 /// `id`. predev named the key's id where this says `this key`: the plane never sees the raw
-/// principal (ruling (B), coordinator 2026-10-07, as [`not_granted`] words it).
+/// principal (ruling (B), coordinator 2026-10-07, as [`not_granted_sentence`] words it).
 #[must_use]
-pub fn pinned_ungranted(id: Value, resource: &str, live: bool) -> Refusal {
+pub fn pinned_ungranted(id: Value, resource: &str, live: bool) -> AgentRefusal {
     let message = if live {
         format!(
             "this key holds no `{resource}` grant, so NO outbound credential is selected for it: \
@@ -553,7 +562,7 @@ pub fn pinned_ungranted(id: Value, resource: &str, live: bool) -> Refusal {
     } else {
         "this key is not live, so no outbound credential is leased for it".to_string()
     };
-    Refusal {
+    AgentRefusal {
         status: STATUS_FORBIDDEN,
         id: (!id.is_null()).then_some(id),
         code: CODE_UNSUPPORTED_OPERATION,
@@ -588,19 +597,19 @@ pub const CODE_INVALID_PARAMS: i64 = -32602;
 /// answer a caller with no grant gets for a named agent, so this endpoint is no inventory oracle;
 /// several: the caller is told to address one, and which.
 #[must_use]
-pub fn scope_refusal(reachable: &str) -> Refusal {
+pub fn scope_refusal(reachable: &str) -> AgentRefusal {
     let ids: Vec<&str> = reachable
         .split(busbar_contract::abi::plane::ROUTE_SCOPE_SEPARATOR)
         .filter(|id| !id.is_empty())
         .collect();
     if ids.is_empty() {
-        return Refusal::unnamed(
+        return AgentRefusal::unnamed(
             STATUS_BAD_REQUEST,
             CODE_UNSUPPORTED_OPERATION,
             "no agent this key may reach can serve this shape of task",
         );
     }
-    Refusal::unnamed(
+    AgentRefusal::unnamed(
         STATUS_BAD_REQUEST,
         CODE_INVALID_PARAMS,
         format!(
@@ -614,5 +623,5 @@ pub fn scope_refusal(reachable: &str) -> Refusal {
 }
 
 #[cfg(test)]
-#[path = "tests/arrival.rs"]
+#[path = "tests/agent_arrival.rs"]
 mod tests;

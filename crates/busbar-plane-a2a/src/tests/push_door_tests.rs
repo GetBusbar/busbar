@@ -21,7 +21,7 @@ fn moved(book: &mut Book, callback: &str) -> TaskRow {
     held.row.push_callback = callback.to_string();
     book.hold(ALICE, &held);
     let mut out = Vec::new();
-    let at = Step {
+    let at = Stamp {
         caller: ALICE,
         request_id: "r",
         now: 200,
@@ -157,7 +157,7 @@ fn an_owed_outcome_is_filed_on_its_tasks_chain() {
 use busbar_contract::abi::host::service::{DEST_INTERNAL, DEST_PLAINTEXT};
 use busbar_contract::vocab::EV_PUSH_REFUSED;
 
-use crate::push::Settled;
+use crate::push::DeliverySettled;
 
 /// A public address a callback resolves to at registration.
 const AT_REGISTRATION: &str = "203.0.113.7";
@@ -243,7 +243,7 @@ fn queued(callback: &str) -> Deliveries {
 }
 
 /// One `tick`'s attempt at `now_ns`, settled as the tick settles it.
-fn tick_once(d: &Deliveries, host: &mut TestHost, now_ns: u64) -> (Attempted, Settled) {
+fn tick_once(d: &Deliveries, host: &mut TestHost, now_ns: u64) -> (Attempted, DeliverySettled) {
     let delivery = d.next_due(now_ns).expect("a delivery is due");
     let mut flight = Flight {
         delivery,
@@ -266,7 +266,7 @@ fn a_completed_task_with_a_callback_is_delivered() {
     let mut host = TestHost::answering(vec![Some((DEST_ALLOWED, &[AT_REGISTRATION][..]))], 200);
     let (end, settled) = tick_once(&d, &mut host, 0);
     assert_eq!(end, Attempted::Delivered);
-    assert_eq!(settled, Settled::Done(EV_PUSH_DELIVERED));
+    assert_eq!(settled, DeliverySettled::Done(EV_PUSH_DELIVERED));
     assert_eq!(host.sent, vec![callback.to_string()]);
     assert_eq!(
         d.rebound(callback, &["198.51.100.9".to_string()]),
@@ -284,8 +284,61 @@ fn a_callback_that_became_internal_after_registration_is_refused_at_delivery() {
     let mut host = TestHost::answering(vec![Some((DEST_INTERNAL, &[][..]))], 200);
     let (end, settled) = tick_once(&d, &mut host, 0);
     assert_eq!(end, Attempted::Judged(DEST_INTERNAL));
-    assert_eq!(settled, Settled::Done(EV_PUSH_REFUSED), "never retried");
+    assert_eq!(
+        settled,
+        DeliverySettled::Done(EV_PUSH_REFUSED),
+        "never retried"
+    );
     assert!(host.sent.is_empty(), "refused before the socket");
+}
+
+/// THE CALLER'S OWN CREDENTIAL IS PRESENTED, and it is the caller's — not busbar's (ported from the
+/// engine's `pushdeliver_tests.rs::the_callers_own_webhook_credential_is_presented_on_the_delivery`,
+/// the `egress-auth × a2a-server` cell). A caller whose webhook authenticates registers its
+/// `authentication` with the push config; the delivery the judge admits carries exactly one
+/// `authorization` field, `<scheme> <credentials>` as RFC 9110 spells it and as the caller wrote it,
+/// and that delivery is the one sent. The credential is never printed: a failure names the field,
+/// not its value.
+#[test]
+fn the_callers_own_webhook_credential_is_presented_on_the_delivery() {
+    let callback = "https://hook.caller.test/notify";
+    let mut book = Book::default();
+    let row = moved(&mut book, callback);
+    let d = Deliveries::new();
+    let auth = DeliveryAuth {
+        scheme: "Bearer".into(),
+        credentials: busbar_contract::Redacted::new("receiver-issued-token".into()),
+    };
+    assert!(queue(&d, &row, Some(&config(callback, Some(auth)))));
+    let due = d.next_due(0).expect("a delivery is due");
+    let presented: Vec<Vec<u8>> = d
+        .request(&due)
+        .fields
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case(b"authorization"))
+        .map(|(_, value)| value.clone())
+        .collect();
+    assert!(
+        presented == vec![b"Bearer receiver-issued-token".to_vec()],
+        "the delivery did not present, exactly once, the credential the caller registered \
+         ({} authorization field(s))",
+        presented.len()
+    );
+    // The attempt frames that same request once the judge has passed, and sends it.
+    let mut host = TestHost::answering(vec![Some((DEST_ALLOWED, &[AT_REGISTRATION][..]))], 200);
+    let mut flight = Flight {
+        delivery: due,
+        exchange: None,
+    };
+    let Poll::Ready((end, _)) = attempt(&mut host, &d, &mut flight) else {
+        panic!("the test's host never pends");
+    };
+    assert_eq!(end, Attempted::Delivered);
+    assert_eq!(
+        host.sent,
+        vec![callback.to_string()],
+        "the delivery that carries the caller's credential is the one sent to its callback"
+    );
 }
 
 /// Across a restart no reached address survives, so the anti-rebinding rule has nothing to compare
@@ -339,7 +392,7 @@ fn a_plaintext_callback_is_refused_at_delivery() {
     let mut host = TestHost::answering(vec![Some((DEST_PLAINTEXT, &[][..]))], 200);
     let (end, settled) = tick_once(&d, &mut host, 0);
     assert_eq!(end, Attempted::Judged(DEST_PLAINTEXT));
-    assert_eq!(settled, Settled::Done(EV_PUSH_REFUSED));
+    assert_eq!(settled, DeliverySettled::Done(EV_PUSH_REFUSED));
     assert_eq!(host.judged, vec![callback.to_string()]);
     assert!(host.sent.is_empty());
 }
@@ -358,12 +411,12 @@ fn the_guard_is_re_run_on_the_retry() {
     );
     let (first, settled) = tick_once(&d, &mut host, 0);
     assert_eq!(first, Attempted::Status(503));
-    let Settled::Retry(at) = settled else {
+    let DeliverySettled::Retry(at) = settled else {
         panic!("a 503 is retried: {settled:?}");
     };
     let (second, settled) = tick_once(&d, &mut host, at);
     assert_eq!(second, Attempted::Judged(DEST_INTERNAL));
-    assert_eq!(settled, Settled::Done(EV_PUSH_REFUSED));
+    assert_eq!(settled, DeliverySettled::Done(EV_PUSH_REFUSED));
     assert_eq!(host.judged.len(), 2, "judged on every attempt");
     assert_eq!(host.sent.len(), 1, "the retry sent nothing");
 }

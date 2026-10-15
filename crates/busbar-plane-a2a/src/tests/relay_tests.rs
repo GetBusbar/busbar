@@ -39,16 +39,19 @@ fn far(status: Option<u32>, bytes: &[u8], last: bool) -> Piece<'_> {
 }
 
 /// A hop through its attempt and the caller's body, waiting on the far end.
-fn sent() -> Relay {
-    let mut r = Relay::new(json!(7), "1.0");
-    assert!(matches!(r.on_piece(kernel(Some(URL))), Answer::Attempt(_)));
-    assert_eq!(r.on_piece(caller(ASK)), Answer::ToFarEndLent);
+fn sent() -> HopRelay {
+    let mut r = HopRelay::new(json!(7), "1.0");
+    assert!(matches!(
+        r.on_piece(kernel(Some(URL))),
+        PieceAnswer::Attempt(_)
+    ));
+    assert_eq!(r.on_piece(caller(ASK)), PieceAnswer::ToFarEndLent);
     r
 }
 
-fn answered(r: &mut Relay, status: u32, body: &[u8]) -> Reply {
+fn answered(r: &mut HopRelay, status: u32, body: &[u8]) -> RelayReply {
     match r.on_piece(far(Some(status), body, true)) {
-        Answer::ToCaller(reply) => reply,
+        PieceAnswer::ToCaller(reply) => reply,
         other => panic!("no answer: {other:?}"),
     }
 }
@@ -73,10 +76,10 @@ fn refused(code: &str, sentence: &str) -> Vec<u8> {
 
 #[test]
 fn an_attempt_posts_to_the_agents_own_path_with_the_engines_three_fields_in_order() {
-    let mut r = Relay::new(json!(7), "1.0");
+    let mut r = HopRelay::new(json!(7), "1.0");
     assert_eq!(
         r.on_piece(kernel(Some(URL))),
-        Answer::Attempt(Attempt {
+        PieceAnswer::Attempt(Attempt {
             verb: "POST",
             target: "/a2a/v1?tenant=t1".to_string(),
             fields: vec![
@@ -135,16 +138,16 @@ fn a_target_read_without_a_parse_is_the_parsed_target() {
 
 #[test]
 fn an_attempt_at_an_agent_the_section_does_not_name_is_refused() {
-    let mut r = Relay::new(json!(7), "0.3");
-    assert_eq!(r.on_piece(kernel(None)), Answer::Refused);
+    let mut r = HopRelay::new(json!(7), "0.3");
+    assert_eq!(r.on_piece(kernel(None)), PieceAnswer::Refused);
 }
 
 #[test]
 fn the_callers_body_reaches_the_far_end_verbatim() {
     let odd = br#"{ "jsonrpc" : "2.0", "id":7, "method":"GetExtendedAgentCard", "x":[1,2] }"#;
-    let mut r = Relay::new(json!(7), "0.3");
+    let mut r = HopRelay::new(json!(7), "0.3");
     let _ = r.on_piece(kernel(Some(URL)));
-    assert_eq!(r.on_piece(caller(odd)), Answer::ToFarEndLent);
+    assert_eq!(r.on_piece(caller(odd)), PieceAnswer::ToFarEndLent);
 }
 
 #[test]
@@ -152,14 +155,14 @@ fn a_correlated_result_is_relayed_whole_under_the_callers_id() {
     let mut r = sent();
     assert_eq!(
         r.on_piece(far(Some(200), br#"{"jsonrpc":"2.0","id":7,"#, false)),
-        Answer::Nothing
+        PieceAnswer::Nothing
     );
     let reply = match r.on_piece(far(
         None,
         br#""result":{"name":"Vendor","skills":[]}}"#,
         true,
     )) {
-        Answer::ToCaller(reply) => reply,
+        PieceAnswer::ToCaller(reply) => reply,
         other => panic!("no answer: {other:?}"),
     };
     assert_eq!(reply.status, 200);
@@ -172,7 +175,7 @@ fn a_correlated_result_is_relayed_whole_under_the_callers_id() {
     .expect("json");
     assert_eq!(reply.body, expected);
     assert!(r.answered());
-    assert_eq!(r.on_piece(far(None, b"late", true)), Answer::Nothing);
+    assert_eq!(r.on_piece(far(None, b"late", true)), PieceAnswer::Nothing);
 }
 
 #[test]
@@ -266,7 +269,10 @@ fn the_bytes_moved_count_both_ways_once_the_far_end_answers() {
 fn a_new_attempt_forgets_the_previous_far_end() {
     let mut r = sent();
     let _ = r.on_piece(far(Some(200), br#"{"jsonrpc":"2.0","#, false));
-    assert!(matches!(r.on_piece(kernel(Some(URL))), Answer::Attempt(_)));
+    assert!(matches!(
+        r.on_piece(kernel(Some(URL))),
+        PieceAnswer::Attempt(_)
+    ));
     let _ = r.on_piece(caller(ASK));
     assert_eq!(r.moved(), 0);
     let reply = answered(&mut r, 200, br#"{"jsonrpc":"2.0","id":7,"result":1}"#);
@@ -276,7 +282,7 @@ fn a_new_attempt_forgets_the_previous_far_end() {
 #[test]
 fn a_last_far_end_piece_with_no_status_is_refused() {
     let mut r = sent();
-    assert_eq!(r.on_piece(far(None, b"{}", true)), Answer::Refused);
+    assert_eq!(r.on_piece(far(None, b"{}", true)), PieceAnswer::Refused);
 }
 
 // ── a hop about a task (ARCHITECT ruling B1) ─────────────────────────────────────────────────────
@@ -293,15 +299,18 @@ fn task(addressed: bool) -> TaskHop {
 }
 
 /// A task hop through its attempt and the caller's body, waiting on the far end.
-fn task_sent(addressed: bool) -> Relay {
-    let mut r = Relay::new(json!(7), "1.0");
+fn task_sent(addressed: bool) -> HopRelay {
+    let mut r = HopRelay::new(json!(7), "1.0");
     r.for_task(task(addressed));
-    assert!(matches!(r.on_piece(kernel(Some(URL))), Answer::Attempt(_)));
-    assert_eq!(r.on_piece(caller(SEND)), Answer::ToFarEndLent);
+    assert!(matches!(
+        r.on_piece(kernel(Some(URL))),
+        PieceAnswer::Attempt(_)
+    ));
+    assert_eq!(r.on_piece(caller(SEND)), PieceAnswer::ToFarEndLent);
     r
 }
 
-fn body(reply: &Reply) -> serde_json::Value {
+fn body(reply: &RelayReply) -> serde_json::Value {
     serde_json::from_slice(&reply.body).expect("json")
 }
 
@@ -319,7 +328,7 @@ fn a_task_hops_answer_leaves_under_busbars_identity_and_says_what_the_far_end_re
     );
     assert_eq!(
         r.take_settled(),
-        vec![Settled::Reported {
+        vec![TaskSettled::Reported {
             state: TaskState::Completed,
             backend_id: Some("far-1".into()),
         }]
@@ -352,7 +361,7 @@ fn a_failed_hop_ends_the_task_it_opened_and_names_it() {
             "the backend agent did not complete this task"
         )
     );
-    assert_eq!(r.take_settled(), vec![Settled::Failed]);
+    assert_eq!(r.take_settled(), vec![TaskSettled::Failed]);
 }
 
 #[test]
@@ -370,7 +379,7 @@ fn the_far_ends_own_a2a_error_code_travels_and_its_prose_does_not() {
             "the backend agent refused this task"
         )
     );
-    assert_eq!(r.take_settled(), vec![Settled::Failed]);
+    assert_eq!(r.take_settled(), vec![TaskSettled::Failed]);
 
     let mut r = task_sent(false);
     let far = br#"{"jsonrpc":"2.0","id":7,"error":{"code":-32050,"message":"custom"}}"#;
@@ -418,22 +427,31 @@ fn a_failed_hop_about_a_held_task_fails_the_request_never_the_task() {
 
 #[test]
 fn a_translated_request_is_sent_once_per_attempt_in_place_of_the_callers_pieces() {
-    let mut r = Relay::new(json!(7), "1.0");
+    let mut r = HopRelay::new(json!(7), "1.0");
     r.for_task(task(true));
     r.send_instead(b"translated".to_vec());
-    assert!(matches!(r.on_piece(kernel(Some(URL))), Answer::Attempt(_)));
+    assert!(matches!(
+        r.on_piece(kernel(Some(URL))),
+        PieceAnswer::Attempt(_)
+    ));
     let first = Piece {
         from: From::Caller,
         bytes: b"part-1",
         status: None,
         last: false,
     };
-    assert_eq!(r.on_piece(first), Answer::ToFarEnd(b"translated".to_vec()));
-    assert_eq!(r.on_piece(caller(b"part-2")), Answer::Nothing);
-    assert!(matches!(r.on_piece(kernel(Some(URL))), Answer::Attempt(_)));
+    assert_eq!(
+        r.on_piece(first),
+        PieceAnswer::ToFarEnd(b"translated".to_vec())
+    );
+    assert_eq!(r.on_piece(caller(b"part-2")), PieceAnswer::Nothing);
+    assert!(matches!(
+        r.on_piece(kernel(Some(URL))),
+        PieceAnswer::Attempt(_)
+    ));
     assert_eq!(
         r.on_piece(caller(b"again")),
-        Answer::ToFarEnd(b"translated".to_vec())
+        PieceAnswer::ToFarEnd(b"translated".to_vec())
     );
 }
 
@@ -441,8 +459,8 @@ fn a_translated_request_is_sent_once_per_attempt_in_place_of_the_callers_pieces(
 
 const GET: &[u8] = br#"{"jsonrpc":"2.0","id":7,"method":"GetTask","params":{"id":"t1"}}"#;
 
-fn rest_relay(task_hop: Option<TaskHop>) -> Relay {
-    let mut r = Relay::new(json!(7), "1.0");
+fn rest_relay(task_hop: Option<TaskHop>) -> HopRelay {
+    let mut r = HopRelay::new(json!(7), "1.0");
     if let Some(t) = task_hop {
         r.for_task(t);
     }
@@ -458,7 +476,7 @@ fn an_http_json_attempt_is_the_operations_request_line_and_sends_no_body_for_a_r
     let mut r = rest_relay(None);
     assert_eq!(
         r.on_piece(kernel(Some(URL))),
-        Answer::Attempt(Attempt {
+        PieceAnswer::Attempt(Attempt {
             verb: "GET",
             target: "/a2a/v1/tasks/t1".into(),
             fields: vec![
@@ -467,7 +485,7 @@ fn an_http_json_attempt_is_the_operations_request_line_and_sends_no_body_for_a_r
             ],
         })
     );
-    assert_eq!(r.on_piece(caller(GET)), Answer::Nothing);
+    assert_eq!(r.on_piece(caller(GET)), PieceAnswer::Nothing);
     let reply = answered(&mut r, 200, br#"{"id":"t1","status":{"state":"working"}}"#);
     assert_eq!(
         body(&reply),
@@ -478,7 +496,10 @@ fn an_http_json_attempt_is_the_operations_request_line_and_sends_no_body_for_a_r
 #[test]
 fn an_http_json_answer_that_is_not_json_is_unframable_and_fails_the_task_it_opened() {
     let mut r = rest_relay(Some(task(false)));
-    assert!(matches!(r.on_piece(kernel(Some(URL))), Answer::Attempt(_)));
+    assert!(matches!(
+        r.on_piece(kernel(Some(URL))),
+        PieceAnswer::Attempt(_)
+    ));
     let reply = answered(&mut r, 200, b"<html>");
     assert_eq!(reply.status, 502);
     assert_eq!(
@@ -489,10 +510,13 @@ fn an_http_json_answer_that_is_not_json_is_unframable_and_fails_the_task_it_open
             "the backend agent did not complete this task"
         )
     );
-    assert_eq!(r.take_settled(), vec![Settled::Failed]);
+    assert_eq!(r.take_settled(), vec![TaskSettled::Failed]);
 
     let mut r = rest_relay(None);
-    assert!(matches!(r.on_piece(kernel(Some(URL))), Answer::Attempt(_)));
+    assert!(matches!(
+        r.on_piece(kernel(Some(URL))),
+        PieceAnswer::Attempt(_)
+    ));
     let reply = answered(&mut r, 200, b"<html>");
     assert_eq!(
         body(&reply)["error"]["message"],
@@ -502,12 +526,12 @@ fn an_http_json_answer_that_is_not_json_is_unframable_and_fails_the_task_it_open
 
 #[test]
 fn a_request_the_binding_cannot_carry_is_refused_at_the_attempt() {
-    let mut r = Relay::new(json!(7), "1.0");
+    let mut r = HopRelay::new(json!(7), "1.0");
     r.bind(
         Binding::HttpJson,
         &json!({ "jsonrpc": "2.0", "id": 7, "method": "vendor/Thing" }),
     );
-    let Answer::ToCaller(reply) = r.on_piece(kernel(Some(URL))) else {
+    let PieceAnswer::ToCaller(reply) = r.on_piece(kernel(Some(URL))) else {
         panic!("not refused");
     };
     assert_eq!(reply.status, 502);
@@ -519,10 +543,10 @@ fn a_request_the_binding_cannot_carry_is_refused_at_the_attempt() {
 
 #[test]
 fn a_card_naming_only_grpc_is_refused_by_name_before_the_hop() {
-    let mut r = Relay::new(json!(7), "1.0");
+    let mut r = HopRelay::new(json!(7), "1.0");
     r.for_task(task(false));
     r.bind(Binding::JsonRpc, &serde_json::from_slice(SEND).unwrap());
-    let Answer::ToCaller(reply) = r.refuse_unspeakable("GRPC") else {
+    let PieceAnswer::ToCaller(reply) = r.refuse_unspeakable("GRPC") else {
         panic!("not refused");
     };
     assert_eq!(reply.status, 502);
@@ -534,7 +558,7 @@ fn a_card_naming_only_grpc_is_refused_by_name_before_the_hop() {
                 "domain": "a2a-protocol.org", "reason": "INVALID_AGENT_RESPONSE" }] } })
     );
     assert_eq!(r.take_settled(), Vec::new(), "the task stays as it is");
-    assert_eq!(r.on_piece(caller(SEND)), Answer::Nothing);
+    assert_eq!(r.on_piece(caller(SEND)), PieceAnswer::Nothing);
 }
 
 // ── a hop whose answer is events (the engine's event-stream hop) ────────────────────────────────
@@ -542,14 +566,14 @@ fn a_card_naming_only_grpc_is_refused_by_name_before_the_hop() {
 const STREAM: &[u8] = br#"{"jsonrpc":"2.0","id":7,"method":"message/stream","params":{}}"#;
 
 /// An events hop about a task, through its attempt and the caller's body.
-fn events_sent() -> (Relay, Attempt) {
-    let mut r = Relay::new(json!(7), "1.0");
+fn events_sent() -> (HopRelay, Attempt) {
+    let mut r = HopRelay::new(json!(7), "1.0");
     r.expect_events();
     r.for_task(task(false));
-    let Answer::Attempt(attempt) = r.on_piece(kernel(Some(URL))) else {
+    let PieceAnswer::Attempt(attempt) = r.on_piece(kernel(Some(URL))) else {
         panic!("no attempt");
     };
-    assert_eq!(r.on_piece(caller(STREAM)), Answer::ToFarEndLent);
+    assert_eq!(r.on_piece(caller(STREAM)), PieceAnswer::ToFarEndLent);
     (r, attempt)
 }
 
@@ -562,9 +586,9 @@ fn event(result: serde_json::Value) -> Vec<u8> {
     .into_bytes()
 }
 
-fn part(answer: Answer) -> Part {
+fn part(answer: PieceAnswer) -> Part {
     match answer {
-        Answer::Part(part) => part,
+        PieceAnswer::Part(part) => part,
         other => panic!("not a part: {other:?}"),
     }
 }
@@ -600,7 +624,7 @@ fn events_are_answered_as_they_come_and_settled_as_they_pass() {
     let (head, tail) = first.split_at(10);
     assert_eq!(
         r.on_piece(far(Some(200), head, false)),
-        Answer::Nothing,
+        PieceAnswer::Nothing,
         "half an event"
     );
     let one = part(r.on_piece(far(None, tail, false)));
@@ -611,7 +635,7 @@ fn events_are_answered_as_they_come_and_settled_as_they_pass() {
     assert_eq!(got[0]["result"]["contextId"], "ctx-1");
     assert_eq!(
         r.take_settled(),
-        vec![Settled::Event {
+        vec![TaskSettled::Event {
             state: Some(TaskState::Working),
             artifact: false,
             backend_id: Some("far-1".into()),
@@ -626,12 +650,12 @@ fn events_are_answered_as_they_come_and_settled_as_they_pass() {
     assert_eq!(
         r.take_settled(),
         vec![
-            Settled::Event {
+            TaskSettled::Event {
                 state: None,
                 artifact: true,
                 backend_id: Some("far-1".into()),
             },
-            Settled::Event {
+            TaskSettled::Event {
                 state: Some(TaskState::Completed),
                 artifact: false,
                 backend_id: Some("far-1".into()),
@@ -652,7 +676,7 @@ fn one_document_to_an_events_hop_is_the_unary_answer() {
     assert_eq!(body(&reply)["result"]["id"], "a2a-p-0102030405060708");
     assert_eq!(
         r.take_settled(),
-        vec![Settled::Reported {
+        vec![TaskSettled::Reported {
             state: TaskState::Completed,
             backend_id: Some("far-1".into()),
         }]
@@ -667,7 +691,7 @@ fn an_uncorrelated_event_refuses_before_the_answer_and_ends_it_after() {
     let (mut before, _) = events_sent();
     let reply = answered(&mut before, 200, other);
     assert_eq!(reply.status, 502);
-    assert_eq!(before.take_settled(), vec![Settled::Failed]);
+    assert_eq!(before.take_settled(), vec![TaskSettled::Failed]);
 
     let (mut after, _) = events_sent();
     let first = event(json!({ "kind": "status-update", "status": { "state": "working" } }));
@@ -675,10 +699,10 @@ fn an_uncorrelated_event_refuses_before_the_answer_and_ends_it_after() {
     let _ = after.take_settled();
     let end = part(after.on_piece(far(None, other, false)));
     assert!(end.last && !end.head && end.body.is_empty());
-    assert_eq!(after.take_settled(), vec![Settled::Failed]);
+    assert_eq!(after.take_settled(), vec![TaskSettled::Failed]);
     assert_eq!(
         after.on_piece(far(None, b"", true)),
-        Answer::Nothing,
+        PieceAnswer::Nothing,
         "nothing after the end"
     );
 }
@@ -694,12 +718,15 @@ fn an_events_hop_answered_outside_2xx_is_refused() {
 /// An HTTP+JSON far end's events carry the bare result: each is read as the result of the request.
 #[test]
 fn an_http_json_far_ends_bare_events_are_read_as_results() {
-    let mut r = Relay::new(json!(7), "1.0");
+    let mut r = HopRelay::new(json!(7), "1.0");
     r.expect_events();
     r.for_task(task(false));
     let envelope: serde_json::Value = serde_json::from_slice(STREAM).unwrap();
     r.bind(Binding::HttpJson, &envelope);
-    assert!(matches!(r.on_piece(kernel(Some(URL))), Answer::Attempt(_)));
+    assert!(matches!(
+        r.on_piece(kernel(Some(URL))),
+        PieceAnswer::Attempt(_)
+    ));
     let _ = r.on_piece(caller(STREAM));
     let bare = b"data: {\"kind\":\"status-update\",\"status\":{\"state\":\"working\"}}\n\n";
     let one = part(r.on_piece(far(Some(200), bare, true)));
@@ -746,7 +773,10 @@ fn the_far_ends_whole_answer_states_the_breakers_reading() {
     ];
     for (status, body, want) in cases {
         let mut r = sent();
-        assert_eq!(r.on_piece(far(Some(*status), &[], false)), Answer::Nothing);
+        assert_eq!(
+            r.on_piece(far(Some(*status), &[], false)),
+            PieceAnswer::Nothing
+        );
         assert_eq!(r.take_reading(), None, "the head alone states nothing");
         let _ = r.on_piece(far(None, body, true));
         assert_eq!(
@@ -826,7 +856,7 @@ fn a_far_ends_push_and_extension_refusals_are_relayed_as_themselves() {
     }
 }
 
-fn reply_text(reply: &Reply) -> String {
+fn reply_text(reply: &RelayReply) -> String {
     String::from_utf8_lossy(&reply.body).into_owned()
 }
 
@@ -841,7 +871,7 @@ fn a_buffered_hop_that_dies_mid_answer_bills_its_request_and_the_bytes_received(
     let partial = vec![b'x'; DELIVERED];
     assert_eq!(
         r.on_piece(far(Some(200), &partial, false)),
-        Answer::Nothing,
+        PieceAnswer::Nothing,
         "the answer is incomplete, so nothing is relayed"
     );
     // The connection dies here: no last piece ever arrives.
@@ -937,14 +967,14 @@ fn an_oversized_body_is_cut_one_byte_past_the_ceiling_so_the_driver_can_refuse_i
     let huge = answer_of_len(MAX_REPLY_BYTES * 3);
     let mut r = sent();
     let (a, b) = huge.split_at(MAX_REPLY_BYTES * 2);
-    assert_eq!(r.on_piece(far(Some(200), a, false)), Answer::Nothing);
+    assert_eq!(r.on_piece(far(Some(200), a, false)), PieceAnswer::Nothing);
     assert_eq!(
         r.far.len(),
         MAX_REPLY_BYTES + 1,
         "cut one byte past the cap"
     );
     let reply = match r.on_piece(far(None, b, true)) {
-        Answer::ToCaller(reply) => reply,
+        PieceAnswer::ToCaller(reply) => reply,
         other => panic!("no answer: {other:?}"),
     };
     assert_eq!(
@@ -991,7 +1021,7 @@ impl tracing::Subscriber for Capture {
 }
 
 /// What `run` answers the caller, and the lines it journaled.
-fn journaled(run: impl FnOnce() -> Reply) -> (Reply, Vec<(tracing::Level, String)>) {
+fn journaled(run: impl FnOnce() -> RelayReply) -> (RelayReply, Vec<(tracing::Level, String)>) {
     let (sent, heard) = std::sync::mpsc::channel();
     let reply = tracing::subscriber::with_default(Capture(sent), run);
     (reply, heard.try_iter().collect())
@@ -1011,7 +1041,7 @@ fn a_refused_hops_journal_line_names_the_backend_and_the_callers_answer_does_not
         .banner()
         .to_string();
     let other = b"data: {\"jsonrpc\":\"2.0\",\"id\":99,\"result\":{}}\n\n";
-    type Run = Box<dyn FnOnce() -> Reply>;
+    type Run = Box<dyn FnOnce() -> RelayReply>;
     let cases: Vec<(&str, String, Run)> = vec![
         (
             "a task-less hop's backend status",
@@ -1037,7 +1067,7 @@ fn a_refused_hops_journal_line_names_the_backend_and_the_callers_answer_does_not
                     event(json!({ "kind": "status-update", "status": { "state": "working" } }));
                 let _ = r.on_piece(far(Some(200), &first, false));
                 let _ = r.on_piece(far(None, other, false));
-                Reply {
+                RelayReply {
                     status: 0,
                     content_type: "",
                     body: Vec::new(),

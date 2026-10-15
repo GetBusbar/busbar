@@ -5,4 +5,4 @@
 //! compiled-in row holds. `tests/conformance.rs` (`both_ways`) loads it beside the linked door
 //! and drives both the same way.
 
-busbar_contract::export_door!(busbar_plane_a2a::plane_door::door);
+busbar_contract::export_door!(busbar_plane_a2a::agent_door::door);

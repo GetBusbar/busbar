@@ -111,7 +111,7 @@ const SITES: &[Site] = &[
     //
     // a2a has no site here since FLIP-A2A deleted `busbar-a2a` (its one was the engine's
     // `a2a/receive.rs`): the plane's door reports its usage by INDEX into its own declared
-    // `BILLABLE_CLASSES` (`busbar-plane-a2a/src/door.rs`), through no shape above, so no
+    // `BILLABLE_CLASSES` (`busbar-plane-a2a/src/door_statement.rs`), through no shape above, so no
     // undeclared class can be named there. A shape appearing under `busbar-plane-a2a/src` is
     // still RED here until it is listed.
     // `class_counts` (busbar-plane-streaming's session.rs) names these six.

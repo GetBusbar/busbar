@@ -312,7 +312,7 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "G-trust-parameterised".into(),
             tag: "TRUST-MACHINE-FORK".into(),
-            owner: "crates/busbar-plane-a2a/src/trust.rs (CardPin, the artifact, plus the one plane-specific refusal, jws_refusal) + the kernel's HostSlots trust.* service (the verbs a plane calls; BUSBAR-1.6.0.md Part 3 §4)".into(),
+            owner: "crates/busbar-plane-a2a/src/card_trust.rs (CardPin, the artifact, plus the one plane-specific refusal, jws_refusal) + the kernel's HostSlots trust.* service (the verbs a plane calls; BUSBAR-1.6.0.md Part 3 §4)".into(),
             class_test: "crates/busbar-plane-a2a/tests/purity.rs::the_a2a_plane_declares_no_trust_state_of_its_own".into(),
             remedy: "declare the facts (identity, registration state, artifact outcome) and let the kernel's Approval decide; a plane may narrow the kernel's verdict, never assert Allow over it".into(),
             rules: Vec::new(),

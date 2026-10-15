@@ -41,18 +41,7 @@ pub fn tool_digest(name: &str, description: &str, input_schema: &Value) -> Strin
         framed.extend_from_slice(&(part.len() as u64).to_be_bytes());
         framed.extend_from_slice(part.as_bytes());
     }
-    format!(
-        "sha256:{}",
-        hex(&busbar_contract::abi::sdk::digest::sha256(&framed))
-    )
-}
-
-fn hex(bytes: &[u8]) -> String {
-    use std::fmt::Write as _;
-    bytes.iter().fold(String::new(), |mut s, b| {
-        let _ = write!(s, "{b:02x}");
-        s
-    })
+    format!("sha256:{}", busbar_contract::sha256_hex(&framed))
 }
 
 /// `value` with every object's keys sorted, recursively: key ORDER is not drift, any change of key,
@@ -143,24 +132,13 @@ pub fn catalogue_hash(observation: &Observation) -> String {
         bytes.extend_from_slice(digest.as_bytes());
         bytes.push(b'\n');
     }
-    format!(
-        "sha256:{}",
-        hex(&busbar_contract::abi::sdk::digest::sha256(&bytes))
-    )
+    format!("sha256:{}", busbar_contract::sha256_hex(&bytes))
 }
 
-/// The last contact. `Never` is not a failure: a declaratively approved server has legitimately
-/// never been reached.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub enum Sighting {
-    /// Never contacted.
-    #[default]
-    Never,
-    /// The contact failed, with the operator-visible reason.
-    Failed(String),
-    /// Contacted, and this is what it offered.
-    Seen(Observation),
-}
+/// The last contact: the SDK's one shape of a sighting
+/// ([`busbar_contract::abi::sdk::trust::Sighting`]), over what the server offered. `Never` is not
+/// a failure: a declaratively approved server has legitimately never been reached.
+pub type Sighting = busbar_contract::abi::sdk::trust::Sighting<Observation>;
 
 /// ONE ITEM OF THE KERNEL'S TRUST STATE (`trust.state`, ARCHITECT Q3): the kernel owns every
 /// approval and every verdict; the plane's views read them, they derive none.
@@ -174,31 +152,11 @@ pub struct KernelItem {
     pub approved: Option<String>,
 }
 
-/// The view's state word.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum State {
-    /// Nothing is approved: nothing served.
-    Pending,
-    /// Something is approved, and the kernel holds no drift on what the server offers. Serves.
-    Approved,
-    /// The kernel holds a tool drifted or quarantined, or the server offers what nothing approved.
-    Quarantined,
-    /// The last contact failed.
-    Error,
-}
-
-impl State {
-    /// The wire word a UI branches on.
-    #[must_use]
-    pub fn word(self) -> &'static str {
-        match self {
-            State::Pending => "pending",
-            State::Approved => "approved",
-            State::Quarantined => "quarantined",
-            State::Error => "error",
-        }
-    }
-}
+/// The view's state word: the SDK's one state word of a trust view
+/// ([`busbar_contract::abi::sdk::trust::State`]). `Approved`: something is approved and the kernel
+/// holds no drift on what the server offers; `Quarantined`: the kernel holds a tool drifted or
+/// quarantined, or the server offers what nothing approved.
+pub use busbar_contract::abi::sdk::trust::State;
 
 /// The changes queue: what the server offers now against what the kernel holds approved.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

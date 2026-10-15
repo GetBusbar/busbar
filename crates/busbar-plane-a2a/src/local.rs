@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
 use crate::a2a::task::{Task, TaskState};
-use crate::arrival::Refusal;
+use crate::agent_arrival::AgentRefusal;
 use crate::push::DeliveryAuth;
 use crate::records::KIND_PUSH_CONFIG;
 use crate::tasks::{self, task_key, Halt, Records, Write};
@@ -82,7 +82,7 @@ pub trait Reach: Records {
 
 /// One local answer: its status and its JSON body.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Answer {
+pub struct LocalAnswer {
     /// The status.
     pub status: u32,
     /// The body.
@@ -103,17 +103,17 @@ const INTERNAL: i64 = -32603;
 pub const NO_SUCH_TASK: &str = "no task with that id is open for this caller";
 
 /// A JSON-RPC success under the caller's id.
-fn ok(rpc_id: &Value, result: Value) -> Answer {
+fn ok(rpc_id: &Value, result: Value) -> LocalAnswer {
     let doc = json!({ "jsonrpc": "2.0", "id": rpc_id, "result": result });
-    Answer {
+    LocalAnswer {
         status: 200,
         body: serde_json::to_vec(&doc).unwrap_or_default(),
     }
 }
 
 /// A JSON-RPC error under the caller's id, at the status A2A section 5.4 binds to its code.
-fn refusal(rpc_id: &Value, code: i64, message: impl Into<String>) -> Refusal {
-    Refusal {
+fn refusal(rpc_id: &Value, code: i64, message: impl Into<String>) -> AgentRefusal {
+    AgentRefusal {
         status: match code {
             TASK_NOT_FOUND => 404,
             UNSUPPORTED_OPERATION | INVALID_PARAMS => 400,
@@ -126,9 +126,9 @@ fn refusal(rpc_id: &Value, code: i64, message: impl Into<String>) -> Refusal {
 }
 
 /// [`refusal`], as the verb's answer.
-fn err(rpc_id: &Value, code: i64, message: impl Into<String>) -> Answer {
+fn err(rpc_id: &Value, code: i64, message: impl Into<String>) -> LocalAnswer {
     let refused = refusal(rpc_id, code, message);
-    Answer {
+    LocalAnswer {
         status: refused.status,
         body: serde_json::to_vec(&refused.envelope()).unwrap_or_default(),
     }
@@ -149,7 +149,7 @@ pub const CONFIG_UNDELETED: &str =
 /// ([`CONFIG_UNRECORDED`]) or remove ([`CONFIG_UNDELETED`]). `None` for a verb whose answer the
 /// engine never made depend on a write.
 #[must_use]
-pub fn unrecorded(verb: LocalVerb, rpc_id: &Value) -> Option<Refusal> {
+pub fn unrecorded(verb: LocalVerb, rpc_id: &Value) -> Option<AgentRefusal> {
     let message = match verb {
         LocalVerb::CreatePushConfig(_) => CONFIG_UNRECORDED,
         LocalVerb::DeletePushConfig(_) => CONFIG_UNDELETED,
@@ -160,7 +160,7 @@ pub fn unrecorded(verb: LocalVerb, rpc_id: &Value) -> Option<Refusal> {
 
 /// The answer when the task store could not be reached: JSON-RPC's internal error.
 #[must_use]
-pub fn unreadable(rpc_id: &Value) -> Answer {
+pub fn unreadable(rpc_id: &Value) -> LocalAnswer {
     err(rpc_id, INTERNAL, "the task store could not be reached")
 }
 
@@ -169,14 +169,14 @@ pub fn unreadable(rpc_id: &Value) -> Answer {
 ///
 /// # Errors
 /// [`Halt::Pending`] when a records call pends; nothing is written then.
-pub fn answer(
+pub fn answer_local(
     reach: &mut dyn Reach,
     verb: LocalVerb,
     envelope: &Value,
     caller: &str,
     now: u64,
     out: &mut Vec<Write>,
-) -> Result<Option<Answer>, Halt> {
+) -> Result<Option<LocalAnswer>, Halt> {
     let rpc_id = envelope.get("id").cloned().unwrap_or(Value::Null);
     let params = envelope.get("params").cloned().unwrap_or(Value::Null);
     let answered = match verb {
@@ -205,7 +205,7 @@ pub(crate) fn list_answer(
     envelope: &Value,
     caller: &str,
     now: u64,
-) -> Result<Answer, Halt> {
+) -> Result<LocalAnswer, Halt> {
     let rpc_id = envelope.get("id").cloned().unwrap_or(Value::Null);
     let params = envelope.get("params").cloned().unwrap_or(Value::Null);
     list_tasks(rec, &params, &rpc_id, caller, now)
@@ -284,7 +284,7 @@ fn list_tasks(
     rpc_id: &Value,
     caller: &str,
     now: u64,
-) -> Result<Answer, Halt> {
+) -> Result<LocalAnswer, Halt> {
     let context_id = member(params, "contextId", "context_id")
         .and_then(Value::as_str)
         .unwrap_or_default();
@@ -533,7 +533,7 @@ fn create_push_config(
     caller: &str,
     now: u64,
     out: &mut Vec<Write>,
-) -> Result<Answer, Halt> {
+) -> Result<LocalAnswer, Halt> {
     let Some(task) = addressed(reach, params, caller, now)? else {
         return Ok(err(rpc_id, TASK_NOT_FOUND, NO_SUCH_TASK));
     };
@@ -598,7 +598,7 @@ fn get_push_config(
     rpc_id: &Value,
     caller: &str,
     now: u64,
-) -> Result<Answer, Halt> {
+) -> Result<LocalAnswer, Halt> {
     let Some(task) = addressed(rec, params, caller, now)? else {
         return Ok(err(rpc_id, TASK_NOT_FOUND, NO_SUCH_TASK));
     };
@@ -623,7 +623,7 @@ fn list_push_configs(
     rpc_id: &Value,
     caller: &str,
     now: u64,
-) -> Result<Answer, Halt> {
+) -> Result<LocalAnswer, Halt> {
     let Some(task) = addressed(rec, params, caller, now)? else {
         return Ok(err(rpc_id, TASK_NOT_FOUND, NO_SUCH_TASK));
     };
@@ -646,7 +646,7 @@ fn delete_push_config(
     caller: &str,
     now: u64,
     out: &mut Vec<Write>,
-) -> Result<Answer, Halt> {
+) -> Result<LocalAnswer, Halt> {
     let Some(task) = addressed(rec, params, caller, now)? else {
         return Ok(err(rpc_id, TASK_NOT_FOUND, NO_SUCH_TASK));
     };
@@ -674,7 +674,7 @@ fn subscribe_refusal(
     rpc_id: &Value,
     caller: &str,
     now: u64,
-) -> Result<Option<Answer>, Halt> {
+) -> Result<Option<LocalAnswer>, Halt> {
     let Some(named) = ["id", "taskId", "task_id"]
         .iter()
         .find_map(|m| params.get(*m).and_then(Value::as_str))

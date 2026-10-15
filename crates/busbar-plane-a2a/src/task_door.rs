@@ -27,9 +27,9 @@ use busbar_contract::abi::sdk::conn::{Connector, Host};
 use busbar_contract::abi::sdk::{Instance, Keyed, Lent, Out, ServiceError, Services};
 use serde_json::Value;
 
-use crate::arrival::{Disposition, JSON_MEDIA_TYPE};
+use crate::agent_arrival::{AgentDisposition, JSON_MEDIA_TYPE};
+use crate::agent_door::A2aDoor;
 use crate::local::{self, LocalVerb, Reach};
-use crate::plane_door::A2aDoor;
 use crate::records::HELD_KINDS;
 use crate::tasks::{self, Halt, Records, Write};
 
@@ -52,7 +52,7 @@ pub struct Pass {
     answered: bool,
     /// A local answer decided and held while busbar's own callback is mirrored onto the agent
     /// ([`crate::mirror`]): its status, its body, its record writes, and the mirror in flight.
-    held: Option<Held>,
+    held: Option<HeldAnswer>,
     /// `ListTasks`'s refresh from the agent ([`refresh_listed`]): the listing in flight, then its
     /// answer and the handle the piece's calls count on from after it, and how many of the moves it
     /// recorded have queued their deliveries.
@@ -62,7 +62,7 @@ pub struct Pass {
     /// The reply the windows write is one message (the gRPC line's).
     message: bool,
     /// The audit row the unit's answer writes with its first window: its resource, and whether
-    /// the unit was served ([`crate::door::AUDIT_ACTION`]); its resource is also the unit's ledger
+    /// the unit was served ([`crate::door_statement::AUDIT_ACTION`]); its resource is also the unit's ledger
     /// lane (SEAM-L(j)).
     pub(crate) audit: Option<(String, bool)>,
     /// The agent the unit's ATTEMPT reached.
@@ -76,7 +76,7 @@ pub struct Pass {
     /// removed, [`local::unrecorded`]; a task opened or resumed,
     /// [`crate::task_hop::Opened::Hop`]); `None` for a piece whose writes the engine never failed
     /// a verb over.
-    pub(crate) unrecorded: Option<crate::arrival::Refusal>,
+    pub(crate) unrecorded: Option<crate::agent_arrival::AgentRefusal>,
 }
 
 /// A finished listing: the handle the piece's calls count on from after it, and its answer's status
@@ -85,7 +85,7 @@ type Listed = (u32, Option<(u16, Vec<u8>)>);
 
 /// A local answer held across the mirror's PENDING entries.
 #[derive(Debug)]
-pub(crate) struct Held {
+pub(crate) struct HeldAnswer {
     status: u32,
     body: Vec<u8>,
     writes: Vec<Write>,
@@ -453,13 +453,13 @@ fn report_restore(plane: &A2aDoor, unit: u64, restored: Result<tasks::Restored, 
 /// The answer a NOTIFICATION gets: received, never answered (JSON-RPC 2.0 section 4.1: the server
 /// MUST NOT reply), so `202` and no body at all, as the engine's `jsonrpc::accepted` answered it.
 pub(crate) const fn notice_answer() -> (u32, &'static [u8]) {
-    (crate::arrival::STATUS_ACCEPTED, b"")
+    (crate::agent_arrival::STATUS_ACCEPTED, b"")
 }
 
 /// The local verb a unit arrived as.
-fn verb_of(disposition: &Disposition) -> Option<LocalVerb> {
+fn verb_of(disposition: &AgentDisposition) -> Option<LocalVerb> {
     match disposition {
-        Disposition::Request { row, .. } => local::verb_of(row.method),
+        AgentDisposition::Request { row, .. } => local::verb_of(row.method),
         _ => None,
     }
 }
@@ -475,13 +475,13 @@ pub fn on_piece(
     // A NOTIFICATION, acknowledged on the caller's piece: `202` and no body, nothing moved, no
     // fee kept and no audit row (the engine answered it before anything was admitted).
     if plane.units.with(&unit, |u| {
-        u.is_some_and(|u| matches!(u.disposition, Disposition::Notice { .. }))
+        u.is_some_and(|u| matches!(u.disposition, AgentDisposition::Notice { .. }))
     }) {
         if input.get().from != FROM_CALLER {
             return Some(Outcome::Ready);
         }
         let (status, body) = notice_answer();
-        let head = Head {
+        let head = WindowHead {
             fields: &[],
             length: true,
             message: false,
@@ -501,8 +501,8 @@ pub fn on_piece(
         plane.units.with(&unit, |u| {
             let u = u?;
             let version = match &u.disposition {
-                Disposition::Request { version, .. } => *version,
-                _ => crate::arrival::DEFAULT_VERSION,
+                AgentDisposition::Request { version, .. } => *version,
+                _ => crate::agent_arrival::DEFAULT_VERSION,
             };
             Some((
                 verb_of(&u.disposition)?,
@@ -522,7 +522,7 @@ pub fn on_piece(
     }
     // An answer held while busbar's own callback is mirrored: the mirror goes on, then the answer.
     if let Some(mut held) = held {
-        if crate::plane_door::drive_mirror(plane, instance.ticket(), &mut held.flight).is_pending()
+        if crate::agent_door::drive_mirror(plane, instance.ticket(), &mut held.flight).is_pending()
         {
             plane.units.with(&unit, |u| {
                 if let Some(u) = u {
@@ -532,7 +532,7 @@ pub fn on_piece(
             return Some(Outcome::Pending);
         }
         let issued = held.flight.hop.seq;
-        let answer = local::Answer {
+        let answer = local::LocalAnswer {
             status: held.status,
             body: held.body,
         };
@@ -595,7 +595,7 @@ pub fn on_piece(
     }
     if entry.sweep {
         // A sweep that fails leaves nothing behind and does not fail the verb.
-        match tasks::sweep(&mut via, entry.now, SWEEP_BUDGET, &mut writes) {
+        match tasks::retention_sweep(&mut via, entry.now, SWEEP_BUDGET, &mut writes) {
             Err(Halt::Pending) => return Some(Outcome::Pending),
             Err(Halt::Failed(_)) => writes.clear(),
             Ok(()) => {}
@@ -619,7 +619,7 @@ pub fn on_piece(
         .as_ref()
         .and_then(|s| s.agents.get(member))
         .and_then(|def| {
-            crate::plane_door::admit_unit(
+            crate::agent_door::admit_unit(
                 plane,
                 (member, def),
                 addressed.as_deref(),
@@ -630,7 +630,7 @@ pub fn on_piece(
         });
     let served = refused.is_none();
     let answered = match refused {
-        Some(refusal) => Ok(Some(local::Answer {
+        Some(refusal) => Ok(Some(local::LocalAnswer {
             status: refusal.status,
             body: serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
         })),
@@ -658,7 +658,7 @@ pub fn on_piece(
             )
             .map(Some)
         }
-        None => local::answer(&mut via, verb, &envelope, caller, entry.now, &mut writes),
+        None => local::answer_local(&mut via, verb, &envelope, caller, entry.now, &mut writes),
     };
     let answer = match answered {
         Err(Halt::Pending) => return Some(Outcome::Pending),
@@ -666,7 +666,7 @@ pub fn on_piece(
             writes.truncate(swept);
             local::unreadable(envelope.get("id").unwrap_or(&Value::Null))
         }
-        // A subscribe to a live task is the relay's (`crate::plane_door`'s events hop); one that
+        // A subscribe to a live task is the relay's (`crate::agent_door`'s events hop); one that
         // reached here carried no request the relay could send.
         Ok(None) => return Some(Outcome::Refused),
         Ok(Some(answer)) => answer,
@@ -684,7 +684,7 @@ pub fn on_piece(
             u.pass.served = served;
             // An admitted verb the plane answered is the caller's call, audited as served (the
             // engine's local arm, after its admission).
-            u.pass.audit = served.then(|| (crate::door::agent_resource(member), true));
+            u.pass.audit = served.then(|| (crate::door_statement::agent_resource(member), true));
         }
     });
     // BUSBAR'S OWN CALLBACK, MIRRORED ONTO THE AGENT before the answer goes (the engine awaited it
@@ -707,10 +707,10 @@ pub fn on_piece(
         None => None,
     };
     if let Some(mut flight) = flight {
-        if crate::plane_door::drive_mirror(plane, instance.ticket(), &mut flight).is_pending() {
+        if crate::agent_door::drive_mirror(plane, instance.ticket(), &mut flight).is_pending() {
             plane.units.with(&unit, |u| {
                 if let Some(u) = u {
-                    u.pass.held = Some(Held {
+                    u.pass.held = Some(HeldAnswer {
                         status: answer.status,
                         body: answer.body.clone(),
                         writes: writes.clone(),
@@ -815,7 +815,7 @@ fn refresh_listed<'h>(
                 })
             });
             let params = serde_json::json!({});
-            match crate::plane_door::drive_originated(
+            match crate::agent_door::drive_originated(
                 plane,
                 ticket,
                 &mut hop,
@@ -853,7 +853,7 @@ fn refresh_listed<'h>(
         answered.as_ref().map(|(s, b)| (*s, b.as_slice())),
         &ours,
     );
-    let at = tasks::Step {
+    let at = tasks::Stamp {
         caller,
         request_id: "",
         now,
@@ -958,7 +958,7 @@ fn answered_window(
     input: &Lent<'_, OnPieceIn>,
     out: &mut Out<'_, OnPieceOut>,
     (framed, composed): (Option<crate::framed::Rpc>, bool),
-    answer: &local::Answer,
+    answer: &local::LocalAnswer,
     writes: &[Write],
     issued: u32,
 ) -> Outcome {
@@ -969,7 +969,7 @@ fn answered_window(
             unit,
             input,
             out,
-            &crate::framed::reply(rpc, answer.status, &answer.body),
+            &crate::framed::framed_reply(rpc, answer.status, &answer.body),
             writes,
         ),
         (None, true) => window(
@@ -1043,7 +1043,7 @@ fn window_with(
     writes: &[Write],
     head: &[(&str, &str)],
 ) -> Outcome {
-    let first = (status != 0).then_some(Head {
+    let first = (status != 0).then_some(WindowHead {
         close: None,
         fields: head,
         length: true,
@@ -1052,7 +1052,7 @@ fn window_with(
     window_core(plane, unit, input, out, (status, body), writes, first)
 }
 
-/// A WHOLE REPLY ON THE gRPC LINE ([`crate::framed::Reply`]): its status in the line's own
+/// A WHOLE REPLY ON THE gRPC LINE ([`crate::framed::FramedReply`]): its status in the line's own
 /// numbering (`0` = `OK`), its details field when it has one, and no media type and no length (the
 /// grpc transport frames).
 fn framed_window(
@@ -1060,7 +1060,7 @@ fn framed_window(
     unit: u64,
     input: &Lent<'_, OnPieceIn>,
     out: &mut Out<'_, OnPieceOut>,
-    reply: &crate::framed::Reply,
+    reply: &crate::framed::FramedReply,
     writes: &[Write],
 ) -> Outcome {
     // THE gRPC LINE'S ANSWER (SEAM-4l): the head is the listener's `200` and the line's media type;
@@ -1075,7 +1075,7 @@ fn framed_window(
         out,
         (crate::relay::STATUS_OK, body),
         writes,
-        Some(Head {
+        Some(WindowHead {
             fields: &[(
                 crate::relay::H_CONTENT_TYPE,
                 crate::framed::REPLY_CONTENT_TYPE,
@@ -1089,12 +1089,12 @@ fn framed_window(
 
 /// The first window's head: its fields, whether it states its length, and whether its body is one
 /// message (the gRPC line's: its last byte is a message boundary).
-struct Head<'h> {
+struct WindowHead<'h> {
     fields: &'h [(&'h str, &'h str)],
     length: bool,
     message: bool,
     /// The gRPC line's final status the answer closes with (no message went out).
-    close: Option<&'h crate::framed::Reply>,
+    close: Option<&'h crate::framed::FramedReply>,
 }
 
 /// One window: on the first (`first`), its head; then as many bytes as the reply buffer holds.
@@ -1105,7 +1105,7 @@ fn window_core(
     out: &mut Out<'_, OnPieceOut>,
     (status, body): (u32, &[u8]),
     writes: &[Write],
-    first: Option<Head<'_>>,
+    first: Option<WindowHead<'_>>,
 ) -> Outcome {
     let (mut reply, mut fields, mut records, mut arena, mut units) = (
         input.reply_buf(),
@@ -1119,7 +1119,7 @@ fn window_core(
         .with(&unit, |u| u.is_some_and(|u| u.pass.served))
     {
         units.push(UnitCount {
-            class: crate::door::CLASS_FEE_INDEX,
+            class: crate::door_statement::CLASS_FEE_INDEX,
             source: UNITS_REPORTED,
             amount: 1,
         });
@@ -1135,7 +1135,7 @@ fn window_core(
         // engine sent its buffered JSON answer.
         if head.length {
             fields.push(OutField {
-                name: arena.span(crate::plane_door::H_CONTENT_LENGTH.as_bytes()),
+                name: arena.span(crate::agent_door::H_CONTENT_LENGTH.as_bytes()),
                 value: arena.span(body.len().to_string().as_bytes()),
             });
         }
@@ -1155,7 +1155,9 @@ fn window_core(
             .with(&unit, |u| u.and_then(|u| u.pass.audit.clone())),
     );
     if let Some((resource, applied)) = &audit {
-        records.push(crate::door::audit_write(&mut arena, resource, *applied));
+        records.push(crate::door_statement::audit_write(
+            &mut arena, resource, *applied,
+        ));
     }
     // THE UNIT'S LEDGER LANE (SEAM-L(j)): the resource its row names (`agent:<id>`, or the plane
     // pool for busbar's extended card), as the engine's meter named it.
@@ -1305,7 +1307,7 @@ fn extended_card(
 ) -> (u32, Vec<u8>) {
     use crate::served_card as served;
     let refusal = |status: u32, code: i64, message: &str| {
-        let refusal = crate::arrival::Refusal {
+        let refusal = crate::agent_arrival::AgentRefusal {
             status,
             id: Some(rpc.clone()),
             code,
@@ -1326,10 +1328,10 @@ fn extended_card(
     };
     let mut held = Vec::new();
     for (name, def) in agents {
-        if !signer.entitled(&format!("{}:{name}", crate::door::SCOPE)) {
+        if !signer.entitled(&format!("{}:{name}", crate::door_statement::SCOPE)) {
             continue;
         }
-        if crate::plane_door::admit_unit(plane, (name, def), None, generation, None).is_err() {
+        if crate::agent_door::admit_unit(plane, (name, def), None, generation, None).is_err() {
             continue;
         }
         held.push((
@@ -1365,7 +1367,7 @@ fn card_error(code: &str, message: &str) -> Vec<u8> {
         .unwrap_or_default()
 }
 
-/// `on_piece` for a card read ([`crate::arrival::CardAsk`]): its first piece (the caller's, for
+/// `on_piece` for a card read ([`crate::agent_arrival::CardAsk`]): its first piece (the caller's, for
 /// busbar's own card; the ATTEMPT naming the agent, for a fronted agent's) is answered whole, in the
 /// engine's words and heads (`receive::well_known_card` and `receive::card`), the card signed with
 /// busbar's key through the host's `sign`; a card read is never metered, so it reports no fee unit.
@@ -1374,7 +1376,7 @@ pub fn card_piece(
     instance: &Instance<'_, A2aDoor>,
     input: Lent<'_, OnPieceIn>,
     mut out: Out<'_, OnPieceOut>,
-    ask: crate::arrival::CardAsk,
+    ask: crate::agent_arrival::CardAsk,
 ) -> Outcome {
     use crate::served_card::{self as served, OWN_CARD_CACHE_CONTROL, OWN_CARD_MEDIA_TYPE};
     let unit = input.get().unit;
@@ -1382,7 +1384,7 @@ pub fn card_piece(
         plane.units.with(&unit, |u| {
             u.map(|u| {
                 let rpc = match &u.disposition {
-                    Disposition::Request { id, .. } => id.clone(),
+                    AgentDisposition::Request { id, .. } => id.clone(),
                     _ => Value::Null,
                 };
                 (
@@ -1418,7 +1420,7 @@ pub fn card_piece(
         ("content-type", OWN_CARD_MEDIA_TYPE),
     ];
     let (status, body, own) = match ask {
-        crate::arrival::CardAsk::Own => {
+        crate::agent_arrival::CardAsk::Own => {
             match served::self_card_document(&public_url, Vec::new())
                 .ok_or_else(String::new)
                 .and_then(|card| served::sign_card(&card, &mut signer))
@@ -1431,10 +1433,11 @@ pub fn card_piece(
                 ),
             }
         }
-        crate::arrival::CardAsk::Extended => {
+        crate::agent_arrival::CardAsk::Extended => {
             plane.units.with(&unit, |u| {
                 if let Some(u) = u {
-                    u.pass.audit = Some((crate::door::PLANE_POOL_RESOURCE.to_string(), true));
+                    u.pass.audit =
+                        Some((crate::door_statement::PLANE_POOL_RESOURCE.to_string(), true));
                 }
             });
             let (status, body) = extended_card(
@@ -1454,7 +1457,7 @@ pub fn card_piece(
                         u.pass.issued = seq;
                     }
                 });
-                let reply = crate::framed::reply(rpc, status, &body);
+                let reply = crate::framed::framed_reply(rpc, status, &body);
                 return framed_window(plane, unit, &input, &mut out, &reply, &[]);
             }
             let body = if composed {
@@ -1464,7 +1467,7 @@ pub fn card_piece(
             };
             (status, body, false)
         }
-        crate::arrival::CardAsk::Agent => {
+        crate::agent_arrival::CardAsk::Agent => {
             let agent = agent.unwrap_or_default();
             let def = section.as_ref().and_then(|s| s.agents.get(&agent));
             match (def, plane.cards.at(&agent, generation)) {

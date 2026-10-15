@@ -8,8 +8,8 @@
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::plane::{ProjectIn, ProjectOut};
 use busbar_contract::abi::sdk::Safe;
-use busbar_plane_a2a::door;
-use busbar_plane_a2a::plane_door::Project;
+use busbar_plane_a2a::agent_door::Project;
+use busbar_plane_a2a::door_statement;
 use serde_json::json;
 
 /// One `project` of `body` arriving on claim `claim` at `target`, through the door's own entry,
@@ -84,7 +84,7 @@ fn project_session(claim: usize, target: &str, body: &[u8]) -> (Outcome, Option<
 
 /// The claim the door states for `verb target`.
 fn claim_of(verb: &str, target: &str) -> usize {
-    door::ROUTES
+    door_statement::ROUTES
         .iter()
         .position(|r| r.verb == verb && r.target == target)
         .expect("a stated route")

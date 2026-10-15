@@ -208,7 +208,12 @@ fn the_arrival_is_deterministic() {
     );
     for body in &bodies {
         let answers: Vec<String> = (0..8)
-            .map(|_| format!("{:?}", busbar_plane_a2a::arrival::decide(body, |_| None)))
+            .map(|_| {
+                format!(
+                    "{:?}",
+                    busbar_plane_a2a::agent_arrival::decide_arrival(body, |_| None)
+                )
+            })
             .collect();
         assert!(
             answers.windows(2).all(|w| w[0] == w[1]),
@@ -310,7 +315,7 @@ fn no_diagnostic_line_of_the_plane_carries_the_push_token() {
 /// Ported from the deleted engine crate's `reuse_tests::the_a2a_plane_declares_no_trust_state_of_its_own`.
 /// The trust lifecycle (the states, the drift, the approval, the pinned artifact and the verbs that
 /// move a registration through them) is the kernel's, written once and plane-neutral. The plane
-/// contributes its report types (`Sighting`, `Observation`: what a look saw) and parameterises the
+/// contributes its report types (`Sighting`, `CardObservation`: what a look saw) and parameterises the
 /// machine over them; a second declaration of the machine here is a fork, and two machines disagree
 /// the first time one of them is fixed. The sources are enumerated off disk (a hand-kept file list
 /// silently stops covering the newest code), and a scan that finds nothing is a failure, not a pass.

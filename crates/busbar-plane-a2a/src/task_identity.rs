@@ -18,7 +18,7 @@
 use serde_json::{json, Map, Value};
 
 use crate::a2a::task::TaskState;
-use crate::arrival::Refusal;
+use crate::agent_arrival::AgentRefusal;
 
 /// What every task id busbar mints starts with.
 pub const TASK_ID_PREFIX: &str = "a2a";
@@ -266,7 +266,7 @@ pub const TASK_RESOURCE_TYPE: &str = "a2a.busbar/task";
 /// THE REFUSAL'S ENVELOPE, NAMING THE TASK: its error carries a `ResourceInfo` for `task_id` after
 /// its `ErrorInfo` (the engine's `rpcerror::about_task`).
 #[must_use]
-pub fn about_task(refusal: &Refusal, task_id: &str) -> Value {
+pub fn about_task(refusal: &AgentRefusal, task_id: &str) -> Value {
     let mut doc = refusal.envelope();
     let entry = json!({
         "@type": RESOURCE_INFO_TYPE,
@@ -296,5 +296,5 @@ pub const fn status_of_code(code: i64) -> Option<u32> {
 }
 
 #[cfg(test)]
-#[path = "tests/identity_tests.rs"]
+#[path = "tests/task_identity_tests.rs"]
 mod tests;

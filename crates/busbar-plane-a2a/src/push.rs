@@ -14,7 +14,7 @@
 //!   while no attempt on it is open, so a task's notifications reach the receiver in the order its
 //!   state changed.
 //! * Each attempt re-runs the destination judge, then dials the plane's outbound `open-web` need
-//!   ([`crate::door::NEED_OPEN_WEB`]) with [`request`]; its end is [`Attempted`].
+//!   ([`crate::door_statement::NEED_OPEN_WEB`]) with [`request`]; its end is [`Attempted`].
 //! * [`Deliveries::settle`] pops the head, or puts it back with its next time when the end is
 //!   retryable and attempts remain. [`Deliveries::next_tick_ns`] is the lifecycle tick's
 //!   `next_tick_ns`: nothing waits on a slot or a thread between attempts.
@@ -37,7 +37,6 @@
 //! may be spent, exactly as 1.5.5 bounded it.
 
 use std::collections::{BTreeMap, VecDeque};
-use std::fmt::Write as _;
 
 use busbar_contract::abi::sdk::exchange::Request;
 use busbar_contract::abi::sdk::publish::Keyed;
@@ -285,7 +284,7 @@ struct Book {
 
 /// What [`Deliveries::settle`] did with the head of a task's queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Settled {
+pub enum DeliverySettled {
     /// It is done (delivered, refused, or out of attempts): the record kind to file.
     Done(&'static str),
     /// It waits for another attempt at this time.
@@ -455,19 +454,25 @@ impl Deliveries {
     /// Settle the open attempt on `task_id`'s head: done, or back in the queue for its next
     /// attempt (`jitter` is a random byte, [`jittered_ms`]). A terminal task's last delivery
     /// forgets its credential.
-    pub fn settle(&self, task_id: &str, end: Attempted, now_ns: u64, jitter: u8) -> Settled {
+    pub fn settle(
+        &self,
+        task_id: &str,
+        end: Attempted,
+        now_ns: u64,
+        jitter: u8,
+    ) -> DeliverySettled {
         self.with(|b| {
             let Some(queue) = b.queues.get_mut(task_id) else {
-                return Settled::Unknown;
+                return DeliverySettled::Unknown;
             };
             let Some(head) = queue.front_mut().filter(|w| w.open) else {
-                return Settled::Unknown;
+                return DeliverySettled::Unknown;
             };
             head.open = false;
             if end.retryable() && head.attempts < MAX_ATTEMPTS {
                 let wait = jittered_ms(RETRY_DELAYS_MS[(head.attempts - 1) as usize], jitter);
                 head.not_before_ns = now_ns.saturating_add(wait.saturating_mul(1_000_000));
-                return Settled::Retry(head.not_before_ns);
+                return DeliverySettled::Retry(head.not_before_ns);
             }
             let terminal = queue.pop_front().is_some_and(|w| w.delivery.terminal);
             if queue.is_empty() {
@@ -476,7 +481,7 @@ impl Deliveries {
             if terminal {
                 b.auths.remove(task_id);
             }
-            Settled::Done(end.record_kind())
+            DeliverySettled::Done(end.record_kind())
         })
     }
 
@@ -586,12 +591,7 @@ pub const TOKEN_MAC_BYTES: usize = 32;
 /// A signature, as the lower-case hex a token carries it in (its first [`TOKEN_MAC_BYTES`]).
 #[must_use]
 pub fn hex(signature: &[u8]) -> String {
-    let signature = &signature[..signature.len().min(TOKEN_MAC_BYTES)];
-    let mut out = String::with_capacity(2 * signature.len());
-    for b in signature {
-        let _ = write!(out, "{b:02x}");
-    }
-    out
+    busbar_contract::abi::sdk::digest::lower_hex(&signature[..signature.len().min(TOKEN_MAC_BYTES)])
 }
 
 /// BUSBAR'S OWN CALLBACK TOKENS: `<task-id>.<hex signature>`, one per task, the signature the

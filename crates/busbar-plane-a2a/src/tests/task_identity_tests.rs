@@ -135,7 +135,7 @@ fn the_named_tasks_and_context_are_read_where_the_engine_reads_them() {
 
 #[test]
 fn a_refusal_about_a_task_carries_its_resource_info_after_the_error_info() {
-    let refusal = Refusal {
+    let refusal = AgentRefusal {
         status: 502,
         id: Some(json!(9)),
         code: -32006,

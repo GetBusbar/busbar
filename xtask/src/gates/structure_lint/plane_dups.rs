@@ -357,18 +357,34 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
     }
 }
 
-/// THE UNLEDGERED ROW'S ARMED COUNT (Law 9: armed at today's number; ARCHITECT ruling on #787).
-/// Deleting the a2a engine (#787) moved pre-existing door code into its plane's home,
-/// `busbar-plane-a2a`, where this scan sees it for the first time: 22 findings became 94, and none
-/// of the 72 new pairs is new code. A row per duplicate stays refused (it would be evasion), so the
-/// row holds the COUNT: above it is a new plane-local copy, below it is a drain that did not give its
-/// number back. DRAIN: the shared door scaffolding moves to busbar-plugin-sdk (planes never depend
-/// on each other, Law 0), the duplicates that encode a security or money property first (DoD item
-/// 5); lower this count in the commit that drains each one. Re-armed 94 -> 96 at the measure of this
-/// branch merged with predev 62fdbdf3bc: predev's #703 added plane-mcp's `door_sessions.rs`, whose
-/// `session_of` and `state_of` share their names with the a2a door's `plane_door.rs` and
-/// `trust.rs`. Neither is new code on this branch.
-pub const UNLEDGERED_ARMED: usize = 96;
+/// THE UNLEDGERED ROW'S ARMED COUNT (Law 9: armed at the measure and never above it; ARCHITECT
+/// ruling on #787, its accounting corrected 2026-10-14). FLIP-A2A moved the a2a plane's home from
+/// the engine `busbar-a2a` to its door crate `busbar-plane-a2a`, where this scan reads it. The 42
+/// findings are, name by name:
+///
+/// * 15 CARRIED from predev (2bce54dc57 measured 26; 11 left: the engine's `meter.rs`, `plane.rs`,
+///   `route.rs`, `verify.rs`, `admit`, `approve`, `deliver`, `task_verb` and `Verified` with the
+///   deleted crate, and decisions' `Relayed` and `Routed` renamed): `config.rs`, `absolute`,
+///   `Admitted`, `arrive`, `attempt`, `build_runtime`, `drive`, `fingerprint`, `Hop`, `meter`,
+///   `op_class`, `owe`, `refused`, `relayed`, `serve`;
+/// * 27 SCOPE-MOVED: declarations in files `busbar-plane-a2a` already held on predev, seen once the
+///   plane's home moved there: modules `claims.rs`, `diagnostics.rs`, `facts.rs`, `jsonrpc.rs`,
+///   `meta.rs`, `ops.rs`, `record.rs`, `records.rs`; symbols `Envelope`, `IdShape`, `MethodRow`,
+///   `Tap`, `Task`, `correlation_for`, `correlation_value`, `decode`, `encode`, `error`, `id_shape`,
+///   `id_value`, `is_canonical_number`, `is_number`, `open`, `operations_for`, `read`, `row_for`,
+///   `success`.
+///
+/// The door code this branch added (52 names, and the 2 #703 met through predev's `door_sessions.rs`)
+/// is DRAINED, not armed: what was the same concept as the mcp door's copy is shared once in the
+/// SDK (`busbar_contract::abi::sdk`: `publish::ServedRoute`, `publish::admin_route`,
+/// `publish::class_index`, `Lent::stated`, `digest::lower_hex`, `trust::Sighting`,
+/// `trust::State`) and used by both doors; what only shared a name is renamed to what it is. A row
+/// per duplicate stays refused (it would be evasion), so the row holds the COUNT: above it is a new
+/// plane-local copy, below it is a drain that did not give its number back. DRAIN: the remaining
+/// door scaffolding moves to the SDK (planes never depend on each other, Law 0), the duplicates
+/// that encode a security or money property first (DoD item 5); lower this count in the commit
+/// that drains each one.
+pub const UNLEDGERED_ARMED: usize = 42;
 
 /// [`ROW_UNLEDGERED`], judged against [`UNLEDGERED_ARMED`]. A tree with none is clean.
 fn unledgered_row(unledgered: &[String]) -> Row {
@@ -385,9 +401,9 @@ fn unledgered_row(unledgered: &[String]) -> Row {
             ROW_UNLEDGERED,
             "the plane-local duplicates are the armed count and no more",
             format!(
-                "{n} finding(s), armed at {UNLEDGERED_ARMED} (a2a engine deletion (#787) moved \
-                 pre-existing door code into busbar-plane-a2a; drain: shared door scaffolding to \
-                 busbar-plugin-sdk): {}",
+                "{n} finding(s), armed at {UNLEDGERED_ARMED} (predev's carried findings and the \
+                 a2a plane's pre-existing files its home move to busbar-plane-a2a made visible; \
+                 drain: shared door scaffolding to the SDK): {}",
                 unledgered.join(" | ")
             ),
         );

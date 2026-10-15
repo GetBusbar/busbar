@@ -157,7 +157,7 @@ fn the_trailers_state_the_calls_status_and_its_error_info() {
         })
     );
     assert!(ended(&[], Some(0)).is_some_and(|e| e.ok()));
-    let refused = Status::with_error_info(
+    let refused = CallStatus::with_error_info(
         Code::NotFound,
         "no such task",
         ErrorInfo {

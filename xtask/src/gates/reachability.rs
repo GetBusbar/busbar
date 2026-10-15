@@ -307,7 +307,7 @@ const ROSTER: &[Plane] = &[
         linked_crate: "busbar-plane-a2a",
         register_tokens: &["busbar_plane_a2a"],
         note: "a DOOR plane since FLIP-A2A deleted the `busbar-a2a` engine: served through its \
-               `plane-door` row (busbar-plane-a2a's `plane_door`), the one composition's driver \
+               `plane-door` row (busbar-plane-a2a's `agent_door`), the one composition's driver \
                and the data route driving it, as `decision` is. `root/units_a2a.rs` was the \
                superseded sibling the 2026-09-22 money findings were in",
     },

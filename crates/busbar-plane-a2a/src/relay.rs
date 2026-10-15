@@ -19,7 +19,7 @@
 //! reply that is not JSON, one that answers a different request, or the backend's own JSON-RPC
 //! `error`. No refusal echoes a byte the backend or its address chose.
 //!
-//! A hop that EXPECTS EVENTS ([`Relay::expect_events`]: the engine's event-stream hop) accepts an
+//! A hop that EXPECTS EVENTS ([`HopRelay::expect_events`]: the engine's event-stream hop) accepts an
 //! event stream or one document. A 2xx far end's bytes are framed as they come
 //! ([`crate::sse::SseReader`]) and each event is read ([`crate::events::read_event`]) and answered
 //! at once: the first event commits the caller's answer to an event stream, and every event that
@@ -35,11 +35,11 @@ use busbar_contract::jsonrpc::{read_response, NotAnAnswerKind, Reply as RpcReply
 use serde_json::{json, Value};
 
 use crate::a2a::task::TaskState;
-use crate::arrival::{Refusal, JSON_MEDIA_TYPE};
+use crate::agent_arrival::{AgentRefusal, JSON_MEDIA_TYPE};
 use crate::binding::{self, Binding};
 use crate::events::{self, ACCEPT_EVENTS};
-use crate::identity;
 use crate::sse::SseReader;
+use crate::task_identity;
 
 /// The verb every JSON-RPC hop is sent with.
 pub const VERB: &str = "POST";
@@ -122,7 +122,7 @@ pub struct Attempt {
 
 /// What the caller is answered.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Reply {
+pub struct RelayReply {
     /// The status.
     pub status: u32,
     /// The body's media type.
@@ -145,10 +145,10 @@ pub struct Part {
 
 /// The plane's answer to one piece.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Answer {
+pub enum PieceAnswer {
     /// Nothing to emit yet.
     Nothing,
-    /// The request this attempt sends the far end; its body follows as [`Answer::ToFarEnd`].
+    /// The request this attempt sends the far end; its body follows as [`PieceAnswer::ToFarEnd`].
     Attempt(Attempt),
     /// The request's body, bound for the far end: bytes the relay made (a translated or framed
     /// request).
@@ -158,7 +158,7 @@ pub enum Answer {
     /// copies nothing (the allocation pin, `tests/alloc_gate.rs`).
     ToFarEndLent,
     /// The caller's whole answer: the unit is done.
-    ToCaller(Reply),
+    ToCaller(RelayReply),
     /// Part of the caller's answer in events.
     Part(Part),
     /// The piece is one this relay never takes.
@@ -262,14 +262,14 @@ impl HopRefusal {
     /// The caller's answer: the one error envelope, `-32006` with its `ErrorInfo`, at `502` (the
     /// engine's `receive::refuse_hop_early`).
     #[must_use]
-    pub fn reply(self, id: &Value) -> Reply {
-        let refusal = Refusal {
+    pub fn reply(self, id: &Value) -> RelayReply {
+        let refusal = AgentRefusal {
             status: STATUS_BAD_GATEWAY,
             id: Some(id.clone()),
             code: CODE_INVALID_AGENT_RESPONSE,
             message: self.client_text(),
         };
-        Reply {
+        RelayReply {
             status: STATUS_BAD_GATEWAY,
             content_type: JSON_MEDIA_TYPE,
             body: serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
@@ -316,8 +316,8 @@ fn read_rest_answer(status: u32, body: &[u8], id: &Value) -> Option<Result<Value
 
 /// The caller's answer to a relayed `result`, VERBATIM, under the caller's own `id`.
 #[must_use]
-pub fn relayed(id: &Value, result: Value) -> Reply {
-    Reply {
+pub fn relayed(id: &Value, result: Value) -> RelayReply {
+    RelayReply {
         status: STATUS_OK,
         content_type: JSON_MEDIA_TYPE,
         body: serde_json::to_vec(&json!({ "jsonrpc": "2.0", "id": id, "result": result }))
@@ -446,7 +446,7 @@ pub fn status_reading(status: u32) -> Reading {
 /// ONE UNARY HOP: the caller's request id and negotiated version, and what the current attempt's
 /// far end has said so far.
 #[derive(Debug, Clone)]
-pub struct Relay {
+pub struct HopRelay {
     id: Value,
     version: &'static str,
     sent: u64,
@@ -457,7 +457,7 @@ pub struct Relay {
     task: Option<TaskHop>,
     instead: Option<Vec<u8>>,
     instead_sent: bool,
-    settled: Vec<Settled>,
+    settled: Vec<TaskSettled>,
     binding: Binding,
     method: String,
     params: Value,
@@ -517,7 +517,7 @@ pub struct TaskHop {
 
 /// WHAT A TASK HOP'S ANSWER SAYS ABOUT ITS TASK, for the door to record.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Settled {
+pub enum TaskSettled {
     /// The far end answered: the state it reported, and its own id for the task.
     Reported {
         /// The reported state (`Working` when none could be read).
@@ -539,11 +539,11 @@ pub enum Settled {
     },
 }
 
-impl Relay {
+impl HopRelay {
     /// A hop answering the request `id`, declaring the `version` busbar's edge negotiated.
     #[must_use]
     pub fn new(id: Value, version: &'static str) -> Self {
-        Relay {
+        HopRelay {
             id,
             version,
             sent: 0,
@@ -662,9 +662,9 @@ impl Relay {
 
     /// REFUSED BY NAME before the hop: the agent's card declares only `word`, a binding the plane
     /// does not frame (the engine's early `Unframable` refusal; the task stays as it is).
-    pub fn refuse_unspeakable(&mut self, word: &str) -> Answer {
+    pub fn refuse_unspeakable(&mut self, word: &str) -> PieceAnswer {
         self.answered = true;
-        Answer::ToCaller(self.unframable_reply(word))
+        PieceAnswer::ToCaller(self.unframable_reply(word))
     }
 
     /// REFUSED AT THE HOP'S TRUST GATE: the agent was serving at admission and its re-verification
@@ -672,56 +672,56 @@ impl Relay {
     /// `refuse_hop_early` answer it). A fresh task is answered `503` naming it and stays as opened —
     /// a demotion does not burn it; a task the caller addressed is a failed read (`502`), never a
     /// failed task; a task-less hop is refused early in the hop's own words (`503`).
-    pub fn refuse_demoted(&mut self) -> Answer {
+    pub fn refuse_demoted(&mut self) -> PieceAnswer {
         self.answered = true;
         let reply = match &self.task {
             Some(task) if task.addressed => task_refusal(None, task, &self.id).0,
             Some(task) => {
-                let refusal = Refusal {
+                let refusal = AgentRefusal {
                     status: STATUS_NOT_SERVING,
                     id: Some(self.id.clone()),
-                    code: crate::arrival::CODE_UNSUPPORTED_OPERATION,
+                    code: crate::agent_arrival::CODE_UNSUPPORTED_OPERATION,
                     message: NOT_SERVING.to_string(),
                 };
-                Reply {
+                RelayReply {
                     status: STATUS_NOT_SERVING,
                     content_type: JSON_MEDIA_TYPE,
-                    body: serde_json::to_vec(&identity::about_task(&refusal, &task.task_id))
+                    body: serde_json::to_vec(&task_identity::about_task(&refusal, &task.task_id))
                         .unwrap_or_default(),
                 }
             }
             None => {
-                let refusal = Refusal {
+                let refusal = AgentRefusal {
                     status: STATUS_NOT_SERVING,
                     id: Some(self.id.clone()),
                     code: CODE_INVALID_AGENT_RESPONSE,
                     message: HopRefusal::NotServing.client_text(),
                 };
-                Reply {
+                RelayReply {
                     status: STATUS_NOT_SERVING,
                     content_type: JSON_MEDIA_TYPE,
                     body: serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
                 }
             }
         };
-        Answer::ToCaller(reply)
+        PieceAnswer::ToCaller(reply)
     }
 
     /// REFUSED AT THE RELAY'S GUARD: the agent's registered endpoint was refused before the hop
     /// (the engine's `RelayRefusal::Guard`). A task-less hop is refused early in the hop's fixed
     /// words (`502`, `a2a.hop.endpoint_refused`); a task hop answers as any failed hop does. The
     /// caller never reads the endpoint.
-    pub fn refuse_endpoint(&mut self) -> Answer {
+    pub fn refuse_endpoint(&mut self) -> PieceAnswer {
         self.answered = true;
         self.journal(HopRefusal::EndpointRefused, false);
         let Some(task) = &self.task else {
-            return Answer::ToCaller(HopRefusal::EndpointRefused.reply(&self.id));
+            return PieceAnswer::ToCaller(HopRefusal::EndpointRefused.reply(&self.id));
         };
         let (reply, failed) = task_refusal(None, task, &self.id);
         if failed {
-            self.settled.push(Settled::Failed);
+            self.settled.push(TaskSettled::Failed);
         }
-        Answer::ToCaller(reply)
+        PieceAnswer::ToCaller(reply)
     }
 
     /// THE HOP LEFT AND NOTHING CAME BACK: the attempt went to the agent and the connection could
@@ -732,7 +732,7 @@ impl Relay {
     /// "the backend agent did not complete this task", naming it). The caller's whole answer, and
     /// whether the task ends `failed`.
     #[must_use]
-    pub fn refuse_transport(&mut self) -> (Reply, bool) {
+    pub fn refuse_transport(&mut self) -> (RelayReply, bool) {
         self.answered = true;
         self.journal(HopRefusal::Transport, false);
         match &self.task {
@@ -750,17 +750,17 @@ impl Relay {
     /// task: its own words, nothing settled. The caller's whole answer, and whether the task ends
     /// `failed`.
     #[must_use]
-    pub fn refuse_credential(&mut self) -> (Reply, bool) {
+    pub fn refuse_credential(&mut self) -> (RelayReply, bool) {
         self.answered = true;
         let Some(task) = &self.task else {
-            let refusal = Refusal {
+            let refusal = AgentRefusal {
                 status: STATUS_BAD_GATEWAY,
                 id: Some(self.id.clone()),
                 code: CODE_INVALID_AGENT_RESPONSE,
                 message: CARD_UNFETCHED.to_string(),
             };
             return (
-                Reply {
+                RelayReply {
                     status: STATUS_BAD_GATEWAY,
                     content_type: JSON_MEDIA_TYPE,
                     body: serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
@@ -768,17 +768,17 @@ impl Relay {
                 false,
             );
         };
-        let refusal = Refusal {
+        let refusal = AgentRefusal {
             status: STATUS_BAD_GATEWAY,
             id: Some(self.id.clone()),
             code: CODE_INVALID_AGENT_RESPONSE,
             message: TASK_UNCOMPLETED.to_string(),
         };
         (
-            Reply {
+            RelayReply {
                 status: STATUS_BAD_GATEWAY,
                 content_type: JSON_MEDIA_TYPE,
-                body: serde_json::to_vec(&identity::about_task(&refusal, &task.task_id))
+                body: serde_json::to_vec(&task_identity::about_task(&refusal, &task.task_id))
                     .unwrap_or_default(),
             },
             true,
@@ -786,14 +786,14 @@ impl Relay {
     }
 
     /// The early refusal of a request that cannot be carried over `word`.
-    fn unframable_reply(&self, word: &str) -> Reply {
-        let refusal = Refusal {
+    fn unframable_reply(&self, word: &str) -> RelayReply {
+        let refusal = AgentRefusal {
             status: STATUS_BAD_GATEWAY,
             id: Some(self.id.clone()),
             code: CODE_INVALID_AGENT_RESPONSE,
             message: binding::unframable_text(&self.method, word),
         };
-        Reply {
+        RelayReply {
             status: STATUS_BAD_GATEWAY,
             content_type: JSON_MEDIA_TYPE,
             body: serde_json::to_vec(&refusal.envelope()).unwrap_or_default(),
@@ -802,27 +802,27 @@ impl Relay {
 
     /// The hop could not be framed on its binding: a task-less hop is refused by name; a task hop
     /// answers as any failed hop does.
-    fn unframable(&mut self) -> Answer {
+    fn unframable(&mut self) -> PieceAnswer {
         self.answered = true;
         let Some(task) = &self.task else {
-            return Answer::ToCaller(self.unframable_reply(self.binding.word()));
+            return PieceAnswer::ToCaller(self.unframable_reply(self.binding.word()));
         };
         let (reply, failed) = task_refusal(None, task, &self.id);
         if failed {
-            self.settled.push(Settled::Failed);
+            self.settled.push(TaskSettled::Failed);
         }
-        Answer::ToCaller(reply)
+        PieceAnswer::ToCaller(reply)
     }
 
     /// The request one attempt sends on the hop's binding, to the agent at `url`.
-    fn attempt(&mut self, url: &str) -> Answer {
+    fn attempt(&mut self, url: &str) -> PieceAnswer {
         let version = (
-            crate::arrival::H_VERSION,
+            crate::agent_arrival::H_VERSION,
             std::borrow::Cow::Borrowed(self.version),
         );
         match self.binding {
             Binding::JsonRpc => match target_of(url) {
-                Some(target) => Answer::Attempt(Attempt {
+                Some(target) => PieceAnswer::Attempt(Attempt {
                     verb: VERB,
                     target,
                     fields: vec![
@@ -831,7 +831,7 @@ impl Relay {
                         version,
                     ],
                 }),
-                None => Answer::Refused,
+                None => PieceAnswer::Refused,
             },
             Binding::HttpJson => match binding::compose(url, &self.method, &self.params) {
                 Ok(framed) => {
@@ -842,7 +842,7 @@ impl Relay {
                     fields.push((H_ACCEPT, self.accept().into()));
                     fields.push(version);
                     self.instead = Some(framed.body);
-                    Answer::Attempt(Attempt {
+                    PieceAnswer::Attempt(Attempt {
                         verb: framed.verb,
                         target: framed.target,
                         fields,
@@ -862,7 +862,7 @@ impl Relay {
                     Some((rpc, body)) => {
                         self.instead = Some(body);
                         let media = crate::framed::DIAL_CONTENT_TYPE;
-                        Answer::Attempt(Attempt {
+                        PieceAnswer::Attempt(Attempt {
                             verb: VERB,
                             target: rpc.target(),
                             fields: vec![
@@ -904,7 +904,7 @@ impl Relay {
 
     /// What the answer has said about the task since this was last asked, in order; empty before
     /// the answer or for a task-less hop.
-    pub fn take_settled(&mut self) -> Vec<Settled> {
+    pub fn take_settled(&mut self) -> Vec<TaskSettled> {
         std::mem::take(&mut self.settled)
     }
 
@@ -926,15 +926,15 @@ impl Relay {
     }
 
     /// The plane's answer to `piece`.
-    pub fn on_piece(&mut self, piece: Piece<'_>) -> Answer {
+    pub fn on_piece(&mut self, piece: Piece<'_>) -> PieceAnswer {
         if self.answered {
-            return Answer::Nothing;
+            return PieceAnswer::Nothing;
         }
         match piece.from {
             From::Kernel(url) => {
                 // An answer already started in events cannot be attempted again.
                 if self.events.as_ref().is_some_and(|e| e.committed) {
-                    return Answer::Refused;
+                    return PieceAnswer::Refused;
                 }
                 if let Some(events) = self.events.as_mut() {
                     *events = Events::default();
@@ -956,7 +956,7 @@ impl Relay {
                         }
                         self.attempt(url)
                     }
-                    None => Answer::Refused,
+                    None => PieceAnswer::Refused,
                 }
             }
             From::Caller => {
@@ -990,16 +990,16 @@ impl Relay {
                 };
                 self.sent = self.sent.saturating_add(len.saturating_add(prefix) as u64);
                 match bytes {
-                    _ if len == 0 => Answer::Nothing,
-                    Some(bytes) => Answer::ToFarEnd(bytes),
-                    None => Answer::ToFarEndLent,
+                    _ if len == 0 => PieceAnswer::Nothing,
+                    Some(bytes) => PieceAnswer::ToFarEnd(bytes),
+                    None => PieceAnswer::ToFarEndLent,
                 }
             }
             From::FarEnd => self.far_end_piece(piece),
         }
     }
 
-    fn far_end_piece(&mut self, piece: Piece<'_>) -> Answer {
+    fn far_end_piece(&mut self, piece: Piece<'_>) -> PieceAnswer {
         if self.binding == Binding::Grpc {
             return self.grpc_piece(&piece);
         }
@@ -1017,10 +1017,10 @@ impl Relay {
             self.keep(piece.bytes);
         }
         if !piece.last {
-            return Answer::Nothing;
+            return PieceAnswer::Nothing;
         }
         let Some(status) = self.status else {
-            return Answer::Refused;
+            return PieceAnswer::Refused;
         };
         self.whole(status)
     }
@@ -1034,7 +1034,7 @@ impl Relay {
 
     /// One 2xx far-end piece of a hop expecting events: `None` while the far end has framed no
     /// event (its bytes kept, as one document's are), else what the events it finished answer.
-    fn events_piece(&mut self, piece: &Piece<'_>) -> Option<Answer> {
+    fn events_piece(&mut self, piece: &Piece<'_>) -> Option<PieceAnswer> {
         let (frames, pending, framed) = {
             let events = self.events.as_mut()?;
             let frames = events.reader.feed(piece.bytes);
@@ -1078,7 +1078,7 @@ impl Relay {
                     let said =
                         event.state.is_some() || event.artifact || event.backend_task_id.is_some();
                     if self.task.is_some() && said {
-                        self.settled.push(Settled::Event {
+                        self.settled.push(TaskSettled::Event {
                             state: event.state,
                             artifact: event.artifact,
                             backend_id: event.backend_task_id,
@@ -1099,39 +1099,39 @@ impl Relay {
     }
 
     /// Part of the caller's answer in events: the first one starts it.
-    fn part(&mut self, body: Vec<u8>, last: bool) -> Answer {
+    fn part(&mut self, body: Vec<u8>, last: bool) -> PieceAnswer {
         let Some(events) = self.events.as_mut() else {
-            return Answer::Refused;
+            return PieceAnswer::Refused;
         };
         if body.is_empty() && !last {
-            return Answer::Nothing;
+            return PieceAnswer::Nothing;
         }
         let head = !events.committed;
         events.committed = true;
-        Answer::Part(Part { head, body, last })
+        PieceAnswer::Part(Part { head, body, last })
     }
 
     /// A hop expecting events is refused for `refusal`: before its answer started (and with no
     /// event of this piece to send) the caller is answered as a refused hop is; after it, the
     /// events already read go out and the answer ends there, its task `failed`.
-    fn events_refused(&mut self, refusal: HopRefusal, body: Vec<u8>) -> Answer {
+    fn events_refused(&mut self, refusal: HopRefusal, body: Vec<u8>) -> PieceAnswer {
         self.answered = true;
         let started = self.events.as_ref().is_some_and(|e| e.committed);
         self.journal(refusal, started || !body.is_empty());
         if !started && body.is_empty() {
-            return Answer::ToCaller(match &self.task {
+            return PieceAnswer::ToCaller(match &self.task {
                 None => refusal.reply(&self.id),
                 Some(task) => {
                     let (reply, failed) = task_refusal(None, task, &self.id);
                     if failed {
-                        self.settled.push(Settled::Failed);
+                        self.settled.push(TaskSettled::Failed);
                     }
                     reply
                 }
             });
         }
         if self.task.is_some() {
-            self.settled.push(Settled::Failed);
+            self.settled.push(TaskSettled::Failed);
         }
         self.part(body, true)
     }
@@ -1140,9 +1140,9 @@ impl Relay {
     /// the status the host reports beside them (`status`): on the gRPC binding they say how the
     /// call ended ([`crate::framed::ended`]); any other binding ignores them. Only `last` is acted
     /// on, as the end of the answer.
-    pub fn on_far_fields(&mut self, bytes: &[u8], status: Option<u32>, last: bool) -> Answer {
+    pub fn on_far_fields(&mut self, bytes: &[u8], status: Option<u32>, last: bool) -> PieceAnswer {
         if self.answered {
-            return Answer::Nothing;
+            return PieceAnswer::Nothing;
         }
         // NOT BILLED: a field block is no payload (predev `relay_billing.rs:23-24` excludes "every
         // header in both directions"; predev's hop counted the response body alone, `relay.rs:1796`
@@ -1153,7 +1153,7 @@ impl Relay {
             }
         }
         if !last {
-            return Answer::Nothing;
+            return PieceAnswer::Nothing;
         }
         self.far_end_piece(Piece {
             from: From::FarEnd,
@@ -1168,7 +1168,7 @@ impl Relay {
     /// answer is kept whole and read at its end ([`Self::grpc_envelope`]); an answer in events has
     /// each whole message read as the `StreamResponse` it is and answered as the JSON-RPC event it
     /// re-frames to (the engine's `GrpcFrameReader`), through the one event reader.
-    fn grpc_piece(&mut self, piece: &Piece<'_>) -> Answer {
+    fn grpc_piece(&mut self, piece: &Piece<'_>) -> PieceAnswer {
         if let Some(status) = piece.status {
             self.status = Some(status);
         }
@@ -1191,10 +1191,10 @@ impl Relay {
             self.keep(piece.bytes);
         }
         if !piece.last {
-            return Answer::Nothing;
+            return PieceAnswer::Nothing;
         }
         let Some(status) = self.status else {
-            return Answer::Refused;
+            return PieceAnswer::Refused;
         };
         self.whole(status)
     }
@@ -1253,7 +1253,7 @@ impl Relay {
     }
 
     /// The caller's answer to a far end's whole answer at `status`, read as one document.
-    fn whole(&mut self, status: u32) -> Answer {
+    fn whole(&mut self, status: u32) -> PieceAnswer {
         // THE STATUS FIRST (COORDINATOR ruling 2026-10-07 on finding A; predev `relay.rs:1813-1819`
         // reads a non-2xx before any framing, on every binding): the head's status outside `2xx` is
         // the status table's reading, whatever answer the body or its trailers then frame. A gRPC
@@ -1300,18 +1300,18 @@ impl Relay {
             self.journal(*refusal, false);
         }
         let Some(task) = &self.task else {
-            return Answer::ToCaller(match answer {
+            return PieceAnswer::ToCaller(match answer {
                 Ok(result) => relayed(&self.id, result),
                 Err(refusal) => refusal.reply(&self.id),
             });
         };
-        Answer::ToCaller(match answer {
+        PieceAnswer::ToCaller(match answer {
             Ok(mut result) => {
-                self.settled.push(Settled::Reported {
-                    state: identity::reported_task_state(&result),
-                    backend_id: identity::backend_task_id(&result),
+                self.settled.push(TaskSettled::Reported {
+                    state: task_identity::reported_task_state(&result),
+                    backend_id: task_identity::backend_task_id(&result),
                 });
-                identity::rewrite_identity(
+                task_identity::rewrite_identity(
                     &mut result,
                     &task.task_id,
                     &task.context_id,
@@ -1325,7 +1325,7 @@ impl Relay {
                     .flatten();
                 let (reply, failed) = task_refusal(code, task, &self.id);
                 if failed {
-                    self.settled.push(Settled::Failed);
+                    self.settled.push(TaskSettled::Failed);
                 }
                 reply
             }
@@ -1339,14 +1339,14 @@ fn backend_error_code(body: &[u8]) -> Option<i64> {
         .ok()?
         .pointer("/error/code")?
         .as_i64()
-        .filter(|c| identity::status_of_code(*c).is_some())
+        .filter(|c| task_identity::status_of_code(*c).is_some())
 }
 
 /// THE CALLER'S ANSWER TO A REFUSED TASK HOP, and whether the task ends `failed` (the engine's
 /// `receive::refuse_hop`): the far end's own A2A error code travels, its prose never does, and the
 /// refusal names the task. A hop addressed to a task the caller holds fails the request, never the
 /// task.
-fn task_refusal(code: Option<i64>, task: &TaskHop, id: &Value) -> (Reply, bool) {
+fn task_refusal(code: Option<i64>, task: &TaskHop, id: &Value) -> (RelayReply, bool) {
     let (code, message, failed) = match (task.addressed, code) {
         (true, code) => (
             code.unwrap_or(CODE_INVALID_AGENT_RESPONSE),
@@ -1360,17 +1360,17 @@ fn task_refusal(code: Option<i64>, task: &TaskHop, id: &Value) -> (Reply, bool) 
             true,
         ),
     };
-    let status = identity::status_of_code(code).unwrap_or(STATUS_BAD_GATEWAY);
-    let refusal = Refusal {
+    let status = task_identity::status_of_code(code).unwrap_or(STATUS_BAD_GATEWAY);
+    let refusal = AgentRefusal {
         status,
         id: Some(id.clone()),
         code,
         message: message.to_string(),
     };
-    let reply = Reply {
+    let reply = RelayReply {
         status,
         content_type: JSON_MEDIA_TYPE,
-        body: serde_json::to_vec(&identity::about_task(&refusal, &task.task_id))
+        body: serde_json::to_vec(&task_identity::about_task(&refusal, &task.task_id))
             .unwrap_or_default(),
     };
     (reply, failed)

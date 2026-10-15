@@ -79,7 +79,7 @@ busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # conformance-witness grant).
 busbar-plugin-loader = { path = "../plugin-loader" }
 
-# The door, dropped in: `export_door!` over the same `plane_door::door` the linked row holds.
+# The door, dropped in: `export_door!` over the same `agent_door::door` the linked row holds.
 [[example]]
 name = "a2a_door"
 crate-type = ["cdylib"]

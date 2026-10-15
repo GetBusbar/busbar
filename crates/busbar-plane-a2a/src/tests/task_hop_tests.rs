@@ -184,7 +184,7 @@ fn a_task_another_caller_holds_is_not_addressed_so_a_fresh_one_is_minted() {
 fn an_interrupted_task_on_the_agent_under_the_callers_context_resumes_as_working() {
     let mut desk = desk();
     let mut out = Vec::new();
-    let at = Step {
+    let at = Stamp {
         caller: ALICE,
         request_id: "r",
         now: 150,
@@ -249,9 +249,9 @@ fn a_held_task_id_whose_far_end_id_is_known_is_sent_on_as_the_far_ends() {
     assert_eq!(instead, None);
 }
 
-fn settled(desk: &mut Desk, task: &TaskHop, how: &Settled) -> usize {
+fn settled(desk: &mut Desk, task: &TaskHop, how: &TaskSettled) -> usize {
     let mut out = Vec::new();
-    settle(
+    settle_on_answer(
         &mut desk.book,
         task,
         how,
@@ -269,12 +269,12 @@ fn settled(desk: &mut Desk, task: &TaskHop, how: &Settled) -> usize {
 fn the_answer_records_the_reported_state_and_a_failed_hop_ends_the_task_failed() {
     let mut desk = desk();
     let (task, _) = hop(opened(&mut desk, &send(json!({})), ALICE));
-    let submitted_again = Settled::Reported {
+    let submitted_again = TaskSettled::Reported {
         state: TaskState::Submitted,
         backend_id: None,
     };
     assert_eq!(settled(&mut desk, &task, &submitted_again), 0);
-    let completed = Settled::Reported {
+    let completed = TaskSettled::Reported {
         state: TaskState::Completed,
         backend_id: Some("b".into()),
     };
@@ -291,10 +291,10 @@ fn the_answer_records_the_reported_state_and_a_failed_hop_ends_the_task_failed()
         BOB,
     ));
     let mut out = Vec::new();
-    settle(
+    settle_on_answer(
         &mut desk.book,
         &other,
-        &Settled::Failed,
+        &TaskSettled::Failed,
         BOB,
         400,
         &mut out,
@@ -618,13 +618,13 @@ fn opened_writing(desk: &mut Desk, envelope: &Value) -> (Opened, Vec<Write>) {
 // ── a refused hop's task end, racing another writer of the task ───────────────────────────────
 
 /// End the refused hop's `task` failed, as the door ends it on the refused piece, on the unit's
-/// own ticket: [`settle`] on `Settled::Failed` over the host's records (`plane_door::settle_task`).
+/// own ticket: [`settle_on_answer`] on `TaskSettled::Failed` over the host's records (`agent_door::settle_task`).
 fn ended_on_refusal(d: &mut Desk, task: &TaskHop) -> Vec<Write> {
     let mut out = Vec::new();
-    settle(
+    settle_on_answer(
         &mut d.book,
         task,
-        &Settled::Failed,
+        &TaskSettled::Failed,
         ALICE,
         300,
         &mut out,
@@ -656,7 +656,7 @@ fn a_refused_hops_task_end_keeps_a_concurrent_writers_change() {
 
     // ANOTHER UNIT moves the task while the refused hop is handled: it wins the next sequence.
     let mut theirs = Vec::new();
-    let other = Step {
+    let other = Stamp {
         caller: ALICE,
         request_id: "another-unit",
         now: 300,
@@ -694,7 +694,7 @@ fn a_refused_hops_task_end_keeps_a_concurrent_writers_change() {
 
 /// Put `caller`'s `task` on [`MEMBER`] and walk it through `states` at 150.
 fn walk(desk: &mut Desk, caller: &str, task: &str, states: &[TaskState]) {
-    let at = Step {
+    let at = Stamp {
         caller,
         request_id: "r",
         now: 150,
@@ -714,14 +714,14 @@ fn walk(desk: &mut Desk, caller: &str, task: &str, states: &[TaskState]) {
 /// and the task it settles is PAUSED: live, never terminal.
 #[test]
 fn an_interrupt_from_the_backend_is_relayed_transparently_and_pauses_the_task() {
-    use crate::relay::{Answer, From as Side, Piece, Relay};
+    use crate::relay::{From as Side, HopRelay, Piece, PieceAnswer};
     let mut desk = desk();
     let (task, _) = hop(opened(
         &mut desk,
         &send(json!({ "message": { "contextId": "ctx-abc" } })),
         ALICE,
     ));
-    let mut r = Relay::new(json!(7), "1.0");
+    let mut r = HopRelay::new(json!(7), "1.0");
     r.for_task(task.clone());
     let piece = |from, bytes, status, last| Piece {
         from,
@@ -732,12 +732,12 @@ fn an_interrupt_from_the_backend_is_relayed_transparently_and_pauses_the_task() 
     let url = "https://vendor.example/a2a";
     assert!(matches!(
         r.on_piece(piece(Side::Kernel(Some(url)), &[], None, false)),
-        Answer::Attempt(_)
+        PieceAnswer::Attempt(_)
     ));
     let ask = br#"{"jsonrpc":"2.0","id":7,"method":"SendMessage","params":{}}"#;
     assert!(matches!(
         r.on_piece(piece(Side::Caller, ask, None, true)),
-        Answer::ToFarEnd(_) | Answer::ToFarEndLent
+        PieceAnswer::ToFarEnd(_) | PieceAnswer::ToFarEndLent
     ));
     let far = json!({
         "jsonrpc": "2.0", "id": 7,
@@ -750,7 +750,8 @@ fn an_interrupt_from_the_backend_is_relayed_transparently_and_pauses_the_task() 
         }
     })
     .to_string();
-    let Answer::ToCaller(reply) = r.on_piece(piece(Side::FarEnd, far.as_bytes(), Some(200), true))
+    let PieceAnswer::ToCaller(reply) =
+        r.on_piece(piece(Side::FarEnd, far.as_bytes(), Some(200), true))
     else {
         panic!("no answer");
     };
@@ -839,7 +840,7 @@ fn a_completed_task_is_not_resumed_by_reusing_its_context_id() {
 fn a_streamed_artifact_advances_the_durable_resume_cursor() {
     let mut desk = desk();
     let (task, _) = hop(opened(&mut desk, &send(json!({})), ALICE));
-    let artifact = Settled::Event {
+    let artifact = TaskSettled::Event {
         state: None,
         artifact: true,
         backend_id: Some("B1".into()),
@@ -854,7 +855,7 @@ fn a_streamed_artifact_advances_the_durable_resume_cursor() {
         mid.artifact_cursor, 2,
         "each artifact chunk advances the durable cursor"
     );
-    let terminal = Settled::Event {
+    let terminal = TaskSettled::Event {
         state: Some(TaskState::Completed),
         artifact: false,
         backend_id: Some("B1".into()),
@@ -874,8 +875,8 @@ fn a_streamed_artifact_advances_the_durable_resume_cursor() {
 // ── a hop that left and heard nothing back: its task end, racing another writer of the task ───
 
 /// End `task`, whose hop left and heard nothing back, failed, as the door ends it on the refused
-/// piece, on the unit's own ticket: [`settle`] on `Settled::Failed` over the host's records
-/// (`plane_door::settle_task`).
+/// piece, on the unit's own ticket: [`settle_on_answer`] on `TaskSettled::Failed` over the host's records
+/// (`agent_door::settle_task`).
 fn ended_after_no_answer(d: &mut Desk, task: &TaskHop) -> Vec<Write> {
     ended_on_refusal(d, task)
 }
@@ -900,7 +901,7 @@ fn a_hop_that_heard_nothing_back_ends_its_task_keeping_a_concurrent_writers_chan
 
     // ANOTHER UNIT moves the task while the hop's end is made: it wins the next sequence.
     let mut theirs = Vec::new();
-    let other = Step {
+    let other = Stamp {
         caller: ALICE,
         request_id: "another-unit",
         now: 300,
@@ -970,13 +971,13 @@ impl tracing::Subscriber for Capture {
 
 /// Settle `how` on Alice's task as BOB, who holds no such task: the store refuses the write.
 /// Answers what the call answered, the writes it staged, and the lines it logged.
-fn refused_settle(how: &Settled) -> (Result<Option<TaskRow>, Halt>, usize, Vec<String>) {
+fn refused_settle(how: &TaskSettled) -> (Result<Option<TaskRow>, Halt>, usize, Vec<String>) {
     let mut desk = desk();
     let (task, _) = hop(opened(&mut desk, &send(json!({})), ALICE));
     let (sent, heard) = std::sync::mpsc::channel();
     let mut out = Vec::new();
     let answer = tracing::subscriber::with_default(Capture(sent), || {
-        settle(
+        settle_on_answer(
             &mut desk.book,
             &task,
             how,
@@ -997,7 +998,7 @@ fn refused_settle(how: &Settled) -> (Result<Option<TaskRow>, Halt>, usize, Vec<S
 /// refusal was swallowed, so nothing was logged.
 #[test]
 fn a_resume_cursor_the_store_refuses_is_surfaced_and_the_answer_stands() {
-    let artifact = Settled::Event {
+    let artifact = TaskSettled::Event {
         state: None,
         artifact: true,
         backend_id: None,
@@ -1021,16 +1022,20 @@ fn a_resume_cursor_the_store_refuses_is_surfaced_and_the_answer_stands() {
 /// with the state named (`:2965`), and a task that could not be ended `failed` (`:3508`).
 #[test]
 fn a_transition_the_store_refuses_is_surfaced_and_the_answer_stands() {
-    let reported = Settled::Reported {
+    let reported = TaskSettled::Reported {
         state: TaskState::Completed,
         backend_id: None,
     };
-    let streamed = Settled::Event {
+    let streamed = TaskSettled::Event {
         state: Some(TaskState::Working),
         artifact: false,
         backend_id: None,
     };
-    let arms: [(&Settled, &busbar_contract::diagnostic::Diagnostic, &[&str]); 3] = [
+    let arms: [(
+        &TaskSettled,
+        &busbar_contract::diagnostic::Diagnostic,
+        &[&str],
+    ); 3] = [
         (
             &reported,
             &crate::diagnostics::A2A_RELAYED_OUTCOME_UNRECORDED,
@@ -1045,7 +1050,7 @@ fn a_transition_the_store_refuses_is_surfaced_and_the_answer_stands() {
             ],
         ),
         (
-            &Settled::Failed,
+            &TaskSettled::Failed,
             &crate::diagnostics::A2A_FAILURE_UNRECORDED,
             &["a failed task could not be recorded as failed"],
         ),
@@ -1073,10 +1078,10 @@ fn a_refused_write_is_an_error_the_first_time_and_debug_after() {
     let latches = Latches::new();
     let (sent, heard) = std::sync::mpsc::channel();
     tracing::subscriber::with_default(Capture(sent), || {
-        Refused::Cursor.report(&latches, "t1", "no such task");
-        Refused::Cursor.report(&latches, "t1", "no such task");
-        Refused::Cursor.report(&latches, "t2", "no such task");
-        Refused::Relayed.report(&latches, "t1", "no such task");
+        WriteRefused::Cursor.report(&latches, "t1", "no such task");
+        WriteRefused::Cursor.report(&latches, "t1", "no such task");
+        WriteRefused::Cursor.report(&latches, "t2", "no such task");
+        WriteRefused::Relayed.report(&latches, "t1", "no such task");
     });
     let levels: Vec<Level> = heard.try_iter().map(|(level, _)| level).collect();
     assert_eq!(
@@ -1118,7 +1123,7 @@ fn an_opening_states_the_engines_answer_should_the_store_refuse_its_writes() {
 
     let mut desk = self::desk();
     let mut out = Vec::new();
-    let at = Step {
+    let at = Stamp {
         caller: ALICE,
         request_id: "r",
         now: 150,
