@@ -23,13 +23,32 @@ use crate::abi::mechanism::call::{
     AbiStr, Blob, Envelope, InHead, Op as RawOp, OutHead, Outcome, RawOutcome, Span, BLOB_ABSENT,
     BLOB_JSON, BLOB_OCTETS, BLOB_SECRET, FLAG_RESUME,
 };
+use crate::abi::mechanism::call::{Diag, SEVERITY_INFO, SEVERITY_WARN};
 use crate::abi::mechanism::door::{Door, DoorFn};
 use crate::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
+use crate::abi::mechanism::lifecycle::{CancelIn, CancelOut, DriveIn, TickIn, TickOut};
 use crate::abi::mechanism::ticket::{HostCtx, Ticket};
 use crate::abi::sdk::auth_door::{with_tail, Answer, Verdict, VerifiedIdentity, VerifyView};
+use crate::abi::sdk::conn::Host as SdkHost;
 use crate::abi::sdk::door::{abi_str, statement};
 
 use super::*;
+
+/// The index of the one diagnostic id the test doors declare.
+const NOTED: u32 = 0;
+/// The diagnostic ids the test doors declare (`'static`: the Statement points at them).
+const DIAG_IDS: &[AbiStr] = &[abi_str("auth.test-noted")];
+
+/// `statement` with the test doors' diagnostic ids.
+const fn noted(
+    st: crate::abi::mechanism::door::Statement,
+) -> crate::abi::mechanism::door::Statement {
+    crate::abi::mechanism::door::Statement {
+        diag_ids: DIAG_IDS.as_ptr(),
+        diag_ids_len: DIAG_IDS.len(),
+        ..st
+    }
+}
 
 /// The binding settings that ask for the 20-field answer.
 const HUGE: &[u8] = br#"{"huge":true}"#;
@@ -51,7 +70,7 @@ struct Echo {
 }
 
 impl OutboundPlugin for Echo {
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Echo::default())
     }
 
@@ -60,10 +79,16 @@ impl OutboundPlugin for Echo {
         style: &str,
         credential: Option<&[u8]>,
         settings: Option<&[u8]>,
+        _: Option<&SdkHost>,
+        diags: &mut Diags,
     ) -> Result<u64, OpenRefusal> {
         if style != "bearer-test" {
+            diags.push(NOTED, SEVERITY_WARN, format!("style {style} is not served"));
             let refusal = OpenRefusal::new("style: not served");
             return Err(refusal.and("credential: unused"));
+        }
+        if credential == Some(b"note") {
+            diags.push(NOTED, SEVERITY_INFO, "credential noted at open");
         }
         let handle = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         let binding = Binding {
@@ -89,6 +114,10 @@ impl OutboundPlugin for Echo {
         };
         match credential {
             b"slow" if !self.pended.swap(true, Ordering::SeqCst) => return Poll::Pending,
+            b"note" => {
+                out.diag(NOTED, SEVERITY_WARN, "credential noted on the request");
+                return Poll::Ready(FieldsAnswer::Ready);
+            }
             b"facts" => {
                 let facts = format!(
                     "{} {} {} {:?} {} {:?} {} {} {:?} {}",
@@ -129,7 +158,7 @@ const TAIL: &AuthTail = &outbound_tail(0, STYLES);
 
 mod plugin {
     use super::*;
-    crate::auth_outbound_door!(Echo, with_tail(statement("echo", "1.0.0", 8), TAIL));
+    crate::auth_outbound_door!(Echo, with_tail(noted(statement("echo", "1.0.0", 8)), TAIL));
 }
 
 fn ops() -> &'static Ops {
@@ -581,7 +610,7 @@ fn the_view_reads_the_requests_facts() {
 struct Stray;
 
 impl OutboundPlugin for Stray {
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Stray)
     }
     fn open_outbound(
@@ -589,6 +618,8 @@ impl OutboundPlugin for Stray {
         _: &str,
         _: Option<&[u8]>,
         _: Option<&[u8]>,
+        _: Option<&SdkHost>,
+        _: &mut Diags,
     ) -> Result<u64, OpenRefusal> {
         Ok(1)
     }
@@ -643,7 +674,7 @@ impl VerifyPlugin for Sig {
 }
 
 impl OutboundPlugin for Sig {
-    fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
         Ok(Sig)
     }
     fn open_outbound(
@@ -651,6 +682,8 @@ impl OutboundPlugin for Sig {
         _: &str,
         _: Option<&[u8]>,
         _: Option<&[u8]>,
+        _: Option<&SdkHost>,
+        _: &mut Diags,
     ) -> Result<u64, OpenRefusal> {
         Ok(1)
     }
@@ -718,4 +751,387 @@ fn a_verify_and_outbound_door_serves_both_families() {
     let tail = unsafe { &*st.kind_tail.cast::<AuthTail>() };
     assert_eq!(tail.caps, CAP_OUTBOUND | CAP_INBOUND);
     assert_eq!(tail.inbound_points, POINT_HEAD);
+}
+
+/// The declared diagnostics a reply's envelope carries, as the host reads them: `(id, severity,
+/// text)`.
+fn reported(head: &OutHead) -> Vec<(u32, u8, String)> {
+    let e = &head.envelope;
+    if e.diags_len == 0 {
+        return Vec::new();
+    }
+    // SAFETY: the reply's envelope names `diags_len` diagnostics, kept by the instance that
+    // answered until the host has copied the reply (`abi::sdk::out::Kept`).
+    let diags: &[Diag] = unsafe { std::slice::from_raw_parts(e.diags, e.diags_len) };
+    diags
+        .iter()
+        .map(|d| {
+            // SAFETY: as above; each text is the instance's own, `len` bytes.
+            let text = unsafe { std::slice::from_raw_parts(d.text.ptr, d.text.len) };
+            (
+                d.id_idx,
+                d.severity,
+                String::from_utf8_lossy(text).into_owned(),
+            )
+        })
+        .collect()
+}
+
+/// RED, THE DECLARED DIAGNOSTICS: what `open_outbound` notes rides its reply's envelope, READY or
+/// FAILED, under the Statement's id index and the plugin's severity, word for word; a binding
+/// that notes nothing reports nothing. RED with the kit dropping the staged diagnostics (the
+/// envelope stays empty, and the host logs no line).
+#[test]
+fn red_open_outbound_reports_its_diagnostics_ready_or_failed() {
+    let t = ops();
+    let inst = opened(t);
+    let (o, out) = open_outbound(t, inst, "bearer-test", Some(b"note"), b"{}");
+    assert_eq!(o, Outcome::Ready);
+    assert_eq!(
+        reported(&out.head),
+        vec![(NOTED, SEVERITY_INFO, "credential noted at open".to_string())]
+    );
+
+    let (o, out) = open_outbound(t, inst, "other", Some(b"k"), b"{}");
+    assert_eq!(o, Outcome::Failed);
+    assert_eq!(
+        reported(&out.head),
+        vec![(
+            NOTED,
+            SEVERITY_WARN,
+            "style other is not served".to_string()
+        )]
+    );
+
+    let (o, out) = open_outbound(t, inst, "bearer-test", Some(b"k"), b"{}");
+    assert_eq!(o, Outcome::Ready);
+    assert!(reported(&out.head).is_empty());
+}
+
+/// RED, THE DECLARED DIAGNOSTICS ON THE REQUEST: what `fields` notes rides that request's reply,
+/// with its answer. RED with the kit dropping the writer's diagnostics.
+#[test]
+fn red_fields_reports_its_diagnostics_with_its_answer() {
+    let t = ops();
+    let inst = opened(t);
+    let (_, bound) = open_outbound(t, inst, "bearer-test", Some(b"note"), b"{}");
+    let mut host = Host::new(64, 16);
+    let (o, out, input) = fields(t, inst, bound.handle, &mut host);
+    assert_eq!((o, out.fields_len), (Outcome::Ready, 0));
+    check(o, &out, &input, &host);
+    assert_eq!(
+        reported(&out.head),
+        vec![(
+            NOTED,
+            SEVERITY_WARN,
+            "credential noted on the request".to_string()
+        )]
+    );
+
+    let (_, bound) = open_outbound(t, inst, "bearer-test", Some(b"k"), b"{}");
+    let (o, out, _) = fields(t, inst, bound.handle, &mut Host::new(64, 16));
+    assert_eq!((o, out.fields_len), (Outcome::Ready, 1));
+    assert!(reported(&out.head).is_empty());
+}
+
+/// Mints on its driver ticket: `tick` notes the ticket it ran on and whether it was handed host
+/// tables, and wants the next tick 1000 ns on; `drive` notes its driver ticket and waits,
+/// re-driven at 42 at the latest; `cancel` keeps the work of [`WAITING`] going
+/// (`CANCEL_CONTINUES`) and abandons any other.
+struct Minter;
+
+/// The call ticket [`Minter`] has a mint running for.
+const WAITING: Ticket = Ticket {
+    slot: 9,
+    generation: 2,
+};
+
+impl OutboundPlugin for Minter {
+    fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
+        Ok(Minter)
+    }
+    fn open_outbound(
+        &self,
+        _: &str,
+        _: Option<&[u8]>,
+        _: Option<&[u8]>,
+        _: Option<&SdkHost>,
+        _: &mut Diags,
+    ) -> Result<u64, OpenRefusal> {
+        Ok(1)
+    }
+    fn fields(
+        &self,
+        _: &FieldsView<'_>,
+        _: &mut FieldsWriter<'_>,
+        _: &Op<'_>,
+    ) -> Poll<FieldsAnswer> {
+        Poll::Ready(FieldsAnswer::Ready)
+    }
+    fn outbound_ready(&self, _: u64) -> bool {
+        true
+    }
+    fn tick(&self, now_ns: u64, host: Option<&SdkHost>, driver: Ticket, diags: &mut Diags) -> u64 {
+        diags.push(
+            NOTED,
+            SEVERITY_INFO,
+            format!(
+                "minted on {}/{} host={}",
+                driver.slot,
+                driver.generation,
+                host.is_some()
+            ),
+        );
+        now_ns + 1_000
+    }
+    fn drive(&self, _: Option<&SdkHost>, driver: Ticket, diags: &mut Diags) -> Driven {
+        diags.push(
+            NOTED,
+            SEVERITY_WARN,
+            format!("waiting on {}/{}", driver.slot, driver.generation),
+        );
+        Driven::Pending { wake_at_ns: 42 }
+    }
+    fn cancel(&self, ticket: Ticket) -> u32 {
+        if ticket == WAITING {
+            crate::abi::auth::CANCEL_CONTINUES
+        } else {
+            crate::abi::auth::CANCEL_ABANDONED
+        }
+    }
+}
+
+mod minter {
+    use super::*;
+    crate::auth_outbound_door!(
+        Minter,
+        with_tail(noted(statement("minter", "1.0.0", 8)), TAIL)
+    );
+}
+
+const DRIVER: Ticket = Ticket {
+    slot: 3,
+    generation: 1,
+};
+
+fn tick(t: &Ops, inst: *mut std::ffi::c_void, ticket: Ticket, now_ns: u64) -> (Outcome, TickOut) {
+    let mut input = TickIn {
+        head: head::<TickIn>(life::TICK),
+        now_ns,
+    };
+    input.head.ticket = ticket;
+    let mut out = TickOut {
+        head: out_head(size_of::<TickOut>()),
+        next_tick_ns: 0,
+    };
+    let o = cross(t.head.tick, inst, &input, &mut out);
+    (o, out)
+}
+
+fn drive(t: &Ops, inst: *mut std::ffi::c_void, ticket: Ticket) -> (Outcome, OutHead) {
+    let mut input = DriveIn {
+        head: head::<DriveIn>(life::DRIVE),
+        driver: ticket,
+    };
+    input.head.ticket = ticket;
+    let mut out = out_head(size_of::<OutHead>());
+    let o = cross(t.head.drive, inst, &input, &mut out);
+    (o, out)
+}
+
+fn cancel(t: &Ops, inst: *mut std::ffi::c_void, ticket: Ticket) -> (Outcome, u32) {
+    let input = CancelIn {
+        head: head::<CancelIn>(life::CANCEL),
+        ticket,
+    };
+    let mut out = CancelOut {
+        head: out_head(size_of::<CancelOut>()),
+        disposition: 0,
+        _reserved: 0,
+    };
+    let o = cross(t.head.cancel, inst, &input, &mut out);
+    (o, out.disposition)
+}
+
+/// THE DRIVER TICKET: `tick` runs the plugin on the instance's driver ticket with the host tables
+/// `open` handed it (none here), its notes and next tick in the reply; `drive` on that ticket
+/// answers PENDING with the plugin's latest re-drive, and a ticket-less `drive` (which cannot pend)
+/// READY; `cancel` answers the plugin's own disposition for the cancelled ticket.
+#[test]
+fn a_minting_plugin_runs_on_its_driver_ticket() {
+    let t = ops_of(minter::door);
+    let inst = opened(t);
+
+    let (o, out) = tick(t, inst, DRIVER, 5_000);
+    assert_eq!((o, out.next_tick_ns), (Outcome::Ready, 6_000));
+    // `open` was handed no host tables, so none reach `tick`.
+    assert_eq!(
+        reported(&out.head),
+        vec![(NOTED, SEVERITY_INFO, "minted on 3/1 host=false".to_string())]
+    );
+
+    let (o, out) = drive(t, inst, DRIVER);
+    assert_eq!((o, out.wake_at_ns), (Outcome::Pending, 42));
+    assert_eq!(
+        reported(&out),
+        vec![(NOTED, SEVERITY_WARN, "waiting on 3/1".to_string())]
+    );
+    let (o, _) = drive(t, inst, Ticket::NONE);
+    assert_eq!(o, Outcome::Ready, "a ticket-less drive cannot pend");
+
+    assert_eq!(
+        cancel(t, inst, WAITING),
+        (Outcome::Ready, crate::abi::auth::CANCEL_CONTINUES)
+    );
+    assert_eq!(
+        cancel(t, inst, DRIVER),
+        (Outcome::Ready, crate::abi::auth::CANCEL_ABANDONED)
+    );
+}
+
+/// A plugin that holds no driver ticket keeps the kit's defaults: `tick` wants none, `drive` is
+/// REFUSED, `cancel` is `CANCEL_ABANDONED`.
+#[test]
+fn a_plugin_without_a_driver_ticket_keeps_the_defaults() {
+    let t = ops();
+    let inst = opened(t);
+    let (o, out) = tick(t, inst, DRIVER, 5_000);
+    assert_eq!((o, out.next_tick_ns), (Outcome::Ready, 0));
+    assert!(reported(&out.head).is_empty());
+    assert_eq!(drive(t, inst, DRIVER).0, Outcome::Refused);
+    assert_eq!(
+        cancel(t, inst, DRIVER),
+        (Outcome::Ready, crate::abi::auth::CANCEL_ABANDONED)
+    );
+}
+
+/// Judges its settings (`{"bad":true}` is refused, in its own words) and answers each binding's
+/// handle as the generation it was opened at.
+struct Generational(AtomicU64);
+
+/// The settings [`Generational`] refuses.
+const BAD: &[u8] = br#"{"bad":true}"#;
+
+impl OutboundPlugin for Generational {
+    fn validate(settings: &[u8]) -> Result<(), Refusal> {
+        if settings == BAD {
+            return Err(Refusal::refused("settings: bad"));
+        }
+        Ok(())
+    }
+    fn open(settings: &[u8], _: &[&[u8]], generation: u64) -> Result<Self, Refusal> {
+        Self::validate(settings)?;
+        Ok(Generational(AtomicU64::new(generation)))
+    }
+    fn open_outbound(
+        &self,
+        _: &str,
+        _: Option<&[u8]>,
+        _: Option<&[u8]>,
+        _: Option<&SdkHost>,
+        _: &mut Diags,
+    ) -> Result<u64, OpenRefusal> {
+        Ok(self.0.load(Ordering::SeqCst))
+    }
+    fn fields(
+        &self,
+        _: &FieldsView<'_>,
+        _: &mut FieldsWriter<'_>,
+        _: &Op<'_>,
+    ) -> Poll<FieldsAnswer> {
+        Poll::Ready(FieldsAnswer::Ready)
+    }
+    fn outbound_ready(&self, _: u64) -> bool {
+        true
+    }
+    fn refresh(&self, settings: &[u8], _: &[&[u8]], generation: u64) -> Result<(), Refusal> {
+        Self::validate(settings)?;
+        self.0.store(generation, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+mod generational {
+    use super::*;
+    crate::auth_outbound_door!(Generational, with_tail(statement("gen", "1.0.0", 8), TAIL));
+}
+
+/// The text a REFUSED or FAILED answer names.
+fn error_text(head: &OutHead) -> String {
+    if head.error.ptr.is_null() {
+        return String::new();
+    }
+    // SAFETY: the answer's error text, `len` bytes, kept by the instance or the program.
+    let text = unsafe { std::slice::from_raw_parts(head.error.ptr, head.error.len) };
+    String::from_utf8_lossy(text).into_owned()
+}
+
+/// A HANDLE IS GENERATION DATA: `open` and `refresh` hand the plugin the generation, so the
+/// handles a binding opens after a reload belong to the new one; `validate` and `refresh` refuse
+/// settings that are not the plugin's with the plugin's own outcome and words, and a refused
+/// reload changes nothing.
+#[test]
+fn open_and_refresh_hand_the_plugin_its_generation_and_its_refusals() {
+    let t = ops_of(generational::door);
+
+    let mut buf = vec![0_u8; 64];
+    let input = crate::abi::mechanism::lifecycle::ValidateIn {
+        head: head::<crate::abi::mechanism::lifecycle::ValidateIn>(life::VALIDATE),
+        settings: blob(BAD, BLOB_JSON, 0),
+        err_buf: buf.as_mut_ptr(),
+        err_cap: buf.len(),
+    };
+    let mut out = out_head(size_of::<OutHead>());
+    assert_eq!(
+        cross(t.head.validate, ptr::null_mut(), &input, &mut out),
+        Outcome::Refused
+    );
+    assert_eq!(error_text(&out), "settings: bad");
+
+    let inst = opened(t);
+    assert_eq!(
+        open_outbound(t, inst, "bearer-test", None, b"{}").1.handle,
+        1
+    );
+
+    let refresh = |settings: &[u8], generation: u64| {
+        let input = crate::abi::mechanism::lifecycle::RefreshIn {
+            head: head::<crate::abi::mechanism::lifecycle::RefreshIn>(life::REFRESH),
+            generation,
+            settings: blob(settings, BLOB_JSON, 0),
+            secrets: ptr::null(),
+            secrets_len: 0,
+        };
+        let mut out = out_head(size_of::<OutHead>());
+        let o = cross(t.head.refresh, inst, &input, &mut out);
+        (o, error_text(&out))
+    };
+    assert_eq!(refresh(b"{}", 2), (Outcome::Ready, String::new()));
+    assert_eq!(
+        open_outbound(t, inst, "bearer-test", None, b"{}").1.handle,
+        2
+    );
+    assert_eq!(
+        refresh(BAD, 3),
+        (Outcome::Refused, "settings: bad".to_string())
+    );
+    assert_eq!(
+        open_outbound(t, inst, "bearer-test", None, b"{}").1.handle,
+        2,
+        "a refused reload changes nothing"
+    );
+}
+
+/// What a plugin staged reads back in order, for its own tests.
+#[test]
+fn staged_diagnostics_read_back_in_order() {
+    let mut d = Diags::default();
+    assert!(d.is_empty());
+    d.push(0, SEVERITY_WARN, "one");
+    d.push(2, SEVERITY_INFO, String::from("two"));
+    assert_eq!(d.len(), 2);
+    assert_eq!(
+        d.iter().collect::<Vec<_>>(),
+        vec![(0, SEVERITY_WARN, "one"), (2, SEVERITY_INFO, "two")]
+    );
 }
