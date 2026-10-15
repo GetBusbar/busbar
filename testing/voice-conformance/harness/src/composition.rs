@@ -71,7 +71,7 @@ pub fn downlink(bytes: usize) -> Vec<u8> {
 const MINTED: &[u8] = br#"{"value":"ek_oracle_0001","expires_at":1767225600}"#;
 
 /// One `answer` as a line: the step, the outcome and the cumulative units.
-fn units_of(what: &str, a: &Answer) -> String {
+pub fn units_of(what: &str, a: &Answer) -> String {
     format!("{what} {:?} units=[{}]", a.outcome, a.units_line())
 }
 

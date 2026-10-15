@@ -583,6 +583,75 @@ fn a_trust_from_need_is_declared_with_its_settings_ca_at_open_and_every_refresh(
     );
 }
 
+/// A need whose trust anchors come from the OWNED namespace: `owned.agent_push.ca`.
+const OWNED_TRUSTING: [Need; 1] = [Need {
+    target_from: NONE,
+    trust_from: abi_str("owned.agent_push.ca"),
+    ..NEEDS[0]
+}];
+
+/// `refresh` with `json` as the instance's new settings and `owned` as its owned sections, carried
+/// in the extensions blob under `abi::plane::EXT_OWNED`, ticket-less.
+fn refresh_owning(p: &Plugin<TestKind>, json: &'static [u8], owned: &[u8]) -> Outcome {
+    use busbar_contract::abi::mechanism::call::BLOB_OCTETS;
+    let extensions = busbar_contract::abi::mechanism::extensions::encode(&[(
+        busbar_contract::abi::plane::EXT_OWNED,
+        owned,
+    )]);
+    let mut head = in_head();
+    head.extensions = Blob {
+        ptr: extensions.as_ptr(),
+        len: extensions.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    let mut f = Frame::new(
+        RefreshIn {
+            head,
+            generation: 2,
+            settings: settings(json),
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+        },
+        out_head(),
+    );
+    p.call(slot::REFRESH, &mut f).outcome
+}
+
+/// RED: a need whose `trust_from` is in the OWNED namespace resolves against the owned sections
+/// alone, never the settings (no fallback between the two): its `open` (no owned sections for a
+/// kind that is no plane) and a refresh carrying none declare it WITHOUT a trust (the public roots
+/// alone, the table's to take as optional), even when the settings hold the same path; a refresh
+/// whose owned sections write the anchor declares it with that PEM.
+/// RED before the fix: the path resolved against the settings only, so an owned anchor never
+/// reached the table.
+#[test]
+fn an_owned_trust_from_resolves_against_the_owned_sections_alone() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(OWNED_TRUSTING)), &table);
+    let decoy: &'static [u8] = br#"{"agent_push":{"ca":"PEM-IN-SETTINGS"},"owned":{"agent_push":{"ca":"PEM-IN-SETTINGS"}}}"#;
+    assert_eq!(open_with(&p, decoy), Outcome::Ready);
+    assert_eq!(
+        refresh_owning(&p, decoy, br#"{"agent_push":{"ca":"PEM-OWNED"}}"#),
+        Outcome::Ready
+    );
+    assert_eq!(refresh_with(&p, decoy), Outcome::Ready);
+    let declared = table.declared.lock().unwrap().clone();
+    let seen: Vec<Option<String>> = declared
+        .iter()
+        .filter(|(owner, need, ..)| (*owner, *need) == (p.instance(), NeedId(0)))
+        .map(|(_, _, spec, _, trust)| {
+            assert_eq!(spec.trust_from, "owned.agent_push.ca");
+            trust.clone()
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        vec![None, Some("PEM-OWNED".to_owned()), None],
+        "the settings are never read for an owned path"
+    );
+}
+
 /// RED (Q-FC7): two instances, each on its own dispatcher, whose first tickets collide (fresh
 /// dispatchers mint identical first tickets). Recycling one's ticket forgets only its own kept
 /// answers: the other's re-issued `ESTABLISH` redeems its stored stream and is never run a second
@@ -787,6 +856,9 @@ struct Scripted {
     auth: Option<Arc<dyn OutboundAuth>>,
     /// An open reached the table while the calling thread held the connector's lock.
     opened_under_lock: AtomicBool,
+    /// Every read that parked: the caller and the ticket it registered interest under, as the
+    /// connector keeps them to wake.
+    parked: Mutex<Vec<(InstanceId, u64)>>,
 }
 
 /// One upgrade call as it reached the table: the stream, the name offered, the trust reference.
@@ -902,17 +974,21 @@ impl Conns for Scripted {
         self.writes.lock().unwrap().push(b.to_vec());
         Ok(b.len())
     }
-    fn read(&self, c: InstanceId, id: ConnId, _: u64, buf: &mut [u8]) -> Result<Piece, ConnError> {
+    fn read(
+        &self,
+        c: InstanceId,
+        id: ConnId,
+        ticket: u64,
+        buf: &mut [u8],
+    ) -> Result<Piece, ConnError> {
         self.slab.get(c, id)?;
         if let Some((e, _)) = &self.failing {
             return Err(*e);
         }
-        let (mut p, bytes) = self
-            .script
-            .lock()
-            .unwrap()
-            .pop_front()
-            .ok_or(ConnError::Pending)?;
+        let Some((mut p, bytes)) = self.script.lock().unwrap().pop_front() else {
+            self.parked.lock().unwrap().push((c, ticket));
+            return Err(ConnError::Pending);
+        };
         buf[..bytes.len()].copy_from_slice(&bytes);
         p.len = p.len.min(bytes.len());
         Ok(p)
@@ -1934,6 +2010,70 @@ fn a_members_pending_auth_call_is_polled_and_opened_outside_the_connectors_lock(
         "the open ran under the connector's lock"
     );
     assert_eq!(table.opened.lock().unwrap().len(), 1, "one open");
+}
+
+/// RED (#74, A FORGED TICKET THROUGH A CONNECTION SLOT): a plugin hands the read slot a ticket
+/// generation the host never minted. The table parks the read and, as the connector does, wakes it
+/// through the dispatcher's conn waker naming the caller it parked for. That caller, the supplier,
+/// is quarantined, and the latch does not move: a plugin cannot trip the process's latch through a
+/// connection.
+#[test]
+fn red_a_forged_ticket_through_a_connection_slot_quarantines_its_supplier() {
+    let table = Arc::new(Scripted::default());
+    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let latch: &'static crate::dispatch::handle::Latch =
+        Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
+    d.judge_against(latch);
+    let p = bound_over_by(&table, d.adopter());
+    let est = opened_stream(&p, 0);
+    assert!(ready(&est), "{}", error_text(&est));
+    let t = d.mint(0).expect("a ticket");
+    let forged = Ticket {
+        slot: t.slot,
+        generation: t.generation ^ 0x5a5a_5a5a,
+    };
+    let mut buf = [0u8; 16];
+    let i = IoIn {
+        head: ServiceHead {
+            size: std::mem::size_of::<IoIn>() as u32,
+            op: service::READ,
+            handle: CompletionHandle {
+                ticket: forged,
+                seq: 1,
+                _reserved: 0,
+            },
+        },
+        stream: est.value,
+        buf: buf.as_mut_ptr(),
+        len: buf.len(),
+    };
+    let out = call(&p, CONN_SLOTS.read, &i);
+    assert_eq!(out.outcome, RawOutcome::of(Outcome::Pending));
+    let parked = table.parked.lock().unwrap().clone();
+    assert_eq!(
+        parked,
+        vec![(
+            p.instance(),
+            crate::dispatch::conn_services::conn_ticket(forged)
+        )],
+        "the read parked under its caller and the forged ticket"
+    );
+    let (owner, ticket) = parked[0];
+    (d.conn_waker())(owner, ticket);
+    let started = std::time::Instant::now();
+    while !p.is_faulted() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the supplier of the forged ticket was not quarantined"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        (latch.forged(), latch.unattributed()),
+        (1, 0),
+        "the forged ticket was not judged, or counted toward the latch"
+    );
+    d.recycle(t);
 }
 
 /// RED (§11.13 M1): a framed stream written raw opens as it was named, outside the lock.

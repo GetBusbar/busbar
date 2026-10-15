@@ -10,8 +10,9 @@
 //! Driven through the shipped binary's `--validate`, over every sink this build serves (the modules
 //! its unknown-exporter refusal offers), each handed a settings key no sink declares. RED before the
 //! host's rendering: the door sinks' lines read `settings: …`, with no instance. 1.5.5's own lines,
-//! sink by sink, are DATA (`fixtures/export_settings_refusals_1_5_5.json`, verbatim from the 1.5.5
-//! binary), each held byte for byte on every build that serves its sink; this source names no sink.
+//! sink by sink, are DATA in the oracle corpus
+//! (`testing/shadow-oracle/fixtures/law0/export-settings-refusals-1.5.5.json`, verbatim from the
+//! 1.5.5 binary), each held byte for byte on every build that serves its sink; this source names no sink.
 
 #![cfg(unix)]
 #![cfg(linked_section_pools)]
@@ -117,7 +118,9 @@ fn a_sinks_settings_refusal_is_rendered_under_its_instance_as_1_5_5_printed_it()
 }
 
 /// 1.5.5's settings refusals, sink by sink, as DATA (verbatim from the 1.5.5 binary).
-const REFUSALS_1_5_5: &str = include_str!("fixtures/export_settings_refusals_1_5_5.json");
+const REFUSALS_1_5_5: &str = include_str!(
+    "../../../testing/shadow-oracle/fixtures/law0/export-settings-refusals-1.5.5.json"
+);
 
 /// EVERY 1.5.5 SETTINGS REFUSAL READS AS 1.5.5 PRINTED IT on a build that serves its sink: the line
 /// itself, or the sentence it opens (a whole sentence 1.5.5 printed unprefixed), and a refusal

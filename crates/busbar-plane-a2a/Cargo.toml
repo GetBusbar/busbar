@@ -28,6 +28,11 @@ edition = "2021"
 # One pinned number, set to what CI verifies — the same rationale every other member states.
 rust-version = "1.97"
 description = "The A2A plane for busbar: the plugin contract's plane kind implemented as a thin adapter over the busbar-a2a task-operation codec."
+# THE ROOT CELLS' ADDRESS: `build.rs` states `cells=<this crate>/tests/root/mod.rs` under this
+# `links` name, and the composition root's `build.rs` reads it as `DEP_BUSBAR_DOOR_CELLS_<CRATE>_CELLS`
+# (the same for a path dependency and a pinned one), so the root compiles this plane's own root cells
+# without naming this crate or resolving its checkout. Links no native library.
+links = "busbar-door-cells-busbar-plane-a2a"
 license = "Apache-2.0"
 
 [lib]

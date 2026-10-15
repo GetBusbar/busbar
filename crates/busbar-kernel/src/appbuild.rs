@@ -570,6 +570,33 @@ pub fn set_config_projection(project: ConfigProjection) {
     let _ = CONFIG_PROJECTION.set(project);
 }
 
+/// THE COMPOSITION ROOT'S RULES OF A RESOLVED CONFIGURATION: the rules only the root can state
+/// (ones over what the planes it composed declare, and the deployment facts it alone reads), judged
+/// by [`build_app_from_config`] before any part of a configuration is built or installed. A
+/// configuration they refuse is refused there, at boot and at every apply, rebuild or dry run
+/// alike, so a configuration the boot would refuse never goes live through an apply, and the running
+/// generation is untouched. The built [`App`] keeps the rules it was built under
+/// ([`App::root_rules`]), and every build after it passes them on.
+pub trait RootRules: Send + Sync {
+    /// Judge `cfg`.
+    ///
+    /// # Errors
+    ///
+    /// The refusal, in the words the operator reads.
+    fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
+}
+
+/// The rules of a build with no composition root's rules to judge by (a tool, a test fixture): it
+/// accepts every configuration.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AcceptAll;
+
+impl RootRules for AcceptAll {
+    fn check(&self, _cfg: &config::RootCfg) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
 pub fn build_app_from_config(
@@ -580,7 +607,11 @@ pub fn build_app_from_config(
     base_group_names: std::collections::HashSet<String>,
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
+    rules: &std::sync::Arc<dyn RootRules>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The root's rules of this configuration, before any part of it is built or installed: a
+    // refusal leaves the running generation as it is.
+    rules.check(&cfg)?;
     // The root's projection of this configuration, taken before any part of it is consumed.
     let config_projection = CONFIG_PROJECTION.get().map(|project| project(&cfg));
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
@@ -1833,6 +1864,7 @@ pub fn build_app_from_config(
     // read on the hook seam with a single relaxed load.
 
     let app = App {
+        root_rules: std::sync::Arc::clone(rules),
         config_projection,
         plane_sections: Some(cfg.plane_sections.clone()),
         // Telemetry-bank slot table for this generation (built above as a local, BEFORE the

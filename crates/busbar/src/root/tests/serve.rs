@@ -155,7 +155,7 @@ fn every_service(s: &LateServices) -> Vec<Stored> {
         s.entitlement_check(&caller, None, "model:m"),
         s.random_fill(16),
         s.trust_verify(&caller, "peer", b"payload", b"[]"),
-        now(s.records_secret("sigv4", "AKID", Box::new(|_| {}))),
+        now(s.records_secret("planted-scheme", "AKID", Box::new(|_| {}))),
     ]
 }
 

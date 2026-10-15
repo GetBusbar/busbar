@@ -288,6 +288,9 @@ mod translate_offload_tests;
 #[cfg(test)]
 #[path = "tests/usage_tap_tests.rs"]
 mod usage_tap_tests;
+#[cfg(test)]
+#[path = "tests/view_parity_tests.rs"]
+mod view_parity_tests;
 // `alloc_gate` (the per-request allocation-count PERF gate) needs THIS crate's test binary to install
 // the counting `#[global_allocator]` its instrument reads (`crate::CountingJemalloc`), ported below in
 // `lib.rs` under the same target gate.

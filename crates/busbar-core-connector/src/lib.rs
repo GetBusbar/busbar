@@ -114,8 +114,9 @@ use crate::listen::{AcceptLimits, Listening};
 use crate::pool::{PoolKey, PoolPosture, Pools};
 use crate::registry::Transports;
 
-/// How the host wakes a caller's ticket.
-pub type WakeTicket = Arc<dyn Fn(Ticket) + Send + Sync>;
+/// How the host wakes a caller's ticket, naming the caller that handed it the ticket: the supplier
+/// the host blames for a ticket it never minted (#74).
+pub type WakeTicket = busbar_contract::conn::ConnWake;
 
 /// A `DEST_*` verdict (`busbar_contract::abi::host::service`) refusing a dial.
 pub type Verdict = u64;
@@ -584,7 +585,7 @@ impl Default for Connector {
             declared: Mutex::new(HashMap::new()),
             transports: RwLock::new(Transports::default()),
             tls: None,
-            wake: Arc::new(|_| {}),
+            wake: Arc::new(|_, _| {}),
             judge: Arc::new(LiteralsOnly(guard::Guard::default())),
             listeners: Mutex::new(HashMap::new()),
             pools: Pools::new(PoolPosture::NONE),
@@ -602,12 +603,14 @@ impl Default for Connector {
 
 struct TicketWake {
     wake: WakeTicket,
+    /// The caller whose ticket this is.
+    owner: InstanceId,
     ticket: Ticket,
 }
 
 impl Wake for TicketWake {
     fn wake(self: Arc<Self>) {
-        (self.wake)(self.ticket);
+        (self.wake)(self.owner, self.ticket);
     }
 }
 
@@ -1191,7 +1194,7 @@ impl Connector {
             .get(&(owner, need))
             .cloned()
             .ok_or(ConnError::Refused)?;
-        let waker = self.waker(ticket);
+        let waker = self.waker(owner, ticket);
         let got = l
             .lock()
             .expect("listener")
@@ -1625,12 +1628,14 @@ impl Connector {
         Ok(out)
     }
 
-    fn waker(&self, ticket: Ticket) -> Waker {
+    /// The waker of `owner`'s `ticket`: it names `owner` when it wakes.
+    fn waker(&self, owner: InstanceId, ticket: Ticket) -> Waker {
         if ticket == NO_TICKET {
             return Waker::noop().clone();
         }
         Waker::from(Arc::new(TicketWake {
             wake: Arc::clone(&self.wake),
+            owner,
             ticket,
         }))
     }
@@ -1743,10 +1748,17 @@ impl DeclaredConns for Connector {
         // A member-target need (`settings.*.<key>`) is pinned by no one target: each member's route
         // is sealed at its own, and dials it like any need the plugin names per open.
         let per_member = |path: &str| busbar_contract::section::member_target(path).is_some();
-        let unresolved = (!spec.target_from.is_empty()
-            && !per_member(&spec.target_from)
-            && target.is_none())
-            || (!spec.trust_from.is_empty() && !per_member(&spec.trust_from) && trust.is_none());
+        // A trust anchor in an OWNED section (`owned.<section>.<key>`) is optional by definition
+        // (the section is the operator's to write or not; ARCHITECT ruling 2026-10-14): absent, the
+        // need's connections trust the public roots alone, as one naming no anchor does; present, it
+        // is parsed below and refused when it is no trust anchor, exactly as a `settings.` one is.
+        let optional_trust = busbar_contract::section::owned_path(&spec.trust_from).is_some();
+        let unresolved =
+            (!spec.target_from.is_empty() && !per_member(&spec.target_from) && target.is_none())
+                || (!spec.trust_from.is_empty()
+                    && !per_member(&spec.trust_from)
+                    && !optional_trust
+                    && trust.is_none());
         // USERINFO IS NOT PART OF A SETTINGS-DERIVED TARGET (ARCHITECT ruling, row 159 audit,
         // the settings-URL userinfo finding): a target read from the plugin's own settings through `target_from`
         // is declared without its userinfo, which is dropped here — never recorded, judged or
@@ -1845,7 +1857,7 @@ impl DeclaredConns for Connector {
                 .or_else(|| self.tls.clone())
                 .ok_or(ConnError::Refused)?
         };
-        let waker = self.waker(ticket);
+        let waker = self.waker(caller, ticket);
         if !self.settle(&held, Some(&waker))? {
             return Err(ConnError::Pending);
         }
@@ -2457,11 +2469,11 @@ impl Conns for Connector {
         ticket: Ticket,
         buf: &mut [u8],
     ) -> Result<Piece, ConnError> {
-        self.read_waking(caller, conn, &self.waker(ticket), buf)
+        self.read_waking(caller, conn, &self.waker(caller, ticket), buf)
     }
 
     fn wait(&self, caller: InstanceId, set: &[ConnId], ticket: Ticket) -> Result<usize, ConnError> {
-        let waker = self.waker(ticket);
+        let waker = self.waker(caller, ticket);
         let mut cx = Context::from_waker(&waker);
         for (at, conn) in set.iter().enumerate() {
             let (_, held) = self.slab.get(caller, *conn)?;

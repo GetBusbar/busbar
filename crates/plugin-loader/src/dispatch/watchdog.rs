@@ -29,7 +29,6 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::mechanism::call::DeadlineClass;
 
 use super::plugin::Instance;
-use super::ticket::recycled_generation;
 use super::worker::{spawn_worker, Pool, Worker};
 
 /// Count one breach against `inst`; quarantine it on the pool's Nth. `true` when the instance is
@@ -153,10 +152,11 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
         let breached = Arc::clone(&record.instance);
         drop(crossing);
         st.dead = true;
-        let gens: Vec<u32> = st
+        // Every slot's next mint counter; a spent one RETIRED (`None`), never handed out again.
+        let gens: Vec<Option<u32>> = st
             .entries
             .iter()
-            .map(|e| recycled_generation(e.generation))
+            .map(|e| super::worker::next_count(e.count))
             .collect();
         (Worker::fault_all(&mut st), gens, breached, quarantined)
     };
@@ -169,7 +169,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
     pool.env.services.forget_worker(old.index);
     let conns: Vec<_> = gone.iter().flat_map(|e| e.conns.iter().copied()).collect();
     super::conn_services::forget_worker(&conns, old.index);
-    let (w, rx) = Worker::new(old.index, gens);
+    let (w, rx) = Worker::new(old.index, gens, pool.env.ticket_key);
     *pool.slots[i]
         .current
         .write()

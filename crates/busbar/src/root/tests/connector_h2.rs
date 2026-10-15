@@ -291,7 +291,7 @@ fn connector(settings: &TransportSettings, trust: &EgressTrust) -> Connector {
         view,
         process::judge(dest, &[]),
         Some(Arc::new(tls)),
-        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
     )
     .pooling(crate::root::connector::pool_posture(settings));
     // The need's scheme is the request/response wire, as the admin plane's one claim declares it.

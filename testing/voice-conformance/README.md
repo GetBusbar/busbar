@@ -38,7 +38,7 @@ money steps, the transport), which a plane cannot see and the harness therefore 
 
 | leg | slices | what it judges at the door |
 |---|---|---|
-| `spec-per-dialect` | `openai`, `gemini` | every fixture: codec round trip, and the door's relay of it by the session rules |
+| `spec-per-dialect` | `openai`, `gemini`, `twilio` | every fixture: codec round trip, and the door's relay of it by the session rules; the `twilio` slice also replays `transcript.jsonl`, one whole call |
 | `replay` | `default` | each captured transcript through one session: codec skeleton; the door's relay and skeleton |
 | `cross-parity` | `oo og go gg` | the codec bridge per the cross-dialect map; the bridged wire through the destination door |
 | `provider-credential` | 1 | every far request rides a declared outbound need; none carries a credential |
@@ -51,6 +51,9 @@ money steps, the transport), which a plane cannot see and the harness therefore 
 | `audit-record` | 1 | the audit kind and operation the kernel's one row is written under; no door row |
 | `exit-terminal` | 1 | one session, one end; an ended stream is refused on every side |
 | `tool-reply` | 1 | a tool call is relayed to the caller and never answered by busbar (Law 11) |
+| `twilio-route` | 1 | the Twilio claim: ws transport, one-level `/twilio` prefix, `webhook-signature` the only alternative, a principal asked for; the session opens on the `event`-tagged `start` frame |
+| `twilio-media` | 1 | inbound `media` is the caller's audio; the far end's audio is written back as `media` on the call's `streamSid`, its end as `mark`, a barge-in as `clear`; `stop` ends the session once |
+| `twilio-metering` | 1 | a Twilio session's units, reported per declared class once per turn, the open turn settled when `stop` arrives mid-turn |
 | `governance` | 5 checkpoints | the 5 vision checkpoints — **NOT a conformance result** |
 
 **The session rules** the fixture legs hold the door to (`session_pump`): a caller frame reaches the
@@ -59,6 +62,26 @@ far-end frame reaches the caller as sent, except that usage and rate-limit repor
 becomes reported units), a far-end tool result is never relayed, and a barge-in also cancels and
 truncates the far end's response at the audio the caller heard. The expectation is computed from the
 wire by the codec, never by the door.
+
+### The Twilio legs
+
+Twilio is a dialect over the `ws` transport, claimed on a one-level `/twilio` path prefix
+(`BUSBAR-1.6.0.md` l.418-419; first billable streaming cut with OpenAI and Gemini, #45). Its inbound
+auth is `busbar-auth-webhook-signature`, variant twilio: HMAC-SHA1 `X-Twilio-Signature`, scheme
+alternative `webhook-signature`; a missing signature is 401 end to end and Twilio carries no replay
+rule (l.847-852). Every Twilio frame is `event`-tagged JSON. The fixtures in `fixtures/twilio/` are
+transcribed from Twilio's published messages
+(<https://www.twilio.com/docs/voice/media-streams/websocket-messages>), one file per message:
+`from-twilio.{connected,start,media,dtmf,mark,stop}.json` (what Twilio sends busbar; `mark` is
+Twilio's echo of a mark busbar sent) and `to-twilio.{media,mark,clear}.json` (what busbar sends
+Twilio), plus `transcript.jsonl` (one call: `client` is Twilio to busbar, `server` busbar to Twilio).
+
+The legs are written to the spec and to Twilio's formats, not to what the reader does today, and
+they go GREEN only when the streaming plane answers them. The telephony session's far end is the
+realtime dialect locked to `g711_ulaw`, so the far end's events are the OpenAI Realtime ones
+(`response.output_audio.delta`, `response.output_audio.done`, `input_audio_buffer.speech_started`).
+The kernel's half of the Twilio seam (the boot admitting the claim, the 401 on a missing signature,
+the HMAC-SHA1 verify) is not judged here.
 
 ### Governance is not a conformance result
 
@@ -89,5 +112,5 @@ bash testing/voice-conformance/voice-conformance.sh --list
 voice-conformance.sh      the runner: --selftest | --verdict | --leg | --list
 lib/conform-bin.sh        builds/locates the voice_conform harness and the dropped-in door
 legs/*.sh                 one leg each (LEG_KIND, LEG_STATUS, LEG_SLICES, leg_execute)
-fixtures/{openai,gemini}/ captured transcripts and per-dialect spec fixtures
+fixtures/{openai,gemini,twilio}/ captured transcripts and per-dialect spec fixtures
 ```

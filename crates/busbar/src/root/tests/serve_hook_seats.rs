@@ -769,7 +769,7 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         },
         judge,
         &[],
-        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
     )
     .expect("the connector builds");

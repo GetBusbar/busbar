@@ -104,6 +104,42 @@ fn door() -> DoorFn {
     linked_door().expect("a linked plane door owns the agents section")
 }
 
+/// THIS PLANE'S CAPABILITY-EQUALITY COLUMNS (`qa/capability-equality.json`): the cells its root leg
+/// answers for.
+pub(crate) const COLUMNS: &[&str] = &["a2a-client", "a2a-server"];
+
+/// `(capability, column, reason)`: the root-leg cells this plane is NOT owed, each the ledger's own
+/// not-applicable cell with its reason, word for word. The composition root holds the two equal: a
+/// plane opts out of nothing the ledger says it has, and the ledger excuses nothing the plane does
+/// not state.
+pub(crate) const NOT_APPLICABLE: &[(&str, &str, &str)] = &[
+    (
+        "breaker-trip",
+        "a2a-server",
+        "the front door is inbound; there is no upstream target whose availability could be recorded on this role. The agent a hop dials is the a2a-client cell's evidence.",
+    ),
+    (
+        "breaker-fastfail",
+        "a2a-server",
+        "inbound role; there is no dispatch admission against an upstream to make fast. Refusing inbound work is the governance and trust cells' subject, not the breaker's.",
+    ),
+    (
+        "failover-reroute",
+        "a2a-server",
+        "inbound role; there is no candidate set to walk on the receiving side. The relay's candidate walk is the a2a-client cell.",
+    ),
+    (
+        "hooks-gate",
+        "a2a-client",
+        "busbar-originated A2A traffic is not a second gate point: originate (mirror_push_config, refresh_listed_tasks) is called only from receive.rs::admitted, downstream of the proven inbound hooks gate, and push delivery targets the caller's own webhook, which the agent-submission gate has no semantic target for. Same rationale the mcp-client cell is proven under.",
+    ),
+    (
+        "disposition",
+        "a2a-server",
+        "disposition classifies an upstream's ANSWER; the inbound role has no upstream answer to classify. Rendering a refusal to a caller is the response path, not disposition.",
+    ),
+];
+
 /// THE SECRET-SOURCE SCAN'S DRIVEN DOOR (the composition root's `secret_source.rs`, which holds
 /// every linked door plane to a driver): this door's Statement name, driven by
 /// [`upstream_credential::a_credential_that_stops_resolving_reaches_the_caller_without_its_source`].
@@ -513,6 +549,7 @@ fn served_full(
         facing,
         None,
         false,
+        None,
     )
 }
 
@@ -540,6 +577,50 @@ fn served_pushing(
         Facing::Routes,
         None,
         true,
+        None,
+    )
+}
+
+/// [`served_pushing`] over the process's own connector shape (the public roots alone, no test
+/// root), the plane's `agent_push.ca` written as `push_ca` when given: the cells that read which
+/// receivers a delivery trusts.
+fn served_push_trusting(
+    instance: &'static str,
+    section: &str,
+    allow: Vec<String>,
+    push_ca: Option<String>,
+) -> Served {
+    served_core(
+        instance,
+        section,
+        busbar_kernel::config::Destinations {
+            block_private_addresses: true,
+            allow,
+            ..Default::default()
+        },
+        None,
+        None,
+        None,
+        None,
+        Facing::Routes,
+        None,
+        true,
+        push_ca,
+    )
+}
+
+/// `der`, one certificate, as the PEM an operator writes.
+fn pem_of(der: &[u8]) -> String {
+    use base64::Engine as _;
+    let text = base64::engine::general_purpose::STANDARD.encode(der);
+    let lines: Vec<&str> = text
+        .as_bytes()
+        .chunks(64)
+        .map(|c| std::str::from_utf8(c).expect("base64 is ASCII"))
+        .collect();
+    format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        lines.join("\n")
     )
 }
 
@@ -610,6 +691,7 @@ fn served_priced(instance: &'static str, section: &str, priced: &Priced) -> Serv
         Facing::Routes,
         Some(priced),
         false,
+        None,
     )
 }
 
@@ -626,6 +708,7 @@ fn served_core(
     facing: Facing,
     priced: Option<&Priced>,
     ticking: bool,
+    push_ca: Option<String>,
 ) -> Served {
     // The caller's group, when it is limited: `requests` requests in all.
     let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = requests
@@ -812,6 +895,18 @@ fn served_core(
         sections.insert(
             section_key,
             serde_yaml::from_str(section).expect("a section"),
+        );
+    }
+    // The plane's own `agent_push:` section, when the cell writes one: `{ca: <PEM>}`.
+    if let Some(ca) = push_ca {
+        let mut push = serde_yaml::Mapping::new();
+        push.insert(
+            busbar_plane_a2a::door_statement::PUSH_CA_KEY.into(),
+            serde_yaml::Value::String(ca),
+        );
+        sections.insert(
+            busbar_plane_a2a::door_statement::PUSH_SECTION,
+            serde_yaml::Value::Mapping(push),
         );
     }
     // THE EGRESS, AS PRODUCTION SEALS IT: no provider (an agent is reached at its own `url`),
@@ -6537,6 +6632,262 @@ async fn a_pushed_state_reaches_the_callers_own_webhook_through_busbar() {
         head.contains("authorization: bearer caller-secret"),
         "the caller's own webhook credential is presented at the caller's own webhook: {delivered}"
     );
+}
+
+/// One task's ending pushed by the agent and delivered by busbar to the caller's own https webhook
+/// `hook` (loopback, allow-listed), over the deployment `s` serves: what the webhook heard within
+/// `wait`, or `None`.
+async fn delivered_within(
+    s: &Served,
+    agent: &mut Agent,
+    hook: &mut Agent,
+    wait: std::time::Duration,
+) -> Option<String> {
+    approve(s, "planner").await;
+    let task = open_task(s).await;
+    let config = serde_json::json!({
+        "taskId": task, "id": "caller-config",
+        "url": format!("https://127.0.0.1:{}/hook", hook.port),
+        "authentication": { "scheme": "Bearer", "credentials": "caller-secret" },
+    })
+    .to_string();
+    let (status, body) = answered(
+        &s.router,
+        rpc(
+            "planner",
+            "CreateTaskPushNotificationConfig",
+            &config,
+            Some(&s.token),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "the callback is registered: {body}");
+    let token = token_sent(&heard(agent));
+    let (status, body) = answered(&s.router, push(&token, "completed")).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "the push is taken: {body}");
+    tokio::time::timeout(wait, hook.heard.recv())
+        .await
+        .ok()
+        .flatten()
+}
+
+/// **THE OPERATOR'S `agent_push.ca` IS WHAT A DELIVERY TRUSTS ON TOP OF THE PUBLIC ROOTS**
+/// (ARCHITECT ruling 2026-10-14; the push need's `trust_from` is `owned.agent_push.ca`, the
+/// connector's per-connection trust): a caller's webhook whose certificate chains to the CA the
+/// deployment writes there is delivered to, over a connector that otherwise trusts the public roots
+/// alone.
+/// RED before the fix: push trusted the compiled-in public roots only, so a webhook under an
+/// operator CA was never delivered to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivery_to_a_webhook_under_the_operators_agent_push_ca_is_made() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-agent-door-push-ca";
+    let _published = Published(instance);
+    let tls = AgentTls::new();
+    tls.rekey();
+    let mut hook = Agent::start_over(200, "{}", Some(tls.acceptor())).await;
+    let mut agent =
+        Agent::start_answering(200, Arc::new(|r: &str| far_answer(r, "working", "working")))
+            .await;
+    let s = served_push_trusting(
+        instance,
+        &agent.entry("planner", "1h"),
+        vec!["127.0.0.1".to_string()],
+        Some(pem_of(&tls.root)),
+    );
+    let delivered = delivered_within(
+        &s,
+        &mut agent,
+        &mut hook,
+        std::time::Duration::from_secs(2),
+    )
+    .await
+    .expect("a webhook under the operator's CA is delivered to");
+    assert!(delivered.starts_with("POST /hook"), "{delivered}");
+}
+
+/// **A WEBHOOK UNDER A CA THE OPERATOR DID NOT WRITE IS REFUSED**: `agent_push.ca` names another
+/// CA, so the webhook's chain is to neither it nor the public roots and no delivery reaches it,
+/// however many attempts the retry makes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_delivery_to_a_webhook_under_another_ca_is_refused() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-agent-door-push-other-ca";
+    let _published = Published(instance);
+    let tls = AgentTls::new();
+    tls.rekey();
+    let other = AgentTls::new();
+    let mut hook = Agent::start_over(200, "{}", Some(tls.acceptor())).await;
+    let mut agent =
+        Agent::start_answering(200, Arc::new(|r: &str| far_answer(r, "working", "working")))
+            .await;
+    let s = served_push_trusting(
+        instance,
+        &agent.entry("planner", "1h"),
+        vec!["127.0.0.1".to_string()],
+        Some(pem_of(&other.root)),
+    );
+    assert_eq!(
+        delivered_within(
+            &s,
+            &mut agent,
+            &mut hook,
+            std::time::Duration::from_millis(2500),
+        )
+        .await,
+        None,
+        "a webhook whose chain is to no trusted CA hears nothing"
+    );
+}
+
+/// **NO `agent_push:` SECTION: A DELIVERY TRUSTS THE PUBLIC ROOTS ALONE**, as before the section
+/// existed: the section is the operator's to write or not, so its absence refuses nothing at
+/// boot, and a webhook under a private CA is not delivered to.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_an_agent_push_section_a_delivery_trusts_the_public_roots_alone() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-agent-door-push-no-ca";
+    let _published = Published(instance);
+    let tls = AgentTls::new();
+    tls.rekey();
+    let mut hook = Agent::start_over(200, "{}", Some(tls.acceptor())).await;
+    let mut agent =
+        Agent::start_answering(200, Arc::new(|r: &str| far_answer(r, "working", "working")))
+            .await;
+    let s = served_push_trusting(
+        instance,
+        &agent.entry("planner", "1h"),
+        vec!["127.0.0.1".to_string()],
+        None,
+    );
+    assert_eq!(
+        delivered_within(
+            &s,
+            &mut agent,
+            &mut hook,
+            std::time::Duration::from_millis(2500),
+        )
+        .await,
+        None,
+        "the public roots alone do not reach a private CA's webhook"
+    );
+}
+
+/// **AN `agent_push.ca` THAT IS NO TRUST ANCHOR REFUSES THE BOOT**, naming the key: the host
+/// declares the push need with what the operator wrote, the connection table refuses it, and the
+/// composition stops rather than serving a need every delivery of which would be refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_malformed_agent_push_ca_refuses_the_boot() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-agent-door-push-bad-ca";
+    let _published = Published(instance);
+    let agent =
+        Agent::start_answering(200, Arc::new(|r: &str| far_answer(r, "working", "working")))
+            .await;
+    let section = agent.entry("planner", "1h");
+    let runtime = tokio::runtime::Handle::current();
+    let composed = std::thread::spawn(move || {
+        let _in = runtime.enter();
+        let _ = served_push_trusting(
+            instance,
+            &section,
+            vec!["127.0.0.1".to_string()],
+            Some("-----BEGIN CERTIFICATE-----\nnot a certificate\n-----END CERTIFICATE-----\n"
+                .to_string()),
+        );
+    })
+    .join();
+    let refusal = match composed {
+        Ok(()) => panic!("a malformed agent_push.ca composed"),
+        Err(payload) => payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_default(),
+    };
+    assert!(
+        refusal.contains("`agent_push.ca` is not a usable trust anchor"),
+        "the boot names the key it refuses: {refusal}"
+    );
+}
+
+/// **AN APPLY CARRYING A MALFORMED `agent_push.ca` IS REFUSED, AND DELIVERIES KEEP THE PREVIOUS
+/// ANCHOR** (ARCHITECT ruling 2026-10-14: boot validity and apply validity are one rule): the
+/// root's rules (`root::door_steps::Rules`, holding the composed door's owned anchors as `main`
+/// holds them, passed to the build as an apply passes the running App's) refuse the configuration
+/// with the boot's own words before any generation is built from it, so nothing is swapped and
+/// nothing re-declared; the running door keeps delivering to the webhook under the CA it was
+/// composed with.
+/// RED before the fix: the apply built and swapped the generation, and its refresh re-declared the
+/// push need with the malformed value, so every delivery after it was refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_apply_carrying_a_malformed_agent_push_ca_is_refused_and_deliveries_keep_the_anchor() {
+    let _one = PUBLISHING.lock().await;
+    let instance = "serve-agent-door-push-apply-ca";
+    let _published = Published(instance);
+    let tls = AgentTls::new();
+    tls.rekey();
+    let mut hook = Agent::start_over(200, "{}", Some(tls.acceptor())).await;
+    let mut agent =
+        Agent::start_answering(200, Arc::new(|r: &str| far_answer(r, "working", "working")))
+            .await;
+    let s = served_push_trusting(
+        instance,
+        &agent.entry("planner", "1h"),
+        vec!["127.0.0.1".to_string()],
+        Some(pem_of(&tls.root)),
+    );
+
+    // THE APPLY: a document writing the same agent and a malformed `agent_push.ca`, built as an
+    // apply builds it, under the root's check.
+    {
+        use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
+        busbar_kernel::plane::registry::register_test_plane(
+            busbar_kernel::plane::door::fold(
+                registration(linked_probe(door(), instance)).expect("the door binds"),
+            )
+            .expect("the door folds"),
+        );
+    }
+    let text = format!(
+        "store: {{module: memory}}\nproviders: {{}}\nmodels: {{}}\n{}:\n  planner: {{ url: \
+         https://planner.example/rpc, pin: {{ mechanism: unpinned }} }}\nagent_push:\n  ca: \
+         not a certificate\n",
+        surface("section")
+    );
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(&text).expect("the config parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+    let rules = Arc::new(crate::root::door_steps::Rules::default());
+    rules.hold_owned_anchors(&[busbar_plane_a2a::door_statement::PUSH_TRUST_FROM]);
+    let built = busbar_kernel::build_app_from_config(
+        cfg,
+        busbar_kernel::config::PluginsCfg::default(),
+        None,
+        std::collections::HashSet::new(),
+        std::collections::HashSet::new(),
+        (None, None),
+        None,
+        &(rules as Arc<dyn busbar_kernel::appbuild::RootRules>),
+    );
+    let refusal = match built {
+        Ok(_) => panic!("an apply carrying a malformed agent_push.ca was built"),
+        Err(e) => e,
+    };
+    assert!(
+        refusal.contains("`agent_push.ca` is not a usable trust anchor"),
+        "the apply is refused in the boot's words: {refusal}"
+    );
+
+    // Nothing was swapped: the running door delivers under the anchor it was composed with.
+    let delivered = delivered_within(
+        &s,
+        &mut agent,
+        &mut hook,
+        std::time::Duration::from_secs(2),
+    )
+    .await
+    .expect("the previous anchor still delivers");
+    assert!(delivered.starts_with("POST /hook"), "{delivered}");
 }
 
 /// **A DELIVERY REACHES THE WEBHOOK EXACTLY ONCE** (R-PUSH, coordinator round 2): the queued

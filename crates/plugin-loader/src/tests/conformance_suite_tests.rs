@@ -226,7 +226,7 @@ mod suite_conns {
 
     /// A host connector handed in (`conformance_suite! { …, host: … }`): stands in for busbar's.
     fn a_host(
-        wake: Arc<dyn Fn(u64) + Send + Sync>,
+        wake: busbar_contract::conn::ConnWake,
         anchors: Option<&str>,
     ) -> Arc<dyn busbar_contract::conn::DeclaredConns> {
         let _ = wake;

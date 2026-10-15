@@ -1479,7 +1479,9 @@ pub fn compose_egress(
 /// read back when that generation is swapped in.
 #[derive(Debug)]
 pub struct DoorConfig {
-    /// The kernel-owned sections.
+    /// The kernel-owned sections, and beside them every plane section the configuration carries RAW
+    /// (a door plane's other owned sections among them: a config apply hands a plane its owned
+    /// sections from here, as boot hands them from the document's sections).
     pub sections: BTreeMap<&'static str, serde_yaml::Value>,
     /// The providers, by name.
     pub providers: BTreeMap<String, ProviderRoute>,
@@ -1490,14 +1492,123 @@ pub struct DoorConfig {
 /// The [`DoorConfig`] of `cfg` (the root's `ConfigProjection`).
 #[must_use]
 pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::Any + Send + Sync> {
+    let mut sections = kernel_sections(cfg);
+    for (key, value) in raw_sections(cfg) {
+        sections.entry(key).or_insert(value);
+    }
     Arc::new(DoorConfig {
-        sections: kernel_sections(cfg),
+        sections,
         providers: provider_routes(
             &cfg.providers,
             &busbar_kernel::config_validate::MetadataPosture::global(cfg),
         ),
         model_pools: crate::root::model_egress::ModelPools::of(cfg),
     })
+}
+
+/// EVERY PLANE SECTION `cfg` CARRIES RAW, by section key, as written: each is its plane's resource
+/// (`RootCfg::endpoint_resources`, `(section, value)`), a plane's other owned sections among them.
+fn raw_sections(cfg: &busbar_kernel::config::RootCfg) -> BTreeMap<&'static str, serde_yaml::Value> {
+    cfg.endpoint_resources
+        .values()
+        .filter_map(|r| r.downcast_ref::<(&'static str, serde_yaml::Value)>())
+        .filter(|(_, v)| !v.is_null())
+        .map(|(k, v)| (*k, v.clone()))
+        .collect()
+}
+
+// ── the owned trust anchors: one rule, at boot and before an apply's swap ───────────────────────
+
+/// THE ONE RULE an owned trust anchor the operator wrote is judged by, at boot and before an
+/// apply's swap alike: it is one or more PEM certificates the TLS stack takes as trust anchors (the
+/// connector's own reading of it, `tls::client::operator_ca_config`). An anchor the operator did
+/// not write is no refusal: an owned section is optional.
+///
+/// # Errors
+///
+/// The refusal, naming `at` (`<section>.<key>`).
+pub fn owned_anchor_refusal(at: &str, written: &str) -> Result<(), String> {
+    busbar_core_connector::tls::client::operator_ca_config(written.as_bytes())
+        .map(|_| ())
+        .map_err(|_| {
+            format!(
+                "`{at}` is not a usable trust anchor: it must be one or more PEM certificates the \
+                 TLS stack takes as a trust anchor"
+            )
+        })
+}
+
+/// Judge every owned trust anchor among `paths` (need `trust_from` paths; any other is skipped)
+/// that `sections` (the configuration's sections, by key) writes, by [`owned_anchor_refusal`].
+///
+/// # Errors
+///
+/// The first written anchor that is no trust anchor, named.
+pub fn owned_anchors_refusal<P: AsRef<str>>(
+    paths: &[P],
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+) -> Result<(), String> {
+    for path in paths {
+        let Some(at) = busbar_contract::section::owned_path(path.as_ref()) else {
+            continue;
+        };
+        let mut segments = at.split('.');
+        let written = segments
+            .next()
+            .and_then(|section| sections.get(section))
+            .and_then(|v| segments.try_fold(v, |v, key| v.get(key)))
+            .and_then(serde_yaml::Value::as_str)
+            .filter(|t| !t.is_empty());
+        if let Some(written) = written {
+            owned_anchor_refusal(at, written)?;
+        }
+    }
+    Ok(())
+}
+
+/// THE COMPOSITION ROOT'S RULES OF A CONFIGURATION (`busbar_kernel::appbuild::RootRules`): what
+/// the build judges every configuration by before any part of it is built, at boot and at every
+/// apply, rebuild or dry run, through the `App` each generation keeps them in. Today, the owned
+/// trust anchors the composed door planes name (`owned.<section>.<key>`): each, as a
+/// configuration writes it, judged by [`owned_anchor_refusal`], the rule the boot judges it by, so a
+/// configuration whose anchor the boot would refuse never goes live through an apply, and the
+/// running generation (its declared trust among it) is untouched.
+#[derive(Debug, Default)]
+pub struct Rules {
+    /// The owned trust anchors the composed door planes name, held as each plane is composed.
+    owned_anchors: Mutex<Vec<&'static str>>,
+}
+
+impl Rules {
+    /// Hold the owned trust anchors among a door plane's need `trust_from` paths (`paths`).
+    pub fn hold_owned_anchors(&self, paths: &[&'static str]) {
+        let mut held = self
+            .owned_anchors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for path in paths
+            .iter()
+            .filter(|p| busbar_contract::section::owned_path(p).is_some())
+        {
+            if !held.contains(path) {
+                held.push(path);
+            }
+        }
+    }
+}
+
+impl busbar_kernel::appbuild::RootRules for Rules {
+    fn check(&self, cfg: &busbar_kernel::config::RootCfg) -> Result<(), String> {
+        let anchors = self
+            .owned_anchors
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        if anchors.is_empty() {
+            return Ok(());
+        }
+        owned_anchors_refusal(&anchors, &raw_sections(cfg))
+    }
 }
 
 // ── the kernel-owned sections a door plane reads ────────────────────────────────────────────────
@@ -2525,8 +2636,9 @@ pub struct DoorReach<'a> {
     /// The model-serving pools the plane serving the `pools` map walks
     /// ([`crate::root::model_egress`]); `None` where none is composed.
     pub models: Option<&'a crate::root::model_egress::ModelServing>,
-    /// The linked claims that open at an upgrade (`crate::root::serve::upgrade_carriers`):
-    /// a need over one dials its member's base URL in its own scheme ([`spelled_for`]).
+    /// The claims, linked or dropped in, that open at an upgrade
+    /// (`crate::root::serve::upgrade_carriers`): a need over one dials its member's base URL in its
+    /// own scheme ([`spelled_for`]).
     pub upgrades: Vec<&'static str>,
 }
 

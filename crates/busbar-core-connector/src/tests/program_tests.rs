@@ -37,7 +37,7 @@ fn connector_over(door: TestDoor) -> Connector {
         view,
         Arc::new(crate::LiteralsOnly(crate::guard::Guard::default())),
         None,
-        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
     )
 }
 

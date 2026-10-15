@@ -11,6 +11,11 @@ use busbar_contract::abi::mechanism::endpoint::{EndpointRequest, EndpointRespons
 use busbar_contract::abi::mechanism::route::{Route, RouteAuth, RouteMethod};
 use std::sync::Arc;
 
+/// The protocol a test lane names. The kernel test binary registers no dialect (its built-ins are
+/// the neutral `proto-*` set), so a lane's protocol here is a name nothing resolves, exactly as the
+/// dialect word it replaces was: the neutral crate's tests spell no dialect.
+const LANE_PROTOCOL: &str = "unregistered-lane-protocol";
+
 /// A fake plugin dispatcher that echoes its label + the request line, so a test can prove WHICH plugin
 /// served a request (the scrape-time-resolution proof) and that `handle_http` ran end-to-end.
 struct FakeDispatch {
@@ -252,11 +257,7 @@ fn only_the_scrape_sink_claims_metrics_hooks() {
 fn app_with_table(table: Arc<PluginRouteTable>) -> Arc<crate::state::App> {
     use crate::test_support::{LaneSpec, TestApp};
     let base = TestApp::new()
-        .lane(LaneSpec::new(
-            "m",
-            crate::proto::PROTO_ANTHROPIC,
-            "http://127.0.0.1:1",
-        ))
+        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://127.0.0.1:1"))
         .pool("pa", &[(0, 1)])
         .build();
     let mut app = (*base).clone();
@@ -381,11 +382,7 @@ async fn admin_auth_route_is_absent_from_the_data_listener() {
     let store = Arc::new(MemoryStore::new());
     let gov = Arc::new(GovState::new(store, Some("admintok".to_string())).unwrap());
     let base = TestApp::new()
-        .lane(LaneSpec::new(
-            "m",
-            crate::proto::PROTO_ANTHROPIC,
-            "http://127.0.0.1:1",
-        ))
+        .lane(LaneSpec::new("m", LANE_PROTOCOL, "http://127.0.0.1:1"))
         .pool("pa", &[(0, 1)])
         .governance(gov)
         .admin_chain(Vec::new())

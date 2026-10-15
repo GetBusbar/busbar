@@ -46,6 +46,23 @@ const NULL_MAP: (&str, &str) = (
 
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed=proto");
+    // THE ROOT CELLS' ADDRESS (this crate's `links` row): the composition root compiles this
+    // plane's own root cells from here, reading it as `DEP_BUSBAR_DOOR_CELLS_<CRATE>_CELLS`.
+    println!(
+        "cargo::metadata=cells={}",
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?)
+            .join("tests/root/mod.rs")
+            .display()
+    );
+    // THE BLACK-BOX CASES' ADDRESS (the same `links` row): the root's black-box runner boots the
+    // real binary against every case file here, reading it as `DEP_BUSBAR_DOOR_CELLS_<CRATE>_BLACKBOX`.
+    println!(
+        "cargo::metadata=blackbox={}",
+        PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?)
+            .join("tests/blackbox")
+            .display()
+    );
+    println!("cargo:rerun-if-changed=tests/blackbox");
     let out_dir = PathBuf::from(std::env::var("OUT_DIR")?);
     let descriptor_path = out_dir.join("a2a-descriptor.bin");
     let mut config = prost_build::Config::new();

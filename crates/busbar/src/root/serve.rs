@@ -597,8 +597,17 @@ impl DoorApply {
         // with the generation's unified pools at its reserved `pools` key ([`with_pools`]); the plane
         // is handed it with the core-owned `work:` struck ([`handed_settings`]).
         let section = applied_section(app, &self.facts.plane, self.served_facts.section, &now);
+        // ITS OTHER OWNED SECTIONS as the applied configuration writes them (the raw sections the
+        // generation's projection carries), handed as boot hands them.
+        let owned = app
+            .config_projection
+            .as_ref()
+            .and_then(|p| p.downcast_ref::<crate::root::door_steps::DoorConfig>())
+            .map(|c| owned_sections(&self.served_facts, &c.sections))
+            .unwrap_or_default();
         match self.refreshed(
             &section,
+            &owned,
             now.generation + 1,
             Arc::clone(&app.secret_resolver) as Arc<dyn busbar_contract::secret::SecretResolve>,
         ) {
@@ -625,6 +634,7 @@ impl DoorApply {
     fn refreshed(
         &self,
         section: &serde_yaml::Value,
+        owned: &serde_json::Map<String, serde_json::Value>,
         generation: u64,
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     ) -> Result<DoorLive, String> {
@@ -636,6 +646,7 @@ impl DoorApply {
         crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
             &settings,
+            &owned_bytes(owned)?,
             generation,
         )?;
         let table = routes_of(
@@ -769,8 +780,15 @@ impl DoorAppliers {
             let walked = walked_section(facts, section, sections);
             let now = p.current();
             let next = now.generation + 1;
+            let owned = match owned_bytes(&owned_sections(facts, sections)) {
+                Ok(owned) => owned,
+                Err(e) => {
+                    tracing::error!(plane = name, error = %e, "door plane's new configuration is not JSON; it keeps serving the previous one");
+                    continue;
+                }
+            };
             if let Err(e) = crate::root::loader::dispatch::kinds::plane::refresh_door(
-                &p.plugin, &settings, next,
+                &p.plugin, &settings, &owned, next,
             ) {
                 tracing::error!(plane = name, error = %e, "door plane did not refresh onto the new configuration; it keeps serving the previous one");
                 continue;
@@ -874,6 +892,16 @@ impl Served {
     #[must_use]
     pub fn appliers(&self) -> DoorAppliers {
         DoorAppliers(self.planes.iter().map(|p| Arc::clone(&p.live)).collect())
+    }
+
+    /// Every need `trust_from` the served planes state, plane by plane (what the root's rules hold
+    /// the owned trust anchors from, `door_steps::Rules::hold_owned_anchors`).
+    #[must_use]
+    pub fn need_trust(&self) -> Vec<&'static str> {
+        self.planes
+            .iter()
+            .flat_map(|p| p.live.served_facts.need_trust.iter().copied())
+            .collect()
     }
 }
 
@@ -1426,16 +1454,7 @@ pub(crate) fn compose_planes_over(
         let walked = walked_section(&served_facts, section, sections);
         // The plane's other owned sections this document writes, as written, by section name: it
         // reads them beside its settings (ARCHITECT Q-L3B-AUD). Names come from its Statement.
-        let owned: serde_json::Map<String, serde_json::Value> = served_facts
-            .owns
-            .iter()
-            .filter_map(|name| {
-                let value = serde_json::to_value(sections.get(name)?).ok()?;
-                // A secret reference at every credential position `${VAR}` filled, never the bytes.
-                let value = busbar_kernel::config::filled::plane_bound(&[name], value);
-                Some(((*name).to_string(), value))
-            })
-            .collect();
+        let owned = owned_sections(&served_facts, sections);
         // The dialect facts of the providers its walked section references (THE DESIGN §4): it
         // resolves model to dialect itself. Read off the providers its egress is sealed over.
         let dialects = egress
@@ -1450,6 +1469,11 @@ pub(crate) fn compose_planes_over(
             &dialects,
         )
         .map_err(|e| format!("{instance}: {e}"))?;
+        // ITS OWNED TRUST ANCHORS, judged by the one rule a config apply is judged by too (the
+        // root's rules, [`crate::root::door_steps::Rules`], before the build): an anchor the
+        // operator wrote that is no trust anchor refuses the boot, naming the key.
+        crate::root::door_steps::owned_anchors_refusal(&served_facts.need_trust, sections)
+            .map_err(|e| format!("{instance}: {e}"))?;
         let section = &walked;
         let calls = Arc::new(PlaneInstance::new(
             plugin.clone(),
@@ -1852,6 +1876,34 @@ fn arm_probes(
     let _ = (driver, served_facts, live, egress, schedule);
 }
 
+/// THE PLANE'S OTHER OWNED SECTIONS `sections` writes, as written, by section name (the names its
+/// Statement owns): what `open` hands it in `PlaneOpenIn::owned` and a config apply's `refresh`
+/// under `abi::plane::EXT_OWNED`. A secret reference at every credential position `${VAR}` filled,
+/// never the bytes.
+fn owned_sections(
+    facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    facts
+        .owns
+        .iter()
+        .filter_map(|name| {
+            let value = serde_json::to_value(sections.get(name)?).ok()?;
+            let value = busbar_kernel::config::filled::plane_bound(&[name], value);
+            Some(((*name).to_string(), value))
+        })
+        .collect()
+}
+
+/// `owned` as the JSON bytes a plane is handed (empty when it writes none).
+fn owned_bytes(owned: &serde_json::Map<String, serde_json::Value>) -> Result<Vec<u8>, String> {
+    if owned.is_empty() {
+        Ok(Vec::new())
+    } else {
+        serde_json::to_vec(owned).map_err(|e| format!("its owned sections: {e}"))
+    }
+}
+
 /// THE SETTINGS A DOOR PLANE OPENS WITH (spec Part 1 §4: one validated JSON object `{section:
 /// value}`): a plane that declares the kernel-owned `pools` map (the previous release's top-level
 /// model-serving layout) is handed it and each section it reads beside it (`SECTION_CONSUMED`)
@@ -1914,11 +1966,7 @@ fn open(
 ) -> Result<OwnedSnapshot, String> {
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
     let settings = handed_settings(path, section)?;
-    let owned = if owned.is_empty() {
-        Vec::new()
-    } else {
-        serde_json::to_vec(owned).map_err(|e| format!("its owned sections: {e}"))?
-    };
+    let owned = owned_bytes(owned)?;
     let url = public_url.unwrap_or_default();
     // Each points into `dialects`, which outlives the call.
     let providers = crate::root::loader::dispatch::kinds::plane::provider_facts(dialects);
@@ -2233,48 +2281,79 @@ fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) ->
 /// The claimant the kernel's own data routes are lines of.
 const CORE_CLAIMANT: &str = "core";
 
-/// THE UPGRADE CARRIERS: every linked claim whose unit 0 opens at an UPGRADE, read off the door
-/// Statements (ARCHITECT ruling Q128 U7; never a layer list: no transport names another). Their
-/// lines are handed over after the head and served as sessions; the handoff target on an upgrade
-/// is the claim that owns the requested scheme.
+/// THE UPGRADE CARRIERS: every claim, linked or dropped in, whose unit 0 opens at an UPGRADE, read
+/// off the door Statements (ARCHITECT ruling Q128 U7; never a layer list: no transport names
+/// another). Their lines are handed over after the head and served as sessions; the handoff target
+/// on an upgrade is the claim that owns the requested scheme.
 #[must_use]
-pub fn upgrade_carriers(transports: &[crate::root::linked::LinkedTransport]) -> Vec<&'static str> {
-    transports.iter().flat_map(|t| (t.upgrades)()).collect()
+pub fn upgrade_carriers(
+    transports: &[crate::root::linked::LinkedTransport],
+    dropped: &[crate::root::registry::DroppedDoor],
+) -> Vec<&'static str> {
+    transport_rows(transports, dropped)
+        .into_iter()
+        .flat_map(|r| r.upgrades)
+        .collect()
 }
 
 /// ONE TRANSPORT CLAIM AND THE AUTH POINTS ITS LINES' TRANSPORT OFFERS (THE DESIGN §6 step 3).
 pub type TransportOffer = (&'static str, busbar_contract::abi::auth::AuthPoints);
 
+/// One transport row as the guest lists read it, linked or dropped in (compiled-in = dropped-in,
+/// one path): what its door's Statement states, read by the one reader at link or at load.
+struct TransportRow {
+    /// Every claim, its own first.
+    claims: Vec<&'static str>,
+    /// The claims that open at an upgrade.
+    upgrades: Vec<&'static str>,
+    /// The layer it composes over first, where it composes over one.
+    under: Option<&'static str>,
+    /// The auth points it offers.
+    offered: busbar_contract::abi::auth::AuthPoints,
+}
+
+/// Every transport row, the linked ones first, then the ones dropped into `plugins.dir`.
+fn transport_rows(
+    transports: &[crate::root::linked::LinkedTransport],
+    dropped: &[crate::root::registry::DroppedDoor],
+) -> Vec<TransportRow> {
+    let linked = transports.iter().map(|t| TransportRow {
+        claims: (t.claims)(),
+        upgrades: (t.upgrades)(),
+        under: t.composes_over.first().copied(),
+        offered: (t.offered)(),
+    });
+    let dropped = dropped.iter().map(|d| TransportRow {
+        claims: d.claims.clone(),
+        upgrades: d.upgrades.clone(),
+        under: d.composes_over.first().copied(),
+        offered: d.offered,
+    });
+    linked.chain(dropped).collect()
+}
+
 /// THE OFFERED POINTS OF EVERY TRANSPORT CLAIM, linked or dropped in, read off each door's
-/// Statement by the one reader (compiled-in = dropped-in): a claim's own transport's set; a linked
-/// upgrade claim's, the set of the claim it composes over, whose transport runs the line's auth on
-/// the upgrade request.
+/// Statement by the one reader (compiled-in = dropped-in): a claim's own transport's set; an upgrade
+/// claim's, the set of the claim it composes over, whose transport runs the line's auth on the
+/// upgrade request.
 #[must_use]
 pub fn transport_offers(
     transports: &[crate::root::linked::LinkedTransport],
     dropped: &[crate::root::registry::DroppedDoor],
 ) -> Vec<TransportOffer> {
-    let of_dropped = || {
-        dropped
-            .iter()
-            .flat_map(|d| d.claims.iter().map(move |c| (*c, d.offered)))
-    };
-    let own: Vec<TransportOffer> = transports
+    let rows = transport_rows(transports, dropped);
+    let own: Vec<TransportOffer> = rows
         .iter()
-        .flat_map(|t| (t.claims)().into_iter().map(move |c| (c, (t.offered)())))
-        .chain(of_dropped())
+        .flat_map(|r| r.claims.iter().map(move |c| (*c, r.offered)))
         .collect();
-    transports
-        .iter()
-        .flat_map(|t| {
-            let upgrades = (t.upgrades)();
-            let under = t.composes_over.first().map(|l| offered_by(&own, l));
-            (t.claims)().into_iter().map(move |c| match under {
-                Some(under) if upgrades.contains(&c) => (c, under),
-                _ => (c, (t.offered)()),
+    rows.iter()
+        .flat_map(|r| {
+            let under = r.under.map(|l| offered_by(&own, l));
+            r.claims.iter().map(move |c| match under {
+                Some(under) if r.upgrades.contains(c) => (*c, under),
+                _ => (*c, r.offered),
             })
         })
-        .chain(of_dropped())
         .collect()
 }
 
@@ -4267,3 +4346,8 @@ mod framed_tests;
 #[cfg(all(test, linked_axis_node, linked_axis_plane_door))]
 #[path = "tests/secret_source.rs"]
 mod secret_source_tests;
+
+// The door planes' own root cells, held to the linked roster and to the capability-equality ledger.
+#[cfg(all(test, linked_axis_node))]
+#[path = "tests/door_cells.rs"]
+mod door_cells_tests;

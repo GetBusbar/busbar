@@ -93,3 +93,148 @@ item = "jsonrpc"
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
 item = "streaming"
+
+[[finding]]
+rule = "c1-literals:feature"
+file = "crates/busbar-kernel/Cargo.toml"
+item = "ws (duplex-ws)"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel-egress/src/trust/net.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel-egress/src/trust/net.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/mod.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config_validate/mod.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config_validate/mod.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/diagnostics/mod.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
+item = "websocket"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
+item = "ws"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
+item = "wss"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/client.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/client.rs"
+item = "wss"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/deadline.rs"
+item = "tcp"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/https.rs"
+item = "h2"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/mod.rs"
+item = "h2"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/mod.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/mod.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/observe.rs"
+item = "h2"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/fixtures.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/ingress/protocol.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/ingress/protocol.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/preflight.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/preflight.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/router.rs"
+item = "ws"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/test_support/fixtures.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/test_support/fixtures.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/test_support/mod.rs"
+item = "http"

@@ -137,11 +137,10 @@ fn every_plane_registration_item_is_contract_data_naming_no_kernel_type() {
         offenders.join("\n")
     );
 
-    // NON-VACUITY: the engine plane registers through the contract type: llm. The floor was five
-    // (llm, mcp, a2a, voice and decisions); FLIP-MCP, FLIP-A2A, FLIP-DECISIONS and FLIP-STREAMING
-    // each deleted one item, since each of those planes' rows is now its door's Statement, folded by
-    // the composition root. Fewer than one read means the scan read nothing, and zero offenders over
-    // zero items is not a pass.
+    // NON-VACUITY: the engine plane registers through the contract type: one of them. The floor
+    // was five (that one and four door-served planes); each door flip deleted one item, since each
+    // of those planes' rows is now its door's Statement, folded by the composition root. Fewer than
+    // one read means the scan read nothing, and zero offenders over zero items is not a pass.
     let contract_typed = items.iter().filter(|i| i.ty == CONTRACT_TYPE).count();
     assert!(
         contract_typed >= 1,

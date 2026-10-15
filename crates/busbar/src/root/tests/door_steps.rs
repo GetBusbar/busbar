@@ -7904,3 +7904,55 @@ fn a_models_protocol_override_is_handed_to_the_plane() {
         "a model naming no protocol states none: {models:?}"
     );
 }
+
+/// A self-signed CA as the PEM an operator writes.
+fn a_ca_pem() -> String {
+    let kp = rcgen::KeyPair::generate().expect("a key");
+    let mut params = rcgen::CertificateParams::new(Vec::new()).expect("params");
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.self_signed(&kp).expect("the CA").pem()
+}
+
+/// THE ONE OWNED-ANCHOR RULE, as boot and the pre-swap apply check both judge it: an anchor a
+/// configuration writes that is no trust anchor is refused, naming the key; a usable PEM, an
+/// anchor not written, an empty one and a `settings.` path are no refusal.
+/// RED before the fix: an apply judged nothing, so an `agent_push.ca` the boot refuses went live.
+#[test]
+fn an_owned_anchor_the_boot_would_refuse_is_refused_by_the_same_rule() {
+    let paths = ["owned.agent_push.ca", "settings.*.client_identity"];
+    let with = |ca: Option<&str>| {
+        let mut sections: std::collections::BTreeMap<&'static str, serde_yaml::Value> =
+            std::collections::BTreeMap::new();
+        if let Some(ca) = ca {
+            sections.insert(
+                "agent_push",
+                serde_yaml::from_str(&format!("ca: {}", serde_json::to_string(ca).unwrap()))
+                    .expect("yaml"),
+            );
+        }
+        super::owned_anchors_refusal(&paths, &sections)
+    };
+    for bad in [
+        "not a certificate",
+        "-----BEGIN CERTIFICATE-----\ngarbage\n-----END CERTIFICATE-----\n",
+    ] {
+        let err = with(Some(bad)).expect_err("refused");
+        assert!(
+            err.contains("`agent_push.ca` is not a usable trust anchor"),
+            "{err}"
+        );
+    }
+    let ca = a_ca_pem();
+    assert_eq!(with(Some(&ca)), Ok(()), "a usable CA");
+    assert_eq!(
+        with(None),
+        Ok(()),
+        "an owned section the operator did not write"
+    );
+    assert_eq!(with(Some("")), Ok(()), "an empty anchor is not written");
+    assert_eq!(
+        super::owned_anchor_refusal("agent_push.ca", &ca),
+        Ok(()),
+        "the rule itself takes the CA"
+    );
+}

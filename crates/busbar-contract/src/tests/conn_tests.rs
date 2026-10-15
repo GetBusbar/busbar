@@ -192,6 +192,28 @@ fn a_registrations_program_is_its_command_args_and_env_and_nothing_else() {
     assert!(crate::section::member_target("settings.*").is_none());
 }
 
+/// THE OWNED-SECTION PATH (`owned.<section>.<key>`): a namespace of its own, answered only for a
+/// path under `owned.` with a section and a key; a `settings.` path, the member paths, a bare
+/// `owned.` or an empty segment are not owned paths.
+#[test]
+fn an_owned_path_is_its_own_namespace() {
+    use crate::section::owned_path;
+    assert_eq!(owned_path("owned.agent_push.ca"), Some("agent_push.ca"));
+    assert_eq!(owned_path("owned.webhooks"), Some("webhooks"));
+    for not in [
+        "settings.agent_push.ca",
+        "settings.*.client_identity",
+        "settings.*",
+        "owned.",
+        "owned",
+        "owned.agent_push.",
+        "owned..ca",
+        "",
+    ] {
+        assert_eq!(owned_path(not), None, "{not:?}");
+    }
+}
+
 /// A program's `env` entry written as a secret REFERENCE is held as the reference
 /// (`Program::env_refs`), never resolved by the reader: the host resolves it at the spawn. A
 /// value that is neither a string nor a reference is refused.

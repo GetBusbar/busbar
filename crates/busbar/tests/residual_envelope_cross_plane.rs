@@ -10,9 +10,9 @@
 //! composition root links and the kernel does not.
 //!
 //! The planes come from the test-linked table (`tests/linked/mod.rs`); this file names none of
-//! them. The table of which dialect answers which residual path shape is an llm-plane subject and
-//! lives with that plane (`busbar-llm/tests/residual_dialect.rs`); the error-shaping mechanics the
-//! table feeds stay pinned in busbar-kernel's `src/tests/tests.rs`.
+//! them. The table of which dialect answers which residual path shape is the catch-all plane's
+//! subject and lives with that plane (its own crate's residual-dialect suite); the error-shaping mechanics the
+//! table feeds stay pinned in `src/tests/tests.rs`.
 
 mod linked;
 

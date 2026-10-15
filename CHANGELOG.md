@@ -812,6 +812,13 @@ each dialect translates, field by field, is listed in the generated
   bills nothing; a body that is not a Responses event is a 400. The block is read at boot.
   **Migration:** none. The build-time `webhook-receiver` feature and its `BUSBAR_LLM_WEBHOOK_SECRET`
   variable are gone.
+- 1.6.0 Added: an `agent_push: { ca: <PEM> }` block names the CA the A2A plane's push deliveries trust on top of the public roots.
+  A caller's webhook whose certificate chains to that CA is delivered to; one chaining to any other
+  private CA is refused, as before. The block is the A2A plane's own, beside `agents:`, and is off
+  when absent: without it a delivery trusts the public roots alone, exactly as it did. A `ca` that is
+  not a usable PEM certificate refuses the boot, naming `agent_push.ca`, and a config apply carrying
+  one is refused with the same words while the running configuration stays in force. It is read at
+  boot and at every config apply. **Migration:** none.
 - 1.6.0 Added: `GET /api/v1/admin/ledger/checkpoints` lists sealed checkpoints, sealed every 10,000 journal records or every 60 seconds with a change, whichever comes first.
   The read serves the latest 1,024 seals, oldest first; the journal keeps every seal. A node that
   has not reached either threshold serves an empty list. **Migration:** none.

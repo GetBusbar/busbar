@@ -10,7 +10,7 @@
 //! `build_runtime`) would leave `upstream_creds()` reading the EMPTY-VIEW default regardless of what
 //! `TestApp::upstream_creds` was set to, which is a different, false-negative failure than what this
 //! test exists to pin. The assertion itself (the front door admits regardless of the upstream-creds
-//! knob) is core's own auth behaviour, not anything about the LLM dialect.
+//! knob) is core's own auth behaviour, not anything about the routed plane's dialect.
 //!
 //! Every other test in `auth/tests/tests.rs` builds no lane/pool topology and stays there.
 //!

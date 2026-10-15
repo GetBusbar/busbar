@@ -4,7 +4,7 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: spec-per-dialect — the voice conformance spec, run once PER DIALECT (openai, gemini).
+# LEG: spec-per-dialect — the voice conformance spec, run once PER DIALECT (openai, gemini, twilio).
 #
 # Every captured fixture in `testing/voice-conformance/fixtures/$dialect/`:
 #   * CODEC: wire JSON → IR → wire JSON → IR through the dialect's codec in the plane crate
@@ -15,13 +15,20 @@
 #     the far end's as far-end pieces), linked AND dropped; the door must relay it by the session rules
 #     (a documented drop on no wire at all), every far frame on the dialect's socket need, the far end's
 #     tokens reported as units. RED arm per fixture: a door reporting a token never sent fails.
+#   * TWILIO (`fixtures/twilio/`, Twilio's published Media Streams messages, one file per message in
+#     each direction, `from-twilio.*` and `to-twilio.*`): the codec half is the plane's Twilio envelope
+#     (`TwilioEnvelope`, `event`-tagged); the door half pushes Twilio's frames as caller pieces and the
+#     far-end event that makes the door write a Twilio frame as far-end pieces, and holds the door to
+#     Twilio's shapes (media to the far end as caller audio, the far end's audio as `media`, its end as
+#     `mark`, a barge-in as `clear`); `transcript.jsonl` is one whole call. RED arm: a door handing the
+#     far end audio nobody sent fails.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"
 
 LEG_KIND=conformance
 LEG_STATUS=ready
-LEG_SLICES=(openai gemini)
+LEG_SLICES=(openai gemini twilio)
 
 leg_execute() {
   local dialect="$1"

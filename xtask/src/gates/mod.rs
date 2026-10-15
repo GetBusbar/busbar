@@ -24,6 +24,7 @@ pub mod abi_location;
 pub mod admin_config_parity;
 pub mod blocking_ffi;
 pub mod c1_literals;
+pub mod call_binding;
 pub mod changelog;
 pub mod changelog_register;
 pub mod config_schema;
@@ -3267,6 +3268,14 @@ fn reported_text(verdict: &Verdict) -> Vec<String> {
 }
 
 pub static REGISTRY: &[Registration] = &[
+    Registration {
+        name: "call-binding",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(call_binding::CallBindingGate),
+        summary: "#74 per-call binding: the unit loop's proofs bound to the call, every plugin \
+                  context resolved through the one check, ticket generations permuted and judged",
+    },
     Registration {
         name: "construction",
         batch: 2,

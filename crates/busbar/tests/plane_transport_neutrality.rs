@@ -8,7 +8,7 @@
 //! learn a protocol's TRANSPORT vocabulary. plane-purity-lint bans the plane KEYS and the planes'
 //! dialects; the duplex session plane (Plane-4) drags in a SECOND
 //! vocabulary that plane-purity does not name — the transport/media nouns
-//! of `tests/fixtures/session_transport_nouns.txt` (`rtc / sdp / dtmf / rtp / audio / mulaw / …`).
+//! of `xtask/fixtures/session-transport-nouns.txt` (`rtc / sdp / dtmf / rtp / audio / mulaw / …`).
 //! A leak of any of them into a neutral crate is the forward-edge regression the plane ABI exists to
 //! prevent.
 //!
@@ -39,12 +39,24 @@ use std::path::{Path, PathBuf};
 /// The banned session-transport/media nouns, lowercase (the duplex live-session plane's transport
 /// vocabulary). Every one has ZERO code hits in the neutral crates today; this witness keeps it so.
 ///
-/// The list is DATA — `tests/fixtures/session_transport_nouns.txt`, one noun per line — so this
-/// scanner's own source spells no word it bans, and the list is edited without touching the
-/// detector.
+/// The list is the gates' vocabulary, DATA in xtask (`xtask/fixtures/session-transport-nouns.txt`,
+/// one noun per line), not root-crate source: this scanner's own source spells no word it bans,
+/// and the list is edited without touching the detector.
 fn nouns() -> &'static [String] {
     static NOUNS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    NOUNS.get_or_init(|| common::fixture_lines("session_transport_nouns.txt"))
+    NOUNS.get_or_init(|| {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../xtask/fixtures/session-transport-nouns.txt");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read the banned nouns {}: {e}", path.display()));
+        let nouns: Vec<String> = text
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect();
+        assert!(!nouns.is_empty(), "{} lists no noun", path.display());
+        nouns
+    })
 }
 
 /// The NEUTRAL crate source roots (the ABI side). A neutral crate that appears/disappears is one edit.

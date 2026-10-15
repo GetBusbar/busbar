@@ -52,6 +52,7 @@ use busbar_contract::abi::mechanism::lifecycle::{
 use busbar_contract::abi::mechanism::rendering::ReadNeed;
 use busbar_contract::abi::mechanism::ticket::{HostCtx, HostTables, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::plane::{PlaneOpenIn, EXT_OWNED};
 use busbar_contract::conn::{InstanceId, NeedId};
 
 use super::answer::Answer;
@@ -143,22 +144,6 @@ impl EnvelopeSink for NoSink {
     fn metric(&self, _: Metric<'_>) {}
     fn diag(&self, _: Diagnostic<'_>) {}
     fn dropped(&self, _: Dropped) {}
-}
-
-/// The next instance identity bind mints; `0` is never minted.
-static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
-
-/// MINT ONE INSTANCE IDENTITY off `next`, never `0`: `0` is the composition root's own identity on
-/// the one connector (`busbar`'s `root::connector::ROOT_OWNER`, the authorization server's needs),
-/// so a plugin minted `0` would share that table's needs and connections. A counter that wraps
-/// past `u64::MAX` skips `0` rather than handing it out.
-fn mint_instance(next: &AtomicU64) -> InstanceId {
-    loop {
-        let id = next.fetch_add(1, Ordering::Relaxed);
-        if id != 0 {
-            return InstanceId(id);
-        }
-    }
 }
 
 /// What the host binds a loaded plugin to.
@@ -413,6 +398,24 @@ impl Instance {
         self.faulted.store(true, Ordering::Release);
         self.wake.revoked.store(true, Ordering::Release);
     }
+}
+
+/// THE ONE GUESS, judged after the crossing (#74): the instance whose handle `wake` is, quarantined
+/// as [`quarantine_crossing`] quarantines a crossing's (a forged ticket generation is judged on the
+/// worker, after the wake that carried it returned).
+pub(crate) fn quarantine_entry(wake: &'static InstanceWake) {
+    wake.revoked.store(true, Ordering::Release);
+    let Some(inst) = wake.instance.get().and_then(std::sync::Weak::upgrade) else {
+        return;
+    };
+    inst.revoke();
+    if let Some((id, table)) = inst.wake.conn.get() {
+        super::conn_services::purge(*id, table);
+    }
+    tracing::warn!(
+        plugin = %inst.name,
+        "a plugin woke a ticket generation the host never minted; the instance is quarantined"
+    );
 }
 
 /// One family's shape, copied from the Statement: its kind and its label count.
@@ -707,8 +710,12 @@ impl Instance {
     /// the plugin sees them: the target it is pinned to, and the operator CA PEM its connections
     /// trust on top of the public roots. A path that resolves to nothing is declared without its
     /// value, which the table refuses; a refresh re-declares, so a changed value moves the pin or
-    /// the trust.
-    fn declare_targeted(&self, settings: Blob) {
+    /// the trust. A `trust_from` in the OWNED namespace (`owned.<section>.<key>`,
+    /// [`busbar_contract::section::owned_path`]) resolves against `owned` alone (a plane's other
+    /// owned sections, the JSON object its `open` carries in `PlaneOpenIn::owned` and its `refresh`
+    /// under `abi::plane::EXT_OWNED`), never against `settings`; absent there, the need is declared
+    /// without it, which the table takes as "the public roots alone".
+    fn declare_targeted(&self, settings: Blob, owned: Option<&[u8]>) {
         let Some((instance, table)) = self.wake.conn.get() else {
             return;
         };
@@ -719,6 +726,9 @@ impl Instance {
             unsafe { std::slice::from_raw_parts(settings.ptr, settings.len) }
         };
         let doc = serde_json::from_slice::<serde_json::Value>(bytes).ok();
+        let owned = owned
+            .filter(|b| !b.is_empty())
+            .and_then(|b| serde_json::from_slice::<serde_json::Value>(b).ok());
         for (i, need) in self.needs.iter().enumerate() {
             if !from_settings(need) {
                 continue;
@@ -747,9 +757,12 @@ impl Instance {
             let target = doc
                 .as_ref()
                 .and_then(|d| resolve_target(d, &need.target_from));
-            let trust = doc
-                .as_ref()
-                .and_then(|d| resolve_setting(d, &need.trust_from));
+            let trust = match busbar_contract::section::owned_path(&need.trust_from) {
+                Some(at) => owned.as_ref().and_then(|o| resolve_owned(o, at)),
+                None => doc
+                    .as_ref()
+                    .and_then(|d| resolve_setting(d, &need.trust_from)),
+            };
             let _ = table.declare(*instance, id, need, target.as_deref(), trust.as_deref());
         }
     }
@@ -975,7 +988,14 @@ impl Instance {
             }
             // SAFETY: as above.
             let settings = unsafe { (*input.cast::<OpenIn>()).settings };
-            self.declare_targeted(settings);
+            // A PLANE's open frame is a `PlaneOpenIn` (its `OpenIn` first): its owned sections are
+            // read when the host wrote one that large.
+            // SAFETY: the host wrote `in.size` itself; the cast is read only when it covers the
+            // whole `PlaneOpenIn`, and its `owned` blob is the host's own, live for the crossing.
+            let owned = (self.kind == KindCode::Plane
+                && unsafe { (*input).size } as usize >= size_of::<PlaneOpenIn>())
+            .then(|| unsafe { blob_bytes((*input.cast::<PlaneOpenIn>()).owned) });
+            self.declare_targeted(settings, owned);
             self.bind_destinations(settings);
         }
         if s == slot::READY {
@@ -986,8 +1006,15 @@ impl Instance {
         // SAFETY: the host wrote `in.size`; a frame that holds a `RefreshIn` is read as one.
         if s == slot::REFRESH && unsafe { (*input).size } as usize >= size_of::<RefreshIn>() {
             // SAFETY: as above.
-            let settings = unsafe { (*input.cast::<RefreshIn>()).settings };
-            self.declare_targeted(settings);
+            let (settings, extensions) = unsafe {
+                let refresh = &*input.cast::<RefreshIn>();
+                (refresh.settings, refresh.head.extensions)
+            };
+            // A plane's owned sections ride a refresh's extensions blob ([`EXT_OWNED`]).
+            // SAFETY: the host's own extensions blob, live for the crossing it is handed to.
+            let owned = unsafe { blob_bytes(extensions) };
+            let owned = busbar_contract::abi::mechanism::extensions::get(owned, EXT_OWNED);
+            self.declare_targeted(settings, owned);
             self.bind_destinations(settings);
         }
         // THE HOST ZEROES THE WHOLE `out` BEFORE EVERY CALL, RESUME included (FAULT = 0, every
@@ -1453,9 +1480,11 @@ impl<K: Kind> Plugin<K> {
         // A bind refused after this point leaves no live handle behind: the entry is revoked unless
         // the bind completes (#74).
         let mut unbound = Unbound(Some(wake));
-        // THE CONNECTION TABLE: minted an identity and declared on the host's one table, need by
-        // need under its Statement index, when the Statement declares a need; otherwise none.
-        let instance = mint_instance(&NEXT_INSTANCE);
+        // THE CONNECTION TABLE: the instance's identity is its handle's id (never `0`, the root's
+        // own on the one connector: `busbar`'s `root::connector::ROOT_OWNER`), declared on the
+        // host's one table, need by need under its Statement index, when the Statement declares a
+        // need; otherwise none. One numbering: a table's wake names its caller's entry (#74).
+        let instance = super::handle::instance_id(ctx);
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
             match (&bind.conns, st.needs_len) {
@@ -1594,6 +1623,11 @@ impl<K: Kind> Plugin<K> {
             }),
             _k: PhantomData,
         };
+        let _ = plugin
+            .inner
+            .wake
+            .instance
+            .set(Arc::downgrade(&plugin.inner));
         bind.dispatcher.adopt(&plugin.inner);
         unbound.0 = None;
         Ok(plugin)
@@ -1820,6 +1854,31 @@ mod lifecycle_worker_tests;
 /// is declared at `open` and `refresh` rather than at bind.
 fn from_settings(need: &ReadNeed) -> bool {
     !need.target_from.is_empty() || !need.trust_from.is_empty()
+}
+
+/// What an owned-section path (`owned.<section>.<key>[...]`, `at` its part after `owned.`) names in
+/// a plane's owned sections (`{section: value}`), walked to a non-empty string. Anything else
+/// resolves to nothing.
+pub(crate) fn resolve_owned(owned: &serde_json::Value, at: &str) -> Option<String> {
+    at.split('.')
+        .try_fold(owned, |v, key| v.get(key))
+        .and_then(serde_json::Value::as_str)
+        .filter(|t| !t.is_empty())
+        .map(str::to_owned)
+}
+
+/// The bytes of a host blob: empty when it is absent.
+///
+/// # Safety
+///
+/// `blob` is the host's own, its `ptr` valid for `len` bytes for as long as the slice is read.
+unsafe fn blob_bytes<'b>(blob: Blob) -> &'b [u8] {
+    if blob.ptr.is_null() || blob.len == 0 {
+        &[]
+    } else {
+        // SAFETY: the caller's contract.
+        unsafe { std::slice::from_raw_parts(blob.ptr, blob.len) }
+    }
 }
 
 /// What a need's `target_from` or `trust_from` names in an instance's settings:

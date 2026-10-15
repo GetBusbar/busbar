@@ -713,6 +713,23 @@ mod both_ways {
         assert_eq!(grpc.trust_from, http.trust_from);
     }
 
+    /// THE PUSH NEED'S TRUST, AS THE DOOR STATES IT (ARCHITECT ruling 2026-10-14): the open-web need a
+    /// delivery rides takes its trust anchor from the operator's optional `agent_push.ca`, in the
+    /// owned namespace, never from `agents:`; read off the door's own rendered Statement.
+    #[test]
+    fn the_door_states_its_push_need_trusting_the_owned_agent_push_ca() {
+        let rendered = rendering_of(agent_door::door).expect("the door renders its Statement");
+        let read =
+            busbar_contract::abi::mechanism::rendering::read(&rendered).expect("it reads back");
+        let push = &read.needs[door_statement::NEED_OPEN_WEB as usize];
+        assert_eq!(push.trust_from, door_statement::PUSH_TRUST_FROM);
+        assert_eq!(push.trust_from, "owned.agent_push.ca");
+        assert!(
+            push.target_from.is_empty(),
+            "the plane names each dial's target"
+        );
+    }
+
     /// The linked transcript says what the plane's own functions say the door answers.
     #[test]
     fn the_door_answers_what_the_plane_says() {

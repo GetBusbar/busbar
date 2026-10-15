@@ -776,6 +776,32 @@ fn instrument_cases<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         fixture("over_budget_refuses_with_no_charge_and_nothing_to_refund"),
     ));
 
+    // X-1207: A CITED FILE PATH IS A WITNESS TOO. The rule read identifier-shaped tokens only, so a
+    // note citing a file that is gone (PB-58's `crates/busbar-caps/src/decision.rs`, folded away
+    // with its crate) read as evidence. RED on a path not on disk, over the same green baseline;
+    // the control cites the file the reason codes live in now.
+    r.push(prove_rows_red(
+        &green_base,
+        gate,
+        "a note citing a file path that is not on disk is refused (X-1207)",
+        &[super::ROW_NOTE_WITNESS],
+        fixture(
+            "over_budget_refuses_with_no_charge_and_nothing_to_refund, declared in \
+             crates/busbar-caps/src/decision.rs",
+        ),
+        &["crates/busbar-caps/src/decision.rs"],
+    ));
+    r.push(prove_rows_green(
+        cx,
+        gate,
+        "a note citing a file path on disk is accepted",
+        &[super::ROW_NOTE_WITNESS],
+        fixture(
+            "over_budget_refuses_with_no_charge_and_nothing_to_refund, declared in \
+             crates/busbar-contract/src/caps/seat_verdict.rs",
+        ),
+    ));
+
     r
 }
 

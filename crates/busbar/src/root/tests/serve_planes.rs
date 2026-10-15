@@ -316,7 +316,7 @@ test_plane_owned:
         std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     served.planes[0]
         .live
-        .refreshed(&sections["test_plane"], 2, secrets)
+        .refreshed(&sections["test_plane"], &serde_json::Map::new(), 2, secrets)
         .expect("the plane refreshes");
 
     let read = |name: &str| {

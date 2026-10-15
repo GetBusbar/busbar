@@ -74,7 +74,7 @@ fn connector_over(
         view,
         judge(Arc::new(GuardJudge::new(guard, resolver)), &[]),
         None,
-        Arc::new(move |_| {
+        Arc::new(move |_, _| {
             wakes.fetch_add(1, Ordering::SeqCst);
         }),
     ));
@@ -294,7 +294,7 @@ fn a_name_that_does_not_resolve_fails_the_exchange_and_is_never_a_refusal() {
                 &[],
             ),
             None,
-            Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
         ));
         c.declare_need(
             OWNER,

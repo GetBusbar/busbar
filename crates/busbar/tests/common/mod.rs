@@ -24,9 +24,12 @@
 #![allow(dead_code)]
 
 pub mod boot;
+pub mod credentials;
+pub mod lines;
 pub mod otlp;
 pub mod pinned_planes;
 pub mod plugins;
+pub mod upstream;
 
 use std::path::{Path, PathBuf};
 
@@ -490,6 +493,21 @@ pub fn fixture_lines(name: &str) -> Vec<String> {
     lines
 }
 
+/// THE OPERATOR CREDENTIAL'S MODULE NAME as configuration spells it: the `linked-name` of the row
+/// `[package.metadata.busbar.operator-auth]` names. The manifest's data, so no test spells it.
+pub fn operator_module() -> String {
+    let row = manifest_table("package.metadata.busbar.operator-auth")
+        .into_iter()
+        .find(|(k, _)| k == "row")
+        .map(|(_, v)| v)
+        .expect("`[package.metadata.busbar.operator-auth]` states its `row`");
+    manifest_table("package.metadata.busbar.linked-name")
+        .into_iter()
+        .find(|(k, _)| *k == row)
+        .map(|(_, v)| v)
+        .unwrap_or_else(|| panic!("the operator row `{row}` has a `linked-name`"))
+}
+
 /// `[table]` rows `key = "value"` of this crate's Cargo.toml, in file order (the same shape
 /// `src/linked_gen.rs` reads). An absent or empty table is a failure.
 pub fn manifest_table(table: &str) -> Vec<(String, String)> {
@@ -559,7 +577,7 @@ pub fn enabled_features() -> std::collections::BTreeSet<&'static str> {
 }
 
 /// THE ROOT LEGS THIS BUILD CARRIES: each doctrine `root-leg <leg> <feature>` row whose feature is
-/// enabled. The mcp and a2a legs are the kernel-loop rider those planes are SERVED through, so the
+/// enabled. A door-served plane's leg is the kernel-loop rider that plane is SERVED through, so the
 /// feature that links the plane gates them, not a `root-*` feature of their own.
 pub fn compiled_root_legs() -> std::collections::BTreeSet<&'static str> {
     let on = enabled_features();

@@ -206,6 +206,8 @@ pub fn build_once(
         std::collections::HashSet::new(),
         (None, None),
         prior,
+        &(std::sync::Arc::new(crate::appbuild::AcceptAll)
+            as std::sync::Arc<dyn crate::appbuild::RootRules>),
     )?;
     // Same reasoning for the limits: no persist step follows, so this build IS the live generation
     // and its limits stay installed — the behaviour every caller of this helper has always had.

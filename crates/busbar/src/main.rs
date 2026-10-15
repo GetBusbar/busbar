@@ -731,7 +731,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
     // The transports dropped into `plugins.dir`, as the seal just loaded them: their offered auth
-    // points join the linked rows' when the guest lists seal (compiled-in = dropped-in).
+    // points and upgrade lines join the linked rows' when the guest lists seal (compiled-in =
+    // dropped-in).
     let dropped_doors =
         root::boot::dropped_transports(&root::policy::client_settings(&cfg.limits)).doors;
     // THE PROCESS'S ONE CONNECTOR, right after the transport registry sealed: every linked
@@ -810,6 +811,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // What the door planes are sealed over, projected from every configuration as it is built
     // (`root::door_steps::door_config`), so a config apply refreshes them onto the new generation.
     busbar_kernel::appbuild::set_config_projection(root::door_steps::door_config);
+    // THE ROOT'S RULES every configuration is judged by before a generation is built from it
+    // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
+    // and passed on by every apply, rebuild and dry run. They hold the owned trust anchors the door
+    // planes name once the planes are composed (below), so an apply carrying one the boot would
+    // refuse is refused, its running generation untouched.
+    let root_rules = Arc::new(root::door_steps::Rules::default());
 
     // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
     // kept in that store, and a store that cannot keep it is refused by name.
@@ -838,6 +845,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         base_group_names,
         (Some(config_path.clone()), Some(providers_path.clone())),
         None,
+        &(Arc::clone(&root_rules) as Arc<dyn busbar_kernel::appbuild::RootRules>),
     )
     .unwrap_or_else(|e| die(e));
     // BOOT KEEPS THEM IMMEDIATELY. The admin applies defer this to after their persist-and-swap,
@@ -926,7 +934,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         ),
         catalog: Some(&deploy.models),
         models: Some(&door_models),
-        upgrades: root::serve::upgrade_carriers(LINKED.transports),
+        upgrades: root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
     };
     let served = root::serve::compose_served(
         app.governance.clone(),
@@ -962,6 +970,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         }),
     )
     .unwrap_or_else(|e| die(e));
+    root_rules.hold_owned_anchors(&served.need_trust());
     served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's
@@ -1057,7 +1066,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
-        &root::serve::upgrade_carriers(LINKED.transports),
+        &root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
         &root::serve::transport_offers(LINKED.transports, dropped_doors),
     )
     .unwrap_or_else(|e| die(e));
@@ -1086,7 +1095,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             std::sync::Arc::clone(&door_auths),
             std::sync::Arc::clone(&door_live_handle),
         );
-        let upgrades = root::serve::upgrade_carriers(LINKED.transports);
+        let upgrades = root::serve::upgrade_carriers(LINKED.transports, dropped_doors);
         app_handle.on_apply(Box::new(move |next| {
             let Some(cfg) = next
                 .config_projection
