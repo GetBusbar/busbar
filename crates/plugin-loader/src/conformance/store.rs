@@ -57,7 +57,7 @@ use busbar_contract::records::{
 };
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 
-use super::{crossings, dispatcher, load, ready_step, Fold, Leg, Recorder, Subject};
+use super::{crossings_of, dispatcher, load, ready_step, Fold, Leg, Recorder, Subject};
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::kinds::store::{Store, StoreFacts};
 use crate::dispatch::LoadError;
@@ -406,9 +406,10 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
     let d = dispatcher();
     let p = load::<Store>(s, leg, s.bind(&d, ROOT)).expect("the store door loads");
-    // The instance's crossing gate, held across `open` (which takes the plugin by value).
-    let held = p.clone();
-    let mut r = Recorder::new(crossings(&held));
+    // The instance's crossing gate, held across `open` (which takes the plugin by value; a
+    // `Plugin` is `!Clone`, so the gate is held through its instance).
+    let held = Arc::clone(&p.inner);
+    let mut r = Recorder::new(crossings_of(&held));
     r.line("facts", 0, || {
         format!(
             "{:?} {} max_inflight={} {:?}",

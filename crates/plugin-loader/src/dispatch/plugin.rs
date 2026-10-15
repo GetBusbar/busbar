@@ -1268,20 +1268,12 @@ pub(crate) fn copy_str(s: AbiStr) -> Option<Vec<u8>> {
         .flatten()
 }
 
-/// A loaded plugin of kind `K`: one instance, called through its table. Cheap to clone; every clone
-/// is the same instance.
+/// A loaded plugin of kind `K`: one instance, called through its table. It is NOT `Clone` (THE
+/// DESIGN C.1, `BUSBAR-1.6.0.md` l.3868: "`Plugin<K>` is `!Clone`"): the instance has one owner,
+/// and a holder that shares it shares an `Arc<Plugin<K>>`, never a copy of the handle.
 pub struct Plugin<K: Kind> {
     pub(crate) inner: Arc<Instance>,
     _k: PhantomData<fn() -> K>,
-}
-
-impl<K: Kind> Clone for Plugin<K> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            _k: PhantomData,
-        }
-    }
 }
 
 impl<K: Kind> std::fmt::Debug for Plugin<K> {

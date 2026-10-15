@@ -37,10 +37,11 @@ pub async fn ticks(plugin: &Plugin<Auth>, dispatcher: &Dispatcher, worker: u32) 
 }
 
 /// [`ticks`] for `plugin`, spawned on the runtime the caller runs on; `None` off any runtime. The
-/// handle stops the schedule when it is aborted (the instance retired or replaced).
+/// handle stops the schedule when it is aborted (the instance retired or replaced). The schedule
+/// shares the instance its owner holds (a [`Plugin`] is `!Clone`).
 #[must_use]
 pub fn spawn(
-    plugin: Plugin<Auth>,
+    plugin: Arc<Plugin<Auth>>,
     dispatcher: Arc<Dispatcher>,
     worker: u32,
 ) -> Option<tokio::task::JoinHandle<()>> {

@@ -561,7 +561,8 @@ pub struct Rig {
     driver: PlaneDriver,
     primary: Pool,
     fallback: Option<Pool>,
-    _plugin: Plugin<Plane>,
+    /// The plane, shared with its instance (a `Plugin` is `!Clone`).
+    _plugin: Arc<Plugin<Plane>>,
 }
 
 impl Rig {
@@ -574,8 +575,8 @@ impl Rig {
         if let Some(f) = &fallback {
             pools.push(f);
         }
-        let plugin = door(&dispatcher, &settings(&pools));
-        let calls = Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 1));
+        let plugin = Arc::new(door(&dispatcher, &settings(&pools)));
+        let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher, 1));
         let refusal_statuses = calls.refusal_statuses();
         let served = plugin.served();
         let dialects: Vec<String> = served.dialects.iter().map(|d| (*d).to_string()).collect();

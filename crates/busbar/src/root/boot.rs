@@ -613,9 +613,11 @@ pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::
 /// The door planes [`load_door_planes`] bound, held for the process.
 static DOOR_PLANES: std::sync::OnceLock<Vec<(String, DoorPlane)>> = std::sync::OnceLock::new();
 
-/// A plane bound through its door.
-pub type DoorPlane =
-    crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>;
+/// A plane bound through its door, shared (a `Plugin` is `!Clone`, THE DESIGN C.1): the boot's
+/// list, each generation's plane instance and its config-apply holder share the one instance.
+pub type DoorPlane = std::sync::Arc<
+    crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>,
+>;
 
 /// THE DOOR PLANES' ONE LOAD, run once the process's dispatcher is built
 /// ([`crate::root::dispatch::boot`]): every plane [`dropped_planes_of`] discovered, linked and
@@ -638,7 +640,10 @@ pub fn load_door_planes() {
     .unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
-    });
+    })
+    .into_iter()
+    .map(|(instance, plane)| (instance, std::sync::Arc::new(plane)))
+    .collect::<Vec<(String, DoorPlane)>>();
     // Stage 3g: every bound door validates the section dealt to it before anything opens.
     let path =
         crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());

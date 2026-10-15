@@ -2573,17 +2573,19 @@ pub(crate) mod tool_door {
         conns: crate::root::loader::dispatch::ConnTable,
     ) -> crate::root::boot::DoorPlane {
         let row = LinkedRow::of(line_door()).expect("the door states its Statement");
-        load_linked::<Plane>(
-            &row,
-            Bind {
-                instance: Arc::from(instance),
-                max_inflight_cap: 64,
-                sink: Arc::new(NoSink),
-                dispatcher: dispatcher.adopter(),
-                conns,
-            },
+        Arc::new(
+            load_linked::<Plane>(
+                &row,
+                Bind {
+                    instance: Arc::from(instance),
+                    max_inflight_cap: 64,
+                    sink: Arc::new(NoSink),
+                    dispatcher: dispatcher.adopter(),
+                    conns,
+                },
+            )
+            .expect("the linked door binds"),
         )
-        .expect("the linked door binds")
     }
 
     /// THE EXIT TEST (steps arrival, route, meter, exit): a keyed caller's `tools/call` arrives as one
