@@ -939,14 +939,17 @@ impl ProtocolWriter for AnthropicWriter {
                 // `message` leaves the SDK's `APIError` with an undefined description and is a
                 // distinguishability tell vs a native event.
                 let mut error_obj = serde_json::Map::new();
-                // `error.type` is a DISCRIMINATOR over nine tokens, not a free-text slot: the
-                // signal often carries an upstream sentence (or a foreign dialect's code), and
-                // writing that here produces an error object no SDK can dispatch on. Derive the
-                // token from the class, keeping a signal that is already a spec token so a native
-                // one round-trips. The free text is not lost — it is the `message` below.
+                // `error.type` is v1.5.5's text, byte for byte (v1.5.5
+                // `crates/busbar/src/proto/anthropic/writer.rs:626-666`): the provider signal
+                // VERBATIM when present (even free text), JSON `null` when absent. A class-derived
+                // spec token here was a difference no signed register entry covers; ARCHITECT
+                // ruling: "`error.type` keeps v1.5.5's text. R-22 signs only the request_id."
                 error_obj.insert(
                     keys::TYPE.to_string(),
-                    serde_json::json!(stream_error_type(err)),
+                    match err.provider_signal.as_deref() {
+                        Some(ps) => serde_json::json!(ps),
+                        None => serde_json::Value::Null,
+                    },
                 );
                 // The IR carries no separate message string (IrError == CanonicalSignal, which has
                 // no `message` field), so derive a human-readable one from the signal: prefer the

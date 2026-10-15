@@ -746,48 +746,70 @@ fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side(
     }
 }
 
-/// D7 — `nano_rate` TAKES AN `f64` (#77(8), #81). PARKED (`qa/evidence/1.6.0-money-sweep.md`): the double picks
-/// the wrong side of a decimal half-boundary. Kept verbatim as the parked measurement — card-build
-/// quantisation is outside this collapse, which keeps it byte-identical (#44).
-fn nano_rate_exact_from_text(decimal: &str) -> u64 {
+/// D7 — A RATE IS ITS DECIMAL, EXACTLY, OR IT IS REFUSED: NEVER ROUNDED (#81, #77(8); both
+/// OWNER-LOCKED). 1.5.5 multiplied the configured double by a thousand and rounded
+/// (`(utok * 1000.0).round()`, v1.5.5 `crates/busbar/src/cost.rs:99`), so a rate past the third
+/// decimal of micro-units was priced at a figure nobody configured, and the double picked the wrong
+/// side of a decimal half-boundary (the measurement this cell used to park,
+/// `qa/evidence/1.6.0-money-sweep.md`). #81 retires that rounding as a SIGNED divergence from 1.5.5
+/// (a value that does not fit the scale exactly is refused, never a rounded guess) and #77(8) bans
+/// binary floating point on the money path, so the card holds whole nano-units only (#870).
+///
+/// The exact conversion, from the decimal's own text: `Some(nanos)` for a whole number of
+/// nano-units (at most three decimals of micro-units), `None` for a rate the card cannot hold.
+fn nano_rate_exact_from_text(decimal: &str) -> Option<u64> {
     let count = busbar_contract::count::Count::parse(decimal).expect("a decimal literal");
     let scaled = count.micros() * 1_000;
-    let rounded = (scaled + 500_000) / 1_000_000;
-    u64::try_from(rounded).expect("inside the range")
+    (scaled % 1_000_000 == 0).then(|| u64::try_from(scaled / 1_000_000).expect("inside the range"))
 }
 
+/// Every half-boundary rate (four decimals and more, ending in 5: the ones 1.5.5 rounded) is
+/// refused on both readings, never rounded to a neighbour; every whole-nano rate (three decimals)
+/// converts to exactly the integer its decimal names.
+///
+/// RED: a half-boundary rate priced at any figure (rounded either way), or a whole-nano rate off its
+/// decimal by any amount.
 #[test]
-fn d7_the_f64_rate_conversion_rounds_the_wrong_way_at_a_decimal_half_boundary() {
-    rule("D7  `nano_rate(f64)` vs the exact decimal conversion (#77(8), #81)");
-    let mut disagreements: Vec<(String, u64, u64)> = Vec::new();
+fn d7_a_rate_converts_from_its_decimal_exactly_and_is_never_rounded() {
+    rule("D7  `nano_rate`: the decimal exactly, or refused, never rounded (#81, #77(8))");
+    let (mut refused, mut exact) = (0u64, 0u64);
     for thousandths in 1u64..200_000 {
-        let text = format!(
+        let half = format!(
             "{}.{:04}",
             thousandths / 10_000,
             (thousandths % 10_000) * 10 + 5
         );
-        let exact = nano_rate_exact_from_text(&text);
-        let through_f64 = ledger_cost::nano_rate(text.parse::<f64>().expect("parses"));
-        if exact != through_f64 {
-            disagreements.push((text, exact, through_f64));
-            if disagreements.len() == 5 {
-                break;
-            }
-        }
-    }
-    for (text, exact, through_f64) in &disagreements {
-        row(
-            &format!("rate `{text}` micro-units/token  exact / via f64"),
-            (exact, through_f64),
+        assert_eq!(
+            nano_rate_exact_from_text(&half),
+            None,
+            "{half}: no whole nano-unit"
         );
+        let double = half.parse::<f64>().expect("parses");
+        assert_eq!(
+            ledger_cost::nano_rate(double),
+            0,
+            "{half} micro-units/token is refused, never rounded (#81)"
+        );
+        assert_eq!(
+            ledger_cost::representable_nano_rate(double),
+            None,
+            "{half} micro-units/token is a rate the card cannot hold"
+        );
+        refused += 1;
+
+        let whole = format!("{}.{:03}", thousandths / 1_000, thousandths % 1_000);
+        let nanos = nano_rate_exact_from_text(&whole).expect("three decimals are whole nano-units");
+        assert_eq!(
+            ledger_cost::nano_rate(whole.parse::<f64>().expect("parses")),
+            nanos,
+            "{whole} micro-units/token is exactly {nanos} nano-units"
+        );
+        exact += 1;
     }
-    assert!(
-        !disagreements.is_empty(),
-        "the scan found no disagreement — which would mean the f64 path is exact, and it is not"
+    row(
+        "half-boundary rates refused / whole-nano rates exact",
+        (refused, exact),
     );
-    for (_, exact, through_f64) in &disagreements {
-        assert_eq!(exact.abs_diff(*through_f64), 1);
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────

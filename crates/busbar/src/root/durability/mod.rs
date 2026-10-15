@@ -972,6 +972,37 @@ impl Durability {
         )
     }
 
+    /// CLOSE A UNIT'S HOLD WITH A COUNTS ROW: the exit's posting for a unit whose counts priced to
+    /// nothing (billing off, or a card that prices them at zero). A ZERO IS NOT A SETTLEMENT
+    /// (#77(2)/(3): one sealed line of counts, and a price is never stored): the record is a
+    /// [`PostingKind::Counted`] row carrying the counts and no figure. The book still moves by the
+    /// posting, which hands the hold's reservation back, and a replay closes the same hold off the
+    /// row (the chain's replay): the reservation it held is released, nothing is settled.
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::settle`].
+    pub fn close_counted(
+        &mut self,
+        at: &Settling<'_>,
+        posted: busbar_contract::caps::Posted,
+        counts: &UnitCounts,
+        arrived_ms: u64,
+    ) -> Result<Settled, DurabilityLost> {
+        let settlement = self
+            .ledger
+            .post_counted(at.key, at.window, posted, counts.fee_count);
+        self.journal_settlement_as(
+            at,
+            settlement,
+            self.incarnation,
+            Some(counts),
+            arrived_ms,
+            None,
+            PostingKind::Counted,
+        )
+    }
+
     /// PUT A UNIT'S COUNTS ON THE CHAIN WITH NO FIGURE BEHIND THEM (#43: the write is unconditional).
     ///
     /// For a unit whose counts priced to nothing, or whose pricing REFUSED (#42: a present card
@@ -1157,11 +1188,36 @@ impl Durability {
         arrived_ms: u64,
         refusal: Option<String>,
     ) -> Result<Settled, DurabilityLost> {
+        self.journal_settlement_as(
+            at,
+            settlement,
+            incarnation,
+            counts,
+            arrived_ms,
+            refusal,
+            PostingKind::Settlement,
+        )
+    }
+
+    /// [`Durability::journal_settlement_refusing`] under the record `kind` the line is: a
+    /// `Settlement`, or the `Counted` row a hold closes with when its counts priced to nothing
+    /// ([`Durability::close_counted`]).
+    #[allow(clippy::too_many_arguments)]
+    fn journal_settlement_as(
+        &mut self,
+        at: &Settling<'_>,
+        settlement: Settlement,
+        incarnation: u64,
+        counts: Option<&UnitCounts>,
+        arrived_ms: u64,
+        refusal: Option<String>,
+        kind: PostingKind,
+    ) -> Result<Settled, DurabilityLost> {
         let stamp = at.stamp;
         let principal = settlement.posted.principal().as_str().to_string();
         let posting = Posting {
             principal: principal.clone(),
-            kind: PostingKind::Settlement,
+            kind,
             incarnation,
             key: at.key.clone(),
             window: at.window,

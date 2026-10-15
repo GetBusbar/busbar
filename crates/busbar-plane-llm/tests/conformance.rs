@@ -1155,12 +1155,17 @@ mod door_units {
         assert!(end.done && !end.emitted.contains("event: error"), "{end:?}");
     }
 
-    /// A BUFFERED ANSWER CUT MID-BODY is the caller's 502 and bills no tokens (1.5.5's buffered read);
-    /// a cut before the first byte never reaches the plane as a cut piece at all (the kernel's walk
-    /// takes it as no answer and fails over, `far_end::no_answer`). RED: a buffered cut relayed as a
-    /// truncated body under the far end's 200.
+    /// A SAME-DIALECT WHOLE ANSWER CUT MID-BODY streams what arrived and bills no tokens. Under
+    /// ARCHITECT ruling (a) (the base cut path supersedes #891's) and as v1.5.5 relayed it (a
+    /// same-protocol non-stream body passes through verbatim as it arrives, v1.5.5
+    /// `proxy/response_body.rs:216-262`), the far end's bytes reach the caller under its 200 as
+    /// they come; the cut ends the body with nothing appended, and the far end reported no usage
+    /// in the bytes in hand, so nothing bills (OWNER RULING Q31). A cut before the first byte
+    /// never reaches the plane as a cut piece at all (the kernel's walk takes it as no answer and
+    /// fails over, `far_end::no_answer`). RED: the arrived bytes held back, a body appended at the
+    /// cut, or a token billed.
     #[test]
-    fn a_buffered_answer_cut_mid_body_is_the_callers_502_and_bills_no_tokens() {
+    fn a_same_dialect_answer_cut_mid_body_streams_what_arrived_and_bills_no_tokens() {
         let (_d, p) = door();
         arrive(&p, 25);
         attempt(&p, 25, b"large", 1);
@@ -1175,9 +1180,9 @@ mod door_units {
             0,
         );
         assert_eq!(head.outcome, Outcome::Ready, "{head:?}");
-        assert!(
-            head.emitted.is_empty(),
-            "a buffered answer waits for its end: {head:?}"
+        assert_eq!(
+            head.emitted, "{\"id\":",
+            "a same-dialect answer streams as it arrives: {head:?}"
         );
         let cut = piece(
             &p,
@@ -1192,8 +1197,8 @@ mod door_units {
         assert_eq!(cut.outcome, Outcome::Ready, "{cut:?}");
         assert!(cut.done, "{cut:?}");
         assert!(
-            !cut.emitted.contains("\"id\":"),
-            "never the truncated body: {cut:?}"
+            cut.emitted.is_empty(),
+            "the cut appends nothing to what arrived: {cut:?}"
         );
         assert!(cut.units.iter().all(|(_, n)| *n == 0), "no tokens: {cut:?}");
     }

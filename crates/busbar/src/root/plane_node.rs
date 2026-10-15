@@ -1575,8 +1575,10 @@ fn post_late(
     };
     if amount == 0 {
         match exit {
+            // The exit's hold closes with the counts row: a zero is not a settlement (#77(2)/(3),
+            // ARCHITECT ruling 2026-10-15).
             Some(exit) => {
-                let _line = book.settle_counted(&at, exit, &counts, arrived.ms());
+                let _line = book.close_counted(&at, exit, &counts, arrived.ms());
             }
             None => {
                 let _row = book.post_counts(&at, principal, &counts, arrived.ms(), None);

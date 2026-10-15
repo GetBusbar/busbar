@@ -74,7 +74,6 @@ fn a_body_past_the_usage_taps_cap_bills_no_tokens_and_one_under_it_bills_its_usa
     for piece in over.chunks(16) {
         let _ = r.feed(HOST, piece);
     }
-    assert!(r.relayed_floor().is_none(), "no floor past the cap");
     assert!(
         r.incurred_usage().is_none(),
         "nothing incurred past the cap"

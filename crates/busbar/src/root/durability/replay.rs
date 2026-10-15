@@ -155,20 +155,21 @@ pub(super) fn replay_into(
                 }
                 continue;
             }
-            // The hold this posting closes, if it closes one: a settlement of the same unit.
+            // The hold this posting closes, if it closes one: a settlement of the same unit, or the
+            // counts row a hold whose counts priced to nothing closes with (`close_counted`).
             let unit = (
                 posting.incarnation,
                 posting.key.clone(),
                 posting.window,
                 posting.mono,
             );
-            let closes = (posting.kind == PostingKind::Settlement)
+            let closes = matches!(posting.kind, PostingKind::Settlement | PostingKind::Counted)
                 .then(|| open.iter().position(|held| held.hold.unit() == unit))
                 .flatten()
                 .map(|at| open.remove(at).reserved);
             let figures = match posting.era {
                 RecordEra::Figures => figures_as_written(&posting),
-                RecordEra::Counts => derived_figures(&posting, closes.unwrap_or(0), history),
+                RecordEra::Counts => derived_figures(&posting, closes, history),
             };
             match figures {
                 Ok(Some(figures)) => {
@@ -285,9 +286,10 @@ fn figures_as_written(posting: &Posting) -> Result<Option<Figures>, Unplaced> {
 /// nothing.
 fn derived_figures(
     posting: &Posting,
-    reserved: u64,
+    closes: Option<u64>,
     history: Option<&HistoryView<'_>>,
 ) -> Result<Option<Figures>, Unplaced> {
+    let reserved = closes.unwrap_or(0);
     // A line refused because its plane reported a class nobody declared stays refused: the
     // declaration is a fact about the unit when it was written, and no card — present, absent or
     // amended — can price a class that was never declared.
@@ -308,7 +310,9 @@ fn derived_figures(
             .and_then(|nanos| u64::try_from(nanos).map_err(|_| MoneyError::Overflow))
             .map_err(|refused| Refused(format!("{refused:?}")))?,
     };
-    if posting.kind == PostingKind::Counted && settled == 0 {
+    // A counts row that priced to nothing moves nothing, unless it closes a hold: then it hands
+    // that hold's reservation back, as the live book did when it closed it.
+    if posting.kind == PostingKind::Counted && settled == 0 && closes.is_none() {
         return Ok(None);
     }
     Ok(Some(Figures {

@@ -438,13 +438,14 @@ impl Reply {
                 };
                 let head = head.take();
                 if !last {
+                    // What a stream's readers have read so far. A same-dialect whole body states
+                    // nothing while it relays: a caller that leaves mid-body bills no tokens, as
+                    // 1.5.5 billed none (v1.5.5 proxy/response_body.rs:620-625: a partially
+                    // buffered same-protocol body is not billed on a mid-buffer drop), and the
+                    // kernel adds no floor (#77(2), ARCHITECT ruling 2026-10-15; item 367's
+                    // relayed floor, Q33 (a), was told, never signed).
                     if let Some(u) = relay.streamed_usage() {
                         *units = Units::of(Some(&u), BTreeMap::new());
-                    } else if let Some(floor) = relay.relayed_floor() {
-                        *units = Units {
-                            floor: true,
-                            ..Units::of(Some(&floor), BTreeMap::new())
-                        };
                     }
                     return Piece {
                         verdict: if head.is_some() {
@@ -540,23 +541,14 @@ impl Reply {
                 )
             }
             State::Relay {
-                mut relay,
-                head,
-                units,
+                mut relay, head, ..
             } => {
                 let cut = relay.cut(host, transport);
                 self.ended_partial = cut.partial;
                 Piece {
                     head,
                     bytes: Cow::Owned(cut.bytes.unwrap_or_default()),
-                    // The cut's report replaces a floor stated while relaying, even when it is
-                    // zero, as the end's does: a whole answer the FAR END cut bills only the usage
-                    // it reported in the bytes in hand (OWNER RULING Q31, v1.5.5 billed no floor
-                    // for it); the floor is what a caller that LEAVES mid-relay bills (item 367).
-                    units: Units {
-                        stated: units.floor,
-                        ..Units::of(cut.usage.as_ref(), BTreeMap::new())
-                    },
+                    units: Units::of(cut.usage.as_ref(), BTreeMap::new()),
                     verdict: Verdict::Hard,
                     fault: Some(Fault::Transient(cut.reason)),
                     done: true,

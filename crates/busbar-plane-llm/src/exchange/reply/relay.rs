@@ -411,6 +411,13 @@ impl Relay {
                         // end reported in the bytes in hand, never the floor (OWNER RULING Q31,
                         // oracle cell `route.failover|fo|primary-cut-body`).
                         Err(_) if cut_short(&buf) => wire::reported_usage(self.ingress, &buf),
+                        // A body whose dialect reads it as a failure the FAR END REPORTED (a
+                        // Responses `status: "failed"`) bills no tokens, as 1.5.5 billed none: its
+                        // usage tap read nothing from a body its reader refused (v1.5.5
+                        // handlers/chat.rs:60-98, `read_response` failed -> 0 tokens), and its
+                        // streamed twin bills none either (row-159 L3#4). ARCHITECT ruling
+                        // 2026-10-15; owner answer Q37 is unsigned and does not override 1.5.5.
+                        Err(_) if far_reported_failure(host, self.ingress, &buf) => None,
                         Err(_) => {
                             fault_unreadable(self.ingress, buf.len());
                             Some(wire::unrecovered_usage(self.ingress, &buf))
@@ -518,38 +525,44 @@ impl Relay {
         self.translate.as_ref().and_then(|t| t.usage())
     }
 
-    /// THE FLOOR A NON-STREAM SAME-DIALECT ANSWER HAS INCURRED SO FAR, as it relays: it was
-    /// generated whole before its first byte, so a caller that leaves mid-relay bills the floor
-    /// over the bytes relayed, never 0 (item 367, Q33 (a), told; #62 applied to buffered relays).
-    /// `None` for a stream, a translated answer, or one that meters nothing.
-    #[must_use]
-    pub fn relayed_floor(&self) -> Option<TokenUsage> {
-        (self.translate.is_none()
-            && !self.far_is_stream
-            && self.meter
-            && self.handler.taps_usage()
-            && !self.nonstream_buf_truncated
-            && self.upstream_bytes > 0)
-            .then(|| wire::estimate_usage_from_truncated_tail(self.upstream_bytes))
-    }
-
     /// The usage an answer that ended early had incurred: what a stream's readers accumulated;
-    /// for a same-dialect whole body, the usage the bytes in hand report, else the floor over them
-    /// (a failed far-end transfer bills only what the far end reported, never the floor).
+    /// for a same-dialect whole body the FAR END cut, only the usage the bytes in hand report
+    /// (OWNER RULING Q31, never a floor). A same-dialect whole body that ended early any other way
+    /// (its caller left mid-body) incurred none: 1.5.5 billed no tokens on a mid-buffer drop
+    /// (v1.5.5 proxy/response_body.rs:620-625), and no floor is added for it (#77(2); ARCHITECT
+    /// ruling 2026-10-15 retired item 367's relayed floor, Q33 (a), which was told, never signed).
     #[must_use]
     pub fn incurred_usage(&self) -> Option<TokenUsage> {
         match self.translate.as_ref() {
             Some(t) => t.usage(),
-            None if self.far_is_stream
-                || self.nonstream_buf.is_empty()
-                || self.nonstream_buf_truncated =>
+            None if self.upstream_failed
+                && !self.far_is_stream
+                && !self.nonstream_buf.is_empty()
+                && !self.nonstream_buf_truncated =>
             {
-                None
+                wire::reported_usage(self.ingress, &self.nonstream_buf)
             }
-            None if self.upstream_failed => wire::reported_usage(self.ingress, &self.nonstream_buf),
-            None => Some(wire::unrecovered_usage(self.ingress, &self.nonstream_buf)),
+            None => None,
         }
     }
+}
+
+/// THE FAR END REPORTED THE FAILURE ITSELF: the whole body reads, in its dialect's own reader, as a
+/// failure the far end stated (a Responses `status: "failed"`), not as a body the reader could not
+/// read (`ir_parse`: bad JSON, a shape it does not know, or a usage count it refuses, #42).
+fn far_reported_failure(
+    host: &dyn busbar_contract::codec::CodecHost,
+    protocol: &str,
+    buf: &[u8],
+) -> bool {
+    let Ok(v) = crate::codec::json::parse::<Value>(buf) else {
+        return false;
+    };
+    crate::codec::proto_codec::protocol_for(protocol).is_some_and(|p| {
+        p.reader().read_response(host, &v).is_err_and(|e| {
+            e.provider_signal.as_deref() != Some(busbar_contract::protocol::SIGNAL_IR_PARSE)
+        })
+    })
 }
 
 /// A JSON body that ends before its value does: the far end's transfer stopped short.

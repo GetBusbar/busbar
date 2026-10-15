@@ -1391,8 +1391,8 @@ slot!(
             }
         }
         // A caller that left a usable part of the answer leaves a PARTIAL unit: the units the
-        // answer stated so far bill (1.5.5's drop arm; item 367 for a buffered relay). Any other
-        // cancel bills nothing.
+        // answer stated so far bill (1.5.5's drop arm; a same-dialect whole body states none while
+        // it relays, so it bills none, as 1.5.5's did). Any other cancel bills nothing.
         out.set(
             |o| &o.cancel.disposition,
             if partial { CANCEL_OK_PARTIAL } else { CANCEL_ABORTED },

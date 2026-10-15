@@ -7117,11 +7117,14 @@ async fn the_pools_door_bills_a_cut_non_stream_answer_only_what_its_far_end_repo
     assert_eq!(rig.tokens_after().await, 0, "no report, no charge");
 }
 
-/// ITEM 367 (Q33 (a), told), legacy row 338: a same-dialect non-stream answer the CALLER drops
-/// mid-relay was generated whole before its first byte, so it bills what it relayed: never 0.
+/// Legacy row 338: a same-dialect non-stream answer the CALLER drops mid-relay bills no tokens, as
+/// 1.5.5 billed none (v1.5.5 `crates/busbar/src/proxy/response_body.rs:620-625`: a partially
+/// buffered same-protocol body is not billed on a mid-buffer drop). ARCHITECT ruling 2026-10-15:
+/// v1.5.5 wins over item 367's relayed floor (Q33 (a), told, never signed), and no floor is added
+/// (#77(2)).
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn the_pools_door_bills_a_non_stream_answer_the_caller_dropped_mid_relay() {
+async fn the_pools_door_bills_nothing_for_a_non_stream_answer_the_caller_dropped_mid_relay() {
     use http_body_util::BodyExt as _;
     let _one = ONE_PUBLISHER.lock().await;
     let instance = "serve-door-nonstream-drop";
@@ -7161,10 +7164,10 @@ async fn the_pools_door_bills_a_non_stream_answer_the_caller_dropped_mid_relay()
         let rig = std::sync::Arc::clone(&rig);
         tokio::spawn(async move { rig.chat().await })
     };
-    assert_ne!(
+    assert_eq!(
         rig.tokens_after().await,
         0,
-        "a non-stream answer dropped mid-relay never bills 0"
+        "a non-stream answer dropped mid-relay bills no tokens, as in 1.5.5"
     );
     next.abort();
 }
@@ -7315,15 +7318,15 @@ mod pools_door_money {
         }
     }
 
-    /// A WHOLE ANSWER DROPPED BY ITS CALLER BILLS ITS FLOOR, EXACTLY (F25 row 28; legacy
-    /// `nonstream_drop_billing_tests::a_same_protocol_nonstream_body_dropped_mid_relay_bills_what_it_relayed_not_zero`):
+    /// A WHOLE ANSWER DROPPED BY ITS CALLER BILLS NO TOKENS (F25 row 28; legacy
+    /// `nonstream_drop_billing_tests::a_same_protocol_nonstream_body_dropped_mid_relay_bills_no_tokens_as_in_1_5_5`):
     /// a same-dialect whole answer (usage 1500/90) whose caller goes after its first bytes, the
-    /// prefix before `"stop_reason"` relayed verbatim, bills EXACTLY the floor over the relayed bytes
-    /// (their length over the bytes-per-token divisor, at least 1), never 0; the unit ends Partial,
-    /// and its sealed record reports that same figure. RED: 0 billed, any other figure, or the
-    /// record disagreeing with the ledger.
+    /// prefix before `"stop_reason"` relayed verbatim, bills no tokens, as 1.5.5 billed none (v1.5.5
+    /// `crates/busbar/src/proxy/response_body.rs:620-625`; ARCHITECT ruling 2026-10-15 retired item
+    /// 367's relayed floor, #77(2)); the unit ends Partial, and its sealed record reports that same
+    /// nothing. RED: any token billed, or the record disagreeing with the ledger.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn the_pools_door_bills_the_floor_of_a_whole_answer_its_caller_dropped() {
+    async fn the_pools_door_bills_nothing_for_a_whole_answer_its_caller_dropped() {
         use http_body_util::BodyExt as _;
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-money-dropped-floor";
@@ -7360,10 +7363,6 @@ mod pools_door_money {
         );
         // THE DISCONNECT: the caller goes before the answer's end.
         drop(body);
-        let divisor: u64 = door_word("truncated_tail_bytes_per_token")
-            .parse()
-            .expect("a divisor");
-        let floor = (prefix as u64 / divisor).max(1);
         // The driver finishes a buried unit at the start of its next one.
         let rig = Arc::new(rig);
         let next = {
@@ -7372,12 +7371,14 @@ mod pools_door_money {
         };
         let billed = rig.tokens_after().await;
         next.abort();
-        assert_ne!(billed, 0, "a whole answer dropped mid-relay never bills 0");
-        assert_eq!(billed, floor, "the floor over the relayed bytes");
+        assert_eq!(
+            billed, 0,
+            "a whole answer dropped mid-relay bills no tokens"
+        );
         let record = sealed_as(&rig, busbar_kernel_audit::FinishClass::Partial).await;
         assert_eq!(
             reported(&record),
-            floor,
+            0,
             "the record reports what the ledger accrued: {:?}",
             token_lines(&record)
         );

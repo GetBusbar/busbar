@@ -386,7 +386,7 @@ where
                     this.ended = true;
                     // A cut before the first byte delivered nothing (`Error`); after it, a
                     // non-stream prefix the caller cannot use whole (`Partial`). The usage is what
-                    // the relay had incurred — the figure the Drop bills (item 367).
+                    // the relay had incurred — the figure the Drop bills.
                     this.tap.report(TapReport {
                         lane: this.lane_idx,
                         usage: cut.usage,

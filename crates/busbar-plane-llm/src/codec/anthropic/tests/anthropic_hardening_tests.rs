@@ -609,9 +609,9 @@ fn write_response_event_error_serializes_native_shape() {
     let _: serde_json::Value = serde_json::from_str(&s).expect("must be valid JSON");
 }
 
-/// When the upstream error event carries no `type`, the writer must still emit a spec token for
-/// the error's class (never `""`, and never `null` — not a member of the discriminated set) and a
-/// non-empty `message`. Guards that a message is always present.
+/// When the upstream error event carries no `type`, the writer emits `error.type: null` (never
+/// `""`, never a class token), exactly as v1.5.5 `crates/busbar/src/proto/anthropic/writer.rs:626-666`
+/// did, and a non-empty `message`. Guards that a message is always present.
 #[test]
 fn write_response_event_error_null_type_when_signal_absent() {
     let err = IrError {
@@ -631,8 +631,12 @@ fn write_response_event_error_null_type_when_signal_absent() {
     let error_obj = data.get("error").expect("error sub-object present");
     assert_eq!(
         error_obj.get("type").and_then(|t| t.as_str()),
-        Some("invalid_request_error"), // golden wire-contract literal (kept bare on purpose)
-        "a signal-less ClientError must carry its class's spec token, not null or an empty string"
+        None,
+        "a signal-less error writes error.type null (v1.5.5 writer.rs:626-666), not a class token"
+    );
+    assert!(
+        error_obj.get("type").is_some_and(|t| t.is_null()),
+        "error.type must be present and JSON null"
     );
     assert!(
         error_obj
@@ -644,12 +648,12 @@ fn write_response_event_error_null_type_when_signal_absent() {
     );
 }
 
-/// `ErrorResponse.error` is discriminated on `type` over a CLOSED set of nine tokens, so free text
-/// there is not a valid error object — an SDK dispatching on it cannot match, and the value is
-/// often an upstream sentence rather than a token. The type must come from the error's class; the
-/// free text stays as `message`, where prose belongs.
+/// v1.5.5 `crates/busbar/src/proto/anthropic/writer.rs:626-666`: an in-stream error event writes
+/// `error.type` = the provider signal VERBATIM, even when it is free text, and keeps the same text
+/// as `error.message`. The class-derived spec token is not a signed difference (R-22 signs only the
+/// `request_id`), so the class never reaches `error.type`.
 #[test]
-fn write_response_event_error_type_is_a_spec_token_not_free_text() {
+fn write_response_event_error_type_is_the_signal_verbatim_even_free_text() {
     let sentence = "You have exceeded your requests per minute.";
     let err = IrError {
         class: StatusClass::RateLimit,
@@ -662,40 +666,20 @@ fn write_response_event_error_type_is_a_spec_token_not_free_text() {
     let error_obj = data.get("error").expect("error sub-object present");
     assert_eq!(
         error_obj.get("type").and_then(|t| t.as_str()),
-        Some("rate_limit_error"), // golden wire-contract literal (kept bare on purpose)
-        "error.type must be the class's spec token, never the free-text signal"
+        Some(sentence),
+        "error.type is the signal verbatim (v1.5.5 writer.rs:626-666), never a class token"
     );
     assert_eq!(
         error_obj.get("message").and_then(|m| m.as_str()),
         Some(sentence),
-        "the upstream text must survive verbatim as error.message"
+        "the signal is also error.message"
     );
 }
 
-/// With no provider signal at all the type still has to be one of the nine. `api_error` is the
-/// catch-all a server-side failure maps to; `null` is not a member of the set.
+/// v1.5.5 `crates/busbar/src/proto/anthropic/writer.rs:626-666`: a native token signal is written
+/// verbatim, independent of the class, so a `permission_error` stays `permission_error`.
 #[test]
-fn write_response_event_error_type_falls_back_to_api_error() {
-    let err = IrError {
-        class: StatusClass::ServerError,
-        provider_signal: None,
-        retry_after: None,
-    };
-    let (_, data) = anthropic_writer()
-        .write_response_event(crate::codec::test_host::HOST, &IrStreamEvent::Error(err))
-        .expect("error event must serialize");
-    let error_obj = data.get("error").expect("error sub-object present");
-    assert_eq!(
-        error_obj.get("type").and_then(|t| t.as_str()),
-        Some("api_error"), // golden wire-contract literal (kept bare on purpose)
-        "a signal-less error must still carry a spec token, not null"
-    );
-}
-
-/// A native token arriving from upstream must round-trip verbatim rather than being re-derived,
-/// so a `permission_error` does not come back out as `authentication_error` (both read as Auth).
-#[test]
-fn write_response_event_error_type_round_trips_a_native_token() {
+fn write_response_event_error_type_keeps_a_native_token_verbatim() {
     let err = IrError {
         class: StatusClass::Auth,
         provider_signal: Some("permission_error".to_string()),
@@ -707,7 +691,7 @@ fn write_response_event_error_type_round_trips_a_native_token() {
     assert_eq!(
         data["error"].get("type").and_then(|t| t.as_str()),
         Some("permission_error"),
-        "a signal that is already a spec token must survive unchanged"
+        "a native token signal is written verbatim (v1.5.5 writer.rs:626-666)"
     );
 }
 
@@ -4091,33 +4075,6 @@ fn content_block_start_carries_seed_fields() {
         Some(""),
         "a thinking content_block_start must seed `thinking:\"\"`: {out}"
     );
-}
-
-// ── GOLDEN PARITY CELL: the (class -> `error.type` word) column this dialect renders, pinned as
-//    bytes. The nine classes are spelled out by hand rather than walked off the enum on purpose:
-//    the cell must survive the class enum changing owner (it is one-owner'd in the contract) and
-//    say the same nine words on both sides, so it names nothing about where the enum lives.
-#[test]
-fn status_word_golden() {
-    let golden: [(StatusClass, &str); 9] = [
-        (StatusClass::RateLimit, "rate_limit_error"),
-        (StatusClass::Overloaded, "overloaded_error"),
-        (StatusClass::ServerError, "api_error"),
-        (StatusClass::Timeout, "timeout_error"),
-        (StatusClass::Network, "api_error"),
-        (StatusClass::Auth, "authentication_error"),
-        (StatusClass::Billing, "billing_error"),
-        (StatusClass::ClientError, "invalid_request_error"),
-        (StatusClass::ContextLength, "invalid_request_error"),
-    ];
-    for (class, word) in golden {
-        let err = CanonicalSignal {
-            class,
-            provider_signal: None,
-            retry_after: None,
-        };
-        assert_eq!(stream_error_type(&err), word, "class={class:?}");
-    }
 }
 
 /// DESIGN F3 "Drops" (DF-WIRE card item 5): the reader puts NO empty text block in place of a block

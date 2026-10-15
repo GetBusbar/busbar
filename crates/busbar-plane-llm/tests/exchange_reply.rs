@@ -3080,7 +3080,19 @@ fn a_stream_cut_after_its_first_byte_ends_in_1_5_5s_bytes_for_every_caller_diale
         let _ = r.feed(HOST, CUT_FIRST);
         let cut = r.cut(HOST, true);
         assert_eq!(cut.reason, "mid-stream", "{ingress}");
-        let got = cut.bytes.expect("the caller's in-band error");
+        let mut got = cut.bytes.expect("the caller's in-band error");
+        if ingress == "anthropic" {
+            // R-22 (signed register entry): a translated Anthropic stream's `error` event carries a
+            // minted `request_id`, the one member 1.6.0 adds to 1.5.5's frame. It is checked here
+            // and cut out; every other byte, `error.type` included, is 1.5.5's (ARCHITECT ruling
+            // 2026-10-15: R-22 signs the request_id alone).
+            let text = String::from_utf8(got).expect("text");
+            let at = text
+                .find(r#""request_id":"req_"#)
+                .expect("R-22's request_id");
+            let end = at + text[at..].find("\",").expect("the request_id ends") + 2;
+            got = format!("{}{}", &text[..at], &text[end..]).into_bytes();
+        }
         if ingress == "responses" {
             assert_eq!(without_run_ids(&got), without_run_ids(want), "{ingress}");
         } else {
@@ -3772,16 +3784,7 @@ mod rehomed_metering {
         let read = answer(&ctx, 200, JSON_HEAD, &pieces, false);
         assert_eq!(read.body, body.as_bytes(), "the whole body, verbatim");
         assert_eq!(read.tokens(), (0, 0), "no usage past the cap bills");
-        // Nothing billed: the end STATES its zero (`stated`), so it replaces the floor the relay
-        // stated while the body was still under the cap (`plane_door::counts`), never leaves it.
-        assert_eq!(
-            read.end().units,
-            Units {
-                stated: true,
-                ..Units::default()
-            },
-            "nothing billed"
-        );
+        assert_eq!(read.end().units, Units::default(), "nothing billed");
         assert_eq!(
             truncations(body.as_bytes(), CAP),
             1,
@@ -3810,15 +3813,7 @@ mod rehomed_metering {
         let read = answer(&ctx, 200, JSON_HEAD, &pieces, false);
         assert_eq!(read.body, body.as_bytes(), "the whole body, verbatim");
         assert_eq!(read.tokens(), (0, 0), "no floor past the cap");
-        // Nothing billed: the end's stated zero replaces the floor stated under the cap.
-        assert_eq!(
-            read.end().units,
-            Units {
-                stated: true,
-                ..Units::default()
-            },
-            "nothing billed"
-        );
+        assert_eq!(read.end().units, Units::default(), "nothing billed");
         assert_eq!(
             truncations(body.as_bytes(), CAP),
             1,

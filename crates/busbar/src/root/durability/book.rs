@@ -120,6 +120,20 @@ pub trait MoneyBook: Send + Sync {
         refusal: Option<String>,
     ) -> Result<Settled, DurabilityLost>;
 
+    /// Close the exit's hold with a COUNTS ROW: the unit's counts priced to nothing (billing off,
+    /// or a card that prices them at zero). See [`Durability::close_counted`].
+    ///
+    /// # Errors
+    ///
+    /// As [`MoneyBook::settle_posted`].
+    fn close_counted(
+        &self,
+        at: &Settling<'_>,
+        posted: busbar_contract::caps::Posted,
+        counts: &UnitCounts,
+        arrived_ms: u64,
+    ) -> Result<Settled, DurabilityLost>;
+
     /// The unit's raw counts with no figure behind them — priced to nothing, or REFUSED (#42/#43).
     /// See [`Durability::post_counts`].
     ///
@@ -245,6 +259,16 @@ impl MoneyBook for SharedBook {
         self.settling(|durability| {
             durability.settle_counted_refusing(at, posted, counts, arrived_ms, refusal)
         })
+    }
+
+    fn close_counted(
+        &self,
+        at: &Settling<'_>,
+        posted: busbar_contract::caps::Posted,
+        counts: &UnitCounts,
+        arrived_ms: u64,
+    ) -> Result<Settled, DurabilityLost> {
+        self.settling(|durability| durability.close_counted(at, posted, counts, arrived_ms))
     }
 
     fn post_counts(
