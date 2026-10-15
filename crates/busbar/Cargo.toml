@@ -420,7 +420,7 @@ plane-a2a-door = "busbar-plane-a2a"
 # `secret-doors`: a `kind: secret` plugin's memory-ABI `door`.
 # `export-doors`: a memory-ABI `kind: export` sink's `NAME`, `ALIAS`, `DECLARES` and `door`.
 [package.metadata.busbar.linked-axes]
-plane-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics node gauntlet-one-shot"
+plane-llm = "plane claims protocols path-ingress body-ingress protocol-seams node gauntlet-one-shot"
 export-file = "export-doors"
 export-webhook = "export-doors"
 export-prometheus = "export-doors"
@@ -477,6 +477,7 @@ plane-streaming = "busbar_plane_streaming::door"
 # Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
 # holds it. A door row with no row here declares nothing.
 [package.metadata.busbar.linked-declares]
+plane-llm-door = "busbar_plane_llm::DECLARES"
 plane-mcp-door = "busbar_plane_mcp::DECLARES"
 plane-a2a-door = "busbar_plane_a2a::DECLARES"
 
