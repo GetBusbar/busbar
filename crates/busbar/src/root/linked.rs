@@ -353,6 +353,7 @@ pub fn register_stores(linked: &Linked) {
             secret_axis: Some(secrets),
             export_axis: Some(&crate::root::exports::EXPORTS),
             trust_policy: Some(crate::root::boot::trust_policy),
+            host_counters: Some(crate::root::dispatch::host_counters),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");

@@ -139,7 +139,14 @@ pub struct RootInstall {
     /// [`crate::state::App`] so the operator surface judges a plugin exactly as boot does. `None` =
     /// no trust resolves (the admin catalog lists the linked rows alone; an upload is refused).
     pub trust_policy: Option<TrustPolicyBuild>,
+    /// The host's own counters every `/metrics` scrape exposes, one described family each: the
+    /// root's dispatcher's `bb_*` counters, read when the scrape is (`None` = none).
+    pub host_counters: Option<HostCounters>,
 }
+
+/// THE HOST'S OWN COUNTERS: each counter's family name, its HELP text and its cumulative value,
+/// read at scrape time ([`RootInstall::host_counters`]).
+pub type HostCounters = fn() -> Vec<(&'static str, &'static str, u64)>;
 
 /// THE ROOT'S HOOK AXIS over one plugin registry (each configuration's registry gets its own).
 ///
@@ -173,6 +180,7 @@ const STAND_IN: RootInstall = RootInstall {
     secret_axis: Some(&crate::test_support::SecretsStandIn),
     export_axis: Some(&crate::test_support::export_axis::STAND_IN),
     trust_policy: Some(crate::test_support::trust_policy_stand_in),
+    host_counters: None,
 };
 
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,

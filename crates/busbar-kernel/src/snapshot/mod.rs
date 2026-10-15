@@ -357,6 +357,23 @@ pub fn refresh_scrape_gauges(app: &App) {
     }
 }
 
+/// THE HOST'S OWN COUNTERS onto the recorder at scrape time: what the composition root installed
+/// ([`crate::preflight::RootInstall::host_counters`]), none when it installed nothing.
+pub fn refresh_host_counters() {
+    if let Some(read) = crate::preflight::root_rows().host_counters {
+        emit_host_counters(&read());
+    }
+}
+
+/// Each of `counters` as one described counter family, set to its cumulative value: the host
+/// holds the count, so a scrape states it ([`metrics::Counter::absolute`]) and never adds to it.
+pub(crate) fn emit_host_counters(counters: &[(&'static str, &'static str, u64)]) {
+    for &(name, help, value) in counters {
+        metrics::describe_counter!(name, help);
+        metrics::counter!(name).absolute(value);
+    }
+}
+
 /// `busbar_lane_state` for ONE breaker cell, read from that cell alone — never folded with any
 /// other pool's cell on the same lane:
 /// * `1` — the cell is HalfOpen: a recovery probe is in flight on THIS cell right now.

@@ -736,6 +736,11 @@ each dialect translates, field by field, is listed in the generated
 
 ### Added
 
+- **`/metrics` carries two plugin-health counters.** `bb_deadline_without_wake_total` counts plugin
+  operations settled by their deadline without ever being woken, and `bb_plugin_quarantined_total`
+  counts plugin instances the crossing watchdog quarantined. Each is one counter family with its
+  `# HELP` and `# TYPE` lines, summed over every plugin, and is 0 on a healthy node. Nothing that
+  1.5.5 exposed changed. See [the observability guide](docs/observability.md).
 - **A plugin's inbound listener binds what its settings block states, capped at 1024 connections.**
   A need a plugin declares inbound names a settings block `{listen, tls: {cert, key, client_ca?},
   max_conns?}` (1.5.5's `listen` / `tls` shape; `cert` and `key` are secret references). The listener
