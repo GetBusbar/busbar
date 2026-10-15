@@ -204,11 +204,14 @@ fn the_operator_provider_is_the_row_the_manifest_names() {
     }
 }
 
-/// THE OPERATOR CREDENTIAL'S 1.5.5 WORDS AND LINES, as DATA (`fixtures/operator_1_5_5.json`, verbatim
-/// from the 1.5.5 binary): what the root's words must still read as, byte for byte.
+/// THE OPERATOR CREDENTIAL'S 1.5.5 WORDS AND LINES, as DATA in the oracle corpus
+/// (`testing/shadow-oracle/fixtures/law0/operator-1.5.5.json`, verbatim from the 1.5.5 binary):
+/// what the root's words must still read as, byte for byte.
 fn operator_1_5_5() -> serde_json::Value {
-    serde_json::from_str(include_str!("fixtures/operator_1_5_5.json"))
-        .expect("the 1.5.5 operator fixture is JSON")
+    serde_json::from_str(include_str!(
+        "../../../../../testing/shadow-oracle/fixtures/law0/operator-1.5.5.json"
+    ))
+    .expect("the 1.5.5 operator fixture is JSON")
 }
 
 /// A string field of the 1.5.5 operator fixture.

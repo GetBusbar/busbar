@@ -13,14 +13,15 @@
 //! Which modules the refusal offers is the binary's own answer, and each one it offers is asked of
 //! `--validate` in turn: none of them is an unknown exporter. A build that serves every module
 //! 1.5.5's refusal offered prints 1.5.5's line byte for byte: that line is DATA
-//! (`fixtures/unknown_exporter_1_5_5.txt`, verbatim from the 1.5.5 binary), so the source names no
-//! sink.
+//! in the oracle corpus (`testing/shadow-oracle/fixtures/law0/unknown-exporter-1.5.5.txt`, verbatim
+//! from the 1.5.5 binary), so the source names no sink.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 /// 1.5.5's refusal for `module: nosuch`, byte for byte (DATA, verbatim from the 1.5.5 binary).
-const REFUSAL_1_5_5: &str = include_str!("fixtures/unknown_exporter_1_5_5.txt");
+const REFUSAL_1_5_5: &str =
+    include_str!("../../../testing/shadow-oracle/fixtures/law0/unknown-exporter-1.5.5.txt");
 
 /// The refusal's head for `module: nosuch`; the modules it offers follow, ` | `-separated.
 const REFUSAL_HEAD: &str =

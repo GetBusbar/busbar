@@ -42,7 +42,7 @@ fn the_admin_route_table_method_path_scope_is_byte_identical() {
 
     register_planes();
 
-    // The FROZEN rows the tool plane's verbs and the `agents:` door row's stated verbs mount at, with
+    // The FROZEN rows the linked planes' admin verbs and the door row's stated verbs mount at, with
     // the scope the middleware enforces. Reads are `read-only`; both `connect`s and `approve` are
     // mutations at `full`. The door row's PUBLIC route is not a row: the fold keeps it off.
     let expected: Vec<(&str, &str, &str)> = vec![
@@ -119,8 +119,7 @@ fn verb_planes() -> Vec<&'static busbar_kernel::plane::registry::PlaneDecl> {
 
 /// THE `404` IS DERIVED FROM THE PLANE, so the wording cannot drift apart between two planes and a
 /// third plane gets the same refusal for free. Driven for EVERY linked plane with admin verbs; each
-/// plane pins its own subject noun literal in its own suite (busbar-mcp `codec/tests/decl_tests.rs`,
-/// the retired agent engine's `serve_tests.rs`).
+/// plane pins its own subject noun literal in its own crate's suite.
 #[test]
 fn the_not_found_names_the_plane_s_own_subject() {
     // `registered` now returns the neutral, wordless `PlaneVerbError::NotFound`; the frozen wording is
@@ -143,8 +142,7 @@ fn the_not_found_names_the_plane_s_own_subject() {
 /// the spine. These strings are read back by audit queries and compliance exports, so the kernel's
 /// ONE recorder (`admin::planeverbs::audit`) is driven for every linked plane with admin verbs and
 /// the row it writes is read back off the audit ring. Each plane pins its own published literals
-/// (`<kind>`, `<kind>.connect`, `<kind>.approve`) in its own suite (busbar-mcp
-/// `codec/tests/decl_tests.rs`, the retired agent engine's `serve_tests.rs`).
+/// (`<kind>`, `<kind>.connect`, `<kind>.approve`) in its own crate's suite.
 #[test]
 fn the_audit_naming_is_derived_from_the_plane() {
     use busbar_kernel::audit_ring::AUDIT;
