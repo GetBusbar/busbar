@@ -144,15 +144,68 @@ pub trait MoneyBook: Send + Sync {
 /// and the `Posted` it settles reach the ledger's one book-moving function unaltered, so the postings
 /// on the chain are the same bytes in the same order they are today. It exists so exit arms name a
 /// seam instead of a book, not so the book behaves differently.
+///
+/// What it does keep is WHERE the settlement landed ([`SharedBook::landed`]): the seq of the record
+/// the last settlement through it put on the chain, read under the same lock the settlement took,
+/// so the unit's audit record can name the settlement that closed its hold (THE DESIGN §1: the
+/// record's controls carry the hold and settle seqs).
 pub struct SharedBook {
     pub(super) durability: std::sync::Arc<std::sync::Mutex<Durability>>,
+    landed: std::sync::Mutex<Option<u64>>,
 }
 
 impl SharedBook {
     /// A pass-through over a book the caller already opened and shares.
     #[must_use]
     pub fn over(durability: std::sync::Arc<std::sync::Mutex<Durability>>) -> Self {
-        SharedBook { durability }
+        SharedBook {
+            durability,
+            landed: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The seq of the settlement record the last settlement through this seam put on the chain.
+    ///
+    /// `None` when nothing settled through it, when the journal did not take the record (the log
+    /// retains and re-offers it, and a seq the chain never confirmed is not one to cite), and for a
+    /// counts row ([`MoneyBook::post_counts`]), which closes no hold.
+    #[must_use]
+    pub fn landed(&self) -> Option<u64> {
+        *self
+            .landed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// One settlement, under the book's one lock, noting where its record landed.
+    ///
+    /// A settlement's records are the first the append seals, in order from the journal's next
+    /// seq; the one record that can precede them is the `ChainBreak` an append at the bound seals
+    /// first, and that break names its own seq. So the settlement sits at the seq offered, or one
+    /// past it when the break took that seq.
+    fn settling(
+        &self,
+        line: impl FnOnce(&mut Durability) -> Result<Settled, DurabilityLost>,
+    ) -> Result<Settled, DurabilityLost> {
+        // The same lock, taken the way every other holder of it takes it — read through a poisoning
+        // an unrelated unit caused rather than refusing to settle a delivered unit. Held for exactly
+        // the settlement and released, which is what lets a second arm settle behind this one.
+        let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
+        let offered_at = durability.journal.next_seq();
+        let settled = line(&mut *durability);
+        let landed = settled.is_ok().then(|| {
+            let broke = durability
+                .journal
+                .overflows()
+                .iter()
+                .any(|overflow| overflow.chain_break_seq == offered_at);
+            offered_at.saturating_add(u64::from(broke))
+        });
+        *self
+            .landed
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = landed;
+        settled
     }
 }
 
@@ -168,11 +221,7 @@ impl MoneyBook for SharedBook {
         at: &Settling<'_>,
         posted: busbar_contract::caps::Posted,
     ) -> Result<Settled, DurabilityLost> {
-        // The same lock, taken the way every other holder of it takes it — read through a poisoning
-        // an unrelated unit caused rather than refusing to settle a delivered unit. Held for exactly
-        // the settlement and released, which is what lets a second arm settle behind this one.
-        let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-        durability.settle_posted(at, posted)
+        self.settling(|durability| durability.settle_posted(at, posted))
     }
 
     fn settle_counted(
@@ -182,8 +231,7 @@ impl MoneyBook for SharedBook {
         counts: &UnitCounts,
         arrived_ms: u64,
     ) -> Result<Settled, DurabilityLost> {
-        let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-        durability.settle_counted(at, posted, counts, arrived_ms)
+        self.settling(|durability| durability.settle_counted(at, posted, counts, arrived_ms))
     }
 
     fn settle_counted_refusing(
@@ -194,8 +242,9 @@ impl MoneyBook for SharedBook {
         arrived_ms: u64,
         refusal: Option<String>,
     ) -> Result<Settled, DurabilityLost> {
-        let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
-        durability.settle_counted_refusing(at, posted, counts, arrived_ms, refusal)
+        self.settling(|durability| {
+            durability.settle_counted_refusing(at, posted, counts, arrived_ms, refusal)
+        })
     }
 
     fn post_counts(
