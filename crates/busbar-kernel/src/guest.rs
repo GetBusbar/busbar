@@ -16,6 +16,8 @@
 //! ([`GuestRefusal::PeerMix`]; THE DESIGN §6 step 3, boot refusals). A line that needs no point
 //! (auth `none`) is neutral to that rule: it sits on a `Peer` listener behind the connection's
 //! `Peer` verdict, which gates the whole connection ([`GuestList::connection_gated`]; §6 step 7).
+//! A line whose auth needs a point its transport does not offer is refused
+//! ([`GuestRefusal::PointNotOffered`]).
 //!
 //! MATCH. The first line whose path and predicates hold AND whose method set holds the method wins.
 //! When some line's path and predicates hold but none admits the method, the answer is a method
@@ -186,6 +188,8 @@ pub struct Line {
     pub auth: LineAuth,
     /// The transport the connection is handed to after the head, for an upgrade line.
     pub upgrade: Option<String>,
+    /// The auth points the transport that runs the line's auth offers: its auth may need no other.
+    pub offered: AuthPoints,
 }
 
 /// Why a guest list is refused at boot.
@@ -197,6 +201,8 @@ pub enum GuestRefusal {
     /// `Peer`, then the lines that need only `Head` or `HeadBody`, each in the order they are
     /// tried. A line that needs no point is on neither side.
     PeerMix(Box<(Vec<Line>, Vec<Line>)>),
+    /// A line's auth needs a point its transport does not offer: the line.
+    PointNotOffered(Box<Line>),
 }
 
 /// What a request matched.
@@ -218,13 +224,14 @@ pub struct GuestList {
 }
 
 impl GuestList {
-    /// Order `lines` and refuse two claimants' lines that could meet at an equal precedence, and a
-    /// list where some lines need `Peer` and others need a per-request point without it.
+    /// Order `lines` and refuse two claimants' lines that could meet at an equal precedence, a list
+    /// where some lines need `Peer` and others need a per-request point without it, and a line
+    /// whose auth needs a point its transport does not offer.
     ///
     /// # Errors
     ///
     /// [`GuestRefusal::EqualPrecedence`], naming both lines; [`GuestRefusal::PeerMix`], naming
-    /// the lines on each side.
+    /// the lines on each side; [`GuestRefusal::PointNotOffered`], naming the line.
     pub fn seal(mut lines: Vec<Line>) -> Result<Self, GuestRefusal> {
         // Stable: equal keys keep the declared order, and a claimant's rung orders its own lines.
         lines.sort_by(|a, b| {
@@ -257,6 +264,12 @@ impl GuestList {
             let need = lines.iter().filter(|l| peer(l)).cloned().collect();
             let without = lines.iter().filter(|l| per_request(l)).cloned().collect();
             return Err(GuestRefusal::PeerMix(Box::new((need, without))));
+        }
+        if let Some(line) = lines
+            .iter()
+            .find(|l| l.auth.points().bits() & !l.offered.bits() != 0)
+        {
+            return Err(GuestRefusal::PointNotOffered(Box::new(line.clone())));
         }
         Ok(Self {
             lines,

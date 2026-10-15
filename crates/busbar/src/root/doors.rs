@@ -499,6 +499,25 @@ pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }
 
+/// The auth points a linked row's door offers, read off its Statement's `extensions`
+/// (`abi::transport::EXT_OFFERED_POINTS`; THE DESIGN §6 step 3).
+///
+/// # Panics
+///
+/// The build's own door is refused, as [`build`] panics for it.
+#[must_use]
+pub fn offered_of(door: DoorFn) -> busbar_contract::abi::auth::AuthPoints {
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.offered)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
+/// The auth points a row that states no record offers (a row off the door axis states none).
+#[must_use]
+pub fn offers_unstated() -> busbar_contract::abi::auth::AuthPoints {
+    busbar_contract::abi::transport::check::check_offered_points(&[]).unwrap_or_default()
+}
+
 /// The claims a linked row's door opens at an UPGRADE (their row's `unit0_trigger`), read off the
 /// door's Statement: the data door's upgrade lines (ARCHITECT ruling Q128 U7).
 ///
