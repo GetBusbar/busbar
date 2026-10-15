@@ -166,14 +166,16 @@ fn note_witness_row(ctx: &verify::Ctx) -> Row {
         return Row::pass(
             ROW_NOTE_WITNESS,
             NOTE_WITNESS_TITLE,
-            "every test-shaped name in every note resolves to a fn or a .rs stem in the tree",
+            "every test-shaped name in every note resolves to a fn or a .rs stem in the tree, and every \
+             file path a note cites is on disk",
         );
     }
     Row::fail(
         ROW_NOTE_WITNESS,
         "a binding's note names a witness that does not exist",
         format!(
-            "{} citation(s) resolve to no fn and no .rs stem under crates/ or xtask/: {} — a note \
+            "{} citation(s) resolve to no fn, no .rs stem under crates/ or xtask/ and no file on \
+             disk: {} — a note \
              is evidence or it is nothing. Fix by making the symbol exist, or by the note not \
              claiming it; renaming the prose does not discharge it.",
             bad.len(),
