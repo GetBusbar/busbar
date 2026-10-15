@@ -165,6 +165,9 @@ const AT_REGISTRATION: &str = "203.0.113.7";
 /// One scripted judgement: a verdict and the addresses it judged; `None` = nothing was checked.
 type Scripted = Option<(u64, Vec<String>)>;
 
+/// One exchange's framed fields, `(name, value)` in order.
+type Fields = Vec<(Vec<u8>, Vec<u8>)>;
+
 /// A host whose judge answers each attempt from a script (the last answer repeats), and whose
 /// receiver answers `status`; every judged URL and every send is logged, and every send's framed
 /// exchange is read back: the fields the far end is handed, keyed to the URL they went to.
@@ -174,7 +177,7 @@ struct TestHost {
     judged: Vec<String>,
     sent: Vec<String>,
     /// Each send's URL and the fields its exchange framed, in send order.
-    framed: Vec<(String, Vec<(Vec<u8>, Vec<u8>)>)>,
+    framed: Vec<(String, Fields)>,
     /// How many sends answer PENDING before one reaches the receiver.
     pends: u32,
     /// How many attempts were abandoned (their connection closed).
