@@ -2438,19 +2438,21 @@ impl busbar_contract::conn::DeclaredConns for PresentingConns {
         &self,
         owner: busbar_contract::conn::InstanceId,
         need: busbar_contract::conn::NeedId,
+        member: &str,
         origin: &str,
         binding: busbar_contract::conn::ConnAuth,
     ) {
-        self.inner.bind_auth(owner, need, origin, binding);
+        self.inner.bind_auth(owner, need, member, origin, binding);
     }
 
     fn auth_of(
         &self,
         owner: busbar_contract::conn::InstanceId,
         need: busbar_contract::conn::NeedId,
+        member: &str,
         target: &str,
     ) -> Option<busbar_contract::conn::ConnAuth> {
-        self.inner.auth_of(owner, need, target)
+        self.inner.auth_of(owner, need, member, target)
     }
 
     fn declare_member_programs(

@@ -2762,6 +2762,10 @@
     "type Verdict": {
       "kind": "alias",
       "target": "u64"
+    },
+    "type WakeTicket": {
+      "kind": "alias",
+      "target": "busbar_contract::conn::ConnWake"
     }
   }
 }

@@ -22,11 +22,14 @@ fn got(stream: u64, bytes: &[u8], fields: bool) -> Got {
         end_of_frame: true,
         status_code: None,
         status_class: 0,
+        fault: 0,
         retry_after_secs: None,
+        declared_len: None,
         fields,
         text: false,
         reason: None,
         failed: false,
+        end: false,
     }
 }
 

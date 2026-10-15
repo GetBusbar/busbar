@@ -949,7 +949,10 @@ pub(super) mod session_door {
         ))
         .expect("a provider entry");
         let providers = provider_routes(
-            &std::collections::HashMap::from([("p".to_string(), provider)]),
+            &std::collections::HashMap::from([(
+                "p".to_string(),
+                busbar_kernel::config::ResolvedProvider::from(provider),
+            )]),
             &busbar_kernel::config_validate::MetadataPosture::default(),
         );
         let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =

@@ -539,6 +539,9 @@ fn golden_cell(id: &str) -> Result<Value, String> {
     serde_json::from_str(&text).map_err(|e| format!("the cell does not read ({e})"))
 }
 
+/// A step's `(key, text)` pairs: what its output must contain, must lack, or its lines.
+type Pairs<'a> = Vec<(&'a str, &'a str)>;
+
 /// A CITED CELL IS COMPARED, NOT ONLY NAMED: the case's last step that states a status (`exit`, or
 /// an answered `status`, or a `session` that expects a refusal) is held to the cell — its status to
 /// the cell's `status`, and every body or line it states to the cell's recorded body (`body.text`,
@@ -592,37 +595,36 @@ fn held_to_cell(case: &Case, cell: &Value) -> Result<(), String> {
             "the `{kind}` step states status {stated}; the cell records {recorded}"
         ));
     }
-    let (contains, lacks, lines): (Vec<(&str, &str)>, Vec<(&str, &str)>, Vec<(&str, &str)>) =
-        match kind {
-            "validate" => (
-                vec![
-                    ("stdout_contains", body.as_str()),
-                    ("stderr_contains", stderr.as_str()),
-                    ("output_contains", both.as_str()),
-                ],
-                vec![("output_lacks", both.as_str())],
-                vec![
-                    ("stdout_line_eq", body.as_str()),
-                    ("stderr_line_eq", stderr.as_str()),
-                ],
-            ),
-            "boot" => (
-                vec![("output_contains", both.as_str())],
-                vec![("output_lacks", both.as_str())],
-                vec![],
-            ),
-            "session" => (
-                vec![("output_contains", stderr.as_str())],
-                vec![("output_lacks", stderr.as_str())],
-                vec![],
-            ),
-            "call" => (
-                vec![("body_contains", body.as_str())],
-                vec![("body_lacks", body.as_str())],
-                vec![],
-            ),
-            _ => (vec![], vec![], vec![]),
-        };
+    let (contains, lacks, lines): (Pairs<'_>, Pairs<'_>, Pairs<'_>) = match kind {
+        "validate" => (
+            vec![
+                ("stdout_contains", body.as_str()),
+                ("stderr_contains", stderr.as_str()),
+                ("output_contains", both.as_str()),
+            ],
+            vec![("output_lacks", both.as_str())],
+            vec![
+                ("stdout_line_eq", body.as_str()),
+                ("stderr_line_eq", stderr.as_str()),
+            ],
+        ),
+        "boot" => (
+            vec![("output_contains", both.as_str())],
+            vec![("output_lacks", both.as_str())],
+            vec![],
+        ),
+        "session" => (
+            vec![("output_contains", stderr.as_str())],
+            vec![("output_lacks", stderr.as_str())],
+            vec![],
+        ),
+        "call" => (
+            vec![("body_contains", body.as_str())],
+            vec![("body_lacks", body.as_str())],
+            vec![],
+        ),
+        _ => (vec![], vec![], vec![]),
+    };
     let mut held = 0usize;
     for (key, record) in contains {
         for want in texts(s, key) {

@@ -899,7 +899,10 @@ fn a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority() {
     )
     .expect("a provider entry");
     let routes = super::provider_routes(
-        &std::collections::HashMap::from([("p".to_string(), provider)]),
+        &std::collections::HashMap::from([(
+            "p".to_string(),
+            busbar_kernel::config::ResolvedProvider::from(provider),
+        )]),
         &busbar_kernel::config_validate::MetadataPosture::default(),
     );
     let route = &routes["p"];

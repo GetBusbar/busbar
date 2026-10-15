@@ -4510,8 +4510,8 @@ fn the_provider_tenant_merges_deployment_over_catalog() {
 }
 
 /// A NEUTRAL plane that declares its own section and OWNS a second one beside it, the shape of a
-/// door plane whose Statement states a section that is neither declaring nor consumed (the llm
-/// plane's `webhooks:`, ARCHITECT 2026-10-14 option A).
+/// door plane whose Statement states a section that is neither declaring nor consumed (a plane's
+/// own `webhooks:`, ARCHITECT 2026-10-14 option A).
 static OWNS_BESIDE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
     declaration: crate::plane::registry::PlaneDeclaration {
         key: "neutral-test-owns-beside",

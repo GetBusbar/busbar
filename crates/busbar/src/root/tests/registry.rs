@@ -961,7 +961,7 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
         LinkedTransport {
             key: "framed",
             composes_over: &[],
-            build: |_, _| dropped_doors()[0].wire.clone(),
+            build: |_| dropped_doors()[0].wire.clone(),
             claims: || vec!["framed"],
             upgrades: Vec::new,
             lines: Vec::new,
@@ -970,7 +970,7 @@ fn a_dropped_in_transports_upgrade_lines_reach_the_guest_list_as_a_linked_ones_d
         LinkedTransport {
             key: "upgraded",
             composes_over: &["framed"],
-            build: |_, _| dropped_doors()[0].wire.clone(),
+            build: |_| dropped_doors()[0].wire.clone(),
             claims: || vec!["upgraded"],
             upgrades: || vec!["upgraded"],
             lines: Vec::new,
