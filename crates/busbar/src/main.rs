@@ -398,12 +398,10 @@ fn main() {
     // listener is bound. Every axis above is installed by then, which is the ordering the seal
     // needed from this slot in the first place.
     // THE ROOT-BOUND SEAMS the linked entries drive, each bound once here beside the plane axis and
-    // only when some entry drives it: the hostless-egress driver and the egress-trust host (the
-    // "both ends" binding of the outbound hop — a plane holds only `&dyn HostlessEgress` and never
-    // names the core driver; the trust host is a byte-for-byte pass-through nothing on the shipped
-    // path consults yet), the parse-time section list a cross-plane hook refusal reads (after the
-    // plane axis, before the CLI flags read `--validate`), and the envelope a self-enveloping admin
-    // verb builds its own reply through. A build whose entries drive none of them binds none.
+    // only when some entry drives it: the parse-time section list a cross-plane hook refusal reads
+    // (after the plane axis, before the CLI flags read `--validate`), and the envelope a
+    // self-enveloping admin verb builds its own reply through. A build whose entries drive none of
+    // them binds none.
     root::linked::register_seams();
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.

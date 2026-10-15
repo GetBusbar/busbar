@@ -1587,6 +1587,8 @@ pub fn build_app_from_config(
                     prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
                     // The resolved providers: a door plane's probe is handed its referenced ones.
                     providers: Some(&cfg.providers),
+                    // THIS App's hostless-egress driver, held on the plane that builds over it.
+                    hostless: crate::plane::registry::EgressDriver::core(),
                 };
                 (decl.build)(&ctx).map(|obj| (decl.key, obj))
             })

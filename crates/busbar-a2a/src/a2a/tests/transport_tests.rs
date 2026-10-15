@@ -620,7 +620,7 @@ fn the_production_bundle_hands_out_the_real_pieces_and_the_operators_policy() {
         allow_plaintext: true,
         allow_private: true,
     };
-    let live = LiveCardFetch::new(policy.clone());
+    let live = LiveCardFetch::new(policy.clone(), None);
     assert_eq!(
         live.policy(),
         &policy,
@@ -656,10 +656,13 @@ fn the_reverification_pass_runs_on_the_real_pieces_and_the_guard_still_refuses_l
     let (addr, seen) = spawn_http(200, Vec::new(), r#"{"name":"planner"}"#.to_string());
     // Plaintext opted in, so the refusal below can only be the ADDRESS check and not the scheme
     // check standing in front of it.
-    let live = LiveCardFetch::new(FetchPolicy {
-        allow_plaintext: true,
-        ..FetchPolicy::default()
-    });
+    let live = LiveCardFetch::new(
+        FetchPolicy {
+            allow_plaintext: true,
+            ..FetchPolicy::default()
+        },
+        None,
+    );
 
     let mut registration = crate::a2a::registry::AgentRegistration::registered(
         "planner",
@@ -702,7 +705,7 @@ fn the_reverification_pass_runs_on_the_real_pieces_and_the_guard_still_refuses_l
 fn the_production_probe_carries_a_real_resolution_failure_up_to_the_verb_layer() {
     use crate::a2a::verbs::CardSource;
 
-    let live = LiveCardFetch::new(FetchPolicy::default());
+    let live = LiveCardFetch::new(FetchPolicy::default(), None);
     let registration =
         crate::a2a::registry::AgentRegistration::registered("planner", format!("https://{HOST}"));
     let pin_cfg = crate::a2a::config::AgentPinCfg {

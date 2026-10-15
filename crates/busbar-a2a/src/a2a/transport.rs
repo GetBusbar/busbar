@@ -222,6 +222,11 @@ pub(crate) fn resolve_client_identities(
     Ok(out)
 }
 
+/// THE HOSTLESS-EGRESS DRIVER a transport runs its hops on: the one the App handed this plane's
+/// build (`BuildCtx::hostless`), carried plane -> card-fetch bundle -> transport. `None` = no egress
+/// backend behind this plane, and every hop refuses rather than inventing one.
+pub(crate) type Driver = Option<&'static dyn seam::HostlessEgress>;
+
 /// THE REAL TRANSPORT: a pinned `reqwest` hop to the PINNED ADDRESS, over the unified host egress
 /// backend behind [`busbar_kernel::egress::seam`] — pooled by the pinned address, so a repeated hop to an
 /// already-judged target reuses the connection, and the client still refuses a second lookup.
@@ -245,6 +250,8 @@ pub(crate) struct ReqwestTransport {
     /// closes the handshake itself rather than busbar forging an identity. The private key never crosses
     /// the seam. There is no fallback identity and no plane-wide one.
     client_identity_ref: u64,
+    /// The driver every hop of this transport runs on ([`Driver`]), set by [`Self::driving`].
+    egress: Driver,
 }
 
 impl ReqwestTransport {
@@ -260,7 +267,25 @@ impl ReqwestTransport {
             extra_roots: Vec::new(),
             trust_anchor_ref: 0,
             client_identity_ref: 0,
+            egress: None,
         }
+    }
+
+    /// Run every hop of this transport on `egress`, the plane's own driver.
+    pub(crate) fn driving(mut self, egress: Driver) -> Self {
+        self.egress = egress;
+        self
+    }
+
+    /// The driver a hop runs on. A test binary has no App build to hand a transport one, so a
+    /// transport its test built bare runs on the core-backed driver (`tests/egress_boot.rs`), as the
+    /// App build would hand it; a driver the test DID hand it wins.
+    fn driver(&self) -> Driver {
+        #[cfg(all(test, feature = "test-support"))]
+        if self.egress.is_none() {
+            return Some(test_egress_boot::driver());
+        }
+        self.egress
     }
 
     /// THE OUTBOUND MUTUAL-TLS LEG: present `identity` on every hop this transport makes.
@@ -333,8 +358,8 @@ struct Hop<'a> {
     body: Option<Vec<u8>>,
 }
 
-/// TEST-ONLY: install the core-backed hostless-egress driver the composition root installs at boot.
-/// The plane's own test binary has no `main` to do it, so `hop_spec` calls this once, idempotently.
+/// TEST-ONLY: the core-backed hostless-egress driver the App build hands this plane. The plane's own
+/// test binary builds transports with no App behind them, so [`ReqwestTransport::driver`] reads this.
 /// The body — the one place this crate names core's driver type — lives in the `tests/`-path file
 /// `tests/egress_boot.rs` (the twin of `tests/envelope_boot.rs`), so no shipped source file of this
 /// plane spells a core implementation item. Mirrors the MCP leg's identical `test_egress_boot`.
@@ -356,14 +381,6 @@ impl ReqwestTransport {
         body: &'a [u8],
         timeout: Duration,
     ) -> seam::PinnedHop<'a> {
-        // THE BOOT INSTALL, on the dual-compile TEST path only. The busbar-core test binary that
-        // dual-compiles this plane has no composition root to install the hostless-egress driver (the
-        // `busbar` binary's `main` does that), so a plane transport test would otherwise drive an
-        // uninstalled `hostless()` seam. Install the core-backed driver here, idempotently
-        // (`OnceLock`) — reached by both hop methods (`execute`/`post_stream`) since both build their
-        // hop through this. Compiled out of every non-test build; production installs it at boot.
-        #[cfg(all(test, feature = "test-support"))]
-        test_egress_boot::install();
         seam::PinnedHop {
             verb,
             url,
@@ -400,8 +417,8 @@ impl ReqwestTransport {
         // `Location`, the peer SPKI pin (decoded from the same bytes `super::key_info::pin_hash` produces)
         // and whether busbar's own client identity was carried into the handshake. The deadline rides
         // the desc (`timeout_ms`), the identity/trust anchors ride their opaque refs.
-        let buffered =
-            seam::send_pinned_buffered(&hop, cap).map_err(|f| SendFailure::from(f.cause))?;
+        let buffered = seam::send_pinned_buffered(self.driver(), &hop, cap)
+            .map_err(|f| SendFailure::from(f.cause))?;
 
         match buffered.end {
             // A mid-body transport failure is reported with the SAME fixed line the plane's own read
@@ -513,7 +530,7 @@ impl RelayTransport for ReqwestTransport {
         // body over ONE hostless scope (see `CoreHostlessEgress::stream`), so a mid-body failure still
         // carries the flattened cause and the relay reports the same operator line — byte-identical to
         // the manual orchestration this replaced, now naming no `busbar_kernel` egress driver.
-        seam::send_pinned_stream(&hop, cap, on_chunk).map_err(|f| f.cause)
+        seam::send_pinned_stream(self.driver(), &hop, cap, on_chunk).map_err(|f| f.cause)
     }
 }
 
@@ -554,8 +571,9 @@ pub(crate) struct LiveCardFetch {
 }
 
 impl LiveCardFetch {
-    pub(crate) fn new(policy: FetchPolicy) -> Self {
-        Self::presenting(policy, &ClientIdentities::new())
+    /// The bundle over `egress`, the plane's own driver (every transport in it runs on that one).
+    pub(crate) fn new(policy: FetchPolicy, egress: Driver) -> Self {
+        Self::presenting(policy, &ClientIdentities::new(), egress)
     }
 
     /// The production bundle for a plane whose registrations name client certificates.
@@ -563,19 +581,25 @@ impl LiveCardFetch {
     /// Takes the identities by reference and clones per agent, because a `ClientIdentity` is a
     /// parsed key that several transports may need over a process lifetime and the caller resolved
     /// them once.
-    pub(crate) fn presenting(policy: FetchPolicy, identities: &ClientIdentities) -> Self {
+    pub(crate) fn presenting(
+        policy: FetchPolicy,
+        identities: &ClientIdentities,
+        egress: Driver,
+    ) -> Self {
         let per_agent = identities
             .iter()
             .map(|(agent_id, identity)| {
                 (
                     agent_id.clone(),
-                    ReqwestTransport::new(&policy).presenting(identity.clone()),
+                    ReqwestTransport::new(&policy)
+                        .presenting(identity.clone())
+                        .driving(egress),
                 )
             })
             .collect();
         Self {
             resolver: TokioResolver,
-            transport: ReqwestTransport::new(&policy),
+            transport: ReqwestTransport::new(&policy).driving(egress),
             per_agent,
             policy,
         }

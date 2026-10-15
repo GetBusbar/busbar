@@ -172,6 +172,8 @@ pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
             verify,
             cards,
             kept,
+            // THE APP'S hostless-egress driver, held on the plane this generation builds.
+            ctx.hostless.get(),
         )
         .map(|p| p as std::sync::Arc<dyn std::any::Any + Send + Sync>)
     },
@@ -492,6 +494,7 @@ pub(crate) fn a2a_start(
         let live = std::sync::Arc::new(crate::a2a::transport::LiveCardFetch::presenting(
             plane.fetch_policy().clone(),
             &a2a_identities,
+            plane.egress(),
         ));
         // PUBLISHED FOR VERIFY-ON-CALL to re-fetch a stale card with. It carries the per-agent CLIENT
         // IDENTITIES the card verification (`pin.mechanism: mtls`) needs, which the plane's own relay

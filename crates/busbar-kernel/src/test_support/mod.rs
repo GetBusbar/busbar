@@ -957,25 +957,12 @@ impl Default for TestApp {
     }
 }
 
-#[allow(dead_code)]
-/// THE ROOT'S EGRESS BINDING, IN A TEST BINARY. In production the composition root (`busbar`'s
-/// `register_seams`) installs the core-backed hostless-egress driver once, before any plane
-/// dispatches. A plane's own test binary has no `main`, and a plane names no core type, so the
-/// fixture that stands in for the composition root does the same install — idempotent (`OnceLock`,
-/// the first driver wins), and gated on the neutral egress-seam capability the driver itself lives
-/// behind, so a build with no plane that drives egress installs nothing.
-pub fn install_root_egress() {
-    #[cfg(feature = "egress-seam")]
-    busbar_kernel::egress::seam::install_hostless_egress(&crate::egress::seam::CoreHostlessEgress);
-}
-
-/// THE ROOT'S `register_seams`, IN A TEST BINARY: the hostless-egress driver
-/// ([`install_root_egress`]) and the parse-time section list (the test fold,
-/// [`crate::plane::config::default_plane_sections`]), each first-wins. A plane's test-kit calls this
-/// where the composition root would have bound them, so a plane test that drives a wire leg without
-/// building a [`TestApp`] runs on the same bindings a shipped binary does.
+/// THE ROOT'S `register_seams`, IN A TEST BINARY: the parse-time section list (the test fold,
+/// [`crate::plane::config::default_plane_sections`]), first-wins. A plane's test-kit calls this where
+/// the composition root would have bound it, so a plane test that drives a wire leg without building
+/// a [`TestApp`] runs on the same binding a shipped binary does. The hostless-egress driver is no
+/// longer a binding: a plane is handed its App's on the build context (`BuildCtx::hostless`).
 pub fn install_root_seams() {
-    install_root_egress();
     crate::plane::config::install_plane_sections(crate::plane::config::default_plane_sections);
 }
 
@@ -987,9 +974,6 @@ impl TestApp {
     }
 
     pub fn new() -> Self {
-        // THE TEST-SIDE BOOT BINDING: the fixture that stands in for the composition root binds the
-        // hostless-egress driver the root binds at boot (see [`install_root_egress`]).
-        install_root_egress();
         Self {
             plane_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,

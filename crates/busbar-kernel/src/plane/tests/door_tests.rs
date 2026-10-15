@@ -341,6 +341,7 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
         public_url: None,
         prior: None,
         providers: None,
+        hostless: Default::default(),
     };
     let slot = (decl.build)(&ctx).expect("a slot");
     let adm = (decl.admission)(&*slot).expect("an audience from its owned block");
@@ -379,6 +380,7 @@ fn lane_less_healthz(
             public_url: None,
             prior: None,
             providers: None,
+            hostless: Default::default(),
         })
         .expect("a configured door builds its generation's slot");
         fixture.install_plane_runtime(decl.key, slot);
@@ -558,6 +560,7 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
         public_url: None,
         prior: None,
         providers,
+        hostless: Default::default(),
     };
     let slot = (decl.build)(&ctx(Some(&providers))).expect("a slot");
     let slot = slot.downcast_ref::<DoorSlot>().expect("a door slot");

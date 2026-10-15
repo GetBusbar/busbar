@@ -1458,19 +1458,13 @@ pub fn register_ws_arrivals(linked: &Linked) {
 }
 
 /// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
-/// (the manifest's `egress` / `plane-sections` / `admin-envelope` axes, emitted by the build script as
-/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host and the parse-time section
-/// list a cross-plane hook refusal reads. The envelope a self-enveloping admin verb replies through
-/// is the admin crate's, bound by its `install()`. Each backing is a ZST unit struct, so it promotes
-/// to `'static`. The egress-trust host is installed by `run` once the configuration loads, over the
-/// destination guard.
+/// (the manifest's `plane-sections` / `admin-envelope` axes, emitted by the build script as
+/// `linked_*` cfgs): the parse-time section list a cross-plane hook refusal reads. The envelope a
+/// self-enveloping admin verb replies through is the admin crate's, bound by its `install()`. The
+/// `egress` axis binds nothing here: the hostless-egress driver is the App's, handed to each plane on
+/// its build context (`BuildCtx::hostless`). The egress-trust host is installed by `run` once the
+/// configuration loads, over the destination guard.
 pub fn register_seams() {
-    #[cfg(linked_egress)]
-    {
-        busbar_kernel::egress::seam::install_hostless_egress(
-            &busbar_kernel::egress::seam::CoreHostlessEgress,
-        );
-    }
     #[cfg(linked_plane_sections)]
     busbar_kernel::plane::config::install_plane_sections(
         busbar_kernel::plane::config::config_sections,

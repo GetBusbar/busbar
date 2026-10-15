@@ -161,11 +161,6 @@ item = "PLANE_ADMIN_ENVELOPE"
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/egress/seam.rs"
-item = "HOSTLESS"
-
-[[finding]]
-rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/plane/config.rs"
 item = "PLANE_SECTIONS"
 
