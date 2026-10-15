@@ -681,8 +681,8 @@ improvements above. One documented disagreement
 runs the other way: Anthropic's published stream-event union has no `ping` member although the
 docs say `ping` events occur and real Anthropic streams carry them. Busbar keeps emitting
 `event: ping` in cross-protocol Anthropic streams — a client that cannot take it is not an
-Anthropic client — and records the row as a named gap of the spec, re-judged whenever the pin
-moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
+Anthropic client — and the gate judges the stream against both of Anthropic's documents: the
+published union plus the `ping` and in-stream `error` events the streaming guide documents. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
 `testing/llm-conformance/README.md`.
 
 Three request fields now cross between dialects that 1.5.5 dropped on every crossing: Gemini's

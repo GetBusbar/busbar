@@ -1,0 +1,1 @@
+{"max_tokens":64,"messages":[{"content":"ping","role":"user"}],"model":"m-openai-chat","stream":true}
