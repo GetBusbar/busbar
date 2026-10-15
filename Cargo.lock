@@ -516,6 +516,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tokio-util",
+ "tracing",
  "url",
  "webpki-roots",
  "zeroize",
@@ -605,7 +606,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-webhook"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=46cd95ba78f6639b28d14067bc7c6876e00c5458#46cd95ba78f6639b28d14067bc7c6876e00c5458"
+source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=b5240b33d1da15007fac3f74a1ead87f06289fe4#b5240b33d1da15007fac3f74a1ead87f06289fe4"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -617,7 +618,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-webhook-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=46cd95ba78f6639b28d14067bc7c6876e00c5458#46cd95ba78f6639b28d14067bc7c6876e00c5458"
+source = "git+https://github.com/GetBusbar/busbar-export-webhook?rev=b5240b33d1da15007fac3f74a1ead87f06289fe4#b5240b33d1da15007fac3f74a1ead87f06289fe4"
 dependencies = [
  "busbar-contract",
  "busbar-export-webhook",

@@ -1621,6 +1621,36 @@ fn carries_userinfo(target: &str) -> bool {
     }
 }
 
+/// Whether a need's `target_from` reads its target from the plugin's OWN settings: one
+/// `settings.<key>[.<key>...]` path, each key named (a member path, `settings.*…`, names no one
+/// target). Any other target a need is declared with did not come from its own settings.
+fn settings_derived(target_from: &str) -> bool {
+    target_from
+        .strip_prefix("settings.")
+        .is_some_and(|keys| keys.split('.').all(|k| !k.is_empty() && k != "*"))
+}
+
+/// `target` without its userinfo: the authority's text up to and including its last `@` left out,
+/// everything else as written. `None` when no userinfo is found to leave out. The text left out is
+/// never kept, returned or repeated.
+fn without_userinfo(target: &str) -> Option<String> {
+    let start = match target.split_once("://") {
+        Some((scheme, _))
+            if !scheme.is_empty()
+                && scheme
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')) =>
+        {
+            scheme.len() + 3
+        }
+        _ => 0,
+    };
+    let rest = &target[start..];
+    let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
+    let at = rest[..end].rfind('@')?;
+    Some(format!("{}{}", &target[..start], &rest[at + 1..]))
+}
+
 impl DeclaredConns for Connector {
     fn hold_authority(&self, owner: InstanceId) {
         self.authority_held
@@ -1640,12 +1670,12 @@ impl DeclaredConns for Connector {
         // An outbound need is carried over the transport its claim names, its dials judged in its
         // own egress class, and pinned to the target its config names when it names one (a
         // `target_from` that resolved to nothing is refused, and so is a target carrying a
-        // userinfo: a credential never rides a dial target, it travels in the request's own
-        // headers — FAIL-CLOSED, ARCHITECT ruling 2026-10-02; any earlier pin is dropped), and
-        // refused when no loaded transport serves its scheme (spec Part 2 #50; the loader fails
-        // the boot on it, naming the plugin and the scheme). Its connections are secured with the
-        // operator CA its `trust_from` names added on top of the public roots (ARCHITECT ruling
-        // 2026-10-02): a `trust_from` that resolved to nothing, or to a PEM that does not parse
+        // userinfo its own settings did not give it: a credential never rides a dial target, it
+        // travels in the request's own headers — FAIL-CLOSED, ARCHITECT ruling 2026-10-02; any
+        // earlier pin is dropped), and refused when no loaded transport serves its scheme (spec
+        // Part 2 #50; the loader fails the boot on it, naming the plugin and the scheme). Its
+        // connections are secured with the operator CA its `trust_from` names added on top of the
+        // public roots (ARCHITECT ruling 2026-10-02): a `trust_from` that resolved to nothing, or to a PEM that does not parse
         // into a trust anchor, refuses the need here, at declaration. An inbound need is recorded
         // (the listener binds it), and refused on an unserved scheme alike.
         let outbound = spec.direction == DIRECTION_OUTBOUND;
@@ -1656,6 +1686,15 @@ impl DeclaredConns for Connector {
             && !per_member(&spec.target_from)
             && target.is_none())
             || (!spec.trust_from.is_empty() && !per_member(&spec.trust_from) && trust.is_none());
+        // USERINFO IS NOT PART OF A SETTINGS-DERIVED TARGET (ARCHITECT ruling, row 159 audit,
+        // the settings-URL userinfo finding): a target read from the plugin's own settings through `target_from`
+        // is declared without its userinfo, which is dropped here — never recorded, judged or
+        // repeated; a credential the plugin means to send rides its request's own fields. Every
+        // other target carrying a userinfo is refused, and so is one this reading cannot clear.
+        let cleared = target
+            .filter(|t| settings_derived(&spec.target_from) && carries_userinfo(t))
+            .and_then(without_userinfo);
+        let target = cleared.as_deref().or(target);
         let credentialed = target.is_some_and(carries_userinfo);
         let anchored = match trust.filter(|_| outbound) {
             None => Ok(None),
