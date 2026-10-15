@@ -691,7 +691,7 @@ impl PluginRegistry {
             .map_err(|e| format!("transport plugin '{name}' refused at its door: {e}"))?
             {
                 Staging::Door(plugin) => entries.doors.push(plugin),
-                Staging::NotADoor(..) => {
+                Staging::NotADoor => {
                     return Err(format!(
                         "transport plugin '{name}' exports no memory-ABI door \
                          (`busbar_plugin_door`): a transport loads only through its door"

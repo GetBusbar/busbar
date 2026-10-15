@@ -587,8 +587,9 @@ fn check_facts<K: Kind>(stated: &[u8]) -> Result<(), LoadError> {
 pub(crate) enum Staging<K: Kind> {
     /// A memory-ABI plugin, admitted through its door.
     Door(Plugin<K>),
-    /// No door: not a memory-ABI plugin; the library and its backing come back for another lane.
-    NotADoor(Library, crate::stage::Staged),
+    /// No door: not a memory-ABI plugin. There is no other lane (row 84 deleted the HOT load
+    /// paths), so the library and its backing are released here and the caller refuses it.
+    NotADoor,
 }
 
 /// THE DROPPED-IN DOOR OF A STAGED LIBRARY: `lib` (already `dlopen`ed from its signed tarball's
@@ -605,7 +606,8 @@ pub(crate) fn load_staged<K: Kind>(
     // fn pointer, kept valid by `Lib` for as long as any handle to the instance lives.
     let door = unsafe { lib.get::<DoorFn>(DOOR_SYMBOL).map(|s| *s) };
     let Ok(door) = door else {
-        return Ok(Staging::NotADoor(lib, staged));
+        drop((lib, staged));
+        return Ok(Staging::NotADoor);
     };
     let stated = stated.ok_or(LoadError::StatementMismatch)?;
     let lib = Lib(Some(lib), Some(staged));
