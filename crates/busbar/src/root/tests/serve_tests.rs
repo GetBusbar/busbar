@@ -7626,6 +7626,9 @@ mod pools_door_money {
             RigOpts {
                 members: &[(server.address().port(), 1)],
                 lane_budget: Some(1),
+                // The cap reaches the door as the deployment's `limits` (its settings), not as
+                // the process-wide install above, which only the kernel's own reads see.
+                request_body_max_bytes: Some(CAP),
                 ..RigOpts::default()
             },
         )

@@ -833,24 +833,21 @@ async fn test_same_protocol_nonstream_multichunk_counts_usage() {
     );
 }
 
-/// BILLING-TRUNCATION regression (MEDIUM): a same-protocol non-stream `application/json` body
-/// LARGER than the usage-tap reassembly cap (`nonstream_buf`, capped at
-/// `max_translated_body_bytes()`) must still bill its trailing `usage` object correctly. The client
-/// always receives the body byte-for-byte regardless (asserted below); this test is about the
-/// SEPARATE billing-only copy.
-///
-/// Before the fix, `nonstream_buf` was HEAD-truncated: bytes past the cap were simply dropped, so
-/// once the body exceeded the cap the retained prefix never reached the tail `usage` object (every
-/// dialect places `usage` at/near the end) — `extract_usage` parsed nothing, and the request billed
-/// ZERO tokens despite the client receiving the full, valid completion. After the fix, the buffer is
-/// TAIL-anchored (drops from the FRONT once over cap), so the trailing `usage` object survives and
-/// is recovered even from a fragment whose head is gone (`usage::recover_truncated_usage`).
+/// A SAME-PROTOCOL NON-STREAM BODY PAST THE USAGE TAP'S CAP BILLS NO TRAILING USAGE, AS IN 1.5.5
+/// (map row 336, held to 1.5.5 by the coordinator ruling of 2026-10-15; its served twin is
+/// `busbar-plane-llm/tests/exchange_reply.rs::rehomed_metering::a_same_dialect_body_past_the_cap_bills_no_trailing_usage_as_in_1_5_5`).
+/// v1.5.5 `crates/busbar/src/proxy/response_body.rs:229-262` kept a copy of a same-dialect body
+/// capped at `MAX_TRANSLATED_BODY_BYTES`, dropped the overflow and warned that the request was
+/// undercounted: a `usage` past the cap was never read, and no tokens were billed. This test used to
+/// pin a post-1.5.5 tail-anchored copy that billed the trailing usage (1000 tokens); the engine's
+/// relay is the plane's, which bills as 1.5.5 did (#852). The client still receives the body
+/// byte-for-byte (asserted below).
 ///
 /// Uses a small test cap (via `InstallGuard`, not the 32 MiB production default) so the over-cap
 /// body doesn't need to be enormous, and drives `FirstByteBody` directly with the body split across
 /// several transport-frame-sized chunks (mirroring `test_same_protocol_nonstream_multichunk_counts_usage`).
 #[tokio::test]
-async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
+async fn test_same_protocol_nonstream_over_cap_body_bills_no_trailing_usage_as_in_1_5_5() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use crate::test_support::engine_kit::EngineTestKit as _;
@@ -967,33 +964,29 @@ async fn test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage() {
             .expect("usage read")
             .map(|u| u.tokens)
             .unwrap_or(0);
-        if tokens == 1000 {
+        if tokens != 0 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
     assert_eq!(
-        tokens, 1000,
-        "an over-cap same-protocol non-stream body's tail usage MUST still be billed (1000 tokens); \
-         the old head-truncate code billed 0 here because the retained prefix never reached the \
-         tail `usage` object"
+        tokens, 0,
+        "a usage past the tap's cap is never read and bills no tokens, as 1.5.5 billed none \
+         (v1.5.5 proxy/response_body.rs:229-262)"
     );
 }
 
-/// C2 FAIL-OPEN-TO-FREE regression (HIGH): a same-protocol non-stream body that overflows the
-/// usage-tap reassembly cap AND whose `usage` object cannot be recovered from the retained tail must
-/// NOT bill ZERO tokens. Here the `usage` object sits at the FRONT of the body and a huge `content`
-/// filler trails it, so once the body exceeds the cap the tail-anchored buffer drops the FRONT
-/// (including `usage`) and `recover_truncated_usage` finds no `"usage"` in the tail → recovery
-/// returns `None`. The response demonstrably consumed tokens (it blew past the cap), yet the old
-/// code metered `token_usage = None` → all-zero tiers → only the flat fee, real tokens at $0.
-///
-/// After the C2 fix a truncated-beyond-recovery body falls back to a conservative FLOOR estimate
-/// derived from the retained tail (`estimate_usage_from_truncated_tail`), so the request bills a
-/// NON-ZERO amount rather than being silently free. With the small test cap the retained tail is
-/// exactly `CAP` bytes, so the deterministic floor is `CAP / TRUNCATED_TAIL_BYTES_PER_TOKEN`.
+/// A SAME-PROTOCOL NON-STREAM BODY TRUNCATED PAST THE USAGE TAP'S CAP BILLS NO FLOOR, AS IN 1.5.5
+/// (map row 337, held to 1.5.5 by the coordinator ruling of 2026-10-15; its served twin is
+/// `busbar-plane-llm/tests/exchange_reply.rs::rehomed_metering::a_same_dialect_body_truncated_past_the_cap_bills_no_floor_as_in_1_5_5`).
+/// Here the `usage` object sits at the FRONT of the body and a huge `content` filler trails it.
+/// v1.5.5 `crates/busbar/src/proxy/response_body.rs:229-262`: a same-dialect body past the usage
+/// tap's cap was counted once on `BILLING_TRUNCATED_TOTAL`, warned as undercounted, and billed no
+/// tokens; 1.5.5 billed no floor for it. This test used to pin a post-1.5.5 floor
+/// (`CAP / TRUNCATED_TAIL_BYTES_PER_TOKEN`); the engine's relay is the plane's, which bills as 1.5.5
+/// did (#852).
 #[tokio::test]
-async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
+async fn test_truncated_beyond_recovery_bills_no_floor_as_in_1_5_5() {
     crate::testkit::install_test_seams();
     use super::FirstByteBody;
     use crate::test_support::engine_kit::EngineTestKit as _;
@@ -1098,9 +1091,6 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
         "the client must still receive the complete over-cap body verbatim"
     );
 
-    // Deterministic floor: the tail-anchored buffer holds exactly CAP bytes at end, and the C2
-    // fallback estimates output tokens as tail_len / TRUNCATED_TAIL_BYTES_PER_TOKEN.
-    let expected_floor = CAP as u64 / super::TRUNCATED_TAIL_BYTES_PER_TOKEN;
     let mut tokens = 0;
     for _ in 0..200 {
         tokio::task::yield_now().await;
@@ -1109,20 +1099,15 @@ async fn test_truncated_beyond_recovery_bills_nonzero_floor_not_zero() {
             .expect("usage read")
             .map(|u| u.tokens)
             .unwrap_or(0);
-        if tokens == expected_floor {
+        if tokens != 0 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(1)).await;
     }
-    assert!(
-        tokens > 0,
-        "a truncated-beyond-recovery body that consumed tokens MUST NOT bill ZERO (C2 \
-         fail-open-to-free): recovery returned None, so the old code metered all-zero tiers and \
-         only the flat fee landed"
-    );
     assert_eq!(
-        tokens, expected_floor,
-        "the C2 fallback must bill the conservative tail-derived FLOOR ({expected_floor} tokens)"
+        tokens, 0,
+        "a body past the tap's cap bills no floor and no tokens, as 1.5.5 billed none \
+         (v1.5.5 proxy/response_body.rs:229-262)"
     );
 }
 

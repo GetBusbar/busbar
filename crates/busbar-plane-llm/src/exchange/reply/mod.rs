@@ -462,6 +462,7 @@ impl Reply {
                     };
                 }
                 let partial = relay.partial();
+                let failed_generation = relay.failed_generation(ctx.lane.dialect);
                 let end = relay.end(host);
                 if !end.bytes.is_empty() {
                     out.to_mut().extend_from_slice(&end.bytes);
@@ -473,8 +474,10 @@ impl Reply {
                 // A stream the far end itself ended as FAILED (its terminal error, or a translation
                 // that aborted) delivered no completed generation and bills no tokens, as 1.5.5
                 // billed none (v1.5.5 proxy/response_body.rs:550-575, `if !billing_failed`): its
-                // buffered twin (a `failed` status) reports none either (row-159 L3#4).
-                let units = if end.stream_fault.is_some() {
+                // buffered twin (a `failed` status) reports none either (row-159 L3#4). A FAILED
+                // GENERATION is not one of those: 1.5.5's reader raised no error for it and billed
+                // what it reported, and owner ruling Q31 charges it too ([`Relay::failed_generation`]).
+                let units = if end.stream_fault.is_some() && !failed_generation {
                     Units::default()
                 } else {
                     Units {
@@ -537,14 +540,23 @@ impl Reply {
                 )
             }
             State::Relay {
-                mut relay, head, ..
+                mut relay,
+                head,
+                units,
             } => {
                 let cut = relay.cut(host, transport);
                 self.ended_partial = cut.partial;
                 Piece {
                     head,
                     bytes: Cow::Owned(cut.bytes.unwrap_or_default()),
-                    units: Units::of(cut.usage.as_ref(), BTreeMap::new()),
+                    // The cut's report replaces a floor stated while relaying, even when it is
+                    // zero, as the end's does: a whole answer the FAR END cut bills only the usage
+                    // it reported in the bytes in hand (OWNER RULING Q31, v1.5.5 billed no floor
+                    // for it); the floor is what a caller that LEAVES mid-relay bills (item 367).
+                    units: Units {
+                        stated: units.floor,
+                        ..Units::of(cut.usage.as_ref(), BTreeMap::new())
+                    },
                     verdict: Verdict::Hard,
                     fault: Some(Fault::Transient(cut.reason)),
                     done: true,

@@ -492,6 +492,25 @@ impl Relay {
                 .is_some_and(|t| t.aborted() || t.terminal_error().is_some())
     }
 
+    /// THE STREAM'S TERMINAL ERROR IS ITS FAR END'S FAILED GENERATION: the far dialect's own stop
+    /// token that reads as a failed generation (a Gemini `MALFORMED_FUNCTION_CALL`, a Cohere
+    /// `ERROR`), which its reader surfaces as an error beside the usage it reports (owner ruling
+    /// Q31). 1.5.5's readers raised no error for those stops, so 1.5.5 billed the usage the stream
+    /// reported (v1.5.5 `proxy/response_body.rs:550-575`: only a reader-emitted terminal error
+    /// skipped the token fee) — and Q31 keeps that charge. Every other terminal error is one 1.5.5
+    /// raised too, and bills no tokens. `far` is the far end's dialect.
+    #[must_use]
+    pub fn failed_generation(&self, far: &str) -> bool {
+        self.translate
+            .as_ref()
+            .and_then(|t| t.terminal_error())
+            .is_some_and(|signal| {
+                crate::codec::proto_codec::with_reader(far, |r| r.stop_reason_of_token(signal))
+                    .flatten()
+                    == Some(crate::codec::ir::IrStopReason::Error)
+            })
+    }
+
     /// The usage a stream's readers have read so far (cheap: nothing is scanned); `None` for a
     /// relay that reads its usage only at the end.
     #[must_use]

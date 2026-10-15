@@ -14,13 +14,17 @@ use busbar_plane_llm::exchange::reply::failure::{
 use busbar_plane_llm::exchange::reply::wire::head_field;
 use serde_json::Value;
 
-/// The codec host these tests hand the plane: the OS CSPRNG and the system clock in whole seconds,
-/// read the way the kernel's host reads them.
+/// The codec host these tests hand the plane: a FIXED entropy source and the system clock in whole
+/// seconds. Fixed, because the twin proofs here (one answer judged or relayed twice, compared byte
+/// for byte) need a minted id (a request id, a `chatcmpl-` id) to be the same in both: the plane
+/// draws every id from its host (#1028), and a CSPRNG would answer two different ids. A source that
+/// answers is still a source: every dialect mints its id as it does in production.
 struct TestHost;
 
 impl busbar_contract::codec::CodecHost for TestHost {
     fn fill_entropy(&self, out: &mut [u8]) -> bool {
-        getrandom::fill(out).is_ok()
+        out.fill(7);
+        true
     }
 
     fn wall_clock_now(&self) -> Option<u64> {
@@ -3745,7 +3749,7 @@ mod rehomed_metering {
             .count()
     }
 
-    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage`
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_same_protocol_nonstream_over_cap_body_bills_no_trailing_usage_as_in_1_5_5`
     /// (map row 336), HELD TO 1.5.5 (coordinator ruling 2026-10-15; the legacy test pinned a
     /// post-1.5.5 tail copy). v1.5.5 `crates/busbar/src/proxy/response_body.rs:229-262` kept a copy
     /// of a same-dialect body capped at `MAX_TRANSLATED_BODY_BYTES`, dropped the overflow, counted
@@ -3768,7 +3772,16 @@ mod rehomed_metering {
         let read = answer(&ctx, 200, JSON_HEAD, &pieces, false);
         assert_eq!(read.body, body.as_bytes(), "the whole body, verbatim");
         assert_eq!(read.tokens(), (0, 0), "no usage past the cap bills");
-        assert_eq!(read.end().units, Units::default(), "nothing billed");
+        // Nothing billed: the end STATES its zero (`stated`), so it replaces the floor the relay
+        // stated while the body was still under the cap (`plane_door::counts`), never leaves it.
+        assert_eq!(
+            read.end().units,
+            Units {
+                stated: true,
+                ..Units::default()
+            },
+            "nothing billed"
+        );
         assert_eq!(
             truncations(body.as_bytes(), CAP),
             1,
@@ -3776,7 +3789,7 @@ mod rehomed_metering {
         );
     }
 
-    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_truncated_beyond_recovery_bills_nonzero_floor_not_zero`
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_truncated_beyond_recovery_bills_no_floor_as_in_1_5_5`
     /// (map row 337), HELD TO 1.5.5 (coordinator ruling 2026-10-15; the legacy test pinned a
     /// post-1.5.5 floor). v1.5.5 `crates/busbar/src/proxy/response_body.rs:229-262`: a same-dialect
     /// body past the usage tap's cap is counted once on `BILLING_TRUNCATED_TOTAL` and its tokens go
@@ -3797,7 +3810,15 @@ mod rehomed_metering {
         let read = answer(&ctx, 200, JSON_HEAD, &pieces, false);
         assert_eq!(read.body, body.as_bytes(), "the whole body, verbatim");
         assert_eq!(read.tokens(), (0, 0), "no floor past the cap");
-        assert_eq!(read.end().units, Units::default(), "nothing billed");
+        // Nothing billed: the end's stated zero replaces the floor stated under the cap.
+        assert_eq!(
+            read.end().units,
+            Units {
+                stated: true,
+                ..Units::default()
+            },
+            "nothing billed"
+        );
         assert_eq!(
             truncations(body.as_bytes(), CAP),
             1,

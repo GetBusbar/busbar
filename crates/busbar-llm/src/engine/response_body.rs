@@ -137,10 +137,6 @@ impl std::fmt::Debug for TapCell {
     }
 }
 
-/// Bytes-per-token divisor for the truncated-tail billing FLOOR (the plane's), read by the tests.
-#[cfg(test)]
-pub(crate) use busbar_plane_llm::codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN;
-
 /// The floor over a truncated tail (the plane's reply), read by the tests.
 #[cfg(test)]
 pub(crate) use crate::engine::xchg::reply::wire::estimate_usage_from_truncated_tail;
