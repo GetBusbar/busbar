@@ -253,6 +253,9 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
 // feature) drops the crate edge and the registration together, exactly as the feature-gated line per
 // crate this replaced did.
 include!(concat!(env!("OUT_DIR"), "/linked.rs"));
+// `LINKED_HOOK_NAMES`: each linked hook row's name as the admin surface prints it (the manifest's
+// `linked-name` rows), handed to the admin crate below so it names no hook plugin.
+include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
 /// REGISTER THE LINKED PROTOCOLS — the composition root's one write into the protocol axis, over
 /// every entry in [`LINKED`] (see [`root::linked::register_protocols`]).
@@ -314,6 +317,9 @@ fn register_planes() {
     // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
     // through the seam whenever this (mandatory) sibling is linked, which is every real build.
     busbar_core_admin::install();
+    // The hook rows this build links, by the names the admin surface prints (Law 1: the admin crate
+    // spells no hook plugin; which hooks a build carries is the manifest's data).
+    busbar_core_admin::v1::service::install_hook_plugins(LINKED_HOOK_NAMES);
 
     // THE ROOT UNITS' SEALS. Each reads what its unit composes against the axes installed above and
     // against nothing else — it binds no listener, opens no store, reads no configuration and writes
