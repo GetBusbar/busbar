@@ -415,6 +415,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
         ..Default::default()
     });
     let ctx = |n: u64| UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: busbar_contract::UnitKey::new(n),
         origin: busbar_contract::caps::OriginKind::Client,
         session: None,
@@ -562,6 +563,7 @@ fn charge_once(
     );
     steps.lock().routed = pools.resolve(ROUTE_POOL, Some(pool.as_bytes()));
     let ctx = busbar_kernel::teller::UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: busbar_contract::UnitKey::new(unit),
         origin: busbar_contract::caps::OriginKind::Client,
         session: None,
@@ -7789,6 +7791,7 @@ fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowher
     let facts = super::door_facts("p", &["seat"], &[], &[], "a", Vec::new());
     let p = pools("a: {}\nb: {}\npools:\n  both:\n    members: [a, b]\n    member_granted: true");
     let ctx = UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: busbar_contract::UnitKey::new(1),
         origin: busbar_contract::caps::OriginKind::Client,
         session: None,

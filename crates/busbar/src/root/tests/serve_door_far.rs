@@ -281,6 +281,7 @@ async fn the_planes_fault_reading_reaches_the_breaker_through_the_doors_far_end(
         },
     );
     let ctx = UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: busbar_contract::UnitKey::new(1),
         origin: busbar_contract::caps::OriginKind::Client,
         session: None,

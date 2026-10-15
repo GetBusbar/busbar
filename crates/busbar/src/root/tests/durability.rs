@@ -3032,6 +3032,7 @@ fn a_driven_unit_killed_mid_stream_over_the_store_is_recovered_at_its_flushed_ch
             },
         );
         let ctx = busbar_kernel::teller::UnitCtx {
+            call: busbar_contract::caps::CallId::UNBOUND,
             key: unit,
             origin: OriginKind::Client,
             session: None,
@@ -3374,6 +3375,7 @@ fn a_driven_unit_killed_mid_stream_is_recovered_at_its_flushed_checkpoint() {
             },
         );
         let ctx = busbar_kernel::teller::UnitCtx {
+            call: busbar_contract::caps::CallId::UNBOUND,
             key: unit,
             origin: OriginKind::Client,
             session: None,

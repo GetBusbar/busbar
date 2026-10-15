@@ -306,6 +306,7 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     );
     let seal = busbar_kernel::test_support::tokens::seal();
     let ctx = UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: busbar_contract::ids::UnitKey::new(9),
         origin: busbar_contract::caps::OriginKind::Client,
         session: None,
