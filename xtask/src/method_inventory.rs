@@ -863,29 +863,29 @@ pub fn find_source(pattern: &str, what: &str) -> Result<PathBuf, String> {
     })
 }
 
-/// Where the plane keeps its vendored copy of a2a-pb's `proto/a2a.proto`, repo-relative.
+/// Where the plane keeps its vendored copy of a2a-pb's `proto/a2a.proto`, repo-relative: in the
+/// tree while the plane lived here, and since it left for its own repo (row 106), in the checkout of
+/// the rev the root pins, which [`Ctx::workspace`] lays at this same path as its BASE layer.
 const A2A_PROTO_IN_TREE: &str = "crates/busbar-plane-a2a/proto/a2a.proto";
 
-fn read_sources() -> Result<(String, String), String> {
+fn read_sources(cx: &Ctx) -> Result<(String, String), String> {
     let rmcp = find_source(
         &format!("rmcp-{RMCP_VERSION}/src/model.rs"),
         &format!("rmcp {RMCP_VERSION}"),
     )?;
     // THE A2A PLANE VENDORS a2a-pb's `proto/a2a.proto` byte for byte (its gRPC line generates the
-    // messages from it, ARCHITECT ruling Q1 (C)), so the source is the plane's copy in this tree,
-    // not a registry download of a crate nothing depends on any more.
-    let proto = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join(A2A_PROTO_IN_TREE);
-    if !proto.exists() {
-        return Err(format!(
-            "cannot find a2a-pb {A2A_PB_VERSION}'s a2a.proto at {}. This REFUSES rather than \
-             skipping: an inventory derived from an absent source would be an inventory of nothing.",
-            proto.display()
-        ));
-    }
-    let rd = |p: &PathBuf| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
-    Ok((rd(&rmcp)?, rd(&proto)?))
+    // messages from it, ARCHITECT ruling Q1 (C)), so the source is the plane's copy, read through
+    // the context (the tree, else the pinned plane's checkout laid as its base), not a registry
+    // download of a crate nothing depends on any more.
+    let proto = cx.read(A2A_PROTO_IN_TREE).map_err(|e| {
+        format!(
+            "cannot find a2a-pb {A2A_PB_VERSION}'s a2a.proto at {A2A_PROTO_IN_TREE} ({e}). This \
+             REFUSES rather than skipping: an inventory derived from an absent source would be an \
+             inventory of nothing."
+        )
+    })?;
+    let model = std::fs::read_to_string(&rmcp).map_err(|e| format!("{}: {e}", rmcp.display()))?;
+    Ok((model, proto))
 }
 
 // ---------------------------------------------------------------------------
@@ -1083,7 +1083,7 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
         }
     };
     if mode == "selftest" {
-        let (model, proto) = match read_sources() {
+        let (model, proto) = match read_sources(cx) {
             Ok(x) => x,
             Err(e) => return die(&e),
         };
@@ -1093,7 +1093,7 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
         }
         return if ok { 0 } else { 1 };
     }
-    let (model, proto) = match read_sources() {
+    let (model, proto) = match read_sources(cx) {
         Ok(x) => x,
         Err(e) => return die(&e),
     };
@@ -1445,7 +1445,13 @@ mod tests {
     /// REFUSES in that case rather than skipping.
     #[test]
     fn the_committed_inventory_equals_a_fresh_derivation_of_the_real_sources() {
-        let Ok((model, proto)) = read_sources() else {
+        let Ok(cx) = crate::ctx::Ctx::workspace() else {
+            eprintln!(
+                "SKIPPED: the workspace (with its pinned planes) does not open on this machine"
+            );
+            return;
+        };
+        let Ok((model, proto)) = read_sources(&cx) else {
             eprintln!("SKIPPED: rmcp/a2a-pb sources are not in the cargo registry on this machine");
             return;
         };

@@ -80,6 +80,26 @@ version = "1"
 repos = ["busbar-store-mysql"]
 reason = "TESTS ONLY: sortable ids the mysql store's conformance battery writes (a dev-dependency since busbar-store-mysql#15)."
 
+[plugin-deps.pbjson]
+version = "0.9"
+repos = ["busbar-plane-a2a"]
+reason = "the ProtoJSON mapping of the a2aproject's gRPC messages the a2a plane generates from its vendored `a2a.proto` (ARCHITECT ruling Q1 (C), 2026-10-04: the plane generates its messages; no gRPC server stack in a plane's closure). Moved here from busbar's root table when the a2a plane left busbar for its own repo (row 106): nothing in busbar names it."
+
+[plugin-deps.prost-build]
+version = "0.14"
+repos = ["busbar-plane-a2a"]
+reason = "BUILD ONLY: the a2a plane's `build.rs` generates the a2aproject's prost messages from its vendored `a2a.proto` (ARCHITECT ruling Q1 (C), 2026-10-04). Never in the shipped image. Moved here from busbar's root table with the plane (row 106)."
+
+[plugin-deps.pbjson-build]
+version = "0.9"
+repos = ["busbar-plane-a2a"]
+reason = "BUILD ONLY: the a2a plane's `build.rs` generates the ProtoJSON serde for those messages (ARCHITECT ruling Q1 (C), 2026-10-04). Never in the shipped image. Moved here from busbar's root table with the plane (row 106)."
+
+[plugin-deps.protoc-bin-vendored]
+version = "3"
+repos = ["busbar-plane-a2a"]
+reason = "BUILD ONLY: the protoc the a2a plane's `build.rs` drives, vendored so the build needs no system protoc (ARCHITECT ruling Q1 (C), 2026-10-04). Never in the shipped image. Moved here from busbar's root table with the plane (row 106)."
+
 # ── Extra semver lines (Cargo.lock parity, ARCHITECT 2026-10-05) ──────────────────────────────────
 # Parity is ONE vetted version per semver-compatible line, shared by busbar and its plugins: where busbar's
 # lock holds a version in a crate's compatible line, a plugin's lock holds exactly that version (any drift
