@@ -111,7 +111,7 @@ impl FramerDoor for LengthDoor {
                             len: len as u64,
                             code: 0,
                             status_class: 0,
-                            _reserved: 0,
+                            fault: 0,
                             flags: PIECE_END_OF_FRAME,
                             retry_after_secs: 0,
                         });

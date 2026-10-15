@@ -33,8 +33,9 @@ pub const NEEDLES: &[&str] = &[
 ];
 
 /// The crates that still carry plane code beside the `busbar-plane-*` crates.
-/// `busbar-voice` is struck: FLIP-STREAMING deleted the legacy streams crate.
-pub const PLANE_HOMES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a"];
+/// `busbar-voice` is struck: FLIP-STREAMING deleted the legacy streams crate; `busbar-a2a` likewise
+/// (FLIP-A2A).
+pub const PLANE_HOMES: &[&str] = &["busbar-llm", "busbar-mcp"];
 
 pub const SPEC: Spec = Spec {
     gate: "plane-secret-blindness",

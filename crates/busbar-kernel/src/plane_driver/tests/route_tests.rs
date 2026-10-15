@@ -26,6 +26,7 @@ fn piece(from: u32, attempt_no: u32, head: bool) -> Piece {
         attempt_no,
         src: Src::None,
         head,
+        reason: 0,
     }
 }
 
@@ -150,4 +151,24 @@ fn a_plane_is_lent_the_operators_name_of_its_member() {
     assert_eq!(super::operator_name(key.as_bytes()), b"fs");
     assert_eq!(super::operator_name(b"gpt-model"), b"gpt-model");
     assert_eq!(super::operator_name(b""), b"");
+}
+
+/// Only the REFUSED PIECE lends a reason (`OnPieceIn::reason`, with `PIECE_REFUSED`); every other
+/// piece lends `0`.
+#[test]
+fn only_the_refused_piece_lends_its_reason() {
+    let mut b = bufs(0);
+    for from in [FROM_KERNEL, FROM_CALLER, FROM_FAR_END] {
+        let (i, _) = frame(&mut b, &piece(from, 0, false), 9);
+        assert_eq!(i.reason, 0);
+    }
+    let code = reason_code(ReasonCode::CredentialUnavailable);
+    let refused = Piece {
+        flags: PIECE_REFUSED | PIECE_LAST,
+        reason: code,
+        ..piece(FROM_KERNEL, 0, false)
+    };
+    let (i, _) = frame(&mut b, &refused, 9);
+    assert_eq!((i.flags, i.reason), (PIECE_REFUSED | PIECE_LAST, code));
+    assert_eq!(refused.continuation().reason, 0, "its re-call carries none");
 }

@@ -43,4 +43,6 @@ pub(crate) const TAIL: TransportTail = TransportTail {
     status_rows_len: 0,
     settings: std::ptr::null(),
     settings_len: 0,
+    fault_rows: std::ptr::null(),
+    fault_rows_len: 0,
 };

@@ -414,7 +414,7 @@ pub struct Units {
 /// rule's loud failure (finding 395, kept: "a usage member present but not a whole count is
 /// LOCATED, never dropped"), never a silent 0. Names the member's pointer.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Unreadable(pub &'static str);
+pub struct UnreadableUsage(pub &'static str);
 
 /// What one answer bills, in [`tail::BILLABLE_CLASSES`]' order of reading: the decision count,
 /// the input and output tokens, and the request fee. `None` = nothing in that class.
@@ -702,9 +702,9 @@ impl FarEndReading {
     ///
     /// # Errors
     ///
-    /// [`Unreadable`]: a success whose usage member is present but is not a whole count a signed
-    /// 64-bit count holds (negative, fractional, a string, `null`, past `i64::MAX`).
-    pub fn counts(&self, status: Option<u32>) -> Result<Counts, Unreadable> {
+    /// [`UnreadableUsage`]: a success whose usage member is present but is not a whole count a
+    /// signed 64-bit count holds (negative, fractional, a string, `null`, past `i64::MAX`).
+    pub fn counts(&self, status: Option<u32>) -> Result<Counts, UnreadableUsage> {
         if !self.success(status) {
             return Ok([None; 4]);
         }
@@ -713,10 +713,10 @@ impl FarEndReading {
         let mut whole = [None; 3];
         for (i, (_, pointer)) in usage.counted.iter().enumerate() {
             whole[i] = match members[i] {
-                Member::Absent if i == 0 && usage.required => return Err(Unreadable(pointer)),
+                Member::Absent if i == 0 && usage.required => return Err(UnreadableUsage(pointer)),
                 Member::Absent => None,
                 Member::Whole(n) => Some(n),
-                Member::Unreadable => return Err(Unreadable(pointer)),
+                Member::Unreadable => return Err(UnreadableUsage(pointer)),
             };
         }
         let reported = |class: u32, amount: u64| Units {
@@ -761,13 +761,13 @@ pub const NOT_RELAYED: &[&str] = &[
 /// The caller's fields the far end receives, held in one buffer per unit: each field's name
 /// (lowercased) and value, back to back, and where each ends.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct Relayed {
+pub struct RelayedFields {
     bytes: Vec<u8>,
     /// Per field, `(end of its name, end of its value)` in `bytes`.
     ends: Vec<(usize, usize)>,
 }
 
-impl Relayed {
+impl RelayedFields {
     /// Every field, `(name, value)`, in the caller's order.
     pub fn iter(&self) -> impl Iterator<Item = (&[u8], &[u8])> + '_ {
         let mut from = 0;
@@ -797,7 +797,7 @@ fn relayed(name: &[u8]) -> bool {
 /// passes every header but the governed set; ARCHITECT DEC-SERVE Q2, the OWNER's DIALECT-FIDELITY
 /// F2). Names are lowercased, as the wire compares them. Kept in one buffer sized once.
 #[must_use]
-pub fn relayed_fields<'f, I>(caller: I) -> Relayed
+pub fn relayed_fields<'f, I>(caller: I) -> RelayedFields
 where
     I: IntoIterator<Item = (&'f [u8], &'f [u8])>,
     I::IntoIter: Clone,
@@ -808,7 +808,7 @@ where
         size += name.len() + value.len();
         count += 1;
     }
-    let mut kept = Relayed {
+    let mut kept = RelayedFields {
         bytes: Vec::with_capacity(size),
         ends: Vec::with_capacity(count),
     };

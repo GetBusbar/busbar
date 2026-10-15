@@ -104,7 +104,7 @@ deny = [
 # THE ACCEPTED DUPLICATES: each version here is one a parent forces and busbar cannot collapse.
 skip = [
     { crate = "getrandom@0.2", reason = "ring 0.17 pins getrandom 0.2" },
-    { crate = "getrandom@0.4", reason = "uuid (a2a-lf) and tempfile (build) are on getrandom 0.4" },
+    { crate = "getrandom@0.4", reason = "rand, quinn-proto and tempfile (build) are on getrandom 0.4" },
     { crate = "r-efi@5", reason = "follows getrandom 0.3; UEFI only, never built on linux/macOS" },
     { crate = "windows-sys@0.52", reason = "follows ring's getrandom 0.2; windows only" },
     { crate = "syn@2", reason = "compile time only; the ecosystem is mid-migration to syn 3" },

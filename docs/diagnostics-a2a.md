@@ -382,6 +382,17 @@ A read of busbar's own push registration at the backend agent discovered it gone
 
 **What to do:** Investigate why the backend agent refuses busbar's push-config create (auth, capability, outage). Deliveries the agent originates resume once a re-arm succeeds.
 
+<a id="plane-sse-frame-not-utf8"></a>
+### BUSBAR-7104 — A relayed SSE frame was not valid UTF-8 and was dropped
+
+- **Severity:** actionable
+- **Since:** 1.6.0
+- **Slug:** `plane-sse-frame-not-utf8`
+
+The shared SSE frame reader (the JSON-RPC plane relays) assembled a complete event whose bytes are not valid UTF-8. The event-stream format is UTF-8 BY DEFINITION, so this is a malformed backend; the frame is DROPPED rather than lossily transcoded, which would hand the client a corrupted payload. The stream itself continues, so a client sees a missing event, not a failure. The `bytes` field carries the size of the frame that was dropped.
+
+**What to do:** Investigate the named backend agent: its event stream is emitting non-UTF-8 bytes, which no conforming event-stream consumer can read. Until it is fixed the affected events are lost; busbar relays every well-formed event around them.
+
 <a id="a2a-push-queue-dropped"></a>
 ### BUSBAR-7105 — A2A push-delivery queue dropped an event
 

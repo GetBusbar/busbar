@@ -113,17 +113,25 @@ pub enum Outcome {
 
 /// What the upstream said, as the classifier reads it.
 ///
-/// The unit reads no body: the transport's own status reading and the plane's finish class are the
-/// two legs, and the wait the upstream asked for is the third input. Everything else about what a
-/// given code means to a given destination is configuration, and it lives on the other side of the
-/// classify call.
+/// The transport's own class of the frame (the fee leg, which also tells a success from a
+/// failure), its fault reading of the answer for the breaker, the upstream's numbered status in the
+/// numbering that spelled it, and the wait the upstream asked for. THE BREAKER CLASSIFIES FROM THE
+/// FAULT READING ALONE and never reads `code` (row 66: the kernel names no protocol); what a given
+/// code means to the breaker is the transport's own declared table, read on the transport's side of
+/// the frame. `code` crosses for the composition root's model egress, which runs the previous
+/// release's 429 rate-limit ladder and 4xx client-fault count on the number (ARCHITECT ruling on
+/// #787, 2026-10-13: the transport ABI carries the number beside the class, `FrameMeta`'s
+/// `status_code`, BUSBAR-1.6.0.md l.4036-4053).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct UpstreamStatus {
-    /// The transport's own reading of the frame, where it carries one.
+    /// The transport's own class of the frame, where it carries one.
     pub class: Option<busbar_contract::transport::wire::WireStatusClass>,
+    /// The transport's fault reading of the answer, where it states one (`None` is read as the
+    /// caller's). With no class and no reading at all, no answer came.
+    pub fault: Option<busbar_contract::transport::wire::WireFault>,
     /// The upstream's numeric status AND the numbering that spelled it, where the transport
-    /// reports one — carried across from the frame exactly as the transport named it, never
-    /// flattened to a bare number on the way.
+    /// reports one, carried across from the frame exactly as the transport named it. Never read by
+    /// the breaker.
     pub code: Option<busbar_contract::transport::wire::WireStatus>,
     /// The wait the upstream asked for, in seconds.
     pub retry_after: Option<u64>,
@@ -198,10 +206,10 @@ pub trait Breaker: Send + Sync {
 
     /// Turn one upstream answer into a disposition and a breaker outcome.
     ///
-    /// The table behind this — which code from which destination means transient, which means the
-    /// key is bad, which means the request was simply too big — is the breaker unit's own data,
-    /// including the operator's per-destination overrides. This unit passes the answer through and
-    /// acts on what comes back; it holds no copy of the table and no literal from it.
+    /// What a code means — transient, a refused key, the caller's own mistake — is the transport's
+    /// declared fault table, read into [`UpstreamStatus::fault`] before this port is reached; the
+    /// breaker unit maps that reading to a disposition. This unit passes the answer through and
+    /// acts on what comes back; it holds no table and no literal from one.
     fn classify(&self, destination: DestinationId, status: UpstreamStatus) -> Classified;
 
     /// Record what one attempt meant. Returns true only on a fresh logical trip — the one signal a
@@ -397,6 +405,17 @@ pub trait Clock: Send + Sync {
 
 // ── telemetry ───────────────────────────────────────────────────────────────────────────────────
 
+/// THE LABELS A PLANE STATED for one attempt's counters (`OnPieceOut::metric_pool` /
+/// `metric_lane`): each `None` where it stated none. Words, never trusted: the counters take a
+/// stated word only from the bound their implementation holds, and keep their own otherwise.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StatedLabels {
+    /// The `pool` label the plane stated.
+    pub pool: Option<String>,
+    /// The `lane` label the plane stated.
+    pub lane: Option<String>,
+}
+
 /// `// contract:` the counters the walk moves. Every method is an observation and none may fail,
 /// block, or change what the walk does next.
 pub trait Telemetry: Send + Sync {
@@ -409,6 +428,32 @@ pub trait Telemetry: Send + Sync {
 
     /// One attempt failed, with the disposition label the previous release used.
     fn upstream_failure(&self, pool: &str, destination: DestinationId, disposition: &'static str);
+
+    /// [`Telemetry::upstream_attempt`] for an attempt whose plane stated its counter labels
+    /// (`stated`): an implementation that bounds them takes the ones within its bound; by default
+    /// they are not taken.
+    fn upstream_attempt_stated(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        stated: Option<&StatedLabels>,
+    ) {
+        let _ = stated;
+        self.upstream_attempt(pool, destination);
+    }
+
+    /// [`Telemetry::upstream_failure`] for an attempt whose plane stated its counter labels, as
+    /// [`Telemetry::upstream_attempt_stated`] takes them.
+    fn upstream_failure_stated(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        disposition: &'static str,
+        stated: Option<&StatedLabels>,
+    ) {
+        let _ = stated;
+        self.upstream_failure(pool, destination, disposition);
+    }
 
     /// One attempt failed over to the next candidate, with the reason label.
     fn failover(&self, pool: &str, reason: &'static str);

@@ -136,7 +136,6 @@ fn metadata_value(manifest: &str, table: &str, key: &str) -> Option<String> {
 pub(crate) const SEAMS: &[(&str, &str)] = &[
     ("egress", "linked_egress"),
     ("plane-sections", "linked_plane_sections"),
-    ("admin-envelope", "linked_admin_envelope"),
 ];
 
 /// THE SWAPS TABLE (BUSBAR-1.6.0.md Part 3 section 12, "The switch"): `<row feature> = "<switch>"`,

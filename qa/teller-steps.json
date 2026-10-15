@@ -97,7 +97,7 @@
     },
     "root-a2a": {
       "plane": "a2a",
-      "file": "crates/busbar/src/root/tests/gauntlet_kernel.rs",
+      "file": "crates/busbar-plane-a2a/tests/root/mod.rs",
       "feature": "plane-a2a"
     },
     "root-streaming": {
@@ -348,8 +348,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_carries_one_unit_per_call",
-          "note": "one inbound message/send arrives as ONE unit the kernel-loop rider carries into the plane's drive and is relayed to the backend agent exactly once"
+          "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_charges_the_presenting_key",
+          "note": "one inbound message/send arrives at the agent door's claim as ONE unit, crosses the door and is relayed to the far agent once, its one admitted request on the presenting key"
         }
       },
       "decode": {
@@ -359,8 +359,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_body_that_does_not_decode",
-          "note": "a body that is not JSON is refused with the parse error's own -32700 by the unit's decode, which on this plane runs inside the drive the rider carries, and nothing is relayed"
+          "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agent_unit_whose_body_is_not_json_is_refused_at_its_arrival",
+          "note": "a body that is not JSON is refused by the door's arrive with the parse error's own -32700, and nothing is relayed or charged"
         }
       },
       "authenticate": {
@@ -370,8 +370,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_is_reached_only_by_an_authenticated_caller",
-          "note": "no credential and a forged one are both 401 at the front door and never become a unit; the caller holding a real audience-bound token is carried through the rider and relayed once"
+          "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agent_unit_served_through_its_door_charges_the_presenting_key",
+          "note": "an unkeyed caller is refused 401 at the door's claim and never becomes a unit; the keyed caller is served through the door"
         }
       },
       "verify": {
@@ -381,8 +381,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_destination_before_it_dials",
-          "note": "a backend whose name resolves to the cloud metadata address is refused by the guard inside the unit and the transport is never reached"
+          "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agent_unit_dials_only_the_address_the_guard_admits",
+          "note": "an agent whose address the deployment's destination guard refuses is never fetched, approved or dialled; admitted, it is dialled at its own path"
         }
       },
       "approve": {
@@ -392,8 +392,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_grant_short_of_the_operation",
-          "note": "a caller granted planner and not payments is refused at payments with no hop and no lease spent, and still reaches planner through the same rider"
+          "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agent_unit_outside_the_callers_grant_is_refused_before_it_dials",
+          "note": "a caller the agent is not granted to is refused before any hop, and the agent is never dialled"
         }
       },
       "admit": {
@@ -403,8 +403,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_an_over_budget_caller_before_it_dials",
-          "note": "a caller whose group allows one request a day is served once and refused the second time with a 429 before any hop, both units riding the rider"
+          "test": "crates/busbar-plane-a2a/tests/root/mod.rs::an_agent_unit_past_its_callers_request_limit_is_refused_before_it_dials",
+          "note": "a caller whose group admits one request is relayed once and refused 429 the second time at admission, before the agent is dialled, charging nothing more"
         }
       },
       "route": {
@@ -414,8 +414,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_answers_a_failed_upstream_inside_the_unit",
-          "note": "a hop the transport cannot complete is answered inside the unit as the upstream's fault, 502 carrying -32006, after exactly one attempt -- never a silent empty task"
+          "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_to_an_agent_that_is_down_ends_inside_its_unit",
+          "note": "a hop to an agent that has gone down is answered inside the unit in the plane's own envelope as the far end's failure, never left hanging"
         }
       },
       "meter": {
@@ -425,8 +425,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_meters_exactly_one_request_per_call",
-          "note": "one served hop writes exactly ONE metering row under this plane's own resource spelling agent:planner, counting one request"
+          "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
+          "note": "one relayed unit posts exactly ONE line on the node's book under the lane of the agent it reached"
         }
       },
       "audit": {
@@ -436,8 +436,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_audits_each_call_once",
-          "note": "one served hop lands exactly ONE agent.call row, applied, in the admin audit ring for the calling principal"
+          "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
+          "note": "one relayed unit lands exactly ONE audit row on the kernel's chain, the plane's action, applied, naming the agent it reached, sealed to the row before it"
         }
       },
       "encode": {
@@ -447,8 +447,8 @@
         "root": {
           "state": "proven",
           "leg": "root-a2a",
-          "test": "crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_ends_each_call_once",
-          "note": "a hop that can never complete ends its task once, as failed rather than left submitted, after its one hop"
+          "test": "crates/busbar-plane-a2a/tests/root/mod.rs::a_relayed_agent_unit_is_audited_on_the_chain_and_posts_one_line_once",
+          "note": "one relayed unit ends once: one audit row, one book line, every fact of it closed at its end"
         }
       }
     },

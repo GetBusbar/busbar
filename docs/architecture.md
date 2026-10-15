@@ -457,7 +457,7 @@ on A2A. Three identities, one state machine:
 |---|---|---|
 | LLM | a `(pool, lane)` cell | yes, and has been since the breaker landed |
 | MCP | one registered tool server | yes: the kernel's walk admits each member through the host's `breaker_admit` slot (`crates/busbar-kernel/src/plane_host/breaker.rs`) before every leg |
-| A2A | one registered agent | yes: the ingress walks it at submission admission (`crates/busbar-a2a/src/a2a/route.rs` → `failover::walk_with`) |
+| A2A | one registered agent | yes: the door plane states the agent as its unit's route at `arrive` (`crates/busbar-plane-a2a/src/agent_door.rs`), and the kernel's plane driver walks that route through the same breaker cells before every attempt (`crates/busbar-kernel/src/plane_driver/far_end.rs`) |
 
 **One state machine, and one place to tune it.** `BreakerCfg` (the cooldown bounds and
 the `trip:` condition) is accepted under `pools:` and nowhere else. There is no

@@ -46,9 +46,40 @@ serde = { workspace = true }
 # The object notation the codec speaks. The adapter hands values across the seam and never invents
 # a second parser.
 serde_json = { workspace = true }
+# The `agents:` section keeps its registrations in the order an operator wrote them.
+indexmap = { workspace = true, features = ["serde"] }
+# The deployment's `public_url`, read once into the absolute URLs the plane publishes.
+url = { workspace = true }
+# The frame reader's one diagnostic goes out through the contract's `diag_warn!`, which expands to
+# `tracing`.
+tracing = { workspace = true }
+# THE gRPC LINE (ARCHITECT rulings on FOLD-A2A, 2026-10-04, Q1 (C)): the a2aproject's service
+# messages, generated at build time from the vendored `proto/a2a.proto` (`build.rs`), decoded and
+# encoded with `prost`, which also writes the error model's `google.rpc.Status` details; their
+# ProtoJSON mapping is pbjson's (`pbjson`; the well-known types are the plane's own, `src/wkt.rs`).
+prost = { workspace = true, features = ["derive"] }
+pbjson = { workspace = true }
+# The gRPC line's status details, written as gRPC writes a binary field (unpadded base64).
+base64 = { workspace = true }
+
+[build-dependencies]
+# The message and ProtoJSON code generators `build.rs` runs, and the protoc they drive.
+prost-build = { workspace = true }
+pbjson-build = { workspace = true }
+protoc-bin-vendored = { workspace = true }
 
 [dev-dependencies]
 # The TEST-ONLY seal (#65). `busbar_contract::plugin::TestKernelSeal` is the one blessed
 # fixture implementor of the SEALED `KernelSeal` trait; this crate's test harnesses used to
 # forge their own. Dev-only and feature-gated, so it is absent from every release build.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
+# The one loader both of the door's forms are admitted through (`tests/conformance.rs`, the
+# `both_ways` rig): the compiled-in door by `load_linked`, the dropped-in `a2a_door` example by
+# `load_dropped`, on one dispatcher. Dev-only, and named by that one file alone (the gate's
+# conformance-witness grant).
+busbar-plugin-loader = { path = "../plugin-loader" }
+
+# The door, dropped in: `export_door!` over the same `agent_door::door` the linked row holds.
+[[example]]
+name = "a2a_door"
+crate-type = ["cdylib"]

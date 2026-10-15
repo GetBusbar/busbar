@@ -89,7 +89,7 @@ fn item_184_a_duplicate_between_llm_and_a2a_is_seen() {
         "pub fn planted_llm_a2a_copy() {}\n",
     );
     ov.set(
-        "crates/busbar-a2a/src/a2a/planted_llm_a2a_copy.rs",
+        "crates/busbar-plane-a2a/src/a2a/planted_llm_a2a_copy.rs",
         "pub fn planted_llm_a2a_copy() {}\n",
     );
     names(
@@ -98,7 +98,7 @@ fn item_184_a_duplicate_between_llm_and_a2a_is_seen() {
         &[
             "`planted_llm_a2a_copy`",
             "llm:crates/busbar-llm/src/planted_llm_a2a_copy.rs:1",
-            "a2a:crates/busbar-a2a/src/a2a/planted_llm_a2a_copy.rs:1",
+            "a2a:crates/busbar-plane-a2a/src/a2a/planted_llm_a2a_copy.rs:1",
         ],
     );
 }
@@ -110,7 +110,9 @@ fn item_184_a_duplicate_between_llm_and_a2a_is_seen() {
 /// The signed name is `config.rs`, the ledger's one surviving row: its fn-name siblings (`judge`
 /// among them) were struck at P3 DEL-MCP with the engine whose half they signed for. The stretch
 /// case (a third plane's `config.rs` beside a2a's) is no longer on disk now that voice is deleted,
-/// so llm's `config.rs` is planted beside a2a's real one.
+/// so llm's `config.rs` is planted beside a2a's real one. Since FLIP-A2A the a2a plane's home is its
+/// door crate `busbar-plane-a2a` (the engine `busbar-a2a` is deleted), so the a2a copy is planted
+/// there.
 #[test]
 fn item_223_a_third_plane_copy_of_a_plane_helper_is_seen_and_a_signed_claim_does_not_stretch() {
     let signed = plane_dups::ledger()
@@ -127,7 +129,7 @@ fn item_223_a_third_plane_copy_of_a_plane_helper_is_seen_and_a_signed_claim_does
         "pub fn planted_llm_config() {}\n",
     );
     ov.set(
-        "crates/busbar-a2a/src/a2a/planted_llm_a2a_helper.rs",
+        "crates/busbar-plane-a2a/src/a2a/planted_llm_a2a_helper.rs",
         "pub fn planted_llm_a2a_helper() {}\n",
     );
     names(
@@ -154,7 +156,7 @@ fn item_224_the_plane_set_is_derived_not_spelled() {
          pub fn planted_derived_plane_helper() {}\n",
     );
     ov.set(
-        "crates/busbar-a2a/src/a2a/planted_derived_plane_helper.rs",
+        "crates/busbar-plane-a2a/src/a2a/planted_derived_plane_helper.rs",
         "pub fn planted_derived_plane_helper() {}\n",
     );
     ov.set(

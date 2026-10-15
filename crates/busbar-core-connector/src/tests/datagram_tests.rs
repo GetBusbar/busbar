@@ -270,17 +270,16 @@ fn write_answer(st: &mut St, sink: &FramerSink, lane: Option<&DatagramLane>, o: 
     for (stream, bytes) in st.pieces.drain(..) {
         let s = frame(&bytes);
         assert!(n < sink.pieces_cap);
-        // SAFETY: the host's piece buffer, bounded above.
+        // SAFETY: the host's piece buffer, bounded above. A `FramePiece` is plain integers, so the
+        // all-zero piece is valid: every field not named here (the status, the fault reading, the
+        // retry) is zero, whatever the piece grows to.
         unsafe {
             sink.pieces.add(n).write(FramePiece {
                 stream,
                 offset: s.offset,
                 len: s.len,
-                code: 0,
-                status_class: 0,
-                _reserved: 0,
                 flags: PIECE_END_OF_FRAME,
-                retry_after_secs: 0,
+                ..std::mem::zeroed()
             });
         }
         n += 1;

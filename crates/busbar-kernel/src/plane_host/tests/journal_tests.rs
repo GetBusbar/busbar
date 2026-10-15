@@ -182,7 +182,7 @@ fn journal_read_returns_ok_and_writes_bytes() {
 // ── THE DURABLE SEAM — register + append_scoped + verify/read/restore over a real store ────────
 
 use crate::audit::journal::NeutralBody;
-use busbar_contract::abi::hot::{JournalStreamDesc, ReframeOut, RestoredHdr, VerifyChainHdr};
+use busbar_contract::abi::hot::{JournalStreamDesc, ReframeOut};
 use std::sync::Arc;
 
 // Base 10_000 so these unit streams never collide in the process-global registry with the
@@ -392,6 +392,44 @@ fn durable_app_over(store: Arc<GenericPlaneStore>) -> Arc<crate::state::App> {
     crate::test_support::TestApp::new().governance(gov).build()
 }
 
+/// BOOT REHYDRATE the registered stream `kind_id` through its own engine, reframing with its
+/// registered callback. The kernel's own streams reach the engine directly; the vtable's restore,
+/// verify and read slots were plane-only and are gone (a plane's record chains are framed and
+/// verified on the kernel's record path, `crate::host_chains`), so these tests drive the engine
+/// those slots wrapped.
+fn engine_restore(host: HostCtx, kind_id: u32) -> crate::audit::journal::Restored {
+    let h = stream_handle(kind_id).expect("the stream is registered");
+    let store = h.journal.sink().expect("the stream is durable");
+    let reframe =
+        |sc: &str, body: &[u8]| super::call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+    h.journal
+        .restore_scoped(&h.kind, store.as_ref(), &reframe)
+        .expect("the store reads")
+}
+
+/// VERIFY one scope of the registered stream `kind_id` through its own engine: the break, or
+/// `None` when it verifies.
+fn engine_verify(host: HostCtx, kind_id: u32, scope: &str) -> Option<crate::audit::ChainBreak> {
+    let h = stream_handle(kind_id).expect("the stream is registered");
+    let store = h.journal.sink().expect("the stream is durable");
+    let reframe =
+        |sc: &str, body: &[u8]| super::call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+    h.journal
+        .verify_scoped(&h.kind, scope, store.as_ref(), &reframe)
+        .expect("the store reads")
+}
+
+/// READ one scope of the registered stream `kind_id` back through its own engine, oldest first.
+fn engine_read(host: HostCtx, kind_id: u32, scope: &str) -> Vec<PlaneJournalRecord> {
+    let h = stream_handle(kind_id).expect("the stream is registered");
+    let store = h.journal.sink().expect("the stream is durable");
+    let reframe =
+        |sc: &str, body: &[u8]| super::call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+    h.journal
+        .read_scoped(&h.kind, scope, store.as_ref(), &reframe)
+        .expect("the store reads")
+}
+
 fn register(host: HostCtx, vt: &PlaneHostVtable, kind_id: u32, framing: AbiFraming) {
     let kind = b"durable_test_event";
     let desc = JournalStreamDesc {
@@ -412,8 +450,8 @@ fn register(host: HostCtx, vt: &PlaneHostVtable, kind_id: u32, framing: AbiFrami
 
 /// The durable analogue of `append_two_and_verify`: register a store-backed stream, append two
 /// records via `journal_append_scoped` (each PERSISTED to the store as a neutral body), then the
-/// durable `journal_verify_scoped` reframes them back and the REAL `verify_chain` passes; a
-/// `journal_restore` counts both records and one scope; a `journal_read_scoped` yields the rows.
+/// engine's verify reframes them back and the REAL `verify_chain` passes; its restore counts both
+/// records and one scope; its read yields the rows, and they verify.
 fn durable_append_two_and_verify(framing: AbiFraming) {
     let app = durable_app();
     let kind_id = fresh_kind_id();
@@ -443,85 +481,29 @@ fn durable_append_two_and_verify(framing: AbiFraming) {
         assert_eq!(s2, Seq(2), "second record is seq 2");
 
         // VERIFY: reframes the persisted neutral bodies and runs the real verifier.
-        let mut vout = MaybeUninit::<VerifyChainHdr>::uninit();
-        assert_eq!(
-            (vt.journal_verify_scoped.unwrap())(
-                host,
-                kind_id,
-                scope.as_ptr(),
-                scope.len(),
-                &mut vout as *mut MaybeUninit<VerifyChainHdr>,
-            ),
-            StatusClass::Ok
-        );
-        // SAFETY: Ok published the slot.
-        let vhdr = unsafe { vout.assume_init() };
-        assert_eq!(
-            vhdr.verified, 1,
+        assert!(
+            engine_verify(host, kind_id, "task-1").is_none(),
             "the persisted durable chain verifies byte-identically"
         );
 
         // RESTORE: counts both durable records under the one scope, zero breaks.
-        let mut rout = MaybeUninit::<RestoredHdr>::uninit();
-        assert_eq!(
-            (vt.journal_restore.unwrap())(
-                host,
-                kind_id,
-                &mut rout as *mut MaybeUninit<RestoredHdr>,
-            ),
-            StatusClass::Ok
-        );
-        // SAFETY: Ok published the slot.
-        let rhdr = unsafe { rout.assume_init() };
-        assert_eq!(rhdr.records, 2, "both records were durable");
-        assert_eq!(rhdr.scopes, 1);
-        assert_eq!(rhdr.chain_breaks, 0);
+        let restored = engine_restore(host, kind_id);
+        assert_eq!(restored.records, 2, "both records were durable");
+        assert_eq!(restored.scopes, 1);
+        assert!(restored.chain_breaks.is_empty());
 
-        // READ the window back: the encoded blob's row count is 2.
-        let mut written: usize = 0;
-        let s = (vt.journal_read_scoped.unwrap())(
-            host,
-            kind_id,
-            scope.as_ptr(),
-            scope.len(),
-            0,
-            0,
-            std::ptr::null_mut(),
-            0,
-            &mut written as *mut usize,
-        );
-        assert_eq!(
-            s,
-            StatusClass::Refused,
-            "a zero buffer reports the required size"
-        );
-        let mut big = vec![0u8; written];
-        let s = (vt.journal_read_scoped.unwrap())(
-            host,
-            kind_id,
-            scope.as_ptr(),
-            scope.len(),
-            0,
-            0,
-            big.as_mut_ptr(),
-            big.len(),
-            &mut written as *mut usize,
-        );
-        assert_eq!(s, StatusClass::Ok);
-        assert_eq!(
-            u32::from_le_bytes(big[0..4].try_into().unwrap()),
-            2,
-            "two rows read back"
-        );
+        // READ the scope back: two rows, verifying.
+        let rows = engine_read(host, kind_id, "task-1");
+        assert_eq!(rows.len(), 2, "two rows read back");
+        assert!(crate::audit::verify_chain(&rows).is_ok());
     });
 }
 
-/// F5: the neutral `journal_restore` must SURFACE the undecodable-row aggregate, not compute it on the
-/// host and drop it. `restore_scoped` counts each unreadable body into `Restored.unreadable` and fires
-/// the per-row diagnostic, but `RestoredHdr` carried no field for the count, so the aggregate was
-/// write-only dead state on the RAM journal. With the count now on the header, a boot summary can log
-/// it. This registers a stream, persists ONE good record, injects a raw UNDECODABLE sibling body under
-/// the same scope, then asserts `journal_restore` reports `unreadable == 1` (and `records == 1`).
+/// F5: the neutral restore must SURFACE the undecodable-row aggregate, not compute it and drop it.
+/// `restore_scoped` counts each unreadable body into `Restored.unreadable` and fires the per-row
+/// diagnostic. This registers a stream, persists ONE good record, injects a raw UNDECODABLE sibling
+/// body under the same scope, then asserts the restore reports `unreadable == 1` (and
+/// `records == 1`).
 #[test]
 fn journal_restore_surfaces_the_unreadable_row_count() {
     use busbar_contract::records::RecordStore as _;
@@ -561,26 +543,16 @@ fn journal_restore_surfaces_the_unreadable_row_count() {
             )
             .unwrap();
 
-        let mut rout = MaybeUninit::<RestoredHdr>::uninit();
+        let restored = engine_restore(host, kind_id);
         assert_eq!(
-            (vt.journal_restore.unwrap())(
-                host,
-                kind_id,
-                &mut rout as *mut MaybeUninit<RestoredHdr>,
-            ),
-            StatusClass::Ok
-        );
-        // SAFETY: Ok published the slot.
-        let rhdr = unsafe { rout.assume_init() };
-        assert_eq!(
-            rhdr.unreadable, 1,
-            "the undecodable sibling must be surfaced on the restore header, not dropped"
+            restored.unreadable, 1,
+            "the undecodable sibling must be surfaced on the restore, not dropped"
         );
         assert_eq!(
-            rhdr.records, 1,
+            restored.records, 1,
             "only the decodable row is a restored record"
         );
-        assert_eq!(rhdr.scopes, 1);
+        assert_eq!(restored.scopes, 1);
     });
 }
 
@@ -617,7 +589,7 @@ fn durable_unregistered_kind_fails_closed() {
 //
 // The SECOND, independent tripwire beside `audit::boot_verify_golden`. Those same frozen
 // `serde_json` bodies a store held before the cleave are fed through the NEW durable seam
-// (`journal_register` + `journal_restore` + `journal_verify_scoped`), reframed PLANE-SIDE back into
+// (`journal_register`, then the engine's restore and verify), reframed PLANE-SIDE back into
 // records, and the host's ONE verifier RECOMPUTES each digest from the reframed prelude ⧺ suffix.
 // If that recompute no longer equals the frozen `hash`, restore reports a chain break and verify
 // fails — RED before a single deployed store does. The frozen bytes are DUPLICATED from
@@ -628,7 +600,7 @@ const G_CALL_1: &[u8] = br#"{"principal":"vk_alice","seq":1,"ts":1700000000,"ser
 const G_CALL_2: &[u8] = br#"{"principal":"vk_alice","seq":2,"ts":1700000060,"server":"srv","tool":"srv_other","outcome":"refused","reason":"not_granted","tool_digest":"","pin_generation":7,"request_id":"req-2","prev_hash":"f1e8c2ec47e8199499663f3e08272d67b96ed4d56bddc8fa9e9371352e5ba718","hash":"721c70456695c90b0085e3ef0170d413a6fa3a1e0ebb65eb02730ab6597ef47a"}"#;
 // The A2A task-event fixture was RELOCATED with the task subsystem: the A2A plane computes its chain
 // plane-side over its own `TaskEventRow` now (no host-side journal stream), and its byte-layout golden
-// lives in `busbar_a2a::taskstore`. This neutral seam golden keeps the MCP `call` (LengthPrefixed) and
+// lives in the retired agent engine's `taskstore`. This neutral seam golden keeps the MCP `call` (LengthPrefixed) and
 // admin `audit` (PipeSeparated, no scope) fixtures.
 const G_AD_1: &[u8] = br#"{"seq":1,"ts":1700000000,"action":"hook.register","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"","hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa"}"#;
 const G_AD_2: &[u8] = br#"{"seq":2,"ts":1700000060,"action":"hook.delete","resource":"hook:compress","outcome":"applied","principal":"admin","prev_hash":"52258f59f0ccf11e717462b0cbd040e6bfa7f576624c77a9e332e483553f56aa","hash":"33a3906258375ea69278797ddd446d4f2d3f24e91eee181e1f26e0fef19a5264"}"#;
@@ -826,43 +798,23 @@ fn register_stream(
 
 fn restore_and_verify(
     host: HostCtx,
-    vt: &PlaneHostVtable,
     kind_id: u32,
-    scope: &[u8],
+    scope: &str,
     expect_tail: &str,
     tail_hash: &str,
 ) {
     // RESTORE: both frozen records, one scope, zero breaks (the digest recompute matched).
-    let mut rout = MaybeUninit::<RestoredHdr>::uninit();
-    assert_eq!(
-        (vt.journal_restore.unwrap())(host, kind_id, &mut rout as *mut MaybeUninit<RestoredHdr>),
-        StatusClass::Ok
-    );
-    // SAFETY: Ok published the slot.
-    let r = unsafe { rout.assume_init() };
-    assert_eq!(
-        r.chain_breaks, 0,
+    let r = engine_restore(host, kind_id);
+    assert!(
+        r.chain_breaks.is_empty(),
         "a frozen chain reported TAMPERED means the durable-seam digest drifted"
     );
     assert_eq!(r.records, 2, "both frozen records restored");
     assert_eq!(r.scopes, 1);
 
     // VERIFY the scope explicitly.
-    let mut vout = MaybeUninit::<VerifyChainHdr>::uninit();
-    assert_eq!(
-        (vt.journal_verify_scoped.unwrap())(
-            host,
-            kind_id,
-            scope.as_ptr(),
-            scope.len(),
-            &mut vout as *mut MaybeUninit<VerifyChainHdr>,
-        ),
-        StatusClass::Ok
-    );
-    // SAFETY: Ok published the slot.
-    let v = unsafe { vout.assume_init() };
-    assert_eq!(
-        v.verified, 1,
+    assert!(
+        engine_verify(host, kind_id, scope).is_none(),
         "the frozen chain verifies through the durable seam"
     );
     assert_eq!(expect_tail, tail_hash, "the frozen tail hash is intact");
@@ -905,8 +857,8 @@ fn frozen_chains_boot_verify_through_the_durable_seam() {
         let call_tail: FrozenCallBody = serde_json::from_slice(G_CALL_2).unwrap();
         let ad_tail: crate::audit_ring::AuditEntry = serde_json::from_slice(G_AD_2).unwrap();
 
-        restore_and_verify(host, vt, call_id, b"vk_alice", &call_tail.hash, G_CALL_TAIL);
-        restore_and_verify(host, vt, admin_id, b"log", &ad_tail.hash, G_AD_TAIL);
+        restore_and_verify(host, call_id, "vk_alice", &call_tail.hash, G_CALL_TAIL);
+        restore_and_verify(host, admin_id, "log", &ad_tail.hash, G_AD_TAIL);
     });
 }
 

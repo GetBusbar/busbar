@@ -85,7 +85,7 @@ fn an_attempt_forwards_the_caller_body_unchanged() {
 }
 
 /// The answer's counts as `(class, amount)`, for a far end answering `status` with `body`.
-fn billed(status: u32, body: &[u8]) -> Result<Vec<(u32, u64)>, Unreadable> {
+fn billed(status: u32, body: &[u8]) -> Result<Vec<(u32, u64)>, UnreadableUsage> {
     let mut reading = FarEndReading::new();
     reading.piece(body);
     reading.counts(Some(status)).map(|c| {
@@ -194,13 +194,13 @@ fn a_usage_member_that_is_not_a_whole_count_fails_loudly() {
         let body = format!(r#"{{"usage":{{"units":{units}}}}}"#);
         assert_eq!(
             billed(200, body.as_bytes()),
-            Err(Unreadable(crate::codec::PTR_USAGE_UNITS)),
+            Err(UnreadableUsage(crate::codec::PTR_USAGE_UNITS)),
             "{body}"
         );
     }
     assert_eq!(
         billed(200, br#"{"usage":{"units":1,"output_tokens":-2}}"#),
-        Err(Unreadable(crate::codec::PTR_USAGE_OUTPUT_TOKENS))
+        Err(UnreadableUsage(crate::codec::PTR_USAGE_OUTPUT_TOKENS))
     );
 }
 
@@ -411,7 +411,7 @@ fn every_caller_field_but_the_governed_set_is_relayed() {
 
 /// The money rule's reading of a whole answer by its declared pointers, as the body would be read
 /// kept whole: the reference the piece-by-piece reading is held to.
-fn by_pointer(status: u32, body: &[u8]) -> Result<Vec<(u32, u64)>, Unreadable> {
+fn by_pointer(status: u32, body: &[u8]) -> Result<Vec<(u32, u64)>, UnreadableUsage> {
     use crate::codec::{read_raw, PTR_ERROR};
     let ok = (200..300).contains(&status) && read_raw(body, PTR_ERROR).is_none_or(|e| e == b"null");
     if !ok {
@@ -419,7 +419,7 @@ fn by_pointer(status: u32, body: &[u8]) -> Result<Vec<(u32, u64)>, Unreadable> {
     }
     let count = |p: &'static str| match read_raw(body, p) {
         None => Ok(None),
-        Some(raw) => whole(raw).map(Some).ok_or(Unreadable(p)),
+        Some(raw) => whole(raw).map(Some).ok_or(UnreadableUsage(p)),
     };
     let mut out = vec![(DECISION, count(crate::codec::PTR_USAGE_UNITS)?.unwrap_or(1))];
     if let Some(n) = count(crate::codec::PTR_USAGE_INPUT_TOKENS)? {
@@ -433,7 +433,7 @@ fn by_pointer(status: u32, body: &[u8]) -> Result<Vec<(u32, u64)>, Unreadable> {
 }
 
 /// The answer read in two pieces split at `at`.
-fn split_billed(status: u32, body: &[u8], at: usize) -> Result<Vec<(u32, u64)>, Unreadable> {
+fn split_billed(status: u32, body: &[u8], at: usize) -> Result<Vec<(u32, u64)>, UnreadableUsage> {
     let mut reading = FarEndReading::new();
     reading.piece(&body[..at]);
     reading.piece(&body[at..]);
@@ -499,7 +499,7 @@ fn a_large_answer_is_read_without_keeping_it() {
 }
 
 /// The counts of a `nanojev` answer, `(class, amount)`.
-fn nanojev_billed(status: u32, body: &[u8]) -> Result<Vec<(u32, u64)>, Unreadable> {
+fn nanojev_billed(status: u32, body: &[u8]) -> Result<Vec<(u32, u64)>, UnreadableUsage> {
     let mut reading = FarEndReading::for_dialect(tail::DIALECT_NANOJEV);
     reading.piece(body);
     reading.counts(Some(status)).map(|c| {
@@ -534,14 +534,14 @@ fn a_nanojev_answer_bills_its_execution_states() {
     ] {
         assert_eq!(
             nanojev_billed(200, missing),
-            Err(Unreadable(crate::codec::PTR_EXECUTION_STATES)),
+            Err(UnreadableUsage(crate::codec::PTR_EXECUTION_STATES)),
             "{}",
             String::from_utf8_lossy(missing)
         );
     }
     assert_eq!(
         nanojev_billed(200, br#"{"execution":{"states":2.5}}"#),
-        Err(Unreadable(crate::codec::PTR_EXECUTION_STATES))
+        Err(UnreadableUsage(crate::codec::PTR_EXECUTION_STATES))
     );
     assert_eq!(
         nanojev_billed(500, br#"{"result":{}}"#),

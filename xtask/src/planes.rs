@@ -40,8 +40,10 @@ use std::path::{Path, PathBuf};
 /// [`plane_src_roots`]). `mcp` IS STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05; its shell twin
 /// `scripts/plane-keys.sh` says the same in the same commit): `crates/busbar-mcp` is deleted and the
 /// mcp plane is plane-kind only, its door crate `busbar-plane-mcp` — scanned by the plane-kind regime
-/// and located by its door row ([`door_planes`]) wherever a gate resolves the plane's home.
-pub const PLANE_KEYS: [&str; 2] = ["llm", "a2a"];
+/// and located by its door row ([`door_planes`]) wherever a gate resolves the plane's home. `a2a` IS
+/// STRUCK the same way (FLIP-A2A): `crates/busbar-a2a` is deleted and the A2A plane is
+/// `busbar-plane-a2a`, served through its memory-ABI door (`plane-a2a-door`) and located by that row.
+pub const PLANE_KEYS: [&str; 1] = ["llm"];
 
 /// Plane keys with NO legacy-engine crate: the plane lives only in its plane-kind crate
 /// `busbar-plane-<key>` and is located by its door row ([`door_planes`]). Twin of
@@ -50,7 +52,7 @@ pub const PLANE_KEYS: [&str; 2] = ["llm", "a2a"];
 /// must not take a plane off the roster that refuses an unlocatable plane. `streaming` joined when
 /// FLIP-STREAMING took `voice` off [`PLANE_KEYS`]: `crates/busbar-voice` is deleted and the plane is
 /// `busbar-plane-streaming`, located by its `plane-streaming` door row.
-pub const PLANE_KEYS_KIND_ONLY: [&str; 2] = ["mcp", "streaming"];
+pub const PLANE_KEYS_KIND_ONLY: [&str; 3] = ["mcp", "a2a", "streaming"];
 
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.
@@ -122,6 +124,9 @@ pub fn plane_keys_protocol() -> Vec<&'static str> {
 /// MCP HAS NO ROOT HERE AT ALL since P3 DEL-MCP (ARCHITECT 2026-10-05): the engine crate is deleted
 /// and `mcp` left [`PLANE_KEYS`]. The paragraph below is the history of its `-codec` half.
 ///
+/// A2A HAS NO ROOT HERE EITHER since FLIP-A2A: `crates/busbar-a2a` is deleted and `a2a` left
+/// [`PLANE_KEYS`]; `crates/busbar-plane-a2a/src` is scanned by the PLANE-KIND regime, as below.
+///
 /// MCP HAS NO `-codec` ROOT ANY MORE, and that is a decision rather than an omission.
 /// `busbar-mcp-codec` dissolved (#39: no `busbar-*-codec` crate). Its `ProtocolDecl` and two
 /// operation cells stayed with the engine at `crates/busbar-mcp/src/codec/`, which the
@@ -177,7 +182,7 @@ pub fn plane_src_roots() -> Vec<String> {
 ///
 /// * the five `busbar-plane-*` crates — the plane kind itself, scanned by the REVERSE side of
 ///   `plane-purity` through `kind_isolation::plane_kind_src_roots`;
-/// * `busbar-llm`, `busbar-a2a` (`busbar-mcp` and `busbar-voice` are deleted) and the two surviving `-codec` halves
+/// * `busbar-llm` (`busbar-mcp`, `busbar-a2a` and `busbar-voice` are deleted) and the two surviving `-codec` halves
 ///   — the legacy engines: naming a protocol is what they are for, and [`plane_src_roots`] is the
 ///   list that scans them;
 /// * the plugin INSTANCES (`busbar-transport-*`, `store-*`, `secret-*`, `auth-*`, `hook*`,

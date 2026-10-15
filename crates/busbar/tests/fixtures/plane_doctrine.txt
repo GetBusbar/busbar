@@ -31,8 +31,8 @@ root-leg root-decisions plane-decisions
 # to (both halves of every plane; plane-streaming is the plane voice is a dialect of).
 crate llm llm
 # (`crate mcp` STRUCK, P3 DEL-MCP, ARCHITECT 2026-10-05: crates/busbar-mcp is deleted; the mcp plane is
-# `plane-mcp` below.)
-crate a2a a2a-client a2a-server
+# `plane-mcp` below. `crate a2a` STRUCK, FLIP-A2A: crates/busbar-a2a is deleted; the a2a plane is
+# `plane-a2a` below.)
 crate plane-llm llm
 crate plane-mcp mcp-client mcp-server
 crate plane-a2a a2a-client a2a-server
@@ -44,13 +44,13 @@ crate plane-decisions decisions
 #
 # installed <plane key> <ledger column>...: the doctrine's installed-plane axis (plane_isomorphism.rs)
 # — each plane the composition root installs from its own linked entry, and the directional ledger
-# column(s) it answers to. The streaming plane is not on it since FLIP-STREAMING: it is served only
-# through its memory-ABI door (`plane-door` axis), which has no linked PlaneDecl to compare.
+# column(s) it answers to. The A2A plane is not on it since FLIP-A2A, nor the streaming plane since
+# FLIP-STREAMING: each is served only through its memory-ABI door (`plane-door` axis), which has no
+# linked PlaneDecl to compare.
 installed llm llm
 # (`installed mcp` STRUCK, P3 DEL-MCP, ARCHITECT 2026-10-05: the mcp plane is served through its
 # memory-ABI door alone and installs no PlaneDecl, so it is not on the reflected axis; its columns are
-# still answered by the `root-mcp` leg.)
-installed a2a a2a-client a2a-server
+# still answered by the `root-mcp` leg. `installed a2a` STRUCK, FLIP-A2A, for the same reason.)
 #
 # owned-section <plane key> <declaring section> <owned section>...: the linked planes that own the
 # grammar of a top-level section, and those sections (plane_owned_sections_boot.rs).

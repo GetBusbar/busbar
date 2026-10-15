@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::host::conn::connector::{
     CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_FRAMER, CAUSE_SECURITY,
 };
-use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_ACCEPT, SIDE_DIAL};
+use busbar_contract::abi::transport::{CLOSE_NORMAL, FAULT_NONE, SIDE_ACCEPT, SIDE_DIAL};
 use busbar_contract::conn::ConnCause;
 
 use crate::carrier::{Carried, Dest, DialFailure};
@@ -1612,11 +1612,13 @@ impl Connection {
                     end_of_frame,
                     status_code: None,
                     status_class: 0,
+                    fault: FAULT_NONE,
                     retry_after_secs: None,
                     fields: false,
                     text: false,
                     reason: None,
                     failed: false,
+                    end: false,
                 });
             }
             if end {

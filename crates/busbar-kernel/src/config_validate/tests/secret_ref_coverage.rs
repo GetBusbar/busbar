@@ -249,67 +249,10 @@ fn read_between(path: &Path, from: &str, to: &str) -> String {
     text[start..start + end].to_string()
 }
 
-/// The brace-balanced text of an `impl` block, from its `header` line to the `}` that closes it.
-/// Panics if the header is absent or the braces never balance — the same fail-loud contract as
-/// [`read_between`], because a plane whose `secret_refs` impl the scan could not locate is a plane
-/// whose Walked types would go unchecked.
-fn extract_impl_block(path: &Path, header: &str) -> String {
-    let text = std::fs::read_to_string(path)
-        .unwrap_or_else(|e| panic!("read {} failed: {e}", path.display()));
-    let start = text
-        .find(header)
-        .unwrap_or_else(|| panic!("`{header}` is not in {}", path.display()));
-    let rest = &text[start..];
-    let open = rest
-        .find('{')
-        .unwrap_or_else(|| panic!("`{header}` has no opening brace in {}", path.display()));
-    let mut depth = 0i32;
-    for (i, ch) in rest[open..].char_indices() {
-        match ch {
-            '{' => depth += 1,
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return rest[..open + i + 1].to_string();
-                }
-            }
-            _ => {}
-        }
-    }
-    panic!("`{header}` block never closes in {}", path.display());
-}
-
-/// The brace-balanced `impl` block opened by `header`, wherever in `crates/*/src` it lives (the
-/// [`source_files`] walk). EXACTLY ONE file may hold it: none is a panic (the plane impl the Walked
-/// assertions rely on is gone, so they would check nothing), and two is a panic (the scan cannot
-/// say which impl is the real one).
-fn impl_block_in_tree(header: &str) -> String {
-    let holders: Vec<PathBuf> = source_files()
-        .into_iter()
-        .filter(|p| {
-            std::fs::read_to_string(p)
-                .unwrap_or_else(|e| panic!("read {} failed: {e}", p.display()))
-                .contains(header)
-        })
-        .collect();
-    assert_eq!(
-        holders.len(),
-        1,
-        "`{header}` must be declared in exactly one file under crates/*/src; found {holders:?}"
-    );
-    extract_impl_block(&holders[0], header)
-}
-
-/// The body of `secret_refs`, the helpers it delegates its destructures to, AND the per-plane
-/// `PlaneCfg::secret_refs` impls the two sibling-crate sweeps now live in. Used to prove that a type
-/// CLAIMING to be `Walked` really is destructured somewhere this guard can see, so the inventory
-/// cannot be satisfied by listing a type and never looking at it.
-///
-/// The plane impls are folded in because that is where the exhaustive destructures for both sibling
-/// crates' credential types moved: the core walk stopped naming `TokenExchangeCfg`, `OutboundCredential`
-/// and `ClientIdentityCfg` and now loops the trait, so `secret_refs.rs` alone would report those
-/// Walked types as undestructured — a false red that is really "look in the impl". This concatenation
-/// is what makes the Walked assertions track the destructure to wherever the plane put it.
+/// The body of `secret_refs` and the helpers it delegates its destructures to. Used to prove that
+/// a type CLAIMING to be `Walked` really is destructured somewhere this guard can see, so the
+/// inventory cannot be satisfied by listing a type and never looking at it. Every plane section is a
+/// door's, its references read at the door's declared paths, so no plane impl is folded in.
 fn secret_refs_source() -> String {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let core = read_between(
@@ -317,16 +260,9 @@ fn secret_refs_source() -> String {
         "pub(crate) fn secret_refs(",
         "pub(crate) const SECRET_BEARING_TYPES",
     );
-    // The `tools:` and `agents:` configs moved out to their owning plane crates (Phase-B B2 and
-    // the plane extraction); each crate's `secret_refs` impl names the `PlaneCfg` trait through its
-    // public path, which relocated to `busbar-substrate` (Phase-C config-seam), so the impl spells
-    // `busbar_kernel::…` and the scan matches on that spelling. The impl is FOUND by its header
-    // across the source tree rather than read from a spelled crate path, so this neutral test
-    // names no plane crate — and a header that moved, vanished or was duplicated is still a panic.
-    // The `tools:` plane is served through its door (P3 DEL-MCP): its references are read at its
-    // door's declared paths (`SecretBearing::DoorDeclared`), with no typed impl to scan.
-    let agents = impl_block_in_tree("impl busbar_kernel::plane::config::PlaneCfg for AgentsCfg");
-    let body = format!("{core}\n{agents}");
+    // The `tools:` and `agents:` planes are served through their doors: their references are read
+    // at each door's declared paths (`SecretBearing::DoorDeclared`), with no typed impl to scan.
+    let body = core;
     assert!(
         body.len() > 500,
         "the extracted secret_refs region is only {} bytes; the extraction is broken and the \

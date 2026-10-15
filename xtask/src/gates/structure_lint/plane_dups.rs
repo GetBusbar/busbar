@@ -106,7 +106,10 @@ pub fn concerns(_a: &Addresses) -> Vec<Concern> {
 /// with nothing owed is a heading somebody adds a row under.
 pub fn ledger() -> Vec<LedgerRow> {
     // Every row below was argued for the MCP and A2A planes — the only pair the scan could see
-    // when each was written — and signs for exactly that pair.
+    // when each was written — and signs for exactly that pair. FLIP-A2A deleted the a2a engine
+    // (`busbar-a2a`); the a2a plane's home is its door crate `busbar-plane-a2a`, which still declares
+    // `a2a/config.rs`, so `config.rs` stays: the filename is still declared in more than one plane,
+    // and the row is still read.
     let d = |name: &str, note: &str| LedgerRow {
         name: name.to_string(),
         class: Class::Distinct,
@@ -388,14 +391,77 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
     }
 }
 
-pub fn rows(f: &Findings) -> Vec<Row> {
-    vec![
-        row(
+/// THE UNLEDGERED ROW'S ARMED COUNT (Law 9: armed at the measure and never above it; ARCHITECT
+/// ruling on #787, its accounting corrected 2026-10-14). FLIP-A2A moved the a2a plane's home from
+/// the engine `busbar-a2a` to its door crate `busbar-plane-a2a`, where this scan reads it. The 42
+/// findings are, name by name:
+///
+/// * 15 CARRIED from predev (2bce54dc57 measured 26; 11 left: the engine's `meter.rs`, `plane.rs`,
+///   `route.rs`, `verify.rs`, `admit`, `approve`, `deliver`, `task_verb` and `Verified` with the
+///   deleted crate, and decisions' `Relayed` and `Routed` renamed): `config.rs`, `absolute`,
+///   `Admitted`, `arrive`, `attempt`, `build_runtime`, `drive`, `fingerprint`, `Hop`, `meter`,
+///   `op_class`, `owe`, `refused`, `relayed`, `serve`;
+/// * 27 SCOPE-MOVED: declarations in files `busbar-plane-a2a` already held on predev, seen once the
+///   plane's home moved there: modules `claims.rs`, `diagnostics.rs`, `facts.rs`, `jsonrpc.rs`,
+///   `meta.rs`, `ops.rs`, `record.rs`, `records.rs`; symbols `Envelope`, `IdShape`, `MethodRow`,
+///   `Tap`, `Task`, `correlation_for`, `correlation_value`, `decode`, `encode`, `error`, `id_shape`,
+///   `id_value`, `is_canonical_number`, `is_number`, `open`, `operations_for`, `read`, `row_for`,
+///   `success`.
+///
+/// The door code this branch added (52 names, and the 2 #703 met through predev's `door_sessions.rs`)
+/// is DRAINED, not armed: what was the same concept as the mcp door's copy is shared once in the
+/// SDK (`busbar_contract::abi::sdk`: `publish::ServedRoute`, `publish::admin_route`,
+/// `publish::class_index`, `Lent::stated`, `digest::lower_hex`, `trust::Sighting`,
+/// `trust::State`) and used by both doors; what only shared a name is renamed to what it is. A row
+/// per duplicate stays refused (it would be evasion), so the row holds the COUNT: above it is a new
+/// plane-local copy, below it is a drain that did not give its number back. DRAIN: the remaining
+/// door scaffolding moves to the SDK (planes never depend on each other, Law 0), the duplicates
+/// that encode a security or money property first (DoD item 5); lower this count in the commit
+/// that drains each one.
+pub const UNLEDGERED_ARMED: usize = 42;
+
+/// [`ROW_UNLEDGERED`], judged against [`UNLEDGERED_ARMED`]. A tree with none is clean.
+fn unledgered_row(unledgered: &[String]) -> Row {
+    let n = unledgered.len();
+    if n == 0 {
+        return Row::pass(
             ROW_UNLEDGERED,
             "no name is declared in two planes without a signed claim about why",
-            "a shared concern grew a second, plane-local implementation",
-            &f.unledgered,
-        ),
+            super::CLEAN,
+        );
+    }
+    if n == UNLEDGERED_ARMED {
+        return Row::pass(
+            ROW_UNLEDGERED,
+            "the plane-local duplicates are the armed count and no more",
+            format!(
+                "{n} finding(s), armed at {UNLEDGERED_ARMED} (predev's carried findings and the \
+                 a2a plane's pre-existing files its home move to busbar-plane-a2a made visible; \
+                 drain: shared door scaffolding to the SDK): {}",
+                unledgered.join(" | ")
+            ),
+        );
+    }
+    let why = if n > UNLEDGERED_ARMED {
+        format!(
+            "{n} finding(s) against an armed count of {UNLEDGERED_ARMED}: a new plane-local copy"
+        )
+    } else {
+        format!(
+            "{n} finding(s) under an armed count of {UNLEDGERED_ARMED}: lower UNLEDGERED_ARMED to \
+             {n} in the commit that drained it (Law 9: the count ratchets down)"
+        )
+    };
+    Row::fail(
+        ROW_UNLEDGERED,
+        "a shared concern grew a second, plane-local implementation",
+        format!("{why}: {}", unledgered.join(" | ")),
+    )
+}
+
+pub fn rows(f: &Findings) -> Vec<Row> {
+    vec![
+        unledgered_row(&f.unledgered),
         row(
             ROW_LEDGER_INTEGRITY,
             "every ledger row is a complete, single, well-classed claim",

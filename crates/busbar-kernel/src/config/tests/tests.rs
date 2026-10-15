@@ -3573,11 +3573,11 @@ fn failover_pools_are_absent_by_default() {
 // real `busbar_mcp::mcp::config::ToolsCfg`). See that file's header.
 
 // KIND IS INFERRED... MOVED to `crates/busbar/tests/config_cross_plane.rs::a_pool_may_not_straddle_two_planes`
-// (needs real `busbar_mcp`/`busbar_a2a` config types). See that file's header.
+// (needs real `busbar_mcp` and agent-engine config types). See that file's header.
 
 // A one-member pool changes nothing... MOVED to
 // `crates/busbar/tests/config_cross_plane.rs::a_failover_pool_needs_two_members` (needs a real
-// `busbar_a2a::a2a::config::AgentsCfg`). See that file's header.
+// the retired agent engine's `AgentsCfg`). See that file's header.
 
 /// `repeatable:` IS THE SAFETY DECLARATION, and the default is that nothing is repeatable. Asserted
 /// here rather than only in the seam's own tests because this is where an operator's document is

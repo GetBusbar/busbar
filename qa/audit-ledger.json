@@ -239,54 +239,6 @@
    ]
   },
   {
-   "id": "crates/busbar-a2a/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-a2a/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-a2a/src/tests"
-   ]
-  },
-  {
-   "id": "crates/busbar-a2a/build.rs",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-a2a/build.rs"
-   ],
-   "tree_hash": "c83f08b43391af3ceb387e5233af49ed1c7c675e26a58c1392204b87ccf4854f",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "LOW": 1
-   },
-   "report": "Generates an extern-crate import of an auth plugin for the plane's admin tests: a test-only lateral plugin edge kept out of source scans by moving the name into manifest metadata. The generator is correct and emits nothing into the production library. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "c83f08b43391af3ceb387e5233af49ed1c7c675e26a58c1392204b87ccf4854f",
-     "counts": {
-      "LOW": 1
-     },
-     "report": "Generates an extern-crate import of an auth plugin for the plane's admin tests: a test-only lateral plugin edge kept out of source scans by moving the name into manifest metadata. The generator is correct and emits nothing into the production library. Read fully."
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-auth-admin-tokens/src",
    "kind": "production",
    "paths": [
@@ -1862,36 +1814,6 @@
       "LOW": 2
      },
      "report": "Boots the real shipped binary and times a no-hook request against a loopback stub, so it measures the shipped path; but it names a dialect in composition-root source, no longer measures any hook despite its name, and its header quotes readings for removed cells. Read fully."
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-a2a/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-a2a/src/tests"
-   ],
-   "tree_hash": "0f80dba5d71d26a0fabd12959300a2897cd86f6d9eb87d243ed1eb33c4d6ca18",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "LOW": 2
-   },
-   "report": "The SSE reader tests are sound, but exist because the legacy plane carries its own SSE framer duplicating the transport's; the diagnostics-page gate imports the plane plugin sideways and vanishes with the legacy crate. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "0f80dba5d71d26a0fabd12959300a2897cd86f6d9eb87d243ed1eb33c4d6ca18",
-     "counts": {
-      "LOW": 2
-     },
-     "report": "The SSE reader tests are sound, but exist because the legacy plane carries its own SSE framer duplicating the transport's; the diagnostics-page gate imports the plane plugin sideways and vanishes with the legacy crate. Read fully."
     }
    ]
   },

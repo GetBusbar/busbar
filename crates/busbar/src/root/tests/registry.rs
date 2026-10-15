@@ -36,9 +36,9 @@ fn linked_registry() -> Registry {
 /// The shipped transport fold (`<wire key> <composed over, or ->` rows, in build order), as data.
 const TRANSPORT_FOLD: &str = include_str!("fixtures/transport_fold.txt");
 
-/// The sealed walk over the forty declared claims, most specific first. The decisions plane's
-/// claim is its door snapshot's (FLIP-DECISIONS), mounted by the serve fold, as the MCP plane's are
-/// (FLIP-MCP) and every other door plane's are, so none of them is here.
+/// The sealed walk over the twenty-six declared claims, most specific first. The decisions plane's
+/// claim is its door snapshot's (FLIP-DECISIONS), mounted by the serve fold, as the MCP and A2A
+/// planes' are (FLIP-MCP, FLIP-A2A) and every other door plane's are, so none of them is here.
 ///
 /// Pinned as text rather than as indices so that a diff of it reads as a routing change. See
 /// the test that reads it for what a change to this snapshot means. The rows are fixture DATA
@@ -134,7 +134,7 @@ fn six_transports_and_five_planes_register() {
 // its door snapshot's, mounted by the serve fold, so they are not counted here.
 #[cfg(linked_every_plane)]
 #[test]
-fn the_planes_declare_forty_claims() {
+fn the_planes_declare_twenty_six_claims() {
     let claims = linked_claims();
     let count = |plane: &str| claims.iter().filter(|c| c.plane == plane).count();
     // One `<plane key> <claims>` row per plane, pinned as fixture DATA so this source names none.
@@ -145,9 +145,10 @@ fn the_planes_declare_forty_claims() {
             (key.to_string(), n.parse().expect("a claim count"))
         })
         .collect();
-    // Three rows: each plane that became a door plane took its claims out of the linked table (its
-    // door's snapshot claims them, mounted by the serve fold).
-    assert_eq!(pinned.len(), 3, "three planes are pinned: {pinned:?}");
+    // Two rows: each plane that became a door plane (FLIP-MCP, FLIP-A2A, FLIP-DECISIONS,
+    // FLIP-STREAMING) took its claims out of the linked table (its door's snapshot claims them,
+    // mounted by the serve fold), so six rows became two.
+    assert_eq!(pinned.len(), 2, "two planes are pinned: {pinned:?}");
     for (key, n) in &pinned {
         assert_eq!(
             count(key),
@@ -166,7 +167,7 @@ fn the_planes_declare_forty_claims() {
         claims.len(),
         "every claim belongs to a pinned plane"
     );
-    assert_eq!(claims.len(), 40);
+    assert_eq!(claims.len(), 26);
 }
 
 /// The measured overlap, split the way the rule splits it. Both counts are pinned because both
@@ -186,16 +187,16 @@ fn the_planes_declare_forty_claims() {
 /// it too (its door's snapshot claims `POST /v1/systemone` alone, mounted by the serve fold): ten
 /// cross-family pairs and one same-family pair. The session plane's flip to its door took its five
 /// claims out (its door's snapshot claims them, mounted by the serve fold): ten cross-family and 22
-/// same-family pairs. The three planes' claims never overlapped one another (none of them states a
-/// header claim, the tool plane's stream name is not on the path planes' transport, and no exact
-/// path of one matches another's suffix, substring or prefix selectors), so 100 cross-family and 64
-/// same-family became 70 and 41.
+/// same-family pairs. FLIP-A2A took the A2A plane's fourteen claims out of it as well (its door's
+/// snapshot claims them, mounted by the serve fold behind the data listener's guest list): 65
+/// cross-family and 24 same-family pairs. None of the door planes' claims overlapped another's, so
+/// 100 cross-family and 64 same-family became 5 and 17.
 // Pinned against the SHIPPED composition (every linked plane on). Compiled out with any of them
 // because the numbers below are that composition's, not a subset of it. A door plane's claims are
 // its door snapshot's, mounted by the serve fold, so they are not counted here.
 #[cfg(linked_every_plane)]
 #[test]
-fn one_hundred_and_eleven_cross_plane_pairs_overlap() {
+fn twenty_two_cross_plane_pairs_overlap() {
     use busbar_kernel::grammar::family;
 
     let claims = linked_claims();
@@ -213,11 +214,11 @@ fn one_hundred_and_eleven_cross_plane_pairs_overlap() {
             }
         }
     }
-    assert_eq!(cross_family, 70);
-    assert_eq!(same_family, 41);
+    assert_eq!(cross_family, 5);
+    assert_eq!(same_family, 17);
 }
 
-/// What the 41 path-family overlaps that remain actually ARE, one class at a time.
+/// What the 17 path-family overlaps that remain actually ARE, one class at a time.
 ///
 /// A count alone cannot say whether an overlap is a real shape or a gap in the reasoning, and
 /// that distinction is the whole reason to tighten a grammar rather than to relax a check. So
@@ -271,13 +272,15 @@ fn every_remaining_path_overlap_is_a_shape_and_not_a_gap() {
     // The decisions plane's `/v1/models` against the llm plane's tail pattern left with its claims
     // (FLIP-DECISIONS).
     assert_eq!(tail, 17);
-    assert_eq!(variable, 24);
+    // The variable-segment pairs were the A2A plane's patterns against the llm plane's fragments;
+    // its claims left this table with FLIP-A2A.
+    assert_eq!(variable, 0);
     // The fragment pairs were the session plane's audio suffixes against the model plane's; its
     // claims left this table when it became a door plane.
     assert_eq!(fragments, 0);
 }
 
-/// **The finding, answered.** Every one of those 111 overlaps is settled by the sealed order,
+/// **The finding, answered.** Every one of those 22 overlaps is settled by the sealed order,
 /// and none of them is a refusal.
 ///
 /// The resolved count is pinned against the overlap count above, so the two cannot drift apart
@@ -293,7 +296,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     let claims = linked_claims();
     let sealed = seal_claims(&claims);
 
-    assert_eq!(sealed.resolved.len(), 111);
+    assert_eq!(sealed.resolved.len(), 22);
     assert!(
         sealed.refused.is_empty(),
         "the declared claims do not seal: {:?}",
@@ -319,7 +322,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
     }
 }
 
-/// The sealed order of the forty, written out.
+/// The sealed order of the twenty-six, written out.
 ///
 /// A snapshot, and deliberately a verbose one: the walk every arriving connection is matched
 /// against is the thing this file produces, and a change to it is a change to which plane
@@ -331,7 +334,7 @@ fn every_cross_plane_overlap_is_resolved_by_precedence_and_none_refuses() {
 // its door snapshot's, mounted by the serve fold, so they are not counted here.
 #[cfg(linked_every_plane)]
 #[test]
-fn the_sealed_order_of_the_forty_claims_is_pinned() {
+fn the_sealed_order_of_the_twenty_six_claims_is_pinned() {
     let claims = linked_claims();
     let sealed = seal_claims(&claims);
     let walk: Vec<String> = sealed
@@ -633,8 +636,8 @@ fn a_claim_on_a_transport_with_no_crate_refuses_at_boot() {
 fn the_seal_answers_now_that_every_claim_names_a_registered_transport() {
     let sealed = seal(&crate::LINKED, Dropped::NONE, TransportSettings::default())
         .expect("every claim names a live transport");
-    assert_eq!(sealed.claims.len(), 40);
-    assert_eq!(sealed.precedence.len(), 40);
+    assert_eq!(sealed.claims.len(), 26);
+    assert_eq!(sealed.precedence.len(), 26);
 }
 
 /// The operator's request-body cap reaches every linked transport.

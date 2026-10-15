@@ -66,6 +66,9 @@ pub mod store;
 // PUBLISHED GENERATION DATA: the SDK owns what a plugin publishes (`abi::sdk::publish`).
 pub mod publish;
 pub use publish::{Generations, Keyed};
+// TRUST ON SIGHT, PLANE SIDE: the state word a trust view answers and the last contact it is
+// derived from, one shape for every plane that sights an upstream on the kernel's trust book.
+pub mod trust;
 // THE LIFECYCLE, ONCE FOR EVERY KIND: the nine lifecycle slots over a kind's `Life` (`abi::sdk::life`).
 pub mod life;
 

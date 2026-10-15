@@ -106,6 +106,9 @@ pub struct Piece {
     pub fields: bool,
     /// The message was text.
     pub text: bool,
+    /// The stream ENDS here (its data channel closed): the door states it as its own empty piece
+    /// with `PIECE_END`. An empty piece without it is an empty message, never the end.
+    pub end: bool,
 }
 
 /// A path request.
@@ -391,6 +394,7 @@ impl Framing {
             bytes: description.into_bytes(),
             fields: false,
             text: true,
+            end: false,
         });
     }
 
@@ -741,6 +745,7 @@ impl Framing {
             bytes: block,
             fields: true,
             text: false,
+            end: false,
         });
     }
 
@@ -872,6 +877,7 @@ impl Framing {
                     bytes: d.data,
                     fields: false,
                     text: !d.binary,
+                    end: false,
                 });
             }
             Event::ChannelClose(id) => {
@@ -881,6 +887,7 @@ impl Framing {
                         bytes: Vec::new(),
                         fields: false,
                         text: false,
+                        end: true,
                     });
                 }
             }
@@ -901,6 +908,7 @@ impl Framing {
                         bytes: d.data.to_vec(),
                         fields: false,
                         text: false,
+                        end: false,
                     });
                 }
             }

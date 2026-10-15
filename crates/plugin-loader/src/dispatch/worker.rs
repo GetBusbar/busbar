@@ -491,6 +491,8 @@ pub(crate) struct Driven {
     /// drives `drive` this way, as a wake, THE DESIGN §11.4).
     answers: Mutex<(u64, Option<Outcome>)>,
     answered: Condvar,
+    /// A wake's `drive` ran: the host re-polls `tick` (R-PUSH).
+    woke: tokio::sync::Notify,
 }
 
 impl Driven {
@@ -547,6 +549,16 @@ impl Driven {
     #[cfg(any(test, feature = "conformance"))]
     pub(crate) fn drain(&self) -> Vec<u64> {
         std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// A wake of the driver ticket has run its `drive`.
+    fn drove(&self) {
+        self.woke.notify_one();
+    }
+
+    /// Waits until a wake's `drive` has run, once per run; never parks a thread.
+    pub(crate) async fn woken(&self) {
+        self.woke.notified().await;
     }
 
     /// Every name held, once one is; never parks a thread.
@@ -1186,6 +1198,9 @@ impl Worker {
                     inst.driven.name(frame.named());
                 }
                 inst.driven.answer(c.outcome);
+                if c.outcome != Outcome::Pending {
+                    inst.driven.drove();
+                }
                 let e = &mut st.entries[idx as usize];
                 if e.generation == generation {
                     if let Some(d) = e.driver.as_mut() {

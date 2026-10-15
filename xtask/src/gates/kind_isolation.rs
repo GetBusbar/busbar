@@ -365,7 +365,10 @@ static KINDS: &[KindDef] = &[
     KindDef {
         kind: "legacy",
         family: Family::Plane,
-        matchers: &["=busbar-llm", "=busbar-a2a"],
+        // `=busbar-a2a` STRUCK (FLIP-A2A) and `=busbar-voice` STRUCK (FLIP-STREAMING): the engines
+        // are deleted; each plane is its `busbar-plane-*` crate, a `plane` crate (`legacy-retired`
+        // asks for exactly this strike).
+        matchers: &["=busbar-llm"],
     },
 ];
 
@@ -427,9 +430,10 @@ const PENDING_EDGES: &[(&str, &str)] = &[
 ];
 
 /// The retiring 1.5.x crates, named so the ratchet can check they still exist. `busbar-mcp` retired
-/// at P3 DEL-MCP (ARCHITECT 2026-10-05) and `busbar-voice` at FLIP-STREAMING (the streaming plane's
-/// door serves every route); both are struck, as `legacy-retired` requires.
-const LEGACY_CRATES: &[&str] = &["busbar-llm", "busbar-a2a"];
+/// at P3 DEL-MCP (ARCHITECT 2026-10-05), `busbar-a2a` at FLIP-A2A and `busbar-voice` at
+/// FLIP-STREAMING (the streaming plane door serves every route); all are struck, as
+/// `legacy-retired` requires.
+const LEGACY_CRATES: &[&str] = &["busbar-llm"];
 
 /// THE MANIFESTS IN THIS REPOSITORY THAT ARE NOT CRATES OF THE TREE, each with the sentence that
 /// says why, and each on the expiry ratchet every allowance in this file lives under: an entry that
@@ -1011,6 +1015,22 @@ struct CoreName {
     cite: String,
 }
 
+/// One `[[shape-word]]` row: ONE NAMED RESERVATION of a word the instance vocabulary counts, for a
+/// spelling that is a SHAPE and not a plugin instance (ARCHITECT ruling on #787: the 1.5.5
+/// credential placement key `header`, a config word, is a shape under BUSBAR-1.6.0.md Part 2 #83 and
+/// stays byte-identical under DoD item 6). It reserves exactly ONE literal `word` in exactly ONE
+/// `file`, on the line `holder` names: in a `.rs` file the line that declares `const <holder>:`, in
+/// a `.json` file a line inside the object keyed `"<holder>"`. It is never a word-wide excuse (the
+/// 2026-09-26 ruling: named reservations, never a word-wide mask): a second spelling of the word, in
+/// the same file or any other, still counts, and a row that reserves nothing is RED.
+#[derive(Debug, Clone)]
+struct ShapeWord {
+    word: String,
+    file: String,
+    holder: String,
+    cite: String,
+}
+
 /// One `[[dep]]` row: one crate's dependency on one other crate, in one half of the build graph,
 /// at the EXACT number of declarations that state it today.
 ///
@@ -1107,6 +1127,9 @@ struct KindRegistry {
     /// The `[[core-name]]` table: core's own words the instance vocabulary must not count. See
     /// [`CoreName`] and `matrix::instances::vocabulary`.
     core_names: Vec<CoreName>,
+    /// The `[[shape-word]]` table: the named reservations of a word that is a shape. See
+    /// [`ShapeWord`] and `matrix::instances::measure_reserved`.
+    shape_words: Vec<ShapeWord>,
     /// Every named `[patch]`/`[replace]`/`[source]` allowance. See [`PatchAllow`].
     patch_allows: Vec<PatchAllow>,
     /// Rows REFUSED AT LOAD. A malformed or over-broad row is not skipped and it is not tolerated:
@@ -1456,6 +1479,48 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
                 cite: v[2].clone(),
             });
         }
+        // A NAMED RESERVATION OF A SHAPE'S WORD (ARCHITECT ruling on #787). Every field is
+        // required, the cite must be a spec line, and one (file, word, holder) is one row.
+        "shape-word" => {
+            let Some(v) = take_row(
+                fields,
+                &["word", "file", "holder", "cite"],
+                table,
+                at,
+                &mut reg.errors,
+            ) else {
+                return;
+            };
+            let line = v[3].strip_prefix("BUSBAR-1.6.0.md:").unwrap_or("");
+            if !line.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                reg.errors.push(format!(
+                    "bad-shape-word-cite\t{REGISTRY_FILE}:{at}\t`[[shape-word]] {} in {}`: cite = \
+                     \"{}\" does not open with `BUSBAR-1.6.0.md:<line>`. A reservation no clause \
+                     grants is an exemption",
+                    v[0], v[1], v[3]
+                ));
+                return;
+            }
+            let word = v[0].trim().to_ascii_lowercase();
+            if reg
+                .shape_words
+                .iter()
+                .any(|r| r.word == word && r.file == v[1] && r.holder == v[2])
+            {
+                reg.errors.push(format!(
+                    "duplicate-shape-word\t{REGISTRY_FILE}:{at}\t`[[shape-word]] {word} in {} at \
+                     {}` is already a row. Two rows for one reservation are two answers",
+                    v[1], v[2]
+                ));
+                return;
+            }
+            reg.shape_words.push(ShapeWord {
+                word,
+                file: v[1].clone(),
+                holder: v[2].clone(),
+                cite: v[3].clone(),
+            });
+        }
         // THE `:deps` AND `:test-deps` ROWS' TWO TABLES. Same reader, same refusals — and two more
         // of its own, because a row whose `half` or whose `verdict` is a word this gate has no
         // meaning for is a row that would be silently scored against nothing.
@@ -1589,7 +1654,7 @@ fn push_row(reg: &mut KindRegistry, table: &str, fields: &[(String, String)], at
             "unknown-table\t{REGISTRY_FILE}:{at}\t`[[{other}]]` is not a table this gate reads; the \
              file holds `[[transitional]]`, `[[registered]]`, `[[announced]]`, `[[dep]]`, \
              `[[question]]`, `[[face]]`, `[[law0]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, \
-             `[[core-name]]` and `[[patch]]` rows and nothing else"
+             `[[core-name]]`, `[[shape-word]]` and `[[patch]]` rows and nothing else"
         )),
     }
 }
@@ -1624,7 +1689,7 @@ fn parse_registry(text: &str) -> KindRegistry {
             reg.errors.push(format!(
                 "unknown-table\t{REGISTRY_FILE}:{}\t`{t}` — the file holds `[[transitional]]`, \
                  `[[registered]]`, `[[announced]]`, `[[dep]]`, `[[question]]`, `[[face]]`, \
-                 `[[law0]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]` and `[[patch]]` rows and \
+                 `[[law0]]`, `[[edge]]`, `[[cell]]`, `[[instance]]`, `[[core-name]]`, `[[shape-word]]` and `[[patch]]` rows and \
                  nothing else",
                 i + 1
             ));
@@ -8000,9 +8065,11 @@ impl Gate for KindIsolationGate {
             let planted_door = |linked_row: &str, drain: &str| {
                 let manifest = cx.read(kernel).unwrap_or_default();
                 let manifest = manifest
+                    // Anchored on the list's head, which every shape of the kernel's list keeps
+                    // (`busbar-a2a` left it at FLIP-A2A), so the plant does not go quietly inert.
                     .replacen(
-                        "test-linked = [\"busbar-llm\", \"busbar-a2a\"]",
-                        &format!("test-linked = [\"busbar-llm\", \"{linked_row}\", \"busbar-a2a\"]"),
+                        "test-linked = [\"busbar-llm\"",
+                        &format!("test-linked = [\"busbar-llm\", \"{linked_row}\""),
                         1,
                     )
                     .replacen(
@@ -10013,14 +10080,14 @@ impl Gate for KindIsolationGate {
 
         // THE LEGACY RATCHET, proven by retiring one.
         let mut ov = Overlay::new();
-        ov.remove("crates/busbar-a2a/Cargo.toml");
+        ov.remove("crates/busbar-llm/Cargo.toml");
         report.push(prove_rows_red(
             cx,
             subject,
             "a legacy exemption that outlived its crate is refused",
             &[ROW_REGISTRY],
             ov,
-            &["legacy-retired", "busbar-a2a"],
+            &["legacy-retired", "busbar-llm"],
         ));
 
         // THE THREE TRUTHS, each planted in the file that carries it.
@@ -10678,7 +10745,7 @@ impl Gate for KindIsolationGate {
         //
         // THE SHIPPED GATE, NOT THE DEBT-FREE SUBJECT: this case already brings its own green base
         // (the empty table), and the subject's debt — measured over the REAL table, whose
-        // `busbar-a2a` row is exactly this plant's row — would take the planted finding out of
+        // `busbar-llm` row would be exactly this plant's row — would take the planted finding out of
         // view as if it were the tree's. The pair below is the same transition read the other way.
         report.push(prove_rows_red(
             &cx.with_overlay(registry_plant("")),
@@ -11270,15 +11337,17 @@ impl Gate for KindIsolationGate {
             &["no-exemplar", "busbar-plane-a2a"],
         ));
 
-        // THE EXEMPLAR STATES NO SINGLE ENTRY. A second `impl Plane for …` in the canonical plane
-        // makes the kind's entry count TWO, and `entry-count` — the rule that holds every other
+        // THE EXEMPLAR STATES NO SINGLE ENTRY. Two `impl Plane for …` blocks in the canonical
+        // plane make the kind's entry count TWO, and `entry-count` — the rule that holds every other
         // plane to exactly one — is guarded on the exemplar stating exactly one, so it goes quiet
         // for the whole kind. The finding is that the spec stopped saying anything, and it is a
-        // finding rather than a silence.
+        // finding rather than a silence. TWO impls, not one: a plane's door is built over its own
+        // impl and the two read as ONE entry ([`door_or_impls`]), and since FLIP-A2A the exemplar is
+        // a door with no `impl` of its own, so a single planted impl is that same one entry.
         let mut ov = Overlay::new();
         ov.set(
             "crates/busbar-plane-a2a/src/planted_second_entry.rs",
-            "pub struct Second;\nimpl Plane for Second {}\n",
+            "pub struct First;\nimpl Plane for First {}\npub struct Second;\nimpl Plane for Second {}\n",
         );
         report.push(prove_rows_red(
             cx,
@@ -11445,13 +11514,14 @@ fn announced_reaching_drain_target(cx: &Ctx) -> Overlay {
 
 /// THE LEGACY CRATE THE DRAIN PAIR IS ABOUT. It must be a `legacy` crate that is really on disk,
 /// or the red case plants a row for nothing and the green case removes a manifest that is not there.
-const DRAIN_PLANT_FROM: &str = "busbar-a2a";
+/// FLIP-A2A and FLIP-STREAMING deleted the other two, so it is `busbar-llm`, the one left.
+const DRAIN_PLANT_FROM: &str = "busbar-llm";
 
 /// ONE `[[transitional]]` row for [`DRAIN_PLANT_FROM`], and no other row — the red case's plant
 /// and, with the crate removed, the green case's.
 fn drain_row_plant() -> Overlay {
     registry_plant(&format!(
-        "[[transitional]]\nfrom = \"{DRAIN_PLANT_FROM}\"\nto = \"busbar-plane-a2a\"\nreason = \
+        "[[transitional]]\nfrom = \"{DRAIN_PLANT_FROM}\"\nto = \"busbar-plane-llm\"\nreason = \
          \"legacy drain\"\n"
     ))
 }

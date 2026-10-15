@@ -26,10 +26,11 @@ path = "src/lib.rs"
 
 # THE LINKED TEST-SEAM LIST: the dev-dependency crates whose `testkit::TEST_SEAM` entry this crate's
 # unit tests register and loop (build.rs emits the table; the sources name none of these crates).
-# A `door:` row is a plane crate served through its memory-ABI door only: its registry row is folded
-# from its Statement, as the composition root folds it. The list is the install order.
+# The list is the install order. A plane served through its memory-ABI door only is no row here:
+# this crate links no loader (P2 D4); the admin tests that need a door plane's section run in the
+# composition root's tests, where the loader links the door.
 [package.metadata.busbar]
-test-linked = ["busbar-llm", "busbar-a2a"]
+test-linked = ["busbar-llm"]
 # THE TEST REGISTRY ROW for the operator credential: the auth plugin dev-dependency whose SDK boundary
 # this crate's unit tests link onto the auth axis (build.rs emits it; the sources name no auth plugin),
 # as the composition root links it into the shipped binary.
@@ -68,19 +69,16 @@ test-support = ["busbar-kernel/test-support"]
 # verbs lose their typed bodies. The binary forwards the same four; without this, `cargo test -p
 # busbar-core-admin --features openapi-schema` run alone generated a different document than CI's
 # combined `-p busbar -p busbar-kernel -p busbar-core-admin` run, where feature unification hid it.
-openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema", "busbar-llm/openapi-schema", "busbar-a2a/openapi-schema"]
+openapi-schema = ["dep:schemars", "busbar-kernel/openapi-schema", "busbar-llm/openapi-schema"]
 
 [dev-dependencies]
 # Test-only (json body decode + public-key hex in the service tests); no production use.
 hex = { workspace = true }
 http-body-util = { workspace = true }
 busbar-kernel = { path = "../busbar-kernel", default-features = false, features = ["test-support", "plane-mcp", "plane-a2a"] }
-# The moved cross-plane drift test drives the MCP and A2A plane trust-verb error surfaces. Their
-# testkits register the plane decls + the self-enveloping admin-verb backing (core's
-# `CorePlaneAdminEnvelope`, which STAYED in busbar-core). NOTE: do NOT enable busbar-admin/test-support
-# on these edges.
+# The moved cross-plane drift test drives the linked planes' trust-verb error surfaces. Their
+# testkits register the plane decls. NOTE: do NOT enable busbar-admin/test-support on these edges.
 busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
-busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 # THE OPERATOR CREDENTIAL'S TEST REGISTRY ROW (`test-operator-auth` above): the admin e2e tests
 # authenticate through the auth plugin the composition root links for it, from its own repo, at the
 # SAME pinned rev plugin-loader's both-ways proof drives. Dev-only: the library names no auth plugin.

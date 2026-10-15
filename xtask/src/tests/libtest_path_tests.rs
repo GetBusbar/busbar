@@ -181,3 +181,41 @@ fn an_unreached_file_or_an_absent_fn_is_refused() {
         "a commented-out declaration is no module and no fn"
     );
 }
+
+/// A DOOR PLANE'S OWN ROOT CELLS: the composition root's serve module includes the build script's
+/// `door_cells.rs`, one `#[path]` module per `[package.metadata.busbar.door-cells]` row, each at its
+/// plane crate's `tests/root/mod.rs`. The tree reads the rows off the manifest, so a cell there is
+/// `root::serve::<feature>::<fn>`. RED arm: with no row, the plane crate's file is reached by no
+/// declaration and its cell resolves nowhere.
+#[test]
+fn a_door_cells_include_reaches_each_rows_plane_crate_cells() {
+    let files = |manifest: &str| {
+        tree_of(&[
+            ("c/src/main.rs", "mod root;\nfn main() {}\n"),
+            ("c/src/root/mod.rs", "pub mod serve;\n"),
+            (
+                "c/src/root/serve.rs",
+                "pub fn serve() {}\n\
+                 #[cfg(all(test, linked_axis_node))]\n\
+                 include!(concat!(env!(\"OUT_DIR\"), \"/door_cells.rs\"));\n",
+            ),
+            ("c/Cargo.toml", manifest),
+            (
+                "q/tests/root/mod.rs",
+                "mod inner {\n    #[test]\n    fn a_plane_cell() {}\n}\n",
+            ),
+        ])
+    };
+    let with_row = "[dependencies]\nplane-q = { path = \"../q\", optional = true }\n\n\
+                    [package.metadata.busbar.door-cells]\nplane-q-door = \"plane-q\"\n";
+    let tree = files(with_row);
+    assert_eq!(
+        resolve(&tree, "q/tests/root/mod.rs", "a_plane_cell").as_deref(),
+        Ok("root::serve::plane_q_door::inner::a_plane_cell")
+    );
+    let tree = files("[dependencies]\nplane-q = { path = \"../q\", optional = true }\n");
+    assert!(
+        resolve(&tree, "q/tests/root/mod.rs", "a_plane_cell").is_err(),
+        "no row, no module"
+    );
+}

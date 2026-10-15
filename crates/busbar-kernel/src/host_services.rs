@@ -491,8 +491,9 @@ pub struct InstanceFacts {
     /// The scope kinds its tail declares: `entitlement.check` answers only for these.
     pub scope_kinds: Vec<String>,
     /// Its chained record kinds, as its tail declares them (`PlaneTail::record_chains`, each `kind`
-    /// an index into [`InstanceFacts::record_kinds`]): a record write of one is appended to the
-    /// kernel's journal ([`crate::host_chains`]), never put.
+    /// an index into [`InstanceFacts::record_kinds`]): a record write of one is APPENDED to its
+    /// chain, framed and sealed by the host and verified when read (`crate::host_chains`), never
+    /// put.
     pub record_chains: Vec<busbar_contract::abi::plane::RecordChain>,
 }
 
@@ -557,12 +558,7 @@ impl std::error::Error for AdmitRefused {}
 struct Records {
     reads: Arc<dyn RecordRows>,
     claims: Arc<dyn RecordStore>,
-    /// The same store narrowed to its plane-record slots: where a chained kind's journal persists.
-    plane: Arc<dyn crate::plane::store::PlaneStore>,
 }
-
-/// Every admitted instance's chained record kinds, by `(label, kind)`.
-type Chains = HashMap<(Arc<str>, String), Arc<crate::host_chains::ChainedKind>>;
 
 /// The wall clock, in milliseconds since the Unix epoch.
 pub type WallMs = Arc<dyn Fn() -> u64 + Send + Sync>;
@@ -594,14 +590,13 @@ pub struct KernelServices {
     /// The monotonic clock, where one was given; else the time since [`Self::origin`].
     mono_ns: Option<MonoNs>,
     instances: Mutex<HashMap<Arc<str>, Arc<InstanceFacts>>>,
-    /// Every admitted instance's chained record kinds, by `(label, kind)`; kept across a
-    /// re-admission so a chain's positions are never reset.
-    chains: Mutex<Chains>,
     records: OnceLock<Records>,
     pool: OnceLock<Arc<dyn Offload>>,
     pending: Arc<PendingRecords>,
     units: Arc<crate::host_units::UnitRecords>,
     batcher: Arc<WriteBehind>,
+    /// The positions of every instance's declared record chains, the flush's to keep.
+    chains: Arc<crate::host_chains::ChainBook>,
     signer: OnceLock<Arc<dyn SignKey>>,
     trust: TrustBook,
     /// The destination guard; when set it IS the judge (`dest.judge`, [`Self::judge_dial`]).
@@ -681,12 +676,12 @@ impl KernelServices {
             wall_ms: Arc::new(system_wall_ms),
             mono_ns: None,
             instances: Mutex::default(),
-            chains: Mutex::default(),
             records: OnceLock::new(),
             pool: OnceLock::new(),
             pending: Arc::default(),
             units: Arc::default(),
             batcher: Arc::default(),
+            chains: Arc::default(),
             signer: OnceLock::new(),
             trust: TrustBook::default(),
             judge: None,
@@ -811,14 +806,7 @@ impl KernelServices {
     /// late, once: the configured store is opened after the services are installed (the composition
     /// root's late attach). `false` when a record store was already bound.
     pub fn attach_records(&self, reads: Arc<dyn RecordRows>, claims: Arc<dyn RecordStore>) -> bool {
-        let plane = crate::plane::store::PlaneStoreView::narrow(Arc::clone(&claims));
-        self.records
-            .set(Records {
-                reads,
-                claims,
-                plane,
-            })
-            .is_ok()
+        self.records.set(Records { reads, claims }).is_ok()
     }
 
     /// Run every store call on `pool`, never on the calling thread. Without it the services that
@@ -919,23 +907,17 @@ impl KernelServices {
         // EVERY DECLARED CHAIN IS ONE THIS HOST CAN KEEP, judged before anything is registered: a
         // chain it cannot keep refuses the admit rather than leaving the kind unchained (audit
         // contract-C2 #4).
-        let chained: Vec<(String, crate::host_chains::ChainedKind)> = facts
-            .record_chains
-            .iter()
-            .map(|chain| {
-                let unknown = AdmitRefused::ChainUnknown {
-                    kind: chain.kind,
-                    framing: chain.framing,
-                };
-                let kind = facts
-                    .record_kinds
-                    .get(chain.kind as usize)
-                    .ok_or_else(|| unknown.clone())?;
-                crate::host_chains::ChainedKind::new(kind.as_str(), chain)
-                    .map(|c| (kind.as_str().to_string(), c))
-                    .ok_or(unknown)
-            })
-            .collect::<Result<_, _>>()?;
+        for chain in &facts.record_chains {
+            let unknown = AdmitRefused::ChainUnknown {
+                kind: chain.kind,
+                framing: chain.framing,
+            };
+            if facts.record_kinds.get(chain.kind as usize).is_none()
+                || crate::host_chains::ChainFraming::of(chain).is_none()
+            {
+                return Err(unknown);
+            }
+        }
         let key: Arc<str> = Arc::from(instance);
         let (rows, default) = self.demotions.get().map_or_else(
             || (Vec::new(), false),
@@ -975,17 +957,6 @@ impl KernelServices {
         });
         self.trust
             .admit(&key, facts.trust.iter().cloned(), replayed);
-        {
-            let mut chains = self
-                .chains
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            for (kind, chained) in chained {
-                chains
-                    .entry((Arc::clone(&key), kind))
-                    .or_insert_with(|| Arc::new(chained));
-            }
-        }
         self.trust.admit_decided(instance, &decided);
         instances.insert(key, Arc::new(facts));
         Ok(())
@@ -1153,10 +1124,17 @@ impl KernelServices {
     /// the store takes it in the next batch, on the pool, and `acked` is answered only then (`Ok`,
     /// or the store's refusal). The write is durable before its writer hears so.
     ///
+    /// A kind the instance declared CHAINED (`PlaneTail::record_chains`) is APPENDED to instead:
+    /// `key` is the chain's scope and `value` the record's own bytes, sealed by the host in the
+    /// declared framing when the flush reaches it (`crate::host_chains`); an empty `value` drops
+    /// the chain. It is not laid on the overlay: a chain is read back once the store took it.
+    ///
     /// # Errors
     ///
     /// The refusal, with `acked` never called: an instance never admitted, a kind it did not
-    /// declare, no store or pool, or [`QUEUE_FULL`] (the overlay untouched).
+    /// declare, no store or pool, or [`QUEUE_FULL`] (the overlay untouched); for a chained kind, a
+    /// key that is no scope ([`crate::host_chains::CHAIN_SCOPE_UNFIT`]) or bytes too large to keep
+    /// with their chain fields ([`crate::host_chains::CHAIN_RECORD_TOO_LARGE`]).
     pub fn record_write(
         &self,
         caller: &Caller,
@@ -1166,20 +1144,23 @@ impl KernelServices {
         acked: Acked,
     ) -> Result<(), &'static str> {
         let (schema, records, pool) = self.scope(caller, kind).map_err(|s| s.error)?;
-        if let Some(chain) = self.chained(caller, kind) {
-            // A CHAINED KIND: appended to its journal on the pool, durable before `acked` hears
-            // so; never put through the write-behind (a put keyed by scope would overwrite).
-            let store = Arc::clone(&records.plane);
-            let instance = Arc::clone(&caller.instance);
-            let (key, content) = (key.to_vec(), value.as_slice().to_vec());
-            pool.run(Box::new(move || {
-                acked(chain.append(&store, &instance, &key, content));
-            }));
-            return Ok(());
+        let chain = self.chain_of(caller, kind);
+        if chain.is_some() {
+            if crate::host_chains::scope_of(key).is_none() {
+                return Err(crate::host_chains::CHAIN_SCOPE_UNFIT);
+            }
+            let room = busbar_contract::bounded::MAX_RECORD_BYTES
+                .saturating_sub(crate::host_chains::CHAIN_OVERHEAD);
+            if value.as_slice().len() > room {
+                return Err(crate::host_chains::CHAIN_RECORD_TOO_LARGE);
+            }
         }
         let pending = &self.pending;
         let started = self.batcher.push_with(|| {
-            let seq = pending.enqueue(&caller.instance, kind, key, value.as_slice().to_vec());
+            let seq = match chain {
+                Some(_) => 0,
+                None => pending.enqueue(&caller.instance, kind, key, value.as_slice().to_vec()),
+            };
             Write {
                 instance: Arc::clone(&caller.instance),
                 schema,
@@ -1187,6 +1168,7 @@ impl KernelServices {
                 value,
                 seq,
                 owed: WriteOwed::new(acked),
+                chain,
             }
         });
         match started {
@@ -1197,13 +1179,15 @@ impl KernelServices {
         Ok(())
     }
 
-    /// The chained kind `kind` of the caller, when its tail declares that kind chained.
-    fn chained(&self, caller: &Caller, kind: &str) -> Option<Arc<crate::host_chains::ChainedKind>> {
-        self.chains
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .get(&(Arc::clone(&caller.instance), kind.to_string()))
-            .cloned()
+    /// The declared chain framing of the caller's record kind `kind`; `None` when it is not chained.
+    fn chain_of(&self, caller: &Caller, kind: &str) -> Option<crate::host_chains::ChainFraming> {
+        let facts = self.facts(caller)?;
+        let index = facts.record_kinds.iter().position(|k| k.as_str() == kind)?;
+        facts
+            .record_chains
+            .iter()
+            .find(|c| c.kind as usize == index)
+            .and_then(crate::host_chains::ChainFraming::of)
     }
 
     /// The caller's record kind at `index` of its tail ([`RecordWrite::kind`] indexes it).
@@ -1274,10 +1258,11 @@ impl KernelServices {
     fn start_flush(&self, records: &Records, pool: &dyn Offload) {
         let unrun = Unrun(Some(Arc::clone(&self.batcher)));
         let pending = Arc::clone(&self.pending);
+        let chains = Arc::clone(&self.chains);
         let rows = Arc::clone(&records.reads);
         pool.run(Box::new(move || {
             if let Some(batcher) = unrun.run() {
-                batcher.flush(&pending, &*rows);
+                batcher.flush(&pending, &*rows, &chains);
             }
         }));
     }
@@ -1564,6 +1549,9 @@ impl HostServices for KernelServices {
             Ok(s) => s,
             Err(refused) => return Ran::Now(refused),
         };
+        if self.chain_of(caller, kind).is_some() {
+            return Ran::Now(Stored::refused(crate::host_chains::CHAIN_READ_WHOLE));
+        }
         let found = |v: Vec<u8>| {
             let len = v.len();
             let mut s = Stored::ready(svc::FOUND);
@@ -1601,23 +1589,34 @@ impl HostServices for KernelServices {
             0 => cap,
             n => (n as usize).min(cap),
         };
-        let queued = self
-            .pending
-            .under(&caller.instance, &list.kind, &list.prefix);
+        let chain = self.chain_of(caller, &list.kind);
+        // A chain is read back from the store only: its appends never sit on the overlay.
+        let queued = match chain {
+            Some(_) => Vec::new(),
+            None => self
+                .pending
+                .under(&caller.instance, &list.kind, &list.prefix),
+        };
         let reads = Arc::clone(&records.reads);
+        let instance = Arc::clone(&caller.instance);
         let scope = record_key(&caller.instance, &[]).len();
         let prefix = record_key(&caller.instance, &list.prefix);
         // The store's scan has no cursor: the whole prefix is read, and `after` and `limit` are
-        // applied here, over the store's rows and the queued writes together.
+        // applied here, over the store's rows and the queued writes together. A chained kind's
+        // rows are its chains, each VERIFIED first (`crate::host_chains::verified`).
         submit(pool, later, move || {
             match reads.record_scan(schema, &prefix, u32::MAX) {
                 Ok(rows) => {
-                    let rows = rows
+                    let rows: Vec<(Vec<u8>, Vec<u8>)> = rows
                         .into_iter()
                         .filter_map(|(k, v)| {
                             Some((k.get(scope..)?.to_vec(), v.as_slice().to_vec()))
                         })
                         .collect();
+                    let rows = match chain {
+                        Some(f) => crate::host_chains::verified(&instance, schema, rows, f),
+                        None => rows,
+                    };
                     spans_of(merge_list(rows, queued, list.after.as_deref(), limit))
                 }
                 Err(_) => failed(STORE_FAILED),
@@ -2405,3 +2404,7 @@ pub fn distrust_code(why: Distrust) -> u64 {
 #[cfg(test)]
 #[path = "tests/host_stage_tests.rs"]
 mod host_stage_tests;
+
+#[cfg(test)]
+#[path = "tests/host_chains_tests.rs"]
+mod chain_tests;

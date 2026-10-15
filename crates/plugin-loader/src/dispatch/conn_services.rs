@@ -56,9 +56,10 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
-    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, REPLY_ACK, REPLY_BODY,
-    REPLY_END, REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE,
-    UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
+    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn,
+    CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD,
+    REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
+    WITHIN_SEPARATOR,
 };
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
@@ -137,7 +138,9 @@ impl Answer {
         }
     }
 
-    /// A connection table's refusal, as the plugin reads it.
+    /// A connection table's refusal, as the plugin reads it. An unavailable credential is a refusal
+    /// that names its own cause ([`CAUSE_CREDENTIAL_UNAVAILABLE`] in `value`), so the plugin can
+    /// tell it from the target's, the egress rules' or the far end's.
     const fn of(e: ConnError) -> Self {
         let outcome = match e {
             ConnError::Pending => Outcome::Pending,
@@ -145,9 +148,17 @@ impl Answer {
             ConnError::NotOwner
             | ConnError::UndeclaredNeed
             | ConnError::Refused
-            | ConnError::Unarmed => Outcome::Refused,
+            | ConnError::Unarmed
+            | ConnError::CredentialUnavailable => Outcome::Refused,
         };
-        Self::with(outcome, e.text())
+        let value = match e {
+            ConnError::CredentialUnavailable => CAUSE_CREDENTIAL_UNAVAILABLE,
+            _ => CAUSE_NONE,
+        };
+        Self {
+            value,
+            ..Self::with(outcome, e.text())
+        }
     }
 
     /// A connection table's refusal of `conn`, naming why the connection failed where the table
@@ -751,7 +762,7 @@ enum Conn {
     /// Its open was refused or failed: the reply's failed ack.
     Failed(ConnError),
     /// The request is whole and its member's auth call is in flight: it opens when the fields
-    /// answer (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: the open calls the member binding's fields).
+    /// answer (the open calls the member binding's fields).
     Authing(Box<Authing>),
     /// One call has taken the stream out to open it, or to make or poll its member's auth call,
     /// OUTSIDE the connector's lock (THE DESIGN §11.13 M1: no plugin code runs under a host lock;
@@ -1008,25 +1019,54 @@ extern "C" fn write_request(
                     // (`abi::auth::SCOPE_REQUEST_FIELD`): out of the request before anything is
                     // encoded, lent to the member's auth call. No wire carries it.
                     let mut scope = None;
+                    // THE PLUGIN'S WAIVER of the member's binding for this request
+                    // (`abi::auth::NO_MEMBER_AUTH_FIELD`): the host's own field too, taken out here,
+                    // and the request is opened with no member auth.
+                    let mut waived = false;
                     h.fields.retain(|(name, value)| {
                         if busbar_contract::abi::auth::is_scope_field(name.as_bytes()) {
                             scope.get_or_insert_with(|| value.clone());
+                            false
+                        } else if busbar_contract::abi::auth::is_no_member_auth_field(
+                            name.as_bytes(),
+                        ) {
+                            waived = true;
                             false
                         } else {
                             true
                         }
                     });
                     let at = (target.as_str(), within.as_slice(), member.as_str());
-                    // THE MEMBER'S BINDING (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE): a request to a
-                    // member the connector holds a binding for carries that binding's auth fields,
-                    // as the member's relayed calls do. The request is handed over whole; what
-                    // became of it is the reply's to say.
-                    let conn = match table.auth_of(id, need, &target) {
+                    // THE MEMBER'S BINDING: a request to a member the connector holds a binding
+                    // for carries that binding's auth fields, as the member's relayed calls do. The
+                    // connector keys a binding by (instance, need, member, target origin); a
+                    // request naming no member gets no binding. It is the binding of the member the
+                    // stream NAMES (`EstablishIn::member`), never of another registration at the
+                    // same origin. The request is handed over whole; what became of it is the
+                    // reply's to say.
+                    let bound = if waived {
+                        None
+                    } else {
+                        table.auth_of(id, need, &member, &target)
+                    };
+                    // A refreshed binding answers this request's handle with a load (never a
+                    // resolution inside this crossing); one whose credential its last refresh
+                    // found unavailable refuses the request under its own cause, nothing
+                    // presented.
+                    let handle = bound.as_ref().and_then(|b| match &b.per_request {
+                        Some(per) => per.handle_now(),
+                        None => Some(b.handle),
+                    });
+                    let conn = match bound {
                         None => open_with(table, id, need, at, &h, &body, &[]),
+                        Some(_) if handle.is_none() => {
+                            Conn::Failed(ConnError::CredentialUnavailable)
+                        }
                         Some(binding) => match auth_request(&binding, &h, &target, &body, scope) {
                             None => Conn::Failed(ConnError::Refused),
                             Some(request) => {
-                                match binding.auth.fields_now(binding.handle, &request) {
+                                let handle = handle.unwrap_or(binding.handle);
+                                match binding.auth.fields_now(handle, &request) {
                                     Some(Fields::Ready(auth)) => {
                                         open_with(table, id, need, at, &h, &body, &auth)
                                     }
@@ -1034,7 +1074,7 @@ extern "C" fn write_request(
                                         Conn::Failed(ConnError::Refused)
                                     }
                                     None => Conn::Authing(Box::new(Authing {
-                                        fielding: binding.auth.fields(binding.handle, request, 0),
+                                        fielding: binding.auth.fields(handle, request, 0),
                                         need,
                                         target,
                                         within,

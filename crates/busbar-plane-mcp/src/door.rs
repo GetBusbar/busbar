@@ -26,12 +26,13 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT};
 use busbar_contract::abi::mechanism::door::{KindTailHead, Section, SECTION_DECLARING};
 use busbar_contract::abi::plane::{
     AdminRoute, BillableClass, OpClass, PinMechanism, PlaneTail, RecordChain, TrustKey,
-    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CLAIM_EXACT, CLAIM_OPEN, INGRESS_REQUEST_RESPONSE,
-    INGRESS_RESPONSE_STREAM, MECHANISM_ROOT, SHAPE_PIECEWISE, TRUST_PIN, TRUST_PRIVATE_REACH,
-    TRUST_REVERIFY_TTL,
+    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    MECHANISM_ROOT, SHAPE_PIECEWISE, TRUST_PIN, TRUST_PRIVATE_REACH, TRUST_REVERIFY_TTL,
 };
 use busbar_contract::abi::sdk::door::abi_str;
-use busbar_contract::abi::sdk::publish::{AdminRouteSpec, ClaimSpec, SnapshotSpec};
+use busbar_contract::abi::sdk::publish::{
+    admin_route, class_index, AdminRouteSpec, ServedRoute, SnapshotSpec,
+};
 
 use crate::tool_claims::{
     CARRIER_HTTP, CARRIER_SSE, CARRIER_STDIO, DEFAULT_METADATA, DEFAULT_MOUNT, TASK_RUN_MOUNT,
@@ -320,13 +321,11 @@ const OP_CLASS_TABLE: &[OpClass] = &[
     op_class(16),
 ];
 
-/// The tail index of an operation class, where the table holds it.
+/// The tail index of an operation class, where the table holds it (the SDK's one index rule,
+/// [`class_index`]).
 #[must_use]
 pub fn op_class_index(op: busbar_contract::ids::OpClassId) -> Option<u32> {
-    crate::tool_ops::OP_CLASSES
-        .iter()
-        .position(|c| *c == op)
-        .map(|i| i as u32)
+    class_index(crate::tool_ops::OP_CLASSES, op)
 }
 
 /// The status of a verb the endpoint does not serve for the request as it came: a GET or DELETE
@@ -442,21 +441,14 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     // a stalled consumer (its event and subscribe streams were pull-based bodies, `session_serve.rs`,
     // `subscribe.rs`), so the mcp plane states none and keeps that behaviour.
     stream_ceiling_secs: 0,
+    metric_lanes: std::ptr::null(),
+    metric_lanes_len: 0,
 };
 
-/// One path the plane answers on: the verb, the target, the transport claim it arrives over, and
-/// whether the route admits a caller with no credential at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Route {
-    /// The verb.
-    pub verb: &'static str,
-    /// The target path.
-    pub target: &'static str,
-    /// The transport claim it arrives over.
-    pub carrier: &'static str,
-    /// No inbound credential: the discovery document.
-    pub open: bool,
-}
+/// One path the plane answers on: the SDK's one route row ([`ServedRoute`]): the verb, the target,
+/// the transport claim it arrives over, and whether the route admits a caller with no credential
+/// at all (the discovery document).
+pub type Route = ServedRoute;
 
 /// EVERY ROUTE THE PLANE SERVES, in the order the engine mounts them: the discovery document, the
 /// endpoint's three verbs, and the event-framed answer on the same path.
@@ -534,18 +526,12 @@ pub const ADMIN_VERBS: &[(&str, &str)] = &[
     ("GET", "/tools/{name}/health"),
 ];
 
-const fn admin_route(i: usize) -> AdminRoute {
-    AdminRoute {
-        verb: abi_str(ADMIN_VERBS[i].0),
-        target: abi_str(ADMIN_VERBS[i].1),
-        flags: 0,
-        _reserved: 0,
-        audit_verb: abi_str(ADMIN_AUDIT[i]),
-    }
-}
-
-/// [`ADMIN_VERBS`] in the ABI's spelling.
-pub const ADMIN_ROUTES: &[AdminRoute] = &[admin_route(0), admin_route(1), admin_route(2)];
+/// [`ADMIN_VERBS`] in the ABI's spelling, each audited under its [`ADMIN_AUDIT`] word.
+pub const ADMIN_ROUTES: &[AdminRoute] = &[
+    admin_route(ADMIN_VERBS[0], 0, ADMIN_AUDIT[0]),
+    admin_route(ADMIN_VERBS[1], 0, ADMIN_AUDIT[1]),
+    admin_route(ADMIN_VERBS[2], 0, ADMIN_AUDIT[2]),
+];
 
 /// `validate` and `open`: the settings blob read as the `tools:` section. An empty blob is the
 /// empty section. The error is the grammar's own sentence.
@@ -742,7 +728,11 @@ pub fn snapshot_spec_with(
     facts: Option<Vec<u8>>,
 ) -> SnapshotSpec {
     let (audience, resource_metadata, claims) = match admitted {
-        Some((a, m)) => (Some(a), Some(m), ROUTES.iter().map(claim).collect()),
+        Some((a, m)) => (
+            Some(a),
+            Some(m),
+            ROUTES.iter().map(ServedRoute::claim_spec).collect(),
+        ),
         None => (None, None, Vec::new()),
     };
     SnapshotSpec {
@@ -762,17 +752,6 @@ pub fn snapshot_spec_with(
         resource_metadata,
         listed: Vec::new(),
     }
-}
-
-/// A route as the snapshot's claim: an open route takes no inbound credential, and every target
-/// matches exactly.
-fn claim(r: &Route) -> ClaimSpec {
-    let flags = if r.open {
-        CLAIM_EXACT | CLAIM_OPEN
-    } else {
-        CLAIM_EXACT
-    };
-    ClaimSpec::new(r.verb, r.target, r.carrier, flags)
 }
 
 #[cfg(test)]

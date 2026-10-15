@@ -566,3 +566,7 @@ pub fn send_pinned_stream(
         .ok_or_else(|| no_backend_fault(hop.url))?
         .stream(&hop.spec(), cap, on_chunk)
 }
+
+#[cfg(test)]
+#[path = "tests/seam_conformance_tests.rs"]
+mod seam_conformance_tests;

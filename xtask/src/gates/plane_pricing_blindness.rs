@@ -211,10 +211,8 @@ pub const PLANE_CRATES: &[PlaneCrate] = &[
     // `busbar-mcp` IS DELETED (P3 DEL-MCP, ARCHITECT 2026-10-05): the SPLIT finished — the mcp plane
     // is its door crate, `busbar-plane-mcp`, scanned by the CLEAN row above — so its entry is struck
     // in this reviewed diff, as the `plane-roots` row asks of a folded crate.
-    PlaneCrate {
-        dir: "busbar-a2a",
-        placement: "#83 SPLIT -> def 16-20",
-    },
+    // `busbar-a2a` is struck (FLIP-A2A): the engine is deleted and the a2a plane is
+    // `busbar-plane-a2a`, scanned as a plane crate.
     // `busbar-voice` is struck: FLIP-STREAMING deleted the legacy streams crate, and the streaming
     // plane is `busbar-plane-streaming`, scanned as a plane crate.
 ];

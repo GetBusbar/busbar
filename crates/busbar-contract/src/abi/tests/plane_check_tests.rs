@@ -1230,9 +1230,9 @@ fn a_tail_with_unknown_bits_or_no_ingress_is_fault() {
     let mut t = tail();
     t.ingress = INGRESS_REQUEST_RESPONSE | (1 << 5);
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.ingress"));
-    // The first bit past the last one a tail may state (`TAIL_HOOKS_GATED`, bit 2, is known).
+    // The first bit past the last one a tail may state (`TAIL_REFUSED_PIECE`, bit 3, is known).
     let mut t = tail();
-    t.flags = TAIL_HOOKS_GATED << 1;
+    t.flags = TAIL_REFUSED_PIECE << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
     let mut t = tail();
     t.dispatch_shape = 2;
@@ -1647,13 +1647,22 @@ fn a_verdict_is_known() {
 }
 
 /// THE BREAKER FAULT READING (ARCHITECT 2026-10-05): one vocabulary with the transport's
-/// (`FAULT_*`), separate from the verdict. RED arms: past `FAULT_HARD`, on an answer that is not
+/// (`FAULT_*`, healthy included), separate from the verdict. RED arms: past `FAULT_HEALTHY`, on an
+/// answer that is not
 /// READY, and its padding not zero.
 #[test]
 fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
-    use crate::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
+    use crate::abi::transport::{
+        FAULT_CALLER, FAULT_HARD, FAULT_HEALTHY, FAULT_NONE, FAULT_TRANSIENT,
+    };
     let mut o: OnPieceOut = z();
-    for reading in [FAULT_NONE, FAULT_CALLER, FAULT_TRANSIENT, FAULT_HARD] {
+    for reading in [
+        FAULT_NONE,
+        FAULT_CALLER,
+        FAULT_TRANSIENT,
+        FAULT_HARD,
+        FAULT_HEALTHY,
+    ] {
         o.fault = reading;
         assert_eq!(piece(&o, &[], &[], &[]), Ok(()), "{reading}");
     }
@@ -1662,7 +1671,7 @@ fn a_fault_reading_is_the_transports_vocabulary_on_a_ready_answer() {
     o.fault = FAULT_CALLER;
     assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
     o.verdict = 0;
-    o.fault = FAULT_HARD + 1;
+    o.fault = FAULT_HEALTHY + 1;
     assert_eq!(
         piece(&o, &[], &[], &[]),
         f(Rule::UnknownCode, "on_piece.fault")
@@ -1808,7 +1817,18 @@ fn a_tail_may_declare_the_gate_first_hook_order() {
     let mut t = tail();
     t.flags = TAIL_HOOKS_GATED;
     assert_eq!(check_tail(&t), Ok(()));
-    t.flags = TAIL_HOOKS_GATED << 1;
+    t.flags = TAIL_REFUSED_PIECE << 1;
+    assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
+}
+
+/// A tail may state that the plane takes a credential refusal as a piece first
+/// (`TAIL_REFUSED_PIECE`), beside the gate-first order; a flag past it is still unknown.
+#[test]
+fn a_tail_may_take_a_credential_refusal_as_a_piece() {
+    let mut t = tail();
+    t.flags = TAIL_REFUSED_PIECE | TAIL_HOOKS_GATED;
+    assert_eq!(check_tail(&t), Ok(()));
+    t.flags = TAIL_REFUSED_PIECE << 1;
     assert_eq!(check_tail(&t), f(Rule::UnknownCode, "tail.flags"));
 }
 
@@ -1829,10 +1849,31 @@ fn an_admin_route_flag_is_known() {
         audit_verb: z(),
     };
     assert_eq!(check_admin_routes(&[r]), Ok(()));
-    r.flags = ROUTE_PUBLIC << 1;
+    r.flags = ROUTE_CARRIES_OWN_TOKEN << 1;
     assert_eq!(
         check_admin_routes(&[r]),
         f(Rule::UnknownCode, "admin_route.flags")
+    );
+}
+
+/// RED (`BUSBAR-1.6.0.md` l.4882, a callback route the plane addresses by its own token): a
+/// public route may carry the plane's own token, and an admin route may not — its `authorization`
+/// is the operator's credential, which never crosses — so a snapshot stating the bit on a route that
+/// is not public is refused at its load.
+#[test]
+fn only_a_public_route_carries_its_own_token() {
+    let mut r = AdminRoute {
+        verb: s("POST"),
+        target: s("/t"),
+        flags: ROUTE_PUBLIC | ROUTE_CARRIES_OWN_TOKEN,
+        _reserved: 0,
+        audit_verb: z(),
+    };
+    assert_eq!(check_admin_routes(&[r]), Ok(()));
+    r.flags = ROUTE_CARRIES_OWN_TOKEN;
+    assert_eq!(
+        check_admin_routes(&[r]),
+        f(Rule::Contradiction, "admin_route.flags")
     );
 }
 
@@ -2304,6 +2345,11 @@ const PINNED: &[(u32, RefusalCode, &str)] = &[
     (40, RefusalCode::ClientGone, "client_gone"),
     (41, RefusalCode::DeadlineExceeded, "deadline_exceeded"),
     (42, RefusalCode::Untrusted, "untrusted"),
+    (
+        43,
+        RefusalCode::CredentialUnavailable,
+        "credential_unavailable",
+    ),
 ];
 
 #[test]
@@ -3038,7 +3084,7 @@ fn an_arrivals_route_class_is_pool_or_direct() {
     o.pool = s("a, b");
     assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
     let mut o: ArriveOut = z();
-    o.route = ROUTE_SCOPE + 1;
+    o.route = ROUTE_SCOPE_LOCAL + 1;
     assert_eq!(
         check_arrive(Ready, &o, &[], 4, &bounds()),
         f(Rule::UnknownCode, "arrive.route")
@@ -3050,6 +3096,40 @@ fn an_arrivals_route_class_is_pool_or_direct() {
     assert_eq!(
         check_arrive(Refused, &o, &[], 4, &bounds()),
         f(Rule::Contradiction, "arrive.pool")
+    );
+}
+
+/// A UNIT ANSWERED BY THE PLANE AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`, COORDINATOR ruling
+/// 2026-10-07): a READY arrival may state it, naming no entry or its candidate entries as
+/// `ROUTE_SCOPE` does, and may count it as an admitted call as `ROUTE_LOCAL` may (`ROUTE_COUNTED`);
+/// a refusal about an entry never names it, as it never names `ROUTE_SCOPE`. RED: value `4` was an
+/// unknown route.
+#[test]
+fn a_unit_answered_at_its_scopes_one_entry_is_a_route_of_its_own() {
+    let mut o: ArriveOut = z();
+    o.route = ROUTE_SCOPE_LOCAL;
+    assert_eq!(check_arrive(Ready, &o, &[], 4, &bounds()), Ok(()));
+    o.pool = s("a, b");
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "it may name its candidates"
+    );
+    o.route_flags = ROUTE_COUNTED;
+    assert_eq!(
+        check_arrive(Ready, &o, &[], 4, &bounds()),
+        Ok(()),
+        "it may be counted as an admitted call"
+    );
+    let mut o: ArriveOut = z();
+    o.refusal = 7;
+    o.refusal_status = 503;
+    o.route = ROUTE_SCOPE_LOCAL;
+    o.pool = s("planner");
+    assert_eq!(
+        check_arrive(Refused, &o, &[], 4, &bounds()),
+        f(Rule::UnknownCode, "arrive.route"),
+        "a refusal about an entry names it directly or as a pool"
     );
 }
 
@@ -3092,5 +3172,79 @@ fn a_refused_arrival_may_name_the_entry_it_is_about() {
         check_arrive(Refused, &o, &[], 4, &bounds()),
         f(Rule::UnknownCode, "arrive.refusal_status"),
         "a refusal about no entry is the caller's: a 4xx"
+    );
+}
+
+/// THE ATTEMPT'S COUNTER LABELS (ARCHITECT ruling: one optional per-attempt tail): where an answer
+/// states them, each sits inside the arena it wrote; absent is a zero length.
+#[test]
+fn an_attempts_stated_counter_labels_sit_inside_the_arena() {
+    let mut o = attempt_answer();
+    o.metric_pool = sp(0, 4);
+    o.metric_lane = sp(4, 4);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    let mut o = attempt_answer();
+    o.metric_pool = sp(6, 4);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanOutOfBounds, "on_piece.metric_pool")
+    );
+    let mut o = attempt_answer();
+    o.metric_lane = sp(u32::MAX - 1, 4);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanOutOfBounds, "on_piece.metric_lane")
+    );
+}
+
+/// THE TAIL'S COUNTER LANE WORDS: a closed vocabulary, declared once. Each word named, a label
+/// value (no control character), none twice, at most `MAX_METRIC_LANES`; a count over NULL is the
+/// tail's own fault.
+#[test]
+fn a_tails_counter_lane_words_are_a_small_closed_vocabulary() {
+    assert_eq!(check_metric_lanes(&[]), Ok(()));
+    assert_eq!(
+        check_metric_lanes(&[s("jsonrpc"), s("beta+json"), s("gamma")]),
+        Ok(())
+    );
+    assert_eq!(
+        check_metric_lanes(&[s("jsonrpc"), s("jsonrpc")]),
+        f(Rule::Contradiction, "tail.metric_lanes")
+    );
+    assert_eq!(
+        check_metric_lanes(&[s("")]),
+        f(Rule::Missing, "tail.metric_lanes")
+    );
+    assert_eq!(
+        check_metric_lanes(&[s("a\nb")]),
+        f(Rule::UnknownCode, "tail.metric_lanes")
+    );
+    const WORDS: [&str; 17] = [
+        "w0", "w1", "w2", "w3", "w4", "w5", "w6", "w7", "w8", "w9", "w10", "w11", "w12", "w13",
+        "w14", "w15", "w16",
+    ];
+    let over: Vec<AbiStr> = WORDS.iter().copied().map(s).collect();
+    assert_eq!(
+        check_metric_lanes(&over),
+        f(Rule::OverMax, "tail.metric_lanes")
+    );
+    let mut t = tail();
+    t.metric_lanes_len = 1;
+    assert_eq!(check_tail(&t), f(Rule::NullWithCount, "tail.metric_lanes"));
+}
+
+/// THE MEMBER WHOSE WAIT A REFUSAL ANSWERS (`OnPieceOut::wait_member`, a tail addition) lies inside
+/// the arena written, as every span an answer states does; whether it names a member of the unit's
+/// pool is the kernel's to judge. RED with the field unchecked: a span past the arena passed.
+#[test]
+fn a_stated_wait_member_lies_inside_the_arena() {
+    let mut o: OnPieceOut = z();
+    o.arena_written = 9;
+    o.wait_member = sp(0, 9);
+    assert_eq!(piece(&o, &[], &[], &[]), Ok(()));
+    o.wait_member = sp(4, 9);
+    assert_eq!(
+        piece(&o, &[], &[], &[]),
+        f(Rule::SpanOutOfBounds, "on_piece.wait_member")
     );
 }

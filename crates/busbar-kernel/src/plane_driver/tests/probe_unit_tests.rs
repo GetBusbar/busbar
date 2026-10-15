@@ -5,7 +5,8 @@
 //! that declares probes: the probe unit arrives on the probe claim, pushes its ATTEMPT piece alone,
 //! sends the request the plane emitted to the ONE member it is pinned to (past that member's
 //! breaker), and the far end's answer is recorded on every cell of it. Proven: a probe recovers a
-//! tripped member; a client-fault answer records nothing; a probe that brings no answer is a
+//! tripped member; a client-fault answer records nothing; the plane's stated fault reading of the
+//! probe's answer is recorded as an organic answer's is; a probe that brings no answer is a
 //! transient and tries no other member; the unit is zero-billed; a passthrough member, a plane
 //! that does not declare probes and a plane that refuses the probe are never sent one.
 
@@ -51,6 +52,8 @@ struct Prober {
     claims: Mutex<Vec<u32>>,
     /// Every `on_piece`'s source and attempt number.
     pieces: Mutex<Vec<(u32, u32)>>,
+    /// The breaker fault reading (`FAULT_*`) it states of the far end's answer.
+    fault: u8,
     next: AtomicU32,
 }
 
@@ -222,6 +225,7 @@ impl PlaneCalls for Prober {
                 o.units_written = 1;
                 o.reply_status = i.status_code;
                 o.flags = EMIT_DONE;
+                o.fault = self.fault;
             }
             _ => {}
         }
@@ -398,6 +402,70 @@ async fn a_client_fault_answer_records_nothing() {
     p.probes.probe(0, TIMEOUT).await;
     assert_eq!(probed(&p), vec![(TRIPPED, Outcome::RecordNothing)]);
     assert!(p.probes.suppressing(0), "still tripped");
+}
+
+/// THE PLANE'S READING OF A PROBE ANSWER is recorded as an organic answer's is (Part 3 §12: the
+/// breaker service classifies the probe's answer as it classifies organic traffic): a 502 the plane
+/// reads HEALTHY is a success on every cell and recovers the member. RED before the plane's reading
+/// was read on a probe: the transport's 502 was recorded at once, a transient, and the member stayed
+/// tripped.
+#[tokio::test]
+async fn a_probe_answer_the_plane_reads_healthy_records_success() {
+    let hosts = [(
+        "a.test",
+        Script::Answer(502, None, vec![b"an error, well formed"]),
+    )];
+    let plane = Prober {
+        fault: FAULT_HEALTHY,
+        ..Prober::default()
+    };
+    let p = probing(&hosts, plane, TAIL_PROBES).expect("the plane declares probes");
+    p.probes.probe(0, TIMEOUT).await;
+    assert_eq!(probed(&p), vec![(TRIPPED, Outcome::Success)]);
+    assert!(!p.probes.suppressing(0), "recovered");
+    assert!(
+        p.book.observed.lock().unwrap().is_empty(),
+        "nothing organic"
+    );
+}
+
+/// A probe answer the plane reads as a FAULT records that fault, over the transport's reading: a
+/// 400 (the caller's, by the table: nothing) the plane reads TRANSIENT is a transient, and a 502
+/// (transient, by the table) the plane reads HARD is a hard-down. RED before the plane's reading
+/// was read on a probe: the table's reading was recorded (nothing; a transient).
+#[tokio::test]
+async fn a_probe_answer_the_plane_reads_as_a_fault_records_that_fault() {
+    for (code, fault, outcome) in [
+        (
+            400,
+            FAULT_TRANSIENT,
+            Outcome::Transient { retry_after: None },
+        ),
+        (502, FAULT_HARD, Outcome::HardDown),
+    ] {
+        let hosts = [("a.test", Script::Answer(code, None, vec![b"no"]))];
+        let plane = Prober {
+            fault,
+            ..Prober::default()
+        };
+        let p = probing(&hosts, plane, TAIL_PROBES).expect("the plane declares probes");
+        p.probes.probe(0, TIMEOUT).await;
+        assert_eq!(probed(&p), vec![(TRIPPED, outcome)], "{code}");
+        assert!(p.probes.suppressing(0), "{code}: still tripped");
+    }
+}
+
+/// A probe answer the plane states NO reading of is recorded with the transport's: the table's
+/// transient for a 502.
+#[tokio::test]
+async fn a_probe_answer_the_plane_states_no_reading_of_records_the_tables() {
+    let hosts = [("a.test", Script::Answer(502, None, vec![b"down"]))];
+    let p = probing(&hosts, Prober::default(), TAIL_PROBES).expect("the plane declares probes");
+    p.probes.probe(0, TIMEOUT).await;
+    assert_eq!(
+        probed(&p),
+        vec![(TRIPPED, Outcome::Transient { retry_after: None })]
+    );
 }
 
 /// A probe that brings no answer is a transient on the member, and the probe tries no other.

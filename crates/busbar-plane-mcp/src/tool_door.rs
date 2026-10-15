@@ -242,14 +242,6 @@ fn opened_section(bytes: &[u8]) -> Result<(ToolsCfg, BTreeMap<String, door::Tool
     door::read_open(bytes).map_err(Refusal::refused)
 }
 
-/// The public base URL the host lent, when it states one.
-fn public_url(bytes: &[u8]) -> Option<String> {
-    std::str::from_utf8(bytes)
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-}
-
 /// One slot body on the SDK's safe surface, over this plane's [`McpDoor`].
 macro_rules! slot {
     ($(#[$doc:meta])* $name:ident, $in:ty, $out:ty,
@@ -287,7 +279,7 @@ slot!(
         let generation = input.get().open.generation;
         let owned = input.field(|i| &i.owned).bytes();
         let admitted = match door::admitted_endpoint(
-            public_url(input.field(|i| &i.public_url).bytes()).as_deref(),
+            input.field(|i| &i.public_url).stated().as_deref(),
             owned,
         ) {
             Ok(admitted) => admitted,

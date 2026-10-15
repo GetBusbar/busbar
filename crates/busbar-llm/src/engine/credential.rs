@@ -205,13 +205,18 @@ fn mint_params(mut params: Map<String, Value>) -> Value {
 }
 
 /// The style and parameters `lane`'s credential is bound under, or the dialect's own builder.
-enum Binding {
+enum CredentialBinding {
     /// The style binding, and a signing scheme's per-signature region read.
     Style(StyleBinding, Option<fn(&str) -> Option<&str>>),
     Builder(Arc<dyn CredentialProvider>),
 }
 
-fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &str) -> Binding {
+fn binding_for(
+    protocol: &'static str,
+    lane: &LaneInput,
+    host: &str,
+    api_key: &str,
+) -> CredentialBinding {
     let text = |m: &mut Map<String, Value>, k: &str, v: &Option<String>| {
         if let Some(v) = v {
             m.insert(k.to_string(), Value::String(v.clone()));
@@ -223,7 +228,7 @@ fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &s
             text(&mut m, "scope", &lane.scope);
             text(&mut m, "subject", &lane.subject);
             text(&mut m, "token_uri", &token_uri(api_key));
-            Binding::Style(
+            CredentialBinding::Style(
                 StyleBinding {
                     style: "jwt-bearer".to_string(),
                     params: mint_params(m),
@@ -238,7 +243,7 @@ fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &s
             let mut m = Map::new();
             text(&mut m, "token_url", &lane.token_url);
             text(&mut m, "scope", &lane.scope);
-            Binding::Style(
+            CredentialBinding::Style(
                 StyleBinding {
                     style: "oauth-client-credentials".to_string(),
                     params: mint_params(m),
@@ -249,7 +254,7 @@ fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &s
                 None,
             )
         }
-        AuthStyleInput::ApiKey => Binding::Style(api_key_override_binding(), None),
+        AuthStyleInput::ApiKey => CredentialBinding::Style(api_key_override_binding(), None),
         // No override, or `auth: bearer`: the dialect's own declared scheme.
         AuthStyleInput::Default | AuthStyleInput::Bearer => {
             match busbar_kernel::proto::decl_for(protocol) {
@@ -259,15 +264,17 @@ fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &s
                             EgressScheme::SigV4 { region_of_host, .. } => Some(region_of_host),
                             EgressScheme::Static { .. } => None,
                         };
-                        Binding::Style(declared_binding(decl, scheme, host), read)
+                        CredentialBinding::Style(declared_binding(decl, scheme, host), read)
                     }
-                    (None, Some(headers_for)) => Binding::Builder(Arc::new(DeclaredBuilder {
-                        headers_for,
-                        lane_constant: decl.egress_auth_lane_constant,
-                    })),
-                    (None, None) => Binding::Builder(Arc::new(NoCredential)),
+                    (None, Some(headers_for)) => {
+                        CredentialBinding::Builder(Arc::new(DeclaredBuilder {
+                            headers_for,
+                            lane_constant: decl.egress_auth_lane_constant,
+                        }))
+                    }
+                    (None, None) => CredentialBinding::Builder(Arc::new(NoCredential)),
                 },
-                None => Binding::Builder(Arc::new(NoCredential)),
+                None => CredentialBinding::Builder(Arc::new(NoCredential)),
             }
         }
     }
@@ -283,8 +290,8 @@ pub(crate) fn credential_for(
     api_key: &str,
 ) -> Arc<dyn CredentialProvider> {
     match binding_for(protocol, lane, host, api_key) {
-        Binding::Builder(built) => built,
-        Binding::Style(binding, read) => {
+        CredentialBinding::Builder(built) => built,
+        CredentialBinding::Style(binding, read) => {
             let Some(reach) = &input.auths else {
                 return Arc::new(NoCredential);
             };

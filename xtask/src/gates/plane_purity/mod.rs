@@ -495,7 +495,7 @@ impl Gate for PlanePurityGate {
             "a busbar_<plane>:: symbol path in a neutral crate",
             &[ROW_SYMBOL],
             &plant_at,
-            "use busbar_a2a::TaskThing;\n",
+            "use busbar_plane_a2a::TaskThing;\n",
             &[ROW_SYMBOL, "planted_plane_purity.rs:1"],
         ));
 
@@ -505,7 +505,7 @@ impl Gate for PlanePurityGate {
             "the two symbol spellings that carry no :: on the line",
             &[ROW_SYMBOL],
             &plant_at,
-            "extern crate busbar_mcp;\nuse busbar_a2a as plane_alias;\n",
+            "extern crate busbar_mcp;\nuse busbar_plane_a2a as plane_alias;\n",
             &[ROW_SYMBOL, "planted_plane_purity.rs:2"],
         ));
 
@@ -1211,7 +1211,7 @@ fn strict_plants() -> Vec<(&'static str, String, &'static str)> {
         (
             "SYMBOL",
             neutral_test("planted_strict_symbol.rs"),
-            "use busbar_a2a::TaskThing;\n",
+            "use busbar_plane_a2a::TaskThing;\n",
         ),
         (
             "TYPE",

@@ -277,8 +277,9 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
 
     // A plane whose grammar left its `mod.rs` is a plane nothing can locate — and every rule that
     // names it would then scan zero files, which is the passing answer to a ban. Planted against
-    // a2a: mcp is a DOOR-ONLY plane since P3 DEL-MCP (ARCHITECT 2026-10-05) and declares no grammar.
-    match plane_grammar_file(cx, "a2a") {
+    // the llm plane: mcp, a2a and streaming are DOOR-ONLY planes since P3 DEL-MCP (ARCHITECT
+    // 2026-10-05), FLIP-A2A (#787) and FLIP-STREAMING (#503) and declare no grammar.
+    match plane_grammar_file(cx, "busbar-llm") {
         Some((rel, text)) => {
             let mut ov = Overlay::new();
             ov.set(
@@ -291,11 +292,11 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
                 "a plane whose declaration moved is refused, not silently unscanned",
                 &[roots::ROW_PLANE_ROOTS],
                 ov,
-                &["PLANE-ROOT-MISSING", "a2a"],
+                &["PLANE-ROOT-MISSING", "llm"],
             ));
         }
         None => report.note_infra_failure(
-            "structure-lint selftest: no file declares the a2a plane's grammar, so the plane-root \
+            "structure-lint selftest: no file declares the llm plane's grammar, so the plane-root \
              rule has nothing to plant against",
         ),
     }
@@ -676,14 +677,18 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     //   alone absorbed it.
     // The third plane was voice until FLIP-STREAMING deleted `busbar-voice`; llm is the same
     // "never loaded beside a2a" pair.
+    //
+    // Since FLIP-A2A the a2a plane is door-only: its home is its door crate's `src`
+    // (`busbar-plane-a2a`, read off the composition root's door row), not the deleted engine's.
     let voice = addresses.plane("llm");
+    let a2a = addresses.plane("a2a");
     let mut ov = Overlay::new();
     ov.set(
         format!("{voice}/planted_shared_concern.rs"),
         "pub fn planted_shared_concern() {}\n",
     );
     ov.set(
-        format!("{}/planted_shared_concern.rs", addresses.a2a),
+        format!("{a2a}/planted_shared_concern.rs"),
         "pub fn planted_shared_concern() {}\npub fn planted_derived_plane_helper() {}\n",
     );
     ov.set(
@@ -722,10 +727,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         naming.push(format!("PLANE-DUPLICATE (symbol): `{name}`"));
         naming.push("signs for".to_string());
     } else if let Some(name) = &signed_module {
-        ov.set(
-            format!("{}/{name}", addresses.a2a),
-            "pub fn a2a_grammar() {}\n",
-        );
+        ov.set(format!("{a2a}/{name}"), "pub fn a2a_grammar() {}\n");
         ov.set(format!("{voice}/{name}"), "pub fn voice_grammar() {}\n");
         naming.push(format!("PLANE-DUPLICATE (module): `{name}`"));
         naming.push("signs for".to_string());
