@@ -244,28 +244,3 @@ item = "https"
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/test_support/mod.rs"
 item = "http"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/plugin-loader/src/conformance/mod.rs"
-item = "tcp"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/plugin-loader/src/https_conns.rs"
-item = "http"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/plugin-loader/src/https_conns.rs"
-item = "https"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/plugin-loader/src/tcp_conns.rs"
-item = "tcp"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/plugin-loader/src/tcp_conns.rs"
-item = "unix"
