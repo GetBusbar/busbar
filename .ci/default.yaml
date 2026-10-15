@@ -300,6 +300,7 @@ checks:
       cargo deny check
     baseline: target
     needs: [preflight]
+    requires: [cc]
   # ON-DEMAND ONLY (not in on.move): the predev->dev oracle, measurable on a PR head that changes the
   # served LLM path (e.g. a plane default flip), so claim C3 is proven before landing, not only at the move.
   oracle:
