@@ -4,8 +4,8 @@
 //! THE PLUGIN LOADER: discovery, trust and the registry ([`registry`], [`sign`], [`tarball`]); the
 //! ONE loading path and the ONE dispatcher of the memory ABI ([`dispatch`]: `load_linked` /
 //! `load_dropped`), through which every store, secret, auth, hook and export plugin loads,
-//! compiled in or dropped in (`BUSBAR-1.6.0.md` THE DESIGN §11); and the HOT lane the planes and
-//! transports that have not moved to their door still ride ([`plane`], [`transport`]).
+//! compiled in or dropped in (`BUSBAR-1.6.0.md` THE DESIGN §11); and the HOT lane the planes that
+//! have not moved to their door still ride ([`plane`]). Every transport loads through its door.
 //!
 //! No plugin of any kind loads through a JSON lane: the COLD/JSON lane is gone. What remains of
 //! its symbols here is the HOT lane's handshake (`abi_handshake`, `read_plugin_kind`), deleted with
@@ -83,8 +83,6 @@ pub mod test_issuer;
 #[doc(hidden)]
 #[path = "tests/test_support.rs"]
 pub mod test_support;
-pub mod transport;
-pub mod transport_adapter;
 
 /// THE REGISTRY AS THE KERNEL READS IT (the contract's `PluginRows`).
 pub mod rows;
@@ -118,11 +116,6 @@ pub use registry::{
     LinkedPlugin, LoadablePlugin, PluginRegistry, SkippedPlugin,
 };
 pub use stage::sweep_dead_staging;
-pub use transport::{
-    host_wake, link_transport, load_transport_from_bytes, wire_settings, Built, DeclCarrier,
-    DeclFramer, DynTransport, WakeToken, HOST_WAKER,
-};
-pub use transport_adapter::{CarrierIo, WireTransport};
 
 /// THE LOADER RE-EXPORTS NO CONTRACT TYPE (BOOT-LOOP step 3, ruling R2). A type the contract owns
 /// is named from `busbar_contract::abi::*`, the crate that owns it; the loader path to it does not
@@ -292,10 +285,10 @@ pub(crate) fn abi_symbol(
 }
 
 /// THE PLUGIN-ABI HANDSHAKE, one home for every load path that still answers it: the JSON lane's
-/// residue, the upload vet, the HOT plane loader and the HOT transport loader. Calls `busbar_abi()` under
+/// residue, the upload vet and the HOT plane loader. Calls `busbar_abi()` under
 /// the ffi guard (it runs plugin code, so a panic fails the load closed) and refuses a plugin whose
 /// plugin-ABI version is not the engine's, answering the version it verified. `noun` is how the
-/// refusal names it (`plugin`, `plane`, `transport`), so each path's text is unchanged byte for
+/// refusal names it (`plugin`, `plane`), so each path's text is unchanged byte for
 /// byte.
 pub(crate) fn abi_handshake(
     abi: busbar_contract::abi::cold::AbiFn,
@@ -324,7 +317,7 @@ fn ffi_guard_confined<R>(path: &str, op: &str, f: impl FnOnce() -> R) -> Result<
 /// Read the kind a mapped library states into an owned `String`. A memory-ABI image states it in
 /// its door's head ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`],
 /// [`dispatch::load::kind_of_door`]): the SDK's `busbar_plugin_kind` answers for no door it
-/// registered (a null kind). A plane or transport image registered through its decl answers
+/// registered (a null kind). A plane image registered through its decl answers
 /// `busbar_plugin_kind()`. Any other library with no door is a 1.5.5-era JSON-contract plugin: its
 /// kind symbol only CLASSIFIES it, and it is REFUSED here, naming the rebuild (no legacy loading,
 /// THE DESIGN §11.8, ruling C21/ABI-o1), so no upload vet, inventory or kind gate takes it as valid.
@@ -589,6 +582,11 @@ mod secret_door_conformance_tests;
 #[cfg(test)]
 #[path = "tests/transport_door_conformance_tests.rs"]
 mod transport_door_conformance_tests;
+
+/// A dropped-in transport door through the registry, and the refusal of a library with no door.
+#[cfg(test)]
+#[path = "tests/transport_door_tests.rs"]
+mod transport_door_tests;
 
 /// `kind: hook` through both doors on the memory ABI: decide identical, a broken one refused.
 #[cfg(test)]

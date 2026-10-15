@@ -917,7 +917,6 @@ fn two_linked_door_rows_are_bound_under_two_distinct_labels() {
 
 fn one_door() -> Dropped {
     Dropped {
-        hot: &[],
         doors: &dropped_doors()[..1],
     }
 }

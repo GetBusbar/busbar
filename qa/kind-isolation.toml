@@ -880,13 +880,9 @@ cite = "BUSBAR-1.6.0.md THE DESIGN, §5 — the host owns every socket; the conn
 why = "`busbar::root::doors::RootWire` wraps the connector's `HostWire` and implements the kernel's legacy transport seam by only delegating to the connector's host-side surface, so the kernel's listeners and upgrades drive a memory-ABI framer door over the host's sockets. One implementation, in shipped source. Transitional: RootWire deletes with the legacy stack at step 36."
 drain = "drains at TODO step 36, when the kernel's serve/egress path stops speaking `Transport` and the engine is deleted; RootWire deletes with the legacy stack at step 36."
 
-[[face]]
-crate = "busbar-plugin-loader"
-face = "Transport"
-count = "1"
-cite = "BUSBAR-1.6.0.md THE DESIGN, §2 — the loader is part of the trusted base and is NOT a kind. Bridging a plugin's face across the ABI is what a loader does; it is the one crate whose job is to be on both sides."
-why = "the loader implements the transport face (transport_adapter.rs `WireTransport`) to hand a dynamically loaded transport plugin to the kernel. One implementation, in shipped source. Its store bridge (store_v3.rs `impl RecordStore for LoadedStore`) is the store face, granted to plugin-tooling in the gate's code (FACE_GRANTS, Part 2 #33), so it carries no row."
-drain = "none while the loader is outside the kind system. The drain is the ruling that gives the trusted base a kind of its own; until then this row holds the number, so a SECOND face appearing in the loader is a landing that has to say why."
+# STRUCK (row 84, S1): `busbar-plugin-loader` × Transport. The loader's one transport face was
+# `transport_adapter.rs`'s `WireTransport`, which presented a HOT-decl transport to the kernel; the
+# HOT transport lane is deleted, so the loader implements no transport face.
 
 # STRUCK (row 113, ruling (B)): `busbar` × Store. The root's two implementations — the refusing
 # stand-in and the forwarding newtype — are deleted; the root binds the loader's adapter over the

@@ -159,9 +159,8 @@ libloading = { workspace = true }
 # `tokio` is `rt`/`time`/`sync` only (spawn_blocking, timeouts, the hook quarantine's wait) — no
 # runtime is started in this crate.
 tokio = { workspace = true, features = ["rt", "time", "sync"] }
-# The transport adapter (`transport_adapter`): a HOT-lane transport presented as the host's async
-# `busbar_contract::Transport`, whose frame pump is a `futures::Stream` and whose detached stream is
-# `futures::io` — the traits the contract already names (#83: the adapter is loading machinery).
+# The dispatcher's inline wake (`AtomicWaker`) and the export door's fan-out (`FuturesUnordered`):
+# the `futures` traits the contract already names (#83: loading machinery).
 futures = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -256,9 +255,8 @@ busbar-transport-tcp-plugin = { workspace = true }
 # The tcp LOGIC crate (same pin, no door symbol): `transport_door_conformance_tests` drives its linked door
 # against the plugin's cdylib. The `-plugin` crate's rlib is never named (it exports `busbar_plugin_door`).
 busbar-transport-tcp = { workspace = true }
-# The transport adapter's witness (`transport_adapter_tests`) dials through the trait, which takes a
-# sealed destination: the contract's blessed test seal (#65), as the wire crates' own batteries use.
-# The host-services doubles (`ClockOnly`, `DiskHost`, the services `Provider`) are the contract's
+# The contract's blessed test seal (#65), as the wire crates' own batteries use it. The host-services
+# doubles (`ClockOnly`, `DiskHost`, the services `Provider`) are the contract's
 # shared `services::double`, so a service the host adds does not reopen them.
 busbar-contract = { path = "../busbar-contract", features = ["test-seal", "services-double"] }
 

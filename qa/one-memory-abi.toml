@@ -56,11 +56,6 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-contract/src/abi/sdk/transport.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
 file = "crates/busbar-kernel/src/audit/auditlog.rs"
 item = "extern 'C-unwind'"
 
@@ -110,11 +105,6 @@ file = "crates/plugin-loader/src/plane.rs"
 item = "extern 'C-unwind'"
 
 [[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/plugin-loader/src/transport.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
 rule = "one-memory-abi:cold-lane"
 file = "crates/busbar-contract/src/abi/sdk/mod.rs"
 item = "abi::cold"
@@ -144,7 +134,3 @@ rule = "one-memory-abi:exported-symbol"
 file = "crates/busbar-contract/src/abi/sdk/mod.rs"
 item = "busbar_plugin_kind"
 
-[[finding]]
-rule = "one-memory-abi:exported-symbol"
-file = "crates/busbar-contract/src/abi/sdk/mod.rs"
-item = "busbar_transport_decl"
