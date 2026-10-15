@@ -40,11 +40,10 @@ fn shaping() -> Shaping {
     .expect("reads")
 }
 
-fn arrived(
-    body: &str,
-    extra: &[(&'static [u8], &'static [u8])],
-) -> (Arrived, Vec<(&'static [u8], &'static [u8])>) {
-    let mut h: Vec<(&'static [u8], &'static [u8])> = vec![
+type Head = Vec<(&'static [u8], &'static [u8])>;
+
+fn arrived(body: &str, extra: &[(&'static [u8], &'static [u8])]) -> (Arrived, Head) {
+    let mut h: Head = vec![
         (&b"content-type"[..], &b"application/json"[..]),
         (&b"anthropic-version"[..], &b"2023-06-01"[..]),
     ];
