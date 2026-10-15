@@ -3561,10 +3561,13 @@ impl DataRoutes {
         // previous release's `ingress::finish_inner` emitted them: for every request its dialect
         // read (decoded, or refused for its body; a path it does not serve, or a verb it does not
         // take, never reached a dialect), under the dialect it arrived in and the pool or model it
-        // named ("unresolved" when it named none the configuration holds).
+        // named ("unresolved" when it named none the configuration holds). An action the dialect
+        // has and the plane does not serve is a request the dialect read: counted on the outcome
+        // the plane stated for it, never told apart by its status.
         if live.facts.plane.is_empty() {
             let decoded = units.decoded();
             let counted = decoded.is_some()
+                || units.declined_unsupported_action()
                 || units
                     .declined_status()
                     .is_some_and(|s| s != 404 && s != 405);
@@ -3738,6 +3741,13 @@ impl FarEnd for DoorFar<'_, '_> {
     fn judged(&self, token: &Pass<Route>, fault: u8) {
         if let Some(far) = self.far() {
             far.judged(token, fault);
+        }
+    }
+
+    /// The plane's fault reading with the reason it states, handed on verbatim.
+    fn judged_stating(&self, token: &Pass<Route>, fault: u8, reason: Option<&str>) {
+        if let Some(far) = self.far() {
+            far.judged_stating(token, fault, reason);
         }
     }
 

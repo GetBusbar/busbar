@@ -710,6 +710,8 @@ pub(crate) struct UnitState {
     declined: Option<(u32, u32)>,
     /// A REFUSED `arrive`'s own words (its `head.error`), for the plane's `refusal`.
     declined_words: Option<Vec<u8>>,
+    /// A REFUSED `arrive`'s stated outcome (`ArriveOut::refusal_flags`, `REFUSED_*`).
+    declined_flags: u32,
     /// THE WAIT THE KERNEL'S REFUSAL CARRIES (ARCHITECT Q5): the reason the loop refused the unit
     /// under, and the Retry-After its `Refusal` names in whole seconds: an admission's window
     /// reset, as 1.5.5 rendered it. Handed to the plane's `refusal` beside that reason alone.
@@ -802,6 +804,15 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
         self.lock().declined.map(|(_, status)| status)
     }
 
+    /// The plane's `arrive` refused the arrival as an action its protocol has and it does not
+    /// serve (`REFUSED_UNSUPPORTED_ACTION`): the outcome the plane stated, never read off its code
+    /// or its status.
+    pub fn declined_unsupported_action(&self) -> bool {
+        let st = self.lock();
+        st.declined.is_some()
+            && st.declined_flags & busbar_contract::abi::plane::REFUSED_UNSUPPORTED_ACTION != 0
+    }
+
     /// The status a refusal for `reason` goes out under, as [`Self::render`] chooses it.
     fn status_for(&self, reason: ReasonCode) -> u32 {
         let st = self.lock();
@@ -869,6 +880,7 @@ impl<S, F, C> PlaneUnits<'_, S, F, C> {
             let mut st = self.lock();
             st.declined = Some((o.refusal, o.refusal_status));
             st.declined_words = words;
+            st.declined_flags = o.refusal_flags;
         }
         // A REFUSAL ABOUT AN ENTRY (abi/plane "A refused arrival", rule 6; ARCHITECT
         // Q-DEL-A2A-GATE) decodes as the entry it names: the caller's grant over it is judged

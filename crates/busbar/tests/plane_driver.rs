@@ -209,7 +209,7 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
             units_needed: 0,
             refusal: 0,
             refusal_status: 0,
-            _reserved: 0,
+            refusal_flags: 0,
             correlation: 0,
             cancels: 0,
             pool: busbar_contract::abi::mechanism::call::AbiStr {
@@ -396,7 +396,7 @@ fn zero_arrive_out() -> ArriveOut {
         units_needed: 0,
         refusal: 0,
         refusal_status: 0,
-        _reserved: 0,
+        refusal_flags: 0,
         correlation: 0,
         cancels: 0,
         pool: busbar_contract::abi::mechanism::call::AbiStr {
@@ -838,6 +838,7 @@ fn zero_piece_out() -> OnPieceOut {
         metric_pool: span,
         metric_lane: span,
         wait_member: span,
+        fault_reason: span,
     }
 }
 

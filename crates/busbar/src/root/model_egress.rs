@@ -432,6 +432,21 @@ impl Breaker for DirectCells {
         pool: &str,
         destination: DestinationId,
         outcome: Outcome,
+        now: u64,
+        token: &Pass<Route>,
+    ) -> bool {
+        self.observe_stated(pool, destination, outcome, None, now, token)
+    }
+
+    /// The outcome recorded with the reason the plane's reading states, verbatim: a hard-down's
+    /// down reason (the lane's `dead_reason` and its operator diagnostic) is the plane's words, as
+    /// 1.5.5's classifier wrote its own; with none stated, the outcome's own name.
+    fn observe_stated(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        outcome: Outcome,
+        reason: Option<&str>,
         _now: u64,
         _token: &Pass<Route>,
     ) -> bool {
@@ -455,7 +470,9 @@ impl Breaker for DirectCells {
             Outcome::Transient { retry_after } => {
                 store.record_transient_in(cell, lane, "transient", cfg, retry_after)
             }
-            Outcome::HardDown => store.record_hard_down_all_cells(lane, "hard_down"),
+            Outcome::HardDown => {
+                store.record_hard_down_all_cells(lane, reason.unwrap_or("hard_down"))
+            }
             // Counted as the caller's fault above.
             Outcome::RecordNothing => false,
         }

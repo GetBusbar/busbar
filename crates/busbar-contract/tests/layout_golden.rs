@@ -1796,7 +1796,7 @@ fn compute_layout() -> String {
             units_needed,
             refusal,
             refusal_status,
-            _reserved,
+            refusal_flags,
             correlation,
             cancels,
             pool,
@@ -1875,7 +1875,8 @@ fn compute_layout() -> String {
             final_details,
             metric_pool,
             metric_lane,
-            wait_member
+            wait_member,
+            fault_reason
         ]
     );
     record!(

@@ -249,6 +249,14 @@ pub trait FarEnd: Sync {
     fn judged(&self, token: &Pass<Route>, fault: u8) {
         let _ = (token, fault);
     }
+    /// [`Self::judged`] with THE REASON THE PLANE'S READING STATES (`OnPieceOut::fault_reason`):
+    /// the plane's own neutral words for why it reads the answer so, carried verbatim to the
+    /// breaker's record of that reading; `None` = none stated. The kernel never makes its own
+    /// from the answer's code. The default records the reading alone.
+    fn judged_stating(&self, token: &Pass<Route>, fault: u8, reason: Option<&str>) {
+        let _ = reason;
+        self.judged(token, fault);
+    }
     /// THE WAIT OF ONE MEMBER the plane stated on its answer to the walk's exhausted refused piece
     /// (`OnPieceOut::wait_member`, the entry name as `OnPieceIn::member` lends it): the whole seconds
     /// left on `member`'s cell in the pool the unit's walk routes over (at least 1). `None` when
@@ -589,6 +597,8 @@ struct Answer {
     metric_lane: Span,
     wait_member: Span,
     tap_fault: u8,
+    /// The reason the plane's fault reading states.
+    fault_reason: Span,
 }
 
 impl Answer {
@@ -618,6 +628,7 @@ impl Answer {
             metric_lane: o.metric_lane,
             wait_member: o.wait_member,
             tap_fault: o.tap_fault,
+            fault_reason: o.fault_reason,
         }
     }
 
@@ -1297,8 +1308,13 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             // destination where it states one, the transport's reading otherwise (ARCHITECT
             // 2026-10-05, plane first, then transport). Before the verdict acts, so a retry
             // records the reading of the answer it leaves.
+            // The reason the reading states rides with it, verbatim (words that are not UTF-8 are
+            // no words, and the reading is recorded with none).
             if piece.from == FROM_FAR_END {
-                self.far.judged(run.token, out.fault);
+                let reason = std::str::from_utf8(run.bufs.arena(out.fault_reason))
+                    .ok()
+                    .filter(|r| !r.is_empty());
+                self.far.judged_stating(run.token, out.fault, reason);
             }
             // THE MEMBER WHOSE WAIT THE REFUSAL ANSWERS, stated on the answer to the walk's exhausted
             // refused piece and nowhere else (`OnPieceOut::wait_member`): kept for the refusal;

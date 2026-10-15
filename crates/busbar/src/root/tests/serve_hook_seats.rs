@@ -506,6 +506,9 @@ pub(super) struct RigOpts<'a> {
     /// The destination judge refuses every private address, so each member's dial is refused
     /// before it leaves.
     pub refuse_private: bool,
+    /// No rewrite seat is installed, so the caller's own messages reach the translation (a cell
+    /// that reads what the plane does with the caller's parts).
+    pub no_rewrite: bool,
 }
 
 /// `text`, each line indented by `by` spaces (empty lines dropped).
@@ -1022,7 +1025,11 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     }
     {
         let a = Arc::get_mut(&mut app).expect("sole owner");
-        a.rewrite_hooks = vec![(std::time::Duration::from_millis(500), Arc::new(rewrite))];
+        a.rewrite_hooks = if opts.no_rewrite {
+            Vec::new()
+        } else {
+            vec![(std::time::Duration::from_millis(500), Arc::new(rewrite))]
+        };
         // The request tap holds the prompt grant so its payload carries the (rewritten) messages.
         let rt: Arc<dyn RoutingPolicy> = request_tap.clone();
         a.tap_hooks = vec![(std::time::Duration::from_millis(500), true, rt, Vec::new())];

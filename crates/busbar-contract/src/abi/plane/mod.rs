@@ -472,6 +472,14 @@ pub const ROUTE_STREAM: u8 = 4;
 /// routed to any member, it contradicts its route.
 pub const ROUTE_COUNTED: u8 = 8;
 
+/// [`ArriveOut::refusal_flags`]: the arrival names an ACTION THE PLANE'S PROTOCOL HAS BUT THE PLANE
+/// DOES NOT SERVE. The refusal is the caller's request as the plane read it (counted under the
+/// claimant dialect like any other refusal of a read request), not a path or a verb no protocol of
+/// the plane claims. The plane states it, because only the plane reads its own resource grammar;
+/// the kernel and the root count the outcome and never read the plane's code or status to tell one
+/// refusal from another.
+pub const REFUSED_UNSUPPORTED_ACTION: u32 = 1;
+
 /// [`OnPieceIn::from`]: the piece is the caller's.
 pub const FROM_CALLER: u32 = 0;
 /// [`OnPieceIn::from`]: the piece is the far end's.
@@ -1700,8 +1708,9 @@ pub struct ArriveOut {
     /// fault by definition; 400 to 599 for a refusal about an entry (see "A refused arrival",
     /// rule 6). `0` on every other outcome.
     pub refusal_status: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// On REFUSED: `REFUSED_*` bits, the refusal's neutral outcome ([`REFUSED_UNSUPPORTED_ACTION`]);
+    /// `0` on every other outcome. In what was padding.
+    pub refusal_flags: u32,
     /// This unit's CORRELATION KEY: a non-zero value the plane derives from the arrival (for
     /// example from its request identifier), naming the unit for a subsequent
     /// [`ArriveOut::cancels`]; `0` = the unit cannot be cancelled by name. A tail addition. It is
@@ -1930,6 +1939,13 @@ pub struct OnPieceOut {
     /// plane whose answer stops short of it states none (the host reads an absent tail field as
     /// zero, `abi::mechanism::call` SIZES).
     pub wait_member: Span,
+    /// THE REASON THE FAULT READING STATES (ARCHITECT, the far-end fault reading): beside a
+    /// [`OnPieceOut::fault`] reading, the plane's own neutral words for why it reads the answer so
+    /// (an exhausted account, a refused credential), in the arena; a zero length = none stated. The plane classifies the far end's code; the kernel carries these words
+    /// VERBATIM to the breaker's record of the reading (the member's down reason and its operator
+    /// diagnostic) and never reads a code to make its own. Stated with no reading, it contradicts
+    /// the answer. UTF-8. A tail addition.
+    pub fault_reason: Span,
 }
 
 /// `refusal`'s `in`.

@@ -797,10 +797,11 @@ fn the_api_key_override_presents_the_shared_builders_bytes() {
     }
 }
 
-/// `dialect`'s recorded binding, its lines naming `protocol` (the name 1.5.5's twin carried).
+/// `dialect`'s recorded binding, its lines naming `protocol` (the name 1.5.5's twin carried): every
+/// static style's (`bearer`, `api-key`, `x-goog-api-key`), the signing style naming none.
 fn named_binding(dialect: &str, protocol: &str) -> StyleBinding {
     let mut binding = binding_of(dialect, SIGNING_HOST, &[]);
-    if binding.style == "api-key" {
+    if binding.style != "sigv4" {
         binding.params["protocol"] = serde_json::Value::String(protocol.to_string());
     }
     binding
@@ -1100,30 +1101,16 @@ fn a_keyless_lane_presents_no_credential_field() {
     }
 }
 
-/// LEGACY the retiring engine crate's `src/engine/tests/auth_style_tests.rs::each_dialects_declared_scheme_maps_to_its_recorded_binding`
-/// (coverage map v2 row 78). 1.5.5 (the plane's half of the declared-credential proof): every
-/// dialect's declared scheme maps to exactly the binding the shared fixture records for it
-/// (`testing/plane-copies/declared-credentials.json`, `bindings`): the style and the parameters,
-/// a signing style's region read from each recorded host by the dialect's own rule (the recorded
-/// region, else `us-east-1`); the `auth: api-key` override binds its style with no parameters of
-/// the dialect's; and exactly the six recorded dialects are mapped.
-///
-/// Read off what the served pools door STATES (its tail's per-dialect default style and
-/// parameters) and sealed the way the root seals a member's binding (`sealed_settings`), so the
-/// recorded bindings are held to the plane the root actually serves, not to test twins.
-///
-/// RED: a dialect's stated style or parameters drift from the recorded binding, a signing style
-/// reads another region from a recorded host, or the door states another set of dialects.
+/// What the build's door serving the `pools` map STATES (its tail's dialects, their default styles
+/// and parameters, and its needs), bound on a probe dispatcher.
 #[cfg(linked_driver_proofs)]
-#[test]
-fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
-    use crate::root::door_steps::sealed_settings;
+fn served_pools_door() -> crate::root::loader::dispatch::kinds::plane::ServedFacts {
     use crate::root::loader::dispatch::kinds::plane::Plane;
     use crate::root::loader::dispatch::{
         load_linked, Bind, DispatchConfig, Dispatcher, LinkedRow, NoSink,
     };
     let probe = Dispatcher::new(DispatchConfig::default());
-    let served = crate::LINKED
+    crate::LINKED
         .plane_doors
         .iter()
         .map(|door| {
@@ -1142,7 +1129,32 @@ fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
             .served()
         })
         .find(|served| served.section == busbar_contract::section::RESERVED_POOLS_KEY)
-        .expect("the build links the door serving the `pools` map");
+        .expect("the build links the door serving the `pools` map")
+}
+
+/// LEGACY the retiring engine crate's `src/engine/tests/auth_style_tests.rs::each_dialects_declared_scheme_maps_to_its_recorded_binding`
+/// (coverage map v2 row 78). 1.5.5 (the plane's half of the declared-credential proof): every
+/// dialect's declared scheme maps to exactly the binding the shared fixture records for it
+/// (`testing/plane-copies/declared-credentials.json`, `bindings`): the style and the parameters,
+/// a signing style's region read from each recorded host by the dialect's own rule (the recorded
+/// region, else `us-east-1`); the `auth: api-key` override binds its style with no parameters of
+/// the dialect's; and exactly the six recorded dialects are mapped.
+///
+/// Read off what the served pools door STATES (its tail's per-dialect default style and
+/// parameters) and sealed the way the root seals a member's binding (`sealed_settings`), so the
+/// recorded bindings are held to the plane the root actually serves, not to test twins.
+///
+/// RED: a dialect's stated style or parameters drift from the recorded binding, a signing style
+/// reads another region from a recorded host, or the door states another set of dialects.
+///
+/// The recorded styles are each protocol's NATIVE auth, v1.5.5's (`crates/busbar/src/config/mod.rs`
+/// `ProviderAuth`, ~l.1130: "the request is signed with the protocol's native auth unless `api-key`
+/// selects an `api-key: <key>` header"; ARCHITECT ruling (a)).
+#[cfg(linked_driver_proofs)]
+#[test]
+fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
+    use crate::root::door_steps::sealed_settings;
+    let served = served_pools_door();
     let bindings = fixture()["bindings"].as_object().expect("bindings");
     let mut mapped = 0usize;
     for (dialect, want) in bindings {
@@ -1194,4 +1206,105 @@ fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
         6,
         "the door states exactly the recorded dialects"
     );
+}
+
+/// THE `api-key` OVERRIDE, CONFIGURED (v1.5.5 `crates/busbar/src/config/mod.rs` `ProviderAuth`,
+/// ~l.1130: "the request is signed with the protocol's native auth unless `api-key` selects an
+/// `api-key: <key>` header"; v1.5.5 `egress_auth::resolve` answered `api-key` first, whatever the
+/// protocol): a provider entry written with `auth: api-key`, of every dialect the served pools door
+/// states, resolves through the door's own member resolution to a binding on the linked plugin that
+/// presents the credential verbatim in `api-key` and nothing else. The door states `api-key` as an
+/// outbound need beside the natives, so the override is an alternative every dialect accepts.
+///
+/// RED: the configured word maps to another style, the door states no need serving `api-key`, or
+/// the override is opened with its dialect's own parameters (a credential-family table's
+/// `x-api-key`, a key header's `x-goog-api-key`, a bearer's `authorization`).
+#[cfg(all(linked_driver_proofs, feature = "auth-header"))]
+#[test]
+fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() {
+    use busbar_contract::auth_calls::{Fields, FieldsRequest};
+    const KEY: &str = "operator-key-0123456789";
+    let served = served_pools_door();
+    assert!(
+        served
+            .need_auths
+            .iter()
+            .any(|(_, style)| *style == "api-key"),
+        "the door states an outbound need serving the `api-key` override: {:?}",
+        served.need_auths
+    );
+    let key_file =
+        std::env::temp_dir().join(format!("busbar-declared-override-{}", std::process::id()));
+    std::fs::write(&key_file, KEY).expect("the key");
+    for dialect in &served.dialects {
+        let entry: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(&format!(
+            "{{protocol: {dialect}, base_url: 'http://127.0.0.1:9', api_key: none, \
+             error_map: {{}}, auth: api-key}}"
+        ))
+        .unwrap_or_else(|e| panic!("{dialect}: a provider entry with `auth: api-key`: {e}"));
+        let mut providers = crate::root::door_steps::provider_routes(
+            &std::collections::HashMap::from([(
+                "p".to_string(),
+                busbar_kernel::config::ResolvedProvider::from(entry),
+            )]),
+            &busbar_kernel::config_validate::MetadataPosture::default(),
+        );
+        let route = providers.get_mut("p").expect("the provider's route");
+        assert_eq!(route.style.as_deref(), Some("api-key"), "{dialect}");
+        route.credential =
+            busbar_contract::secret_ref::SecretRef::file(key_file.display().to_string());
+        let section: serde_yaml::Value =
+            serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
+        let dispatcher = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+            crate::root::loader::dispatch::DispatchConfig::default(),
+        ));
+        crate::root::connector::install_io(&dispatcher);
+        let reach = crate::root::door_steps::DoorReach {
+            providers: &providers,
+            secrets: Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
+            auths: Arc::new(crate::root::door_steps::OutboundAuths::new(
+                dispatcher,
+                crate::LINKED.auths,
+                None,
+                crate::root::loader::dispatch::ConnTable::NoNeeds,
+            )),
+            conns: Arc::new(busbar_core_connector::Connector::new()),
+            stream_ceiling_secs: 1,
+            catalog: None,
+            models: None,
+            upgrades: Vec::new(),
+        };
+        let routes = crate::root::door_steps::member_routes(
+            &section,
+            &crate::root::door_steps::DoorPools::of(&section),
+            &served,
+            &reach,
+        )
+        .unwrap_or_else(|e| panic!("{dialect}: the overridden member resolves: {e}"));
+        let binding = routes["m"]
+            .auth
+            .as_ref()
+            .unwrap_or_else(|| panic!("{dialect}: the override's credential is bound"));
+        let Some(Fields::Ready(fields)) = binding
+            .auth
+            .fields_now(binding.handle, &FieldsRequest::default())
+        else {
+            panic!("{dialect}: the api-key binding answers on the spot");
+        };
+        let fields: Vec<(String, String)> = fields
+            .iter()
+            .map(|f| {
+                (
+                    String::from_utf8_lossy(&f.name).to_ascii_lowercase(),
+                    String::from_utf8_lossy(f.value.expose_secret()).into_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            fields,
+            vec![("api-key".to_string(), KEY.to_string())],
+            "{dialect}: `auth: api-key` presents the credential in `api-key` alone"
+        );
+    }
+    let _ = std::fs::remove_file(&key_file);
 }

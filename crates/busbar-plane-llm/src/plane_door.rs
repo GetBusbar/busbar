@@ -67,9 +67,10 @@ use busbar_contract::abi::plane::{
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
     CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END,
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE,
-    ROUTE_DIRECT, ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES,
-    UNITS_FLOOR, UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
+    PIECE_CUT, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED,
+    REFUSAL_GATE, REFUSED_UNSUPPORTED_ACTION, ROUTE_DIRECT, ROUTE_POOL, SHAPE_PIECEWISE,
+    SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED, VERDICT_HARD,
+    VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
@@ -83,7 +84,7 @@ use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAUL
 use busbar_contract::ids::{MeterClassDecl, OpClassId};
 use busbar_contract::plane::PlaneMeta;
 use busbar_contract::provider_keys::EXT_PROVIDER_KEYS;
-use busbar_contract::upstream::Disposition;
+use busbar_contract::upstream::{Disposition, StatusClass};
 use serde_json::Value;
 
 use crate::dialect::DIALECTS;
@@ -464,6 +465,8 @@ struct Answer {
     verdict: u32,
     /// `FAULT_*`: the breaker's reading of this answer, written once, on its first window.
     fault: u8,
+    /// The reason that reading states, in neutral words, written with it (empty: none).
+    fault_reason: Vec<u8>,
     /// `TAP_FAULT_*`: why the usage tap could not read the body, beside the units; written once,
     /// on the first window, for the kernel to count (row 155).
     tap_fault: u8,
@@ -518,6 +521,8 @@ struct UnitState {
     reply: Option<Reply>,
     /// The clock at the attempt's start (monotonic nanoseconds).
     started: Option<u64>,
+    /// The status the current attempt's far end answered under (`0` before its head).
+    far_status: u16,
     /// The answer the driver's re-call is owed.
     pending: Option<Pending>,
     /// The far end's last cumulative counts, as the unit last reported them.
@@ -545,6 +550,7 @@ impl UnitState {
             request: None,
             reply: None,
             started: None,
+            far_status: 0,
             pending: None,
             reported: Vec::new(),
             fee: false,
@@ -779,6 +785,29 @@ pub fn breaker_fault(f: Option<&Fault>) -> u8 {
     }
 }
 
+/// THE REASON THE BREAKER'S READING STATES (the far-end fault reading): the plane classifies the
+/// far end's answer and states why in neutral words, which the kernel carries verbatim to the
+/// breaker's record (the member's down reason and its operator diagnostic). They are 1.5.5's own,
+/// byte for byte (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs`, the `HardDown` arm; retired as
+/// `crates/busbar-llm/src/engine/attempt/classify.rs`): an exhausted account is
+/// `billing / insufficient balance`, a refused own credential `auth rejected (HTTP <status>)`, any
+/// other hard-down `request rejected (HTTP <status>)`. Every other reading states none.
+#[must_use]
+pub fn fault_reason(f: Option<&Fault>, status: u16) -> Option<String> {
+    let Some(Fault::Judged {
+        disposition: Disposition::HardDown,
+        class,
+    }) = f
+    else {
+        return None;
+    };
+    Some(match class {
+        Some(StatusClass::Billing) => "billing / insufficient balance".to_string(),
+        Some(StatusClass::Auth) => format!("auth rejected (HTTP {status})"),
+        _ => format!("request rejected (HTTP {status})"),
+    })
+}
+
 fn verdict(v: Verdict) -> u32 {
     match v {
         Verdict::None => VERDICT_NONE,
@@ -862,6 +891,16 @@ fn to_caller(piece: Piece<'_>) -> Answer {
     }
 }
 
+/// A far-end reply piece as the caller's answer, with the reason its fault reading states (`status`:
+/// the far end's own, which the reason names).
+fn far_answer(piece: Piece<'_>, status: u16) -> Answer {
+    let reason = fault_reason(piece.fault.as_ref(), status);
+    Answer {
+        fault_reason: reason.map(String::into_bytes).unwrap_or_default(),
+        ..to_caller(piece)
+    }
+}
+
 /// A rendered refusal as the caller's whole answer.
 fn answered(r: refuse::Rendered) -> Answer {
     Answer {
@@ -887,6 +926,9 @@ fn at(clock: Option<ClockReading>, started: Option<u64>) -> At {
 /// One piece of a unit, as `on_piece` lends it.
 struct PieceIn<'a> {
     last: bool,
+    /// The far end's answer ended without completing (`PIECE_CUT`, on its last piece): its
+    /// connection failed or the send's deadline passed after its head.
+    cut: bool,
     status: Option<u32>,
     fields: Vec<(&'a [u8], &'a [u8])>,
     bytes: &'a [u8],
@@ -902,6 +944,7 @@ fn attempt(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     unit.final_answer = false;
     unit.reply = None;
     unit.request = None;
+    unit.far_status = 0;
     unit.started = piece.clock.map(|c| c.mono_ns);
     let built = if unit.probe {
         unit.shaping
@@ -978,20 +1021,45 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
         translate_cap: unit.shaping.translate_cap(),
     };
     if let Some(status) = piece.status {
-        unit.reply = Some(Reply::new(
-            &ctx,
-            u16::try_from(status).unwrap_or(0),
-            &piece.fields,
-        ));
+        unit.far_status = u16::try_from(status).unwrap_or(0);
+        unit.reply = Some(Reply::new(&ctx, unit.far_status, &piece.fields));
     }
     let Some(reply) = unit.reply.as_mut() else {
         return Answer::hard();
     };
+    if piece.cut {
+        // THE FAR END'S ANSWER WAS CUT (`PIECE_CUT`): the caller's answer ends as 1.5.5 ended a cut
+        // one: after a streamed first byte, an in-band error in the caller's own framing; a
+        // buffered answer, the caller's 502; a failure's body, judged on what arrived. The units
+        // the stream stated up to the cut are reported (#62: a cut bills what streamed). The
+        // kernel's far end recorded the compensating transient of a success cut after its head,
+        // so a success's cut states no second reading; a failure's judged reading stands.
+        let arrived = piece.bytes;
+        let mut fed = if arrived.is_empty() {
+            Piece::default()
+        } else {
+            reply.feed(&ctx, arrived, false, at(piece.clock, unit.started))
+        };
+        let mut cut = reply.cut(&ctx, true);
+        if matches!(cut.fault, Some(Fault::Transient(_))) {
+            cut.fault = None;
+        }
+        // Bytes the cut piece itself carried reach the caller before the cut's own end.
+        if !fed.bytes.is_empty() {
+            let mut bytes = std::mem::take(&mut fed.bytes).into_owned();
+            bytes.extend_from_slice(&cut.bytes);
+            cut.bytes = std::borrow::Cow::Owned(bytes);
+        }
+        if cut.head.is_none() {
+            cut.head = fed.head.take();
+        }
+        return far_answer(cut, unit.far_status);
+    }
     let mut fed = reply.feed(&ctx, piece.bytes, piece.last, at(piece.clock, unit.started));
     // An answer member the caller's dialect has no form for, one degraded row each (`<path> from
     // <dialect>`, the row 1.5.5 wrote as it delivered the translated answer).
     let dropped = std::mem::take(&mut fed.dropped);
-    let mut answer = to_caller(fed);
+    let mut answer = far_answer(fed, unit.far_status);
     answer.audits = dropped
         .iter()
         .map(|p| {
@@ -1096,6 +1164,9 @@ fn deliver(
             });
         }
         units.extend(&p.answer.units);
+        // The reason the answer's fault reading states, on the window that carries the reading.
+        let reason = (p.answer.fault != FAULT_NONE && !p.answer.fault_reason.is_empty())
+            .then(|| arena.span(&p.answer.fault_reason));
         for (action, resource) in &p.answer.audits {
             records.push(RecordWrite {
                 kind: AUDIT_DEGRADED,
@@ -1110,6 +1181,9 @@ fn deliver(
         if let Some((verb, target)) = request {
             out.set(|o| &o.verb, verb);
             out.set(|o| &o.target, target);
+        }
+        if let Some(reason) = reason {
+            out.set(|o| &o.fault_reason, reason);
         }
         out.set(|o| &o.reply_status, p.answer.status);
         p.opened = true;
@@ -1365,6 +1439,11 @@ slot!(
             Err(declined) => {
                 out.set(|o| &o.refusal, declined.why.code());
                 out.set(|o| &o.refusal_status, u32::from(declined.status));
+                // An action the dialect has and the plane does not serve, stated as that outcome:
+                // the caller's request as a dialect read it, never told apart by its status.
+                if declined.why.unsupported_action() {
+                    out.set(|o| &o.refusal_flags, REFUSED_UNSUPPORTED_ACTION);
+                }
                 unit.declined = Some(declined);
                 guard(&door.units).insert(given.unit, unit);
                 out.fail(Refusal::bare())
@@ -1398,6 +1477,7 @@ slot!(
             }
             let piece = PieceIn {
                 last: given.flags & PIECE_LAST != 0,
+                cut: given.from == FROM_FAR_END && given.flags & PIECE_CUT != 0,
                 status: (given.flags & PIECE_HAS_STATUS != 0).then_some(given.status_code),
                 fields: input
                     .head_fields()

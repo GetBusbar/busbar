@@ -56,6 +56,16 @@ impl Decline {
     pub const fn code(self) -> u32 {
         self as u32
     }
+
+    /// The arrival names an action its dialect has that this plane does not serve: a resolved
+    /// operation with no handler, or a path-model URL naming no model and action this plane
+    /// serves (`REFUSED_UNSUPPORTED_ACTION`, which the root counts as a refusal of a read request,
+    /// as 1.5.5's ingress counted its unsupported-action and malformed-path answers). A path no
+    /// dialect claims, or a verb a dialect path does not take, is none.
+    #[must_use]
+    pub const fn unsupported_action(self) -> bool {
+        matches!(self, Decline::UnsupportedOperation | Decline::PathNotFound)
+    }
 }
 
 /// A refused arrival: what the previous release answered, in the dialect envelope it answered in.

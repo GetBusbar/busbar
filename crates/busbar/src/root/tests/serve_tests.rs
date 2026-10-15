@@ -1171,14 +1171,17 @@ pub(super) mod session_door {
         let app = groups
             .iter()
             .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
+        // Each hook defined and attached deployment-wide (the runtime global list `pools.hooks:`
+        // lowers to), its gates resolved into the generation as the production build resolves them.
         let app = if opts.hooks.is_empty() {
             app
         } else {
             opts.hooks
                 .iter()
                 .fold(app.hook_env(hook_env()), |app, (name, cfg)| {
-                    app.hook(name, cfg.clone())
+                    app.hook(name, cfg.clone()).global_hook(name)
                 })
+                .resolve_global_gates()
         };
         let app = app.governance(Arc::clone(&gov)).cost(cost).build();
         let _ = live_app.set(Arc::clone(&app));
@@ -1796,8 +1799,23 @@ pub(super) mod session_door {
         frame
     }
 
-    /// A provider on loopback speaking WebSocket: it accepts each dial's upgrade and reports
-    /// every TEXT frame it is sent on the channel, in order.
+    /// One text frame as a server sends it (unmasked, RFC 6455 section 5.1).
+    fn server_text(text: &str) -> Vec<u8> {
+        let bytes = text.as_bytes();
+        let mut frame = vec![0x81u8, u8::try_from(bytes.len()).expect("a short frame")];
+        frame.extend_from_slice(bytes);
+        frame
+    }
+
+    /// The provider's opening event: the session it created, sent the moment its upgrade is
+    /// answered and before it reads anything, as the provider's protocol has it speak first.
+    const FAR_OPENING: &str = r#"{"type":"session.created","session":{"id":"sess_door_0001"}}"#;
+
+    /// A provider on loopback speaking WebSocket: it accepts each dial's upgrade, speaks first
+    /// ([`FAR_OPENING`]), as the provider does, and reports every TEXT frame it is sent on the
+    /// channel, in order. A far end is held for a session's next turns once it has answered
+    /// (`plane_driver::session`): its opening event is that answer, so a provider that never spoke
+    /// would hold every turn after the first.
     async fn far_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -1824,6 +1842,9 @@ pub(super) mod session_door {
                         ws_accept(&key)
                     );
                     if socket.write_all(reply.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    if socket.write_all(&server_text(FAR_OPENING)).await.is_err() {
                         return;
                     }
                     while let Some((opcode, payload)) = read_frame(&mut socket).await {
@@ -4883,6 +4904,8 @@ mod pools_door_walk_and_breaker {
             RigOpts {
                 members: &[(port_of(&server), 1)],
                 dialect: Some(far_dialect),
+                // The caller's own parts reach the translation: no rewrite seat replaces them.
+                no_rewrite: true,
                 ..RigOpts::default()
             },
         )

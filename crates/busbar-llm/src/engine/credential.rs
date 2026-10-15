@@ -31,9 +31,14 @@ fn presentation(p: CredentialHeader) -> Value {
     }
 }
 
-/// The binding a DECLARED egress scheme is opened under: a static scheme on the `api-key` style
-/// with its whole presentation table as parameters and the dialect's name (the `protocol` an
-/// unpresentable credential's line names, as 1.5.5's did), a per-request signature on the `sigv4` style
+/// The binding a DECLARED egress scheme is opened under: a static scheme on its NATIVE style (1.5.5
+/// `crates/busbar/src/config/mod.rs` `ProviderAuth`, ~l.1130: "the request is signed with the
+/// protocol's native auth unless `api-key` selects an `api-key: <key>` header"; `egress_auth::resolve`
+/// there): `bearer` for an operator's credential presented as a bearer, the style named by the one
+/// header it is presented in (`x-goog-api-key`), and, for a credential-family table, `api-key`
+/// naming the operator's header; each with its whole presentation table as parameters and the
+/// dialect's name (the `protocol` an unpresentable credential's line names, as 1.5.5's did), a
+/// per-request signature on the `sigv4` style
 /// with its service, the region its host names (else its default) and its content type, which the
 /// lane's writer sends and so is lent as the `content-type` the signature covers. The dialect's
 /// static fields (`decl`'s) follow the plugin's.
@@ -64,16 +69,21 @@ pub(crate) fn declared_binding(
                     Value::Object(row)
                 })
                 .collect();
-            (
-                "api-key",
-                json!({
-                    "families": families,
-                    "own": presentation(own),
-                    "passthrough": presentation(passthrough),
-                    "protocol": decl.name,
-                }),
-                Vec::new(),
-            )
+            let mut params = json!({
+                "families": families,
+                "own": presentation(own),
+                "passthrough": presentation(passthrough),
+                "protocol": decl.name,
+            });
+            let style = match own {
+                CredentialHeader::Bearer => "bearer",
+                CredentialHeader::Raw { header, .. } if families.is_empty() => header,
+                CredentialHeader::Raw { header, .. } => {
+                    params["header"] = Value::String(header.to_string());
+                    "api-key"
+                }
+            };
+            (style, params, Vec::new())
         }
         EgressScheme::SigV4 {
             service,

@@ -242,6 +242,12 @@ fn test_sign_and_wire_path_signed_equals_sent_for_reserved_chars() {
 /// from the host by the dialect's own rule; the `auth: api-key` override to its own. The composition
 /// root binds those same rows on the linked auth plugins and holds the headers they present to the
 /// 1.5.5 builders' (`root/tests/declared_credentials.rs`); neither half names the other.
+///
+/// Each recorded style is the protocol's NATIVE auth (v1.5.5 `crates/busbar/src/config/mod.rs`
+/// `ProviderAuth`, ~l.1130: "the request is signed with the protocol's native auth unless `api-key`
+/// selects an `api-key: <key>` header"; ARCHITECT ruling (a)): a bearer-presented scheme on
+/// `bearer`, a one-header scheme on the style that header names, a credential-family table on
+/// `api-key` naming its operator header. RED: a declared scheme bound under another style.
 #[test]
 fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
     crate::testkit::install_test_seams();

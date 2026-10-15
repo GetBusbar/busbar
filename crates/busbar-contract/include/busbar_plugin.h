@@ -393,6 +393,7 @@ extern "C" {
 #define BB_PLANE_ROUTE_SESSION UINT8_C(2) /* [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5 */
 #define BB_PLANE_ROUTE_STREAM UINT8_C(4) /* [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut, */
 #define BB_PLANE_ROUTE_COUNTED UINT8_C(8) /* [`ArriveOut::route_flags`], on a unit the plane answers itself ([`ROUTE_LOCAL`] or */
+#define BB_PLANE_REFUSED_UNSUPPORTED_ACTION UINT32_C(1) /* [`ArriveOut::refusal_flags`]: the arrival names an ACTION THE PLANE'S PROTOCOL HAS BUT THE PLANE */
 #define BB_PLANE_FROM_CALLER UINT32_C(0) /* [`OnPieceIn::from`]: the piece is the caller's. */
 #define BB_PLANE_FROM_FAR_END UINT32_C(1) /* [`OnPieceIn::from`]: the piece is the far end's. */
 #define BB_PLANE_FROM_KERNEL UINT32_C(2) /* [`OnPieceIn::from`]: the piece is the kernel's. With [`OnPieceIn::attempt_no`] above `0` it */
@@ -2748,7 +2749,7 @@ struct bb_plane_ArriveOut {
     uint32_t units_needed;
     uint32_t refusal;
     uint32_t refusal_status;
-    uint32_t _reserved;
+    uint32_t refusal_flags;
     uint64_t correlation;
     uint64_t cancels;
     bb_mech_AbiStr pool;
@@ -2824,6 +2825,7 @@ struct bb_plane_OnPieceOut {
     bb_mech_Span metric_pool;
     bb_mech_Span metric_lane;
     bb_mech_Span wait_member;
+    bb_mech_Span fault_reason;
 };
 
 /* `refusal`'s `in`. */
@@ -5274,7 +5276,7 @@ BB_ASSERT(offsetof(bb_plane_ArriveOut, units_written) == 108, "bb_plane_ArriveOu
 BB_ASSERT(offsetof(bb_plane_ArriveOut, units_needed) == 112, "bb_plane_ArriveOut.units_needed: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, refusal) == 116, "bb_plane_ArriveOut.refusal: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, refusal_status) == 120, "bb_plane_ArriveOut.refusal_status: offset");
-BB_ASSERT(offsetof(bb_plane_ArriveOut, _reserved) == 124, "bb_plane_ArriveOut._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_ArriveOut, refusal_flags) == 124, "bb_plane_ArriveOut.refusal_flags: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, correlation) == 128, "bb_plane_ArriveOut.correlation: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, cancels) == 136, "bb_plane_ArriveOut.cancels: offset");
 BB_ASSERT(offsetof(bb_plane_ArriveOut, pool) == 144, "bb_plane_ArriveOut.pool: offset");
@@ -5316,7 +5318,7 @@ BB_ASSERT(offsetof(bb_plane_OnPieceIn, head_fields) == 288, "bb_plane_OnPieceIn.
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, head_fields_len) == 296, "bb_plane_OnPieceIn.head_fields_len: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, passthrough) == 304, "bb_plane_OnPieceIn.passthrough: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, reason) == 308, "bb_plane_OnPieceIn.reason: offset");
-BB_ASSERT(sizeof(bb_plane_OnPieceOut) == 240, "bb_plane_OnPieceOut: size");
+BB_ASSERT(sizeof(bb_plane_OnPieceOut) == 248, "bb_plane_OnPieceOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OnPieceOut) == 8, "bb_plane_OnPieceOut: alignment");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, head) == 0, "bb_plane_OnPieceOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, emitted) == 96, "bb_plane_OnPieceOut.emitted: offset");
@@ -5346,6 +5348,7 @@ BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_details) == 208, "bb_plane_OnPiece
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, metric_pool) == 216, "bb_plane_OnPieceOut.metric_pool: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, metric_lane) == 224, "bb_plane_OnPieceOut.metric_lane: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, wait_member) == 232, "bb_plane_OnPieceOut.wait_member: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, fault_reason) == 240, "bb_plane_OnPieceOut.fault_reason: offset");
 BB_ASSERT(sizeof(bb_plane_RefusalIn) == 240, "bb_plane_RefusalIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_RefusalIn) == 8, "bb_plane_RefusalIn: alignment");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, head) == 0, "bb_plane_RefusalIn.head: offset");

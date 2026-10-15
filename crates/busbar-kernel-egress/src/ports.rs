@@ -229,6 +229,23 @@ pub trait Breaker: Send + Sync {
         token: &Pass<Route>,
     ) -> bool;
 
+    /// [`Self::observe`] of an outcome the PLANE read, with the reason its reading states: the
+    /// plane's own neutral words (an exhausted account, a refused credential), carried verbatim as
+    /// the record's reason, never parsed and never made from the answer's code. `None` = none
+    /// stated. The default records the outcome alone.
+    fn observe_stated(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        outcome: Outcome,
+        reason: Option<&str>,
+        now: u64,
+        token: &Pass<Route>,
+    ) -> bool {
+        let _ = reason;
+        self.observe(pool, destination, outcome, now, token)
+    }
+
     /// A non-success answer judged and recorded: [`Self::classify`], then [`Self::observe`] of the
     /// outcome it names on `pool`'s cell. Returns the classification and whether the record was a
     /// fresh trip. The attempt the walk's caller runs judges every answer here.
