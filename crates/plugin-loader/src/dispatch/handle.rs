@@ -33,6 +33,7 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
 
 use busbar_contract::abi::mechanism::ticket::HostCtx;
+use busbar_contract::conn::InstanceId;
 
 use super::load::LoadError;
 use super::ticket::InstanceWake;
@@ -87,8 +88,9 @@ impl Latch {
         if n >= LATCH_AT && !self.tripped.swap(true, Ordering::AcqRel) {
             tracing::error!(
                 forgeries = n,
-                "plugins handed the host {n} contexts it did not mint from outside any crossing; \
-                 every host call made outside a crossing is refused for the rest of the process"
+                "plugins handed the host {n} contexts or tickets it did not mint with no instance \
+                 to blame; every host call made outside a crossing is refused for the rest of the \
+                 process"
             );
         }
     }
@@ -132,11 +134,16 @@ fn draw(source: impl FnOnce(&mut [u8]) -> Result<(), String>) -> Result<(u64, u6
 /// ([`arm`]) and at the latest by the first bind. A source that cannot answer refuses the boot
 /// ([`LoadError::Entropy`]): there is no fallback key.
 fn key() -> Result<(u64, u64), LoadError> {
-    static KEY: OnceLock<(u64, u64)> = OnceLock::new();
     #[cfg(test)]
     if ENTROPY_FAILS.with(std::cell::Cell::get) {
         return draw(|_| Err("the test seam's failing entropy source".to_string()));
     }
+    drawn_key()
+}
+
+/// The process's one key, drawn on first use; [`key`] is this behind the test seam.
+fn drawn_key() -> Result<(u64, u64), LoadError> {
+    static KEY: OnceLock<(u64, u64)> = OnceLock::new();
     if let Some(k) = KEY.get() {
         return Ok(*k);
     }
@@ -218,6 +225,25 @@ pub(crate) fn mint(wake: &'static InstanceWake) -> Result<HostCtx, LoadError> {
     })
 }
 
+/// THE INSTANCE'S IDENTITY ON THE CONNECTION TABLE: its handle's id. Never `0` (ids are minted from
+/// 1), which is the composition root's own identity on the one connector, and never reused in one
+/// process. One numbering, so a table's wake names its caller's entry with no second registry (#74).
+pub(crate) fn instance_id(ctx: HostCtx) -> InstanceId {
+    InstanceId(ctx.handle & ID_MASK)
+}
+
+/// The entry the connection table's caller `owner` is ([`instance_id`]), revoked or not; `None` for
+/// the root's own identity (`0`) or an id the host never minted. Host-side only: `owner` is the
+/// identity the table registered a ticket under, never a plugin's word.
+pub(crate) fn supplier_of(owner: InstanceId) -> Option<&'static InstanceWake> {
+    let i = usize::try_from(owner.0.checked_sub(1)?).ok()?;
+    INSTANCES
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(i)
+        .copied()
+}
+
 /// THE ONE CHECK: the instance `ctx` names, when the host minted it, it is live, and (inside a
 /// crossing) it is the crossing's own.
 pub(crate) fn resolve(ctx: HostCtx) -> Option<&'static InstanceWake> {
@@ -293,6 +319,100 @@ fn count_forgery(latch: &Latch, crossing: Option<&'static InstanceWake>) {
     if crossing.is_none() || !super::plugin::quarantine_crossing() {
         latch.count();
     }
+}
+
+/// A ticket generation the host never minted (#74, the ticket half), judged against `latch`:
+/// counted; its SUPPLIER (the instance whose context handed the host the ticket, carried with the
+/// wake, never read off the thread it fires on) quarantined; a wake with no supplier (the host's
+/// own) counted against `latch`.
+pub(crate) fn forged_ticket(supplier: Option<&'static InstanceWake>, latch: &Latch) {
+    FORGED.fetch_add(1, Ordering::Relaxed);
+    latch.forged.fetch_add(1, Ordering::AcqRel);
+    match supplier {
+        Some(wake) => super::plugin::quarantine_entry(wake),
+        None => latch.count(),
+    }
+}
+
+/// The process's latch, which every dispatcher judges against but in a test that names its own.
+pub(crate) fn process_latch() -> &'static Latch {
+    &LATCH
+}
+
+// ── THE TICKET GENERATION: a keyed permutation of the slot's counter ───────────────────────────
+
+/// Domain separation from the instance handle's tags.
+const DOMAIN_TICKET: u64 = u64::from_le_bytes(*b"bb.tick1");
+
+/// Feistel rounds: six, each a SipHash-2-4 of the round's half under the key and the slot's tweak.
+const ROUNDS: u64 = 6;
+
+/// A keyed permutation of `[0, 2^(2*half))` (a balanced Feistel network of `half`-bit halves),
+/// forward or `inverse`.
+fn feistel(key: (u64, u64), tweak: (u64, u64), half: u32, x: u64, inverse: bool) -> u64 {
+    let mask = (1u64 << half) - 1;
+    let f = |i: u64, v: u64| siphash24(key, &[DOMAIN_TICKET, tweak.0, tweak.1, i, v]) & mask;
+    let (mut l, mut r) = ((x >> half) & mask, x & mask);
+    if inverse {
+        for i in (0..ROUNDS).rev() {
+            (l, r) = (r ^ f(i, l), l);
+        }
+    } else {
+        for i in 0..ROUNDS {
+            (l, r) = (r, l ^ f(i, r));
+        }
+    }
+    (l << half) | r
+}
+
+/// The permutation of `[1, 2^(2*half))`, `0` excluded by cycle-walking (a walk ends at the first
+/// nonzero point of `x`'s cycle, so the map stays a bijection of the nonzero values).
+fn nonzero_permutation(
+    key: (u64, u64),
+    tweak: (u64, u64),
+    half: u32,
+    x: u64,
+    inverse: bool,
+) -> u64 {
+    let mut y = feistel(key, tweak, half, x, inverse);
+    while y == 0 {
+        y = feistel(key, tweak, half, y, inverse);
+    }
+    y
+}
+
+/// The key tickets are permuted under: the handle key, held by the dispatcher that drew it. Only
+/// [`ticket_key`] makes one, so no ticket is ever minted under a key that was not drawn.
+#[derive(Clone, Copy)]
+pub(crate) struct TicketKey((u64, u64));
+
+/// THE DISPATCHER'S BOOT: the ticket key, drawn now ([`arm`]'s draw). A failure is the boot's
+/// refusal; there is no fallback key.
+///
+/// # Errors
+///
+/// [`LoadError::Entropy`] when the OS random source cannot answer.
+pub(crate) fn ticket_key() -> Result<TicketKey, LoadError> {
+    key().map(TicketKey)
+}
+
+/// THE GENERATION of worker `worker`'s slot `idx` at its `count`-th mint (`count` >= 1):
+/// `PRP_k(count)`, a bijection of the nonzero 32-bit values for each slot, so uniqueness per slot is
+/// exact (as the bare counter it replaces) and no generation tells a plugin the next.
+pub(crate) fn ticket_generation(key: TicketKey, worker: u32, idx: u32, count: u32) -> u32 {
+    let tweak = (u64::from(worker), u64::from(idx));
+    nonzero_permutation(key.0, tweak, 16, u64::from(count), false) as u32
+}
+
+/// The count `generation` is the image of, for worker `worker`'s slot `idx`: the inverse of
+/// [`ticket_generation`]. A generation the slot minted maps to a count it has reached; one it never
+/// minted maps, but for a 1-in-2^32 chance, past it.
+pub(crate) fn ticket_count(key: TicketKey, worker: u32, idx: u32, generation: u32) -> u32 {
+    if generation == 0 {
+        return 0;
+    }
+    let tweak = (u64::from(worker), u64::from(idx));
+    nonzero_permutation(key.0, tweak, 16, u64::from(generation), true) as u32
 }
 
 /// Whether the process's off-crossing latch has tripped ([`LATCH_AT`]).

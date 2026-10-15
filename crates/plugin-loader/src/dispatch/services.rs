@@ -58,7 +58,7 @@ pub use busbar_contract::services::{
     Stored,
 };
 
-use super::ticket::{decode, WakeRoute};
+use super::ticket::{decode, Waking};
 
 /// The error text of a caller-scoped service called from an instance the host states no caller for.
 pub const NO_CALLER: &str = "no caller is bound to this instance";
@@ -155,7 +155,8 @@ impl ServiceStore {
 /// The one answer a pended service gives: store the result under its handle, then wake its ticket.
 pub struct Completer {
     store: Weak<ServiceStore>,
-    route: Weak<dyn WakeRoute>,
+    /// The route, and the instance whose context took the ticket (#74).
+    waking: Waking,
     handle: CompletionHandle,
     /// The epoch of the op that issued `handle`.
     epoch: u64,
@@ -178,9 +179,7 @@ impl Completer {
             return;
         };
         if store.complete(self.handle, self.epoch, stored) {
-            if let Some(route) = self.route.upgrade() {
-                route.wake(self.handle.ticket);
-            }
+            self.waking.wake(self.handle.ticket);
         }
     }
 }
@@ -282,7 +281,7 @@ unsafe fn deliver(stored: &Stored, into: Option<&ServiceBufs>) -> Result<Answere
 /// As [`deliver`].
 pub(crate) unsafe fn serve(
     store: &Arc<ServiceStore>,
-    route: &Weak<dyn WakeRoute>,
+    route: &Waking,
     head: &ServiceHead,
     into: Option<&ServiceBufs>,
     body: impl FnOnce(Option<Completer>) -> Ran,
@@ -319,7 +318,7 @@ pub(crate) unsafe fn serve(
     if fresh {
         let completer = Completer {
             store: Arc::downgrade(store),
-            route: route.clone(),
+            waking: route.clone(),
             handle: h,
             epoch,
         };
@@ -397,11 +396,11 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
 };
 
 /// The dispatcher an instance's context routes to, and what it serves.
-fn served(ctx: HostCtx) -> Option<(Served, Weak<dyn WakeRoute>)> {
+fn served(ctx: HostCtx) -> Option<(Served, Waking)> {
     let wake = super::handle::resolve(ctx)?;
-    let route = wake.route.get()?.clone();
-    let served = route.upgrade()?.services()?;
-    Some((served, route))
+    let waking = Waking::of(wake)?;
+    let served = waking.route.upgrade()?.services()?;
+    Some((served, waking))
 }
 
 /// The caller an instance's context names; `None` before bind stated one.
@@ -447,7 +446,7 @@ fn slot(
     out: *mut ServiceOut,
     service: u32,
     in_size: usize,
-    body: impl FnOnce(Served, Weak<dyn WakeRoute>, ServiceHead) -> Answered,
+    body: impl FnOnce(Served, Waking, ServiceHead) -> Answered,
 ) -> RawOutcome {
     framed(input, out, service, in_size, |head| match served(ctx) {
         Some((served, route)) => body(served, route, head),
@@ -582,7 +581,7 @@ fn scoped(
     out: *mut ServiceOut,
     service: u32,
     in_size: usize,
-    body: impl FnOnce(Served, Weak<dyn WakeRoute>, ServiceHead, Caller) -> Answered,
+    body: impl FnOnce(Served, Waking, ServiceHead, Caller) -> Answered,
 ) -> RawOutcome {
     slot(
         ctx,
@@ -604,7 +603,7 @@ fn scoped(
 /// As [`deliver`].
 unsafe fn pended(
     served: &Served,
-    route: &Weak<dyn WakeRoute>,
+    route: &Waking,
     head: &ServiceHead,
     into: Option<&ServiceBufs>,
     run: impl FnOnce(Later) -> Ran,

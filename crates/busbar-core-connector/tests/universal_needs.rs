@@ -372,7 +372,7 @@ fn head_through_the_table(response: &'static str) -> (Pieces, Option<Vec<u8>>) {
         .unwrap(),
         std::sync::Arc::new(judge),
         None,
-        std::sync::Arc::new(|_| {}),
+        std::sync::Arc::new(|_, _| {}),
     );
     let owner = InstanceId(1);
     c.declare_over(owner, NeedId(0), scheme)
@@ -595,7 +595,7 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         .unwrap(),
         std::sync::Arc::new(judge),
         None,
-        std::sync::Arc::new(|_| {}),
+        std::sync::Arc::new(|_, _| {}),
     );
     let owner = InstanceId(1);
     c.declare_over(owner, NeedId(1), raw)
@@ -678,7 +678,7 @@ fn fetch_table() -> (&'static str, busbar_core_connector::fetch::Table) {
         .unwrap(),
         std::sync::Arc::new(judge),
         None,
-        std::sync::Arc::new(|_| {}),
+        std::sync::Arc::new(|_, _| {}),
     ));
     let table = busbar_core_connector::fetch::Table {
         owner: InstanceId(9),

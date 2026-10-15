@@ -40,8 +40,9 @@ pub fn the() -> &'static Arc<Connector> {
 
 /// THE IDENTITY THE COMPOSITION ROOT'S OWN NEEDS ARE DECLARED UNDER on the one connector: the
 /// authorization server's (`busbar-core-oauth2`, a compiled-in cleanliness crate, not a plugin
-/// instance). The loader mints every plugin instance's identity from 1 up
-/// (`busbar_plugin_loader`'s dispatch, `NEXT_INSTANCE`), so 0 never names a plugin's table.
+/// instance). The loader numbers every plugin instance by its handle's id, minted from 1 up
+/// (`busbar_plugin_loader`'s `dispatch::handle`), so 0 never names a plugin's table, and a wake
+/// under it names no instance as the ticket's supplier.
 pub const ROOT_OWNER: busbar_contract::conn::InstanceId = busbar_contract::conn::InstanceId(0);
 
 /// THE AUTHORIZATION SERVER'S CONNECTION TABLE (`busbar_core_oauth2::Connections`): this process's

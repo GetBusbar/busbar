@@ -37,7 +37,7 @@ fn connector(wakes: Arc<AtomicU64>) -> Connector {
         view,
         crate::tests::loopback_literals(),
         None,
-        Arc::new(move |_| {
+        Arc::new(move |_, _| {
             wakes.fetch_add(1, Ordering::SeqCst);
         }),
     )

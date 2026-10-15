@@ -390,7 +390,7 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
             view,
             crate::tests::loopback_literals(),
             None,
-            Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
         );
         c.declare_over(OWNER, NeedId(0), "sec")
             .expect("a served scheme declares");

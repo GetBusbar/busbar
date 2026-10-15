@@ -106,7 +106,7 @@ pub struct TcpConns {
     /// The transport it stands in for: the claim it serves and its local-socket prefix.
     facts: StreamFacts,
     slab: ConnSlab<Mutex<Conn>>,
-    wake: Arc<dyn Fn(u64) + Send + Sync>,
+    wake: busbar_contract::conn::ConnWake,
     tls: Option<Arc<dyn SecureDial>>,
     timeouts: Mutex<Vec<u64>>,
     /// Each declared need's egress class, by owner and need.
@@ -141,14 +141,14 @@ impl TcpConns {
     /// A table waking a parked read's ticket through `wake` (the dispatcher's
     /// [`conn_waker`](crate::dispatch::Dispatcher::conn_waker)); `upgrade_secure` is refused.
     #[must_use]
-    pub fn new(wake: Arc<dyn Fn(u64) + Send + Sync>) -> Self {
+    pub fn new(wake: busbar_contract::conn::ConnWake) -> Self {
         Self::serving(StreamFacts::stand_in(), wake)
     }
 
     /// A table standing in for the stream transport `facts` names, its parked reads woken through
     /// `wake`.
     #[must_use]
-    pub fn serving(facts: StreamFacts, wake: Arc<dyn Fn(u64) + Send + Sync>) -> Self {
+    pub fn serving(facts: StreamFacts, wake: busbar_contract::conn::ConnWake) -> Self {
         Self {
             facts,
             slab: ConnSlab::default(),
@@ -161,7 +161,7 @@ impl TcpConns {
 
     /// [`TcpConns::new`], securing a stream on `upgrade_secure` with `tls`.
     #[must_use]
-    pub fn with_tls(wake: Arc<dyn Fn(u64) + Send + Sync>, tls: Arc<dyn SecureDial>) -> Self {
+    pub fn with_tls(wake: busbar_contract::conn::ConnWake, tls: Arc<dyn SecureDial>) -> Self {
         Self {
             tls: Some(tls),
             ..Self::new(wake)
@@ -302,7 +302,7 @@ impl Conns for TcpConns {
                     let wake = self.wake.clone();
                     std::thread::spawn(move || {
                         std::thread::sleep(POLL);
-                        wake(ticket);
+                        wake(caller, ticket);
                     });
                 }
                 Err(ConnError::Pending)

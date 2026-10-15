@@ -218,7 +218,7 @@ impl Drop for FoldSettings<'_> {
 /// through the leg dispatcher's conn waker, its TLS trusting the test anchors (PEM) when named.
 /// INJECTED, never named here: this crate cannot depend on the connector (the connector depends on
 /// the kernel, which depends on this crate), so the busbar side that composes it hands it in.
-pub type Host = fn(Arc<dyn Fn(u64) + Send + Sync>, Option<&str>) -> Arc<dyn DeclaredConns>;
+pub type Host = fn(busbar_contract::conn::ConnWake, Option<&str>) -> Arc<dyn DeclaredConns>;
 
 impl Subject {
     /// `inputs` is the plugin's `conformance.json` text.

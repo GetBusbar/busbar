@@ -189,6 +189,11 @@ pub type Ticket = u64;
 /// The ticket that names no waiting task: a call handed it registers no interest.
 pub const NO_TICKET: Ticket = 0;
 
+/// HOW A TABLE WAKES A CALLER'S TICKET: the caller the interest was registered for, and its ticket.
+/// The caller is named so the host can blame the instance that supplied a ticket it never minted
+/// (#74) rather than whichever thread the wake fires on.
+pub type ConnWake = std::sync::Arc<dyn Fn(InstanceId, Ticket) + Send + Sync>;
+
 /// THE HOST'S CONNECTION TABLE, as the host implements it. Every method names the `caller`, which
 /// the host reads off the instance's own context.
 pub trait Conns: Send + Sync {

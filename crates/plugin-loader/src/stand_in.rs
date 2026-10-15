@@ -103,7 +103,7 @@ mod tests {
                 transport: "planted-stream".into(),
                 local_prefix: "planted:".into(),
             },
-            Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
         );
         assert!(stream.serves_scheme("planted-stream"));
         assert!(!stream.serves_scheme(&StreamFacts::stand_in().transport));

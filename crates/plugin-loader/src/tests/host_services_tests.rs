@@ -19,7 +19,7 @@ use busbar_contract::abi::mechanism::check::Filled;
 use busbar_contract::services::DiskDest;
 
 use super::*;
-use crate::dispatch::ticket::InstanceWake;
+use crate::dispatch::ticket::{InstanceWake, WakeRoute};
 
 const TICKET: Ticket = Ticket {
     slot: 3,
@@ -390,7 +390,7 @@ struct Route {
 }
 
 impl WakeRoute for Route {
-    fn wake(&self, t: Ticket) {
+    fn wake(&self, t: Ticket, _supplier: Option<&'static InstanceWake>) {
         self.wakes.lock().unwrap().push(t);
     }
 
@@ -1132,13 +1132,16 @@ fn bufs(buf: &mut [u8], spans: &mut [ItemSpan]) -> ServiceBufs {
     }
 }
 
-fn nowhere() -> Weak<dyn WakeRoute> {
+fn nowhere() -> Waking {
     let r: Arc<dyn WakeRoute> = Arc::new(Route {
         store: Arc::default(),
         provider: Arc::default(),
         wakes: Mutex::default(),
     });
-    Arc::downgrade(&r)
+    Waking {
+        route: Arc::downgrade(&r),
+        supplier: None,
+    }
 }
 
 const SPAN: ItemSpan = ItemSpan {
@@ -1486,7 +1489,10 @@ fn a_late_completion_from_an_ended_op_never_lands_on_the_next_ops_handle() {
     let d = double();
     let store = Arc::clone(&d.route.store);
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
-    let route = Arc::downgrade(&dyn_route);
+    let route = Waking {
+        route: Arc::downgrade(&dyn_route),
+        supplier: None,
+    };
     let held: Mutex<Option<Completer>> = Mutex::new(None);
     let pend = || {
         |c: Option<Completer>| {

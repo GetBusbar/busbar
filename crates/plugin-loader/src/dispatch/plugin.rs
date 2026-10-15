@@ -146,22 +146,6 @@ impl EnvelopeSink for NoSink {
     fn dropped(&self, _: Dropped) {}
 }
 
-/// The next instance identity bind mints; `0` is never minted.
-static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
-
-/// MINT ONE INSTANCE IDENTITY off `next`, never `0`: `0` is the composition root's own identity on
-/// the one connector (`busbar`'s `root::connector::ROOT_OWNER`, the authorization server's needs),
-/// so a plugin minted `0` would share that table's needs and connections. A counter that wraps
-/// past `u64::MAX` skips `0` rather than handing it out.
-fn mint_instance(next: &AtomicU64) -> InstanceId {
-    loop {
-        let id = next.fetch_add(1, Ordering::Relaxed);
-        if id != 0 {
-            return InstanceId(id);
-        }
-    }
-}
-
 /// What the host binds a loaded plugin to.
 #[derive(Clone)]
 pub struct Bind {
@@ -414,6 +398,24 @@ impl Instance {
         self.faulted.store(true, Ordering::Release);
         self.wake.revoked.store(true, Ordering::Release);
     }
+}
+
+/// THE ONE GUESS, judged after the crossing (#74): the instance whose handle `wake` is, quarantined
+/// as [`quarantine_crossing`] quarantines a crossing's (a forged ticket generation is judged on the
+/// worker, after the wake that carried it returned).
+pub(crate) fn quarantine_entry(wake: &'static InstanceWake) {
+    wake.revoked.store(true, Ordering::Release);
+    let Some(inst) = wake.instance.get().and_then(std::sync::Weak::upgrade) else {
+        return;
+    };
+    inst.revoke();
+    if let Some((id, table)) = inst.wake.conn.get() {
+        super::conn_services::purge(*id, table);
+    }
+    tracing::warn!(
+        plugin = %inst.name,
+        "a plugin woke a ticket generation the host never minted; the instance is quarantined"
+    );
 }
 
 /// One family's shape, copied from the Statement: its kind and its label count.
@@ -1478,9 +1480,11 @@ impl<K: Kind> Plugin<K> {
         // A bind refused after this point leaves no live handle behind: the entry is revoked unless
         // the bind completes (#74).
         let mut unbound = Unbound(Some(wake));
-        // THE CONNECTION TABLE: minted an identity and declared on the host's one table, need by
-        // need under its Statement index, when the Statement declares a need; otherwise none.
-        let instance = mint_instance(&NEXT_INSTANCE);
+        // THE CONNECTION TABLE: the instance's identity is its handle's id (never `0`, the root's
+        // own on the one connector: `busbar`'s `root::connector::ROOT_OWNER`), declared on the
+        // host's one table, need by need under its Statement index, when the Statement declares a
+        // need; otherwise none. One numbering: a table's wake names its caller's entry (#74).
+        let instance = super::handle::instance_id(ctx);
         let mut declared_needs: Box<[ReadNeed]> = Box::default();
         let conns: *const busbar_contract::abi::host::conn::connector::ConnectorSlots =
             match (&bind.conns, st.needs_len) {
@@ -1619,6 +1623,11 @@ impl<K: Kind> Plugin<K> {
             }),
             _k: PhantomData,
         };
+        let _ = plugin
+            .inner
+            .wake
+            .instance
+            .set(Arc::downgrade(&plugin.inner));
         bind.dispatcher.adopt(&plugin.inner);
         unbound.0 = None;
         Ok(plugin)

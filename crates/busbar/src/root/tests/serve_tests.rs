@@ -245,7 +245,7 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
         },
         judge,
         &[],
-        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
     )
     .expect("the connector builds");
@@ -800,7 +800,7 @@ pub(super) mod session_door {
             },
             judge,
             &[],
-            Arc::new(|_| {}),
+            Arc::new(|_, _| {}),
             busbar_core_connector::pool::PoolPosture::NONE,
         )
         .expect("the connector builds")
@@ -2998,7 +2998,7 @@ async fn serve_configured(
         },
         judge,
         &[],
-        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
         busbar_core_connector::pool::PoolPosture::NONE,
     )
     .expect("the connector builds");

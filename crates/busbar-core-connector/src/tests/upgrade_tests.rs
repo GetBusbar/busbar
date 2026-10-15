@@ -116,7 +116,7 @@ fn raw_connector() -> Connector {
         view,
         crate::tests::loopback_literals(),
         Some(Arc::new(tls)),
-        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
     )
 }
 
