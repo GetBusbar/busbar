@@ -1496,11 +1496,11 @@
       "id": "#64-class build.auth_modules lists the webhook-signature module",
       "kind": "additive",
       "changelog": "1.6.0 Added: `GET /api/v1/admin/info` `build.auth_modules` lists `busbar-auth-webhook-signature`, the linked inbound auth module that verifies Twilio and Standard Webhooks signatures.",
-      "by": "ARCHITECT ruling 2026-10-14 (busbar-e1 relay), the class of OWNER-LOCKED #64 (additive list growth for a real new 1.6.0 surface); the owner's signature is pending",
+      "by": "ARCHITECT ruling 2026-10-14 (busbar-e1 relay), the class of OWNER-LOCKED #64 (additive list growth for a real new 1.6.0 surface); the owner signed 2026-10-15",
       "signoff": {
-        "who": "ARCHITECT ruling 2026-10-14, pending the owner's signature (an agent cannot sign; this entry's PR stays a draft until the owner signs)",
-        "when": "2026-10-14",
-        "ruling": "ARCHITECT 2026-10-14: link busbar-auth-webhook-signature default-on (option (a)); Twilio Media Streams, Standard Webhooks and the Responses webhook are signed 1.6.0 scope (BUSBAR-1.6.0.md l.847-852, l.4835) and useless if the shipped binary cannot authenticate them; register admin.ops|GetInfo|ok as additive, #64's class"
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-15",
+        "ruling": "OWNER signed in session 2026-10-15: build.auth_modules lists busbar-auth-webhook-signature (additive, #64 class)"
       },
       "expires": {
         "baseline": "1.5.5",
