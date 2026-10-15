@@ -68,7 +68,7 @@ A durable-chain sequence number is no longer in the in-memory ring (it was prune
 - **Since:** 1.6.0
 - **Slug:** `admin-store-operation-failed`
 
-An admin API CRUD or read operation against the governance/durable store returned an error, so busbar answers the admin request with a generic 500. The store's own error (which may embed SQL fragments or backend paths) is logged server-side only — the HTTP body carries no store internals. The `operation` field names which call failed.
+An admin API CRUD or read operation against the governance/durable store returned an error, so busbar answers the admin request with a generic 500. The store's own error (which may embed SQL fragments or backend paths) is logged server-side only — the response body carries no store internals. The `operation` field names which call failed.
 
 **What to do:** Investigate the durable/governance store's health and reachability for the named operation. A transient store hiccup self-heals on retry; sustained failures mean the store backend is unhealthy and admin mutations/reads cannot complete.
 
@@ -338,7 +338,7 @@ An auth chain entry sets `max_admin_scope: full`, so every principal identified 
 
 The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly empty, so the admin API has no credential gating it — ANYONE can mint virtual keys through it. Acceptable only for local development.
 
-**What to do:** Configure `auth.admin_auth` (an `admin-tokens` entry with a `token:`, or an admin module granting `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key minting is gated by an operator credential.
+**What to do:** Configure `auth.admin_auth` (an admin credential entry, or an admin module granting `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key minting is gated by an operator credential.
 
 <a id="config-passthrough-unused-apikey"></a>
 ### BUSBAR-3013 — passthrough provider has a non-empty api_key that is never forwarded (inert config)
@@ -347,7 +347,7 @@ The auth chain names the built-in `keys` verifier while `auth.admin_auth` is exp
 - **Since:** 1.6.0
 - **Slug:** `config-passthrough-unused-apikey`
 
-A provider is configured with a NON-EMPTY api_key while `upstream_credentials` is `passthrough`, under which the upstream key is the caller's own token (or empty), so the configured api_key is NEVER forwarded — it is inert dead config. A legitimate passthrough provider that itself signs per-request via SigV4 and needs no static key, hence a warning rather than a hard reject.
+A provider is configured with a NON-EMPTY api_key while `upstream_credentials` is `passthrough`, under which the upstream key is the caller's own token (or empty), so the configured api_key is NEVER forwarded — it is inert dead config. A legitimate passthrough provider may itself sign each request and need no static key, hence a warning rather than a hard reject.
 
 **What to do:** If you intended static-key gating, use `upstream_credentials: own` (plus an auth chain). Otherwise clear the referenced provider secret so the config reflects that no static key is used on that passthrough provider.
 
@@ -446,9 +446,9 @@ One of the 1.5.x environment overrides (BUSBAR_PROVIDERS, BUSBAR_CONFIG_OVERLAY,
 - **Since:** 1.6.0
 - **Slug:** `config-error-map-class-unrecognized`
 
-A provider's `error_map` maps an upstream error code or structured type to a string that is not one of busbar's status classes (rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length). The mapping is IGNORED and the error is classified from its HTTP status instead, so a typo'd entry (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized value for the life of the process, on the first error that reaches it — never at boot, so a deployment whose providers never fail never sees this line.
+A provider's `error_map` maps an upstream error code or structured type to a string that is not one of busbar's status classes (rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length). The mapping is IGNORED and the error is classified from its upstream status instead, so a typo'd entry (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized value for the life of the process, on the first error that reaches it — never at boot, so a deployment whose providers never fail never sees this line.
 
-**What to do:** Correct the named `error_map` value to one of the nine status classes, or remove the entry if the built-in HTTP-status classification is what you want.
+**What to do:** Correct the named `error_map` value to one of the nine status classes, or remove the entry if the built-in status classification is what you want.
 
 <a id="config-overlay-rejected"></a>
 ### BUSBAR-3023 — Config overlay rejected at read (the reason, naming the key and the file)
@@ -483,7 +483,7 @@ An authenticated, authorized token-exchange request could not be completed becau
 
 A login-plugin call could not obtain a blocking-offload permit within the wait window because the offload budget is fully in flight — a login plugin is wedged and not returning. busbar rejects the login fail-closed rather than complete a login it never ran. Warned once on entry to the saturated state; recurrence logs at debug.
 
-**What to do:** Investigate the login plugin (LDAP/AD bind, an OIDC token/userinfo round-trip) — it is blocking past its timeout. Restore or restart it; the saturation clears once calls return within budget.
+**What to do:** Investigate the login plugin (its directory bind or identity-provider round-trip) — it is blocking past its timeout. Restore or restart it; the saturation clears once calls return within budget.
 
 <a id="login-plugin-panicked"></a>
 ### BUSBAR-4003 — Login plugin call panicked (login rejected fail-closed)
@@ -596,26 +596,26 @@ A token-exchange request presented a principal id that is unsafe as a self-serve
 **What to do:** None — self-heals; the client must present a valid subject id. If a legitimate identity is being rejected, its id needs to be reshaped to avoid the reserved prefixes and separators.
 
 <a id="egress-apikey-invalid-bytes"></a>
-### BUSBAR-4013 — Egress API key contains invalid header bytes (auth header omitted)
+### BUSBAR-4013 — Egress API key contains invalid header bytes (auth header omitted) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `egress-apikey-invalid-bytes`
 
-A configured egress credential (a static `api-key`/`x-goog-api-key`) contains bytes that are invalid in an HTTP header value (typically an ASCII control character), so busbar omits the auth header entirely and the upstream will reject with 401. The credential is misconfigured.
+RETIRED. A configured static egress credential contained bytes that are invalid in a header value, so the auth header was omitted and the upstream rejected the request. Nothing raises this code.
 
-**What to do:** Fix the configured egress credential — remove stray whitespace/control characters (often a trailing newline from how the secret was pasted or injected). Requests to that upstream 401 until the key is a valid header value.
+**What to do:** Nothing emits this code.
 
 <a id="egress-oauth-token-invalid-bytes"></a>
-### BUSBAR-4014 — Minted OAuth token contains invalid header bytes (auth header omitted)
+### BUSBAR-4014 — Minted OAuth token contains invalid header bytes (auth header omitted) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `egress-oauth-token-invalid-bytes`
 
-An OAuth token minted for egress contains bytes invalid in an HTTP header value, so busbar omits the `Bearer` auth header and the upstream will reject with 401. Fires on mint (per refresh), not per request, and is near-unreachable for a well-formed token endpoint.
+RETIRED. An OAuth token minted for egress contained bytes invalid in a header value, so the `Bearer` auth header was omitted and the upstream rejected the request. Nothing raises this code.
 
-**What to do:** Investigate the OAuth token endpoint — it returned an access token with control or non-ASCII bytes. Requests to that upstream 401 until it mints a header-safe token.
+**What to do:** Nothing emits this code.
 
 <a id="egress-oauth-empty-token"></a>
 ### BUSBAR-4015 — OAuth token endpoint returned a 200 with an empty access_token
@@ -716,16 +716,16 @@ The oauth_as authorization-server sweep of expired records failed for a tick —
 
 **What to do:** None if it clears on the next tick. Sustained failures indicate an oauth_as store problem worth investigating; expired records accumulate until a sweep succeeds.
 
-<a id="sigv4-hmac-init-failed"></a>
-### BUSBAR-4024 — SigV4 HMAC-SHA256 init failed (documented unreachable)
+<a id="request-signing-hmac-init-failed"></a>
+### BUSBAR-4024 — Request-signing HMAC-SHA256 init failed — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
-- **Slug:** `sigv4-hmac-init-failed`
+- **Slug:** `request-signing-hmac-init-failed`
 
-Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as unreachable — HMAC-SHA256 accepts a key of any length — so reaching it indicates a serious crypto-library inconsistency. busbar returns an empty signature, which the upstream rejects.
+RETIRED. Initializing HMAC-SHA256 for per-request egress signing failed, which was documented as unreachable (HMAC-SHA256 accepts a key of any length). Request signing is no longer the host's, and nothing raises this code.
 
-**What to do:** Capture the logged error and file a bug; this should not be possible. SigV4-signed egress fails to authenticate until it is resolved.
+**What to do:** Nothing emits this code.
 
 <a id="oauth-as-ephemeral-signing-key"></a>
 ### BUSBAR-4025 — oauth_as generated an ephemeral ES256 signing key (tokens die on restart)
@@ -747,7 +747,7 @@ The oauth_as authorization server has no `signing_key` configured, so busbar gen
 
 An EMPTY admin_auth chain was seen: the admin API's open dev posture admits every admin request anonymously with FULL authority. The live `PUT /api/v1/admin/admin-auth` REFUSES to apply an empty chain (and an admin-scope dry-run reports it as no earned grant, never full), so this posture can only be entered deliberately via config.yaml at boot — never flipped open by one unnoticed API call.
 
-**What to do:** Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an `admin-tokens` entry with a `token:`, or an admin module) before exposing the admin API to any untrusted network.
+**What to do:** Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an admin credential entry, or an admin module) before exposing the admin API to any untrusted network.
 
 <a id="admin-createkey-malformed-body"></a>
 ### BUSBAR-4027 — create_key request body failed to parse (client 400)
@@ -1125,14 +1125,14 @@ A compliance restrict re-applied against a fallback pool left no eligible lane, 
 
 **What to do:** None — self-heals per request. If the fallback pool should serve this traffic, ensure its members carry the tags the restrict requires.
 
-<a id="prometheus-recorder-install-failed"></a>
-### BUSBAR-5032 — Prometheus recorder install failed; /metrics will be empty
+<a id="metrics-recorder-install-failed"></a>
+### BUSBAR-5032 — Metrics recorder install failed; /metrics will be empty
 
 - **Severity:** actionable
 - **Since:** 1.6.0
-- **Slug:** `prometheus-recorder-install-failed`
+- **Slug:** `metrics-recorder-install-failed`
 
-The Prometheus metrics recorder failed to install at boot, so the /metrics endpoint will be empty for the life of the process. busbar continues serving proxy traffic, but is blind to metrics.
+The host's metrics recorder failed to install at boot, so the /metrics endpoint will be empty for the life of the process. busbar continues serving proxy traffic, but is blind to metrics.
 
 **What to do:** Investigate the boot error (often a duplicate recorder install or a conflicting exporter). Restart busbar after resolving it; /metrics stays empty until then.
 
@@ -1165,7 +1165,7 @@ A /metrics scrape could not list virtual keys from the governance store (a trans
 - **Since:** 1.6.0
 - **Slug:** `metrics-key-gauge-limit-exceeded`
 
-The number of virtual keys exceeds the per-key gauge limit (`metrics.key_gauge_limit`), so busbar emits gauges for only the first `limit` keys to bound Prometheus cardinality and scrape-path DB load. Some keys have no per-key series. Warned once until the count drops back under the limit.
+The number of virtual keys exceeds the per-key gauge limit (`metrics.key_gauge_limit`), so busbar emits gauges for only the first `limit` keys to bound the exposition's cardinality and scrape-path DB load. Some keys have no per-key series. Warned once until the count drops back under the limit.
 
 **What to do:** Raise `metrics.key_gauge_limit` if you need per-key series for all keys and can afford the cardinality, or reduce the number of active virtual keys. Aggregate group gauges are unaffected.
 

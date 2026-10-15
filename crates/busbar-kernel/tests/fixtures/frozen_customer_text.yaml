@@ -34,6 +34,7 @@ legacy_rows:
   login_brands: "microsoft entra azure msft aad login.microsoftonline : Microsoft : squares | github : GitHub : octocat | google accounts.google : Google : g-mark"
   renamed_display: Valkey
   retired_url_scheme: redis
+  snapshot_recorder_failed: "prometheus recorder install failed; /metrics will be empty"
   gov14_module: sqlite
   gov14_db_path: busbar-governance.db
   gov14_busy_timeout_key: sqlite_busy_timeout_ms

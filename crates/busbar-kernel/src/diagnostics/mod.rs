@@ -468,9 +468,9 @@ pub const CONFIG_OPEN_ADMIN_MINT: Diagnostic = Diagnostic {
         "The auth chain names the built-in `keys` verifier while `auth.admin_auth` is explicitly \
               empty, so the admin API has no credential gating it — ANYONE can mint virtual keys \
               through it. Acceptable only for local development.",
-    action: "Configure `auth.admin_auth` (an `admin-tokens` entry with a `token:`, or an admin \
-             module granting `mint`/`full`) before exposing busbar's admin API to any untrusted \
-             network, so key minting is gated by an operator credential.",
+    action: "Configure `auth.admin_auth` (an admin credential entry, or an admin module granting \
+             `mint`/`full`) before exposing busbar's admin API to any untrusted network, so key \
+             minting is gated by an operator credential.",
     since: "1.6.0",
     retired: false,
 };
@@ -485,8 +485,8 @@ pub const CONFIG_PASSTHROUGH_UNUSED_APIKEY: Diagnostic = Diagnostic {
     summary: "A provider is configured with a NON-EMPTY api_key while `upstream_credentials` is \
               `passthrough`, under which the upstream key is the caller's own token (or empty), so \
               the configured api_key is NEVER forwarded — it is inert dead config. A legitimate \
-              passthrough provider that itself signs per-request via SigV4 and needs no static \
-              key, hence a warning rather than a hard reject.",
+              passthrough provider may itself sign each request and need no static key, hence a \
+              warning rather than a hard reject.",
     action: "If you intended static-key gating, use `upstream_credentials: own` (plus an auth \
              chain). Otherwise clear the referenced provider secret so the config reflects that no \
              static key is used on that passthrough provider.",
@@ -525,8 +525,8 @@ pub const LOGIN_OFFLOAD_SATURATED: Diagnostic = Diagnostic {
               window because the offload budget is fully in flight — a login plugin is wedged and \
               not returning. busbar rejects the login fail-closed rather than complete a login it \
               never ran. Warned once on entry to the saturated state; recurrence logs at debug.",
-    action: "Investigate the login plugin (LDAP/AD bind, an OIDC token/userinfo round-trip) — it \
-             is blocking past its timeout. Restore or restart it; the saturation clears once calls \
+    action: "Investigate the login plugin (its directory bind or identity-provider round-trip) — \
+             it is blocking past its timeout. Restore or restart it; the saturation clears once calls \
              return within budget.",
     since: "1.6.0",
     retired: false,
@@ -710,39 +710,38 @@ pub const SELF_SUBJECT_UNSAFE: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// A configured egress API key contains bytes invalid for an HTTP header value.
+/// A configured egress API key contains bytes invalid for a header value — RETIRED: nothing in the
+/// tree raises it. The number is kept so a log line from a pre-release build still resolves.
 pub const EGRESS_APIKEY_INVALID_BYTES: Diagnostic = Diagnostic {
     code: 4013,
     class: Class::Auth,
     slug: "egress-apikey-invalid-bytes",
-    title: "Egress API key contains invalid header bytes (auth header omitted)",
+    title: "Egress API key contains invalid header bytes (auth header omitted) — RETIRED",
     severity: Severity::Actionable,
-    summary: "A configured egress credential (a static `api-key`/`x-goog-api-key`) contains bytes \
-              that are invalid in an HTTP header value (typically an ASCII control character), so \
-              busbar omits the auth header entirely and the upstream will reject with 401. The \
-              credential is misconfigured.",
-    action: "Fix the configured egress credential — remove stray whitespace/control characters \
-             (often a trailing newline from how the secret was pasted or injected). Requests to \
-             that upstream 401 until the key is a valid header value.",
+    summary:
+        "RETIRED. A configured static egress credential contained bytes that are invalid in a \
+              header value, so the auth header was omitted and the upstream rejected the request. \
+              Nothing raises this code.",
+    action: "Nothing emits this code.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
-/// A minted OAuth token contains bytes invalid for an HTTP header value.
+/// A minted OAuth token contains bytes invalid for a header value — RETIRED: nothing in the tree
+/// raises it. The number is kept so a log line from a pre-release build still resolves.
 pub const EGRESS_OAUTH_TOKEN_INVALID_BYTES: Diagnostic = Diagnostic {
     code: 4014,
     class: Class::Auth,
     slug: "egress-oauth-token-invalid-bytes",
-    title: "Minted OAuth token contains invalid header bytes (auth header omitted)",
+    title: "Minted OAuth token contains invalid header bytes (auth header omitted) — RETIRED",
     severity: Severity::Actionable,
-    summary: "An OAuth token minted for egress contains bytes invalid in an HTTP header value, so \
-              busbar omits the `Bearer` auth header and the upstream will reject with 401. Fires on \
-              mint (per refresh), not per request, and is near-unreachable for a well-formed token \
-              endpoint.",
-    action: "Investigate the OAuth token endpoint — it returned an access token with control or \
-             non-ASCII bytes. Requests to that upstream 401 until it mints a header-safe token.",
+    summary:
+        "RETIRED. An OAuth token minted for egress contained bytes invalid in a header value, \
+              so the `Bearer` auth header was omitted and the upstream rejected the request. Nothing \
+              raises this code.",
+    action: "Nothing emits this code.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 /// The OAuth token endpoint returned a 200 with an empty access_token. Warn-once (latched).
@@ -904,21 +903,21 @@ pub const OAUTH_AS_SWEEP_FAILED: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// HMAC-SHA256 init failed during SigV4 signing — documented unreachable.
+/// HMAC-SHA256 init failed during request signing — RETIRED: request signing left the host, and no
+/// plugin raises this code. The number is kept so a log line from a pre-release build still
+/// resolves.
 pub const REQUEST_SIGNING_HMAC_INIT_FAILED: Diagnostic = Diagnostic {
     code: 4024,
     class: Class::Auth,
-    slug: "sigv4-hmac-init-failed",
-    title: "SigV4 HMAC-SHA256 init failed (documented unreachable)",
+    slug: "request-signing-hmac-init-failed",
+    title: "Request-signing HMAC-SHA256 init failed — RETIRED",
     severity: Severity::Actionable,
-    summary: "Initializing HMAC-SHA256 for AWS SigV4 signing failed. This is documented as \
-              unreachable — HMAC-SHA256 accepts a key of any length — so reaching it indicates a \
-              serious crypto-library inconsistency. busbar returns an empty signature, which the \
-              upstream rejects.",
-    action: "Capture the logged error and file a bug; this should not be possible. SigV4-signed \
-             egress fails to authenticate until it is resolved.",
+    summary: "RETIRED. Initializing HMAC-SHA256 for per-request egress signing failed, which was \
+              documented as unreachable (HMAC-SHA256 accepts a key of any length). Request signing \
+              is no longer the host's, and nothing raises this code.",
+    action: "Nothing emits this code.",
     since: "1.6.0",
-    retired: false,
+    retired: true,
 };
 
 /// oauth_as has no configured signing_key, so an EPHEMERAL ES256 key was generated at boot.
@@ -1408,14 +1407,14 @@ pub const FALLBACK_RESTRICT_NO_ELIGIBLE_LANE: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// The Prometheus recorder failed to install at boot; /metrics will be empty.
-pub const PROMETHEUS_RECORDER_INSTALL_FAILED: Diagnostic = Diagnostic {
+/// The host's metrics recorder failed to install at boot; /metrics will be empty.
+pub const METRICS_RECORDER_INSTALL_FAILED: Diagnostic = Diagnostic {
     code: 5032,
     class: Class::Proxy,
-    slug: "prometheus-recorder-install-failed",
-    title: "Prometheus recorder install failed; /metrics will be empty",
+    slug: "metrics-recorder-install-failed",
+    title: "Metrics recorder install failed; /metrics will be empty",
     severity: Severity::Actionable,
-    summary: "The Prometheus metrics recorder failed to install at boot, so the /metrics endpoint \
+    summary: "The host's metrics recorder failed to install at boot, so the /metrics endpoint \
               will be empty for the life of the process. busbar continues serving proxy traffic, \
               but is blind to metrics.",
     action: "Investigate the boot error (often a duplicate recorder install or a conflicting \
@@ -1467,7 +1466,7 @@ pub const METRICS_KEY_GAUGE_LIMIT_EXCEEDED: Diagnostic = Diagnostic {
     severity: Severity::Actionable,
     summary:
         "The number of virtual keys exceeds the per-key gauge limit (`metrics.key_gauge_limit`), \
-              so busbar emits gauges for only the first `limit` keys to bound Prometheus \
+              so busbar emits gauges for only the first `limit` keys to bound the exposition's \
               cardinality and scrape-path DB load. Some keys have no per-key series. Warned once \
               until the count drops back under the limit.",
     action: "Raise `metrics.key_gauge_limit` if you need per-key series for all keys and can \
@@ -2425,7 +2424,7 @@ pub const ADMIN_STORE_OPERATION_FAILED: Diagnostic = Diagnostic {
     severity: Severity::Actionable,
     summary: "An admin API CRUD or read operation against the governance/durable store returned an \
               error, so busbar answers the admin request with a generic 500. The store's own error \
-              (which may embed SQL fragments or backend paths) is logged server-side only — the HTTP \
+              (which may embed SQL fragments or backend paths) is logged server-side only — the response \
               body carries no store internals. The `operation` field names which call failed.",
     action: "Investigate the durable/governance store's health and reachability for the named \
              operation. A transient store hiccup self-heals on retry; sustained failures mean the \
@@ -2496,8 +2495,8 @@ pub const ADMIN_AUTH_CHAIN_EMPTY: Diagnostic = Diagnostic {
               at boot — never flipped open by one unnoticed API call.",
     action: "Leave `admin_auth` empty ONLY for local development. To opt into the open posture, set \
              `admin_auth: []` in config.yaml and restart. Otherwise configure a non-empty chain (an \
-             `admin-tokens` entry with a `token:`, or an admin module) before exposing the admin API \
-             to any untrusted network.",
+             admin credential entry, or an admin module) before exposing the admin API to any \
+             untrusted network.",
     since: "1.6.0",
     retired: false,
 };
@@ -2905,7 +2904,7 @@ pub const CONFIG_RATE_CARD_ALL_ZERO: Diagnostic = Diagnostic {
 };
 
 /// A provider `error_map` entry names a status class busbar does not recognize; the mapping is
-/// ignored and classification falls through to the HTTP status.
+/// ignored and classification falls through to the upstream status.
 pub const CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED: Diagnostic = Diagnostic {
     code: 3022,
     class: Class::Config,
@@ -2915,12 +2914,12 @@ pub const CONFIG_ERROR_MAP_CLASS_UNRECOGNIZED: Diagnostic = Diagnostic {
     summary: "A provider's `error_map` maps an upstream error code or structured type to a string \
               that is not one of busbar's status classes (rate_limit, overloaded, server_error, \
               timeout, network, auth, billing, client_error, context_length). The mapping is \
-              IGNORED and the error is classified from its HTTP status instead, so a typo'd entry \
+              IGNORED and the error is classified from its upstream status instead, so a typo'd entry \
               (`rate_limt`) silently never takes effect. Reported once per distinct unrecognized \
               value for the life of the process, on the first error that reaches it — never at \
               boot, so a deployment whose providers never fail never sees this line.",
     action: "Correct the named `error_map` value to one of the nine status classes, or remove the \
-             entry if the built-in HTTP-status classification is what you want.",
+             entry if the built-in status classification is what you want.",
     since: "1.6.0",
     retired: false,
 };
@@ -3225,7 +3224,7 @@ pub static REGISTRY: &[&Diagnostic] = &[
     &USAGE_TAP_DECODE_FAILED,
     &ATTEMPT_TIMEOUT_DEGRADED,
     &FALLBACK_RESTRICT_NO_ELIGIBLE_LANE,
-    &PROMETHEUS_RECORDER_INSTALL_FAILED,
+    &METRICS_RECORDER_INSTALL_FAILED,
     &METRICS_MAINTENANCE_THREAD_SPAWN_FAILED,
     &METRICS_SCRAPE_LIST_KEYS_FAILED,
     &METRICS_KEY_GAUGE_LIMIT_EXCEEDED,

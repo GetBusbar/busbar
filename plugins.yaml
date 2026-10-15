@@ -128,6 +128,9 @@ legacy:
   # The retired backend's own driver URL scheme, which the rewrite leaves untouched.
   # v1.5.5:crates/busbar/src/config/migrate.rs:2075
   retired_url_scheme: redis
+  # The host recorder's install-failure log line (1.5.5's recorder carried its exporter's name).
+  # v1.5.5:crates/busbar/src/metrics.rs:331
+  snapshot_recorder_failed: "prometheus recorder install failed; /metrics will be empty"
   # 1.4.x governance database. v1.5.5:crates/busbar/src/config/migrate.rs:817, :824, :828
   gov14_module: sqlite
   # v1.5.5:crates/busbar/src/config/migrate.rs:30 (DEFAULT_GOVERNANCE_DB_1_4)
