@@ -8,8 +8,9 @@
 //! configured, cannot hold `27.1` at all, and turns "the bill equals the sum of the lines" from a
 //! proof into a hope. So the crate that owns the money arithmetic (`busbar-kernel-ledger`), the
 //! crate that owns the exact count type (`busbar-contract`'s count module), the kernel module that
-//! decides affordability (`busbar-kernel/src/governance`, less one named routing ratio) and the
-//! kernel's and binary's dedicated money-unit files carry no float in production source.
+//! decides affordability (`busbar-kernel/src/governance`, less one named routing ratio), the
+//! kernel's and binary's dedicated money-unit files, and EVERY production file that names a money
+//! type ([`MONEY_TYPES`], derived rather than listed) carry no float in production source.
 //!
 //! # THE SCAN SET IS THE CHECK
 //!
@@ -171,8 +172,9 @@ pub enum IntakeItem {
     ConversionFn,
     /// `struct <boundary>` and its inherent `impl <boundary>` blocks: THE RECORD OF CONFIGURED
     /// DECIMALS a conversion fn reads, exempt as declared. It carries decimals INTO a named
-    /// conversion fn, so it has no "integers come out" to hold it to; what it hands on is read by
-    /// one of the named fns or the read is a finding in the fn that makes it.
+    /// conversion fn, so it has no "integers come out" to hold it to. Outside the named items, a
+    /// read of it is a finding where the line spells a float, calls a [`FLOAT_ONLY_METHODS`] method
+    /// or names a [`FLOAT_CARRIERS`] item; a bare field read with none of those is not seen.
     DecimalRecord,
 }
 
@@ -369,8 +371,9 @@ const BINARY_ROOT: &str = "crates/busbar/src/root";
 /// the only production float in `crates/busbar-contract/src` outside these files is
 /// `signal.rs:158`, `SignalValue::F64(f64)` — the closed scalar wire value for the hook
 /// decide/tap path, a ratio and not a price. A wholesale scan of the contract would red this gate
-/// on a hook signal. PARK: SHAPE D is unclosed here — a new money file beside `count.rs` is in no
-/// scan set until somebody edits this list, and nothing tells them to.
+/// on a hook signal. A new contract file that names a [`MONEY_TYPES`] type is float-scanned by the
+/// derived population (audit xtask-E HIGH 3); one beside `count.rs` that names none is in no float
+/// scan set until somebody edits this list.
 const CONTRACT_MONEY_FILES: &[&str] = &[
     "crates/busbar-contract/src/count.rs",
     "crates/busbar-contract/src/tests/count_tests.rs",
@@ -491,8 +494,10 @@ const WAL_FLOOR: usize = 6;
 ///
 /// THE REST OF THE KERNEL STAYS OFF THIS LIST for the reason the paragraph above gives, and the
 /// measurement backs it: the kernel is 350-odd files of routing weights, health scores and backoff
-/// curves, all of them legitimate floats. PARK: this is SHAPE D and it is unclosed — nothing in the
-/// tree tells the author of the next kernel money file to add it here.
+/// curves, all of them legitimate floats. THE NEXT KERNEL MONEY FILE IS NOT LEFT TO THIS LIST
+/// (audit xtask-E HIGH 3): every file that names a [`MONEY_TYPES`] type — `settlement.rs`,
+/// `teller.rs`, `tick.rs` today — is float-scanned by derivation, and this list keeps the money files
+/// that name none of them.
 const KERNEL_MONEY_FILES: &[&str] = &[
     "crates/busbar-kernel/src/billing.rs",
     "crates/busbar-kernel/src/cost.rs",
@@ -501,9 +506,121 @@ const KERNEL_MONEY_FILES: &[&str] = &[
     "crates/busbar-kernel/src/plane_driver/money.rs",
 ];
 
+/// THE TYPES A MONEY FIGURE IS WRITTEN THROUGH (audit xtask-E HIGH 3): the integer nano-rate, the
+/// card, the ledger's entry, metered row and posting, the settle seam and its flags, the money book,
+/// and the accrual meter. EVERY production file under `crates/*/src` that names one of them in code
+/// is a money file and is float-scanned whole, wherever it lives — the DERIVED half of the scan set.
+///
+/// THE NAMED LISTS ABOVE COULD NOT FOLLOW THE MONEY. The settlement writer (`settlement.rs`), the
+/// accrual meter (`teller.rs`), the operator's rate amend and adjust units (`root/units_admin`) and
+/// the node that holds the book (`root/plane_node.rs`) were in no float scan, because nobody had
+/// typed their paths; a float in what a unit's end posts read green. A file is in this population
+/// because of what it HANDLES, so the next money file is scanned the day it is written.
+///
+/// Each name must still be DECLARED (`struct`/`enum`/`type`/`trait`) in a production file: a type
+/// renamed away would silently drop every file that named only it, so that is refused, not passed.
+pub const MONEY_TYPES: &[&str] = &[
+    "RateNanos",
+    "RateCard",
+    "LedgerEntry",
+    "MeteredRow",
+    "Posting",
+    "PostingKind",
+    "PostingFlags",
+    "Settling",
+    "MoneyBook",
+    "SharedBook",
+    "AccrualMeter",
+];
+
+/// THE FLOOR UNDER THE DERIVED MONEY POPULATION. MEASURED 2026-10-13 on predev `5c99befcfa`: 28
+/// production files name a [`MONEY_TYPES`] type in code. A population that empties out is "no money
+/// file has a float" for a reason nobody can see, so it is refused below this.
+const MONEY_TYPED_FLOOR: usize = 24;
+
+/// Every production file among `files` that names a [`MONEY_TYPES`] type in code (comments and
+/// literals blanked).
+fn money_typed_files(files: &[crate::ctx::SourceFile]) -> Vec<crate::ctx::SourceFile> {
+    files
+        .iter()
+        .filter(|f| {
+            if !MONEY_TYPES.iter().any(|t| f.text.contains(t)) {
+                return false;
+            }
+            let mut st = scan::LexState::default();
+            f.text.lines().any(|l| {
+                let code = scan::blank_code(l, &mut st);
+                MONEY_TYPES.iter().any(|t| word_hit(&code, t))
+            })
+        })
+        .cloned()
+        .collect()
+}
+
+/// Is `name` declared as a `struct`, `enum`, `type` or `trait` in `text`?
+fn declares_type(text: &str, name: &str) -> bool {
+    if !text.contains(name) {
+        return false;
+    }
+    let mut st = scan::LexState::default();
+    text.lines().any(|l| {
+        let code = scan::blank_code(l, &mut st);
+        ["struct", "enum", "type", "trait"]
+            .iter()
+            .any(|kw| declares(&code, kw, name))
+    })
+}
+
+/// Every file under `crates/*/src/`, read: the one listing the derived money population and the
+/// persisted-record census share. LISTED, THEN READ ONLY UNDER `src/`: a crate's integration tests,
+/// benches and fixtures are never in either. Anything that could not be listed or read is returned
+/// as a problem, never dropped.
+fn crate_src_files(cx: &Ctx) -> (Vec<crate::ctx::SourceFile>, Vec<String>) {
+    let mut problems = Vec::new();
+    let mut files = Vec::new();
+    match cx.list(&WalkSpec::new([PERSISTED_CENSUS_ROOT]).ext("rs")) {
+        Ok(rels) => {
+            for rel in rels
+                .into_iter()
+                .filter(|r| r.to_string_lossy().contains("/src/"))
+            {
+                match cx.read(&rel) {
+                    Ok(text) => files.push(crate::ctx::SourceFile {
+                        abs: cx.abs(&rel),
+                        rel,
+                        text,
+                    }),
+                    Err(e) => problems.push(format!(
+                        "the crate-source census could not read {}: {e}",
+                        rel.display()
+                    )),
+                }
+            }
+        }
+        Err(e) => problems.push(format!("the crate-source census could not walk: {e}")),
+    }
+    (files, problems)
+}
+
 /// The float tokens a money path may not name. Word-boundary matched so `nf64` or an identifier that
 /// merely contains the text is not a hit, but the bare type is.
 pub const FLOAT_TOKENS: &[&str] = &["f64", "f32"];
+
+/// THE FLOAT-ONLY METHODS (audit xtask-E HIGH 2). A float can reach a scanned money line with no
+/// float token on it: `r.input.round() as u64` reads a field whose `f64` was declared in a file no
+/// money scan reads, and the line names neither type word nor a literal. Each of these methods
+/// exists on `f32`/`f64` and on no integer type, so a call to one IS a float on the line, whatever
+/// its receiver is spelled as. (`as f64` / `as f32` is already the [`FLOAT_TOKENS`] word.)
+pub const FLOAT_ONLY_METHODS: &[&str] = &[
+    "round", "floor", "ceil", "trunc", "fract", "mul_add", "powf", "powi", "sqrt",
+];
+
+/// THE NAMED FLOAT CARRIERS (audit xtask-E HIGH 2): items declared outside every money scan set that
+/// hand their caller a float. `blended_per_mtok` (`busbar_contract::billing::RawTierRates`) returns
+/// the routing cost scalar as an `f64`; called from a scanned money file it puts a float on the
+/// money path with no float token on the line. A named intake row ([`MONEY_INTAKE`]) is the only
+/// exemption, as it is for every other float.
+pub const FLOAT_CARRIERS: &[&str] = &["blended_per_mtok"];
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // The count-read scan set, the shape it hunts, and the sites it knows about
@@ -1044,7 +1161,32 @@ fn scan_file(rel: &str, text: &str, exempt: &IntakeSpans, offenders: &mut Vec<St
         for spelled in float_spellings(&blanked) {
             offenders.push(finding(rel, line, &spelled));
         }
+        for carried in float_carriers(&blanked) {
+            offenders.push(finding(rel, line, &carried));
+        }
     }
+}
+
+/// A FLOAT CARRIED BY A TYPE, NOT SPELLED ON THE LINE (audit xtask-E HIGH 2): a call to a
+/// [`FLOAT_ONLY_METHODS`] method (`.round()`, reached through a `.`), or any use of a
+/// [`FLOAT_CARRIERS`] item. Reads a line whose literals and comments are already blanked.
+fn float_carriers(blanked: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in FLOAT_ONLY_METHODS {
+        for at in word_positions(blanked, name) {
+            let before = blanked[..at].trim_end();
+            let after = blanked[at + name.len()..].trim_start();
+            if before.ends_with('.') && !before.ends_with("..") && after.starts_with('(') {
+                out.push(format!(".{name}()"));
+            }
+        }
+    }
+    for name in FLOAT_CARRIERS {
+        if word_hit(blanked, name) {
+            out.push((*name).to_string());
+        }
+    }
+    out
 }
 
 /// EVERY OTHER WAY A FLOAT IS SPELLED ON A LINE (item 213). [`FLOAT_TOKENS`] is a case-sensitive
@@ -1053,7 +1195,8 @@ fn scan_file(rel: &str, text: &str, exempt: &IntakeSpans, offenders: &mut Vec<St
 /// is `let mut acc = 0.0;`. Four spellings, each a real Rust float:
 ///
 /// * a FLOAT LITERAL — `1.0`, `1_000.5`, `0.25` (a digit, a dot, a digit; a tuple index `x.0.1`
-///   and a range `0..5` are not);
+///   and a range `0..5` are not), and the TRAILING-DOT form `1000.` / `0.` (a decimal, then a dot
+///   that opens no range, field or method);
 /// * an EXPONENT LITERAL — `1e9`, `2.5E-3`, which Rust types as a float with no dot at all;
 /// * a SUFFIXED LITERAL — `0f64`, `1_f32`, `2.5f64`, where the word match misses because the digit
 ///   before the `f` is part of the same word;
@@ -1091,6 +1234,19 @@ fn float_spellings(blanked: &str) -> Vec<String> {
                 while i < chars.len() && wordy(chars[i]) {
                     i += 1;
                 }
+            } else if chars.get(i) == Some(&'.')
+                && chars[start..i]
+                    .iter()
+                    .all(|d| d.is_ascii_digit() || *d == '_')
+                && !chars
+                    .get(i + 1)
+                    .is_some_and(|n| *n == '.' || *n == '_' || n.is_alphabetic())
+            {
+                // A TRAILING-DOT literal — `1000.`, `0.` — is a float too (audit xtask-E HIGH 1):
+                // a decimal followed by a `.` that opens no range (`0..5`), field or method
+                // (`1.max(2)`) is how Rust spells `1000.0` without the zero.
+                dotted = true;
+                i += 1;
             }
             // `1e-9` / `1.5E+3`: the sign splits the word, so the exponent is read through it.
             if i + 1 < chars.len()
@@ -1413,12 +1569,13 @@ fn read_args(bytes: &[u8], text: &str, mut i: usize) -> Option<(String, usize)> 
 /// Does a silent zero default follow the accessor that starts at `start` and ends at `i`? Returns
 /// the index past it. The default is judged by VALUE ([`is_zero_value`]), in every shape that
 /// substitutes it: `unwrap_or_default()`, `unwrap_or(Z)`, `unwrap_or_else(Z)`, `map_or(Z, f)`,
-/// `map_or_else(Z, f)`, and `if let Some(n) = <read> { … } else { Z }`.
+/// `map_or_else(Z, f)`, `if let Some(n) = <read> { … } else { Z }` and
+/// `match <read> { … None => Z }`.
 fn zero_default_after(flat: &Flat, start: usize, i: usize) -> Option<usize> {
     let bytes = flat.text.as_bytes();
     let next = skip_call(bytes, &flat.text, i)?;
     if bytes.get(next) == Some(&b'{') {
-        return if_let_else_zero(flat, start, next);
+        return if_let_else_zero(flat, start, next).or_else(|| match_none_zero(flat, start, next));
     }
     let dot = skip_to_dot(bytes, &flat.text, i)?;
     let (name, after) = read_ident(bytes, &flat.text, dot);
@@ -1435,6 +1592,48 @@ fn zero_default_after(flat: &Flat, start: usize, i: usize) -> Option<usize> {
         }
         _ => None,
     }
+}
+
+/// `match <read> { … None => Z, … }` (or `_ => Z`) with `Z` zero (audit xtask-E HIGH 4): the `{` at
+/// `body` opens the `match` body, and the read starting at `start` must be its scrutinee (no `{`,
+/// `}` or `;` between the `match` and the read). An arm ends at a `,` at its own depth, or at the `}`
+/// that closes a block arm.
+fn match_none_zero(flat: &Flat, start: usize, body: usize) -> Option<usize> {
+    let bytes = flat.text.as_bytes();
+    let head = &flat.text[..start];
+    let at = word_positions(head, "match").last()?;
+    if head[at..].contains(['{', '}', ';']) {
+        return None;
+    }
+    let close = balanced(bytes, body, b'{', b'}')?;
+    let arms = &flat.text[body + 1..close - 1];
+    // A block arm needs no comma, so its closing `}` ends it once the arm has its `=>` — a `}`
+    // before the `=>` closes a struct pattern instead.
+    let mut ends: Vec<(usize, usize)> = Vec::new();
+    let mut depth = 0i32;
+    let mut arm_start = 0usize;
+    for (k, b) in arms.bytes().enumerate() {
+        match b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 && b == b',' {
+            ends.push((arm_start, k));
+            arm_start = k + 1;
+        } else if depth == 0 && b == b'}' && arms[arm_start..k].contains("=>") {
+            ends.push((arm_start, k + 1));
+            arm_start = k + 1;
+        }
+    }
+    ends.push((arm_start, arms.len()));
+    let zero_arm = ends.iter().any(|&(from, to)| {
+        arms[from..to].split_once("=>").is_some_and(|(pat, value)| {
+            let pat = pat.trim();
+            (pat == "_" || pat == "None" || pat.ends_with("::None")) && is_zero_value(value)
+        })
+    });
+    zero_arm.then_some(close)
 }
 
 /// `if let Some(n) = <read> { … } else { Z }` with `Z` zero: the `{` at `body` opens the `if let`
@@ -1925,6 +2124,48 @@ impl Gate for NoFloatMoneyGate {
             }
         }
 
+        // ── THE DERIVED MONEY POPULATION (audit xtask-E HIGH 3) ──────────────────────────────────
+        //
+        // Every production file that names a [`MONEY_TYPES`] type is scanned whole, on top of the
+        // named sets: the settlement writer, the accrual meter, the rate amend and adjust units and
+        // whatever money file is written next. The crate sources are read ONCE here and handed on to
+        // the persisted-record census below.
+        let (crate_src, crate_src_problems) = crate_src_files(cx);
+        float_scan_problems.extend(crate_src_problems);
+        let crate_src = production_only(cx, crate_src);
+        let money_typed = money_typed_files(&crate_src);
+        if money_typed.len() < MONEY_TYPED_FLOOR {
+            float_scan_problems.push(format!(
+                "the derived money population holds {} production file(s) naming a money type, \
+                 below the floor of {MONEY_TYPED_FLOOR} — a population that went blind reads \
+                 exactly like a money path with no float",
+                money_typed.len()
+            ));
+        }
+        for t in MONEY_TYPES {
+            if !money_typed.iter().any(|f| declares_type(&f.text, t)) {
+                float_scan_problems.push(format!(
+                    "the money type `{t}` is declared in no production file — every file that \
+                     named only it has dropped out of the derived money population; rename it in \
+                     MONEY_TYPES in the diff that renames the type"
+                ));
+            }
+        }
+        {
+            let scanned: std::collections::BTreeSet<String> = ledger_files
+                .iter()
+                .chain(governance_files.iter())
+                .chain(whole_crate_files.iter())
+                .chain(named_files.iter())
+                .map(|f| f.rel_str())
+                .collect();
+            named_files.extend(
+                money_typed
+                    .into_iter()
+                    .filter(|f| !scanned.contains(&f.rel_str())),
+            );
+        }
+
         // ── THE MONEY-INTAKE BOUNDARIES ───────────────────────────────────────────────────────
         //
         // Every row of [`MONEY_INTAKE`] is READ: the boundary has to be found where the table says
@@ -2079,83 +2320,95 @@ impl Gate for NoFloatMoneyGate {
             used: std::collections::BTreeMap::new(),
             pending: 0,
         };
+        let mut count_files: Vec<crate::ctx::SourceFile> = Vec::new();
         for area in COUNT_READ_ROOTS {
-            let files = match walk_area(cx, area) {
-                Ok(f) => f,
-                Err(e) => {
-                    set_problems.push(format!(
-                        "{e} — if this area legitimately moved, add its new home to the group in a \
-                         reviewed diff; do not lower the floor"
-                    ));
-                    continue;
-                }
-            };
-            for f in &files {
-                let rel = f.rel_str();
-                if !scanned.insert(rel.clone()) {
-                    continue;
-                }
-                let hits = scan_count_reads(&f.text);
-                if hits.is_empty() {
-                    continue;
-                }
-                let items = fn_items(&f.text);
-                for hit in hits.iter() {
-                    let item = enclosing_fn(&items, hit.line);
-                    let allowed = ALLOWED_COUNT_READS
-                        .iter()
-                        .enumerate()
-                        .find(|(_, a)| a.file == rel && !item.is_empty() && a.item == item);
-                    match allowed {
-                        Some((i, a)) => {
-                            *count_scan.used.entry(i).or_default() += 1;
-                            if a.class == AllowClass::PendingConversion {
-                                count_scan.pending += 1;
-                            }
+            match walk_area(cx, area) {
+                Ok(f) => count_files.extend(f),
+                Err(e) => set_problems.push(format!(
+                    "{e} — if this area legitimately moved, add its new home to the group in a \
+                     reviewed diff; do not lower the floor"
+                )),
+            }
+        }
+        // EVERY PLANE CRATE, DERIVED (audit xtask-E HIGH 3). A plane reads its billed usage off the
+        // provider's body, so every crate the kind census calls a plane is a count-read area, named
+        // or not: the decision plane read a billed usage figure in no area at all. Its `src/` is
+        // walked whole; a plane whose source reads as empty is refused, never scanned as zero hits.
+        match crate::gates::kind_isolation::plane_kind_crates(cx) {
+            Ok(planes) => {
+                for plane in planes {
+                    let dir = plane
+                        .manifest
+                        .strip_suffix("Cargo.toml")
+                        .unwrap_or(&plane.manifest);
+                    let src = format!("{dir}src");
+                    let files = match cx.walk(&WalkSpec::new([src.clone()]).ext("rs")) {
+                        Ok(f) => production_only(cx, f),
+                        Err(e) => {
+                            set_problems.push(format!(
+                                "the plane crate `{}`'s source {src} could not be walked for \
+                                 count reads ({e})",
+                                plane.name
+                            ));
+                            continue;
                         }
-                        None => count_scan.offenders.push(format!(
-                            "{rel}:{}: `{}` defaulted to zero instead of refusing (#81), in `fn {}`",
-                            hit.line,
-                            hit.accessor,
-                            if item.is_empty() { "<none>" } else { item }
-                        )),
+                    };
+                    if files.is_empty() {
+                        set_problems.push(format!(
+                            "the plane crate `{}`'s source {src} holds no production file — a \
+                             plane the count-read scan cannot read is not a plane with no \
+                             defaulted count",
+                            plane.name
+                        ));
                     }
+                    count_files.extend(files);
+                }
+            }
+            Err(e) => set_problems.push(format!(
+                "the plane-crate census could not be read, so the count-read scan cannot claim \
+                 every plane: {e}"
+            )),
+        }
+        for f in &count_files {
+            let rel = f.rel_str();
+            if !scanned.insert(rel.clone()) {
+                continue;
+            }
+            let hits = scan_count_reads(&f.text);
+            if hits.is_empty() {
+                continue;
+            }
+            let items = fn_items(&f.text);
+            for hit in hits.iter() {
+                let item = enclosing_fn(&items, hit.line);
+                let allowed = ALLOWED_COUNT_READS
+                    .iter()
+                    .enumerate()
+                    .find(|(_, a)| a.file == rel && !item.is_empty() && a.item == item);
+                match allowed {
+                    Some((i, a)) => {
+                        *count_scan.used.entry(i).or_default() += 1;
+                        if a.class == AllowClass::PendingConversion {
+                            count_scan.pending += 1;
+                        }
+                    }
+                    None => count_scan.offenders.push(format!(
+                        "{rel}:{}: `{}` defaulted to zero instead of refusing (#81), in `fn {}`",
+                        hit.line,
+                        hit.accessor,
+                        if item.is_empty() { "<none>" } else { item }
+                    )),
                 }
             }
         }
         count_scan.offenders.sort();
         count_scan.offenders.dedup();
 
-        // THE PERSISTED-COUNT DISCRIMINATOR (#81a), over the DERIVED homes.
+        // THE PERSISTED-COUNT DISCRIMINATOR (#81a), over the DERIVED homes, read off the one
+        // crate-source listing the derived money population took above (a listing or read failure
+        // is already a scan-set problem there).
         let mut scale_offenders = Vec::new();
-        // LISTED, THEN READ ONLY UNDER `src/`: a crate's integration tests, benches and fixtures
-        // are never a home, so they are never read.
-        let homes = match cx.list(&WalkSpec::new([PERSISTED_CENSUS_ROOT]).ext("rs")) {
-            Ok(rels) => {
-                let mut files = Vec::new();
-                for rel in rels
-                    .into_iter()
-                    .filter(|r| r.to_string_lossy().contains("/src/"))
-                {
-                    match cx.read(&rel) {
-                        Ok(text) => files.push(crate::ctx::SourceFile {
-                            abs: cx.abs(&rel),
-                            rel,
-                            text,
-                        }),
-                        Err(e) => set_problems.push(format!(
-                            "the persisted-record census could not read {}: {e}",
-                            rel.display()
-                        )),
-                    }
-                }
-                persisted_record_homes(cx, files)
-            }
-            Err(e) => {
-                set_problems.push(format!("the persisted-record census could not walk: {e}"));
-                Vec::new()
-            }
-        };
+        let homes = persisted_record_homes(cx, crate_src);
         for home in &homes {
             let rel = home.rel_str();
             for (line, body) in struct_bodies(&home.text) {
@@ -2262,6 +2515,108 @@ impl Gate for NoFloatMoneyGate {
             ),
             &["planted_unspelled_float", "1_000_000_000.0"],
         ));
+
+        // AUDIT XTASK-E HIGH 1: THE TRAILING-DOT LITERAL. `1000.` and `0.` are Rust floats with no
+        // digit after the dot, no exponent and no suffix, so the literal reader passed them.
+        report.push(plant(
+            cx,
+            self,
+            "a trailing-dot float literal (`1000.`, `0.`) is flagged",
+            &[ROW_NO_FLOAT],
+            &format!("{LEDGER_SRC}/planted_trailing_dot.rs"),
+            Edit::Create(
+                "pub fn drift(x: Rate) -> u128 {\n    let zero = 0.;\n    (x.get() * 1000.) as u128 + zero as u128\n}\n"
+                    .to_string(),
+            ),
+            &["planted_trailing_dot", "`1000.`", "`0.`"],
+        ));
+
+        // AUDIT XTASK-E HIGH 2: A FLOAT CARRIED BY A TYPE. The rate-apply seam holds the configured
+        // `RawTierRates`, whose fields and `blended_per_mtok()` are `f64` declared in a file no money
+        // scan reads; a scanned fn can turn one into a figure with no float token on the line.
+        report.push(plant(
+            cx,
+            self,
+            "a float reached through a float-only method or a named float carrier is flagged",
+            &[ROW_NO_FLOAT],
+            "crates/busbar-kernel/src/rate_apply.rs",
+            Edit::Append(
+                "\npub fn planted_blend(rates: &RawRates<'_>) -> u64 {\n    let lane = &rates.lanes[0].1;\n    lane.blended_per_mtok() as u64 + lane.input.round() as u64\n}\n"
+                    .to_string(),
+            ),
+            &["rate_apply.rs", "`blended_per_mtok`", "`.round()`"],
+        ));
+
+        // AUDIT XTASK-E HIGH 3: THE MONEY FILES NOBODY HAD TYPED. The settlement writer, the accrual
+        // meter and the operator's rate amend were in no float scan set, so a float in what a unit's
+        // end posts, in the accrual total or in a rate correction could not go red. They are in the
+        // DERIVED population now, because each names a money type.
+        for (file, what) in [
+            (
+                "crates/busbar-kernel/src/settlement.rs",
+                "the settlement writer",
+            ),
+            ("crates/busbar-kernel/src/teller.rs", "the accrual meter"),
+            (
+                "crates/busbar/src/root/units_admin/mod.rs",
+                "the rate amend unit",
+            ),
+        ] {
+            report.push(plant(
+                cx,
+                self,
+                &format!("a float in {what} ({file}) is flagged"),
+                &[ROW_NO_FLOAT],
+                file,
+                Edit::Append(format!(
+                    "\npub fn planted_money_drift(units: u64) -> u64 {{ (units as {float_ty} * 1.5) as u64 }}\n"
+                )),
+                &[file, &float_ty],
+            ));
+        }
+
+        // AND A MONEY FILE NOBODY HAS WRITTEN YET: a new kernel file that names the accrual meter is
+        // scanned the day it exists, with no list edited.
+        report.push(plant(
+            cx,
+            self,
+            "a float in a NEW file that names a money type is flagged (the population is derived)",
+            &[ROW_NO_FLOAT],
+            "crates/busbar-kernel/src/planted_money_unit.rs",
+            Edit::Create(
+                "pub fn planted(m: &AccrualMeter, k: Rate) {\n    m.accrue((k.get() * 1e9) as u64);\n}\n"
+                    .to_string(),
+            ),
+            &["planted_money_unit", "`1e9`"],
+        ));
+
+        // AND A MONEY TYPE RENAMED AWAY IS REFUSED: every file that named only it would otherwise
+        // leave the derived population in silence.
+        match cx.read("crates/busbar-kernel/src/teller.rs") {
+            Ok(text) if text.contains("pub struct AccrualMeter") => {
+                let mut ov = Overlay::new();
+                ov.set(
+                    "crates/busbar-kernel/src/teller.rs",
+                    text.replace("AccrualMeter", "PlantedAccrualGauge"),
+                );
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "a money type declared in no production file is refused",
+                    &[ROW_SCAN_FLOOR, ROW_NO_FLOAT],
+                    ov,
+                    &["`AccrualMeter`", "declared in no production file"],
+                ));
+            }
+            Ok(_) => report.note_infra_failure(
+                "no-float-money selftest: crates/busbar-kernel/src/teller.rs no longer declares \
+                 `pub struct AccrualMeter`, so the renamed-money-type plant has nothing to rename"
+                    .to_string(),
+            ),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not read crates/busbar-kernel/src/teller.rs ({e})"
+            )),
+        }
 
         // A FLOAT IN A NAMED BINARY MONEY FILE IS FLAGGED.
         report.push(plant(
@@ -2737,6 +3092,22 @@ impl Gate for NoFloatMoneyGate {
             &["planted_second_crate", "as_u64"],
         ));
 
+        // AUDIT XTASK-E HIGH 3: THE PLANE NO AREA NAMED. The decision plane reads a billed usage
+        // figure off the provider's body and was in no count-read area; every plane crate the kind
+        // census finds is one now.
+        report.push(plant(
+            cx,
+            self,
+            "a defaulted count read in the decision plane (a derived plane area) is flagged",
+            &[ROW_COUNT_READ],
+            "crates/busbar-plane-decisions/src/planted_decisions_read.rs",
+            Edit::Create(
+                "use serde_json::Value;\npub fn planted(u: &Value) -> u64 {\n    u.get(\"usage_units\").and_then(Value::as_u64).unwrap_or(0)\n}\n"
+                    .to_string(),
+            ),
+            &["planted_decisions_read", "as_u64"],
+        ));
+
         // THE METHOD FORM, the turbofish, the alias, and the `as_i64`/`as_f64` siblings — every
         // spelling the one-pattern guard would have let through.
         for (what, body) in [
@@ -2772,6 +3143,16 @@ impl Gate for NoFloatMoneyGate {
             (
                 "an if-let with a zero else",
                 "if let Some(n) = v.as_u64() { n } else { 0 }",
+            ),
+            // AUDIT XTASK-E HIGH 4: A `match` WHOSE `None` (OR WILDCARD) ARM IS ZERO. A `{` after the
+            // read was judged only as an `if let` body, so each of these was GREEN.
+            (
+                "a match with a zero None arm",
+                "match v.as_u64() { Some(n) => n, None => 0 }",
+            ),
+            (
+                "a match with a block arm and a zero wildcard",
+                "match v.get(\"tokens\").and_then(Json::as_u64) { Some(n) => { n } _ => 0u64 }",
             ),
         ] {
             report.push(plant(
@@ -2947,6 +3328,20 @@ impl Gate for NoFloatMoneyGate {
         );
         report.push(Case {
             name: "a read that propagates None instead of defaulting stays green".to_string(),
+            covers: vec![ROW_COUNT_READ.to_string()],
+            expected: crate::gates::Expect::Green,
+            got: verdict_expect(self, &cx.with_overlay(ov)),
+        });
+
+        // AND A `match` WHOSE `None` ARM REFUSES IS THE CORRECT SHAPE: judging the `match` must not
+        // turn a refusal into a finding.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-llm/src/planted_refusing_match.rs",
+            "use serde_json::Value;\npub fn planted(v: &Value) -> Result<u64, Refused> {\n    match v.as_u64() { Some(n) => Ok(n), None => Err(Refused) }\n}\n",
+        );
+        report.push(Case {
+            name: "a match whose None arm refuses stays green".to_string(),
             covers: vec![ROW_COUNT_READ.to_string()],
             expected: crate::gates::Expect::Green,
             got: verdict_expect(self, &cx.with_overlay(ov)),
@@ -3458,7 +3853,9 @@ mod tests {
                    pub fn e2() -> u64 { 2.5E-3 as u64 }\n\
                    pub fn sfx() -> u64 { 0f64 as u64 }\n\
                    pub fn j(v: &Value) -> u64 { v.as_f64().map(|x| x as u64).unwrap_or(1) }\n\
-                   pub fn ints(t: (u64, (u64, u64))) -> u64 { let _r = 0..5; let _h = 0xE5; let _s = 12usize; let _v = \"1.0\"; t.1.0 + 1_000 + 7u64.max(2) }\n";
+                   pub fn ints(t: (u64, (u64, u64))) -> u64 { let _r = 0..5; let _h = 0xE5; let _s = 12usize; let _v = \"1.0\"; t.1.0 + 1_000 + 7u64.max(2) }\n\
+                   pub fn td(x: Rate) -> u128 { let zero = 0.; (x.get() * 1_000.) as u128 + zero as u128 }\n\
+                   pub fn td_ints(t: (u64, u64)) -> u64 { let _r = 0..=5; let _q = 1..; t.0.max(1) + 1.max(2) + 3._x() }\n";
         let mut offenders = Vec::new();
         scan_file("m.rs", src, &IntakeSpans::new(), &mut offenders);
         let lines: std::collections::BTreeSet<&str> = offenders
@@ -3467,9 +3864,18 @@ mod tests {
             .collect();
         assert_eq!(
             lines,
-            ["2", "4", "5", "6", "7", "8"].into_iter().collect(),
+            ["2", "4", "5", "6", "7", "8", "10"].into_iter().collect(),
             "{offenders:#?}"
         );
+        // AUDIT XTASK-E HIGH 1: the trailing-dot spellings are named as written.
+        for spelled in ["`0.`", "`1_000.`"] {
+            assert!(
+                offenders
+                    .iter()
+                    .any(|o| o.starts_with("m.rs:10:") && o.contains(spelled)),
+                "{spelled} was not named: {offenders:#?}"
+            );
+        }
         for spelled in [
             "`F64`",
             "`1_000_000_000.0`",
@@ -3483,6 +3889,66 @@ mod tests {
             assert!(
                 offenders.iter().any(|o| o.contains(spelled)),
                 "{spelled} was not named: {offenders:#?}"
+            );
+        }
+    }
+
+    /// AUDIT XTASK-E HIGH 2: A FLOAT CARRIED BY A TYPE NEEDS NO FLOAT TOKEN. Lines 1, 3 and 4 reach a
+    /// float through a float-only method (line 3 is the call rustfmt broke onto its own line) or a
+    /// named carrier; line 5 is integer work spelled alike (a `div_ceil`, a `round_up` fn, a `floor`
+    /// field, a range to `round`, a method name in a string) and must stay clean.
+    #[test]
+    fn a_float_carried_by_a_method_is_a_finding() {
+        let src = "pub fn a(r: &Raw) -> u64 { r.input.round() as u64 }\n\
+                   pub fn b(r: &Raw) -> u64 { (r.output\n        .mul_add(2, 1)) as u64 }\n\
+                   pub fn c(l: &Lane) -> u64 { l.1.blended_per_mtok() as u64 }\n\
+                   pub fn d(x: u64, w: W) -> u64 { x.div_ceil(2) + round_up(x) + w.floor + (0..round).len() as u64 + \".ceil()\".len() as u64 }\n";
+        let mut offenders = Vec::new();
+        scan_file("m.rs", src, &IntakeSpans::new(), &mut offenders);
+        let named: Vec<(&str, &str)> = offenders
+            .iter()
+            .map(|o| {
+                let mut parts = o.split(':');
+                let _file = parts.next();
+                let line = parts.next().unwrap_or_default();
+                let token = o.split('`').nth(1).unwrap_or_default();
+                (line, token)
+            })
+            .collect();
+        assert_eq!(
+            named,
+            vec![
+                ("1", ".round()"),
+                ("3", ".mul_add()"),
+                ("4", "blended_per_mtok")
+            ],
+            "{offenders:#?}"
+        );
+    }
+
+    /// AUDIT XTASK-E HIGH 3: THE DERIVED POPULATION HOLDS THE MONEY FILES NOBODY TYPED, and every
+    /// money type it is derived from is still declared.
+    #[test]
+    fn the_derived_money_population_holds_the_settle_and_amend_path() {
+        let cx = cx();
+        let (files, problems) = crate_src_files(&cx);
+        assert!(problems.is_empty(), "{problems:?}");
+        let typed = money_typed_files(&production_only(&cx, files));
+        let rels: std::collections::BTreeSet<String> = typed.iter().map(|f| f.rel_str()).collect();
+        for want in [
+            "crates/busbar-kernel/src/settlement.rs",
+            "crates/busbar-kernel/src/teller.rs",
+            "crates/busbar/src/root/units_admin/mod.rs",
+            "crates/busbar/src/root/units_admin/adjust.rs",
+            "crates/busbar/src/root/plane_node.rs",
+        ] {
+            assert!(rels.contains(want), "{want} is not in {rels:#?}");
+        }
+        assert!(rels.len() >= MONEY_TYPED_FLOOR, "{} < floor", rels.len());
+        for t in MONEY_TYPES {
+            assert!(
+                typed.iter().any(|f| declares_type(&f.text, t)),
+                "`{t}` is declared nowhere"
             );
         }
     }
@@ -3502,6 +3968,22 @@ mod tests {
             vec![(3, "read_count_u64"), (6, "read_count_u64")],
             "the helper defaulted to zero must be a hit, and the undefaulted read must not"
         );
+    }
+
+    /// AUDIT XTASK-E HIGH 4: A ZERO DEFAULT IN A `match` IS THE SAME SILENT ZERO. Lines 2-3 default
+    /// to zero (a `None` arm, a block arm and a path-form read with an `Option::None` arm); lines 4-5
+    /// refuse or name a non-zero default and must not be hits.
+    #[test]
+    fn a_zero_default_in_a_match_is_a_hit() {
+        let src = "fn f(v: &Value) -> u64 {\n\
+                   \x20   let c = match v.as_u64() { Some(n) => n, None => 0 };\n\
+                   \x20   let d = match Json::as_i64(v) { Some(n) => { n } Option::None => { 0 } };\n\
+                   \x20   let g = match v.as_u64() { Some(n) => n, None => return Err(Refused) };\n\
+                   \x20   let h = match v.as_u64() { Some(0) => 1, Some(n) => n, None => 7 };\n\
+                   }\n";
+        let hits = scan_count_reads(src);
+        let lines: Vec<usize> = hits.iter().map(|h| h.line).collect();
+        assert_eq!(lines, vec![2, 3], "the hits were {lines:?}");
     }
 
     /// ITEM 178: THE PENDING ALLOWANCES ARE HELD TO THEIR ARMED NUMBER. A needle names a shape, so
