@@ -399,21 +399,15 @@ fn a_members_program_inherits_only_its_stated_environment() {
     });
 }
 
-/// The spawn's resolver in these cells: an `env` reference reads its variable, nothing else resolves.
-fn env_only(r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
-    r.env_var()
-        .and_then(|v| std::env::var(v).ok())
-        .ok_or_else(|| format!("{} does not resolve", r.describe()))
-}
-
-/// RED (SECURITY ruling 2026-10-07: a member's env resolves at spawn): an `env` entry written as a
-/// secret reference stays the reference in the declared program, and only the spawn resolves it:
-/// the child's environment carries the value, a template's `${VAR}` filled in place.
+/// THE HELD ENVIRONMENT (ARCHITECT ruling 2026-10-13, row 166): an `env` entry written as a secret
+/// reference stays the reference in the declared program; the need's DECLARATION resolves it (config
+/// time) and the spawn hands the held value: the child's environment carries it, a template's
+/// `${VAR}` filled in place. The first lease's spawn resolves nothing.
 #[test]
-fn a_members_env_refsironment_resolves_at_the_spawn() {
+fn a_members_env_refsironment_resolves_at_the_declaration_and_is_held_for_the_spawn() {
     const VAR: &str = "BUSBAR_CONNECTOR_SPAWN_SECRET";
     std::env::set_var(VAR, "spawn-value");
-    let _ = crate::compose::install_spawn_secrets(env_only);
+    let _ = crate::compose::install_spawn_secrets(crate::spawn_env::counting_env);
     worker().block_on(async {
         let c = connector();
         let env = Program {
@@ -436,6 +430,8 @@ fn a_members_env_refsironment_resolves_at_the_spawn() {
             "the declared program holds no value"
         );
         declare(&c, &[("shown", env)]).unwrap();
+        let declared = crate::spawn_env::resolutions_of(VAR);
+        assert!(declared >= 2, "the declaration resolved both references");
         let id = open(&c, "shown", b"").unwrap();
         generation(&c, id).await;
         let mut held = Vec::new();
@@ -452,14 +448,20 @@ fn a_members_env_refsironment_resolves_at_the_spawn() {
                 "WHOLE=spawn-value".to_owned(),
             ]
         );
+        assert_eq!(
+            crate::spawn_env::resolutions_of(VAR),
+            declared,
+            "the spawn resolved a reference"
+        );
         c.close(OWNER, id).unwrap();
     });
 }
 
-/// A member whose environment reference does not resolve is not spawned (fail-closed).
+/// A member whose environment reference did not resolve at its declaration is not spawned
+/// (fail-closed); the declaration itself stands.
 #[test]
 fn a_member_whose_env_refsironment_does_not_resolve_is_not_spawned() {
-    let _ = crate::compose::install_spawn_secrets(env_only);
+    let _ = crate::compose::install_spawn_secrets(crate::spawn_env::counting_env);
     worker().block_on(async {
         let c = connector();
         let env = Program {

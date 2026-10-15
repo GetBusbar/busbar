@@ -220,7 +220,10 @@ fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
             env: Vec::new(),
             env_refs: Vec::new(),
         };
-        io.admit(ticket(20), Admission::Spawn(program));
+        io.admit(
+            ticket(20),
+            Admission::Spawn(program, crate::spawn_env::HeldEnv::written_only()),
+        );
         let h = io
             .spawn(
                 OWNER,
@@ -247,22 +250,52 @@ fn an_admitted_program_is_spawned_bare_and_killed_with_its_handle() {
     });
 }
 
-/// The spawn's resolver in this cell: an `env` reference reads its variable, nothing else resolves.
-fn env_only(r: &busbar_contract::secret_ref::SecretRef) -> Result<String, String> {
-    r.env_var()
-        .and_then(|v| std::env::var(v).ok())
-        .ok_or_else(|| format!("{} does not resolve", r.describe()))
+/// The config-time proof the cells' declarations hold.
+fn scope() -> busbar_contract::config_time::ConfigScope {
+    busbar_contract::config_time::ConfigScope::config_time()
 }
 
-/// RED (SECURITY ruling 2026-10-07: a member's env resolves at the spawn): the carrier hands the
-/// host's `io.spawn` the program's WRITTEN environment only; the admitted program's references
-/// resolve inside the host's spawn, so the value exists in the child's environment and nowhere the
-/// carrier reaches. A reference that does not resolve spawns nothing.
+/// Spawn the admitted `/usr/bin/env` on `t` and read its whole output, sorted.
+async fn env_lines(io: &HostIo, t: u32) -> Result<Vec<String>, IoRefusal> {
+    let h = io.spawn(
+        OWNER,
+        ticket(t),
+        &Spawn {
+            program: "/usr/bin/env",
+            args: &[],
+            env: &[("DECLARED", "yes")],
+        },
+    )?;
+    let mut out = Vec::new();
+    loop {
+        let mut buf = [0_u8; 256];
+        let n = poll_fn(|cx| io.read(OWNER, h, &mut buf, cx.waker()))
+            .await
+            .unwrap();
+        if n == 0 {
+            break;
+        }
+        out.extend_from_slice(&buf[..n]);
+    }
+    io.close(OWNER, h).unwrap();
+    let mut lines: Vec<String> = String::from_utf8(out)
+        .unwrap()
+        .lines()
+        .map(str::to_owned)
+        .collect();
+    lines.sort();
+    Ok(lines)
+}
+
+/// THE HELD ENVIRONMENT (ARCHITECT ruling 2026-10-13, row 166): the carrier hands the host's
+/// `io.spawn` the program's WRITTEN environment only; the admitted program's references were
+/// resolved at config time and are held, so the value exists in the host's records and the child's
+/// environment and nowhere the carrier reaches. A reference that did not resolve spawns nothing.
 #[test]
-fn a_programs_environment_reference_resolves_inside_the_hosts_spawn() {
+fn a_programs_environment_reference_is_held_for_the_hosts_spawn() {
     const VAR: &str = "BUSBAR_HOSTIO_SPAWN_SECRET";
     std::env::set_var(VAR, "hostio-spawn-value");
-    let _ = crate::compose::install_spawn_secrets(env_only);
+    let _ = crate::compose::install_spawn_secrets(crate::spawn_env::counting_env);
     worker().block_on(async {
         let io = HostIo::new();
         let program = Program {
@@ -274,43 +307,19 @@ fn a_programs_environment_reference_resolves_inside_the_hosts_spawn() {
                 busbar_contract::secret_ref::SecretRef::env(VAR),
             )],
         };
-        io.admit(ticket(30), Admission::Spawn(program.clone()));
-        let h = io
-            .spawn(
-                OWNER,
-                ticket(30),
-                &Spawn {
-                    program: "/usr/bin/env",
-                    args: &[],
-                    env: &[("DECLARED", "yes")],
-                },
-            )
-            .unwrap();
-        let mut out = Vec::new();
-        loop {
-            let mut buf = [0_u8; 256];
-            let n = poll_fn(|cx| io.read(OWNER, h, &mut buf, cx.waker()))
-                .await
-                .unwrap();
-            if n == 0 {
-                break;
-            }
-            out.extend_from_slice(&buf[..n]);
-        }
-        let mut lines: Vec<String> = String::from_utf8(out)
-            .unwrap()
-            .lines()
-            .map(str::to_owned)
-            .collect();
-        lines.sort();
+        let held = crate::spawn_env::HeldEnv::load(&program.env_refs, &scope());
+        assert!(
+            !format!("{held:?}").contains("hostio-spawn-value"),
+            "a held environment names no value"
+        );
+        io.admit(ticket(30), Admission::Spawn(program.clone(), held));
         assert_eq!(
-            lines,
+            env_lines(&io, 30).await.unwrap(),
             vec![
                 "DECLARED=yes".to_owned(),
                 "WHOLE=hostio-spawn-value".to_owned()
             ]
         );
-        io.close(OWNER, h).unwrap();
 
         // RED: a reference that does not resolve spawns nothing, and its refusal names the
         // reference, never a value.
@@ -321,21 +330,77 @@ fn a_programs_environment_reference_resolves_inside_the_hosts_spawn() {
             )],
             ..program
         };
-        io.admit(ticket(31), Admission::Spawn(unresolved));
-        match io.spawn(
-            OWNER,
-            ticket(31),
-            &Spawn {
-                program: "/usr/bin/env",
-                args: &[],
-                env: &[("DECLARED", "yes")],
-            },
-        ) {
+        let held = crate::spawn_env::HeldEnv::load(&unresolved.env_refs, &scope());
+        io.admit(ticket(31), Admission::Spawn(unresolved, held));
+        match env_lines(&io, 31).await {
             Err(IoRefusal::Refused(why)) => {
                 assert!(why.contains("MISSING"), "{why}");
                 assert!(!why.contains("hostio-spawn-value"), "{why}");
             }
             other => panic!("an unresolved reference spawned: {other:?}"),
+        }
+        assert_eq!(io.held(), 0);
+    });
+}
+
+/// RED (ARCHITECT ruling 2026-10-13, row 166): A SPAWN RESOLVES NOTHING. A spawn serves a request
+/// (a member's first lease, a respawn, a program need's every open), so the program's references
+/// resolve ONCE, at the load, and every spawn after it loads what is held: two spawns, still one
+/// resolution. RED before: `io.spawn` resolved every reference at every spawn.
+///
+/// And A ROTATED SECRET REACHES THE FIRST NEW CHILD AFTER THE NEXT REFRESH: the variable changed,
+/// the next spawn still hands the value the load resolved; after the refresher's pass the next
+/// spawn hands the new one. A reference gone at a refresh refuses every spawn after it.
+#[test]
+fn a_spawn_resolves_nothing_and_a_rotation_reaches_the_first_child_after_the_refresh() {
+    const VAR: &str = "BUSBAR_HOSTIO_SPAWN_ROTATED";
+    std::env::set_var(VAR, "before-rotation");
+    let _ = crate::compose::install_spawn_secrets(crate::spawn_env::counting_env);
+    worker().block_on(async {
+        let io = HostIo::new();
+        let program = Program {
+            command: "/usr/bin/env".into(),
+            args: Vec::new(),
+            env: vec![("DECLARED".to_owned(), "yes".to_owned())],
+            env_refs: vec![(
+                "ROTATED".to_owned(),
+                busbar_contract::secret_ref::SecretRef::env(VAR),
+            )],
+        };
+        let held = crate::spawn_env::HeldEnv::load(&program.env_refs, &scope());
+        let loaded = crate::spawn_env::resolutions_of(VAR);
+        assert!(loaded >= 1, "the load resolved the reference");
+        let want = |v: &str| vec!["DECLARED=yes".to_owned(), format!("ROTATED={v}")];
+        for t in [40, 41] {
+            io.admit(ticket(t), Admission::Spawn(program.clone(), held.clone()));
+            assert_eq!(env_lines(&io, t).await.unwrap(), want("before-rotation"));
+        }
+        assert_eq!(
+            crate::spawn_env::resolutions_of(VAR),
+            loaded,
+            "a spawn resolved a reference"
+        );
+
+        std::env::set_var(VAR, "after-rotation");
+        io.admit(ticket(42), Admission::Spawn(program.clone(), held.clone()));
+        assert_eq!(
+            env_lines(&io, 42).await.unwrap(),
+            want("before-rotation"),
+            "a rotation reaches no child before the refresh"
+        );
+        crate::spawn_env::refresh_all();
+        io.admit(ticket(43), Admission::Spawn(program.clone(), held.clone()));
+        assert_eq!(env_lines(&io, 43).await.unwrap(), want("after-rotation"));
+
+        std::env::remove_var(VAR);
+        crate::spawn_env::refresh_all();
+        io.admit(ticket(44), Admission::Spawn(program, held));
+        match env_lines(&io, 44).await {
+            Err(IoRefusal::Refused(why)) => {
+                assert!(why.contains("ROTATED"), "{why}");
+                assert!(!why.contains("rotation"), "{why}");
+            }
+            other => panic!("a reference gone at the refresh spawned: {other:?}"),
         }
         assert_eq!(io.held(), 0);
     });

@@ -490,6 +490,7 @@ dependencies = [
 name = "busbar-core-connector"
 version = "1.6.0"
 dependencies = [
+ "arc-swap",
  "axum",
  "base64 0.22.1",
  "busbar-contract",
