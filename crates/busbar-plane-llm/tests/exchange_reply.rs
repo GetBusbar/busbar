@@ -3064,6 +3064,7 @@ fn a_responses_stream_that_fails_bills_no_tokens_and_agrees_with_its_buffered_tw
         lane: &lane,
         intent: stream_intent(chat_handler("responses"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let stream = concat!(
         "event: response.created\n",
@@ -3097,6 +3098,7 @@ fn a_responses_stream_that_fails_bills_no_tokens_and_agrees_with_its_buffered_tw
         lane: &lane,
         intent: stream_intent(chat_handler("responses"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let failed = br#"{"id":"resp_1","object":"response","created_at":1,"status":"failed","model":"m-1","output":[],"error":{"code":"server_error","message":"boom"},"usage":{"input_tokens":5,"output_tokens":2,"total_tokens":7}}"#;
     let mut reply = Reply::new(&ctx, 200, JSON_HEAD);
@@ -3129,6 +3131,7 @@ fn a_responses_streams_top_level_error_event_is_neither_terminal_nor_a_failure()
         lane: &lane,
         intent: stream_intent(chat_handler("responses"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let stream = concat!(
         "event: response.created\n",

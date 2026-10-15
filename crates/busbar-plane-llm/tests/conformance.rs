@@ -1192,7 +1192,14 @@ mod door_units {
             busbar_contract::abi::plane::PlaneCancelOut,
         > = Frame::new(z(), z());
         (x.input.cancel.head, x.out.cancel.head) = (in_head(), out_head());
-        assert_eq!(p.call(life::CANCEL, &mut x).outcome, Outcome::Ready);
+        assert_eq!(
+            p.call(
+                busbar_contract::abi::mechanism::lifecycle::slot::CANCEL,
+                &mut x
+            )
+            .outcome,
+            Outcome::Ready
+        );
         x.out.cancel.disposition
     }
 
