@@ -4,14 +4,14 @@
 //! Gemini `RequestHandler` + cells. Embeddings via `models/{id}:embedContent`.
 
 use super::{
-    COUNT_LABEL, FIELD_ASPECT_RATIO, FIELD_AUDIO_DURATION_SECONDS, FIELD_BYTES_BASE64_ENCODED,
-    FIELD_CANDIDATES, FIELD_CANDIDATES_TOKEN_COUNT, FIELD_CONTENTS, FIELD_FINISH_REASON,
-    FIELD_GENERATE_CONTENT, FIELD_GENERATION_CONFIG, FIELD_GUIDANCE_SCALE, FIELD_INLINE_DATA,
-    FIELD_INLINE_DATA_SNAKE, FIELD_MIME_TYPE, FIELD_MIME_TYPE_SNAKE, FIELD_NEGATIVE_PROMPT,
-    FIELD_OUTPUT_DIMENSIONALITY, FIELD_PARTS, FIELD_PERSON_GENERATION, FIELD_PREDICTIONS,
-    FIELD_PROMPT_TOKEN_COUNT, FIELD_RESPONSE_MODALITIES, FIELD_SAMPLE_COUNT,
-    FIELD_SAMPLE_IMAGE_SIZE, FIELD_STREAM_GENERATE_CONTENT, FIELD_TOTAL_TOKEN_COUNT,
-    FIELD_USAGE_METADATA, FIELD_VALUES, GEMINI_AUDIO, GEMINI_FINISH_STOP,
+    COUNT_LABEL, FIELD_ASPECT_RATIO, FIELD_BYTES_BASE64_ENCODED, FIELD_CANDIDATES,
+    FIELD_CANDIDATES_TOKEN_COUNT, FIELD_CONTENTS, FIELD_FINISH_REASON, FIELD_GENERATE_CONTENT,
+    FIELD_GENERATION_CONFIG, FIELD_GUIDANCE_SCALE, FIELD_INLINE_DATA, FIELD_INLINE_DATA_SNAKE,
+    FIELD_MIME_TYPE, FIELD_MIME_TYPE_SNAKE, FIELD_NEGATIVE_PROMPT, FIELD_OUTPUT_DIMENSIONALITY,
+    FIELD_PARTS, FIELD_PERSON_GENERATION, FIELD_PREDICTIONS, FIELD_PROMPT_TOKEN_COUNT,
+    FIELD_RESPONSE_MODALITIES, FIELD_SAMPLE_COUNT, FIELD_SAMPLE_IMAGE_SIZE,
+    FIELD_STREAM_GENERATE_CONTENT, FIELD_TOTAL_TOKEN_COUNT, FIELD_USAGE_METADATA, FIELD_VALUES,
+    GEMINI_AUDIO, GEMINI_FINISH_STOP,
 };
 use crate::codec::ir::audio::{SpeechResp, TranscriptionResp};
 use crate::codec::ir::embeddings::{
@@ -588,26 +588,10 @@ pub fn read_transcription_response(
         .get(FIELD_USAGE_METADATA)
         .map(
             |u| -> Result<busbar_contract::billing::Billing, CodecError> {
-                // The transcription writer emits `audioDurationSeconds` (not a token count) when the
-                // source billing was whisper-1's `Billing::Duration` (an openai->gemini hop). Reading it
-                // back as Duration preserves the billable seconds; forcing Tokens{0,0} — as the old
-                // reader did — silently discarded the duration. Real Gemini upstreams emit only the
-                // token fields, which take the Tokens branch as before.
-                // THE DURATION IS A MEASUREMENT, so it is read from the wire's DECIMAL TEXT and never
-                // through an `f64` (#81): a quantity that transits a double has already lost the
-                // exactness no later conversion can give back. `u.get(..)` would hand back a `Value`
-                // whose number is already a double, so the read goes to the ORIGINAL BYTES by pointer.
-                if u.get(FIELD_AUDIO_DURATION_SECONDS).is_some() {
-                    let seconds = busbar_contract::Count::read_at(
-                        wire,
-                        "/usageMetadata/audioDurationSeconds",
-                    )
-                    .map_err(|e| CodecError::Malformed(format!("audioDurationSeconds: {e}")))?
-                    .ok_or_else(|| {
-                        CodecError::Malformed("audioDurationSeconds: located then lost".to_string())
-                    })?;
-                    return Ok(busbar_contract::billing::Billing::Duration { seconds });
-                }
+                // Only the token fields are read, exactly as 1.5.5 read them (v1.5.5
+                // `crates/busbar/src/handlers/gemini.rs:229-241`): an upstream cannot pick the
+                // duration meter (`audio_ms`) by sending an `audioDurationSeconds` member Gemini's
+                // `UsageMetadata` does not define. A real Gemini upstream sends only token counts.
                 // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42). The old
                 // `.unwrap_or(0)` wrote "no work happened" for a count the provider really sent and
                 // this build could not read, and every money view over that row was then faithfully
