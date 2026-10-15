@@ -26,6 +26,7 @@
 use busbar_contract::caps::KernelSeal;
 
 /// The seal, as only this module can name it.
+#[cfg(not(test))]
 struct Held(KernelSeal);
 
 /// The kernel's seal. Boot takes one for the [`Kernel`](crate::teller::Kernel); a kernel
@@ -37,6 +38,7 @@ struct Held(KernelSeal);
 /// inlined into its callers, the object holding the definition would be pulled in only to resolve
 /// the symbol itself, and an image that defined the symbol first would be linked without it: an
 /// interception, not a link error.
+#[cfg(not(test))]
 #[must_use]
 #[inline(never)]
 pub fn acquire() -> KernelSeal {
@@ -60,8 +62,20 @@ pub fn acquire() -> KernelSeal {
 // SAFETY: the signature is exactly the declaration in `busbar-contract/src/abi/mod.rs`
 // (`fn __busbar_kernel_root(seal: KernelSeal) -> Box<dyn Any + Send + Sync>`), built by the same
 // compiler in the same workspace; the body touches no state.
+#[cfg(not(test))]
 #[allow(unsafe_code)]
 #[no_mangle]
 pub fn __busbar_kernel_root(seal: KernelSeal) -> Box<dyn std::any::Any + Send + Sync> {
     Box::new(Held(seal))
+}
+
+/// THIS CRATE'S OWN UNIT-TEST BUILD (`cfg(test)`) takes the contract's dev-only test seal, and
+/// defines no root symbol: the test binary also links the library built WITHOUT `cfg(test)` (the
+/// crate's dev edge on itself, `test-support`), which defines `__busbar_kernel_root` once, so a
+/// second definition here is the duplicate symbol the link refuses. The release path is witnessed
+/// where it is the only path, in the integration test `tests/seal_release_path.rs`.
+#[cfg(test)]
+#[must_use]
+pub fn acquire() -> KernelSeal {
+    KernelSeal::acquire_for_kernel()
 }

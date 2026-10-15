@@ -146,8 +146,7 @@ fn a_section_no_registered_plane_declares_is_an_unknown_field() {
     assert_eq!(err, "unknown field `bays`");
     let err = section
         .insert(&mut base_deploy(), "dock", &serde_json::json!({}))
-        .err()
-        .expect("and refused on insert too");
+        .expect_err("and refused on insert too");
     assert_eq!(err, "unknown field `bays`");
     assert!(!err.contains("compiled without"), "{err}");
 }
