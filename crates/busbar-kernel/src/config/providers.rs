@@ -32,7 +32,12 @@ use crate::ir::lane_caps::{MaxOutputKeyCfg, ModelCapabilities};
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)] // a typo'd provider key must fail boot, not be silently ignored.
 pub struct ProviderCfg {
-    #[serde(default = "default_protocol")]
+    /// The dialect the provider speaks, as the catalog (or a deployment override) names it, carried
+    /// as an opaque word. The kernel supplies no dialect of its own (BUSBAR-1.6.0.md #49: the kernel
+    /// contains zero transport-protocol literals), so an omitted key here is EMPTY. A resolved
+    /// provider always carries one, because the catalog's `ProviderDef::protocol` is required; the
+    /// default for a key omitted elsewhere is the speaking plane's own.
+    #[serde(default)]
     pub protocol: String,
     pub base_url: String,
     /// The provider credential as a SECRET REFERENCE - `{ env: VAR }`, `{ file: … }`, or a
@@ -101,19 +106,6 @@ pub struct ProviderCfg {
     /// (all metadata blocked).
     #[serde(default)]
     pub allow_metadata_hosts: Vec<String>,
-}
-
-/// Default provider protocol when not specified. Wire-contract: providers.yaml catalog entries
-/// and un-overridden deployments use this protocol for the dispatch registry lookup. This is the
-/// FROZEN config-grammar default for an omitted `protocol:` — independent of which dialects are
-/// compiled in (a build with every LLM dialect deleted still parses providers.yaml against it), so it
-/// cannot be read off the (possibly-empty) protocol registry and is named as a frozen-wire literal.
-// plane-purity: frozen-wire the omitted-`protocol:` default in the frozen providers.yaml config grammar (frozen since 1.5.3)
-pub const DEFAULT_PROTOCOL: &str = "anthropic";
-
-/// The serde default for an omitted `protocol:` — see [`DEFAULT_PROTOCOL`].
-pub fn default_protocol() -> String {
-    DEFAULT_PROTOCOL.to_string()
 }
 
 /// Active health-probe mode for a provider's lanes.

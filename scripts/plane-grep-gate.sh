@@ -52,8 +52,7 @@
 #     DATA, and are explicitly in-scope-neutral.
 #   * FROZEN-WIRE ALLOWLIST — a narrow, path-scoped list (token × path-prefix × optional SOURCE TEXT)
 #     of hits that are frozen CONTRACT vocabulary, not dialect leakage: the OpenAPI/MCP `responses`
-#     object key under the admin/mcp/a2a wire crates, and the frozen `anthropic` protocol default
-#     pinned to its own declaration text. See ALLOWLIST below — each entry is
+#     object key under the a2a wire crate. See ALLOWLIST below — each entry is
 #     scoped, never global, and a row that suppresses NOTHING is reported as dead and fails the gate.
 #
 # REPORTING MODE (this lands NON-BLOCKING to measure the debt R3/R4/R5 will drive to 0):
@@ -184,16 +183,16 @@ OPERATION_EXCLUDE="crates/api/src/operation.rs"
 #               row that suppresses nothing is a scoped hole waiting for an unrelated line to land
 #               where it points, so it goes. A bare `responses` appearing under the kernel's admin
 #               now TRIPS, which is the correct answer: put the row back with the diff that needs it.
-#   anthropic : the frozen `DEFAULT_PROTOCOL = "anthropic"` providers.yaml config-grammar default —
-#               its own comment declares it frozen-wire. Pinned to that declaration's own text, at
-#               its home beside the other `providers:` shapes (architect ruling PROVIDERS-MOVE).
+#   anthropic : THE ROW IS DELETED (row 155 B1). It excused the kernel's `DEFAULT_PROTOCOL =
+#               "anthropic"` omitted-`protocol:` default; that const is gone (BUSBAR-1.6.0.md #49: the
+#               kernel contains zero transport-protocol literals) and the dialect an omitted key gets
+#               is the speaking plane's own, so the row would suppress nothing and read as dead.
 #   mcp       : THE TWO `mcp|crates/busbar-kernel/src/config/mod.rs` ROWS ARE DELETED (item 2). They
 #               excused the `mcp: McpEndpointSection` field and the `deploy.mcp.0` read as a "frozen"
 #               deploy key, and that claim is false: v1.5.3 and v1.5.5 both ship a 26-field DeployCfg
 #               (config-schema.snapshot.json) with no `mcp` field and no McpEndpointSection type. The
 #               key is 1.6.0-additive, so both lines now REPORT as the core-names-a-plane debt they are.
-ALLOWLIST="responses|crates/busbar-a2a/src/|
-anthropic|crates/busbar-kernel/src/config/providers.rs|DEFAULT_PROTOCOL"
+ALLOWLIST="responses|crates/busbar-a2a/src/|"
 
 # ── THE TEST-SUPPORT MODULE PREPASS ────────────────────────────────────────────────────────────────
 # Emits the file/subtree prefixes of every brace-less `mod NAME;` whose `#[cfg(…)]` predicate NAMES

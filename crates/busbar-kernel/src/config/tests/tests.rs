@@ -2,6 +2,10 @@ use super::*;
 
 // ── shared test helpers ──────────────────────────────────────────────────────────────────────────
 
+/// The dialect a test catalog entry names. The merge carries a provider's `protocol:` as opaque data
+/// and names no dialect, so these tests name none either.
+const CATALOG_PROTOCOL: &str = "proto-a";
+
 /// A minimal ProviderDef for resolve() tests.
 fn provider_def(protocol: &str, base_url: &str) -> ProviderDef {
     ProviderDef {
@@ -1439,7 +1443,7 @@ fn test_resolve_provider_from_def() {
     // DeployCfg referencing z.ai + providers.yaml def -> resolved ProviderCfg has
     // protocol/base_url/error_map from def
     let mut defs = HashMap::new();
-    let mut def = provider_def(DEFAULT_PROTOCOL, "https://api.z.ai/api/model-1");
+    let mut def = provider_def(CATALOG_PROTOCOL, "https://api.z.ai/api/model-1");
     def.error_map
         .insert("1113".to_string(), "billing".to_string());
     def.error_map
@@ -1457,7 +1461,7 @@ fn test_resolve_provider_from_def() {
         .providers
         .get("z.ai")
         .expect("z.ai should be in resolved providers");
-    assert_eq!(provider_cfg.protocol, DEFAULT_PROTOCOL);
+    assert_eq!(provider_cfg.protocol, CATALOG_PROTOCOL);
     assert_eq!(provider_cfg.base_url, "https://api.z.ai/api/model-1");
     assert_eq!(provider_cfg.api_key.env_var(), Some("ZAI_KEY"));
     assert_eq!(
@@ -1533,7 +1537,7 @@ fn test_resolve_override_wins() {
     let mut defs = HashMap::new();
     defs.insert(
         "custom".to_string(),
-        provider_def(DEFAULT_PROTOCOL, "https://default.example.com"),
+        provider_def(CATALOG_PROTOCOL, "https://default.example.com"),
     );
 
     let mut override_error_map = HashMap::new();
@@ -1573,7 +1577,7 @@ fn test_resolve_empty_error_map_allowed_in_def() {
     let mut defs = HashMap::new();
     defs.insert(
         "minimal".to_string(),
-        provider_def(DEFAULT_PROTOCOL, "https://api.example.com"),
+        provider_def(CATALOG_PROTOCOL, "https://api.example.com"),
     );
     let mut deploy = base_deploy();
     deploy
@@ -2259,8 +2263,6 @@ fn on_error_cfg_as_name_unwraps_both_variants() {
 /// rather than N near-identical single-purpose tests.
 #[test]
 fn serde_default_fns_return_their_documented_constants() {
-    // plane-purity: frozen-wire the omitted-`protocol:` default in the frozen providers.yaml config grammar (frozen since 1.5.3)
-    assert_eq!(default_protocol(), "anthropic");
     assert_eq!(default_min_requests(), 5);
     assert_eq!(default_max_cooldown(), 120);
     assert_eq!(default_failover_timeout(), 120);
@@ -2274,6 +2276,24 @@ fn serde_default_fns_return_their_documented_constants() {
     // gap.
     assert!(!default_response_headers_server_timing());
     assert!(!default_response_headers_route_policy());
+}
+
+/// RED (row 155 B1; BUSBAR-1.6.0.md #49: the kernel contains zero transport-protocol literals; THE
+/// DESIGN §4: "A plane receives, at open, the dialect fields of the providers it references and
+/// resolves model -> dialect itself"): the kernel supplies NO dialect for a provider entry that omits
+/// `protocol:`. The key stays empty; the default dialect is the speaking plane's own. (Base: the
+/// kernel filled in its own `DEFAULT_PROTOCOL` dialect name, so this read that name.) The catalog
+/// still requires the key, so a resolved provider always carries the catalog's dialect: see
+/// `test_resolve_provider_from_def`.
+#[test]
+fn an_omitted_provider_protocol_names_no_dialect_in_the_kernel() {
+    let p: ProviderCfg =
+        serde_yaml::from_str("base_url: https://x.example\napi_key: {env: K}\nerror_map: {}\n")
+            .expect("a provider entry with no protocol parses");
+    assert_eq!(
+        p.protocol, "",
+        "an omitted `protocol:` is left to the plane, never filled with a kernel-chosen dialect"
+    );
 }
 
 /// `warn_invalid_floors`' anti-downgrade-floor sanity warning must fire ONLY for a

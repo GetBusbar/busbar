@@ -844,8 +844,7 @@ pub const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
 // serde data; the catalog/deployment MERGE that produces a `ProviderCfg` stays here (`resolve`).
 // Moved to `busbar_kernel::config::providers`; re-exported at their historical `config::` path.
 pub use busbar_kernel::config::providers::{
-    default_protocol, neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef,
-    ProviderDeploy, DEFAULT_PROTOCOL,
+    neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef, ProviderDeploy,
 };
 
 // ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is a plane-owned runtime config
@@ -2756,6 +2755,12 @@ mod named_map_merge_tests;
 #[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]
 mod config_backcompat_corpus;
+
+// The 1.5.5 refusals of a provider entry's dialect keys, pinned byte for byte before the reading of
+// those keys leaves the kernel (row 155 B1).
+#[cfg(test)]
+#[path = "tests/provider_refusal_pins.rs"]
+mod provider_refusal_pins;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 
