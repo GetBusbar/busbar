@@ -100,6 +100,9 @@ pub const KIND_REJECTS: u64 = 0xDEAD;
 pub const SHORT: u64 = 0x5807;
 /// `tick` mode: panic. `tick` has no guard, so the process aborts.
 pub const PANIC: &[u8] = b"panic";
+/// `tick`: hand the host's `wake` a context one tag bit off the one this crossing was handed (#74:
+/// the host refuses it and quarantines this instance), then answer READY.
+pub const FORGE: &[u8] = b"forge";
 
 /// Family index of the `invocations` gauge.
 pub const GAUGE_INVOCATIONS: u32 = 2;
@@ -515,6 +518,13 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
         }
         if let Some(key) = mode.strip_prefix(HANG) {
             hang_until(key);
+            return say(out, Outcome::Ready);
+        }
+        if mode == FORGE {
+            let forged = HostCtx {
+                handle: tin.head.host.handle ^ (1 << 24),
+            };
+            (me.wake)(forged, tin.head.ticket);
             return say(out, Outcome::Ready);
         }
         if mode == DRIVE_HANGS {

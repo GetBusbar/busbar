@@ -356,6 +356,12 @@ fn main() {
     // It serves the kernel's host services through `LateServices`, installed once the config is
     // composed (`root::serve::compose`, in `run()`).
     let late_services = root::serve::LateServices::new();
+    // THE HANDLE KEY (#74), drawn before the dispatcher exists: a process whose OS random source
+    // cannot answer refuses to boot rather than mint plugin handles under a weaker key.
+    if let Err(e) = root::loader::dispatch::handle::arm() {
+        eprintln!("busbar: {e}");
+        std::process::exit(1);
+    }
     let dispatcher = root::dispatch::boot(WORKERS.0, late_services.clone());
     root::doors::install_dispatcher(dispatcher);
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol

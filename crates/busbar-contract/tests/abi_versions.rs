@@ -121,10 +121,5 @@ fn every_slot_type_is_extern_c() {
         Outcome::Ready
     );
     assert!(door().is_null());
-    wake(
-        HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
-        Ticket::NONE,
-    );
+    wake(HostCtx::NONE, Ticket::NONE);
 }

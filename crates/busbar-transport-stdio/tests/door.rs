@@ -177,9 +177,7 @@ impl Host {
         let tables = Box::new(HostTables {
             size: size_of::<HostTables>() as u32,
             _reserved: 0,
-            ctx: HostCtx {
-                ptr: std::ptr::null_mut(),
-            },
+            ctx: HostCtx::NONE,
             wake: None,
             conns: std::ptr::null(),
             services: std::ptr::null(),

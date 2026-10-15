@@ -329,10 +329,91 @@ impl Crossed {
 
 /// The host tables `open` is handed; immutable after construction.
 struct Tables(Box<HostTables>);
-// SAFETY: the tables are written once at bind and only read after; `ctx` points to a leaked,
-// `Sync` [`InstanceWake`].
+// SAFETY: the tables are written once at bind and only read after; `ctx` is a plain handle (#74)
+// and every pointer in them is to `'static` host tables.
 unsafe impl Send for Tables {}
 unsafe impl Sync for Tables {}
+
+thread_local! {
+    /// The instance whose crossing is on this thread (innermost first), for what a host entry needs
+    /// it for (#74): the instance a context must name, and the quarantine of a forged one.
+    static CROSSING: std::cell::Cell<*const Instance> = const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+/// `f` run as the crossing of `inst` on this thread (`None`: as no crossing), the mark restored to
+/// the crossing it is nested in, if any, when `f` returns or unwinds. The ONE way the mark is set:
+/// a call into plugin code is either a crossing of an instance or explicitly none.
+pub(crate) fn with_crossing<R>(inst: Option<&Instance>, f: impl FnOnce() -> R) -> R {
+    struct Restore(*const Instance);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            CROSSING.with(|c| c.set(self.0));
+        }
+    }
+    let mark = inst.map_or(std::ptr::null(), std::ptr::from_ref);
+    let _restore = Restore(CROSSING.with(|c| c.replace(mark)));
+    f()
+}
+
+/// `f`, a call into plugin code that is no mechanism crossing (the inline HOT-lane plane and
+/// transport slots), run with the mark nulled, so nothing it hands the host is taken for the
+/// crossing it happens to be nested in.
+pub(crate) fn without_crossing<R>(f: impl FnOnce() -> R) -> R {
+    with_crossing(None, f)
+}
+
+/// The handle table entry of the instance crossing on this thread; `None` outside a crossing.
+pub(crate) fn crossing_wake() -> Option<&'static InstanceWake> {
+    let p = CROSSING.with(std::cell::Cell::get);
+    // SAFETY: `CROSSING` is non-null only inside `with_crossing(Some(&*p), ..)`, which borrows the
+    // instance for the whole span; its `wake` entry is leaked (`'static`).
+    (!p.is_null()).then(|| unsafe { (*p).wake })
+}
+
+/// THE ONE GUESS (#74): a host entry handed a context the host did not mint, inside a crossing,
+/// quarantines the instance making that crossing, as the watchdog does a hung one: faulted, never
+/// called again on any worker, its connections gone. No plugin gets a second guess. Answers whether
+/// there was a crossing to quarantine (a call from a plugin's own thread, outside any crossing,
+/// names no caller; it is refused and counted all the same).
+pub(crate) fn quarantine_crossing() -> bool {
+    let p = CROSSING.with(std::cell::Cell::get);
+    if p.is_null() {
+        return false;
+    }
+    // SAFETY: `CROSSING` is non-null only inside `with_crossing(Some(&*p), ..)`, which borrows the
+    // instance for the whole span.
+    let inst = unsafe { &*p };
+    inst.revoke();
+    if let Some((id, table)) = inst.wake.conn.get() {
+        super::conn_services::purge(*id, table);
+    }
+    tracing::warn!(
+        plugin = %inst.name,
+        "a plugin handed the host a context the host did not mint; the instance is quarantined"
+    );
+    true
+}
+
+/// A minted handle whose bind has not completed: revoked when dropped still holding it (#74).
+struct Unbound(Option<&'static InstanceWake>);
+
+impl Drop for Unbound {
+    fn drop(&mut self) {
+        if let Some(wake) = self.0 {
+            wake.revoked.store(true, Ordering::Release);
+        }
+    }
+}
+
+impl Instance {
+    /// FAULT AND REVOKE (#74): the instance is never called again on any worker, and its handle
+    /// names nothing any more. The watchdog's fault and the forged-context quarantine both land
+    /// here.
+    pub(crate) fn revoke(&self) {
+        self.faulted.store(true, Ordering::Release);
+        self.wake.revoked.store(true, Ordering::Release);
+    }
+}
 
 /// One family's shape, copied from the Statement: its kind and its label count.
 #[derive(Debug, Clone, Copy)]
@@ -423,6 +504,8 @@ impl Drop for Instance {
     /// The instance is gone (closed and let go, or replaced by a reload): what it held on the
     /// connector's process-wide maps goes with it.
     fn drop(&mut self) {
+        // Let go: its handle names nothing any more (#74).
+        self.wake.revoked.store(true, Ordering::Release);
         if let Some((id, table)) = self.wake.conn.get() {
             super::conn_services::purge(*id, table);
         }
@@ -520,10 +603,10 @@ impl Instance {
         self.tables.0.conns
     }
 
+    /// The instance's handle (#74): what the plugin is handed and hands back, verified by the host
+    /// on every call ([`super::handle::resolve`]).
     pub(crate) fn ctx(&self) -> HostCtx {
-        HostCtx {
-            ptr: std::ptr::from_ref(self.wake).cast_mut().cast(),
-        }
+        self.tables.0.ctx
     }
 
     /// Whether the door states `ready` ([`slot::READY`]).
@@ -791,6 +874,8 @@ impl Instance {
             shut = was_open || crossed.outcome == Outcome::Fault;
             if shut {
                 self.closed.store(true, Ordering::Release);
+                // A closed instance's handle names nothing any more (#74).
+                self.wake.revoked.store(true, Ordering::Release);
             }
             self.ptr.store(std::ptr::null_mut(), Ordering::Release);
         }
@@ -943,7 +1028,9 @@ impl Instance {
                 let _runtime = runtime.as_ref().map(tokio::runtime::Handle::enter);
                 let _acting = super::worker::acting_for(acting);
                 let _unit = super::services::serving(unit);
-                enter_lifecycle((self.op_name)(s), op, instance, input, output)
+                with_crossing(Some(self), || {
+                    enter_lifecycle((self.op_name)(s), op, instance, input, output)
+                })
             });
             match routed {
                 Ok(raw) => raw,
@@ -952,7 +1039,9 @@ impl Instance {
                 Err(_) => return Crossed::host(Outcome::Fault),
             }
         } else {
-            op(instance, input.cast_const().cast(), out.cast())
+            with_crossing(Some(self), || {
+                op(instance, input.cast_const().cast(), out.cast())
+            })
         };
         if s == slot::OPEN
             && (raw == RawOutcome::of(Outcome::Ready) || raw == RawOutcome::of(Outcome::Pending))
@@ -961,6 +1050,12 @@ impl Instance {
             // judges below.
             // SAFETY: `refuse` checked the frame holds an `OpenOut`.
             open_ended.live = unsafe { (*out.cast::<OpenOut>()).instance };
+        }
+        // FAULTED WHILE IT CROSSED (#74): an instance quarantined inside this very crossing (a
+        // forged context), or by the watchdog meanwhile, does not have its answer judged or its
+        // envelope read: the op itself answers FAULT.
+        if self.faulted.load(Ordering::Acquire) {
+            return Crossed::host(Outcome::Fault);
         }
         // SAFETY: the plugin wrote at most the host's `out`; read it back.
         let head = unsafe { *out };
@@ -1342,6 +1437,11 @@ impl<K: Kind> Plugin<K> {
         // One small leak per instance: a plugin may call `wake` with this context at any time, even
         // late, so it must never dangle.
         let wake: &'static InstanceWake = Box::leak(Box::default());
+        // ITS HANDLE (#74): the context the plugin is handed is a tagged index, never this address.
+        let ctx = super::handle::mint(wake)?;
+        // A bind refused after this point leaves no live handle behind: the entry is revoked unless
+        // the bind completes (#74).
+        let mut unbound = Unbound(Some(wake));
         // THE CONNECTION TABLE: minted an identity and declared on the host's one table, need by
         // need under its Statement index, when the Statement declares a need; otherwise none.
         let instance = mint_instance(&NEXT_INSTANCE);
@@ -1405,9 +1505,7 @@ impl<K: Kind> Plugin<K> {
         let tables = Tables(Box::new(HostTables {
             size: size_of::<HostTables>() as u32,
             _reserved: 0,
-            ctx: HostCtx {
-                ptr: std::ptr::from_ref(wake).cast_mut().cast(),
-            },
+            ctx,
             wake: Some(host_wake),
             conns,
             services: &super::services::HOST_SLOTS,
@@ -1478,6 +1576,7 @@ impl<K: Kind> Plugin<K> {
             _k: PhantomData,
         };
         bind.dispatcher.adopt(&plugin.inner);
+        unbound.0 = None;
         Ok(plugin)
     }
 

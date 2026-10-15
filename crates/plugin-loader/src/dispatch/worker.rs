@@ -135,6 +135,11 @@ pub struct DispatchStats {
     /// cancelled, a WriteBehind op's caller released), never woken before it. A door whose every
     /// wait is woken keeps it 0; every conformance script requires 0.
     pub deadline_without_wake: u64,
+    /// Contexts plugins handed the host that it did not mint, process-wide (#74,
+    /// `dispatch::handle`): each inside a crossing quarantined its instance.
+    pub forged_handles: u64,
+    /// The off-crossing latch tripped (#74): nothing resolves outside a crossing any more.
+    pub handles_latched: bool,
 }
 
 #[derive(Debug, Default)]
@@ -1390,8 +1395,23 @@ impl std::fmt::Debug for Dispatcher {
 impl Dispatcher {
     /// Workers and a watchdog, per `config`, with no host services bound: every service answers
     /// REFUSED.
+    ///
+    /// # Panics
+    ///
+    /// When the OS random source cannot answer the handle key (#74): a boot with no key is refused,
+    /// never run under a weaker one. [`Dispatcher::try_new`] answers the refusal instead.
     pub fn new(config: DispatchConfig) -> Self {
-        Self::build(config, None)
+        Self::try_new(config).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// THE LOADER'S BOOT (#74): the handle key drawn first, then the dispatcher.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
+    pub fn try_new(config: DispatchConfig) -> Result<Self, super::LoadError> {
+        super::handle::arm()?;
+        Ok(Self::build(config, None))
     }
 
     /// The connection table's wake: its wake number ([`super::conn_services::conn_ticket`]) routed to
@@ -1421,8 +1441,25 @@ impl Dispatcher {
     }
 
     /// Workers and a watchdog, per `config`, serving the host services the kernel implements.
+    ///
+    /// # Panics
+    ///
+    /// As [`Dispatcher::new`]; [`Dispatcher::try_with_services`] answers the refusal instead.
     pub fn with_services(config: DispatchConfig, provider: Arc<dyn HostServices>) -> Self {
-        Self::build(config, Some(provider))
+        Self::try_with_services(config, provider).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// [`Dispatcher::try_new`], serving `provider`.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
+    pub fn try_with_services(
+        config: DispatchConfig,
+        provider: Arc<dyn HostServices>,
+    ) -> Result<Self, super::LoadError> {
+        super::handle::arm()?;
+        Ok(Self::build(config, Some(provider)))
     }
 
     fn build(config: DispatchConfig, provider: Option<Arc<dyn HostServices>>) -> Self {
@@ -1481,6 +1518,8 @@ impl Dispatcher {
             live_reapers: super::load::live_reapers(),
             driver_kept_high: s.driver_kept_high.load(Ordering::Relaxed),
             deadline_without_wake: s.deadline_without_wake.load(Ordering::Relaxed),
+            forged_handles: super::handle::forged(),
+            handles_latched: super::handle::latched(),
         }
     }
 

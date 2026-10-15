@@ -31,7 +31,7 @@ use busbar_contract::abi::mechanism::call::{AbiStr, Field, Outcome, RawOutcome};
 use busbar_contract::abi::mechanism::ticket::{HostCtx, Ticket};
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 
-use super::ticket::{InstanceWake, WakeRoute};
+use super::ticket::WakeRoute;
 
 /// The table every instance is handed.
 pub static IO_SLOTS: IoSlots = IoSlots {
@@ -134,15 +134,11 @@ impl Wake for Routed {
 }
 
 fn caller(ctx: HostCtx) -> Option<Caller> {
-    if ctx.ptr.is_null() {
-        return None;
-    }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
-    let wake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    let wake = super::handle::resolve(ctx)?;
     let route = wake.route.get()?.clone();
     let io = route.upgrade()?.io()?;
     Some(Caller {
-        owner: ctx.ptr as usize as u64,
+        owner: ctx.handle,
         route,
         io,
     })

@@ -75,7 +75,7 @@ fn ticketless(pool: &Pool) {
             started.elapsed() > pool.env.budgets.of(s, DeadlineClass::Call)
         });
         if hung {
-            inst.faulted.store(true, Ordering::Release);
+            inst.revoke();
             // A faulted instance never crosses again: its connector streams go now.
             if let Some((id, table)) = inst.wake.conn.get() {
                 super::conn_services::purge(*id, table);
@@ -96,7 +96,7 @@ fn replace(pool: &Pool, i: usize, old: &Arc<Worker>, started: Instant) {
         let Some(record) = crossing.as_ref().filter(|c| c.started == started) else {
             return;
         };
-        record.instance.faulted.store(true, Ordering::Release);
+        record.instance.revoke();
         let faulted = Arc::clone(&record.instance);
         drop(crossing);
         st.dead = true;

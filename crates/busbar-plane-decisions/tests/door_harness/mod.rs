@@ -85,9 +85,7 @@ unsafe impl Sync for Tables {}
 static TABLES: Tables = Tables(HostTables {
     size: std::mem::size_of::<HostTables>() as u32,
     _reserved: 0,
-    ctx: HostCtx {
-        ptr: std::ptr::null_mut(),
-    },
+    ctx: HostCtx::NONE,
     wake: None,
     conns: std::ptr::null(),
     io: std::ptr::null(),

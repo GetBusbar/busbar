@@ -1010,7 +1010,7 @@ fn compute_layout() -> String {
     record!(s, MechKindTailHead, [size, _reserved]);
     record!(s, MechTicket, [slot, generation]);
     record!(s, MechCompletionHandle, [ticket, seq, _reserved]);
-    record!(s, MechHostCtx, [ptr]);
+    record!(s, MechHostCtx, [handle]);
     record!(
         s,
         MechHostTables,

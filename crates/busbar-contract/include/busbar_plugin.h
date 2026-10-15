@@ -1153,9 +1153,9 @@ struct bb_mech_Blob {
     uint32_t flags;
 };
 
-/* The host's context for one plugin instance: opaque to the plugin, handed back on `wake`. */
+/* The host's context for one plugin instance: an opaque handle the host verifies on every call. */
 struct bb_mech_HostCtx {
-    void *ptr;
+    uint64_t handle;
 };
 
 /* A ticket: `(slot, generation)`. UNIQUE PER INSTANCE across all workers, so a plugin may key its */
@@ -4194,7 +4194,7 @@ BB_ASSERT(offsetof(bb_mech_CompletionHandle, seq) == 8, "bb_mech_CompletionHandl
 BB_ASSERT(offsetof(bb_mech_CompletionHandle, _reserved) == 12, "bb_mech_CompletionHandle._reserved: offset");
 BB_ASSERT(sizeof(bb_mech_HostCtx) == 8, "bb_mech_HostCtx: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_HostCtx) == 8, "bb_mech_HostCtx: alignment");
-BB_ASSERT(offsetof(bb_mech_HostCtx, ptr) == 0, "bb_mech_HostCtx.ptr: offset");
+BB_ASSERT(offsetof(bb_mech_HostCtx, handle) == 0, "bb_mech_HostCtx.handle: offset");
 BB_ASSERT(sizeof(bb_mech_HostTables) == 48, "bb_mech_HostTables: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_HostTables) == 8, "bb_mech_HostTables: alignment");
 BB_ASSERT(offsetof(bb_mech_HostTables, size) == 0, "bb_mech_HostTables.size: offset");

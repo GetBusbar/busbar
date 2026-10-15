@@ -58,7 +58,7 @@ pub use busbar_contract::services::{
     Stored,
 };
 
-use super::ticket::{decode, InstanceWake, WakeRoute};
+use super::ticket::{decode, WakeRoute};
 
 /// The error text of a caller-scoped service called from an instance the host states no caller for.
 pub const NO_CALLER: &str = "no caller is bound to this instance";
@@ -398,11 +398,7 @@ pub static HOST_SLOTS: HostSlots = HostSlots {
 
 /// The dispatcher an instance's context routes to, and what it serves.
 fn served(ctx: HostCtx) -> Option<(Served, Weak<dyn WakeRoute>)> {
-    if ctx.ptr.is_null() {
-        return None;
-    }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
-    let wake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    let wake = super::handle::resolve(ctx)?;
     let route = wake.route.get()?.clone();
     let served = route.upgrade()?.services()?;
     Some((served, route))
@@ -410,12 +406,7 @@ fn served(ctx: HostCtx) -> Option<(Served, Weak<dyn WakeRoute>)> {
 
 /// The caller an instance's context names; `None` before bind stated one.
 fn caller(ctx: HostCtx) -> Option<Caller> {
-    if ctx.ptr.is_null() {
-        return None;
-    }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
-    let wake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
-    wake.caller.get().cloned()
+    super::handle::resolve(ctx)?.caller.get().cloned()
 }
 
 /// A checked range of the caller's, copied: `None` for NULL with a length.
@@ -665,11 +656,9 @@ extern "C" fn records_get(ctx: HostCtx, input: *const c_void, out: *mut ServiceO
 
 /// The credential kinds an instance's context declares it reads; none before bind stated them.
 fn credential_kinds(ctx: HostCtx) -> &'static [String] {
-    if ctx.ptr.is_null() {
+    let Some(wake) = super::handle::resolve(ctx) else {
         return &[];
-    }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked (`'static`) `InstanceWake`.
-    let wake: &'static InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    };
     wake.credential_kinds.get().map_or(&[], Vec::as_slice)
 }
 
@@ -716,11 +705,7 @@ extern "C" fn records_secret(
 /// The destination the calling instance's `key` is bound to; `None` when it was granted no such
 /// key, or its settings leave it unset.
 fn destination(ctx: HostCtx, key: &str) -> Option<busbar_contract::services::DiskDest> {
-    if ctx.ptr.is_null() {
-        return None;
-    }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked (`'static`) `InstanceWake`.
-    let wake: &'static InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    let wake = super::handle::resolve(ctx)?;
     if !wake.destinations.get()?.iter().any(|k| k == key) {
         return None;
     }
