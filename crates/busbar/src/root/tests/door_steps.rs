@@ -742,6 +742,8 @@ fn resolve_upgrading(
         crate::root::loader::dispatch::DispatchConfig::default(),
     ));
     crate::root::connector::install_io(&dispatcher);
+    // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let auths = super::OutboundAuths::new(
         dispatcher,
         crate::LINKED.auths,
@@ -1268,8 +1270,9 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
 fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<String> {
     match answer? {
         busbar_contract::auth_calls::Fields::Ready(fields) => fields.iter().find_map(|f| {
-            (f.name == b"authorization")
-                .then(|| String::from_utf8_lossy(f.value.expose_secret()).into_owned())
+            (f.name == b"authorization").then(|| {
+                String::from_utf8_lossy(f.value.expose(&busbar_kernel::seal::lend())).into_owned()
+            })
         }),
         _ => None,
     }
@@ -1282,6 +1285,8 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
         crate::root::loader::dispatch::DispatchConfig::default(),
     ));
     crate::root::connector::install_io(&dispatcher);
+    // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     // The row's canonical name is its key.
     let name = "busbar-auth-oauth";
     let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
@@ -1947,6 +1952,8 @@ pub(crate) mod tool_door {
             let section = endpoint_section();
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
             crate::root::connector::install_io(&dispatcher);
+            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+            let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             crate::LINKED
                 .plane_doors
                 .iter()
@@ -2312,7 +2319,11 @@ pub(crate) mod tool_door {
                         .expect("mint");
                     gov.hydrate_budgets(&CostModel::flat(1), 0)
                         .expect("hydrate");
-                    (gov, Arc::new(key), token.expose_secret().to_string())
+                    (
+                        gov,
+                        Arc::new(key),
+                        token.expose(&busbar_kernel::seal::lend()).to_string(),
+                    )
                 }
             };
             let clock = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -2331,6 +2342,8 @@ pub(crate) mod tool_door {
                 }),
             ));
             crate::root::connector::install_io(&dispatcher);
+            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+            let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             // Its connection reads through a ticket (the door's `exchange`) wake on the dispatcher.
             let connector = busbar_core_connector::process::build(
                 || {
@@ -3988,6 +4001,8 @@ pub(crate) mod tool_door {
         let compose = |instance: &'static str, public_url: Option<&str>| {
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
             crate::root::connector::install_io(&dispatcher);
+            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+            let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             let plane = bound(
                 instance,
                 &dispatcher,
@@ -4024,6 +4039,8 @@ pub(crate) mod tool_door {
             let _block = Published(block);
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
             crate::root::connector::install_io(&dispatcher);
+            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+            let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             let plane = bound(
                 block,
                 &dispatcher,
@@ -5545,7 +5562,7 @@ mod task_continuation {
                 1_700_000_000,
             )
             .expect("mint");
-        let other = other.expose_secret().to_string();
+        let other = other.expose(&busbar_kernel::seal::lend()).to_string();
         let foreign = ask(&rig, &other, "tasks/get", &task_id).await;
         let unknown = ask(
             &rig,

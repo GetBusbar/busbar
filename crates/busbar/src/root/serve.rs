@@ -2214,7 +2214,7 @@ pub struct DoorRequest {
     /// The auth gate's verdict for the caller.
     pub gov: busbar_contract::records::PlaneRequestCtx,
     /// The caller's verified credential, lent for a passthrough member's outbound auth call alone.
-    pub credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
+    pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
     /// The generation serving the request.
     pub app: Arc<busbar_kernel::state::App>,
 }
@@ -3649,7 +3649,7 @@ struct DoorFar<'d, 's> {
     steps: &'d DoorSteps<'s>,
     unit: busbar_contract::UnitKey,
     /// The caller's verified credential, lent to the walk for a passthrough member alone.
-    credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
+    credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
     far: OnceLock<Option<EgressFarEnd<'d>>>,
 }
 
@@ -3824,7 +3824,7 @@ struct SessionDoor {
     key: Option<Arc<busbar_contract::records::VirtualKey>>,
     open: bool,
     /// The caller's verified credential, lent to a passthrough member alone.
-    credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
+    credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
 }
 
 /// THE CALLER'S SIDE OF A DUPLEX SESSION over today's hyper upgrade (K6's one `SessionCaller`;
@@ -4108,7 +4108,7 @@ impl IngressReply {
 type UnitCaller = (
     PrincipalId,
     Option<Arc<busbar_contract::records::VirtualKey>>,
-    Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
+    Option<busbar_contract::redacted::Secret<Vec<u8>>>,
 );
 
 /// A FRAMED STREAM THAT CLOSED BEFORE ITS FIRST BODY BYTE (ARCHITECT ruling on #787): its close is

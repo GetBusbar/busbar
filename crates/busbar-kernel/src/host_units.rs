@@ -76,7 +76,7 @@ pub struct UnitRecords {
     stages: Mutex<HashMap<u64, Arc<dyn UnitHookStage>>>,
     /// The caller credential each unit lends its passthrough member (the caller-credential
     /// lending), held while the unit runs and dropped (zeroised) at its end.
-    lent: Mutex<HashMap<u64, busbar_contract::redacted::Redacted<Vec<u8>>>>,
+    lent: Mutex<HashMap<u64, busbar_contract::redacted::Secret<Vec<u8>>>>,
 }
 
 impl std::fmt::Debug for UnitRecords {
@@ -116,7 +116,7 @@ impl UnitRecords {
     /// member's auth call made inside it (a request the plane makes on its own need included: the
     /// connector keys a binding by (instance, need, member, target origin); a request naming no
     /// member gets no binding).
-    pub fn lend(&self, unit: u64, credential: busbar_contract::redacted::Redacted<Vec<u8>>) {
+    pub fn lend(&self, unit: u64, credential: busbar_contract::redacted::Secret<Vec<u8>>) {
         self.lent
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -152,7 +152,7 @@ impl UnitRecords {
 }
 
 impl busbar_contract::conn::LendCredential for UnitRecords {
-    fn lent(&self, unit: u64) -> Option<busbar_contract::redacted::Redacted<Vec<u8>>> {
+    fn lent(&self, unit: u64) -> Option<busbar_contract::redacted::Secret<Vec<u8>>> {
         self.lent
             .lock()
             .unwrap_or_else(|e| e.into_inner())

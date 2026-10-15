@@ -9,7 +9,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use busbar_contract::secret::{SecretCalls, SecretRefused};
 
 use crate::preflight::OpenedSecrets;
@@ -20,14 +20,14 @@ struct Source {
 }
 
 impl SecretCalls for Source {
-    fn resolve(&self, settings: &[u8]) -> Result<Redacted<Vec<u8>>, SecretRefused> {
+    fn resolve(&self, settings: &[u8]) -> Result<Secret<Vec<u8>>, SecretRefused> {
         if let Some(gate) = &self.gate {
             let _ = gate
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .recv_timeout(Duration::from_secs(10));
         }
-        Ok(Redacted::new(settings.to_vec()))
+        Ok(Secret::new(settings.to_vec()))
     }
 }
 

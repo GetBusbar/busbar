@@ -35,9 +35,14 @@ fn real_row() -> &'static busbar_kernel::preflight::LinkedStore {
 /// `door`, opened through the store axis on a dispatcher of its own, as boot opens a store.
 fn open(door: DoorFn, label: &str) -> Arc<dyn RecordStore> {
     let axis = crate::root::loader::store_v3::DoorStoreAxis {
-        dispatcher: Arc::new(crate::root::loader::dispatch::Dispatcher::new(
-            crate::root::loader::dispatch::DispatchConfig::default(),
-        )),
+        dispatcher: {
+            let d = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+                crate::root::loader::dispatch::DispatchConfig::default(),
+            ));
+            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+            let _ = d.lend_seal(busbar_kernel::seal::lend());
+            d
+        },
         logs: crate::root::boot::plugin_logs().clone(),
         // Neither store declares a need: each serves with no connection table.
         conns: crate::root::loader::dispatch::ConnTable::NoNeeds,

@@ -198,12 +198,11 @@ pub struct SecretRefused {
 pub trait SecretCalls: Send + Sync {
     /// `resolve` one reference's `settings` object (JSON bytes) to the secret's material. The
     /// plugin's lease is released before this returns; the material is held only in the
-    /// [`Redacted`](crate::redacted::Redacted) it comes back in.
+    /// [`Secret`](crate::redacted::Secret) it comes back in.
     ///
     /// # Errors
     /// The plugin's refusal, its code and its text.
-    fn resolve(&self, settings: &[u8])
-        -> Result<crate::redacted::Redacted<Vec<u8>>, SecretRefused>;
+    fn resolve(&self, settings: &[u8]) -> Result<crate::redacted::Secret<Vec<u8>>, SecretRefused>;
 
     /// `resolve` at CONFIG TIME, with its proof ([`ConfigScope`](crate::config_time::ConfigScope)):
     /// the one way a source that reads the disk resolves (THE DESIGN §11.11 R4, OWNER 2026-10-13).
@@ -215,7 +214,7 @@ pub trait SecretCalls: Send + Sync {
         &self,
         settings: &[u8],
         _scope: &crate::config_time::ConfigScope,
-    ) -> Result<crate::redacted::Redacted<Vec<u8>>, SecretRefused> {
+    ) -> Result<crate::redacted::Secret<Vec<u8>>, SecretRefused> {
         self.resolve(settings)
     }
 }

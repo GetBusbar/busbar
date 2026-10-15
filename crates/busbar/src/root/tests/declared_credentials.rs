@@ -460,10 +460,9 @@ fn the_linked_sigv4_style_signs_the_walked_requests_method_and_query() {
         other => panic!("the style signs in place: {other:?}"),
     };
     let field = |name: &str| {
-        fields
-            .iter()
-            .find(|f| f.name == name.as_bytes())
-            .map(|f| String::from_utf8(f.value.expose_secret().clone()).expect("utf-8"))
+        fields.iter().find(|f| f.name == name.as_bytes()).map(|f| {
+            String::from_utf8(f.value.expose(&busbar_kernel::seal::lend()).clone()).expect("utf-8")
+        })
     };
     let auth = field("authorization").expect("an authorization field");
     let amzdate = field("x-amz-date").expect("an x-amz-date field");

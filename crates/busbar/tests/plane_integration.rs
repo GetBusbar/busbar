@@ -716,7 +716,11 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     let signer = TokenSigner::from_secret_bytes(&[9u8; 32], DEFAULT_KID);
     let verifier = TokenVerifier::single(signer.kid(), signer.verifying_key());
     let generation = verifier
-        .verify(plain_token.expose_secret().as_str(), 1_000_000_000, None)
+        .verify(
+            plain_token.expose(&busbar_kernel::seal::lend()).as_str(),
+            1_000_000_000,
+            None,
+        )
         .expect("plain claims")
         .generation;
     let bound_token = signer.mint_for_audience(
@@ -926,7 +930,10 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
                 .request(method.clone(), &url)
                 .header(
                     "authorization",
-                    format!("Bearer {}", plain_token.expose_secret()),
+                    format!(
+                        "Bearer {}",
+                        plain_token.expose(&busbar_kernel::seal::lend())
+                    ),
                 )
                 .body(body.clone())
                 .send()
@@ -976,7 +983,10 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
             .request(method, &url)
             .header(
                 "authorization",
-                format!("Bearer {}", plain_token.expose_secret()),
+                format!(
+                    "Bearer {}",
+                    plain_token.expose(&busbar_kernel::seal::lend())
+                ),
             )
             .body(body.clone())
             .send()

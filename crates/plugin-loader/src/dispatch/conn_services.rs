@@ -212,6 +212,12 @@ pub(crate) fn armed(ctx: HostCtx) -> Option<&'static (InstanceId, Arc<dyn Declar
     super::handle::resolve(ctx)?.conn.get()
 }
 
+/// The seal the host lent the dispatcher a context's instance is adopted by (Part 2 #54): what the
+/// member's auth fields are revealed under to join the request's head. `None` when none was lent.
+fn lent_seal(ctx: HostCtx) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
+    super::handle::resolve(ctx)?.route.get()?.upgrade()?.seal()
+}
+
 /// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and covers its
 /// `in`, then `body` with the caller's identity and table. A panic answers FAULT; the whole `out`
 /// is written.
@@ -1101,7 +1107,7 @@ extern "C" fn write_request(
                         None => Some(b.handle),
                     });
                     let conn = match bound {
-                        None => open_with(table, id, need, at, &h, &body, &[]),
+                        None => open_with(table, id, need, at, &h, &body, &[], None),
                         Some(_) if handle.is_none() => {
                             Conn::Failed(ConnError::CredentialUnavailable)
                         }
@@ -1111,7 +1117,17 @@ extern "C" fn write_request(
                                 let handle = handle.unwrap_or(binding.handle);
                                 match binding.auth.fields_now(handle, &request) {
                                     Some(Fields::Ready(auth)) => {
-                                        open_with(table, id, need, at, &h, &body, &auth)
+                                        let seal = lent_seal(ctx);
+                                        open_with(
+                                            table,
+                                            id,
+                                            need,
+                                            at,
+                                            &h,
+                                            &body,
+                                            &auth,
+                                            seal.as_deref(),
+                                        )
                                     }
                                     Some(Fields::Refused | Fields::Failed) => {
                                         Conn::Failed(ConnError::Refused)
@@ -1147,7 +1163,8 @@ extern "C" fn write_request(
 
 /// Open a whole request on the table: the member's `auth` fields first, then the plugin's (a
 /// plugin field named like an auth field never doubles it: the binding's stands), 1.5.5's egress
-/// order, as the relayed calls are opened.
+/// order, as the relayed calls are opened. The auth fields are revealed under `seal`, the one the
+/// host lent the dispatcher; with auth fields and no seal the open is refused (fail closed).
 #[allow(clippy::too_many_arguments)]
 fn open_with(
     table: &Arc<dyn DeclaredConns>,
@@ -1157,14 +1174,22 @@ fn open_with(
     h: &Head,
     body: &[u8],
     auth: &[busbar_contract::auth_calls::AuthField],
+    seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
 ) -> Conn {
+    let seal = match (auth.is_empty(), seal) {
+        (true, _) => None,
+        (false, Some(seal)) => Some(seal),
+        (false, None) => return Conn::Failed(ConnError::Refused),
+    };
     let mut fields: Vec<(&str, &[u8])> = Vec::with_capacity(auth.len() + h.fields.len());
     let names: Vec<String> = auth
         .iter()
         .map(|f| String::from_utf8_lossy(&f.name).into_owned())
         .collect();
-    for (name, f) in names.iter().zip(auth) {
-        fields.push((name.as_str(), f.value.expose_secret().as_slice()));
+    if let Some(seal) = seal {
+        for (name, f) in names.iter().zip(auth) {
+            fields.push((name.as_str(), f.value.expose(seal).as_slice()));
+        }
     }
     fields.extend(
         h.fields
@@ -1209,7 +1234,7 @@ fn auth_request(
                 .lender
                 .as_ref()
                 .and_then(|l| l.lent(unit))
-                .unwrap_or_else(|| busbar_contract::redacted::Redacted::new(Vec::new())),
+                .unwrap_or_else(|| busbar_contract::redacted::Secret::new(Vec::new())),
         )
     } else {
         None
@@ -1365,6 +1390,7 @@ fn reply(
                 &a.head,
                 &a.body,
                 &auth,
+                lent_seal(ctx).as_deref(),
             ),
             Fields::Refused | Fields::Failed => Conn::Failed(ConnError::Refused),
         };
