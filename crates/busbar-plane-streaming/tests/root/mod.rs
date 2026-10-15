@@ -27,7 +27,7 @@ pub(crate) const NOT_APPLICABLE: &[(&str, &str, &str)] = &[
     (
         "breaker-trip",
         "streaming-server",
-        "the voice front door is an inbound role; opening a session records no upstream target availability, so there is no core breaker cell to trip here -- the outbound provider dial a session triggers is the streaming-client cell's subject, the same shape mcp-server/a2a-server breaker-trip are N/A under.",
+        "the voice front door is an inbound role; opening a session records no upstream target availability, so there is no core breaker cell to trip here -- the outbound provider dial a session triggers is the streaming-client cell's subject, the same shape every other inbound server column's breaker-trip is N/A under.",
     ),
     (
         "breaker-fastfail",
@@ -42,7 +42,7 @@ pub(crate) const NOT_APPLICABLE: &[(&str, &str, &str)] = &[
     (
         "failover-reroute",
         "streaming-server",
-        "the front door is an inbound role with no candidate set to walk; failover selection over interchangeable provider members is the outbound streaming-client leg's decision, exactly as a2a-server reroute is not-applicable on the receiving side.",
+        "the front door is an inbound role with no candidate set to walk; failover selection over interchangeable provider members is the outbound streaming-client leg's decision, exactly as an inbound server column's reroute is not-applicable on the receiving side.",
     ),
     (
         "disposition",
@@ -52,22 +52,22 @@ pub(crate) const NOT_APPLICABLE: &[(&str, &str, &str)] = &[
     (
         "disposition",
         "streaming-server",
-        "disposition classifies an upstream's ANSWER; the inbound session-open has no upstream answer to normalize, so Stage-1/Stage-2 classification has no subject here -- the same argument mcp-server and a2a-server disposition are not-applicable under.",
+        "disposition classifies an upstream's ANSWER; the inbound session-open has no upstream answer to normalize, so Stage-1/Stage-2 classification has no subject here -- the same argument the other inbound server columns' disposition is not-applicable under.",
     ),
     (
         "trust-pinning",
         "streaming-client",
-        "voice providers (OpenAI Realtime, Gemini Live) are operator-declared config endpoints, not peer-published artifacts; there is no upstream-authored schema digest or card to pin -- exactly the argument the llm dial cell is not-applicable under.",
+        "voice providers (OpenAI Realtime, Gemini Live) are operator-declared config endpoints, not peer-published artifacts; there is no upstream-authored schema digest or card to pin -- exactly the argument an operator-declared provider dial cell is not-applicable under.",
     ),
     (
         "trust-pinning",
         "streaming-server",
-        "the browser-sideband and telephony callers that reach the front door publish no artifact (no schema digest, agent card, or SPKI) for the trust lifecycle to pin; there is no peer-authored object whose drift could be detected, unlike the a2a-server card-fingerprint cell.",
+        "the browser-sideband and telephony callers that reach the front door publish no artifact (no schema digest, agent card, or SPKI) for the trust lifecycle to pin; there is no peer-authored object whose drift could be detected, unlike a server column whose peers publish a card for it to fingerprint.",
     ),
     (
         "net-guard",
         "streaming-client",
-        "the provider WSS is an operator-configured endpoint and no request-authored URL reaches the dial, so there is no SSRF surface on the outbound leg (the net_guard resolve->pin->guard at topology::dial_provider is defense-in-depth, not a request-URL guard); revisit if a T3 request-authored callback URL is ever dialed, like a2a-server push delivery.",
+        "the provider WSS is an operator-configured endpoint and no request-authored URL reaches the dial, so there is no SSRF surface on the outbound leg (the net_guard resolve->pin->guard at topology::dial_provider is defense-in-depth, not a request-URL guard); revisit if a T3 request-authored callback URL is ever dialed, like a server column's push delivery.",
     ),
     (
         "net-guard",
@@ -77,7 +77,7 @@ pub(crate) const NOT_APPLICABLE: &[(&str, &str, &str)] = &[
     (
         "egress-auth",
         "streaming-server",
-        "the front door's only outbound is the provider dial, whose credential injection is the streaming-client egress-auth cell; the inbound caller's own bearer is authenticated by the Auth plugin, which is not egress credential planning -- the same split mcp-server egress-auth is not-applicable under.",
+        "the front door's only outbound is the provider dial, whose credential injection is the streaming-client egress-auth cell; the inbound caller's own bearer is authenticated by the Auth plugin, which is not egress credential planning -- the same split another inbound server column's egress-auth is not-applicable under.",
     ),
     (
         "catalogue",
