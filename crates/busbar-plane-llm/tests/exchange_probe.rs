@@ -62,3 +62,93 @@ fn a_lane_under_a_path_base_is_not_probed_and_a_fixed_path_is_kept() {
         "/fixed/chat"
     );
 }
+
+/// The value of the head field `name` on `r`.
+fn field_value<'a>(r: &'a busbar_plane_llm::exchange::attempt::FarRequest, name: &str) -> &'a [u8] {
+    r.fields
+        .iter()
+        .find(|(n, _)| n.eq_ignore_ascii_case(name))
+        .map(|(_, v)| v.as_slice())
+        .unwrap_or_else(|| panic!("the request carries `{name}`"))
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/health_tests.rs::test_probe_sends_native_user_agent_and_accept_headers`
+/// (coverage map v2 row 220). 1.5.5: an active probe of an anthropic lane sends the SAME native-SDK
+/// fingerprint organic traffic sends: `user-agent: Anthropic/Python 0.39.0` and the non-streaming
+/// `accept: application/json`, so a far end cannot tell busbar's probes from its clients.
+///
+/// RED: the probe's `user-agent` or `accept` value differs from the one an organic (UA-less,
+/// non-streaming) anthropic request carries, or either moves off the pinned literal.
+#[test]
+fn test_probe_sends_native_user_agent_and_accept_headers() {
+    use busbar_plane_llm::exchange::arrive::arrive;
+    use busbar_plane_llm::exchange::attempt::build;
+    let s = Shaping::from_settings(&json!({
+        "providers": { "ant": { "protocol": "anthropic", "base_url": "https://b" } },
+        "models": { "claude": { "provider": "ant" } },
+        "pools": { "p": { "members": ["claude"] } }
+    }))
+    .expect("reads");
+    let lane = s.lane("claude").expect("lane");
+    let probe = request(lane).expect("probed");
+
+    // Organic traffic on the same lane: a native caller that sent no user-agent, not streaming.
+    let head: Vec<(&[u8], &[u8])> =
+        vec![(b"content-type".as_slice(), b"application/json".as_slice())];
+    let body = br#"{"model":"claude","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}"#;
+    let arrived = arrive("POST", "/v1/messages", &head, body, &()).expect("arrives");
+    let organic = build(&arrived, &head, &s, "p", "claude").expect("built");
+
+    assert_eq!(
+        field_value(&probe, "user-agent"),
+        field_value(&organic, "user-agent"),
+        "probe must send the native User-Agent organic traffic sends"
+    );
+    assert_eq!(
+        field_value(&probe, "user-agent"),
+        b"Anthropic/Python 0.39.0"
+    );
+    assert_eq!(
+        field_value(&probe, "accept"),
+        field_value(&organic, "accept"),
+        "probe must send the native Accept organic traffic sends"
+    );
+    assert_eq!(field_value(&probe, "accept"), b"application/json");
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/health_tests.rs::test_probe_signs_and_sends_same_encoded_path_for_reserved_chars`
+/// (coverage map v2 row 230). 1.5.5: a probe of a bedrock model id carrying a reserved `:` sends
+/// the `%3A`-encoded path, never the raw `:0/converse`, and the signature's canonical path is
+/// computed from that SAME wire path, so the signed and sent paths cannot diverge
+/// (`SignatureDoesNotMatch` would park every such lane dead).
+///
+/// RED: the raw colon reaches the wire, the probe sends a path other than the one the signature
+/// is computed from, or the canonical path stops being the wire path's own encoding.
+#[test]
+fn test_probe_signs_and_sends_same_encoded_path_for_reserved_chars() {
+    use busbar_plane_llm::exchange::attempt::{uri_encode_path, wire_and_canonical_path};
+    let s = shaping();
+    let lane = s.lane("bed").expect("lane");
+    let probe = request(lane).expect("probed");
+    let (wire_path, canonical) = wire_and_canonical_path(&probe_path(lane));
+    assert!(
+        probe.target.contains("%3A"),
+        "Bedrock modelId ':' must be percent-encoded on the wire path: {}",
+        probe.target
+    );
+    assert!(
+        !probe.target.contains(":0/converse"),
+        "the raw ':' must NOT survive on the wire path (would diverge from the signed URI): {}",
+        probe.target
+    );
+    assert_eq!(
+        probe.target, wire_path,
+        "the probe sends exactly the wire path the signature is computed from"
+    );
+    assert_eq!(
+        canonical,
+        uri_encode_path(&wire_path),
+        "the signed canonical path is the transmitted wire path's own encoding (signed == sent)"
+    );
+    assert_eq!(probe.target, "/model/anthropic.claude-3%3A0/converse");
+}

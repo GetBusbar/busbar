@@ -1030,3 +1030,72 @@ fn the_main_log_sink_writes_a_declared_diagnostic_in_its_one_five_five_shape() {
         ]
     );
 }
+
+/// LEGACY the retiring engine crate's keyless-lane test in `src/engine/tests/auth_style_tests.rs`
+/// (coverage map v2 row 73; its name spells an auth plugin's crate id, which the root may not). 1.5.5: a lane whose provider declared `api_key: none` (a keyless
+/// local upstream) holds an empty key, and an empty key presents NO auth header at all under any
+/// auth style (the dialect's default, the token override, the key-header override): never a bare
+/// scheme word with an empty token, never an empty key field. A non-empty credential is
+/// unaffected and presents its one header.
+///
+/// Here every non-signing binding the fixture records (each dialect's default and the key-header
+/// override) and the token override (`auth:` names its own style, which the door binds as written,
+/// root door_steps `style_word`; its style word is the fixture's `override_styles.token`) are bound
+/// on the linked auth plugins with the empty key, in both credential modes, and asked for their
+/// fields. A signing binding is the one that sends fields of its own beside the credential, and is
+/// left out: it signs, it presents no key header.
+///
+/// RED: a linked auth plugin presents a field for an empty credential (a bare scheme word, an
+/// empty key header), or a real credential stops presenting its one header.
+#[test]
+fn a_keyless_lane_presents_no_credential_field() {
+    let ctx = |upstream_creds| SigningContext {
+        host: "upstream.internal",
+        canonical_uri: "/",
+        body: b"{}",
+        timestamp_epoch: 0,
+        upstream_creds,
+    };
+    let token_override = StyleBinding {
+        style: fixture()["override_styles"]["token"]
+            .as_str()
+            .expect("the token override's style")
+            .to_string(),
+        params: serde_json::json!({}),
+        uses_key: true,
+        statics: &[],
+        sent: Vec::new(),
+    };
+    let mut bindings: Vec<(String, StyleBinding)> = fixture()["bindings"]
+        .as_object()
+        .expect("bindings")
+        .keys()
+        .map(|name| (name.clone(), binding_of(name, "upstream.internal", &[])))
+        .filter(|(_, binding)| binding.sent.is_empty())
+        .collect();
+    bindings.push(("token override".to_string(), token_override.clone()));
+    assert!(
+        bindings.len() >= 3,
+        "the defaults, the key-header override and the token override are all bound"
+    );
+    for (name, binding) in &bindings {
+        for mode in [UpstreamCreds::Own, UpstreamCreds::Passthrough] {
+            assert_eq!(
+                present_bound(binding, "", &ctx(mode)),
+                Vec::<(String, String)>::new(),
+                "an empty credential must send NO auth header ({name}, style {}, {mode:?})",
+                binding.style
+            );
+        }
+    }
+    for (name, real) in [
+        &bindings[0],
+        &("token override".to_string(), token_override),
+    ] {
+        assert_eq!(
+            present_bound(real, "SECRETKEY", &ctx(UpstreamCreds::Own)).len(),
+            1,
+            "a real credential still sends its header ({name})"
+        );
+    }
+}

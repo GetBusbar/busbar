@@ -616,3 +616,69 @@ fn test_lane_state_by_model_default_cell_untouched_zero_cooldown_reports_healthy
              gauge regardless of unrelated pool cells being broken; got:\n{line}"
     );
 }
+
+/// LEGACY the retiring engine crate's `src/engine/tests/scrape_queued_depth_tests.rs::test_scrape_gauges_pool_queued_reads_live_depth`
+/// (coverage map v2 row 604). 1.5.5: `busbar_pool_queued{pool}` reads the LIVE park depth, not a
+/// literal 0: `1` while a request is parked on the pool's wait terminal, `0` once it leaves.
+///
+/// The park is written where the served walk writes it (`set_pool_queued_depth`, the walk
+/// telemetry's balanced park/leave count) and read through the kernel's own tables, the read seam
+/// the scrape takes for a door-served plane; the scrape's gauge is then held to whatever the app's
+/// read seam answers for the pool at that moment, so the gauge is the seam's reading and never a
+/// literal.
+///
+/// RED: the door read seam ignores the walk's park depth (reads 0 while parked, or keeps 1 after
+/// the leave), or the scrape renders a value other than the live depth its read seam reports.
+#[test]
+fn the_scrapes_pool_queued_gauge_reads_the_live_depth() {
+    use busbar_kernel::plane_host::{set_pool_queued_depth, ConfigTables, EngineTablesView};
+    register_planes();
+    init();
+    // Unique labels: the recorder and the park table are process-global.
+    let pool = "q-live-pool";
+    // The linked plane's own default dialect, read off the registry (this cell names none).
+    let dialect = busbar_kernel::proto::residual_default_dialect()
+        .or_else(|| {
+            busbar_kernel::proto::detect_protocol(
+                "/v1/chat/completions",
+                &axum::http::HeaderMap::new(),
+            )
+        })
+        .expect("a linked plane states a dialect");
+    let app = TestApp::new()
+        .lane(LaneSpec::new("q-live-model", dialect, "http://q"))
+        .pool(pool, &[(0, 1)])
+        .build();
+    let door_tables = ConfigTables::default();
+
+    // A request parks on the pool's wait terminal.
+    set_pool_queued_depth(pool, 1);
+    assert_eq!(
+        door_tables.queued_depth(pool),
+        1,
+        "the door read seam must reflect the live park depth (1 while parked)"
+    );
+    refresh_scrape_gauges(&app);
+    let out = render();
+    let live = app.engine_tables_view().queued_depth(pool) as f64;
+    assert_eq!(
+        gauge_value(&out, POOL_QUEUED, pool),
+        Some(live),
+        "busbar_pool_queued must render the live depth its read seam reports; got:\n{out}"
+    );
+
+    // The request leaves the queue.
+    set_pool_queued_depth(pool, 0);
+    assert_eq!(
+        door_tables.queued_depth(pool),
+        0,
+        "the door read seam must return to 0 once the parked request leaves"
+    );
+    refresh_scrape_gauges(&app);
+    let out = render();
+    assert_eq!(
+        gauge_value(&out, POOL_QUEUED, pool),
+        Some(0.0),
+        "busbar_pool_queued must return to 0 once the parked request leaves; got:\n{out}"
+    );
+}

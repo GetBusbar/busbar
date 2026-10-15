@@ -305,3 +305,97 @@ fn a_reload_that_removes_the_scrape_sink_keeps_metrics_hooks_and_drops_metrics_a
     drop(child);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// LEGACY the retiring engine crate's `src/engine/tests/forward_pool_integration_tests.rs::test_metrics_requires_auth_in_chain_mode`
+/// (coverage map v2 row 138). 1.5.5: with a data-plane auth chain configured, `GET /metrics` with
+/// NO credential is refused `401` (the scrape is credential-gated, never exempt), while the same
+/// credential-less client still reaches the declared-open routes: `/healthz` answers with its own
+/// verdict (`200` or `503`, never the chain's `401`) and `GET /auth/token?logout=1` serves its
+/// signed-out page (`200`). The same scrape with a chain-admitted credential is `200` and carries
+/// a series (the legacy test seeded the request counter in process; a spawned node with no traffic
+/// yet renders its scrape-time lane series, `busbar_lane_state`).
+///
+/// RED: `/metrics` is re-exempted (a credential-less `200`), the chain shuts the declared-open
+/// routes too, or an admitted credential's scrape is refused.
+#[test]
+fn test_metrics_requires_auth_in_chain_mode() {
+    let dir = fixture_dir();
+    let (data_port, admin_port) = (common::boot::free_port(), common::boot::free_port());
+    write_configs(&dir, data_port, admin_port);
+    let log_path = dir.join("out.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let mut child = Reap(
+        Command::new(common::boot::exe())
+            .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+            .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+            .env("MOCK_KEY", "x")
+            .env("BUSBAR_ADMIN_TOKEN", ADMIN_TOKEN)
+            .env("RUST_LOG", "info")
+            .stdout(log.try_clone().unwrap())
+            .stderr(log)
+            .spawn()
+            .expect("spawn busbar"),
+    );
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while !read_to_string(&log_path).contains("busbar listening") {
+        if let Some(status) = child.0.try_wait().expect("try_wait") {
+            panic!("busbar exited ({status}):\n{}", read_to_string(&log_path));
+        }
+        assert!(
+            Instant::now() < deadline,
+            "busbar did not listen:\n{}",
+            read_to_string(&log_path)
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (data, admin) = (
+        format!("127.0.0.1:{data_port}"),
+        format!("127.0.0.1:{admin_port}"),
+    );
+    let minted = http(
+        &admin,
+        "POST",
+        "/api/v1/admin/keys",
+        Some(r#"{"name":"metrics-scrapers"}"#),
+        Some(ADMIN_TOKEN),
+    );
+    let token = minted
+        .body
+        .split("\"token\":\"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_else(|| panic!("the admin API mints a key: {}", minted.body))
+        .to_string();
+    // The admitted scrape first, past the recorder's boot window.
+    let authed = settled(&data, "/metrics", &token);
+    assert_eq!(
+        authed.status, 200,
+        "/metrics with the configured credential must be admitted: {}",
+        authed.body
+    );
+    assert!(
+        authed.body.contains("busbar_lane_state"),
+        "authed exposition should contain a metric; got:\n{}",
+        authed.body
+    );
+
+    let unauthed = http(&data, "GET", "/metrics", None, None);
+    assert_eq!(
+        unauthed.status, 401,
+        "/metrics must require auth in chain mode; a 200 means it was re-exempted like /healthz"
+    );
+    let healthz = http(&data, "GET", "/healthz", None, None);
+    assert!(
+        matches!(healthz.status, 200 | 503),
+        "/healthz is declared open: the probe answers (200/503), never the chain's 401; got {}",
+        healthz.status
+    );
+    let exchange = http(&data, "GET", "/auth/token?logout=1", None, None);
+    assert_eq!(
+        exchange.status, 200,
+        "/auth/token is declared open and must serve its signed-out page with no credential: {}",
+        exchange.body
+    );
+    drop(child);
+    let _ = std::fs::remove_dir_all(&dir);
+}
