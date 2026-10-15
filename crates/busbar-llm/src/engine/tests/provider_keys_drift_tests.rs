@@ -17,7 +17,9 @@ use serde_json::{json, Map, Value};
 use busbar_contract::provider_keys::{decode, ProviderKeys, Shape, Table};
 use busbar_plane_llm::meta::PROVIDER_KEYS;
 
-use crate::engine::build_runtime::{ProviderCfg, ProviderDef, ProviderDeploy};
+use busbar_kernel::config::providers::ProviderCfg;
+
+use crate::engine::build_runtime::{ProviderDef, ProviderDeploy};
 
 /// The keys the kernel owns in every form of a provider entry (its destination, its credential and
 /// outbound-auth binding, its health block and its metadata allowance): never a plane's to declare.

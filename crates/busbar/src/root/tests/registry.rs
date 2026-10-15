@@ -778,9 +778,9 @@ fn transports_layered_over_each_other_refuse_at_boot() {
             ..own
         },
     ];
-    let refusal = compose(&rows, Dropped::NONE, &TransportSettings::default())
-        .err()
-        .expect("no order builds either");
+    let Err(refusal) = compose(&rows, Dropped::NONE, &TransportSettings::default()) else {
+        panic!("no order builds either");
+    };
     assert!(matches!(
         refusal,
         BootRefusal::Uncomposable { transport: "upper" }

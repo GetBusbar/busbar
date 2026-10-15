@@ -3798,9 +3798,12 @@ const CREATED: u32 = 201;
 /// runs (a refusal fails the unit, unanswered); and what runs once in the session's cleanup.
 struct Attach {
     answered: u32,
-    admitted: Option<Box<dyn FnOnce(u64) -> Result<(), String> + Send>>,
+    admitted: Option<OnAdmitted>,
     ended: Option<Box<dyn FnOnce(u64) + Send>>,
 }
+
+/// What runs once a session's unit is admitted (handed the unit), before the session runs.
+type OnAdmitted = Box<dyn FnOnce(u64) -> Result<(), String> + Send>;
 
 impl Attach {
     /// An upgraded stream's session: answered `101`, nothing around it.

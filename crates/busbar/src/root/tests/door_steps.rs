@@ -1087,6 +1087,9 @@ fn a_members_binding_is_opened_with_its_dialects_parameters_under_the_providers_
 
 // ── the minted credential of a member bound under an OAuth grant (TODO row 22) ─────────────────
 
+/// One open's head fields: `(name, value)`, in the order received.
+type HeadFields = Vec<(String, Vec<u8>)>;
+
 /// A connection table standing in for the token endpoint: framed needs, each declaration and each
 /// open recorded, each open answered by the endpoint's next reply (`expires_in` 2, then 3600), one
 /// piece per read.
@@ -1096,7 +1099,7 @@ pub(crate) struct TokenEndpoint {
     declared: std::sync::Mutex<Vec<(u32, u32, Option<String>)>>,
     opened: std::sync::Mutex<Vec<Opened>>,
     /// Each open's head fields, as the table received them.
-    fields: std::sync::Mutex<Vec<Vec<(String, Vec<u8>)>>>,
+    fields: std::sync::Mutex<Vec<HeadFields>>,
     replies: std::sync::Mutex<Replies>,
     /// The reply body to a request body, when the endpoint answers by what it was asked (an RFC
     /// 8693 exchange's token names its scope); `None` = the minted replies above.

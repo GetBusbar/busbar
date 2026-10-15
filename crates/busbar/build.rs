@@ -522,7 +522,15 @@ fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String,
         "/// Every door plane's root cells: its crate, the file its crate states, its\n\
          /// capability-equality columns and its not-applicable `(capability, column, reason)` cells.\n\
          #[allow(dead_code)]\n\
-         pub(crate) static DOOR_CELLS: &[(&str, &str, &[&str], &[(&str, &str, &str)])] = &[\n{}];\n",
+         pub(crate) static DOOR_CELLS: &[DoorCellsRow] = &[\n{}];\n\
+         /// One door plane's root cells: `(crate, file, columns, not-applicable cells)`.\n\
+         #[allow(dead_code)]\n\
+         pub(crate) type DoorCellsRow = (\n    \
+         &'static str,\n    \
+         &'static str,\n    \
+         &'static [&'static str],\n    \
+         &'static [(&'static str, &'static str, &'static str)],\n\
+         );\n",
         cells.concat()
     ));
     out.push_str(&format!(
