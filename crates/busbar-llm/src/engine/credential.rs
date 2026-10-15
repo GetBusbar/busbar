@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use busbar_contract::protocol::{CredentialHeader, EgressScheme, ProtocolDecl};
 use busbar_kernel::bound_credential::{
-    bind, CredentialProvider, DeclaredBuilder, NoCredential, StyleBinding,
+    bind_presenting, CredentialProvider, DeclaredBuilder, NoCredential, StyleBinding,
 };
 use busbar_kernel::plane_host::{AuthStyleInput, LaneInput, PlaneBuildInput};
 use serde_json::{json, Map, Value};
@@ -295,7 +295,13 @@ pub(crate) fn credential_for(
             let Some(reach) = &input.auths else {
                 return Arc::new(NoCredential);
             };
-            match bind(&*reach.0, &binding, api_key.as_bytes()) {
+            // The token endpoint's userinfo (row 74, F25): stripped from `lane.token_url` before
+            // this plane saw it, and handed back opaque for the host to present on the mint.
+            let endpoint = match lane.auth_style {
+                AuthStyleInput::OAuthClientCredentials => lane.token_userinfo.as_ref(),
+                _ => None,
+            };
+            match bind_presenting(&*reach.0, &binding, api_key.as_bytes(), endpoint) {
                 Ok(inner) => match read {
                     Some(region_of_host) => Arc::new(PerSignatureRegionRead {
                         inner,

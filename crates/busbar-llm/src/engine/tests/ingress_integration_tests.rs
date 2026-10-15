@@ -651,6 +651,73 @@ fn anthropic_ok_body() -> serde_json::Value {
     })
 }
 
+/// ROW 74 (F25), THE ORGANIC FORWARD: a lane whose base URL spells `user:pass@` and whose credential
+/// presents no `authorization` (here: a keyless lane, `api_key` empty, so no credential field at
+/// all) reaches its far end at the stripped authority with `authorization: Basic
+/// base64(user:pass)` — what 1.5.5's reqwest build over `{base_url}{path}` sent (v1.5.5
+/// `crates/busbar/src/proxy/engine/mod.rs:1669-1670`). The plane never reads the value: the kernel's
+/// hop presents it from the opaque handle the lane carries.
+#[tokio::test]
+async fn a_userinfo_base_url_presents_its_basic_when_the_credential_names_no_authorization() {
+    use base64::Engine as _;
+    crate::testkit::install_test_seams();
+    busbar_kernel::snapshot::init();
+    let state = StdArc::new(MockServerState::new());
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: openai_ok_body(),
+    });
+    let server = MockServer::new(state.clone()).await;
+    let bare = server.base_url();
+    let planted = bare.replacen("://", "://svcuser:hunter2-P4ss@", 1);
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &planted)
+                .provider("zai")
+                .api_key(""),
+        )
+        .pool("co", &[(0, 1)])
+        .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
+    let (addr, handle) = serve(app).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/v2/chat"))
+        .credential("t")
+        .body(
+            json!({
+                "model": "co",
+                "messages": [{"role": "user", "content": "hello"}]
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "served through the userinfo lane"
+    );
+    let expected = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+    );
+    assert_eq!(
+        state.get_last_request_header("authorization").as_deref(),
+        Some(expected.as_str()),
+        "the far end hears the userinfo as 1.5.5 sent it"
+    );
+    assert_eq!(
+        state.get_last_request_header("host").as_deref(),
+        bare.split_once("://").map(|(_, authority)| authority),
+        "dialled at the stripped authority"
+    );
+    handle.abort();
+    server.shutdown().await;
+}
+
 /// Cohere client → OpenAI backend: a native Cohere `/v2/chat` request must round-trip through
 /// the IR to an OpenAI backend and back, returning a 2xx the Cohere SDK can parse.
 #[tokio::test]

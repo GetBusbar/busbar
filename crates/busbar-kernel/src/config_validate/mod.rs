@@ -2385,7 +2385,11 @@ fn validate_providers_with(
                     || scheme_is(tu, "https")
                     || (host_private && scheme_is(tu, "http"));
                 if !tu_scheme_ok {
-                    errors.push(if scheme_is(tu, "http") {
+                    // Repeated with its userinfo redacted: a `user:pass@` in token_url is accepted
+                    // and rides the mint as 1.5.5's did (row 74, F25), never a message.
+                    let plaintext = scheme_is(tu, "http");
+                    let tu = crate::net_guard::redact_userinfo(tu);
+                    errors.push(if plaintext {
                         format!(
                             "provider '{provider_name}' token_url must use https for a public host (got '{tu}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint"
                         )
@@ -2400,6 +2404,7 @@ fn validate_providers_with(
                     cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
                 ) {
+                    let tu = crate::net_guard::redact_userinfo(tu);
                     errors.push(format!(
                         "provider '{provider_name}' token_url '{tu}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
                     ));
@@ -2428,8 +2433,10 @@ fn validate_providers_with(
             if !cred.trim().is_empty() {
                 // The credential's shape is the serving auth plugin's to judge, in its own words,
                 // through the same `open_outbound` the build binds it with (never dialing).
+                // The endpoint as the plugin is handed it at the build: its userinfo stripped.
+                let token_url = provider_cfg.token_url.as_deref().unwrap_or_default();
                 let params = serde_json::json!({
-                    "token_url": provider_cfg.token_url.clone().unwrap_or_default(),
+                    "token_url": crate::net_guard::strip_userinfo(token_url),
                     "scope": provider_cfg.scope.clone().unwrap_or_default(),
                 });
                 for e in outbound_credential_refusals("oauth-client-credentials", &cred, &params) {
@@ -2610,6 +2617,9 @@ pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), S
         .map(host_is_private_or_loopback)
         .unwrap_or(false);
     if !(scheme_is(token_uri, "https") || (host_private && scheme_is(token_uri, "http"))) {
+        // Repeated with its userinfo redacted: a `user:pass@` in token_uri rides the mint as
+        // 1.5.5's did (row 74, F25), never a message.
+        let token_uri = crate::net_guard::redact_userinfo(token_uri);
         return Err(format!(
             "service-account token_uri must use https for a public host (got '{token_uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
         ));
@@ -2620,6 +2630,7 @@ pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), S
         posture.allow_all,
         &posture.blocked_hosts,
     ) {
+        let token_uri = crate::net_guard::redact_userinfo(token_uri);
         return Err(format!(
             "service-account token_uri '{token_uri}' targets a blocked cloud-metadata host '{host}' (the signed assertion would be POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
         ));

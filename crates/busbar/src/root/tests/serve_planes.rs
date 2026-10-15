@@ -390,6 +390,7 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     let _late = composed_services();
     let route = |protocol: &str, error_map: &[(&str, &str)]| ProviderRoute {
         base_url: "http://127.0.0.1:9".to_string(),
+        userinfo: None,
         protocol: protocol.to_string(),
         error_map: error_map
             .iter()

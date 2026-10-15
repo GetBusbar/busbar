@@ -663,7 +663,8 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
 /// stripped the userinfo for the host it dialled and signed). Driven over the REAL boot
 /// (`build_app_from_config`, through `build_once`) and a REAL dial to a loopback far end: the
 /// active probe rides the same owned egress stack as organic traffic. The far end sees the stripped
-/// authority in `Host` and no credential the userinfo spelled (no `Basic` built from it), and the
+/// authority in `Host` and the lane's `authorization` credential alone (it displaces the Basic field
+/// the userinfo spells, as 1.5.5's reqwest build did), and the
 /// lane row the plane built (its dial base, its signed host) and the neutral lane table the
 /// `/stats`-adjacent readers render carry the stripped base, never the planted spelling. RED before
 /// the fix: the lane carrier kept the base URL as written, so every table downstream held it.
@@ -713,6 +714,10 @@ async fn a_userinfo_base_url_boots_and_its_lane_dials_the_stripped_host() {
     // The lane row the plane built, and the neutral table core renders, hold the stripped base.
     let lane = &app.llm_runtime().lanes[0];
     assert_eq!(lane.base_url, bare, "the lane dials the stripped base");
+    assert!(
+        lane.url_userinfo.is_some(),
+        "the userinfo is held, opaque, for the kernel's hop"
+    );
     assert_eq!(
         lane.signing_host, authority,
         "the signed host is the dialled one"
@@ -735,16 +740,16 @@ async fn a_userinfo_base_url_boots_and_its_lane_dials_the_stripped_host() {
         Some(authority.as_str()),
         "the far end was dialled at the stripped authority"
     );
-    for name in ["authorization", "proxy-authorization", "x-api-key"] {
-        if let Some(value) = state.get_last_request_header(name) {
-            assert!(
-                !value.contains("svcuser")
-                    && !value.contains("hunter2")
-                    && !value.to_ascii_lowercase().starts_with("basic "),
-                "`{name}` carried the planted spelling: {value}"
-            );
-        }
-    }
+    // This test build's credential is `authorization: Bearer <key>`, so 1.5.5's reqwest build
+    // replaced the Basic field the userinfo spelled: the far end hears the credential alone.
+    assert_eq!(
+        state.get_last_request_header("authorization").as_deref(),
+        Some("Bearer sk-row74"),
+        "an `authorization` credential displaces the userinfo's Basic field, as in 1.5.5"
+    );
+    assert!(state
+        .get_last_request_header("proxy-authorization")
+        .is_none());
     server.shutdown().await;
 }
 

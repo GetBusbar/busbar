@@ -182,6 +182,7 @@ pub(crate) fn build_runtime(
             provider: li.provider.clone(),
             signing_host,
             base_url,
+            url_userinfo: li.url_userinfo.clone(),
             authority,
             lane_id,
             api_key: busbar_contract::redacted::Redacted::new(api_key),
