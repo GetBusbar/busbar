@@ -325,6 +325,9 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     // caller keeps it open, so the streaming plane states none; a streamed answer's send runs under
     // the deployment's ceiling.
     stream_ceiling_secs: 0,
+    // No lane words of its own: its attempts' counters carry the kernel's own lane.
+    metric_lanes: ptr::null(),
+    metric_lanes_len: 0,
 };
 
 /// The inbound auth style of a door read without a credential (no door of the plane is, today).
