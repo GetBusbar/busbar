@@ -732,18 +732,29 @@ reviewed_allowlist = ["busbar-api", "serde", "serde_json", "tracing", "async-tra
 #
 # OWNER RULING 2026-09-28 (PLUGIN LIBRARIES): "a plugin may use any third-party library it needs to
 # do its job" (tokio, hyper, h2, tracing, ...) supersedes the old posture of reviewing a transport's
-# runtime/wire-protocol crates one at a time. The four `busbar-transport-*` rows below are that
-# ruling applied: each crate's OWN direct third-party dependencies, named once. The two walls that
-# remain are unaffected — a transport's closure still holds no busbar-* crate but busbar-contract
-# (the RED (kernel/caps/unit/plane/transport) branch above, never waivable), and the host still owns
+# runtime/wire-protocol crates one at a time. The `busbar-transport-*` rows below are that ruling
+# applied: each crate's OWN direct third-party dependencies, named once. A transport that left for its
+# own repo is still READ here (ARCHITECT P5 ruling 2026-10-14: the base layer lays every pinned
+# plugin crate of a kind the census floors, transport included), so its row is its manifest at the
+# rev the root pins; tcp and stdio name busbar-contract alone and need none. The http and ws rows
+# struck when each crate left (871a978517, befd20dc37) come back with grpc's at their pinned
+# manifests. The two walls that remain are unaffected — a transport's closure still holds no
+# busbar-* crate but busbar-contract (the RED (kernel/caps/unit/plane/transport) branch above, never
+# waivable), and the host still owns
 # OS sockets, TLS, ALPN and pools (busbar-core-connector; BUSBAR-1.6.0.md THE DESIGN, §5) regardless
 # of which wire library a transport links to reach them.
 [rules.manifest-allowlist.reviewed_extra]
-busbar-transport-stdio = ["tokio", "futures"]
 # The webrtc framer (THE DESIGN l.749-757): str0m for ICE/SRTP/SCTP, ring for its primitives, aes for
 # the SRTP key derivation alone (l.753's one exception, confined by its tests/dependency_closure.rs),
 # zeroize for the keying material.
 busbar-transport-webrtc = ["str0m", "ring", "aes", "zeroize"]
+# The pinned http transport (rev in the root Cargo.toml): hyper for HTTP/1.1 and 2, its tokio-based
+# util and body helpers, tokio and tokio-util for the framer's I/O adapters, futures and memchr.
+busbar-transport-http = ["futures", "http", "http-body-util", "hyper", "hyper-util", "memchr", "tokio", "tokio-util"]
+# The pinned grpc framer: hyper's http and http-body types for the gRPC framing over HTTP/2.
+busbar-transport-grpc = ["http", "http-body", "hyper"]
+# The pinned ws framer: tokio-tungstenite's frame codec (handshake feature only).
+busbar-transport-ws = ["tokio-tungstenite"]
 # The MCP plane's outbound wire (fold A5, ARCHITECT 2026-09-29 under the PLUGIN LIBRARIES ruling):
 # the `Mcp-Name` header's `=?base64?...?=` sentinel for a name a header value cannot carry.
 busbar-plane-mcp = ["base64", "indexmap"]

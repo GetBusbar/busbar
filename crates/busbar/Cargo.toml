@@ -63,7 +63,7 @@ busbar-llm = { path = "../busbar-llm", optional = true }
 busbar-plane-llm = { path = "../busbar-plane-llm", optional = true }
 # THE MCP PLANE, through its memory-ABI door: the edge `plane-mcp` carries through its door row
 # (`plane-mcp-door`, see that feature).
-busbar-plane-mcp = { path = "../busbar-plane-mcp", optional = true }
+busbar-plane-mcp = { workspace = true, optional = true }
 # THE A2A PLANE-KIND SHELL (step 3.B.0 of the plane split). Empty crate so far (see its `src/lib.rs`)
 # — nothing in `main.rs` names it and `plane-a2a` below is not in `default`, so this edge is inert
 # until the plane/codec code that a later step moves actually lands here.
@@ -105,7 +105,7 @@ busbar-plane-streaming = { path = "../busbar-plane-streaming" }
 # registry row is the door's own Statement folded by the kernel and the composition root writes no
 # declaration of its own. Optional, so `--no-default-features` installs no plane at all, which is the
 # property the strong-form deletion test is written about.
-busbar-plane-decisions = { path = "../busbar-plane-decisions", optional = true }
+busbar-plane-decisions = { workspace = true, optional = true }
 # THE DEFAULT STORE (`governance.store: memory`), linked in every build through the `stores` axis —
 # the same row a dropped-in store takes, opened in process. The kernel names no store.
 busbar-store-memory = { workspace = true }
@@ -175,7 +175,7 @@ busbar-transport-grpc = { workspace = true }
 # pulled `tokio-tungstenite` through this line and voice stopped being strong-form deletable — the
 # exact leak `cargo xtask gate duplex-ws-default-edge` exists to catch. `plane-streaming` carries the edge.
 busbar-transport-ws = { workspace = true, optional = true }
-busbar-transport-stdio = { path = "../busbar-transport-stdio" }
+busbar-transport-stdio = { workspace = true }
 # WebRTC: the datagram framer door (ICE, SRTP, SCTP) over the connector's datagram port and secure
 # layer. Optional and off by default: its linked row is the wire's one registration, and a build
 # that does not turn `transport-webrtc` on carries neither the crate nor its media stack.
@@ -279,7 +279,7 @@ transport-tcp = []
 # compiles it out. On, the plane's door (`busbar_plane_decisions::plane_door::door`) is a `plane-door`
 # row: the root hands it to the loader beside every dropped-in plane door and binds it through the one
 # load on the one dispatcher, so the compiled-in plane is called through the same table as its
-# dropped-in cdylib (`decisions_door`; #2, #30; THE DESIGN section 11.4), its Statement folds into the
+# dropped-in cdylib (`busbar-plane-decisions-plugin`; #2, #30; THE DESIGN section 11.4), its Statement folds into the
 # plane's registry row (the `decisions:` section judged by the door's own `validate`), and the serve
 # path hands it its arrivals through the plane driver.
 plane-decisions = ["dep:busbar-plane-decisions"]
@@ -294,7 +294,7 @@ llm-on-driver = ["proto-llm", "dep:busbar-plane-llm", "auth-sigv4", "auth-oauth"
 # is gone: the plane is flipped onto the driver, BUSBAR-1.6.0.md Part 3 section 12). The plane's
 # memory-ABI door (`busbar_plane_mcp::plane_door::door`) is a `plane-door` row, bound through the
 # loader's one load beside every dropped-in plane door, the same table as its dropped-in cdylib
-# (`mcp_door`; #2, #30; THE DESIGN section 11.4). It is complete on its own: no linked row of the
+# (`busbar-plane-mcp-plugin`; #2, #30; THE DESIGN section 11.4). It is complete on its own: no linked row of the
 # plane's key stands beside it.
 plane-mcp-door = ["dep:busbar-plane-mcp"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
@@ -561,7 +561,7 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 busbar-a2a = { path = "../busbar-a2a", features = ["test-support"] }
 # The MCP plane's door, a `door:` row of `test-linked` above: linked in every build's tests, whatever
 # plane features the build enables (a single-plane build's tests still install the whole roster).
-busbar-plane-mcp = { path = "../busbar-plane-mcp" }
+busbar-plane-mcp = { workspace = true }
 busbar-voice = { path = "../busbar-voice", features = ["test-support"] }
 # `root::door_steps` tests: a member bound under an OAuth grant, its credential minted by the real
 # token-style auth plugin through its own need (TODO row 22). The same pin the `auth-oauth` row links.

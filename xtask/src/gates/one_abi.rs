@@ -351,6 +351,71 @@ pub fn members(cx: &Ctx) -> Result<Vec<Member>, String> {
     Ok(out)
 }
 
+/// THE PINNED PLUGIN CRATES, READ AS MEMBERS (ARCHITECT P5 ruling 2026-10-14, blocker 2): every
+/// `git+` package `cargo metadata` resolves over the root manifest, every feature on (a plugin linked
+/// behind a default-off feature is still linked: [`Ctx::cargo_metadata_all_features`]), that is a plugin crate
+/// ([`is_plugin_crate`]) and not a `-plugin` cdylib twin, at `crates/<package>`, the directory the
+/// base layer and kind-isolation's mount lay it at. A plugin that left for its own repo is still a
+/// plugin this binary links, so a gate over plugins reads it rather than scanning a tree that
+/// quietly lost it. The manifest is read through `cx` first (a plant, or the base layer, wins),
+/// else from the checkout cargo fetched for the pinned rev. Sorted by name.
+///
+/// # Errors
+/// `cargo metadata` does not answer, or a pinned manifest does not read.
+pub fn pinned_plugin_members(cx: &Ctx) -> Result<Vec<Member>, String> {
+    let meta: serde_json::Value =
+        serde_json::from_str(&cx.cargo_metadata_all_features("Cargo.toml")?)
+            .map_err(|e| format!("`cargo metadata` output did not parse: {e}"))?;
+    let mut out: Vec<Member> = Vec::new();
+    for p in meta["packages"].as_array().into_iter().flatten() {
+        let Some(name) = p["name"].as_str() else {
+            continue;
+        };
+        let pinned = p["source"].as_str().is_some_and(|s| s.starts_with("git+"));
+        if !pinned
+            || !is_plugin_crate(name)
+            || name.ends_with("-plugin")
+            || out.iter().any(|m| m.name == name)
+        {
+            continue;
+        }
+        let dir = format!("crates/{name}");
+        let text = match cx.read(format!("{dir}/Cargo.toml")) {
+            Ok(text) => text,
+            Err(_) => {
+                let path = p["manifest_path"]
+                    .as_str()
+                    .ok_or_else(|| format!("{name}: `cargo metadata` names no manifest_path"))?;
+                std::fs::read_to_string(path).map_err(|e| format!("{name}: {path}: {e}"))?
+            }
+        };
+        out.push(Member {
+            name: name.to_string(),
+            dir,
+            decls: manifest::dep_decls(&text),
+            manifest: text,
+        });
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(out)
+}
+
+/// Every workspace member ([`members`]) and every pinned plugin crate ([`pinned_plugin_members`])
+/// no member already names: what a gate over the binary's plugins reads.
+///
+/// # Errors
+/// As [`members`] or [`pinned_plugin_members`].
+pub fn members_with_pinned(cx: &Ctx) -> Result<Vec<Member>, String> {
+    let mut out = members(cx)?;
+    let have: BTreeSet<String> = out.iter().map(|m| m.name.clone()).collect();
+    out.extend(
+        pinned_plugin_members(cx)?
+            .into_iter()
+            .filter(|m| !have.contains(&m.name)),
+    );
+    Ok(out)
+}
+
 fn package_name(text: &str) -> Option<String> {
     let mut inside = false;
     for raw in text.lines() {
