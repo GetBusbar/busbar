@@ -398,7 +398,7 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     audit_kind: NONE,
     signing_domain: NONE,
     signing_kid_prefix: NONE,
-    cli_help: NONE,
+    cli_help: abi_str(crate::meta::CLI_HELP_TEXT),
     dialects: DIALECT_NAMES.as_ptr(),
     dialects_len: DIALECT_NAMES.len(),
     dialect_auth: DIALECT_AUTH.as_ptr(),
