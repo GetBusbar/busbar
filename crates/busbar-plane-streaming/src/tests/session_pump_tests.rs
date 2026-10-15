@@ -5,6 +5,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use bytes::Bytes;
+
 use super::*;
 use crate::codec::ir::codec::OpenAiRealtimeCodec;
 use crate::governed::{GovernedCalls, ReplyRefusal};
@@ -39,14 +41,6 @@ impl TurnSink for Turns {
     }
 }
 
-fn serves_all(_: &str) -> bool {
-    true
-}
-
-fn serves_none(_: &str) -> bool {
-    false
-}
-
 fn usage_done() -> WireEvent {
     wire(serde_json::json!({
         "type": "response.done",
@@ -78,8 +72,8 @@ fn a_usage_report_closes_the_turn_with_its_counters_and_the_session_continues() 
         "type":"input_audio_buffer.append","audio": b64
     })));
     assert_eq!(up.upstream.len(), 1, "uplink audio is written through");
-    let (out, runs) = p.on_server_frame(usage_done(), 0, &mut sink, &serves_all);
-    assert!(!out.close && runs.is_empty());
+    let out = p.on_server_frame(usage_done(), 0, &mut sink);
+    assert!(!out.close);
     assert_eq!(sink.closed.len(), 1);
     let (usage, counters) = sink.closed[0];
     let usage = usage.expect("the turn carries its usage");
@@ -97,7 +91,7 @@ fn a_sink_that_refuses_cuts_the_session_and_tells_the_far_end_to_stop() {
         refuse: true,
         ..Turns::default()
     };
-    let (out, _) = p.on_server_frame(usage_done(), 0, &mut sink, &serves_all);
+    let out = p.on_server_frame(usage_done(), 0, &mut sink);
     assert!(out.close);
     assert!(texts(&out.upstream).contains("response.cancel"));
 }
@@ -114,16 +108,14 @@ fn a_barge_in_cancels_and_truncates_at_what_was_heard() {
         ),
         0,
         &mut sink,
-        &serves_all,
     );
-    let (out, _) = p.on_server_frame(
+    let out = p.on_server_frame(
         wire(
             serde_json::json!({"type":"input_audio_buffer.speech_started",
             "audio_start_ms":0,"item_id":"it7"}),
         ),
         0,
         &mut sink,
-        &serves_all,
     );
     let up = texts(&out.upstream);
     assert!(up.contains("response.cancel"), "{up}");
@@ -134,24 +126,33 @@ fn a_barge_in_cancels_and_truncates_at_what_was_heard() {
     assert!(texts(&out.downlink).contains("speech_started"));
 }
 
+/// LAW 11 (QUESTIONS Q98): a tool call is part of the model's response. Every frame of it is relayed
+/// to the caller as the model streamed it, its arguments verbatim, and nothing the gateway writes
+/// upstream answers it: no `function_call_output`, no `response.create`. RED: the pump handed a
+/// closed call to a server-side executor and wrote the executor's output upstream itself.
 #[test]
-fn a_tool_call_is_run_once_on_its_close_with_its_accumulated_arguments() {
+fn a_tool_call_is_relayed_to_the_caller_as_is_and_the_gateway_answers_nothing() {
     let mut p = pump();
     let mut sink = Turns::default();
-    let mut runs = Vec::new();
+    let (mut down, mut up) = (Vec::new(), Vec::new());
     for f in call_frames("ca", "alpha", "{\"x\":1}") {
-        let (_, r) = p.on_server_frame(f, 0, &mut sink, &serves_all);
-        runs.extend(r);
+        let out = p.on_server_frame(f, 0, &mut sink);
+        down.extend(out.downlink);
+        up.extend(out.upstream);
     }
-    assert_eq!(runs.len(), 1);
-    assert_eq!(runs[0].name, "alpha");
-    assert_eq!(runs[0].call_id, "ca");
-    assert_eq!(runs[0].args, b"{\"x\":1}");
-    let mut out = Outbound::default();
-    p.tool_executed(runs.remove(0), b"{\"ok\":true}".to_vec(), &mut out);
-    let up = texts(&out.upstream);
-    assert!(up.contains("function_call_output") && up.contains("\"call_id\":\"ca\""));
-    assert!(up.contains("response.create"));
+    let down = texts(&down);
+    assert!(
+        down.contains("\"name\":\"alpha\"")
+            && down.contains("\"call_id\":\"ca\"")
+            && down.contains("{\\\"x\\\":1}")
+            && down.contains("function_call_arguments.done"),
+        "the call's open, its arguments and its close reach the caller: {down}"
+    );
+    assert!(
+        up.is_empty(),
+        "the gateway writes nothing upstream for a call: {}",
+        texts(&up)
+    );
     p.settle_open_turn(&mut sink);
     assert_eq!(sink.closed.len(), 1);
     assert_eq!(
@@ -162,47 +163,72 @@ fn a_tool_call_is_run_once_on_its_close_with_its_accumulated_arguments() {
 
 /// P-ITEM: VOICE TOOL-ARGS (spec DONE item 2, "All P-item behaviours match 1.5.5"; the drive log's
 /// P5, commit 470351a480: "streamed tool-call arguments are discarded"). The model streams a call's
-/// arguments as several partial-JSON fragments; they reach the executor CONCATENATED, as one call,
-/// run once, on the call's close and not before.
+/// arguments as several partial-JSON fragments; none of them is lost, and they reach the caller
+/// whole, in order, as one call, counted once.
 ///
 /// Voice is new in 1.6.0; the 1.5.5 behaviour it matches is the llm surface's own streamed tool
 /// call (owner correction 2026-09-28): 1.5.5 accumulated every `InputJsonDelta` fragment of an open
 /// tool block and emitted the call ONCE on its block stop with the fully reassembled arguments,
 /// because parsing each fragment alone lost the arguments and split one call into many (v1.5.5
-/// `crates/busbar/src/proto/gemini/writer.rs:734-780`).
+/// `crates/busbar/src/proto/gemini/writer.rs:734-780`). The streaming plane holds no tool executor
+/// (LAW 11, QUESTIONS Q98): the caller runs the call, so the pin is on what the caller receives,
+/// and the gateway answers nothing upstream on any fragment or on the close.
 #[test]
-fn p_item_voice_tool_args_streamed_fragments_reach_the_executor_whole_and_once() {
+fn p_item_voice_tool_args_streamed_fragments_reach_the_caller_whole_and_once() {
     let mut p = pump();
     let mut sink = Turns::default();
-    let mut runs = Vec::new();
+    let mut down = Vec::new();
     let open = wire(serde_json::json!({"type":"response.output_item.added",
         "item":{"type":"function_call","call_id":"cw","name":"weather"}}));
-    let (_, r) = p.on_server_frame(open, 0, &mut sink, &serves_all);
-    assert!(r.is_empty(), "an announced call is not run");
+    let out = p.on_server_frame(open, 0, &mut sink);
+    assert!(out.upstream.is_empty(), "an announced call is not answered");
+    down.extend(out.downlink);
     for fragment in ["{\"lo", "c\":\"S", "F\"}"] {
         let delta = wire(
             serde_json::json!({"type":"response.function_call_arguments.delta",
             "call_id":"cw","delta":fragment}),
         );
-        let (_, r) = p.on_server_frame(delta, 0, &mut sink, &serves_all);
+        let out = p.on_server_frame(delta, 0, &mut sink);
         assert!(
-            r.is_empty(),
-            "a call is not run on a fragment of its arguments"
+            out.upstream.is_empty(),
+            "a fragment of a call's arguments is not answered"
         );
+        down.extend(out.downlink);
     }
     let done = wire(
         serde_json::json!({"type":"response.function_call_arguments.done",
         "call_id":"cw"}),
     );
-    let (_, r) = p.on_server_frame(done, 0, &mut sink, &serves_all);
-    runs.extend(r);
-    assert_eq!(runs.len(), 1, "one call, run once on its close");
-    assert_eq!(runs[0].name, "weather");
-    assert_eq!(runs[0].call_id, "cw");
+    let out = p.on_server_frame(done, 0, &mut sink);
+    assert!(out.upstream.is_empty(), "a closed call is not answered");
+    down.extend(out.downlink);
+    let frames: Vec<serde_json::Value> = down
+        .iter()
+        .map(|w| serde_json::from_slice(&w.0).expect("a downlink frame is json"))
+        .collect();
+    let args: String = frames
+        .iter()
+        .filter(|f| f["type"] == "response.function_call_arguments.delta")
+        .map(|f| f["delta"].as_str().expect("a delta carries its fragment"))
+        .collect();
     assert_eq!(
-        runs[0].args, b"{\"loc\":\"SF\"}",
-        "the fragments reach the executor whole, in order"
+        args,
+        "{\"loc\":\"SF\"}",
+        "the fragments reach the caller whole, in order: {}",
+        texts(&down)
     );
+    assert_eq!(
+        frames
+            .iter()
+            .filter(|f| f["type"] == "response.function_call_arguments.done")
+            .count(),
+        1,
+        "one call, closed once: {}",
+        texts(&down)
+    );
+    p.settle_open_turn(&mut sink);
+    assert_eq!(sink.closed.len(), 1);
+    assert_eq!(sink.closed[0].1.tool_calls, 1, "one call, counted once");
 }
 
 /// A table that records what the pump asked of it.
@@ -241,7 +267,7 @@ impl GovernedCalls for Table {
 }
 
 #[test]
-fn a_call_the_session_does_not_serve_waits_for_the_callers_reply() {
+fn a_relayed_call_waits_for_the_callers_reply() {
     let table = Arc::new(Table::default());
     let mut p = pump();
     p.bind_governed(GovernedSession {
@@ -250,11 +276,8 @@ fn a_call_the_session_does_not_serve_waits_for_the_callers_reply() {
     });
     let mut sink = Turns::default();
     for f in call_frames("cc", "lookup", "{}") {
-        let (_, runs) = p.on_server_frame(f, 42, &mut sink, &serves_none);
-        assert!(
-            runs.is_empty(),
-            "the gateway never answers a call it does not serve"
-        );
+        let out = p.on_server_frame(f, 42, &mut sink);
+        assert!(out.upstream.is_empty(), "the gateway never answers a call");
     }
     assert_eq!(
         *table.planned.lock().expect("lock"),
@@ -308,15 +331,136 @@ fn a_session_past_its_ceiling_is_told_why_in_its_dialect() {
 fn an_error_closes_the_open_turn_before_it_is_relayed() {
     let mut p = pump();
     let mut sink = Turns::default();
-    let (out, _) = p.on_server_frame(
+    let out = p.on_server_frame(
         wire(serde_json::json!({"type":"error","error":{"code":"x","message":"y"}})),
         0,
         &mut sink,
-        &serves_all,
     );
     assert_eq!(sink.closed.len(), 1);
     assert!(sink.closed[0].0.is_none());
     assert!(texts(&out.downlink).contains("error"));
+}
+
+#[test]
+fn an_ungoverned_session_relays_a_call_and_never_answers_it() {
+    // No open-call table bound (an ungoverned node): the call reaches the caller, and nothing the
+    // gateway writes answers it.
+    let mut p = pump();
+    let mut sink = Turns::default();
+    let (mut down, mut up) = (Vec::new(), Vec::new());
+    for f in call_frames("cu", "unknown_tool", "{\"q\":1}") {
+        let out = p.on_server_frame(f, 0, &mut sink);
+        down.extend(out.downlink);
+        up.extend(out.upstream);
+    }
+    let down = texts(&down);
+    assert!(
+        down.contains("unknown_tool") && down.contains("\"call_id\":\"cu\""),
+        "the call is relayed to the caller: {down}"
+    );
+    assert!(
+        !texts(&up).contains("function_call_output"),
+        "no result is authored upstream by the gateway"
+    );
+}
+
+fn uplink_ms(ms: usize) -> WireEvent {
+    wire(serde_json::json!({"type":"input_audio_buffer.append",
+        "audio": busbar_contract::media::base64_encode(&vec![0u8; ms * 48])}))
+}
+
+#[test]
+fn two_open_tool_calls_wait_on_two_different_correlations() {
+    let table = Arc::new(Table::default());
+    let mut p = pump();
+    p.bind_governed(GovernedSession {
+        session: 1,
+        calls: table.clone(),
+    });
+    let mut sink = Turns::default();
+    for f in call_frames("cc", "a", "{}")
+        .into_iter()
+        .chain(call_frames("dd", "b", "{}"))
+    {
+        let _ = p.on_server_frame(f, 0, &mut sink);
+    }
+    let planned: Vec<String> = table
+        .planned
+        .lock()
+        .expect("lock")
+        .iter()
+        .map(|(_, c, _)| c.clone())
+        .collect();
+    assert_eq!(planned, ["cc", "dd"], "each call is its own wait");
+    let reply = |id: &str| {
+        wire(
+            serde_json::json!({"type":"conversation.item.create","item":{
+            "type":"function_call_output","call_id":id,"output":"{}"}}),
+        )
+    };
+    assert!(!p.on_client_frame(reply("dd")).refused_reply);
+    assert!(
+        p.on_client_frame(reply("dd")).refused_reply,
+        "a wait is woken once"
+    );
+    assert!(!p.on_client_frame(reply("cc")).refused_reply);
+}
+
+#[test]
+fn an_upstream_error_still_meters_the_turn_it_ended() {
+    let mut p = pump();
+    let mut sink = Turns::default();
+    let _ = p.on_client_frame(uplink_ms(40_000));
+    for id in ["e1", "e2"] {
+        let open = call_frames(id, "t", "{}");
+        let [first, ..] = open;
+        let _ = p.on_server_frame(first, 0, &mut sink);
+    }
+    let _ = p.on_server_frame(
+        wire(serde_json::json!({"type":"error","error":{"code":"x","message":"y"}})),
+        0,
+        &mut sink,
+    );
+    assert_eq!(sink.closed.len(), 1);
+    let closed = sink.closed[0].1;
+    assert_eq!((closed.audio_ms_in, closed.tool_calls), (40_000, 2));
+}
+
+#[test]
+fn a_barge_in_bills_what_the_interrupted_turn_served_on_the_turn_that_takes_over() {
+    let mut p = pump();
+    let mut sink = Turns::default();
+    let _ = p.on_client_frame(uplink_ms(1_000));
+    let [open, ..] = call_frames("b1", "t", "{}");
+    let _ = p.on_server_frame(open, 0, &mut sink);
+    let _ = p.on_server_frame(
+        wire(
+            serde_json::json!({"type":"input_audio_buffer.speech_started",
+            "audio_start_ms":0,"item_id":"it"}),
+        ),
+        0,
+        &mut sink,
+    );
+    assert!(
+        sink.closed.is_empty(),
+        "a barge-in closes no turn and drops no counter"
+    );
+    let _ = p.on_server_frame(usage_done(), 0, &mut sink);
+    assert_eq!(sink.closed.len(), 1);
+    let closed = sink.closed[0].1;
+    assert_eq!((closed.audio_ms_in, closed.tool_calls), (1_000, 1));
+}
+
+#[test]
+fn a_caller_frame_that_is_not_utf8_or_names_no_known_event_goes_nowhere() {
+    let mut p = pump();
+    let mut sink = Turns::default();
+    let bad = p.on_client_frame(WireEvent(Bytes::from_static(&[0xff, 0xfe, 0x00])));
+    assert!(bad.upstream.is_empty() && bad.downlink.is_empty() && !bad.close);
+    let unknown = p.on_client_frame(wire(serde_json::json!({"type":"teleport.now"})));
+    assert!(unknown.upstream.is_empty() && unknown.downlink.is_empty());
+    p.settle_open_turn(&mut sink);
+    assert!(sink.closed.is_empty(), "nothing was counted");
 }
 
 /// The `audio_seconds_in` every closed turn bills, summed over the session.
@@ -342,7 +486,7 @@ fn twenty_turns_of_1050_ms_bill_21_audio_seconds_not_40() {
         let _ = p.on_client_frame(wire(serde_json::json!({
             "type":"input_audio_buffer.append","audio": b64
         })));
-        let _ = p.on_server_frame(usage_done(), 0, &mut sink, &serves_all);
+        let _ = p.on_server_frame(usage_done(), 0, &mut sink);
     }
     assert_eq!(sink.closed.len(), 20);
     assert_eq!(billed_audio_seconds(&sink), 21);
@@ -361,7 +505,7 @@ fn the_part_of_a_millisecond_a_frame_leaves_over_is_carried_not_floored() {
             "type":"input_audio_buffer.append","audio": b64
         })));
     }
-    let _ = p.on_server_frame(usage_done(), 0, &mut sink, &serves_all);
+    let _ = p.on_server_frame(usage_done(), 0, &mut sink);
     assert_eq!(sink.closed.len(), 1);
     assert_eq!(sink.closed[0].1.audio_ms_in, 1000);
     assert_eq!(billed_audio_seconds(&sink), 1);

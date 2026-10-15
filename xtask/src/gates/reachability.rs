@@ -311,12 +311,13 @@ const ROSTER: &[Plane] = &[
     },
     Plane {
         key: "streaming",
-        on_disk: "voice",
-        module: "units_voice",
-        linked_crate: "busbar-voice",
+        on_disk: "plane-streaming",
+        module: "units_streaming",
+        linked_crate: "busbar-plane-streaming",
         register_tokens: &["StreamingPlane"],
-        note: "#18: streaming is the PLANE, voice is one dialect inside it. The rename has not \
-               landed, so the module and the crate are still spelled `voice`",
+        note: "#18: streaming is the PLANE (voice is one dialect inside it), a DOOR plane since \
+               FLIP-STREAMING: its crate is `busbar-plane-streaming`, registered by its `plane-door` \
+               row (Part 2 #2) and served through the one composition's driver (Q-SO10)",
     },
     Plane {
         key: "decision",
@@ -1774,7 +1775,6 @@ const AXIS_ITEMS: &[(&str, &[&str])] = &[
     ("body-ingress", &["BODY_INGRESS"]),
     ("protocol-seams", &["install_protocol_seams"]),
     ("diagnostics", &["DIAGNOSTICS"]),
-    ("ws-arrivals", &["install_ws_arrivals"]),
     ("on-host", &["on_host"]),
     ("compose", &["compose"]),
 ];
@@ -2538,8 +2538,8 @@ impl Gate for ReachabilityGate {
             let f = &findings[p.key];
             // THE ON-DISK SPELLING IS IN THE TITLE WHENEVER IT DIFFERS. A reader who finds
             // `reachability:unit-path:streaming` red has to know, without opening this file, that
-            // the module it is about is `units_voice.rs` — the #18 rename has not landed and a row
-            // naming a file that is not there is a row nobody can act on.
+            // the crate it is about — a row naming a file that is not there is a row nobody can act
+            // on.
             let who = if p.key == p.on_disk {
                 format!("plane `{}`", p.key)
             } else {
@@ -2820,15 +2820,13 @@ impl Gate for ReachabilityGate {
             cx,
             FIX_GREEN,
             "a key flipped only under #[cfg(test)] reds its unit-path and root-reach rows",
-            &[row_unit_path("streaming"), row_root_reach("streaming")],
+            &[row_unit_path("a2a"), row_root_reach("a2a")],
             {
                 let mut ov = Overlay::new();
                 ov.set(
                     INSTALL_RS,
-                    FIXTURE_GREEN_INSTALL.replace(
-                        VOICE_FLIP_LINE,
-                        &format!("    #[cfg(test)]\n{VOICE_FLIP_LINE}"),
-                    ),
+                    FIXTURE_GREEN_INSTALL
+                        .replace(A2A_FLIP_LINE, &format!("    #[cfg(test)]\n{A2A_FLIP_LINE}")),
                 );
                 ov
             },
@@ -2885,9 +2883,9 @@ impl Gate for ReachabilityGate {
                 ov.set(
                     INSTALL_RS,
                     FIXTURE_GREEN_INSTALL.replace(
-                        VOICE_FLIP_LINE,
+                        A2A_FLIP_LINE,
                         &format!(
-                            "{VOICE_FLIP_LINE}    flip_one_shot_to_kernel(crate::root::plane_decisions::PLANE_DECLARATION.key);\n"
+                            "{A2A_FLIP_LINE}    flip_one_shot_to_kernel(crate::root::plane_decisions::PLANE_DECLARATION.key);\n"
                         ),
                     ),
                 );
@@ -3004,7 +3002,7 @@ impl Gate for ReachabilityGate {
             cx,
             FIX_GREEN,
             "a plane whose linked-axes row carries no gauntlet axis is not flipped by the fold",
-            &[row_unit_path("streaming"), row_root_reach("streaming")],
+            &[row_unit_path("a2a"), row_root_reach("a2a")],
             folded_install(false),
             "no fold over `LINKED` flips it",
         ));
@@ -3093,7 +3091,8 @@ impl Gate for ReachabilityGate {
             }),
             "the plane-crate population is empty",
         ));
-        // THE ON-DISK SPELLING MAPS: a plane crate declaring `voice` is the streaming plane's.
+        // THE ON-DISK SPELLING MAPS: a plane crate declaring `plane-streaming` is the streaming
+        // plane's.
         report.push(green_over(
             self,
             cx,
@@ -3108,7 +3107,7 @@ impl Gate for ReachabilityGate {
                 ov.set(
                     "crates/busbar-plane-voice/src/lib.rs",
                     "pub struct VoicePlane;\n\nimpl PlaneMeta for VoicePlane {\n    \
-                     const KEY: &'static str = \"voice\";\n}\n",
+                     const KEY: &'static str = \"plane-streaming\";\n}\n",
                 );
                 ov
             }),
@@ -3262,17 +3261,19 @@ impl Gate for ReachabilityGate {
             cx,
             FIX_GREEN,
             "a crate linked but not on the plane axis, and no plane_claims token, reds its registration row",
-            &[row_registered("streaming")],
+            &[row_registered("mcp")],
             {
                 let mut ov = claims_name_no_plane();
                 ov.set(
                     CRATE_MANIFEST,
-                    FIXTURE_LINKED_MANIFEST
-                        .replace("plane-streaming = \"plane diagnostics\"", "plane-streaming = \"diagnostics\""),
+                    FIXTURE_LINKED_MANIFEST.replace(
+                        "plane-mcp = \"plane protocols diagnostics\"",
+                        "plane-mcp = \"protocols diagnostics\"",
+                    ),
                 );
                 ov
             },
-            "no linked-table row for `busbar-voice` on the `plane` or `plane-door` axis",
+            "no linked-table row for `busbar-plane-mcp` on the `plane` or `plane-door` axis",
         ));
         // A DOOR ROW IS REGISTRATION (Part 2 #2, compiled-in = dropped-in): a door-shaped plane —
         // its declaration row on no `plane` axis, its crate linked again on `plane-door`, no
@@ -3315,7 +3316,7 @@ impl Gate for ReachabilityGate {
             cx,
             FIX_GREEN,
             "a module `main.rs` reaches only through a root-units row of the generated table is reached",
-            evidenced(voice_reached_only_through_root_units(true)),
+            evidenced(mcp_reached_only_through_root_units(true)),
         ));
         report.push(red_over(
             self,
@@ -3323,8 +3324,8 @@ impl Gate for ReachabilityGate {
             FIX_GREEN,
             "the same module with no root-units row reds the root-module row",
             &[ROW_ROOT_MODULE.to_string()],
-            voice_reached_only_through_root_units(false),
-            "units_voice",
+            mcp_reached_only_through_root_units(false),
+            "units_mcp",
         ));
 
         report
@@ -3366,19 +3367,19 @@ fn claims_name_no_plane() -> Overlay {
     ov
 }
 
-/// The green fixture with `main.rs` no longer calling into `units_voice` — reached, if at all, only
+/// The green fixture with `main.rs` no longer calling into `units_mcp` — reached, if at all, only
 /// through a root-units row of the manifest (planted when `listed`).
-fn voice_reached_only_through_root_units(listed: bool) -> Overlay {
+fn mcp_reached_only_through_root_units(listed: bool) -> Overlay {
     let mut ov = Overlay::new();
     ov.set(
         MAIN_RS,
-        FIXTURE_GREEN_MAIN.replace("        + root::units_voice::answer()\n", ""),
+        FIXTURE_GREEN_MAIN.replace("        + root::units_mcp::answer()\n", ""),
     );
     if listed {
         ov.set(
             CRATE_MANIFEST,
             format!(
-                "{FIXTURE_LINKED_MANIFEST}\n[package.metadata.busbar.root-units]\nroot-voice = \"units_voice\"\n"
+                "{FIXTURE_LINKED_MANIFEST}\n[package.metadata.busbar.root-units]\nroot-mcp = \"units_mcp\"\n"
             ),
         );
     }
@@ -3406,7 +3407,6 @@ const FIXTURE_GREEN_DECISION: &str =
     include_str!("../../fixtures/reachability-green/crates/busbar/src/root/plane_decisions.rs");
 const A2A_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_a2a::PLANE_KEY);\n";
 const MCP_FLIP_LINE: &str = "    flip_one_shot_to_kernel(busbar_plane_mcp::PLANE_KEY);\n";
-const VOICE_FLIP_LINE: &str = "    flip_session_to_kernel(busbar_voice::PLANE_KEY);\n";
 const INSTALL_CALL_LINE: &str = "    root::gauntlet_install::install();\n";
 
 /// The decisions plane's entry as it is on the real tree: a declaration and hooks, no `Units` impl —
@@ -3456,14 +3456,9 @@ fn decision_door(door_row: bool, driven: bool, twice: bool) -> Overlay {
         );
         calls.push_str("    let _ = root::serve::compose_again();\n");
     }
+    // The green fixture's root already carries `root/serve.rs` (the streaming door plane's one
+    // composition); this plants its decisions-shaped variant over it.
     ov.set(SERVE_RS, serve);
-    ov.set(
-        "crates/busbar/src/root/mod.rs",
-        format!(
-            "{}pub mod serve;\n",
-            include_str!("../../fixtures/reachability-green/crates/busbar/src/root/mod.rs")
-        ),
-    );
     ov.set(
         MAIN_RS,
         FIXTURE_GREEN_MAIN.replace(INSTALL_CALL_LINE, &format!("{INSTALL_CALL_LINE}{calls}")),
@@ -3600,15 +3595,11 @@ fn folded_install(all: bool) -> Overlay {
         .replace(
             "plane-mcp = \"plane protocols diagnostics\"",
             "plane-mcp = \"plane protocols diagnostics gauntlet-one-shot\"",
-        )
-        .replace(
-            "plane-a2a = \"plane diagnostics\"",
-            "plane-a2a = \"plane diagnostics gauntlet-one-shot\"",
         );
     if all {
         manifest = manifest.replace(
-            "plane-streaming = \"plane diagnostics\"",
-            "plane-streaming = \"plane diagnostics gauntlet-session\"",
+            "plane-a2a = \"plane diagnostics\"",
+            "plane-a2a = \"plane diagnostics gauntlet-one-shot\"",
         );
     }
     let mut ov = Overlay::new();

@@ -2073,6 +2073,9 @@ pub struct DoorReach<'a> {
     pub conns: Arc<dyn busbar_contract::conn::PollConns>,
     /// Whole seconds.
     pub stream_ceiling_secs: u64,
+    /// The top-level models catalog a section's `session.model` names an entry of
+    /// (`root::serve::catalog_routes`, ARCHITECT Q-L5B-ROUTE); `None` = the section's own table.
+    pub catalog: Option<&'a std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
     /// The model-serving pools the plane serving the `pools` map walks
     /// ([`crate::root::model_egress`]); `None` where none is composed.
     pub models: Option<&'a crate::root::model_egress::ModelServing>,

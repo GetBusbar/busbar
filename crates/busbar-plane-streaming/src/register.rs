@@ -44,8 +44,8 @@
 //!
 //! The plane opens NO socket (#7): its whole closure is pure. The duplex WebSocket ingress, the TLS
 //! termination and the SSE/duplex reframe are the composition root's host seams — the same
-//! `busbar-transport-ws` edge the `plane-streaming` feature pulls (`busbar-voice?/runtime` arms the neutral
-//! full-duplex WS transport; the plane SELECTS `Transport::WebSocket` and the host opens it). The
+//! `busbar-transport-ws` edge the `plane-streaming` feature pulls (the neutral full-duplex WS
+//! transport; the plane SELECTS `Transport::WebSocket` and the host opens it). The
 //! `plane-streaming` feature forwards to that same transport edge; the plane holds no socket plumbing.
 //!
 //! ## S4 — HOT-ABI / SDK (compiled-in AND dropped-in)

@@ -110,41 +110,6 @@ file = "crates/busbar-llm/src/unit/meter.rs"
 item = "busbar_plane_llm"
 
 [[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-voice/src/bin/voice-conform.rs"
-item = "busbar_plane_streaming"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-voice/src/lib.rs"
-item = "busbar_plane_streaming"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-voice/src/runtime/metering.rs"
-item = "busbar_plane_streaming"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-voice/src/runtime/mod.rs"
-item = "busbar_plane_streaming"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-voice/src/runtime/session.rs"
-item = "busbar_plane_streaming"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-voice/src/runtime/voice_plane_unit_oracle.rs"
-item = "busbar_plane_streaming"
-
-[[finding]]
-rule = "door-only:plugin-path"
-file = "crates/busbar-voice/src/topology/mod.rs"
-item = "busbar_plane_streaming"
-
-[[finding]]
 rule = "door-only:static-seam"
 file = "crates/busbar-core-admin/src/v1/service.rs"
 item = "USAGE_RATE_HISTORY"
@@ -196,11 +161,6 @@ item = "SECTION_PLANE_TEST_RUNTIME_FACTORY"
 rule = "door-only:static-seam"
 file = "crates/busbar-llm/src/unit/node.rs"
 item = "NATIVE_SEATS"
-
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/busbar-voice/src/mount.rs"
-item = "COMPOSED_GOVERNED_CALLS"
 
 [[finding]]
 rule = "door-only:static-seam"

@@ -896,6 +896,7 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: opts.stream_ceiling_secs.unwrap_or(600),
         models: Some(&models),
+        catalog: None,
         upgrades: Vec::new(),
     };
     let stage = HookStage {
@@ -948,6 +949,7 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
                 conns: Arc::clone(&connector) as Arc<dyn PollConns>,
                 stream_ceiling_secs,
                 models: Some(&models),
+                catalog: None,
                 upgrades: Vec::new(),
             };
             appliers.refresh_models(

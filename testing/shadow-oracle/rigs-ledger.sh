@@ -89,7 +89,7 @@
 #
 # ARMING
 #   MCP_SUBJECT_BUSBAR_BIN / A2A_SUBJECT_BUSBAR_BIN are set from --bin for the MCP and A2A legs. The
-#   voice battery arms itself (it drives its OWN `voice-conform` harness binary built from this tree,
+#   voice battery arms itself (it drives its OWN `voice_conform` harness (testing/voice-conformance/harness) from this tree,
 #   never busbar's server binary — see testing/voice-conformance/lib/conform-bin.sh), so --bin plays
 #   no part in that leg; it is still required, so a run cannot silently skip the two legs that do need
 #   it by never providing one.
@@ -660,7 +660,7 @@ run_voice() {
   say "== rig: voice conformance battery =="
   local log="${WORK}/voice-results.tsv"
   : >"$log"
-  # No busbar binary is threaded through: the voice legs drive their OWN `voice-conform` harness
+  # No busbar binary is threaded through: the voice legs drive their OWN `voice_conform` harness
   # binary built from this tree (testing/voice-conformance/lib/conform-bin.sh), never a server
   # busbar binary. --bin is still required at the top of this script so a caller cannot silently
   # skip the two legs that DO need it by never supplying one.

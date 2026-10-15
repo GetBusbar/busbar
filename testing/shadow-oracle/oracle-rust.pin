@@ -285,6 +285,19 @@
 # earlier pin (predev's 4a7a7bba2cef, oracle-strict's edd17921e320, #157's 0ede76aea912, #493's 5b89bdf67326), so
 # no lane's engine moves backwards when this lands.
 #
+# 2026-10-06 (busbar P3 FLIP-STREAMING / DEL-VOICE): moved 4a7a7bba2cef -> 30d072960aa1 (busbar-release
+# `p3-flip-streaming-plan`, PR #168 into dev, cut from 4a7a7bba2cef). One commit, no engine change: the
+# build-test plan's `voice runtime` row leaves with the deleted busbar-voice crate (plan-lint refuses a row
+# naming a package the tree lacks). The judge's code is 4a7a7bba2cef's byte for byte. promote.yml
+# RELEASE_REF moves to the same sha in the same commit. Feature branch head; re-pin to the merge commit
+# when it lands.
+#
+# 2026-10-06 (ARCHITECT RELEASE_REF rule: the pin is always a busbar-release DEV commit that contains
+# every earlier pin): moved 30d072960aa1 -> 1869c0032ecf, the merge of busbar-release #168 into dev
+# (#168 = the voice-runtime row strike above, merged with dev 5b89bdf67326 = #166). It contains
+# 4a7a7bba2cef, 0ede76aea9 (#157) and 5b89bdf67326 (#166). promote.yml RELEASE_REF moves to the same
+# sha in the same commit.
+#
 # 2026-10-07 (ARCHITECT ruling on #536, option b; HEADROOM-REMOVE precedent Q-SO2/Q-SO3): moved 1869c0032ecf ->
 # 4d52f387c4d1 (busbar-release dev, the merge of #177; its tree is #177's head 0ff118af56f5 byte for byte; it descends
 # 1869c0032ecf, 2119a67a6f and 4a7a7bba2c).

@@ -32,21 +32,25 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The canonical order is the doctrine order: the three original protocols, then voice (Plane 4).
+/// The canonical order is the doctrine order: the legacy-engine protocols. `voice` (Plane 4's legacy
+/// crate, `crates/busbar-voice`) is struck: FLIP-STREAMING deleted it, and the streaming plane is
+/// `busbar-plane-streaming`, scanned by the PLANE-KIND regime like every `busbar-plane-*` crate.
 ///
 /// THE LEGACY-ENGINE ROSTER: every consumer reads a key as a `crates/busbar-<key>` directory (see
 /// [`plane_src_roots`]). `mcp` IS STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05; its shell twin
 /// `scripts/plane-keys.sh` says the same in the same commit): `crates/busbar-mcp` is deleted and the
 /// mcp plane is plane-kind only, its door crate `busbar-plane-mcp` — scanned by the plane-kind regime
 /// and located by its door row ([`door_planes`]) wherever a gate resolves the plane's home.
-pub const PLANE_KEYS: [&str; 3] = ["llm", "a2a", "voice"];
+pub const PLANE_KEYS: [&str; 2] = ["llm", "a2a"];
 
 /// Plane keys with NO legacy-engine crate: the plane lives only in its plane-kind crate
 /// `busbar-plane-<key>` and is located by its door row ([`door_planes`]). Twin of
 /// `scripts/plane-keys.sh`'s `PLANE_KEYS_KIND_ONLY`. A roster that must notice a plane VANISHING
 /// (structure-lint's plane-roots row) reads these beside [`PLANE_KEYS`]: leaving the legacy roster
-/// must not take a plane off the roster that refuses an unlocatable plane.
-pub const PLANE_KEYS_KIND_ONLY: [&str; 1] = ["mcp"];
+/// must not take a plane off the roster that refuses an unlocatable plane. `streaming` joined when
+/// FLIP-STREAMING took `voice` off [`PLANE_KEYS`]: `crates/busbar-voice` is deleted and the plane is
+/// `busbar-plane-streaming`, located by its `plane-streaming` door row.
+pub const PLANE_KEYS_KIND_ONLY: [&str; 2] = ["mcp", "streaming"];
 
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.
@@ -173,7 +177,7 @@ pub fn plane_src_roots() -> Vec<String> {
 ///
 /// * the five `busbar-plane-*` crates — the plane kind itself, scanned by the REVERSE side of
 ///   `plane-purity` through `kind_isolation::plane_kind_src_roots`;
-/// * `busbar-llm`, `busbar-mcp`, `busbar-a2a`, `busbar-voice` and the two surviving `-codec` halves
+/// * `busbar-llm`, `busbar-a2a` (`busbar-mcp` and `busbar-voice` are deleted) and the two surviving `-codec` halves
 ///   — the legacy engines: naming a protocol is what they are for, and [`plane_src_roots`] is the
 ///   list that scans them;
 /// * the plugin INSTANCES (`busbar-transport-*`, `store-*`, `secret-*`, `auth-*`, `hook*`,

@@ -433,6 +433,10 @@
           "optional": true,
           "type": "ConfigMgmtCfg"
         },
+        "decisions": {
+          "optional": true,
+          "type": "DeclaredSections"
+        },
         "export": {
           "optional": true,
           "type": "ExportDefs"

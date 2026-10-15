@@ -104,6 +104,17 @@ impl LinkedRow {
     }
 }
 
+/// A compiled-in door's Statement, checked as [`rendering_of`] checks it, for a kind's own reader
+/// of its tail (`kinds::transport::stated`).
+///
+/// # Errors
+///
+/// The refusal the door or its Statement earns.
+pub(crate) fn statement_of(door_fn: DoorFn) -> Result<Statement, LoadError> {
+    let (door, _) = read_door(door_fn(), None)?;
+    statement(&door)
+}
+
 /// THE RENDERING a door's Statement makes, for any kind: the door's head checks (magic, mechanism,
 /// size, a known kind at this host's ABI version for it) and the Statement's, then
 /// [`render`]. The pack tool signs it into a dropped plugin's manifest; [`LinkedRow::of`] states it

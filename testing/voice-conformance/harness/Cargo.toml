@@ -1,0 +1,29 @@
+[package]
+name = "voice-conformance-harness"
+version = "0.0.0"
+publish = false
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.97"
+description = "The voice (streaming-plane) conformance harness: drives busbar-plane-streaming's door both ways, linked and dropped in, through the plugin loader."
+
+# TESTKIT, NOT PRODUCT PATH (ARCHITECT Q6: the streaming plane's conformance MUST-set, built against
+# `busbar-plane-streaming`, linked and dlopened, RED arm kept). `testing/voice-conformance/`'s legs
+# shell out to this binary. It is not shipped and not built by `cargo build --bin busbar`: it is the
+# same kind of member as `testing/ws-conformance/subject`, an input to a conformance leg. It lives
+# outside the plane crate so the plane's only user of the loader is its own both-ways witness
+# (`tests/conformance.rs`), the one dev-edge on the loader a plugin crate is granted.
+[[bin]]
+name = "voice_conform"
+path = "src/main.rs"
+
+[dependencies]
+busbar-contract = { path = "../../../crates/busbar-contract" }
+# THE PLANE UNDER TEST: its linked door (`busbar_plane_streaming::door::door`) and its codecs, which
+# compute every expectation from the wire. The dropped-in door is the plane's own `streaming_door`
+# example cdylib.
+busbar-plane-streaming = { path = "../../../crates/busbar-plane-streaming" }
+# THE ONE LOADER both doors are loaded through (`load_linked`, `load_dropped`).
+busbar-plugin-loader = { path = "../../../crates/plugin-loader" }
+serde_json = { workspace = true }
+bytes = { workspace = true }

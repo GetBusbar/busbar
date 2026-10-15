@@ -18,7 +18,7 @@ ignore = [
     "RUSTSEC-2024-0436",
     # RUSTSEC-2024-0449: `unsafe-libyaml` 0.2.11 is unmaintained. It is pulled in only via
     # serde_yaml_ng 0.10, busbar's YAML config parser (`cargo tree -i unsafe-libyaml`:
-    # busbar, busbar-a2a, busbar-contract, busbar-kernel, busbar-voice, busbar-core-oauth2,
+    # busbar, busbar-a2a, busbar-contract, busbar-kernel, busbar-core-oauth2,
     # xtask and others -> serde_yaml_ng -> unsafe-libyaml). Advisory is "unmaintained", not a
     # security hole. There is no safe swap now: a different YAML parser risks 1.5.5 config-parse
     # parity (customer-visible behaviour, guarded by the oracle). Re-evaluate when serde_yaml_ng

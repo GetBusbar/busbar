@@ -39,7 +39,6 @@ const SCANNED: &[&str] = &[
     // `crates/busbar-mcp/src` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted; the
     // mcp plane is `crates/busbar-plane-mcp/src`, scanned above.
     "crates/busbar-a2a/src",
-    "crates/busbar-voice/src",
 ];
 
 /// The shapes a class key enters a usage report through.
@@ -49,13 +48,17 @@ const SHAPES: &[&str] = &[
     "=> Billing::Counted {",
     "usage_units: std::collections::BTreeMap::from(",
     "usage_units: class_counts(",
+    // The streaming door's session sink folds each closed turn's counts into its unit tail.
+    "in class_counts(",
 ];
 
 /// Where a plane's `PlaneDeclaration` (and so its `billable_classes`) is written.
 const DECLARATIONS: &[(&str, &str)] = &[
     ("llm", "crates/busbar-llm/src/lib.rs"),
     ("a2a", "crates/busbar-a2a/src/a2a/mod.rs"),
-    ("streaming", "crates/busbar-voice/src/lib.rs"),
+    // FLIP-STREAMING: the streaming plane is a door; its classes are its Statement's
+    // `BILLABLE_CLASSES` table (`class(<class>, <family>)` rows).
+    ("streaming", "crates/busbar-plane-streaming/src/door.rs"),
 ];
 
 /// One report site: its plane, its file, its shape and how many times the shape occurs there, and
@@ -116,11 +119,12 @@ const SITES: &[Site] = &[
         emits: &["busbar_plane_a2a::meta::CLASS_BYTES"],
         dead: None,
     },
-    // `class_counts` (busbar-plane-streaming's session.rs) names these six.
+    // `class_counts` (busbar-plane-streaming's session.rs) names these six; the door's session
+    // sink reports each closed turn's counts under them.
     Site {
         plane: "streaming",
-        file: "crates/busbar-voice/src/runtime/metering.rs",
-        shape: "usage_units: class_counts(",
+        file: "crates/busbar-plane-streaming/src/session_unit.rs",
+        shape: "in class_counts(",
         occurrences: 1,
         emits: &[
             "busbar_plane_streaming::meta::CLASS_AUDIO_TOKENS_IN",
@@ -212,6 +216,61 @@ fn literal_of(src: &str, name: &str) -> Option<String> {
     Some(def[open + 1..open + 1 + close].to_string())
 }
 
+/// A plane DOOR's classes: its Statement's `const BILLABLE_CLASSES: &[BillableClass] = &[ … ]`
+/// table of `class(<class>, <family>)` rows, each class a crate-relative constant path
+/// (`meta::CLASS_X.as_str()`) or a name the file imports (`use busbar_contract::plane::{PER_SESSION,
+/// …}`). `None` when the file holds no such table (a `PlaneDeclaration` file).
+fn door_classes(root: &Path, file: &str, src: &str) -> Result<Option<BTreeSet<String>>, String> {
+    let Some(at) = src.find("const BILLABLE_CLASSES: &[BillableClass] = &[") else {
+        return Ok(None);
+    };
+    let body = &src[at..];
+    let end = body
+        .find("\n];")
+        .ok_or_else(|| format!("{file}: an unterminated BILLABLE_CLASSES"))?;
+    let krate = file
+        .strip_prefix("crates/")
+        .and_then(|r| r.split('/').next())
+        .ok_or_else(|| format!("{file}: not under crates/"))?
+        .replace('-', "_");
+    let mut classes = BTreeSet::new();
+    for line in body[..end].lines() {
+        let Some(row) = line.trim().strip_prefix("class(") else {
+            continue;
+        };
+        let expr = row.split(',').next().unwrap_or("").trim();
+        let expr = expr.trim_end_matches(".as_str()");
+        let path = if let Some(lit) = expr.strip_prefix('"') {
+            classes.insert(lit.trim_end_matches('"').to_string());
+            continue;
+        } else if expr.contains("::") {
+            format!("{krate}::{expr}")
+        } else {
+            let import = src
+                .lines()
+                .filter_map(|l| l.trim().strip_prefix("use "))
+                .find_map(|l| {
+                    let l = l.trim_end_matches(';');
+                    match l.split_once("::{") {
+                        Some((module, names)) => names
+                            .trim_end_matches('}')
+                            .split(',')
+                            .any(|n| n.trim() == expr)
+                            .then(|| format!("{module}::{expr}")),
+                        None => (l.rsplit("::").next() == Some(expr)).then(|| l.to_string()),
+                    }
+                })
+                .ok_or_else(|| format!("{file}: class `{expr}` is neither a path nor imported"))?;
+            import
+        };
+        classes.insert(resolve(root, &path)?);
+    }
+    if classes.is_empty() {
+        return Err(format!("{file}: a BILLABLE_CLASSES table with no rows"));
+    }
+    Ok(Some(classes))
+}
+
 /// The classes a plane's `PlaneDeclaration::billable_classes` names, resolved.
 fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
     let (_, file) = DECLARATIONS
@@ -219,6 +278,9 @@ fn declared(root: &Path, plane: &str) -> Result<BTreeSet<String>, String> {
         .find(|(p, _)| *p == plane)
         .ok_or_else(|| format!("no declaration file for plane {plane}"))?;
     let src = std::fs::read_to_string(root.join(file)).map_err(|e| format!("{file}: {e}"))?;
+    if let Some(classes) = door_classes(root, file, &src)? {
+        return Ok(classes);
+    }
     let start = src
         .find("billable_classes: &")
         .ok_or_else(|| format!("{file}: no billable_classes"))?;
