@@ -1,12 +1,6 @@
-//! Test-only wiring: the shared harness, the codec/µ-law fixture tests, and the purity/determinism
+//! Test-only wiring: the selector, purity/determinism
 //! and style checks the crate doc comments promise elsewhere (`lib.rs`'s [`crate::StreamingPlane`] doc
 //! comment cites [`purity`] by name).
-
-pub mod harness;
-
-mod codec;
-mod twilio;
-mod ulaw;
 
 /// What a request path matches, decided the same way the boot's overlap check decides it.
 mod selectors {
@@ -25,6 +19,48 @@ mod selectors {
         assert!(!matches_selector(&s, "/twilio/inbound/deeper"));
         assert!(!matches_selector(&s, "/other/inbound"));
     }
+
+    /// Twilio Media Streams is a streaming DIALECT carried by the WebSocket transport, not a
+    /// transport of its own (the design lists five transports and no telephony one). Its claim is
+    /// on the WebSocket transport, one path level under `/twilio`, and authenticates under the
+    /// `webhook-signature` alternative alone: Twilio holds no busbar bearer or API key. Without the
+    /// claim the dialect's reader and codec are unreachable: no arrival ever names it.
+    #[test]
+    fn twilio_media_streams_is_claimed_on_the_websocket_carrier_under_the_webhook_signature() {
+        use crate::claims::{dialect_for, Dialect, DIALECT_CLAIMS, WS_TRANSPORT};
+        use crate::StreamingPlane;
+        use busbar_contract::plane::PlaneMeta;
+
+        let twilio: Vec<_> = DIALECT_CLAIMS
+            .iter()
+            .filter(|c| c.dialect == Dialect::TwilioMediaStreams)
+            .collect();
+        assert_eq!(
+            twilio.len(),
+            1,
+            "exactly one claim names the Twilio dialect"
+        );
+        let claim = &twilio[0].claim;
+        assert_eq!(
+            claim.transport, WS_TRANSPORT,
+            "Twilio rides the WebSocket transport"
+        );
+        assert_eq!(claim.selector, Selector::PrefixOneLevel("/twilio"));
+        assert_eq!(claim.scheme_alternatives, &["webhook-signature"]);
+        assert!(
+            <StreamingPlane as PlaneMeta>::CLAIMS.contains(claim),
+            "the declared claim is one the boot seal reads"
+        );
+        // An arrival one level under `/twilio` names the dialect; the prefix alone and a deeper
+        // path do not, and neither does another dialect's path.
+        assert_eq!(
+            dialect_for("/twilio/inbound"),
+            Some(Dialect::TwilioMediaStreams)
+        );
+        assert_eq!(dialect_for("/twilio"), None);
+        assert_eq!(dialect_for("/twilio/a/b"), None);
+        assert_eq!(dialect_for("/v1/realtime"), Some(Dialect::OpenaiRealtime));
+    }
 }
 
 /// Purity and determinism: the properties every plane in the design is held to ("pure over its
@@ -35,8 +71,8 @@ mod purity {
     /// `StreamingPlane` derives `Copy`. Every interior-mutable cell (`Cell`, `RefCell`, `Mutex`,
     /// `OnceLock`, ...) is `!Copy`, so a type that IS `Copy` structurally cannot hold one: this is
     /// a compile-time proof, not a convention, that the plane keeps no mutable state of its own
-    /// across calls — everything that varies across a session lives in the kernel-held
-    /// `PlaneSessionState` instead (see `session::VoiceSessionState`).
+    /// across calls: everything that varies across a session lives in the session's own state
+    /// (see `session_unit::SessionUnit`).
     const fn assert_copy<T: Copy>() {}
     const _: () = assert_copy::<StreamingPlane>();
 
@@ -80,100 +116,6 @@ mod purity {
     // implementation of it can falsify, and one that read as coverage the transform did not have.
     // What the transform is actually held to lives in [`super::ulaw`]: the standard's own reference
     // vectors in both directions, and a round trip over all 256 bytes that pins the decoded sample.
-}
-
-/// Where a paired turn is routed: to the upstream the session actually DIALED, not the first
-/// configured one. A session opened on a duplex client dialect dialed the upstream that speaks it;
-/// every later turn of that session must name that same upstream, or a turn is metered on the wrong
-/// provider's lane.
-mod route {
-    use crate::claims::Dialect;
-    use crate::tests::harness::{
-        ctx_with_session, EmptyConfig, LeakPlaneAlloc, PairedSession, WsStack,
-    };
-    use crate::{StreamingPlane, Upstream};
-    use busbar_contract::bounded::{FactValue, Facts, Ir, Labels};
-    use busbar_contract::dest::DestinationFacts;
-    use busbar_contract::ids::{LaneId, OpClassId};
-    use busbar_contract::plane::Plane;
-
-    /// Two upstreams, gemini declared SECOND, each on its own priced lane.
-    static UPSTREAMS: &[Upstream] = &[
-        Upstream {
-            lane: LaneId::new("realtime-openai"),
-            host: "api.openai.example",
-            dialect: Dialect::OpenaiRealtime,
-        },
-        Upstream {
-            lane: LaneId::new("realtime-gemini"),
-            host: "api.gemini.example",
-            dialect: Dialect::GeminiLive,
-        },
-    ];
-
-    /// P-ITEM: WRONG-PROVIDER ATTRIBUTION (spec DONE item 2, "All P-item behaviours match 1.5.5";
-    /// fixed red-before-green in e15713578a). A paired turn of a gemini-live session routes to the
-    /// gemini upstream — its real config index and its own priced lane — not to the first-declared
-    /// openai upstream. Before the fix the paired branch hard-coded `UpstreamIdx(0)` and
-    /// `upstreams().first().lane`, so a gemini session's every turn was billed on the openai lane:
-    /// the wrong provider's money. The 1.5.5 behaviour this matches is its one surface's (the llm
-    /// surface; owner correction 2026-09-28): usage is ledgered and metered against the SERVING lane
-    /// and its provider, never another configured one (v1.5.5 `crates/busbar/src/proxy/usage.rs:57-103`,
-    /// "`lane` is the SERVING lane (post-failover)"). A bug fixed to match, never a signed diff.
-    #[test]
-    fn p_item_wrong_provider_attribution_a_paired_turn_routes_to_the_dialed_upstream_not_the_first()
-    {
-        let plane = StreamingPlane::new(UPSTREAMS);
-        let arena = LeakPlaneAlloc;
-        let config = EmptyConfig;
-        let transport = WsStack::new("/openai/realtime");
-        let labels = Labels::new();
-        let session = PairedSession::new(Dialect::GeminiLive.name(), 1);
-        let cx = ctx_with_session(&arena, &config, &transport, &labels, &session);
-
-        let mut facts = Facts::new();
-        let _ = facts.set("dialect", FactValue::Str(Dialect::GeminiLive.name()));
-        let u = crate::tests::harness::unit(OpClassId::new("duplex_turn"), Ir::empty(), facts);
-
-        match plane.verify(&u, &cx) {
-            DestinationFacts::SessionUpstream { upstream, lane, .. } => {
-                assert_eq!(
-                    lane,
-                    LaneId::new("realtime-gemini"),
-                    "a gemini session's turn must bill on the gemini lane it dialed"
-                );
-                assert_eq!(
-                    upstream.0, 1,
-                    "the fact must name the gemini upstream's real config index"
-                );
-            }
-            other => panic!("a paired turn must route to a session upstream, got {other:?}"),
-        }
-    }
-
-    /// A paired turn of an openai-realtime session still routes to the openai upstream (index 0),
-    /// so the fix does not simply invert the bug.
-    #[test]
-    fn a_paired_openai_turn_still_routes_to_the_openai_upstream() {
-        let plane = StreamingPlane::new(UPSTREAMS);
-        let arena = LeakPlaneAlloc;
-        let config = EmptyConfig;
-        let transport = WsStack::new("/openai/realtime");
-        let labels = Labels::new();
-        let session = PairedSession::new(Dialect::OpenaiRealtime.name(), 1);
-        let cx = ctx_with_session(&arena, &config, &transport, &labels, &session);
-
-        let u =
-            crate::tests::harness::unit(OpClassId::new("duplex_turn"), Ir::empty(), Facts::new());
-
-        match plane.verify(&u, &cx) {
-            DestinationFacts::SessionUpstream { upstream, lane, .. } => {
-                assert_eq!(lane, LaneId::new("realtime-openai"));
-                assert_eq!(upstream.0, 0);
-            }
-            other => panic!("a paired turn must route to a session upstream, got {other:?}"),
-        }
-    }
 }
 
 /// Style rules this crate holds itself to, checked rather than merely asserted in prose: no

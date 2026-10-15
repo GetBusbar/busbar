@@ -33,7 +33,7 @@ rule | hold-escape | banned | JoinHandle::abort | an aborted task loses its unit
 # the type, so the literal that finds every take site is the exit token the take demands.
 rule | seal-site | confined:kernel/src | KernelSeal::acquire_for_kernel | the seal is what mints every token; only the kernel may obtain one
 rule | seal-site | confined:recovery | Grant::<Recover>::mint( | it materialises a hold from a journal record with no admission behind it, so only the recovery path may name it; the capability crate that declares it is the one reviewed exception, and the gate names that exception by file
-rule | seal-site | confined:kernel/src | take(&Grant::<Exit>::mint( | there are three take sites -- the exit path and a child unit's end in the teller, and the sweep in the tick -- all in the kernel, and no fourth anywhere
+rule | seal-site | confined:kernel/src | take(&Grant::<Exit>::mint | there are three take sites -- the exit path and a child unit's end in the teller, and the sweep in the tick -- all in the kernel, and no fourth anywhere
 
 # Every escape the compiler cannot close that the source scan must keep looking for. The join test
 # fails if a `rule` line above stops naming one of these.
@@ -46,4 +46,4 @@ expect | .leak()
 expect | AssertUnwindSafe
 expect | KernelSeal::acquire_for_kernel
 expect | Grant::<Recover>::mint(
-expect | take(&Grant::<Exit>::mint(
+expect | take(&Grant::<Exit>::mint

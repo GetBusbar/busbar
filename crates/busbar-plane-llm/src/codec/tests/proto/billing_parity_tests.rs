@@ -18,9 +18,9 @@ use super::*;
 fn same_proto_usage(proto: &str, frames: &[&[u8]]) -> (u64, u64) {
     let mut t = StreamTranslate::new_same_proto(proto).expect("same-proto translator");
     for f in frames {
-        let _ = t.feed(f);
+        let _ = t.feed(crate::codec::test_host::HOST, f);
     }
-    let _ = t.finish();
+    let _ = t.finish(crate::codec::test_host::HOST);
     let u = t.usage().expect("A-tap captured terminal usage").clone();
     (u.input_tokens, u.output_tokens)
 }
@@ -29,9 +29,9 @@ fn same_proto_usage(proto: &str, frames: &[&[u8]]) -> (u64, u64) {
 fn cross_proto_usage(ingress: &str, egress: &str, frames: &[&[u8]]) -> (u64, u64) {
     let mut t = StreamTranslate::new(ingress, egress).expect("cross-proto translator");
     for f in frames {
-        let _ = t.feed(f);
+        let _ = t.feed(crate::codec::test_host::HOST, f);
     }
-    let _ = t.finish();
+    let _ = t.finish(crate::codec::test_host::HOST);
     let u = t.usage().expect("A-tap captured terminal usage").clone();
     (u.input_tokens, u.output_tokens)
 }
@@ -41,7 +41,10 @@ fn cross_proto_usage(ingress: &str, egress: &str, frames: &[&[u8]]) -> (u64, u64
 fn nonstream_usage(proto: &str, body: &[u8]) -> (u64, u64) {
     let p = protocol_for(proto).expect("known proto");
     let v: serde_json::Value = crate::codec::json::parse(body).expect("json body");
-    let ir = p.reader().read_response(&v).expect("read_response");
+    let ir = p
+        .reader()
+        .read_response(crate::codec::test_host::HOST, &v)
+        .expect("read_response");
     (ir.usage.input_tokens, ir.usage.output_tokens)
 }
 
@@ -228,7 +231,7 @@ fn buffered_billing_and_stream_tap_agree_on_cohere_billed_units() {
     let ir = protocol_for("cohere")
         .expect("known proto")
         .reader()
-        .read_response(&v)
+        .read_response(crate::codec::test_host::HOST, &v)
         .expect("read_response");
 
     // The STREAM tap's ledgered projection of this exact IR.
@@ -240,7 +243,12 @@ fn buffered_billing_and_stream_tap_agree_on_cohere_billed_units() {
     );
 
     // The BUFFERED billing arm over the same IR.
-    let buffered = match chat_handle::ChatRespHandle(ir).billing() {
+    let buffered = match chat_handle::ChatRespHandle(
+        ir,
+        busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+    )
+    .billing()
+    {
         Some(Billing::Tokens(t)) => t,
         other => panic!("buffered chat billing must be token-shaped, got {other:?}"),
     };

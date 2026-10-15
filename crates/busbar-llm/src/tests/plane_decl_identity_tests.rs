@@ -31,3 +31,25 @@ fn the_plane_declares_its_published_key_and_is_the_fallback() {
     assert_eq!(d.config_section, "pools");
     assert_eq!(d.audit_kind, "pool");
 }
+
+/// ONE DECLARATION, ONE SOURCE (ARCHITECT, `$` meter classes): the linked declaration's billable
+/// classes are the door's, class for class and family for family — the four token tiers in the token
+/// family, then every open class in the family the codec's table gives it — and its fee unit is the
+/// door's. RED while `search_units` was re-familied `count` here against the door's `units`.
+#[test]
+fn the_linked_billable_classes_are_the_doors() {
+    use busbar_plane_llm::plane_door::{FEE_CLASS, OPEN_CLASSES, TOKEN_CLASSES};
+    let d = &super::PLANE_DECLARATION;
+    let declared: Vec<(&str, &str)> = d
+        .billable_classes
+        .iter()
+        .map(|c| (c.class, c.family))
+        .collect();
+    let door: Vec<(&str, &str)> = TOKEN_CLASSES
+        .iter()
+        .map(|c| (*c, busbar_contract::plane::TOKEN_FAMILY))
+        .chain(OPEN_CLASSES.iter().copied())
+        .collect();
+    assert_eq!(declared, door);
+    assert_eq!(d.fee_units, &[FEE_CLASS]);
+}

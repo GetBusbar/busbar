@@ -372,9 +372,10 @@ union has no `ping` member, although Anthropic's documentation says `ping` event
 real Anthropic streams carry them. Busbar keeps emitting `event: ping` in translated Anthropic
 streams: it is a documented event, an Anthropic client that cannot take it is not an Anthropic
 client, and dropping it would make a Busbar-fronted stream less like the real thing rather than
-more. The conformance row is recorded as a named gap of the published spec — it is never
-special-cased in the validator — and is re-judged whenever the pinned document is re-pinned; it
-disappears the day the union gains the member.
+more. The conformance gate judges Anthropic's stream against both of Anthropic's documents: the
+published union, plus the two events its streaming guide documents outside it (`ping`, exactly
+`{"type":"ping"}`, and `error`, the spec's own `ErrorResponse`), each under its own SSE event name.
+Any other event type still fails the published union, and there is no named gap for these rows.
 
 Anything else you observe that differs from what the provider's own endpoint returns on a
 same-protocol route is a bug, and on a cross-protocol route is either listed under

@@ -32,7 +32,6 @@ static TEST_REGISTERED_PROTOCOLS: std::sync::Mutex<Vec<&'static ProtocolDecl>> =
 /// itself.
 #[cfg(any(test, feature = "test-support"))]
 pub fn register_test_protocol(decl: &'static ProtocolDecl) {
-    arm_host_services();
     // A name the composition root already installed is declared: this seam stands in for a root
     // in binaries that have none, and re-declaring behind a real root would make the boot fold
     // report a duplicate the operator never caused (a test-built binary would then carry boot
@@ -250,29 +249,24 @@ static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
 /// [`registry`]'s initializer.
 static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::OnceLock::new();
 
-/// Arm the HOST SERVICES a protocol cell reaches through the contract: the usage-tap fault reporter
-/// (`handlers::report_usage_tap_decode_failure`) a cell's default usage tap reports through, the
-/// usage-tap fault latch (`handlers::usage_tap_decode_fail_should_warn`) a codec whose tap reads a
-/// body more than one way counts each way through, the translate-body cap reader
-/// (`proxy::max_translate_body_bytes`, the live operator knob), the host entropy source (the OS
-/// CSPRNG) and the host wall clock (`store::now`). Called wherever protocols become reachable —
-/// [`install_protocols`] and the test registration seams — so no cell can be dispatched before they
-/// are armed. Idempotent.
-fn arm_host_services() {
-    busbar_contract::codec::install_usage_tap_fault_reporter(
-        crate::handlers::report_usage_tap_decode_failure,
-    );
-    busbar_contract::codec::install_usage_tap_fault_latch(
-        crate::handlers::usage_tap_decode_fail_should_warn,
-    );
-    busbar_contract::codec::install_translate_cap_reader(crate::proxy::max_translate_body_bytes);
-    busbar_contract::codec::install_entropy_source(os_entropy);
-    busbar_contract::codec::install_wall_clock(crate::store::now);
-}
+/// THE KERNEL'S CODEC HOST: the host services every codec the kernel drives is handed, down its call
+/// graph, as a `&dyn CodecHost` — the host entropy source (the OS CSPRNG, one `getrandom` fill per
+/// call) and the host wall clock (`store::now`, whole Unix seconds). A value with no state: the
+/// services are the kernel's, and the contract holds neither.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct CodecHostServices;
 
-/// The host entropy source: the OS CSPRNG, one `getrandom` fill per call.
-fn os_entropy(out: &mut [u8]) -> bool {
-    getrandom::fill(out).is_ok()
+/// The kernel's codec host, as the borrowed handle a codec call takes.
+pub const CODEC_HOST: &dyn busbar_contract::codec::CodecHost = &CodecHostServices;
+
+impl busbar_contract::codec::CodecHost for CodecHostServices {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        getrandom::fill(out).is_ok()
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(crate::store::now())
+    }
 }
 
 /// INSTALL PROTOCOL DECLARATIONS — the composition root's one write into the protocol axis, and the
@@ -287,7 +281,6 @@ fn os_entropy(out: &mut [u8]) -> bool {
 /// - if called after the registry was first read.
 #[allow(dead_code)] // pub-widened and called by the busbar binary once the first protocol crate registers through it
 pub fn install_protocols(decls: Vec<&'static ProtocolDecl>) {
-    arm_host_services();
     assert!(
         INSTALLED.set(decls).is_ok(),
         "install_protocols called twice: there is one composition root, and it registers once"
@@ -379,7 +372,6 @@ static TEST_BUILTINS_HOOK: std::sync::OnceLock<fn() -> &'static [&'static Protoc
 /// tail re-folds WITH it on the next read — the read is self-healing regardless of call order.
 #[cfg(any(test, feature = "test-support"))]
 pub fn set_test_builtins(f: fn() -> &'static [&'static ProtocolDecl]) {
-    arm_host_services();
     let _ = TEST_BUILTINS_HOOK.set(f);
 }
 
@@ -424,12 +416,17 @@ pub fn registry() -> &'static Registry {
 /// THE GENERIC ROUTER DETECTION FOLD — `(path, headers)` → which registered protocol a request
 /// speaks, or `None` for a path that names none. Folds every registered protocol's
 /// [`ProtocolDecl::claims`] predicate in REGISTRATION ORDER and keeps the TIGHTEST claim (lowest
-/// [`ClaimStrength`]); a tie breaks by registration order. Byte-identical to the old ladder.
+/// [`ClaimStrength`]); a tie breaks by registration order. Byte-identical to the old ladder. The
+/// head crosses the seam as neutral field pairs, in the map's order (a name's first value first).
 pub fn detect_protocol(path: &str, headers: &http::HeaderMap) -> Option<&'static str> {
+    let fields: Vec<(&[u8], &[u8])> = headers
+        .iter()
+        .map(|(n, v)| (n.as_str().as_bytes(), v.as_bytes()))
+        .collect();
     registry()
         .decls()
         .iter()
-        .filter_map(|d| d.claims.and_then(|c| c(headers, path)).map(|s| (s, d.name)))
+        .filter_map(|d| d.claim_over(path, &fields).map(|s| (s, d.name)))
         .min_by(|a, b| a.0.cmp(&b.0))
         .map(|(_, name)| name)
 }

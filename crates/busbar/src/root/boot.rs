@@ -16,9 +16,7 @@
 use std::sync::Arc;
 
 use super::linked::{linked_exports, Linked};
-use super::loader::{
-    boot::*, dispatch::LoadError, dispatch::ManifestFacts, DynPlane, PluginRegistry,
-};
+use super::loader::{boot::*, dispatch::LoadError, dispatch::ManifestFacts, PluginRegistry};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_kernel::config::{FetchTarget, PluginsCfg};
 use busbar_kernel::config_validate::deal::{Document, Seat};
@@ -64,7 +62,9 @@ pub fn registry(
 /// THE `plugins:` BLOCK'S TRUST, resolved: the embedded first-party key, the configured
 /// publishers and opt-ins and the per-name floors (`min_versions`, the rollback pins), through the
 /// loader's `TrustPolicy::from_config`. `binary_version` is carried for diagnostics only. The
-/// automatic first-party floor is the registry build's to arm.
+/// automatic first-party floor is the registry build's to arm. THE ONE BUILDER: the root hands this
+/// same function to the kernel (`RootInstall::trust_policy`, `root::linked::register_stores`), and
+/// every snapshot carries it to the admin surface, which judges a plugin under nothing else.
 ///
 /// # Errors
 ///
@@ -126,7 +126,8 @@ pub fn harness_first_party_key(
 
 /// THE ROOT'S PLUGINS FETCH (the kernel preflight's `PluginsFetch`): every `plugins.fetch` target
 /// through the loader's fetch (cache-by-pin, verify-before-write, atomic write) into `dir`, and only
-/// ever through the kernel's SSRF-guarded `download`.
+/// ever through the SSRF-guarded download over the one connector
+/// ([`super::plugin_fetch::downloader`], the operator's metadata denylist `blocked` extending it).
 ///
 /// # Errors
 ///
@@ -135,8 +136,9 @@ pub fn plugins_fetch(
     dir: &std::path::Path,
     targets: &[FetchTarget],
     fatal_on_miss: bool,
-    download: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+    blocked: &[String],
 ) -> Result<Vec<Fetched>, Vec<String>> {
+    let download = super::plugin_fetch::downloader(blocked);
     let specs: Vec<super::loader::FetchSpec> = targets
         .iter()
         .map(|t| super::loader::FetchSpec {
@@ -145,7 +147,7 @@ pub fn plugins_fetch(
             filename: t.filename.clone(),
         })
         .collect();
-    let outcomes = super::loader::fetch_plugins(dir, &specs, fatal_on_miss, download)?;
+    let outcomes = super::loader::fetch_plugins(dir, &specs, fatal_on_miss, &download)?;
     Ok(outcomes
         .into_iter()
         .map(|o| match o {
@@ -489,21 +491,6 @@ pub fn refuse_unserved_inbound(
     refuse_inbound(&candidates, &select(&Uses::of(&doc), &candidates))
 }
 
-/// THE PLANES DROPPED INTO `dir`: every tarball the loader's three-phase scan admits under `policy`
-/// whose signed kind is `plane`, loaded over the HOT-tier ABI from its verified bytes, in the scan's
-/// (filename) order. A scan the loader refuses yields no plane here — the plugins preflight reads the
-/// same directory under the same policy later in boot and refuses it there with every problem named;
-/// a trusted plane that will not LOAD is a refusal here, as a linked plane's would be.
-pub fn dropped_planes(
-    dir: &std::path::Path,
-    policy: &crate::root::loader::sign::TrustPolicy,
-) -> Result<Vec<DynPlane>, String> {
-    let Ok(registry) = crate::root::loader::scan_and_validate(dir, policy) else {
-        return Ok(Vec::new());
-    };
-    registry.open_planes(&[]).map(|set| set.hot)
-}
-
 /// THE PLUGINS DROPPED INTO THE CONFIGURED `plugins.dir`, scanned ONCE before any axis is installed —
 /// so before the configuration is parsed, which needs those axes — and kept for the process, whose
 /// dropped-in planes and export modules are opened from it. Only the kernel-owned `plugins:` block is
@@ -587,13 +574,9 @@ fn scan_configured() -> Option<crate::root::loader::PluginRegistry> {
 
 /// THE PLANES DROPPED INTO `dropped` (see [`dropped_from_config`]) AND THE LINKED PLANE DOORS: every
 /// plane that states itself through a door is discovered here and bound by [`load_door_planes`] once
-/// the process's dispatcher is built; every HOT-lane plane (M6-HOT-PLANE) is opened here and
-/// returned for the plane axis. A trusted plane that will not state itself or LOAD refuses the boot,
-/// as a linked plane's would.
-pub fn dropped_planes_of(
-    linked: &Linked,
-    dropped: Option<&crate::root::loader::PluginRegistry>,
-) -> Vec<DynPlane> {
+/// the process's dispatcher is built. A trusted plane that will not state itself, or has no door,
+/// refuses the boot, as a linked plane's would.
+pub fn discover_planes(linked: &Linked, dropped: Option<&crate::root::loader::PluginRegistry>) {
     let set = match dropped {
         Some(registry) => registry.open_planes(linked.plane_doors),
         None => crate::root::loader::PluginRegistry::empty().open_planes(linked.plane_doors),
@@ -603,22 +586,23 @@ pub fn dropped_planes_of(
         std::process::exit(2);
     });
     let _ = DOOR_CANDIDATES.set(set.doors);
-    set.hot
 }
 
-/// The door planes [`dropped_planes_of`] discovered, waiting for the dispatcher.
+/// The door planes [`discover_planes`] discovered, waiting for the dispatcher.
 pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::boot::Candidate>> =
     std::sync::OnceLock::new();
 
 /// The door planes [`load_door_planes`] bound, held for the process.
 static DOOR_PLANES: std::sync::OnceLock<Vec<(String, DoorPlane)>> = std::sync::OnceLock::new();
 
-/// A plane bound through its door.
-pub type DoorPlane =
-    crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>;
+/// A plane bound through its door, shared (a `Plugin` is `!Clone`, THE DESIGN C.1): the boot's
+/// list, each generation's plane instance and its config-apply holder share the one instance.
+pub type DoorPlane = std::sync::Arc<
+    crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>,
+>;
 
 /// THE DOOR PLANES' ONE LOAD, run once the process's dispatcher is built
-/// ([`crate::root::dispatch::boot`]): every plane [`dropped_planes_of`] discovered, linked and
+/// ([`crate::root::dispatch::boot`]): every plane [`discover_planes`] discovered, linked and
 /// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
 /// under the configured `plugins.logs`, each declaring its needs on the process's one connection
 /// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
@@ -638,7 +622,10 @@ pub fn load_door_planes() {
     .unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
-    });
+    })
+    .into_iter()
+    .map(|(instance, plane)| (instance, std::sync::Arc::new(plane)))
+    .collect::<Vec<(String, DoorPlane)>>();
     // Stage 3g: every bound door validates the section dealt to it before anything opens.
     let path =
         crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
@@ -704,27 +691,23 @@ pub fn door_planes() -> &'static [(String, DoorPlane)] {
 /// THE TRANSPORTS DROPPED INTO THE CONFIGURED `plugins.dir` (the registry [`dropped_from_config`]
 /// scanned): every `kind: transport` plugin it admitted, loaded ONCE and held for the process, so the
 /// boot seal folds them beside the linked wires (`crate::root::registry::compose`) and a wire the
-/// data door serves through lives as long as the door. Each image is opened on the lane it speaks: a
-/// memory-ABI door through the one dispatcher, served over the host's sockets
-/// (`crate::root::doors`, opened with the deployment's `settings`; the boot's call is the one that
-/// loads them); a HOT decl through its adapter. A trusted transport that will not LOAD refuses the
-/// boot, as a linked plane's would.
+/// data door serves through lives as long as the door. Each image is a memory-ABI door, opened
+/// through the one dispatcher and served over the host's sockets (`crate::root::doors`, opened with
+/// the deployment's `settings`; the boot's call is the one that loads them). A trusted transport
+/// that will not LOAD, or that exports no door, refuses the boot, as a linked plane's would.
 pub fn dropped_transports(
     settings: &busbar_contract::transport::TransportSettings,
 ) -> crate::root::registry::Dropped {
-    type Held = (
-        Vec<crate::root::loader::DynTransport>,
-        Vec<crate::root::registry::DroppedDoor>,
-    );
-    static WIRES: std::sync::OnceLock<Held> = std::sync::OnceLock::new();
-    let (hot, doors) = WIRES.get_or_init(|| {
+    static WIRES: std::sync::OnceLock<Vec<crate::root::registry::DroppedDoor>> =
+        std::sync::OnceLock::new();
+    let doors = WIRES.get_or_init(|| {
         let Some(registry) = REGISTRY.get() else {
-            return (Vec::new(), Vec::new());
+            return Vec::new();
         };
         let opened = registry
             .open_transport_entries(&crate::root::doors::bind())
             .and_then(|entries| {
-                let doors = entries
+                entries
                     .doors
                     .into_iter()
                     .map(|plugin| {
@@ -735,6 +718,8 @@ pub fn dropped_transports(
                         let key = facts.claims.first().copied().unwrap_or_default();
                         let claims = facts.claims;
                         let composes_over = facts.composes_over;
+                        let offered = facts.offered;
+                        let upgrades = facts.upgrades;
                         let (door, wire) = crate::root::doors::served(
                             plugin,
                             settings,
@@ -744,19 +729,20 @@ pub fn dropped_transports(
                             key,
                             claims,
                             composes_over,
+                            offered,
+                            upgrades,
                             wire,
                             door,
                         })
                     })
-                    .collect::<Result<Vec<_>, String>>()?;
-                Ok((entries.hot, doors))
+                    .collect::<Result<Vec<_>, String>>()
             });
         opened.unwrap_or_else(|refusal| {
             eprintln!("busbar: {refusal}");
             std::process::exit(2);
         })
     });
-    crate::root::registry::Dropped { hot, doors }
+    crate::root::registry::Dropped { doors }
 }
 
 /// THE BOOT BOOK, COMPOSED — the extracted seam [`book`] calls, wired against a store
@@ -927,8 +913,17 @@ pub fn book(
     let token = super::kernel::new_kernel().durability_token();
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
     let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
+    // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
+    // material derives it from the deployment keyset just bound, so no verified principal is lent
+    // an empty reference and two principals never share one.
+    if let Some(material) = durability
+        .record
+        .derived_secret(super::keyset::CALLER_REF_MATERIAL)
+    {
+        gov.bind_deployment_caller_ref(material);
+    }
     // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
-    // boot log's INFO+ line set is part of what "LLM-only ≡ 1.5.5" means — it is pinned
+    // boot log's INFO+ line set is part of what "one plane alone ≡ 1.5.5" means — it is pinned
     // by `tests/boot_lines_neutrality.rs` and recorded by the oracle's
     // `hazard|no-data-dir|logs` cell — so a new line here is a user-visible byte change
     // on a surface that must not move. The seal is an internal fact an operator can ask

@@ -31,11 +31,19 @@ fn foreign_vendor_image_ref_never_corrupts_any_writer() {
     let cohere = CohereWriter;
     let gemini = GeminiWriter;
     let bedrock = BedrockWriter;
-    let o = serde_json::to_string(&openai_writer().write_request(&req)).unwrap();
-    let a = serde_json::to_string(&anthropic_writer().write_request(&req)).unwrap();
-    let g = serde_json::to_string(&gemini.write_request(&req)).unwrap();
-    let b = serde_json::to_string(&bedrock.write_request(&req)).unwrap();
-    let c = serde_json::to_string(&cohere.write_request(&req)).unwrap();
+    let o =
+        serde_json::to_string(&openai_writer().write_request(crate::codec::test_host::HOST, &req))
+            .unwrap();
+    let a = serde_json::to_string(
+        &anthropic_writer().write_request(crate::codec::test_host::HOST, &req),
+    )
+    .unwrap();
+    let g =
+        serde_json::to_string(&gemini.write_request(crate::codec::test_host::HOST, &req)).unwrap();
+    let b =
+        serde_json::to_string(&bedrock.write_request(crate::codec::test_host::HOST, &req)).unwrap();
+    let c =
+        serde_json::to_string(&cohere.write_request(crate::codec::test_host::HOST, &req)).unwrap();
     for (name, wire) in [
         ("openai", o),
         ("anthropic", a),
@@ -67,7 +75,7 @@ fn base64_image_projects_intact_on_every_writer() {
     // bytes: `contains("QUJD")` alone is satisfied by the payload landing without its
     // `data:image/png;base64,` header (or under the wrong key), which OpenAI rejects as an invalid
     // image_url — the media type is as load-bearing as the bytes.
-    let o = openai_writer().write_request(&req);
+    let o = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let url = o["messages"][0]["content"][0]["image_url"]["url"].as_str();
     assert_eq!(
         url,
@@ -82,15 +90,31 @@ fn base64_image_projects_intact_on_every_writer() {
     let bedrock = BedrockWriter;
     let cohere = CohereWriter;
     for (name, media_token, wire) in [
-        ("openai", "image/png", openai.write_request(&req)),
+        (
+            "openai",
+            "image/png",
+            openai.write_request(crate::codec::test_host::HOST, &req),
+        ),
         (
             "anthropic",
             "image/png",
-            anthropic_writer().write_request(&req),
+            anthropic_writer().write_request(crate::codec::test_host::HOST, &req),
         ),
-        ("gemini", "image/png", gemini.write_request(&req)),
-        ("bedrock", "\"png\"", bedrock.write_request(&req)),
-        ("cohere", "image/png", cohere.write_request(&req)),
+        (
+            "gemini",
+            "image/png",
+            gemini.write_request(crate::codec::test_host::HOST, &req),
+        ),
+        (
+            "bedrock",
+            "\"png\"",
+            bedrock.write_request(crate::codec::test_host::HOST, &req),
+        ),
+        (
+            "cohere",
+            "image/png",
+            cohere.write_request(crate::codec::test_host::HOST, &req),
+        ),
     ] {
         let s = serde_json::to_string(&wire).unwrap();
         assert!(

@@ -36,11 +36,6 @@ item = "ranking (hooks-ranking)"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel-scope/src/lib.rs"
-item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/api.rs"
 item = "openapi"
 
@@ -51,53 +46,13 @@ item = "openapi"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/auth/token.rs"
-item = "github"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate.rs"
-item = "otlp"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate.rs"
-item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate.rs"
-item = "webhook"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate_export.rs"
-item = "otlp"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/mod.rs"
 item = "github"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/mod.rs"
-item = "otlp"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/mod.rs"
-item = "prometheus"
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/mod.rs"
 item = "ranking"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/mod.rs"
-item = "webhook"
 
 [[finding]]
 rule = "c1-literals:literal"
@@ -106,38 +61,8 @@ item = "openapi"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/providers.rs"
-item = "anthropic"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config_validate/mod.rs"
 item = "ranking"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "admin-tokens"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "ldap"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "oidc"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "sigv4"
 
 [[finding]]
 rule = "c1-literals:literal"
@@ -156,23 +81,8 @@ item = "jsonrpc"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/snapshot/mod.rs"
-item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/observability.rs"
-item = "webhook"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/plane/registry.rs"
 item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane_host/egress.rs"
-item = "streaming"
 
 [[finding]]
 rule = "c1-literals:literal"
@@ -185,16 +95,146 @@ file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
 item = "streaming"
 
 [[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/test_support/export_axis.rs"
-item = "otlp"
+rule = "c1-literals:feature"
+file = "crates/busbar-kernel/Cargo.toml"
+item = "ws (duplex-ws)"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/test_support/export_axis.rs"
-item = "webhook"
+file = "crates/busbar-kernel-egress/src/trust/net.rs"
+item = "http"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/plugin-loader/src/plane.rs"
-item = "openapi"
+file = "crates/busbar-kernel-egress/src/trust/net.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config/mod.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config_validate/mod.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/config_validate/mod.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/diagnostics/mod.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
+item = "websocket"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
+item = "ws"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
+item = "wss"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/client.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/client.rs"
+item = "wss"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/deadline.rs"
+item = "tcp"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/https.rs"
+item = "h2"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/mod.rs"
+item = "h2"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/mod.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/mod.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/engine/observe.rs"
+item = "h2"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/egress/fixtures.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/ingress/protocol.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/ingress/protocol.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/preflight.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/preflight.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/router.rs"
+item = "ws"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/test_support/fixtures.rs"
+item = "http"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/test_support/fixtures.rs"
+item = "https"
+
+[[finding]]
+rule = "c1-literals:literal"
+file = "crates/busbar-kernel/src/test_support/mod.rs"
+item = "http"

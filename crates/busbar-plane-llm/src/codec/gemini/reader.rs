@@ -3,10 +3,17 @@ use crate::codec::dialect::ir_parse_error;
 use crate::codec::keys;
 
 impl ProtocolReader for GeminiReader {
-    /// The FIRST `finishReason` is the first candidate's — the one `read_response` reads its stop
-    /// reason from. `FIELD_FINISH_REASON`, quoted, spelled as bytes so the lookup allocates nothing.
-    fn stop_reason_key(&self) -> Option<&'static [u8]> {
-        Some(b"\"finishReason\"")
+    /// A candidate's own `finishReason` member (`{"candidates":[{…,"finishReason":…}]}`, depth 3):
+    /// the first is the first candidate's, the one `read_response` reads its stop reason from.
+    /// Located structurally, so a `finishReason` key inside the candidate's `content` (a model-written
+    /// `functionCall.args` object holding `"finishReason":"MALFORMED_FUNCTION_CALL"`) is never read
+    /// as the stop reason and never faults a shared lane. `FIELD_FINISH_REASON`, quoted, spelled as
+    /// bytes so the lookup allocates nothing.
+    fn stop_reason_key(&self) -> Option<crate::codec::usage_tail::StopKey> {
+        Some(crate::codec::usage_tail::StopKey {
+            key: b"\"finishReason\"",
+            depth: 3,
+        })
     }
 
     /// The same `map_gemini_finish_reason` `read_response` maps it through.
@@ -18,7 +25,8 @@ impl ProtocolReader for GeminiReader {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usageMetadata\"")?;
         // The same table the complete response reads (`USAGE`): thinking tokens fold into the
         // output and the tool-use prompt term into the input, so a truncated response counts the same
-        // as a complete one. An unreadable count yields NO recovered usage, never a zero one (#42).
+        // as a complete one. An unreadable count is refused on its own and bills nothing; the
+        // readable counts recover (#42; ARCHITECT ruling 2026-10-15).
         // The stated-total check rides too, so a recovered turn ledgers the same `unitemized_tokens`
         // remainder its complete twin does (owner LEDGER-100).
         let mut usage = crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), USAGE).ok()?;
@@ -588,9 +596,22 @@ impl ProtocolReader for GeminiReader {
             // Gemini's own error envelope (spec Part 2 #76), never silently left out.
             Some(budget) => match read_gemini_thinking_budget(budget).ok_or_else(ir_parse_error)? {
                 -1 => Some(crate::codec::ir::IrReasoningAsk::Dynamic),
-                // 0 = thinking explicitly switched off (IR-09): a foreign reasoning-by-default
-                // backend must be told, not left to think.
-                0 => Some(crate::codec::ir::IrReasoningAsk::Off),
+                // 0 = thinking switched off. It carries no ask across the seam, exactly as 1.5.5
+                // read it (v1.5.5 `crates/busbar/src/proto/gemini/reader.rs:554-558`, `_ => None`):
+                // promoting it to `Off` switched thinking off on a foreign reasoning-by-default
+                // lane, changing the thinking tokens that request is billed, and no owner ruling
+                // signs that (BUSBAR-1.6.0.md:4774, "Billing never moves"). Dropped on the one drop
+                // path; the raw member still rides `extra` on the same dialect.
+                0 => {
+                    crate::codec::drops::writer_drop!(
+                        crate::codec::drops::REASONING,
+                        &crate::codec::diagnostics::IR_DROP_REASONING,
+                        [],
+                        "dropping thinkingBudget 0 (reasoning off) across dialects: it carries no \
+                         ask, as in 1.5.5"
+                    );
+                    None
+                }
                 n => Some(crate::codec::ir::IrReasoningAsk::Budget(n.unsigned_abs())),
             },
             // Gemini 3's word-form knob, `thinkingLevel`, is the effort ask (GEM-09). The API
@@ -672,6 +693,7 @@ impl ProtocolReader for GeminiReader {
 
     fn read_response_events(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         _event_type: &str,
         data: &serde_json::Value,
         state: &mut crate::codec::ir::StreamDecodeState,
@@ -996,7 +1018,12 @@ impl ProtocolReader for GeminiReader {
                                     // not index arithmetic) — the ID space is unrelated to the IR
                                     // index space. Recorded in `open_tools` so the finishReason
                                     // handler emits a matching BlockStop for every tool block.
-                                    let text_base = usize::from(state.text_block_open);
+                                    // A text part anywhere before this call counts as position 0,
+                                    // open or already closed, exactly as 1.5.5 counted it (v1.5.5
+                                    // `crates/busbar/src/proto/gemini/reader.rs:895`,
+                                    // `state.text_index.is_some()`) and as the buffered reader counts
+                                    // it, so a streamed and a buffered answer name a call alike.
+                                    let text_base = usize::from(state.text_index.is_some());
                                     let ir_idx = state.claim_ir_index();
                                     state.open_tools.insert(ir_idx);
 
@@ -1296,6 +1323,7 @@ impl ProtocolReader for GeminiReader {
 
     fn read_response(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or_else(ir_parse_error)?;

@@ -126,6 +126,16 @@ impl<'a> Lent<'a, AbiStr> {
     pub fn as_str(self) -> Result<&'a str, Utf8Error> {
         std::str::from_utf8(self.bytes())
     }
+
+    /// The string, owned, when the host states one: UTF-8 and not empty. An absent string, an
+    /// empty one and one that is not UTF-8 each state nothing.
+    #[must_use]
+    pub fn stated(self) -> Option<String> {
+        self.as_str()
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+    }
 }
 
 /// A list the host lent the call: `len` values at `ptr`.

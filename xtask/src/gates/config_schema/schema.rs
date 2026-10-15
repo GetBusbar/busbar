@@ -324,9 +324,10 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         "crates/busbar-plane-mcp/src/tools_config.rs".to_string(),
         // `mcp:` — the plane's endpoint block (`McpCfg`), in the plane crate beside `tools:`.
         "crates/busbar-plane-mcp/src/endpoint.rs".to_string(),
-        // `tool_pools:` / `agent_pools:` — one type, two sections, and `repeatable:` is the SAFETY
-        // declaration that decides whether an operation with effects may be performed twice.
-        core_file(cx, &core, "failover/mod.rs")?,
+        // (`tool_pools:` / `agent_pools:` — `CandidatePoolCfg`, one type for two sections whose
+        // `repeatable:` is the SAFETY declaration that decides whether an operation with effects may
+        // be performed twice — lives in the kernel's `config/pools.rs`, which the grammar directory
+        // above tracks, so it carries no entry of its own here.)
         // `streams:` — the streaming plane's grammar, including the three plane-imposed session
         // CEILINGS that bound what a live-voice deployment may ever hold.
         "crates/busbar-plane-streaming/src/config.rs".to_string(),
@@ -735,7 +736,14 @@ struct Lift {
     any: BTreeSet<String>,
     /// The sections a map carrier holds: the owned declaring sections no one-key carrier names.
     owned: BTreeSet<String>,
+    /// The sections the RAW carrier ([`RAW_CARRIER`]) holds: a section a plane owns BESIDE its
+    /// declaring one when that plane is not the endpoint door's owner ([`super::declared`]'s `raw`).
+    raw: BTreeSet<String>,
 }
+
+/// THE RAW CARRIER: the frozen struct's skipped field the pre-pass banks every RAW-lifted section
+/// into (`DeployCfg::plane_raw`, `Dest::Raw`), whatever key it was lifted from.
+const RAW_CARRIER: &str = "plane_raw";
 
 impl Lift {
     fn read(
@@ -788,6 +796,7 @@ impl Lift {
             carriers,
             any,
             owned,
+            raw: declared.raw.clone(),
         })
     }
 
@@ -799,8 +808,8 @@ impl Lift {
 }
 
 /// `"lit"` → `lit`; `[path::]LIFTED_*KEYS[n]` → the n-th literal of that list; `[path::]Kernel(e)`
-/// → `e` resolved the same way; `[path::]Door` → THE door section the plane declarations declare
-/// (refused when they declare more than one: one carrier type carries one key); anything else
+/// → `e` resolved the same way; `[path::]Door` → THE door section the endpoint owner's declaration
+/// declares (refused when it declares more than one: one carrier type carries one key); anything else
 /// (`ByField`) `None`, so the carrier is matched by its field's own name.
 fn resolve_lift_key(
     expr: &str,
@@ -881,6 +890,21 @@ fn parse_struct(
             // A MAP carrier is grammar under every section it holds, each recorded as the key an
             // operator writes; a one-key carrier or field of the same struct keeps its own entry.
             let bare = inner.rsplit("::").next().unwrap_or(&inner).trim();
+            if name == RAW_CARRIER {
+                // Each section it holds is recorded as the map's VALUE type: what the operator
+                // writes under that key, held as written.
+                let value = inner
+                    .strip_suffix('>')
+                    .and_then(|t| t.rsplit_once(','))
+                    .map_or(inner.as_str(), |(_, v)| v.trim());
+                for key in &lifted.raw {
+                    if !fields.contains_key(key) {
+                        fields.insert(key.clone(), field_value(value, true));
+                        carried.insert(key.clone());
+                    }
+                }
+                continue;
+            }
             if lifted.any.contains(bare) {
                 for key in &lifted.owned {
                     if !fields.contains_key(key) {

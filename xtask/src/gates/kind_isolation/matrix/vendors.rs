@@ -43,7 +43,7 @@
 use std::path::PathBuf;
 
 use crate::ctx::{Ctx, SourceFile};
-use crate::gates::plane_purity::{scanner, vocab};
+use crate::gates::plane_purity::{scanner, segment_debt, vocab};
 
 use super::super::{CrateInfo, Family};
 
@@ -63,6 +63,8 @@ pub fn offenders(
         .collect();
 
     let words = dialect_vocab(cx)?;
+    let debt = segment_debt::load(cx)?;
+    let mut debt_matched = vec![false; debt.len()];
 
     let mut scanned: Vec<(String, SourceFile)> = Vec::new();
     for (rel, text) in files {
@@ -95,7 +97,12 @@ pub fn offenders(
     let mut out: Vec<String> = Vec::new();
     for (krate, f) in &scanned {
         let read = read_file(f, &words, words_key);
-        for (scope, site, code) in &read.dialect {
+        for (scope, site, code, segment) in &read.dialect {
+            // A LISTED SEGMENT-ONLY HIT IS DEBT, NOT A FINDING: the row (file + text) excludes it
+            // here exactly as it does from plane-purity's counts. An unlisted one is a finding.
+            if *segment && segment_debt::consume(&debt, &mut debt_matched, &f.rel_str(), code) {
+                continue;
+            }
             out.push(format!(
                 "vendor-name\t{krate}\t{site}\t{scope}\t{code}\ta NEUTRAL crate names a dialect a plane \
                  declares (Law 1). Ceiling 0, armed, and no ledger row raises it: the vendor \
@@ -111,6 +118,20 @@ pub fn offenders(
             ));
         }
     }
+    // A ROW OF THIS POPULATION THAT MATCHES NO LIVE HIT IS STALE: the debt was paid, strike it. A
+    // row whose file is in plane-purity's roots (or in no scanned file) is that gate's to judge.
+    for (d, matched) in debt.iter().zip(&debt_matched) {
+        if !matched && scanned.iter().any(|(_, f)| f.rel_str() == d.file) {
+            out.push(format!(
+                "vendor-segment-stale\t{}\t{}\t{}: a segment-debt row matches no live hit of \
+                 the vendor scan. The debt is paid: strike the row from {}.",
+                d.file,
+                d.site(),
+                d.text,
+                segment_debt::SEGMENT_DEBT_TOML,
+            ));
+        }
+    }
     out.sort();
     out.dedup();
     Ok(out)
@@ -123,10 +144,10 @@ thread_local! {
     static FILES_READ: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
-/// What one file says to this rule: every `DIALECT` hit as `(scope, site, code)`, and the line of
+/// What one file says to this rule: every `DIALECT` hit as `(scope, site, code, segment-only)`, and the line of
 /// every frozen-wire pragma.
 struct FileRead {
-    dialect: Vec<(&'static str, String, String)>,
+    dialect: Vec<(&'static str, String, String, bool)>,
     frozen: Vec<usize>,
 }
 
@@ -157,7 +178,7 @@ fn read_file(f: &SourceFile, words: &vocab::Vocab, words_key: u64) -> std::sync:
     let mut dialect = Vec::new();
     for (scope, hits) in [("production", prod), ("test", test)] {
         for h in hits.iter().filter(|h| h.category == "DIALECT") {
-            dialect.push((scope, h.site(), h.code.clone()));
+            dialect.push((scope, h.site(), h.code.clone(), h.segment));
         }
     }
     let frozen = f

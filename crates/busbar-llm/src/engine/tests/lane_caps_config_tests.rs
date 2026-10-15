@@ -8,31 +8,21 @@
 use std::collections::HashMap;
 
 use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
-use busbar_kernel::ir::lane_caps::{
-    resolve_lane_caps, MaxOutputKeyCfg, ModelCapabilities, ProviderLaneCaps,
-};
+use busbar_kernel::ir::lane_caps::{MaxOutputKeyCfg, ModelCapabilities};
 
 use crate::engine::build_runtime::{
-    resolve_provider as merge_provider_fallback, ProviderCfg, ProviderDef, ProviderDeploy,
+    resolve_provider as merge_provider_fallback, ProviderDef, ProviderDeploy, ResolvedProvider,
 };
 
-/// The resolved entry's lane capabilities for one wire model, wired field by field as `appbuild`
-/// wires them into `LaneInput::lane_caps`.
+/// The resolved entry's lane capabilities for one wire model, read off its table exactly as
+/// `appbuild` reads them into `LaneInput::lane_caps`.
 trait LaneCapsFor {
     fn lane_caps_for(&self, wire_model: &str) -> LaneCaps;
 }
 
-impl LaneCapsFor for ProviderCfg {
+impl LaneCapsFor for ResolvedProvider {
     fn lane_caps_for(&self, wire_model: &str) -> LaneCaps {
-        resolve_lane_caps(
-            ProviderLaneCaps {
-                max_output_key: self.max_output_key,
-                anthropic_adaptive_thinking: self.anthropic_adaptive_thinking,
-                native_structured_output: self.native_structured_output,
-            },
-            &self.model_capabilities,
-            wire_model,
-        )
+        busbar_kernel::plane_host::LegacyLaneKeys::of(self).lane_caps(wire_model)
     }
 }
 

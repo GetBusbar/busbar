@@ -144,6 +144,11 @@ pub struct MemoryStore {
     /// the test's `now()` and the sweep's `now()` would otherwise shift the ceiling and evict the
     /// "one second inside" row. Prod behavior is untouched: the field is only ever set from tests.
     clock: AtomicU64,
+    /// Test-only planted fault: when set (an `open` whose settings carry
+    /// `"panic_on_plane_append": true`), the door's `append_plane_record` slot PANICS inside the
+    /// store body, so a test proves the door boundary turns a backend panic into a FAULT answer.
+    /// Only the door path reads it; a direct `RecordStore` call never does.
+    pub(crate) panic_on_plane_append: std::sync::atomic::AtomicBool,
     /// The store v3 slots' own state: the `op_id` dedupe log, the caps, the drawn totals, the
     /// slices, the ledger chains and the session directory ([`v3`]).
     v3: v3::State,

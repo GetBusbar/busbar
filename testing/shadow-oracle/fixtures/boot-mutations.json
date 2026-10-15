@@ -5235,6 +5235,340 @@
         "stdout_contains": null
       },
       "notes": "neutrality/unknown-key: a typo'd key under a NAMED export entry."
+    },
+    {
+      "id": "LAW0-EXP-UNKNOWN",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "export.x",
+          "value": {
+            "module": "nosuch"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "export.x.module: unknown exporter 'nosuch'; the built-in export modules are prometheus | request-log-webhook | request-log-file | otlp",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): the unknown-exporter refusal and its sink list (busbar #1020 crates/busbar/tests/fixtures/unknown_exporter_1_5_5.txt)."
+    },
+    {
+      "id": "LAW0-EXP-SET-PROM-UNKNOWN",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "export.metrics",
+          "value": {
+            "module": "prometheus",
+            "settings": {
+              "buffer_seconds": 60,
+              "bogus": 1
+            }
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "export.metrics.settings: unknown field `bogus`, expected `buffer_seconds` or `key_gauge_limit`",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): export-sink settings refusal (busbar #1020 crates/busbar/tests/fixtures/export_settings_refusals_1_5_5.json case 1)."
+    },
+    {
+      "id": "LAW0-EXP-SET-PROM-MISSING",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "export.metrics",
+          "value": {
+            "module": "prometheus",
+            "settings": {
+              "key_gauge_limit": 7
+            }
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "export.metrics.settings: missing field `buffer_seconds`",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): export-sink settings refusal (busbar #1020 export_settings_refusals_1_5_5.json case 2)."
+    },
+    {
+      "id": "LAW0-EXP-SET-OTLP-UNKNOWN",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "export.trace",
+          "value": {
+            "module": "otlp",
+            "settings": {
+              "url": "http://127.0.0.1:4318/v1/traces",
+              "bogus": 1
+            }
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "export.trace.settings: unknown field `bogus`, expected `url`",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): export-sink settings refusal (busbar #1020 export_settings_refusals_1_5_5.json case 3)."
+    },
+    {
+      "id": "LAW0-EXP-SET-FILE-TYPE",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "export.file",
+          "value": {
+            "module": "request-log-file",
+            "settings": {
+              "path": 7
+            }
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "export.file.settings: invalid type: integer `7`, expected a string",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): export-sink settings refusal (busbar #1020 export_settings_refusals_1_5_5.json case 4). Cases 5 and 6 of that file are BOOT-101 and BOOT-102."
+    },
+    {
+      "id": "LAW0-HOOKWORD-admin-tokens",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "hooks.admin-tokens",
+          "value": {
+            "module": "oracle-hook"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "hooks.admin-tokens: 'admin-tokens' is a reserved name",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): one word of 1.5.5's reserved hook-name word space (busbar #1017 crates/busbar/src/root/tests/fixtures/operator_1_5_5.json hook_word_space); BOOT-056 is the word `weighted`."
+    },
+    {
+      "id": "LAW0-HOOKWORD-cheapest",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "hooks.cheapest",
+          "value": {
+            "module": "oracle-hook"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "hooks.cheapest: 'cheapest' is a reserved name",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): one word of 1.5.5's reserved hook-name word space (busbar #1017 crates/busbar/src/root/tests/fixtures/operator_1_5_5.json hook_word_space); BOOT-056 is the word `weighted`."
+    },
+    {
+      "id": "LAW0-HOOKWORD-fastest",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "hooks.fastest",
+          "value": {
+            "module": "oracle-hook"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "hooks.fastest: 'fastest' is a reserved name",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): one word of 1.5.5's reserved hook-name word space (busbar #1017 crates/busbar/src/root/tests/fixtures/operator_1_5_5.json hook_word_space); BOOT-056 is the word `weighted`."
+    },
+    {
+      "id": "LAW0-HOOKWORD-first",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "hooks.first",
+          "value": {
+            "module": "oracle-hook"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "hooks.first: 'first' is a reserved name",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): one word of 1.5.5's reserved hook-name word space (busbar #1017 crates/busbar/src/root/tests/fixtures/operator_1_5_5.json hook_word_space); BOOT-056 is the word `weighted`."
+    },
+    {
+      "id": "LAW0-HOOKWORD-least_busy",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "hooks.least_busy",
+          "value": {
+            "module": "oracle-hook"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "hooks.least_busy: 'least_busy' is a reserved name",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): one word of 1.5.5's reserved hook-name word space (busbar #1017 crates/busbar/src/root/tests/fixtures/operator_1_5_5.json hook_word_space); BOOT-056 is the word `weighted`."
+    },
+    {
+      "id": "LAW0-HOOKWORD-nothing",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "hooks.nothing",
+          "value": {
+            "module": "oracle-hook"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "hooks.nothing: 'nothing' is a reserved name",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): one word of 1.5.5's reserved hook-name word space (busbar #1017 crates/busbar/src/root/tests/fixtures/operator_1_5_5.json hook_word_space); BOOT-056 is the word `weighted`."
+    },
+    {
+      "id": "LAW0-HOOKWORD-reject",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "hooks.reject",
+          "value": {
+            "module": "oracle-hook"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "hooks.reject: 'reject' is a reserved name",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): one word of 1.5.5's reserved hook-name word space (busbar #1017 crates/busbar/src/root/tests/fixtures/operator_1_5_5.json hook_word_space); BOOT-056 is the word `weighted`."
+    },
+    {
+      "id": "LAW0-HOOKWORD-tokens",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "hooks.tokens",
+          "value": {
+            "module": "oracle-hook"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "hooks.tokens: 'tokens' is a reserved name",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): one word of 1.5.5's reserved hook-name word space (busbar #1017 crates/busbar/src/root/tests/fixtures/operator_1_5_5.json hook_word_space); BOOT-056 is the word `weighted`."
+    },
+    {
+      "id": "LAW0-HOOKWORD-usage",
+      "family": "boot.refusal",
+      "mode": "both",
+      "target": "config",
+      "op": [
+        {
+          "set": "hooks.usage",
+          "value": {
+            "module": "oracle-hook"
+          }
+        }
+      ],
+      "expect": {
+        "exit": 1,
+        "stderr_contains": "hooks.usage: 'usage' is a reserved name",
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): one word of 1.5.5's reserved hook-name word space (busbar #1017 crates/busbar/src/root/tests/fixtures/operator_1_5_5.json hook_word_space); BOOT-056 is the word `weighted`."
+    },
+    {
+      "id": "LAW0-MIG-OPERATOR-14X",
+      "family": "config.migrate",
+      "mode": "boot",
+      "target": "cli",
+      "op": [
+        {
+          "args": [
+            "--migrate-config",
+            "testing/shadow-oracle/fixtures/migrate-operator-1.4-admin-token.yaml"
+          ]
+        }
+      ],
+      "expect": {
+        "exit": 0,
+        "stderr_contains": null,
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): `--migrate-config` of a 1.4.x `governance.admin_token` writes `auth.admin_auth: [admin-tokens]` and the secret ref on `identity-providers.admin-tokens` (busbar #1017 auth_bindings.rs migration_writes_the_14x_admin_token_as_1_5_5_did). The path is relative to the product root, the recorder's working directory (as config.migrate's own cells pass theirs)."
+    },
+    {
+      "id": "LAW0-MIG-OPERATOR-INLINE",
+      "family": "config.migrate",
+      "mode": "boot",
+      "target": "cli",
+      "op": [
+        {
+          "args": [
+            "--migrate-config",
+            "testing/shadow-oracle/fixtures/migrate-operator-1.5-inline-admin-entry.yaml"
+          ]
+        }
+      ],
+      "expect": {
+        "exit": 0,
+        "stderr_contains": null,
+        "stdout_contains": null
+      },
+      "notes": "coordinator 2026-10-14 (law0-root: 1.5.5 bytes that lived only as in-repo fixture data get an oracle cell, recorded add-only from the published 1.5.5): `--migrate-config` of a 1.5.x inline `admin_auth` operator entry lifts it onto its definition and keeps the bare name in the chain (busbar #1017 auth_bindings.rs migration_lifts_the_inline_operator_entry_as_1_5_5_did)."
     }
   ]
 }

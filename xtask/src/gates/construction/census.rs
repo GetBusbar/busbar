@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::Ctx;
-use crate::gates::construction::ceilings::base_ref;
+use crate::gates::construction::ceilings::{base_ref, Base};
 use crate::gates::construction::model::{plain, py_list, CRow, Cfg};
 use crate::gates::construction::{dirs_for_globs, CEILINGS};
 use crate::toml_doc::Document;
@@ -166,21 +166,24 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
     // The rename rows are read (and a broken one is refused) whether or not a base is established.
     let (renamed, problems) = renames(cx, &cfg.doc);
     bad.extend(problems);
-    if let Ok(base) = base_ref(cx) {
-        if let Ok(was) = cx.git_show(&base.sha, CEILINGS) {
-            if let Ok(doc) = crate::toml_doc::parse_str(&was) {
-                let base_deleted = deleted_ledger(&doc);
-                let now_deleted = deleted_ledger(&cfg.doc);
-                bad.extend(deleted_ledger_findings(&now_deleted, &base_deleted, |d| {
-                    cx.abs(d).exists()
-                }));
-                let mut moved = moved_out_by_kind(cx, cfg, &doc, &base.sha, &now_deleted, &renamed);
-                if let Some(n) = deleted_plane_crates(cx, cfg, &doc, &now_deleted) {
-                    moved.insert("plane_crates".to_string(), n as i64);
-                }
-                bad.extend(lowered_floors(&cfg.doc, &doc, base.short(), &moved));
+    match base_ceilings(cx) {
+        Ok((base, doc)) => {
+            let base_deleted = deleted_ledger(&doc);
+            let now_deleted = deleted_ledger(&cfg.doc);
+            bad.extend(deleted_ledger_findings(&now_deleted, &base_deleted, |d| {
+                cx.abs(d).exists()
+            }));
+            let mut moved = moved_out_by_kind(cx, cfg, &doc, &base.sha, &now_deleted, &renamed);
+            let base_planes = doc.table_or_empty("gate").list_of("plane_crates");
+            let now_planes = cfg.plane_crates().unwrap_or_default();
+            if let Some(n) = deleted_plane_crates(&base_planes, &now_planes, |dir| {
+                now_deleted.contains(dir) && !cx.abs(dir).exists()
+            }) {
+                moved.insert("plane_crates".to_string(), n as i64);
             }
+            bad.extend(lowered_floors(&cfg.doc, &doc, base.short(), &moved));
         }
+        Err(e) => bad.push(e),
     }
 
     if bad.is_empty() {
@@ -214,6 +217,32 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
     )]
 }
 
+/// THE BASE'S COPY OF THE CEILINGS FILE, or why there is none. Every arm that fails is a census
+/// problem: with no base copy the floors are compared against nothing, and "none below its pinned
+/// floor" would then be a claim nothing checked. A base that cannot be established is RED (see
+/// [`base_ref`]), never a skipped comparison. CI names the base (`XTASK_CEILING_BASE`).
+fn base_ceilings(cx: &Ctx) -> Result<(Base, Document), String> {
+    let base = base_ref(cx).map_err(|e| {
+        format!("no base to hold the census floors against, so no floor is checked: {e}")
+    })?;
+    let was = cx.git_show(&base.sha, CEILINGS).map_err(|e| {
+        format!(
+            "the base {} ({}) has no readable {CEILINGS}, so no census floor is checked against \
+             it: {e}",
+            base.short(),
+            base.how
+        )
+    })?;
+    let doc = crate::toml_doc::parse_str(&was).map_err(|e| {
+        format!(
+            "the base {}'s copy of {CEILINGS} does not parse, so no census floor is checked \
+             against it: {e}",
+            base.short()
+        )
+    })?;
+    Ok((base, doc))
+}
+
 /// EVERY CENSUS FLOOR THAT WENT DOWN, or was deleted outright, since the base.
 ///
 /// This is the half that makes the census hold. Without it, "delete the rule table AND drop its
@@ -231,7 +260,8 @@ pub fn ceiling_census(cx: &Ctx, cfg: &Cfg) -> Vec<CRow> {
 /// `plugin_kinds.<kind>` floor may drop by at most `moved[<key>]`, the number of that kind's crate
 /// directories that left the tree as MOVED-OUT plugins or ruled deletions ([`excused_out`]), and
 /// `plane_crates` by the legacy engines deleted under `[gate.census.deleted]`
-/// ([`deleted_plane_crates`], P3 DEL-MCP, ARCHITECT 2026-10-05). Every other drop is RED.
+/// ([`deleted_plane_crates`], P3 DEL-MCP, ARCHITECT 2026-10-05; and `busbar-voice`, FLIP-STREAMING).
+/// Every other drop is RED.
 /// A crate whose package name changed with the move counts only through a rename row ([`renames`],
 /// ARCHITECT 2026-10-03 Q-L7B2-CENSUS).
 fn lowered_floors(
@@ -307,29 +337,21 @@ fn moved_out_by_kind(
 /// THE SAME RULED WAY DOWN FOR `gate.plane_crates` (P3 DEL-MCP, ARCHITECT 2026-10-05: "delete
 /// busbar-mcp, add `crates/busbar-mcp` to [gate.census.deleted]"). The legacy-engine list may lose
 /// an entry only when its crate was DELETED under the ledger: the entries the base listed and this
-/// tree does not, `Some(n)` when EVERY one names a `crates/<entry>` that `[gate.census.deleted]`
-/// lists and that is absent from this tree ([`excused_out`], no move-out arm — a legacy engine is
-/// retired, never pinned back). `None` when nothing left the list or any one left any other way, so
-/// the `plane_crates` floor drop stays RED.
+/// tree does not, `Some(n)` when EVERY one names a `crates/<entry>` that is a ruled deletion
+/// (`is_deleted`: `[gate.census.deleted]` lists it and it is absent from this tree; [`excused_out`],
+/// no move-out arm — a legacy engine is retired, never pinned back). `None` when nothing left the
+/// list or any one left any other way, so the `plane_crates` floor drop stays RED.
 fn deleted_plane_crates(
-    cx: &Ctx,
-    cfg: &Cfg,
-    base_doc: &Document,
-    deleted: &BTreeSet<String>,
+    base: &[String],
+    now: &[String],
+    is_deleted: impl Fn(&str) -> bool,
 ) -> Option<usize> {
-    let now = cfg.plane_crates().unwrap_or_default();
-    let gone: Vec<String> = base_doc
-        .table_or_empty("gate")
-        .list_of("plane_crates")
-        .into_iter()
+    let gone: Vec<String> = base
+        .iter()
         .filter(|c| !now.contains(c))
         .map(|c| format!("crates/{c}"))
         .collect();
-    excused_out(
-        &gone,
-        |_| false,
-        |dir| deleted.contains(dir) && !cx.abs(dir).exists(),
-    )
+    excused_out(&gone, |_| false, is_deleted)
 }
 
 /// A plugin crate MOVED OUT (TODO PATH TO DEV-GREEN P5: filter-repo into its own repo, pinned back
@@ -525,6 +547,41 @@ mod moveout_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RED: A PINNED PLANE IS COUNTED FROM ITS CHECKOUT. A plane extracted to its own repo is laid
+    /// into the tree by the BASE layer only (ARCHITECT row 106 (A)); the kind census counted
+    /// directories with a disk-only `is_dir`, so `plane` matched 3 of its 5 crates and the floor
+    /// went red on a tree that had lost nothing. A census that silently stops seeing pinned planes
+    /// is the fault this gate exists to catch, so the base-only plane must count.
+    #[test]
+    fn a_pinned_plane_present_only_in_the_base_layer_is_counted() {
+        let cx = Ctx::workspace().expect("workspace").without_base();
+        let cfg = crate::gates::construction::ConstructionGate::cfg(&cx).expect("ceilings");
+        let globs = cfg.kind_globs("plane").expect("the plane kind");
+        let probe = "crates/busbar-plane-mcp".to_string();
+        assert!(
+            globs.contains(&probe),
+            "the control needs {probe} in [gate.plugin_kinds] plane: {globs:?}"
+        );
+        assert!(
+            !cx.abs(&probe).exists(),
+            "the control needs a plane that is not on disk"
+        );
+        let bare = dirs_for_globs(&cx, &globs);
+        assert!(!bare.contains(&probe), "{probe} counted with no base");
+        let mut base = crate::ctx::Overlay::new();
+        base.set(
+            format!("{probe}/Cargo.toml"),
+            "[package]\nname = \"busbar-plane-mcp\"\n",
+        );
+        base.set(format!("{probe}/src/lib.rs"), "");
+        let laid = dirs_for_globs(&cx.with_base(base), &globs);
+        assert!(
+            laid.contains(&probe),
+            "a plane laid only by the base layer is not counted: {laid:?}"
+        );
+        assert_eq!(laid.len(), bare.len() + 1, "{laid:?} against {bare:?}");
+    }
 
     const DOC: &str = "[gate.census]\nplane_crates = 4\n\n[gate.census.plugin_kinds]\nplane = 5\n";
 

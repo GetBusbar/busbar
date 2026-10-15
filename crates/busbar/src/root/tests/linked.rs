@@ -263,7 +263,7 @@ fn a_first_party_plugins_declared_codes_join_the_catalogue_and_nothing_else_does
 /// the hook table is the linked ranking DOOR, whose Statement claims each built-in strategy word
 /// (the root's hook axis binds it).
 ///
-/// RED by deleting the `store-memory` / `hooks-ranking` rows of `[package.metadata.busbar.linked]`:
+/// RED by deleting the store and ranking rows of `[package.metadata.busbar.linked]`:
 /// the tables carry no store (and no ranking row) to hand the kernel.
 #[test]
 fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
@@ -315,7 +315,8 @@ fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
 #[test]
 fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
     use busbar_contract::secret::SecretAxis;
-    let axis = super::link_secrets(crate::LINKED.secrets).expect("the linked secret doors state");
+    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
+        .expect("the linked secret doors state");
     assert!(axis.linked("env") && axis.linked("file") && !axis.answers("vault"));
     let env = axis.shared("env").expect("env opens");
     assert!(
@@ -327,7 +328,10 @@ fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
     let got = env
         .resolve(format!(r#"{{"key":"{var}"}}"#).as_bytes())
         .expect("a set variable resolves");
-    assert_eq!(got.expose_secret().as_slice(), b"hunter2");
+    assert_eq!(
+        got.expose(&busbar_kernel::seal::lend()).as_slice(),
+        b"hunter2"
+    );
     std::env::remove_var(var);
     let refused = env
         .resolve(br#"{"key":"BUSBAR_WIRE_SECRET_ROOT_UNSET"}"#)
@@ -362,9 +366,31 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         served_op_classes: &[],
         caller_credential_refusal: None,
     };
-    let hooks = PlaneHooks {
+    let hooks = busbar_kernel::plane::registry::PlaneHooks {
         wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
-        ..HOT_PLANE_HOOKS
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
     };
     Box::leak(Box::new([PlaneDecl::assemble(declaration, hooks)]))
 }
@@ -379,7 +405,7 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
     let legacy = &native("seam-l-shared")[0];
     let other = &native("seam-l-other")[0];
     let door = &native("seam-l-shared")[0];
-    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]).expect("the fold");
+    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]);
     assert_eq!(rows.len(), 2, "the legacy row yields the shared key");
     assert!(
         std::ptr::eq(rows[0], other),
@@ -397,13 +423,16 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
     );
 }
 
-/// SEAM-L(s), THE ENGINE RIDES THE KEY: a door taking the key of the legacy row that is the fallback
-/// plane takes over that row's engine (the fallback flag, the runtime it builds and the view the
-/// core's own readers walk) and keeps every other word of its own. RED: the fold dropped the legacy
-/// row whole, so with a linked llm door the node had no fallback runtime and `/metrics` lost its lane
-/// gauges (`metrics_scrape_boot_window` under `--features llm-on-driver`).
+/// THE ENGINE DOES NOT RIDE THE KEY (status row 83, PR 4a; BUSBAR-1.6.0.md l.639, l.2577, #7): a
+/// door taking the key of the legacy row that is the fallback plane serves its key with its OWN
+/// row. The legacy row's engine (its fallback flag, the runtime it builds, the view, the provider
+/// merge, `on_swap`) yields with the plane axis: the fallback flag is the door's own tail's
+/// (`TAIL_FALLBACK`), and the core's readers walk the kernel's own tables
+/// (`busbar_kernel::plane_host::ConfigTables`, pinned equal to the engine's view on the same config
+/// by busbar-llm's `view_parity_tests`). RED while the door's row carried the legacy engine: its
+/// `build_runtime` and `viewer` were the legacy row's, so the core read the engine's tables.
 #[test]
-fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
+fn a_door_taking_the_fallback_planes_key_serves_it_with_its_own_row() {
     let base = &native("seam-l-engine")[0];
     let legacy: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
         declaration: PlaneDeclaration {
@@ -416,26 +445,25 @@ fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
     }));
     let door: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
         declaration: PlaneDeclaration {
+            fallback: true,
             config_section: "seam-l-door-section",
             ..base.declaration
         },
         ..*base
     }));
-    let rows = doors_own_their_plane_keys(vec![legacy, door], &[door]).expect("the fold");
+    let rows = doors_own_their_plane_keys(vec![legacy, door], &[door]);
     assert_eq!(rows.len(), 1, "one row serves the key");
-    let row = rows[0];
-    assert!(!std::ptr::eq(row, legacy), "the door serves the plane");
-    assert_eq!(
-        row.config_section, "seam-l-door-section",
-        "the door's own words stay"
+    assert!(
+        std::ptr::eq(rows[0], door),
+        "the door's own row serves the plane"
     );
     assert!(
-        row.fallback,
-        "the fallback plane is still the fallback plane"
+        rows[0].build_runtime.is_none() && rows[0].viewer.is_none(),
+        "no legacy engine rides the door's row"
     );
     assert!(
-        row.build_runtime.is_some() && row.viewer.is_some(),
-        "the engine's runtime and view ride the key"
+        rows[0].fallback,
+        "the door's own tail states the fallback plane"
     );
     let folded = merged_boot_plane_decls(&rows, &[]);
     let kept = folded
@@ -443,51 +471,8 @@ fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
         .find(|d| d.key == "seam-l-engine")
         .expect("the key is registered");
     assert!(
-        kept.fallback && kept.viewer.is_some(),
-        "the boot fold keeps it"
-    );
-    // A legacy row with no engine leaves the door's row untouched (the shared-key case above).
-    let plain = &native("seam-l-plain")[0];
-    let plain_door = &native("seam-l-plain")[0];
-    let rows =
-        doors_own_their_plane_keys(vec![plain, plain_door], &[plain_door]).expect("the fold");
-    assert!(std::ptr::eq(rows[0], plain_door), "nothing to carry");
-}
-
-/// SEAM-L(s), A FULL CARRY TABLE REFUSES BY NAME: a door taking an engine when every slot already
-/// carries another key's row is a boot refusal naming the door, never a row served without the
-/// engine. Driven on a one-slot table of its own, so the process's table is untouched. RED: the carry
-/// answered "nothing to carry" and the door served its key with no fallback runtime.
-#[test]
-fn a_door_carried_past_the_last_slot_refuses_by_name() {
-    static ONE: [std::sync::OnceLock<PlaneDecl>; 1] = [const { std::sync::OnceLock::new() }; 1];
-    let engine = |key: &'static str| -> (&'static PlaneDecl, &'static PlaneDecl) {
-        let base = &native(key)[0];
-        let legacy: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
-            declaration: PlaneDeclaration {
-                fallback: true,
-                ..base.declaration
-            },
-            viewer: Some(|_| &busbar_kernel::plane_host::EMPTY_VIEW),
-            ..*base
-        }));
-        (legacy, &native(key)[0])
-    };
-    let (legacy, door) = engine("seam-l-full-a");
-    let first = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
-        .expect("the one slot carries the first door");
-    assert!(first[0].fallback, "the first door carries its engine");
-    let again = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
-        .expect("the same key answers its row again");
-    assert!(std::ptr::eq(first[0], again[0]), "one row per key");
-    let (legacy, door) = engine("seam-l-full-b");
-    let Err(refusal) = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
-    else {
-        panic!("no slot is left for a second key, and the fold answered rows");
-    };
-    assert!(
-        refusal.contains("seam-l-full-b") && refusal.contains("1 door planes"),
-        "{refusal}"
+        std::ptr::eq(*kept, door) && kept.viewer.is_none(),
+        "the boot fold keeps the door's row, with no engine view"
     );
 }
 
@@ -602,5 +587,38 @@ fn the_linked_scrape_sink_renders_the_recorder_snapshot_byte_identically() {
         body,
         own.as_bytes(),
         "the scrape is the recorder's bytes, back"
+    );
+}
+
+/// THE ADMIN SURFACE'S COMPILED-IN HOOKS ARE THE ROOT'S DATA (Law 1, BUSBAR-1.6.0.md:1875-1877): the
+/// root hands the admin crate one printed name per linked hook row (`LINKED_HOOK_NAMES`, the
+/// manifest's `linked-name` rows), and the admin crate's info read reports exactly those — it spells
+/// no hook plugin of its own.
+///
+/// RED with the admin crate's former `#[cfg(feature = ...)]` list (it reports its own literal, not
+/// the installed names) or with a `hooks` row that has no `linked-name` row (the build refuses).
+#[test]
+fn the_admin_compiled_in_hooks_are_the_linked_hook_rows() {
+    assert_eq!(
+        crate::LINKED_HOOK_NAMES.len(),
+        crate::LINKED.hook_doors.len(),
+        "one printed name per linked hook row: {:?}",
+        crate::LINKED_HOOK_NAMES
+    );
+    let mut seen = std::collections::HashSet::new();
+    for name in crate::LINKED_HOOK_NAMES {
+        assert!(
+            !name.is_empty(),
+            "a linked hook row's printed name is not empty"
+        );
+        assert!(
+            seen.insert(*name),
+            "`{name}` is printed for two linked hook rows"
+        );
+    }
+    assert_eq!(
+        cfg!(linked_axis_hooks),
+        !crate::LINKED_HOOK_NAMES.is_empty(),
+        "a build that links a hook row prints it"
     );
 }

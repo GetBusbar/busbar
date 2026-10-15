@@ -5,7 +5,8 @@
 //! first-party into a `plugins/` directory, is scanned, trusted, staged, `dlopen`ed once and
 //! admitted through the one dispatcher's door validation — its tail read into the claims the
 //! connector's registry view serves. A manifest outside the transport's version window is refused at
-//! the structural gate.
+//! the structural gate, and a library with no door is refused outright: the HOT transport lane is
+//! deleted (row 84), so a door is the only way a transport loads.
 
 use std::sync::Arc;
 
@@ -17,18 +18,6 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::abi::transport::ROLE_FRAMER;
-
-/// The test-only HOT carrier the conformance and stack witnesses below drive.
-#[path = "mem_carrier.rs"]
-mod mem_carrier;
-
-/// A HOT decl's admission and its decl-backed carrier, against the linked carrier.
-#[path = "transport_conformance_tests.rs"]
-mod conformance;
-
-/// The HOT carrier stacked as the host's `Transport` (`WireTransport`).
-#[path = "transport_adapter_tests.rs"]
-mod adapter;
 
 /// The neutral frame door (`tests/fixtures/neutral_frame_door.rs`): a dropped-in transport door
 /// that frames the host's socket, built beside the test binary as this crate's example `cdylib`.
@@ -102,7 +91,6 @@ fn a_signed_door_tarball_is_opened_through_the_one_door() {
     let entries = registry
         .open_transport_entries(&bind())
         .expect("the door opens");
-    assert!(entries.hot.is_empty(), "a door image is not a HOT decl");
     assert_eq!(entries.doors.len(), 1);
     let door = &entries.doors[0];
     let facts = door.context::<TransportFacts>().expect("its tail");
@@ -135,4 +123,28 @@ fn a_manifest_outside_the_transport_version_window_is_refused() {
     let mut newer = packed();
     newer.abi_version = busbar_contract::abi::transport::ABI_VERSION + 1;
     assert!(validate_structure(&newer, b"lib", &crate::supported_abi, "").is_err());
+}
+
+/// RED: a transport library with no memory-ABI door is refused, naming the door, rather than read
+/// over another lane. The 1.5.5-shaped library exports the frozen handshake and no
+/// `busbar_plugin_door`, which is what a HOT-lane transport image was.
+#[test]
+fn a_transport_library_with_no_door_is_refused() {
+    let lib = std::fs::read(crate::both_ways::example_cdylib("json_contract_auth"))
+        .expect("read the cdylib");
+    let manifest = statement(
+        busbar_contract::abi::mechanism::kind::TRANSPORT,
+        "no-door",
+        "no-door",
+        busbar_contract::abi::transport::ABI_VERSION,
+    );
+    let registry = dropped("no-door", manifest, &lib);
+    let why = registry
+        .open_transport_entries(&bind())
+        .err()
+        .expect("a library with no door is not a transport");
+    assert!(
+        why.contains("exports no memory-ABI door"),
+        "the refusal names the missing door: {why}"
+    );
 }

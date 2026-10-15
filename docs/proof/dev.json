@@ -396,27 +396,6 @@
           "count": 0
         },
         {
-          "id": "plane-grep-gate",
-          "kind": "gate",
-          "status": "report-only",
-          "count": 198,
-          "breakdown": {
-            "openai": 72,
-            "gemini": 88,
-            "anthropic": 1,
-            "bedrock": 0,
-            "cohere": 0,
-            "responses": 4,
-            "mcp": 22,
-            "a2a": 11
-          },
-          "selftest": "pass",
-          "drilldown": {
-            "type": "hit-list",
-            "artifact": "plane-grep-hits.tsv"
-          }
-        },
-        {
           "id": "plane-abi-neutrality",
           "kind": "gate",
           "status": "pass",

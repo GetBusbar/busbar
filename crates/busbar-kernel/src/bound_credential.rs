@@ -24,7 +24,7 @@ use busbar_contract::abi::auth::{AuthPoint, AuthPoints, STYLE_NEEDS_HEADERS};
 use busbar_contract::auth_calls::{AuthAxis, Fields, FieldsRequest, OutboundAuth};
 use busbar_contract::config::UpstreamCreds;
 use busbar_contract::protocol::EgressAuthHeaders;
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use http::{HeaderName, HeaderValue};
 
 use crate::proto::SigningContext;
@@ -87,8 +87,17 @@ pub struct DeclaredBuilder {
 }
 
 impl CredentialProvider for DeclaredBuilder {
+    /// The plane's field pairs as headers, in order; a pair that is not a legal header is dropped.
     fn headers_for(&self, key: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
         (self.headers_for)(key, ctx)
+            .into_iter()
+            .filter_map(|(name, value)| {
+                Some((
+                    HeaderName::from_bytes(name.as_bytes()).ok()?,
+                    HeaderValue::from_bytes(&value).ok()?,
+                ))
+            })
+            .collect()
     }
     fn is_lane_constant(&self) -> bool {
         self.lane_constant
@@ -160,7 +169,7 @@ impl BoundCredential {
             query: None,
             timestamp: ctx.timestamp_epoch,
             headers: self.headers.clone(),
-            caller_credential: passthrough.then(|| Redacted::new(key.as_bytes().to_vec())),
+            caller_credential: passthrough.then(|| Secret::new(key.as_bytes().to_vec())),
             ..FieldsRequest::default()
         }
     }
@@ -178,7 +187,7 @@ impl CredentialProvider for BoundCredential {
                 .filter_map(|f| {
                     Some((
                         HeaderName::from_bytes(&f.name).ok()?,
-                        HeaderValue::from_bytes(f.value.expose_secret()).ok()?,
+                        HeaderValue::from_bytes(f.value.expose(&crate::seal::lend())).ok()?,
                     ))
                 })
                 .collect(),
@@ -217,8 +226,31 @@ pub fn bind(
     binding: &StyleBinding,
     credential: &[u8],
 ) -> Result<Arc<dyn CredentialProvider>, String> {
+    bind_presenting(axis, binding, credential, None)
+}
+
+/// [`bind`] for a binding whose token endpoint the operator spelled with a `user:pass@` (row 74,
+/// F25): `binding.params` names the stripped endpoint, and `endpoint` is the Basic value that
+/// userinfo spelled, held opaque, handed to the axis that presents it on the mint as 1.5.5 sent it
+/// ([`AuthAxis::serving_presenting`]). The plane that built the binding never reads it.
+///
+/// TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
+///
+/// # Errors
+///
+/// As [`bind`].
+pub fn bind_presenting(
+    axis: &dyn AuthAxis,
+    binding: &StyleBinding,
+    credential: &[u8],
+    endpoint: Option<&crate::egress::engine::UrlUserinfo>,
+) -> Result<Arc<dyn CredentialProvider>, String> {
     let serving = axis
-        .serving(&binding.style, &binding.params)?
+        .serving_presenting(
+            &binding.style,
+            &binding.params,
+            endpoint.map(|basic| basic.value().as_bytes()),
+        )?
         .ok_or_else(|| {
             format!(
                 "no linked or dropped-in auth plugin serves the style '{}'",
@@ -274,3 +306,7 @@ pub fn prebuild_auth(
         credential.headers_for(api_key, &ctx),
     ))
 }
+
+#[cfg(test)]
+#[path = "tests/bound_credential_tests.rs"]
+mod tests;

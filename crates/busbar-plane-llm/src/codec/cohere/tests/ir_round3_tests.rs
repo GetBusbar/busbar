@@ -43,7 +43,10 @@ fn item13_request_citations_without_text_are_carried_not_sent_as_empty_text() {
     for egress in ["anthropic", "bedrock", "gemini"] {
         let mut req = ir.clone();
         req.extra.clear();
-        let out = protocol_for(egress).unwrap().writer().write_request(&req);
+        let out = protocol_for(egress)
+            .unwrap()
+            .writer()
+            .write_request(crate::codec::test_host::HOST, &req);
         let s = out.to_string();
         assert!(
             !s.contains(r#""text":"""#),

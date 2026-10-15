@@ -13,7 +13,7 @@
 
 use super::*;
 use crate::codec::usage_census::{
-    at, bump, class_of, ledgered, lock_counts, moved, plus, slot, Ledgered, CR, IN, OUT,
+    at, bump, class_of, ledgered, lock_counts, moved, slot, Ledgered, IN, NONE, OUT,
 };
 
 /// Which turn a count is measured on. Cohere invoices `billed_units`, whose token counts WIN the
@@ -29,13 +29,16 @@ enum Turn {
 
 /// What each Cohere `usage` count IS, as the move one more of it makes on the ledgered units
 /// (the four token tiers and every open class), and the turn it is measured on. The billed token
-/// counts are the reserved input/output classes; the cache hit is a cache read out of the input;
+/// counts are the reserved input/output classes; the cache hit stays inside the input (1.5.5);
 /// `search_units` is the open class `search_units`; `classifications` is the open class
 /// `classifications` (owner LEDGER-100: every reported unit is a ledger line).
 const COHERE_COUNT_CLASSES: &[(&str, (Turn, Ledgered))] = &[
     ("tokens.input_tokens", (Turn::Raw, at(IN, 1))),
     ("tokens.output_tokens", (Turn::Raw, at(OUT, 1))),
-    ("cached_tokens", (Turn::Billed, plus(at(IN, -1), at(CR, 1)))),
+    // The cache hit is a slice of `tokens.input_tokens` and bills inside it, as 1.5.5 billed it
+    // (v1.5.5 `crates/busbar/src/proto/cohere/reader.rs:964-979` and `:709-729` read only
+    // `tokens.*`): 7 more cached tokens move nothing, on the raw turn where the raw input is the bill.
+    ("cached_tokens", (Turn::Raw, NONE)),
     ("billed_units.input_tokens", (Turn::Billed, at(IN, 1))),
     ("billed_units.output_tokens", (Turn::Billed, at(OUT, 1))),
     (
@@ -72,7 +75,7 @@ fn buffered_and_truncated(usage: &serde_json::Value) -> [Ledgered; 2] {
         "usage": usage
     });
     let buffered = CohereReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read")
         .usage
         .to_token_usage();
@@ -90,12 +93,18 @@ fn streamed(usage: &serde_json::Value) -> Ledgered {
         "type": "message-end",
         "delta": {"finish_reason": "COMPLETE", "usage": usage}
     });
-    let _ = t.feed(b"data: {\"type\":\"message-start\",\"id\":\"m\"}\n\n");
     let _ = t.feed(
+        crate::codec::test_host::HOST,
+        b"data: {\"type\":\"message-start\",\"id\":\"m\"}\n\n",
+    );
+    let _ = t.feed(crate::codec::test_host::HOST,
         b"data: {\"type\":\"content-delta\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"text\":\"hi\"}}}}\n\n",
     );
-    let _ = t.feed(format!("data: {end}\n\n").as_bytes());
-    let _ = t.finish();
+    let _ = t.feed(
+        crate::codec::test_host::HOST,
+        format!("data: {end}\n\n").as_bytes(),
+    );
+    let _ = t.finish(crate::codec::test_host::HOST);
     ledgered(&t.usage().expect("the tap captured usage").to_token_usage())
 }
 

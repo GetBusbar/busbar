@@ -33,11 +33,12 @@ fn lane_with_auth(auth: Option<&str>) -> Lane {
         provider: "azure".to_string(),
         signing_host: "res.openai.azure.com".to_string(),
         base_url: "https://res.openai.azure.com".to_string(),
+        url_userinfo: None,
         // The seated names this fixture never plans a leg with — spelled as the literals the row
         // would have been built from, so the fixture stays a lane row and not a second interner.
         authority: "https://res.openai.azure.com",
         lane_id: "gpt-4o",
-        api_key: busbar_contract::redacted::Redacted::new("SECRETKEY".to_string()),
+        api_key: busbar_contract::redacted::Secret::new("SECRETKEY".to_string()),
         protocol: "openai",
         max: 1,
         error_map: Arc::new(HashMap::new()),
@@ -241,6 +242,12 @@ fn test_sign_and_wire_path_signed_equals_sent_for_reserved_chars() {
 /// from the host by the dialect's own rule; the `auth: api-key` override to its own. The composition
 /// root binds those same rows on the linked auth plugins and holds the headers they present to the
 /// 1.5.5 builders' (`root/tests/declared_credentials.rs`); neither half names the other.
+///
+/// Each recorded style is the protocol's NATIVE auth (v1.5.5 `crates/busbar/src/config/mod.rs`
+/// `ProviderAuth`, ~l.1130: "the request is signed with the protocol's native auth unless `api-key`
+/// selects an `api-key: <key>` header"; ARCHITECT ruling (a)): a bearer-presented scheme on
+/// `bearer`, a one-header scheme on the style that header names, a credential-family table on
+/// `api-key` naming its operator header. RED: a declared scheme bound under another style.
 #[test]
 fn each_dialects_declared_scheme_maps_to_its_recorded_binding() {
     crate::testkit::install_test_seams();

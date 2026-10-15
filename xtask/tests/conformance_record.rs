@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use xtask::conformance_record::{
-    decide_legs, decide_llm, decide_voice, decide_ws, head_commit, render_verdict, write_verdict,
-    LlmRun, Outcome, Status, VoiceRun, WsRun, LLM_DIALECTS,
+    decide_legs, decide_llm, decide_voice, decide_webrtc, decide_ws, head_commit, render_verdict,
+    rig_for, write_verdict, LlmRun, Outcome, Status, VoiceRun, WebrtcRun, WsRun, LLM_DIALECTS,
+    WEBRTC_SUITE,
 };
 use xtask::gates::conformance_sync::render::{Suite, Tier};
 
@@ -637,4 +638,66 @@ fn the_records_own_reconciled_outputs_are_not_drift_but_any_other_tracked_edit_i
     // Any other tracked edit means HEAD does not name the judged tree.
     std::fs::write(repo.join("a.txt"), "two\n").unwrap();
     assert_eq!(drift(&repo), vec!["a.txt".to_string()]);
+}
+
+/// The browser cell: the browsers are the instrument. Not installed, not launching, a red
+/// self-test, a red control or a negative control that does not bite is `not-run`, never `pass`;
+/// only a red subject leg is `fail`; a pass needs an armed `pass` verdict from a leg that exited 0.
+#[test]
+fn the_browser_cell_passes_only_an_armed_subject_its_controls_vouch_for() {
+    assert!(rig_for(WEBRTC_SUITE).is_some(), "the suite has a producer");
+    let run = |install, control, neg, subject, json: Option<&str>| {
+        decide_webrtc(&WebrtcRun {
+            selftest: Some(0),
+            install,
+            control,
+            negative_control: neg,
+            subject,
+            subject_verdict: json.map(str::to_string),
+            evidence: "e".into(),
+        })
+    };
+    let good = r#"{"status":"pass","armed":true}"#;
+    let ok = Some(0);
+    assert_eq!(
+        run(Some(1), ok, ok, ok, Some(good)).status,
+        Status::NotRun,
+        "no browsers"
+    );
+    assert_eq!(
+        run(ok, Some(3), ok, ok, Some(good)).status,
+        Status::NotRun,
+        "no launch"
+    );
+    assert_eq!(
+        run(ok, Some(1), ok, ok, Some(good)).status,
+        Status::NotRun,
+        "red control"
+    );
+    assert_eq!(
+        run(ok, ok, Some(1), ok, Some(good)).status,
+        Status::NotRun,
+        "no bite"
+    );
+    assert_eq!(
+        run(ok, ok, ok, ok, Some(r#"{"status":"pass","armed":false}"#)).status,
+        Status::NotRun,
+        "unarmed"
+    );
+    let red = run(
+        ok,
+        ok,
+        ok,
+        Some(1),
+        Some(r#"{"status":"fail","armed":true,"reason":"firefox/media-round-trip"}"#),
+    );
+    assert_eq!(red.status, Status::Fail);
+    assert_eq!(
+        run(ok, ok, ok, Some(1), Some(good)).status,
+        Status::Fail,
+        "exit beats the file"
+    );
+    let pass = run(ok, ok, ok, ok, Some(good));
+    assert_eq!(pass.status, Status::Pass);
+    assert!(pass.armed);
 }

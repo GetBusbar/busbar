@@ -464,7 +464,9 @@ pub struct RootCfg {
     /// TLS/mTLS for the admin listener (only meaningful with `admin_listen`).
     pub admin_tls: Option<TlsCfg>,
     pub auth: Option<AuthCfg>,
-    pub providers: HashMap<String, ProviderCfg>,
+    /// The resolved providers: each catalog definition merged with its deployment, the kernel-owned
+    /// keys typed and the plane's an opaque table ([`ResolvedProvider`]).
+    pub providers: HashMap<String, ResolvedProvider>,
     pub models: HashMap<String, ModelCfg>,
     pub pools: HashMap<String, PoolCfg>,
     /// The ALL-POOLS `upstream_credentials:` default, resolved from the reserved
@@ -752,9 +754,8 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
             "{msg}\n  hint: hook tap stage `{old}` was renamed to `{new}` in 1.5.3 — run \
              `busbar --migrate-config <config.yaml>` or update the `at:` value to `{new}`"
         )
-    } else if let Some((old, new)) = RETIRED_OBSERVABILITY_KEYS
-        .iter()
-        .copied()
+    } else if let Some((old, new)) = retired_observability_keys()
+        .into_iter()
         .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
     {
         // 1.5.3 observability→export lift-out. Serde rejects the retired key as an unknown
@@ -765,9 +766,8 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
              built-in EXPORTERS (`{new}`). Run `busbar --migrate-config <config.yaml>` or move the \
              field yourself"
         )
-    } else if let Some((old, new)) = RETIRED_CONFIG_KEYS_1_5_3
-        .iter()
-        .copied()
+    } else if let Some((old, new)) = retired_config_keys_1_5_3()
+        .into_iter()
         .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
     {
         // The 1.5.3 GRAMMAR-LOCK retirements. Same shared-table discipline as
@@ -785,28 +785,35 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
 /// The 1.5.3 GRAMMAR-LOCK retired keys (retired key → its new home), shared by
 /// [`augment_config_error`]'s loud-fail hint, `config::migrate::detect_legacy_markers` (the
 /// boot/`--validate` loud-fail) and `migrate_config`'s mechanical rewrite so the three cannot drift —
-/// the same shared-table discipline [`RENAMED_HOOK_STAGES`] and [`RETIRED_OBSERVABILITY_KEYS`] use.
+/// the same shared-table discipline [`RENAMED_HOOK_STAGES`] and [`retired_observability_keys`] use.
 ///
 /// These are the LAST breaking config changes: 1.5.3 is the break-once release, and everything here
-/// is frozen additive-only afterwards.
-pub const RETIRED_CONFIG_KEYS_1_5_3: &[(&str, &str)] = &[
-    // The whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
-    // retired leaves reports the block-level move (the leaves have nowhere left to live).
-    (
-        "observability",
-        "the `export:` NAMED map — a `module: prometheus` / `module: request-log-webhook` / \
-         `module: otlp` instance (all telemetry egress is now the single `export:` surface)",
-    ),
-    // Inverted so the SAFE posture is the default.
-    ("admin_insecure", "admin_require_mtls (INVERTED: `admin_insecure: true` ⇒ `admin_require_mtls: false`)"),
-    // Whose credential reaches the upstream is a routing property, not an inbound-auth one.
-    ("upstream_credentials", "pools.upstream_credentials (the all-pools default) + a per-pool `pools.<p>.upstream_credentials` override"),
-    // The IdP is DEFINED once and REFERENCED by name.
-    ("methods", "the matching `identity-providers:` definition (browser_login + settings are per-provider)"),
-    // The last `observability:` field folded into `export:`.
-    ("otlp_url", "an `export:` instance with `module: otlp` and `settings.url`"),
-    ("otlp_endpoint", "an `export:` instance with `module: otlp` and `settings.url`"),
-];
+/// is frozen additive-only afterwards. The rows that name an export sink (the `observability:`
+/// block's home and the trace URL keys that folded into one) are the root legacy table's frozen
+/// 1.5.5 text ([`legacy`]): the kernel names no export instance.
+pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
+    let trace_home = format!(
+        "an `export:` instance with `module: {}` and `settings.url`",
+        legacy::text("export_trace_module")
+    );
+    [
+        // The whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
+        // retired leaves reports the block-level move (the leaves have nowhere left to live).
+        ("observability", legacy::text("observability_home").to_string()),
+        // Inverted so the SAFE posture is the default.
+        ("admin_insecure", "admin_require_mtls (INVERTED: `admin_insecure: true` ⇒ `admin_require_mtls: false`)".to_string()),
+        // Whose credential reaches the upstream is a routing property, not an inbound-auth one.
+        ("upstream_credentials", "pools.upstream_credentials (the all-pools default) + a per-pool `pools.<p>.upstream_credentials` override".to_string()),
+        // The IdP is DEFINED once and REFERENCED by name.
+        ("methods", "the matching `identity-providers:` definition (browser_login + settings are per-provider)".to_string()),
+        // The last `observability:` field (and its 1.4.x spelling) folded into `export:`.
+        (legacy::text("observability_trace_key"), trace_home.clone()),
+        (legacy::text("observability_trace_key_1_4"), trace_home),
+    ]
+    .into_iter()
+    .filter(|(old, _)| !old.is_empty())
+    .collect()
+}
 
 /// The 1.5.3 tap-stage `at:` renames (old wire string → new), shared by `augment_config_error`'s
 /// loud-fail hint and the `--migrate-config` rewrite so the two cannot drift.
@@ -816,36 +823,35 @@ pub const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
     ("completion", "response"),
 ];
 
-/// The 1.5.3 observability→export RETIRED keys (retired LEAF key → its new home under the built-in
+/// The 1.5.3 observability→export RETIRED keys (retired LEAF key → its new home under the
 /// exporters), shared by `augment_config_error`'s loud-fail hint, `config::migrate::detect_legacy_markers`
 /// (the boot/`--validate` loud-fail), and `migrate_config`'s mechanical rewrite so the three cannot
 /// drift — the same shared-table discipline the HookStage rename uses ([`RENAMED_HOOK_STAGES`]).
-pub const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
-    (
-        "request_log_webhook_url",
-        "export.request-log-webhook.settings.url",
-    ),
-    (
-        "max_inflight_webhook_deliveries",
-        "export.request-log-webhook.settings.max_inflight_deliveries",
-    ),
-    (
-        "webhook_delivery_timeout_secs",
-        "export.request-log-webhook.settings.delivery_timeout_secs",
-    ),
-    (
+/// The leaves, the request-log type key they fold under and the metrics type key are the root
+/// legacy table's frozen 1.5.5 rows ([`legacy`]); the top-level `metrics:` block is listed last.
+pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
+    let log = legacy::text("observability_log_type_key");
+    let mut out: Vec<(&'static str, String)> = legacy::pairs("observability_log_keys")
+        .into_iter()
+        .map(|(old, leaf)| (old, format!("export.{log}.settings.{leaf}")))
+        .collect();
+    out.push((
         "metrics",
-        "export.prometheus.settings (buffer_seconds / key_gauge_limit)",
-    ),
-];
+        format!(
+            "export.{}.settings (buffer_seconds / key_gauge_limit)",
+            legacy::text("metrics_type_key")
+        ),
+    ));
+    out
+}
 
 // The `providers:` / `models:` config SHAPES — the catalog definition, the operator deployment, the
 // resolved provider the runtime reads, the active-health block and the per-model entry — are plain
-// serde data; the catalog/deployment MERGE that produces a `ProviderCfg` stays here (`resolve`).
+// serde data; the catalog/deployment MERGE that produces a `ResolvedProvider` runs here (`resolve`).
 // Moved to `busbar_kernel::config::providers`; re-exported at their historical `config::` path.
 pub use busbar_kernel::config::providers::{
-    default_protocol, neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef,
-    ProviderDeploy, DEFAULT_PROTOCOL,
+    neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef, ProviderDeploy, ProviderTable,
+    ResolvedProvider,
 };
 
 // ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is a plane-owned runtime config
@@ -884,12 +890,10 @@ pub use busbar_kernel::config::pools::{
     STRATEGY_USAGE,
 };
 
-// The FAILOVER BUDGET numeric defaults/bounds are plain scalars with no config grammar attached, so
-// they live in the neutral `busbar_kernel::failover` (a plane names the per-request failover
-// budget without reaching into `busbar-core`); re-exported here at their historical
-// `crate::config::*` paths so every core call site (`appbuild`, `config_validate`, `test_support`,
-// the pools `default_failover_timeout`/`default_max_hops` serde defaults) resolves unchanged.
-pub use busbar_kernel::failover::{
+// The FAILOVER BUDGET numeric defaults/bounds live beside the `FailoverCfg` shape in `pools`;
+// re-exported here at their historical `crate::config::*` paths so every core call site
+// (`appbuild`, `config_validate`, `test_support`) resolves unchanged.
+pub use busbar_kernel::config::pools::{
     DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS, MAX_FAILOVER_DEADLINE_SECS,
 };
 
@@ -925,7 +929,7 @@ fn check_failover_pool(
     errors: &mut Vec<String>,
     section: &str,
     pool: &str,
-    def: &crate::failover::CandidatePoolCfg,
+    def: &pools::CandidatePoolCfg,
     on_this_plane: impl Fn(&str) -> bool,
     on_other_plane: impl Fn(&str) -> bool,
     this_registry: &str,
@@ -1984,7 +1988,7 @@ fn default_plugins_dir() -> String {
 }
 
 /// Resolve DeployCfg + ProviderDef map into resolved RootCfg.
-/// For each deployed provider, look up its definition by name; produce a resolved ProviderCfg
+/// For each deployed provider, look up its definition by name; produce a resolved ResolvedProvider
 /// = def's protocol/base_url/error_map (with any config.yaml override applied) + the deployment's api_key_env.
 /// Build a runtime [`HookCfg`] registry entry from one top-level `hooks:` NAMED DEFINITION (1.5.3).
 /// `module:` names the `kind: hook` PLUGIN that backs the hook (by signed-manifest name/alias) and
@@ -2025,73 +2029,16 @@ fn hook_cfg_from_def(def: &HookDefCfg) -> Result<HookCfg, String> {
     })
 }
 
-/// THE CORE-RESIDENT FALLBACK for `PlaneDecl::resolve_provider` (1.6.0 pools stage-B) — byte-identical
-/// to `busbar_llm::engine::build_runtime::resolve_provider`, kept here for the build with no plane
-/// implementing the hook. `providers:`/`pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and
-/// merged UNCONDITIONALLY (never gated on plane presence, unlike `tools:`/`agents:`/`mcp:`), so an
-/// llm-plane-absent build must keep merging providers exactly as every prior release has rather than
-/// silently dropping configured providers out of `RootCfg::providers`. See
-/// `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for why this section never evicts.
-pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ProviderCfg {
-    // Merge error_map: def's map with deployment override taking precedence
-    let mut error_map = def.error_map.clone();
-    if let Some(override_map) = &deploy_cfg.error_map {
-        for (code, class) in override_map {
-            error_map.insert(code.clone(), class.clone());
-        }
-    }
-    ProviderCfg {
-        // Apply overrides from deployment (rarely used)
-        protocol: deploy_cfg
-            .protocol
-            .clone()
-            .unwrap_or_else(|| def.protocol.clone()),
-        base_url: deploy_cfg
-            .base_url
-            .clone()
-            .unwrap_or_else(|| def.base_url.clone()),
-        api_key: deploy_cfg.api_key.clone(),
-        // Deployment health config wins over the catalog default (mirrors path/auth), so
-        // the `health:` block documented in config.yaml actually takes effect.
-        health: deploy_cfg.health.clone().or_else(|| def.health.clone()),
-        error_map,
-        // deployment override wins over the catalog default
-        path: deploy_cfg.path.clone().or_else(|| def.path.clone()),
-        path_base: deploy_cfg
-            .path_base
-            .clone()
-            .or_else(|| def.path_base.clone()),
-        organization: deploy_cfg
-            .organization
-            .clone()
-            .or_else(|| def.organization.clone()),
-        project: deploy_cfg.project.clone().or_else(|| def.project.clone()),
-        token_url: deploy_cfg
-            .token_url
-            .clone()
-            .or_else(|| def.token_url.clone()),
-        scope: deploy_cfg.scope.clone().or_else(|| def.scope.clone()),
-        subject: deploy_cfg.subject.clone().or_else(|| def.subject.clone()),
-        auth: deploy_cfg.auth.or(def.auth),
-        // deployment override (Some) replaces the catalog default
-        allow_metadata_hosts: deploy_cfg
-            .allow_metadata_hosts
-            .clone()
-            .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
-        // Lane capabilities: each deployment value overrides the catalog's; a deployment rule list
-        // replaces the catalog's.
-        max_output_key: deploy_cfg.max_output_key.or(def.max_output_key),
-        anthropic_adaptive_thinking: deploy_cfg
-            .anthropic_adaptive_thinking
-            .or(def.anthropic_adaptive_thinking),
-        native_structured_output: deploy_cfg
-            .native_structured_output
-            .or(def.native_structured_output),
-        model_capabilities: deploy_cfg
-            .model_capabilities
-            .clone()
-            .unwrap_or_else(|| def.model_capabilities.clone()),
-    }
+/// THE CORE-RESIDENT FALLBACK for `PlaneDecl::resolve_provider`, kept for the build with no plane
+/// implementing the hook: [`ResolvedProvider::merge`], the neutral merge (the kernel-owned keys
+/// typed, the plane's table by [`busbar_kernel::config::providers::merge_tables`]). `providers:`/
+/// `pools:` are `CORE_OWNED_CONCRETE_SECTIONS` and are parsed and merged UNCONDITIONALLY (never gated
+/// on plane presence, unlike `tools:`/`agents:`/`mcp:`), so an llm-plane-absent build keeps merging
+/// providers exactly as every prior release has rather than silently dropping configured providers
+/// out of `RootCfg::providers`. See `crate::plane::registry::CORE_OWNED_CONCRETE_SECTIONS`'s doc for
+/// why this section never evicts.
+pub fn merge_provider_fallback(def: &ProviderDef, deploy_cfg: &ProviderDeploy) -> ResolvedProvider {
+    ResolvedProvider::merge(def, deploy_cfg)
 }
 
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
@@ -2108,7 +2055,7 @@ pub fn resolve(
 
     // (A scrape sink's zero retention window — recording at full cost, reporting nothing — is its
     // own settings refusal, raised by the sink while `resolve_export` validates it.)
-    let mut resolved_providers: HashMap<String, ProviderCfg> = HashMap::new();
+    let mut resolved_providers: HashMap<String, ResolvedProvider> = HashMap::new();
 
     // THE PLANE HOOK (1.6.0 pools stage-B): the per-provider catalog/deployment MERGE is the LLM
     // plane's own logic (`PlaneDecl::resolve_provider`), resolved ONCE here — not per-provider — since
@@ -2256,7 +2203,7 @@ pub fn resolve(
             };
             let members = pool.members.iter().map(|m| m.model.clone()).collect();
             let repeatable = pool.repeatable.clone();
-            let candidates = crate::failover::CandidatePoolCfg {
+            let candidates = pools::CandidatePoolCfg {
                 members,
                 repeatable,
             };
@@ -2522,12 +2469,12 @@ pub fn resolve(
                 }
                 Some(p) => {
                     if let Some(known) = section.known_dialects() {
-                        if !known.contains(&p.protocol.as_str()) {
+                        if !known.contains(&p.dialect()) {
                             errors.push(format!(
                                 "{path} '{provider_name}' resolves to protocol '{}', but this plane \
                                  speaks only: {}. Point it at a provider whose protocol resolves to \
                                  one of those, or remove the reference.",
-                                p.protocol,
+                                p.dialect(),
                                 known.join(", ")
                             ));
                         }
@@ -2758,6 +2705,18 @@ mod named_map_merge_tests;
 #[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]
 mod config_backcompat_corpus;
+
+// The 1.5.5 refusals of a provider entry's dialect keys, pinned byte for byte before the reading of
+// those keys leaves the kernel (row 155 B1).
+#[cfg(test)]
+#[path = "tests/provider_refusal_pins.rs"]
+mod provider_refusal_pins;
+
+// The resolved provider: the kernel-owned keys typed, the plane's one table under the neutral merge
+// (row 155 B1b).
+#[cfg(test)]
+#[path = "tests/resolved_provider_tests.rs"]
+mod resolved_provider_tests;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 

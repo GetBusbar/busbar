@@ -20,7 +20,7 @@ use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::auth_calls::{
     AuthCalls, Decision, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest,
 };
-use busbar_contract::Redacted;
+use busbar_contract::Secret;
 
 use crate::auth_axis::AuthRows;
 use crate::dispatch::{Budgets, DispatchConfig, Dispatcher};
@@ -150,6 +150,7 @@ fn dispatcher() -> Arc<Dispatcher> {
         workers: 2,
         budgets: Budgets::default(),
         watchdog_period: Duration::from_millis(20),
+        ..DispatchConfig::default()
     }))
 }
 
@@ -172,7 +173,7 @@ fn request(credential: Option<&str>, alt: Option<&str>) -> VerifyRequest {
     VerifyRequest {
         query: credential.map(str::to_string),
         lines: alt
-            .map(|a| vec![("X-Alt".to_string(), Redacted::new(a.as_bytes().to_vec()))])
+            .map(|a| vec![("X-Alt".to_string(), Secret::new(a.as_bytes().to_vec()))])
             .unwrap_or_default(),
         method: "GET".into(),
         authority: "node.example".into(),
@@ -214,7 +215,7 @@ fn script() -> Vec<(VerifyRequest, VerifyAnswer)> {
 /// `credential` blob of `verify`'s `in`), and nothing on the query or the field lines.
 fn lent(credential: &str) -> VerifyRequest {
     VerifyRequest {
-        credential: Some(Redacted::new(credential.as_bytes().to_vec())),
+        credential: Some(Secret::new(credential.as_bytes().to_vec())),
         method: "GET".into(),
         authority: "node.example".into(),
         path: "/v1/chat/completions".into(),
@@ -706,7 +707,7 @@ static SERVING_TABLE: std::sync::OnceLock<Arc<crate::tcp_conns::TcpConns>> =
 
 fn serving_table() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
     SERVING_TABLE
-        .get_or_init(|| Arc::new(crate::tcp_conns::TcpConns::new(Arc::new(|_| {}))))
+        .get_or_init(|| Arc::new(crate::tcp_conns::TcpConns::new(Arc::new(|_, _| {}))))
         .clone()
 }
 
@@ -776,9 +777,11 @@ mod outbound {
     use std::task::Poll;
 
     use busbar_contract::abi::sdk::auth_outbound::{
-        outbound_tail, style, FieldsAnswer, FieldsView, FieldsWriter, OpenRefusal, OutboundPlugin,
+        outbound_tail, style, Diags, FieldsAnswer, FieldsView, FieldsWriter, OpenRefusal,
+        OutboundPlugin,
     };
     use busbar_contract::abi::sdk::exchange::Op;
+    use busbar_contract::abi::sdk::life::Refusal;
     use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest};
 
     use super::*;
@@ -790,7 +793,7 @@ mod outbound {
     }
 
     impl OutboundPlugin for Echo {
-        fn open(_: &[u8], _: &[&[u8]]) -> Result<Self, &'static str> {
+        fn open(_: &[u8], _: &[&[u8]], _: u64) -> Result<Self, Refusal> {
             Ok(Echo::default())
         }
 
@@ -799,6 +802,8 @@ mod outbound {
             style: &str,
             credential: Option<&[u8]>,
             _: Option<&[u8]>,
+            _: Option<&busbar_contract::abi::sdk::conn::Host>,
+            _: &mut Diags,
         ) -> Result<u64, OpenRefusal> {
             if style != "bearer-test" {
                 return Err(OpenRefusal::new("style: not served"));
@@ -860,7 +865,7 @@ mod outbound {
             serving.auth.fields_now(handle, &FieldsRequest::default()),
             Some(Fields::Ready(vec![AuthField {
                 name: b"authorization".to_vec(),
-                value: Redacted::new(b"Bearer k".to_vec()),
+                value: Secret::new(b"Bearer k".to_vec()),
                 sensitive: false,
             }]))
         );

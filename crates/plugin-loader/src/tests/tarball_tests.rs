@@ -95,6 +95,32 @@ fn missing_manifest_or_lib_is_refused() {
     assert!(err.contains("no library member"), "got {err}");
 }
 
+/// X-2017, ruled: a member name with a relative directory prefix is keyed on its basename, as
+/// 1.5.5's `unpack` keyed it, so a tarball a 1.5.5 operator built from a directory still loads.
+/// A refusal here would be a customer-visible change nobody signed.
+#[test]
+fn a_nested_member_name_flattens_to_its_basename_as_in_1_5_5() {
+    let m = manifest();
+    let gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    let mut t = tar::Builder::new(gz);
+    let json = serde_json::to_vec(&m).unwrap();
+    for (name, data) in [
+        ("pkg/manifest.json", json.as_slice()),
+        ("pkg/lib/libgamma.so", &b"abc"[..]),
+    ] {
+        let mut h = tar::Header::new_gnu();
+        h.set_size(data.len() as u64);
+        h.set_mode(0o644);
+        h.set_cksum();
+        t.append_data(&mut h, name, data).unwrap();
+    }
+    let bytes = t.into_inner().unwrap().finish().unwrap();
+    let got = unpack(&bytes).expect("a nested member name loads, as in 1.5.5");
+    assert_eq!(got.lib_name, "libgamma.so");
+    assert_eq!(got.lib_bytes, b"abc");
+    assert_eq!(got.manifest.alias, "gamma");
+}
+
 #[test]
 fn extra_members_and_traversal_are_refused() {
     // Three regular files: manifest + two libraries.

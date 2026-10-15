@@ -42,6 +42,13 @@ pub const CATEGORIES: [&str; 6] = [
 // to [`scan`] as a [`Vocab`]. A new plane, transport or dialect is in the scan the day its crate or
 // its declaration is in the tree.
 
+/// DIALECTS THE SEGMENT RULE DOES NOT MATCH, because the word is also frozen contract vocabulary.
+/// `responses` is the OpenAPI `responses` object key (`RESPONSES_KEY`, `declared_responses`), a
+/// name the admin surface cannot change; the retired substring meter carried the same carve-out in
+/// its frozen-wire allowlist. Whole-word matching of these dialects is unchanged; only the
+/// segment spelling is skipped.
+pub const SEGMENT_COLLISIONS: &[&str] = &["responses"];
+
 /// The named plane record types the TYPE rule bans outright.
 const RECORD_TYPES: [&str; 4] = ["McpCallRecord", "McpDemotionRow", "TaskRow", "TaskEventRow"];
 
@@ -68,6 +75,10 @@ pub struct Hit {
     pub file: String,
     pub line: usize,
     pub code: String,
+    /// True when this DIALECT hit is SEGMENT-ONLY: the dialect is named as an identifier segment
+    /// (`PROTO_GEMINI`, `gemini_path`) and no whole-word spelling of any dialect is on the line.
+    /// Always false for every other category and for every whole-word hit.
+    pub segment: bool,
 }
 
 impl Hit {
@@ -185,9 +196,9 @@ fn scan_file(
         }
         // The categories this line is guilty of, in rule order, and whether a test-scope
         // PATH-INCLUDE must ALSO land in the production list (see (a)).
-        let mut found: Vec<&'static str> = Vec::new();
+        let mut found: Vec<(&'static str, bool)> = Vec::new();
         let mut include_in_prod_too = false;
-        let mut emit = |category: &'static str| found.push(category);
+        let mut emit = |category: &'static str, segment: bool| found.push((category, segment));
 
         if mode == Mode::Reverse {
             // No backwards reach: a plane crate must not name `busbar_core::` implementation items.
@@ -199,7 +210,7 @@ fn scan_file(
                     || extern_crate_of(&code, "busbar_core")
                     || bound_as(&code, "busbar_core"))
             {
-                emit("BACKWARDS");
+                emit("BACKWARDS", false);
             }
         } else {
             forward_rules(
@@ -213,17 +224,18 @@ fn scan_file(
         }
 
         let trimmed = code.trim();
-        let hit = |category: &'static str| Hit {
+        let hit = |category: &'static str, segment: bool| Hit {
             category,
             file: name.to_string(),
             line: lineno,
             code: trimmed.to_string(),
+            segment,
         };
         if include_in_prod_too {
-            prod.push(hit("PATH-INCLUDE"));
+            prod.push(hit("PATH-INCLUDE", false));
         }
         let out: &mut Vec<Hit> = if intest { test } else { prod };
-        out.extend(found.into_iter().map(hit));
+        out.extend(found.into_iter().map(|(c, segment)| hit(c, segment)));
     }
 }
 
@@ -232,7 +244,7 @@ fn forward_rules(
     code: &str,
     frozen: bool,
     vocab: &Vocab,
-    emit: &mut impl FnMut(&'static str),
+    emit: &mut impl FnMut(&'static str, bool),
     include_in_prod_too: &mut bool,
     intest: bool,
 ) {
@@ -243,7 +255,7 @@ fn forward_rules(
     if (code.contains("#[") || code.contains("include"))
         && (path_attr_include(code, vocab) || macro_include(code, vocab))
     {
-        emit("PATH-INCLUDE");
+        emit("PATH-INCLUDE", false);
         *include_in_prod_too = intest;
     }
 
@@ -256,7 +268,7 @@ fn forward_rules(
                 && (path_of(code, krate) || extern_crate_of(code, krate) || bound_as(code, krate))
         })
     {
-        emit("SYMBOL");
+        emit("SYMBOL", false);
     }
 
     // THE FROZEN-WIRE CARVE-OUT: exempt from the VOCABULARY rules ONLY, and only below the two
@@ -276,7 +288,7 @@ fn forward_rules(
             .iter()
             .any(|p| prefix_then_upper(code, p))
     {
-        emit("TYPE");
+        emit("TYPE", false);
     }
 
     let lc = format!(" {} ", code.to_lowercase());
@@ -286,12 +298,21 @@ fn forward_rules(
     if vocab.key_words.iter().any(|k| word_ci(&lc, k))
         || vocab.literal_words.iter().any(|q| lc.contains(q.as_str()))
     {
-        emit("KEY");
+        emit("KEY", false);
     }
 
-    // (c2) DIALECT — a dialect the tree declares, as a token.
-    if vocab.dialects.iter().any(|d| word_ci(&lc, d)) {
-        emit("DIALECT");
+    // (c2) DIALECT — a dialect the tree declares, as a token OR as an identifier segment
+    //      (`PROTO_GEMINI`, `gemini_path`: `_` is a segment boundary here, though not a word one).
+    //      A line only the segment spelling reaches is SEGMENT-ONLY, and says so on its hit.
+    let word = vocab.dialects.iter().any(|d| word_ci(&lc, d));
+    let segment = !word
+        && vocab
+            .dialects
+            .iter()
+            .filter(|d| !SEGMENT_COLLISIONS.contains(&d.as_str()))
+            .any(|d| segment_ci(&lc, &d.replace('-', "_")));
+    if word || segment {
+        emit("DIALECT", segment);
     }
 }
 
@@ -415,6 +436,22 @@ pub fn word_ci(lc: &str, needle: &str) -> bool {
     lc.match_indices(needle).any(|(i, _)| {
         let end = i + needle.len();
         i >= 1 && end < hay.len() && !is_ident_lc_b(hay[i - 1]) && !is_ident_lc_b(hay[end])
+    })
+}
+
+/// A SEGMENT hit of a lowercase needle (a dialect with `-` spelled `_`) in the lowercased line: the
+/// character before is not ASCII alphanumeric (start of line, `_` and punctuation all count) and
+/// neither is the one after. The word rule above treats `_` as part of the word; this one treats it
+/// as the joint between segments, which is how `PROTO_GEMINI` and `gemini_path` name a dialect.
+pub fn segment_ci(lc: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    let hay = lc.as_bytes();
+    lc.match_indices(needle).any(|(i, _)| {
+        let end = i + needle.len();
+        (i == 0 || !hay[i - 1].is_ascii_alphanumeric())
+            && hay.get(end).is_none_or(|c| !c.is_ascii_alphanumeric())
     })
 }
 

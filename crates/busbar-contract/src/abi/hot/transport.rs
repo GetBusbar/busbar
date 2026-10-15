@@ -52,11 +52,7 @@ use crate::abi::AbiPreamble;
 use core::mem::MaybeUninit;
 use std::os::raw::c_void;
 
-use crate::grammar::SelectorForm;
-use crate::transport::wire::{
-    CloseReason, Encode, Framing, StatusAt, TransportError, Unit0Trigger, WireStatusClass,
-};
-use crate::transport::Side;
+use crate::transport::wire::{Encode, TransportError};
 
 /// The transport decl's own generation (module docs): the value of [`TransportDecl::version`].
 pub const TRANSPORT_DECL_MAJOR: u32 = 2;
@@ -223,192 +219,7 @@ impl RawWireOutcome {
     }
 }
 
-// ── the closed vocabularies, as bytes ────────────────────────────────────────────────────────────
-
-/// Every closed vocabulary a slot or the row carries crosses as a byte, `0` = absent where the
-/// value is optional; these are the encodings, each with its inverse (an unknown byte is `None`).
-pub mod code {
-    use super::*;
-
-    /// A close reason, `0..=7` in [`CloseReason`]'s order.
-    #[must_use]
-    pub const fn close_reason(r: CloseReason) -> u8 {
-        match r {
-            CloseReason::Normal => 0,
-            CloseReason::PeerClosed => 1,
-            CloseReason::Drain => 2,
-            CloseReason::Poisoned => 3,
-            CloseReason::Revoked => 4,
-            CloseReason::Timeout => 5,
-            CloseReason::TransportFailed => 6,
-            CloseReason::CapacityExhausted => 7,
-        }
-    }
-
-    /// The inverse of [`close_reason`].
-    #[must_use]
-    pub const fn close_reason_of(b: u8) -> Option<CloseReason> {
-        Some(match b {
-            0 => CloseReason::Normal,
-            1 => CloseReason::PeerClosed,
-            2 => CloseReason::Drain,
-            3 => CloseReason::Poisoned,
-            4 => CloseReason::Revoked,
-            5 => CloseReason::Timeout,
-            6 => CloseReason::TransportFailed,
-            7 => CloseReason::CapacityExhausted,
-            _ => return None,
-        })
-    }
-
-    /// A status class, `1..=4`; `0` = none.
-    #[must_use]
-    pub const fn status_class(s: Option<WireStatusClass>) -> u8 {
-        match s {
-            None => 0,
-            Some(WireStatusClass::Success) => 1,
-            Some(WireStatusClass::CallerFault) => 2,
-            Some(WireStatusClass::FarEndFault) => 3,
-            Some(WireStatusClass::Other) => 4,
-        }
-    }
-
-    /// The inverse of [`status_class`]; `Err` for an unknown byte.
-    pub const fn status_class_of(b: u8) -> Result<Option<WireStatusClass>, u8> {
-        Ok(match b {
-            0 => None,
-            1 => Some(WireStatusClass::Success),
-            2 => Some(WireStatusClass::CallerFault),
-            3 => Some(WireStatusClass::FarEndFault),
-            4 => Some(WireStatusClass::Other),
-            other => return Err(other),
-        })
-    }
-
-    /// Which frame carries the status, `1..=2`; `0` = none.
-    #[must_use]
-    pub const fn status_at(s: Option<StatusAt>) -> u8 {
-        match s {
-            None => 0,
-            Some(StatusAt::FirstFrame) => 1,
-            Some(StatusAt::Terminal) => 2,
-        }
-    }
-
-    /// The inverse of [`status_at`]; `Err` for an unknown byte.
-    pub const fn status_at_of(b: u8) -> Result<Option<StatusAt>, u8> {
-        Ok(match b {
-            0 => None,
-            1 => Some(StatusAt::FirstFrame),
-            2 => Some(StatusAt::Terminal),
-            other => return Err(other),
-        })
-    }
-
-    /// How arrivals are delimited, `0..=1`.
-    #[must_use]
-    pub const fn framing(f: Framing) -> u8 {
-        match f {
-            Framing::Stream => 0,
-            Framing::Datagram => 1,
-        }
-    }
-
-    /// The inverse of [`framing`]; `Err` for an unknown byte.
-    pub const fn framing_of(b: u8) -> Result<Framing, u8> {
-        match b {
-            0 => Ok(Framing::Stream),
-            1 => Ok(Framing::Datagram),
-            other => Err(other),
-        }
-    }
-
-    /// What opens a session's first unit, `1..=6`; `0` = none.
-    #[must_use]
-    pub const fn unit0_trigger(t: Option<Unit0Trigger>) -> u8 {
-        match t {
-            None => 0,
-            Some(Unit0Trigger::FirstBytes) => 1,
-            Some(Unit0Trigger::FirstLine) => 2,
-            Some(Unit0Trigger::FirstMessage) => 3,
-            Some(Unit0Trigger::FirstDatagram) => 4,
-            Some(Unit0Trigger::Upgrade) => 5,
-            Some(Unit0Trigger::Handshake) => 6,
-        }
-    }
-
-    /// The inverse of [`unit0_trigger`]; `Err` for an unknown byte.
-    pub const fn unit0_trigger_of(b: u8) -> Result<Option<Unit0Trigger>, u8> {
-        Ok(match b {
-            0 => None,
-            1 => Some(Unit0Trigger::FirstBytes),
-            2 => Some(Unit0Trigger::FirstLine),
-            3 => Some(Unit0Trigger::FirstMessage),
-            4 => Some(Unit0Trigger::FirstDatagram),
-            5 => Some(Unit0Trigger::Upgrade),
-            6 => Some(Unit0Trigger::Handshake),
-            other => return Err(other),
-        })
-    }
-
-    /// Every selector form, in code order: a form's code is its index here plus one.
-    pub const SELECTOR_FORMS: [SelectorForm; 13] = [
-        SelectorForm::ExactPath,
-        SelectorForm::PrefixOneLevel,
-        SelectorForm::Sni,
-        SelectorForm::ClientCertSubject,
-        SelectorForm::PathPattern,
-        SelectorForm::HeaderExact,
-        SelectorForm::HeaderPresent,
-        SelectorForm::HeaderPrefix,
-        SelectorForm::PathSuffix,
-        SelectorForm::PathContains,
-        SelectorForm::StreamName,
-        SelectorForm::Alpn,
-        SelectorForm::Port,
-    ];
-
-    /// A selector form's code, `1..=13`.
-    #[must_use]
-    pub const fn selector_form(f: SelectorForm) -> u8 {
-        let mut i = 0;
-        while i < SELECTOR_FORMS.len() {
-            if SELECTOR_FORMS[i] as u8 == f as u8 {
-                return i as u8 + 1;
-            }
-            i += 1;
-        }
-        0
-    }
-
-    /// The inverse of [`selector_form`].
-    #[must_use]
-    pub const fn selector_form_of(b: u8) -> Option<SelectorForm> {
-        match b {
-            1..=13 => Some(SELECTOR_FORMS[b as usize - 1]),
-            _ => None,
-        }
-    }
-
-    /// Which end of a connection, `0..=1`.
-    #[must_use]
-    pub const fn side(s: Side) -> u8 {
-        match s {
-            Side::Accept => 0,
-            Side::Dial => 1,
-        }
-    }
-
-    /// The inverse of [`side`].
-    #[must_use]
-    pub const fn side_of(b: u8) -> Option<Side> {
-        match b {
-            0 => Some(Side::Accept),
-            1 => Some(Side::Dial),
-            _ => None,
-        }
-    }
-}
+pub use crate::abi::shared::{code, WireConnFacts, WireField};
 
 // ── the shapes that cross ────────────────────────────────────────────────────────────────────────
 
@@ -549,30 +360,6 @@ pub struct WireDest {
     pub env_len: usize,
 }
 
-/// What connection security established ([`crate::transport::ConnFacts`]), borrowed for the call —
-/// facts only; each string NULL when absent, and the certificate's three facts present together.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct WireConnFacts {
-    /// `size_of::<WireConnFacts>()` at construction.
-    pub size: u32,
-    /// Schema version.
-    pub version: u32,
-    /// The server name offered.
-    pub sni: DeclStr,
-    /// The protocol agreed.
-    pub alpn: DeclStr,
-    /// The far end's certificate subject.
-    pub cert_subject: DeclStr,
-    /// The far end's certificate issuer.
-    pub cert_issuer: DeclStr,
-    /// The far end's certificate fingerprint (NULL = no certificate).
-    pub cert_fingerprint: DeclStr,
-    /// The claim the host resolved the connection to (appended at minor 33; NULL = the entry's
-    /// first claim).
-    pub claim: DeclStr,
-}
-
 /// One frame piece ([`crate::transport::Framed`]), borrowed for the callback.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -646,16 +433,6 @@ pub struct WireBytesOut {
     pub ctx: *mut c_void,
     /// The bytes, in order.
     pub put: WireSendFn,
-}
-
-/// One envelope field: a name and its value.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct WireField {
-    /// The field name (UTF-8).
-    pub name: DeclStr,
-    /// Its value (any bytes).
-    pub value: DeclStr,
 }
 
 // ── the carrier's slots: `crate::transport::Carrier`, one per method ─────────────────────────────

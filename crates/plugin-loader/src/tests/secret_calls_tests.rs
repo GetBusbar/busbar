@@ -57,8 +57,11 @@ fn unreached(r: &SecretRef) -> Result<Vec<u8>, String> {
 
 /// Two resolves through `opened`: the hit and the miss.
 fn resolves(opened: &dyn busbar_contract::secret::SecretCalls) -> Vec<String> {
-    let spell = |r: Result<busbar_contract::redacted::Redacted<Vec<u8>>, SecretRefused>| match r {
-        Ok(m) => format!("ok {}", String::from_utf8_lossy(m.expose_secret())),
+    let spell = |r: Result<busbar_contract::redacted::Secret<Vec<u8>>, SecretRefused>| match r {
+        Ok(m) => format!(
+            "ok {}",
+            String::from_utf8_lossy(m.expose(&busbar_contract::plugin::TestKernelSeal))
+        ),
         Err(e) => format!("refused {} {}", e.error_kind, e.text),
     };
     vec![
@@ -273,4 +276,38 @@ fn each_secret_instance_logs_to_its_own_file_under_its_own_label() {
         "a second instance of the one plugin has a file of its own"
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// RED (Part 2 #54, coordinator ruling 2026-10-14): a resolved `Secret` is revealed to a plugin
+/// only under the seal the host lent the dispatcher. On a dispatcher lent NONE the open that would
+/// hand the plugin its material is REFUSED before any crossing (fail closed), naming why; on a lent
+/// one the reveal is made and nothing refuses for want of a seal.
+#[test]
+fn a_dispatcher_lent_no_seal_refuses_the_reveal() {
+    use crate::dispatch::{load_linked, Bind, LinkedRow, NoSink};
+    let material = [super::SecretValue::new(MATERIAL.as_bytes().to_vec())];
+    let open = |d: Arc<Dispatcher>| {
+        let row = LinkedRow::of(door).expect("the env source states its Statement");
+        let plugin = load_linked::<crate::dispatch::kinds::secret::Secret>(
+            &row,
+            Bind {
+                instance: Arc::from("seal-witness"),
+                max_inflight_cap: 16,
+                sink: Arc::new(NoSink),
+                dispatcher: d.adopter(),
+                conns: crate::dispatch::ConnTable::NoNeeds,
+            },
+        )
+        .expect("the linked env source loads");
+        super::LoadedSecret::open(plugin, d, b"{}", &material).map(|_| ())
+    };
+    let refused = open(Arc::new(Dispatcher::new_unlent(DispatchConfig::default())))
+        .expect_err("no seal lent: the material is never revealed");
+    assert!(refused.contains("lent its seal"), "{refused}");
+    if let Err(other) = open(Arc::new(Dispatcher::new(DispatchConfig::default()))) {
+        assert!(
+            !other.contains("lent its seal"),
+            "a lent dispatcher reveals: {other}"
+        );
+    }
 }

@@ -375,13 +375,9 @@
       "transparent": false
     },
     "CredentialPlacement": {
-      "deny_unknown_fields": false,
-      "kind": "enum",
-      "transparent": false,
-      "variants": [
-        "bearer",
-        "header"
-      ]
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
     },
     "DecisionsSection": {
       "deny_unknown_fields": true,
@@ -421,6 +417,10 @@
           "optional": true,
           "type": "AdvancedCfg"
         },
+        "agent_push": {
+          "optional": true,
+          "type": "serde_yaml::Value"
+        },
         "agents": {
           "optional": true,
           "type": "AgentsSection"
@@ -432,6 +432,10 @@
         "config": {
           "optional": true,
           "type": "ConfigMgmtCfg"
+        },
+        "decisions": {
+          "optional": true,
+          "type": "DeclaredSections"
         },
         "export": {
           "optional": true,
@@ -1866,6 +1870,25 @@
       "kind": "struct",
       "transparent": false
     },
+    "ProviderLaneCaps": {
+      "deny_unknown_fields": false,
+      "fields": {
+        "anthropic_adaptive_thinking": {
+          "optional": true,
+          "type": "bool"
+        },
+        "max_output_key": {
+          "optional": true,
+          "type": "MaxOutputKeyCfg"
+        },
+        "native_structured_output": {
+          "optional": true,
+          "type": "bool"
+        }
+      },
+      "kind": "struct",
+      "transparent": false
+    },
     "QueueBody": {
       "deny_unknown_fields": true,
       "fields": {
@@ -2526,6 +2549,15 @@
       "refused": [],
       "wire_keys": []
     },
+    "manual-de CredentialPlacement": {
+      "fields": {},
+      "kind": "manual",
+      "refused": [],
+      "wire_keys": [
+        "bearer",
+        "header"
+      ]
+    },
     "manual-de LimitCfg": {
       "fields": {
         "admission": {
@@ -2655,6 +2687,10 @@
       "kind": "alias",
       "target": "indexmap::IndexMap<String, AskEntryCfg>"
     },
+    "type AuthKey": {
+      "kind": "alias",
+      "target": "(InstanceId, NeedId, String, String)"
+    },
     "type AuthMethods": {
       "kind": "alias",
       "target": "indexmap::IndexMap<String, AuthMethodCfg>"
@@ -2683,6 +2719,10 @@
       "kind": "alias",
       "target": "Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>"
     },
+    "type MemberAnchored": {
+      "kind": "alias",
+      "target": "Mutex<HashMap<(InstanceId, NeedId, String), (String, Option<Arc<tls::client::Sealed>>)>>"
+    },
     "type Members": {
       "kind": "alias",
       "target": "HashMap<String, Arc<Member>>"
@@ -2699,6 +2739,10 @@
       "kind": "alias",
       "target": "std::collections::BTreeMap<String, std::collections::BTreeMap<String, RateEntryCfg>>"
     },
+    "type ProviderTable": {
+      "kind": "alias",
+      "target": "serde_json::Map<String, Value>"
+    },
     "type RoleBindings": {
       "kind": "alias",
       "target": "std::collections::BTreeMap<String, std::collections::BTreeMap<String, RoleBindingCfg>>"
@@ -2713,11 +2757,15 @@
     },
     "type SpawnSecretFn": {
       "kind": "alias",
-      "target": "fn(&busbar_contract::secret_ref::SecretRef) -> Result<String, String>"
+      "target": "fn(&SecretRef, &ConfigScope) -> Result<String, String>"
     },
     "type Verdict": {
       "kind": "alias",
       "target": "u64"
+    },
+    "type WakeTicket": {
+      "kind": "alias",
+      "target": "busbar_contract::conn::ConnWake"
     }
   }
 }

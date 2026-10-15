@@ -87,11 +87,11 @@ async fn connect(
     .with_root_certificates(roots)
     .with_no_client_auth();
     config.alpn_protocols = protocols.iter().map(|p| p.to_vec()).collect();
-    let tcp = tokio::net::TcpStream::connect(addr).await.expect("connect");
+    let socket = tokio::net::TcpStream::connect(addr).await.expect("connect");
     tokio_rustls::TlsConnector::from(Arc::new(config))
         .connect(
             rustls::pki_types::ServerName::try_from("localhost").expect("name"),
-            tcp,
+            socket,
         )
         .await
         .expect("the handshake completes")

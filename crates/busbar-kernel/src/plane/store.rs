@@ -46,7 +46,7 @@ use busbar_contract::records::{PlaneRecordRef, RecordStoreError, RecordStoreResu
 // missing symbol rather than a silently-inert string. These are the on-wire tags a store branches on;
 // they are neutral strings that name no Rust plane type, and the stores key their retention on them
 // verbatim (a `task` purges only terminal rows). A plane crate mirrors the constant it owns (e.g. `busbar_mcp`'s
-// `KIND_CALL`, `busbar_a2a`'s `KIND_TASK`) so the tag it writes and the tag core reads agree.
+// `KIND_CALL`, the agent plane's `KIND_TASK`) so the tag it writes and the tag core reads agree.
 
 /// One plane's task row kind.
 pub const KIND_TASK: &str = "task";

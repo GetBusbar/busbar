@@ -12,10 +12,9 @@
 //! `ROOT_UNITS` table of each enabled root module's [`RootUnit`]. `main.rs` includes it and hands the
 //! tables to the functions below — and they are the SAME functions a plugin dropped into `plugins/`
 //! feeds (#2 rule (1): compiled in or dropped in, same contract, same loading path). On the plane
-//! axis that is literal: a HOT-lane plane dropped into `plugins/` ([`dropped_planes`]) and the same
-//! plane linked into the build ([`Linked::hot_planes`]) are both admitted by the loader into a
-//! `DynPlane` and adapted onto the axis by the one [`hot_plane_row`]. Nothing here asks where a row
-//! came from.
+//! axis that is literal: a plane door linked into the build and the same door dropped into
+//! `plugins/` are both bound through the loader's one load and folded onto the axis by one fold.
+//! Nothing here asks where a row came from.
 //!
 //! What a plugin STATES about itself (its plane declaration) is contract data; what the kernel RUNS
 //! for it is typed by the kernel's own seams (its plane hooks, protocol declarations, arrivals,
@@ -29,18 +28,10 @@
 
 use std::sync::Arc;
 
-use crate::root::loader::{DynPlane, ServedPlane};
-use busbar_contract::abi::hot;
-use busbar_contract::abi::hot::StatusClass;
-use busbar_contract::abi::mechanism::route::{RouteAuth, RouteMethod};
-use busbar_contract::ids::OpClassId;
-use busbar_contract::plane::{MetricFamily, ServedOpClass};
 use busbar_kernel::ingress::arrival::{BodyIngressEntry, PathIngressEntry};
 use busbar_kernel::plane::registry::PlaneDecl;
-use busbar_kernel::plane::registry::{BillableClass, BuildCtx, PlaneDeclaration, PlaneHooks};
-use busbar_kernel::plane::PlaneAdmission;
+use busbar_kernel::plane::registry::PlaneDeclaration;
 use busbar_kernel::plane_host::EngineHost;
-use busbar_kernel::plane_routes::{PlaneReqCtx, PlaneResponse, PlaneRouteSpec};
 use busbar_kernel::preflight::{LinkedAuth, LinkedStore, RootInstall};
 
 /// A provider composition step, captured off the resolved configuration before the app is built and
@@ -58,10 +49,6 @@ pub type CliHelpRow = (&'static str, &'static str);
 pub struct Linked {
     /// The plane axis: each entry's contract declaration joined kernel-side to its hooks.
     pub planes: &'static [PlaneDecl],
-    /// The plane axis, HOT lane: each linked plane that exports a `#[repr(C)]` plane declaration
-    /// (`busbar_contract::abi::hot::PlaneDecl`) instead of Rust hooks — admitted and adapted exactly as the
-    /// same plane dropped into `plugins/` is (see [`register_planes`]).
-    pub hot_planes: &'static [&'static hot::PlaneDecl],
     /// The plane axis, door lane: each linked plane's door (`busbar_plugin_door`), bound through the
     /// one load on the process's dispatcher exactly as the same plane dropped into `plugins/` is
     /// (see [`crate::root::boot::load_door_planes`]).
@@ -72,6 +59,10 @@ pub struct Linked {
     /// Each plane door row's place among [`Linked::planes`] (how many plane rows precede it in
     /// manifest order), parallel to [`Linked::plane_doors`]: where its folded registry row goes.
     pub plane_door_slots: &'static [usize],
+    /// Each linked secret door's DECLARED METADATA, `(door, declares)`: its `declares.json` (named by
+    /// `[package.metadata.busbar.linked-declares]`), read as a dropped-in copy's signed `declares`
+    /// is — its disk need (THE DESIGN §11.11 R4). A door with no row declares none.
+    pub secret_declares: &'static [(busbar_contract::abi::mechanism::door::DoorFn, &'static str)],
     /// Each linked plane door's DECLARED METADATA, `(row, door, declares)`: its manifest `declares`
     /// section as JSON (the crate's `declares.json`, named by `[package.metadata.busbar.linked-declares]`),
     /// read as every default-linked plugin's is, beside the door it belongs to. A linked door is
@@ -92,9 +83,6 @@ pub struct Linked {
     pub protocol_seams: &'static [fn()],
     /// Owned diagnostics, joining the rendered catalog.
     pub diagnostics: &'static [&'static [&'static busbar_contract::diagnostic::Diagnostic]],
-    /// Installers of a duplex plane's inbound WS-accept arrivals (the seam is set once: the first
-    /// duplex entry in table order is the one installed).
-    pub ws_arrivals: &'static [fn()],
     /// Background work re-anchored on every generation's engine host (boot, then each swap).
     pub on_host: &'static [fn(&Arc<dyn EngineHost>)],
     /// Providers composed off the resolved configuration (see [`Compose`]).
@@ -111,6 +99,9 @@ pub struct Linked {
     pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
     /// The auth axis: each linked `kind: auth` plugin's `(registry key, SDK boundary)`.
     pub auths: &'static [LinkedAuth],
+    /// The operator credential's provider word: the key the manifest's operator row states
+    /// (`[package.metadata.busbar.operator-auth]`), linked in this build or not.
+    pub operator_auth: &'static str,
     /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],
@@ -177,7 +168,8 @@ pub struct LinkedTransport {
     pub key: &'static str,
     /// The layers it declares, in the order it would take one.
     pub composes_over: &'static [&'static str],
-    /// Build the wire over `lower`.
+    /// Open the row's door and serve it over the host's sockets (it is handed no layer: no transport
+    /// names another).
     pub build: BuildTransport,
     /// Every scheme its entry claims, its own first: a door row's are read off the door's
     /// Statement (ONE ENTRY PER PLUGIN, the schemes are its claims), and the seal registers each.
@@ -185,16 +177,25 @@ pub struct LinkedTransport {
     /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
     /// upgrade lines (`crate::root::serve::upgrade_carriers`; ARCHITECT ruling Q128 U7).
     pub upgrades: ClaimsOf,
+    /// The claims whose unit 0 opens on the FIRST LINE, read off the door's Statement: the line
+    /// carrier the process's own stdin/stdout serves (`crate::root::serve::lines::line_carrier`).
+    pub lines: ClaimsOf,
+    /// The auth points it offers, read off the door's Statement (`abi::transport::
+    /// EXT_OFFERED_POINTS`): a guest-list line's auth may need no other (THE DESIGN §6 step 3).
+    pub offered: OfferedOf,
 }
 
 /// A row's claims, read when the seal runs.
 pub type ClaimsOf = fn() -> Vec<&'static str>;
 
-/// A wire's build: handed the layer built beneath it, where one is, and the deployment's settings.
+/// A row's offered auth points, read when the guest lists seal.
+pub type OfferedOf = fn() -> busbar_contract::abi::auth::AuthPoints;
+
+/// A wire's build: handed the deployment's settings, it answers the wire the host serves the row's
+/// door over.
 pub type BuildTransport = fn(
-    Option<Arc<dyn busbar_contract::Transport>>,
     &busbar_contract::transport::TransportSettings,
-) -> Arc<dyn busbar_contract::Transport>;
+) -> Arc<busbar_core_connector::wire::HostWire>;
 
 /// One linked plane's contribution to the boot seal: the pure plane registered under its own key,
 /// and the claims that plane declares.
@@ -346,7 +347,7 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 /// names (Q-STORE = (B)). A linked secret door that does not state itself refuses the boot (exit 2)
 /// before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
-    match link_secrets(linked.secrets) {
+    match link_secrets(linked.secrets, linked.secret_declares) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
             registry_build: Some(crate::root::boot::registry),
@@ -355,6 +356,8 @@ pub fn register_stores(linked: &Linked) {
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
             export_axis: Some(&crate::root::exports::EXPORTS),
+            trust_policy: Some(crate::root::boot::trust_policy),
+            host_counters: Some(crate::root::dispatch::host_counters),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
@@ -362,11 +365,11 @@ pub fn register_stores(linked: &Linked) {
         }
     }
     // A member program's `env` secret references resolve through the same linked secret plugins
-    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A): as the previous release resolved them), at the
-    // SPAWN, by the connector that spawns it (SECURITY ruling 2026-10-07: a member's env resolves
-    // at spawn).
+    // (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)), at CONFIG TIME — the need's declaration at a
+    // plane's load or a config apply, and the connector's refresher — and are held for the spawns,
+    // which resolve nothing (ARCHITECT ruling 2026-10-13, row 166: a spawn serves a request).
     busbar_core_connector::compose::install_spawn_secrets(
-        busbar_kernel::config::secret::resolve_linked_string,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     );
 }
 
@@ -399,6 +402,7 @@ static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRow
 /// A linked secret door that does not state itself, naming why.
 pub fn link_secrets(
     doors: &[busbar_contract::abi::mechanism::door::DoorFn],
+    declares: &[(busbar_contract::abi::mechanism::door::DoorFn, &str)],
 ) -> Result<&'static crate::root::loader::secret_calls::SecretRows, String> {
     if let Some(rows) = SECRETS.get() {
         return Ok(rows);
@@ -407,13 +411,33 @@ pub fn link_secrets(
         crate::root::dispatch::dispatcher,
         conns,
     )
-    .with_logs(|| crate::root::boot::plugin_logs().clone());
+    .with_logs(|| crate::root::boot::plugin_logs().clone())
+    .with_disk_lane(disk_run);
     for door in doors {
         rows.link(*door)
             .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
     }
+    for (door, json) in declares {
+        rows.declare_linked(*door, json)?;
+    }
     rows.with_former_names(busbar_kernel::config::legacy::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
+}
+
+/// THE PROCESS'S ONE DISK LANE (THE DESIGN §11.11 R4): the kernel's host services append on it
+/// ([`crate::root::serve::kernel_services`]) and a disk-declared secret source's config-time
+/// `resolve` runs on it ([`disk_run`]).
+static DISK: std::sync::OnceLock<std::sync::Arc<busbar_kernel::host_disk::DiskLane>> =
+    std::sync::OnceLock::new();
+
+/// The process's one disk lane.
+pub fn disk_lane() -> std::sync::Arc<busbar_kernel::host_disk::DiskLane> {
+    DISK.get_or_init(std::sync::Arc::default).clone()
+}
+
+/// The secret axis's hook onto [`disk_lane`]: a job submitted to the lane thread.
+fn disk_run(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
+    disk_lane().run(job).map_err(str::to_string)
 }
 
 /// The host's one connection table (`root::connector::the()`), on which a secret plugin that declares
@@ -427,14 +451,15 @@ pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
     SECRETS.get_or_init(|| {
         crate::root::loader::secret_calls::SecretRows::new(crate::root::dispatch::dispatcher, conns)
             .with_logs(|| crate::root::boot::plugin_logs().clone())
+            .with_disk_lane(disk_run)
     })
 }
 
-/// THE PLANE AXIS: every entry's registry row and every HOT-lane plane's — linked or dropped in —
+/// THE PLANE AXIS: every entry's registry row and every plane door's — linked or dropped in —
 /// installed once. A plane whose declaration the loader will not admit refuses the boot (exit 2)
 /// whichever door it came in by, before any listener binds.
-pub fn register_planes(linked: &Linked, dropped: Vec<DynPlane>) {
-    match plane_rows(linked, dropped) {
+pub fn register_planes(linked: &Linked) {
+    match plane_rows(linked) {
         Ok(rows) => busbar_kernel::plane::registry::install_planes(rows.leak()),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
@@ -443,29 +468,11 @@ pub fn register_planes(linked: &Linked, dropped: Vec<DynPlane>) {
     }
 }
 
-/// The rows [`register_planes`] installs, in install order: the linked Rust-hook planes, then the
-/// linked HOT-lane planes, then the dropped-in ones — each HOT-lane plane admitted by the loader
-/// (`link_plane` for a linked decl, the `plugins/` load for a dropped one) and adapted by the one
-/// [`hot_plane_row`]. The kernel's boot fold (`merged_boot_plane_decls`) then orders, dedups and
-/// claim-checks them without knowing which door any came in by.
-pub fn plane_rows(
-    linked: &Linked,
-    dropped: Vec<DynPlane>,
-) -> Result<Vec<&'static PlaneDecl>, String> {
-    let mut hot = linked
-        .hot_planes
-        .iter()
-        .map(|decl| crate::root::loader::link_plane(decl, "linked plane"))
-        .collect::<Result<Vec<DynPlane>, String>>()?;
-    hot.extend(dropped);
-    // The HOT-lane planes live as long as the process, as a linked plane's image does, and so do the
-    // rows read off them: the batch is kept once, the same way the installed row list is.
-    let hot: &'static [DynPlane] = hot.leak();
-    let hot_rows: &'static [PlaneDecl] = hot
-        .iter()
-        .map(hot_plane_row)
-        .collect::<Result<Vec<PlaneDecl>, String>>()?
-        .leak();
+/// The rows [`register_planes`] installs, in install order: the linked Rust-hook planes with each
+/// linked door's folded row at its manifest place, then the dropped-in doors' rows. The kernel's boot
+/// fold (`merged_boot_plane_decls`) then orders, dedups and claim-checks them without knowing which
+/// door any came in by.
+pub fn plane_rows(linked: &Linked) -> Result<Vec<&'static PlaneDecl>, String> {
     let mut rows: Vec<&'static PlaneDecl> = linked.planes.iter().collect();
     // A linked door's folded row goes at its manifest row's place among the linked plane rows (the
     // layering order is the manifest's whichever axis a plane registers on); a dropped one follows.
@@ -475,11 +482,10 @@ pub fn plane_rows(
     for (row, slot) in linked_doors.iter().zip(linked.plane_door_slots).rev() {
         rows.insert((*slot).min(rows.len()), row);
     }
-    rows.extend(hot_rows);
     rows.extend(dropped_doors.iter().copied());
     // PER-AXIS (SEAM-L(s)): a door row owns the plane axis for its key; a legacy row of the same
     // key yields that axis alone and keeps every other axis it registers (its tables are its own).
-    let rows = doors_own_their_plane_keys(rows, &doors)?;
+    let rows = doors_own_their_plane_keys(rows, &doors);
     let declared: Vec<&PlaneDeclaration> = rows.iter().map(|d| &d.declaration).collect();
     busbar_contract::plane::check_metric_families(&declared, PLANE_CARRIED_SERIES)?;
     busbar_contract::plane::check_served_op_classes(&declared)?;
@@ -492,100 +498,23 @@ pub fn plane_rows(
 /// register (its other tables: the CLI help, the one-shot runner, the protocols, the diagnostics),
 /// which this fold never touches. Order is kept.
 ///
-/// The ENGINE is not the plane axis: a legacy row that is the fallback plane carries the routing
-/// tables the core's own readers walk (the `/metrics` lane gauges, `/v1/models`, the provider
-/// merge), so a door taking its key takes them over ([`with_the_engine_of`]) rather than leaving the
-/// node with none.
-///
-/// # Errors
-///
-/// A door taking an engine past the [`CARRIED`] table's last slot, named (see [`carry_into`]).
+/// The ENGINE does not ride the door's row (status row 83, PR 4a; BUSBAR-1.6.0.md l.639, l.2577,
+/// #7: the route tables, the view, the health loop and `on_swap` are the KERNEL's). The door's own
+/// tail states whether it is the fallback plane (`TAIL_FALLBACK`), the core's readers (the
+/// `/metrics` lane gauges, `/v1/models`, the keys and service-operations views) walk the kernel's
+/// own [`busbar_kernel::plane_host::ConfigTables`], built from the same resolved lanes and pools,
+/// the provider merge is the kernel's `merge_provider_fallback`, and the health probes are the
+/// kernel's probe units on the door's sealed egress (`root::serve::arm_probes`). So a legacy row of
+/// the door's key yields the plane axis whole, its `build_runtime`, `viewer`, `resolve_provider`,
+/// `on_swap` and fallback flag included.
 pub fn doors_own_their_plane_keys(
     rows: Vec<&'static PlaneDecl>,
     doors: &[&'static PlaneDecl],
-) -> Result<Vec<&'static PlaneDecl>, String> {
-    doors_own_their_plane_keys_into(&CARRIED, rows, doors)
-}
-
-/// [`doors_own_their_plane_keys`], carrying engines into `table`.
-pub(crate) fn doors_own_their_plane_keys_into(
-    table: &'static [std::sync::OnceLock<PlaneDecl>],
-    rows: Vec<&'static PlaneDecl>,
-    doors: &[&'static PlaneDecl],
-) -> Result<Vec<&'static PlaneDecl>, String> {
+) -> Vec<&'static PlaneDecl> {
     let is_door = |row: &PlaneDecl| doors.iter().any(|d| std::ptr::eq(*d, row));
-    let legacy_of = |key: &str| rows.iter().copied().find(|r| r.key == key && !is_door(r));
-    let mut kept: Vec<&'static PlaneDecl> = rows
-        .iter()
-        .copied()
+    rows.into_iter()
         .filter(|row| is_door(row) || !doors.iter().any(|d| d.key == row.key))
-        .collect();
-    for row in &mut kept {
-        if let Some(legacy) = legacy_of(row.key).filter(|_| is_door(row)) {
-            if let Some(carried) = carry_into(table, row, legacy)? {
-                *row = carried;
-            }
-        }
-    }
-    Ok(kept)
-}
-
-/// The door rows a carried engine rides: one slot per door plane a process folds, the shape of table
-/// the kernel keeps its own folded rows in (`busbar_kernel::plane::door`), so a row lives as long as
-/// the process with no allocation leaked for it.
-static CARRIED: [std::sync::OnceLock<PlaneDecl>; busbar_kernel::plane::door::MAX_DOOR_PLANES] =
-    [const { std::sync::OnceLock::new() }; busbar_kernel::plane::door::MAX_DOOR_PLANES];
-
-/// THE DOOR ROW, CARRYING THE ENGINE ITS KEY'S LEGACY ROW HELD, kept in `table`: the fallback flag
-/// and the hooks the kernel builds and reads the fallback plane's routing tables through
-/// (`build_runtime`, `viewer`, `resolve_provider`, `on_swap`), each the legacy row's; every other
-/// word stays the door's. `None` when the legacy row holds none of them: the door's row stands as it
-/// is. Carrying the same key again answers the row the first carry built, as the kernel's fold
-/// answers a key it already folded.
-///
-/// # Errors
-///
-/// Every slot of `table` already holds another key's row: the engine has nowhere to ride, and the
-/// boot refuses rather than serve the door's key without the fallback plane's tables.
-fn carry_into(
-    table: &'static [std::sync::OnceLock<PlaneDecl>],
-    door: &PlaneDecl,
-    legacy: &PlaneDecl,
-) -> Result<Option<&'static PlaneDecl>, String> {
-    let holds_an_engine = legacy.fallback
-        || legacy.build_runtime.is_some()
-        || legacy.viewer.is_some()
-        || legacy.resolve_provider.is_some()
-        || legacy.on_swap.is_some();
-    if !holds_an_engine {
-        return Ok(None);
-    }
-    let carried = || PlaneDecl {
-        declaration: PlaneDeclaration {
-            fallback: legacy.fallback,
-            ..door.declaration
-        },
-        build_runtime: legacy.build_runtime,
-        viewer: legacy.viewer,
-        resolve_provider: legacy.resolve_provider,
-        on_swap: legacy.on_swap,
-        ..*door
-    };
-    table
-        .iter()
-        .find_map(|slot| match slot.get() {
-            Some(row) => (row.key == door.key).then_some(row),
-            None => Some(slot.get_or_init(carried)).filter(|row| row.key == door.key),
-        })
-        .map(Some)
-        .ok_or_else(|| {
-            format!(
-                "the plane door `{}` takes the engine its legacy row holds, and {} door planes \
-                 already carry one, the most one process carries",
-                door.key,
-                table.len()
-            )
-        })
+        .collect()
 }
 
 /// TWO DOORS ON ONE AXIS: a plane key registered by two door rows (each `(row name, key)`) is a
@@ -611,9 +540,9 @@ pub(crate) fn door_probe_dispatcher() -> Arc<crate::root::loader::dispatch::Disp
     crate::root::dispatch::dispatcher()
 }
 
-/// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
-/// and R2-C): every plane [`dropped_planes_of`] discovered through a door, linked or dropped, bound
-/// once through the loader's one load on the process's one dispatcher (booted as main's first act,
+/// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03 on the door's declaration; spec #49
+/// and R2-C): every plane [`crate::root::boot::discover_planes`] discovered through a door, linked
+/// or dropped, bound once through the loader's one load on the process's one dispatcher (booted as main's first act,
 /// before any plane registers and before the config prepass), and its Statement
 /// folded into a registry row by the kernel (`busbar_kernel::plane::door::fold`). The row's every
 /// word is the door's; a door owns the plane axis for its key, a linked legacy row of the same key
@@ -707,476 +636,6 @@ pub const PLANE_CARRIED_SERIES: &[(&str, &[&str])] = &[
     ),
 ];
 
-/// ADAPT ONE HOT-LANE PLANE onto the plane axis — the ONE function a linked and a dropped-in plane
-/// both pass through. The row's contract declaration is the plane's own statement, field for field:
-/// its `name` is the registry key, its `section_key` the declaring section, and every other fact is
-/// read off the decl's declaration tail (the loader refuses a decl that states none). Nothing is
-/// defaulted and nothing stands in for anything. The plane lives for the process, so every string
-/// and list here is borrowed from it or kept once, as the installed row list is. Its hooks are
-/// [`HOT_PLANE_HOOKS`], and the plane is recorded where their shared `build` finds it.
-pub fn hot_plane_row(plane: &'static DynPlane) -> Result<PlaneDecl, String> {
-    let key = plane.name();
-    if key.is_empty() || plane.section_key().is_empty() {
-        return Err(format!(
-            "plane {plane:?} declares no name or no config section; a plane is installed by its \
-             name and configured by its section"
-        ));
-    }
-    let stated = plane.declaration();
-    let list = |items: &'static [String]| -> &'static [&'static str] {
-        items.iter().map(String::as_str).collect::<Vec<_>>().leak()
-    };
-    let declaration = PlaneDeclaration {
-        key,
-        fallback: stated.fallback,
-        config_section: plane.section_key(),
-        scope_kinds: list(&stated.scope_kinds),
-        subject_noun: &stated.subject_noun,
-        admin_noun: &stated.admin_noun,
-        audit_kind: &stated.audit_kind,
-        card_signing_domain: stated.signing_domain.as_deref(),
-        card_kid_prefix: stated.signing_kid_prefix.as_deref(),
-        owned_config_sections: list(&stated.owned_sections),
-        billable_classes: stated
-            .billable_classes
-            .iter()
-            .map(|(class, family)| BillableClass { class, family })
-            .collect::<Vec<_>>()
-            .leak(),
-        fee_units: list(&stated.fee_units),
-        record_kinds: list(&stated.record_kinds),
-        required_config_sections: list(&stated.required_sections),
-        trust_keys: &[],
-        metric_families: stated
-            .metric_families
-            .iter()
-            .map(|f| MetricFamily {
-                name: &f.name,
-                kind: &f.kind,
-                label_keys: list(&f.label_keys),
-            })
-            .collect::<Vec<_>>()
-            .leak(),
-        served_op_classes: stated
-            .served_op_classes
-            .iter()
-            .map(|(op, name)| ServedOpClass {
-                op: OpClassId::new(op),
-                name,
-            })
-            .collect::<Vec<_>>()
-            .leak(),
-        caller_credential_refusal: None,
-    };
-    HOT_PLANES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push(plane);
-    Ok(PlaneDecl::assemble(declaration, HOT_PLANE_HOOKS))
-}
-
-/// Every HOT-lane plane [`hot_plane_row`] adapted, in adaptation (= install) order: where the one
-/// shared [`hot_build`] finds the plane a row is for, by the section its resource names. The first
-/// plane with a section is the one the boot fold kept (it keeps the first row of a key).
-static HOT_PLANES: std::sync::Mutex<Vec<&'static DynPlane>> = std::sync::Mutex::new(Vec::new());
-
-/// THE HOST EVERY HOT-LANE PLANE IS BUILT AGAINST: the kernel's own vtable, every slot, built once
-/// and kept for the process — a built plane may hold the table it was handed at `build`, so the
-/// table outlives it (the ABI's build contract), and a dropped-in plane's contract host-service
-/// ports are armed over it when its door opens (minor 30). Each dispatch is handed a table and
-/// `HostCtx` of its own, minted for it.
-static HOT_HOST: std::sync::LazyLock<hot::PlaneHostVtable> =
-    std::sync::LazyLock::new(busbar_kernel::plane_host::build_plane_host_vtable);
-
-/// A HOT-lane plane's runtime slot for one config generation: the plane as built, and the door it
-/// stated through its `claims` and `admission` slots when it was built.
-struct HotSlot {
-    /// The built plane.
-    served: ServedPlane,
-    /// Each path it answers on: the method, the path, and the wire format (one the host speaks).
-    claims: Vec<(RouteMethod, String, &'static str)>,
-    /// The audience it binds, if it binds one.
-    admission: Option<PlaneAdmission>,
-    /// The operator's destinations in its section — what its egress may reach (DEC-SERVE G3).
-    destinations: busbar_kernel::plane_host::egress::OperatorDestinations,
-}
-
-/// BUILD a HOT-lane plane's slot for this generation, over the ABI. The kernel hands a plane whose
-/// section it carries raw that section as its resource, `(section, value)`; the section names the
-/// plane. The value crosses as JSON bytes, beside the deployment's public URL, into the plane's own
-/// `build` slot (against [`HOT_HOST`]); what the built plane states through `claims` and `admission`
-/// is read once, here. A plane that will not build, or states a door the host cannot mount, gets no
-/// slot — it serves nothing this generation, and the refusal is logged, naming it.
-fn hot_build(ctx: &BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
-    let resource = ctx.endpoint_slot.as_deref()?;
-    let (section, value) = resource.downcast_ref::<(&'static str, serde_yaml::Value)>()?;
-    let plane = HOT_PLANES
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .copied()
-        .find(|p| p.section_key() == *section)?;
-    match hot_slot(plane, value, ctx.public_url) {
-        Ok(slot) => Some(std::sync::Arc::new(slot)),
-        Err(refusal) => {
-            tracing::error!(plane = plane.name(), "{refusal}");
-            None
-        }
-    }
-}
-
-/// [`hot_build`]'s body: serve `plane` over `section`, then read and check the door it states.
-fn hot_slot(
-    plane: &'static DynPlane,
-    section: &serde_yaml::Value,
-    public_url: Option<&str>,
-) -> Result<HotSlot, String> {
-    let name = plane.name();
-    let bytes = serde_json::to_vec(section)
-        .map_err(|e| format!("plane `{name}`'s section is not representable as JSON: {e}"))?;
-    let served = plane.serve(&HOT_HOST, &bytes, public_url)?;
-    let methods = [
-        RouteMethod::Get,
-        RouteMethod::Post,
-        RouteMethod::Put,
-        RouteMethod::Patch,
-        RouteMethod::Delete,
-    ];
-    let wires = [
-        busbar_kernel::plane::WIRE_HTTP_JSON,
-        busbar_kernel::plane::WIRE_JSONRPC,
-        busbar_kernel::plane::WIRE_GRPC,
-    ];
-    let claims = served
-        .claims()?
-        .into_iter()
-        .map(|c| {
-            let method = methods.into_iter().find(|m| m.as_str() == c.method);
-            let wire = wires.into_iter().find(|w| *w == c.wire);
-            match (method, wire) {
-                (Some(method), Some(wire)) => Ok((method, c.path, wire)),
-                _ => Err(format!(
-                    "plane `{name}` claims `{} {} {}`, a method or wire format the host does not serve",
-                    c.method, c.path, c.wire
-                )),
-            }
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    let admission = served
-        .admission()?
-        .map(|(audience, resource_metadata)| PlaneAdmission {
-            audience,
-            resource_metadata,
-        });
-    Ok(HotSlot {
-        served,
-        claims,
-        admission,
-        destinations: busbar_kernel::plane_host::egress::OperatorDestinations::of_section(section),
-    })
-}
-
-/// THE PATHS A HOT-LANE PLANE ANSWERS ON, as its `claims` slot stated them at build.
-fn hot_claims(slot: &dyn std::any::Any) -> Vec<(String, &'static str)> {
-    slot.downcast_ref::<HotSlot>().map_or_else(Vec::new, |s| {
-        s.claims
-            .iter()
-            .map(|(_, path, wire)| (path.clone(), *wire))
-            .collect()
-    })
-}
-
-/// THE AUDIENCE A HOT-LANE PLANE BINDS, as its `admission` slot stated it at build.
-fn hot_admission(slot: &dyn std::any::Any) -> Option<PlaneAdmission> {
-    slot.downcast_ref::<HotSlot>()?.admission.clone()
-}
-
-/// THE DATA ROUTES A HOT-LANE PLANE SERVES: one per claimed path, at the data-plane bar
-/// ([`RouteAuth::Key`]). Each is answered INLINE on the request's worker ([`hot_answer_inline`]) —
-/// the #30 HOT lane takes no thread hop — unless the plane declares its dispatch blocks (minor 32,
-/// `DISPATCH_BLOCKS`), when it is answered on a blocking thread ([`hot_answer_blocking`]).
-fn hot_routes(slot: &dyn std::any::Any) -> Vec<PlaneRouteSpec> {
-    let Some(slot) = slot.downcast_ref::<HotSlot>() else {
-        return Vec::new();
-    };
-    let blocks = slot.served.plane().dispatch_blocks();
-    slot.claims
-        .iter()
-        .map(|(method, path, _)| PlaneRouteSpec {
-            path: path.clone(),
-            method: *method,
-            auth: RouteAuth::Key,
-            handler: std::sync::Arc::new(move |ctx| {
-                Box::pin(async move {
-                    match blocks {
-                        true => hot_answer_blocking(ctx).await,
-                        false => hot_answer_inline(&ctx),
-                    }
-                })
-            }),
-        })
-        .collect()
-}
-
-/// One event of a HOT-lane answer on its way to the caller: the streamed head, a body chunk, or the
-/// plane's fault after the stream began.
-enum Emitted {
-    Head(Option<u16>, Vec<(Vec<u8>, Vec<u8>)>),
-    Chunk(axum::body::Bytes),
-    Fault,
-}
-
-/// How many streamed chunks may wait for the caller before the plane's next `emit_body` blocks.
-const HOT_STREAM_DEPTH: usize = 8;
-
-/// The dispatching thread's [`crate::root::loader::ReplyStream`]: each event goes to the caller's
-/// response; `false` once the caller went away.
-struct ToCaller(tokio::sync::mpsc::Sender<Emitted>);
-
-impl crate::root::loader::ReplyStream for ToCaller {
-    fn head(&mut self, status: Option<u16>, headers: &[(Vec<u8>, Vec<u8>)]) -> bool {
-        self.0
-            .blocking_send(Emitted::Head(status, headers.to_vec()))
-            .is_ok()
-    }
-    fn chunk(&mut self, bytes: &[u8]) -> bool {
-        let chunk = axum::body::Bytes::copy_from_slice(bytes);
-        self.0.blocking_send(Emitted::Chunk(chunk)).is_ok()
-    }
-}
-
-/// A streamed HOT-lane body: the chunks as the plane writes them; a plane fault after the stream
-/// began ends the body with an error, so the caller sees a cut answer, never a clean short one.
-struct HotStream(tokio::sync::mpsc::Receiver<Emitted>);
-
-impl http_body::Body for HotStream {
-    type Data = axum::body::Bytes;
-    type Error = std::io::Error;
-
-    fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        self.0.poll_recv(cx).map(|event| match event? {
-            Emitted::Chunk(chunk) => Some(Ok(http_body::Frame::data(chunk))),
-            Emitted::Head(..) | Emitted::Fault => Some(Err(std::io::Error::other(
-                "the plane faulted after its answer began",
-            ))),
-        })
-    }
-}
-
-/// What an inline dispatch streamed, held until it returns: the stated head and the chunks, bounded
-/// by the host's per-response buffering cap (the operator's translate-body cap) — past it the plane
-/// is told the caller is gone.
-/// A stated answer head: the status (`None` = unstated) and the headers.
-type StatedHead = (Option<u16>, Vec<(Vec<u8>, Vec<u8>)>);
-
-struct Held {
-    head: Option<StatedHead>,
-    chunks: Vec<axum::body::Bytes>,
-    held: usize,
-    cap: usize,
-}
-
-impl crate::root::loader::ReplyStream for Held {
-    fn head(&mut self, status: Option<u16>, headers: &[(Vec<u8>, Vec<u8>)]) -> bool {
-        self.head = Some((status, headers.to_vec()));
-        true
-    }
-    fn chunk(&mut self, bytes: &[u8]) -> bool {
-        self.held = self.held.saturating_add(bytes.len());
-        if self.held > self.cap {
-            return false;
-        }
-        self.chunks.push(axum::body::Bytes::copy_from_slice(bytes));
-        true
-    }
-}
-
-/// ANSWER ONE REQUEST INLINE ON THE REQUEST'S WORKER (#30 HOT lane; ARCHITECT HOTDOOR-B queue 2): a
-/// plane whose dispatch does not block is called in place — no thread hop. A body it streamed is
-/// held until the dispatch returns and then served as a stream (its length unstated), exactly as
-/// the blocking door serves it; a plane that faults after streaming answers its class status.
-fn hot_answer_inline(ctx: &PlaneReqCtx) -> PlaneResponse {
-    let mut held = Held {
-        head: None,
-        chunks: Vec::new(),
-        held: 0,
-        cap: busbar_contract::codec::max_translate_body_bytes(),
-    };
-    let reply = hot_dispatch(ctx, &mut held);
-    let (Some((status, headers)), StatusClass::Ok) = (held.head, reply.class) else {
-        return buffered_response(reply);
-    };
-    let (tx, rx) = tokio::sync::mpsc::channel(held.chunks.len().max(1));
-    for chunk in held.chunks {
-        let _ = tx.try_send(Emitted::Chunk(chunk));
-    }
-    drop(tx);
-    live_response(status, &headers, rx)
-}
-
-/// A streamed answer: its head, then the body the channel carries.
-fn live_response(
-    status: Option<u16>,
-    headers: &[(Vec<u8>, Vec<u8>)],
-    rx: tokio::sync::mpsc::Receiver<Emitted>,
-) -> PlaneResponse {
-    let body = axum::body::Body::new(HotStream(rx));
-    match status {
-        Some(status) => hot_response(status, Some(headers), body),
-        None => hot_response(200, None, body),
-    }
-}
-
-/// A buffered answer: the plane's stated head on `Ok`, else its class status (see [`hot_response`]).
-fn buffered_response(reply: crate::root::loader::HotReply) -> PlaneResponse {
-    let body = axum::body::Body::from(reply.body);
-    match (reply.class, reply.status) {
-        (StatusClass::Ok, Some(status)) => hot_response(status, Some(&reply.headers), body),
-        (StatusClass::Ok, None) => hot_response(200, None, body),
-        (StatusClass::Refused, _) => hot_response(403, None, body),
-        (StatusClass::Gone, _) => hot_response(410, None, body),
-        (StatusClass::Unsupported, _) => hot_response(501, None, body),
-        (StatusClass::Fault, _) => hot_response(500, None, body),
-    }
-}
-
-/// ANSWER ONE REQUEST THROUGH A PLANE WHOSE DISPATCH BLOCKS (DEC-SERVE G2; minor 32
-/// `DISPATCH_BLOCKS`). The dispatch runs on a blocking thread ([`hot_dispatch`]): its host calls
-/// may wait, and a streamed body is written while the caller already reads it. A streamed body is
-/// served LIVE — its head first, then each chunk as the plane writes it; a buffered one is served
-/// whole.
-async fn hot_answer_blocking(ctx: PlaneReqCtx) -> PlaneResponse {
-    let (tx, mut rx) = tokio::sync::mpsc::channel(HOT_STREAM_DEPTH);
-    let run = tokio::task::spawn_blocking(move || {
-        let mut to_caller = ToCaller(tx);
-        let reply = hot_dispatch(&ctx, &mut to_caller);
-        if reply.streamed && reply.class != StatusClass::Ok {
-            let _ = to_caller.0.blocking_send(Emitted::Fault);
-        }
-        reply
-    });
-    if let Some(Emitted::Head(status, headers)) = rx.recv().await {
-        return live_response(status, &headers, rx);
-    }
-    let reply = run.await.unwrap_or_else(|_| crate::root::loader::HotReply {
-        class: StatusClass::Fault,
-        status: None,
-        headers: Vec::new(),
-        body: Vec::new(),
-        streamed: false,
-    });
-    buffered_response(reply)
-}
-
-/// The response a HOT-lane plane answered: on an `Ok` answer with a stated head, EXACTLY the status
-/// and headers it stated — its provider's, passed through; otherwise (`headers` `None`) the status
-/// of its class with the JSON content type every HOT-lane answer carried before a plane could state
-/// a head (`Ok` 200, `Refused` 403, `Gone` 410, `Unsupported` 501, anything else 500). A status or
-/// header the host cannot serve is a 500.
-fn hot_response(
-    status: u16,
-    headers: Option<&[(Vec<u8>, Vec<u8>)]>,
-    body: axum::body::Body,
-) -> PlaneResponse {
-    let mut response = axum::http::Response::builder().status(status);
-    match headers {
-        None => response = response.header(axum::http::header::CONTENT_TYPE, "application/json"),
-        Some(headers) => {
-            for (name, value) in headers {
-                response = response.header(name.as_slice(), value.as_slice());
-            }
-        }
-    }
-    response.body(body).unwrap_or_else(|_| {
-        let mut fault = axum::http::Response::default();
-        *fault.status_mut() = axum::http::StatusCode::INTERNAL_SERVER_ERROR;
-        fault
-    })
-}
-
-/// DRIVE ONE REQUEST THROUGH A HOT-LANE PLANE: the request body is the work item's finite inbound
-/// buffer and the request's method, path, query and headers its request head, dispatched through the
-/// plane's `dispatch` slot inside the kernel's plane-door mint (`with_plane_door`, under the plane's
-/// registry key, over this request's engine snapshot and a fresh arena) — so every host call the
-/// plane makes back is recovered, governed, metered and journalled as this plane's, billed to the
-/// caller the auth middleware resolved (`ctx.gov`, never a key id the plane writes; DEC-SERVE G1),
-/// and its egress judged against the operator's destinations in its section (DEC-SERVE G3). A body
-/// larger than the reply buffer goes to `stream` (DEC-SERVE G2).
-fn hot_dispatch(
-    ctx: &PlaneReqCtx,
-    stream: &mut dyn crate::root::loader::ReplyStream,
-) -> crate::root::loader::HotReply {
-    let slot = ctx.slot.downcast_ref::<HotSlot>();
-    let handle = ctx.engine.downcast_ref::<busbar_kernel::state::AppHandle>();
-    let headers: Vec<(&[u8], &[u8])> = ctx
-        .headers
-        .iter()
-        .map(|(name, value)| (name.as_str().as_bytes(), value.as_bytes()))
-        .collect();
-    let head = crate::root::loader::RequestHead {
-        method: ctx.method.as_str().as_bytes(),
-        path: ctx.uri.path().as_bytes(),
-        query: ctx.uri.query().unwrap_or_default().as_bytes(),
-        headers: &headers,
-    };
-    let (Some(slot), Some(handle)) = (slot, handle) else {
-        return crate::root::loader::HotReply {
-            class: StatusClass::Fault,
-            status: None,
-            headers: Vec::new(),
-            body: Vec::new(),
-            streamed: false,
-        };
-    };
-    let app = handle.load();
-    let scope = busbar_kernel::plane_host::DispatchScope::new();
-    busbar_kernel::plane_host::with_plane_door(
-        slot.served.plane().name(),
-        ctx.gov.as_ref(),
-        &slot.destinations,
-        &app,
-        &scope,
-        |host, vt| {
-            slot.served
-                .answer(vt, host, Some(&head), &ctx.body, Some(stream))
-        },
-    )
-}
-
-/// THE KERNEL HOOKS OF A HOT-LANE PLANE — the same set for every HOT-lane plane, whichever door it
-/// came in by: its claims, admission, build and data routes each run over the plane's C-ABI slots
-/// (the loader's [`DynPlane`] / [`ServedPlane`] against the kernel's own host vtable), and the
-/// request loop drives it through the same plane-route mount every linked plane's routes take.
-pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
-    wire_format_names: || &[],
-    claims: hot_claims,
-    admission: hot_admission,
-    build: hot_build,
-    routes: Some(hot_routes),
-    admin_routes: None,
-    openapi: None,
-    hydrate: None,
-    start: None,
-    config_validate: None,
-    named_def_list: None,
-    named_def_get: None,
-    registry_contains: None,
-    reresolve_gates: None,
-    openapi_schemas: None,
-    on_swap: None,
-    parse_section: None,
-    parse_endpoint: None,
-    lower_endpoint: None,
-    build_runtime: None,
-    viewer: None,
-    retain_verify_gates: None,
-    default_section: None,
-    resolve_provider: None,
-};
-
 /// THE EXPORT AXIS'S REGISTRY: the registry an `export:` instance's `module:` resolves against —
 /// every `kind: export` row the plugin registry's one registration admitted, linked and dropped in
 /// ([`crate::root::boot::dropped_from_config`]) — kept for the root's export axis
@@ -1184,7 +643,11 @@ pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
 /// no export module of its own, so every module is a row here; a linked row and a different
 /// dropped-in plugin spelling one module refuse the boot (ARCHITECT Q-P4-12).
 pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
-    crate::root::loader::observe::install_host_series(host_series);
+    // The host's own series, named on the process's one dispatcher (built first, in `main`), whose
+    // observability every first-party export open is granted against.
+    let _ = crate::root::dispatch::dispatcher()
+        .observing()
+        .install_host_series(host_series);
     if let Some(registry) = dropped {
         let _ = DROPPED.set(registry);
     }
@@ -1276,6 +739,7 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::METERING_PENDING_COALESCED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_LABEL_REFUSED_TOTAL,
     busbar_kernel::snapshot::KEY_SPEND_CENTS,
     busbar_kernel::snapshot::KEY_TOKENS_TOTAL,
     busbar_kernel::snapshot::BUCKET_TOKENS,
@@ -1438,34 +902,17 @@ fn catalogue_entries(
     Ok(declared)
 }
 
-/// THE WS-ACCEPT AXIS: each duplex entry installs its inbound arrivals — and none does when no entry
-/// is duplex, so the router mounts no WS-accept route.
-pub fn register_ws_arrivals(linked: &Linked) {
-    for install in linked.ws_arrivals {
-        install();
-    }
-}
-
 /// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
-/// (the manifest's `egress` / `plane-sections` / `admin-envelope` axes, emitted by the build script as
-/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host and the parse-time section
-/// list a cross-plane hook refusal reads. The envelope a self-enveloping admin verb replies through
-/// is the admin crate's, bound by its `install()`. Each backing is a ZST unit struct, so it promotes
-/// to `'static`. The egress-trust host is installed by `run` once the configuration loads, over the
-/// destination guard.
+/// (the manifest's `plane-sections` axis, emitted by the build script as a `linked_*` cfg): the
+/// parse-time section list a cross-plane hook refusal reads. The `egress` axis binds nothing here:
+/// the hostless-egress driver is the App's, handed to each plane on its build context
+/// (`BuildCtx::hostless`). The egress-trust host is installed by `run` once the configuration
+/// loads, over the destination guard.
 pub fn register_seams() {
-    #[cfg(linked_egress)]
-    {
-        busbar_kernel::egress::seam::install_hostless_egress(
-            &busbar_kernel::egress::seam::CoreHostlessEgress,
-        );
-    }
     #[cfg(linked_plane_sections)]
     busbar_kernel::plane::config::install_plane_sections(
         busbar_kernel::plane::config::config_sections,
     );
-    // `admin-envelope`: the self-enveloping plane-verb backing is the admin crate's own, bound by
-    // its `install()` (main.rs), which the composition root calls unconditionally.
 }
 
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a
@@ -1487,7 +934,7 @@ mod tests;
 #[path = "tests/linked_secret_sources.rs"]
 mod secret_source_tests;
 
-#[cfg(all(test, feature = "auth-admin-tokens", linked_axis_body_ingress))]
+#[cfg(all(test, linked_operator_auth, linked_axis_body_ingress))]
 #[path = "tests/linked_auth.rs"]
 mod auth_tests;
 

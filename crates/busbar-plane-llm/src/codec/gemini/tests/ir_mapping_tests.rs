@@ -29,7 +29,9 @@ fn xreq(ingress: &'static str, egress: &str, body: &Value) -> Value {
             lane_caps: Default::default(),
         },
     );
-    egress_p.writer().write_request(&req)
+    egress_p
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &req)
 }
 
 /// Cross-protocol buffered RESPONSE: `egress` backend body → `ingress` client body.
@@ -38,18 +40,20 @@ fn xresp(egress: &str, ingress: &'static str, body: &Value) -> Value {
     let ingress_p = crate::codec::proto_codec::protocol_for(ingress).expect("ingress");
     let mut resp = egress_p
         .reader()
-        .read_response(body)
+        .read_response(crate::codec::test_host::HOST, body)
         .expect("read_response");
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut resp, ingress, 1_752_000_000);
-    ingress_p.writer().write_response(&resp)
+    ingress_p
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &resp)
 }
 
 /// Cross-protocol STREAM: `egress` backend SSE bytes → `ingress` client bytes.
 fn xstream(egress: &str, ingress: &str, raw: &str) -> String {
     let mut st =
         crate::codec::proto_stream::StreamTranslate::new(ingress, egress).expect("translator");
-    let mut out = st.feed(raw.as_bytes());
-    out.extend(st.finish());
+    let mut out = st.feed(crate::codec::test_host::HOST, raw.as_bytes());
+    out.extend(st.finish(crate::codec::test_host::HOST));
     String::from_utf8(out).expect("utf8")
 }
 
@@ -95,7 +99,9 @@ fn gem08_native_call_ids_pair_on_a_foreign_backend() {
     let resp = json!({"candidates": [{"content": {"role": "model", "parts": [
         {"functionCall": {"id": "fc9", "name": "f", "args": {}}}]}, "finishReason": "STOP"}],
         "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}});
-    let ir = GeminiReader.read_response(&resp).expect("read");
+    let ir = GeminiReader
+        .read_response(crate::codec::test_host::HOST, &resp)
+        .expect("read");
     assert!(
         matches!(&ir.content[0], crate::codec::ir::IrBlock::ToolUse { id, .. } if id == "fc9"),
         "{:?}",
@@ -356,12 +362,16 @@ fn gem15_image_policy_and_unexpected_tool_call_stops() {
     ] {
         let body = json!({"candidates": [{"content": {"role": "model", "parts": [{"text": "x"}]},
             "finishReason": token}], "usageMetadata": {"promptTokenCount": 1, "candidatesTokenCount": 1}});
-        let ir = GeminiReader.read_response(&body).expect("read");
+        let ir = GeminiReader
+            .read_response(crate::codec::test_host::HOST, &body)
+            .expect("read");
         assert_eq!(ir.stop_reason, Some(want), "{token}");
     }
     let body = json!({"promptFeedback": {"blockReason": "IMAGE_SAFETY"},
         "usageMetadata": {"promptTokenCount": 1}});
-    let ir = GeminiReader.read_response(&body).expect("read");
+    let ir = GeminiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
     assert_eq!(ir.stop_reason, Some(S::Safety));
 }
 
@@ -371,15 +381,21 @@ fn gem15_image_policy_and_unexpected_tool_call_stops() {
 fn gem16_streamed_citation_offsets_are_bytes_for_a_gemini_client() {
     let writer = GeminiWriter;
     // "héllo " is 6 characters and 7 bytes; "wörld" is 5 characters and 6 bytes.
-    let _ = writer.write_response_event(&IrStreamEvent::BlockStart {
-        index: 0,
-        block: crate::codec::ir::IrBlockMeta::Text,
-        refusal: false,
-    });
-    let _ = writer.write_response_event(&IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::codec::ir::IrDelta::TextDelta("héllo wörld".to_string()),
-    });
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::codec::ir::IrBlockMeta::Text,
+            refusal: false,
+        },
+    );
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::codec::ir::IrDelta::TextDelta("héllo wörld".to_string()),
+        },
+    );
     let citation = crate::codec::ir::IrCitation {
         domain: None,
         kind: Some("url_citation".to_string()),
@@ -394,10 +410,13 @@ fn gem16_streamed_citation_offsets_are_bytes_for_a_gemini_client() {
         ..Default::default()
     };
     let (_, frame) = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: crate::codec::ir::IrDelta::CitationsDelta(vec![citation]),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::codec::ir::IrDelta::CitationsDelta(vec![citation]),
+            },
+        )
         .expect("citation frame");
     let src = &frame["candidates"][0]["citationMetadata"]["citationSources"][0];
     assert_eq!(src["startIndex"], json!(7), "{frame}");
@@ -552,16 +571,22 @@ fn gem08_call_ids_reach_gemini() {
     );
 
     let writer = GeminiWriter;
-    let _ = writer.write_response_event(&IrStreamEvent::BlockStart {
-        index: 0,
-        block: crate::codec::ir::IrBlockMeta::ToolUse {
-            id: "call_9".to_string(),
-            name: "f".to_string(),
+    let _ = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::codec::ir::IrBlockMeta::ToolUse {
+                id: "call_9".to_string(),
+                name: "f".to_string(),
+            },
+            refusal: false,
         },
-        refusal: false,
-    });
+    );
     let (_, frame) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 0 },
+        )
         .expect("functionCall frame");
     assert_eq!(
         frame["candidates"][0]["content"]["parts"][0]["functionCall"]["id"],
@@ -570,41 +595,46 @@ fn gem08_call_ids_reach_gemini() {
     );
 }
 
-/// GEM-13: reasoning tokens reach a Gemini client as `thoughtsTokenCount`, beside a
-/// `candidatesTokenCount` that counts only the answer — buffered and streamed; the total is unchanged.
+/// A Gemini client of a reasoning lane reads the `candidatesTokenCount` 1.5.5 wrote: the whole
+/// output, reasoning included, with no `thoughtsTokenCount` (v1.5.5
+/// `crates/busbar/src/proto/gemini/writer.rs:962-964`) — buffered and streamed; the total is
+/// unchanged. RED while the writer split the reasoning out (candidates 10 + thoughts 20).
 #[test]
-fn gem13_reasoning_tokens_are_thoughts_for_a_gemini_client() {
+fn reasoning_tokens_stay_inside_candidates_for_a_gemini_client() {
     let resp = json!({"id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "o3",
         "choices": [{"index": 0, "message": {"role": "assistant", "content": "42"}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 10, "completion_tokens": 30, "total_tokens": 40,
             "completion_tokens_details": {"reasoning_tokens": 20}}});
     let out = xresp("openai", "gemini", &resp);
     let um = &out["usageMetadata"];
-    assert_eq!(um["candidatesTokenCount"], json!(10), "{out}");
-    assert_eq!(um["thoughtsTokenCount"], json!(20), "{out}");
+    assert_eq!(um["candidatesTokenCount"], json!(30), "{out}");
+    assert!(um.get("thoughtsTokenCount").is_none(), "{out}");
     assert_eq!(um["totalTokenCount"], json!(40), "{out}");
 
     let writer = GeminiWriter;
     let (_, frame) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: crate::codec::ir::IrUsage {
-                input_tokens: 10,
-                output_tokens: 30,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-                detail: crate::codec::ir::IrUsageDetail {
-                    reasoning_tokens: Some(20),
-                    ..Default::default()
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: crate::codec::ir::IrUsage {
+                    input_tokens: 10,
+                    output_tokens: 30,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    detail: crate::codec::ir::IrUsageDetail {
+                        reasoning_tokens: Some(20),
+                        ..Default::default()
+                    },
                 },
+                stop_detail: None,
             },
-            stop_detail: None,
-        })
+        )
         .expect("terminal frame");
     let um = &frame["usageMetadata"];
-    assert_eq!(um["candidatesTokenCount"], json!(10), "{frame}");
-    assert_eq!(um["thoughtsTokenCount"], json!(20), "{frame}");
+    assert_eq!(um["candidatesTokenCount"], json!(30), "{frame}");
+    assert!(um.get("thoughtsTokenCount").is_none(), "{frame}");
     assert_eq!(um["totalTokenCount"], json!(40), "{frame}");
 }
 

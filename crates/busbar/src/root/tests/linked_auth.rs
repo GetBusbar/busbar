@@ -149,12 +149,16 @@ fn the_operator_credentials_row_is_linked_under_its_config_key() {
     );
 }
 
-/// `GET /api/v1/admin/info` `build.auth_modules` in the shipped build is 1.5.5's answer,
-/// `["keys", "admin-tokens"]` (oracle cell `admin.ops|GetInfo|ok`): the build also links the
-/// OUTBOUND-ONLY header auth plugin on the auth axis (ARCHITECT Q-L1-AUTH (A)), and a row that
-/// declares no inbound capability is not an auth-chain module an operator can name, so it is not
-/// listed. RED before the fix: `["keys", "admin-tokens", "busbar-auth-header"]`.
-#[cfg(feature = "auth-header")]
+/// `GET /api/v1/admin/info` `build.auth_modules` in the shipped build is 1.5.5's answer, `keys` and
+/// the operator credential's word (oracle cell `admin.ops|GetInfo|ok`): the build also links
+/// OUTBOUND-ONLY auth plugins on the auth axis (ARCHITECT Q-L1-AUTH (A)), and a row that declares no
+/// inbound capability is not an auth-chain module an operator can name, so it is not listed. RED
+/// before the fix: the outbound-only header row's name was listed third. The default build also
+/// links the INBOUND webhook-signature row (ARCHITECT 2026-10-14, accepted difference `#64-class
+/// build.auth_modules lists the webhook-signature module`), an auth-chain module an operator names,
+/// so it is listed after 1.5.5's two. The case rides every linked auth row (`linked_every_auth`,
+/// build.rs): every outbound-only row is then linked, and none of them is listed.
+#[cfg(linked_every_auth)]
 #[test]
 fn the_info_auth_modules_are_the_inbound_rows_only() {
     link();
@@ -165,8 +169,13 @@ fn the_info_auth_modules_are_the_inbound_rows_only() {
     );
     assert_eq!(
         busbar_core_admin::v1::service::auth_modules_compiled_in(),
-        vec!["keys", config::operator_provider()],
-        "only inbound auth-chain modules are listed (linked rows: {linked:?})"
+        vec![
+            "keys",
+            config::operator_provider(),
+            "busbar-auth-webhook-signature"
+        ],
+        "only inbound auth-chain modules are listed, 1.5.5's two first and the default build's \
+         webhook-signature row after them (ARCHITECT 2026-10-14; linked rows: {linked:?})"
     );
 }
 
@@ -342,7 +351,7 @@ fn the_operator_token_ref_is_checked_by_shape_only() {
     };
     assert!(
         build(SecretRef {
-            module: "vault".to_string(),
+            module: "planted-plugin-secret-module".to_string(),
             settings: serde_json::Map::new(),
         })
         .is_ok(),
@@ -482,7 +491,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     let now = busbar_kernel::store::now();
     let (_binding, old_token) = gov.mint_signed(spec, now + 10_000, now).expect("mint");
     assert!(
-        gov.verify_token(old_token.expose_secret(), now, None)
+        gov.verify_token(old_token.expose(&busbar_kernel::seal::lend()), now, None)
             .is_some(),
         "valid pre-rotation"
     );
@@ -496,7 +505,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
     .expect("apply");
 
     assert!(
-        gov.verify_token(old_token.expose_secret(), now, None)
+        gov.verify_token(old_token.expose(&busbar_kernel::seal::lend()), now, None)
             .is_none(),
         "a token minted under the PRE-rotation signing key must stop verifying after the reload"
     );
@@ -511,7 +520,7 @@ fn signing_key_secret_ref_re_resolves_on_apply_and_fails_closed() {
         .mint_signed(spec2, now + 10_000, now)
         .expect("mint under the new key");
     assert!(
-        gov.verify_token(fresh.expose_secret(), now, None).is_some(),
+        gov.verify_token(fresh.expose(&busbar_kernel::seal::lend()), now, None).is_some(),
         "the engine mints AND verifies under the rotated key (signer and verifier swap as one unit)"
     );
 
@@ -962,4 +971,131 @@ fn bearer(token: &str) -> axum::http::HeaderMap {
         format!("Bearer {token}").parse().expect("a header value"),
     );
     headers
+}
+
+/// LEGACY the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_role_bound_principal_governed_like_a_virtual_key`
+/// (coverage map v2 row 402). 1.5.5: with governance on and an external data-plane module on the
+/// chain, a role-bound principal is governed through a SYNTHESIZED key exactly like a virtual key:
+/// its binding's pool ACL admits the granted pool (200) and refuses another (403); a binding that
+/// omits `allowed_pools` grants every pool; an explicit `allowed_pools: []` grants nothing (401);
+/// and an identified principal whose roles earn no binding is refused outright (401, fail closed).
+///
+/// Walked here through the served steps: the data-plane chain judges the request's credential
+/// (the test chain's `grp:<role>` module), the verdict resolves to a governance key through the
+/// module's `role_bindings` (`resolve_data_plane_identity`), and the door's grant judges the pool
+/// the unit names with that key.
+///
+/// RED: a role binding's pool ACL stops gating (an ungranted pool served), an omitted grant stops
+/// meaning every pool, or an empty or absent binding admits the principal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn test_role_bound_principal_governed_like_a_virtual_key() {
+    use busbar_contract::abi::plane::ROUTE_POOL;
+    use busbar_kernel::auth::{
+        resolve_data_plane_identity, AuthMiddleware, ChainHead, IdentityRefusal,
+    };
+    link();
+    let module = "test-groups-module";
+    let mut table = std::collections::BTreeMap::new();
+    table.insert(
+        "pool-users".to_string(),
+        RoleBindingCfg {
+            allowed_pools: Some(vec!["gpool-a".to_string()]),
+            ..Default::default()
+        },
+    );
+    // OMITTED allowed_pools = ALL pools.
+    table.insert("batch".to_string(), RoleBindingCfg::default());
+    // Explicit [] = NO pools (the empty set, fail closed).
+    table.insert(
+        "locked".to_string(),
+        RoleBindingCfg {
+            allowed_pools: Some(vec![]),
+            ..Default::default()
+        },
+    );
+    let mut role_bindings = config::RoleBindings::new();
+    role_bindings.insert(module.to_string(), table);
+    let auth = Arc::new(AuthMiddleware::new_builtin(&AuthCfg::with_chain(vec![
+        AuthChainEntry::bare(module),
+    ])));
+    let app = busbar_kernel::test_support::TestApp::new()
+        .auth(Arc::clone(&auth))
+        .role_bindings(role_bindings)
+        .build();
+    let pools = crate::root::door_steps::DoorPools::of(
+        &serde_yaml::from_str(
+            "models:\n  rekey-model: {provider: p}\npools:\n  gpool-a:\n    members: \
+             [rekey-model]\n  gpool-b:\n    members: [rekey-model]",
+        )
+        .expect("the section"),
+    );
+    // What the caller reads: the identity refusal's 401, the grant's 403, else served.
+    let answer = |credential: &'static str, pool: &'static str| {
+        let (auth, app, pools) = (Arc::clone(&auth), Arc::clone(&app), pools.clone());
+        async move {
+            // The test module judges the credential handed beside the head, never the head's own line.
+            let headers = axum::http::HeaderMap::new();
+            let head = ChainHead::of_parts("POST", "/v1/chat/completions", &headers);
+            let verdict = AuthMiddleware::run_chain_on_request_path(
+                &auth,
+                Some(credential.to_string()),
+                head,
+                None,
+                None,
+            )
+            .await;
+            match resolve_data_plane_identity(&app, verdict) {
+                Err(IdentityRefusal::NoGrant | IdentityRefusal::Denied) => 401,
+                Ok((_, gov)) => {
+                    if pools.granted(
+                        Some("pool"),
+                        gov.key.as_deref(),
+                        ROUTE_POOL,
+                        Some(pool.as_bytes()),
+                    ) {
+                        200
+                    } else {
+                        busbar_kernel::plane_driver::refusal_status(
+                            busbar_contract::caps::ReasonCode::ScopeDenied,
+                        )
+                    }
+                }
+            }
+        }
+    };
+
+    // Pool ACL from the role binding: gpool-a serves, gpool-b is denied.
+    assert_eq!(
+        answer("grp:pool-users", "gpool-a").await,
+        200,
+        "granted pool serves"
+    );
+    assert_eq!(
+        answer("grp:pool-users", "gpool-b").await,
+        403,
+        "ungranted pool is denied"
+    );
+    // OMITTED allowed_pools grants every pool.
+    assert_eq!(
+        answer("grp:batch", "gpool-a").await,
+        200,
+        "omitted allowed_pools grants all"
+    );
+    assert_eq!(
+        answer("grp:batch", "gpool-b").await,
+        200,
+        "omitted allowed_pools grants all"
+    );
+    // Explicit [] grants the EMPTY SET: no data-plane access at all.
+    assert_eq!(
+        answer("grp:locked", "gpool-a").await,
+        401,
+        "allowed_pools [] grants nothing"
+    );
+    // Fail closed: an identified principal whose roles earn no binding is rejected.
+    assert_eq!(
+        answer("grp:strangers", "gpool-a").await,
+        401,
+        "unbound roles grant nothing"
+    );
 }

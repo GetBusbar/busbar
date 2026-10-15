@@ -26,7 +26,7 @@ fn plan(table: &OpenToolCalls, session: u64, unit: u64, call_id: &str, now: Mill
 
 /// The plane's declared reply deadline, in milliseconds.
 fn deadline() -> u64 {
-    u64::from(crate::plane::TOOL_REPLY_DEADLINE_SECS) * 1_000
+    u64::from(crate::open_calls::TOOL_REPLY_DEADLINE_SECS) * 1_000
 }
 
 /// **Two calls open at once, and each reply wakes only its own.**

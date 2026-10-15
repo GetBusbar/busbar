@@ -85,7 +85,7 @@ fn deploy_yaml(sections: &str) -> DeployCfg {
 /// THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B). `resolve`'s provider merge runs
 /// through `PlaneDecl::resolve_provider` when the LLM plane is installed (the shipped default) and
 /// through core's own `merge_provider_fallback` when no plane implements the hook. This test proves
-/// the two produce the IDENTICAL `ProviderCfg` for the same inputs, so an llm-plane-absent build's
+/// the two produce the IDENTICAL `ResolvedProvider` for the same inputs, so an llm-plane-absent build's
 /// merge is byte-identical to the shipped one — the guarantee `merge_provider_fallback`'s doc claims.
 #[test]
 fn resolve_provider_hook_and_core_fallback_agree() {
@@ -109,14 +109,13 @@ fn resolve_provider_hook_and_core_fallback_agree() {
     let via_fallback = merge_provider_fallback(&def, &deploy_cfg);
     for (key, hook) in hooks {
         let via_hook = hook(&def, &deploy_cfg);
-        assert_eq!(via_hook.protocol, via_fallback.protocol, "{key}");
+        assert_eq!(via_hook.table, via_fallback.table, "{key}");
         assert_eq!(via_hook.base_url, via_fallback.base_url, "{key}");
         assert_eq!(
             via_hook.api_key.env_var(),
             via_fallback.api_key.env_var(),
             "{key}"
         );
-        assert_eq!(via_hook.error_map, via_fallback.error_map, "{key}");
         assert_eq!(
             via_hook.health.is_some(),
             via_fallback.health.is_some(),

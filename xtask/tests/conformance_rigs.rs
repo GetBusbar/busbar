@@ -35,7 +35,8 @@ fn registry_ids() -> Vec<String> {
 #[test]
 fn every_registered_suite_has_a_rig() {
     let ids = registry_ids();
-    assert_eq!(ids.len(), 17, "the registry is the MUST set: {ids:?}");
+    // 18: #885 (row 132, piece 6) registered `webrtc-browser`, judged by `Rig::Webrtc`.
+    assert_eq!(ids.len(), 18, "the registry is the MUST set: {ids:?}");
     let orphans: Vec<&String> = ids.iter().filter(|id| rig_for(id).is_none()).collect();
     assert!(
         orphans.is_empty(),

@@ -12,8 +12,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use super::super::self_keys::{
-    issue_key, resolve_exchange, DeterministicEd25519Keys, ExchangeError, IssuedKey,
-    SelfGroupProvisioner, SelfServeKeys,
+    admit_self_mint, issue_key, resolve_exchange, DeterministicEd25519Keys, ExchangeError,
+    IssuedKey, SelfGroupProvisioner, SelfServeKeys,
 };
 use super::super::{ChainVerdict, Principal};
 use crate::config::groups::{provision_child, GroupCfg};
@@ -375,6 +375,91 @@ fn concurrent_issue_self_yields_one_binding() {
     );
 }
 
+// ── admit_self_mint: the mint ceiling binds the self-serve mint (X-1001) ─────────────────────────
+
+/// The self-serve default lifetime the tests mint at: 90 days, as `auth.self_key_ttl` defaults.
+const SELF_TTL: u64 = crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS;
+
+/// **THE BLOCK `max_ttl` BINDS `POST /auth/token`** (X-1001; the mint ceiling is a kernel valve,
+/// `BUSBAR-1.6.0.md:157`). Before, only the admin `POST /keys` mint was held to the ceiling: an
+/// identity that could not be issued a key past an hour by an admin minted itself one for ninety
+/// days. The self-serve lifetime is a DEFAULT, not an explicit ask, so the ceiling clamps it.
+#[test]
+fn the_block_ttl_ceiling_clamps_the_self_serve_key() {
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
+    let policy = crate::governance::mint_policy::MintPolicy {
+        block_max_ttl_secs: Some(3_600),
+        ..Default::default()
+    };
+    let mint = admit_self_mint(&v, &rb, &policy, SELF_TTL).expect("admitted, clamped");
+    assert_eq!(mint.ttl, Duration::from_secs(3_600));
+    assert_eq!(mint.principal.id, "sam");
+    assert_eq!(mint.team, "team");
+}
+
+/// A role's `mint_ceilings` TTL narrows below the block cap, as it does on the admin mint.
+#[test]
+fn a_role_ttl_ceiling_clamps_the_self_serve_key() {
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
+    let mut policy = crate::governance::mint_policy::MintPolicy {
+        block_max_ttl_secs: Some(86_400),
+        ..Default::default()
+    };
+    policy.ceilings.insert(
+        "eng".to_string(),
+        crate::governance::mint_policy::RoleCeiling {
+            max_ttl_secs: Some(600),
+            ..Default::default()
+        },
+    );
+    let mint = admit_self_mint(&v, &rb, &policy, SELF_TTL).expect("admitted, clamped");
+    assert_eq!(mint.ttl, Duration::from_secs(600));
+}
+
+/// A role ceiling that admits only some pools refuses a self-serve key whose bindings grant ALL of
+/// them, exactly as it refuses an admin mint of all pools: the key would carry more than the
+/// ceiling lets that role hand out.
+#[test]
+fn a_role_pool_ceiling_refuses_a_self_serve_key_over_it() {
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
+    let mut policy = crate::governance::mint_policy::MintPolicy::default();
+    policy.ceilings.insert(
+        "eng".to_string(),
+        crate::governance::mint_policy::RoleCeiling {
+            allowed_pools: Some(vec!["pool-a".to_string()]),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(
+        admit_self_mint(&v, &rb, &policy, SELF_TTL),
+        Err(ExchangeError::OverCeiling(_))
+    ));
+}
+
+/// THE CONTROL: with no `auth.policy` the self-serve key keeps its configured lifetime and pools —
+/// the 1.5.5 shape, byte for byte — and `self_mint: false` still refuses before any ceiling.
+#[test]
+fn no_policy_mints_at_the_self_serve_default_and_self_mint_off_still_refuses() {
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
+    let open = crate::governance::mint_policy::MintPolicy::default();
+    let mint = admit_self_mint(&v, &rb, &open, SELF_TTL).expect("no ceiling");
+    assert_eq!(mint.ttl, Duration::from_secs(SELF_TTL));
+    assert_eq!(mint.pools, None);
+    let off = crate::governance::mint_policy::MintPolicy {
+        self_mint: Some(false),
+        block_max_ttl_secs: Some(3_600),
+        ..Default::default()
+    };
+    assert!(matches!(
+        admit_self_mint(&v, &rb, &off, SELF_TTL),
+        Err(ExchangeError::SelfMintDisabled)
+    ));
+}
+
 // ── resolve_exchange: identity source + refusal matrix ────────────────────────────────────────────
 
 #[test]
@@ -588,12 +673,15 @@ async fn resolve_then_issue_via_real_seam() {
     let issued = issue_key(&keys, p, Duration::from_secs(3600), false)
         .await
         .unwrap();
-    assert!(issued.secret.expose_secret().starts_with("bbk_"));
+    assert!(issued
+        .secret
+        .expose(&crate::seal::lend())
+        .starts_with("bbk_"));
     assert_eq!(issued.group, "user:sam");
     // The token the seam handed back verifies through the ordinary path.
     let now = busbar_kernel::store::now();
     assert!(gov
-        .verify_token(issued.secret.expose_secret(), now, None)
+        .verify_token(issued.secret.expose(&crate::seal::lend()), now, None)
         .is_some());
 }
 
@@ -628,7 +716,7 @@ async fn module_namespaced_sub_is_admitted_and_grouped_under_user() {
     );
     assert!(gov
         .verify_token(
-            issued.secret.expose_secret(),
+            issued.secret.expose(&crate::seal::lend()),
             busbar_kernel::store::now(),
             None
         )
@@ -670,7 +758,7 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         .expect("first login issues");
     let now = busbar_kernel::store::now();
     assert!(gov
-        .verify_token(t0.secret.expose_secret(), now, None)
+        .verify_token(t0.secret.expose(&crate::seal::lend()), now, None)
         .is_some());
 
     // The admin disables it, exactly as `PATCH /api/v1/admin/keys/{id} {"enabled":false}` would.
@@ -693,7 +781,7 @@ async fn an_admin_disable_of_a_self_serve_key_holds_across_the_next_login() {
         "the admin's disable still stands"
     );
     assert!(
-        gov.verify_token(t0.secret.expose_secret(), now, None)
+        gov.verify_token(t0.secret.expose(&crate::seal::lend()), now, None)
             .is_none(),
         "the pre-disable token must NOT come back to life"
     );
@@ -747,7 +835,7 @@ async fn a_second_provider_asserting_the_same_subject_is_refused() {
     );
     let now = busbar_kernel::store::now();
     assert!(gov
-        .verify_token(issued.secret.expose_secret(), now, None)
+        .verify_token(issued.secret.expose(&crate::seal::lend()), now, None)
         .is_some());
     let again = issue_key(&corp, &alice, ttl, false)
         .await
@@ -806,7 +894,7 @@ impl SelfServeKeys for FakeKeys {
         _ttl: Duration,
     ) -> Result<IssuedKey, ExchangeError> {
         Ok(IssuedKey {
-            secret: busbar_contract::redacted::Redacted::new(format!(
+            secret: busbar_contract::redacted::Secret::new(format!(
                 "fake-scheme-token:{}",
                 principal.id
             )),
@@ -832,16 +920,22 @@ async fn endpoint_is_scheme_agnostic_over_the_trait() {
     let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
         .await
         .unwrap();
-    assert_eq!(issued.secret.expose_secret(), "fake-scheme-token:sam");
+    assert_eq!(
+        issued.secret.expose(&crate::seal::lend()),
+        "fake-scheme-token:sam"
+    );
     // Refresh path also rides the same trait object.
     let refreshed = issue_key(&FakeKeys, p, Duration::from_secs(60), true)
         .await
         .unwrap();
-    assert_eq!(refreshed.secret.expose_secret(), "fake-scheme-token:sam");
+    assert_eq!(
+        refreshed.secret.expose(&crate::seal::lend()),
+        "fake-scheme-token:sam"
+    );
 }
 
 /// HEADLINE secret-hygiene fix: an `IssuedKey` carries a LIVE bearer token, and the struct derives
-/// `Debug`. Before the `secret: Redacted<String>` conversion, `format!("{issued:?}")` printed the
+/// `Debug`. Before the `secret: Secret<String>` conversion, `format!("{issued:?}")` printed the
 /// token verbatim — a latent leak the instant any code `tracing`/`{:?}`'d an `IssuedKey`. Now the
 /// token is `[REDACTED]` in Debug while the safe `key_id` identity still shows.
 #[tokio::test]
@@ -852,7 +946,7 @@ async fn issued_key_debug_never_leaks_the_live_token() {
     let issued = issue_key(&FakeKeys, p, Duration::from_secs(60), false)
         .await
         .unwrap();
-    let token = issued.secret.expose_secret().clone();
+    let token = issued.secret.expose(&crate::seal::lend()).clone();
     let dbg = format!("{issued:?}");
     assert!(
         !dbg.contains(&token),

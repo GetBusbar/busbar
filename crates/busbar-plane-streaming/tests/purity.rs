@@ -93,8 +93,7 @@ fn walk(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
 ///
 /// LOAD-BEARING HERE, not decoration: this crate's headers legitimately DISCUSS the kernel and its
 /// sibling planes — `lib.rs:35` names the older `busbar_kernel::plane::registry::PlaneDecl`
-/// architecture it is not built on, `claims.rs:117` cites `busbar_plane_llm`'s ladder, and
-/// `governed.rs:10/18` explain the dependency inversion by naming `busbar_voice::runtime`. Every
+/// architecture it is not built on and `claims.rs:117` cites `busbar_plane_llm`'s ladder. Every
 /// one is prose about what this plane does NOT do. A gate its own explanation fails is a gate
 /// somebody deletes.
 fn is_comment(line: &str) -> bool {
@@ -138,5 +137,30 @@ fn the_plane_names_no_kernel_side_crate() {
     assert!(
         offenders.is_empty(),
         "the streaming plane reaches a kernel-side crate or a sibling plane: {offenders:#?}"
+    );
+}
+
+/// LAW 11 (QUESTIONS Q98): busbar does not act on the data it carries, so the plane holds no port
+/// that runs a tool. A tool call is relayed to the caller as-is (`session_pump`'s
+/// `a_tool_call_is_relayed_to_the_caller_as_is_and_the_gateway_answers_nothing`); this arm keeps the
+/// executor seam itself from coming back. RED: `tools.rs` declared `ToolExecutor` with an
+/// `async fn execute(&self, name, arguments) -> Vec<u8>` the session pump called on a call's close.
+#[test]
+fn the_plane_holds_no_tool_executor_port() {
+    let mut offenders = Vec::new();
+    walk(&src_dir(), &mut |path, text| {
+        for (n, line) in text.lines().enumerate() {
+            if is_comment(line) {
+                continue;
+            }
+            if line.contains("ToolExecutor") || line.contains("fn execute(") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    });
+    assert!(
+        offenders.is_empty(),
+        "the streaming plane runs no tool; a tool call is the caller's to run:\n{}",
+        offenders.join("\n")
     );
 }

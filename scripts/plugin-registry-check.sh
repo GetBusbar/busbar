@@ -49,7 +49,7 @@ if [ "$MODE" = "--selftest" ]; then
   # 5's cases, so check 2's fail-injection below never executed on the happy path and could not
   # change the outcome on the unhappy one. The EXIT trap counts the cases that actually ran and
   # turns a green exit with any case unrun into RED.
-  SELFTEST_CASES=15
+  SELFTEST_CASES=16
   ran=0
   selftest_exit() {
     local st=$?
@@ -136,7 +136,9 @@ PAGES
   echo "plugin-registry-check selftest (check 1, every repo is busbar-<its kind>-<name>)"
   c1="$tmp/c1"; mkdir -p "$c1/scripts" "$c1/.github/workflows"
   cp plugins.yaml "$c1/plugins.yaml"
-  cp scripts/plugin-registry-check.sh scripts/release-check.sh "$c1/scripts/"
+  cp scripts/plugin-registry-check.sh "$c1/scripts/"
+  # release-check.sh no longer runs (the qa soak is struck, d2db89fa93); copied only where it remains.
+  [ -f scripts/release-check.sh ] && cp scripts/release-check.sh "$c1/scripts/"
   [ -f scripts/release-check-1.5.2.sh ] && cp scripts/release-check-1.5.2.sh "$c1/scripts/"
   c1_says() { local out; out="$( (cd "$c1" && ./scripts/plugin-registry-check.sh --offline) 2>&1 || true)"; case "$out" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
   first="$(sed -n 's/^  - repo: //p' plugins.yaml | head -1)"
@@ -180,6 +182,16 @@ PAGES
     printf '  [ok]     %s\n' "a manifest name that is not the repo name is RED"
   else
     printf '  [FAILED] %s\n' "check 1 passed manifest_name ${first}-plugin"; rc=1
+  fi
+  # A one-character alias is RED (the committed registry, the control above, carries none).
+  cp plugins.yaml "$c1/plugins.yaml"
+  ran=$((ran + 1))
+  first_alias="$(awk '/^  - repo: /{n++} n==1 && /^    alias: /{print $2; exit}' plugins.yaml)"
+  sed -i.bak "s/^    alias: ${first_alias}\$/    alias: x/" "$c1/plugins.yaml"
+  if c1_says "alias 'x' is one character"; then
+    printf '  [ok]     %s\n' "a one-character alias is RED"
+  else
+    printf '  [FAILED] %s\n' "check 1 passed the one-character alias x"; rc=1
   fi
   # A `pending_crate: true` entry (registered, its crates not moved in yet) is kept OUT of the --list
   # feed every cloning/testing consumer iterates, so release-check does not clone or test an
@@ -288,6 +300,12 @@ for p in plugins:
     if p["crate"] not in (p["repo"], p["repo"] + "-plugin"):
         fail.append(f"{p['repo']}: crate '{p['crate']}' is neither {p['repo']} nor {p['repo']}-plugin "
                     f"(repo = crate = artifact prefix)")
+    # THE ALIAS IS A WORD, NOT A LETTER: a one-character alias is spelled by every one-letter string
+    # literal, so the instance censuses (kind-isolation law0, instance-noun) cannot tell the plugin
+    # from text and count every such literal in core as a leak.
+    if len(str(p["alias"]).strip()) < 2:
+        fail.append(f"{p['repo']}: alias '{p['alias']}' is one character (an alias is a word: "
+                    f"a one-letter alias is spelled by every one-letter literal)")
     for k in ("manifest_name", "asset_prefix"):
         if k in p and str(p[k]).strip() != p["repo"]:
             fail.append(f"{p['repo']}: {k} '{p[k]}' is not the repo name (repo = crate = artifact prefix)")

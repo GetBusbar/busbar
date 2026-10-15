@@ -100,7 +100,7 @@ die() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 
 # THE SUITE'S NODE. @modelcontextprotocol/conformance imports fs.globSync, which exists from Node 22;
 # on Node 20 the suite dies at import, enumerates zero scenarios, and every row it owes reads as a
-# failure. promote.yml runs Node 22, so this script provisions the same major itself rather than
+# failure. The suite needs Node 22, so this script provisions the same major itself rather than
 # relying on whatever the runner image ships: a pinned release from nodejs.org, checked against a
 # sha256 this file commits, unpacked under target/ and put first on PATH. A runner that already has
 # Node >= 22 is left alone. The hash is checked BEFORE the archive is unpacked, and a mismatch, a

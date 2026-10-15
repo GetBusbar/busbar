@@ -227,7 +227,11 @@ impl HookEnv {
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
-        crate::config::secret::resolve_settings(settings, self.secret_resolver.as_ref())
+        crate::config::secret::resolve_settings(
+            settings,
+            self.secret_resolver.as_ref(),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
     }
 
     /// PRE-BUILD FAIL-CLOSED PASS: resolve every configured hook's SecretRef settings ONCE, up

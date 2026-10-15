@@ -70,13 +70,13 @@ use busbar_contract::abi::plane::{
     AdminRoute, ArriveIn, ArriveOut, BillableClass, Claim, OnPieceIn, OnPieceOut, OpClass, Ops,
     OutField, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut,
     PlaneSnapshot, PlaneTail, ProjectOut, RefusalIn, RefusalOut, RefusalStatus, ServeIn, ServeOut,
-    UnitCount, AUDIT_APPLIED, AUDIT_NONE, AUDIT_REJECTED, CANCEL_ABORTED, CANCEL_FAILED,
-    CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
-    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST,
-    PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT, ROUTE_COUNTED, ROUTE_DIRECT,
-    ROUTE_LOCAL, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE, SPAN_ABSENT, UNITS_ESTIMATED,
-    UNITS_REPORTED, VERDICT_RETRY,
+    UnitCount, ANSWER_LAYOUT, AUDIT_APPLIED, AUDIT_NONE, AUDIT_REJECTED, CANCEL_ABORTED,
+    CANCEL_FAILED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_FINAL_STATUS,
+    EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, PIECE_FIELDS,
+    PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PRINCIPAL_OPTIONAL, REFUSAL_ANY_DIALECT,
+    ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_PUBLIC, SHAPE_WHOLE, SPAN_ABSENT,
+    UNITS_ESTIMATED, UNITS_REPORTED, VERDICT_RETRY,
 };
 
 /// The plane's own refusal code and the status `/clock` refuses with when the host will not read
@@ -264,7 +264,8 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     flags: 0,
     ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM | INGRESS_DUPLEX_SESSION,
     dispatch_shape: SHAPE_WHOLE,
-    _reserved: 0,
+    // The layout this plane writes its answers in: the contract's it was built against.
+    answer_layout: ANSWER_LAYOUT,
     scope: s(b"test"),
     label: s(b"Test plane"),
     subject_noun: NO_STR,
@@ -301,6 +302,8 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     admin_routes: std::ptr::null(),
     admin_routes_len: 0,
     admin_openapi: NO_BLOB,
+    metric_lanes: std::ptr::null(),
+    metric_lanes_len: 0,
     stream_ceiling_secs: 0,
 });
 
@@ -516,18 +519,13 @@ impl Inst {
         self.stats[s as usize].fetch_add(1, Ordering::SeqCst);
     }
     fn wake_later(&'static self, t: Ticket, ms: u64) {
-        let (wake, ctx) = (self.wake as usize, self.ctx.ptr as usize);
+        let (wake, ctx) = (self.wake as usize, self.ctx);
         self.count(Stat::HostCalls);
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(ms));
             // SAFETY: the host's wake, with the context it handed `open`.
             let wake: WakeFn = unsafe { std::mem::transmute::<usize, WakeFn>(wake) };
-            wake(
-                HostCtx {
-                    ptr: ctx as *mut c_void,
-                },
-                t,
-            );
+            wake(ctx, t);
         });
     }
 }
@@ -797,6 +795,17 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 };
                 me.count(Stat::HostCalls);
                 (me.wake)(me.ctx, ticket);
+                vec![estimate(0, 0)]
+            }
+            b"/forge-context" => {
+                // #74: hand the host's `wake` this instance's own context one tag bit off, a
+                // context the host never minted, from inside a non-lifecycle op. The host
+                // quarantines the instance, and this arrive itself answers FAULT.
+                me.count(Stat::HostCalls);
+                let forged = HostCtx {
+                    handle: me.ctx.handle ^ (1 << 24),
+                };
+                (me.wake)(forged, Ticket::NONE);
                 vec![estimate(0, 0)]
             }
             b"/clock" => {
@@ -1165,6 +1174,14 @@ extern "C" fn on_piece(
             *i.fields_buf = OutField { name, value };
             o.fields_written = 1;
             o.arena_written = at as u64;
+            // A plane whose usage tap could not read the answer (modes `tap-bad-json`,
+            // `tap-unknown`, the latter a byte outside the vocabulary): the fault rides the answer
+            // that opens the reply, once.
+            o.tap_fault = match u.mode.as_slice() {
+                b"tap-bad-json" => busbar_contract::abi::plane::TAP_FAULT_BAD_JSON,
+                b"tap-unknown" => 0xC8,
+                _ => busbar_contract::abi::plane::TAP_FAULT_NONE,
+            };
         }
         let n = u.pending.len().min(i.reply_cap);
         std::ptr::copy_nonoverlapping(u.pending.as_ptr(), i.reply_buf, n);

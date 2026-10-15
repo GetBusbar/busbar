@@ -483,7 +483,7 @@ enum Reach {
 /// the caller holds no request head (the stdio identity bind): the candidate alone is lent.
 #[derive(Debug, Clone, Default)]
 pub struct ChainHead {
-    lines: Vec<(String, busbar_contract::redacted::Redacted<Vec<u8>>)>,
+    lines: Vec<(String, busbar_contract::redacted::Secret<Vec<u8>>)>,
     method: String,
     authority: String,
     path: String,
@@ -516,7 +516,7 @@ impl ChainHead {
             lines: headers
                 .iter()
                 .map(|(n, v)| {
-                    let value = busbar_contract::redacted::Redacted::new(v.as_bytes().to_vec());
+                    let value = busbar_contract::redacted::Secret::new(v.as_bytes().to_vec());
                     (n.as_str().to_string(), value)
                 })
                 .collect(),
@@ -533,7 +533,7 @@ impl ChainHead {
         VerifyRequest {
             point: busbar_contract::abi::auth::AuthPoint::Head,
             credential: candidate
-                .map(|c| busbar_contract::redacted::Redacted::new(c.as_bytes().to_vec())),
+                .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec())),
             lines: self.lines.clone(),
             method: self.method.clone(),
             authority: self.authority.clone(),
@@ -665,9 +665,12 @@ impl AdminAuthChain {
                 "test-scope-module" | "test-groups-module" => {}
                 other => {
                     let name = entry.name.as_str();
-                    let resolved =
-                        crate::config::secret::resolve_settings(&entry.settings, secret_resolver)
-                            .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
+                    let resolved = crate::config::secret::resolve_settings(
+                        &entry.settings,
+                        secret_resolver,
+                        &busbar_contract::config_time::ConfigScope::config_time(),
+                    )
+                    .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
                     let refused = |e: String| {
                         format!(
                             "auth.admin_auth provider '{name}' (module '{other}') could not be \
@@ -777,15 +780,20 @@ impl AuthMiddleware {
                 // that does not: a keys-only chain refuses a foreign token anyway, for a different
                 // reason, and every assertion about the plane boundary passes vacuously.
                 #[cfg(any(test, feature = "test-support"))]
-                "test-idp-module" => chain.push(stand_in(&entry.name, Box::new(TestIdpModule))),
+                "test-idp-module" => {
+                    chain.push(stand_in(&entry.name, Box::new(TestIdpModule)));
+                }
                 other => {
                     // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret
                     // store BEFORE the settings cross the ABI (ADR-0010). FAIL-CLOSED: an
                     // unresolvable ref aborts the chain build rather than handing the plugin a
                     // dangling reference.
-                    let resolved =
-                        crate::config::secret::resolve_settings(&entry.settings, secret_resolver)
-                            .map_err(|e| format!("auth.chain module '{other}' settings: {e}"))?;
+                    let resolved = crate::config::secret::resolve_settings(
+                        &entry.settings,
+                        secret_resolver,
+                        &busbar_contract::config_time::ConfigScope::config_time(),
+                    )
+                    .map_err(|e| format!("auth.chain module '{other}' settings: {e}"))?;
                     let refused = |e: String| {
                         format!(
                             "auth.chain module '{other}' could not be loaded as a `kind: auth` \
@@ -886,6 +894,25 @@ impl AuthMiddleware {
     /// chain). Never a secret: a module name is a plugin identifier, not a credential.
     pub fn chain_names(&self) -> Vec<String> {
         self.chain.iter().map(|e| e.name.clone()).collect()
+    }
+
+    /// THE POINT SET OF THE DATA CHAIN'S POSITION `provider` (THE DESIGN §6, "Auth points and
+    /// guest lists"): the points its opened instance's `verify` is called at. A provider that is no
+    /// boxed position (`keys`) is its host-held credentials' verifiers' union, `{Head}` with none.
+    pub fn position_points(&self, provider: &str) -> busbar_contract::abi::auth::AuthPoints {
+        use busbar_contract::abi::auth::AuthPoints;
+        if let Some(entry) = self.chain.iter().find(|e| e.provider == provider) {
+            return entry.calls.inbound_points();
+        }
+        let readers = self
+            .readers
+            .iter()
+            .fold(0, |set, r| set | r.calls.inbound_points().bits());
+        if readers == 0 {
+            AuthPoints::HEAD
+        } else {
+            AuthPoints(readers)
+        }
     }
 
     /// Whether the front door is OPEN — no boxed module AND no keys arm, so every request is
@@ -1484,7 +1511,7 @@ async fn run_admin_chain(
                 // The Bearer is the candidate the host extracted: lent as the credential, beside
                 // the lines the plugin reads its carriers from.
                 head.credential =
-                    bearer.map(|b| busbar_contract::redacted::Redacted::new(b.as_bytes().to_vec()));
+                    bearer.map(|b| busbar_contract::redacted::Secret::new(b.as_bytes().to_vec()));
                 match probe {
                     true => operator.probe(&head),
                     false => operator.judge(head).await,
@@ -1498,7 +1525,7 @@ async fn run_admin_chain(
                 let mut request = admin_head(method, target, headers, now);
                 request.credential = bearer
                     .or(header)
-                    .map(|c| busbar_contract::redacted::Redacted::new(c.as_bytes().to_vec()));
+                    .map(|c| busbar_contract::redacted::Secret::new(c.as_bytes().to_vec()));
                 external_admin_module(app, other, request, probe).await
             }
         }
@@ -1673,7 +1700,7 @@ fn admin_head(
         point: busbar_contract::abi::auth::AuthPoint::Head,
         lines: (headers.iter())
             .map(|(n, v)| {
-                let value = busbar_contract::redacted::Redacted::new(v.as_bytes().to_vec());
+                let value = busbar_contract::redacted::Secret::new(v.as_bytes().to_vec());
                 (n.as_str().to_string(), value)
             })
             .collect(),
@@ -2500,7 +2527,7 @@ pub fn resolve_data_plane_identity(
 /// The one `verify` request for a signed ingress, at `HeadBody`: every field line as presented, the
 /// whole (bounded) body, the method, the authority, the raw path and query, and the time read once.
 fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequest {
-    use busbar_contract::redacted::Redacted;
+    use busbar_contract::redacted::Secret;
     VerifyRequest {
         point: busbar_contract::abi::auth::AuthPoint::HeadBody,
         lines: parts
@@ -2509,7 +2536,7 @@ fn signed_request(parts: &axum::http::request::Parts, body: &[u8]) -> VerifyRequ
             .map(|(name, value)| {
                 (
                     name.as_str().to_string(),
-                    Redacted::new(value.as_bytes().to_vec()),
+                    Secret::new(value.as_bytes().to_vec()),
                 )
             })
             .collect(),

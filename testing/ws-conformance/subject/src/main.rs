@@ -96,8 +96,9 @@ async fn echo(mut conn: Connection) {
     let mut text = false;
     while let Ok(Some(piece)) = poll_fn(|cx| conn.poll_piece(cx)).await {
         // A field block (a head) is the handshake's, not a message; a failed stream's piece is
-        // its reason, not a message either.
-        if piece.fields || piece.failed {
+        // its reason and the stream's end (`PIECE_END`) is no message either. An EMPTY piece is
+        // an empty message, echoed in kind.
+        if piece.fields || piece.failed || piece.ends_stream() {
             continue;
         }
         if message.is_empty() {

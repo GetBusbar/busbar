@@ -226,6 +226,33 @@ fn red_a_piece_called_short_that_is_not_is_refused() {
     assert!(text.contains("live uplink"), "{text}");
 }
 
+/// A session naming its own `member`: its ATTEMPT names that member, not `plane.member`, so a
+/// plane serving several far ends is driven against each one's answer (TODO L-R22: every declared
+/// class is reported by a case, and a class only one far end reports needs a case on that far end).
+/// RED: the same session naming no member is attempted on `plane.member` and fails its want.
+#[test]
+fn a_session_naming_its_member_is_attempted_on_that_member() {
+    let s = subject();
+    let named = |member: Option<&str>| {
+        let mut one = serde_json::json!({ "name": "other", "unit": 42, "steps": [
+            { "label": "attempt", "piece": { "from": "kernel", "attempt": 1 },
+              "want": { "outcome": "Ready", "emitted": "m2", "to_far_end": true } } ] });
+        if let Some(m) = member {
+            one["member"] = serde_json::json!(m);
+        }
+        serde_json::json!([one])
+    };
+    let all = named(Some("m2"));
+    let f = fold_over(&s, Leg::Linked, None, &all);
+    exact(&f).unwrap_or_else(|e| panic!("{e}"));
+    sessions_contract(&f, &all);
+
+    let all = named(None);
+    let f = fold_over(&s, Leg::Linked, None, &all);
+    let text = panics(|| sessions_contract(&f, &all));
+    assert!(text.contains("other attempt"), "{text}");
+}
+
 /// RED: two sessions sharing a name, or two steps of one sharing a label, are refused at once
 /// (the contract finds a step by its label).
 #[test]

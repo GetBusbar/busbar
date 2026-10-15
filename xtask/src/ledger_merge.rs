@@ -50,6 +50,8 @@ pub const LEDGER: &str = crate::gates::kind_isolation::REGISTRY_FILE;
 ///   transitional row as the edge `from -> to`.
 /// * `core-name` — `kind`, `name`: `duplicate-core-name`.
 /// * `patch` — `file`, `entry`: the redirect allowance matches `a.file == rel && a.entry == entry`.
+/// * `shape-word` — `word`, `file`, `holder`: `duplicate-shape-word` (one reservation is one word,
+///   in one file, on the line its holder names).
 /// * `announced`, `registered` — `crate`: one row says what one crate is.
 pub const IDENTITY: &[(&str, &[&str])] = &[
     ("transitional", &["from", "to"]),
@@ -64,6 +66,7 @@ pub const IDENTITY: &[(&str, &[&str])] = &[
     ("instance", &["crate", "kind"]),
     ("core-name", &["kind", "name"]),
     ("patch", &["file", "entry"]),
+    ("shape-word", &["word", "file", "holder"]),
 ];
 
 const USAGE: &str =

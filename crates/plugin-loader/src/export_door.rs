@@ -695,13 +695,13 @@ impl ExportCalls for ExportInstance {
     /// `shed`), folded under its name through the one observability path (ARCHITECT ruling
     /// 2026-09-30, Q2).
     fn shed(&self) {
-        fold_shed(self.plugin().name());
+        fold_shed(self.shared.dispatcher.observing(), self.plugin().name());
     }
 }
 
 /// Count one SHED line for the export instance `name` on each counter it was GRANTED as its shed
 /// counter at open, folded under its name through the ONE observability path every envelope takes.
-fn fold_shed(name: &str) {
+fn fold_shed(observing: &crate::observe::Observing, name: &str) {
     let metrics = crate::observe::shed_series(name)
         .into_iter()
         .map(|n| serde_json::json!({"name": n, "type": "counter", "value": 1}))
@@ -711,7 +711,7 @@ fn fold_shed(name: &str) {
         metrics,
         diagnostics: Vec::new(),
     };
-    crate::observe::fold(name, busbar_contract::abi::mechanism::kind::EXPORT, &report);
+    observing.fold(name, busbar_contract::abi::mechanism::kind::EXPORT, &report);
 }
 
 #[cfg(test)]

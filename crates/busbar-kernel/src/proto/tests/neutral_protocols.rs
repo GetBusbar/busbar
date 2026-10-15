@@ -11,10 +11,9 @@
 //! default, one lane-constant and one request-signing egress builder, and one SigV4-ingress row
 //! claiming the `/model/` residual path. THE ORDER IS FIXED: tests read these rows by position.
 
-use axum::http::{header::AUTHORIZATION, HeaderName, HeaderValue, StatusCode};
 use busbar_contract::billing::TokenUsage;
 use busbar_contract::codec::{
-    CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler,
+    CodecError, CodecHost, EgressCtx, IngressReject, OperationHandler, RequestHandler,
 };
 use busbar_contract::ir::handle::IrHandle;
 use busbar_contract::operation::OpVerb;
@@ -29,7 +28,7 @@ use serde_json::{json, Map, Value};
 struct Passthrough;
 
 impl DialectCodec for Passthrough {
-    fn probe_body(&self, _model: &str) -> Vec<u8> {
+    fn probe_body(&self, _: &dyn CodecHost, _model: &str) -> Vec<u8> {
         b"{}".to_vec()
     }
     fn apply_rewrite_to_ingress_body(
@@ -43,26 +42,41 @@ impl DialectCodec for Passthrough {
     fn recover_truncated_usage(&self, _tail: &[u8]) -> Option<TokenUsage> {
         None
     }
-    fn ingress_response_request_id(&self, _: Option<&str>) -> Option<(&'static str, String)> {
+    fn ingress_response_request_id(
+        &self,
+        _: &dyn CodecHost,
+        _: Option<&str>,
+    ) -> Option<(&'static str, String)> {
         None
     }
-    fn write_error(&self, _status: u16, kind: &str, message: &str) -> Value {
+    fn write_error(&self, _: &dyn CodecHost, _status: u16, kind: &str, message: &str) -> Value {
         json!({ "error": { "type": kind, "message": message } })
     }
     fn requested_candidate_count(&self, _body: &Value) -> Option<u64> {
         None
     }
-    fn write_response_exception(&self, _: &CanonicalSignal) -> Option<(String, String)> {
+    fn write_response_exception(
+        &self,
+        _: &dyn CodecHost,
+        _: &CanonicalSignal,
+    ) -> Option<(String, String)> {
         None
     }
-    fn write_error_frame(&self, _: &CanonicalSignal) -> Option<(String, Value)> {
+    fn write_error_frame(&self, _: &dyn CodecHost, _: &CanonicalSignal) -> Option<(String, Value)> {
         None
     }
     fn wants_array_stream(&self, _body: &Value) -> bool {
         false
     }
     fn inject_response_metrics(&self, _value: &mut Value, _elapsed_ms: Option<u64>) {}
-    fn attach_error_response_headers(&self, _: &mut axum::http::HeaderMap, _: &str, _: &Value) {}
+    fn error_response_fields(
+        &self,
+        _: &dyn CodecHost,
+        _: &str,
+        _: &Value,
+    ) -> Vec<(String, Vec<u8>)> {
+        Vec::new()
+    }
     fn extract_error(&self, status: u16, _body: &[u8]) -> RawUpstreamError {
         RawUpstreamError::from_status(status)
     }
@@ -88,7 +102,11 @@ impl OperationHandler for Cell {
     fn read_request(&self, _: &[u8], _: &str) -> Result<Box<dyn IrHandle>, IngressReject> {
         Err(IngressReject::BadRequest("synthetic protocol".into()))
     }
-    fn read_response(&self, _wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+    fn read_response(
+        &self,
+        _host: &dyn CodecHost,
+        _wire: &[u8],
+    ) -> Result<Box<dyn IrHandle>, CodecError> {
         Err(CodecError::Malformed("synthetic protocol".into()))
     }
 }
@@ -114,25 +132,22 @@ impl RequestHandler for Handler {
 }
 
 /// A static scheme: the credential in one header, whatever the request.
-fn static_header(cred: &str, _: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
+fn static_header(cred: &str, _: &SigningContext) -> Vec<(String, Vec<u8>)> {
     vec![(
-        AUTHORIZATION,
-        HeaderValue::from_str(&format!("Bearer {cred}")).expect("header"),
+        "authorization".to_string(),
+        format!("Bearer {cred}").into_bytes(),
     )]
 }
 
 /// A request signer: the header covers the body, the time and the path.
-fn signed_header(cred: &str, ctx: &SigningContext) -> Vec<(HeaderName, HeaderValue)> {
+fn signed_header(cred: &str, ctx: &SigningContext) -> Vec<(String, Vec<u8>)> {
     let sig = format!(
         "{cred}/{}/{}/{}",
         ctx.body.len(),
         ctx.timestamp_epoch,
         ctx.canonical_uri
     );
-    vec![(
-        HeaderName::from_static("x-test-signature"),
-        HeaderValue::from_str(&sig).expect("header"),
-    )]
+    vec![("x-test-signature".to_string(), sig.into_bytes())]
 }
 
 fn claims_model_prefix(path: &str) -> Option<ClaimStrength> {
@@ -174,7 +189,7 @@ static B: ProtocolDecl = ProtocolDecl {
 static C: ProtocolDecl = codec_row("proto-c", &Handler("proto-c", CHAT));
 static D: ProtocolDecl = ProtocolDecl {
     ingress_auth: IngressAuth::SigV4,
-    auth_failure_status_and_kind: (StatusCode::FORBIDDEN, ERR_TYPE_PERMISSION),
+    auth_failure_status_and_kind: (403, ERR_TYPE_PERMISSION),
     egress_auth_headers: Some(signed_header),
     residual_claims: Some(claims_model_prefix),
     ..codec_row("proto-d", &Handler("proto-d", CHAT))

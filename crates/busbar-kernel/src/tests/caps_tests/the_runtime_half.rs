@@ -13,16 +13,29 @@ use busbar_contract::caps::*;
 /// seal on its own.
 struct Kernel {
     seal: KernelSeal,
+    call_gen: std::sync::atomic::AtomicU64,
 }
 
 impl Kernel {
     fn new() -> Self {
         Kernel {
             seal: KernelSeal::acquire_for_kernel(),
+            call_gen: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+    /// A fresh per-request generation, as the teller's `Kernel::next_call` opens one (#74).
+    fn next_call(&self) -> CallId {
+        let gen = self
+            .call_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        CallId::seal(&self.seal, gen)
     }
     fn admit_token(&self) -> Grant<Admittance> {
         Grant::<Admittance>::mint(&self.seal)
+    }
+    /// The admittance grant bound to one call, as the teller's `Kernel::admit_token_for` (#74).
+    fn admit_token_for(&self, call: CallId) -> Grant<Admittance> {
+        Grant::<Admittance>::mint_bound(&self.seal, call)
     }
     fn exit_token(&self) -> Grant<Exit> {
         Grant::<Exit>::mint(&self.seal)
@@ -529,43 +542,6 @@ fn a_sealed_destination_carries_the_lane_the_money_side_reads() {
         LaneId::new("vendor-a:gpt-4o"),
     );
     assert_eq!(dest.lane().as_str(), "vendor-a:gpt-4o");
-
-    let decoration = AuthDecoration::decorate(
-        &Grant::<Sign>::mint(&k.seal),
-        vec![("authorization".into(), "Scheme {slot}".into())],
-        true,
-        vec![SecretSlot::declare(
-            &Grant::<Sign>::mint(&k.seal),
-            "header:authorization",
-        )],
-    );
-    match decoration {
-        AuthDecoration::Decorate { slots, .. } => {
-            assert_eq!(slots[0].location(), "header:authorization")
-        }
-        AuthDecoration::Handshake { .. } => panic!("built a decoration, got a handshake"),
-    }
-}
-
-/// The handshake leg is not wired to a transport yet, so the only thing that can go wrong with it
-/// silently is its two bounds being built the wrong way round — a frame count into the byte bound
-/// and a byte bound into the frame count reads the same at every call site and means something
-/// entirely different at the one that enforces it. So the order is pinned here, before there is a
-/// caller that could inherit the mistake.
-#[test]
-fn a_handshake_decoration_carries_its_two_bounds_in_the_order_it_declares_them() {
-    let k = Kernel::new();
-    let token = Grant::<Sign>::mint(&k.seal);
-    match AuthDecoration::handshake(&token, 7, 4096) {
-        AuthDecoration::Handshake {
-            max_frames,
-            max_bytes,
-        } => {
-            assert_eq!(max_frames, 7);
-            assert_eq!(max_bytes, 4096);
-        }
-        AuthDecoration::Decorate { .. } => panic!("asked for a handshake, got a decoration"),
-    }
 }
 
 /// The journal spelling of an origin is a wire fact: it is what a metering row and an audit entry
@@ -790,7 +766,9 @@ fn an_outstanding_accrual_becomes_a_hold_of_its_own_at_the_parents_exit() {
 
     // Sized at the child's maximum reported push, drawn synchronously: whatever the child goes on
     // to spend, there is a reservation behind it, which is what makes the exposure a bound.
-    let converted = accrual.convert_at_parent_exit(1_000, &admit);
+    let converted = accrual
+        .convert_at_parent_exit(1_000, &admit)
+        .expect("the accruing call's own grant converts it");
     assert_eq!(converted.reserved(), 1_000);
     assert_eq!(converted.principal(), &who("acct-1"));
     let posted = Posted::settle(converted, 250, &usage_of(&k, 250), &k.ledger_token());
@@ -936,4 +914,42 @@ fn a_posting_settles_the_priced_amount_and_not_the_sum_of_the_quantities() {
         posted.flags().contains(PostingFlags::OVERDRAFT),
         "settling above the reservation is an overdraft even when the hold's own counter is quiet"
     );
+}
+
+/// #74, THE PER-CALL BINDING AT THE MONEY SEAM: a grant minted for call A does not admit call B's
+/// hold into a cell (the hold comes back untouched, `CellError::CallMismatch`), and does not convert
+/// call B's accrual at the parent's exit (the accrual comes back). The control: each call's own
+/// grant does both.
+#[test]
+fn a_grant_of_another_call_neither_admits_nor_converts() {
+    let k = Kernel::new();
+    let (call_a, call_b) = (k.next_call(), k.next_call());
+    let (grant_a, grant_b) = (k.admit_token_for(call_a), k.admit_token_for(call_b));
+
+    let cell = HoldCell::new(Hold::open(&grant_b, who("acct-1"), 0));
+    let rejected = cell
+        .admit(Hold::open(&grant_b, who("acct-1"), 5_000), &grant_a)
+        .expect_err("call A's grant admitted call B's hold");
+    assert_eq!(rejected.error, CellError::CallMismatch);
+    assert_eq!(
+        rejected.hold.reserved(),
+        5_000,
+        "the refused hold did not come back whole"
+    );
+    let arrival = cell
+        .admit(rejected.hold, &grant_b)
+        .expect("call B's own grant admits its hold");
+    let _ = Posted::settle(arrival, 0, &usage_of(&k, 0), &k.ledger_token());
+
+    let accrual = cell
+        .accrue_child(&who("acct-1"), 250, &grant_b)
+        .expect("an open parent takes the child's spend");
+    let accrual = accrual
+        .convert_at_parent_exit(1_000, &grant_a)
+        .expect_err("call A's grant converted call B's accrual");
+    let converted = accrual
+        .convert_at_parent_exit(1_000, &grant_b)
+        .expect("call B's own grant converts it");
+    assert_eq!(converted.reserved(), 1_000);
+    let _ = Posted::settle(converted, 250, &usage_of(&k, 250), &k.ledger_token());
 }

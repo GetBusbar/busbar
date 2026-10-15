@@ -19,7 +19,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-pub(crate) use busbar_kernel::config::providers::{ProviderCfg, ProviderDef, ProviderDeploy};
+pub(crate) use busbar_kernel::config::providers::{ProviderDef, ProviderDeploy, ResolvedProvider};
 use busbar_kernel::plane_host::{OnExhaustedInput, PlaneBuildInput, PlaneSlots};
 
 use crate::engine::health::ProbeSchedule;
@@ -28,63 +28,12 @@ use crate::engine::{
     QueuedDepth, WeightedLane,
 };
 
-/// THE `PlaneDecl::resolve_provider` FN-POINTER for the LLM plane (1.6.0 pools stage-B) — merge one
-/// provider's catalog definition (`providers.yaml`) with its operator deployment (`config.yaml`'s
-/// `providers:` entry) into the resolved [`ProviderCfg`] a lane is built from.
-///
-/// Byte-identical to the pre-seam inline merge in `busbar_kernel::config::resolve`: a deployment
-/// override REPLACES the catalog default field-by-field (`protocol`/`base_url`/`health`/`path`/
-/// `path_base`/`token_url`/`scope`/`subject`/`auth`/`allow_metadata_hosts`), `error_map` UNIONS the
-/// two (deployment entries win on key collision), and `api_key` carries the deployment's secret
-/// reference verbatim (a provider's credential is deployment-only; the catalog never carries one).
-pub(crate) fn resolve_provider(def: &ProviderDef, deploy: &ProviderDeploy) -> ProviderCfg {
-    let mut error_map = def.error_map.clone();
-    if let Some(override_map) = &deploy.error_map {
-        for (code, class) in override_map {
-            error_map.insert(code.clone(), class.clone());
-        }
-    }
-    ProviderCfg {
-        protocol: deploy
-            .protocol
-            .clone()
-            .unwrap_or_else(|| def.protocol.clone()),
-        base_url: deploy
-            .base_url
-            .clone()
-            .unwrap_or_else(|| def.base_url.clone()),
-        api_key: deploy.api_key.clone(),
-        health: deploy.health.clone().or_else(|| def.health.clone()),
-        error_map,
-        path: deploy.path.clone().or_else(|| def.path.clone()),
-        path_base: deploy.path_base.clone().or_else(|| def.path_base.clone()),
-        organization: deploy
-            .organization
-            .clone()
-            .or_else(|| def.organization.clone()),
-        project: deploy.project.clone().or_else(|| def.project.clone()),
-        token_url: deploy.token_url.clone().or_else(|| def.token_url.clone()),
-        scope: deploy.scope.clone().or_else(|| def.scope.clone()),
-        subject: deploy.subject.clone().or_else(|| def.subject.clone()),
-        auth: deploy.auth.or(def.auth),
-        allow_metadata_hosts: deploy
-            .allow_metadata_hosts
-            .clone()
-            .unwrap_or_else(|| def.allow_metadata_hosts.clone()),
-        // Lane capabilities: a deployment value overrides the catalog's; a deployment rule list
-        // replaces the catalog's.
-        max_output_key: deploy.max_output_key.or(def.max_output_key),
-        anthropic_adaptive_thinking: deploy
-            .anthropic_adaptive_thinking
-            .or(def.anthropic_adaptive_thinking),
-        native_structured_output: deploy
-            .native_structured_output
-            .or(def.native_structured_output),
-        model_capabilities: deploy
-            .model_capabilities
-            .clone()
-            .unwrap_or_else(|| def.model_capabilities.clone()),
-    }
+/// THE `PlaneDecl::resolve_provider` FN-POINTER for the LLM plane (1.6.0 pools stage-B): the
+/// kernel's neutral merge of one provider's catalog definition with its operator deployment
+/// ([`ResolvedProvider::merge`], row 155 B1b). The smallest shim that keeps this legacy crate
+/// building; it goes with the crate.
+pub(crate) fn resolve_provider(def: &ProviderDef, deploy: &ProviderDeploy) -> ResolvedProvider {
+    ResolvedProvider::merge(def, deploy)
 }
 
 /// THE `PlaneDecl::build_runtime` FN-POINTER for the LLM plane. Downcast the neutral carrier, lower it
@@ -125,7 +74,7 @@ pub(crate) fn build_runtime(
     // registered, and interns a name the root has not reached yet at most once for the image. What
     // it buys is that the lane table is seated with its static names at BUILD time, off the request
     // path, and therefore before this generation can be published.
-    let mut registration = busbar_contract::Registration::new();
+    let mut registration = busbar_kernel::Registration::new();
 
     // ── lanes (one per model, in the carrier's deterministic sorted order — `lanes[i]` IS lane `i`) ──
     let mut lanes: Vec<Lane> = Vec::with_capacity(input.lanes.len());
@@ -142,7 +91,7 @@ pub(crate) fn build_runtime(
         // AUDIT POINT: the resolved credential leaves redaction here and nowhere else on this path —
         // the auth plugin serving the lane's style is handed the plaintext to bind, and the `Lane`
         // this builds re-wraps it.
-        let api_key = li.api_key.expose_secret().clone();
+        let api_key = li.api_key.expose(&busbar_kernel::seal::lend()).clone();
         let signing_host = host_from_base(&li.base_url);
         let credential =
             crate::engine::credential::credential_for(input, li, protocol, &signing_host, &api_key);
@@ -182,9 +131,10 @@ pub(crate) fn build_runtime(
             provider: li.provider.clone(),
             signing_host,
             base_url,
+            url_userinfo: li.url_userinfo.clone(),
             authority,
             lane_id,
-            api_key: busbar_contract::redacted::Redacted::new(api_key),
+            api_key: busbar_contract::redacted::Secret::new(api_key),
             protocol,
             credential,
             max: li.max_concurrent,
@@ -318,8 +268,8 @@ pub(crate) fn build_runtime(
     let client = if let (true, Some(pr)) = (reuse_prior_client, prior_rt) {
         pr.client.clone()
     } else {
-        crate::engine::install_proxy_tunnel_if_configured()
-            .unwrap_or_else(|e| panic!("upstream proxy tunnel: {e}"));
+        // The proxy choice is the connector's parse of the process environment, installed into the
+        // engine by the composition root at boot (status row 130 E5a); nothing is read here.
         let shard_count = busbar_kernel::topology::UpstreamClients::shard_count();
         let idle_per_host_per_shard = input
             .client_settings

@@ -438,8 +438,11 @@ pub struct ChatReqHandle(
     pub IrRequest,
     pub busbar_contract::ir::egress_prep::LaneCaps,
 );
-/// The chat RESPONSE handle.
-pub struct ChatRespHandle(pub IrResponse);
+/// The chat RESPONSE handle: the response, and the TRANSLATION CAP its plane enforces
+/// ([`IrHandle::apply_translate_cap`]; [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`]
+/// until the plane hands one), which bounds what a writer accumulates when the response is
+/// re-emitted as a stream.
+pub struct ChatRespHandle(pub IrResponse, pub usize);
 
 impl Sealed for ChatReqHandle {}
 impl Sealed for ChatRespHandle {}
@@ -466,7 +469,12 @@ impl IrHandle for ChatReqHandle {
             })
             .unwrap_or_default()
     }
-    fn write_egress_request(&mut self, egress_proto: &str, model: &str) -> EgressWire {
+    fn write_egress_request(
+        &mut self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        egress_proto: &str,
+        model: &str,
+    ) -> EgressWire {
         // Chat is always a JSON body the router post-shapes (write_request_value == Some). The lane
         // model rides along for the dialects whose spelling depends on the model family, and the
         // lane's declared capabilities (recorded at `prepare_for_egress`) for the dialects whose
@@ -477,7 +485,7 @@ impl IrHandle for ChatReqHandle {
                 if !writer.carries_image_detail() {
                     warn_dropped_image_details(&self.0);
                 }
-                EgressWire::Json(writer.write_request_for_lane(&self.0, model, &self.1))
+                EgressWire::Json(writer.write_request_for_lane(host, &self.0, model, &self.1))
             })
             .unwrap_or_else(|| EgressWire::Bytes(SlabBytes::default()))
     }
@@ -505,8 +513,12 @@ impl IrHandle for ChatRespHandle {
     fn apply_request_echo(&mut self, ingress_request_body: &Value) {
         self.0.request_echo = Some(ingress_request_body.clone());
     }
+    fn apply_translate_cap(&mut self, cap: usize) {
+        self.1 = cap;
+    }
     fn wrap_buffered_as_stream(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         ingress_protocol: &str,
         elapsed_ms: Option<u64>,
     ) -> Option<Vec<u8>> {
@@ -515,16 +527,22 @@ impl IrHandle for ChatRespHandle {
         // eventstream frames); every SSE-framed dialect falls through to the shared synthesizer, which
         // drives the buffered response through the same translator the live stream path uses.
         super::proto_codec::protocol_for(ingress_protocol)
-            .and_then(|p| p.writer().wrap_buffered_as_stream(&self.0, elapsed_ms))
+            .and_then(|p| {
+                p.writer()
+                    .wrap_buffered_as_stream(host, &self.0, elapsed_ms)
+            })
             .or_else(|| {
                 super::proto_stream::StreamTranslate::synthesize_from_response(
+                    host,
                     ingress_protocol,
                     &self.0,
+                    self.1,
                 )
             })
     }
     fn write_ingress_response(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         ingress_protocol: &str,
         ingress_serves_op: bool,
     ) -> TranslatedResponse {
@@ -533,7 +551,7 @@ impl IrHandle for ChatRespHandle {
         }
         // Chat write_response_value == Some(Value) => Json.
         match super::proto_codec::protocol_for(ingress_protocol) {
-            Some(p) => TranslatedResponse::Json(p.writer().write_response(&self.0)),
+            Some(p) => TranslatedResponse::Json(p.writer().write_response(host, &self.0)),
             None => TranslatedResponse::IngressUnsupported,
         }
     }
@@ -582,70 +600,46 @@ impl OperationHandler for ChatOperation {
     }
     fn extract_usage(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         ingress_protocol: &str,
         body: &[u8],
-    ) -> Option<busbar_contract::billing::TokenUsage> {
+    ) -> Result<Option<busbar_contract::billing::TokenUsage>, busbar_contract::codec::UsageTapFault>
+    {
         // Same-protocol usage tap (verbatim from the former `ChatOperation`; `crate::codec::` re-pathed).
+        // Each way the tap cannot read the body is RETURNED as its fault: the door carries it out on
+        // its answer and the kernel counts it and warns once per (protocol, reason) (row 155). The
+        // codec's own line is the per-request detail, at debug.
+        use busbar_contract::codec::UsageTapFault;
         let Some(p) = super::proto_codec::protocol_for(ingress_protocol) else {
-            if busbar_contract::codec::usage_tap_fault_should_warn(
-                ingress_protocol,
-                "unknown_protocol",
-            ) {
-                ::tracing::warn!(diag = %crate::codec::diagnostics::USAGE_TAP_UNKNOWN_PROTOCOL.banner(),
-                    protocol = ingress_protocol,
-                    "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
-                     billing 0 tokens for this request"
-                );
-            } else {
-                ::tracing::debug!(diag = %crate::codec::diagnostics::USAGE_TAP_UNKNOWN_PROTOCOL.banner(),
-                    protocol = ingress_protocol,
-                    "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
-                     billing 0 tokens for this request"
-                );
-            }
-            return None;
+            ::tracing::debug!(diag = %crate::codec::diagnostics::USAGE_TAP_UNKNOWN_PROTOCOL.banner(),
+                protocol = ingress_protocol,
+                "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
+                 billing 0 tokens for this request"
+            );
+            return Err(UsageTapFault::UnknownProtocol);
         };
         let v = match crate::codec::json::parse::<Value>(body) {
             Ok(v) => v,
             Err(_e) => {
-                if busbar_contract::codec::usage_tap_fault_should_warn(ingress_protocol, "bad_json")
-                {
-                    ::tracing::warn!(diag = %crate::codec::diagnostics::USAGE_TAP_BAD_JSON.banner(),
-                        protocol = ingress_protocol,
-                        error = %crate::codec::json::parse_err_log(body.len()),
-                        "usage tap: failed to parse a same-protocol 2xx body as JSON; \
-                         billing 0 tokens for this request"
-                    );
-                } else {
-                    ::tracing::debug!(diag = %crate::codec::diagnostics::USAGE_TAP_BAD_JSON.banner(),
-                        protocol = ingress_protocol,
-                        error = %crate::codec::json::parse_err_log(body.len()),
-                        "usage tap: failed to parse a same-protocol 2xx body as JSON; \
-                         billing 0 tokens for this request"
-                    );
-                }
-                return None;
+                ::tracing::debug!(diag = %crate::codec::diagnostics::USAGE_TAP_BAD_JSON.banner(),
+                    protocol = ingress_protocol,
+                    error = %crate::codec::json::parse_err_log(body.len()),
+                    "usage tap: failed to parse a same-protocol 2xx body as JSON; \
+                     billing 0 tokens for this request"
+                );
+                return Err(UsageTapFault::BadJson);
             }
         };
-        match p.reader().read_response(&v) {
-            Ok(ir) => Some(ir.usage.to_token_usage()),
+        match p.reader().read_response(host, &v) {
+            Ok(ir) => Ok(Some(ir.usage.to_token_usage())),
             Err(e) => {
-                if busbar_contract::codec::usage_tap_fault_should_warn(ingress_protocol, "decode") {
-                    ::tracing::warn!(diag = %busbar_contract::diagnostic::USAGE_TAP_DECODE_FAILED.banner(),
-                        protocol = ingress_protocol,
-                        error = ?e,
-                        "usage tap: read_response failed to decode a same-protocol 2xx body; \
-                         billing 0 tokens for this request"
-                    );
-                } else {
-                    ::tracing::debug!(diag = %busbar_contract::diagnostic::USAGE_TAP_DECODE_FAILED.banner(),
-                        protocol = ingress_protocol,
-                        error = ?e,
-                        "usage tap: read_response still failing to decode a same-protocol 2xx body; \
-                         billing 0 tokens for this request"
-                    );
-                }
-                None
+                ::tracing::debug!(diag = %busbar_contract::diagnostic::USAGE_TAP_DECODE_FAILED.banner(),
+                    protocol = ingress_protocol,
+                    error = ?e,
+                    "usage tap: read_response failed to decode a same-protocol 2xx body; \
+                     billing 0 tokens for this request"
+                );
+                Err(UsageTapFault::Decode)
             }
         }
     }
@@ -659,13 +653,22 @@ impl OperationHandler for ChatOperation {
             .map(|r| Box::new(ChatReqHandle(r, Default::default())) as Box<dyn IrHandle>)
             .map_err(|e| IngressReject::BadRequest(format!("{e:?}")))
     }
-    fn read_response_value(&self, v: &Value) -> Result<Box<dyn IrHandle>, CodecError> {
+    fn read_response_value(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        v: &Value,
+    ) -> Result<Box<dyn IrHandle>, CodecError> {
         let p = self
             .proto()
             .ok_or_else(|| CodecError::Malformed(format!("unknown protocol {}", self.0)))?;
         p.reader()
-            .read_response(v)
-            .map(|r| Box::new(ChatRespHandle(r)) as Box<dyn IrHandle>)
+            .read_response(host, v)
+            .map(|r| {
+                Box::new(ChatRespHandle(
+                    r,
+                    busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+                )) as Box<dyn IrHandle>
+            })
             .map_err(|e| CodecError::Malformed(format!("{e:?}")))
     }
     fn read_request(
@@ -683,15 +686,24 @@ impl OperationHandler for ChatOperation {
             .map(|r| Box::new(ChatReqHandle(r, Default::default())) as Box<dyn IrHandle>)
             .map_err(|e| IngressReject::BadRequest(format!("{e:?}")))
     }
-    fn read_response(&self, wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+    fn read_response(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        wire: &[u8],
+    ) -> Result<Box<dyn IrHandle>, CodecError> {
         let v: Value =
             serde_json::from_slice(wire).map_err(|e| CodecError::Malformed(e.to_string()))?;
         let p = self
             .proto()
             .ok_or_else(|| CodecError::Malformed(format!("unknown protocol {}", self.0)))?;
         p.reader()
-            .read_response(&v)
-            .map(|r| Box::new(ChatRespHandle(r)) as Box<dyn IrHandle>)
+            .read_response(host, &v)
+            .map(|r| {
+                Box::new(ChatRespHandle(
+                    r,
+                    busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+                )) as Box<dyn IrHandle>
+            })
             .map_err(|e| CodecError::Malformed(format!("{e:?}")))
     }
 }

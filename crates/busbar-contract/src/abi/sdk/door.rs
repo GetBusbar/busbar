@@ -794,7 +794,6 @@ macro_rules! plugin_door {
     };
 }
 
-// M6-COLD-DELETE: rename export_door! → export_plugin! when the cold macro is deleted (abi-v2, the row-macro name)
 /// THE ONE EXPORT. Invoked once, in a plugin's thin `cdylib` crate, with the logic crate's door:
 /// `busbar_contract::export_door!(crate_x::door);`. Emits the ONE `#[no_mangle]` symbol
 /// [`DOOR_SYMBOL`](crate::abi::mechanism::DOOR_SYMBOL), forwarding to that door — the same

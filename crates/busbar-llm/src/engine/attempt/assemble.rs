@@ -86,7 +86,7 @@ pub(super) async fn build(
         (Some(pre), busbar_contract::config::UpstreamCreds::Own) => pre.clone(),
         (None, busbar_contract::config::UpstreamCreds::Own) => convert_headers(lane_auth_headers(
             hop.lane_row(),
-            hop.lane_row().api_key.expose_secret(),
+            hop.lane_row().api_key.expose(&busbar_kernel::seal::lend()),
             &signing_ctx,
         )),
     };
@@ -148,7 +148,12 @@ pub(super) async fn build(
         egress_headers.insert(name.clone(), value.clone());
     }
     let uri = with_query.unwrap_or_else(|| target.uri.clone());
-    let hreq = crate::engine::egress_request(uri, egress_headers, payload);
+    let mut hreq = crate::engine::egress_request(uri, egress_headers, payload);
+    // The base URL's userinfo, opaque, handed back to the kernel's hop that presents it (row 74).
+    // TRANSITIONAL: deleted with busbar-llm (row 155 C).
+    if let Some(userinfo) = &hop.lane_row().url_userinfo {
+        hreq.extensions_mut().insert(userinfo.clone());
+    }
     drop(_cb_reqwest);
     Ok(hreq)
 }

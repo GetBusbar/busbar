@@ -41,7 +41,9 @@ fn cross_protocol_strips_source_only_extra_keys() {
     ir.extra.clear();
     // Anthropic has no logprobs concept: its writer must not emit any spelling of it.
     let anthropic = Protocol::anthropic();
-    let out = anthropic.writer().write_request(&ir);
+    let out = anthropic
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     let obj = out.as_object().expect("object body");
     assert!(
         !obj.contains_key("logprobs"),
@@ -53,7 +55,9 @@ fn cross_protocol_strips_source_only_extra_keys() {
 
     // Gemini DOES model it: the ask arrives in Gemini's native generationConfig spellings.
     let gemini = Protocol::gemini();
-    let gout = gemini.writer().write_request(&ir);
+    let gout = gemini
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         gout["generationConfig"]["responseLogprobs"],
         serde_json::json!(true),
@@ -76,7 +80,9 @@ fn same_protocol_passthrough_preserves_extra_keys() {
     let openai = Protocol::openai();
     let ir = openai.reader().read_request(&body).expect("read");
     // No clear() here — same-protocol passthrough never hits the cross-protocol seam.
-    let out = openai.writer().write_request(&ir);
+    let out = openai
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     let obj = out.as_object().expect("object body");
     assert_eq!(
         obj.get("logprobs"),

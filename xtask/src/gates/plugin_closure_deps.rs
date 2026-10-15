@@ -13,8 +13,10 @@
 //! * **`busbar-deps`** — a busbar crate other than `busbar-contract` reached through the plugin's
 //!   shipped workspace edges (its own and those of every workspace crate it reaches).
 //!
-//! Plugin crates are the workspace members named for a plugin kind ([`one_abi::is_plugin_crate`]).
-//! Sibling plugin repositories are not read by this gate; M5 (ZERODEP) owns them.
+//! Plugin crates are the workspace members named for a plugin kind ([`one_abi::is_plugin_crate`]),
+//! and every PINNED plugin crate the root links from its own repository
+//! ([`one_abi::members_with_pinned`]; ARCHITECT P5 ruling 2026-10-14): a plugin that left `crates/`
+//! is still a plugin, and its closure is still held to busbar-contract alone.
 //!
 //! REPORT-ONLY, armed at today's count as the drain-only ledger `qa/plugin-closure-deps.toml`.
 
@@ -74,7 +76,7 @@ fn reached<'m>(
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
     let mut findings = Vec::new();
     let mut errors = Vec::new();
-    let members = match one_abi::members(cx) {
+    let members = match one_abi::members_with_pinned(cx) {
         Ok(m) => m,
         Err(e) => return (findings, vec![e]),
     };
@@ -124,8 +126,10 @@ impl Gate for PluginClosureDepsGate {
     }
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
-        // THE PLANTS GO INTO THE ONE PLUGIN CRATE THAT DEPENDS ON busbar-contract ALONE TODAY, so a
-        // plant's finding is the only new one.
+        // THE PLANTS GO INTO A PINNED PLUGIN, AND THAT IS THE RED for reading pinned crates (ARCHITECT
+        // P5 ruling 2026-10-14): the stdio carrier left for its own repo, its one busbar crate is
+        // busbar-contract, and its manifest reads at `crates/busbar-transport-stdio` (the base
+        // layer). A gate that read workspace members only would never see the plant.
         let manifest = "crates/busbar-transport-stdio/Cargo.toml";
         let with_dep = |dep: &str| {
             let text = cx.read(manifest).unwrap_or_default();
@@ -138,12 +142,25 @@ impl Gate for PluginClosureDepsGate {
             cx,
             self,
             &SPEC,
-            vec![(
-                ROW_BUSBAR,
-                "a plugin depending on the kernel is RED, naming the kernel",
-                with_dep("busbar-kernel-wal = { path = \"../busbar-kernel-wal\" }"),
-                vec![manifest, "busbar-kernel-wal"],
-            )],
+            vec![
+                (
+                    ROW_BUSBAR,
+                    "a plugin depending on the kernel is RED, naming the kernel",
+                    with_dep("busbar-kernel-wal = { path = \"../busbar-kernel-wal\" }"),
+                    vec![manifest, "busbar-kernel-wal"],
+                ),
+                // THE SEAL LENDER (Part 2 #54): `busbar_kernel::seal::lend()` mints the grant a
+                // `Secret::expose` presents, for any crate that depends on busbar-kernel. That is
+                // safe only while no plugin can: a plugin naming busbar-kernel itself is RED.
+                (
+                    ROW_BUSBAR,
+                    "a plugin depending on busbar-kernel (the seal lender) is RED, naming it",
+                    with_dep(
+                        "busbar-kernel = { path = \"../busbar-kernel\", default-features = false }",
+                    ),
+                    vec![manifest, "busbar-kernel"],
+                ),
+            ],
         );
         // OWNER RULING 2026-09-28 (PLUGIN LIBRARIES): a plugin's own third-party library choice is
         // no longer this gate's business, so a plugin naming a runtime, logger or subscriber crate

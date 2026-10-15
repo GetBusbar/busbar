@@ -7,7 +7,8 @@
 //! round trip through `build_router`, which only routes `/pa/v1/messages` to the pool `pa` through
 //! the REAL `busbar_llm` plane's `build_runtime`/`viewer` — same reason as `endpoints_cross_plane.rs`
 //! (see its header). What this test asserts (a key row's `expires_at` is unenforced; the token's own
-//! `exp` IS) is core's own governance/auth behaviour, not anything about the LLM dialect — the real
+//! `exp` IS) is core's own governance/auth behaviour, not anything about the routed plane's dialect —
+//! the real
 //! plane is present only so the request has somewhere to route.
 //!
 //! `a_key_row_whose_expires_at_is_in_the_past_still_verifies` (the governance-seam half, no
@@ -70,7 +71,7 @@ fn mint_then_expire_the_row(
     row.expires_at = Some(row_expired_at);
     store.put_key(&row).expect("rewrite the row");
     gov.refresh().expect("reload caches");
-    token.expose_secret().clone()
+    token.expose(&busbar_kernel::seal::lend()).clone()
 }
 
 /// End to end on the data plane through the `keys` chain: the request is admitted (200 from the

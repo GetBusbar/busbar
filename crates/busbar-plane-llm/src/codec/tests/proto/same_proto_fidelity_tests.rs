@@ -7,9 +7,9 @@ fn run_same_proto(proto: &str, chunks: &[&[u8]]) -> (Vec<u8>, StreamTranslate) {
     let mut t = StreamTranslate::new_same_proto(proto).expect("same-proto translator");
     let mut out = Vec::new();
     for c in chunks {
-        out.extend_from_slice(&t.feed(c));
+        out.extend_from_slice(&t.feed(crate::codec::test_host::HOST, c));
     }
-    out.extend_from_slice(&t.finish());
+    out.extend_from_slice(&t.finish(crate::codec::test_host::HOST));
     (out, t)
 }
 
@@ -54,9 +54,9 @@ fn openai_bare_data_round_trip_byte_exact() {
     t.set_client_include_usage(true);
     let mut out = Vec::new();
     for c in frames {
-        out.extend_from_slice(&t.feed(c));
+        out.extend_from_slice(&t.feed(crate::codec::test_host::HOST, c));
     }
-    out.extend_from_slice(&t.finish());
+    out.extend_from_slice(&t.finish(crate::codec::test_host::HOST));
     assert_eq!(
         out,
         concat(frames),
@@ -215,9 +215,11 @@ fn bench_same_proto_short_circuit() {
             let mut t = ctor();
             let mut out: Vec<u8> = Vec::new();
             for f in frames {
-                out.extend_from_slice(&t.feed(std::hint::black_box(f)));
+                out.extend_from_slice(
+                    &t.feed(crate::codec::test_host::HOST, std::hint::black_box(f)),
+                );
             }
-            out.extend_from_slice(&t.finish());
+            out.extend_from_slice(&t.finish(crate::codec::test_host::HOST));
             std::hint::black_box(out);
         }
         start.elapsed().as_nanos() as f64 / iters as f64

@@ -101,7 +101,9 @@ fn assert_request_roundtrip(proto: &str, body: Value, allowed: &[&str]) {
         .reader
         .read_request(&body)
         .unwrap_or_else(|e| panic!("{proto}: read_request failed: {e:?}"));
-    let out = entry.writer.write_request(&ir);
+    let out = entry
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_divergences(proto, "REQ", &body, &out, allowed);
 }
 
@@ -110,9 +112,11 @@ fn assert_response_roundtrip(proto: &str, body: Value, allowed: &[&str]) {
     let entry = crate::codec::proto_codec::protocol_for(proto).expect("protocol registered");
     let ir = entry
         .reader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .unwrap_or_else(|e| panic!("{proto}: read_response failed: {e:?}"));
-    let out = entry.writer.write_response(&ir);
+    let out = entry
+        .writer
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_divergences(proto, "RESP", &body, &out, allowed);
 }
 
@@ -237,7 +241,7 @@ fn anthropic_cache_tier_split_survives_the_ir() {
     let entry = crate::codec::proto_codec::protocol_for("anthropic").expect("anthropic");
     let ir = entry
         .reader
-        .read_response(&json!({
+        .read_response(crate::codec::test_host::HOST, &json!({
             "id": "msg_1", "role": "assistant", "model": "m",
             "content": [{"type": "text", "text": "hi"}],
             "usage": {
@@ -252,7 +256,9 @@ fn anthropic_cache_tier_split_survives_the_ir() {
     assert_eq!(u.detail.cache_creation_1h_input_tokens, Some(3));
     // The tiers are a SLICE of the total, never an addition to it — billing must not change.
     assert_eq!(u.cache_creation_input_tokens, Some(7));
-    let out = entry.writer.write_response(&ir);
+    let out = entry
+        .writer
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["usage"]["cache_creation"]["ephemeral_5m_input_tokens"],
         4
@@ -353,7 +359,9 @@ fn openai_attachments_survive_the_ir_rather_than_becoming_empty_text() {
         blocks[2]
     );
 
-    let out = entry.writer.write_request(&ir);
+    let out = entry
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     let parts = out["messages"][0]["content"].as_array().expect("parts");
     assert_eq!(parts[0]["type"], "input_audio");
     assert_eq!(parts[0]["input_audio"]["data"], "AAA");
@@ -376,7 +384,7 @@ fn openai_reasoning_tokens_reach_the_ir() {
     let entry = crate::codec::proto_codec::protocol_for("openai").expect("openai");
     let ir = entry
         .reader
-        .read_response(&json!({
+        .read_response(crate::codec::test_host::HOST, &json!({
             "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "o3",
             "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
             "usage": {
@@ -390,7 +398,9 @@ fn openai_reasoning_tokens_reach_the_ir() {
         Some(12),
         "reasoning_tokens must reach the IR: a customer reconciling a bill against it got a hard 0"
     );
-    let out = entry.writer.write_response(&ir);
+    let out = entry
+        .writer
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["usage"]["completion_tokens_details"]["reasoning_tokens"],
         12
@@ -452,7 +462,9 @@ fn gemini_non_image_inline_data_is_not_an_image_block() {
 
     // ...and the Anthropic egress must not put any of it on the wire as an `image`.
     let anthropic = crate::codec::proto_codec::protocol_for("anthropic").expect("anthropic");
-    let out = anthropic.writer.write_request(&ir);
+    let out = anthropic
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     let parts = out["messages"][0]["content"].as_array().expect("content");
     for p in parts {
         if p["type"] == "image" {
@@ -488,7 +500,9 @@ fn attachments_reach_gemini_as_inline_data() {
         }))
         .expect("read");
     let gemini = crate::codec::proto_codec::protocol_for("gemini").expect("gemini");
-    let out = gemini.writer.write_request(&ir);
+    let out = gemini
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     let parts = out["contents"][0]["parts"].as_array().expect("parts");
     assert_eq!(parts[0]["inlineData"]["mimeType"], "audio/wav");
     assert_eq!(parts[0]["inlineData"]["data"], "AAA");
@@ -544,7 +558,9 @@ fn bedrock_document_is_modelled_without_double_emitting() {
         )),
         "a Converse document must be modelled so it survives a CROSS-protocol hop"
     );
-    let out = entry.writer.write_request(&ir);
+    let out = entry
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     let content = out["messages"][0]["content"].as_array().expect("content");
     assert_eq!(
         content.iter().filter(|b| b.get("document").is_some()).count(),
@@ -569,15 +585,18 @@ fn cohere_tool_plan_is_reasoning_not_visible_text() {
     let entry = crate::codec::proto_codec::protocol_for("cohere").expect("cohere");
     let ir = entry
         .reader
-        .read_response(&json!({
-            "id": "c1",
-            "message": {
-                "role": "assistant",
-                "tool_plan": "I will search for it",
-                "content": [{"type": "text", "text": "hi"}]
-            },
-            "finish_reason": "COMPLETE"
-        }))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &json!({
+                "id": "c1",
+                "message": {
+                    "role": "assistant",
+                    "tool_plan": "I will search for it",
+                    "content": [{"type": "text", "text": "hi"}]
+                },
+                "finish_reason": "COMPLETE"
+            }),
+        )
         .expect("read");
     assert!(
         matches!(
@@ -599,7 +618,9 @@ fn cohere_tool_plan_is_reasoning_not_visible_text() {
     // the answer — never `message.tool_plan`, and never visible text (COH-08, IR mapping Q57). (A
     // Cohere -> Cohere answer is relayed verbatim in production; this pins the writer's contract
     // for a Thinking block, whichever dialect read it.)
-    let out = entry.writer.write_response(&ir);
+    let out = entry
+        .writer
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert!(
         out["message"].get("tool_plan").is_none(),
         "a response's reasoning is a thinking part, not tool_plan: {out}"
@@ -613,7 +634,9 @@ fn cohere_tool_plan_is_reasoning_not_visible_text() {
 
     // Cross-protocol: an Anthropic client sees it as a `thinking` block, not as the answer.
     let anthropic = crate::codec::proto_codec::protocol_for("anthropic").expect("anthropic");
-    let a = anthropic.writer.write_response(&ir);
+    let a = anthropic
+        .writer
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(a["content"][0]["type"], "thinking");
     assert_eq!(a["content"][1]["text"], "hi");
 }
@@ -654,7 +677,9 @@ fn cohere_tool_result_document_is_not_stringified() {
         "a tool-result document's data must reach the IR as a structured Json block"
     );
     let anthropic = crate::codec::proto_codec::protocol_for("anthropic").expect("anthropic");
-    let out = anthropic.writer.write_request(&ir);
+    let out = anthropic
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["messages"][2]["content"][0]["content"],
         json!([{"type": "text", "text": "{\"t\":\"x\"}"}]),
@@ -669,18 +694,23 @@ fn cohere_search_units_reach_the_ir() {
     let entry = crate::codec::proto_codec::protocol_for("cohere").expect("cohere");
     let ir = entry
         .reader
-        .read_response(&json!({
-            "id": "c1",
-            "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
-            "finish_reason": "COMPLETE",
-            "usage": {
-                "tokens": {"input_tokens": 10, "output_tokens": 5},
-                "billed_units": {"input_tokens": 10, "output_tokens": 5, "search_units": 2}
-            }
-        }))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &json!({
+                "id": "c1",
+                "message": {"role": "assistant", "content": [{"type": "text", "text": "hi"}]},
+                "finish_reason": "COMPLETE",
+                "usage": {
+                    "tokens": {"input_tokens": 10, "output_tokens": 5},
+                    "billed_units": {"input_tokens": 10, "output_tokens": 5, "search_units": 2}
+                }
+            }),
+        )
         .expect("read");
     assert_eq!(ir.usage.detail.search_units, Some(2));
-    let out = entry.writer.write_response(&ir);
+    let out = entry
+        .writer
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["usage"]["billed_units"]["search_units"], 2);
 }
 
@@ -713,7 +743,9 @@ fn responses_input_file_survives_the_ir() {
         "input_file must reach the IR as a Document media block, got {:?}",
         ir.messages[0].content[1]
     );
-    let out = entry.writer.write_request(&ir);
+    let out = entry
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     let parts = out["input"][0]["content"].as_array().expect("content");
     assert_eq!(parts[1]["type"], "input_file");
     assert_eq!(parts[1]["filename"], "spec.pdf");
@@ -735,7 +767,7 @@ fn responses_reasoning_tokens_are_not_zeroed() {
     let entry = crate::codec::proto_codec::protocol_for("responses").expect("responses");
     let ir = entry
         .reader
-        .read_response(&json!({
+        .read_response(crate::codec::test_host::HOST, &json!({
             "id": "resp_1", "object": "response", "created_at": 1, "model": "o3",
             "status": "completed",
             "output": [{"type": "message", "id": "msg_1", "role": "assistant", "status": "completed",
@@ -745,7 +777,9 @@ fn responses_reasoning_tokens_are_not_zeroed() {
         }))
         .expect("read");
     assert_eq!(ir.usage.detail.reasoning_tokens, Some(2));
-    let out = entry.writer.write_response(&ir);
+    let out = entry
+        .writer
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["usage"]["output_tokens_details"]["reasoning_tokens"], 2);
 }
 
@@ -762,14 +796,17 @@ fn gemini_thoughts_token_count_is_the_reasoning_sub_bucket() {
     let entry = crate::codec::proto_codec::protocol_for("gemini").expect("gemini");
     let ir = entry
         .reader
-        .read_response(&json!({
-            "candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]},
-                            "finishReason": "STOP"}],
-            "usageMetadata": {
-                "promptTokenCount": 10, "candidatesTokenCount": 5,
-                "thoughtsTokenCount": 7, "totalTokenCount": 22
-            }
-        }))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &json!({
+                "candidates": [{"content": {"role": "model", "parts": [{"text": "hi"}]},
+                                "finishReason": "STOP"}],
+                "usageMetadata": {
+                    "promptTokenCount": 10, "candidatesTokenCount": 5,
+                    "thoughtsTokenCount": 7, "totalTokenCount": 22
+                }
+            }),
+        )
         .expect("read");
     assert_eq!(ir.usage.detail.reasoning_tokens, Some(7));
     assert_eq!(
@@ -808,7 +845,7 @@ fn streamed_citations_reach_openai_and_cohere_clients() {
     let openai = crate::codec::proto_codec::protocol_for("openai").expect("openai");
     let (_, chunk) = openai
         .writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("a chat.completion.chunk carries delta.annotations");
     let ann = &chunk["choices"][0]["delta"]["annotations"][0];
     assert_eq!(ann["type"], "url_citation");
@@ -818,7 +855,7 @@ fn streamed_citations_reach_openai_and_cohere_clients() {
     let cohere = crate::codec::proto_codec::protocol_for("cohere").expect("cohere");
     let (_, frame) = cohere
         .writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("Cohere v2 has a native `citation-start` frame");
     assert_eq!(frame["type"], "citation-start");
     // WIRE SHAPE (docs.cohere.com/v2/docs/streaming): `delta.message.citations` on a `citation-start`
@@ -857,19 +894,22 @@ fn cohere_response_citations_reach_a_foreign_client() {
     let cohere = crate::codec::proto_codec::protocol_for("cohere").expect("cohere");
     let ir = cohere
         .reader
-        .read_response(&json!({
-            "id": "c1",
-            "finish_reason": "COMPLETE",
-            "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Paris is the capital."}],
-                "citations": [{
-                    "start": 0, "end": 5, "text": "Paris",
-                    "sources": [{"type": "document", "id": "d1",
-                                 "document": {"title": "Atlas", "url": "https://atlas"}}]
-                }]
-            }
-        }))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &json!({
+                "id": "c1",
+                "finish_reason": "COMPLETE",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Paris is the capital."}],
+                    "citations": [{
+                        "start": 0, "end": 5, "text": "Paris",
+                        "sources": [{"type": "document", "id": "d1",
+                                     "document": {"title": "Atlas", "url": "https://atlas"}}]
+                    }]
+                }
+            }),
+        )
         .expect("read");
     // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
     // ride the text block's citations.
@@ -887,7 +927,9 @@ fn cohere_response_citations_reach_a_foreign_client() {
 
     // Cross-protocol: an Anthropic-dialect client sees the grounding rather than a bare assertion.
     let anthropic = crate::codec::proto_codec::protocol_for("anthropic").expect("anthropic");
-    let out = anthropic.writer.write_response(&ir);
+    let out = anthropic
+        .writer
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert!(
         out["content"][0]["citations"]
             .as_array()
@@ -896,7 +938,9 @@ fn cohere_response_citations_reach_a_foreign_client() {
     );
 
     // Same-protocol: the source object round-trips verbatim out of `raw`.
-    let back = cohere.writer.write_response(&ir);
+    let back = cohere
+        .writer
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(back["message"]["citations"][0]["text"], "Paris");
     assert_eq!(
         back["message"]["citations"][0]["sources"][0]["document"]["title"],
@@ -968,7 +1012,9 @@ fn anthropic_search_result_reaches_a_foreign_client() {
 
     // CROSS-PROTOCOL, the direction that was broken: an OpenAI backend must receive the passage.
     let openai = crate::codec::proto_codec::protocol_for("openai").expect("openai");
-    let out = openai.writer.write_request(&ir);
+    let out = openai
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     let rendered = out["messages"][0]["content"].to_string();
     assert!(
         rendered.contains("Refunds are issued within 30 days."),
@@ -977,7 +1023,9 @@ fn anthropic_search_result_reaches_a_foreign_client() {
 
     // ... and a Gemini backend, whose content shape is different again.
     let gemini = crate::codec::proto_codec::protocol_for("gemini").expect("gemini");
-    let out = gemini.writer.write_request(&ir);
+    let out = gemini
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         out.to_string()
             .contains("Refunds are issued within 30 days."),
@@ -986,7 +1034,9 @@ fn anthropic_search_result_reaches_a_foreign_client() {
 
     // SAME-PROTOCOL: the original block re-emits verbatim out of the unmodeled sentinel, so nothing
     // about modelling it cross-protocol degraded the Anthropic→Anthropic path.
-    let back = anthropic.writer.write_request(&ir);
+    let back = anthropic
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         back["messages"][0]["content"][0], body["messages"][0]["content"][0],
         "the Anthropic re-emit must be the ORIGINAL search_result block, byte-exact"
@@ -1020,7 +1070,7 @@ fn streamed_citations_reach_a_bedrock_client() {
     let bedrock = crate::codec::proto_codec::protocol_for("bedrock").expect("bedrock");
     let (et, frame) = bedrock
         .writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("Converse has a native `citation` ContentBlockDelta member");
     assert_eq!(et, "contentBlockDelta");
     assert_eq!(frame["contentBlockIndex"], 3);
@@ -1056,7 +1106,10 @@ fn bedrock_citation_omits_a_location_it_cannot_honestly_fill() {
         }]),
     };
     let bedrock = crate::codec::proto_codec::protocol_for("bedrock").expect("bedrock");
-    let (_, frame) = bedrock.writer.write_response_event(&ev).expect("frame");
+    let (_, frame) = bedrock
+        .writer
+        .write_response_event(crate::codec::test_host::HOST, &ev)
+        .expect("frame");
     let c = &frame["delta"]["citation"];
     assert_eq!(c["title"], "Contract");
     assert_eq!(c["sourceContent"][0]["text"], "clause 4");
@@ -1077,7 +1130,7 @@ fn gemini_grounding_metadata_reaches_a_foreign_client() {
     let gemini = crate::codec::proto_codec::protocol_for("gemini").expect("gemini");
     let ir = gemini
         .reader
-        .read_response(&json!({
+        .read_response(crate::codec::test_host::HOST, &json!({
             "candidates": [{
                 "content": {"role": "model", "parts": [{"text": "Paris is the capital."}]},
                 "finishReason": "STOP",
@@ -1108,7 +1161,9 @@ fn gemini_grounding_metadata_reaches_a_foreign_client() {
     // CROSS-PROTOCOL both ways out: an OpenAI client sees an annotation, an Anthropic client a
     // citation. Neither receives a bare unattributed paragraph.
     let openai = crate::codec::proto_codec::protocol_for("openai").expect("openai");
-    let out = openai.writer.write_response(&ir);
+    let out = openai
+        .writer
+        .write_response(crate::codec::test_host::HOST, &ir);
     // The Chat wire shape is the NESTED one: `ChatCompletionResponseMessage.annotations` items are
     // `{type, url_citation:{url,title,start_index,end_index}}`.
     assert_eq!(
@@ -1127,7 +1182,9 @@ fn gemini_grounding_metadata_reaches_a_foreign_client() {
     );
     assert_eq!(recovered[0].url.as_deref(), Some("https://atlas"));
     let anthropic = crate::codec::proto_codec::protocol_for("anthropic").expect("anthropic");
-    let out = anthropic.writer.write_response(&ir);
+    let out = anthropic
+        .writer
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert!(
         out["content"][0]["citations"]
             .as_array()
@@ -1145,16 +1202,19 @@ fn gemini_grounding_chunks_cross_without_support_spans() {
     let gemini = crate::codec::proto_codec::protocol_for("gemini").expect("gemini");
     let ir = gemini
         .reader
-        .read_response(&json!({
-            "candidates": [{
-                "content": {"role": "model", "parts": [{"text": "hi"}]},
-                "finishReason": "STOP",
-                "groundingMetadata": {
-                    "groundingChunks": [{"web": {"uri": "https://a", "title": "A"}},
-                                        {"web": {"uri": "https://b", "title": "B"}}]
-                }
-            }]
-        }))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &json!({
+                "candidates": [{
+                    "content": {"role": "model", "parts": [{"text": "hi"}]},
+                    "finishReason": "STOP",
+                    "groundingMetadata": {
+                        "groundingChunks": [{"web": {"uri": "https://a", "title": "A"}},
+                                            {"web": {"uri": "https://b", "title": "B"}}]
+                    }
+                }]
+            }),
+        )
         .expect("read");
     // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
     // ride the text block's citations.
@@ -1191,7 +1251,9 @@ fn tool_strict_crosses_the_openai_responses_pair() {
         }))
         .expect("read");
     assert_eq!(ir.tools[0].strict, Some(true));
-    let out = responses.writer.write_request(&ir);
+    let out = responses
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["tools"][0]["strict"], true, "{out}");
 
     // Responses → Chat (the flat shape back into the nested one).
@@ -1205,7 +1267,9 @@ fn tool_strict_crosses_the_openai_responses_pair() {
         }))
         .expect("read");
     assert_eq!(ir.tools[0].strict, Some(true));
-    let out = openai.writer.write_request(&ir);
+    let out = openai
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["tools"][0]["function"]["strict"], true, "{out}");
 
     // A caller who said NOTHING must not acquire an invented `strict: false`.
@@ -1218,7 +1282,9 @@ fn tool_strict_crosses_the_openai_responses_pair() {
         }))
         .expect("read");
     assert_eq!(ir.tools[0].strict, None);
-    let out = openai.writer.write_request(&ir);
+    let out = openai
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         out["tools"][0]["function"].get("strict").is_none(),
         "an absent flag must stay absent, not become an explicit opt-out: {out}"
@@ -1245,7 +1311,9 @@ fn openai_message_name_survives_a_same_protocol_reserialize() {
             ]
         }))
         .expect("read");
-    let out = openai.writer.write_request(&ir);
+    let out = openai
+        .writer
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["messages"][0]["name"], "alice", "{out}");
     assert!(
         out["messages"][1].get("name").is_none(),
@@ -1268,6 +1336,7 @@ fn streamed_usage_sub_buckets_are_not_zeroed() {
     let openai = crate::codec::proto_codec::protocol_for("openai").expect("openai");
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let events = openai.reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &json!({
             "id": "chatcmpl-1", "object": "chat.completion.chunk", "created": 1, "model": "o3",
@@ -1293,21 +1362,24 @@ fn streamed_usage_sub_buckets_are_not_zeroed() {
     // And it reaches the other side: an OpenAI-ingress client's terminal chunk carries it natively.
     let (_, chunk) = openai
         .writer
-        .write_response_event(&crate::codec::ir::IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: crate::codec::ir::IrUsage {
-                input_tokens: 10,
-                output_tokens: 20,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-                detail: crate::codec::ir::IrUsageDetail {
-                    reasoning_tokens: Some(9),
-                    ..Default::default()
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: crate::codec::ir::IrUsage {
+                    input_tokens: 10,
+                    output_tokens: 20,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    detail: crate::codec::ir::IrUsageDetail {
+                        reasoning_tokens: Some(9),
+                        ..Default::default()
+                    },
                 },
+                stop_detail: None,
             },
-            stop_detail: None,
-        })
+        )
         .expect("terminal chunk");
     assert_eq!(
         chunk["usage"]["completion_tokens_details"]["reasoning_tokens"], 9,
@@ -1321,6 +1393,7 @@ fn streamed_anthropic_cache_tiers_survive() {
     let anthropic = crate::codec::proto_codec::protocol_for("anthropic").expect("anthropic");
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let events = anthropic.reader.read_response_events(
+        crate::codec::test_host::HOST,
         "message_start",
         &json!({
             "type": "message_start",
@@ -1346,22 +1419,25 @@ fn streamed_anthropic_cache_tiers_survive() {
     // The tier split reaches an Anthropic-ingress client's `message_delta`.
     let (_, frame) = anthropic
         .writer
-        .write_response_event(&crate::codec::ir::IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: crate::codec::ir::IrUsage {
-                input_tokens: 5,
-                output_tokens: 1,
-                cache_creation_input_tokens: Some(30),
-                cache_read_input_tokens: None,
-                detail: crate::codec::ir::IrUsageDetail {
-                    cache_creation_5m_input_tokens: Some(10),
-                    cache_creation_1h_input_tokens: Some(20),
-                    ..Default::default()
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: crate::codec::ir::IrUsage {
+                    input_tokens: 5,
+                    output_tokens: 1,
+                    cache_creation_input_tokens: Some(30),
+                    cache_read_input_tokens: None,
+                    detail: crate::codec::ir::IrUsageDetail {
+                        cache_creation_5m_input_tokens: Some(10),
+                        cache_creation_1h_input_tokens: Some(20),
+                        ..Default::default()
+                    },
                 },
+                stop_detail: None,
             },
-            stop_detail: None,
-        })
+        )
         .expect("message_delta");
     assert_eq!(
         frame["usage"]["cache_creation"]["ephemeral_5m_input_tokens"], 10,
@@ -1382,6 +1458,7 @@ fn streamed_cohere_search_units_survive() {
     let cohere = crate::codec::proto_codec::protocol_for("cohere").expect("cohere");
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let events = cohere.reader.read_response_events(
+        crate::codec::test_host::HOST,
         "message-end",
         &json!({
             "type": "message-end",
@@ -1402,21 +1479,24 @@ fn streamed_cohere_search_units_survive() {
 
     let (_, frame) = cohere
         .writer
-        .write_response_event(&crate::codec::ir::IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: crate::codec::ir::IrUsage {
-                input_tokens: 4,
-                output_tokens: 6,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-                detail: crate::codec::ir::IrUsageDetail {
-                    search_units: Some(3),
-                    ..Default::default()
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: crate::codec::ir::IrUsage {
+                    input_tokens: 4,
+                    output_tokens: 6,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    detail: crate::codec::ir::IrUsageDetail {
+                        search_units: Some(3),
+                        ..Default::default()
+                    },
                 },
+                stop_detail: None,
             },
-            stop_detail: None,
-        })
+        )
         .expect("message-end");
     assert_eq!(
         frame["delta"]["usage"]["billed_units"]["search_units"], 3,
@@ -1434,23 +1514,28 @@ fn buffered_citations_reach_a_bedrock_client() {
     let cohere = crate::codec::proto_codec::protocol_for("cohere").expect("cohere");
     let ir = cohere
         .reader
-        .read_response(&json!({
-            "id": "c1",
-            "finish_reason": "COMPLETE",
-            "message": {
-                "role": "assistant",
-                "content": [{"type": "text", "text": "Paris is the capital."}],
-                "citations": [{
-                    "start": 0, "end": 5, "text": "Paris",
-                    "sources": [{"type": "document", "id": "d1",
-                                 "document": {"title": "Atlas", "url": "https://atlas"}}]
-                }]
-            }
-        }))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &json!({
+                "id": "c1",
+                "finish_reason": "COMPLETE",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "Paris is the capital."}],
+                    "citations": [{
+                        "start": 0, "end": 5, "text": "Paris",
+                        "sources": [{"type": "document", "id": "d1",
+                                     "document": {"title": "Atlas", "url": "https://atlas"}}]
+                    }]
+                }
+            }),
+        )
         .expect("read");
 
     let bedrock = crate::codec::proto_codec::protocol_for("bedrock").expect("bedrock");
-    let out = bedrock.writer.write_response(&ir);
+    let out = bedrock
+        .writer
+        .write_response(crate::codec::test_host::HOST, &ir);
     let block = &out["output"]["message"]["content"][0];
     assert_eq!(
         block["citationsContent"]["content"][0]["text"], "Paris is the capital.",
@@ -1470,9 +1555,9 @@ fn buffered_citations_reach_a_bedrock_client() {
 #[test]
 fn bedrock_uncited_text_keeps_the_plain_shape() {
     let bedrock = crate::codec::proto_codec::protocol_for("bedrock").expect("bedrock");
-    let out = bedrock
-        .writer
-        .write_response(&crate::codec::ir::IrResponse {
+    let out = bedrock.writer.write_response(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrResponse {
             role: crate::codec::ir::IrRole::Assistant,
             content: vec![crate::codec::ir::IrBlock::Text {
                 text: "plain".to_string(),
@@ -1498,7 +1583,8 @@ fn bedrock_uncited_text_keeps_the_plain_shape() {
             request_echo: None,
             stop_detail: None,
             ..Default::default()
-        });
+        },
+    );
     assert_eq!(
         out["output"]["message"]["content"][0]["text"], "plain",
         "{out}"

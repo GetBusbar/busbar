@@ -101,13 +101,28 @@ fn main() {
     println!("cargo:rerun-if-changed=Cargo.toml");
     println!("cargo:rerun-if-changed=src/linked_gen.rs");
     let manifest = std::fs::read_to_string("Cargo.toml").expect("read Cargo.toml");
-    let enabled = |feature: &str| {
+    let on = |feature: &str| {
         let var = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));
         env::var_os(var).is_some()
     };
+    // A fold's development-only switch SWAPS its plane's legacy row out (`linked-swaps`): the row is
+    // not linked while the switch is on, so the folded door is the plane's one claimant.
+    // A build with no switch left has no table: nothing is swapped.
+    let swaps = if manifest.contains(&format!("[{LINKED_SWAPS}]")) {
+        metadata_map(&manifest, LINKED_SWAPS)
+    } else {
+        Vec::new()
+    };
+    let enabled = |feature: &str| swapped_in(&swaps, &on, feature);
     let (source, cfgs) = linked_source(&manifest, &enabled);
     let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("linked.rs");
     std::fs::write(out, source).expect("write linked.rs");
+    // THE LINKED HOOK NAMES: what the root hands the admin surface as its compiled-in hook plugins
+    // (`main.rs` and the admin integration tests include it).
+    let out = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"))
+        .join("linked_hook_names.rs");
+    std::fs::write(out, linked_hook_names_source(&manifest, &enabled))
+        .expect("write linked_hook_names.rs");
     // THE ROOT LEGACY TABLE (`[package.metadata.busbar.legacy]`, rendered from plugins.yaml; the
     // root's tests hold it to the render) as `LEGACY_ROWS`, which `root::legacy` hands to the kernel.
     let legacy: String = metadata_map(&manifest, "package.metadata.busbar.legacy")
@@ -136,6 +151,12 @@ fn main() {
     for cfg in linked_axis_cfgs(&manifest, &enabled).1 {
         println!("cargo::rustc-check-cfg=cfg({cfg})");
     }
+    // `BUSBAR_LINKED_AXES`: the same set as data, space-separated, so a black-box case's `requires`
+    // reads it at run time rather than a test spelling a `cfg` per axis.
+    println!(
+        "cargo:rustc-env=BUSBAR_LINKED_AXES={}",
+        linked_axis_cfgs(&manifest, &enabled).0.join(" ")
+    );
     for cfg in linked_axis_cfgs(&manifest, &enabled).0 {
         println!("cargo::rustc-cfg={cfg}");
     }
@@ -174,6 +195,26 @@ fn main() {
     if every_plane {
         println!("cargo::rustc-cfg=linked_every_plane");
     }
+    // `linked_every_auth`: EVERY linked row on the auth axis (`AUTH_AXIS`) is enabled — the shape a
+    // suite binding every dialect's declared scheme on the plugin serving its style needs (each
+    // style is then served), read off the same table.
+    println!("cargo::rustc-check-cfg=cfg(linked_every_auth)");
+    let every_auth = metadata_map(&manifest, "package.metadata.busbar.linked-axes")
+        .iter()
+        .filter(|(_, axes)| axes.split_whitespace().any(|a| a == AUTH_AXIS))
+        .all(|(feature, _)| enabled(feature));
+    if every_auth {
+        println!("cargo::rustc-cfg=linked_every_auth");
+    }
+    // `linked_operator_auth`: the row `[package.metadata.busbar.operator-auth]` names (the operator
+    // credential's auth plugin) is enabled — what a test that needs the operator credential to
+    // answer gates on, without spelling the row's feature.
+    println!("cargo::rustc-check-cfg=cfg(linked_operator_auth)");
+    if metadata_value(&manifest, "package.metadata.busbar.operator-auth", "row")
+        .is_some_and(|row| enabled(&row))
+    {
+        println!("cargo::rustc-cfg=linked_operator_auth");
+    }
 
     // THE LINKED PLANE ROWS FOR THE INTEGRATION TESTS (tests only include it): each enabled linked
     // plane crate's registry row, assembled from its `linked` entry exactly as the root assembles it,
@@ -189,18 +230,18 @@ fn main() {
         .join("linked_plane_doors.rs");
     std::fs::write(out, linked_plane_doors_source(&manifest, &enabled))
         .expect("write linked_plane_doors.rs");
-    // `linked_fold_on_driver`: a development-only fold switch is on (a `<plane>-on-driver` feature,
-    // BUSBAR-1.6.0.md Part 3 section 12 "The switch"), so its proofs on the driver compile without a
-    // test spelling the plane the switch carries.
-    println!("cargo::rustc-check-cfg=cfg(linked_fold_on_driver)");
-    if declared_features(&manifest)
+    // `linked_driver_proofs`: a `[package.metadata.busbar.driver-proofs]` row is enabled (a plane
+    // door whose plane-origin hook cases run on the driver, BUSBAR-1.6.0.md Part 3 section 12), so
+    // those proofs compile without a test spelling the plane the row links.
+    println!("cargo::rustc-check-cfg=cfg(linked_driver_proofs)");
+    if metadata_map(&manifest, "package.metadata.busbar.driver-proofs")
         .iter()
-        .any(|f| f.ends_with("-on-driver") && enabled(f))
+        .any(|(feature, _)| enabled(feature))
     {
-        println!("cargo::rustc-cfg=linked_fold_on_driver");
+        println!("cargo::rustc-cfg=linked_driver_proofs");
     }
 
-    // THE DRIVER PROOFS OF THE FOLD SWITCH (tests only include them): the enabled
+    // THE DRIVER PROOFS OF THE PLANE DOOR (tests only include them): the enabled
     // `[package.metadata.busbar.driver-proofs]` row's plane-owned cases (`mod proofs`, which the
     // `hook_parity_driver` suite compiles beside its rig) and the words its door cells read as data
     // (`DRIVER_WORDS`), both at the row's crate's own `tests/on_driver/`, so neither the suite nor
@@ -231,6 +272,16 @@ fn main() {
         std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR")).join("served_witness.rs");
     std::fs::write(out, served_witness_source(&manifest, &enabled))
         .expect("write served_witness.rs");
+
+    // THE DOOR PLANES' OWN ROOT CELLS (test builds only include them): each enabled linked plane
+    // door's cases, at the path its crate states under its `links` name, so the composition root's
+    // sources name no plane while the cases a plane writes in its own words still drive the root's
+    // door path (ARCHITECT ruling on #464, the composition root names no plane).
+    let (cells, cells_files) = door_cells_source(&manifest, &enabled);
+    let out_dir = std::path::PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+    std::fs::write(out_dir.join("door_cells.rs"), cells).expect("write door_cells.rs");
+    std::fs::write(out_dir.join("door_cells_files.rs"), cells_files)
+        .expect("write door_cells_files.rs");
 
     // THE NODE-AXIS PLANE FOR THE NODE'S OWN TESTS (test builds only include it): the crate of the
     // enabled linked row whose axes carry `node`, aliased `node_plane`, so `root/plane_node.rs`'s
@@ -273,7 +324,9 @@ const TEST_LINKED_DOOR_ROW: &str = "door:";
 
 /// `$OUT_DIR/test_linked.rs` from `[package.metadata.busbar.test-linked] planes`: `extern crate` per
 /// listed crate; `static TEST_LINKED`, each non-door row's `testkit::TEST_SEAM`; `static
-/// TEST_LINKED_DOORS`, each `door:<crate>` row's `(<crate>, <crate>::plane_door::door)`; and `static
+/// TEST_LINKED_DOORS`, each `door:<crate>` row's `(<crate>, <module>::door)`, `<module>` the
+/// `[package.metadata.busbar.linked-entry]` module in that crate (the plane door row's own entry),
+/// else `<crate>::plane_door`; and `static
 /// TEST_LINKED_ORDER`, the list's install order (`false` the next `TEST_LINKED` entry, `true` the
 /// next door). An absent or empty list is a build failure, never an empty roster.
 fn test_linked_source(manifest: &str) -> String {
@@ -297,8 +350,17 @@ fn test_linked_source(manifest: &str) -> String {
     out.push_str(
         "];\nstatic TEST_LINKED_DOORS: &[(&str, ::busbar_contract::abi::mechanism::door::DoorFn)] = &[\n",
     );
+    // A door row's module is the one its plane-door row names in `linked-entry`, so the roster
+    // never spells a module the crate has moved.
+    let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
     for id in &doors {
-        out.push_str(&format!("    ({id:?}, {id}::plane_door::door),\n"));
+        let module = entries
+            .iter()
+            .map(|(_, module)| module)
+            .find(|module| module.starts_with(&format!("{id}::")))
+            .cloned()
+            .unwrap_or_else(|| format!("{id}::plane_door"));
+        out.push_str(&format!("    ({id:?}, {module}::door),\n"));
     }
     out.push_str("];\nstatic TEST_LINKED_ORDER: &[bool] = &[");
     for r in &rows {
@@ -385,11 +447,124 @@ fn node_plane_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> String {
     out
 }
 
+/// THE DOOR PLANES' OWN ROOT CELLS, one `#[path]` module per enabled linked plane door, named for
+/// its row: the plane crate states where its cells are under its `links` name
+/// (`busbar-door-cells-<crate>`, its `build.rs` printing `cargo::metadata=cells=<path>`), and this
+/// reads it as `DEP_BUSBAR_DOOR_CELLS_<CRATE>_CELLS` — the same for a path dependency and a pinned
+/// one, so no checkout is resolved by hand. Beside the modules: `door_cells_secret_driven()` (the
+/// Statement names every module's `secret_source_driven()` drives through the root's secret-source
+/// scan), `DOOR_CELLS` (every module's capability-equality `COLUMNS` and `NOT_APPLICABLE` cells, for
+/// the root's ledger agreement), and `DOOR_CELLS_MISSING` (every enabled plane door whose crate
+/// states no cells: the root's tests refuse it, naming the crate — a root leg is never skipped). A
+/// build with a door's feature off has no module for it, exactly as it links no door for that plane.
+///
+/// The second source is `DOOR_CELLS_FILES` for the capability-equality gate: every door's cells as
+/// the ledger cites them (`crates/<crate>/tests/root/mod.rs`, the crate's census mount) beside the
+/// file its crate states — one resolver for a path dependency and a pinned one alike.
+fn door_cells_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String, String) {
+    let axes = metadata_map(manifest, "package.metadata.busbar.linked-axes");
+    let mut out = String::from(
+        "// @generated by build.rs from Cargo.toml `[package.metadata.busbar.linked]` and each plane \
+         door's `links` metadata.\n",
+    );
+    let mut driven: Vec<String> = Vec::new();
+    let mut cells: Vec<String> = Vec::new();
+    let mut missing: Vec<String> = Vec::new();
+    let mut files: Vec<String> = Vec::new();
+    let mut blackbox: Vec<String> = Vec::new();
+    for (feature, krate) in metadata_map(manifest, "package.metadata.busbar.linked") {
+        let is_door = axes
+            .iter()
+            .any(|(f, a)| *f == feature && a.split_whitespace().any(|x| x == PLANE_DOOR_AXIS));
+        if !(enabled(&feature) && is_door) {
+            continue;
+        }
+        // THE BLACK-BOX CASES the crate states beside its cells (`blackbox=<dir>`, the same
+        // `links` name): read for every door, cells or none, so the runner sees each.
+        let box_var = format!(
+            "DEP_{}_BLACKBOX",
+            door_cells_links(&krate).to_uppercase().replace('-', "_")
+        );
+        println!("cargo:rerun-if-env-changed={box_var}");
+        if let Ok(dir) = env::var(&box_var) {
+            println!("cargo:rerun-if-changed={dir}");
+            blackbox.push(format!("    ({krate:?}, {dir:?}),\n"));
+        }
+        let var = format!(
+            "DEP_{}_CELLS",
+            door_cells_links(&krate).to_uppercase().replace('-', "_")
+        );
+        println!("cargo:rerun-if-env-changed={var}");
+        let Ok(at) = env::var(&var) else {
+            missing.push(krate);
+            continue;
+        };
+        println!("cargo:rerun-if-changed={at}");
+        let module = ident(&feature);
+        out.push_str(&format!("#[path = {at:?}]\nmod {module};\n"));
+        driven.push(format!(".chain({module}::secret_source_driven())"));
+        cells.push(format!(
+            "    ({krate:?}, {at:?}, {module}::COLUMNS, {module}::NOT_APPLICABLE),\n"
+        ));
+        files.push(format!(
+            "    ({:?}, {at:?}),\n",
+            format!("crates/{krate}/tests/root/mod.rs")
+        ));
+    }
+    out.push_str(&format!(
+        "/// The Statement names the door planes' own root cells drive through the secret-source scan.\n\
+         #[allow(dead_code)]\n\
+         pub(crate) fn door_cells_secret_driven() -> Vec<String> {{\n    \
+         std::iter::empty::<String>(){}.collect()\n}}\n",
+        driven.concat()
+    ));
+    out.push_str(&format!(
+        "/// Every door plane's root cells: its crate, the file its crate states, its\n\
+         /// capability-equality columns and its not-applicable `(capability, column, reason)` cells.\n\
+         #[allow(dead_code)]\n\
+         pub(crate) static DOOR_CELLS: &[DoorCellsRow] = &[\n{}];\n\
+         /// One door plane's root cells: `(crate, file, columns, not-applicable cells)`.\n\
+         #[allow(dead_code)]\n\
+         pub(crate) type DoorCellsRow = (\n    \
+         &'static str,\n    \
+         &'static str,\n    \
+         &'static [&'static str],\n    \
+         &'static [(&'static str, &'static str, &'static str)],\n\
+         );\n",
+        cells.concat()
+    ));
+    out.push_str(&format!(
+        "/// Every enabled plane door whose crate states no root cells (its `links` metadata).\n\
+         #[allow(dead_code)]\n\
+         pub(crate) static DOOR_CELLS_MISSING: &[&str] = &{missing:?};\n"
+    ));
+    let files = format!(
+        "// @generated by build.rs from Cargo.toml `[package.metadata.busbar.linked]` and each plane \
+         door's `links` metadata.\n\
+         /// Every door plane's root cells: the path the ledger cites them by (the crate's census\n\
+         /// mount, `crates/<crate>/tests/root/mod.rs`) and the file its crate states.\n\
+         #[allow(dead_code)]\n\
+         static DOOR_CELLS_FILES: &[(&str, &str)] = &[\n{}];\n\
+         /// Every door plane's black-box case directory (`blackbox=<dir>` under its `links` name):\n\
+         /// its crate and the directory its crate states.\n\
+         #[allow(dead_code)]\n\
+         static DOOR_BLACKBOX: &[(&str, &str)] = &[\n{}];\n",
+        files.concat(),
+        blackbox.concat()
+    );
+    (out, files)
+}
+
+/// The `links` name a plane door crate states its root cells under.
+fn door_cells_links(krate: &str) -> String {
+    format!("busbar-door-cells-{krate}")
+}
+
 /// `(proofs, words)` for the one enabled `[package.metadata.busbar.driver-proofs]` row (cargo feature
-/// -> the plane crate whose fold switch it is): `proofs` is `pub(crate) mod proofs;` at that crate's
+/// -> the plane crate whose door it links): `proofs` is `pub(crate) mod proofs;` at that crate's
 /// `tests/on_driver/mod.rs`, `words` is `DRIVER_WORDS`, that directory's `words.txt`. The crate's
 /// directory is its `[dependencies]` row's `path`. No row enabled: no module and empty words; more
-/// than one: a compile error in the one suite that includes them, since a build proves one switch.
+/// than one: a compile error in the one suite that includes them, since a build proves one door.
 fn driver_proofs_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (String, String) {
     let head =
         "// @generated by build.rs from Cargo.toml `[package.metadata.busbar.driver-proofs]`.\n";
@@ -426,7 +601,7 @@ fn driver_proofs_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Stri
         }
         _ => {
             proofs.push_str(
-                "compile_error!(\"more than one driver-proofs row is enabled; a build proves one fold switch\");\n",
+                "compile_error!(\"more than one driver-proofs row is enabled; a build proves one door\");\n",
             );
             words.push_str("#[allow(dead_code)]\npub(crate) const DRIVER_WORDS: &str = \"\";\n");
         }
@@ -444,7 +619,13 @@ fn served_witness_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> Stri
          pub(crate) type ServedWitness =\n    fn() -> ::std::pin::Pin<Box<dyn ::std::future::Future<Output = u64>>>;\n\
          pub(crate) static SERVED_WITNESSES: &[(&str, &[(&str, ServedWitness)])] = &[\n",
     );
-    for (feature, krate) in metadata_map(manifest, "package.metadata.busbar.served-witness") {
+    // A build with no served-leg witness left has no table: nothing is witnessed.
+    let rows = if manifest.contains("[package.metadata.busbar.served-witness]") {
+        metadata_map(manifest, "package.metadata.busbar.served-witness")
+    } else {
+        Vec::new()
+    };
+    for (feature, krate) in rows {
         if enabled(&feature) {
             out.push_str(&format!("    {}::testkit::SERVED,\n", ident(&krate)));
         }
@@ -471,6 +652,8 @@ fn linked_axis_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Vec<Stri
         cfg_of(PLANE_DOOR_AXIS),
     ];
     declared.extend(AXES.iter().map(|(axis, _, _)| cfg_of(axis)));
+    // The auth axis (`auths`): a `kind: auth` plugin's linked door.
+    declared.push(cfg_of(AUTH_AXIS));
     // The memory-ABI export axis: what a test that documents the linked sinks' declarations needs.
     declared.push(cfg_of(EXPORT_DOOR_AXIS));
     let mut set: Vec<String> = Vec::new();
@@ -582,23 +765,23 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
             .iter()
             .any(|(f, a)| *f == key && a.split_whitespace().any(|x| x == DOOR_AXIS));
         let n = rows.matches("LinkedWire {").count();
-        let (build, claims) = if door {
-            // A door row's entry exports its memory-ABI `door`; the root's doors module (mounted
-            // here under its own name, the tests including this file have no root) builds it, and
-            // reads every scheme it claims off its Statement.
-            door_builds.push_str(&format!(
-                "fn __door_build_{n}(lower: Option<Wire>, settings: &::busbar_contract::transport::TransportSettings) -> Wire {{\n    \
-                 self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, lower, settings, None)\n}}\n\
-                 fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
-                 self::__busbar_doors::claims_of(::{entry}::door)\n}}\n"
-            ));
-            (format!("__door_build_{n}"), format!("__door_claims_{n}"))
-        } else {
-            door_builds.push_str(&format!(
-                "fn __row_claims_{n}() -> Vec<&'static str> {{\n    vec![::{entry}::KEY]\n}}\n"
-            ));
-            (format!("::{entry}::build"), format!("__row_claims_{n}"))
-        };
+        // A TRANSPORT LOADS ONLY THROUGH ITS DOOR (step 36): a transport row off the door axis is a
+        // manifest the root refuses (`src/linked_gen.rs`), and so is this table.
+        assert!(
+            door,
+            "Cargo.toml: `{key}` is on the transport axis but not the `{DOOR_AXIS}` axis; a \
+             transport is linked only as its memory-ABI door"
+        );
+        // A door row's entry exports its memory-ABI `door`; the root's doors module (mounted here
+        // under its own name, the tests including this file have no root) builds it, and reads
+        // every scheme it claims off its Statement.
+        door_builds.push_str(&format!(
+            "fn __door_build_{n}(settings: &::busbar_contract::transport::TransportSettings) -> Wire {{\n    \
+             self::__busbar_doors::build(::{entry}::KEY, ::{entry}::door, settings, None)\n}}\n\
+             fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
+             self::__busbar_doors::claims_of(::{entry}::door)\n}}\n"
+        ));
+        let (build, claims) = (format!("__door_build_{n}"), format!("__door_claims_{n}"));
         rows.push_str(&format!(
             "    LinkedWire {{ key: ::{entry}::KEY, composes_over: ::{entry}::COMPOSES_OVER, \
              session: ::{entry}::SESSION, build: {build}, claims: {claims} }},\n"
@@ -607,9 +790,9 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
     let source = format!(
         "// @generated by build.rs from Cargo.toml `[package.metadata.busbar.linked]` (the transport axis).\n\
          /// A built wire.\n\
-         pub(crate) type Wire = ::std::sync::Arc<dyn ::busbar_contract::Transport>;\n\
-         /// A wire's build: handed the layer built beneath it, where one is, and the settings.\n\
-         pub(crate) type BuildWire = fn(Option<Wire>, &::busbar_contract::transport::TransportSettings) -> Wire;\n\
+         pub(crate) type Wire = ::std::sync::Arc<::busbar_core_connector::wire::HostWire>;\n\
+         /// A wire's build: handed the settings, it answers the wire the host serves the row's door over.\n\
+         pub(crate) type BuildWire = fn(&::busbar_contract::transport::TransportSettings) -> Wire;\n\
          /// One linked wire: its registry key, the layers it declares, whether it carries a session,\n\
          /// its build, and every scheme its entry claims (its own first).\n\
          #[allow(dead_code)]\n\
@@ -626,8 +809,8 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
          /// The transport rows the manifest declares that this build does not link.\n\
          #[allow(dead_code)]\n\
          pub(crate) const LINKED_TRANSPORTS_OFF: usize = {off};\n\
-         /// The boot seal's fold: each round builds the first row whose every linked layer is built,\n\
-         /// over the first of its declared layers that was. Panics where the rows declare each other.\n\
+         /// The boot seal's fold: each round builds the first row whose every linked layer is built.\n\
+         /// Panics where the rows declare each other.\n\
          #[allow(dead_code)]\n\
          pub(crate) fn fold_linked_transports(\n    \
              settings: &::busbar_contract::transport::TransportSettings,\n\
@@ -645,10 +828,7 @@ fn linked_transports_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (
                      }})\n            \
                      .unwrap_or_else(|| panic!(\"`{{}}` has no bottom\", pending[0].key));\n        \
                  let row = pending.remove(at);\n        \
-                 let lower = row.composes_over.iter().find_map(|l| {{\n            \
-                     built.iter().find(|(r, _)| r.key == *l).map(|(_, t)| ::std::sync::Arc::clone(t))\n        \
-                 }});\n        \
-                 built.push((row, (row.build)(lower, settings)));\n    \
+                 built.push((row, (row.build)(settings)));\n    \
              }}\n    \
              built\n\
          }}\n"

@@ -21,12 +21,13 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use busbar_contract::billing::TokenUsage;
-use busbar_contract::codec::OperationHandler;
+use busbar_contract::codec::{OperationHandler, UsageTapFault};
 use busbar_contract::protocol::HeadFields;
 use busbar_contract::upstream::{Disposition, StatusClass};
 
 use super::arrive::Arrived;
 use super::attempt::StreamIntent;
+use super::invoke;
 use super::refuse::Rendered;
 use super::shaping::Lane;
 use crate::codec::DECLS;
@@ -49,6 +50,11 @@ pub struct ReplyCtx<'a> {
     /// The far end was reached with the caller's own credential (the kernel's fact): its 401 and
     /// 403 are the caller's own, relayed unjudged.
     pub passthrough: bool,
+    /// The TRANSLATION CAP the plane enforces, the one its settings carry
+    /// ([`super::shaping::Shaping::translate_cap`]): a whole answer past it is refused, a
+    /// same-dialect copy kept for usage keeps its tail within it, and a writer bounds what it
+    /// accumulates there.
+    pub translate_cap: usize,
 }
 
 /// The time-like inputs of a piece.
@@ -160,6 +166,9 @@ pub struct Piece<'a> {
     /// audit row per path (`<path> from <dialect>`), 1.5.5's row. Empty on a relay of the caller's
     /// own dialect and on every end that delivers nothing.
     pub dropped: Vec<String>,
+    /// Why the usage tap could not read a same-dialect whole body, on the end that read it: the
+    /// door carries it out beside its units, and the kernel counts it (row 155).
+    pub tap_fault: Option<UsageTapFault>,
 }
 
 enum State {
@@ -185,6 +194,13 @@ enum State {
 /// ONE ATTEMPT'S ANSWER.
 pub struct Reply {
     state: State,
+    /// The relayed answer ended a usable success the caller was reading (its first byte reached
+    /// the caller and its stream ended clean): a caller that leaves while its last window is still
+    /// being written bills the units it stated, as one that left mid-relay does (L1#5).
+    ended_partial: bool,
+    /// A streamed answer over the invoke envelope, re-framed into its carried dialect's events
+    /// before it is read ([`invoke::Transcoder`]).
+    invoke: Option<invoke::Transcoder>,
 }
 
 impl std::fmt::Debug for Reply {
@@ -239,6 +255,7 @@ fn answered<'a>(r: Rendered, units: Units, verdict: Verdict, fault: Option<Fault
         fault,
         done: true,
         dropped: Vec::new(),
+        tap_fault: None,
     }
 }
 
@@ -249,17 +266,35 @@ fn pending<'a>() -> Piece<'a> {
 impl Reply {
     /// OPEN the answer on the far end's `status` and head.
     #[must_use]
-    pub fn new(ctx: &ReplyCtx<'_>, status: u16, head: HeadFields<'_>) -> Self {
+    pub fn new(
+        host: &dyn busbar_contract::codec::CodecHost,
+        ctx: &ReplyCtx<'_>,
+        status: u16,
+        head: HeadFields<'_>,
+    ) -> Self {
         if !(200..300).contains(&status) {
             return Reply {
+                ended_partial: false,
                 state: State::Error {
                     status,
                     head: head.iter().map(|(n, v)| (n.to_vec(), v.to_vec())).collect(),
                     body: Vec::new(),
                 },
+                invoke: None,
             };
         }
         let far_ct = wire::head_value(head, "content-type");
+        // A STREAM OVER THE INVOKE ENVELOPE is read as its carried dialect's stream: its frames are
+        // re-framed into that dialect's events before any byte is read.
+        let invoke_stream = ctx.lane.invoke
+            && far_ct
+                .and_then(wire::head_text)
+                .is_some_and(|ct| ct.starts_with(invoke::EVENTSTREAM));
+        let far_ct = if invoke_stream {
+            Some(busbar_contract::protocol::TEXT_EVENT_STREAM.as_bytes())
+        } else {
+            far_ct
+        };
         let far_is_stream = far_ct
             .and_then(wire::head_text)
             .is_some_and(wire::is_stream_content_type);
@@ -267,22 +302,26 @@ impl Reply {
         let egress = ctx.lane.dialect;
         let Some(op) = handler(ctx) else {
             return Reply {
+                ended_partial: false,
                 state: State::Whole {
                     status,
                     body: Vec::new(),
                     head: Vec::new(),
                 },
+                invoke: None,
             };
         };
         // Only a translated answer is taken whole, and a translated answer relays no far head; a
         // same-dialect answer takes the relay path below, which carries the far head.
         if relay::takes_whole(ingress, egress, far_is_stream) {
             return Reply {
+                ended_partial: false,
                 state: State::Whole {
                     status,
                     body: Vec::new(),
                     head: Vec::new(),
                 },
+                invoke: None,
             };
         }
         let mut fields = Vec::new();
@@ -302,7 +341,7 @@ impl Reply {
                 }
             }
         }
-        fields.extend(failure::request_id_field(ingress, head));
+        fields.extend(failure::request_id_field(host, ingress, head));
         if ingress == egress {
             wire::relay_far_head(ingress, &mut fields, head);
         }
@@ -315,19 +354,49 @@ impl Reply {
             request: ctx.arrived.parsed.as_ref(),
             handler: op,
             meter: true,
+            translate_cap: ctx.translate_cap,
         });
         Reply {
+            ended_partial: false,
             state: State::Relay {
                 relay: Box::new(relay),
                 head: Some(Head { status, fields }),
                 units: Units::default(),
             },
+            invoke: invoke_stream.then(invoke::Transcoder::new),
         }
     }
 
     /// FEED one far-end piece; `last` says no piece follows.
     pub fn feed<'a>(
         &mut self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ctx: &ReplyCtx<'_>,
+        bytes: &'a [u8],
+        last: bool,
+        at: At,
+    ) -> Piece<'a> {
+        let Some(transcoder) = self.invoke.as_mut() else {
+            return self.read(host, ctx, bytes, last, at);
+        };
+        let framed = transcoder.feed(bytes);
+        let p = self.read(host, ctx, &framed, last, at);
+        Piece {
+            head: p.head,
+            bytes: Cow::Owned(p.bytes.into_owned()),
+            units: p.units,
+            verdict: p.verdict,
+            fault: p.fault,
+            done: p.done,
+            dropped: p.dropped,
+            tap_fault: p.tap_fault,
+        }
+    }
+
+    /// READ one piece in the answer's own framing.
+    fn read<'a>(
+        &mut self,
+        host: &dyn busbar_contract::codec::CodecHost,
         ctx: &ReplyCtx<'_>,
         bytes: &'a [u8],
         last: bool,
@@ -338,16 +407,16 @@ impl Reply {
             State::Error { body, .. } => {
                 body.extend_from_slice(bytes);
                 if last {
-                    self.judge(ctx)
+                    self.judge(host, ctx)
                 } else {
                     pending()
                 }
             }
             State::Whole { status, body, head } => {
                 body.extend_from_slice(bytes);
-                if body.len() > crate::codec::wire_shim::max_translated_body_bytes() {
+                if body.len() > ctx.translate_cap {
                     self.state = State::Done;
-                    let w = whole::over_cap(ctx.arrived.dialect);
+                    let w = whole::over_cap(host, ctx.arrived.dialect);
                     return answered(w.answer, Units::default(), Verdict::Hard, None);
                 }
                 if !last {
@@ -359,23 +428,24 @@ impl Reply {
                     .iter()
                     .map(|(n, v)| (n.as_slice(), v.as_slice()))
                     .collect();
-                whole_piece(ctx, status, &body, &far_head, at)
+                whole_piece(host, ctx, status, &body, &far_head, at)
             }
             State::Relay { relay, head, units } => {
-                let (fed, _) = relay.feed(bytes);
+                let (fed, _) = relay.feed(host, bytes);
                 let mut out: Cow<'a, [u8]> = match fed {
                     relay::Fed::Bytes(b) => b,
                     relay::Fed::Nothing => Cow::Borrowed(&[]),
                 };
                 let head = head.take();
                 if !last {
+                    // What a stream's readers have read so far. A same-dialect whole body states
+                    // nothing while it relays: a caller that leaves mid-body bills no tokens, as
+                    // 1.5.5 billed none (v1.5.5 proxy/response_body.rs:620-625: a partially
+                    // buffered same-protocol body is not billed on a mid-buffer drop), and the
+                    // kernel adds no floor (#77(2), ARCHITECT ruling 2026-10-15; item 367's
+                    // relayed floor, Q33 (a), was told, never signed).
                     if let Some(u) = relay.streamed_usage() {
                         *units = Units::of(Some(&u), BTreeMap::new());
-                    } else if let Some(floor) = relay.relayed_floor() {
-                        *units = Units {
-                            floor: true,
-                            ..Units::of(Some(&floor), BTreeMap::new())
-                        };
                     }
                     return Piece {
                         verdict: if head.is_some() {
@@ -389,9 +459,12 @@ impl Reply {
                         fault: None,
                         done: false,
                         dropped: Vec::new(),
+                        tap_fault: None,
                     };
                 }
-                let end = relay.end();
+                let partial = relay.partial();
+                let failed_generation = relay.failed_generation(ctx.lane.dialect);
+                let end = relay.end(host);
                 if !end.bytes.is_empty() {
                     out.to_mut().extend_from_slice(&end.bytes);
                 }
@@ -399,10 +472,21 @@ impl Reply {
                     .generation_failed
                     .then_some(Fault::Transient("upstream-generation-failed")));
                 // The end's report replaces a floor stated while relaying, even when it is zero.
-                let units = Units {
-                    stated: units.floor,
-                    ..Units::of(end.usage.as_ref(), end.open_units)
+                // A stream the far end itself ended as FAILED (its terminal error, or a translation
+                // that aborted) delivered no completed generation and bills no tokens, as 1.5.5
+                // billed none (v1.5.5 proxy/response_body.rs:550-575, `if !billing_failed`): its
+                // buffered twin (a `failed` status) reports none either (row-159 L3#4). A FAILED
+                // GENERATION is not one of those: 1.5.5's reader raised no error for it and billed
+                // what it reported, and owner ruling Q31 charges it too ([`Relay::failed_generation`]).
+                let units = if end.stream_fault.is_some() && !failed_generation {
+                    Units::default()
+                } else {
+                    Units {
+                        stated: units.floor,
+                        ..Units::of(end.usage.as_ref(), end.open_units)
+                    }
                 };
+                self.ended_partial = partial && fault.is_none();
                 self.state = State::Done;
                 Piece {
                     head,
@@ -416,6 +500,7 @@ impl Reply {
                     fault,
                     done: true,
                     dropped: end.dropped,
+                    tap_fault: end.tap_fault,
                 }
             }
         }
@@ -425,20 +510,29 @@ impl Reply {
     /// its cancel bills the units the answer stated so far.
     #[must_use]
     pub fn partial(&self) -> bool {
-        matches!(&self.state, State::Relay { relay, .. } if relay.partial())
+        match &self.state {
+            State::Relay { relay, .. } => relay.partial(),
+            State::Done => self.ended_partial,
+            _ => false,
+        }
     }
 
     /// CUT the answer: the far end's transfer failed (`transport`) or the kernel's ceiling for it
     /// expired, before its last piece.
-    pub fn cut(&mut self, ctx: &ReplyCtx<'_>, transport: bool) -> Piece<'static> {
+    pub fn cut(
+        &mut self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ctx: &ReplyCtx<'_>,
+        transport: bool,
+    ) -> Piece<'static> {
         match std::mem::replace(&mut self.state, State::Done) {
             State::Done => pending(),
             state @ State::Error { .. } => {
                 self.state = state;
-                self.judge(ctx)
+                self.judge(host, ctx)
             }
             State::Whole { .. } => {
-                let w = whole::cut(ctx.arrived.dialect);
+                let w = whole::cut(host, ctx.arrived.dialect);
                 answered(
                     w.answer,
                     Units::default(),
@@ -449,7 +543,8 @@ impl Reply {
             State::Relay {
                 mut relay, head, ..
             } => {
-                let cut = relay.cut(transport);
+                let cut = relay.cut(host, transport);
+                self.ended_partial = cut.partial;
                 Piece {
                     head,
                     bytes: Cow::Owned(cut.bytes.unwrap_or_default()),
@@ -458,12 +553,17 @@ impl Reply {
                     fault: Some(Fault::Transient(cut.reason)),
                     done: true,
                     dropped: Vec::new(),
+                    tap_fault: None,
                 }
             }
         }
     }
 
-    fn judge<'a>(&mut self, ctx: &ReplyCtx<'_>) -> Piece<'a> {
+    fn judge<'a>(
+        &mut self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ctx: &ReplyCtx<'_>,
+    ) -> Piece<'a> {
         let State::Error { status, head, body } = std::mem::replace(&mut self.state, State::Done)
         else {
             return pending();
@@ -472,12 +572,19 @@ impl Reply {
             .iter()
             .map(|(n, v)| (n.as_slice(), v.as_slice()))
             .collect();
+        // A refusal over the invoke envelope is read in its carried dialect's error envelope.
+        let body = if ctx.lane.invoke {
+            invoke::error_body(&pairs, &body)
+        } else {
+            body
+        };
         let far = failure::FarError {
             status,
             head: &pairs,
             body: &body,
         };
         let j = failure::judge(
+            host,
             ctx.arrived.dialect,
             ctx.lane.dialect,
             ctx.arrived.operation,
@@ -509,6 +616,7 @@ impl Reply {
 }
 
 fn whole_piece<'a>(
+    host: &dyn busbar_contract::codec::CodecHost,
     ctx: &ReplyCtx<'_>,
     status: u16,
     body: &[u8],
@@ -516,6 +624,7 @@ fn whole_piece<'a>(
     at: At,
 ) -> Piece<'a> {
     let mut w = whole::translate(
+        host,
         &whole::WholeCtx {
             ingress: ctx.arrived.dialect,
             egress: ctx.lane.dialect,
@@ -526,6 +635,7 @@ fn whole_piece<'a>(
             request: ctx.arrived.parsed.as_ref(),
             now_s: at.now_s,
             elapsed_ms: at.elapsed_ms,
+            translate_cap: ctx.translate_cap,
         },
         status,
         body,

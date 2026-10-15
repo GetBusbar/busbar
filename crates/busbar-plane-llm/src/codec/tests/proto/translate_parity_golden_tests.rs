@@ -91,7 +91,9 @@ fn translate_request_a2o(body: &str) -> Vec<u8> {
         },
     );
     let ir = req;
-    let mut out = openai.writer().write_request(&ir);
+    let mut out = openai
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     crate::codec::wire_shim::strip_router_shim_keys(&mut out, "openai");
     openai
         .writer()
@@ -107,11 +109,16 @@ fn translate_response_o2a(body: &str) -> Vec<u8> {
     let openai = crate::codec::proto_codec::protocol_for("openai").expect("openai protocol");
     let v: serde_json::Value =
         crate::codec::json::parse(body.as_bytes()).expect("valid corpus JSON");
-    let ir = openai.reader().read_response(&v).expect("reads");
+    let ir = openai
+        .reader()
+        .read_response(crate::codec::test_host::HOST, &v)
+        .expect("reads");
     let mut resp = ir;
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut resp, "anthropic", FIXED_NOW);
     let ir = resp;
-    let mut out = anthropic.writer().write_response(&ir);
+    let mut out = anthropic
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     anthropic
         .writer()
         .inject_response_metrics(&mut out, Some(123));

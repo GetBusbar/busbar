@@ -24,7 +24,7 @@
 //! `busbar-plane-<key>` crate whose `[package.metadata.busbar.linked-axes]` row carries the
 //! `plane-door` axis, e.g. `plane-mcp-door`). Its home is that crate's `src`, read by
 //! [`door_planes`]. The door is consulted ONLY for a plane no grammar declaration claims, so a
-//! plane that still has its engine beside a door row (`llm-on-driver`) keeps the engine as its
+//! plane that still has its engine beside a door row (`plane-llm-door`) keeps the engine as its
 //! home; a door row that names no crate on disk is still `Missing`, never a pass. This is the same
 //! reading `gates::config_schema::declared` gives a door-only plane's Statement.
 
@@ -32,21 +32,31 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-/// The canonical order is the doctrine order: the three original protocols, then voice (Plane 4).
+/// The canonical order is the doctrine order: the legacy-engine protocols. `voice` (Plane 4's legacy
+/// crate, `crates/busbar-voice`) is struck: FLIP-STREAMING deleted it, and the streaming plane is
+/// `busbar-plane-streaming`, scanned by the PLANE-KIND regime like every `busbar-plane-*` crate.
 ///
 /// THE LEGACY-ENGINE ROSTER: every consumer reads a key as a `crates/busbar-<key>` directory (see
 /// [`plane_src_roots`]). `mcp` IS STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05; its shell twin
 /// `scripts/plane-keys.sh` says the same in the same commit): `crates/busbar-mcp` is deleted and the
 /// mcp plane is plane-kind only, its door crate `busbar-plane-mcp` — scanned by the plane-kind regime
-/// and located by its door row ([`door_planes`]) wherever a gate resolves the plane's home.
-pub const PLANE_KEYS: [&str; 3] = ["llm", "a2a", "voice"];
+/// and located by its door row ([`door_planes`]) wherever a gate resolves the plane's home. `a2a` IS
+/// STRUCK the same way (FLIP-A2A): `crates/busbar-a2a` is deleted and the A2A plane is
+/// `busbar-plane-a2a`, served through its memory-ABI door (`plane-a2a-door`) and located by that row.
+pub const PLANE_KEYS: [&str; 1] = ["llm"];
 
 /// Plane keys with NO legacy-engine crate: the plane lives only in its plane-kind crate
 /// `busbar-plane-<key>` and is located by its door row ([`door_planes`]). Twin of
 /// `scripts/plane-keys.sh`'s `PLANE_KEYS_KIND_ONLY`. A roster that must notice a plane VANISHING
 /// (structure-lint's plane-roots row) reads these beside [`PLANE_KEYS`]: leaving the legacy roster
-/// must not take a plane off the roster that refuses an unlocatable plane.
-pub const PLANE_KEYS_KIND_ONLY: [&str; 1] = ["mcp"];
+/// must not take a plane off the roster that refuses an unlocatable plane. `streaming` joined when
+/// FLIP-STREAMING took `voice` off [`PLANE_KEYS`]: `crates/busbar-voice` is deleted and the plane is
+/// `busbar-plane-streaming`, located by its `plane-streaming` door row.
+///
+/// `decisions` (#48, the fifth plane) has never had a legacy-engine crate: it is one plane-kind
+/// crate, `busbar-plane-decisions`, located by its door row alone (`plane-decisions`, FLIP-DECISIONS).
+/// Off this list, a door row that vanished took it off structure-lint's roster with no finding.
+pub const PLANE_KEYS_KIND_ONLY: [&str; 4] = ["mcp", "a2a", "streaming", "decisions"];
 
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.
@@ -118,6 +128,9 @@ pub fn plane_keys_protocol() -> Vec<&'static str> {
 /// MCP HAS NO ROOT HERE AT ALL since P3 DEL-MCP (ARCHITECT 2026-10-05): the engine crate is deleted
 /// and `mcp` left [`PLANE_KEYS`]. The paragraph below is the history of its `-codec` half.
 ///
+/// A2A HAS NO ROOT HERE EITHER since FLIP-A2A: `crates/busbar-a2a` is deleted and `a2a` left
+/// [`PLANE_KEYS`]; `crates/busbar-plane-a2a/src` is scanned by the PLANE-KIND regime, as below.
+///
 /// MCP HAS NO `-codec` ROOT ANY MORE, and that is a decision rather than an omission.
 /// `busbar-mcp-codec` dissolved (#39: no `busbar-*-codec` crate). Its `ProtocolDecl` and two
 /// operation cells stayed with the engine at `crates/busbar-mcp/src/codec/`, which the
@@ -173,7 +186,7 @@ pub fn plane_src_roots() -> Vec<String> {
 ///
 /// * the five `busbar-plane-*` crates — the plane kind itself, scanned by the REVERSE side of
 ///   `plane-purity` through `kind_isolation::plane_kind_src_roots`;
-/// * `busbar-llm`, `busbar-mcp`, `busbar-a2a`, `busbar-voice` and the two surviving `-codec` halves
+/// * `busbar-llm` (`busbar-mcp`, `busbar-a2a` and `busbar-voice` are deleted) and the two surviving `-codec` halves
 ///   — the legacy engines: naming a protocol is what they are for, and [`plane_src_roots`] is the
 ///   list that scans them;
 /// * the plugin INSTANCES (`busbar-transport-*`, `store-*`, `secret-*`, `auth-*`, `hook*`,
@@ -293,6 +306,9 @@ impl fmt::Display for PlaneRootError {
 pub struct PlaneRoots {
     search_root: PathBuf,
     grammar: String,
+    /// The context whose BASE layer lays the pinned planes (ARCHITECT row 106 (A)): a door crate
+    /// that left for its own repo is found where it lived, read from its pinned checkout.
+    laid: Option<crate::ctx::Ctx>,
 }
 
 impl PlaneRoots {
@@ -300,7 +316,15 @@ impl PlaneRoots {
         PlaneRoots {
             search_root: search_root.into(),
             grammar: PLANE_GRAMMAR.to_string(),
+            laid: None,
         }
+    }
+
+    /// The resolver over `cx`'s tree: a door crate the context's BASE layer lays (a pinned plane,
+    /// ARCHITECT row 106 (A)) is a door home exactly as it was on disk.
+    pub fn over(mut self, cx: &crate::ctx::Ctx) -> PlaneRoots {
+        self.laid = Some(cx.clone());
+        self
     }
 
     pub fn grammar(mut self, grammar: impl Into<String>) -> PlaneRoots {
@@ -330,8 +354,16 @@ impl PlaneRoots {
     pub fn door_home(&self, plane: &str) -> Option<PathBuf> {
         let manifest = std::fs::read_to_string(self.search_root.join(DOOR_MANIFEST)).ok()?;
         let krate = door_planes(&manifest).remove(plane)?;
-        let src = self.search_root.join(krate).join("src");
-        holds_source(&src).then_some(src)
+        let src = self.search_root.join(&krate).join("src");
+        if holds_source(&src) {
+            return Some(src);
+        }
+        let cx = self.laid.as_ref()?;
+        let rel = src.strip_prefix(cx.root()).ok()?;
+        cx.base_children(rel)
+            .iter()
+            .any(|f| f.ends_with(".rs"))
+            .then_some(src)
     }
 
     /// The three-answers rule, over candidates somebody else located. THE SAME judgement the disk
@@ -422,13 +454,13 @@ mod tests {
     use super::*;
 
     const MANIFEST: &str = "[package.metadata.busbar.linked]\n\
-        proto-llm = \"busbar-llm\"\n\
-        llm-on-driver = \"busbar-plane-llm\"\n\
+        plane-llm = \"busbar-llm\"\n\
+        plane-llm-door = \"busbar-plane-llm\"\n\
         plane-mcp-door = \"busbar-plane-mcp\"\n\
         transport-tcp = \"busbar-transport-tcp\"\n\n\
         [package.metadata.busbar.linked-axes]\n\
-        proto-llm = \"plane claims\"\n\
-        llm-on-driver = \"plane-door\"\n\
+        plane-llm = \"plane claims\"\n\
+        plane-llm-door = \"plane-door\"\n\
         plane-mcp-door = \"plane-door\" # the door\n\
         transport-tcp = \"transport transport-door\"\n";
 

@@ -13,7 +13,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 use busbar_contract::billing::{Billing, TokenUsage};
-use busbar_contract::codec::OperationHandler;
+use busbar_contract::codec::{OperationHandler, UsageTapFault};
 use busbar_contract::protocol::{ArrayStreamFramer, ProtocolDecl, StreamTranslator};
 use serde_json::Value;
 
@@ -92,6 +92,9 @@ pub struct End {
     /// The far-end wire paths a translated stream dropped (design F3 "Drops"), each warned once:
     /// the host records one audit row per path.
     pub dropped: Vec<String>,
+    /// Why the usage tap could not read a same-dialect whole body (only when metering): returned
+    /// as data for the kernel to count, never reported from here (row 155).
+    pub tap_fault: Option<UsageTapFault>,
 }
 
 /// How a relayed answer was cut: by the far end's transport, or by the stream's ceiling.
@@ -115,6 +118,7 @@ pub struct Relay {
     far_is_stream: bool,
     handler: &'static dyn OperationHandler,
     meter: bool,
+    translate_cap: usize,
     translate: Option<Box<dyn StreamTranslator>>,
     json_array: Option<Box<dyn ArrayStreamFramer>>,
     nonstream_buf: Vec<u8>,
@@ -157,6 +161,9 @@ pub struct RelayCtx<'a> {
     /// Read the usage: keep the bounded copy of a same-dialect whole body and read the usage at
     /// the end. Off, the bytes relay and nothing is read for usage.
     pub meter: bool,
+    /// The TRANSLATION CAP the plane enforces, the one its settings carry: the bound on the
+    /// same-dialect copy kept for usage, and on what the translator's writer accumulates.
+    pub translate_cap: usize,
 }
 
 /// A relay's translator and JSON-array framer, before the relay is opened over them.
@@ -183,6 +190,7 @@ pub fn parts_on(ctx: &RelayCtx<'_>, clock: fn() -> std::time::Instant) -> Parts 
         ctx.egress,
         ctx.far_is_stream,
         clock,
+        ctx.translate_cap,
     )
     .map(|mut t| {
         t.set_client_include_usage(ctx.client_include_usage);
@@ -217,18 +225,21 @@ impl Relay {
             ctx.far_is_stream,
             ctx.handler,
             ctx.meter,
+            ctx.translate_cap,
             translate,
             json_array,
         )
     }
 
-    /// OPEN the relay over a translator and a framer already made (see [`parts`]).
+    /// OPEN the relay over a translator and a framer already made (see [`parts`]), its same-dialect
+    /// usage copy bounded at the plane's `translate_cap`.
     #[must_use]
     pub fn from_parts(
         ingress: &str,
         far_is_stream: bool,
         handler: &'static dyn OperationHandler,
         meter: bool,
+        translate_cap: usize,
         translate: Option<Box<dyn StreamTranslator>>,
         json_array: Option<Box<dyn ArrayStreamFramer>>,
     ) -> Self {
@@ -249,6 +260,7 @@ impl Relay {
             far_is_stream,
             handler,
             meter,
+            translate_cap,
             translate,
             json_array,
             nonstream_buf: Vec::new(),
@@ -281,11 +293,15 @@ impl Relay {
 
     /// FEED one far-end piece. The second value is `true` on the one piece that first pushed the
     /// retained copy of a same-dialect whole body over the cap (its head is dropped from then on).
-    pub fn feed<'a>(&mut self, chunk: &'a [u8]) -> (Fed<'a>, bool) {
+    pub fn feed<'a>(
+        &mut self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        chunk: &'a [u8],
+    ) -> (Fed<'a>, bool) {
         self.first_byte = true;
         self.upstream_bytes = self.upstream_bytes.saturating_add(chunk.len());
         if let Some(t) = self.translate.as_mut() {
-            let out = t.feed(chunk);
+            let out = t.feed(host, chunk);
             if let Some(framer) = self.json_array.as_mut() {
                 let framed = framer.feed(&out);
                 return (bytes_or_nothing(framed), false);
@@ -297,7 +313,7 @@ impl Relay {
         }
         let mut truncated_now = false;
         if !self.far_is_stream && self.handler.taps_usage() && self.meter {
-            let cap = crate::codec::wire_shim::max_translated_body_bytes();
+            let cap = self.translate_cap;
             self.nonstream_buf.extend_from_slice(chunk);
             if self.nonstream_buf.len() > cap {
                 let excess = self.nonstream_buf.len() - cap;
@@ -316,7 +332,7 @@ impl Relay {
     }
 
     /// END the relay cleanly: the far end's body is complete.
-    pub fn end(&mut self) -> End {
+    pub fn end(&mut self, host: &dyn busbar_contract::codec::CodecHost) -> End {
         let translate_aborted = self.translate.as_ref().is_some_and(|t| t.aborted());
         let stream_terminal_error = self
             .translate
@@ -336,7 +352,7 @@ impl Relay {
         let tail = self
             .translate
             .as_mut()
-            .map(|t| t.finish())
+            .map(|t| t.finish(host))
             .unwrap_or_default();
         let bytes = if let Some(framer) = self.json_array.as_mut() {
             let mut wrapped = if translate_aborted {
@@ -361,6 +377,7 @@ impl Relay {
             })
             == Some(crate::codec::ir::IrStopReason::Error);
         let mut open_billing: Option<Billing> = None;
+        let mut tap_fault = None;
         let usage = if !self.meter {
             None
         } else if let Some(t) = self.translate.as_ref() {
@@ -376,10 +393,15 @@ impl Relay {
         } else if !self.far_is_stream && !self.nonstream_buf.is_empty() {
             let buf = std::mem::take(&mut self.nonstream_buf);
             if self.nonstream_buf_truncated {
-                Some(wire::unrecovered_usage(self.ingress, &buf))
+                // A body past the usage tap's cap bills no tokens, as 1.5.5 billed none: it kept
+                // only the body's first `cap` bytes, whose reading found no usage, and warned that
+                // the request was undercounted (v1.5.5 proxy/response_body.rs:230-262).
+                None
             } else {
-                self.handler.extract_usage(self.ingress, &buf).or_else(|| {
-                    match self.handler.read_response(&buf) {
+                let tapped = self.handler.extract_usage(host, self.ingress, &buf);
+                tap_fault = tapped.as_ref().err().copied();
+                tapped.ok().flatten().or_else(|| {
+                    match self.handler.read_response(host, &buf) {
                         Ok(read) => {
                             open_billing = read.billing();
                             None
@@ -389,6 +411,13 @@ impl Relay {
                         // end reported in the bytes in hand, never the floor (OWNER RULING Q31,
                         // oracle cell `route.failover|fo|primary-cut-body`).
                         Err(_) if cut_short(&buf) => wire::reported_usage(self.ingress, &buf),
+                        // A body whose dialect reads it as a failure the FAR END REPORTED (a
+                        // Responses `status: "failed"`) bills no tokens, as 1.5.5 billed none: its
+                        // usage tap read nothing from a body its reader refused (v1.5.5
+                        // handlers/chat.rs:60-98, `read_response` failed -> 0 tokens), and its
+                        // streamed twin bills none either (row-159 L3#4). ARCHITECT ruling
+                        // 2026-10-15; owner answer Q37 is unsigned and does not override 1.5.5.
+                        Err(_) if far_reported_failure(host, self.ingress, &buf) => None,
                         Err(_) => {
                             fault_unreadable(self.ingress, buf.len());
                             Some(wire::unrecovered_usage(self.ingress, &buf))
@@ -418,18 +447,20 @@ impl Relay {
                 .as_ref()
                 .map(|t| t.dropped())
                 .unwrap_or_default(),
+            tap_fault,
         }
     }
 
     /// CUT the relay: the far end's transport failed (`transport`), or the stream's ceiling
     /// expired.
-    pub fn cut(&mut self, transport: bool) -> Cut {
+    pub fn cut(&mut self, host: &dyn busbar_contract::codec::CodecHost, transport: bool) -> Cut {
         let had_first = self.first_byte;
         if had_first && self.far_is_stream {
             let usage = self.translate.as_ref().and_then(|t| t.usage());
             let bytes = match self.json_array.as_mut() {
                 Some(framer) => framer.finish_with_server_error(wire::MID_STREAM_GENERIC_DETAIL),
                 None => wire::mid_stream_error_bytes(
+                    host,
                     self.ingress,
                     self.ingress_eventstream,
                     wire::MID_STREAM_GENERIC_DETAIL,
@@ -468,6 +499,25 @@ impl Relay {
                 .is_some_and(|t| t.aborted() || t.terminal_error().is_some())
     }
 
+    /// THE STREAM'S TERMINAL ERROR IS ITS FAR END'S FAILED GENERATION: the far dialect's own stop
+    /// token that reads as a failed generation (a Gemini `MALFORMED_FUNCTION_CALL`, a Cohere
+    /// `ERROR`), which its reader surfaces as an error beside the usage it reports (owner ruling
+    /// Q31). 1.5.5's readers raised no error for those stops, so 1.5.5 billed the usage the stream
+    /// reported (v1.5.5 `proxy/response_body.rs:550-575`: only a reader-emitted terminal error
+    /// skipped the token fee) — and Q31 keeps that charge. Every other terminal error is one 1.5.5
+    /// raised too, and bills no tokens. `far` is the far end's dialect.
+    #[must_use]
+    pub fn failed_generation(&self, far: &str) -> bool {
+        self.translate
+            .as_ref()
+            .and_then(|t| t.terminal_error())
+            .is_some_and(|signal| {
+                crate::codec::proto_codec::with_reader(far, |r| r.stop_reason_of_token(signal))
+                    .flatten()
+                    == Some(crate::codec::ir::IrStopReason::Error)
+            })
+    }
+
     /// The usage a stream's readers have read so far (cheap: nothing is scanned); `None` for a
     /// relay that reads its usage only at the end.
     #[must_use]
@@ -475,32 +525,44 @@ impl Relay {
         self.translate.as_ref().and_then(|t| t.usage())
     }
 
-    /// THE FLOOR A NON-STREAM SAME-DIALECT ANSWER HAS INCURRED SO FAR, as it relays: it was
-    /// generated whole before its first byte, so a caller that leaves mid-relay bills the floor
-    /// over the bytes relayed, never 0 (item 367, Q33 (a), told; #62 applied to buffered relays).
-    /// `None` for a stream, a translated answer, or one that meters nothing.
-    #[must_use]
-    pub fn relayed_floor(&self) -> Option<TokenUsage> {
-        (self.translate.is_none()
-            && !self.far_is_stream
-            && self.meter
-            && self.handler.taps_usage()
-            && self.upstream_bytes > 0)
-            .then(|| wire::estimate_usage_from_truncated_tail(self.upstream_bytes))
-    }
-
     /// The usage an answer that ended early had incurred: what a stream's readers accumulated;
-    /// for a same-dialect whole body, the usage the bytes in hand report, else the floor over them
-    /// (a failed far-end transfer bills only what the far end reported, never the floor).
+    /// for a same-dialect whole body the FAR END cut, only the usage the bytes in hand report
+    /// (OWNER RULING Q31, never a floor). A same-dialect whole body that ended early any other way
+    /// (its caller left mid-body) incurred none: 1.5.5 billed no tokens on a mid-buffer drop
+    /// (v1.5.5 proxy/response_body.rs:620-625), and no floor is added for it (#77(2); ARCHITECT
+    /// ruling 2026-10-15 retired item 367's relayed floor, Q33 (a), which was told, never signed).
     #[must_use]
     pub fn incurred_usage(&self) -> Option<TokenUsage> {
         match self.translate.as_ref() {
             Some(t) => t.usage(),
-            None if self.far_is_stream || self.nonstream_buf.is_empty() => None,
-            None if self.upstream_failed => wire::reported_usage(self.ingress, &self.nonstream_buf),
-            None => Some(wire::unrecovered_usage(self.ingress, &self.nonstream_buf)),
+            None if self.upstream_failed
+                && !self.far_is_stream
+                && !self.nonstream_buf.is_empty()
+                && !self.nonstream_buf_truncated =>
+            {
+                wire::reported_usage(self.ingress, &self.nonstream_buf)
+            }
+            None => None,
         }
     }
+}
+
+/// THE FAR END REPORTED THE FAILURE ITSELF: the whole body reads, in its dialect's own reader, as a
+/// failure the far end stated (a Responses `status: "failed"`), not as a body the reader could not
+/// read (`ir_parse`: bad JSON, a shape it does not know, or a usage count it refuses, #42).
+fn far_reported_failure(
+    host: &dyn busbar_contract::codec::CodecHost,
+    protocol: &str,
+    buf: &[u8],
+) -> bool {
+    let Ok(v) = crate::codec::json::parse::<Value>(buf) else {
+        return false;
+    };
+    crate::codec::proto_codec::protocol_for(protocol).is_some_and(|p| {
+        p.reader().read_response(host, &v).is_err_and(|e| {
+            e.provider_signal.as_deref() != Some(busbar_contract::protocol::SIGNAL_IR_PARSE)
+        })
+    })
 }
 
 /// A JSON body that ends before its value does: the far end's transfer stopped short.

@@ -39,8 +39,12 @@ fn opening_id(frame: &serde_json::Value, pointer: &str) -> String {
 /// Drive one writer through `MessageStart("first")`, `MessageStart("second")` and return the id
 /// each opening frame carried.
 fn two_starts<W: ProtocolWriter>(w: &W, pointer: &str) -> (String, String) {
-    let one = w.write_response_event(&start("id_first")).expect("frame");
-    let two = w.write_response_event(&start("id_second")).expect("frame");
+    let one = w
+        .write_response_event(crate::codec::test_host::HOST, &start("id_first"))
+        .expect("frame");
+    let two = w
+        .write_response_event(crate::codec::test_host::HOST, &start("id_second"))
+        .expect("frame");
     (opening_id(&one.1, pointer), opening_id(&two.1, pointer))
 }
 
@@ -143,7 +147,11 @@ fn two_starts_stripped<W: ProtocolWriter>(
     pointer: &str,
     ev: &dyn Fn() -> IrStreamEvent,
 ) -> (String, String) {
-    let one = w.write_response_event(&ev()).expect("frame");
-    let two = w.write_response_event(&ev()).expect("frame");
+    let one = w
+        .write_response_event(crate::codec::test_host::HOST, &ev())
+        .expect("frame");
+    let two = w
+        .write_response_event(crate::codec::test_host::HOST, &ev())
+        .expect("frame");
     (opening_id(&one.1, pointer), opening_id(&two.1, pointer))
 }

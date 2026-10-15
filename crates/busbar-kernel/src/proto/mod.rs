@@ -231,17 +231,15 @@ pub use registry::{
 /// dialect: every request-path site reads the name off the protocol registry instead — the URL-model
 /// arrivals live with their own dialect plugins, the `/v1/messages` convenience surface resolves its
 /// dialect through [`residual_dialect_for_path`], the error-shaping fallback through
-/// [`residual_default_dialect`], and the frozen config lane-default is a frozen-wire literal in
-/// `config`. What remains is core's OWN test binary's fixtures, which name the shipped dialects by
+/// [`residual_default_dialect`], and an omitted `protocol:` is the speaking plane's own default
+/// (the kernel's `ProviderCfg` leaves it empty). What remains is core's OWN test binary's fixtures, which name the shipped dialects by
 /// convention (golden-value checks) — so these consts are confined to test / `test-support` scope,
 /// and the neutral PRODUCTION source spells none.
 ///
 /// EACH VALUE IS A FROZEN WIRE STRING, and that is the only ground on which it is spelled here: it is
 /// the value an operator writes in a provider's `protocol:` key, and all six have been accepted there
 /// unchanged since 1.5.3 (`git show v1.5.3:crates/busbar/src/proto/mod.rs`, lines 1744-1749, holds
-/// these six consts byte-for-byte). So each line carries the frozen-wire pragma naming that key,
-/// exactly as `crate::config::providers::DEFAULT_PROTOCOL` does for the omitted-key
-/// default.
+/// these six consts byte-for-byte). So each line carries the frozen-wire pragma naming that key.
 #[cfg(any(test, feature = "test-support"))]
 mod dialect_test_names {
     // plane-purity: frozen-wire a value of a provider's `protocol:` key in the frozen providers.yaml config grammar (frozen since 1.5.3)

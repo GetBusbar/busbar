@@ -29,6 +29,8 @@ const MESSAGE_INTEGRITY: u16 = 0x0008;
 const PRIORITY: u16 = 0x0024;
 /// ICE-CONTROLLED.
 const ICE_CONTROLLED: u16 = 0x8029;
+/// ICE-CONTROLLING.
+const ICE_CONTROLLING: u16 = 0x802a;
 /// FINGERPRINT.
 const FINGERPRINT: u16 = 0x8028;
 /// FINGERPRINT's XOR constant (RFC 8489 §14.7).
@@ -164,6 +166,11 @@ pub(crate) fn verified_probe_answer(d: &[u8], keys: &Keys) -> Option<[u8; 12]> {
     None
 }
 
+/// Is `d` a Binding request (whoever it is for)?
+pub(crate) fn is_binding_request(d: &[u8]) -> bool {
+    d.len() >= HEADER && d[0..2] == BINDING_REQUEST && d[4..8] == MAGIC_COOKIE
+}
+
 /// Is `d` a Binding success response (whoever it answers)?
 pub(crate) fn is_binding_success(d: &[u8]) -> bool {
     d.len() >= HEADER && d[0..2] == BINDING_SUCCESS && d[4..8] == MAGIC_COOKIE
@@ -181,9 +188,14 @@ fn set_len(m: &mut [u8], body: usize) {
 }
 
 /// A consent probe: a Binding request to the peer under the REMOTE credentials (USERNAME
-/// "remote:local", MESSAGE-INTEGRITY with the remote password), as the controlled agent, with
-/// FINGERPRINT.
-pub(crate) fn probe(keys: &Keys, txid: [u8; 12], tie_breaker: [u8; 8]) -> Vec<u8> {
+/// "remote:local", MESSAGE-INTEGRITY with the remote password), as the controlled agent (or, on
+/// the dialling side, the controlling one), with FINGERPRINT.
+pub(crate) fn probe(
+    keys: &Keys,
+    txid: [u8; 12],
+    tie_breaker: [u8; 8],
+    controlling: bool,
+) -> Vec<u8> {
     let mut m = Vec::with_capacity(128);
     m.extend_from_slice(&BINDING_REQUEST);
     m.extend_from_slice(&[0, 0]);
@@ -191,7 +203,12 @@ pub(crate) fn probe(keys: &Keys, txid: [u8; 12], tie_breaker: [u8; 8]) -> Vec<u8
     m.extend_from_slice(&txid);
     attr(&mut m, USERNAME, &keys.probe_username);
     attr(&mut m, PRIORITY, &PROBE_PRIORITY.to_be_bytes());
-    attr(&mut m, ICE_CONTROLLED, &tie_breaker);
+    let role = if controlling {
+        ICE_CONTROLLING
+    } else {
+        ICE_CONTROLLED
+    };
+    attr(&mut m, role, &tie_breaker);
     let body = m.len() - HEADER + 4 + MI_LEN;
     set_len(&mut m, body);
     let mac = hmac::sign(&keys.remote, &m);

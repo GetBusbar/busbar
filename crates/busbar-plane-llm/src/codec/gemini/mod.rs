@@ -78,11 +78,11 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// `/v1{,beta}/models/` wildcard surface (rung 6). Strength values are the ladder POSITION (lower
 /// binds tighter); they are the single ladder shared with the sibling dialects' predicates.
 fn claims(
-    h: &busbar_contract::http::HeaderMap,
+    h: busbar_contract::protocol::HeadFields<'_>,
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::ClaimStrength;
-    if h.contains_key(FIELD_X_GOOG_API_KEY) {
+    use busbar_contract::protocol::{head_field, ClaimStrength};
+    if head_field(h, FIELD_X_GOOG_API_KEY).is_some() {
         return Some(ClaimStrength(3));
     }
     if path.contains(":generateContent")
@@ -176,7 +176,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
@@ -188,7 +188,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "google-genai-sdk/0.8.0 gl-python/3.11",
     has_model_in_url: true,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::BAD_REQUEST,
+        busbar_contract::http::StatusCode::BAD_REQUEST.as_u16(),
         ERR_TYPE_INVALID_REQUEST,
     ),
     ingress_relays_amzn_headers: false,
@@ -654,8 +654,6 @@ const FIELD_ALLOWED_FUNCTION_NAMES: &str = "allowedFunctionNames";
 const FIELD_ARGS: &str = "args";
 /// The wire word `aspectRatio`.
 const FIELD_ASPECT_RATIO: &str = "aspectRatio";
-/// The wire word `audioDurationSeconds`.
-const FIELD_AUDIO_DURATION_SECONDS: &str = "audioDurationSeconds";
 /// The wire word `bytesBase64Encoded`.
 const FIELD_BYTES_BASE64_ENCODED: &str = "bytesBase64Encoded";
 /// The wire word `candidates`.
@@ -858,7 +856,7 @@ const RESPONSE_ID_REJECT_THRESHOLD: u8 = crate::codec::dialect::BASE62_REJECT_TH
 /// RESPONSE_ID_REJECT_THRESHOLD` (the largest multiple of 62 that fits in a `u8`, i.e. `4*62 = 248`)
 /// and resample, so every surviving byte maps uniformly across the 62 symbols. Rejected bytes are
 /// simply skipped and more random bytes are drawn as needed.
-fn synth_response_id() -> String {
+fn synth_response_id(host: &dyn busbar_contract::codec::CodecHost) -> String {
     let mut token = [b'0'; RESPONSE_ID_TOKEN_LEN];
     let mut filled = 0usize;
     // Bound the number of refill rounds so a stuck/zero entropy source can never spin forever on the
@@ -871,7 +869,7 @@ fn synth_response_id() -> String {
         // Draw a generous batch so a single entropy draw typically fills the whole token even after
         // rejections (RESPONSE_ID_TOKEN_LEN*2 bytes leave ample headroom for the ~1.6% reject rate).
         let mut batch = [0u8; RESPONSE_ID_TOKEN_LEN * 2];
-        if !super::synth_rng::fill_entropy(&mut batch) {
+        if !super::synth_rng::fill_entropy(host, &mut batch) {
             break;
         }
         for &byte in batch.iter() {
@@ -1745,6 +1743,12 @@ pub struct GeminiWriter {
     /// (IR audit GEM-16), exactly as the buffered writer converts them. Same `Mutex` /
     /// poison-degrades discipline as `open_tools`; a poisoned lock passes offsets through unconverted.
     stream_text: std::sync::Mutex<GeminiStreamText>,
+    /// THIS STREAM'S TRANSLATION CAP: the byte ceiling one open tool's streamed `args` may reach
+    /// (see the `InputJsonDelta` arm of `write_response_event`). The plane hands it from its own
+    /// settings when it opens the stream
+    /// ([`crate::codec::proto_codec::ProtocolWriter::set_translate_cap`]); until then,
+    /// [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`].
+    translate_cap: std::sync::atomic::AtomicUsize,
 }
 
 /// The streamed answer text [`GeminiWriter::stream_text`] accumulates: the concatenated `text` and
@@ -1777,6 +1781,9 @@ pub const GeminiWriter: GeminiWriter = GeminiWriter {
         text: String::new(),
         block_starts: Vec::new(),
     }),
+    translate_cap: std::sync::atomic::AtomicUsize::new(
+        busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+    ),
 };
 
 impl Clone for GeminiWriter {
@@ -1800,6 +1807,10 @@ impl Clone for GeminiWriter {
                     .lock()
                     .map(|t| t.clone())
                     .unwrap_or_default(),
+            ),
+            translate_cap: std::sync::atomic::AtomicUsize::new(
+                self.translate_cap
+                    .load(std::sync::atomic::Ordering::Relaxed),
             ),
         }
     }

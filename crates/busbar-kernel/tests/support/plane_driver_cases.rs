@@ -81,6 +81,8 @@ pub(crate) struct Far {
     /// The ceiling its plane states on a streamed answer, stated to the driver as the unit's
     /// deadline once the route is known; `None` = none.
     ceiling: Option<Duration>,
+    /// How many times the walk asked it for a member.
+    picks: std::sync::atomic::AtomicU32,
 }
 
 /// The greeting a held far end opens its answer with, before any frame is answered.
@@ -103,6 +105,7 @@ impl Far {
                 fields: false,
                 head: Vec::new(),
                 relayed: false,
+                cut: false,
             })
             .collect();
         Far {
@@ -115,6 +118,7 @@ impl Far {
             open: std::sync::atomic::AtomicBool::new(false),
             arrived: tokio::sync::Notify::new(),
             ceiling: None,
+            picks: std::sync::atomic::AtomicU32::new(0),
         }
     }
 
@@ -137,6 +141,12 @@ impl Far {
 
     pub(crate) fn sent(&self) -> Vec<OutboundRequest> {
         self.sent.lock().unwrap().clone()
+    }
+
+    /// How many times the walk asked it for a member.
+    #[allow(dead_code)] // read by the kernel's driver suite only
+    pub(crate) fn picks(&self) -> u32 {
+        self.picks.load(Ordering::SeqCst)
     }
 
     /// The frames written into a held far end, with whether its socket was open when each came.
@@ -185,6 +195,7 @@ impl FarEnd for Far {
         _: &'a Pass<Route>,
         attempt_no: u32,
     ) -> impl Future<Output = Pick> + Send + 'a {
+        self.picks.fetch_add(1, Ordering::SeqCst);
         let pick = match self.members.get(attempt_no as usize - 1) {
             Some(m) => Pick::Member {
                 name: (*m).to_string(),
@@ -216,6 +227,7 @@ impl FarEnd for Far {
                 fields: false,
                 head: Vec::new(),
                 relayed: false,
+                cut: false,
             }]
         } else if request.member.starts_with("trailers") {
             // The body, then the far end's trailers after it.
@@ -229,6 +241,13 @@ impl FarEnd for Far {
                 fields: true,
                 ..FarPiece::default()
             });
+            script
+        } else if request.member.starts_with("cut") {
+            // The body, its last piece marked cut: the far end's answer ended without completing.
+            let mut script = self.script.clone();
+            if let Some(last) = script.last_mut() {
+                last.cut = true;
+            }
             script
         } else if held_body.is_some() {
             // The socket opens and greets; the dial's body is its first frame.
@@ -870,6 +889,95 @@ async fn a_retry_verdict_before_the_first_byte_fails_over() {
 // `ledger_and_meter`: "`lane` is the SERVING lane"): when the answer commits, the driver names the
 // member that answered to the money steps, once.
 
+/// THE USAGE-TAP FAULT A DOOR RETURNS REACHES THE KERNEL'S COUNTER (row 155): a plane whose
+/// answer carries a usage-tap fault beside its units has it counted, ONCE per unit, by the steps
+/// the driver hands it to, on `busbar_billing_tap_decode_fail_total{protocol,reason}` (the
+/// counter, labels and increments of 1.5.5's latch). The byte is a closed enum: a value outside
+/// the vocabulary is counted under `reason="unknown"`, never ignored and never read as none. RED:
+/// drop the driver's read of `tap_fault` and neither the steps nor the counter see a fault.
+#[tokio::test]
+async fn a_usage_tap_fault_the_door_returns_reaches_the_kernel_counter() {
+    use metrics::{
+        Counter, CounterFn, Gauge, Histogram, Key, KeyName, Metadata, Recorder, SharedString, Unit,
+    };
+    use std::collections::BTreeMap;
+    type Counts = Arc<Mutex<BTreeMap<String, u64>>>;
+    struct Cell(Counts, String);
+    impl CounterFn for Cell {
+        fn increment(&self, value: u64) {
+            *self.0.lock().unwrap().entry(self.1.clone()).or_insert(0) += value;
+        }
+        fn absolute(&self, value: u64) {
+            self.0.lock().unwrap().insert(self.1.clone(), value);
+        }
+    }
+    struct Local(Counts);
+    impl Recorder for Local {
+        fn describe_counter(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn describe_gauge(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn describe_histogram(&self, _: KeyName, _: Option<Unit>, _: SharedString) {}
+        fn register_counter(&self, key: &Key, _: &Metadata<'_>) -> Counter {
+            let labels: Vec<String> = key
+                .labels()
+                .map(|l| format!("{}={}", l.key(), l.value()))
+                .collect();
+            let series = format!("{}{{{}}}", key.name(), labels.join(","));
+            Counter::from_arc(Arc::new(Cell(Arc::clone(&self.0), series)))
+        }
+        fn register_gauge(&self, _: &Key, _: &Metadata<'_>) -> Gauge {
+            Gauge::noop()
+        }
+        fn register_histogram(&self, _: &Key, _: &Metadata<'_>) -> Histogram {
+            Histogram::noop()
+        }
+    }
+    let counts = Counts::default();
+    let local = Local(Arc::clone(&counts));
+    let _recording = metrics::set_default_local_recorder(&local);
+    let mut ran = 0u64;
+    for way in ways() {
+        ran += 1;
+        for (member, reason) in [("tap-bad-json", "bad_json"), ("tap-unknown", "unknown")] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(&[member], CHUNKS),
+                Caller::default(),
+            );
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+            assert!(matches!(drive(&units).await, Outcome::Completed));
+            let seen: Vec<&str> = steps
+                .tap_faults
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|f| f.1)
+                .collect();
+            assert_eq!(seen, vec![reason], "{way:?}: one fault per unit");
+        }
+        let ok = TestUnits::passing();
+        let (far, caller) = (Far::new(&["ok"], CHUNKS), Caller::default());
+        let r = rig(way, BufferCaps::default(), Book::default());
+        let units = r.driver.unit(&ok, &far, &caller, arrival("/call", b"p"), 0);
+        assert!(matches!(drive(&units).await, Outcome::Completed));
+        assert!(
+            ok.tap_faults.lock().unwrap().is_empty(),
+            "{way:?}: an answer carrying none counts none"
+        );
+    }
+    let series = |reason: &str| {
+        format!(
+            "busbar_billing_tap_decode_fail_total{{protocol={},reason={reason}}}",
+            super::common::TAP_FAULT_PROTOCOL
+        )
+    };
+    let counts = counts.lock().unwrap().clone();
+    assert_eq!(counts.get(&series("bad_json")), Some(&ran), "{counts:?}");
+    assert_eq!(counts.get(&series("unknown")), Some(&ran), "{counts:?}");
+}
+
 /// RED: without the driver's call the money steps never learn the serving member.
 #[tokio::test]
 async fn the_answering_member_is_named_to_the_money_steps_once() {
@@ -1067,6 +1175,31 @@ async fn trailers_reach_the_plane_which_decides() {
                 "{way:?} {member}"
             );
             assert_eq!(caller.text(), expect, "{way:?} {member}");
+        }
+    }
+}
+
+/// A CUT ANSWER, TO A PLANE THAT READS NO CUT (back-compat for `PIECE_CUT`): the far end's last
+/// piece marked cut reaches a plane that ignores the bit, which ends the unit exactly as it ends a
+/// complete answer. RED: a driver that withholds or reorders the marked piece, or faults it.
+#[tokio::test]
+async fn a_cut_answer_ends_cleanly_on_a_plane_that_reads_no_cut() {
+    for way in ways() {
+        for member in ["cut", "ok"] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(&[member], CHUNKS),
+                Caller::default(),
+            );
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+            assert!(
+                matches!(drive(&units).await, Outcome::Completed),
+                "{way:?} {member}"
+            );
+            assert_eq!(caller.text(), "hello far end", "{way:?} {member}");
         }
     }
 }

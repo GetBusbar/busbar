@@ -19,8 +19,9 @@ use busbar_contract::abi::host::io::DIR_WRITE;
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::{
-    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, DEST_PROGRAM, EMIT_TEXT,
-    PIECE_END_OF_FRAME, PIECE_TEXT, READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, DEST_PROGRAM, EMIT_TEXT, PIECE_END,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_DECLARED_LEN, PIECE_TEXT, READ_END_OF_FRAME,
+    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 use futures::task::AtomicWaker;
@@ -44,9 +45,21 @@ pub struct Knobs {
     pub text: bool,
     /// `locate` answers this protocol offer (ProtocolNameList bytes).
     pub offer: Option<&'static [u8]>,
+    /// `locate` asked for the ACCEPTING side (`LocateIn::accept`) answers this offer instead.
+    pub accept_offer: Option<&'static [u8]>,
+    /// The far end's bytes are SCRIPTED messages on this stream, one piece per byte: `b` an empty
+    /// binary message, `t` an empty text message, `e` the stream's end (`PIECE_END`), any other
+    /// byte a one-byte binary message.
+    pub messages: Option<u64>,
     /// Every frame piece the framing yields holds at most this many bytes, so one frame arrives
     /// in several pieces (the last ends it), as a line framer cuts a line its sink cannot hold.
     pub piece: Option<usize>,
+    /// Every frame the framing yields is a field block (`PIECE_FIELDS`), as a framer hands the far
+    /// end's head.
+    pub fields: bool,
+    /// Every field block the framing yields states this declared body length
+    /// (`PIECE_HAS_DECLARED_LEN`).
+    pub declared_len: Option<u64>,
 }
 
 #[derive(Default)]
@@ -57,7 +70,10 @@ struct State {
     heard: bool,
     deadline_ns: u64,
     text: bool,
+    messages: Option<u64>,
     piece: Option<usize>,
+    fields: bool,
+    declared_len: Option<u64>,
 }
 
 /// One `begin` crossing's opening head fields, name and value.
@@ -95,14 +111,17 @@ impl TestDoor {
         composes_over: &[&'static str],
         knobs: Knobs,
     ) -> Self {
-        // A knob only a framer answers (a secure target, a protocol offer, a head, text frames, a
-        // silence deadline, another authority) states the entry a FRAMER: a carrier frames nothing.
+        // A knob only a framer answers (a secure target, a protocol offer, a head, text or
+        // field-block frames, a silence deadline, another authority, scripted messages) states the
+        // entry a FRAMER: a carrier frames nothing.
         let frames = knobs.secure_name.is_some()
             || knobs.offer.is_some()
             || knobs.head
             || knobs.text
+            || knobs.fields
             || knobs.silence.is_some()
-            || knobs.authority.is_some();
+            || knobs.authority.is_some()
+            || knobs.messages.is_some();
         Self {
             facts: DoorFacts {
                 name: name.to_owned(),
@@ -116,6 +135,7 @@ impl TestDoor {
                 ported: composes_over.is_empty() && !frames,
                 status_rows: Vec::new(),
                 duplex: Vec::new(),
+                datagram: false,
             },
             knobs,
             framings: Mutex::new(HashMap::new()),
@@ -190,7 +210,43 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
     let w = st.outbound.len().min(sink.wire_cap);
     put(sink.wire, &mut st.outbound, w);
     y.wire_len = w as u64;
-    if !st.inbound.is_empty() && sink.pieces_cap > 0 {
+    if let Some(stream) = st.messages {
+        let mut frame_len = 0;
+        let mut n = 0;
+        while n < sink.pieces_cap && frame_len < sink.frame_cap {
+            let Some(b) = st.inbound.pop_front() else {
+                break;
+            };
+            let (len, flags) = match b {
+                b'b' => (0, PIECE_END_OF_FRAME),
+                b't' => (0, PIECE_TEXT | PIECE_END_OF_FRAME),
+                b'e' => (0, PIECE_END | PIECE_END_OF_FRAME),
+                other => {
+                    // SAFETY: `frame_len < frame_cap`.
+                    unsafe { sink.frame.add(frame_len).write(other) };
+                    (1, PIECE_END_OF_FRAME)
+                }
+            };
+            // SAFETY: `n < pieces_cap`.
+            unsafe {
+                sink.pieces.add(n).write(FramePiece {
+                    stream,
+                    offset: frame_len as u64,
+                    len,
+                    code: 0,
+                    status_class: 0,
+                    flags,
+                    fault: 0,
+                    retry_after_secs: 0,
+                    declared_len: 0,
+                });
+            }
+            frame_len += len as usize;
+            n += 1;
+        }
+        y.frame_len = frame_len as u64;
+        y.pieces_len = n as u32;
+    } else if !st.inbound.is_empty() && sink.pieces_cap > 0 {
         let n = st
             .inbound
             .len()
@@ -201,7 +257,13 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
             PIECE_END_OF_FRAME
         } else {
             0
-        } | if st.text && n > 0 { PIECE_TEXT } else { 0 };
+        } | if st.text && n > 0 { PIECE_TEXT } else { 0 }
+            | if st.fields { PIECE_FIELDS } else { 0 }
+            | if st.declared_len.is_some() {
+                PIECE_HAS_DECLARED_LEN
+            } else {
+                0
+            };
         // SAFETY: a host buffer of at least one piece.
         unsafe {
             sink.pieces.write(FramePiece {
@@ -211,8 +273,9 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
                 code: 0,
                 status_class: 0,
                 flags,
-                _reserved: 0,
+                fault: 0,
                 retry_after_secs: 0,
+                declared_len: st.declared_len.unwrap_or(0),
             });
         }
         y.frame_len = n as u64;
@@ -295,7 +358,12 @@ impl FramerDoor for TestDoor {
                     }
                     o.name_written = name.len() as u64;
                 }
-                if let Some(offer) = self.knobs.offer {
+                let offer = if i.accept == 1 {
+                    self.knobs.accept_offer
+                } else {
+                    self.knobs.offer
+                };
+                if let Some(offer) = offer {
                     // SAFETY: host buffer of `alpn_cap` bytes; the test's offers fit.
                     unsafe {
                         std::ptr::copy_nonoverlapping(
@@ -333,7 +401,10 @@ impl FramerDoor for TestDoor {
                 let token = self.next.fetch_add(1, Ordering::Relaxed);
                 let mut st = State {
                     text: self.knobs.text,
+                    messages: self.knobs.messages,
                     piece: self.knobs.piece,
+                    fields: self.knobs.fields,
+                    declared_len: self.knobs.declared_len,
                     ..State::default()
                 };
                 answer(&mut st, &i.sink, o, silence);

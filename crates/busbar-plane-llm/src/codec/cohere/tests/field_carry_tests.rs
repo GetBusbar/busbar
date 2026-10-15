@@ -31,16 +31,16 @@ fn request_roundtrip(body: serde_json::Value) -> serde_json::Value {
     // Bind the writer to a local (the `CohereWriter` const carries a Mutex; borrowing the const
     // directly trips clippy's interior-mutability lint).
     let w = CohereWriter;
-    w.write_request(&ir)
+    w.write_request(crate::codec::test_host::HOST, &ir)
 }
 
 /// Read a Cohere response body → IR → write it back on the Cohere wire.
 fn response_roundtrip(body: serde_json::Value) -> serde_json::Value {
     let ir = CohereReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("cohere response parses");
     let w = CohereWriter;
-    w.write_response(&ir)
+    w.write_response(crate::codec::test_host::HOST, &ir)
 }
 
 /// A rich Cohere v2 request exercising every request member the gate enumerates. Callers assert on
@@ -376,10 +376,10 @@ fn cohere_response_logprobs_drop_is_warned() {
     let subscriber = cap.clone();
     let (ir, out) = tracing::subscriber::with_default(subscriber, || {
         let ir = CohereReader
-            .read_response(&body)
+            .read_response(crate::codec::test_host::HOST, &body)
             .expect("cohere response parses");
         let w = CohereWriter;
-        let out = w.write_response(&ir);
+        let out = w.write_response(crate::codec::test_host::HOST, &ir);
         (ir, out)
     });
 
@@ -428,33 +428,42 @@ fn cohere_stream_events_reach_a_cohere_client() {
 
     // message-start
     let (_, start) = w
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: IrRole::Assistant,
-            usage: None,
-            id: Some("co_1".to_string()),
-            created: None,
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: IrRole::Assistant,
+                usage: None,
+                id: Some("co_1".to_string()),
+                created: None,
+                model: None,
+            },
+        )
         .expect("message-start frame");
     assert_eq!(start["type"], "message-start", "stream:message-start");
     assert_eq!(start["id"], "co_1", "message-start carries the id");
 
     // content-start
     let (_, cs) = w
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: IrBlockMeta::Text,
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 0,
+                block: IrBlockMeta::Text,
+                refusal: false,
+            },
+        )
         .expect("content-start frame");
     assert_eq!(cs["type"], "content-start", "stream:content-start");
 
     // content-delta
     let (_, cd) = w
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: IrDelta::TextDelta("hi".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: IrDelta::TextDelta("hi".to_string()),
+            },
+        )
         .expect("content-delta frame");
     assert_eq!(cd["type"], "content-delta", "stream:content-delta");
     assert_eq!(
@@ -464,20 +473,26 @@ fn cohere_stream_events_reach_a_cohere_client() {
 
     // content-end (BlockStop on the text index)
     let (_, ce) = w
-        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 0 },
+        )
         .expect("content-end frame");
     assert_eq!(ce["type"], "content-end", "stream:content-end");
 
     // tool-call-start
     let (_, ts) = w
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 1,
-            block: IrBlockMeta::ToolUse {
-                id: "tc1".to_string(),
-                name: "search".to_string(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 1,
+                block: IrBlockMeta::ToolUse {
+                    id: "tc1".to_string(),
+                    name: "search".to_string(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        })
+        )
         .expect("tool-call-start frame");
     assert_eq!(ts["type"], "tool-call-start", "stream:tool-call-start");
     assert_eq!(
@@ -487,10 +502,13 @@ fn cohere_stream_events_reach_a_cohere_client() {
 
     // tool-call-delta
     let (_, td) = w
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 1,
-            delta: IrDelta::InputJsonDelta("{\"q\":".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 1,
+                delta: IrDelta::InputJsonDelta("{\"q\":".to_string()),
+            },
+        )
         .expect("tool-call-delta frame");
     assert_eq!(td["type"], "tool-call-delta", "stream:tool-call-delta");
     assert_eq!(
@@ -500,18 +518,24 @@ fn cohere_stream_events_reach_a_cohere_client() {
 
     // tool-call-end (BlockStop on the tool index)
     let (_, te) = w
-        .write_response_event(&IrStreamEvent::BlockStop { index: 1 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 1 },
+        )
         .expect("tool-call-end frame");
     assert_eq!(te["type"], "tool-call-end", "stream:tool-call-end");
 
     // message-end
     let (_, me) = w
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: None,
-            stop_sequence: None,
-            usage: stream_usage(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: None,
+                stop_sequence: None,
+                usage: stream_usage(),
+                stop_detail: None,
+            },
+        )
         .expect("message-end frame");
     assert_eq!(me["type"], "message-end", "stream:message-end");
     assert_eq!(
@@ -543,10 +567,13 @@ fn cohere_stream_citation_end_pairs_with_start() {
         ..Default::default()
     };
 
-    let frames = w.write_response_events(&IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: IrDelta::CitationsDelta(vec![citation]),
-    });
+    let frames = w.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: IrDelta::CitationsDelta(vec![citation]),
+        },
+    );
 
     assert_eq!(
         frames.len(),

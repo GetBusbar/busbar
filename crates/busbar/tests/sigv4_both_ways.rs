@@ -27,7 +27,7 @@
 // A bootable data plane with the bedrock path ingress, the admin listener, the admin-token door and
 // the SigV4 auth plugin must all be linked.
 #![cfg(all(
-    linked_axis_body_ingress,
+    linked_section_pools,
     feature = "root-admin",
     feature = "auth-admin-tokens",
     feature = "auth-sigv4"
@@ -670,7 +670,8 @@ identity-providers:
 auth:
   chain: [keys]
   signing_key: {{ file: "{signing}" }}
-  admin_auth: [admin-tokens]
+  admin_auth:
+    - admin-tokens
 providers:
   bedrock-lane:
     api_key: {{ env: {UPSTREAM_CREDS_ENV} }}

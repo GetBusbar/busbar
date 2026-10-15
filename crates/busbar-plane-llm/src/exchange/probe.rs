@@ -21,10 +21,14 @@ fn decl(name: &str) -> Option<&'static ProtocolDecl> {
 
 /// The probe body the far end's dialect answers for `wire_model` (empty when it has none).
 #[must_use]
-pub fn probe_body(dialect: &str, wire_model: &str) -> Vec<u8> {
+pub fn probe_body(
+    host: &dyn busbar_contract::codec::CodecHost,
+    dialect: &str,
+    wire_model: &str,
+) -> Vec<u8> {
     decl(dialect)
         .and_then(|d| d.dialect())
-        .map(|dc| dc.probe_body(wire_model))
+        .map(|dc| dc.probe_body(host, wire_model))
         .unwrap_or_default()
 }
 
@@ -42,11 +46,22 @@ pub fn probe_path(lane: &Lane) -> String {
 
 /// THE PROBE REQUEST for `lane`; `None` for a lane under a path base, which is not probed.
 #[must_use]
-pub fn request(lane: &Lane) -> Option<FarRequest> {
+pub fn request(host: &dyn busbar_contract::codec::CodecHost, lane: &Lane) -> Option<FarRequest> {
     if lane.path_base.is_some() {
         return None;
     }
-    let (target, _canonical) = wire_and_canonical_path(&probe_path(lane));
+    // A lane over the invoke envelope is probed through it: its target, and its body's edits.
+    let path = match &lane.path {
+        None if lane.invoke => super::invoke::path(lane.wire_model(), false),
+        _ => probe_path(lane),
+    };
+    let body = probe_body(host, lane.dialect, lane.wire_model());
+    let body = if lane.invoke {
+        super::invoke::body(&body, &[])?
+    } else {
+        body
+    };
+    let (target, _canonical) = wire_and_canonical_path(&path);
     let user_agent = decl(lane.dialect).map_or(EGRESS_UA_DEFAULT, |d| d.egress_user_agent);
     Some(FarRequest {
         verb: "POST",
@@ -59,7 +74,7 @@ pub fn request(lane: &Lane) -> Option<FarRequest> {
             ("user-agent".to_string(), user_agent.as_bytes().to_vec()),
             ("accept".to_string(), APPLICATION_JSON.as_bytes().to_vec()),
         ],
-        body: probe_body(lane.dialect, lane.wire_model()),
+        body,
         pristine: false,
         dropped_controls: Vec::new(),
     })

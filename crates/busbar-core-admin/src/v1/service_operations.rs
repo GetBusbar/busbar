@@ -16,22 +16,19 @@
 //! where the block now lives.
 
 use super::*;
-use busbar_kernel::plugin_admission::sign::{TrustInput, TrustPolicy};
+use busbar_kernel::plugin_admission::sign::TrustPolicy;
 
-/// `plugins.trust` resolved as boot resolves it (the loader's `TrustPolicy::from_config`), after
-/// warning about any malformed anti-downgrade floor — every admin moment the policy resolves
-/// (catalog, reload, upload, rollback) warns exactly as boot does. `binary_version` is carried for
+/// `plugins.trust` resolved by THE ROOT'S ONE BUILDER — the one boot admits plugins under, carried
+/// on the snapshot (`App::plugin_trust`) — after warning about any malformed anti-downgrade floor,
+/// so every admin moment the policy resolves (catalog, install, inspect, rollback) reaches boot's
+/// verdict and warns exactly as boot does. No builder lives here. `binary_version` is carried for
 /// diagnostics only.
-pub(crate) fn trust_policy(cfg: &PluginsCfg, binary_version: &str) -> Result<TrustPolicy, String> {
-    cfg.warn_invalid_floors();
-    TrustPolicy::from_config(TrustInput {
-        publishers: &cfg.publisher_keys(),
-        allow_unsigned: cfg.trust.allow_unsigned,
-        allow_third_party: cfg.trust.allow_third_party,
-        min_versions: &cfg.min_versions,
-        first_party_floors: &cfg.first_party_floors,
-        binary_version,
-    })
+pub(crate) fn trust_policy(app: &App, binary_version: &str) -> Result<TrustPolicy, String> {
+    app.plugins_cfg.warn_invalid_floors();
+    let build = app.plugin_trust.ok_or_else(|| {
+        "no plugin trust policy is installed (the composition root's)".to_string()
+    })?;
+    build(&app.plugins_cfg, binary_version)
 }
 
 impl AdminService {
@@ -610,7 +607,7 @@ impl AdminService {
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
         // the same posture the compiled-in hook rows take (`active: None`).
         let mut out = linked_store_rows();
-        let Ok(policy) = trust_policy(&self.app.plugins_cfg, env!("CARGO_PKG_VERSION")) else {
+        let Ok(policy) = trust_policy(&self.app, env!("CARGO_PKG_VERSION")) else {
             return out;
         };
 
@@ -881,8 +878,8 @@ impl AdminService {
         // ── 1. filename sanity: a bare tarball filename ──
         let file = validate_plugin_filename(file)?;
 
-        let policy = trust_policy(&self.app.plugins_cfg, env!("CARGO_PKG_VERSION"))
-            .map_err(AdminError::Validation)?;
+        let policy =
+            trust_policy(&self.app, env!("CARGO_PKG_VERSION")).map_err(AdminError::Validation)?;
 
         // ── 2. STRUCTURAL: in-memory unpack + manifest completeness + integrity + abi ──
         let unpacked = busbar_kernel::plugin_admission::tarball::unpack(tarball)
@@ -1057,8 +1054,8 @@ impl AdminService {
             )));
         }
 
-        let policy = trust_policy(&self.app.plugins_cfg, env!("CARGO_PKG_VERSION"))
-            .map_err(AdminError::Validation)?;
+        let policy =
+            trust_policy(&self.app, env!("CARGO_PKG_VERSION")).map_err(AdminError::Validation)?;
 
         let unpacked = busbar_kernel::plugin_admission::tarball::unpack(tarball)
             .map_err(|e| AdminError::Validation(format!("invalid plugin tarball: {e}")))?;
@@ -1205,8 +1202,8 @@ impl AdminService {
         // third-party plugin can also roll back. Anything the target does NOT satisfy (a broken
         // signature, an un-opted-in third party) still fails: a rollback authenticates the OPERATOR,
         // never the ARTIFACT.
-        let mut policy = trust_policy(&self.app.plugins_cfg, &manifest.version)
-            .map_err(AdminError::Validation)?;
+        let mut policy =
+            trust_policy(&self.app, &manifest.version).map_err(AdminError::Validation)?;
         policy
             .min_versions
             .insert(manifest.name.clone(), manifest.version.clone());
@@ -1283,8 +1280,10 @@ impl AdminService {
             }
         };
         let plugins_dir = self.app.plugins_dir.to_string_lossy().into_owned();
+        // The running generation's root rules: a dry run judges what an apply would.
+        let rules = std::sync::Arc::clone(&self.app.root_rules);
         match tokio::task::spawn_blocking(move || {
-            validate_config_blocking(deploy, &defs, plugins_dir)
+            validate_config_blocking(deploy, &defs, plugins_dir, &rules)
         })
         .await
         {
@@ -1410,6 +1409,8 @@ impl AdminService {
             window,
             as_of: now,
             currency: (),
+            // No row was read, so no card priced one.
+            rate_card_version: None,
             total: UsageBreakdown::default(),
             by_model: Vec::new(),
             by_key: Vec::new(),
@@ -1471,6 +1472,11 @@ impl AdminService {
         // journal sealed, read ONCE for the whole response. Each row prices its counts AS CORRECTED
         // (`row_count_corrections`), never a money figure a correction carried — it carries none.
         let corrections = amend::node_corrections();
+        // THE VERSION THE RESPONSE WAS PRICED AT (#44, Q93): the highest history seq among the
+        // cards that priced its rows. It is RECORDED as each row's card resolves and never read back
+        // by the pricing: a row's card is resolved by its own instant (#79). `?as_of=<it>` re-derives
+        // every figure below, and a card published after these rows were earned leaves it as it was.
+        let mut priced_by: Option<u64> = None;
         // Aggregate in memory — a bucket is bounded by (keys × models) accumulation rows.
         let mut total = UsageBreakdown::default();
         let mut by_model: std::collections::BTreeMap<(String, String), UsageBreakdown> =
@@ -1554,9 +1560,12 @@ impl AdminService {
             let classes: &std::collections::BTreeMap<String, u64> = &corrected_classes;
             let row_spend = match view.as_ref() {
                 Some(v) => match v.card_at(at) {
-                    Some((_card_seq, card)) => derive_spend_micros_row_classes_at_card(
-                        v, at, card, &cost, &lane, &row_view, classes,
-                    ),
+                    Some((card_seq, card)) => {
+                        priced_by = priced_by.max(Some(card_seq.get()));
+                        derive_spend_micros_row_classes_at_card(
+                            v, at, card, &cost, &lane, &row_view, classes,
+                        )
+                    }
                     None => Err(busbar_kernel::cost::MoneyError::NoCardInForce { at }),
                 },
                 None => derive_spend_micros_row_classes(&cost, &lane, &row_view, classes),
@@ -1698,6 +1707,7 @@ impl AdminService {
             window,
             as_of: now,
             currency: (),
+            rate_card_version: priced_by,
             total,
             by_model,
             by_key,
@@ -1787,6 +1797,7 @@ fn validate_config_blocking(
     mut deploy: DeployCfg,
     defs: &std::collections::HashMap<String, ProviderDef>,
     plugins_dir: String,
+    rules: &std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
 ) -> ConfigValidateView {
     // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
     // fails there is no RootCfg to hand to the semantic validator, so return the resolve errors.
@@ -1796,6 +1807,14 @@ fn validate_config_blocking(
     };
     if let Err(errors) = busbar_kernel::config_validate::validate(&root) {
         return ConfigValidateView { ok: false, errors };
+    }
+    // The composition root's rules, as an apply's build judges them first: a dry run never answers
+    // green for a configuration the apply would refuse.
+    if let Err(e) = rules.check(&root) {
+        return ConfigValidateView {
+            ok: false,
+            errors: vec![e],
+        };
     }
     // SECURITY (R3-B): the pre-flight below SCANS `plugins.dir` — `fs::read_dir` plus a read of
     // every tarball it finds (`plugins_preflight` → `scan_and_validate`). On THIS endpoint

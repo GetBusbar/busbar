@@ -70,16 +70,19 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         //    keyed by a `PipeId`, wired over the real governed child process in `super::pipe`. ──────
         pipe_read: Some(super::pipe::pipe_read),
         pipe_write: Some(super::pipe::pipe_write),
-        // ── The DURABLE journal seam (minor-9): each slot wired over the store-backed
-        //    `audit::journal::Journal<PlaneJournalRecord>` in `super::journal`. ───────────────────────
+        // ── The DURABLE journal seam (minor-9): the slots the kernel's own streams still reach,
+        //    wired over the store-backed `audit::journal::Journal<StreamRecord>` of
+        //    `audit::stream_registry`. A plane's record chains are framed and verified on the
+        //    kernel's record path (`crate::host_chains`, BUSBAR-1.6.0.md Part 3 §5), so the read,
+        //    restore, forget and verify slots no plane reached any more are gone (unwired). ───────
         journal_register: Some(super::journal::journal_register),
         journal_append_scoped: Some(super::journal::journal_append_scoped),
-        journal_read_scoped: Some(super::journal::journal_read_scoped),
-        journal_restore: Some(super::journal::journal_restore),
+        journal_read_scoped: None,
+        journal_restore: None,
         journal_seed: Some(super::journal::journal_seed),
-        journal_forget: Some(super::journal::journal_forget),
+        journal_forget: None,
         journal_compact: Some(super::journal::journal_compact),
-        journal_verify_scoped: Some(super::journal::journal_verify_scoped),
+        journal_verify_scoped: None,
         // ── The CARD-SIGN seam (minor-10): the host derives the deployment's domain-separated card
         //    subkey and signs a plane-framed input, so the card SECRET never crosses to the plane.
         //    Wired only when a plane declares a card-signing domain (the neutral `card-signing`
@@ -96,15 +99,50 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         // ── WIRED `counter_add` (minor-25, the METRIC-FAMILY seam) → the recorder, over a family the
         //    emitting plane DECLARED. Always wired; what a plane may add to is its declaration's. ──
         counter_add: Some(counter_add),
-        // ── The HOST SERVICES (minor 30): entropy, wall clock, usage-tap fault latch, translate
-        //    cap — the contract ports this image's host armed, served by the contract itself, so a
-        //    dropped-in plane gets the services a linked one does (ARCHITECT SD-3 queue (6)). The
+        // ── The HOST SERVICES (minor 30): the host's entropy and wall clock, served here (the
+        //    contract holds neither: a codec is handed them as a `CodecHost`). The usage-tap fault
+        //    latch and the translate cap are retired slots and stay `None` (row 155). The
         //    trust family (`verify_lookup`/`verify_store`/`verify_decide`/`drift_quarantine`/
         //    `approval_redeem[_q]`/`trust_evaluate`) and `guard_url` stay at the base's `None`: no
         //    plane calls them, and a plane's trust and destination judging are the `HostSlots`
         //    `trust.*` and `dest.judge` services. ──
-        ..PlaneHostVtable::SERVICES
+        entropy_fill: Some(entropy_fill),
+        wall_clock: Some(wall_clock),
+        ..PlaneHostVtable::EMPTY
     }
+}
+
+/// WIRED `entropy_fill` → the host's CSPRNG ([`crate::proto::CodecHostServices`], the one the kernel
+/// hands every codec it drives). Process-wide: `host` may be `HostCtx::NULL`. `Refused` for a NULL
+/// `out` with a non-zero length or a CSPRNG that has nothing to give; `Fault` on a caught panic.
+extern "C-unwind" fn entropy_fill(_host: HostCtx, out: *mut u8, out_len: usize) -> StatusClass {
+    catch_unwind(AssertUnwindSafe(|| {
+        if out.is_null() && out_len > 0 {
+            return StatusClass::Refused;
+        }
+        if out_len == 0 {
+            return StatusClass::Ok;
+        }
+        // SAFETY: a non-null `out` addresses `out_len` writable bytes for the call (the slot's
+        // buffer discipline).
+        let buf = unsafe { std::slice::from_raw_parts_mut(out, out_len) };
+        if busbar_contract::codec::CodecHost::fill_entropy(&crate::proto::CodecHostServices, buf) {
+            StatusClass::Ok
+        } else {
+            StatusClass::Refused
+        }
+    }))
+    .unwrap_or(StatusClass::Fault)
+}
+
+/// WIRED `wall_clock` → the host's wall clock in whole Unix seconds (`store::now`, the one a codec
+/// the kernel drives is handed). Process-wide: `host` may be `HostCtx::NULL`; `0` on a caught panic.
+extern "C-unwind" fn wall_clock(_host: HostCtx) -> u64 {
+    catch_unwind(|| {
+        busbar_contract::codec::CodecHost::wall_clock_now(&crate::proto::CodecHostServices)
+            .unwrap_or(0)
+    })
+    .unwrap_or(0)
 }
 
 /// WIRED `card_sign` → the REAL host-side card signer over `crate::governance` (see

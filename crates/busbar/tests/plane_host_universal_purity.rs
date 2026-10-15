@@ -518,7 +518,7 @@ fn no_unjustified_single_plane_method_on_universal_engine_host() {
 
 /// SELF-TEST (the detector is NON-VACUOUS): the SAME detector must (1) enumerate the known slice
 /// methods, (2) classify a KNOWN single-plane method (`pool_label`) as single-plane, (3)
-/// still see a KNOWN ≥2-plane method (`clock_now_secs`) as multi-plane, and (4) a KNOWN 0-plane method
+/// see a method two (planted) planes call as multi-plane, and (4) a KNOWN 0-plane method
 /// (`plane_defs`) as neutral. A broken scan that "finds nothing" (all-0, or all-1) fails HERE loudly,
 /// so a green real witness above is meaningful. It also proves `.plane_slot(` ≠ `plane_slot_live`
 /// (whole-token matching) via a direct `calls_method` assertion.
@@ -562,13 +562,35 @@ fn detector_is_non_vacuous_across_single_multi_and_zero_plane_methods() {
          (`{recorded}`), got {single:?}"
     );
 
-    // (3) A KNOWN ≥2-plane method: `clock_now_secs` (llm + a2a + voice). Proves the detector DISTINGUISHES
-    //     shared capabilities — it does not collapse everything to single-plane.
+    // (3) THE ≥2-PLANE CLASS. `clock_now_secs` was the tree's shared example until a2a and voice
+    //     were served through their doors: a plugin reaches busbar only over the ABI
+    //     (`BUSBAR-1.6.0.md` l.2179, Part 2 #2), so neither holds an `EngineHost`, and one in-root
+    //     plane is left. No method on the real tree CAN have two in-root plane callers now, so the
+    //     multi-plane class is proved over the SAME counter on two planted plane sources — the
+    //     property this case exists for: a counter that under-counts a shared method would false-RED
+    //     it. The real scan still sees the method's one caller.
     let clock = scan.callers.get("clock_now_secs").expect("enumerated");
-    assert!(
-        clock.len() >= 2,
-        "detector failed to see `clock_now_secs` as MULTI-plane (got {clock:?}); a broken counter that \
-         under-counts would false-RED shared methods"
+    assert_eq!(
+        clock.len(),
+        1,
+        "detector failed to see the one in-root plane's `.clock_now_secs(` call (got {clock:?})"
+    );
+    let planted: BTreeMap<&'static str, Vec<String>> = BTreeMap::from([
+        (
+            "planted-a",
+            vec!["fn a(h: &H) { let _ = h.clock_now_secs(); }".to_string()],
+        ),
+        (
+            "planted-b",
+            vec!["fn b(h: &H) -> u64 { h\n    .clock_now_secs() }".to_string()],
+        ),
+    ]);
+    let shared = plane_callers("clock_now_secs", &planted);
+    assert_eq!(
+        shared.len(),
+        2,
+        "detector failed to see `clock_now_secs` as MULTI-plane over two planted callers (got \
+         {shared:?}); a broken counter that under-counts would false-RED shared methods"
     );
 
     // (4) A KNOWN 0-plane method: `plane_defs` (A2A's card path names it, but not via `.plane_defs(`

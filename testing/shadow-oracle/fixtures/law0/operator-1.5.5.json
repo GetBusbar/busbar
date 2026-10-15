@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "THE OPERATOR CREDENTIAL'S 1.5.5 WORDS AND LINES, verbatim from the 1.5.5 binary (DATA: the root's",
+    "tests read it; their source names no auth module). provider: the operator credential's module, the",
+    "`auth.admin_auth:` default and a reserved hook name (v1.5.5 crates/busbar/src/config/mod.rs:795, :1874,",
+    ":1891); principal: the id it identifies as; hook_word_space: 1.5.5's whole reserved hook-name set;",
+    "unanswered_token / misplaced_token: v1.5.5 crates/busbar/src/config_validate/mod.rs:1175."
+  ],
+  "provider": "admin-tokens",
+  "principal": "admin",
+  "hook_word_space": [
+    "admin-tokens",
+    "cheapest",
+    "fastest",
+    "first",
+    "least_busy",
+    "nothing",
+    "reject",
+    "tokens",
+    "usage",
+    "weighted"
+  ],
+  "unanswered_token": "an admin-tokens token is configured but this binary was built WITHOUT the `auth-admin-tokens` feature — the admin API would be silently disabled. Rebuild with default features or wire an external admin auth module.",
+  "misplaced_token": "auth chain entry 'keys' sets `token:`, which belongs to the built-in `admin-tokens` module only; move it, e.g.:\n\n    admin_auth:\n      - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }\n"
+}

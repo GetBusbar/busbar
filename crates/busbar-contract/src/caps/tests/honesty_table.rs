@@ -67,7 +67,7 @@ fn the_grants_the_table_names_are_the_ones_the_signatures_take() {
     for (row, signature) in [
         (
             "`Hold::open` demands a `Grant<Admittance>`",
-            "pub fn open(_token: &Grant<Admittance>,",
+            "pub fn open(token: &Grant<Admittance>,",
         ),
         (
             "`Posted::settle` demands a `Grant<WriteMoney>`",

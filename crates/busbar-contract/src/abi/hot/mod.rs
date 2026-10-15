@@ -4,8 +4,8 @@
 //! The busbar **protocol-plane HOT-tier ABI** — a `#[repr(C)]`, POD-by-pointer, zero-alloc seam
 //! between the neutral engine and a protocol plane (compiled in or `dlopen`ed).
 //!
-//! This is the HOT lane of [`busbar_plugin`](crate); the [`cold`](crate::abi::cold) lane is its
-//! deliberately-opposite sibling (JSON over six C symbols, off the request hot path). Both obey the
+//! This is the HOT lane of [`busbar_plugin`](crate); the COLD lane (`abi::cold`, deleted) was its
+//! deliberately-opposite sibling (JSON over six C symbols, off the request hot path). Both obeyed the
 //! shared airlock preamble and sized-struct discipline hoisted to the [crate root](crate).
 //!
 //! Every type and signature here is real. The host side of the table is built by busbar-kernel's
@@ -35,14 +35,13 @@
 pub mod decl;
 pub mod host;
 pub mod pod;
-pub mod services;
 pub mod transport;
 pub mod workitem;
 
 /// The cdylib ENTRYPOINT convention a dropped-in plane exports so the loader can recover its
 /// [`PlaneDecl`]. This is the HOT-lane analogue of the cold lane's six `busbar_*` symbols
-/// ([`crate::abi::cold::symbol`]): a plane `cdylib` still exports `busbar_abi()` (the SHARED
-/// [`TRANSPORT_VERSION`](crate::abi::cold::TRANSPORT_VERSION) handshake) and `busbar_plugin_kind()` (==
+/// (`abi::cold::symbol`, deleted): a plane `cdylib` exported `busbar_abi()` (the SHARED
+/// `TRANSPORT_VERSION` handshake) and `busbar_plugin_kind()` (==
 /// `"plane"`, [`crate::abi::mechanism::kind::PLANE`]) so it rides the EXACT same tarball / signed-manifest /
 /// trust discovery pipeline; the ONE extra symbol below is how it hands core the `#[repr(C)]` decl
 /// pointer instead of the JSON `call` wire.
@@ -60,22 +59,10 @@ pub mod symbol {
     /// the loader. The transport cdylib also exports `busbar_abi()` and `busbar_plugin_kind()` (==
     /// `"transport"`).
     pub const TRANSPORT_DECL: &[u8] = b"busbar_transport_decl\0";
-
-    /// `busbar_plane_arm(host: *const PlaneHostVtable) -> RawStatus` — OPTIONAL (minor 30): arm the
-    /// dropped-in plane image's contract host-service ports over the host's table
-    /// ([`services::arm`](super::services::arm)). The host calls it when it opens the door, before
-    /// `build`; an image that does not export it simply keeps its ports' failure paths.
-    pub const PLANE_ARM: &[u8] = b"busbar_plane_arm\0";
 }
 
-/// `busbar_plane_arm` — the optional arm entrypoint's fn-pointer type (see [`symbol::PLANE_ARM`]).
-///
-/// # Safety
-/// A non-null `host` must address a live `PlaneHostVtable` that outlives the loaded image.
-pub type PlaneArmFn = unsafe extern "C-unwind" fn(host: *const PlaneHostVtable) -> RawStatus;
-
 /// `busbar_plane_decl` — the plane cdylib entrypoint's fn-pointer type the loader resolves via
-/// `libloading`. `unsafe extern "C-unwind"` for parity with the cold [`AbiFn`](crate::abi::cold::AbiFn):
+/// `libloading`. `unsafe extern "C-unwind"` for parity with the cold lane's `AbiFn` (deleted):
 /// a panic in a plane's decl accessor unwinds as a DEFINED forced unwind the loader's guard catches,
 /// rather than aborting at the plugin frame.
 ///

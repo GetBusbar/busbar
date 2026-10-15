@@ -3,7 +3,7 @@
 
 //! THE 1.5.5 HOOK PARITY SUITE, ON THE DRIVER (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch":
 //! the flip's gate is every hook test green on the driver; Appendix A: the hook parity suite is the
-//! 184 v1.5.5 hook tests).
+//! 181 v1.5.5 hook tests).
 //!
 //! The plane-origin tests of `v1.5.5`, each under its 1.5.5 name, with the values 1.5.5 asserted,
 //! run with the plane under proof served on the plane driver: its REAL door, linked and loaded
@@ -20,10 +20,10 @@
 //! the one `#[path]`); the plane under proof is the one whose Statement declares the `pools` map,
 //! found by what it states, never by name.
 //!
-//! Development-only, like the switch it proves: built with a plane's development-only fold switch
-//! (`linked_fold_on_driver`).
+//! Built whenever a `driver-proofs` row's plane door is linked (`linked_driver_proofs`): the default
+//! build links it, so the hook gate on the driver runs with every default test run.
 
-#![cfg(linked_fold_on_driver)]
+#![cfg(linked_driver_proofs)]
 
 // The linked plane doors (`LINKED_PLANE_DOORS`), generated from the manifest.
 include!(concat!(env!("OUT_DIR"), "/linked_plane_doors.rs"));

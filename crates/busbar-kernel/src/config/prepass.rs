@@ -150,17 +150,16 @@ enum Dest {
 }
 
 impl Dest {
-    /// The carrier `key` lands in when `decl` declares it, or `None` (no carrier: left unlifted). A
-    /// section declared BESIDE the declaring one is the endpoint door of the plane that owns it; a
-    /// declaring section lands in the carrier for that section — the named ones by their section,
-    /// one its plane owns the grammar of in the map carrier ([`DeclaredSections::holds`]), and any
-    /// other in the generic RAW carrier ([`DeployCfg::plane_raw`]) — so every registered plane's
-    /// declaring section is lifted, whichever door the plane came in by.
+    /// The carrier `key` lands in when `decl` declares it. A section owned BESIDE the declaring one
+    /// is its owner's endpoint door, else RAW; a declaring section lands in its named carrier, the map
+    /// carrier ([`DeclaredSections::holds`]) or RAW ([`DeployCfg::plane_raw`]), whichever door.
     fn for_declared(decl: &PlaneDeclaration, key: &'static str) -> Option<Dest> {
         if key != decl.config_section {
-            // The carrier that states itself the door takes it, for the plane that owns that door.
+            // The door's carrier takes it for the door's owner; any other owned section rides RAW.
             let door = (EndpointSection::KEY == Declared::Door).then_some(Dest::Endpoint);
-            return door.filter(|_| decl.config_section == EndpointSection::OWNER);
+            return door
+                .filter(|_| decl.config_section == EndpointSection::OWNER)
+                .or(Some(Dest::Raw));
         }
         [
             (ToolsSection::SECTION, Dest::Tools),

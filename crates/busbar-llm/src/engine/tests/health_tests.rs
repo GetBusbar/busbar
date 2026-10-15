@@ -658,6 +658,101 @@ async fn a_shortened_interval_takes_effect_on_the_inherited_schedule() {
     server.shutdown().await;
 }
 
+/// ROW 74 (F25): a provider `base_url` carrying `user:pass@` BOOTS and is reached at the host after
+/// it, as 1.5.5 reached it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`, `host_from_base`, which
+/// stripped the userinfo for the host it dialled and signed). Driven over the REAL boot
+/// (`build_app_from_config`, through `build_once`) and a REAL dial to a loopback far end: the
+/// active probe rides the same owned egress stack as organic traffic. The far end sees the stripped
+/// authority in `Host` and the lane's `authorization` credential alone (it displaces the Basic field
+/// the userinfo spells, as 1.5.5's reqwest build did), and the
+/// lane row the plane built (its dial base, its signed host) and the neutral lane table the
+/// `/stats`-adjacent readers render carry the stripped base, never the planted spelling. RED before
+/// the fix: the lane carrier kept the base URL as written, so every table downstream held it.
+#[tokio::test]
+async fn a_userinfo_base_url_boots_and_its_lane_dials_the_stripped_host() {
+    use busbar_kernel::plane_host::EngineTablesView;
+    crate::testkit::install_test_seams();
+    busbar_kernel::snapshot::init();
+    let state = Arc::new(MockServerState::new());
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: serde_json::json!({"ok": true}),
+    });
+    let server = MockServer::new(state.clone()).await;
+    let bare = server.base_url();
+    let authority = bare
+        .split_once("://")
+        .map(|(_, rest)| rest.to_string())
+        .expect("the mock names a scheme");
+    let key_file =
+        std::env::temp_dir().join(format!("busbar-row74-userinfo-{}", std::process::id()));
+    std::fs::write(&key_file, "sk-row74").expect("the key file");
+    let mut cfg = crate::test_support::cfg_with_provider_api_key(
+        busbar_contract::secret_ref::SecretRef::file(key_file.display().to_string()),
+    );
+    let p = cfg.providers.get_mut("acme").expect("the sole provider");
+    p.base_url = bare.replacen("://", "://svcuser:hunter2-P4ss@", 1);
+    p.health = Some(health_active());
+    cfg.models.insert(
+        "m0".to_string(),
+        busbar_kernel::config::providers::ModelCfg {
+            reasoning: None,
+            prompt_caching: None,
+            protocol: None,
+            max_requests: -1,
+            provider: "acme".into(),
+            max_concurrent: Some(1),
+            default_max_tokens: None,
+            upstream_model: None,
+            attempt_timeout_ms: None,
+        },
+    );
+
+    let app = Arc::new(build_once(cfg, None).expect("a userinfo base_url boots"));
+    let _ = std::fs::remove_file(&key_file);
+
+    // The lane row the plane built, and the neutral table core renders, hold the stripped base.
+    let lane = &app.llm_runtime().lanes[0];
+    assert_eq!(lane.base_url, bare, "the lane dials the stripped base");
+    assert!(
+        lane.url_userinfo.is_some(),
+        "the userinfo is held, opaque, for the kernel's hop"
+    );
+    assert_eq!(
+        lane.signing_host, authority,
+        "the signed host is the dialled one"
+    );
+    let view = app
+        .config_tables
+        .lane_view(0)
+        .expect("the lane's neutral view");
+    assert_eq!(view.base_url, bare, "the rendered base is the stripped one");
+
+    // The dial: the far end is reached at the stripped authority and hears nothing of the userinfo.
+    probe_lane(
+        busbar_kernel::test_support::engine_host(&app).as_ref(),
+        0,
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(
+        state.get_last_request_header("host").as_deref(),
+        Some(authority.as_str()),
+        "the far end was dialled at the stripped authority"
+    );
+    // This test build's credential is `authorization: Bearer <key>`, so 1.5.5's reqwest build
+    // replaced the Basic field the userinfo spelled: the far end hears the credential alone.
+    assert_eq!(
+        state.get_last_request_header("authorization").as_deref(),
+        Some("Bearer sk-row74"),
+        "an `authorization` credential displaces the userinfo's Basic field, as in 1.5.5"
+    );
+    assert!(state
+        .get_last_request_header("proxy-authorization")
+        .is_none());
+    server.shutdown().await;
+}
+
 /// The tick-side owner-checked write. A late-arriving prober's post-tick write must
 /// NOT revert a newer generation's spawn-time clamp — the deeper reason `advance_owned_deadline`
 /// is `compare_exchange`, keyed on the value THIS prober last observed itself owning, rather than

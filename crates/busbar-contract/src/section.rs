@@ -48,6 +48,31 @@ pub const SUBJECT_TOKEN_TYPE_KEY: &str = "subject_token_type";
 /// token, which is what busbar's own ambient credential is.
 pub const DEFAULT_SUBJECT_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:access_token";
 
+/// A registration's LEASED OUTBOUND CREDENTIAL block: busbar's own credential for the member,
+/// presented on every request to it by the auth style its [`CREDENTIAL_PLACEMENT_KEY`] names
+/// (`BUSBAR-1.6.0.md` Part 3 section 4: "credentials are auth objects, never a host-minted header").
+/// Its keys are [`CREDENTIAL_SECRET_KEY`] (a secret reference), [`CREDENTIAL_PLACEMENT_KEY`] and
+/// [`CREDENTIAL_LEASE_TTL_KEY`]. The kernel resolves and binds it; a plane validates it and never
+/// resolves it.
+pub const UPSTREAM_CREDENTIAL_KEY: &str = "upstream_credential";
+
+/// Inside [`UPSTREAM_CREDENTIAL_KEY`]: the credential, a secret reference.
+pub const CREDENTIAL_SECRET_KEY: &str = "secret";
+
+/// Inside [`UPSTREAM_CREDENTIAL_KEY`]: where the credential is presented: [`PLACEMENT_BEARER`]
+/// (absent = it), or `{header: <name>}` ([`PLACEMENT_HEADER_KEY`]), the named header carrying the
+/// credential verbatim.
+pub const CREDENTIAL_PLACEMENT_KEY: &str = "placement";
+
+/// The [`CREDENTIAL_PLACEMENT_KEY`] word that presents `authorization: Bearer <credential>`.
+pub const PLACEMENT_BEARER: &str = "bearer";
+
+/// The [`CREDENTIAL_PLACEMENT_KEY`] object's key naming the header the credential is carried in.
+pub const PLACEMENT_HEADER_KEY: &str = "header";
+
+/// Inside [`UPSTREAM_CREDENTIAL_KEY`]: the lease, in milliseconds (greater than zero).
+pub const CREDENTIAL_LEASE_TTL_KEY: &str = "lease_ttl_ms";
+
 /// A registration's `aud:`: the RFC 8707 resource indicator its outbound token is audience-bound to.
 pub const AUDIENCE_KEY: &str = "aud";
 
@@ -160,6 +185,24 @@ pub const MEMBER_PROGRAM: &str = "settings.*";
 #[must_use]
 pub fn member_program(target_from: &str) -> bool {
     target_from == MEMBER_PROGRAM
+}
+
+/// THE OWNED-SECTION PATH of a need's `trust_from` (ARCHITECT ruling on a plane's push trust,
+/// 2026-10-14): `owned.<section>.<key>[...]` names a value in one of the plane's OTHER OWNED
+/// SECTIONS (the Statement's sections beside its declaring one, lifted raw and handed at `open` in
+/// `PlaneOpenIn::owned` and at `refresh` under `abi::plane::EXT_OWNED`), never in its own settings:
+/// a namespace of its own, with no fallback between it and `settings.`. An owned section is
+/// operator-OPTIONAL, so a trust anchor named here is optional by definition: absent, the need is
+/// secured with the public roots alone; present, it is the operator CA added on top of them, and one
+/// that does not parse into a trust anchor is refused, as a `settings.` anchor is.
+pub const OWNED_PATH_PREFIX: &str = "owned.";
+
+/// The path inside the owned sections an owned-section path names ([`OWNED_PATH_PREFIX`]):
+/// `<section>.<key>[...]`; `None` for any other path.
+#[must_use]
+pub fn owned_path(path: &str) -> Option<&str> {
+    path.strip_prefix(OWNED_PATH_PREFIX)
+        .filter(|rest| !rest.is_empty() && rest.split('.').all(|segment| !segment.is_empty()))
 }
 
 /// One plane's top-level section, split into its two reserved knobs and its registrations.

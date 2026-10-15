@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use busbar_contract::protocol::{CredentialHeader, EgressScheme, ProtocolDecl};
 use busbar_kernel::bound_credential::{
-    bind, CredentialProvider, DeclaredBuilder, NoCredential, StyleBinding,
+    bind_presenting, CredentialProvider, DeclaredBuilder, NoCredential, StyleBinding,
 };
 use busbar_kernel::plane_host::{AuthStyleInput, LaneInput, PlaneBuildInput};
 use serde_json::{json, Map, Value};
@@ -31,9 +31,14 @@ fn presentation(p: CredentialHeader) -> Value {
     }
 }
 
-/// The binding a DECLARED egress scheme is opened under: a static scheme on the `api-key` style
-/// with its whole presentation table as parameters and the dialect's name (the `protocol` an
-/// unpresentable credential's line names, as 1.5.5's did), a per-request signature on the `sigv4` style
+/// The binding a DECLARED egress scheme is opened under: a static scheme on its NATIVE style (1.5.5
+/// `crates/busbar/src/config/mod.rs` `ProviderAuth`, ~l.1130: "the request is signed with the
+/// protocol's native auth unless `api-key` selects an `api-key: <key>` header"; `egress_auth::resolve`
+/// there): `bearer` for an operator's credential presented as a bearer, the style named by the one
+/// header it is presented in (`x-goog-api-key`), and, for a credential-family table, `api-key`
+/// naming the operator's header; each with its whole presentation table as parameters and the
+/// dialect's name (the `protocol` an unpresentable credential's line names, as 1.5.5's did), a
+/// per-request signature on the `sigv4` style
 /// with its service, the region its host names (else its default) and its content type, which the
 /// lane's writer sends and so is lent as the `content-type` the signature covers. The dialect's
 /// static fields (`decl`'s) follow the plugin's.
@@ -64,16 +69,21 @@ pub(crate) fn declared_binding(
                     Value::Object(row)
                 })
                 .collect();
-            (
-                "api-key",
-                json!({
-                    "families": families,
-                    "own": presentation(own),
-                    "passthrough": presentation(passthrough),
-                    "protocol": decl.name,
-                }),
-                Vec::new(),
-            )
+            let mut params = json!({
+                "families": families,
+                "own": presentation(own),
+                "passthrough": presentation(passthrough),
+                "protocol": decl.name,
+            });
+            let style = match own {
+                CredentialHeader::Bearer => "bearer",
+                CredentialHeader::Raw { header, .. } if families.is_empty() => header,
+                CredentialHeader::Raw { header, .. } => {
+                    params["header"] = Value::String(header.to_string());
+                    "api-key"
+                }
+            };
+            (style, params, Vec::new())
         }
         EgressScheme::SigV4 {
             service,
@@ -205,13 +215,18 @@ fn mint_params(mut params: Map<String, Value>) -> Value {
 }
 
 /// The style and parameters `lane`'s credential is bound under, or the dialect's own builder.
-enum Binding {
+enum CredentialBinding {
     /// The style binding, and a signing scheme's per-signature region read.
     Style(StyleBinding, Option<fn(&str) -> Option<&str>>),
     Builder(Arc<dyn CredentialProvider>),
 }
 
-fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &str) -> Binding {
+fn binding_for(
+    protocol: &'static str,
+    lane: &LaneInput,
+    host: &str,
+    api_key: &str,
+) -> CredentialBinding {
     let text = |m: &mut Map<String, Value>, k: &str, v: &Option<String>| {
         if let Some(v) = v {
             m.insert(k.to_string(), Value::String(v.clone()));
@@ -223,7 +238,7 @@ fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &s
             text(&mut m, "scope", &lane.scope);
             text(&mut m, "subject", &lane.subject);
             text(&mut m, "token_uri", &token_uri(api_key));
-            Binding::Style(
+            CredentialBinding::Style(
                 StyleBinding {
                     style: "jwt-bearer".to_string(),
                     params: mint_params(m),
@@ -238,7 +253,7 @@ fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &s
             let mut m = Map::new();
             text(&mut m, "token_url", &lane.token_url);
             text(&mut m, "scope", &lane.scope);
-            Binding::Style(
+            CredentialBinding::Style(
                 StyleBinding {
                     style: "oauth-client-credentials".to_string(),
                     params: mint_params(m),
@@ -249,7 +264,7 @@ fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &s
                 None,
             )
         }
-        AuthStyleInput::ApiKey => Binding::Style(api_key_override_binding(), None),
+        AuthStyleInput::ApiKey => CredentialBinding::Style(api_key_override_binding(), None),
         // No override, or `auth: bearer`: the dialect's own declared scheme.
         AuthStyleInput::Default | AuthStyleInput::Bearer => {
             match busbar_kernel::proto::decl_for(protocol) {
@@ -259,15 +274,17 @@ fn binding_for(protocol: &'static str, lane: &LaneInput, host: &str, api_key: &s
                             EgressScheme::SigV4 { region_of_host, .. } => Some(region_of_host),
                             EgressScheme::Static { .. } => None,
                         };
-                        Binding::Style(declared_binding(decl, scheme, host), read)
+                        CredentialBinding::Style(declared_binding(decl, scheme, host), read)
                     }
-                    (None, Some(headers_for)) => Binding::Builder(Arc::new(DeclaredBuilder {
-                        headers_for,
-                        lane_constant: decl.egress_auth_lane_constant,
-                    })),
-                    (None, None) => Binding::Builder(Arc::new(NoCredential)),
+                    (None, Some(headers_for)) => {
+                        CredentialBinding::Builder(Arc::new(DeclaredBuilder {
+                            headers_for,
+                            lane_constant: decl.egress_auth_lane_constant,
+                        }))
+                    }
+                    (None, None) => CredentialBinding::Builder(Arc::new(NoCredential)),
                 },
-                None => Binding::Builder(Arc::new(NoCredential)),
+                None => CredentialBinding::Builder(Arc::new(NoCredential)),
             }
         }
     }
@@ -283,12 +300,19 @@ pub(crate) fn credential_for(
     api_key: &str,
 ) -> Arc<dyn CredentialProvider> {
     match binding_for(protocol, lane, host, api_key) {
-        Binding::Builder(built) => built,
-        Binding::Style(binding, read) => {
+        CredentialBinding::Builder(built) => built,
+        CredentialBinding::Style(binding, read) => {
             let Some(reach) = &input.auths else {
                 return Arc::new(NoCredential);
             };
-            match bind(&*reach.0, &binding, api_key.as_bytes()) {
+            // TRANSITIONAL: deleted with busbar-llm (row 155 C).
+            // The token endpoint's userinfo (row 74, F25): stripped from `lane.token_url` before
+            // this plane saw it, and handed back opaque for the host to present on the mint.
+            let endpoint = match lane.auth_style {
+                AuthStyleInput::OAuthClientCredentials => lane.token_userinfo.as_ref(),
+                _ => None,
+            };
+            match bind_presenting(&*reach.0, &binding, api_key.as_bytes(), endpoint) {
                 Ok(inner) => match read {
                     Some(region_of_host) => Arc::new(PerSignatureRegionRead {
                         inner,

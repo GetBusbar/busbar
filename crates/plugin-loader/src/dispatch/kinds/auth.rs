@@ -112,6 +112,18 @@ pub fn declares_chain_module(door: busbar_contract::abi::mechanism::door::DoorFn
         })
 }
 
+/// The principal id the auth plugin behind `door` states as THE OPERATOR CREDENTIAL's
+/// (`FACT_OPERATOR` and its `operator_principal`); `None` when it states no operator, or its
+/// Statement does not read as an auth Statement. Reads the door's `'static` Statement only; nothing
+/// is opened.
+#[must_use]
+pub fn operator_principal(door: busbar_contract::abi::mechanism::door::DoorFn) -> Option<String> {
+    crate::dispatch::load::validate::<Auth>(door)
+        .ok()
+        .and_then(|v| facts(&v.statement).ok())
+        .and_then(|f| f.operator_principal)
+}
+
 /// A `'static` Statement string, copied; `None` when malformed.
 fn owned(s: AbiStr) -> Option<String> {
     crate::dispatch::plugin::str_bytes(s).map(|b| String::from_utf8_lossy(b).into_owned())

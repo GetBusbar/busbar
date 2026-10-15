@@ -27,7 +27,8 @@ fn block() -> serde_yaml::Value {
 
 /// One generation, as the kernel's build holds it.
 fn generation() -> Arc<dyn std::any::Any + Send + Sync> {
-    seam_build::<crate::NoConnections>(&block(), Vec::new(), Vec::new(), None).expect("builds")
+    seam_build::<crate::NoConnections>(&block(), Vec::new(), Vec::new(), None, None)
+        .expect("builds")
 }
 
 #[tokio::test]

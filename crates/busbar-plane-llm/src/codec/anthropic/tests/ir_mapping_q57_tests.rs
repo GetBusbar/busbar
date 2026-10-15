@@ -29,7 +29,9 @@ fn xreq(ingress: &'static str, egress: &str, body: &Value) -> Value {
             lane_caps: Default::default(),
         },
     );
-    egress_p.writer().write_request(&req)
+    egress_p
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &req)
 }
 
 /// [`xreq`] onto a lane with the declared capabilities, through the production lane write.
@@ -62,7 +64,7 @@ fn xreq_lane(
     );
     egress_p
         .writer()
-        .write_request_for_lane(&req, "claude-x", caps)
+        .write_request_for_lane(crate::codec::test_host::HOST, &req, "claude-x", caps)
 }
 
 /// A lane of the newest Claude generation: declares adaptive thinking AND native structured
@@ -81,18 +83,20 @@ fn xresp(egress: &str, ingress: &'static str, body: &Value) -> Value {
     let ingress_p = protocol_for(ingress).expect("ingress protocol");
     let mut resp = egress_p
         .reader()
-        .read_response(body)
+        .read_response(crate::codec::test_host::HOST, body)
         .expect("response reads");
     super::super::chat_handle::chat_prepare_for_ingress(&mut resp, ingress, 1_752_000_000);
-    ingress_p.writer().write_response(&resp)
+    ingress_p
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &resp)
 }
 
 /// Cross-protocol STREAM: backend `egress` SSE bytes → the `ingress` client's bytes.
 fn xstream(egress: &str, ingress: &str, raw: &str) -> String {
     let mut st =
         super::super::proto_stream::StreamTranslate::new(ingress, egress).expect("translator");
-    let mut out = st.feed(raw.as_bytes());
-    out.extend(st.finish());
+    let mut out = st.feed(crate::codec::test_host::HOST, raw.as_bytes());
+    out.extend(st.finish(crate::codec::test_host::HOST));
     String::from_utf8_lossy(&out).into_owned()
 }
 
@@ -191,7 +195,7 @@ fn ant03_file_image_source_is_a_vendor_handle_not_empty_base64() {
     let back = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_request(&ir);
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         back.pointer("/messages/0/content/1"),
         Some(&json!({"type": "image", "source": {"type": "file", "file_id": "file_abc"}})),
@@ -320,7 +324,12 @@ fn ant07_response_format_is_native_and_leaves_tool_choice_alone() {
         .unwrap();
     let anthropic = protocol_for("anthropic").unwrap();
     let w = anthropic.writer();
-    let out3 = w.write_request_for_lane(&ir, "claude-x", &newest_lane());
+    let out3 = w.write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &ir,
+        "claude-x",
+        &newest_lane(),
+    );
     assert!(out3.get("output_config").is_none(), "{out3}");
     assert_eq!(out3["tools"].as_array().unwrap().len(), 1, "{out3}");
     assert!(w
@@ -329,11 +338,13 @@ fn ant07_response_format_is_native_and_leaves_tool_choice_alone() {
 }
 
 /// ANT-07, the lane that does NOT declare native structured outputs (the default — Claude 3.x,
-/// Sonnet 4 / Opus 4.0 400 on `output_config.format`): the directive takes the pre-capability
-/// forced-tool form, byte for byte what this writer sent before the capability existed, and the
-/// forced answer is mapped back to text on the buffered path.
+/// Sonnet 4 / Opus 4.0 400 on `output_config.format`): the directive is DROPPED with a warn and
+/// reported, exactly as 1.5.5 dropped it (v1.5.5 `crates/busbar/src/proto/anthropic/writer.rs:343-347`;
+/// CHANGELOG 1.6.0: an omitted lane-capability key "sends what 1.5.5 sent"). No synthetic tool, no
+/// forced `tool_choice` overwriting the caller's, and a `tool_use` named like the old sentinel is
+/// an ordinary tool call. RED while the writer sent `busbar_response_format` with a forced choice.
 #[test]
-fn ant07_default_lane_keeps_the_forced_tool() {
+fn ant07_default_lane_drops_the_directive_as_in_1_5_5() {
     let body = json!({
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "hi"}],
@@ -342,34 +353,30 @@ fn ant07_default_lane_keeps_the_forced_tool() {
     });
     let out = xreq_lane("openai", "anthropic", &body, &Default::default());
     assert!(out.get("output_config").is_none(), "{out}");
-    assert_eq!(
-        out["tool_choice"],
-        json!({"type": "tool", "name": "busbar_response_format"}),
-        "{out}"
-    );
-    assert_eq!(
-        out["tools"][0]["input_schema"],
-        json!({"type": "object", "properties": {"n": {"type": "integer"}}}),
-        "{out}"
-    );
+    assert!(out.get("tool_choice").is_none(), "{out}");
+    assert!(out.get("tools").is_none(), "{out}");
     // The model-blind write is the default-lane write.
     assert_eq!(xreq("openai", "anthropic", &body), out);
-    // A schema-less JSON mode is carried (permissive object schema), so nothing is reported dropped.
-    let ir = protocol_for("openai")
-        .unwrap()
-        .reader()
-        .read_request(
-            &json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
-            "response_format": {"type": "json_object"}}),
-        )
-        .unwrap();
     let anthropic = protocol_for("anthropic").unwrap();
     let w = anthropic.writer();
-    assert!(!w
-        .dropped_egress_controls_for_lane(&ir, &Default::default())
-        .contains(&"response_format"));
+    for rf in [
+        json!({"type": "json_object"}),
+        json!({"type": "json_schema", "json_schema": {"name": "out", "schema": {"type": "object"}}}),
+    ] {
+        let ir = protocol_for("openai")
+            .unwrap()
+            .reader()
+            .read_request(
+                &json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                "response_format": rf}),
+            )
+            .unwrap();
+        assert!(w
+            .dropped_egress_controls_for_lane(&ir, &Default::default())
+            .contains(&"response_format"));
+    }
 
-    // The forced tool_use answer comes back to a foreign client as text.
+    // A tool_use answer is an ordinary tool call, whatever its name.
     let resp = json!({"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-x",
         "content": [{"type": "tool_use", "id": "toolu_1", "name": "busbar_response_format",
                      "input": {"n": 3}}],
@@ -377,11 +384,11 @@ fn ant07_default_lane_keeps_the_forced_tool() {
         "usage": {"input_tokens": 3, "output_tokens": 4}});
     let o = xresp("anthropic", "openai", &resp);
     assert_eq!(
-        o["choices"][0]["message"]["content"],
-        json!("{\"n\":3}"),
+        o["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+        json!("busbar_response_format"),
         "{o}"
     );
-    assert_eq!(o["choices"][0]["finish_reason"], json!("stop"), "{o}");
+    assert_eq!(o["choices"][0]["finish_reason"], json!("tool_calls"), "{o}");
 }
 
 /// ANT-09: Anthropic adaptive thinking and `output_config.effort` reach foreign backends.
@@ -485,8 +492,9 @@ fn ant12_content_filter_stop_is_a_refusal() {
 
 /// ANT-13: an Anthropic server tool is hosted, not a function: it never reaches a foreign backend as
 /// a function tool with a null schema. A KIND the IR models (web search) crosses in the IR-11
-/// hosted slot and the Anthropic writer re-emits it as its server tool; any other server tool
-/// (`bash_*`) keeps its raw definition, same-protocol only.
+/// hosted slot; the Anthropic writer, which runs only across dialects, drops it as 1.5.5 did (an
+/// Anthropic caller's own server tools are relayed byte for byte, never written); any other server
+/// tool (`bash_*`) keeps its raw definition, same-protocol only.
 #[test]
 fn ant13_server_tools_are_hosted_not_functions() {
     let body = json!({"model": "m", "max_tokens": 100, "messages": [user_text("hi")],
@@ -514,17 +522,13 @@ fn ant13_server_tools_are_hosted_not_functions() {
     let back = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_request(&ir);
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         back.pointer("/tools/1"),
         Some(&json!({"type": "bash_20250124", "name": "bash"})),
         "{back}"
     );
-    assert_eq!(
-        back.pointer("/tools/2"),
-        Some(&json!({"type": "web_search_20250305", "name": "web_search", "max_uses": 3})),
-        "{back}"
-    );
+    assert_eq!(back.pointer("/tools/2"), None, "{back}");
 }
 
 /// ANT-14: a streamed server-tool block (`server_tool_use` + its `input_json_delta`s + stop, then a
@@ -553,7 +557,12 @@ fn ant14_suppressed_stream_block_drops_its_deltas_and_stop() {
         let ev = lines.next().unwrap().trim_start_matches("event: ");
         let data: Value =
             serde_json::from_str(lines.next().unwrap().trim_start_matches("data: ")).unwrap();
-        events.extend(decoder.reader().read_response_events(ev, &data, &mut state));
+        events.extend(decoder.reader().read_response_events(
+            crate::codec::test_host::HOST,
+            ev,
+            &data,
+            &mut state,
+        ));
     }
     for ev in &events {
         match ev {
@@ -616,7 +625,7 @@ fn ant15_response_image_and_json_blocks_are_not_invalid_blocks() {
     let out = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_response(&resp);
+        .write_response(crate::codec::test_host::HOST, &resp);
     let content = out["content"].as_array().unwrap();
     assert!(
         content.iter().all(|b| b["type"] == "text"),
@@ -695,7 +704,7 @@ fn ant17_tool_result_content_is_filtered_like_message_content() {
     let out = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_request(&req);
+        .write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         out.pointer("/messages/0/content/0/content"),
         Some(&json!([{"type": "text", "text": "ok"}])),
@@ -717,7 +726,7 @@ fn ant18_search_result_citation_source_maps_both_ways() {
     let resp = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .unwrap();
     let crate::codec::ir::IrBlock::Text { citations, .. } = &resp.content[0] else {
         panic!("text block expected");
@@ -733,4 +742,78 @@ fn ant18_search_result_citation_source_maps_both_ways() {
         json!({"type": "search_result_location", "cited_text": "c", "source": "https://kb/1",
                "title": "KB", "search_result_index": 0, "start_block_index": 0, "end_block_index": 1}),
     );
+}
+
+/// F25 REHOME row 107, from `crates/busbar-llm/src/engine/tests/egress_dropped_controls_audit_tests.rs:26`
+/// (`openai_to_anthropic_response_format_forwards_and_translates_not_dropped`), PORTED AT 1.5.5: the
+/// legacy test pinned the post-1.5.5 synthetic `busbar_response_format` forced tool (drift; ARCHITECT
+/// 2026-10-13: 1.5.5 wins). An OpenAI caller's `{"type":"json_object"}` onto a DEFAULT (non-native)
+/// Anthropic lane forwards with no `response_format`, no `tool_choice` and no `tools`, and is
+/// reported as the dropped control `response_format` (the caller's `response_format on anthropic`
+/// audit row) — exactly as 1.5.5 dropped it (v1.5.5 `crates/busbar/src/proto/anthropic/writer.rs:343-347`).
+#[test]
+fn openai_json_object_onto_a_default_anthropic_lane_is_dropped_and_reported() {
+    let body = json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {"type": "json_object"}
+    });
+    let out = xreq_lane("openai", "anthropic", &body, &Default::default());
+    assert!(out.as_object().is_some_and(|o| !o.is_empty()), "{out}");
+    assert!(out.get("response_format").is_none(), "{out}");
+    assert!(out.get("tool_choice").is_none(), "{out}");
+    assert!(out.get("tools").is_none(), "{out}");
+    let ir = protocol_for("openai")
+        .unwrap()
+        .reader()
+        .read_request(&body)
+        .unwrap();
+    assert!(protocol_for("anthropic")
+        .unwrap()
+        .writer()
+        .dropped_egress_controls_for_lane(&ir, &Default::default())
+        .contains(&"response_format"));
+}
+
+/// F25 REHOME row 110, from `crates/busbar-llm/src/engine/tests/egress_dropped_controls_audit_tests.rs:245`
+/// (`native_structured_output_lane_drops_schema_less_json_with_audit`): on a lane declaring native
+/// structured outputs a `json_schema` directive rides `output_config.format.type: json_schema` with no
+/// `tool_choice`; a schema-less `json_object` writes no `output_config` and no `tools`, and is reported
+/// as the dropped control `response_format` (the caller's `response_format on anthropic` audit row).
+#[test]
+fn native_structured_output_lane_drops_schema_less_json_and_reports_it() {
+    let native = busbar_contract::ir::egress_prep::LaneCaps {
+        native_structured_output: true,
+        ..Default::default()
+    };
+    let schema = json!({"type": "object", "properties": {"a": {"type": "string"}}});
+    let with_schema = xreq_lane(
+        "openai",
+        "anthropic",
+        &json!({"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}],
+               "response_format": {"type": "json_schema", "json_schema": {"name": "o", "schema": schema}}}),
+        &native,
+    );
+    assert_eq!(
+        with_schema.pointer("/output_config/format/type"),
+        Some(&json!("json_schema")),
+        "{with_schema}"
+    );
+    assert!(with_schema.get("tool_choice").is_none(), "{with_schema}");
+
+    let object_body = json!({"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}],
+                             "response_format": {"type": "json_object"}});
+    let object_mode = xreq_lane("openai", "anthropic", &object_body, &native);
+    assert!(object_mode.get("output_config").is_none(), "{object_mode}");
+    assert!(object_mode.get("tools").is_none(), "{object_mode}");
+    let ir = protocol_for("openai")
+        .unwrap()
+        .reader()
+        .read_request(&object_body)
+        .unwrap();
+    assert!(protocol_for("anthropic")
+        .unwrap()
+        .writer()
+        .dropped_egress_controls_for_lane(&ir, &native)
+        .contains(&"response_format"));
 }

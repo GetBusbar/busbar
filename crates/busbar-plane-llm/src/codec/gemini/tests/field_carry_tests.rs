@@ -68,7 +68,9 @@ fn gemini_request_sampling_knobs_survive() {
     assert_eq!(ir.presence_penalty, Some(0.5));
     assert_eq!(ir.frequency_penalty, Some(0.25));
 
-    let out = Protocol::gemini().writer().write_request(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     let gc = &out["generationConfig"];
     assert_eq!(gc["temperature"], 0.35);
     assert_eq!(gc["topP"], 0.8);
@@ -95,7 +97,9 @@ fn gemini_request_logprobs_ask_survives() {
     assert_eq!(ir.logprobs, Some(true)); // responseLogprobs
     assert_eq!(ir.top_logprobs, Some(3)); // logprobs (top-count)
 
-    let out = Protocol::gemini().writer().write_request(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["generationConfig"]["responseLogprobs"], true);
     assert_eq!(out["generationConfig"]["logprobs"], 3);
 }
@@ -123,7 +127,9 @@ fn gemini_request_response_format_survives() {
     assert!(rf.json, "responseMimeType application/json → json output");
     assert!(rf.schema.is_some(), "responseSchema must reach the IR");
 
-    let out = Protocol::gemini().writer().write_request(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["generationConfig"]["responseMimeType"],
         "application/json"
@@ -151,7 +157,9 @@ fn gemini_request_thinking_budget_survives() {
         Some(crate::codec::ir::IrReasoningAsk::Budget(2048)),
         "thinkingBudget must reach the IR reasoning carrier"
     );
-    let out = Protocol::gemini().writer().write_request(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     // Same-protocol keeps the caller's native thinkingConfig (seeded from extra) verbatim.
     assert_eq!(
         out["generationConfig"]["thinkingConfig"]["thinkingBudget"],
@@ -181,7 +189,9 @@ fn gemini_request_system_instruction_survives() {
         "systemInstruction must reach the IR system carrier: {:?}",
         ir.system
     );
-    let out = Protocol::gemini().writer().write_request(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["systemInstruction"]["parts"][0]["text"], "be terse");
 }
 
@@ -203,7 +213,9 @@ fn gemini_request_tools_survive() {
     assert_eq!(ir.tools[0].name, "get_weather");
     assert_eq!(ir.tools[0].description.as_deref(), Some("look up weather"));
 
-    let out = Protocol::gemini().writer().write_request(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     let decl = &out["tools"][0]["functionDeclarations"][0];
     assert_eq!(decl["name"], "get_weather");
     assert_eq!(decl["description"], "look up weather");
@@ -227,7 +239,9 @@ fn gemini_request_tool_config_survives() {
         ir.tool_choice.is_some(),
         "toolConfig must reach the IR tool_choice carrier"
     );
-    let out = Protocol::gemini().writer().write_request(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     // The functionCallingConfig survives (mode re-emitted from the typed choice).
     assert!(
         out["toolConfig"]["functionCallingConfig"].is_object(),
@@ -268,7 +282,9 @@ fn gemini_request_provider_specific_fields_survive_same_proto() {
         .expect("read");
 
     // SAME-PROTOCOL: every provider field is re-emitted verbatim.
-    let out = Protocol::gemini().writer().write_request(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["safetySettings"], safety, "safetySettings must survive");
     assert_eq!(out["labels"], labels, "labels must survive");
     assert_eq!(
@@ -295,7 +311,9 @@ fn gemini_request_provider_specific_fields_survive_same_proto() {
     // have typed carriers now — the IR metadata map (IR-03) and output modalities (IR-19) — so
     // they are rebuilt from those, not from the raw copy.
     ir.extra.clear();
-    let dropped = Protocol::gemini().writer().write_request(&ir);
+    let dropped = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         dropped.get("safetySettings").is_none(),
         "safetySettings must drop cross-protocol"
@@ -399,7 +417,9 @@ fn gemini_request_content_parts_survive() {
     );
 
     // Re-emit and assert each construct is back in its native part shape.
-    let out = Protocol::gemini().writer().write_request(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     let mparts = out["contents"][0]["parts"].as_array().expect("model parts");
     assert!(
         mparts.iter().any(|p| p["text"] == "visible answer"),
@@ -479,7 +499,7 @@ fn gemini_code_execution_parts_drop_cross_proto_without_corruption() {
     });
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&resp)
+        .read_response(crate::codec::test_host::HOST, &resp)
         .expect("read");
     assert!(
         ir.content.is_empty(),
@@ -487,7 +507,9 @@ fn gemini_code_execution_parts_drop_cross_proto_without_corruption() {
         ir.content
     );
     // ...and the cross-protocol egress (OpenAI) carries no synthetic text for them.
-    let openai = Protocol::openai().writer().write_response(&ir);
+    let openai = Protocol::openai()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     let msg = openai["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or("");
@@ -516,7 +538,7 @@ fn gemini_response_core_fields_survive() {
     });
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     // candidates[].content
     assert!(
@@ -534,7 +556,9 @@ fn gemini_response_core_fields_survive() {
     assert_eq!(ir.model.as_deref(), Some("gemini-2.5-flash-001"));
     assert_eq!(ir.id.as_deref(), Some("PXmFaPzVMIabcdef"));
 
-    let out = Protocol::gemini().writer().write_response(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["candidates"][0]["content"]["parts"][0]["text"],
         "the answer"
@@ -561,7 +585,7 @@ fn gemini_response_citations_survive() {
     });
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&cited)
+        .read_response(crate::codec::test_host::HOST, &cited)
         .expect("read");
     // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
     // ride the text block's citations.
@@ -574,7 +598,9 @@ fn gemini_response_citations_survive() {
     };
     assert_eq!(citations.len(), 1, "citationMetadata must reach the IR");
     assert_eq!(citations[0].url.as_deref(), Some("https://atlas"));
-    let out = Protocol::gemini().writer().write_response(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert!(
         out["candidates"][0]["citationMetadata"]["citationSources"]
             .as_array()
@@ -599,7 +625,7 @@ fn gemini_response_citations_survive() {
     });
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&grounded)
+        .read_response(crate::codec::test_host::HOST, &grounded)
         .expect("read");
     // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
     // ride the text block's citations.
@@ -616,7 +642,9 @@ fn gemini_response_citations_survive() {
         "groundingMetadata source must reach the IR"
     );
     assert_eq!(citations[0].url.as_deref(), Some("https://atlas"));
-    let anthropic = Protocol::anthropic().writer().write_response(&ir);
+    let anthropic = Protocol::anthropic()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert!(
         anthropic["content"][0]["citations"]
             .as_array()
@@ -644,13 +672,15 @@ fn gemini_response_logprobs_result_survives() {
     });
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     assert_eq!(ir.logprobs.len(), 1, "logprobsResult must reach the IR");
     assert_eq!(ir.logprobs[0].token, "Hi");
     assert_eq!(ir.logprobs[0].top.len(), 2);
 
-    let out = Protocol::gemini().writer().write_response(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["candidates"][0]["logprobsResult"]["chosenCandidates"][0]["token"], "Hi",
         "logprobsResult must be re-emitted: {out}"
@@ -673,7 +703,7 @@ fn gemini_response_usage_buckets_survive() {
     });
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     // cachedContentTokenCount → cache_read (input normalized to uncached: 100 - 30 = 70).
     assert_eq!(
@@ -691,7 +721,9 @@ fn gemini_response_usage_buckets_survive() {
         "toolUsePromptTokenCount must reach the IR usage detail"
     );
 
-    let out = Protocol::gemini().writer().write_response(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["usageMetadata"]["cachedContentTokenCount"], 30,
         "cachedContentTokenCount must be re-emitted: {out}"
@@ -718,7 +750,7 @@ fn gemini_response_prompt_feedback_block_reason_survives() {
     });
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     assert_eq!(
         ir.stop_reason,
@@ -767,7 +799,7 @@ fn gemini_response_provider_specific_fields_drop_cross_proto_without_corruption(
     });
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     // NO CORRUPTION: the only content is the visible answer — candidates[].index / safetyRatings /
     // avgLogprobs / tokenCount / promptFeedback.safetyRatings / promptTokensDetails were each read
@@ -787,7 +819,10 @@ fn gemini_response_provider_specific_fields_drop_cross_proto_without_corruption(
     // DOCUMENTED CROSS-PROTOCOL DROP: a foreign (OpenAI) egress carries none of the Gemini-only
     // field names — they are not leaked onto a backend that has no slot for them. A future edit that
     // began modelling any of these would turn this red (allow-list discipline), never pass silently.
-    let openai = Protocol::openai().writer().write_response(&ir).to_string();
+    let openai = Protocol::openai()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir)
+        .to_string();
     for field in [
         "safetyRatings",
         "avgLogprobs",
@@ -826,7 +861,7 @@ fn gemini_vertex_traffic_type_survives() {
     });
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     assert_eq!(
         ir.usage.detail.traffic_type.as_deref(),
@@ -843,7 +878,9 @@ fn gemini_vertex_traffic_type_survives() {
         "trafficType must not perturb the billed output total"
     );
 
-    let out = Protocol::gemini().writer().write_response(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["usageMetadata"]["trafficType"], "ON_DEMAND",
         "trafficType must be re-emitted: {out}"
@@ -866,7 +903,7 @@ fn gemini_vertex_create_time_survives() {
     });
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     assert_eq!(
         ir.usage.detail.create_time.as_deref(),
@@ -874,7 +911,9 @@ fn gemini_vertex_create_time_survives() {
         "createTime must reach the IR's dedicated carrier"
     );
 
-    let out = Protocol::gemini().writer().write_response(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["createTime"], "2026-09-07T16:54:20.179017Z",
         "createTime must be re-emitted verbatim: {out}"
@@ -905,7 +944,7 @@ fn gemini_vertex_grounding_chunk_domain_survives() {
     });
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     // A grounded answer leads with its hosted web-search record (DF-MAP item 2); the spans
     // ride the text block's citations.
@@ -929,7 +968,9 @@ fn gemini_vertex_grounding_chunk_domain_survives() {
         "groundingChunks[].web.domain must reach the IR (via the stashed raw chunk)"
     );
 
-    let out = Protocol::gemini().writer().write_response(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     let sources = out["candidates"][0]["citationMetadata"]["citationSources"]
         .as_array()
         .expect("citationSources array");
@@ -953,7 +994,7 @@ fn gemini_vertex_grounding_chunk_domain_survives() {
     });
     let ir2 = Protocol::gemini()
         .reader()
-        .read_response(&cited)
+        .read_response(crate::codec::test_host::HOST, &cited)
         .expect("read");
     let crate::codec::ir::IrBlock::Text { citations, .. } = &ir2.content[0] else {
         panic!("expected a Text block, got {:?}", ir2.content[0]);
@@ -966,7 +1007,9 @@ fn gemini_vertex_grounding_chunk_domain_survives() {
             .is_none(),
         "a plain citationSources entry must not fabricate a domain"
     );
-    let out2 = Protocol::gemini().writer().write_response(&ir2);
+    let out2 = Protocol::gemini()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir2);
     let sources2 = out2["candidates"][0]["citationMetadata"]["citationSources"]
         .as_array()
         .expect("citationSources array");

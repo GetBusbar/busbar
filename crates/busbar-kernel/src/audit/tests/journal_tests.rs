@@ -346,7 +346,7 @@ fn an_evicted_scope_resumes_from_the_store_not_from_seq_one() {
 // scope is supplied by the caller, never read from the body — so the reframe callback captures it.
 
 /// A neutral record carrying an opaque `content` suffix. Its digest is the framed prelude followed by
-/// the suffix RAW — the SAME shape `plane_host::journal::PlaneJournalRecord` uses.
+/// the suffix RAW — the SAME shape `audit::stream_registry::StreamRecord` uses.
 #[derive(Clone)]
 struct NeutralRec {
     tenant: String,

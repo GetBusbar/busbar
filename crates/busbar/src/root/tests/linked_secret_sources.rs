@@ -24,11 +24,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A reference's bytes through the root's linked secret sources.
 fn resolve_linked(secret: &SecretRef) -> Result<Vec<u8>, String> {
-    let axis = super::link_secrets(crate::LINKED.secrets).expect("the linked secret doors state");
+    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
+        .expect("the linked secret doors state");
     let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
     axis.shared(&secret.module)?
         .resolve(settings.as_bytes())
-        .map(|m| m.expose_secret().clone())
+        .map(|m| m.expose(&busbar_kernel::seal::lend()).clone())
         .map_err(|r| r.text)
 }
 

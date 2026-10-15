@@ -151,6 +151,113 @@ fn the_grant_is_judged_over_the_named_pool_then_its_fallback() {
     );
 }
 
+/// LEGACY the retiring engine crate's `src/engine/tests/ingress_integration_tests.rs::test_adhoc_governance_pool_acl_403_via_router`
+/// (coverage map v2 row 463). 1.5.5: the ad-hoc (direct) route runs the same governance guard,
+/// keyed on the resolved MODEL: a key allowed only on `other-pool` that names the configured model
+/// directly is refused 403 (a permission refusal, the dialect's own `permission_error` envelope).
+///
+/// Held here on the door's grant over a direct route and the refusal the seat answers for it: the
+/// grant is denied, the seat refuses it as `ScopeDenied`, and the driver's status for that reason
+/// is 403 (the plane renders it as its dialect's permission refusal; its own suite holds that).
+///
+/// RED: a direct route escapes the key's pool grant (the model served to a key scoped elsewhere),
+/// or its refusal stops being a 403.
+#[test]
+fn test_adhoc_governance_pool_acl_403_via_router() {
+    use busbar_contract::records::{ScopeRef, VirtualKey};
+    let p = pools("models:\n  configured-model: {provider: p}\npools:\n  other-pool:\n    members: [configured-model]");
+    let elsewhere = VirtualKey {
+        allowed_scopes: Some(vec![ScopeRef::pool("other-pool")]),
+        ..VirtualKey::default()
+    };
+    assert!(
+        !p.granted(
+            Some("pool"),
+            Some(&elsewhere),
+            ROUTE_DIRECT,
+            Some(b"configured-model")
+        ),
+        "a key allowed only on `other-pool` may not name the configured model directly"
+    );
+    assert!(
+        p.granted(
+            Some("pool"),
+            Some(&elsewhere),
+            ROUTE_POOL,
+            Some(b"other-pool")
+        ),
+        "the same key is served on the pool it is granted"
+    );
+    assert_eq!(
+        busbar_kernel::plane_driver::refusal_status(busbar_contract::caps::ReasonCode::ScopeDenied),
+        403,
+        "ad-hoc governance pool-ACL => 403"
+    );
+}
+
+/// A POOL OF NAMED DEFINITIONS, ITS MEMBERS EACH ON THEIR OWN GRANT (QP2, coordinator 2026-10-07):
+/// its route's grant is the caller's grant on the member the unit is ADDRESSED to (its stated trust
+/// counterparty), judged before anything is charged, as predev's admission judged it; a
+/// counterparty that names no member of the pool, or none stated, leaves the members to the plane.
+/// RED before the judge: every caller passes a member-granted pool route.
+#[test]
+fn a_member_granted_pool_route_is_judged_on_the_member_it_is_addressed_to() {
+    use busbar_contract::records::{ScopeRef, VirtualKey};
+    let p = pools(
+        "a: {}\nb: {}\npools:\n  twins:\n    members: [{name: a, tier: 0}, {name: b, tier: 1}]\n\
+         \x20   member_granted: true",
+    );
+    let key = |scopes: &[&str]| VirtualKey {
+        allowed_scopes: Some(
+            scopes
+                .iter()
+                .map(|n| ScopeRef {
+                    kind: "seat".to_string(),
+                    value: (*n).to_string(),
+                })
+                .collect(),
+        ),
+        ..VirtualKey::default()
+    };
+    let granted = |k: &VirtualKey, counterparty: Option<&str>| {
+        p.granted_to(
+            Some("seat"),
+            Some(k),
+            (ROUTE_POOL, Some(b"twins".as_slice())),
+            counterparty.map(str::as_bytes),
+        )
+    };
+    assert!(
+        granted(&key(&["a"]), Some("a")),
+        "granted the member it addressed"
+    );
+    assert!(
+        !granted(&key(&["b"]), Some("a")),
+        "a twin's grant is not the addressed member's"
+    );
+    assert!(
+        !granted(&key(&[]), Some("b")),
+        "an empty grant reaches no member"
+    );
+    assert!(
+        granted(&key(&[]), None),
+        "no counterparty stated: the members are the plane's to judge"
+    );
+    assert!(
+        granted(&key(&[]), Some("elsewhere")),
+        "a counterparty outside the pool names no member of it"
+    );
+    assert!(
+        p.granted_to(
+            None,
+            Some(&key(&[])),
+            (ROUTE_POOL, Some(b"twins".as_slice())),
+            Some(b"a")
+        ),
+        "a plane with no scope kind scopes nothing"
+    );
+}
+
 /// THE MEMBER'S TIER (the core-owned per-member `tier`, `BUSBAR-1.6.0.md` l.4196 (b), R2-G
 /// l.4285): read off a member written `{name, tier}`, `0` for a bare name, for one with no tier, and
 /// for a tier that is no unsigned integer; a pool's entries are its members' names either way.
@@ -308,6 +415,7 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
         ..Default::default()
     });
     let ctx = |n: u64| UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: busbar_contract::UnitKey::new(n),
         origin: busbar_contract::caps::OriginKind::Client,
         session: None,
@@ -355,6 +463,225 @@ fn a_units_principal_is_recorded_from_authenticate_until_its_steps_drop() {
     assert!(records.get(8).is_none(), "a refused unit writes no record");
 }
 
+// ── budget downgrade (`on_exhaust: downgrade`, 1.5.5 `ingress::admit_check`) ──────────────────────
+
+/// A budget limit on `pool` that downgrades to `to` once `amount` minor units are spent in a day.
+fn downgrading(pool: &str, amount: u64, to: &str) -> busbar_kernel::config::groups::LimitCfg {
+    use busbar_kernel::config::groups::{LimitCfg, LimitMetric, LimitWindow, OnExhaust};
+    LimitCfg {
+        metric: LimitMetric::Budget,
+        amount,
+        per: Some(LimitWindow::Day),
+        scope: Some(busbar_contract::records::ScopeRef::pool(pool)),
+        on_exhaust: Some(OnExhaust::Downgrade),
+        downgrade_to: Some(busbar_contract::records::ScopeRef::pool(to)),
+        admission: None,
+        on_exhaustion: None,
+    }
+}
+
+/// A governed generation whose group `team` holds `limits` at a flat 10-minor-unit fee per request,
+/// and a key in that group granted `allowed_pools` (`None`: every pool).
+fn downgrade_book(
+    limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+    allowed_pools: Option<Vec<String>>,
+) -> (
+    std::sync::Arc<busbar_kernel::state::App>,
+    std::sync::Arc<busbar_contract::records::VirtualKey>,
+) {
+    use busbar_kernel::test_support::engine_kit::{EngineTestKit as _, CORE_ENGINE_KIT};
+    let gov = CORE_ENGINE_KIT
+        .governance(CORE_ENGINE_KIT.scratch_store(), None, None)
+        .expect("governance");
+    let groups = std::collections::BTreeMap::from([(
+        "team".to_string(),
+        busbar_kernel::config::groups::GroupCfg {
+            parent: None,
+            enabled: true,
+            limits,
+            ..Default::default()
+        },
+    )]);
+    let cost = CORE_ENGINE_KIT.cost_parts(None, 10, &groups);
+    let (key, _secret) = gov
+        .create_key(
+            busbar_kernel::governance::NewKeySpec {
+                name: "dev".to_string(),
+                allowed_pools,
+                group: Some("team".to_string()),
+                ..Default::default()
+            },
+            1_700_000_000,
+        )
+        .expect("a key");
+    let app = busbar_kernel::test_support::TestApp::new()
+        .governance_kit(gov)
+        .keys_chain()
+        .cost_kit(cost)
+        .build();
+    (app, std::sync::Arc::new(key))
+}
+
+/// What one keyed unit of the plane serving the `pools` map did at its `$` door, routed to `pool`:
+/// its admission (`Ok(())`, or the refusal's reason and words), the route its walk takes, and the
+/// pool a downgrade sent it to.
+struct Charged {
+    admitted: Result<(), (busbar_contract::caps::ReasonCode, Option<String>)>,
+    routed: Option<(String, Vec<String>)>,
+    downgraded: Option<String>,
+}
+
+fn charge_once(
+    app: &std::sync::Arc<busbar_kernel::state::App>,
+    key: &std::sync::Arc<busbar_contract::records::VirtualKey>,
+    pools: &DoorPools,
+    pool: &str,
+    unit: u64,
+) -> Charged {
+    use busbar_kernel::plane_driver::{DriverSteps as _, EndPost, PlaneMoney};
+    let facts = super::door_facts("", &["pool"], &[], &[], "door", Vec::new());
+    let gov = std::sync::Arc::clone(app.governance.as_ref().expect("a governed generation"));
+    let post = std::sync::Arc::new(crate::root::plane_node::NodeEndPost::new(
+        std::sync::Arc::new(crate::root::plane_node::Node::new()),
+    ));
+    let money = PlaneMoney::new(gov, post as std::sync::Arc<dyn EndPost>);
+    let steps = super::DoorSteps::new(
+        &facts,
+        pools,
+        std::sync::Arc::new(|_: &str| None),
+        std::sync::Arc::clone(app),
+        Some(&money),
+        super::DoorCaller {
+            principal: busbar_contract::caps::PrincipalId::new(key.id.as_str()),
+            key: Some(std::sync::Arc::clone(key)),
+            open: false,
+            arrived: busbar_kernel::store::now(),
+            records: None,
+            depth: 0,
+            credential: None,
+        },
+    );
+    steps.lock().routed = pools.resolve(ROUTE_POOL, Some(pool.as_bytes()));
+    let ctx = busbar_kernel::teller::UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
+        key: busbar_contract::UnitKey::new(unit),
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let admitted = steps
+        .charge(&ctx, key)
+        .map(|_| ())
+        .map_err(|refusal| (refusal.reason(), steps.refused_words().1));
+    Charged {
+        admitted,
+        routed: steps.routed(),
+        downgraded: steps.downgraded(),
+    }
+}
+
+const DOWNGRADE_SECTION: &str = "models:\n  big: {}\n  small: {}\n  tiny: {}\n\
+     pools:\n  frontier:\n    members: [big]\n  value:\n    members: [small]\n\
+     \x20 first:\n    members: [big]\n  second:\n    members: [small]\n  third:\n    members: [tiny]";
+
+/// BUDGET DOWNGRADE ON THE DOOR PATH (1.5.5 `test_budget_exhaustion_downgrades_pool`): exhausting
+/// the `frontier` budget re-admits the unit through `value` instead of refusing it; the charge lands
+/// there and the unit's walk routes over `value`'s members. RED: a door that refuses a budget block
+/// carrying `downgrade_to` answers the third unit `OverBudget` and never re-pools it.
+#[test]
+fn an_exhausted_budget_re_pools_the_unit_through_its_downgrade_pool() {
+    let (app, key) = downgrade_book(vec![downgrading("frontier", 25, "value")], None);
+    let pools = pools(DOWNGRADE_SECTION);
+    // fee 10, cap 25: two frontier admissions spend 20; the third would reach 30.
+    for unit in 1..=2 {
+        let charged = charge_once(&app, &key, &pools, "frontier", unit);
+        assert_eq!(
+            charged.admitted,
+            Ok(()),
+            "unit {unit} is under the frontier cap"
+        );
+        assert_eq!(charged.downgraded, None, "no downgrade while under the cap");
+        assert_eq!(charged.routed, owned("frontier", &["big"]));
+    }
+    let charged = charge_once(&app, &key, &pools, "frontier", 3);
+    assert_eq!(charged.admitted, Ok(()), "downgraded, not refused");
+    assert_eq!(
+        charged.downgraded.as_deref(),
+        Some("value"),
+        "the charge landed on the downgrade pool"
+    );
+    assert_eq!(
+        charged.routed,
+        owned("value", &["small"]),
+        "the walk follows the charge to the downgrade pool"
+    );
+}
+
+/// A DOWNGRADE CYCLE TERMINATES (1.5.5 `test_downgrade_cycle_terminates_via_the_revisit_guard`):
+/// `first` -> `second` -> `third` -> `second` walks to `third` and stops at the revisit, refusing
+/// with `third`'s bucket named in the previous release's words; a guard that refused one hop early
+/// names `second`.
+#[test]
+fn a_downgrade_cycle_ends_in_the_plain_refusal_naming_the_last_pool_walked() {
+    let (app, key) = downgrade_book(
+        vec![
+            downgrading("first", 10, "second"),
+            downgrading("second", 0, "third"),
+            downgrading("third", 0, "second"),
+        ],
+        None,
+    );
+    let pools = pools(DOWNGRADE_SECTION);
+    let first = charge_once(&app, &key, &pools, "first", 1);
+    assert_eq!(first.admitted, Ok(()), "under the first pool's cap");
+    assert_eq!(first.downgraded, None);
+    let second = charge_once(&app, &key, &pools, "first", 2);
+    let (reason, words) = second
+        .admitted
+        .expect_err("a cyclic downgrade chain ends in a refusal");
+    assert_eq!(reason, busbar_contract::caps::ReasonCode::OverBudget);
+    let words = words.expect("the plane serving the `pools` map renders 1.5.5's words");
+    assert!(
+        words.contains("pool 'third'"),
+        "the chain walked first -> second -> third before the revisit guard: {words}"
+    );
+    assert_eq!(
+        second.downgraded, None,
+        "a refused unit is re-pooled nowhere"
+    );
+}
+
+/// A DOWNGRADE NEVER BYPASSES THE KEY'S POOL GRANT (1.5.5 `test_downgrade_never_bypasses_pool_acl`):
+/// a key granted only `frontier` is refused the plain budget refusal, never routed into `value`.
+#[test]
+fn a_downgrade_never_routes_a_key_into_a_pool_it_may_not_use() {
+    let (app, key) = downgrade_book(
+        vec![downgrading("frontier", 25, "value")],
+        Some(vec!["frontier".to_string()]),
+    );
+    let pools = pools(DOWNGRADE_SECTION);
+    for unit in 1..=2 {
+        assert_eq!(
+            charge_once(&app, &key, &pools, "frontier", unit).admitted,
+            Ok(())
+        );
+    }
+    let charged = charge_once(&app, &key, &pools, "frontier", 3);
+    assert_eq!(
+        charged.admitted.map_err(|(reason, _)| reason),
+        Err(busbar_contract::caps::ReasonCode::OverBudget),
+        "the plain budget refusal, not a leaked pool"
+    );
+    assert_eq!(charged.downgraded, None);
+    assert_eq!(
+        charged.routed,
+        owned("frontier", &["big"]),
+        "the route is unchanged"
+    );
+}
+
 // ── the members' routes (THE DESIGN §6 steps 2-3) ──────────────────────────────────────────────
 
 /// The decisions-shaped plane facts: one dialect `d` whose default style is `bearer`, one outbound
@@ -372,6 +699,7 @@ fn styled() -> crate::root::loader::dispatch::kinds::plane::ServedFacts {
 fn provider(protocol: &str, style: Option<&str>) -> super::ProviderRoute {
     super::ProviderRoute {
         base_url: "http://127.0.0.1:9".to_string(),
+        userinfo: None,
         protocol: protocol.to_string(),
         error_map: Default::default(),
         credential: busbar_contract::secret_ref::SecretRef::none(),
@@ -416,21 +744,25 @@ fn resolve_upgrading(
         crate::root::loader::dispatch::DispatchConfig::default(),
     ));
     crate::root::connector::install_io(&dispatcher);
+    // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let auths = super::OutboundAuths::new(
         dispatcher,
         crate::LINKED.auths,
         None,
         crate::root::loader::dispatch::ConnTable::NoNeeds,
     );
-    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
+        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let conns: std::sync::Arc<dyn busbar_contract::conn::PollConns> =
         std::sync::Arc::new(busbar_core_connector::Connector::new());
     let reach = super::DoorReach {
         providers: &providers,
-        secrets: &secrets,
+        secrets: std::sync::Arc::clone(&secrets),
         auths: std::sync::Arc::new(auths),
         conns,
         stream_ceiling_secs: 1,
+        catalog: None,
         models: None,
         upgrades,
     };
@@ -557,6 +889,146 @@ fn a_member_is_bound_under_its_dialects_default_style_on_the_need_that_style_nam
     );
 }
 
+/// ROW 74 (F25): a provider whose `base_url` spells `user:pass@` is reached at the host after it,
+/// as 1.5.5 reached it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`). The provider's route is
+/// the one entry every member's route, sealed reach, binding and dial reads its base from, so the
+/// userinfo is stripped HERE and nothing downstream (the connector refuses a dial target spelling
+/// one, fail-closed) ever sees it. RED before the fix: the route carried the base as written, and
+/// the member's dial was refused.
+#[test]
+fn a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority() {
+    let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(
+        "{protocol: d, base_url: 'https://svcuser:hunter2-P4ss@api.example.com:8443/v1', \
+         api_key: none, error_map: {}}",
+    )
+    .expect("a provider entry");
+    let routes = super::provider_routes(
+        &std::collections::HashMap::from([(
+            "p".to_string(),
+            busbar_kernel::config::ResolvedProvider::from(provider),
+        )]),
+        &busbar_kernel::config_validate::MetadataPosture::default(),
+    );
+    let route = &routes["p"];
+    assert_eq!(route.base_url, "https://api.example.com:8443/v1");
+    assert!(
+        route.userinfo.is_some(),
+        "the userinfo is held, opaque, for the member's attempts to present as 1.5.5 did"
+    );
+    let shown = format!("{route:?}");
+    assert!(
+        !shown.contains("hunter2") && !shown.contains("svcuser"),
+        "the route kept the planted spelling: {shown}"
+    );
+}
+
+/// ROW 74 (F25), THE DOOR PATH HOLDS NO USERINFO BYTES IN A KERNEL TYPE: a member whose provider's
+/// base URL spells `user:pass@` is sealed with the stripped base on its route (the kernel's
+/// `MemberRoute` has no field for the userinfo), and the Basic value reaches its attempts only
+/// through the binding's handle, which the root wrapped ([`crate::root::userinfo::lead_with`]):
+/// first when the style's credential rides another field, displaced when it is `authorization`,
+/// as 1.5.5's reqwest build sent it. The bearer and api-key styles are the linked header plugin's.
+#[cfg(feature = "auth-header")]
+#[test]
+fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    use busbar_contract::auth_calls::{Fields, FieldsRequest};
+    const WRITTEN: &str = "https://svcuser:hunter2-P4ss@api.example.com/v1";
+    let key_file =
+        std::env::temp_dir().join(format!("busbar-door-steps-row74-{}", std::process::id()));
+    std::fs::write(&key_file, "sk-row74").expect("the key");
+    let expected = {
+        use base64::Engine as _;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+        )
+    };
+    for (style, led) in [("api-key", true), ("bearer", false)] {
+        let provider = super::ProviderRoute {
+            base_url: busbar_kernel_egress::trust::net::strip_userinfo(WRITTEN).into_owned(),
+            userinfo: crate::root::userinfo::UserinfoBasic::of(WRITTEN),
+            protocol: "d".to_string(),
+            error_map: Default::default(),
+            credential: busbar_contract::secret_ref::SecretRef::file(
+                key_file.display().to_string(),
+            ),
+            style: Some(style.to_string()),
+            params: super::StyleParams::default(),
+            metadata: busbar_kernel::config_validate::MetadataPosture::default(),
+        };
+        let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+            need_auths: vec![(DIRECTION_OUTBOUND, style)],
+            dialects: vec!["d"],
+            ..Default::default()
+        };
+        let routes = resolve_for(&facts, "models: {m: {provider: p}}", &[("p", provider)])
+            .expect("the member resolves");
+        let route = &routes["m"];
+        assert_eq!(route.base_url, "https://api.example.com/v1");
+        let binding = route.auth.as_ref().expect("its credential is bound");
+        let Some(Fields::Ready(fields)) = binding
+            .auth
+            .fields_now(binding.handle, &FieldsRequest::default())
+        else {
+            panic!("the {style} binding answers on the spot");
+        };
+        let fields: Vec<(String, String)> = fields
+            .iter()
+            .map(|f| {
+                (
+                    String::from_utf8_lossy(&f.name).to_ascii_lowercase(),
+                    String::from_utf8_lossy(f.value.expose(&busbar_kernel::seal::lend()))
+                        .into_owned(),
+                )
+            })
+            .collect();
+        if led {
+            assert_eq!(
+                fields[0],
+                ("authorization".to_string(), expected.clone()),
+                "a credential under another field leaves the Basic value first: {fields:?}"
+            );
+            assert!(fields[1..].iter().all(|(n, _)| n != "authorization"));
+        } else {
+            assert!(
+                fields
+                    .iter()
+                    .all(|(n, v)| n != "authorization" || !v.starts_with("Basic ")),
+                "an authorization credential displaces the Basic value: {fields:?}"
+            );
+        }
+    }
+    let _ = std::fs::remove_file(&key_file);
+}
+
+/// A MEMBER WHOSE OWN PROTOCOL STATES NO DEFAULT STYLE rides its provider protocol's default (the
+/// envelope ruling, ARCHITECT 2026-10-14: a model a plane serves over another dialect's
+/// envelope is credentialed by its provider). RED: the member's own protocol alone was looked up,
+/// so the load was refused as styleless.
+#[cfg(feature = "auth-header")]
+#[test]
+fn a_member_whose_protocol_states_no_default_style_rides_its_providers() {
+    let routes = resolve(
+        "models: {m: {provider: p, protocol: x-envelope}}",
+        &[("p", provider("d", None))],
+    )
+    .expect("the member resolves under its provider's default style");
+    assert!(
+        routes["m"].auth.is_some(),
+        "bound by the plugin serving `bearer`"
+    );
+    let styleless = resolve(
+        "models: {m: {provider: p, protocol: x-envelope}}",
+        &[("p", provider("x", None))],
+    );
+    assert!(
+        styleless.as_ref().is_err_and(|e| e.contains("no `auth:`")),
+        "neither the member's protocol nor its provider's states a default: {:?}",
+        styleless.err()
+    );
+}
+
 #[test]
 fn a_member_that_cannot_be_reached_refuses_the_load_naming_it() {
     let unknown = resolve("models: {m: {provider: q}}", &[("p", provider("d", None))]);
@@ -647,6 +1119,9 @@ fn a_members_binding_is_opened_with_its_dialects_parameters_under_the_providers_
 
 // ── the minted credential of a member bound under an OAuth grant (TODO row 22) ─────────────────
 
+/// One open's head fields: `(name, value)`, in the order received.
+type HeadFields = Vec<(String, Vec<u8>)>;
+
 /// A connection table standing in for the token endpoint: framed needs, each declaration and each
 /// open recorded, each open answered by the endpoint's next reply (`expires_in` 2, then 3600), one
 /// piece per read.
@@ -655,6 +1130,8 @@ pub(crate) struct TokenEndpoint {
     slab: busbar_contract::conn::ConnSlab<()>,
     declared: std::sync::Mutex<Vec<(u32, u32, Option<String>)>>,
     opened: std::sync::Mutex<Vec<Opened>>,
+    /// Each open's head fields, as the table received them.
+    fields: std::sync::Mutex<Vec<HeadFields>>,
     replies: std::sync::Mutex<Replies>,
     /// The reply body to a request body, when the endpoint answers by what it was asked (an RFC
     /// 8693 exchange's token names its scope); `None` = the minted replies above.
@@ -681,7 +1158,9 @@ fn reply_piece(kind: busbar_contract::conn::PieceKind, len: usize) -> busbar_con
         status_code: (kind == PieceKind::Fields).then_some(200),
         status_namespace: None,
         retry_after_secs: None,
+        fault: None,
         reason: None,
+        declared_len: None,
     }
 }
 
@@ -732,6 +1211,12 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
     ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
         use busbar_contract::conn::PieceKind;
         self.slab.check_need(caller, need)?;
+        self.fields.lock().unwrap().push(
+            desc.fields
+                .iter()
+                .map(|(n, v)| ((*n).to_string(), v.to_vec()))
+                .collect(),
+        );
         let mut opened = self.opened.lock().unwrap();
         opened.push((
             need.0,
@@ -815,8 +1300,9 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
 fn presented(answer: Option<&busbar_contract::auth_calls::Fields>) -> Option<String> {
     match answer? {
         busbar_contract::auth_calls::Fields::Ready(fields) => fields.iter().find_map(|f| {
-            (f.name == b"authorization")
-                .then(|| String::from_utf8_lossy(f.value.expose_secret()).into_owned())
+            (f.name == b"authorization").then(|| {
+                String::from_utf8_lossy(f.value.expose(&busbar_kernel::seal::lend())).into_owned()
+            })
         }),
         _ => None,
     }
@@ -829,6 +1315,8 @@ fn linked_mint_plugin(table: &std::sync::Arc<TokenEndpoint>) -> super::OutboundA
         crate::root::loader::dispatch::DispatchConfig::default(),
     ));
     crate::root::connector::install_io(&dispatcher);
+    // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     // The row's canonical name is its key.
     let name = "busbar-auth-oauth";
     let linked: [busbar_kernel::preflight::LinkedAuth; 1] = [(name, name, busbar_auth_oauth::door)];
@@ -855,98 +1343,140 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
     };
     use busbar_contract::auth_calls::FieldsRequest;
     const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
-    let key_file =
-        std::env::temp_dir().join(format!("busbar-door-steps-oauth-{}", std::process::id()));
-    std::fs::write(&key_file, "oracle-client-0001:oracle:secret:with:colons").expect("key");
-    let providers: std::collections::BTreeMap<String, super::ProviderRoute> = [(
-        "p".to_string(),
-        super::ProviderRoute {
-            base_url: "http://127.0.0.1:9".to_string(),
-            protocol: "d".to_string(),
-            error_map: Default::default(),
-            credential: busbar_contract::secret_ref::SecretRef::file(
-                key_file.display().to_string(),
-            ),
-            style: Some("oauth-client-credentials".to_string()),
-            params: super::StyleParams {
-                token_url: Some(TOKEN_URL.to_string()),
-                scope: Some("https://cognitiveservices.azure.com/.default".to_string()),
-                ..super::StyleParams::default()
+    let basic = {
+        use base64::Engine as _;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+        )
+    };
+    // The endpoint as written, plain and spelling a userinfo (row 74, F25).
+    for written in [
+        TOKEN_URL.to_string(),
+        TOKEN_URL.replacen("://", "://svcuser:hunter2-P4ss@", 1),
+    ] {
+        let key_file =
+            std::env::temp_dir().join(format!("busbar-door-steps-oauth-{}", std::process::id()));
+        std::fs::write(&key_file, "oracle-client-0001:oracle:secret:with:colons").expect("key");
+        let providers: std::collections::BTreeMap<String, super::ProviderRoute> = [(
+            "p".to_string(),
+            super::ProviderRoute {
+                base_url: "http://127.0.0.1:9".to_string(),
+                userinfo: None,
+                protocol: "d".to_string(),
+                error_map: Default::default(),
+                credential: busbar_contract::secret_ref::SecretRef::file(
+                    key_file.display().to_string(),
+                ),
+                style: Some("oauth-client-credentials".to_string()),
+                params: super::StyleParams {
+                    token_url: Some(written.clone()),
+                    scope: Some("https://cognitiveservices.azure.com/.default".to_string()),
+                    ..super::StyleParams::default()
+                },
+                metadata: busbar_kernel::config_validate::MetadataPosture::default(),
             },
-            metadata: busbar_kernel::config_validate::MetadataPosture::default(),
-        },
-    )]
-    .into();
-    let table = std::sync::Arc::new(TokenEndpoint::default());
-    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
-    let reach = super::DoorReach {
-        providers: &providers,
-        secrets: &secrets,
-        auths: std::sync::Arc::new(linked_mint_plugin(&table)),
-        conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
-        stream_ceiling_secs: 1,
-        models: None,
-        upgrades: Vec::new(),
-    };
-    let section: serde_yaml::Value =
-        serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
-    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
-        need_auths: vec![(DIRECTION_OUTBOUND, "oauth-client-credentials")],
-        dialects: vec!["d"],
-        ..Default::default()
-    };
-    let routes = super::member_routes(&section, &DoorPools::of(&section), &facts, &reach)
-        .expect("the member resolves");
-    let _ = std::fs::remove_file(&key_file);
-    let binding = routes["m"].auth.clone().expect("its credential is bound");
-    assert!(
-        table.declared.lock().unwrap().contains(&(
-            0,
-            EGRESS_OPERATOR_INFRASTRUCTURE,
-            Some(TOKEN_URL.to_string())
-        )),
-        "the plugin's operator-infrastructure need (ARCHITECT D1 2026-10-05, MINT CLASS (B)), \
-         pinned to the provider's token_url: {:?}",
-        table.declared.lock().unwrap()
-    );
+        )]
+        .into();
+        let table = std::sync::Arc::new(TokenEndpoint::default());
+        let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
+            std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
+        let reach = super::DoorReach {
+            providers: &providers,
+            secrets: std::sync::Arc::clone(&secrets),
+            auths: std::sync::Arc::new(linked_mint_plugin(&table)),
+            conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
+            stream_ceiling_secs: 1,
+            catalog: None,
+            models: None,
+            upgrades: Vec::new(),
+        };
+        let section: serde_yaml::Value =
+            serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
+        let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+            need_auths: vec![(DIRECTION_OUTBOUND, "oauth-client-credentials")],
+            dialects: vec!["d"],
+            ..Default::default()
+        };
+        let routes = super::member_routes(&section, &DoorPools::of(&section), &facts, &reach)
+            .expect("the member resolves");
+        let _ = std::fs::remove_file(&key_file);
+        let binding = routes["m"].auth.clone().expect("its credential is bound");
+        assert!(
+            table.declared.lock().unwrap().contains(&(
+                0,
+                EGRESS_OPERATOR_INFRASTRUCTURE,
+                Some(TOKEN_URL.to_string())
+            )),
+            "the plugin's operator-infrastructure need (ARCHITECT D1 2026-10-05, MINT CLASS (B)), \
+             pinned to the provider's token_url: {:?}",
+            table.declared.lock().unwrap()
+        );
 
-    // The first request waits for the first mint (no empty credential), then carries it.
-    let first = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        binding
-            .auth
-            .fields(binding.handle, FieldsRequest::default(), 0),
-    )
-    .await
-    .expect("the first mint lands");
-    assert_eq!(
-        presented(Some(&first)).as_deref(),
-        Some("Bearer oracle-minted-1")
-    );
-    // The refresh lands ahead of the first token's expiry; the next request carries it.
-    let refreshed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            let now = binding
+        // The first request waits for the first mint (no empty credential), then carries it.
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            binding
                 .auth
-                .fields_now(binding.handle, &FieldsRequest::default());
-            if presented(now.as_ref()).as_deref() == Some("Bearer oracle-minted-2") {
-                return;
+                .fields(binding.handle, FieldsRequest::default(), 0),
+        )
+        .await
+        .expect("the first mint lands");
+        assert_eq!(
+            presented(Some(&first)).as_deref(),
+            Some("Bearer oracle-minted-1")
+        );
+        // The refresh lands ahead of the first token's expiry; the next request carries it.
+        let refreshed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let now = binding
+                    .auth
+                    .fields_now(binding.handle, &FieldsRequest::default());
+                if presented(now.as_ref()).as_deref() == Some("Bearer oracle-minted-2") {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        })
+        .await;
+        assert!(refreshed.is_ok(), "the refreshed bearer is presented");
+        let opened = table.opened.lock().unwrap();
+        assert_eq!(opened.len(), 2, "the mint and the refresh: {opened:?}");
+        assert!(opened.iter().all(|(need, target, words, _)| *need == 0
+            && target == TOKEN_URL
+            && words == b"/tenant/oauth2/v2.0/token"));
+        assert_eq!(
+            opened[1].3,
+            "grant_type=client_credentials&client_id=oracle-client-0001&client_secret=\
+             oracle%3Asecret%3Awith%3Acolons&scope=https%3A%2F%2Fcognitiveservices.azure.com%2F.default"
+        );
+        drop(opened);
+        // ROW 74 (F25): the endpoint as the plugin was handed it is the stripped one (its need is
+        // pinned there and its mint dialled there, above), and a `user:pass@` the operator wrote rides
+        // each mint FIRST as `authorization: Basic`, as 1.5.5's reqwest POST sent it (v1.5.5
+        // `oauth_client_credentials.rs:119-126` in its egress-auth tree); a plain endpoint's mint
+        // carries none.
+        let fields = table.fields.lock().unwrap();
+        assert_eq!(fields.len(), 2);
+        for head in fields.iter() {
+            let lead = head.first().map(|(n, v)| (n.as_str(), v.as_slice()));
+            if written == TOKEN_URL {
+                assert!(
+                    !head
+                        .iter()
+                        .any(|(n, _)| n.eq_ignore_ascii_case("authorization")),
+                    "a plain endpoint's mint presents no authorization: {head:?}"
+                );
+            } else {
+                assert_eq!(lead, Some(("authorization", basic.as_bytes())), "{head:?}");
+            }
+            assert!(
+                head.iter()
+                    .all(|(_, v)| !String::from_utf8_lossy(v).contains("hunter2")),
+                "the userinfo rides only as its Basic value: {head:?}"
+            );
         }
-    })
-    .await;
-    assert!(refreshed.is_ok(), "the refreshed bearer is presented");
-    let opened = table.opened.lock().unwrap();
-    assert_eq!(opened.len(), 2, "the mint and the refresh: {opened:?}");
-    assert!(opened.iter().all(|(need, target, words, _)| *need == 0
-        && target == TOKEN_URL
-        && words == b"/tenant/oauth2/v2.0/token"));
-    assert_eq!(
-        opened[1].3,
-        "grant_type=client_credentials&client_id=oracle-client-0001&client_secret=\
-         oracle%3Asecret%3Awith%3Acolons&scope=https%3A%2F%2Fcognitiveservices.azure.com%2F.default"
-    );
+    }
 }
 
 /// A test-only 2048-bit PKCS#8 RSA private key (generated for the kernel's `jwt_bearer` tests and
@@ -1004,6 +1534,7 @@ fn jwt_bearer_routes(
         "p".to_string(),
         super::ProviderRoute {
             base_url: "http://127.0.0.1:9".to_string(),
+            userinfo: None,
             protocol: "d".to_string(),
             error_map: Default::default(),
             credential: busbar_contract::secret_ref::SecretRef::file(
@@ -1015,13 +1546,15 @@ fn jwt_bearer_routes(
         },
     )]
     .into();
-    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
+        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let reach = super::DoorReach {
         providers: &providers,
-        secrets: &secrets,
+        secrets: std::sync::Arc::clone(&secrets),
         auths: std::sync::Arc::new(linked_mint_plugin(table)),
         conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
         stream_ceiling_secs: 1,
+        catalog: None,
         models: None,
         upgrades: Vec::new(),
     };
@@ -1092,6 +1625,181 @@ async fn a_member_under_jwt_bearer_mints_at_its_service_accounts_token_uri() {
             "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion="
         ),
         "1.5.5's RFC 7523 form: {body}"
+    );
+}
+
+/// ROW 74 (F25), `jwt-bearer`: 1.5.5 POSTed the signed assertion with reqwest to the service
+/// account's `token_uri` as written (v1.5.5 `crates/busbar/src/egress_auth/jwt_bearer.rs:175-181`),
+/// whose builder took a `user:pass@` out of the URL and sent it FIRST as `authorization: Basic` (the
+/// form names no `authorization`). A service account whose `token_uri` spells one, served on the
+/// DOOR path: the plane's side of the seal (the member's route, the declared need) carries no
+/// userinfo; the assertion's `aud` is the raw `token_uri`, as 1.5.5 signed it; and the mint POSTs
+/// to the stripped endpoint, led by the Basic value, with no field carrying the userinfo in clear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it() {
+    use base64::Engine as _;
+    use busbar_contract::auth_calls::FieldsRequest;
+    const TOKEN_URI: &str = "https://oauth2.example.com/token";
+    let written = TOKEN_URI.replacen("://", "://svcuser:hunter2-P4ss@", 1);
+    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let routes = jwt_bearer_routes(
+        &written,
+        busbar_kernel::config_validate::MetadataPosture::default(),
+        &table,
+    )
+    .expect("a token_uri spelling a userinfo seals, as 1.5.5 accepted it");
+    let binding = routes["m"].auth.clone().expect("its credential is bound");
+    assert!(
+        table
+            .declared
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, _, target)| target.as_deref() == Some(TOKEN_URI)),
+        "the mint need is pinned to the stripped endpoint: {:?}",
+        table.declared.lock().unwrap()
+    );
+    let minted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let now = binding
+                .auth
+                .fields_now(binding.handle, &FieldsRequest::default());
+            if presented(now.as_ref()).is_some_and(|a| a.starts_with("Bearer oracle-minted-")) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(minted.is_ok(), "a bearer minted at the stripped endpoint");
+    assert_eq!(table.opened.lock().unwrap()[0].1, TOKEN_URI);
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+    );
+    let fields = table.fields.lock().unwrap();
+    let head = &fields[0];
+    assert_eq!(
+        head.first().map(|(n, v)| (n.as_str(), v.as_slice())),
+        Some(("authorization", basic.as_bytes())),
+        "{head:?}"
+    );
+    assert!(
+        head.iter()
+            .all(|(_, v)| !String::from_utf8_lossy(v).contains("hunter2")),
+        "{head:?}"
+    );
+    drop(fields);
+    // (1) Nothing the plane's side of the seal holds carries the userinfo: the member's sealed
+    // route (its base and every base a framer spells it in) and the need the minting plugin
+    // declared over its settings. The service account itself goes to the auth plugin alone.
+    let route = &routes["m"];
+    assert!(
+        !route.base_url.contains("svcuser")
+            && route
+                .spelled
+                .iter()
+                .all(|(_, url)| !url.contains("svcuser")),
+        "the member's route carries no userinfo"
+    );
+    assert!(
+        table
+            .declared
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, _, target)| !matches!(target, Some(t) if t.contains("svcuser"))),
+        "no declared need carries the userinfo: {:?}",
+        table.declared.lock().unwrap()
+    );
+    // (2) The assertion's `aud` is the service account's `token_uri` AS WRITTEN, userinfo and all:
+    // 1.5.5 signed it over the raw endpoint (v1.5.5 `crates/busbar/src/egress_auth/jwt_bearer.rs:
+    // 152-159`, `jwt_claims_json(.., &self.token_uri, ..)`), and only the POST's URL lost it.
+    let body = table.opened.lock().unwrap()[0].3.clone();
+    let assertion = body
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("assertion="))
+        .expect("the RFC 7523 form carries the assertion");
+    let claims = assertion.split('.').nth(1).expect("a compact JWT");
+    let claims: serde_json::Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(claims)
+            .expect("base64url claims"),
+    )
+    .expect("JSON claims");
+    assert_eq!(
+        claims["aud"],
+        written.as_str(),
+        "the aud is the raw token_uri, as 1.5.5 signed it"
+    );
+}
+
+/// ROW 74 (F25), THE IN-PROCESS LANE'S SHAPE: the host stripped a `token_url`'s userinfo before a
+/// plane built its binding (`appbuild`), so the settings the axis is handed name the stripped
+/// endpoint and the Basic value arrives beside them ([`super::OutboundAuths::serving_with`]). The
+/// mint need is pinned to the stripped endpoint and every mint leads with the Basic value, as
+/// 1.5.5's reqwest POST sent it (v1.5.5 `oauth_client_credentials.rs:119-126` in its egress-auth
+/// tree).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_mint() {
+    use base64::Engine as _;
+    use busbar_contract::auth_calls::FieldsRequest;
+    const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
+    let held = crate::root::userinfo::UserinfoBasic::of(&TOKEN_URL.replacen(
+        "://",
+        "://svcuser:hunter2-P4ss@",
+        1,
+    ))
+    .expect("the userinfo, held by the host");
+    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let auths = linked_mint_plugin(&table);
+    // The style as the operator's config spells it (a fixture), read by the config's own parser.
+    let style = super::style_word(
+        serde_yaml::from_str(include_str!("fixtures/client_credentials_style.yaml"))
+            .expect("a provider style"),
+    );
+    // What the plane built its binding from: the stripped endpoint.
+    let settings = serde_json::json!({
+        "token_url": TOKEN_URL,
+        "scope": "https://x.example.com/.default",
+    });
+    let (auth, _) = auths
+        .serving_with(style, &settings, Some(held))
+        .expect("the plugin opens")
+        .expect("a linked plugin serves the style");
+    let handle = auth
+        .open_outbound(
+            style,
+            b"oracle-client-0001:oracle:secret:with:colons",
+            &settings,
+        )
+        .expect("the binding opens");
+    let first = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        auth.fields(handle, FieldsRequest::default(), 0),
+    )
+    .await
+    .expect("the first mint lands");
+    assert_eq!(
+        presented(Some(&first)).as_deref(),
+        Some("Bearer oracle-minted-1")
+    );
+    assert!(table
+        .declared
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(_, _, target)| target.as_deref() == Some(TOKEN_URL)));
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+    );
+    let fields = table.fields.lock().unwrap();
+    assert_eq!(
+        fields[0].first().map(|(n, v)| (n.as_str(), v.as_slice())),
+        Some(("authorization", basic.as_bytes())),
+        "the far end hears the Basic value on the token POST: {:?}",
+        fields[0]
     );
 }
 
@@ -1274,6 +1982,8 @@ pub(crate) mod tool_door {
             let section = endpoint_section();
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
             crate::root::connector::install_io(&dispatcher);
+            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+            let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             crate::LINKED
                 .plane_doors
                 .iter()
@@ -1639,7 +2349,11 @@ pub(crate) mod tool_door {
                         .expect("mint");
                     gov.hydrate_budgets(&CostModel::flat(1), 0)
                         .expect("hydrate");
-                    (gov, Arc::new(key), token.expose_secret().to_string())
+                    (
+                        gov,
+                        Arc::new(key),
+                        token.expose(&busbar_kernel::seal::lend()).to_string(),
+                    )
                 }
             };
             let clock = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1658,6 +2372,8 @@ pub(crate) mod tool_door {
                 }),
             ));
             crate::root::connector::install_io(&dispatcher);
+            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+            let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             // Its connection reads through a ticket (the door's `exchange`) wake on the dispatcher.
             let connector = busbar_core_connector::process::build(
                 || {
@@ -1711,7 +2427,8 @@ pub(crate) mod tool_door {
             }
             sections.insert(section_key, tools.unwrap_or_else(|| section(port)));
             let providers = BTreeMap::new();
-            let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+            let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
+                std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
             // The build's linked auth rows, and the OAuth plugin (a dropped-in plugin in a
             // deployment) a token-exchange registration's style is served by. Its own need (the
             // `open-web` token endpoint, connection security only) reaches a table standing in for
@@ -1739,11 +2456,12 @@ pub(crate) mod tool_door {
             );
             let reach = crate::root::door_steps::DoorReach {
                 providers: &providers,
-                secrets: &secrets,
+                secrets: std::sync::Arc::clone(&secrets),
                 auths: Arc::new(auths),
                 conns: Arc::clone(&connector) as Arc<dyn PollConns>,
                 models: None,
                 stream_ceiling_secs: 600,
+                catalog: None,
                 upgrades: Vec::new(),
             };
             let egress = crate::root::serve::DoorEgress {
@@ -1958,9 +2676,10 @@ pub(crate) mod tool_door {
                 busbar_kernel::host_records::QUEUE_CAP,
             )));
         let kernel = Arc::new(match ledger {
-            Ledger::Memory => {
-                kernel.with_records(Arc::new(Rows::default()), Arc::clone(&store) as _)
-            }
+            Ledger::Memory => kernel.with_records(
+                Arc::new(StoreRows(Arc::clone(&store))),
+                Arc::clone(&store) as _,
+            ),
             Ledger::Store(claims) => kernel.with_records(Arc::new(Rows::default()), claims),
             Ledger::Rows(rows, max_live) => kernel
                 .with_work_bounds(busbar_kernel::host_work::WorkBounds {
@@ -2269,6 +2988,42 @@ pub(crate) mod tool_door {
         Unbound,
     }
 
+    /// The rig's in-memory store's own typed record rows, for the records services: what a door
+    /// writes through them (a chained kind's sealed records included) is read back off the store.
+    struct StoreRows(Arc<busbar_kernel::governance::MemoryStore>);
+
+    impl busbar_kernel::host_records::RecordRows for StoreRows {
+        fn record_put(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            key: &[u8],
+            value: &busbar_contract::kinds::RecordBytes,
+        ) -> Result<(), busbar_contract::kinds::StoreError> {
+            self.0.record_put(schema, key, value)
+        }
+
+        fn record_get(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            key: &[u8],
+        ) -> Result<Option<busbar_contract::kinds::RecordBytes>, busbar_contract::kinds::StoreError>
+        {
+            self.0.record_get(schema, key)
+        }
+
+        fn record_scan(
+            &self,
+            schema: busbar_contract::ids::RecordSchemaId,
+            prefix: &[u8],
+            limit: u32,
+        ) -> Result<
+            Vec<(Vec<u8>, busbar_contract::kinds::RecordBytes)>,
+            busbar_contract::kinds::StoreError,
+        > {
+            self.0.record_scan(schema, prefix, limit)
+        }
+    }
+
     /// Typed record rows in memory: the store kind's record slots, for the records services; and
     /// how many writes of a settled work handle the store refuses next.
     #[derive(Default)]
@@ -2355,17 +3110,19 @@ pub(crate) mod tool_door {
         conns: crate::root::loader::dispatch::ConnTable,
     ) -> crate::root::boot::DoorPlane {
         let row = LinkedRow::of(line_door()).expect("the door states its Statement");
-        load_linked::<Plane>(
-            &row,
-            Bind {
-                instance: Arc::from(instance),
-                max_inflight_cap: 64,
-                sink: Arc::new(NoSink),
-                dispatcher: dispatcher.adopter(),
-                conns,
-            },
+        Arc::new(
+            load_linked::<Plane>(
+                &row,
+                Bind {
+                    instance: Arc::from(instance),
+                    max_inflight_cap: 64,
+                    sink: Arc::new(NoSink),
+                    dispatcher: dispatcher.adopter(),
+                    conns,
+                },
+            )
+            .expect("the linked door binds"),
         )
-        .expect("the linked door binds")
     }
 
     /// THE EXIT TEST (steps arrival, route, meter, exit): a keyed caller's `tools/call` arrives as one
@@ -2416,18 +3173,24 @@ pub(crate) mod tool_door {
         assert!(rig.all_ended(), "its facts closed at its end");
 
         // THE CALL LOG, CHAINED (audit-chain): the call's one record is appended to the plane's call
-        // chain in the kernel's record store before the caller was answered (a chained write is
-        // durable before its writer hears so).
+        // chain in the kernel's record store, sealed by the host when the write-behind flushes it.
         {
-            use busbar_contract::records::{PlaneSelector, RecordStore as _};
-            let kind = surface("record_kind_call");
-            let parents = rig.store.list_plane_record_parents(kind).expect("a read");
-            assert_eq!(parents.len(), 1, "one chain, the caller's: {parents:?}");
-            let chained = rig
-                .store
-                .list_plane_records(kind, &PlaneSelector::Parent(parents[0].as_str().into()))
-                .expect("a read");
-            assert_eq!(chained.len(), 1, "the call's one chained record");
+            let (_, chained) = crate::root::serve::planes_tests::chained_records(
+                &rig.store,
+                surface("record_kind_call"),
+                busbar_contract::abi::plane::RecordChain {
+                    kind: 0,
+                    framing: busbar_contract::abi::plane::CHAIN_LENGTH_PREFIXED,
+                    flags: busbar_contract::abi::plane::CHAIN_DIGESTS_SCOPE,
+                    _reserved: 0,
+                },
+                1,
+            );
+            assert_eq!(
+                chained.len(),
+                1,
+                "the call's one chained record: {chained:?}"
+            );
         }
         let rows = rig.book.durability.lock().expect("unpoisoned").read_back();
         // The unit's lane is the published tool it called (SEAM-L(j)), as predev ledgered a call.
@@ -3268,6 +4031,8 @@ pub(crate) mod tool_door {
         let compose = |instance: &'static str, public_url: Option<&str>| {
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
             crate::root::connector::install_io(&dispatcher);
+            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+            let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             let plane = bound(
                 instance,
                 &dispatcher,
@@ -3304,6 +4069,8 @@ pub(crate) mod tool_door {
             let _block = Published(block);
             let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
             crate::root::connector::install_io(&dispatcher);
+            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+            let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
             let plane = bound(
                 block,
                 &dispatcher,
@@ -3492,6 +4259,7 @@ pub(crate) mod door_boundary {
             public_url: Some(PUBLIC_URL),
             prior: None,
             providers: None,
+            hostless: Default::default(),
         })
         .expect("the door builds from its section")
     }
@@ -4824,7 +5592,7 @@ mod task_continuation {
                 1_700_000_000,
             )
             .expect("mint");
-        let other = other.expose_secret().to_string();
+        let other = other.expose(&busbar_kernel::seal::lend()).to_string();
         let foreign = ask(&rig, &other, "tasks/get", &task_id).await;
         let unknown = ask(
             &rig,
@@ -5870,4 +6638,1377 @@ done
             "the child was refused on its input, by the operator's grant: {body}"
         );
     }
+}
+
+/// THE TRANSLATE CAP RIDES THE SETTINGS (row 155): the `limits` section a door plane is opened and
+/// refreshed with carries the operator's `request_body_max_bytes`, the kernel's resolved value (its
+/// 32 MiB default when the deployment names none), so the plane enforces the kernel's cap from its
+/// own settings.
+#[test]
+fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
+    let handed = |yaml: &str| {
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("a deployment");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        super::kernel_sections(&cfg)["limits"]["request_body_max_bytes"].as_u64()
+    };
+    assert_eq!(
+        handed("providers: {}\nmodels: {}\nlimits:\n  request_body_max_bytes: 131072\n"),
+        Some(131_072)
+    );
+    assert_eq!(
+        handed("providers: {}\nmodels: {}\n"),
+        Some(busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT as u64)
+    );
+}
+
+// ── `upstream_credential:` — busbar's own credential for a registration, refreshed once per lease ─
+
+/// No provider: a registration is reached at its own target.
+static NO_PROVIDERS: std::collections::BTreeMap<String, super::ProviderRoute> =
+    std::collections::BTreeMap::new();
+
+/// The door's reach over the build's linked auth plugins (`busbar-auth-header` serves `bearer`
+/// and `api-key`) and the built-in secret modules.
+fn own_reach() -> super::DoorReach<'static> {
+    let dispatcher = std::sync::Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+        crate::root::loader::dispatch::DispatchConfig::default(),
+    ));
+    super::DoorReach {
+        providers: &NO_PROVIDERS,
+        secrets: std::sync::Arc::new(
+            busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        ),
+        auths: std::sync::Arc::new(super::OutboundAuths::new(
+            dispatcher,
+            crate::LINKED.auths,
+            None,
+            crate::root::loader::dispatch::ConnTable::NoNeeds,
+        )),
+        conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
+        stream_ceiling_secs: 1,
+        catalog: None,
+        upgrades: Vec::new(),
+        models: None,
+    }
+}
+
+/// A secret file of this test's own (a file, not an env var: `set_var` is process-global and the
+/// cells run in parallel), holding `value`.
+fn own_secret(name: &str, value: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "busbar-door-steps-cred-{name}-{}",
+        std::process::id()
+    ));
+    std::fs::write(&path, value).expect("write the test secret");
+    path
+}
+
+/// ROTATE the secret at `path` to `value` the way an operator's secret store does: written aside,
+/// then renamed over it, so a reader sees the old value or the new one, whole.
+fn rotate(path: &std::path::Path, value: &str) {
+    let aside = path.with_extension("rotating");
+    std::fs::write(&aside, value).expect("write the rotated secret");
+    std::fs::rename(&aside, path).expect("swap it in");
+}
+
+/// The registration `planner` stating `upstream_credential: {secret: {file: <path>}<placement>,
+/// lease_ttl_ms: 60000}` (`placement` the YAML after the secret, or empty for none).
+fn registration(path: &std::path::Path, placement: &str) -> serde_yaml::Value {
+    serde_yaml::from_str(&format!(
+        "url: 'https://agent.vendor/planner'\nupstream_credential: {{secret: {{file: '{}'}}{placement}, \
+         lease_ttl_ms: 60000}}",
+        path.display()
+    ))
+    .expect("yaml")
+}
+
+/// What a binding's handle `handle` presents on one request: each field, its name lower-cased.
+fn presents(
+    auth: &dyn busbar_contract::auth_calls::OutboundAuth,
+    handle: u64,
+) -> Vec<(String, String)> {
+    match auth.fields_now(
+        handle,
+        &busbar_contract::auth_calls::FieldsRequest::default(),
+    ) {
+        Some(busbar_contract::auth_calls::Fields::Ready(fields)) => fields
+            .iter()
+            .map(|f| {
+                (
+                    String::from_utf8_lossy(&f.name).to_ascii_lowercase(),
+                    String::from_utf8_lossy(f.value.expose(&busbar_kernel::seal::lend()))
+                        .into_owned(),
+                )
+            })
+            .collect(),
+        other => panic!("a header binding answers on the spot: {other:?}"),
+    }
+}
+
+/// Why the load was refused (a binding is not `Debug`: it holds an auth instance).
+fn refused(bound: Result<Option<busbar_kernel::plane_driver::AuthBinding>, String>) -> String {
+    match bound {
+        Err(why) => why,
+        Ok(_) => panic!("the load was not refused"),
+    }
+}
+
+/// Ported from the deleted engine crate's `creds_tests::a_minted_lease_carries_the_secret_only_through_the_header_it_was_placed_at`:
+/// `placement: bearer` (and no placement at all) binds the `bearer` style, so the secret is
+/// presented only as `authorization: Bearer <secret>`, the trailing newline a file secret picks up
+/// trimmed by the resolver (a header value with an embedded newline is a header-splitting bug).
+/// RED: a registration stating no `upstream_credential` binds nothing, so nothing is presented.
+#[test]
+fn a_bearer_placement_presents_the_secret_only_as_the_bearer() {
+    let path = own_secret("bearer", "s3cr3t-vendor-token\n");
+    let reach = own_reach();
+    for placement in [", placement: bearer", ""] {
+        let binding =
+            super::upstream_credential_binding("planner", &registration(&path, placement), &reach)
+                .expect("it binds")
+                .expect("an upstream credential is a binding");
+        assert!(
+            !binding.passthrough,
+            "busbar's own credential, never the caller's"
+        );
+        let handle = binding
+            .per_request
+            .as_ref()
+            .expect("a refreshed binding")
+            .handle_now()
+            .expect("it resolves");
+        assert_eq!(
+            presents(&*binding.auth, handle),
+            vec![(
+                "authorization".to_string(),
+                "Bearer s3cr3t-vendor-token".to_string()
+            )],
+            "placement `{placement}`"
+        );
+    }
+    let bare: serde_yaml::Value =
+        serde_yaml::from_str("url: 'https://agent.vendor/planner'").expect("yaml");
+    assert!(
+        super::upstream_credential_binding("planner", &bare, &reach)
+            .expect("no block is no error")
+            .is_none(),
+        "no upstream_credential: nothing is bound, so nothing is presented"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Ported from the deleted engine crate's `creds_tests::a_named_header_placement_carries_the_value_verbatim`:
+/// `placement: {header: X-API-Key}` binds the `api-key` style over that header, the secret
+/// verbatim, and no `authorization`; a placement naming no header refuses the load.
+#[test]
+fn a_named_header_placement_presents_the_secret_verbatim_in_that_header() {
+    let path = own_secret("apikey", "abc123");
+    let reach = own_reach();
+    let binding = super::upstream_credential_binding(
+        "planner",
+        &registration(&path, ", placement: {header: X-API-Key}"),
+        &reach,
+    )
+    .expect("it binds")
+    .expect("a binding");
+    let handle = binding
+        .per_request
+        .as_ref()
+        .expect("a refreshed binding")
+        .handle_now()
+        .expect("it resolves");
+    assert_eq!(
+        presents(&*binding.auth, handle),
+        vec![("x-api-key".to_string(), "abc123".to_string())]
+    );
+    let err = refused(super::upstream_credential_binding(
+        "planner",
+        &registration(&path, ", placement: {header: ''}"),
+        &reach,
+    ));
+    assert!(err.contains("member 'planner'"), "{err}");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Ported from the deleted engine crate's `creds_tests::an_unresolvable_handle_fails_closed_and_names_the_agent`:
+/// a secret that does not resolve when the generation is sealed refuses the load naming the member
+/// (fail closed); one that stops resolving after it is refused from the next refresh on: the handle
+/// answers none, hop after hop, and answers again once a refresh finds it back. A block stating no
+/// lease (or a zero one) refuses the load naming the member too: the lease is how often the
+/// credential is refreshed.
+#[test]
+fn an_unresolvable_credential_fails_closed_and_names_the_member() {
+    let reach = own_reach();
+    let missing = std::path::Path::new("/nonexistent/busbar/agent/secret");
+    let err = refused(super::upstream_credential_binding(
+        "planner",
+        &registration(missing, ""),
+        &reach,
+    ));
+    assert!(
+        err.contains("member 'planner'") && err.contains("cannot resolve"),
+        "{err}"
+    );
+
+    let path = own_secret("vanish", "tok");
+    for lease in [None, Some(0_u64)] {
+        let mut bare = registration(&path, "");
+        let block = bare
+            .get_mut(busbar_contract::section::UPSTREAM_CREDENTIAL_KEY)
+            .and_then(serde_yaml::Value::as_mapping_mut)
+            .expect("the block");
+        let key = serde_yaml::Value::from(busbar_contract::section::CREDENTIAL_LEASE_TTL_KEY);
+        match lease {
+            None => {
+                block.remove(&key);
+            }
+            Some(ms) => {
+                block.insert(key, serde_yaml::Value::from(ms));
+            }
+        }
+        let err = refused(super::upstream_credential_binding("planner", &bare, &reach));
+        assert!(
+            err.contains("member 'planner'") && err.contains("lease_ttl_ms"),
+            "{err}"
+        );
+    }
+    let (_, per) = super::upstream_credential("planner", &registration(&path, ""), &reach)
+        .expect("it binds")
+        .expect("a binding");
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let first = per
+        .handle_now()
+        .expect("it resolves while the file is there");
+    std::fs::remove_file(&path).expect("remove it");
+    assert_eq!(
+        per.handle_now(),
+        Some(first),
+        "a hop before the next refresh presents what the last refresh left"
+    );
+    per.refresh();
+    for _ in 0..8 {
+        assert_eq!(
+            per.handle_now(),
+            None,
+            "gone: nothing is presented, hop after hop"
+        );
+    }
+    std::fs::write(&path, "tok").expect("put it back");
+    per.refresh();
+    assert!(
+        per.handle_now().is_some(),
+        "a refresh that finds it back serves it again"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A SECRET PASTED WHERE ITS REFERENCE BELONGS IS NEVER ECHOED (secret-hygiene Check 3; coordinator
+/// ruling 2026-10-07: the refusal names the binding, member and key, never the value or a decoder
+/// error over the secret input). Each `secret:` below carries a real-looking value in a shape the
+/// reference decoder cannot read; every refusal names `member 'planner'` and
+/// `upstream_credential.secret`, and none carries the value.
+/// RED before the fix: the flow map `{sk-live-...}` is a map whose one KEY is the secret, and the
+/// decoder's "unknown field `sk-live-...`" error rode into the refusal verbatim.
+#[test]
+fn a_secret_pasted_as_its_reference_is_never_echoed_in_the_refusal() {
+    const SECRET: &str = "sk-live-4f9QzX7pL2mV8rT1";
+    let reach = own_reach();
+    for secret in [
+        format!("{{{SECRET}}}"),
+        format!("{{{SECRET}: {{file: /x}}}}"),
+        SECRET.to_string(),
+        format!("'{SECRET}'"),
+        format!("{{env: {{{SECRET}: 1}}}}"),
+        format!("{{file: [{SECRET}]}}"),
+        format!("{{module: file, settings: {SECRET}}}"),
+        format!("{{module: [{SECRET}]}}"),
+    ] {
+        let registration: serde_yaml::Value = serde_yaml::from_str(&format!(
+            "url: 'https://agent.vendor/planner'\nupstream_credential: {{secret: {secret}}}"
+        ))
+        .expect("yaml");
+        let err = refused(super::upstream_credential_binding(
+            "planner",
+            &registration,
+            &reach,
+        ));
+        assert!(
+            !err.contains(SECRET),
+            "the refusal for `secret: {secret}` echoes the secret: {err}"
+        );
+        assert!(
+            err.contains("member 'planner'") && err.contains("upstream_credential.secret"),
+            "the refusal names the binding: {err}"
+        );
+    }
+}
+
+/// An `OutboundAuth` counting its `open_outbound` calls over the real one.
+struct CountingOpens {
+    inner: std::sync::Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
+    opened: std::sync::atomic::AtomicUsize,
+}
+
+impl busbar_contract::auth_calls::OutboundAuth for CountingOpens {
+    fn open_outbound(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<u64, String> {
+        self.opened
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.open_outbound(style, credential, settings)
+    }
+
+    fn fields_now(
+        &self,
+        handle: u64,
+        request: &busbar_contract::auth_calls::FieldsRequest,
+    ) -> Option<busbar_contract::auth_calls::Fields> {
+        self.inner.fields_now(handle, request)
+    }
+
+    fn fields(
+        &self,
+        handle: u64,
+        request: busbar_contract::auth_calls::FieldsRequest,
+        deadline_ns: u64,
+    ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+        self.inner.fields(handle, request, deadline_ns)
+    }
+}
+
+/// A `bearer` [`super::PerHop`] over the secret at `path`, opened by `auth` as the composition
+/// opens it, its lease a minute (no cell waits on the refresher: each refreshes by hand).
+fn per_hop(path: &std::path::Path, auth: std::sync::Arc<CountingOpens>) -> super::PerHop {
+    per_hop_over(
+        path,
+        auth,
+        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only()),
+    )
+}
+
+/// [`per_hop`], its secret resolved through `secrets`.
+fn per_hop_over(
+    path: &std::path::Path,
+    auth: std::sync::Arc<CountingOpens>,
+    secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
+) -> super::PerHop {
+    let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
+    let value = secrets.resolve_string(&secret).expect("it resolves");
+    let settings = serde_json::json!({});
+    let handle = {
+        use busbar_contract::auth_calls::OutboundAuth as _;
+        auth.open_outbound("bearer", value.as_bytes(), &settings)
+            .expect("it opens")
+    };
+    super::PerHop {
+        secret,
+        secrets,
+        auth: auth as std::sync::Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
+        style: "bearer",
+        header: None,
+        lease: std::time::Duration::from_secs(60),
+        held: arc_swap::ArcSwapOption::from_pointee(super::Held {
+            digest: busbar_contract::abi::sdk::digest::sha256(value.as_bytes()),
+            handle,
+        }),
+        refreshing: std::sync::Mutex::new(()),
+    }
+}
+
+/// The real `bearer` auth instance the build links.
+fn bearer_auth() -> std::sync::Arc<CountingOpens> {
+    let (inner, _) = own_reach()
+        .auths
+        .serving("bearer", &serde_json::json!({}))
+        .expect("a lookup")
+        .expect("the linked header plugin serves `bearer`");
+    std::sync::Arc::new(CountingOpens {
+        inner,
+        opened: std::sync::atomic::AtomicUsize::new(0),
+    })
+}
+
+/// REFRESHED ONCE PER LEASE, OFF THE HOP (ARCHITECT ruling on #787): a hop after the secret's
+/// source changed still presents what the last refresh left; the first hop after the next refresh
+/// presents the NEW value, the refresh re-opening the binding exactly once for the rotation; an
+/// unchanged secret never re-opens it, however many hops or refreshes ask (handles grow by
+/// rotations, never by hops).
+#[test]
+fn a_rotated_secret_is_presented_on_the_first_hop_after_the_next_refresh() {
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let path = own_secret("rotate", "old-token");
+    let auth = bearer_auth();
+    let per = per_hop(&path, std::sync::Arc::clone(&auth));
+    let opens = || auth.opened.load(std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(opens(), 1, "the composition's one open");
+
+    let first = per.handle_now().expect("it resolves");
+    for _ in 0..16 {
+        assert_eq!(
+            per.handle_now(),
+            Some(first),
+            "the same handle hop after hop"
+        );
+    }
+    assert_eq!(opens(), 1, "an unchanged secret never re-opens the binding");
+    assert_eq!(
+        presents(&*auth, first),
+        vec![("authorization".to_string(), "Bearer old-token".to_string())]
+    );
+
+    per.refresh();
+    assert_eq!(
+        opens(),
+        1,
+        "a refresh over an unchanged secret never re-opens the binding"
+    );
+    rotate(&path, "new-token");
+    assert_eq!(
+        per.handle_now(),
+        Some(first),
+        "a hop before the next refresh presents what the last refresh left"
+    );
+    per.refresh();
+    let next = per.handle_now().expect("it resolves");
+    assert_ne!(
+        next, first,
+        "the refresh re-opened the binding for the rotation"
+    );
+    assert_eq!(opens(), 2, "one re-open for one rotation");
+    assert_eq!(
+        presents(&*auth, next),
+        vec![("authorization".to_string(), "Bearer new-token".to_string())],
+        "the first hop after the refresh presents the new value"
+    );
+    per.refresh();
+    assert_eq!(per.handle_now(), Some(next));
+    assert_eq!(
+        opens(),
+        2,
+        "and the new value, unchanged, never re-opens it"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A NAMED-HEADER BINDING RE-OPENED BY A ROTATION keeps its header: the binding holds the typed
+/// placement (no settings bag), and the re-open after a rotation rebuilds the same
+/// `{header: X-API-Key}` settings, so the new value is presented verbatim in that header and never
+/// as `authorization`.
+#[test]
+fn a_rotated_header_credential_is_presented_in_the_same_header() {
+    let path = own_secret("rotate-header", "key-old");
+    let reach = own_reach();
+    let (binding, per) = super::upstream_credential(
+        "planner",
+        &registration(&path, ", placement: {header: X-API-Key}"),
+        &reach,
+    )
+    .expect("it binds")
+    .expect("a binding");
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let first = per.handle_now().expect("it resolves");
+    assert_eq!(
+        presents(&*binding.auth, first),
+        vec![("x-api-key".to_string(), "key-old".to_string())]
+    );
+    rotate(&path, "key-new");
+    per.refresh();
+    let next = per.handle_now().expect("it resolves");
+    assert_ne!(next, first, "the rotation re-opened the binding");
+    assert_eq!(
+        presents(&*binding.auth, next),
+        vec![("x-api-key".to_string(), "key-new".to_string())],
+        "the re-open keeps the header placement"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// HOPS RACING A ROTATION each present ONE COMPLETE VALUE, the old or the new, never a mix: the
+/// handle a hop is given was opened over one whole value, and a refresh swaps it whole.
+#[test]
+fn hops_racing_a_rotation_each_present_one_whole_value() {
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let path = own_secret("race", "value-old-0000000000");
+    let auth = bearer_auth();
+    let per = std::sync::Arc::new(per_hop(&path, std::sync::Arc::clone(&auth)));
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let hops: Vec<_> = (0..4)
+        .map(|_| {
+            let (per, auth, stop) = (
+                std::sync::Arc::clone(&per),
+                std::sync::Arc::clone(&auth),
+                std::sync::Arc::clone(&stop),
+            );
+            std::thread::spawn(move || {
+                let mut seen = std::collections::BTreeSet::new();
+                while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                    let Some(handle) = per.handle_now() else {
+                        continue;
+                    };
+                    for (_, value) in presents(&*auth, handle) {
+                        seen.insert(value);
+                    }
+                }
+                seen
+            })
+        })
+        .collect();
+    for i in 0..64 {
+        let value = if i % 2 == 0 {
+            "value-new-1111111111"
+        } else {
+            "value-old-0000000000"
+        };
+        rotate(&path, value);
+        per.refresh();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let whole = [
+        "Bearer value-old-0000000000".to_string(),
+        "Bearer value-new-1111111111".to_string(),
+    ];
+    for hop in hops {
+        for value in hop.join().expect("a hop thread") {
+            assert!(whole.contains(&value), "a mixed or partial value: {value}");
+        }
+    }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A `SecretResolve` counting its resolutions over the built-in resolver.
+struct CountingResolves {
+    inner: busbar_kernel::config::secret::SecretResolver,
+    resolved: std::sync::atomic::AtomicUsize,
+}
+
+impl busbar_contract::secret::SecretResolve for CountingResolves {
+    fn resolve(&self, secret: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
+        self.resolved
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        busbar_contract::secret::SecretResolve::resolve(&self.inner, secret)
+    }
+
+    fn resolve_string(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<String, String> {
+        self.resolved
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        busbar_contract::secret::SecretResolve::resolve_string(&self.inner, secret)
+    }
+}
+
+/// Whether `ask` answers within `budget`, asked on a thread of its own (a hop that blocks is
+/// left parked there and reported as not answering).
+fn answers_within<T: Send + 'static>(
+    budget: std::time::Duration,
+    ask: impl FnOnce() -> T + Send + 'static,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(ask());
+    });
+    rx.recv_timeout(budget).ok()
+}
+
+/// A HOP RESOLVES NOTHING AND TAKES NO LOCK (ARCHITECT ruling on #787: a secret resolution blocks
+/// its thread up to its deadline, `busbar_contract::secret::SecretCalls`, and is never made on the
+/// request path): across many hops the resolver is asked nothing, and a hop answers while a
+/// refresh holds the binding's own lock. Only a refresh resolves.
+/// RED before the fix: `handle_now` re-resolved the secret on every hop (the count rose by one per
+/// hop) under the binding's lock.
+#[test]
+fn a_hop_resolves_nothing_and_takes_no_lock() {
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let path = own_secret("no-resolve", "steady-token");
+    let resolver = std::sync::Arc::new(CountingResolves {
+        inner: busbar_kernel::config::secret::SecretResolver::builtins_only(),
+        resolved: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let per = std::sync::Arc::new(per_hop_over(
+        &path,
+        bearer_auth(),
+        std::sync::Arc::clone(&resolver)
+            as std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
+    ));
+    let resolved = || resolver.resolved.load(std::sync::atomic::Ordering::SeqCst);
+    let built = resolved();
+    let first = per.handle_now().expect("it resolved at build");
+    for _ in 0..256 {
+        assert_eq!(per.handle_now(), Some(first));
+    }
+    assert_eq!(resolved(), built, "256 hops asked the resolver nothing");
+
+    let held = per
+        .refreshing
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let hop = std::sync::Arc::clone(&per);
+    assert_eq!(
+        answers_within(std::time::Duration::from_secs(5), move || hop.handle_now()),
+        Some(Some(first)),
+        "a hop answers while a refresh holds the binding's lock"
+    );
+    drop(held);
+
+    per.refresh();
+    assert_eq!(resolved(), built + 1, "a refresh resolves, once");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// An `OutboundAuth` whose `open_outbound` parks until released, over the real one.
+struct ParkedOpens {
+    inner: std::sync::Arc<CountingOpens>,
+    parked: std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    entered: std::sync::mpsc::SyncSender<()>,
+}
+
+impl busbar_contract::auth_calls::OutboundAuth for ParkedOpens {
+    fn open_outbound(
+        &self,
+        style: &str,
+        credential: &[u8],
+        settings: &serde_json::Value,
+    ) -> Result<u64, String> {
+        let release = self
+            .parked
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        if let Some(release) = release {
+            let _ = self.entered.send(());
+            let _ = release.recv();
+        }
+        busbar_contract::auth_calls::OutboundAuth::open_outbound(
+            &*self.inner,
+            style,
+            credential,
+            settings,
+        )
+    }
+
+    fn fields_now(
+        &self,
+        handle: u64,
+        request: &busbar_contract::auth_calls::FieldsRequest,
+    ) -> Option<busbar_contract::auth_calls::Fields> {
+        busbar_contract::auth_calls::OutboundAuth::fields_now(&*self.inner, handle, request)
+    }
+
+    fn fields(
+        &self,
+        handle: u64,
+        request: busbar_contract::auth_calls::FieldsRequest,
+        deadline_ns: u64,
+    ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+        busbar_contract::auth_calls::OutboundAuth::fields(
+            &*self.inner,
+            handle,
+            request,
+            deadline_ns,
+        )
+    }
+}
+
+/// THE OPEN RUNS UNDER NO LOCK A HOP WAITS ON (ARCHITECT ruling on #787): while a refresh's
+/// `open_outbound` for a rotated secret is parked inside the auth plugin, a hop answers at once with
+/// the handle the last refresh left; once the open returns, the next hop presents the new handle.
+/// RED before the fix: the re-open ran under the `held` mutex every hop locked, so the hop waited
+/// out the open.
+#[test]
+fn an_open_runs_under_no_lock_a_hop_waits_on() {
+    use busbar_contract::auth_calls::PerRequestHandle as _;
+    let path = own_secret("parked-open", "token-before");
+    let counting = bearer_auth();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let (entered_tx, entered_rx) = std::sync::mpsc::sync_channel(1);
+    let parked = std::sync::Arc::new(ParkedOpens {
+        inner: std::sync::Arc::clone(&counting),
+        parked: std::sync::Mutex::new(None),
+        entered: entered_tx,
+    });
+    let mut per = per_hop(&path, std::sync::Arc::clone(&counting));
+    per.auth = std::sync::Arc::clone(&parked)
+        as std::sync::Arc<dyn busbar_contract::auth_calls::OutboundAuth>;
+    let per = std::sync::Arc::new(per);
+    let first = per.handle_now().expect("it resolved at build");
+
+    rotate(&path, "token-after");
+    *parked
+        .parked
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(release_rx);
+    let refreshing = std::sync::Arc::clone(&per);
+    let refresh = std::thread::spawn(move || refreshing.refresh());
+    entered_rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("the refresh reached the auth plugin's open");
+
+    let hop = std::sync::Arc::clone(&per);
+    assert_eq!(
+        answers_within(std::time::Duration::from_secs(5), move || hop.handle_now()),
+        Some(Some(first)),
+        "a hop answers, with the last refresh's handle, while the open is parked"
+    );
+
+    release_tx.send(()).expect("release the open");
+    refresh.join().expect("the refresh");
+    let next = per.handle_now().expect("the rotation bound");
+    assert_ne!(
+        next, first,
+        "the hop after the open presents the new handle"
+    );
+    assert_eq!(
+        presents(&*counting, next),
+        vec![(
+            "authorization".to_string(),
+            "Bearer token-after".to_string()
+        )]
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Ported from the deleted engine crate's `creds_tests::the_lease_never_renders_the_secret_in_a_debug_line`:
+/// the per-hop binding holds a reference and a digest, never the value, and its debug line shows
+/// neither the value nor the digest.
+#[test]
+fn the_per_hop_binding_never_renders_the_secret_in_a_debug_line() {
+    let path = own_secret("debug", "SUPER-SECRET-VALUE");
+    let per = per_hop(&path, bearer_auth());
+    let rendered = format!("{per:?}");
+    assert!(
+        !rendered.contains("SUPER-SECRET-VALUE"),
+        "the binding rendered its secret: {rendered}"
+    );
+    let digest = busbar_contract::abi::sdk::digest::sha256(b"SUPER-SECRET-VALUE");
+    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    assert!(
+        !rendered.contains(&hex) && !rendered.contains(&format!("{:?}", digest[0..4].to_vec())),
+        "the binding rendered its digest: {rendered}"
+    );
+    assert!(rendered.contains("<redacted"), "{rendered}");
+    assert!(
+        !rendered.contains(&path.display().to_string()),
+        "nor where the secret lives: {rendered}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+/// A REGISTRATION MEMBER RIDES EVERY MEMBER-TARGET NEED its plane states (ARCHITECT root ruling,
+/// 2026-10-07, reusing the providers' rides, Q-L5B-NEEDS): its first is its own, each
+/// other one rides beside it at the target the registration names there (another origin dials that
+/// origin), and a far request naming any of them opens on it. A registration naming no target for
+/// a need does not ride it. RED: only the first member-target need was bound, so a far request
+/// naming the second had no destination.
+#[test]
+fn a_registration_member_rides_every_member_target_need() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![
+            (DIRECTION_OUTBOUND, ""),
+            (DIRECTION_OUTBOUND, ""),
+            (DIRECTION_OUTBOUND, ""),
+            (DIRECTION_OUTBOUND, ""),
+        ],
+        need_targets: vec!["", "settings.*.url", "settings.*.url", "settings.*.alt"],
+        ..Default::default()
+    };
+    let routes = resolve_for(
+        &facts,
+        "fs: {url: \"http://127.0.0.1:7/rpc\", alt: \"http://127.0.0.1:8/x\"}\n\
+         one: {url: \"http://127.0.0.1:9/rpc\"}\n",
+        &[],
+    )
+    .expect("the registrations resolve");
+    let fs = &routes["fs"];
+    assert_eq!(fs.need.0, 1, "the first member-target need is its own");
+    let rides: Vec<u32> = fs.rides.iter().map(|(n, _)| n.0).collect();
+    assert_eq!(
+        rides,
+        [2, 3],
+        "every other member-target need rides beside it"
+    );
+    assert_eq!(fs.ride(3).map(|r| r.need.0), Some(2));
+    assert_eq!(
+        fs.ride(3).map(|r| r.base_url),
+        Some("http://127.0.0.1:7"),
+        "the same target, the same origin"
+    );
+    assert_eq!(
+        fs.ride(4).map(|r| r.base_url),
+        Some("http://127.0.0.1:8"),
+        "a need whose target is another origin dials that origin"
+    );
+    assert!(fs.ride(1).is_none(), "the open need is no member's");
+    let one = &routes["one"];
+    let rides: Vec<u32> = one.rides.iter().map(|(n, _)| n.0).collect();
+    assert_eq!(
+        rides,
+        [2],
+        "a registration naming no `alt` does not ride its need"
+    );
+}
+
+/// A connection table that records what the composition seals on it: each need's anchors and
+/// private reach, and each auth binding, by need, member and target. It opens nothing.
+#[derive(Default)]
+struct Sealing {
+    anchored: std::sync::Mutex<Vec<(u32, String)>>,
+    reached: std::sync::Mutex<Vec<(u32, String, String)>>,
+    bound: std::sync::Mutex<Vec<(u32, String, String)>>,
+}
+
+impl busbar_contract::conn::Conns for Sealing {
+    fn open(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::NeedId,
+        _: &busbar_contract::conn::OpenDesc<'_>,
+    ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Refused)
+    }
+    fn write(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+        _: &[u8],
+        _: bool,
+        _: bool,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn read(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+        _: u64,
+        _: &mut [u8],
+    ) -> Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn wait(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: &[busbar_contract::conn::ConnId],
+        _: u64,
+    ) -> Result<usize, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn facts(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+    ) -> Result<busbar_contract::transport::ConnFacts, busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+    fn close(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        Err(busbar_contract::conn::ConnError::Closed)
+    }
+}
+
+impl busbar_contract::conn::PollConns for Sealing {
+    fn poll_read(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::ConnId,
+        _: &mut std::task::Context<'_>,
+        _: &mut [u8],
+    ) -> std::task::Poll<Result<busbar_contract::conn::Piece, busbar_contract::conn::ConnError>>
+    {
+        std::task::Poll::Ready(Err(busbar_contract::conn::ConnError::Closed))
+    }
+    fn anchor(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        _: &str,
+        target: &str,
+        _: &busbar_contract::transport::trust::Anchors,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        self.anchored
+            .lock()
+            .unwrap()
+            .push((need.0, target.to_string()));
+        Ok(())
+    }
+    fn seal_reach(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        member: &str,
+        target: &str,
+        reach: bool,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        if reach {
+            self.reached
+                .lock()
+                .unwrap()
+                .push((need.0, member.to_string(), target.to_string()));
+        }
+        Ok(())
+    }
+}
+
+impl busbar_contract::conn::DeclaredConns for Sealing {
+    fn declare(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::NeedId,
+        _: &busbar_contract::abi::mechanism::rendering::ReadNeed,
+        _: Option<&str>,
+        _: Option<&str>,
+    ) -> Result<(), busbar_contract::conn::ConnError> {
+        Ok(())
+    }
+    fn declared(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        _: busbar_contract::conn::NeedId,
+    ) -> Option<Result<(), busbar_contract::conn::ConnError>> {
+        Some(Ok(()))
+    }
+    fn serves_scheme(&self, _: &str) -> bool {
+        true
+    }
+    fn bind_auth(
+        &self,
+        _: busbar_contract::conn::InstanceId,
+        need: busbar_contract::conn::NeedId,
+        member: &str,
+        origin: &str,
+        _: busbar_contract::conn::ConnAuth,
+    ) {
+        self.bound
+            .lock()
+            .unwrap()
+            .push((need.0, member.to_string(), origin.to_string()));
+    }
+}
+
+/// An auth binding that is only ever bound: it answers no fields.
+struct Bound;
+
+/// A fields answer that never arrives.
+struct Never;
+
+impl std::future::Future for Never {
+    type Output = busbar_contract::auth_calls::Fields;
+    fn poll(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Self::Output> {
+        std::task::Poll::Pending
+    }
+}
+
+impl busbar_contract::auth_calls::Fielding for Never {
+    fn settled(&mut self) -> Option<busbar_contract::auth_calls::Fields> {
+        None
+    }
+}
+
+impl busbar_contract::auth_calls::OutboundAuth for Bound {
+    fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+        Ok(1)
+    }
+    fn fields_now(
+        &self,
+        _: u64,
+        _: &busbar_contract::auth_calls::FieldsRequest,
+    ) -> Option<busbar_contract::auth_calls::Fields> {
+        None
+    }
+    fn fields(
+        &self,
+        _: u64,
+        _: busbar_contract::auth_calls::FieldsRequest,
+        _: u64,
+    ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+        Box::new(Never)
+    }
+}
+
+/// THE MEMBER'S ANCHORS, REACH AND BINDING HOLD ON EVERY NEED IT RIDES (ARCHITECT root ruling,
+/// 2026-10-07): the composition seals the registration's trust anchors and private reach on
+/// its own need and on each need riding beside it, at the base each dials, and the door's own
+/// requests on any member-target need it rides carry its auth binding. RED: only the member's own
+/// need was sealed and bound, so a far request (or the door's own request) on its second
+/// transport went out unpinned, unreached and unauthenticated.
+#[test]
+fn a_registration_members_anchors_reach_and_binding_hold_on_every_need_it_rides() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    use busbar_kernel::plane_driver::{AuthBinding, MemberRoute, ResponseKeep};
+    let served = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+        need_auths: vec![
+            (DIRECTION_OUTBOUND, ""),
+            (DIRECTION_OUTBOUND, ""),
+            (DIRECTION_OUTBOUND, ""),
+        ],
+        need_targets: vec!["", "settings.*.url", "settings.*.url"],
+        ..Default::default()
+    };
+    let route = MemberRoute {
+        need: busbar_contract::conn::NeedId(1),
+        base_url: "https://far.example".to_string(),
+        auth: Some(AuthBinding {
+            auth: std::sync::Arc::new(Bound),
+            handle: 1,
+            style_flags: 0,
+            points: busbar_contract::abi::auth::AuthPoints(0),
+            passthrough: false,
+            per_request: None,
+        }),
+        provider: "fs".to_string(),
+        keep: ResponseKeep::default(),
+        rides: vec![(busbar_contract::conn::NeedId(2), ResponseKeep::default())],
+        anchors: busbar_contract::transport::trust::Anchors {
+            private_reach: true,
+            ..Default::default()
+        },
+        spelled: Vec::new(),
+    };
+    let routes = std::collections::BTreeMap::from([("fs".to_string(), route)]);
+    let table = std::sync::Arc::new(Sealing::default());
+    let instance = busbar_contract::conn::InstanceId(7);
+    super::bind_member_fetches(
+        &served,
+        &routes,
+        instance,
+        &*table,
+        &std::sync::Arc::new(busbar_kernel::host_units::UnitRecords::default()),
+    );
+    assert_eq!(
+        *table.bound.lock().unwrap(),
+        [
+            (1, "fs".to_string(), "https://far.example".to_string()),
+            (2, "fs".to_string(), "https://far.example".to_string())
+        ],
+        "the door's own requests on either need carry the member's binding"
+    );
+    let section: serde_yaml::Value =
+        serde_yaml::from_str("fs: {url: \"https://far.example/rpc\"}").expect("yaml");
+    let facts = super::door_facts("p", &[], &[], &[], "audit", Vec::new());
+    let node = std::sync::Arc::new(crate::root::plane_node::Node::new());
+    let post = std::sync::Arc::new(crate::root::plane_node::NodeEndPost::new(node));
+    super::compose_egress(
+        &facts,
+        &DoorPools::of(&section),
+        instance,
+        std::sync::Arc::clone(&table) as std::sync::Arc<dyn busbar_contract::conn::PollConns>,
+        &routes,
+        post as std::sync::Arc<dyn busbar_kernel_egress::ports::Journal>,
+        1,
+    )
+    .expect("the egress composes");
+    assert_eq!(
+        *table.anchored.lock().unwrap(),
+        [
+            (1, "https://far.example".to_string()),
+            (2, "https://far.example".to_string())
+        ],
+        "the anchors are sealed on both needs"
+    );
+    assert_eq!(
+        *table.reached.lock().unwrap(),
+        [
+            (1, "fs".to_string(), "https://far.example".to_string()),
+            (2, "fs".to_string(), "https://far.example".to_string())
+        ],
+        "the registration's private reach is sealed on both needs"
+    );
+}
+
+/// THE MODEL-SHAPED GUARD on the counter label rule: a section shaped as the model plane's is (a
+/// `models` map, a named pool over two of its entries) yields, when its plane STATES its attempts'
+/// labels, exactly the `(pool, lane)` pairs 1.5.5 counted (the golden cells
+/// its direct-route request cell: a direct route, `pool` and `lane` both the model entry;
+/// `route.529__failover__primary`: the pool `cap-fo`, each member entry its `lane`;
+/// its upstream-down request cell: the failures family, the same pair). Stating
+/// nothing keeps the kernel's qualified default, which is what a plane that states no label (and
+/// predev's door) counts under.
+#[test]
+fn a_model_shaped_section_takes_the_stated_labels_the_previous_release_counted() {
+    use busbar_kernel_egress::ports::StatedLabels;
+    let p = pools(
+        "models:\n  m-direct: {}\n  m-first: {}\n  m-second: {}\npools:\n  cap-fo:\n    members: [m-first, m-second]\n",
+    );
+    let bound = super::label_bound("p", &p, &[]);
+    let stated = |pool: &str, lane: &str| StatedLabels {
+        pool: Some(pool.to_string()),
+        lane: Some(lane.to_string()),
+    };
+    // A DIRECT route: the walk keys it by the entry's own (qualified) pool.
+    let direct = super::egress_pool(
+        "p",
+        &routed(&p, ROUTE_DIRECT, Some("m-direct")).expect("a direct route"),
+    );
+    let own = super::plane_lane("p", "m-direct");
+    assert_eq!(
+        bound.labels(
+            &direct,
+            (&direct, &own),
+            Some(&stated("m-direct", "m-direct"))
+        ),
+        ("m-direct".to_string(), "m-direct".to_string(), false),
+        "the golden direct-route request cell"
+    );
+    // A POOL route: the pool's label, each member entry its lane.
+    let pooled = super::egress_pool(
+        "p",
+        &routed(&p, ROUTE_POOL, Some("cap-fo")).expect("a pool route"),
+    );
+    for member in ["m-first", "m-second"] {
+        assert_eq!(
+            bound.labels(
+                &pooled,
+                (&pooled, &super::plane_lane("p", member)),
+                Some(&stated("cap-fo", member))
+            ),
+            ("cap-fo".to_string(), member.to_string(), false),
+            "route.529__failover__primary: {member}"
+        );
+    }
+    // Stated nothing: the kernel's own labels, unchanged.
+    assert_eq!(
+        bound.labels(&direct, (&direct, &own), None),
+        (direct.clone(), own.clone(), false)
+    );
+    // A member of ANOTHER route is not this walk's to name.
+    assert_eq!(
+        bound.labels(&direct, (&direct, &own), Some(&stated("cap-fo", "m-first"))),
+        (direct.clone(), own.clone(), true),
+        "a direct route reaches no pool and no other entry"
+    );
+}
+
+/// A fallback pool's labels and members are within its parent pool's reach (the walk spills
+/// into it), and the plane's declared lane words are within every walk's.
+#[test]
+fn a_pools_reach_follows_its_fallback_and_the_declared_words() {
+    use busbar_kernel_egress::ports::StatedLabels;
+    let p = pools(
+        "a: {}\nb: {}\npools:\n  first:\n    members: [a]\n    on_exhausted: { fallback_pool: spill }\n  spill:\n    members: [b]\n",
+    );
+    let bound = super::label_bound("p", &p, &["word".to_string()]);
+    let stated = |pool: &str, lane: &str| StatedLabels {
+        pool: Some(pool.to_string()),
+        lane: Some(lane.to_string()),
+    };
+    assert_eq!(
+        bound.labels("first", ("first", "own"), Some(&stated("spill", "b"))),
+        ("spill".to_string(), "b".to_string(), false)
+    );
+    assert_eq!(
+        bound.labels("first", ("first", "own"), Some(&stated("a", "word"))),
+        ("a".to_string(), "word".to_string(), false)
+    );
+    assert_eq!(
+        bound.labels("spill", ("spill", "own"), Some(&stated("first", "a"))),
+        ("spill".to_string(), "own".to_string(), true),
+        "a fallback pool does not reach back into the pool that spilled into it"
+    );
+}
+
+/// A UNIT ITS PLANE ANSWERS AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`, COORDINATOR ruling
+/// 2026-10-07), plane-neutral: resolved on the caller's grant of the plane's scope kind exactly as
+/// `ROUTE_SCOPE` is, then routed NOWHERE: the one entry the grant reaches is the steps' resolved
+/// entry (lent to the plane), no route is sealed, and a pool the entry is a member of is never
+/// read, where the same unit routed by scope walks that pool. Zero or several reachable entries
+/// resolve none and are refused `no_destination` at admission, the several named in the refusal's
+/// words. RED before the value: a scope-local unit resolved nothing and routed nowhere it could be
+/// answered at.
+#[test]
+fn a_scope_local_unit_resolves_the_one_entry_the_grant_reaches_and_routes_nowhere() {
+    use busbar_contract::abi::plane::{ROUTE_SCOPE, ROUTE_SCOPE_LOCAL};
+    use busbar_contract::caps::{
+        Admit, Admittance, Dial, OpClassId, PrincipalId, ReasonCode, Verify,
+    };
+    use busbar_contract::records::{ScopeRef, VirtualKey};
+    use busbar_kernel::plane_driver::DriverSteps;
+    use busbar_kernel::teller::{UnitCtx, Units};
+    use busbar_kernel::test_support::tokens;
+    let facts = super::door_facts("p", &["seat"], &[], &[], "a", Vec::new());
+    let p = pools("a: {}\nb: {}\npools:\n  both:\n    members: [a, b]\n    member_granted: true");
+    let ctx = UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
+        key: busbar_contract::UnitKey::new(1),
+        origin: busbar_contract::caps::OriginKind::Client,
+        session: None,
+        generation: busbar_kernel::registry::Generation::FIRST,
+        admin_listener: false,
+        kernel_verb_only: false,
+    };
+    let principal = PrincipalId::new("vk_seat");
+    let steps = |reach: &[&str]| {
+        super::DoorSteps::new(
+            &facts,
+            &p,
+            std::sync::Arc::new(|_: &str| None),
+            busbar_kernel::test_support::TestApp::new().build(),
+            None,
+            super::DoorCaller {
+                principal: principal.clone(),
+                key: Some(std::sync::Arc::new(VirtualKey {
+                    id: "vk_seat".into(),
+                    allowed_scopes: Some(
+                        reach
+                            .iter()
+                            .map(|n| ScopeRef {
+                                kind: "seat".to_string(),
+                                value: (*n).to_string(),
+                            })
+                            .collect(),
+                    ),
+                    ..VirtualKey::default()
+                })),
+                open: false,
+                arrived: 0,
+                records: None,
+                depth: 0,
+                credential: None,
+            },
+        )
+    };
+    let verified = |s: &super::DoorSteps<'_>, class: u8| {
+        s.decoded(&ctx, OpClassId::new("op"), class, None);
+        s.verify(
+            &tokens::pass::<Verify>(),
+            &tokens::grant::<Dial>(),
+            &ctx,
+            &principal,
+        )
+        .into_result(&tokens::seal())
+        .expect("verify proceeds")
+    };
+
+    // ONE reaches: resolved, nothing sealed, no route (its pool unread).
+    let one = steps(&["a"]);
+    let sealed = verified(&one, ROUTE_SCOPE_LOCAL);
+    assert!(sealed.is_empty(), "no destination is sealed");
+    assert_eq!(one.resolved(&ctx), Some(b"a".to_vec()), "the one entry");
+    assert_eq!(one.routed(), None, "routed nowhere: no pool, no walk");
+    // The same reach routed by scope walks the pool its one entry is a member of.
+    let relayed = steps(&["a"]);
+    let _ = verified(&relayed, ROUTE_SCOPE);
+    assert_eq!(relayed.resolved(&ctx), None);
+    assert_eq!(
+        relayed.routed().map(|(label, _)| label),
+        Some("both".to_string()),
+        "a relayed unit is widened to its entry's pool"
+    );
+
+    // ZERO and SEVERAL reach: none resolved, refused `no_destination` at admission.
+    for reach in [&[][..], &["a", "b"][..]] {
+        let s = steps(reach);
+        let _ = verified(&s, ROUTE_SCOPE_LOCAL);
+        assert_eq!(s.resolved(&ctx), None, "{reach:?}");
+        let refused = s
+            .admit(
+                &tokens::pass::<Admit>(),
+                &tokens::grant::<Admittance>(),
+                &ctx,
+                &principal,
+                &[],
+                &busbar_contract::slice::GroupLeaseSlip::default(),
+            )
+            .into_result(&tokens::seal());
+        let Err(refused) = refused else {
+            panic!("{reach:?}: refused at admission");
+        };
+        assert_eq!(refused.reason(), ReasonCode::NoDestination, "{reach:?}");
+        assert_eq!(
+            s.refusal_words(ReasonCode::NoDestination),
+            Some(reach.join(", ").into_bytes()),
+            "the reachable entries named in its words: {reach:?}"
+        );
+    }
+}
+
+/// A MODEL'S `protocol` OVERRIDE REACHES THE PLANE (#51): the section the root hands the plane
+/// serving the `pools` map carries each model's own `protocol` where it names one, and nothing for a
+/// model that names none (its provider's stands). RED: a root that drops the member hands the plane
+/// no override, so the plane speaks the provider's dialect to that model.
+#[test]
+fn a_models_protocol_override_is_handed_to_the_plane() {
+    let def: busbar_kernel::config::ProviderDef =
+        serde_yaml::from_str("protocol: dialect-a\nbase_url: http://127.0.0.1:9\n").expect("a def");
+    let defs = std::collections::HashMap::from([("p".to_string(), def)]);
+    let deploy = busbar_kernel::config::deploy_from_yaml_str(
+        "store: {module: memory}\nproviders:\n  p:\n    api_key: { env: BUSBAR_TEST_KEY }\n\
+         models:\n  over:\n    provider: p\n    protocol: dialect-b\n  plain:\n    provider: p\n",
+    )
+    .expect("parses");
+    let cfg = busbar_kernel::config::resolve(&deploy, &defs).expect("resolves");
+    let sections = super::kernel_sections(&cfg);
+    let models = sections
+        .get(busbar_contract::section::RESERVED_MODELS_KEY)
+        .expect("the models section");
+    assert_eq!(
+        models["over"]["protocol"].as_str(),
+        Some("dialect-b"),
+        "{models:?}"
+    );
+    assert!(
+        models["plain"].get("protocol").is_none(),
+        "a model naming no protocol states none: {models:?}"
+    );
+}
+
+/// A self-signed CA as the PEM an operator writes.
+fn a_ca_pem() -> String {
+    let kp = rcgen::KeyPair::generate().expect("a key");
+    let mut params = rcgen::CertificateParams::new(Vec::new()).expect("params");
+    params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    params.self_signed(&kp).expect("the CA").pem()
+}
+
+/// THE ONE OWNED-ANCHOR RULE, as boot and the pre-swap apply check both judge it: an anchor a
+/// configuration writes that is no trust anchor is refused, naming the key; a usable PEM, an
+/// anchor not written, an empty one and a `settings.` path are no refusal.
+/// RED before the fix: an apply judged nothing, so an `agent_push.ca` the boot refuses went live.
+#[test]
+fn an_owned_anchor_the_boot_would_refuse_is_refused_by_the_same_rule() {
+    let paths = ["owned.agent_push.ca", "settings.*.client_identity"];
+    let with = |ca: Option<&str>| {
+        let mut sections: std::collections::BTreeMap<&'static str, serde_yaml::Value> =
+            std::collections::BTreeMap::new();
+        if let Some(ca) = ca {
+            sections.insert(
+                "agent_push",
+                serde_yaml::from_str(&format!("ca: {}", serde_json::to_string(ca).unwrap()))
+                    .expect("yaml"),
+            );
+        }
+        super::owned_anchors_refusal(&paths, &sections)
+    };
+    for bad in [
+        "not a certificate",
+        "-----BEGIN CERTIFICATE-----\ngarbage\n-----END CERTIFICATE-----\n",
+    ] {
+        let err = with(Some(bad)).expect_err("refused");
+        assert!(
+            err.contains("`agent_push.ca` is not a usable trust anchor"),
+            "{err}"
+        );
+    }
+    let ca = a_ca_pem();
+    assert_eq!(with(Some(&ca)), Ok(()), "a usable CA");
+    assert_eq!(
+        with(None),
+        Ok(()),
+        "an owned section the operator did not write"
+    );
+    assert_eq!(with(Some("")), Ok(()), "an empty anchor is not written");
+    assert_eq!(
+        super::owned_anchor_refusal("agent_push.ca", &ca),
+        Ok(()),
+        "the rule itself takes the CA"
+    );
 }

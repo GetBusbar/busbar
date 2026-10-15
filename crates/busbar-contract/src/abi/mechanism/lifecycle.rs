@@ -204,7 +204,8 @@ pub struct TickIn {
 pub struct TickOut {
     /// The head.
     pub head: OutHead,
-    /// When to tick next; `0` = never.
+    /// When to tick next; `0` = no tick scheduled until the next wake of the instance's driver
+    /// ticket (R-PUSH): a wake runs `drive` and then re-polls `tick`, so `0` is not "never".
     pub next_tick_ns: u64,
 }
 

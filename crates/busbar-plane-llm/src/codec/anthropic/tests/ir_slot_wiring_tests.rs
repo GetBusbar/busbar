@@ -38,7 +38,7 @@ fn egress(
     protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_request_for_lane(&req, "claude-x", caps)
+        .write_request_for_lane(crate::codec::test_host::HOST, &req, "claude-x", caps)
 }
 
 fn newest_lane() -> busbar_contract::ir::egress_prep::LaneCaps {
@@ -65,7 +65,7 @@ fn resp_to_anthropic(resp: &mut crate::codec::ir::IrResponse) -> Value {
     protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_response(resp)
+        .write_response(crate::codec::test_host::HOST, resp)
 }
 
 fn anthropic_response(stop_reason: &str, stop_details: Value) -> Value {
@@ -131,7 +131,7 @@ fn ant11_context_window_stop_round_trips_buffered() {
     let mut ir = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .unwrap();
     assert_eq!(
         ir.stop_reason,
@@ -155,7 +155,7 @@ fn ant11_context_window_stop_round_trips_stream() {
     let ev = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response_event("message_delta", &data)
+        .read_response_event(crate::codec::test_host::HOST, "message_delta", &data)
         .expect("event");
     match &ev {
         crate::codec::ir::IrStreamEvent::MessageDelta {
@@ -177,7 +177,7 @@ fn ant11_context_window_stop_round_trips_stream() {
     let (_, out) = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("written");
     assert_eq!(
         out.pointer("/delta/stop_reason"),
@@ -194,7 +194,10 @@ fn ir02_refusal_stop_details_are_carried() {
     let mut ir = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&anthropic_response("refusal", details.clone()))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &anthropic_response("refusal", details.clone()),
+        )
         .unwrap();
     assert_eq!(
         ir.stop_reason,
@@ -216,19 +219,22 @@ fn ir02_refusal_stop_details_are_carried() {
     let ev = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response_event("message_delta", &data)
+        .read_response_event(crate::codec::test_host::HOST, "message_delta", &data)
         .unwrap();
     let (_, out) = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .unwrap();
     assert_eq!(out.pointer("/delta/stop_details"), Some(&details), "{out}");
 
     let mut plain = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&anthropic_response("end_turn", Value::Null))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &anthropic_response("end_turn", Value::Null),
+        )
         .unwrap();
     assert_eq!(plain.stop_detail, None);
     assert_eq!(resp_to_anthropic(&mut plain)["stop_details"], Value::Null);
@@ -286,11 +292,14 @@ fn ant13_server_tools_read_into_hosted_slot() {
     assert!(ir.tools[1].hosted.is_some());
 }
 
-/// ANT-13 / IR-11 write side: a hosted tool that crossed the seam (e.g. from Responses or Gemini)
-/// reaches Anthropic as its server tool, with its parameters; a field Anthropic lacks is dropped and
-/// the tool kept.
+/// A hosted tool that crossed the seam (from Responses, Chat `web_search_options` or Gemini) is
+/// DROPPED on Anthropic egress, as 1.5.5 dropped it (v1.5.5
+/// `crates/busbar/src/proto/anthropic/writer.rs:171-178`: "prepare_for_egress strips hosted
+/// tools"): no Anthropic server search runs, so the turn charges no `search_units` 1.5.5 never
+/// charged. The drop is reported, and a `tool_choice` left with no tools is dropped too. RED while
+/// the writer sent `web_search_20250305`/`web_fetch_20250910`/`code_execution_20250825`.
 #[test]
-fn ir11_hosted_tools_are_written_as_anthropic_server_tools() {
+fn hosted_tools_that_crossed_the_seam_are_dropped_on_anthropic_egress() {
     let mut ir = read(&base());
     ir.hosted_tools = vec![
         crate::codec::ir::IrHostedTool::WebSearch(crate::codec::ir::IrWebSearch {
@@ -307,20 +316,16 @@ fn ir11_hosted_tools_are_written_as_anthropic_server_tools() {
         crate::codec::ir::IrHostedTool::CodeExecution,
     ];
     ir.tool_choice = Some(crate::codec::ir::IrToolChoice::Auto);
+    let dropped = protocol_for("anthropic")
+        .unwrap()
+        .writer()
+        .dropped_egress_controls(&ir);
+    for kind in ["web_search", "web_fetch", "code_execution"] {
+        assert!(dropped.contains(&kind), "{kind}: {dropped:?}");
+    }
     let out = egress(ir, &Default::default());
-    assert_eq!(
-        out["tools"],
-        json!([
-            {"type": "web_search_20250305", "name": "web_search", "max_uses": 2,
-             "allowed_domains": ["a.com"],
-             "user_location": {"type": "approximate", "timezone": "Europe/Paris"}},
-            {"type": "web_fetch_20250910", "name": "web_fetch"},
-            {"type": "code_execution_20250825", "name": "code_execution"}
-        ]),
-        "{out}"
-    );
-    // A tool_choice survives: the hosted tools are a real tools array.
-    assert_eq!(out["tool_choice"], json!({"type": "auto"}), "{out}");
+    assert!(out.get("tools").is_none(), "{out}");
+    assert!(out.get("tool_choice").is_none(), "{out}");
 }
 
 // ── IR-04 / IR-10 / IR-12 / IR-18 / N slots ───────────────────────────────────────────────────────
@@ -514,11 +519,14 @@ fn ir04_same_dialect_service_tier_bytes_are_the_callers() {
         json!("turbo"),
         json!(7),
     ] {
-        let out = writer.write_request(&read(&with(base(), "service_tier", raw.clone())));
+        let out = writer.write_request(
+            crate::codec::test_host::HOST,
+            &read(&with(base(), "service_tier", raw.clone())),
+        );
         assert_eq!(out.get("service_tier"), Some(&raw), "{raw}");
     }
     assert!(writer
-        .write_request(&read(&base()))
+        .write_request(crate::codec::test_host::HOST, &read(&base()))
         .get("service_tier")
         .is_none());
 }

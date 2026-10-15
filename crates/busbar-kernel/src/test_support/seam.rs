@@ -18,7 +18,6 @@
 //! plane can drive the handle as `&mut dyn TestAppSeam`): the generic scratch accessors live on the
 //! blanket [`TestAppSeamExt`] rather than on the object-safe base.
 
-use crate::plane::registry::CardIssuer;
 use crate::plane::PlaneAdmission;
 use crate::plane_host::{EngineHost, PlaneSlots};
 use std::any::Any;
@@ -83,7 +82,7 @@ pub fn build_router<A: BuiltAppSeam + ?Sized>(app: Arc<A>) -> axum::Router {
 
 /// THE OBJECT-SAFE FIXTURE SEAM core implements for its `TestApp`. Every method is a neutral verb the
 /// plane test-kits already drove on the concrete fixture; the signatures name only neutral ABI types
-/// (`CardIssuer`, `PlaneAdmission`, opaque `Arc<dyn Any>` runtimes, `&str` keys), so a plane crate
+/// (`PlaneAdmission`, opaque `Arc<dyn Any>` runtimes, `&str` keys), so a plane crate
 /// consuming this trait spells no `busbar_kernel::` implementation item.
 pub trait TestAppSeam {
     /// Get-or-create this plane's type-erased accumulator scratch under `key`, initialising with
@@ -104,16 +103,6 @@ pub trait TestAppSeam {
     /// names no plane type.
     #[allow(clippy::type_complexity)]
     fn register_plane_finalizer(&mut self, f: Box<dyn FnOnce(&mut dyn TestAppSeam)>);
-
-    /// The fixture's configured `public_url:`, which a plane's finalizer needs to lower its runtime
-    /// (the A2A plane derives its card/discovery origins from it).
-    fn configured_public_url(&self) -> Option<&str>;
-
-    /// busbar's PUBLIC card-issuer key off the fixture's governance, as the neutral [`CardIssuer`] —
-    /// computed exactly as production's boot fold. A KEYED capability (the requesting plane's decl
-    /// `key`), mirroring the other keyed seams so the method names no plane; `None` when no governance
-    /// / no card key. Only the card-issuing plane asks, under its own key.
-    fn card_issuer(&self, plane_key: &'static str) -> Option<CardIssuer>;
 
     /// Install a pre-built, type-erased plane runtime under its plane decl `key` (or the per-generation
     /// runtime-slot companion). `build()` moves the accumulated map into the App's type-erased slots.

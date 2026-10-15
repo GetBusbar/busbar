@@ -1,0 +1,47 @@
+{
+  "_comment": [
+    "1.5.5's export settings refusals, verbatim from the 1.5.5 binary (DATA: the test that reads it,",
+    "export_settings_refusal_1_5_5.rs, names no sink). module: the sink a case configures (a build that does not",
+    "serve it has no refusal of it to render); export: the `export:` block; line: 1.5.5's line; match: `exact` or",
+    "`prefix` (a sentence 1.5.5 printed unprefixed); once: the line is printed exactly once."
+  ],
+  "cases": [
+    {
+      "module": "prometheus",
+      "export": "  metrics: { module: prometheus, settings: { buffer_seconds: 60, bogus: 1 } }\n",
+      "line": "export.metrics.settings: unknown field `bogus`, expected `buffer_seconds` or `key_gauge_limit`",
+      "match": "exact"
+    },
+    {
+      "module": "prometheus",
+      "export": "  metrics: { module: prometheus, settings: { key_gauge_limit: 7 } }\n",
+      "line": "export.metrics.settings: missing field `buffer_seconds`",
+      "match": "exact"
+    },
+    {
+      "module": "otlp",
+      "export": "  trace: { module: otlp, settings: { url: \"http://127.0.0.1:4318/v1/traces\", bogus: 1 } }\n",
+      "line": "export.trace.settings: unknown field `bogus`, expected `url`",
+      "match": "exact"
+    },
+    {
+      "module": "request-log-file",
+      "export": "  file: { module: request-log-file, settings: { path: 7 } }\n",
+      "line": "export.file.settings: invalid type: integer `7`, expected a string",
+      "match": "exact"
+    },
+    {
+      "module": "prometheus",
+      "export": "  metrics: { module: prometheus, settings: { buffer_seconds: 0 } }\n",
+      "line": "the `module: prometheus` export instance sets settings.buffer_seconds: 0, which retains no observations",
+      "match": "prefix"
+    },
+    {
+      "module": "prometheus",
+      "export": "  one: { module: prometheus, settings: { buffer_seconds: 60 } }\n  two: { module: prometheus, settings: { buffer_seconds: 60 } }\n",
+      "line": "export.two: a second `module: prometheus` instance (already defined as 'one'). Prometheus serves the ONE well-known /metrics route, so a second instance could only be silently ignored — keep a single instance.",
+      "match": "exact",
+      "once": true
+    }
+  ]
+}

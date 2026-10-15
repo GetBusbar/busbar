@@ -72,7 +72,6 @@ const NEGATIVE_TEXT: &str = "negativeText";
 const NUMBER_OF_IMAGES: &str = "numberOfImages";
 const OUTPUT_CONFIG_CAMEL: &str = "outputConfig";
 const OUTPUT_TOKENS_CAMEL: &str = "outputTokens";
-const REASONING_CONFIG: &str = "reasoningConfig";
 const REASONING_CONTENT: &str = "reasoningContent";
 const REASONING_TEXT: &str = "reasoningText";
 const REDACTED_CONTENT: &str = "redactedContent";
@@ -143,13 +142,12 @@ pub fn protocol() -> Protocol {
 /// unambiguous regardless of path), then the `/converse` path (rung 12) and the `/model/{id}/invoke`
 /// path (rung 13). Lower strength binds tighter — the shared ladder positions.
 fn claims(
-    h: &busbar_contract::http::HeaderMap,
+    h: busbar_contract::protocol::HeadFields<'_>,
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::ClaimStrength;
-    if h.get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|a| a.starts_with("AWS4-HMAC-SHA256"))
+    use busbar_contract::protocol::{head_field, ClaimStrength};
+    if head_field(h, "authorization")
+        .is_some_and(|a| a.is_ascii() && a.starts_with(b"AWS4-HMAC-SHA256"))
     {
         return Some(ClaimStrength(1));
     }
@@ -231,7 +229,10 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::BAD_REQUEST,
+    // 429 with `ThrottlingException`, a Converse-declared error, like the other five dialects' 429.
+    // 1.5.5 answered 400 `ServiceQuotaExceededException`, which Converse does not declare (OWNER
+    // rule 22, 2026-10-14; accepted difference "C-22 bedrock budget refusal is a declared Converse error").
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: true,
     emits_sse_done_terminator: false,
     max_citations_per_delta: Some(1),
@@ -243,7 +244,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "Boto3/1.35.0 md/Botocore#1.35.0",
     has_model_in_url: true,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::FORBIDDEN,
+        busbar_contract::http::StatusCode::FORBIDDEN.as_u16(),
         keys::AUTH_WORD,
     ),
     ingress_relays_amzn_headers: true,
@@ -311,9 +312,13 @@ const ERR_TYPE_OVERLOADED: &str = busbar_contract::protocol::ERR_TYPE_OVERLOADED
 
 /// Map busbar's generic error `kind` vocabulary to the AWS Bedrock Converse exception name carried
 /// in `__type`. AWS's Converse error model is a fixed, closed set of exception shapes
-/// (`ValidationException`, `ThrottlingException`, `AccessDeniedException`, `ResourceNotFoundException`,
-/// `ModelTimeoutException`, `ServiceUnavailableException`, `InternalServerException`,
-/// `ServiceQuotaExceededException`, `ModelErrorException`); a native SDK matches on exactly these.
+/// (`AccessDeniedException`, `InternalServerException`, `ModelErrorException`,
+/// `ModelNotReadyException`, `ModelTimeoutException`, `ResourceNotFoundException`,
+/// `ServiceUnavailableException`, `ThrottlingException`, `ValidationException`: the `errors` of
+/// Converse and ConverseStream in botocore's bedrock-runtime model); a native SDK matches on
+/// exactly these. `ServiceQuotaExceededException` is NOT one of them (only InvokeModel declares
+/// it), so an exhausted quota or budget answers `ThrottlingException`, whose AWS description is
+/// "Your request was denied due to exceeding the account quotas for Amazon Bedrock".
 /// Any kind without a Bedrock-native counterpart falls back to `ValidationException` (the generic
 /// client-error shape) — chosen deliberately over a catch-all so the wire `__type` is always a real
 /// AWS exception name. This is the inverse of the `__type` token `extract_error` reads back, so a
@@ -335,9 +340,7 @@ pub fn error_kind_to_bedrock_type(kind: &str) -> &'static str {
         | ERR_TYPE_OVERLOADED
         | "service_unavailable"
         | "unavailable" => EXC_SERVICE_UNAVAILABLE,
-        "quota_exceeded" | "service_quota_exceeded" | ERR_TYPE_INSUFFICIENT_QUOTA => {
-            "ServiceQuotaExceededException"
-        }
+        "quota_exceeded" | "service_quota_exceeded" | ERR_TYPE_INSUFFICIENT_QUOTA => EXC_THROTTLING,
         busbar_contract::protocol::KIND_API_ERROR
         | "internal_error"
         | busbar_contract::protocol::KIND_SERVER_ERROR => EXC_INTERNAL_SERVER,
@@ -357,9 +360,9 @@ pub fn error_kind_to_bedrock_type(kind: &str) -> &'static str {
 /// and error (`proxy::ingress_error` and the `main.rs` fallback, both via
 /// `attach_bedrock_error_headers`) — reaches this through the writer vtable, so there are no private
 /// copies.
-pub fn synth_amzn_request_id() -> Option<String> {
+pub fn synth_amzn_request_id(host: &dyn busbar_contract::codec::CodecHost) -> Option<String> {
     let mut buf = [0u8; 16];
-    if !super::synth_rng::fill_entropy(&mut buf) {
+    if !super::synth_rng::fill_entropy(host, &mut buf) {
         return None;
     }
     // RFC 4122 v4 layout (version + variant bits) so the value is a well-formed UUID.
@@ -386,8 +389,12 @@ pub fn synth_amzn_request_id() -> Option<String> {
 /// ingress_error`, `ingress`, and `auth.rs` reach it through that vtable (not by name), so they
 /// cannot drift on which headers a Bedrock error must carry. Best-effort: if entropy or header
 /// encoding fails we skip that header rather than panic — this runs on the request path.
-fn attach_bedrock_error_headers(headers: &mut busbar_contract::http::HeaderMap, kind: &str) {
-    if let Some(id) = synth_amzn_request_id() {
+fn attach_bedrock_error_headers(
+    host: &dyn busbar_contract::codec::CodecHost,
+    headers: &mut busbar_contract::http::HeaderMap,
+    kind: &str,
+) {
+    if let Some(id) = synth_amzn_request_id(host) {
         if let Ok(hv) = HeaderValue::from_str(&id) {
             headers.insert(HeaderName::from_static(HDR_AMZN_REQUEST_ID), hv);
         }
@@ -660,13 +667,9 @@ const PARKED: &[crate::codec::drops::Parked] = &[
     },
     crate::codec::drops::Parked {
         key: ADDITIONAL_MODEL_REQUEST_FIELDS,
-        holds: crate::codec::drops::Holds::Members(&[
-            TOP_K,
-            TOP_K_CAMEL,
-            keys::THINKING,
-            keys::OUTPUT_CONFIG,
-            REASONING_CONFIG,
-        ]),
+        // The reasoning asks that ride here (`thinking`, `output_config`, Nova `reasoningConfig`)
+        // do not cross, as in 1.5.5: the drop walk names them.
+        holds: crate::codec::drops::Holds::Members(&[TOP_K, TOP_K_CAMEL]),
     },
     crate::codec::drops::Parked {
         key: keys::TOOL_CONFIG,
@@ -1206,76 +1209,6 @@ fn bedrock_cache_point() -> serde_json::Value {
     serde_json::json!({ (CACHE_POINT): { (keys::TYPE): "default" } })
 }
 
-/// Read a native reasoning ASK off a Converse `additionalModelRequestFields` object (BED-06). Two
-/// model-family spellings ride there:
-///   * Anthropic-on-Bedrock `thinking`, read exactly as the Anthropic reader reads its own:
-///     `{type: "enabled", budget_tokens: N}` → `Budget(N)`; `{type: "adaptive"}` → `Effort(<the
-///     output_config.effort word>)` when one is given, else `Dynamic`; no `thinking` but an
-///     `output_config.effort` word → `Effort(word)`; `{type: "disabled"}` → `Off` (IR-09).
-///   * Amazon Nova `reasoningConfig: {type: "enabled", maxReasoningEffort: "low"|"medium"|"high"}`
-///     → `Effort`, and `{type: "disabled"}` → `Off`.
-///
-/// Anything else (malformed, an unknown type) is no ask.
-fn read_bedrock_reasoning_ask(
-    amrf: Option<&serde_json::Map<String, serde_json::Value>>,
-) -> Option<crate::codec::ir::IrReasoningAsk> {
-    use crate::codec::ir::IrReasoningAsk as Ask;
-    let amrf = amrf?;
-    let type_of =
-        |v: &serde_json::Value| v.get(keys::TYPE).and_then(|t| t.as_str()).map(String::from);
-    let effort = amrf
-        .get(keys::OUTPUT_CONFIG)
-        .and_then(|c| c.get(keys::EFFORT))
-        .and_then(|e| e.as_str())
-        .and_then(read_bedrock_claude_effort_word);
-    if let Some(thinking) = amrf.get(keys::THINKING) {
-        return match type_of(thinking).as_deref() {
-            Some(keys::ENABLED) => thinking
-                .get(keys::BUDGET_TOKENS)
-                .and_then(|v| v.as_u64())
-                .and_then(|v| u32::try_from(v).ok())
-                .map(Ask::Budget),
-            Some(THINKING_TYPE_ADAPTIVE) => Some(effort.map(Ask::Effort).unwrap_or(Ask::Dynamic)),
-            Some(THINKING_TYPE_DISABLED) => Some(Ask::Off),
-            _ => None,
-        };
-    }
-    if let Some(rc) = amrf.get(REASONING_CONFIG) {
-        return match type_of(rc).as_deref() {
-            Some(keys::ENABLED) => rc
-                .get("maxReasoningEffort")
-                .and_then(|e| e.as_str())
-                .and_then(crate::codec::ir::IrReasoningEffort::parse)
-                .map(Ask::Effort),
-            Some(THINKING_TYPE_DISABLED) => Some(Ask::Off),
-            _ => None,
-        };
-    }
-    effort.map(Ask::Effort)
-}
-
-/// Claude's adaptive-thinking `thinking.type` (Anthropic-on-Bedrock spells it as Anthropic does).
-const THINKING_TYPE_ADAPTIVE: &str = "adaptive";
-/// Reasoning explicitly switched off (Claude `thinking.type`, Nova `reasoningConfig.type`).
-const THINKING_TYPE_DISABLED: &str = "disabled";
-
-/// Claude `output_config.effort` word (Anthropic-on-Bedrock) → IR effort. The Claude scale is
-/// `low` / `medium` / `high` / `xhigh` / `max` (IR-09 carries all five).
-fn read_bedrock_claude_effort_word(word: &str) -> Option<crate::codec::ir::IrReasoningEffort> {
-    match word {
-        "minimal" => None,
-        other => crate::codec::ir::IrReasoningEffort::parse_extended(other),
-    }
-}
-
-/// IR effort → Claude `output_config.effort` word. Claude has no `minimal`; the nearest is `low`.
-fn bedrock_claude_effort_word(effort: crate::codec::ir::IrReasoningEffort) -> &'static str {
-    match effort {
-        crate::codec::ir::IrReasoningEffort::Minimal => "low",
-        other => other.as_str(),
-    }
-}
-
 /// Read Converse's native structured-output directive, `outputConfig.textFormat` (`{type:
 /// "json_schema", structure: {jsonSchema: {schema: "<JSON as a string>", name, description}}}`),
 /// into the typed [`crate::codec::ir::IrResponseFormat`] (BED-08). The schema travels as a STRING on this
@@ -1657,16 +1590,19 @@ fn stop_reason_map(ward: &str) -> crate::codec::ir::IrStopReason {
         // a token limit, which is what `MaxTokens` means to every client dialect (a dedicated
         // context-window reason needs the IR-16 slot).
         STOP_MODEL_CONTEXT_WINDOW_EXCEEDED => S::MaxTokens,
-        // BED-10: the model produced output Bedrock could not parse (text or a tool call) — an
-        // error termination, not a natural end.
-        "malformed_model_output" | "malformed_tool_use" => S::Error,
+        // The model produced output Bedrock could not parse (text or a tool call). It reads as
+        // `Other`, as in 1.5.5 (v1.5.5 `crates/busbar/src/proto/bedrock/mod.rs:705-716`,
+        // `_ => S::Other`): the answer is served and billed as 1.5.5 served and billed it. Reading
+        // it as `Error` turned a translated buffered answer into a billed 502 and a lane fault, a
+        // money and serving change no owner ruling signs.
+        "malformed_model_output" | "malformed_tool_use" => S::Other,
         _ => S::Other,
     }
 }
 
 /// Whether a Bedrock model id names a Claude model: `anthropic.` / `claude`, which covers the bare
 /// model id, the regional and global inference profiles and their ARNs. The Converse body carries no
-/// model family, so the id is the only place it is visible (see `write_request_for_lane`).
+/// model family, so the id is the only place it is visible (see `bedrock_signature_origin`).
 fn bedrock_model_is_claude(model: &str) -> bool {
     let m = model.to_ascii_lowercase();
     m.contains("anthropic.") || m.contains("claude")
@@ -1865,12 +1801,17 @@ fn read_bedrock_usage(
     usage_obj: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let mut ir = crate::codec::usage_count::read_usage(VENDOR_NAME, usage_obj, USAGE)?;
-    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
-        VENDOR_NAME,
-        BEDROCK_USAGE_IDENTITY,
-        usage_obj.and_then(|u| u.get(TOTAL_TOKENS_CAMEL)),
-        &ir,
-    );
+    // A refused count leaves no gap to ledger (`refused_any`): the total is not cross-checked.
+    ir.detail.usage_identity_note = (!crate::codec::usage_count::refused_any(usage_obj, USAGE))
+        .then(|| {
+            crate::codec::usage_count::stated_total_note(
+                VENDOR_NAME,
+                BEDROCK_USAGE_IDENTITY,
+                usage_obj.and_then(|u| u.get(TOTAL_TOKENS_CAMEL)),
+                &ir,
+            )
+        })
+        .flatten();
     Ok(ir)
 }
 
@@ -1901,9 +1842,10 @@ const GUARDRAIL_INVOCATION_METRICS: &str = "invocationMetrics";
 /// line under its meter class, priced by the ratecard). Each count is summed over every guardrail
 /// and assessment on both sides; a zero sum is no hit on its class.
 ///
-/// A count that is PRESENT and not a count REFUSES (#42, the rule every billed count in this crate
-/// reads under): it cannot be ledgered, and a zero in its place is a bill that disagrees with AWS's
-/// invoice and says nothing. `null` is absence.
+/// A count that is PRESENT and not a count is REFUSED on its own (#42; ARCHITECT ruling 2026-10-15,
+/// the rule every billed count in this crate reads under): it cannot be ledgered, so it bills
+/// nothing and is warned, never read as a zero; the readable counts beside it bill. `null` is
+/// absence.
 ///
 /// The assessment's other integers (`guardrailProcessingLatency`, `guardrailCoverage.*`) are a
 /// latency and the coverage the policy units are computed from, not units AWS bills; ledgering
@@ -1936,18 +1878,18 @@ fn guardrail_units(
         .filter_map(usage_of);
     for usage in input.chain(output) {
         for &(count, class) in crate::codec::ir::open_class::GUARDRAIL_COUNT_CLASSES {
-            let n =
-                crate::codec::usage_count::billed_count(&usage, count).map_err(|unreadable| {
-                    tracing::warn!(
-                        protocol = VENDOR_NAME,
-                        field = unreadable.field,
-                        spelling = %unreadable.spelling,
-                        "guardrail usage count is present but unreadable; refusing rather than \
-                         counting it as zero (#42)"
-                    );
-                    crate::codec::dialect::ir_parse_error()
-                })?;
-            crate::codec::ir::open_class::add(&mut units, class, n);
+            // Each count is judged on its own (ARCHITECT ruling 2026-10-15): an unreadable one is
+            // REFUSED loudly and bills nothing; the readable ones bill as stated.
+            match crate::codec::usage_count::billed_count(&usage, count) {
+                Ok(n) => crate::codec::ir::open_class::add(&mut units, class, n),
+                Err(unreadable) => tracing::warn!(
+                    protocol = VENDOR_NAME,
+                    field = unreadable.field,
+                    spelling = %unreadable.spelling,
+                    "guardrail usage count is present but unreadable: REFUSED, it bills nothing \
+                     and is never read as zero (#42, #81)"
+                ),
+            }
         }
     }
     Ok(units)
@@ -2280,6 +2222,7 @@ impl BedrockWriter {
 /// encoded via `eventstream::encode_frame`, so the bytes are byte-for-byte what a native stream sends.
 /// Never panics on the request path: a frame whose payload fails to serialize is skipped.
 pub fn bedrock_response_to_eventstream(
+    host: &dyn busbar_contract::codec::CodecHost,
     ir: &crate::codec::ir::IrResponse,
     elapsed_ms: Option<u64>,
 ) -> Vec<u8> {
@@ -2292,7 +2235,7 @@ pub fn bedrock_response_to_eventstream(
     // `write_response_events` (not the single-frame method): a multi-citation delta frames as one
     // `citation` delta per citation, exactly as a native ConverseStream interleaves them.
     let push = |ev: &IrStreamEvent, out: &mut Vec<u8>| {
-        for (event_type, mut payload) in writer.write_response_events(ev) {
+        for (event_type, mut payload) in writer.write_response_events(host, ev) {
             // A native ConverseStream `metadata` frame ALWAYS carries a `metrics.latencyMs` (the SDK
             // surfaces it via `ConverseStreamMetadataEvent::metrics()`); the bedrock writer's
             // `MessageDelta` arm deliberately omits `metrics`, and the LIVE StreamTranslate path injects

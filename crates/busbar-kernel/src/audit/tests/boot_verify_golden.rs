@@ -176,17 +176,17 @@ impl PlaneStore for FrozenStore {
 #[test]
 fn per_call_chain_boot_verifies_from_frozen_bytes() {
     use crate::audit::journal::{Journal, NeutralBody};
+    use crate::audit::stream_registry::StreamRecord;
     use crate::audit::Framing;
-    use crate::plane_host::journal::PlaneJournalRecord;
 
     let mut store = FrozenStore::new();
     store.put(KIND_CALL, Some("vk_alice"), CALL_1);
     store.put(KIND_CALL, Some("vk_alice"), CALL_2);
 
-    let journal: Journal<PlaneJournalRecord> = Journal::new(16);
-    let reframe = |scope: &str, body: &[u8]| -> RecordStoreResult<PlaneJournalRecord> {
+    let journal: Journal<StreamRecord> = Journal::new(16);
+    let reframe = |scope: &str, body: &[u8]| -> RecordStoreResult<StreamRecord> {
         let b: NeutralBody = decode(body)?;
-        Ok(PlaneJournalRecord::from_parts(
+        Ok(StreamRecord::from_parts(
             scope.to_string(),
             b.seq,
             b.prev_hash,
@@ -219,10 +219,10 @@ fn per_call_chain_boot_verifies_from_frozen_bytes() {
     assert_eq!(tail.hash, CALL_TAIL_HASH);
 }
 
-// The A2A per-task provenance chain's frozen byte-layout golden RELOCATED to `busbar-a2a` with the
+// The A2A per-task provenance chain's frozen byte-layout golden RELOCATED to the retired agent engine with the
 // task subsystem (1.7.0 plane extraction): the plane owns its `TaskRow`/`TaskEventRow` and computes the
 // chain plane-side now, so the digest-drift tripwire lives beside the code that produces it — see
-// `busbar_a2a::taskstore`'s golden test. Core keeps the neutral admin-audit golden below (its generic
+// its task store's golden test. Core keeps the neutral admin-audit golden below (its generic
 // hash-chain mechanism stays in core) and the MCP call golden above.
 
 /// Admin audit chain (PipeSeparated, NO scope in the digest): the frozen opaque records restore

@@ -37,7 +37,9 @@ pub(super) fn stream_framer(
     framer_for: impl Fn(&str) -> Option<Arc<dyn FramerDoor>>,
 ) -> Option<Arc<dyn FramerDoor>> {
     let door = framer_for(carrier)?;
-    door.facts().duplex.contains(&carrier).then_some(door)
+    // A datagram framer's calls carry the datagram lane: the connector's datagram driver drives
+    // it over the host's port, never a stream.
+    (!door.facts().datagram && door.facts().duplex.contains(&carrier)).then_some(door)
 }
 
 /// The stream, shared by the unit's caller side and the answer that may refuse it; `None` once

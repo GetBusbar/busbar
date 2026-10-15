@@ -2,9 +2,9 @@
 
 The Build Proof Dashboard manifest is collated by `cargo xtask proof-manifest`. The `proof-manifest`
 job that ran it (in the removed `ci.yml`, on a push to `dev`, `qa` or `main`) is deleted with the rest of busbar's
-workflows: `promote.yml` does not publish a manifest, so nothing refreshes the published copies until
-the collator is wired into the release engine in busbar-release. The last published manifests are on
-the `proof-manifests` branch.
+workflows, and `promote.yml` (the busbar-release hop) is deleted too: nothing refreshes the published
+copies until a ModernCI branch file runs the collator on a landing (`on.landed`). The last published
+manifests are on the `proof-manifests` branch.
 
 Usage:
 

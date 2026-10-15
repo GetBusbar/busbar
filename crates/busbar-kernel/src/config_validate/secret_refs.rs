@@ -30,7 +30,7 @@ use super::RootCfg;
 ///    apart with an EXHAUSTIVE destructure and no `..`, the idiom already used by
 ///    `RootSettings::is_empty` and `config::patch`. Adding a field to `RootCfg`, `TlsCfg`,
 ///    `AuthCfg`, `AuthChainEntry`, `AuthMethodCfg`, `BrowserLoginCfg`, `IdentityProviderCfg` or
-///    `ProviderCfg` fails to build with `E0027 pattern does not mention field` until somebody has
+///    `ResolvedProvider` fails to build with `E0027 pattern does not mention field` until somebody has
 ///    decided, here, whether it carries a secret.
 /// 2. A NEW SECRET-BEARING TYPE is a TEST failure. The compiler cannot help with a `SecretRef`
 ///    added to a struct this function never destructures, so
@@ -201,27 +201,21 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     }
 
     for (name, p) in providers {
-        let crate::config::ProviderCfg {
+        let crate::config::ResolvedProvider {
             api_key,
-            // Everything else on a provider is a URL, a protocol/auth-scheme selector, an error map
-            // or a host allowlist.
-            protocol: _,
+            // Everything else on a provider is a URL, an auth-scheme selector or its parameters, a
+            // health block, a host allowlist, or the plane's table (parsed without the credential:
+            // the credential is a kernel-owned key, never in the table).
             base_url: _,
             health: _,
-            error_map: _,
             path: _,
             path_base: _,
-            organization: _,
-            project: _,
             token_url: _,
             scope: _,
             subject: _,
             auth: _,
             allow_metadata_hosts: _,
-            max_output_key: _,
-            anthropic_adaptive_thinking: _,
-            native_structured_output: _,
-            model_capabilities: _,
+            table: _,
         } = p;
         refs.push((format!("providers.{name}.api_key"), api_key));
     }
@@ -395,28 +389,29 @@ fn push_browser_login_refs<'a>(
 #[cfg(test)]
 pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
     ("TlsCfg", SecretBearing::Walked),
-    ("ProviderCfg", SecretBearing::Walked),
+    ("ResolvedProvider", SecretBearing::Walked),
+    (
+        "ProviderCfg",
+        SecretBearing::NotInResolvedConfig(
+            "the frozen whole-entry PARSE shape of a provider; it is never part of `RootCfg`. \
+             `resolve` lowers a catalog entry and its deployment into `ResolvedProvider`, which IS \
+             walked.",
+        ),
+    ),
     ("AuthCfg", SecretBearing::Walked),
     ("AuthChainEntry", SecretBearing::Walked),
     ("IdentityProviderCfg", SecretBearing::Walked),
     ("BrowserLoginCfg", SecretBearing::Walked),
-    // `tools.<name>.token_exchange.subject_token` — busbar's OWN token, the SUBJECT of an RFC 8693
-    // exchange, never the caller's.
-    (
-        "TokenExchangeCfg",
-        SecretBearing::DoorDeclared(
-            "the `tools:` door's section: its Statement declares \
-             `settings.*.token_exchange.subject_token` (and `settings.*.env.*` for a stdio child's \
-             referenced environment), and the folded row's section enumerates every reference at \
-             those paths",
-        ),
-    ),
-    // That plane's LEASED outbound delegation credential. Reached from `RootCfg` through
-    // `agent_defs -> agents.<name>.upstream_credential`.
-    ("OutboundCredential", SecretBearing::Walked),
-    // That plane's OUTBOUND CLIENT CERTIFICATE — busbar's own end of a mutual handshake with a
-    // registered peer. Reached from `RootCfg` through `agent_defs -> agents.<name>.client_identity`.
-    ("ClientIdentityCfg", SecretBearing::Walked),
+    // The `tools:` door's own credential type (`tools.<name>.token_exchange.subject_token`) left
+    // this tree with its plane (the pinned plugin repo, #39): its references are read at the door's
+    // declared `settings.*.token_exchange.subject_token` / `settings.*.env.*` paths through the
+    // `DoorSection` row below, so no type of it is listed here.
+    // The `agents:` door's own credential types (`agents.<name>.upstream_credential`, its LEASED
+    // outbound delegation credential, and `agents.<name>.client_identity`, busbar's end of a mutual
+    // handshake with a registered peer) left this tree with their plane (the pinned plugin repo,
+    // #39): their references are read at the door's declared `settings.*.upstream_credential.secret`
+    // and `settings.*.client_identity.{cert,key}` paths through the `DoorSection` row below, so no
+    // type of them is listed here.
     // The authorization server's ES256 signing key — the highest-value secret in the process, since
     // whoever holds it forges every token this deployment will ever issue. Reached from `RootCfg`
     // through `oauth_as`, which is the VALIDATED identity, which is why that type carries the
@@ -459,24 +454,44 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         SecretBearing::NotInResolvedConfig(
             "a member PROGRAM the host reads off a plane's settings at open and refresh \
              (`busbar_contract::conn::Program`), never a `RootCfg` type: its `env_refs` \
-             references are resolved by the connector at the spawn, as the previous release \
-             resolved a member's environment, and one that does not resolve refuses the spawn, \
-             naming the variable.",
+             references are resolved when the need that names the program is declared and on the \
+             refresher's lease, with the config-time proof (#865, row 166), and held for its \
+             spawns in a `SpawnEnv`; one that does not resolve refuses every spawn, naming the \
+             variable.",
+        ),
+    ),
+    (
+        "SpawnEnv",
+        SecretBearing::NotInResolvedConfig(
+            "the connector's HELD environment of one member program (its spawn environment, \
+             #865, row 166): a runtime CARRIER built from a \
+             `Program`'s `env_refs` when its need is declared, resolved there and on the \
+             refresher's lease and never at a spawn; it is never part of `RootCfg`.",
         ),
     ),
     (
         "ProviderDeploy",
         SecretBearing::NotInResolvedConfig(
             "the DESERIALIZE-side provider entry (providers.yaml). `resolve` lowers it into \
-             `ProviderCfg`, which IS walked.",
+             `ResolvedProvider`, which IS walked.",
         ),
     ),
     (
         "ProviderRoute",
         SecretBearing::NotInResolvedConfig(
-            "the composition root's copy of a RESOLVED `ProviderCfg` (`root::door_steps::\
-             provider_routes`), made for a door plane's members after the `ProviderCfg` it copies \
-             was walked; it is never part of `RootCfg`.",
+            "the composition root's copy of a `ResolvedProvider` (`root::door_steps::\
+             provider_routes`), made for a door plane's members after the `ResolvedProvider` it \
+             copies was walked; it is never part of `RootCfg`.",
+        ),
+    ),
+    (
+        "PerHop",
+        SecretBearing::NotInResolvedConfig(
+            "the composition root's per-hop binding of a registration's own outbound credential \
+             (`root::door_steps::upstream_credential_binding`): a runtime CARRIER built from the \
+             reference a door section declares at its `settings.*.upstream_credential.secret` path, \
+             which the door section's walk (`DoorSection`) already reported; it is never part of \
+             `RootCfg`.",
         ),
     ),
 ];

@@ -450,6 +450,47 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["no struct in the tracked"],
     ));
 
+    // A DOOR plane's Statement declares its section in a `Section` row flagged SECTION_DECLARING
+    // (no PlaneDecl), and the reader reads it there. A door OWNS the section it declares (the
+    // kernel folds it into the pre-pass's map carrier, DECL-FOLD), so, like an owned PlaneDecl
+    // section below, it is an orphan when no carrier holds it: the case takes the tree's map carrier
+    // away. A row that only CONSUMES a section declares nothing.
+    let door_row = |flags: &str| {
+        format!(
+            "const ZZ_SECTION: &str = \"zz_door_no_such_carrier\";\nconst SECTIONS: &[Section] = \
+             &[Section {{\n    name: abi_str(ZZ_SECTION),\n    flags: {flags},\n    _reserved: 0,\n}}];\n"
+        )
+    };
+    let prepass = "crates/busbar-kernel/src/config/prepass.rs";
+    let no_tree_map_carrier = |ov: &mut Overlay| {
+        ov.set(
+            prepass,
+            cx.read(prepass)
+                .unwrap_or_default()
+                .replace("= Declared::Any;", "= Declared::ByField;"),
+        );
+    };
+    let mut ov = Overlay::new();
+    ov.set(plane_fixture, door_row("SECTION_DECLARING"));
+    no_tree_map_carrier(&mut ov);
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a section a plane DOOR declares that no struct carries is REFUSED",
+        &[ROW_TRACKED_SOURCES],
+        ov,
+        &["no struct in the tracked"],
+    ));
+    let mut ov = Overlay::new();
+    ov.set(plane_fixture, door_row("SECTION_CONSUMED"));
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a section a plane door only CONSUMES is not read as declared",
+        &[ROW_TRACKED_SOURCES],
+        ov,
+    ));
+
     // A declared section this reader cannot resolve to a string is a section it cannot freeze.
     let mut ov = Overlay::new();
     ov.set(plane_fixture, declaration("ZZ_NO_SUCH_CONST", ""));
@@ -462,11 +503,13 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["cannot resolve"],
     ));
 
-    // Two door sections: the one door carrier cannot say which it carries.
+    // Two door sections: the one door carrier cannot say which it carries. A door is a section
+    // declared beside the ENDPOINT OWNER's declaring section (`EndpointSection::OWNER`, `tools`), so
+    // the plant declares two beside that one.
     let mut ov = Overlay::new();
     ov.set(
         plane_fixture,
-        declaration("\"zz_declaring\"", "\"zz_second_door\""),
+        declaration("\"tools\"", "\"zz_door_a\", \"zz_door_b\""),
     );
     report.push(prove_rows_red(
         cx,
@@ -477,21 +520,27 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["One carrier type carries one key"],
     ));
 
+    // A section any OTHER plane owns beside its declaring one is no door: the pre-pass lifts it
+    // RAW (`Dest::Raw`), into `DeployCfg::plane_raw`, which carries it.
+    let mut ov = Overlay::new();
+    ov.set(
+        plane_fixture,
+        declaration("\"zz_owner\"", "\"zz_owner\", \"zz_raw_beside\""),
+    );
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a section a non-owner plane owns beside its declaring one is RAW, carried, never a door",
+        &[ROW_TRACKED_SOURCES],
+        ov,
+    ));
+
     // THE MAP CARRIER (`Declared::Any`): a plane that OWNS its declaring section is carried by the
     // pre-pass's one map carrier, never by a carrier named for it. Both arms plant the same owning
     // plane and take the tree's own map carrier away, so each is measured from the same baseline:
     // with no map carrier the owned section is an orphan (RED); with a fixture map carrier it is
     // grammar (GREEN). A plane that does NOT own its declaring section stays an orphan either way
     // (the "no struct carries" case above).
-    let prepass = "crates/busbar-kernel/src/config/prepass.rs";
-    let no_tree_map_carrier = |ov: &mut Overlay| {
-        ov.set(
-            prepass,
-            cx.read(prepass)
-                .unwrap_or_default()
-                .replace("= Declared::Any;", "= Declared::ByField;"),
-        );
-    };
     let mut ov = Overlay::new();
     ov.set(plane_fixture, declaration("\"zz_owned\"", "\"zz_owned\""));
     no_tree_map_carrier(&mut ov);

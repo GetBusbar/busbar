@@ -49,7 +49,9 @@ impl PlaneDriver {
         far: &F,
         timeout: Duration,
     ) {
+        // The probe is its own request (#74): one call, and the Route pass it presents is bound to it.
         let ctx = UnitCtx {
+            call: kernel.next_call(),
             key,
             origin: OriginKind::Tick,
             session: None,
@@ -75,7 +77,7 @@ impl PlaneDriver {
         let Some(ticket) = self.calls.mint() else {
             return;
         };
-        let token = Pass::<Route>::mint(kernel.seal());
+        let token = Pass::<Route>::mint_bound(kernel.seal(), ctx.call);
         let body = units.arrival.body.clone();
         let mut run = Pumping::new(self, &token, &units.state, &ctx, ticket, deadline_ns, body);
         run.lend_unit(CLAIM_PROBE, decoded.dialect, &[], 0);

@@ -119,6 +119,12 @@ pub struct TestUnits {
     /// a plane does with one is post it; what this harness does is keep it, so a cell can post it
     /// onto a real ledger and read the books.
     pub abandoned: Mutex<Vec<busbar_kernel::teller::Ended>>,
+    /// The one entry a `ROUTE_SCOPE_LOCAL` unit's scope resolved to, as a composition's steps
+    /// resolve it on the principal's grant (`DriverSteps::resolved`). `None` = none resolved.
+    pub resolved: Option<Vec<u8>>,
+    /// Every usage-tap fault the driver handed these steps, `(dialect, reason)`, in order. Each is
+    /// also counted on the kernel's own counter, as the root's steps count it.
+    pub tap_faults: Mutex<Vec<(u32, &'static str)>>,
 }
 
 impl Default for TestUnits {
@@ -139,6 +145,8 @@ impl Default for TestUnits {
             groups: Vec::new(),
             capped: None,
             abandoned: Mutex::new(Vec::new()),
+            resolved: None,
+            tap_faults: Mutex::new(Vec::new()),
         }
     }
 }
@@ -317,6 +325,7 @@ pub fn principal() -> PrincipalId {
 /// A context for a client unit.
 pub fn ctx(key: u64) -> UnitCtx {
     UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: UnitKey::new(key),
         origin: OriginKind::Client,
         session: None,
@@ -355,8 +364,22 @@ macro_rules! step {
     }};
 }
 
-/// The plane driver's kernel steps: told nothing beyond the loop's own seats.
-impl busbar_kernel::plane_driver::DriverSteps for TestUnits {}
+/// The protocol label this harness counts a usage-tap fault under (its plane has no dialect names).
+pub const TAP_FAULT_PROTOCOL: &str = "plane-driver-test";
+
+/// The plane driver's kernel steps: told nothing beyond the loop's own seats, save the entry a
+/// scope-local unit resolved to, when the case names one, and a usage-tap fault, which they keep
+/// and count on the kernel's counter exactly as the root's steps do.
+impl busbar_kernel::plane_driver::DriverSteps for TestUnits {
+    fn resolved(&self, _ctx: &UnitCtx) -> Option<Vec<u8>> {
+        self.resolved.clone()
+    }
+
+    fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
+        self.tap_faults.lock().unwrap().push((dialect, reason));
+        busbar_kernel::handlers::usage_tap_fault(TAP_FAULT_PROTOCOL, reason);
+    }
+}
 
 impl Units for TestUnits {
     fn arrival(&self, token: &Pass<Arrival>, _ctx: &UnitCtx) -> SeatVerdict<Arrival> {

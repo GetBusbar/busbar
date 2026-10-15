@@ -24,7 +24,7 @@
       "judgement": "Real defect in a2a-go v2.4.0. It serialises task status timestamps in the host's local zone instead of UTC. Confirmed as a control defect and not a misreading of the spec by the second control, a2a-python 1.1.2, which emits '2026-08-08T23:23:34.117771Z' correctly for the same field. Note this defect is invisible to anyone testing on a UTC host, which is most CI, so it would not have been found by a suite that only ran in CI.",
       "impact_if_a_subject_did_this": "Any client sorting or comparing task times across agents in different regions orders them wrongly, and any client parsing strictly for a trailing Z rejects the response outright.",
       "first_seen": "2026-08-08",
-      "upstream": "not yet reported"
+      "upstream": "drafted 2026-10-14 in testing/upstream-issue-drafts.txt; filing held for the owner's OK"
     },
     {
       "test": "core.unsupported_version_is_rejected",
@@ -35,7 +35,7 @@
       "judgement": "Real defect in a2a-go v2.4.0. It ignores the A2A-Version header entirely rather than negotiating on it. Confirmed as a control defect by the second control, a2a-python 1.1.2, which rejects the same request. The spec is unusually explicit here, with a worked example in SPEC 6.4, so there is no ambiguity to hide behind.",
       "impact_if_a_subject_did_this": "A client pinned to a newer protocol version is silently served older semantics and loses functionality with no error anywhere, which is exactly the silent-downgrade failure SPEC 3.6.3 warns about.",
       "first_seen": "2026-08-08",
-      "upstream": "not yet reported"
+      "upstream": "drafted 2026-10-14 in testing/upstream-issue-drafts.txt; filing held for the owner's OK"
     },
     {
       "test": "adv.wrong_types",
@@ -46,7 +46,7 @@
       "judgement": "Real defect in a2a-go v2.4.0, and the most serious finding in this battery: a null element inside the parts array reaches a nil dereference, so a 60-byte well-formed JSON document panics a goroutine in an unauthenticated request path. Confirmed as a control defect by the second control, a2a-python 1.1.2, which rejects the same input cleanly. Worth reporting upstream.",
       "impact_if_a_subject_did_this": "An unauthenticated remote crash. Any peer, hostile or merely buggy, can fault the agent at will.",
       "first_seen": "2026-08-08",
-      "upstream": "not yet reported"
+      "upstream": "drafted 2026-10-14 in testing/upstream-issue-drafts.txt; filing held for the owner's OK"
     }
   ]
 }

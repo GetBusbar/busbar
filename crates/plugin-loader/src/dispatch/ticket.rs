@@ -35,19 +35,13 @@ pub(crate) fn decode(slot: u32) -> (u32, u32) {
     (slot >> INDEX_BITS, slot & MAX_INDEX)
 }
 
-/// A recycled ticket slot's generation: the one after `g`, never `0` (a ticket generation, not
-/// a configuration generation).
-pub(crate) fn recycled_generation(g: u32) -> u32 {
-    match g.wrapping_add(1) {
-        0 => 1,
-        n => n,
-    }
-}
-
 /// Where an instance's wakes go: the dispatcher that holds its tickets.
 pub(crate) trait WakeRoute: Send + Sync {
-    /// Push `t` to the worker that owns it. Never blocks on the plugin.
-    fn wake(&self, t: Ticket);
+    /// Push `t` to the worker that owns it, with `supplier` the instance whose context handed the
+    /// host `t` (#74: a forged generation the worker finds is that instance's; `None` = the host's
+    /// own wake, blamed on no one and counted against the process's latch). Never blocks on the
+    /// plugin.
+    fn wake(&self, t: Ticket, supplier: Option<&'static InstanceWake>);
 
     /// The host services this route's instances are served from; `None` = none.
     fn services(&self) -> Option<super::services::Served> {
@@ -59,6 +53,14 @@ pub(crate) trait WakeRoute: Send + Sync {
         None
     }
 
+    /// The seal the host lent this route's dispatcher (Part 2 #54); `None` = none, and a reveal of
+    /// a `Secret` its instances' services would make is refused.
+    fn seal(
+        &self,
+    ) -> Option<std::sync::Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
+        None
+    }
+
     /// The waker of an INLINE ticket's task (`super::inline`); `None` for any other ticket.
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
         let _ = t;
@@ -66,7 +68,7 @@ pub(crate) trait WakeRoute: Send + Sync {
     }
 }
 
-/// What an instance's `HostCtx` points to: the dispatcher its tickets live in, and who the instance
+/// What an instance's `HostCtx` names (through [`super::handle`], never by address): the dispatcher its tickets live in, and who the instance
 /// is to the host services. Leaked per instance, so a late wake never dangles; a wake before any
 /// dispatcher is bound is dropped.
 #[derive(Default)]
@@ -89,6 +91,13 @@ pub(crate) struct InstanceWake {
     /// Each granted key bound to the file the instance's settings give it, re-bound by every
     /// `open` and `refresh` (`disk.append` maps a key through it).
     pub(crate) bound: std::sync::RwLock<Vec<busbar_contract::services::DiskDest>>,
+    /// The instance's handle names nothing any more (#74): set when it is quarantined, faulted by
+    /// the watchdog, closed or dropped. Checked by `handle::resolve` after the tag verifies.
+    pub(crate) revoked: std::sync::atomic::AtomicBool,
+    /// The instance this entry is the handle of, set once it exists: what a forgery found AFTER the
+    /// call that supplied it (a forged ticket generation, judged on the worker against the supplier
+    /// its wake carried) quarantines.
+    pub(crate) instance: OnceLock<std::sync::Weak<super::plugin::Instance>>,
 }
 
 impl std::fmt::Debug for InstanceWake {
@@ -103,18 +112,47 @@ impl std::fmt::Debug for InstanceWake {
     }
 }
 
+/// Where a ticket's wake goes, and the instance whose context supplied the ticket (#74). Carried
+/// from the call that took the ticket to whatever fires the wake (a completion, a connection's
+/// readiness, an I/O waker), on any thread: the supplier is never read off the thread the wake
+/// fires on, so a wake firing inside another instance's crossing never blames that instance.
+#[derive(Clone)]
+pub(crate) struct Waking {
+    pub(crate) route: Weak<dyn WakeRoute>,
+    pub(crate) supplier: Option<&'static InstanceWake>,
+}
+
+impl Waking {
+    /// The waking of the instance `wake` names (resolved by the caller): its dispatcher, and itself
+    /// as the supplier. `None` before a dispatcher is bound.
+    pub(crate) fn of(wake: &'static InstanceWake) -> Option<Self> {
+        Some(Self {
+            route: wake.route.get()?.clone(),
+            supplier: Some(wake),
+        })
+    }
+
+    /// Wake `t` through the route, naming the supplier.
+    pub(crate) fn wake(&self, t: Ticket) {
+        if let Some(route) = self.route.upgrade() {
+            route.wake(t, self.supplier);
+        }
+    }
+}
+
 /// THE HOST'S WAKE (`abi::mechanism::ticket::WakeFn`). Any thread; never blocks on the plugin;
 /// never fails. A wake for an unknown worker or a stale generation is dropped (the latter by the
 /// worker, which alone knows the generation).
 pub(crate) extern "C" fn host_wake(ctx: HostCtx, ticket: Ticket) {
     // A generation-0 ticket (NONE) is a stale wake like any other: routed, and dropped and
     // counted by the worker, never silently lost here.
-    if ctx.ptr.is_null() {
+    // THE HANDLE IS VERIFIED BEFORE IT NAMES ANYTHING (#74): a context the host did not mint wakes
+    // nothing and is counted.
+    let Some(target) = super::handle::resolve(ctx) else {
         return;
-    }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
-    let target = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    };
+    // The supplier is the context's own instance, resolved above (#74).
     if let Some(route) = target.route.get().and_then(Weak::upgrade) {
-        route.wake(ticket);
+        route.wake(ticket, Some(target));
     }
 }

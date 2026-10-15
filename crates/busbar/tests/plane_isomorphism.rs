@@ -6,7 +6,7 @@
 //!
 //! Owner's ruling, recorded and slipped repeatedly, which is why this is a gate and not a paragraph:
 //!
-//! > *"LLM == MCP == A2A -- just different protocols not different pathway through engine at all."*
+//! > every plane is the same pathway through the engine; only the protocol differs.
 //!
 //! The structural half of isomorphism (Assertion I1) is enforced by the type system already: every
 //! plane crate constructs the SAME registry `PlaneDecl`, naming every field or failing to compile.
@@ -23,13 +23,12 @@
 //! ## What is reflected, and what is not
 //!
 //! The installed planes are the ones the composition root links and pushes through `install_planes`
-//! (the MCP plane left this set at P3 DEL-MCP: it is served through its door and installs no PlaneDecl):
-//! `{llm, a2a, streaming}` (each a `&'static PlaneDecl` referenced directly here — the same consts
-//! `crates/busbar/src/main.rs` installs; this is also the test-support plane registry's content). The
-//! VOICE plane is off-default, feature-gated, and NOT linked into the binary or this test target (see
-//! `docs/design/BUSBAR-1.6.0.md` #15), so its skeleton asymmetries are governed by the
-//! no-deferral gate + the ledger's voice pin, NOT by this reflection. When voice is wired into the
-//! binary at its DoD, adding its decl to [`installed_decls`] arms this reflection over it too.
+//! (a plane served through its door alone installs no PlaneDecl and is not in this set): each a
+//! `&'static PlaneDecl` referenced directly here — the same consts `crates/busbar/src/main.rs`
+//! installs; this is also the test-support plane registry's content. A plane not linked into the
+//! binary or this test target (see `docs/design/BUSBAR-1.6.0.md` #15) has its skeleton asymmetries
+//! governed by the no-deferral gate + the ledger's pin, NOT by this reflection; adding its decl to
+//! [`installed_decls`] when it is wired into the binary arms this reflection over it too.
 //!
 //! Modelled on `crates/busbar/tests/capability_equality.rs` -- the house oracle pattern: one `verify`
 //! fn drives both the real gate and the fixture self-tests, so a self-test proves the REAL gate fires.
@@ -74,8 +73,21 @@ const HOOK_FIELDS: &[(&str, fn(&PlaneDecl) -> bool)] = &[
 const MIN_HOOK_FIELDS: usize = 15;
 
 /// Floor on the allowlist: an empty allowlist against a decl set that HAS asymmetries could only be a
-/// file that was gutted; today's honest count is well above this.
-const MIN_ASYMMETRIES: usize = 10;
+/// file that was gutted. Re-armed at today's measured count (Law 9) by FLIP-A2A (#787), which
+/// deleted the retired agent engine and with it its plane's installed PlaneDecl (that plane is
+/// door-only now and installs none). That decl was the one installed decl stating `admin_routes`,
+/// `openapi`, `config_validate`, `registry_contains`, `reresolve_gates`, `retain_verify_gates`,
+/// `card_signing_domain` and `card_kid_prefix` (eight hooks, a row each against the two other
+/// installed planes) and the one without `build_runtime` (a row against itself): those 17 rows left
+/// with the decl they described, 21 measured at #778's head, 4 after. The four left are the hooks
+/// one installed plane states and the other does not (`routes`, `hydrate`, `start`,
+/// `default_section`), each still judged. Re-armed again at the measured count by FLIP-STREAMING
+/// merged with FLIP-A2A: the streaming plane is door-only too, so llm is the one installed decl and
+/// a single plane has no sibling to be asymmetric against; those four rows left with the streaming
+/// decl, and the measured count is 0.
+/// Read only by the gate cell below, which runs where the build carries the plane axis.
+#[cfg(linked_axis_plane)]
+const MIN_ASYMMETRIES: usize = 0;
 
 /// The doctrine map: each INSTALLED plane crate key → the directional ledger column(s) it answers to
 /// in `qa/capability-equality.json`. The bidirectional protocols count in both directions. Pinned
@@ -438,7 +450,7 @@ fn every_installed_plane_is_answered_by_a_root_leg() {
     }
     // How many cells each leg proves over the loop ON EACH COLUMN, read off the same ledger. Keyed
     // by (leg, column) and not by leg: a leg answers for two directional columns on the
-    // bidirectional planes (root-mcp is mcp-client AND mcp-server), and a per-leg tally stays
+    // bidirectional planes (one leg is its plane's client AND server column), and a per-leg tally stays
     // positive while one of its two columns has lost every root-loop proof — the assertion below
     // names the column, so the count it reads must be the column's (item 264).
     let leg_proven = proven_per_leg_column(&ledger);
@@ -500,8 +512,8 @@ fn proven_per_leg_column(ledger: &serde_json::Value) -> BTreeMap<(String, String
     out
 }
 
-/// The tally is per COLUMN: a leg proving seven `mcp-client` cells and no `mcp-server` cell has a
-/// dead `mcp-server` column, and the per-leg count of seven must not stand in for it.
+/// The tally is per COLUMN: a leg proving seven client-column cells and no server-column cell has a
+/// dead server column, and the per-leg count of seven must not stand in for it.
 #[test]
 fn selftest_a_column_whose_root_proofs_are_all_gone_counts_zero_under_a_leg_that_proves_others() {
     let ledger = serde_json::json!({
@@ -531,15 +543,15 @@ fn the_reflected_hook_set_and_constants_are_the_doctrine() {
         "the reflected hook set shrank below the floor"
     );
     const {
-        assert!(MIN_HOOK_FIELDS >= 15 && MIN_ASYMMETRIES >= 10);
+        assert!(MIN_HOOK_FIELDS >= 15);
     }
-    // The doctrine's installed-plane axis, verbatim (the same three the composition root installs as
-    // a PlaneDecl: P3 DEL-MCP, ARCHITECT 2026-10-05, took mcp off it — the plane is served through its
-    // memory-ABI door alone and installs no PlaneDecl).
+    // The doctrine's installed-plane axis, verbatim (the one plane the composition root installs as a
+    // PlaneDecl: P3 DEL-MCP, ARCHITECT 2026-10-05, and the door flips after it each took a plane off
+    // it — each is served through its memory-ABI door alone and installs no PlaneDecl).
     let keys: Vec<&str> = plane_ledger_columns().iter().map(|(k, _)| *k).collect();
     assert_eq!(
         keys.len(),
-        3,
+        1,
         "the installed-plane axis is the owner's ruling; changing it is a doctrine change: {keys:?}"
     );
     // With every plane compiled in, the pinned axis is exactly the planes the root installs from

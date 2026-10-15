@@ -425,3 +425,48 @@ async fn a_pinned_client_refuses_a_literal_that_is_not_its_pin() {
     assert!(err.is_connect(), "{err:?}");
     assert!(fixture.records().is_empty(), "no connection was opened");
 }
+
+/// F25 row 104: rehomed from crates/busbar-llm/src/engine/tests/egress_differential_tests.rs::
+/// plaintext_status_and_body_are_identical_across_stacks. The two-stack differential is gone with
+/// the reqwest stack; what it pinned is the served engine's observation of one plaintext hop on the
+/// pinned production posture: status 200, no `Location`, the body byte for byte, no peer identity
+/// (a plaintext hop has none to observe), and exactly one request at the fixture.
+#[tokio::test]
+async fn plaintext_status_and_body_are_identical_across_stacks() {
+    let fixture = spawn_http(CannedResponse::ok(r#"{"answer":42}"#), 4);
+    let client = build_client(&EngineSpec::pinned(
+        Arc::from("plain.test"),
+        fixture.addr.ip(),
+        None,
+        Vec::new(),
+    ))
+    .expect("the pinned posture builds");
+    let req = egress_request(
+        format!("http://plain.test:{}/v1/x", fixture.addr.port())
+            .parse()
+            .expect("uri"),
+        http::HeaderMap::new(),
+        Bytes::from(r#"{"q":"hop"}"#),
+    );
+    let resp = client
+        .request(req)
+        .await
+        .expect("the plaintext hop answers");
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(resp.headers().get(http::header::LOCATION), None);
+    assert_eq!(
+        peer_key_pin(&resp),
+        None,
+        "a plaintext hop has no peer identity to observe"
+    );
+    let body = http_body_util::BodyExt::collect(resp.into_body())
+        .await
+        .expect("body")
+        .to_bytes();
+    assert_eq!(&body[..], br#"{"answer":42}"#);
+    assert_eq!(
+        fixture.request_lines().len(),
+        1,
+        "one request reached the fixture"
+    );
+}

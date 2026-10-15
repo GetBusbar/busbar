@@ -13,6 +13,10 @@
 //!    read. Its tree must be the tree being judged. No record, a record naming no commit, a commit
 //!    that does not resolve, or a commit whose tree differs from HEAD's is a BLOCK: the audit the
 //!    spec asks for has not been made on this candidate, and an audit of another tree is not one.
+//!    The one path that may differ is the record itself. The record is committed in the tree it
+//!    judges and names a commit by its id. A commit cannot contain its own id, so the record can
+//!    never be on the commit it names. Every other path, the audit ledger included, must be
+//!    byte-identical to the candidate's.
 //! 2. **THE AUDIT'S OWN FINDINGS.** Each finding the auditor recorded carries a severity (BLOCK,
 //!    HIGH, MEDIUM, LOW), a scope, its evidence and the Law or DESIGN line it is graded against. An
 //!    open BLOCK fails the audit. A finding is closed only with the change that closed it named.
@@ -97,6 +101,7 @@ pub fn main(root: &Path, args: &[String]) -> i32 {
         record_path: &display_rel(root, &record),
         record_text: record_text.as_deref(),
         tree_of: &|c: &str| rev(root, &format!("{c}^{{tree}}")),
+        changed: &|c: &str| changed_paths(root, c),
         ledger,
     });
 
@@ -155,6 +160,35 @@ fn rev(root: &Path, spec: &str) -> Option<String> {
     (out.status.success() && !s.is_empty()).then_some(s)
 }
 
+/// Every path whose blob differs between commit `c` and HEAD. This includes paths that one side
+/// has and the other lacks. Returns `None` when git cannot answer.
+fn changed_paths(root: &Path, c: &str) -> Option<Vec<String>> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "diff-tree",
+            "-r",
+            "-z",
+            "--no-renames",
+            "--name-only",
+            c,
+            "HEAD",
+        ])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(
+        out.stdout
+            .split(|b| *b == 0)
+            .filter(|p| !p.is_empty())
+            .map(|p| String::from_utf8_lossy(p).into_owned())
+            .collect(),
+    )
+}
+
 /// What the audit ledger's `--check` found, reduced to what the record carries.
 pub struct LedgerView {
     pub red: bool,
@@ -199,6 +233,8 @@ pub struct Inputs<'a> {
     pub record_text: Option<&'a str>,
     /// The tree of a commit, or `None` when it does not resolve.
     pub tree_of: &'a dyn Fn(&str) -> Option<String>,
+    /// The paths whose blobs differ between a commit and HEAD, or `None` when git cannot say.
+    pub changed: &'a dyn Fn(&str) -> Option<Vec<String>>,
     pub ledger: Result<LedgerView, String>,
 }
 
@@ -324,19 +360,54 @@ pub fn judge(inp: &Inputs<'_>) -> Report {
                     }
                     (Some(t), Some(h)) if t == h => true,
                     (Some(t), h) => {
-                        findings.push(finding(
-                            "BLOCK",
-                            "q128",
-                            inp.record_path,
-                            "the audit was made on another tree",
-                            &format!(
-                                "candidate {c} has tree {t}; HEAD {} has tree {}: the audit expired when the code moved",
-                                inp.head.unwrap_or("?"),
-                                h.unwrap_or("?")
-                            ),
-                            CITE,
-                        ));
-                        false
+                        // THE RECORD IS THE ONE PATH ALLOWED TO DIFFER. It names the candidate by
+                        // id, so it cannot be inside the candidate's tree. Any other path that
+                        // moved, or a git that cannot list what moved, keeps this a BLOCK.
+                        let moved = (inp.changed)(c);
+                        let only_record = h.is_some()
+                            && moved.as_ref().is_some_and(|ps| {
+                                !ps.is_empty() && ps.iter().all(|p| p == inp.record_path)
+                            });
+                        if only_record {
+                            audit["differs_only_in_record"] = json!(true);
+                            true
+                        } else {
+                            let what = match &moved {
+                                None => "git could not list the paths that differ".to_string(),
+                                Some(ps) => {
+                                    let other: Vec<&str> = ps
+                                        .iter()
+                                        .map(String::as_str)
+                                        .filter(|p| *p != inp.record_path)
+                                        .collect();
+                                    let shown: Vec<&str> = other.iter().take(10).copied().collect();
+                                    let more = other.len().saturating_sub(shown.len());
+                                    format!(
+                                        "{} path(s) other than the record differ: {}{}",
+                                        other.len(),
+                                        shown.join(", "),
+                                        if more > 0 {
+                                            format!(" and {more} more")
+                                        } else {
+                                            String::new()
+                                        }
+                                    )
+                                }
+                            };
+                            findings.push(finding(
+                                "BLOCK",
+                                "q128",
+                                inp.record_path,
+                                "the audit was made on another tree",
+                                &format!(
+                                    "candidate {c} has tree {t}; HEAD {} has tree {}; {what}: the audit expired when the code moved",
+                                    inp.head.unwrap_or("?"),
+                                    h.unwrap_or("?")
+                                ),
+                                CITE,
+                            ));
+                            false
+                        }
                     }
                 },
             };
@@ -521,6 +592,13 @@ mod tests {
     const HEAD: &str = "1111111111111111111111111111111111111111";
     const TREE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const OTHER: &str = "2222222222222222222222222222222222222222";
+    /// A candidate whose tree differs from HEAD's in the record alone: the commit the auditor read,
+    /// with the record committed on top of it.
+    const READ: &str = "4444444444444444444444444444444444444444";
+    /// A candidate whose tree differs in the record and in the ledger.
+    const READ_THEN_LEDGER: &str = "5555555555555555555555555555555555555555";
+    /// A candidate whose differing paths git cannot list.
+    const UNLISTED: &str = "6666666666666666666666666666666666666666";
 
     fn clean_ledger() -> Result<LedgerView, String> {
         Ok(LedgerView {
@@ -536,6 +614,22 @@ mod tests {
         match c {
             HEAD => Some(TREE.to_string()),
             OTHER => Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()),
+            READ => Some("cccccccccccccccccccccccccccccccccccccccc".to_string()),
+            READ_THEN_LEDGER => Some("dddddddddddddddddddddddddddddddddddddddd".to_string()),
+            UNLISTED => Some("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee".to_string()),
+            _ => None,
+        }
+    }
+
+    fn changed(c: &str) -> Option<Vec<String>> {
+        let v = |ps: &[&str]| -> Option<Vec<String>> {
+            Some(ps.iter().map(|p| p.to_string()).collect())
+        };
+        match c {
+            HEAD => v(&[]),
+            OTHER => v(&["crates/x/src/lib.rs", RECORD_REL]),
+            READ => v(&[RECORD_REL]),
+            READ_THEN_LEDGER => v(&["qa/audit-ledger.json", RECORD_REL]),
             _ => None,
         }
     }
@@ -547,6 +641,7 @@ mod tests {
             record_path: RECORD_REL,
             record_text: record,
             tree_of: &tree_of,
+            changed: &changed,
             ledger,
         })
     }
@@ -594,6 +689,46 @@ mod tests {
             clean_ledger(),
         );
         assert_eq!(titles(&r, "BLOCK"), ["the audited commit does not resolve"]);
+    }
+
+    #[test]
+    fn the_record_is_the_one_path_that_may_differ_from_the_candidate() {
+        // The record is committed after the reading and names the commit it read, so the tree
+        // that carries it can never be the candidate's tree. Before this rule no committed record
+        // could pass.
+        let r = run(Some(&record(&format!("\"{READ}\""), "[]")), clean_ledger());
+        assert_eq!(r.verdict(), "PASS", "{:#}", r.json);
+        assert_eq!(r.json["audit"]["on_this_tree"], true);
+        assert_eq!(r.json["audit"]["differs_only_in_record"], true);
+
+        // Any other path that moved, the audit ledger included, is another tree.
+        for c in [OTHER, READ_THEN_LEDGER] {
+            let r = run(Some(&record(&format!("\"{c}\""), "[]")), clean_ledger());
+            assert_eq!(
+                titles(&r, "BLOCK"),
+                ["the audit was made on another tree"],
+                "{c}"
+            );
+            assert_eq!(r.json["audit"]["on_this_tree"], false, "{c}");
+            let ev = r.findings[0]["evidence"].as_str().unwrap_or("");
+            assert!(
+                ev.contains("1 path(s) other than the record differ"),
+                "{ev}"
+            );
+            assert!(!ev.contains(RECORD_REL), "{ev}");
+        }
+
+        // A git that cannot list what moved is never read as "only the record".
+        let r = run(
+            Some(&record(&format!("\"{UNLISTED}\""), "[]")),
+            clean_ledger(),
+        );
+        assert_eq!(titles(&r, "BLOCK"), ["the audit was made on another tree"]);
+        let ev = r.findings[0]["evidence"].as_str().unwrap_or("");
+        assert!(
+            ev.contains("git could not list the paths that differ"),
+            "{ev}"
+        );
     }
 
     #[test]

@@ -50,7 +50,7 @@ use busbar_contract::conn::InstanceId;
 
 use super::plugin::{is_lifecycle, Crossed, Instance, Plugin};
 use super::services::{HostServices, Served, ServiceStore};
-use super::ticket::{decode, encode, recycled_generation, WakeRoute, MAX_INDEX, MAX_WORKERS};
+use super::ticket::{decode, encode, WakeRoute, MAX_INDEX, MAX_WORKERS};
 use super::{in_head, now_ns, out_head, watchdog, DriveFrame, Frame, InFrame, Kind, OutFrame};
 
 /// The longest a crossing may take before the watchdog faults it, per class. A crossing never
@@ -104,7 +104,26 @@ pub struct DispatchConfig {
     pub budgets: Budgets,
     /// How often the watchdog looks.
     pub watchdog_period: Duration,
+    /// THE QUARANTINE COUNT, N (THE DESIGN A.8): the breaches of the watch budget an instance
+    /// survives before it is quarantined. Every breach replaces its worker and settles the hung
+    /// op as FAULT; the Nth also quarantines the instance — every new call answers FAULT without a
+    /// crossing (a hook's caller goes to its `on_error`, and the hook door's timed trial brings a
+    /// fresh instance back, R2), with a diagnostic and `bb_plugin_quarantined_total`. Clamped to
+    /// at least 1; the default [`DEFAULT_QUARANTINE_AFTER`] quarantines on the first breach.
+    pub quarantine_after: u32,
 }
+
+/// The default [`DispatchConfig::quarantine_after`]: the first breach quarantines, as before the
+/// count existed.
+pub const DEFAULT_QUARANTINE_AFTER: u32 = 1;
+
+/// The quarantine counter's exposition name (THE DESIGN A.8): [`DispatchStats::quarantined`], the
+/// process's sum over every plugin.
+pub const QUARANTINED_TOTAL: &str = "bb_plugin_quarantined_total";
+
+/// The lost-wake counter's exposition name (THE DESIGN A.4.3):
+/// [`DispatchStats::deadline_without_wake`].
+pub const DEADLINE_WITHOUT_WAKE_TOTAL: &str = "bb_deadline_without_wake_total";
 
 impl Default for DispatchConfig {
     fn default() -> Self {
@@ -112,6 +131,7 @@ impl Default for DispatchConfig {
             workers: 1,
             budgets: Budgets::default(),
             watchdog_period: Duration::from_millis(50),
+            quarantine_after: DEFAULT_QUARANTINE_AFTER,
         }
     }
 }
@@ -123,6 +143,9 @@ pub struct DispatchStats {
     pub stale_wakes: u64,
     /// Workers the watchdog replaced.
     pub replacements: u64,
+    /// Instances the watchdog quarantined: `bb_plugin_quarantined_total` (THE DESIGN A.8), the
+    /// process's sum over every plugin.
+    pub quarantined: u64,
     /// WriteBehind ops that completed after their caller stopped waiting.
     pub write_behind_late: u64,
     /// Library unloads still running on their reapers, process-wide: a count that stays up names a
@@ -135,12 +158,44 @@ pub struct DispatchStats {
     /// cancelled, a WriteBehind op's caller released), never woken before it. A door whose every
     /// wait is woken keeps it 0; every conformance script requires 0.
     pub deadline_without_wake: u64,
+    /// Contexts plugins handed the host that it did not mint, process-wide (#74,
+    /// `dispatch::handle`): each inside a crossing quarantined its instance.
+    pub forged_handles: u64,
+    /// The off-crossing latch tripped (#74): nothing resolves outside a crossing any more.
+    pub handles_latched: bool,
+}
+
+/// One `bb_*` counter family the dispatcher exposes: its name, its HELP text and its value.
+pub type CounterFamily = (&'static str, &'static str, u64);
+
+impl DispatchStats {
+    /// EVERY `bb_*` COUNTER these stats hold, one exposition family each (coordinator ruling
+    /// 2026-10-14: the dispatcher's `bb_*` counters are exported through the process's metrics
+    /// path, HELP and TYPE included). The one list the composition root hands the kernel's scrape.
+    #[must_use]
+    pub const fn families(&self) -> [CounterFamily; 2] {
+        [
+            (
+                DEADLINE_WITHOUT_WAKE_TOTAL,
+                "Plugin operations that waited and were settled by their deadline without ever \
+                 being woken; 0 while every plugin wakes what it parks",
+                self.deadline_without_wake,
+            ),
+            (
+                QUARANTINED_TOTAL,
+                "Plugin instances the crossing watchdog quarantined for overrunning their call \
+                 budget, summed over every plugin",
+                self.quarantined,
+            ),
+        ]
+    }
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct Stats {
     stale_wakes: AtomicU64,
     pub(crate) replacements: AtomicU64,
+    pub(crate) quarantined: AtomicU64,
     write_behind_late: AtomicU64,
     driver_kept_high: AtomicU64,
     deadline_without_wake: AtomicU64,
@@ -149,6 +204,8 @@ pub(crate) struct Stats {
 /// What a worker thread needs besides its worker.
 pub(crate) struct Env {
     pub(crate) budgets: Budgets,
+    /// [`DispatchConfig::quarantine_after`], at least 1.
+    pub(crate) quarantine_after: u32,
     pub(crate) stats: Arc<Stats>,
     /// The host services' stored results.
     pub(crate) services: Arc<ServiceStore>,
@@ -169,6 +226,29 @@ pub(crate) struct Env {
     pub(crate) io: std::sync::OnceLock<Arc<dyn busbar_contract::io_host::IoHost>>,
     /// The tickets of ops driven inline on the calling thread (a carrier's connection sides).
     pub(crate) inline: Arc<super::inline::InlineTickets>,
+    /// THE HOST'S OBSERVABILITY of every door this dispatcher binds: the observer and the series
+    /// predicate the host installs on it ([`Dispatcher::observing`]), never a process-global seam.
+    pub(crate) observing: Arc<crate::observe::Observing>,
+    /// The key every worker's ticket generations are permuted under (#74), drawn at the
+    /// dispatcher's boot: no worker exists without it.
+    pub(crate) ticket_key: super::handle::TicketKey,
+    /// The latch a forged ticket with no supplier counts against: the process's, but in a test
+    /// that names its own ([`Dispatcher::judge_against`]).
+    latch: std::sync::OnceLock<&'static super::handle::Latch>,
+    /// THE SEAL THE HOST LENT THIS DISPATCHER (Part 2 #54): what a door it binds presents to read
+    /// a resolved `Secret` it hands a plugin ([`Dispatcher::lend_seal`]). None lent: every such
+    /// reveal is refused.
+    pub(crate) seal:
+        std::sync::OnceLock<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>>,
+}
+
+impl Env {
+    fn latch(&self) -> &'static super::handle::Latch {
+        self.latch
+            .get()
+            .copied()
+            .unwrap_or_else(super::handle::process_latch)
+    }
 }
 
 /// One op's completion.
@@ -491,6 +571,8 @@ pub(crate) struct Driven {
     /// drives `drive` this way, as a wake, THE DESIGN §11.4).
     answers: Mutex<(u64, Option<Outcome>)>,
     answered: Condvar,
+    /// A wake's `drive` ran: the host re-polls `tick` (R-PUSH).
+    woke: tokio::sync::Notify,
 }
 
 impl Driven {
@@ -549,6 +631,16 @@ impl Driven {
         std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()))
     }
 
+    /// A wake of the driver ticket has run its `drive`.
+    fn drove(&self) {
+        self.woke.notify_one();
+    }
+
+    /// Waits until a wake's `drive` has run, once per run; never parks a thread.
+    pub(crate) async fn woken(&self) {
+        self.woke.notified().await;
+    }
+
     /// Every name held, once one is; never parks a thread.
     pub(crate) async fn take(&self) -> Vec<u64> {
         loop {
@@ -579,6 +671,9 @@ enum Action {
 
 #[derive(Default)]
 pub(crate) struct Entry {
+    /// The slot's mint counter (#74): how many times it has been handed out, from 1.
+    pub(crate) count: u32,
+    /// The ticket generation of mint `count`: `handle::ticket_generation(key, worker, idx, count)`.
     pub(crate) generation: u32,
     live: bool,
     latched: bool,
@@ -610,6 +705,10 @@ pub(crate) struct WorkerState {
     pub(crate) entries: Vec<Entry>,
     free: Vec<u32>,
     runnable: VecDeque<u32>,
+    /// The supplier of each forged ticket generation [`Worker::apply`] found, judged by
+    /// [`Worker::judge_forgeries`] once the lock is let go (#74): a quarantine takes the
+    /// instance's own locks and never runs under the worker's.
+    forged: Vec<Option<&'static super::ticket::InstanceWake>>,
 }
 
 pub(crate) enum Msg {
@@ -618,7 +717,8 @@ pub(crate) enum Msg {
         meta: Meta,
         job: Box<dyn Job>,
     },
-    Wake(Ticket),
+    /// A wake for `.0`, supplied by the instance whose handle `.1` is (`None`: the host's own).
+    Wake(Ticket, Option<&'static super::ticket::InstanceWake>),
     DropClient(Ticket),
     Recycle(Ticket),
     Stop,
@@ -635,6 +735,8 @@ pub(crate) struct CrossingRecord {
 /// index.
 pub(crate) struct Worker {
     pub(crate) index: u32,
+    /// The dispatcher's ticket key ([`Env::ticket_key`]).
+    key: super::handle::TicketKey,
     tx: Sender<Msg>,
     pub(crate) state: Mutex<WorkerState>,
     pub(crate) crossing: Mutex<Option<CrossingRecord>>,
@@ -665,18 +767,27 @@ pub(crate) struct Pool {
 
 impl WakeRoute for Pool {
     /// Route a wake to the worker its slot names. Never blocks on the plugin: a channel push.
-    fn wake(&self, t: Ticket) {
+    fn wake(&self, t: Ticket, supplier: Option<&'static super::ticket::InstanceWake>) {
         if super::inline::is_inline(t) {
-            self.env.inline.wake(t);
+            // Judged with the inline table's lock let go (#74): a generation it never minted is
+            // the supplier's forgery.
+            if self.env.inline.wake(t) == super::inline::Judged::Forged {
+                super::handle::forged_ticket(supplier, self.env.latch());
+            }
             return;
         }
         let (w, _) = decode(t.slot);
         match self.slots.get(w as usize) {
             Some(slot) => {
-                let _ = slot.get().tx.send(Msg::Wake(t));
+                // The supplier the caller carried, never the thread's crossing (#74): a wake fires
+                // on whatever thread completes it, inside whichever instance's crossing that is.
+                let _ = slot.get().tx.send(Msg::Wake(t, supplier));
             }
             None => {
+                // A worker this dispatcher does not run minted nothing: a forgery (#74), judged
+                // here, under no lock.
                 self.env.stats.stale_wakes.fetch_add(1, Ordering::Relaxed);
+                super::handle::forged_ticket(supplier, self.env.latch());
             }
         }
     }
@@ -690,6 +801,10 @@ impl WakeRoute for Pool {
 
     fn io(&self) -> Option<Arc<dyn busbar_contract::io_host::IoHost>> {
         self.env.io.get().cloned()
+    }
+
+    fn seal(&self) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
+        self.env.seal.get().cloned()
     }
 
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
@@ -708,23 +823,43 @@ impl Pool {
 }
 
 impl Worker {
-    /// A fresh incarnation at `index`, its slab's generations `gens` (every slot free).
-    pub(crate) fn new(index: u32, gens: Vec<u32>) -> (Arc<Self>, Receiver<Msg>) {
+    /// A fresh incarnation at `index`, its slab's next mint counters `counts`: every slot free
+    /// but a RETIRED one (`None`, [`next_count`]), which is never handed out again.
+    pub(crate) fn new(
+        index: u32,
+        counts: Vec<Option<u32>>,
+        key: super::handle::TicketKey,
+    ) -> (Arc<Self>, Receiver<Msg>) {
         let (tx, rx) = channel();
-        let n = gens.len() as u32;
+        // Lowest index last, so `pop` hands the lowest free slot out first.
+        let mut free: Vec<u32> = counts
+            .iter()
+            .zip(0u32..)
+            .filter_map(|(c, idx)| c.map(|_| idx))
+            .collect();
+        free.reverse();
         let state = WorkerState {
-            entries: gens
+            entries: counts
                 .into_iter()
-                .map(|generation| Entry {
-                    generation,
-                    ..Entry::default()
+                .zip(0u32..)
+                .map(|(count, idx)| match count {
+                    Some(count) => Entry {
+                        count,
+                        generation: super::handle::ticket_generation(key, index, idx, count),
+                        ..Entry::default()
+                    },
+                    None => Entry {
+                        count: u32::MAX,
+                        ..Entry::default()
+                    },
                 })
                 .collect(),
-            free: (0..n).rev().collect(),
+            free,
             ..WorkerState::default()
         };
         let w = Arc::new(Self {
             index,
+            key,
             tx,
             state: Mutex::new(state),
             crossing: Mutex::new(None),
@@ -751,8 +886,10 @@ impl Worker {
         let idx = match st.free.pop() {
             Some(i) => i,
             None if (st.entries.len() as u32) < MAX_INDEX => {
+                let idx = st.entries.len() as u32;
                 st.entries.push(Entry {
-                    generation: 1,
+                    count: 1,
+                    generation: super::handle::ticket_generation(self.key, self.index, idx, 1),
                     ..Entry::default()
                 });
                 st.entries.len() as u32 - 1
@@ -767,6 +904,19 @@ impl Worker {
         e.driver = driver;
         let generation = e.generation;
         Some(self.ticket(idx, generation))
+    }
+
+    /// Whether `t` is a ticket this worker's slab ever handed out: its slot exists and its generation
+    /// is the image of a count the slot has reached (`NONE`, generation 0, is a stale wake by rule).
+    fn ever_minted(&self, st: &WorkerState, t: Ticket) -> bool {
+        if t.generation == 0 {
+            return true;
+        }
+        let (_, idx) = decode(t.slot);
+        st.entries.get(idx as usize).is_some_and(|e| {
+            let c = super::handle::ticket_count(self.key, self.index, idx, t.generation);
+            c >= 1 && c <= e.count
+        })
     }
 
     /// The live entry `t` names on this worker, if its generation is current.
@@ -818,9 +968,15 @@ impl Worker {
                 // A stale or foreign ticket: `meta` drops and settles FAULT.
                 _ => drop(meta),
             },
-            Msg::Wake(t) => match self.entry(st, t) {
+            Msg::Wake(t, supplier) => match self.entry(st, t) {
                 None => {
                     env.stats.stale_wakes.fetch_add(1, Ordering::Relaxed);
+                    // A generation this slot really minted is a late wake (H2: dropped, never an
+                    // error). One it never minted is a forgery (#74): the generation is a keyed
+                    // permutation of the slot's counter, so its inverse names the mint it would be.
+                    if !self.ever_minted(st, t) {
+                        st.forged.push(supplier);
+                    }
                 }
                 Some((idx, e)) => {
                     if e.driver.is_some() {
@@ -875,7 +1031,11 @@ impl Worker {
         for id in e.conns.drain(..) {
             super::conn_services::forget(id, ticket);
         }
-        e.generation = recycled_generation(e.generation);
+        let next = next_count(e.count);
+        if let Some(count) = next {
+            e.count = count;
+            e.generation = super::handle::ticket_generation(self.key, self.index, idx, count);
+        }
         e.live = false;
         e.latched = false;
         e.client_dropped = false;
@@ -883,7 +1043,29 @@ impl Worker {
         e.short_slot = None;
         e.next = None;
         e.driver = None;
-        st.free.push(idx);
+        // A slot whose counter is spent is RETIRED: never handed out again, so no generation of
+        // it is ever re-minted; the next mint takes a fresh slot.
+        if next.is_some() {
+            st.free.push(idx);
+        }
+    }
+
+    /// Judge the forged ticket generations [`Worker::apply`] found, with the worker's lock let go
+    /// (#74): each supplier quarantined, a wake with none counted against the process's latch.
+    fn judge_forgeries<'a>(
+        &'a self,
+        mut st: MutexGuard<'a, WorkerState>,
+        env: &Env,
+    ) -> MutexGuard<'a, WorkerState> {
+        if st.forged.is_empty() {
+            return st;
+        }
+        let forged = std::mem::take(&mut st.forged);
+        drop(st);
+        for supplier in forged {
+            super::handle::forged_ticket(supplier, env.latch());
+        }
+        self.lock()
     }
 
     /// The op on `idx` is over: answer it, give back what it held, start the next.
@@ -1186,6 +1368,9 @@ impl Worker {
                     inst.driven.name(frame.named());
                 }
                 inst.driven.answer(c.outcome);
+                if c.outcome != Outcome::Pending {
+                    inst.driven.drove();
+                }
                 let e = &mut st.entries[idx as usize];
                 if e.generation == generation {
                     if let Some(d) = e.driver.as_mut() {
@@ -1240,6 +1425,13 @@ impl Worker {
     }
 }
 
+/// A slot's mint counter after `count`; `None` once it is spent (#74): the generation is a
+/// permutation of the counter, so a counter that wrapped would re-mint a generation the slot
+/// already handed out. A spent slot is RETIRED instead, never handed out again.
+pub(crate) fn next_count(count: u32) -> Option<u32> {
+    count.checked_add(1)
+}
+
 /// THE WORKER LOOP: messages, then timers, then one runnable action; sleep until the next timer
 /// or message.
 pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
@@ -1260,6 +1452,7 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
         while let Ok(m) = rx.try_recv() {
             stop |= !w.apply(&mut st, m, &env);
         }
+        st = w.judge_forgeries(st, &env);
         if stop {
             st.dead = true;
             let gone = Worker::fault_all(&mut st);
@@ -1287,6 +1480,7 @@ pub(crate) fn run(w: Arc<Worker>, rx: Receiver<Msg>, env: Arc<Env>) {
                     drop(gone);
                     return;
                 }
+                st = w.judge_forgeries(st, &env);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => return,
@@ -1355,6 +1549,14 @@ impl Adopter {
         Self { pool: Weak::new() }
     }
 
+    /// The host's observability of the dispatcher this adopter belongs to; `None` when it adopts
+    /// for no dispatcher (or that one is gone), and the door's back-channel is then dropped.
+    pub(crate) fn observing(&self) -> Option<Arc<crate::observe::Observing>> {
+        self.pool
+            .upgrade()
+            .map(|pool| Arc::clone(&pool.env.observing))
+    }
+
     /// Route `inst`'s wakes to the dispatcher and put it under its watchdog; `false` when the
     /// instance already belongs to another dispatcher (or this one is gone).
     pub(crate) fn adopt(&self, inst: &Arc<Instance>) -> bool {
@@ -1390,20 +1592,67 @@ impl std::fmt::Debug for Dispatcher {
 impl Dispatcher {
     /// Workers and a watchdog, per `config`, with no host services bound: every service answers
     /// REFUSED.
+    ///
+    /// # Panics
+    ///
+    /// When the OS random source cannot answer the handle key (#74): a boot with no key is refused,
+    /// never run under a weaker one. [`Dispatcher::try_new`] answers the refusal instead.
     pub fn new(config: DispatchConfig) -> Self {
-        Self::build(config, None)
+        Self::try_new(config).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// THE LOADER'S BOOT (#74): the handle key drawn first, then the dispatcher.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
+    pub fn try_new(config: DispatchConfig) -> Result<Self, super::LoadError> {
+        let key = super::handle::ticket_key()?;
+        Ok(Self::build(config, None, key))
     }
 
     /// The connection table's wake: its wake number ([`super::conn_services::conn_ticket`]) routed to
-    /// the worker whose ticket it names. The root hands it to its one connector.
+    /// the worker whose ticket it names, with the caller the table registered it for as the
+    /// ticket's supplier (#74: a forged generation quarantines that instance; the root's own
+    /// identity names none). The root hands it to its one connector.
     #[must_use]
-    pub fn conn_waker(&self) -> Arc<dyn Fn(u64) + Send + Sync> {
+    pub fn conn_waker(&self) -> busbar_contract::conn::ConnWake {
         let pool = Arc::downgrade(&self.pool);
-        Arc::new(move |n| {
+        Arc::new(move |owner, n| {
             if let Some(pool) = pool.upgrade() {
-                pool.wake(super::conn_services::ticket_of(n));
+                pool.wake(
+                    super::conn_services::ticket_of(n),
+                    super::handle::supplier_of(owner),
+                );
             }
         })
+    }
+
+    /// THE HOST'S OBSERVABILITY of the doors this dispatcher binds: the composition root installs
+    /// its plugin observer ([`crate::observe::Observing::install_observer`]) and its own series
+    /// predicate ([`crate::observe::Observing::install_host_series`]) here, before the first door
+    /// binds, and every door's envelope folds through it.
+    #[must_use]
+    pub fn observing(&self) -> &crate::observe::Observing {
+        &self.pool.env.observing
+    }
+
+    /// LEND THIS DISPATCHER THE HOST'S SEAL (Part 2 #54): a kernel-minted `Pass` or `Grant`, what
+    /// a door it binds presents to read a resolved `Secret` it hands a plugin (a verify's
+    /// credential, a login's submitted fields, an outbound caller credential, a secret source's
+    /// material). The composition root lends `busbar_kernel::seal::lend()` on the process's one
+    /// dispatcher at boot. The first lend holds; a later one answers `false`. A dispatcher lent no
+    /// seal REFUSES every such reveal (fail closed).
+    pub fn lend_seal(
+        &self,
+        seal: impl busbar_contract::plugin::KernelSeal + Send + Sync + 'static,
+    ) -> bool {
+        self.pool.env.seal.set(Arc::new(seal)).is_ok()
+    }
+
+    /// The seal this dispatcher was lent, if any ([`Self::lend_seal`]).
+    pub(crate) fn seal(&self) -> Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)> {
+        self.pool.env.seal.get().map(|seal| &**seal)
     }
 
     /// INSTALL THE PROCESS'S RUNTIME every worker runs its crossings inside (see `Env::runtime`):
@@ -1421,26 +1670,72 @@ impl Dispatcher {
     }
 
     /// Workers and a watchdog, per `config`, serving the host services the kernel implements.
+    ///
+    /// # Panics
+    ///
+    /// As [`Dispatcher::new`]; [`Dispatcher::try_with_services`] answers the refusal instead.
     pub fn with_services(config: DispatchConfig, provider: Arc<dyn HostServices>) -> Self {
-        Self::build(config, Some(provider))
+        Self::try_with_services(config, provider).unwrap_or_else(|e| panic!("{e}"))
     }
 
-    fn build(config: DispatchConfig, provider: Option<Arc<dyn HostServices>>) -> Self {
+    /// [`Dispatcher::try_new`], serving `provider`.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
+    pub fn try_with_services(
+        config: DispatchConfig,
+        provider: Arc<dyn HostServices>,
+    ) -> Result<Self, super::LoadError> {
+        let key = super::handle::ticket_key()?;
+        Ok(Self::build(config, Some(provider), key))
+    }
+
+    fn build(
+        config: DispatchConfig,
+        provider: Option<Arc<dyn HostServices>>,
+        ticket_key: super::handle::TicketKey,
+    ) -> Self {
+        let built = Self::build_unlent(config, provider, ticket_key);
+        // This crate's own tests lend the dev-only test seal to every dispatcher they build.
+        #[cfg(test)]
+        let _ = built.lend_seal(busbar_contract::plugin::TestKernelSeal);
+        built
+    }
+
+    /// TEST ONLY: a dispatcher lent NO seal, so every reveal its doors would make is refused (the
+    /// fail-closed arm of [`Self::lend_seal`]).
+    #[cfg(test)]
+    pub(crate) fn new_unlent(config: DispatchConfig) -> Self {
+        let key = super::handle::ticket_key().unwrap_or_else(|e| panic!("{e}"));
+        Self::build_unlent(config, None, key)
+    }
+
+    fn build_unlent(
+        config: DispatchConfig,
+        provider: Option<Arc<dyn HostServices>>,
+        ticket_key: super::handle::TicketKey,
+    ) -> Self {
         // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
         let n = config.workers.clamp(1, MAX_WORKERS - 1);
         let env = Arc::new(Env {
             budgets: config.budgets,
+            quarantine_after: config.quarantine_after.max(1),
             stats: Arc::default(),
             services: Arc::default(),
             provider,
             runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
-            inline: Arc::default(),
+            inline: Arc::new(super::inline::InlineTickets::new(ticket_key)),
+            observing: Arc::default(),
+            ticket_key,
+            latch: std::sync::OnceLock::new(),
+            seal: std::sync::OnceLock::new(),
         });
         let mut started = Vec::new();
         let slots = (0..n)
             .map(|i| {
-                let (w, rx) = Worker::new(i, Vec::new());
+                let (w, rx) = Worker::new(i, Vec::new(), ticket_key);
                 started.push((w.clone(), rx));
                 WorkerSlot {
                     current: RwLock::new(w),
@@ -1477,10 +1772,13 @@ impl Dispatcher {
         DispatchStats {
             stale_wakes: s.stale_wakes.load(Ordering::Relaxed),
             replacements: s.replacements.load(Ordering::Relaxed),
+            quarantined: s.quarantined.load(Ordering::Relaxed),
             write_behind_late: s.write_behind_late.load(Ordering::Relaxed),
             live_reapers: super::load::live_reapers(),
             driver_kept_high: s.driver_kept_high.load(Ordering::Relaxed),
             deadline_without_wake: s.deadline_without_wake.load(Ordering::Relaxed),
+            forged_handles: super::handle::forged(),
+            handles_latched: super::handle::latched(),
         }
     }
 
@@ -1529,6 +1827,56 @@ impl Dispatcher {
     #[cfg(test)]
     pub(crate) fn service_store(&self) -> Arc<ServiceStore> {
         Arc::clone(&self.pool.env.services)
+    }
+
+    /// TEST ONLY: a forged ticket with no supplier counts against `latch`, not the process's.
+    #[cfg(test)]
+    pub(crate) fn judge_against(&self, latch: &'static super::handle::Latch) {
+        assert!(
+            self.pool.env.latch.set(latch).is_ok(),
+            "one latch per dispatcher"
+        );
+    }
+
+    /// TEST ONLY: live ticket `t`'s slot as if handed out `count` times; its ticket at that count.
+    #[cfg(test)]
+    pub(crate) fn seed_count(&self, t: Ticket, count: u32) -> Ticket {
+        let (wi, idx) = decode(t.slot);
+        let w = self.worker(wi).expect("the ticket's worker");
+        let mut st = w.lock();
+        let e = &mut st.entries[idx as usize];
+        assert!(e.live, "a live ticket");
+        e.count = count;
+        e.generation = super::handle::ticket_generation(w.key, wi, idx, count);
+        w.ticket(idx, e.generation)
+    }
+
+    /// TEST ONLY: `t`'s slot as `(live, free, count)` (test witness of a recycle and a retirement).
+    #[cfg(test)]
+    pub(crate) fn slot_state(&self, t: Ticket) -> (bool, bool, u32) {
+        let (wi, idx) = decode(t.slot);
+        let w = self.worker(wi).expect("the ticket's worker");
+        let st = w.lock();
+        let e = &st.entries[idx as usize];
+        (e.live, st.free.contains(&idx), e.count)
+    }
+
+    /// TEST ONLY: the inline tickets, shared, for a test that mints from inside a hook.
+    #[cfg(test)]
+    pub(crate) fn inline_tickets_arc(&self) -> Arc<super::inline::InlineTickets> {
+        Arc::clone(&self.pool.env.inline)
+    }
+
+    /// TEST ONLY: the inline tickets, for a test that seeds a slot's counter.
+    #[cfg(test)]
+    pub(crate) fn inline_tickets(&self) -> &super::inline::InlineTickets {
+        &self.pool.env.inline
+    }
+
+    /// TEST ONLY: the dispatcher's ticket key.
+    #[cfg(test)]
+    pub(crate) fn ticket_key(&self) -> super::handle::TicketKey {
+        self.pool.env.ticket_key
     }
 
     /// Whether an op on `t` is pending (test witness: it has crossed and answered PENDING).
@@ -1668,6 +2016,38 @@ impl Dispatcher {
         )
     }
 
+    /// [`Dispatcher::submit_lent`] for an op of an ADMITTED UNIT, on the request ticket the unit
+    /// minted and reuses for all its ops (`BUSBAR-1.6.0.md` A.4.1: "A request or stream mints one
+    /// ticket and reuses it for all its ops"): a plane unit's `on_piece` and `serve`. Like an op on
+    /// a driver ticket it holds no `max_inflight` unit, so it is never REFUSED for the instance's
+    /// cap: the unit was admitted when it arrived, it has at most one op in flight (its pump awaits
+    /// each), and a piece refused mid-answer would cut a stream already answered to its caller.
+    /// Everything else is [`Dispatcher::submit_lent`]'s: the instance's own refusals, the drain
+    /// count, the lent memory and the watchdog.
+    #[allow(clippy::too_many_arguments)] // `submit_lent`'s seven
+    pub(crate) fn submit_unit<K: Kind, I: InFrame, O: OutFrame>(
+        &self,
+        plugin: &Plugin<K>,
+        ticket: Ticket,
+        s: u32,
+        frame: Frame<I, O>,
+        class: DeadlineClass,
+        deadline_ns: u64,
+        lent: Lent,
+    ) -> Reply<I, O> {
+        self.submit_with(
+            plugin,
+            ticket,
+            s,
+            frame,
+            class,
+            deadline_ns,
+            Some(lent),
+            Duration::ZERO,
+            true,
+        )
+    }
+
     /// `tick` at `now_ns` on `driver`, the instance's driver ticket ([`Dispatcher::driver`]). The
     /// head carries `driver`, so a service that pends inside `tick` registers on it and its wake
     /// calls `drive`. Outside `max_inflight`, as every op on a driver ticket: it never holds a
@@ -1731,7 +2111,8 @@ impl Dispatcher {
         if lifecycle && !inst.enter_lifecycle() {
             return Reply::settled(Outcome::Refused, frame);
         }
-        // An op on a driver ticket holds no `max_inflight` unit.
+        // An op on a driver ticket, or of an admitted unit ([`Dispatcher::submit_unit`]), holds no
+        // `max_inflight` unit.
         let Some(units) = (if driven { Some(0) } else { inst.acquire(s) }) else {
             // Over the cap, or `close` while other ops are in flight: REFUSED, never called.
             if lifecycle {

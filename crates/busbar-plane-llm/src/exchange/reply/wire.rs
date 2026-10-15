@@ -110,12 +110,13 @@ pub fn ingress_relayed_response_header_names(ingress: &str) -> &'static [&'stati
 /// one was captured, else a minted one; `None` for a dialect that carries none.
 #[must_use]
 pub fn response_request_id(
+    host: &dyn busbar_contract::codec::CodecHost,
     ingress: &str,
     upstream_request_id: Option<&str>,
 ) -> Option<(&'static str, String)> {
     decl(ingress)
         .and_then(|d| d.dialect())
-        .and_then(|di| di.ingress_response_request_id(upstream_request_id))
+        .and_then(|di| di.ingress_response_request_id(host, upstream_request_id))
 }
 
 /// The first value of the head field `name` in `head`, the name matched in any case.
@@ -209,6 +210,7 @@ pub fn cross_protocol_error(status: u16, bytes: &[u8]) -> (&'static str, String)
 /// bare `data:` frame.
 #[must_use]
 pub fn mid_stream_error_bytes(
+    host: &dyn busbar_contract::codec::CodecHost,
     ingress: &str,
     ingress_eventstream: bool,
     message: &str,
@@ -223,13 +225,13 @@ pub fn mid_stream_error_bytes(
         return agnostic_stream_error_frame(message);
     };
     if ingress_eventstream {
-        if let Some((exc_name, msg)) = dialect.write_response_exception(&err) {
+        if let Some((exc_name, msg)) = dialect.write_response_exception(host, &err) {
             return crate::codec::eventstream::encode_exception_frame(&exc_name, &msg);
         }
     }
     let frame = translate
-        .and_then(|t| t.terminal_error_frame(&err))
-        .or_else(|| dialect.write_error_frame(&err));
+        .and_then(|t| t.terminal_error_frame(host, &err))
+        .or_else(|| dialect.write_error_frame(host, &err));
     match frame {
         Some((event_type, data)) => {
             let data = crate::codec::json::to_string(&data).unwrap_or_else(|_| {
@@ -332,8 +334,12 @@ pub fn open_units_of(usage: &Option<Billing>) -> BTreeMap<String, u64> {
 /// Whether the far end reported this whole answer's generation as failed: its dialect's reader
 /// reads the stop reason as the error reason. A body the reader refuses answers `false`.
 #[must_use]
-pub fn generation_failed(egress: &str, rv: &Value) -> bool {
-    crate::codec::proto_codec::with_reader(egress, |r| r.read_response(rv))
+pub fn generation_failed(
+    host: &dyn busbar_contract::codec::CodecHost,
+    egress: &str,
+    rv: &Value,
+) -> bool {
+    crate::codec::proto_codec::with_reader(egress, |r| r.read_response(host, rv))
         .and_then(Result::ok)
         .is_some_and(|ir| ir.stop_reason == Some(crate::codec::ir::IrStopReason::Error))
 }

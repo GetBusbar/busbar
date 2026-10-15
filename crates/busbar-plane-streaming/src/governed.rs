@@ -1,27 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE GOVERNED-CALL PORT — how a client-served tool call's reply reaches the node's own table.
+//! THE GOVERNED-CALL PORT — how a tool call's reply reaches the node's own table.
 //!
-//! Two kinds of tool call cross a live session, and they end in different places.
+//! A tool call is part of the model's response: the session relays it to the caller as-is, the
+//! caller runs the tool, and busbar executes nothing (Law 11; QUESTIONS Q98). The answer can only
+//! come from the caller, so the call's leg is a *wait*, and a wait belongs to the unit the kernel
+//! opened for the call — not to the session. The node holds that table ([`crate::open_calls`]): it
+//! enters the wait when the session relays the call's close, wakes it when a reply names the call,
+//! and sweeps the ones nobody answered. The session's whole job is to be the thing that *tells* it,
+//! and this port is that telling, dependency-inverted because a plane crate that named the
+//! composition root would be the I/O half deciding which unit an answer belongs to.
 //!
-//! A call for a tool **this node serves** is the tool moat the design is built around
-//! (the tool-moat section of `BUSBAR-1.6.0.md` #18/#45): the runtime accumulates the streamed arguments, executes the
-//! tool in-process through `busbar_voice::runtime::ToolExecutor`, and authors the `function_call_output`
-//! itself. The client never sees it and could not forge it. Nothing about that path changes here.
-//!
-//! A call for a tool the node **does not** serve is the other half: the answer can only come from the
-//! client, so the call's leg is a *wait*, and a wait belongs to the unit the kernel opened for the
-//! call — not to the runtime. The root holds that table (`OpenToolCalls` on the voice node): it
-//! enters the wait when the runtime plans the leg, wakes it when a reply names the call, and sweeps
-//! the ones nobody answered. The runtime's whole job is to be the thing that *tells* it — and this port
-//! is that telling, dependency-inverted the same way `busbar_voice::runtime::ToolExecutor` is, because a
-//! plane crate that named the composition root would be the I/O half deciding which unit an answer
-//! belongs to.
-//!
-//! A node with no governed table bound keeps the pre-1.6.0 behaviour exactly: every call is served
-//! in-process, and a client-authored result is carried upstream verbatim. The governed path is what a
-//! composition root opts a session into.
+//! A session with no table bound carries a caller-authored result upstream verbatim.
 
 /// Why a client's tool reply woke nothing.
 ///

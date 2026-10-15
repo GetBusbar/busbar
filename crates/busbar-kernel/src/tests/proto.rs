@@ -89,14 +89,14 @@ mod registry_fold {
         frame_after_message_start: None,
         reshapes_body_at_path_base: false,
         max_cache_control_breakpoints: None,
-        quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+        quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
         ingress_is_eventstream: false,
         emits_sse_done_terminator: false,
         max_citations_per_delta: None,
         egress_user_agent: busbar_contract::protocol::EGRESS_UA_DEFAULT,
         has_model_in_url: false,
         auth_failure_status_and_kind: (
-            busbar_contract::http::StatusCode::UNAUTHORIZED,
+            busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
             busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
         ),
         ingress_relays_amzn_headers: false,
@@ -150,6 +150,7 @@ mod registry_fold {
         }
         fn read_response(
             &self,
+            _host: &dyn busbar_contract::codec::CodecHost,
             wire: &[u8],
         ) -> Result<Box<dyn busbar_contract::ir::handle::IrHandle>, CodecError> {
             let text = std::str::from_utf8(wire)
@@ -184,6 +185,7 @@ mod registry_fold {
         }
         fn write_ingress_response(
             &self,
+            _host: &dyn busbar_contract::codec::CodecHost,
             _ingress_protocol: &str,
             _ingress_serves_op: bool,
         ) -> busbar_contract::codec::TranslatedResponse {
@@ -245,10 +247,10 @@ mod registry_fold {
         // The write inverted onto the handle (G6 A4b): the cell's handle writes its own telex wire.
         assert_eq!(&ir.write_egress_request_bytes("telex", "")[..], b"TO paris");
         let resp = cell
-            .read_response(b"REGISTERED paris")
+            .read_response(crate::proto::CODEC_HOST, b"REGISTERED paris")
             .expect("its cell reads its own response");
         let busbar_contract::codec::TranslatedResponse::Typed(out) =
-            resp.write_ingress_response("telex", true)
+            resp.write_ingress_response(crate::proto::CODEC_HOST, "telex", true)
         else {
             panic!("telex response writes a typed body");
         };
@@ -304,14 +306,14 @@ mod registry_fold {
             frame_after_message_start: None,
             reshapes_body_at_path_base: false,
             max_cache_control_breakpoints: None,
-            quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+            quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
             ingress_is_eventstream: false,
             emits_sse_done_terminator: false,
             max_citations_per_delta: None,
             egress_user_agent: busbar_contract::protocol::EGRESS_UA_DEFAULT,
             has_model_in_url: false,
             auth_failure_status_and_kind: (
-                busbar_contract::http::StatusCode::UNAUTHORIZED,
+                busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
                 busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
             ),
             ingress_relays_amzn_headers: false,

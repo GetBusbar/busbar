@@ -94,7 +94,55 @@ pub enum DrainStatus {
 /// cross-protocol path, which re-encodes and needs no verbatim copy.
 pub fn drain_frames_checked(
     buf: &mut Vec<u8>,
+    consumed_sink: Option<&mut Vec<u8>>,
+) -> (Vec<(String, Vec<u8>)>, DrainStatus, usize) {
+    drain_frames_counted(buf, consumed_sink, &mut DrainWork::default())
+}
+
+/// The work one drain pass did on its buffer, counted where it is done — the measure the
+/// complexity test holds the drain to, instead of wall-clock time (Law 8: a measurement under a
+/// shared load must count work units, not time).
+///
+/// `scanned` is the bytes walked as complete frames; `edits` the buffer edits; `shifted` the bytes
+/// those edits moved (a front `drain` memmoves the whole remaining tail). EVERY edit of the drained
+/// buffer goes through [`consume_front`] / [`clear_all`], which count it, so a pass that edits per
+/// frame shows up as `edits == frames` and a `shifted` quadratic in the frame count.
+// Production passes discard the count; only the complexity test reads it.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct DrainWork {
+    pub frames: usize,
+    pub scanned: usize,
+    pub edits: usize,
+    pub shifted: usize,
+}
+
+impl DrainWork {
+    /// Every byte the pass touched: walked as frames, plus moved by an edit.
+    #[cfg(test)]
+    pub(crate) fn total(&self) -> usize {
+        self.scanned + self.shifted
+    }
+}
+
+/// Remove the first `n` bytes of `buf`, counting the edit and the tail bytes it moves.
+fn consume_front(buf: &mut Vec<u8>, n: usize, work: &mut DrainWork) {
+    work.edits += 1;
+    work.shifted += buf.len() - n;
+    buf.drain(..n);
+}
+
+/// Empty `buf`, counting the edit (it moves nothing).
+fn clear_all(buf: &mut Vec<u8>, work: &mut DrainWork) {
+    work.edits += 1;
+    buf.clear();
+}
+
+/// [`drain_frames_checked`], counting its buffer work into `work`.
+pub(crate) fn drain_frames_counted(
+    buf: &mut Vec<u8>,
     mut consumed_sink: Option<&mut Vec<u8>>,
+    work: &mut DrainWork,
 ) -> (Vec<(String, Vec<u8>)>, DrainStatus, usize) {
     let mut out = Vec::new();
     let mut status = DrainStatus::Ok;
@@ -137,14 +185,14 @@ pub fn drain_frames_checked(
             sink.extend_from_slice(&rem[..total_len]);
         }
         pos += total_len;
+        work.frames += 1;
+        work.scanned += total_len;
     }
     // Malformed: the stream is unrecoverable, so the valid prefix AND the remainder both go —
     // `valid_consumed` still reports only the prefix, exactly as before.
     match status {
-        DrainStatus::Ok => {
-            buf.drain(..pos);
-        }
-        DrainStatus::MalformedPrelude => buf.clear(),
+        DrainStatus::Ok => consume_front(buf, pos, work),
+        DrainStatus::MalformedPrelude => clear_all(buf, work),
     }
     (out, status, pos)
 }

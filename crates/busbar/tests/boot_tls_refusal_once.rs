@@ -11,10 +11,11 @@
 //! '<addr>': TLS configuration error for '<addr>': …`. This boots the real binary on the oracle's own
 //! mutation (non-PEM bytes resolved from the environment) and counts the prefix.
 //!
-//! The fixture is an LLM config (`providers:`/`models:`/`pools:`), so it needs the LLM plane in the
-//! build: without `proto-llm` no plane owns those sections and boot refuses them before the listener
-//! is ever reached — the same gate every LLM-config boot test in `cli_validate.rs` carries.
-#![cfg(all(unix, linked_axis_body_ingress))]
+//! The fixture is a node-plane config (`providers:`/`models:`/`pools:`), so it needs that plane in
+//! the build: without the door that declares `pools:` no plane owns those sections and boot refuses
+//! them before the listener is ever reached — the same gate every such boot test in `cli_validate.rs`
+//! carries.
+#![cfg(all(unix, linked_section_pools))]
 
 mod common;
 

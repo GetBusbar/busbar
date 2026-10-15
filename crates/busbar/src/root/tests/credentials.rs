@@ -56,18 +56,18 @@ fn the_credential_read_follows_the_app_swap() {
     let creds = AppCredentials::new(Arc::clone(&handle));
     let (s, live) = creds.read(&kind, &old_id);
     assert_eq!(
-        (s.expose_secret().as_str(), live),
+        (s.expose(&busbar_kernel::seal::lend()).as_str(), live),
         (old_secret.as_str(), true)
     );
     handle.swap(TestApp::new().governance(second).build());
     let (s, live) = creds.read(&kind, &new_id);
     assert_eq!(
-        (s.expose_secret().as_str(), live),
+        (s.expose(&busbar_kernel::seal::lend()).as_str(), live),
         (new_secret.as_str(), true)
     );
     let (s, live) = creds.read(&kind, &old_id);
     assert_eq!(
-        (s.expose_secret().as_str(), live),
+        (s.expose(&busbar_kernel::seal::lend()).as_str(), live),
         (busbar_kernel::auth::DUMMY_SECRET, false),
         "a removed id is no longer live"
     );
@@ -162,8 +162,8 @@ impl HostServices for Inner {
 struct Source;
 impl RootCredentials for Source {}
 impl CredentialRead for Source {
-    fn read(&self, kind: &str, id: &str) -> (busbar_contract::redacted::Redacted<String>, bool) {
-        let secret = busbar_contract::redacted::Redacted::new(format!("{kind}:{id}"));
+    fn read(&self, kind: &str, id: &str) -> (busbar_contract::redacted::Secret<String>, bool) {
+        let secret = busbar_contract::redacted::Secret::new(format!("{kind}:{id}"));
         (secret, id.starts_with("live"))
     }
 }

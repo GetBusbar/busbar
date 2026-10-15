@@ -4,7 +4,7 @@
 //! THE SECOND DIALECT — Google **Gemini Live** (`BidiGenerateContent`), mapped to/from the SAME
 //! shared voice IR that [`super::OpenAiRealtimeCodec`] targets. Design `BUSBAR-1.6.0.md` #18/#45.
 //!
-//! This is the codec that turns busbar-voice into a real voice *translator*: a Gemini-Live wire event
+//! This is the codec that turns the streaming plane into a real voice *translator*: a Gemini-Live wire event
 //! is decoded into the plane-owned IR ([`IrClientEvent`] / [`IrServerEvent`]), and the OpenAI codec
 //! (or this one) re-frames that IR onto its own wire. Earning a cross-dialect superset IR is exactly
 //! what a SECOND dialect does — the A2A discipline (a plane earns a superset at its second wire format,

@@ -350,6 +350,22 @@ pub fn is_scope_field(name: &[u8]) -> bool {
     name.eq_ignore_ascii_case(SCOPE_REQUEST_FIELD.as_bytes())
 }
 
+/// THE REQUEST FIELD BY WHICH A PLUGIN WAIVES ITS MEMBER'S BINDING FOR ONE REQUEST: a field of this
+/// name in a request bound for the far end (a plane's attempt answer, a request it writes on its own
+/// need) is the host's, never the far end's, exactly as [`SCOPE_REQUEST_FIELD`] is. The host takes
+/// it out of the request before anything is encoded, and a request that carried it is opened with
+/// NO member auth: the member's binding is not called and none of its fields are sent. Its value is
+/// not read. A plugin can only waive a binding through it, never add or choose one, so it widens
+/// nothing; no wire ever carries it.
+pub const NO_MEMBER_AUTH_FIELD: &str = "busbar-no-member-auth";
+
+/// Whether the request field `name` is [`NO_MEMBER_AUTH_FIELD`] (a field name compares
+/// case-insensitively).
+#[must_use]
+pub fn is_no_member_auth_field(name: &[u8]) -> bool {
+    name.eq_ignore_ascii_case(NO_MEMBER_AUTH_FIELD.as_bytes())
+}
+
 /// The extensions blob a request's stated `scope` is lent to its auth call in: one [`EXT_SCOPE`]
 /// entry; empty (absent) when the request stated none.
 #[must_use]

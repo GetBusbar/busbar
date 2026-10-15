@@ -58,7 +58,13 @@ fn translate(
     };
     let cap = WarnCapture::default();
     let out = tracing::subscriber::with_default(cap.clone(), || {
-        handler.translate_request(TranslateReqInput::Json(body), Some(egress), &prep, "m")
+        handler.translate_request(
+            crate::codec::test_host::HOST,
+            TranslateReqInput::Json(body),
+            Some(egress),
+            &prep,
+            "m",
+        )
     });
     let Ok(out) = out else {
         panic!("{ingress} -> {egress}: the request must translate");

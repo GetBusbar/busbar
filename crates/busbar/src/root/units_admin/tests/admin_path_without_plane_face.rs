@@ -1167,6 +1167,9 @@ fn a_q71_node_trusting(
 #[cfg(feature = "root-admin")]
 #[tokio::test]
 async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
+    // The operator audit ring is the process's one: the plane-door cells that decide trust keys
+    // seal rows on it too, so this count runs under the root's admin-surface lock.
+    let _one = crate::root::PUBLISHING.lock().await;
     use busbar_contract::services::{Caller, HostServices, Later};
     use busbar_kernel::host_services::{InstanceFacts, KernelServices};
     use busbar_kernel::trust::book::{Distrust, TrustFacts};
@@ -1200,6 +1203,13 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
         Arc::new(move || Some(Arc::clone(&desk))),
     );
     let op = Some(THE_OPERATORS_CREDENTIAL);
+    // The operator audit ring is the process's one and keeps what earlier tests sealed on it (the
+    // plane-door cells decide trust keys too), so this test counts the rows ITS calls seal: the
+    // ring as it stood before them, held still by the admin-surface lock above.
+    let approvals_before = the_operators_rows_for(&node, "/api/v1/admin/trust/approve")
+        .await
+        .len();
+    let reads_before = the_operators_rows_for(&node, "/api/v1/admin/trust").await;
     let caller = Caller {
         instance: Arc::from("inst"),
         plugin: Arc::from("the-plane"),
@@ -1315,14 +1325,17 @@ async fn the_trust_verbs_decide_over_the_kernels_trust_book() {
     // Audited like every admin write: one row per decision; the read seals none.
     let approvals = the_operators_rows_for(&node, "/api/v1/admin/trust/approve").await;
     assert_eq!(
-        approvals.len(),
+        approvals.len() - approvals_before,
         5,
         "every approval call sealed one row: {approvals:?}"
     );
-    assert!(approvals.iter().all(|(verb, _)| verb == "trust_approve"));
+    // Newest first: this test's five rows lead the page.
+    assert!(approvals[..5]
+        .iter()
+        .all(|(verb, _)| verb == "trust_approve"));
     assert_eq!(
         the_operators_rows_for(&node, "/api/v1/admin/trust").await,
-        Vec::<(String, String)>::new(),
+        reads_before,
         "the read seals nothing"
     );
 }

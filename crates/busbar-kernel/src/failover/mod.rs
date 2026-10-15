@@ -122,79 +122,17 @@
 
 use busbar_kernel::store::LaneRuntime;
 
-// Phase-B B1: the candidate/stage/refusal/admitted/attempt/order/walk_with FAMILY relocated to
-// `busbar-substrate`; this glob keeps `crate::failover::X` resolving for every in-core caller. The
-// serde config type (`CandidatePoolCfg`) and the disposition halves a plugin's dispatch engine drives
-// (`walk`, `record_outcome`, `record_success`) stay here, over `busbar_kernel::store::LaneRuntime`
-// and `crate::breaker`. Glob, so the re-export is never an unused import when a plane consumer is out.
-
-/// ONE POOL OF INTERCHANGEABLE UPSTREAMS, as the operator writes it — the ENTIRE config vocabulary
-/// this feature adds, and it is CORE's rather than a plugin's.
-///
-/// ```yaml
-/// pool_name:                        # one upstream image, deployed twice
-///   members: [instance-a, instance-b]
-///   repeatable: [read_only_operation]  # operations safe to perform TWICE. Default: none.
-/// ```
-///
-/// ## Why it is ONE type shared by every plugin
-///
-/// A pool already means *"these members are interchangeable for this request; use whichever is
-/// healthy"*. That is the same sentence for every resident plugin, so an operator learns the concept
-/// ONCE — a member list keyed by a pool name, referenced by bare name, never crossing a plugin
-/// boundary. Plugin-local copies of this struct would be several grammars for one idea and would
-/// diverge the first time any one of them grew a key; there is one, in core, and each plugin's section
-/// merely says which registry the bare names are resolved against.
-///
-/// ## It is OPT-IN and the default is UNCHANGED
-///
-/// Owner's steer: *"maybe in a config we dont allow it or maybe we dont suggest it be done."* An
-/// absent section is no pools, which is exactly the behaviour of every deployment that exists today:
-/// one registration, one destination, no failover, nothing to reason about. Nothing here turns on by
-/// itself.
-///
-/// ## `repeatable:` is a LIST OF OPERATIONS and there is no key that disables the safety rule
-///
-/// The dangerous half of this feature is repeating a call that already went out, so the declaration
-/// is per OPERATION and enumerated by hand. There is deliberately NO `repeatable: all` and no
-/// `retry: always`: an operator who wants `send_email` repeated has to write `send_email` down next
-/// to the operations they thought about, which is a different act from flipping a switch. See [`Stage`].
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
-#[serde(deny_unknown_fields)] // a typo'd key must fail boot, not silently un-declare a safety rule.
-pub struct CandidatePoolCfg {
-    /// The interchangeable registrations, by bare name, resolved against whichever registry the
-    /// owning plugin keeps its own registrations in. ORDERED: the first is the
-    /// PRIMARY, and its approved fingerprint is the one every other member must match.
-    ///
-    /// Naming a member is NOT what makes two upstreams interchangeable — busbar checks the pins it
-    /// already computed and refuses the pool at dispatch if they disagree. The operator is asserting
-    /// *"these names are the same deployment"*, a claim busbar can and does verify.
-    #[serde(default)]
-    pub members: Vec<String>,
-    /// The operations that may be performed TWICE — reads, searches, queries. An operation not named
-    /// here is never repeated after a dispatch has gone out.
-    ///
-    /// EMPTY BY DEFAULT, which is the fail-safe posture: an operator who says nothing gets
-    /// reroute-before-first-byte (which duplicates nothing) and no retries at all.
-    #[serde(default)]
-    pub repeatable: Vec<String>,
-}
-
-impl CandidatePoolCfg {
-    /// MAY THIS OPERATION BE PERFORMED TWICE? The one reader of `repeatable:`, so the default can
-    /// never be got wrong by a second caller spelling the lookup differently.
-    // Read only by the per-call dispatch path a protocol plane drives; a plane whose relay never
-    // repeats a dispatch has no caller here. Unconditional allow — the neutral seam names no plane
-    // feature.
-    #[allow(dead_code)]
-    pub fn repeatability(&self, operation: &str) -> Repeatable {
-        if self.repeatable.iter().any(|o| o == operation) {
-            Repeatable::Yes
-        } else {
-            Repeatable::No
-        }
-    }
-}
+// The disposition halves a plugin's dispatch engine drives (`walk`, `record_outcome`,
+// `record_success`) live here, over `busbar_kernel::store::LaneRuntime` and `crate::breaker`. The
+// operator's pool vocabulary — the `CandidatePoolCfg` serde shape, `Repeatable`, and the failover
+// budget's defaults and bound — is configuration, not walk machinery: it lives in
+// `crate::config::pools`, and is re-exported here at its historical `failover::` path only for the
+// callers that still spell it so (the legacy plane crates' walks and the root's door pools). The
+// re-export goes with this module.
+pub use crate::config::pools::{
+    CandidatePoolCfg, Repeatable, DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS,
+    MAX_FAILOVER_DEADLINE_SECS,
+};
 
 /// THE SEAM'S SPELLING OF [`walk_with`]: the operator's `members:` order, admitted breaker-only.
 ///
@@ -308,23 +246,6 @@ mod failover_tests;
 use crate::audit::vocab;
 use crate::store::Unavailable;
 
-// ── The FAILOVER BUDGET numeric defaults/bounds. Plain scalars with no config grammar attached
-//    (the serialized `FailoverCfg` shape stays in core, schema-frozen). They live HERE in the neutral
-//    substrate so a plane crate names the per-request failover budget without reaching into
-//    `busbar-core`; core's `config` re-exports each at its historical `crate::config::*` path (so
-//    `appbuild`/`config_validate`/`test_support` call sites are untouched), and the `serde` default
-//    fns (`default_failover_timeout`/`default_max_hops`) read the re-export.
-/// Default failover wall-clock budget (seconds) when a pool doesn't set `failover.timeout_secs`.
-pub const DEFAULT_FAILOVER_DEADLINE_SECS: u64 = 120;
-/// Upper bound (seconds) on a pool's `failover.timeout_secs`. 24h is already absurdly long for a
-/// per-request failover budget — anything larger is a fat-finger typo (extra zeros). Enforced at
-/// `--validate`/boot so a merely-oversized value fails CLOSED with an actionable message instead of
-/// being accepted and later feeding `RequestCtx::new` a duration large enough to overflow the
-/// monotonic-clock `Instant` math.
-pub const MAX_FAILOVER_DEADLINE_SECS: u64 = 86_400;
-/// Default maximum failover hops per request when a pool doesn't set `failover.max_hops`.
-pub const DEFAULT_FAILOVER_CAP: usize = 3;
-
 /// ONE CANDIDATE: somewhere a request can be sent, on any plane.
 ///
 /// Implementing this is the ENTIRE cost of teaching a plane to fail over. The selection order, the
@@ -362,17 +283,6 @@ pub enum Stage {
     /// A previous candidate was dispatched to and the call failed. Moving on is a RETRY of work an
     /// upstream may already have done.
     AfterDispatch,
-}
-
-/// MAY THIS OPERATION BE PERFORMED TWICE? A property of the operation the caller named, declared by
-/// the operator who vouched for it — never inferred, and never a property of the transport.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Repeatable {
-    /// The DEFAULT for everything an operator has not spoken about. A second execution may have a
-    /// second effect, so an [`Stage::AfterDispatch`] hop is refused.
-    No,
-    /// The operator declared this operation safe to perform twice (a read, a search, a query).
-    Yes,
 }
 
 /// WHY NO FURTHER CANDIDATE MAY BE SELECTED.

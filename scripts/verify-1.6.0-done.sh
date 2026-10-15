@@ -21,7 +21,7 @@
 #                    every filtered step declares its test count so a filter that selects nothing is
 #                    RED rather than vacuously green (see filtered_cargo_test).
 #   config-stability cargo xtask gate config-schema (config-schema.snapshot.json byte-stable).
-#   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
+#   test             cargo test --workspace.
 #   conformance      the conformance rigs' selftests + the voice legs =ready.
 #   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
 #                    scenario/script/leg/suite that owns it, and the rigs behind them RUN and pass
@@ -67,9 +67,9 @@
 # could not fire is refused before its verdict is trusted (the house rule).
 #
 # LOCKED EXCLUSION (00-MASTER-PLAN "RECONCILED DECISIONS"): the done-oracle DELIBERATELY does NOT
-# require scripts/plane-noun-gate.sh / scripts/plane-grep-gate.sh == 0. Those meter LLM BILLING VOCAB
+# require scripts/plane-noun-gate.sh == 0. That meters LLM BILLING VOCAB
 # that STAYS in the neutral crates by the LOCKED invariant — an orthogonal axis, not a done condition.
-# Including them would gate the release on a debt the owner ruled out of scope; they are not here.
+# Including it would gate the release on a debt the owner ruled out of scope; it is not here.
 #
 # PROGRESS METER. This is fail-SOFT across groups: it RUNS EVERY sub-gate, collects every RED, prints a
 # grouped readout, and exits non-zero if ANY group is RED. So on an unfinished tree it doubles as a
@@ -105,6 +105,16 @@ print_help() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exi
 
 FAST=0 SELFTEST=0
 case "${1:-}" in --fast) FAST=1 ;; --selftest) SELFTEST=1 ;; "" ) ;; -h|--help) print_help; exit 0 ;; *) echo "usage: $0 [--fast|--selftest]" >&2; exit 2 ;; esac
+
+# THE BASE THE GATES ARE MEASURED AGAINST, named as CI names it. `ceiling-census` and kind-isolation
+# hold their floors against a base, and a detached checkout derives none, which is RED (a base that
+# cannot be established is never a silent pass). So name it: a caller's own value stands, then the
+# ModernCI target sha the gates check exports, then the merge-base with origin/predev. If none
+# resolves it stays unset and the gates say so.
+if [ -z "${XTASK_CEILING_BASE:-}" ]; then
+  XTASK_CEILING_BASE="${MODERNCI_TO_SHA:-$(git merge-base HEAD origin/predev 2>/dev/null || true)}"
+  [ -n "$XTASK_CEILING_BASE" ] && export XTASK_CEILING_BASE || unset XTASK_CEILING_BASE
+fi
 
 # Results accumulators (parallel arrays — bash 3.2 has no assoc arrays).
 G_NAME=(); G_STATE=(); G_NOTE=()
@@ -459,7 +469,7 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 #   * XTASK_INSN_EMIT_BASELINE / XTASK_PPB_EMIT_BASELINE switch instance-noun-neutrality and
 #     plane-pricing-blindness into their baseline-regeneration mode (the census printed as the
 #     qa/*.toml the gate compares against). The run is then a re-baselining run, not a DONE run.
-#   * GREP_GATE_REPORT_ONLY (plane-grep/noun/config-noun gates) and SECRET_GATE_REPORT_ONLY
+#   * GREP_GATE_REPORT_ONLY (noun/config-noun gates) and SECRET_GATE_REPORT_ONLY
 #     (secret-hygiene gate) turn a gate's RED into exit 0. This file pins GREP_GATE_REPORT_ONLY=0
 #     inline where it runs the config-noun --check; refusing the exported value means a refactor
 #     that drops the inline pin cannot quietly inherit a report-only gate.
@@ -582,6 +592,18 @@ print(d)
 ' "$1" "$2"
 }
 
+# How many cells a cells.json carries (its `cells` array). Non-zero rc when it cannot be read.
+json_cell_count() {  # $1 = cells.json
+  command -v python3 >/dev/null 2>&1 || { echo "python3 is not on PATH" >&2; return 2; }
+  python3 -c '
+import json, sys
+try:
+    print(len(json.load(open(sys.argv[1]))["cells"]))
+except Exception as e:
+    sys.stderr.write("unreadable cells.json %s: %s\n" % (sys.argv[1], e)); sys.exit(2)
+' "$1"
+}
+
 # The path the build named must be a real, executable, NON-SYMLINK file. The symlink arm is not
 # tidiness: a stray link at the recorder's path is exactly how a foreign build got in front of this
 # instrument on this checkout, and it is the one shape that satisfies `-x` while pointing at another
@@ -644,8 +666,8 @@ assert_golden_is_pinned() {  # $1 = golden recording dir ; $2 = the committed di
 
 # The verdict, taken from the report the differ wrote rather than from its exit status, and printed
 # with the scope attached so a green can never be read as more than it is.
-assert_parity_verdict() {  # $1 = report dir
-  local rep="${1:-}" owed diverging accepted unbaselined scope
+assert_parity_verdict() {  # $1 = report dir ; $2 = owed-baseline.txt ; $3 = cells.json
+  local rep="${1:-}" base="${2:-}" cells="${3:-}" owed diverging accepted unbaselined scope want_owed want_scope
   if ! owed="$(json_field "$rep/report.json" totals.owed 2>/dev/null)"; then
     echo "no readable report at $rep/report.json — the replay left no verdict to read, so there is none"; return 1
   fi
@@ -655,10 +677,40 @@ assert_parity_verdict() {  # $1 = report dir
   scope="$(json_field "$rep/report.json" totals.cells_in_scope 2>/dev/null)" || return 1
   case "$owed"      in ''|*[!0-9]*) echo "totals.owed is not a count ('$owed')"; return 1 ;; esac
   case "$diverging" in ''|*[!0-9]*) echo "totals.diverging is not a count ('$diverging')"; return 1 ;; esac
+  case "$unbaselined" in ''|*[!0-9]*) echo "totals.unbaselined is not a count ('$unbaselined')"; return 1 ;; esac
+  case "$scope"     in ''|*[!0-9]*) echo "totals.cells_in_scope is not a count ('$scope')"; return 1 ;; esac
   echo "compared $owed owed cell(s) of a $scope-cell corpus: $diverging diverging, $accepted accepted, $unbaselined unbaselined"
   if [ "$owed" -eq 0 ]; then
     echo "the replay compared ZERO cells. A run that measured nothing and a run that found nothing"
     echo "print the same zero; this one measured nothing — refusing"
+    return 1
+  fi
+  # THE DENOMINATOR IS EVERY OWED CELL, NOT ONE (TODO l.2750 item 7). Refusing only a zero left the
+  # floor at ONE: a replay whose id filter kept 1 owed cell of 1,015 printed green. The owed count
+  # must EQUAL the golden's PASS set (owed-baseline.txt, which assert_golden_bookkeeping holds to the
+  # golden), the scope must equal the committed corpus (cells.json), and the engine's own partition
+  # must close (owed + unbaselined = scope; busbar-release run.rs splits the selected cells exactly
+  # so). Any owed cell the replay did not judge is a refusal.
+  if [ -z "$base" ] || [ -z "$cells" ]; then
+    echo "no owed-baseline / cells.json was named, so the owed denominator cannot be checked — refusing"; return 1
+  fi
+  if ! want_owed="$(grep -cv -e '^[[:space:]]*$' -e '^[[:space:]]*#' "$base" 2>/dev/null)"; then
+    echo "the owed baseline $base is unreadable or empty — refusing"; return 1
+  fi
+  if ! want_scope="$(json_cell_count "$cells")"; then
+    echo "the corpus $cells is unreadable — refusing"; return 1
+  fi
+  if [ "$owed" -ne "$want_owed" ]; then
+    echo "the replay judged $owed owed cell(s), but the golden owes $want_owed ($base):"
+    echo "$((want_owed - owed)) owed cell(s) went unjudged — a partial replay is not a parity verdict — refusing"
+    return 1
+  fi
+  if [ "$scope" -ne "$want_scope" ]; then
+    echo "the replay's scope is $scope cell(s), but the committed corpus holds $want_scope ($cells) — refusing"
+    return 1
+  fi
+  if [ $((owed + unbaselined)) -ne "$scope" ]; then
+    echo "owed $owed + unbaselined $unbaselined != scope $scope: the report does not account for every cell — refusing"
     return 1
   fi
   if [ "$diverging" -ne 0 ]; then
@@ -678,11 +730,12 @@ assert_parity_verdict() {  # $1 = report dir
 # the feature flags did not bite and the "second" leg is the first one measured twice.
 #
 # The LLM-only feature set is DERIVED from the manifest's own `default`, never restated here: drop
-# every `plane-<x>` in `default` and the `root-<x>` of each dropped plane; keep the rest. A restated
-# list goes stale the day a plane joins `default`, and a new plane left out of the rule would ride
-# into the "LLM-only" leg unseen — so the derivation refuses if what is left names any `plane-*`, or
-# lacks `proto-llm` (TODO item 156: without the root's node rate-history answers 400, and the node is
-# compiled with `proto-llm` itself — the plane rides the `node` axis; there is no separate switch).
+# every `plane-<x>` in `default` but the llm plane's one switch `plane-llm`, and the `root-<x>` of
+# each dropped plane; keep the rest. A restated list goes stale the day a plane joins `default`, and
+# a new plane left out of the rule would ride into the "LLM-only" leg unseen — so the derivation
+# refuses if what is left names any `plane-*` but `plane-llm`, or lacks `plane-llm` (TODO item 156:
+# without the root's node rate-history answers 400, and the node is compiled with `plane-llm` itself
+# — the plane rides the `node` axis; there is no separate switch).
 PARITY_LEGS="default llm-only"
 PARITY_MANIFEST=crates/busbar/Cargo.toml
 
@@ -707,16 +760,17 @@ PY
 }
 
 parity_llm_only_features() {  # $1 = manifest ; prints the comma-joined LLM-only feature set
-  local all f x planes="" keep="" drop
+  local all f x planes="" keep="" drop others
   all="$(manifest_default_features "$1")" || return 1
-  for f in $all; do case "$f" in plane-*) planes="$planes ${f#plane-}" ;; esac; done
+  for f in $all; do case "$f" in plane-llm) ;; plane-*) planes="$planes ${f#plane-}" ;; esac; done
   for f in $all; do
     drop=0
     for x in $planes; do [ "$f" = "plane-$x" ] || [ "$f" = "root-$x" ] && drop=1; done
     [ "$drop" -eq 1 ] || keep="${keep:+$keep,}$f"
   done
-  case ",$keep," in *,plane-*) echo "the derived LLM-only set still names a plane feature: $keep" >&2; return 1 ;; esac
-  case ",$keep," in *,proto-llm,*) ;; *) echo "the derived LLM-only set lacks proto-llm — it would not be an LLM build: $keep" >&2; return 1 ;; esac
+  others=",$keep,"; others="${others//,plane-llm,/,}"
+  case "$others" in *,plane-*) echo "the derived LLM-only set still names a plane feature but plane-llm: $keep" >&2; return 1 ;; esac
+  case ",$keep," in *,plane-llm,*) ;; *) echo "the derived LLM-only set lacks plane-llm — it would not be an LLM build: $keep" >&2; return 1 ;; esac
   printf '%s\n' "$keep"
 }
 
@@ -808,17 +862,19 @@ print("golden whole: %d PASS rows = meta recorded %d, every one with its cell fi
 PY
 }
 
-# The engine every PARITY step judges with: bin/oracle fetches busbar-release at the pinned ref into
-# target/oracle/rust/<ref>/checkout and builds it (`tool-dir` is the cheapest subcommand that resolves
-# it). Fails naming the two ways to provide it, so a missing judge reads as that, not as a red cell.
+# The engine every PARITY step judges with: on Linux bin/oracle fetches busbar-release's published
+# busbar-oracle for the pinned ref and runs it only at the pin's sha256 (elsewhere it builds the pinned
+# source; `tool-dir` is the cheapest subcommand that resolves it). Fails naming how to provide it, so
+# a missing judge reads as that, not as a red cell.
 parity_resolve_judge() {  # $1 = the pinned busbar-release ref
   local ref="${1:-}"
   [ -n "$ref" ] || { echo "testing/shadow-oracle/oracle-rust.pin names no release_ref — there is no judge to build"; return 1; }
   if ./bin/oracle tool-dir >/dev/null 2>/tmp/done-parity-judge.$$; then rm -f /tmp/done-parity-judge.$$; return 0; fi
   tail -6 /tmp/done-parity-judge.$$; rm -f /tmp/done-parity-judge.$$
   echo "the judge could not be fetched or built. busbar-release is private: give the run a token"
-  echo "(BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN; bin/oracle never stores it), or place a git"
-  echo "checkout holding commit $ref at target/oracle/rust/$ref/checkout before running"
+  echo "(BUSBAR_RELEASE_TOKEN, GH_TOKEN or GITHUB_TOKEN; bin/oracle never stores it). On Linux the"
+  echo "judge is dev-bin's busbar-oracle for commit $ref at the pin's sha256 (no line: no judge);"
+  echo "elsewhere, place a git checkout holding $ref at target/oracle/rust/$ref/checkout"
   return 1
 }
 
@@ -970,10 +1026,17 @@ if [ "$SELFTEST" -eq 1 ]; then
   printf '{"binary_sha256":"%s","recorded":3}\n' "$st_sha"   > "$st_tmp/rec-good/meta.json"
   printf '{"binary_sha256":"%s","recorded":3}\n' "$st_other" > "$st_tmp/rec-wrong/meta.json"
   printf '# version\tasset\tsha256\n%s\tbusbar-selftest\t%s\n' "$PARITY_BASELINE_VERSION" "$st_sha" > "$st_tmp/digests.tsv"
-  mkdir -p "$st_tmp/rep-green" "$st_tmp/rep-diverging" "$st_tmp/rep-nothing"
-  printf '{"totals":{"owed":913,"diverging":0,"accepted":289,"unbaselined":1405,"cells_in_scope":2318}}\n' > "$st_tmp/rep-green/report.json"
-  printf '{"totals":{"owed":913,"diverging":8,"accepted":289,"unbaselined":1405,"cells_in_scope":2318}}\n' > "$st_tmp/rep-diverging/report.json"
-  printf '{"totals":{"owed":0,"diverging":0,"accepted":0,"unbaselined":0,"cells_in_scope":0}}\n'           > "$st_tmp/rep-nothing/report.json"
+  mkdir -p "$st_tmp/rep-green" "$st_tmp/rep-diverging" "$st_tmp/rep-nothing" "$st_tmp/rep-one" "$st_tmp/rep-short" "$st_tmp/rep-scope" "$st_tmp/rep-open"
+  # A five-cell corpus, three owed (the golden's PASS set) and two unbaselined.
+  printf '# owed\na|1\nb|2\n\nc|3\n' > "$st_tmp/par-base.txt"
+  printf '{"cells":[{"id":"a|1"},{"id":"b|2"},{"id":"c|3"},{"id":"d|4"},{"id":"e|5"}]}\n' > "$st_tmp/par-cells.json"
+  printf '{"totals":{"owed":3,"diverging":0,"accepted":1,"unbaselined":2,"cells_in_scope":5}}\n' > "$st_tmp/rep-green/report.json"
+  printf '{"totals":{"owed":3,"diverging":2,"accepted":1,"unbaselined":2,"cells_in_scope":5}}\n' > "$st_tmp/rep-diverging/report.json"
+  printf '{"totals":{"owed":0,"diverging":0,"accepted":0,"unbaselined":0,"cells_in_scope":0}}\n' > "$st_tmp/rep-nothing/report.json"
+  printf '{"totals":{"owed":1,"diverging":0,"accepted":0,"unbaselined":0,"cells_in_scope":1}}\n' > "$st_tmp/rep-one/report.json"
+  printf '{"totals":{"owed":2,"diverging":0,"accepted":0,"unbaselined":3,"cells_in_scope":5}}\n' > "$st_tmp/rep-short/report.json"
+  printf '{"totals":{"owed":3,"diverging":0,"accepted":0,"unbaselined":1,"cells_in_scope":4}}\n' > "$st_tmp/rep-scope/report.json"
+  printf '{"totals":{"owed":3,"diverging":0,"accepted":0,"unbaselined":1,"cells_in_scope":5}}\n' > "$st_tmp/rep-open/report.json"
   st_expect accept "a real, unlinked, executable artefact is the subject"        assert_candidate_bin_sane "$st_tmp/busbar"
   st_expect refuse "a SYMLINK standing where the candidate binary should be"     assert_candidate_bin_sane "$st_tmp/busbar-link"
   st_expect refuse "a candidate path that does not exist"                        assert_candidate_bin_sane "$st_tmp/absent"
@@ -986,10 +1049,16 @@ if [ "$SELFTEST" -eq 1 ]; then
   st_expect accept "a golden whose digest this repository commits"               assert_golden_is_pinned "$st_tmp/rec-good"  "$st_tmp/digests.tsv" "$PARITY_BASELINE_VERSION"
   st_expect refuse "a golden whose digest this repository does not commit"       assert_golden_is_pinned "$st_tmp/rec-wrong" "$st_tmp/digests.tsv" "$PARITY_BASELINE_VERSION"
   st_expect refuse "a golden checked against a digest table that is not there"   assert_golden_is_pinned "$st_tmp/rec-good"  "$st_tmp/no-such.tsv" "$PARITY_BASELINE_VERSION"
-  st_expect accept "a report with cells compared and none diverging"             assert_parity_verdict "$st_tmp/rep-green"
-  st_expect refuse "a report carrying unaccepted divergences"                    assert_parity_verdict "$st_tmp/rep-diverging"
-  st_expect refuse "a report that compared ZERO cells (the zero that is not one)" assert_parity_verdict "$st_tmp/rep-nothing"
-  st_expect refuse "no report at all"                                            assert_parity_verdict "$st_tmp/rep-missing"
+  st_pv() { assert_parity_verdict "$1" "$st_tmp/par-base.txt" "$st_tmp/par-cells.json"; }
+  st_expect accept "a report that judged every owed cell and none diverging"     st_pv "$st_tmp/rep-green"
+  st_expect refuse "a report carrying unaccepted divergences"                    st_pv "$st_tmp/rep-diverging"
+  st_expect refuse "a report that compared ZERO cells (the zero that is not one)" st_pv "$st_tmp/rep-nothing"
+  st_expect refuse "no report at all"                                            st_pv "$st_tmp/rep-missing"
+  st_expect refuse "a replay that judged ONE owed cell (the floor of one, item 7)" st_pv "$st_tmp/rep-one"
+  st_expect refuse "a replay that judged all but one owed cell"                  st_pv "$st_tmp/rep-short"
+  st_expect refuse "a replay over a corpus short of the committed cells.json"    st_pv "$st_tmp/rep-scope"
+  st_expect refuse "a report whose owed + unbaselined does not close the scope"  st_pv "$st_tmp/rep-open"
+  st_expect refuse "a verdict asked with no owed baseline to hold the count to"  assert_parity_verdict "$st_tmp/rep-green"
 
   # ── PARITY RECORDS BOTH LEGS (item 38) ────────────────────────────────────────────────────────
   st_legs_named() { case " $PARITY_LEGS " in *" default "*) ;; *) return 1 ;; esac
@@ -1003,15 +1072,16 @@ if [ "$SELFTEST" -eq 1 ]; then
   st_default_is_plain() { [ -z "$(parity_leg_args default "$PARITY_MANIFEST")" ]; }
   st_expect accept "the default leg is the plain shipped build (no flag narrows it)" st_default_is_plain
   st_llm_real() { local f; f="$(parity_llm_only_features "$PARITY_MANIFEST")" || return 1
-    case ",$f," in *,plane-*) return 1 ;; esac
+    case ",$f," in *,plane-llm,*) ;; *) return 1 ;; esac
+    f=",$f,"; case "${f//,plane-llm,/,}" in *,plane-*) return 1 ;; esac
     parity_leg_args llm-only "$PARITY_MANIFEST" | grep -qx -- '--no-default-features'; }
-  st_expect accept "the llm-only leg derives from THIS manifest: --no-default-features, no plane-*" st_llm_real
-  printf '[features]\ndefault = ["auth-admin-tokens", "proto-llm", "plane-mcp", "plane-voice", "root-admin", "root-voice"]\n' > "$st_tmp/Cargo-legs.toml"
+  st_expect accept "the llm-only leg derives from THIS manifest: --no-default-features, no plane-* but plane-llm" st_llm_real
+  printf '[features]\ndefault = ["auth-admin-tokens", "plane-llm", "plane-mcp", "plane-voice", "root-admin", "root-voice"]\n' > "$st_tmp/Cargo-legs.toml"
   printf '[features]\ndefault = ["auth-admin-tokens", "plane-mcp", "root-admin"]\n' > "$st_tmp/Cargo-noroot.toml"
   printf '[features]\nfoo = []\n' > "$st_tmp/Cargo-nodefault.toml"
-  st_llm_fixture() { [ "$(parity_llm_only_features "$st_tmp/Cargo-legs.toml")" = "auth-admin-tokens,proto-llm,root-admin" ]; }
-  st_expect accept "a fixture manifest's LLM-only set drops every plane-<x> and its root-<x>, keeps the rest" st_llm_fixture
-  st_expect refuse "an LLM-only set without proto-llm (item 156: no node, rate-history answers 400)" parity_llm_only_features "$st_tmp/Cargo-noroot.toml"
+  st_llm_fixture() { [ "$(parity_llm_only_features "$st_tmp/Cargo-legs.toml")" = "auth-admin-tokens,plane-llm,root-admin" ]; }
+  st_expect accept "a fixture manifest's LLM-only set drops every plane-<x> but plane-llm and its root-<x>, keeps the rest" st_llm_fixture
+  st_expect refuse "an LLM-only set without plane-llm (item 156: no node, rate-history answers 400)" parity_llm_only_features "$st_tmp/Cargo-noroot.toml"
   st_expect refuse "a manifest with no default list (no leg can be derived)"               parity_llm_only_features "$st_tmp/Cargo-nodefault.toml"
   st_expect refuse "an unknown leg name"                                                  parity_leg_args all-planes "$PARITY_MANIFEST"
   st_expect accept "two legs that are two different binaries"                             assert_legs_distinct "$st_sha" "$st_other"
@@ -1299,7 +1369,6 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "TEST — full workspace + voice runtime"
 step "cargo test --workspace"                    cargo test --workspace --quiet
-step "cargo test -p busbar-voice --features runtime" cargo test -p busbar-voice --features runtime --quiet
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1323,8 +1392,8 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "CONFIG-NOUN — four-noun parse residual holds at its locked-legitimate floor"
 step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh --selftest
-# ZERO is deliberately NOT the done condition here — same treatment as the plane-noun/plane-grep
-# billing-vocab meters the oracle excludes. Per the kickoff/LOCKED invariant: `pools`/`providers` STAY
+# ZERO is deliberately NOT the done condition here — same treatment as the plane-noun
+# billing-vocab meter the oracle excludes. Per the kickoff/LOCKED invariant: `pools`/`providers` STAY
 # core-owned (CORE_OWNED_CONCRETE_SECTIONS, never evicted), and the `tools`/`agents`/`streams`
 # DeployCfg fields are Option A's `deny_unknown_fields` floor (Option B is serde-blocked). So the
 # residual is a LEGITIMATE floor, not debt; the DoD is "core's generic named-map MACHINERY names no
@@ -1347,7 +1416,10 @@ step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh 
 # CORE_ROOTS section), so the gate runs again and the true residual is 17, not 16 -- 16 was the wrong
 # number, not the comment that used to claim 19. Lower this number the moment a section is evicted;
 # a fall is reported as a fall and tells you what to lower it to.
-CONFIG_NOUN_FLOOR=17
+# RE-MEASURED 2026-10-13 on predev 163843dd2c: 10 (pools 5 · agents 2 · streams 3). streams fell 7 -> 3,
+# and `tools` is no longer a scanned noun since mcp left PLANE_KEYS (5e52651535): the gate reads its
+# nouns off the PLANE_KEYS planes' PlaneDecls. The floor follows the measure down, never up.
+CONFIG_NOUN_FLOOR=10
 config_noun_residual() {
   local out rc line count
   out="$(GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1)"; rc=$?
@@ -1397,14 +1469,14 @@ sys.exit(1 if m else 0)
 # THE ROOT COLUMN. Every plane also runs through the composition root, so the ledger carries a second
 # verdict per cell over its plane's `root-*` leg. Two things are asserted here and neither is the
 # other: that the column HOLDS (the cargo gate, run with every leg's feature on — `root-admin`,
-# `proto-llm` (the root's node, compiled with the plane that rides the `node` axis) and the
+# `plane-llm` (the root's node, compiled with the plane that rides the `node` axis) and the
 # `plane-mcp` / `plane-a2a` / `plane-streaming` features that link the three planes the kernel-loop rider
 # serves), and that every cell it calls `proven`
 # actually RUNS and passes (the summary's own runner, which refuses a run that executed a different
 # set). The remaining "none" cells are the switch-over queue and are PRINTED, not fatal — the same
 # honest-ledger posture the missing set has.
 step "capability_equality gate, six legs on" \
-  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,proto-llm --quiet --test capability_equality
+  cargo test -p busbar --features root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,plane-llm --quiet --test capability_equality
 step "every root-leg proof cell RUNS and passes" python3 scripts/capability-equality-summary.py --root-legs
 printf '  \033[36m[info]\033[0m '
 python3 scripts/capability-equality-summary.py 2>/dev/null | grep -E "^ROOT-EQUALITY:" || echo "root-equality count unavailable"
@@ -1437,7 +1509,7 @@ elif [ -x bin/oracle ]; then
   # cannot be obtained (busbar-release is private: a runner with no token and no checkout of the
   # pinned commit), say so here, by name, instead of as three unrelated-looking reds below.
   PARITY_JUDGE_REF="$(awk -F= '$1=="release_ref"{print $2; exit}' testing/shadow-oracle/oracle-rust.pin 2>/dev/null)"
-  step "the pinned judge (busbar-release ${PARITY_JUDGE_REF:-<no pin>}) is fetched and built from its source" \
+  step "the pinned judge (busbar-release ${PARITY_JUDGE_REF:-<no pin>}) is fetched at the pin's sha256" \
     parity_resolve_judge "$PARITY_JUDGE_REF"
   step "replay-selftest (the differ can see a diff)" ./bin/oracle replay-selftest
   # cells.json IS the owed set — the recorder and the replayer both iterate it, and every count in
@@ -1518,7 +1590,7 @@ elif [ -x bin/oracle ]; then
       # ...and the same two facts re-derived from the report the differ wrote, so the claim does not
       # rest on one flag in one pinned engine. A green is a statement about the OWED cells only.
       step "[$PARITY_LEG] the report's own numbers: cells were compared, and none diverged" \
-        assert_parity_verdict "$REPORT"
+        assert_parity_verdict "$REPORT" testing/shadow-oracle/owed-baseline.txt testing/shadow-oracle/cells.json
     else
       absent_step "[$PARITY_LEG] the parity recording and its verdict" \
         "a candidate binary this run can prove it built — nothing was recorded, so nothing is proven; the release build above is where to start"
@@ -1559,10 +1631,15 @@ if [ -f qa/audit-ledger.json ]; then
   # The `audit-ledger` GATE was deleted with the old register; what survives, and what
   # judges a restored register, is `cargo xtask ledger`. Its rules' own RED proofs are its unit
   # tests, declared by count so a filter that drifts off them is RED rather than vacuously green.
-  # 29 = the 24 audit/audit_cmd rule tests + the five pinned-scope tests (xtask/src/audit_pinned/
-  # pinned_tests.rs: a moved pin reads stale, a byte-identical pin carries the record, an
-  # unproducible pin is RED naming it, a twin / non-plugin git dep is not mounted, the tree wins).
-  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 29 cargo test -p xtask --lib audit
+  # 28 = the 11 audit rule tests (xtask/src/audit.rs) + the 12 audit_cmd tests (hygiene_tests 4,
+  # move_tests 8, the eighth L-R23's: `sync --write` keeps a gone scope with an open HIGH/MEDIUM
+  # unless `--drop` names it) + the five pinned-scope tests (xtask/src/audit_pinned/pinned_tests.rs: a moved pin
+  # reads stale, a byte-identical pin carries the record, an unproducible pin is RED naming it, a
+  # twin / non-plugin git dep is not mounted, the tree wins). THE FILTER NAMES THE THREE MODULES, not
+  # the bare substring `audit`: that substring also selected q128's two `an_audit_of_*` tests and the
+  # construction gate's two `no_response_escapes_audit_tests`, so the run passed 31 against a declared
+  # 29 and this step was RED on tests that are not the ledger's rules (they run in TEST).
+  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 28 cargo test -p xtask --lib -- audit:: audit_cmd:: audit_pinned::
   step "audit-ledger --check"  cargo xtask ledger --check
 else
   absent_step "audit ledger" "qa/audit-ledger.json"

@@ -22,6 +22,7 @@ fn lines() -> Vec<Line> {
         claimant: Claimant::Plane(who.into()),
         dialect: 0,
         auth: LineAuth::None,
+        offered: busbar_contract::abi::auth::AuthPoints::EMPTY,
         upgrade: None,
     };
     vec![

@@ -554,8 +554,16 @@ impl StoreSlots for MemoryStore {
         Ok(())
     }
 
-    fn open(_settings: &[u8], _host: Option<Host>) -> Result<Self, String> {
-        Ok(Self::new())
+    fn open(settings: &[u8], _host: Option<Host>) -> Result<Self, String> {
+        let store = Self::new();
+        let planted = serde_json::from_slice::<serde_json::Value>(settings)
+            .ok()
+            .and_then(|v| v.get("panic_on_plane_append")?.as_bool())
+            .unwrap_or(false);
+        store
+            .panic_on_plane_append
+            .store(planted, std::sync::atomic::Ordering::Relaxed);
+        Ok(store)
     }
 
     fn add_usage_op(
@@ -588,6 +596,12 @@ impl StoreSlots for MemoryStore {
         op: OpId,
         record: PlaneRecordRef<'_>,
     ) -> Step<OpResult<()>> {
+        if self
+            .panic_on_plane_append
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            panic!("store double: the planted panic on a plane-record append");
+        }
         Step::Ready(self.v3_append_plane_record_op(op, record))
     }
 

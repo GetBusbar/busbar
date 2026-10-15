@@ -3,19 +3,17 @@
 
 //! **THE busbar plugin interface** — the memory ABI (`BUSBAR-1.6.0.md` THE DESIGN, the plugin ABI:
 //! plugins speak the memory ABI only) over the shared mechanism, one folder per kind, and the HOT
-//! lane the planes and transports still ride until each moves to its door.
+//! lane's shapes, which the legacy planes' host still names until it is deleted.
 //!
 //! * [`mechanism`] and `abi/<kind>/` — the ONE memory ABI: one door, one call shape, one
 //!   lifecycle, and each kind's own operations, shapes and version.
-//! * [`hot`] — the HOT lane (was `busbar-plane-abi`). A `#[repr(C)]` fn-pointer vtable the planes
-//!   and transports that have not yet moved to their door still speak; deleted with the last of
-//!   them (M6-HOT-PLANE). Its images answer the two-symbol handshake `busbar_abi` /
-//!   `busbar_plugin_kind` still defined beside the JSON lane's residue ([`cold`]).
-//! * [`cold`] — the residue of the COLD/JSON lane, which THE DESIGN's plugin ABI abolished: the
-//!   auth wire (the one auth plugin still on it, until its door re-pin) and the two request-log
-//!   export sinks' wire, each deleted with the last plugin on it. No store, secret or hook plugin
-//!   rides it, and a 1.5.5 JSON-contract plugin is refused at boot naming the rebuild against the
-//!   1.6.0 SDK (the plugin ABI's "no legacy loading").
+//! * [`hot`] — the HOT lane (was `busbar-plane-abi`). A `#[repr(C)]` fn-pointer vtable no plugin
+//!   image loads through any more: every plane and transport loads through its door (row 84). Its
+//!   shapes stay while the legacy planes' host names them, and go with it.
+//! * The COLD/JSON lane, which THE DESIGN's plugin ABI abolished, is deleted, with the handshake
+//!   (`busbar_abi`, `busbar_plugin_kind`) the HOT lane shared with it. A 1.5.5 JSON-contract plugin
+//!   is refused at boot naming the rebuild against the 1.6.0 SDK (the plugin ABI's "no legacy
+//!   loading").
 //!
 //! # The shared root (this module)
 //!
@@ -49,7 +47,28 @@ use core::mem::MaybeUninit;
 /// (`tests/transport_slot_coverage.rs`, `tests/conn_slot_coverage.rs`) read these lists and hold them
 /// to the traits. A table's slots answer [`hot::transport::RawWireOutcome`] unless the list states
 /// another outcome byte (`-> Outcome`).
+///
+/// A list led by `extern "C";` lowers to `extern "C"` slots (THE DESIGN, the signed kind-ABI
+/// design's finding M3: unwinding across a foreign cdylib is undefined behaviour, so a slot catches
+/// its own panic and answers its fault byte, and a panic that escapes it aborts). A list without it
+/// is still `extern "C-unwind"`, each one a `one-memory-abi:c-unwind` row until it is lowered.
 macro_rules! slot_table {
+    (
+        extern "C";
+        $(#[$doc:meta])*
+        pub struct $table:ident lowers $trait:ident -> $ret:ty {
+            $(
+                $(#[$sdoc:meta])*
+                $slot:ident: $alias:ident = fn($($arg:ident: $ty:ty),* $(,)?);
+            )*
+        }
+    ) => {
+        $(
+            $(#[$sdoc])*
+            pub type $alias = extern "C" fn($($arg: $ty),*) -> $ret;
+        )*
+        slot_table!(@table $(#[$doc])* $table { $($slot: $alias),* });
+    };
     (
         $(#[$doc:meta])*
         pub struct $table:ident lowers $trait:ident {
@@ -76,6 +95,9 @@ macro_rules! slot_table {
             $(#[$sdoc])*
             pub type $alias = extern "C-unwind" fn($($arg: $ty),*) -> $ret;
         )*
+        slot_table!(@table $(#[$doc])* $table { $($slot: $alias),* });
+    };
+    (@table $(#[$doc:meta])* $table:ident { $($slot:ident: $alias:ident),* }) => {
         $(#[$doc])*
         #[repr(C)]
         #[derive(Debug, Clone, Copy)]
@@ -92,8 +114,6 @@ macro_rules! slot_table {
     };
 }
 
-/// M6-COLD-DELETE RESIDUE: the JSON lane's auth and request-log export wires (see its module doc).
-pub mod cold;
 pub mod host;
 pub mod hot;
 pub mod sdk;
@@ -106,12 +126,35 @@ pub mod hook;
 pub mod mechanism;
 pub mod plane;
 pub mod secret;
+/// The shapes the memory ABI's connection table carries that the condemned HOT lane named first.
+pub mod shared;
 pub mod store;
 pub mod transport;
 
 // The two `#[macro_export]` sized-read macros, named at this module's path too, so a caller writes
 // `busbar_contract::abi::read_sized_field!` exactly where it wrote `busbar_plugin::read_sized_field!`.
 pub use crate::{host_slot, read_sized_field};
+
+// THE KERNEL SEAL'S ONE CROSSING (#65, ARCHITECT ruling 2026-10-14): declared here, DEFINED only
+// by `busbar-kernel` (`crates/busbar-kernel/src/seal.rs`). It lives in `abi` because calling it is
+// `unsafe`, and the contract's unsafe lives in this module alone (the unsafe policy in `lib.rs`;
+// `caps` stays `forbid(unsafe_code)`). See [`crate::caps::KernelSeal::deliver`].
+extern "Rust" {
+    fn __busbar_kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync>;
+}
+
+/// Hand `seal` to the kernel's root symbol; [`crate::caps::KernelSeal::deliver`] is the only
+/// caller. `#[inline]` for the reason `deliver` is: only an image that calls it references the
+/// symbol.
+#[inline]
+pub(crate) fn kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync> {
+    // SAFETY: `__busbar_kernel_root` is defined exactly once, by `busbar-kernel`
+    // (`crates/busbar-kernel/src/seal.rs`), with this exact signature, and both crates are built
+    // together by one compiler in one workspace, so the Rust ABI of the declaration and the
+    // definition agree. The definition takes the seal by value and returns an owned box; it
+    // touches no other state.
+    unsafe { __busbar_kernel_root(seal) }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // 1. The airlock preamble — FROZEN FOR ALL TIME. Shared by both lanes.

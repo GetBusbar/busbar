@@ -280,9 +280,7 @@ impl DiagLevel {
 ///
 /// ## Why a CODE and not a free-text line
 ///
-/// A plugin already has a way to emit free text: the optional `busbar_set_log_sink` symbol bridges a
-/// plugin's own `tracing` records into the host's subscriber. That channel is a LOG, and it is not
-/// this. busbar's diagnostics are a CATALOGUE — every operator-facing warning carries a stable
+/// Free text a plugin emits (its own `tracing` records) is a LOG, and it is not this. busbar's diagnostics are a CATALOGUE — every operator-facing warning carries a stable
 /// `BUSBAR-NNNN` code an operator pastes into the docs to land on an entry saying what it means and
 /// what to do. A code is a promise the host made, so only the host can make it: a plugin NAMES a
 /// code, and the host is what looks it up, refuses one that is not in its registry, and emits

@@ -31,12 +31,17 @@
 //! WHAT IS BEING PROVEN, PER PROVIDER:
 //! * bedrock — `usage.cacheDetails[]`, the per-TTL (`5m`/`1h`) breakdown of `cacheWriteInputTokens`.
 //!   The two TTLs price differently, so the total alone cannot be reconciled per line.
-//! * cohere — `usage.cached_tokens`, a prompt-cache HIT, which must price at the cache-READ tier
-//!   rather than the full input rate.
-//! * openai_responses — `usage.input_tokens_details.cache_write_tokens`, which must price at the
-//!   cache-WRITE tier. The Responses WRITER has always emitted this member; the reader never read it
-//!   back, so the pair was asymmetric and the tokens silently fell to the plain input rate.
-//! * openai_chat — `usage.prompt_tokens_details.cache_write_tokens`, same tier, same argument.
+//! * cohere — `usage.cached_tokens`, a prompt-cache HIT counted inside `tokens.input_tokens`, which
+//!   bills at the input tier exactly as 1.5.5 billed it (no cache-read split).
+//! * openai_responses — `usage.input_tokens_details.cache_write_tokens`, a slice of `input_tokens`
+//!   that bills at the input tier exactly as 1.5.5 billed it (no cache-write split).
+//! * openai_chat — `usage.prompt_tokens_details.cache_write_tokens`, same rule, same 1.5.5 source.
+//!
+//! The three 1.5.5 readings are the money baseline (BUSBAR-1.6.0.md THE LLM DIALECT FIDELITY RULE:
+//! "Billing never moves"; CHANGELOG 1.6.0: "The token classes, their figures and every `tokens:` cap
+//! count exactly what 1.5.5 counted"): v1.5.5 `crates/busbar/src/proto/cohere/reader.rs:964-979`
+//! and `:709-729`, `crates/busbar/src/proto/openai_responses/reader.rs:1022` and `:1341`,
+//! `crates/busbar/src/proto/openai_chat/reader.rs:966` and `:693` each set the split tier `None`.
 //! * cohere (truncated recovery) — the recovery path and the buffered path must bill the SAME
 //!   bucket for the same completion.
 
@@ -158,7 +163,9 @@ fn bedrock_recorded_no_cache_turn_invents_no_ttl_split() {
          carrying cacheDetails, use it directly instead of the varied copy: {body}"
     );
 
-    let ir = BedrockReader.read_response(&body).expect("bedrock parses");
+    let ir = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("bedrock parses");
     assert_eq!(
         ir.usage.detail.cache_creation_5m_input_tokens, None,
         "a turn that reported no cache creation must report no 5m tier (None, never Some(0))"
@@ -189,7 +196,9 @@ fn bedrock_cache_details_ttl_split_reaches_the_ir_and_the_wire() {
         ]),
     );
 
-    let ir = BedrockReader.read_response(&body).expect("bedrock parses");
+    let ir = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("bedrock parses");
     assert_eq!(
         ir.usage.cache_creation_input_tokens,
         Some(30),
@@ -207,7 +216,7 @@ fn bedrock_cache_details_ttl_split_reaches_the_ir_and_the_wire() {
     );
 
     let w = BedrockWriter;
-    let out = w.write_response(&ir);
+    let out = w.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/usage/cacheDetails"),
         Some(&json!([
@@ -227,6 +236,7 @@ fn bedrock_cache_details_ttl_split_reaches_the_ir_and_the_wire() {
 fn bedrock_cache_details_ride_the_stream_metadata_frame() {
     let mut state = StreamDecodeState::default();
     let events = BedrockReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &json!({
             "type": "metadata",
@@ -251,7 +261,7 @@ fn bedrock_cache_details_ride_the_stream_metadata_frame() {
     );
 }
 
-// ── cohere: usage.cached_tokens prices at the cache-READ tier ────────────────────────────────────
+// ── cohere: usage.cached_tokens bills inside the input, as in 1.5.5 ──────────────────────────────
 
 /// The RAW RECORDED Cohere upstream body — the bytes off the wire — is the shape the reader handles,
 /// and a turn with no cache hit must not acquire an invented cache-read count.
@@ -268,23 +278,22 @@ fn cohere_recorded_raw_body_reads_without_inventing_a_cache_read() {
         "the recorded cohere body must carry the separately-metered `billed_units` bucket: {body}"
     );
 
-    let ir = CohereReader.read_response(&body).expect("cohere parses");
+    let ir = CohereReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("cohere parses");
     assert_eq!(
         ir.usage.cache_read_input_tokens, None,
         "a turn that reported no cache hit must report no cache read (None, never Some(0))"
     );
 }
 
-/// `usage.cached_tokens` → `cache_read_input_tokens`, with `input_tokens` normalized to the UNCACHED
-/// remainder.
-///
-/// Cohere reports prompt-cache hits on `ApiMeta` beside `tokens`/`billed_units`: prompt tokens
-/// counted INSIDE `tokens.input_tokens` that the model did not have to process. Hardcoded `None`,
-/// every one of them was billed at the full input rate. The IR keeps `input_tokens` uncached and the
-/// cache fields ADDITIVE, so the pair reconstructs the reported total exactly — the TOTAL does not
-/// move, only the tier the cached share prices at.
+/// `usage.cached_tokens` stays inside the input: the whole reported `tokens.input_tokens` bills at
+/// the input tier and nothing reaches the cache-read tier, as 1.5.5 billed it (v1.5.5
+/// `crates/busbar/src/proto/cohere/reader.rs:964-979`: `input_tokens` = `tokens.input_tokens`,
+/// `cache_read_input_tokens: None`). RED while the reader moved the 4 cached tokens to the
+/// cache-read tier.
 #[test]
-fn cohere_cached_tokens_price_at_the_cache_read_tier() {
+fn cohere_cached_tokens_bill_inside_the_input() {
     let raw = conformance_raw_body("selftest-recording", "llm__cohere__cohere__request__ok");
     let recorded: Value = serde_json::from_str(&raw).expect("the recorded raw body is JSON");
     let reported_input = recorded
@@ -294,30 +303,38 @@ fn cohere_cached_tokens_price_at_the_cache_read_tier() {
     // The same recorded turn, with a prompt-cache hit on it.
     let body = with_member(&recorded, "/usage/cached_tokens", json!(4));
 
-    let ir = CohereReader.read_response(&body).expect("cohere parses");
+    let ir = CohereReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("cohere parses");
     assert_eq!(
-        ir.usage.cache_read_input_tokens,
-        Some(4),
-        "cached_tokens must read into cache_read_input_tokens: {ir:?}"
+        ir.usage.cache_read_input_tokens, None,
+        "cached_tokens must not split out to the cache-read tier: {ir:?}"
     );
     assert_eq!(
-        ir.usage.input_tokens,
-        reported_input - 4,
-        "input_tokens must normalize to the UNCACHED remainder: {ir:?}"
+        ir.usage.input_tokens, reported_input,
+        "the whole reported input bills at the input tier: {ir:?}"
     );
+    let ledgered = ir.usage.to_token_usage();
     assert_eq!(
-        ir.usage.input_tokens + ir.usage.cache_read_input_tokens.unwrap_or(0),
-        reported_input,
-        "the two ADDITIVE fields must reconstruct the reported total exactly — only the tier moves"
+        (ledgered.input, ledgered.cache_read),
+        (
+            recorded
+                .pointer("/usage/billed_units/input_tokens")
+                .and_then(Value::as_u64)
+                .expect("the recording states a billed input"),
+            None
+        ),
+        "the ledger bills the billed input whole, with no cache read: {ledgered:?}"
     );
 }
 
-/// The STREAM terminal (`message-end.delta.usage`) prices the cache hit the same way the buffered
-/// response does.
+/// The STREAM terminal (`message-end.delta.usage`) bills the cache hit inside the input the same
+/// way (v1.5.5 `crates/busbar/src/proto/cohere/reader.rs:709-729`).
 #[test]
-fn cohere_cached_tokens_ride_the_stream_terminal() {
+fn cohere_cached_tokens_ride_the_stream_terminal_inside_the_input() {
     let mut state = StreamDecodeState::default();
     let events = CohereReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &json!({
             "type": "message-end",
@@ -334,13 +351,17 @@ fn cohere_cached_tokens_ride_the_stream_terminal() {
     );
     let usage = terminal_usage(&events);
     assert_eq!(
-        usage.cache_read_input_tokens,
-        Some(4),
-        "the streamed cache hit must price at the cache-read tier too: {usage:?}"
+        usage.cache_read_input_tokens, None,
+        "the streamed cache hit stays inside the input: {usage:?}"
     );
     assert_eq!(
-        usage.input_tokens, 7,
-        "the streamed input total must normalize to the uncached remainder: {usage:?}"
+        usage.input_tokens, 11,
+        "the streamed input is the whole reported input: {usage:?}"
+    );
+    let ledgered = usage.to_token_usage();
+    assert_eq!(
+        (ledgered.input, ledgered.output, ledgered.cache_read),
+        (11, 7, None)
     );
 }
 
@@ -377,7 +398,7 @@ fn cohere_truncated_recovery_bills_the_same_bucket_as_the_buffered_path() {
 
     // The buffered path.
     let buffered = CohereReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("cohere parses")
         .usage
         .to_token_usage();
@@ -404,43 +425,35 @@ fn cohere_truncated_recovery_bills_the_same_bucket_as_the_buffered_path() {
     );
 }
 
-// ── openai_responses: input_tokens_details.cache_write_tokens prices at the cache-WRITE tier ─────
+// ── openai_responses: input_tokens_details.cache_write_tokens bills inside the input ──────────────
 
-/// The recorded Responses body PROVES the member exists — and proves the reader/writer asymmetry.
-///
-/// `usage.input_tokens_details.cache_write_tokens` is in the recorded 1.5.5 golden because busbar's
-/// own Responses WRITER has always emitted it (the pinned `ResponseUsage` schema requires the
-/// member). The reader never read it back. That asymmetry is the defect: a Responses body stating a
-/// cache write was re-emitted with its total intact and its write count zeroed, so the tokens
-/// silently moved from the cache-write tier to the plain input rate.
+/// The recorded Responses body carries the member (busbar's own Responses WRITER emits it; the
+/// pinned `ResponseUsage` schema requires it), and the reader leaves it inside the input total: a
+/// recorded `cache_write_tokens: 0` reads as no cache-write tier at all, as in 1.5.5 (v1.5.5
+/// `crates/busbar/src/proto/openai_responses/reader.rs:1341`).
 #[test]
 fn responses_recorded_body_carries_the_cache_write_member() {
     let body = oracle_cell_body("llm__responses__responses__request__ok");
     assert!(
         body.pointer("/usage/input_tokens_details/cache_write_tokens")
             .is_some(),
-        "the recorded Responses cell must carry input_tokens_details.cache_write_tokens — it is \
-         the member the writer emits and the reader must read back: {body}"
+        "the recorded Responses cell must carry input_tokens_details.cache_write_tokens: {body}"
     );
 
     let ir = ResponsesReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("responses parses");
     assert_eq!(
-        ir.usage.cache_creation_input_tokens,
-        Some(0),
-        "the recording REPORTS zero cache writes, so the IR must say `reported zero` (Some(0)), \
-         not `not reported` (None): {ir:?}"
+        ir.usage.cache_creation_input_tokens, None,
+        "the cache-write slice is never split out to its own tier: {ir:?}"
     );
 }
 
-/// `usage.input_tokens_details.cache_write_tokens` → the IR's ADDITIVE `cache_creation_input_tokens`,
-/// with `input_tokens` normalized to the uncached remainder.
-///
-/// The Responses `input_tokens` is a TOTAL: uncached + cached + cache-write. Leaving the write slice
-/// inside it charged the whole cache-writing turn at the plain input rate.
+/// `usage.input_tokens_details.cache_write_tokens` bills inside `input_tokens`, as in 1.5.5: only
+/// the cached prefix is split out (to the cache-read tier); the 6 cache-write tokens stay at the
+/// input tier. RED while the reader moved them to the cache-write tier.
 #[test]
-fn responses_cache_write_tokens_price_at_the_cache_write_tier() {
+fn responses_cache_write_tokens_bill_inside_the_input() {
     let recorded = oracle_cell_body("llm__responses__responses__request__ok");
     let reported_input = recorded
         .pointer("/usage/input_tokens")
@@ -458,36 +471,31 @@ fn responses_cache_write_tokens_price_at_the_cache_write_tier() {
     );
 
     let ir = ResponsesReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("responses parses");
     assert_eq!(
-        ir.usage.cache_creation_input_tokens,
-        Some(6),
-        "cache_write_tokens must land in the IR's cache-WRITE bucket: {ir:?}"
+        ir.usage.cache_creation_input_tokens, None,
+        "cache_write_tokens must not split out to the cache-write tier: {ir:?}"
     );
     assert_eq!(
         ir.usage.cache_read_input_tokens,
         Some(2),
-        "cached_tokens must stay in the cache-READ bucket: {ir:?}"
+        "cached_tokens stays in the cache-READ bucket: {ir:?}"
     );
     assert_eq!(
         ir.usage.input_tokens,
-        reported_input - 6 - 2,
-        "input_tokens must normalize to the UNCACHED remainder: {ir:?}"
-    );
-    assert_eq!(
-        ir.usage.billable_tokens(),
-        reported_input + ir.usage.output_tokens,
-        "the three ADDITIVE input fields must still sum to the provider's stated total — the TOTAL \
-         does not move, only which tier each share prices at"
+        reported_input - 2,
+        "input_tokens is the reported total less the cached prefix only: {ir:?}"
     );
 }
 
-/// The STREAM terminal (`response.completed`) prices the cache write the same way.
+/// The STREAM terminal (`response.completed`) bills the cache write inside the input the same way
+/// (v1.5.5 `crates/busbar/src/proto/openai_responses/reader.rs:1022`).
 #[test]
-fn responses_cache_write_tokens_ride_the_stream_terminal() {
+fn responses_cache_write_tokens_ride_the_stream_terminal_inside_the_input() {
     let mut state = StreamDecodeState::default();
     let events = ResponsesReader.read_response_events(
+        crate::codec::test_host::HOST,
         "response.completed",
         &json!({
             "type": "response.completed",
@@ -506,17 +514,16 @@ fn responses_cache_write_tokens_ride_the_stream_terminal() {
     );
     let usage = terminal_usage(&events);
     assert_eq!(
-        usage.cache_creation_input_tokens,
-        Some(6),
-        "the streamed cache write must price at the cache-write tier too: {usage:?}"
+        usage.cache_creation_input_tokens, None,
+        "the streamed cache write stays inside the input: {usage:?}"
     );
     assert_eq!(
-        usage.input_tokens, 3,
-        "the streamed input total must normalize to the uncached remainder (11-2-6): {usage:?}"
+        usage.input_tokens, 9,
+        "the streamed input is the total less the cached prefix only (11-2): {usage:?}"
     );
 }
 
-// ── openai_chat: prompt_tokens_details.cache_write_tokens prices at the cache-WRITE tier ─────────
+// ── openai_chat: prompt_tokens_details.cache_write_tokens bills inside the input ─────────────────
 
 /// The recorded Chat Completions body is the shape the reader handles, and a turn that reported no
 /// cache detail at all must not acquire an invented one.
@@ -533,21 +540,21 @@ fn openai_chat_recorded_body_invents_no_cache_write() {
          directly instead of the varied copy: {body}"
     );
 
-    let ir = OpenAiReader.read_response(&body).expect("chat parses");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("chat parses");
     assert_eq!(
         ir.usage.cache_creation_input_tokens, None,
         "a turn that reported no cache detail must report no cache write (None, never Some(0))"
     );
 }
 
-/// `usage.prompt_tokens_details.cache_write_tokens` → the IR's ADDITIVE `cache_creation_input_tokens`.
-///
-/// `CompletionUsage.prompt_tokens_details.cache_write_tokens` is "the number of prompt tokens written
-/// to cache" — a SLICE of `prompt_tokens`, priced at its own tier, distinct from both the plain input
-/// rate and the cache-READ rate. The reader hardcoded `None` with the comment "OpenAI doesn't provide
-/// this split"; it does, and the whole write was billed as ordinary input.
+/// `usage.prompt_tokens_details.cache_write_tokens` bills inside `prompt_tokens`, as in 1.5.5
+/// (v1.5.5 `crates/busbar/src/proto/openai_chat/reader.rs:966`, `cache_creation_input_tokens: None`):
+/// only the cached prefix is split out. RED while the reader moved the 6 cache-write tokens to the
+/// cache-write tier.
 #[test]
-fn openai_chat_cache_write_tokens_price_at_the_cache_write_tier() {
+fn openai_chat_cache_write_tokens_bill_inside_the_input() {
     let recorded = oracle_cell_body("llm__openai__openai__request__ok");
     let reported_prompt = recorded
         .pointer("/usage/prompt_tokens")
@@ -564,34 +571,32 @@ fn openai_chat_cache_write_tokens_price_at_the_cache_write_tier() {
         json!(2),
     );
 
-    let ir = OpenAiReader.read_response(&body).expect("chat parses");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("chat parses");
     assert_eq!(
-        ir.usage.cache_creation_input_tokens,
-        Some(6),
-        "cache_write_tokens must land in the IR's cache-WRITE bucket: {ir:?}"
+        ir.usage.cache_creation_input_tokens, None,
+        "cache_write_tokens must not split out to the cache-write tier: {ir:?}"
     );
     assert_eq!(
         ir.usage.cache_read_input_tokens,
         Some(2),
-        "cached_tokens must stay in the cache-READ bucket: {ir:?}"
+        "cached_tokens stays in the cache-READ bucket: {ir:?}"
     );
     assert_eq!(
         ir.usage.input_tokens,
-        reported_prompt - 6 - 2,
-        "input_tokens must normalize to the UNCACHED remainder: {ir:?}"
-    );
-    assert_eq!(
-        ir.usage.billable_tokens(),
-        reported_prompt + ir.usage.output_tokens,
-        "the three ADDITIVE input fields must still sum to the provider's stated total"
+        reported_prompt - 2,
+        "input_tokens is the reported total less the cached prefix only: {ir:?}"
     );
 }
 
-/// The STREAM's `include_usage` chunk prices the cache write the same way.
+/// The STREAM's `include_usage` chunk bills the cache write inside the input the same way (v1.5.5
+/// `crates/busbar/src/proto/openai_chat/reader.rs:693`).
 #[test]
-fn openai_chat_cache_write_tokens_ride_the_usage_chunk() {
+fn openai_chat_cache_write_tokens_ride_the_usage_chunk_inside_the_input() {
     let mut state = StreamDecodeState::default();
     let events = OpenAiReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &json!({
             "id": "chatcmpl-oracle", "object": "chat.completion.chunk", "created": 0,
@@ -605,13 +610,12 @@ fn openai_chat_cache_write_tokens_ride_the_usage_chunk() {
     );
     let usage = terminal_usage(&events);
     assert_eq!(
-        usage.cache_creation_input_tokens,
-        Some(6),
-        "the streamed cache write must price at the cache-write tier too: {usage:?}"
+        usage.cache_creation_input_tokens, None,
+        "the streamed cache write stays inside the input: {usage:?}"
     );
     assert_eq!(
-        usage.input_tokens, 3,
-        "the streamed input total must normalize to the uncached remainder (11-2-6): {usage:?}"
+        usage.input_tokens, 9,
+        "the streamed input is the total less the cached prefix only (11-2): {usage:?}"
     );
 }
 
@@ -621,16 +625,9 @@ fn openai_chat_cache_write_tokens_ride_the_usage_chunk() {
 ///
 /// Cohere is the one dialect where a bucket OTHER than `IrUsage::input_tokens` reaches the ledger:
 /// `to_token_usage` lets `billed_units.input_tokens` win, because that is the count an operator is
-/// invoiced on. That exception was written when Cohere reported no cache accounting at all, so the
-/// billed count and a cache read could never both exist and the exception never had to state which
-/// convention it followed.
-///
-/// Reading `usage.cached_tokens` makes them coexist, and the two lanes are summed by the meter. The
-/// raw path subtracts the cached prefix out of `input_tokens`; if the billed path does not, a turn
-/// Cohere states as 11 input tokens (4 cached) ledgers `input: 11` BESIDE `cache_read: 4` — 15
-/// charged for 11 reported. An over-charge is the one error a customer cannot detect from the
-/// invoice and busbar cannot undo, so this test pins the floor directly rather than pinning the
-/// implementation: whatever the buckets, `input + cache_read` is what the provider said.
+/// invoiced on. A cache hit on the same turn must not be charged a second time beside it: the
+/// reader leaves `cached_tokens` inside the input (1.5.5), so whatever the buckets,
+/// `input + cache_read` is what the provider said.
 #[test]
 fn cohere_billed_input_and_cache_read_never_exceed_the_reported_total() {
     let raw = conformance_raw_body("selftest-recording", "llm__cohere__cohere__request__ok");
@@ -643,7 +640,9 @@ fn cohere_billed_input_and_cache_read_never_exceed_the_reported_total() {
     // already — it is the bucket that wins — so this is the exact coexistence the hazard needs.
     let body = with_member(&recorded, "/usage/cached_tokens", json!(4));
 
-    let ir = CohereReader.read_response(&body).expect("cohere parses");
+    let ir = CohereReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("cohere parses");
     assert!(
         ir.usage.detail.billed_input_tokens.is_some(),
         "the recording must carry billed_units for this test to exercise the billed-wins path: {ir:?}"
@@ -658,9 +657,8 @@ fn cohere_billed_input_and_cache_read_never_exceed_the_reported_total() {
         ledgered.cache_read
     );
     assert_eq!(
-        ledgered.cache_read,
-        Some(4),
-        "and the cached share must still be attributed to the cache-READ tier: {ledgered:?}"
+        ledgered.cache_read, None,
+        "and the cached share bills inside the input, never on a cache-READ line: {ledgered:?}"
     );
 }
 
@@ -682,7 +680,7 @@ fn the_billed_netting_does_not_touch_a_dialect_without_billed_units() {
         json!(2),
     );
     let ir = ResponsesReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("responses parses");
     assert_eq!(
         ir.usage.detail.billed_input_tokens, None,

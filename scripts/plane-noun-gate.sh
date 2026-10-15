@@ -15,9 +15,9 @@
 # and the money-path relocation is its own tracked move); a blocking gate now would only paint CI red
 # with work already queued. So this prints a DEBT COUNT and EXITS 0. It exists so the debt has a
 # NUMBER that later moves drive down, and so the day it reaches zero, arming the hard gate is a
-# one-flag flip — exactly the posture of scripts/plane-grep-gate.sh.
+# one-flag flip — exactly the posture of the retired substring-dialect meter.
 #
-# MODES / ENV (mirrors plane-grep-gate.sh):
+# MODES / ENV (mirrors the retired substring-dialect meter):
 #   (no arg) | --report | --check   Scan, print the per-needle table + TOTAL debt, then:
 #     GREP_GATE_REPORT_ONLY=1 (DEFAULT)  → report-only: EXIT 0 regardless of the count.
 #     GREP_GATE_REPORT_ONLY=0            → future hard gate: exit 1 if TOTAL>0. NOT used in CI today.

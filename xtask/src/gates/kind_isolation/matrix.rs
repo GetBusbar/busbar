@@ -202,7 +202,18 @@ pub(super) fn instance_axes() -> Vec<&'static str> {
 /// draining do not brick every other push. The ship twin (`ship: true`) ignores this
 /// list entirely and enforces EVERY neutral crate unconditionally, because the ship SHA
 /// owes zero everywhere regardless of what the everyday gate has caught up to.
-const LAW0_ENFORCED_NEUTRAL_CRATES: &[&str] = &[];
+///
+/// ARMED 2026-10-14 (TODO l.2747 item 1, Instrument #2's hard clause): the three core-neutral
+/// crates with no `[[law0]]` row in qa/kind-isolation.toml, i.e. measured 0 on every axis. The list
+/// cannot drift from the measurement in either direction ([`law0_arming`]): a name that is no
+/// neutral crate of the tree is refused (a typo would pin nothing), and a core-neutral crate that
+/// measures 0 everywhere but is not listed is refused (a drained crate is armed in the commit
+/// that drained it).
+const LAW0_ENFORCED_NEUTRAL_CRATES: &[&str] = &[
+    "busbar-kernel-audit",
+    "busbar-kernel-identity",
+    "busbar-kernel-wal",
+];
 
 // ------------------------------------------------------------------------------------------------
 // the vocabulary, derived
@@ -978,6 +989,11 @@ fn mask_chain(m: MaskInputs<'_>) -> String {
     let masked = external::mask_kernel_facade(rel, &masked);
     // English words that are also instance names are not counted as English prose.
     let masked = mask_english_prose(rel, &masked);
+    // An export entry's frozen 1.5.x `streams: [` key is the export projection, not the plane.
+    let masked = match mask_export_streams_key(&masked) {
+        Some(owned) => std::borrow::Cow::Owned(owned),
+        None => masked,
+    };
     // Instance ids that are also a crate's or an abbreviation's name count only as references.
     let masked = mask_colliding_words(rel, &masked);
     // `unix` as the operating system (a cfg, `std::os::unix`, the clock) is not the carrier.
@@ -1344,6 +1360,51 @@ fn mask_english_prose<'a>(rel: &str, text: &'a str) -> std::borrow::Cow<'a, str>
         out.push_str(&mask_prose_words(prose));
     }
     std::borrow::Cow::Owned(out)
+}
+
+/// THE FROZEN 1.5.x EXPORT KEY (ARCHITECT ruling, Law 0 root lane: a gate exemption only for frozen
+/// 1.5.x bytes, modelled on [`BARE_WORD_COLLISIONS`]). `streams` is the streaming plane's section-key
+/// alias, and it is also the key of an `export:` entry's projection list — `streams: [logs,
+/// identity, decisions, …]` (v1.5.5 crates/busbar/src/config/migrate_export.rs:17, :178), frozen
+/// operator config text every export entry carries. The two are told apart by the value the key
+/// takes: an export entry's `streams:` is a flow LIST, and a plane's section is a mapping. So a
+/// `streams` standing on its own (not joined to a neighbouring name by `-`, `_`, `.` or a letter),
+/// followed by `:` (not `::`) and then, past spaces, by `[`, is masked before the scanners read the
+/// line; in every other position — a section key over a mapping, an identifier, a literal of its
+/// own — it still counts.
+const EXPORT_STREAMS_KEY: &str = "streams";
+
+/// `text` with every export entry's `streams: [` key masked (same-length filler, so lines and
+/// columns hold), or `None` when it holds none; see [`EXPORT_STREAMS_KEY`].
+fn mask_export_streams_key(text: &str) -> Option<String> {
+    if !text.contains(EXPORT_STREAMS_KEY) {
+        return None;
+    }
+    let b = text.as_bytes();
+    let joins = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.');
+    let mut out = b.to_vec();
+    let mut changed = false;
+    let mut from = 0;
+    while let Some(off) = text[from..].find(EXPORT_STREAMS_KEY) {
+        let i = from + off;
+        let j = i + EXPORT_STREAMS_KEY.len();
+        from = j;
+        if i > 0 && joins(b[i - 1]) {
+            continue;
+        }
+        if b.get(j) != Some(&b':') || b.get(j + 1) == Some(&b':') {
+            continue;
+        }
+        let mut k = j + 1;
+        while matches!(b.get(k), Some(b' ' | b'\t')) {
+            k += 1;
+        }
+        if b.get(k) == Some(&b'[') {
+            out[i..j].fill(b'x');
+            changed = true;
+        }
+    }
+    changed.then(|| String::from_utf8(out).expect("ascii-for-ascii"))
 }
 
 /// The byte offset of a `//` comment on `line` that is not inside a `"…"` string literal.
@@ -2515,6 +2576,39 @@ fn law0_offenders(matrix: &Matrix, crates: &[CrateInfo], enforced: Option<&[&str
     offenders
 }
 
+/// THE ARMED LIST AGAINST THE MEASUREMENT. `armed` names crates; `measured` is the Law 0 class
+/// per `(neutral crate, axis)`, holding only cells above 0. Two offenders, one per direction:
+/// - `law0-armed-unknown`: a listed name that is no `Family::Neutral` crate of the tree. It pins
+///   nothing, and the list reads as if it did.
+/// - `law0-unarmed`: a core-neutral crate absent from `measured` (0 on every axis) that the list
+///   does not name. Its zero is held only by its absence from a ledger; arming it is what keeps it.
+fn law0_arming(armed: &[&str], crates: &[CrateInfo], measured: &Law0Counts) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in armed {
+        if !crates
+            .iter()
+            .any(|c| c.name == *name && c.family == Family::Neutral)
+        {
+            out.push(format!(
+                "law0-armed-unknown\t{name}\tLAW0_ENFORCED_NEUTRAL_CRATES names a crate that is no \
+                 neutral crate of this tree: the entry pins nothing. Strike it or correct it."
+            ));
+        }
+    }
+    for c in crates.iter().filter(|c| is_core_neutral(c)) {
+        let zero = !measured.keys().any(|(krate, _)| krate == &c.name);
+        if zero && !armed.contains(&c.name.as_str()) {
+            out.push(format!(
+                "law0-unarmed\t{}\tthe crate measures 0 on every Law 0 axis and is not on \
+                 LAW0_ENFORCED_NEUTRAL_CRATES (xtask/src/gates/kind_isolation/matrix.rs). Add it in \
+                 the commit that drained it, so the zero is pinned.",
+                c.name
+            ));
+        }
+    }
+    out
+}
+
 /// THE LAW 0 ROW (ARCHITECT 2026-10-07, Q128 route). The DoD's hard clause (BUSBAR-1.6.0.md
 /// :1994-1999): every `Family::Neutral` crate (the kernel and its workflow crates, the contract,
 /// the loader, the three cleanliness crates and the composition root) names ZERO plugin-instance
@@ -3311,7 +3405,7 @@ fn measured_row(
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(scope, || vendors::offenders(cx, crates, &files))
                     .expect("spawn the vendor-name scan thread");
-                let inst = instances::measure(crates, &files, &ivocab);
+                let inst = instances::measure_reserved(crates, &files, &ivocab, &reg.shape_words);
                 (
                     inst,
                     vendor
@@ -3319,7 +3413,8 @@ fn measured_row(
                         .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
                 )
             });
-            (ivocab, inst, vendor)
+            let ((inst, unreserved), vendor) = (inst, vendor);
+            (ivocab, inst, unreserved, vendor)
         });
         (
             measured
@@ -3350,7 +3445,7 @@ fn measured_row(
     // THE FIVE INSTANCE AXES (item 118). Same scan set, read a second way — see [`instances`].
     // LAW 1 OVER THE NEUTRAL CENSUS (item 203) — a vendor name in a neutral crate plane-purity does
     // not list. Ceiling 0 in both twins; see [`vendors`].
-    let (ivocab, inst, vendor) = match rest {
+    let (ivocab, inst, unreserved, vendor) = match rest {
         Ok(r) => r,
         Err(e) => {
             return (
@@ -3434,7 +3529,11 @@ fn measured_row(
     let mut offenders: Vec<String> = duplicates(reg);
     offenders.extend(minted_rows(cx));
     offenders.extend(instances::offenders(&inst, &ivocab, reg));
+    offenders.extend(unreserved);
     offenders.extend(instances::law0(&inst, Some(LAW0_ENFORCED_NEUTRAL_CRATES)));
+    if let Some(measured) = law0.as_ref() {
+        offenders.extend(law0_arming(LAW0_ENFORCED_NEUTRAL_CRATES, crates, measured));
+    }
     // Law 1 is armed at 0 on the everyday gate too: no ledger row exists that could raise it.
     offenders.extend(vendor.iter().cloned());
     let kind_of: BTreeMap<&str, &'static str> = crates
@@ -4453,6 +4552,40 @@ pub fn selftest<'a>(
         &["unlisted-cell", &fixture_subject("plane")],
     ));
 
+    // AN EXPORT ENTRY'S FROZEN 1.5.x `streams: [` KEY IS THE EXPORT PROJECTION, NOT THE PLANE
+    // ([`EXPORT_STREAMS_KEY`]). The fixture holds only export entries, in a YAML document and in a
+    // Rust string, and no row: the plane cell stays at zero (GREEN). The same word keying a mapping
+    // — the plane's section — beside them is a hit, and the cell becomes an edge nobody listed (RED).
+    let export_fixture = |extra: Option<(&'static str, &'static str)>| {
+        let mut files = vec![
+            (
+                "export.yaml",
+                "export:\n  sink: { module: tail, streams: [logs, costs] }\n  other:\n    streams:  [metrics]\n",
+            ),
+            (
+                "export.rs",
+                "pub const E: &str = \"  tp: { module: x, streams: [metrics] }\";\n",
+            ),
+        ];
+        files.extend(extra);
+        fixture_files(&files)
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "an export entry's frozen 1.5.x `streams: [` key is not the plane",
+        &[ROW_MATRIX],
+        export_fixture(None),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "`streams:` keying a mapping beside the export entries still counts",
+        &[ROW_MATRIX],
+        export_fixture(Some(("section.yaml", "streams:\n  gw: {}\n"))),
+        &["unlisted-cell", &fixture_subject("plane")],
+    ));
+
     // AN INSTANCE ID THAT IS ALSO A CRATE'S OR AN ABBREVIATION'S NAME COUNTS ONLY AS A REFERENCE
     // ([`COLLIDING_INSTANCE_WORDS`]). The fixture holds only the non-references and no row: the
     // `http` crate's paths, `axum::http`, HTTP in a comment, a URL scheme, whitespace called `ws`,
@@ -4695,7 +4828,10 @@ pub fn selftest<'a>(
     // The subject is `busbar-core-connector`, the cleanliness crate whose `× plane` cell has NO
     // `[[cell]]` row: presence can only see this refusal where a row does not already list the cell.
     // `busbar-core-oauth2` names planes by design (a listed `× plane` cell, count→presence owner
-    // 2026-10-03), so the same plant there is green — a listed edge, not a refusal.
+    // 2026-10-03), so the same plant there is green — a listed edge, not a refusal. The plant names
+    // the a2a plane by a path into its crate: `mcp` is also the retiring engine's id, and a word two
+    // crates own counts only as a reference ([`mask_colliding_words`]), so the bare
+    // `busbar_plane_mcp` this used to plant read as no plane at all and the case went green.
     report.push(prove_rows_red(
         cx,
         gate,
@@ -4704,7 +4840,7 @@ pub fn selftest<'a>(
         plant(
             cx,
             "crates/busbar-core-connector/src/leak.rs",
-            "// busbar_plane_mcp is not this crate's to name.\n",
+            "// busbar_plane_a2a::meta is not this crate's to name.\n",
         ),
         &["unlisted-cell", "busbar-core-connector \u{d7} plane"],
     ));
@@ -5032,7 +5168,7 @@ pub fn selftest<'a>(
     // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
     // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
 
-    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-breaker` carries a live cell; it
+    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-egress` carries a live cell; it
     // measures nothing the moment the crate stops being one.
     //
     // RE-TARGETED TWICE. The subject was `busbar-auth-admin-tokens × api`, and that row went dead
@@ -5046,16 +5182,18 @@ pub fn selftest<'a>(
     // [`COLLIDING_INSTANCE_WORDS`] no longer counts, so that row went dead on the real tree.
     // Re-targeted a fourth time: the subject was `busbar-kernel-ledger × kernel`, whose last hit was
     // the dev-dependency on the deleted `busbar-kernel-budget` (DEL-BUDGET-R), so that row went dead
-    // on the real tree and was struck.
+    // on the real tree and was struck. Re-targeted a fifth time: the subject was
+    // `busbar-kernel-breaker × plane`, which went dead when the breaker stopped naming a plane
+    // (row 66: it reads the transport's and the plane's fault readings) and was struck.
     let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/busbar-kernel-breaker/Cargo.toml");
+    ov.remove("crates/busbar-kernel-egress/Cargo.toml");
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
         &[ROW_MATRIX],
         ov,
-        &["dead-cell", "busbar-kernel-breaker \u{d7} plane"],
+        &["dead-cell", "busbar-kernel-egress \u{d7} plane"],
     ));
 
     // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. The case used to delete the one crate of kind
@@ -5110,6 +5248,59 @@ mod tests {
             ambiguous: Vec::new(),
             pinned: None,
         }
+    }
+
+    /// TODO l.2747: the armed list was `&[]`, so the everyday gate blocked no neutral crate. An
+    /// armed crate that names a plugin instance is an offender; the same crate unarmed is not.
+    #[test]
+    fn an_armed_neutral_crate_naming_an_instance_is_an_offender() {
+        let crates = vec![neutral_kernel("busbar-kernel-wal")];
+        let mut matrix = Matrix::new();
+        matrix.insert(
+            ("busbar-kernel-wal".to_string(), "plane"),
+            Cell {
+                count: 1,
+                ..Cell::default()
+            },
+        );
+        let armed = law0_offenders(&matrix, &crates, Some(LAW0_ENFORCED_NEUTRAL_CRATES));
+        assert!(
+            armed
+                .iter()
+                .any(|o| o.starts_with("law0-neutral-instance\tbusbar-kernel-wal")),
+            "{armed:?}"
+        );
+        assert!(law0_offenders(&matrix, &crates, Some(&[])).is_empty());
+    }
+
+    /// The list against the measurement, both directions, and the control that today's list
+    /// raises neither.
+    #[test]
+    fn the_armed_list_follows_the_measurement() {
+        let crates = vec![
+            neutral_kernel("busbar-kernel"),
+            neutral_kernel("busbar-kernel-wal"),
+        ];
+        let measured = law0_counts_of(&[("busbar-kernel", "plane", 3)]);
+        assert!(law0_arming(&["busbar-kernel-wal"], &crates, &measured).is_empty());
+
+        let typo = law0_arming(
+            &["busbar-kernel-wal", "busbar-kernal-wal"],
+            &crates,
+            &measured,
+        );
+        assert!(
+            typo.iter()
+                .any(|o| o.starts_with("law0-armed-unknown\tbusbar-kernal-wal")),
+            "{typo:?}"
+        );
+
+        let unarmed = law0_arming(&[], &crates, &measured);
+        assert_eq!(unarmed.len(), 1, "{unarmed:?}");
+        assert!(
+            unarmed[0].starts_with("law0-unarmed\tbusbar-kernel-wal"),
+            "{unarmed:?}"
+        );
     }
 
     fn law0_reg(rows: &[(&str, &str, usize)]) -> super::super::KindRegistry {

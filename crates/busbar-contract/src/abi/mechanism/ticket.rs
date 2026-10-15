@@ -14,8 +14,6 @@
 //! * A host service that can pend answers with a [`CompletionHandle`] `(ticket, seq)`. On resume the
 //!   plugin re-issues the same handle and receives the stored result: the host never runs it twice.
 
-use std::os::raw::c_void;
-
 use crate::abi::host::conn::connector::ConnectorSlots;
 use crate::abi::host::io::IoSlots;
 use crate::abi::host::service::HostSlots;
@@ -58,12 +56,28 @@ pub struct CompletionHandle {
     pub _reserved: u32,
 }
 
-/// The host's context for one plugin instance: opaque to the plugin, handed back on `wake`.
+/// The host's context for one plugin instance: an opaque handle the host verifies on every call.
+///
+/// BUSBAR-1.6.0.md Part 2 #74: no host address crosses the ABI. The handle is the host's own
+/// index for the instance beside a keyed tag over it; the host recomputes the tag on every `wake`,
+/// service, connector and I/O call and refuses a handle it did not mint before anything is read
+/// through it. A plugin copies it and hands it back, and never interprets it. `0` is no context.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HostCtx {
-    /// The host's per-instance state; never dereferenced by a plugin.
-    pub ptr: *mut c_void,
+    /// The host's handle for the instance; never interpreted by a plugin.
+    pub handle: u64,
+}
+
+impl HostCtx {
+    /// No context: what a host hands before it binds one, and what a test double hands.
+    pub const NONE: HostCtx = HostCtx { handle: 0 };
+
+    /// Whether this is [`HostCtx::NONE`].
+    #[must_use]
+    pub const fn is_none(self) -> bool {
+        self.handle == 0
+    }
 }
 
 /// `host.wake(ctx, ticket)`: callable from any thread, never blocks, never fails. A wake for a

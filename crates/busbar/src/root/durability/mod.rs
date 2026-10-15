@@ -709,7 +709,7 @@ impl Durability {
             // of the figures era that carried none, its whole-second arrival.
             let arrived_ms = match &hold.held {
                 Held::Counts { arrived_ms, .. } => *arrived_ms,
-                Held::Figure(_) => hold.wall.saturating_mul(1_000),
+                Held::FiguresEra(_) => hold.wall.saturating_mul(1_000),
             };
             let at = Settling {
                 key: &hold.key,
@@ -972,6 +972,37 @@ impl Durability {
         )
     }
 
+    /// CLOSE A UNIT'S HOLD WITH A COUNTS ROW: the exit's posting for a unit whose counts priced to
+    /// nothing (billing off, or a card that prices them at zero). A ZERO IS NOT A SETTLEMENT
+    /// (#77(2)/(3): one sealed line of counts, and a price is never stored): the record is a
+    /// [`PostingKind::Counted`] row carrying the counts and no figure. The book still moves by the
+    /// posting, which hands the hold's reservation back, and a replay closes the same hold off the
+    /// row (the chain's replay): the reservation it held is released, nothing is settled.
+    ///
+    /// # Errors
+    ///
+    /// As [`Durability::settle`].
+    pub fn close_counted(
+        &mut self,
+        at: &Settling<'_>,
+        posted: busbar_contract::caps::Posted,
+        counts: &UnitCounts,
+        arrived_ms: u64,
+    ) -> Result<Settled, DurabilityLost> {
+        let settlement = self
+            .ledger
+            .post_counted(at.key, at.window, posted, counts.fee_count);
+        self.journal_settlement_kind(
+            at,
+            settlement,
+            self.incarnation,
+            Some(counts),
+            arrived_ms,
+            None,
+            PostingKind::Counted,
+        )
+    }
+
     /// PUT A UNIT'S COUNTS ON THE CHAIN WITH NO FIGURE BEHIND THEM (#43: the write is unconditional).
     ///
     /// For a unit whose counts priced to nothing, or whose pricing REFUSED (#42: a present card
@@ -1157,11 +1188,36 @@ impl Durability {
         arrived_ms: u64,
         refusal: Option<String>,
     ) -> Result<Settled, DurabilityLost> {
+        self.journal_settlement_kind(
+            at,
+            settlement,
+            incarnation,
+            counts,
+            arrived_ms,
+            refusal,
+            PostingKind::Settlement,
+        )
+    }
+
+    /// [`Durability::journal_settlement_refusing`] under the record `kind` the line is: a
+    /// `Settlement`, or the `Counted` row a hold closes with when its counts priced to nothing
+    /// ([`Durability::close_counted`]).
+    #[allow(clippy::too_many_arguments)]
+    fn journal_settlement_kind(
+        &mut self,
+        at: &Settling<'_>,
+        settlement: Settlement,
+        incarnation: u64,
+        counts: Option<&UnitCounts>,
+        arrived_ms: u64,
+        refusal: Option<String>,
+        kind: PostingKind,
+    ) -> Result<Settled, DurabilityLost> {
         let stamp = at.stamp;
         let principal = settlement.posted.principal().as_str().to_string();
         let posting = Posting {
             principal: principal.clone(),
-            kind: PostingKind::Settlement,
+            kind,
             incarnation,
             key: at.key.clone(),
             window: at.window,
@@ -1437,7 +1493,7 @@ fn meter_class_of(class: &str) -> Option<busbar_contract::caps::MeterClassId> {
         .into_iter()
         .find(|reserved| *reserved == class)
         .map(busbar_contract::caps::MeterClassId::new)
-        .or_else(|| busbar_contract::Registration::meter_class(class))
+        .or_else(|| busbar_kernel::Registration::meter_class(class))
 }
 
 /// What one journalled posting leaves for the read-time totals.
@@ -1889,8 +1945,24 @@ pub enum Held {
         /// The unit's arrival, in milliseconds: the card epoch.
         arrived_ms: u64,
     },
-    /// A record of the era that carried the reserved FIGURE. Read as written.
-    Figure(u64),
+    /// A record of the era that carried the reserved FIGURE: decoded, never written. Its figure
+    /// sits in [`FiguresEra`], whose field only [`HoldOpened::from_record`] can fill, so no writer
+    /// in this build can put a money figure on a hold (#71: the ledger records counts; #77: money
+    /// holds no record field). Money-shape hardening; no amount moves.
+    FiguresEra(FiguresEra),
+}
+
+/// The reserved figure (nanos) a FIGURES-ERA hold record holds, as it was read. Constructible only
+/// by decoding such a record ([`HoldOpened::from_record`]); read through [`FiguresEra::nanos`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FiguresEra(u64);
+
+impl FiguresEra {
+    /// The figure the old record holds, in nanos, exactly as written.
+    #[must_use]
+    pub fn nanos(self) -> u64 {
+        self.0
+    }
 }
 
 /// A hold as the journal carries it (item 127): opened, and not yet closed by a posting.
@@ -1928,13 +2000,15 @@ impl HoldOpened {
                 body.num(*arrived_ms);
                 write_counts(&mut body, Some(counts));
             }
-            Held::Figure(reserved) => {
+            // A decoded figures-era hold re-spells exactly the bytes it was read from: the figure
+            // is the record's own, never one this build minted (only `from_record` makes one).
+            Held::FiguresEra(era) => {
                 body.text(HOLD_OPENED);
                 body.num(self.incarnation);
                 body.text(&self.principal);
                 write_key(&mut body, &self.key);
                 body.num(self.window);
-                body.num(*reserved);
+                body.num(era.nanos());
             }
         }
         body.finish()
@@ -1962,7 +2036,7 @@ impl HoldOpened {
                 arrived_ms,
             }
         } else {
-            Held::Figure(body.num()?)
+            Held::FiguresEra(FiguresEra(body.num()?))
         };
         body.is_done().then_some(HoldOpened {
             key,
@@ -1981,7 +2055,7 @@ impl HoldOpened {
     #[must_use]
     pub fn reserved(&self, history: Option<&HistoryView<'_>>) -> u64 {
         match &self.held {
-            Held::Figure(reserved) => *reserved,
+            Held::FiguresEra(era) => era.nanos(),
             Held::Counts { counts, arrived_ms } => price_counts(history, counts, *arrived_ms)
                 .ok()
                 .and_then(|nanos| u64::try_from(nanos).ok())
@@ -2238,7 +2312,7 @@ pub fn decode_audit(record: &JournalRecord) -> Result<Option<AuditRecord>, Strin
     if record.class != RecordClass::Transaction {
         return Ok(None);
     }
-    from_journal_body(&record.body, &busbar_contract::Registration::meter_class)
+    from_journal_body(&record.body, &busbar_kernel::Registration::meter_class)
 }
 
 /// The journal body of a sealed checkpoint.

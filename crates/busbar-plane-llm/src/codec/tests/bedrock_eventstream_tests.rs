@@ -34,7 +34,7 @@ fn buffered_response_wraps_into_converse_stream_frames() {
         stop_detail: None,
         ..Default::default()
     };
-    let mut bytes = bedrock_response_to_eventstream(&ir, Some(42));
+    let mut bytes = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &ir, Some(42));
     assert!(!bytes.is_empty(), "must emit eventstream frames");
 
     // Decode the frames using the same decoder the wire uses.
@@ -106,7 +106,7 @@ fn buffered_tool_use_wraps_into_converse_stream_tool_frames() {
         stop_detail: None,
         ..Default::default()
     };
-    let mut bytes = bedrock_response_to_eventstream(&ir, Some(7));
+    let mut bytes = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &ir, Some(7));
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
 
     // contentBlockStart must carry the tool identity nested under start.toolUse.
@@ -193,7 +193,7 @@ fn buffered_multi_block_assigns_distinct_monotonic_content_block_indices() {
         stop_detail: None,
         ..Default::default()
     };
-    let mut bytes = bedrock_response_to_eventstream(&ir, Some(99));
+    let mut bytes = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &ir, Some(99));
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
     let names: Vec<&str> = frames.iter().map(|(t, _)| t.as_str()).collect();
 
@@ -303,7 +303,7 @@ fn buffered_tool_use_with_absent_stop_reason_defaults_to_tool_use() {
         stop_detail: None,
         ..Default::default()
     };
-    let mut bytes = bedrock_response_to_eventstream(&ir, Some(3));
+    let mut bytes = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &ir, Some(3));
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
     let stop = frames
         .iter()
@@ -348,7 +348,7 @@ fn buffered_text_only_with_absent_stop_reason_defaults_to_end_turn() {
         stop_detail: None,
         ..Default::default()
     };
-    let mut bytes = bedrock_response_to_eventstream(&ir, Some(3));
+    let mut bytes = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &ir, Some(3));
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
     let stop = frames
         .iter()
@@ -393,7 +393,7 @@ fn buffered_explicit_stop_reason_overrides_content_default() {
         stop_detail: None,
         ..Default::default()
     };
-    let mut bytes = bedrock_response_to_eventstream(&ir, Some(3));
+    let mut bytes = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &ir, Some(3));
     let frames = crate::codec::eventstream::drain_frames(&mut bytes);
     let stop = frames
         .iter()

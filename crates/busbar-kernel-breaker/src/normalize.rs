@@ -8,8 +8,11 @@
 //! adaptation is that the unrecognized-`error_map` report is the caller's (`unrecognized`), since
 //! this unit takes no logging dependency.
 //!
-//! [`crate::classify`] is this unit's own classifier over its own raw-error record; the two read a
-//! status-less error (0) and the obsolete HTTP-date forms differently, so they are not merged here.
+//! NOT A BREAKER INPUT (ARCHITECT, breaker ruling Q2). The unit's own [`crate::classify`] reads facts
+//! only and never calls this. The retiring engines import it through `busbar-kernel`'s `breaker`
+//! module until D2 deletes them with this file; no new caller may import it. Its dialect facts (the
+//! error-map rule, the context-length code) belong to the plane's own outcome verdict, and the
+//! requested-wait read to the framer that owns the header.
 
 use busbar_contract::http;
 use busbar_contract::upstream::{CanonicalSignal, RawUpstreamError, StatusClass};

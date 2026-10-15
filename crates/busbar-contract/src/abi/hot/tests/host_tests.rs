@@ -27,7 +27,7 @@ fn empty_vtable_grants_nothing() {
 /// A well-formed table checks out and honours exactly its own size.
 #[test]
 fn a_well_formed_vtable_honours_its_own_size() {
-    let vt = PlaneHostVtable::SERVICES;
+    let vt = PlaneHostVtable::EMPTY;
     // SAFETY: `vt` is a whole, live `PlaneHostVtable`.
     let honoured = unsafe { PlaneHostVtable::check(&vt as *const PlaneHostVtable) }
         .expect("a table this build built checks out");
@@ -107,7 +107,7 @@ fn a_shorter_vtable_hides_its_trailing_slots() {
     let vt = PlaneHostVtable {
         govern_admit: Some(bench_govern_admit_ffi),
         counter_add: Some(refuse_counter_add),
-        ..PlaneHostVtable::SERVICES
+        ..PlaneHostVtable::EMPTY
     };
     // A peer that predates the minor-25 metric-family slot: it attests everything up to (but not
     // including) `counter_add`.

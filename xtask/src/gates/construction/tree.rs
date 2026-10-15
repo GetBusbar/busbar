@@ -415,9 +415,10 @@ struct BaseScan {
 static BASE_SCAN: std::sync::OnceLock<std::sync::Mutex<BTreeMap<u64, std::sync::Arc<BaseScan>>>> =
     std::sync::OnceLock::new();
 
-/// The disk tree, scanned once and shared. Overlay-free by construction: it reads through
-/// `std::fs` rather than `cx.read`, because the thing being cached is precisely the tree BEFORE any
-/// plant, and a plant is the only thing an overlay carries.
+/// The disk tree with the BASE layer's sources beneath it, scanned once and shared. Overlay-free by
+/// construction: it reads through `std::fs` (and the base's own bytes) rather than `cx.read`,
+/// because the thing being cached is precisely the tree BEFORE any plant, and a plant is the only
+/// thing an overlay carries.
 fn base_scan(
     cx: &Ctx,
     lexer: &Lexer,
@@ -429,6 +430,16 @@ fn base_scan(
     cx.root().to_string_lossy().hash(&mut h);
     scan_roots.hash(&mut h);
     test_fragments.hash(&mut h);
+    // The BASE layer is part of the tree this scan is of: a context with and one without it (or
+    // with another) never share a scan.
+    if let Some(base) = cx.base() {
+        for (path, change) in base.changes() {
+            path.hash(&mut h);
+            if let crate::ctx::Change::Content(text) = change {
+                text.hash(&mut h);
+            }
+        }
+    }
     let key = h.finish();
 
     let cache = BASE_SCAN.get_or_init(Default::default);
@@ -448,6 +459,29 @@ fn base_scan(
     }
     rels.sort();
     rels.dedup();
+
+    // THE BASE LAYER'S SOURCES (a pinned plane's crate, laid where it lived: ARCHITECT row 106 (A)).
+    // `collect_rs` walks the disk, so without these a pinned plane's directory is counted by the
+    // kind globs while not one of its files is in the tree, and every rule that reads its lines
+    // reads nothing (`forbid-unsafe` reported a plane that carries the attribute as MISSING). A
+    // path on disk keeps the disk's bytes, as everywhere the base sits beneath the tree.
+    let mut laid: BTreeMap<String, String> = BTreeMap::new();
+    if let Some(base) = cx.base() {
+        for (path, change) in base.changes() {
+            let rel = path.to_string_lossy().replace('\\', "/");
+            if !rel.ends_with(".rs")
+                || !under_any(&rel, scan_roots)
+                || rels.binary_search(&rel).is_ok()
+            {
+                continue;
+            }
+            if let crate::ctx::Change::Content(text) = change {
+                laid.insert(rel, text.clone());
+            }
+        }
+    }
+    rels.extend(laid.keys().cloned());
+    let laid = &laid;
 
     // SCAN THE COLD TREE ACROSS THE CORES. This is the one whole-tree lex of the battery — every
     // plant after it reuses these maps — and it is the single dearest thing the self-test does: on
@@ -480,8 +514,11 @@ fn base_scan(
                         let mut out = Vec::with_capacity(chunk.len());
                         for rel in chunk {
                             let abs = cx.abs(rel);
-                            let text =
-                                std::fs::read_to_string(&abs).map_err(|e| format!("{rel}: {e}"))?;
+                            let text = match laid.get(rel) {
+                                Some(text) => text.clone(),
+                                None => std::fs::read_to_string(&abs)
+                                    .map_err(|e| format!("{rel}: {e}"))?,
+                            };
                             let abs = abs.to_string_lossy().into_owned();
                             out.push((
                                 rel.clone(),
@@ -798,7 +835,7 @@ pub fn glob_dirs(cx: &Ctx, pattern: &str) -> Vec<String> {
                 } else {
                     format!("{base}/{seg}")
                 };
-                if cx.abs(&cand).exists() {
+                if cx.abs(&cand).exists() || cx.is_dir(&cand) {
                     next.push(cand);
                 }
                 continue;
@@ -808,14 +845,17 @@ pub fn glob_dirs(cx: &Ctx, pattern: &str) -> Vec<String> {
             } else {
                 cx.abs(base)
             };
-            let Ok(rd) = std::fs::read_dir(&dir) else {
-                continue;
-            };
-            let mut names: Vec<String> = rd
+            // The disk's entries and the BASE layer's (a pinned plane's crate directory, laid
+            // where it lived: ARCHITECT row 106 (A)).
+            let mut names: Vec<String> = std::fs::read_dir(&dir)
+                .into_iter()
+                .flatten()
                 .filter_map(|e| e.ok())
                 .map(|e| e.file_name().to_string_lossy().into_owned())
+                .chain(cx.base_children(base.as_str()))
                 .collect();
             names.sort();
+            names.dedup();
             for nm in names {
                 if glob_segment(seg, &nm) {
                     next.push(if base.is_empty() {
@@ -904,7 +944,7 @@ pub fn dirs_for_globs(cx: &Ctx, patterns: &[String]) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for pat in patterns {
         for d in glob_dirs(cx, pat) {
-            if cx.abs(&d).is_dir() && !out.contains(&d) {
+            if cx.is_dir(&d) && !out.contains(&d) {
                 out.push(d);
             }
         }

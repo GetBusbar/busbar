@@ -31,6 +31,7 @@ pub const LEDGER: &str = "qa/abi-freeze.toml";
 /// freeze cannot be lifted by deleting its row.
 pub const CONDEMNED: &[&str] = &[
     "crates/busbar-contract/src/abi/hot",
+    // qa-names: crates/busbar-contract/src/abi/cold -- xtask/src/gates/abi_freeze.rs -- the cold lane is deleted (row 84, #961); it stays condemned so a directory that grows back there is UNFROZEN and red, and this declaration reds the day the path exists again
     "crates/busbar-contract/src/abi/cold",
 ];
 

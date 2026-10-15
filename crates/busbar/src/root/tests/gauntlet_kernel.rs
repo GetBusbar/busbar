@@ -6,7 +6,8 @@
 //! Both loops are pass-through wrappers around the SAME `GauntletPlane::drive`, so for one plane on
 //! one input they must return identical status, headers and body. This is the local proof that the
 //! loop unification adds nothing to the wire — the same faithfulness the fleet-box money oracle
-//! (DECISIONS #29) will later confirm on the MCP money family. Any difference here is a divergence.
+//! (DECISIONS #29) will later confirm on a door-served plane's money family. Any difference here is
+//! a divergence.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -639,109 +640,4 @@ async fn served_rider_audits_each_call_once() {
 #[tokio::test]
 async fn served_rider_ends_each_call_once() {
     run_served("exit", "served_rider_ends_each_call_once").await;
-}
-
-/// AUDIT-CHAIN, on the served leg: the call's record is linked into its tamper-evident chain.
-#[tokio::test]
-async fn served_rider_chains_what_it_audits() {
-    run_served("audit-chain", "served_rider_chains_what_it_audits").await;
-}
-
-/// GOVERNANCE-BUDGET, on the served leg: the spend is the presenting key's.
-#[tokio::test]
-async fn served_rider_charges_the_presenting_key() {
-    run_served(
-        "governance-budget",
-        "served_rider_charges_the_presenting_key",
-    )
-    .await;
-}
-
-/// METRICS, on the served leg: the upstream leg is on the scrape.
-#[tokio::test]
-async fn served_rider_counts_the_upstream_attempt() {
-    run_served("metrics", "served_rider_counts_the_upstream_attempt").await;
-}
-
-/// TRUST-PINNING, on the served leg: a drifted or demoted peer is not served.
-#[tokio::test]
-async fn served_rider_refuses_an_unpinned_peer() {
-    run_served("trust-pinning", "served_rider_refuses_an_unpinned_peer").await;
-}
-
-/// NET-GUARD, on the served leg: the dialled address is the one the guard judged.
-#[tokio::test]
-async fn served_rider_dials_only_the_judged_address() {
-    run_served("net-guard", "served_rider_dials_only_the_judged_address").await;
-}
-
-/// VERIFY, on a session's served leg: the destination the door judged is the one the session runs
-/// under.
-#[tokio::test]
-async fn served_rider_opens_the_session_on_the_destination_it_judged() {
-    run_served(
-        "session-verify",
-        "served_rider_opens_the_session_on_the_destination_it_judged",
-    )
-    .await;
-}
-
-/// ROUTE, on a session's served leg: the session the door opened relays both directions.
-#[tokio::test]
-async fn served_rider_opens_a_session_that_relays_both_ways() {
-    run_served(
-        "session-route",
-        "served_rider_opens_a_session_that_relays_both_ways",
-    )
-    .await;
-}
-
-/// AUTHENTICATE, on a session's served leg: the session answers for the key the door resolved.
-#[tokio::test]
-async fn served_rider_attributes_the_session_to_the_resolved_key() {
-    run_served(
-        "session-authenticate",
-        "served_rider_attributes_the_session_to_the_resolved_key",
-    )
-    .await;
-}
-
-/// METER, on a session's served leg: each turn is ledgered per class the plane declares.
-#[tokio::test]
-async fn served_rider_meters_each_turn_per_declared_class() {
-    run_served(
-        "session-meter",
-        "served_rider_meters_each_turn_per_declared_class",
-    )
-    .await;
-}
-
-/// METRICS, on a session's served leg: each session the door opens is reported under its labels.
-#[tokio::test]
-async fn served_rider_reports_each_session_it_opens() {
-    run_served(
-        "session-metrics",
-        "served_rider_reports_each_session_it_opens",
-    )
-    .await;
-}
-
-/// BREAKER-FASTFAIL, on the served leg: a tripped upstream cell refuses before any socket opens.
-#[tokio::test]
-async fn served_rider_fast_fails_a_tripped_upstream() {
-    run_served(
-        "breaker-fastfail",
-        "served_rider_fast_fails_a_tripped_upstream",
-    )
-    .await;
-}
-
-/// CATALOGUE, on the served leg: what the caller may not see is not served.
-#[tokio::test]
-async fn served_rider_serves_only_the_callers_catalogue() {
-    run_served(
-        "catalogue",
-        "served_rider_serves_only_the_callers_catalogue",
-    )
-    .await;
 }

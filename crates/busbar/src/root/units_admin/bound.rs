@@ -421,7 +421,7 @@ pub(crate) fn trust_list_effect(desk: &TrustDesk) -> Result<AdminAnswer, Governa
 /// `Store` (`503`).
 pub(crate) fn trust_decide_effect(
     body: &[u8],
-    decision: Ruling,
+    ruling: Ruling,
     desk: &TrustDesk,
 ) -> Result<AdminAnswer, GovernanceError> {
     let doc: serde_json::Value =
@@ -444,7 +444,7 @@ pub(crate) fn trust_decide_effect(
     let Some(kernel) = desk() else {
         return not_found();
     };
-    match kernel.trust_rule(key, decision) {
+    match kernel.trust_rule(key, ruling) {
         Ok(row) => answer(&trust_row(&row)),
         Err(TrustRefused::NoSuchKey) => not_found(),
         Err(TrustRefused::NothingSighted) => Ok(refused(
@@ -464,7 +464,7 @@ pub(crate) fn trust_decide_effect(
             &format!("trust key `{key}` has no authenticity root"),
         )),
         Err(TrustRefused::Store(why)) => {
-            tracing::error!(key = %key, error = %why, "a trust decision could not be kept");
+            tracing::error!(key = %key, error = %why, "a trust ruling could not be kept");
             Err(GovernanceError::Store)
         }
     }

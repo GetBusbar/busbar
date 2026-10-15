@@ -678,6 +678,47 @@ mod tests {
         );
     }
 
+    /// RED: A PINNED PLANE'S SOURCES ARE IN THE TREE THE RULES READ. A plane extracted to its own
+    /// repo is laid only by the BASE layer (ARCHITECT row 106 (A)); the tree's scan walked the disk
+    /// alone, so once the kind census counted the plane, `forbid-unsafe` read none of its lines and
+    /// reported a plane that carries `#![forbid(unsafe_code)]` as MISSING. The base-laid plane's
+    /// attribute must be found, and its absence must still be MISSING.
+    #[test]
+    fn forbid_unsafe_reads_a_plane_laid_only_by_the_base_layer() {
+        let bare = Ctx::workspace().expect("workspace").without_base();
+        let probe = "crates/busbar-plane-mcp";
+        assert!(
+            !bare.abs(probe).exists(),
+            "the control needs a plane that is not on disk"
+        );
+        let cfg = ConstructionGate::cfg(&bare).expect("ceilings");
+        let row = |lib: &str| {
+            let mut base = crate::ctx::Overlay::new();
+            base.set(
+                format!("{probe}/Cargo.toml"),
+                "[package]\nname = \"busbar-plane-mcp\"\n",
+            );
+            base.set(format!("{probe}/src/lib.rs"), lib);
+            let cx = bare.with_base(base);
+            let tree = Tree::load(
+                &cx,
+                &cfg.scan_roots().expect("scan roots"),
+                &cfg.test_path_fragments().expect("fragments"),
+            )
+            .expect("tree");
+            rules2::forbid_unsafe(&cx, &tree, &cfg)
+                .expect("the rule runs")
+                .into_iter()
+                .find(|r| r.id == "forbid-unsafe:busbar-plane-mcp")
+                .expect("a forbid-unsafe row for the base-laid plane")
+        };
+        let carries = row("//! A plane.\n#![forbid(unsafe_code)]\npub fn f() {}\n");
+        assert_eq!(carries.status, Status::Pass, "{}", carries.detail);
+        assert!(carries.detail.contains("present"), "{}", carries.detail);
+        let lacks = row("//! A plane.\npub fn f() {}\n");
+        assert!(lacks.detail.contains("MISSING"), "{}", lacks.detail);
+    }
+
     /// ITEM 120: THE RULE READS THE `transport` KIND. It read six kinds, so the oracle above owed
     /// seven rows the rule never emitted. Every in-tree transport crate gets a row. The transport
     /// crates live in their own plugin repos now (P5), so a tree with none owes none: the rule's

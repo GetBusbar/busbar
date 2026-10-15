@@ -4,28 +4,17 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: route-failover — a down provider trips the breaker on its first hard-down strike, and a tripped
-# breaker refuses EVERY further dial before any socket/URL work — the documented terminal outcome
-# (BUSBAR-1.6.0.md THE DESIGN, §1's teller loop, step 5 ROUTE) with no repeated egress once the cell is open.
+# LEG: route-failover — the door's half of the route walk (BUSBAR-1.6.0.md THE DESIGN §1 step 5 ROUTE;
+# Part 3 §12 "The route pump": the walk — pool, member pick, breaker, failover, exhaustion — is the
+# kernel's, and the driver builds no second one).
 #
-# `topology::dial_provider` probes the `(pool, lane)` breaker cell through the host seam FIRST — before
-# any DNS/guard/socket work — and folds a real dial's outcome back into the SAME cell
-# (`host.breaker_record_signal`). This leg drives that real function twice over the substrate's
-# `FixtureHost` (a real in-memory breaker, not a stand-in that always admits):
-#
-#   1. breaker CLOSED, a real dial to a target the default fail-closed `GuardPolicy` refuses (a
-#      plaintext `ws://` loopback address) — a genuine `DialProviderError::Dial(_)`, and the guard
-#      refusal's canonical signal (Auth-class) trips the cell HARD DOWN on this first strike.
-#   2. breaker now OPEN — a SECOND dial, to a syntactically GARBAGE target a real dial would fail
-#      differently on (`DialProviderError::Dial(Url(_))`), must instead come back
-#      `DialProviderError::BreakerOpen` with a positive `Retry-After` — proving the breaker check runs
-#      STRICTLY BEFORE any dial attempt, not just that a dial eventually fails again.
-#
-# WAS RED (this leg's own history): `dial_provider`'s breaker-admit-first order and its fold-back onto
-# the cell existed and were unit-tested in isolation, but no conformance leg judged the OBSERVABLE
-# outcome from the plane's own public seam — that a real hard-down dial actually opens the SAME cell a
-# second dial is judged against, and that the terminal refusal it then returns names ZERO further dial
-# attempt (as opposed to, say, a retried dial that merely fails again for a different reason).
+# THE DOOR'S HALF (judged, linked AND dropped door, the mint door): it names the session model's DIRECT
+# route (and none with no model configured); each ATTEMPT is answered afresh with the same request on
+# the declared pass need (door::RIDES_REALTIME_PASS) — the host connector dials it; a failing far end
+# reaches the caller with nothing before its last piece, so the walk may still fail over; the next
+# attempt's answer is the caller's whole answer, free of the failed one; and a last attempt that fails
+# is the served plane's 502. The plane opens no socket and holds no breaker or guard. RED arm: a retry
+# that sends a different request fails.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

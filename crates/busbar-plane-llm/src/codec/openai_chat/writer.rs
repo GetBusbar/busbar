@@ -1,10 +1,11 @@
 use super::*;
 
 /// The `created` this writer stamps when the answer it is writing carries none: the HOST's wall
-/// clock (#83a SD-3; the plane reads no clock of its own), or `0` — what an unstamped Responses
-/// answer carries too — in a process whose host installed no clock.
-fn host_now() -> u64 {
-    busbar_contract::codec::wall_clock_now().unwrap_or(0)
+/// clock, read through the [`CodecHost`](busbar_contract::codec::CodecHost) the caller handed down
+/// (#83a SD-3; the plane reads no clock of its own), or `0` — what an unstamped Responses answer
+/// carries too — when that host holds no clock.
+fn host_now(host: &dyn busbar_contract::codec::CodecHost) -> u64 {
+    host.wall_clock_now().unwrap_or(0)
 }
 
 /// One streamed `chat.completion.chunk` frame carrying `delta` on its single choice, unfinished.
@@ -23,10 +24,10 @@ fn delta_chunk(delta: serde_json::Value) -> Option<(String, serde_json::Value)> 
 }
 
 impl ProtocolWriter for OpenAiWriter {
-    fn probe_request(&self) -> serde_json::Value {
+    fn probe_request(&self, host: &dyn busbar_contract::codec::CodecHost) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
         // through its own write_request, so the probe body matches a real request on this wire.
-        self.write_request(&super::super::ir_encode::ping_request())
+        self.write_request(host, &super::super::ir_encode::ping_request())
     }
 
     fn upstream_path(&self) -> &str {
@@ -41,8 +42,12 @@ impl ProtocolWriter for OpenAiWriter {
         body.get(W_N).and_then(|v| v.as_u64()).filter(|&k| k > 1)
     }
 
-    fn write_request(&self, req: &crate::codec::ir::IrRequest) -> serde_json::Value {
-        self.write_request_for_lane(req, "", &LaneCaps::default())
+    fn write_request(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        req: &crate::codec::ir::IrRequest,
+    ) -> serde_json::Value {
+        self.write_request_for_lane(host, req, "", &LaneCaps::default())
     }
 
     /// A hosted tool of a kind Chat has no built-in for (code execution, web fetch) is dropped by
@@ -56,6 +61,7 @@ impl ProtocolWriter for OpenAiWriter {
 
     fn write_request_for_lane(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         req: &crate::codec::ir::IrRequest,
         _model: &str,
         caps: &LaneCaps,
@@ -642,7 +648,11 @@ impl ProtocolWriter for OpenAiWriter {
         serde_json::Value::Object(out)
     }
 
-    fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)> {
+    fn write_response_event(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ev: &IrStreamEvent,
+    ) -> Option<(String, serde_json::Value)> {
         match ev {
             IrStreamEvent::MessageStart {
                 role,
@@ -665,9 +675,9 @@ impl ProtocolWriter for OpenAiWriter {
                 // SYNTHESIZE a protocol-correct id/created so a native SDK accepts the stream.
                 // The FIRST opening chunk decides this stream's id; a duplicate replays it rather
                 // than announcing the same completion under a second identity.
-                let chunk_id =
-                    self.carried_chunk_id(|| id.clone().unwrap_or_else(synth_completion_id));
-                let chunk_created = created.unwrap_or_else(host_now);
+                let chunk_id = self
+                    .carried_chunk_id(|| id.clone().unwrap_or_else(|| synth_completion_id(host)));
+                let chunk_created = created.unwrap_or_else(|| host_now(host));
                 // `model` is REQUIRED and non-nullable in the OpenAI chunk schema. A cross-protocol
                 // backend (e.g. Bedrock) whose IR carries `model: None` must not yield a model-less
                 // first chunk — that fails strict SDK (Pydantic) deserialisation and is a proxy tell —
@@ -965,7 +975,13 @@ impl ProtocolWriter for OpenAiWriter {
     /// `error.code`/`error.param`), so a client on the native SDK gets a typed exception rather than
     /// an undecodable body. The generic `kind` is mapped onto OpenAI's own error-`type` vocabulary
     /// where one exists; otherwise it is passed through verbatim (still a valid string `type`).
-    fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value {
+    fn write_error(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        status: u16,
+        kind: &str,
+        message: &str,
+    ) -> serde_json::Value {
         // Map the protocol-agnostic `kind` onto OpenAI's documented error `type` values. OpenAI's
         // vocabulary: "invalid_request_error", "authentication_error", "permission_error",
         // "not_found_error", "rate_limit_error", "server_error", "api_error". HTTP 401/403/404/429
@@ -1030,13 +1046,21 @@ impl ProtocolWriter for OpenAiWriter {
         })
     }
 
-    fn write_error_frame(&self, err: &IrError) -> Option<(String, serde_json::Value)> {
+    fn write_error_frame(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        err: &IrError,
+    ) -> Option<(String, serde_json::Value)> {
         // The streaming-error seam: delegate to this dialect's own event writer so the mid-stream
         // error frame is byte-for-byte what an `Error` event produces on this wire.
-        self.write_response_event(&IrStreamEvent::Error(err.clone()))
+        self.write_response_event(host, &IrStreamEvent::Error(err.clone()))
     }
 
-    fn write_response(&self, resp: &crate::codec::ir::IrResponse) -> serde_json::Value {
+    fn write_response(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        resp: &crate::codec::ir::IrResponse,
+    ) -> serde_json::Value {
         let mut obj = serde_json::Map::new();
 
         // Collect the assistant text parts exactly once: their presence decides whether
@@ -1218,10 +1242,10 @@ impl ProtocolWriter for OpenAiWriter {
         // `choices`, and `usage`; `system_fingerprint` is optional. When the IR field is `None`
         // (cross-protocol: the backend never minted one) we SYNTHESIZE a protocol-correct value so a
         // native SDK can't tell this was translated.
-        let id = resp.id.clone().unwrap_or_else(synth_completion_id);
+        let id = resp.id.clone().unwrap_or_else(|| synth_completion_id(host));
         obj.insert(keys::ID.to_string(), serde_json::json!(id));
         obj.insert(keys::OBJECT.to_string(), serde_json::json!(OBJ_COMPLETION));
-        let created = resp.created.unwrap_or_else(host_now);
+        let created = resp.created.unwrap_or_else(|| host_now(host));
         obj.insert(CREATED.to_string(), serde_json::json!(created));
         // model that served the response. `model` is a REQUIRED non-nullable string in the OpenAI
         // chat.completion schema; a cross-protocol backend whose `read_response` yields `model: None`

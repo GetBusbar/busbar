@@ -32,7 +32,6 @@ use crate::config::groups::GroupCfg;
 use crate::config::sections::RateEntryCfg;
 use crate::governance::signing::TokenSigner;
 use crate::governance::{DerivedUsage, NewKeySpec};
-use crate::plane::registry::CardIssuer;
 use crate::plane::PlaneAdmission;
 use crate::plane_host::{EngineHost, LiveHostFactory, PlaneSlots};
 use crate::store::BreakerState;
@@ -91,13 +90,13 @@ pub trait GovKit: Any + Send + Sync {
     /// Mint an UNSIGNED key from `spec` at `now`: the persisted key and its plaintext secret.
     fn create_key(&self, spec: NewKeySpec, now: u64) -> Result<(VirtualKey, String), String>;
     /// Mint a SIGNED (bearer-token) key from `spec`, expiring at `exp`, minted at `now`. The token
-    /// comes back redacted; a test reads it with `expose_secret` where it presents or asserts it.
+    /// comes back redacted; a test reads it with the sealed `expose` where it presents or asserts it.
     fn mint_signed(
         &self,
         spec: NewKeySpec,
         exp: u64,
         now: u64,
-    ) -> Result<(VirtualKey, busbar_contract::redacted::Redacted<String>), String>;
+    ) -> Result<(VirtualKey, busbar_contract::redacted::Secret<String>), String>;
     /// Mint a key that ALSO carries a generated AWS SigV4 credential: the persisted key, its
     /// plaintext bearer secret, and the credential's access-key id and secret access key. What a
     /// test needs to sign a SigV4 request against its own fixture.
@@ -342,12 +341,6 @@ impl TestAppSeam for Box<dyn TestAppKit> {
     }
     fn register_plane_finalizer(&mut self, f: Box<dyn FnOnce(&mut dyn TestAppSeam)>) {
         (**self).register_plane_finalizer(f)
-    }
-    fn configured_public_url(&self) -> Option<&str> {
-        (**self).configured_public_url()
-    }
-    fn card_issuer(&self, plane_key: &'static str) -> Option<CardIssuer> {
-        (**self).card_issuer(plane_key)
     }
     fn install_plane_runtime(&mut self, key: &'static str, rt: Arc<dyn Any + Send + Sync>) {
         (**self).install_plane_runtime(key, rt)

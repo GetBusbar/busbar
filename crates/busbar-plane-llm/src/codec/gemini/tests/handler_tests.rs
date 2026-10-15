@@ -344,11 +344,12 @@ fn image_read_response_captures_base64_image_bytes() {
     assert_eq!(r.images[0].mime_type.as_deref(), Some("image/png"));
 }
 
-// FIND (money): a token-metered Gemini image response carries a `usageMetadata` token object; the
-// reader must surface it so `billing()` token-meters the request instead of billing nothing. Fails
-// pre-fix (usage left unset → `billing()` is None).
+// A token-reporting Gemini image response carries a `usageMetadata` token object. Its tokens are
+// RECORDED (residual units) and bill NOTHING on the four token tiers, as in 1.5.5, whose Imagen
+// reader read no `usageMetadata` (v1.5.5 `crates/busbar/src/handlers/gemini.rs:446-472`) and whose
+// image op tapped no same-dialect body. RED while the reader token-billed 20 in / 10 out.
 #[test]
-fn image_response_with_usage_metadata_bills_tokens() {
+fn image_response_usage_metadata_is_recorded_never_billed() {
     let wire = serde_json::to_vec(&json!({
         "predictions": [{ "bytesBase64Encoded": "AAAA", "mimeType": "image/png" }],
         "usageMetadata": { "promptTokenCount": 20, "candidatesTokenCount": 10 },
@@ -357,10 +358,18 @@ fn image_response_with_usage_metadata_bills_tokens() {
     let resp = super::read_image_response(&wire).unwrap();
     match resp.billing() {
         Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            assert_eq!(t.input, 20);
-            assert_eq!(t.output, 10);
+            assert_eq!((t.input, t.output), (0, 0), "no image token bills: {t:?}");
+            assert_eq!(
+                t.residual_units,
+                std::collections::BTreeMap::from([
+                    ("image.input_tokens".to_string(), 20),
+                    ("image.output_tokens".to_string(), 10),
+                ])
+            );
         }
-        other => panic!("token-metered Gemini image must token-bill, got {other:?}"),
+        other => {
+            panic!("a token-reporting Gemini image answer is a zero token line, got {other:?}")
+        }
     }
 }
 
@@ -620,13 +629,13 @@ fn a_json_error_shaped_speech_body_is_not_served_as_audio() {
     );
 }
 
-// FIND-3 (money): whisper-1 transcription bills audio DURATION. On an openai->gemini transcription
-// hop the gemini response writer previously surfaced only `Billing::Tokens` and DROPPED a
-// `Billing::Duration`. Assert the seconds survive the hop. Fails pre-fix (usageMetadata absent).
+// A duration-billed transcription (whisper-1's `Billing::Duration`, an openai->gemini hop) reaches a
+// Gemini client with NO `usageMetadata`, exactly as 1.5.5 wrote it (v1.5.5
+// `crates/busbar/src/handlers/gemini.rs:259-265` wrote `usageMetadata` only for `Billing::Tokens`).
+// Gemini's `UsageMetadata` has no seconds member; the billed seconds are read off the egress reader,
+// never off these bytes. RED while the writer invented `usageMetadata.audioDurationSeconds`.
 #[test]
-fn openai_whisper_duration_carries_through_gemini_transcription_write() {
-    // A `Billing::Duration` is exactly what the OpenAI whisper-1 transcription reader produces from
-    // `usage.type == "duration"`; feed it to the gemini response writer and assert it is not dropped.
+fn a_duration_billed_transcription_writes_no_usage_metadata() {
     let ir = TranscriptionResp {
         text: "hi".into(),
         usage: Some(busbar_contract::billing::Billing::Duration {
@@ -636,12 +645,7 @@ fn openai_whisper_duration_carries_through_gemini_transcription_write() {
     };
     let out = super::write_transcription_response(&ir).bytes;
     let v: Value = serde_json::from_slice(&out).unwrap();
-    assert_eq!(
-        v.pointer("/usageMetadata/audioDurationSeconds")
-            .and_then(Value::as_f64),
-        Some(12.5),
-        "gemini transcription writer must carry the whisper duration through: {v}"
-    );
+    assert!(v.get("usageMetadata").is_none(), "{v}");
 }
 
 // carryable-flatten #6: the gemini transcription writer REPLACED the caller's prompt with a fixed
@@ -825,31 +829,22 @@ fn transcription_transcribe_round_trips_as_transcribe() {
     );
 }
 
-// L3: whisper Duration billing (an openai->gemini hop emits `audioDurationSeconds`) must read back
-// as Duration, not be flattened to Tokens{0,0}. Fails pre-fix: the reader forced Tokens.
+// An upstream cannot choose the duration meter: a `usageMetadata.audioDurationSeconds` member (not
+// Gemini's wire) is not read, and the answer bills its token fields exactly as 1.5.5 read them
+// (v1.5.5 `crates/busbar/src/handlers/gemini.rs:229-241`: `promptTokenCount`/`candidatesTokenCount`
+// only, here both absent, so Tokens{0,0}). RED while the reader billed 12.5 seconds of `audio_ms`.
 #[test]
-fn transcription_response_round_trips_audio_duration() {
-    let resp = crate::codec::ir::audio::TranscriptionResp {
-        text: "hello".into(),
-        usage: Some(busbar_contract::billing::Billing::Duration {
-            seconds: busbar_contract::Count::parse("12.5").expect("12.5 is an exact decimal"),
-        }),
-        ..Default::default()
-    };
-    let wb = write_transcription_response(&resp);
-    let v: Value = serde_json::from_slice(&wb.bytes).unwrap();
-    assert_eq!(
-        v.pointer("/usageMetadata/audioDurationSeconds"),
-        Some(&json!(12.5)),
-        "duration must be emitted under audioDurationSeconds: {v}"
-    );
-    let back = read_transcription_response(&wb.bytes).expect("re-read");
+fn transcription_response_reads_no_audio_duration_member() {
+    let wire = json!({
+        "candidates": [{"content": {"parts": [{"text": "hello"}], "role": "model"}}],
+        "usageMetadata": {"audioDurationSeconds": 12.5},
+    });
+    let back = read_transcription_response(&serde_json::to_vec(&wire).unwrap()).expect("read");
     assert_eq!(
         back.usage,
-        Some(busbar_contract::billing::Billing::Duration {
-            seconds: busbar_contract::Count::parse("12.5").expect("12.5 is an exact decimal"),
-        }),
-        "duration must round-trip as Duration, not collapse to Tokens{{0,0}}"
+        Some(busbar_contract::billing::Billing::Tokens(
+            busbar_contract::billing::TokenUsage::default()
+        ))
     );
 }
 
@@ -884,10 +879,9 @@ fn image_response_writer_writes_no_usage_metadata() {
             b64: Some("aGVsbG8=".into()),
             ..Default::default()
         }],
-        usage: Some(busbar_contract::billing::TokenUsage {
-            input: 10,
-            output: 5,
-            ..Default::default()
+        usage: Some(crate::codec::ir::image::ImageTokens {
+            input: Some(10),
+            output: Some(5),
         }),
         ..Default::default()
     };

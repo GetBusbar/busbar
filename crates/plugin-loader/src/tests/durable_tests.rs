@@ -340,7 +340,7 @@ fn create_dir_all_fsyncs_the_parent_of_every_directory_it_creates() {
     let sc = Scratch::new("mkdir-ancestors");
     fault_reset();
 
-    let leaf = sc.dir.join("a").join("b").join("c");
+    let leaf = sc.dir.join("a").join("b").join("leaf");
     create_dir_all(&leaf).unwrap();
     assert!(leaf.is_dir());
     assert_eq!(

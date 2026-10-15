@@ -1,12 +1,12 @@
 //! WHAT A DELIVERED LLM RESPONSE LEAVES ON THE BOOKS WHEN IT DOES NOT END CLEANLY, OR WHEN NO CARD
 //! PRICES IT.
 //!
-//! ITEM 367 — a SAME-PROTOCOL NON-STREAM body (`!is_sse`, `translate == None`) the client stops
-//! reading mid-relay. A non-streamed completion is generated WHOLE before its first byte is sent, so
-//! every token was spent upstream; the drop arm read usage only from a streaming translator and billed
-//! 0 for it. That is a LEDGER fault (the book says no work happened). It now bills what the
-//! truncated-tail path bills when the document cannot be read whole — the usage recovered from the
-//! bytes in hand, else the floor over them — and the report-back carries the same figure (#71).
+//! A SAME-PROTOCOL NON-STREAM body (`!is_sse`, `translate == None`) the client stops reading
+//! mid-relay bills NO tokens, as 1.5.5 billed none: its drop arm read usage only from a streaming
+//! translator (v1.5.5 `crates/busbar/src/proxy/response_body.rs:620-625`, "a partially-buffered
+//! same-proto non-stream body cannot be reliably parsed for usage, so it is not billed on a
+//! mid-buffer drop"). Item 367's floor over the relayed bytes (Q33 (a), told, never signed) is
+//! retired by the ARCHITECT ruling of 2026-10-15: v1.5.5 wins, and the kernel adds no floor (#77(2)).
 //!
 //! DECISION #43 / #42 (architect-carried, same as item 36) — with NO `rate_card:` the delivered
 //! response still writes its metering row: the plane always ledgers, and billing off is the money
@@ -121,11 +121,11 @@ async fn ledgered_tokens(
     tokens
 }
 
-/// ITEM 367. The client read the first chunk of a non-streamed completion and went away; the body
-/// was DROPPED mid-relay. It bills the floor over the bytes it relayed — never 0 — and the tap reports
-/// exactly that figure as a `Partial` end, so both books hold one number.
+/// The client read the first chunk of a non-streamed completion and went away; the body was DROPPED
+/// mid-relay. It bills no tokens, as 1.5.5 billed none (v1.5.5 `proxy/response_body.rs:620-625`),
+/// and the tap reports a `Partial` end with no usage, so both books hold the same nothing.
 #[tokio::test]
-async fn a_same_protocol_nonstream_body_dropped_mid_relay_bills_what_it_relayed_not_zero() {
+async fn a_same_protocol_nonstream_body_dropped_mid_relay_bills_no_tokens_as_in_1_5_5() {
     let whole = message_with_usage(r#"{"input_tokens":1500,"output_tokens":90}"#);
     // The prefix stops before the `usage` object: what the client had when it left.
     let cut = whole
@@ -145,26 +145,20 @@ async fn a_same_protocol_nonstream_body_dropped_mid_relay_bills_what_it_relayed_
     // THE DISCONNECT: the server drops the body before its end.
     drop(fbb);
 
-    let floor = estimate_usage_from_truncated_tail(prefix.len());
     let billed = ledgered_tokens(&gov, &cost, &key_id).await;
-    assert_ne!(
-        billed, 0,
-        "a non-streamed completion dropped mid-relay was generated whole: it never bills 0"
-    );
     assert_eq!(
-        billed, floor.output,
-        "it bills the no-usage-recovered floor over the relayed bytes"
+        billed, 0,
+        "a same-protocol non-stream body dropped mid-relay bills no tokens, as in 1.5.5"
     );
     let report = tap.get().expect("the drop reports its end");
     assert_eq!(report.finish, TapFinish::Partial);
     assert_eq!(
-        report.usage,
-        Some(floor),
-        "the report-back carries the figure the ledger accrued (#71: both books agree)"
+        report.usage, None,
+        "the report-back carries the figure the ledger accrued: none (#71: both books agree)"
     );
 }
 
-/// ITEM 367, THE CONTROL: the same body relayed to its END bills its own `usage` exactly — the drop
+/// THE CONTROL: the same body relayed to its END bills its own `usage` exactly — the drop
 /// arm adds nothing to a clean end (the sink was already taken).
 #[tokio::test]
 async fn a_same_protocol_nonstream_body_relayed_whole_bills_its_own_usage_once() {

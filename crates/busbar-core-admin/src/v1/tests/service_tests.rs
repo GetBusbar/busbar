@@ -2379,7 +2379,7 @@ plugins:
         serde_yaml::from_str(&yaml).expect("test DeployCfg yaml must parse");
     let def: busbar_kernel::config::ProviderDef = serde_yaml::from_str(&format!(
         "protocol: {}\nbase_url: https://upstream.example\nerror_map:\n  \"400\": client_error\n",
-        busbar_kernel::proto::PROTO_ANTHROPIC
+        crate::linked_protocol()
     ))
     .unwrap();
     let defs = std::collections::HashMap::from([("upstream".to_string(), def)]);
@@ -2427,7 +2427,7 @@ store:
     .expect("test DeployCfg yaml must parse");
     let def: busbar_kernel::config::ProviderDef = serde_yaml::from_str(&format!(
         "protocol: {}\nbase_url: https://upstream.example\nerror_map:\n  \"400\": client_error\n",
-        busbar_kernel::proto::PROTO_ANTHROPIC
+        crate::linked_protocol()
     ))
     .unwrap();
     let defs = std::collections::HashMap::from([("upstream".to_string(), def)]);
@@ -2481,7 +2481,8 @@ mod dated_rate_card_history {
             Some([(
                 LANE,
                 TierRates {
-                    input: micro_per_token,
+                    // The fixture's rates are whole micro-units, so the intake's nano-units are exact.
+                    input: Some((micro_per_token * 1000.0).round() as u64),
                     ..Default::default()
                 },
             )]),
@@ -2667,6 +2668,52 @@ mod dated_rate_card_history {
             read(gov, src, prepaid).await.total.spend_micros,
             1_000,
             "the prepaid window prices at 1"
+        );
+    }
+
+    // ── PROOF 1a: the response NAMES the card that priced it (#44, Q93) ──────────────────────
+
+    /// RED (Q93, ANSWERED 2026-09-27: "serve the rate-card version on the usage and audit
+    /// responses"; #44 "rate_card_version surfaced on usage+audit endpoints"): each window's
+    /// response names the history seq of the card that priced it, PAYG 0, month-to-month 1,
+    /// prepaid 2, while the CURRENT card is 2. Asking `?as_of=<that seq>` re-derives the same
+    /// figure, which is what makes the version an invoice's provenance. A node with no dated
+    /// history names none (`null`), never a zero: seq 0 is a real opening entry.
+    #[tokio::test]
+    async fn the_usage_response_names_the_rate_card_version_that_priced_it() {
+        let (payg, monthly, prepaid) = windows();
+        let src = source(payg_then_monthly_then_prepaid(monthly, prepaid));
+        let gov = gov_with_rows(&[
+            (payg, 0),
+            (monthly, monthly * 1_000),
+            (prepaid, prepaid * 1_000),
+        ]);
+        for (bucket, seq) in [(payg, 0), (monthly, 1), (prepaid, 2)] {
+            let live = read(gov.clone(), src, bucket).await;
+            assert_eq!(
+                live.rate_card_version,
+                Some(seq),
+                "the window at {bucket} is priced by history entry {seq}"
+            );
+            let pinned = read_as_of(gov.clone(), src, bucket, Some(seq))
+                .await
+                .expect("the named version is a snapshot this history holds");
+            assert_eq!(
+                pinned.total.spend_micros, live.total.spend_micros,
+                "`?as_of=<rate_card_version>` re-derives the figure the version was served beside"
+            );
+            assert_eq!(pinned.rate_card_version, Some(seq));
+            let wire = serde_json::to_value(&live).expect("a usage view serializes");
+            assert_eq!(wire["rate_card_version"], serde_json::json!(seq));
+        }
+        let none = read_no_source_as_of(gov, payg, None)
+            .await
+            .expect("a node with no dated history still reads");
+        assert_eq!(none.rate_card_version, None);
+        let wire = serde_json::to_value(&none).expect("a usage view serializes");
+        assert!(
+            wire["rate_card_version"].is_null(),
+            "no history: the version is null, never a zero"
         );
     }
 
@@ -3328,7 +3375,8 @@ mod one_recorded_usage_every_surface {
             Some([(
                 LANE,
                 TierRates {
-                    input: micro_per_token,
+                    // The fixture's rates are whole micro-units, so the intake's nano-units are exact.
+                    input: Some((micro_per_token * 1000.0).round() as u64),
                     ..Default::default()
                 },
             )]),
@@ -4347,30 +4395,59 @@ fn the_store_catalog_heads_with_the_linked_store_rows() {
     assert_eq!(head, want);
 }
 
-/// EVERY ADMIN MOMENT THE TRUST POLICY RESOLVES WARNS AS BOOT DOES: the catalog, reload, upload and
-/// rollback all resolve through the one `trust_policy` (none resolves it any other way), and it
-/// warns about a malformed anti-downgrade floor before resolving.
+/// EVERY ADMIN MOMENT THE TRUST POLICY RESOLVES WARNS AS BOOT DOES: the catalog, install, inspect
+/// and rollback all resolve through the one `trust_policy` (none resolves it any other way), which
+/// builds nothing itself (the root's builder is installed), and it warns about a malformed
+/// anti-downgrade floor before resolving.
 #[test]
 fn every_admin_trust_resolution_warns_about_a_malformed_floor() {
     use busbar_kernel::diagnostics::CONFIG_ANTIDOWNGRADE_FLOOR_INVALID;
     use tracing_subscriber::layer::SubscriberExt as _;
     let src = include_str!("../service_operations.rs");
     assert_eq!(
-        src.matches("trust_policy(&self.app.plugins_cfg").count(),
+        src.matches("trust_policy(&self.app, ").count(),
         4,
-        "catalog, reload, upload and rollback resolve through trust_policy"
+        "catalog, install, inspect and rollback resolve through trust_policy"
     );
-    assert_eq!(src.matches("TrustPolicy::from_config(").count(), 1);
+    assert_eq!(
+        src.matches("TrustPolicy::from_config(").count(),
+        0,
+        "the admin surface builds no trust policy of its own: it resolves through the root's"
+    );
     let mut cfg = busbar_kernel::config::PluginsCfg::default();
     cfg.min_versions.insert("p".into(), "v2".into());
+    let app = crate::new_test_app().plugins_cfg(cfg).build();
     let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
     let subscriber = tracing_subscriber::registry().with(cap.clone());
     tracing::subscriber::with_default(subscriber, || {
-        super::operations::trust_policy(&cfg, "1.6.0").expect("the policy resolves");
+        super::operations::trust_policy(&app, "1.6.0").expect("the policy resolves");
     });
     assert!(
         cap.contains(&CONFIG_ANTIDOWNGRADE_FLOOR_INVALID.banner().to_string()),
         "{:?}",
         cap.messages()
     );
+}
+
+/// THE ADMIN SURFACE JUDGES UNDER THE SNAPSHOT'S BUILDER AND NO OTHER: an App handed a root builder
+/// that refuses is refused by every admin trust moment with that builder's words, and an App with no
+/// builder resolves nothing (the catalog lists the linked rows alone).
+#[test]
+fn every_admin_trust_moment_resolves_through_the_snapshots_builder() {
+    fn refusing_root(
+        _: &busbar_kernel::config::PluginsCfg,
+        _: &str,
+    ) -> Result<busbar_kernel::plugin_admission::sign::TrustPolicy, String> {
+        Err("the root's refusal".into())
+    }
+    let app = crate::new_test_app().plugin_trust(refusing_root).build();
+    assert_eq!(
+        super::operations::trust_policy(&app, "1.6.0")
+            .err()
+            .as_deref(),
+        Some("the root's refusal")
+    );
+    let mut none = (*app).clone();
+    none.plugin_trust = None;
+    assert!(super::operations::trust_policy(&none, "1.6.0").is_err());
 }

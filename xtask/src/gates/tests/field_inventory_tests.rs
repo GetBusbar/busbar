@@ -111,3 +111,42 @@ fn an_orphan_floor_row_is_refused() {
     floors.push(("retired", "request", 1));
     assert_eq!(orphan_floors(&floors).len(), 2);
 }
+
+/// THE REGISTER IS READ, NOT RESTATED (TODO l.1995 defect 1). The plane's committed table yields
+/// exactly the six dialects the generator locks; a seventh row there, with no lock and no generator
+/// entry, reds `:registration` naming it, where every row used to stay PASS.
+#[test]
+fn a_dialect_the_plane_registers_without_a_lock_is_refused() {
+    let cx = cx();
+    let names = registry_names(&cx.read(REGISTRY).expect("register"));
+    let want: BTreeSet<String> = DIALECTS.iter().map(|d| d.name.to_string()).collect();
+    assert_eq!(
+        names, want,
+        "the plane's register and the generator's agree today"
+    );
+
+    let v = FieldInventoryGate.run(&cx.with_overlay(register_plant(&cx)));
+    assert_eq!(status_of(&v, ROW_REGISTRATION), Status::Fail);
+    let detail = &v
+        .rows
+        .iter()
+        .find(|r| r.id == ROW_REGISTRATION)
+        .expect("row")
+        .detail;
+    assert!(detail.contains("mistral"), "{detail}");
+}
+
+/// The table is read inside `pub const DIALECTS` only, and a `name:` in a comment or a test module
+/// is not a row.
+#[test]
+fn the_register_reader_reads_only_the_table_rows() {
+    let text = "struct Other { name: \"outside\" }\n\
+                pub const DIALECTS: &[Dialect] = &[\n\
+                    Dialect {\n        name: \"alpha\",\n    },\n\
+                    // name: \"commented\",\n\
+                    Dialect {\n        name: \"beta\",\n    },\n\
+                ];\n\
+                const AFTER: Dialect = Dialect { name: \"after\" };\n";
+    let got: Vec<String> = registry_names(text).into_iter().collect();
+    assert_eq!(got, ["alpha", "beta"]);
+}

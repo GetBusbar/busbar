@@ -14,6 +14,12 @@ fn model_part_frame(part: serde_json::Value) -> (String, serde_json::Value) {
 }
 
 impl ProtocolWriter for GeminiWriter {
+    /// Latch the stream's translation cap, the one its plane's settings carry.
+    fn set_translate_cap(&self, cap: usize) {
+        self.translate_cap
+            .store(cap, std::sync::atomic::Ordering::Relaxed);
+    }
+
     /// No image-fidelity slot: an image's `detail` is dropped, with the seam's warn.
     fn carries_image_detail(&self) -> bool {
         false
@@ -27,10 +33,10 @@ impl ProtocolWriter for GeminiWriter {
             .collect()
     }
 
-    fn probe_request(&self) -> serde_json::Value {
+    fn probe_request(&self, host: &dyn busbar_contract::codec::CodecHost) -> serde_json::Value {
         // The ping IR is built by the plugin (ir_encode::ping_request); this dialect serializes it
         // through its own write_request, so the probe body matches a real request on this wire.
-        self.write_request(&super::super::ir_encode::ping_request())
+        self.write_request(host, &super::super::ir_encode::ping_request())
     }
 
     fn upstream_path(&self) -> &str {
@@ -102,9 +108,13 @@ impl ProtocolWriter for GeminiWriter {
         true
     }
 
-    fn write_request(&self, req: &crate::codec::ir::IrRequest) -> serde_json::Value {
+    fn write_request(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        req: &crate::codec::ir::IrRequest,
+    ) -> serde_json::Value {
         // The model-blind write: `""` is "model unknown".
-        self.write_request_for_model(req, "")
+        self.write_request_for_model(host, req, "")
     }
 
     /// The production write: the lane model is known, so a reasoning-OFF ask is written only where
@@ -112,6 +122,7 @@ impl ProtocolWriter for GeminiWriter {
     /// the model-blind [`ProtocolWriter::write_request`]; nothing else here depends on it.
     fn write_request_for_model(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         req: &crate::codec::ir::IrRequest,
         model: &str,
     ) -> serde_json::Value {
@@ -769,7 +780,13 @@ impl ProtocolWriter for GeminiWriter {
     /// the HTTP-status-derived name wins (so an unrecognized `kind` never produces a non-canonical
     /// `status` string a native SDK would choke on). No `_ =>` catch-all is used on `kind`; the
     /// final fallback is the explicit HTTP-status mapping.
-    fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value {
+    fn write_error(
+        &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
+        status: u16,
+        kind: &str,
+        message: &str,
+    ) -> serde_json::Value {
         // google.rpc.Code name for an HTTP status (the canonical Generative Language API mapping).
         fn status_name_for_http(status: u16) -> &'static str {
             if let Some((name, _)) = STATUS_HTTP.iter().find(|(_, code)| *code == status) {
@@ -888,7 +905,11 @@ impl ProtocolWriter for GeminiWriter {
         }
     }
 
-    fn write_response_event(&self, ev: &IrStreamEvent) -> Option<(String, serde_json::Value)> {
+    fn write_response_event(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ev: &IrStreamEvent,
+    ) -> Option<(String, serde_json::Value)> {
         match ev {
             // MessageStart → a leading identity-bearing chunk, ALWAYS emitted (this arm never returns
             // `None`). Native Gemini SSE chunks carry top-level `responseId`/`modelVersion`; the
@@ -912,8 +933,8 @@ impl ProtocolWriter for GeminiWriter {
                 // as `modelVersion` below) we SYNTHESIZE a native-shaped one rather than omitting
                 // it, because a native google-genai SDK reads `chunk.response_id` off the first
                 // chunk and an identity-less frame is a detectable fidelity gap.
-                let response_id =
-                    self.carried_response_id(|| id.clone().unwrap_or_else(synth_response_id));
+                let response_id = self
+                    .carried_response_id(|| id.clone().unwrap_or_else(|| synth_response_id(host)));
                 frame.insert(
                     FIELD_RESPONSE_ID.to_string(),
                     serde_json::json!(response_id),
@@ -1014,17 +1035,17 @@ impl ProtocolWriter for GeminiWriter {
                 // per-connection memory-amplification DoS distinct from `MAX_GEMINI_TOOL_FRAMES`, which
                 // only bounds the COUNT of distinct open blocks, not one block's accumulated size).
                 //
-                // The cap is `busbar_contract::codec::max_translate_body_bytes()` — the neutral twin of
-                // core's `limits::translate_body_max_bytes()`, the SAME operator-tunable,
+                // The cap is this stream's `translate_cap`, the one the plane's settings carry: the
+                // kernel hands `limits.request_body_max_bytes`, the SAME operator-tunable,
                 // live-reconfigurable limit (default 32 MiB, coupled to `limits.request_body_max_bytes`)
                 // that already bounds a buffered cross-protocol NON-STREAM completion body elsewhere
                 // (`proxy::wire::max_translated_body_bytes`), whose own doc comment names "big tool-call
                 // arguments" as exactly why that cap must be generous. Reusing it here — rather than a
                 // new hardcoded constant — means an operator who raises the one knob to admit larger
                 // tool payloads gets that same headroom on this streaming path too, instead of the two
-                // paths silently diverging. Read through the translate-cap reader the host installs
-                // (the host's live value, #83a SD-3) so this plugin never reaches the host crate. A
-                // read per fragment is cheap (a function-pointer call over an atomic load).
+                // paths silently diverging. Read from the writer's own state (the plane's settings,
+                // row 155) so this plugin never reaches the host. A read per fragment is one atomic
+                // load.
                 //
                 // Once appending a fragment would cross the cap, that fragment (and every subsequent one
                 // for this block) is dropped whole rather than sliced at the boundary: the buffer is
@@ -1039,7 +1060,9 @@ impl ProtocolWriter for GeminiWriter {
                         if let Some(GeminiOpenTool { args, .. }) =
                             guard.iter_mut().find(|t| t.index == *index)
                         {
-                            let cap = busbar_contract::codec::max_translate_body_bytes();
+                            let cap = self
+                                .translate_cap
+                                .load(std::sync::atomic::Ordering::Relaxed);
                             if args.len().saturating_add(json_str.len()) <= cap {
                                 args.push_str(json_str);
                             }
@@ -1313,13 +1336,21 @@ impl ProtocolWriter for GeminiWriter {
         }
     }
 
-    fn write_error_frame(&self, err: &IrError) -> Option<(String, serde_json::Value)> {
+    fn write_error_frame(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        err: &IrError,
+    ) -> Option<(String, serde_json::Value)> {
         // The streaming-error seam: delegate to this dialect's own event writer so the mid-stream
         // error frame is byte-for-byte what an `Error` event produces on this wire.
-        self.write_response_event(&IrStreamEvent::Error(err.clone()))
+        self.write_response_event(host, &IrStreamEvent::Error(err.clone()))
     }
 
-    fn write_response(&self, resp: &crate::codec::ir::IrResponse) -> serde_json::Value {
+    fn write_response(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        resp: &crate::codec::ir::IrResponse,
+    ) -> serde_json::Value {
         // Build candidates array (Gemini whole-response format)
         let mut parts_arr: Vec<serde_json::Value> = Vec::new();
 
@@ -1578,7 +1609,7 @@ impl ProtocolWriter for GeminiWriter {
                 out[FIELD_RESPONSE_ID] = serde_json::json!(id);
             }
             (None, Some(_)) => {
-                out[FIELD_RESPONSE_ID] = serde_json::json!(synth_response_id());
+                out[FIELD_RESPONSE_ID] = serde_json::json!(synth_response_id(host));
             }
             (None, None) => {}
         }
@@ -1613,26 +1644,17 @@ impl ProtocolWriter for GeminiWriter {
     }
 }
 
-/// `candidatesTokenCount` and `thoughtsTokenCount` from the IR usage (IR audit GEM-13). The IR folds
-/// reasoning INTO `output_tokens` (every dialect's reasoning count is a slice of its output total), but
-/// Gemini states the two apart: `candidatesTokenCount` is the visible answer and the ADDITIVE
-/// `thoughtsTokenCount` is the thinking. Writing the whole output as `candidatesTokenCount` told a
-/// Gemini client the thinking was answer. `thoughtsTokenCount` is emitted only for a non-zero
-/// reasoning count (native Gemini omits it when the model did not think); the total is unchanged.
+/// `candidatesTokenCount` from the IR usage: the WHOLE output count, reasoning included, exactly
+/// as 1.5.5 wrote it (v1.5.5 `crates/busbar/src/proto/gemini/writer.rs:962-964`,
+/// `serde_json::json!(usage.output_tokens)`). A Gemini client reconciling usage against its bill
+/// reads the figure 1.5.5 gave it; splitting the reasoning out into `thoughtsTokenCount` lowered the
+/// answer count a 1.5.5 client read, and no register entry signs that value change.
 fn insert_gemini_output_counts(
     usage_metadata: &mut serde_json::Map<String, serde_json::Value>,
     usage: &crate::codec::ir::IrUsage,
 ) {
-    let thoughts = usage
-        .detail
-        .reasoning_tokens
-        .filter(|&t| t > 0)
-        .map(|t| t.min(usage.output_tokens));
     usage_metadata.insert(
         FIELD_CANDIDATES_TOKEN_COUNT.to_string(),
-        serde_json::json!(usage.output_tokens.saturating_sub(thoughts.unwrap_or(0))),
+        serde_json::json!(usage.output_tokens),
     );
-    if let Some(t) = thoughts {
-        usage_metadata.insert(FIELD_THOUGHTS_TOKEN_COUNT.to_string(), serde_json::json!(t));
-    }
 }

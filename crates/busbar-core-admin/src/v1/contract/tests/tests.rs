@@ -183,6 +183,7 @@ fn usage_view_serializes_currency_from_const() {
         window: UsageWindow { start: 0, end: 1 },
         as_of: 0,
         currency: (),
+        rate_card_version: None,
         total: UsageBreakdown::default(),
         by_model: Vec::new(),
         by_key: Vec::new(),

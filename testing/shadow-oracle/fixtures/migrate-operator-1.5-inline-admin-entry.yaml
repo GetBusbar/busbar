@@ -1,0 +1,5 @@
+auth:
+  admin_auth:
+    - admin-tokens: { token: { env: BUSBAR_ADMIN_TOKEN } }
+providers: {}
+models: {}

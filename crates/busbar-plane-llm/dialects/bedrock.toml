@@ -33,9 +33,9 @@ drop_warn = "dropping a request control on Bedrock egress: Converse has no form 
 [rows.tier]
 "serviceTier.type" = { ir = "service_tier", words = "service_tier" }
 
-# The reasoning effort word Converse spells `outputConfig.effort`, read when no
-# `additionalModelRequestFields` reasoning ask was given (that ask wins). Read only: the writer
-# states a reasoning ask in `additionalModelRequestFields` (BED-06).
+# The reasoning effort word Converse spells `outputConfig.effort` (registered in CHANGELOG 1.6.0).
+# Read only: an `additionalModelRequestFields` reasoning ask is not read, and the writer writes no
+# reasoning ask, as in 1.5.5.
 [rows.output_config]
 "outputConfig.effort" = { ir = "reasoning_effort", words = "effort" }
 

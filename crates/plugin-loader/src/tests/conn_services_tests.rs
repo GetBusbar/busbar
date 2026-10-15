@@ -583,6 +583,75 @@ fn a_trust_from_need_is_declared_with_its_settings_ca_at_open_and_every_refresh(
     );
 }
 
+/// A need whose trust anchors come from the OWNED namespace: `owned.agent_push.ca`.
+const OWNED_TRUSTING: [Need; 1] = [Need {
+    target_from: NONE,
+    trust_from: abi_str("owned.agent_push.ca"),
+    ..NEEDS[0]
+}];
+
+/// `refresh` with `json` as the instance's new settings and `owned` as its owned sections, carried
+/// in the extensions blob under `abi::plane::EXT_OWNED`, ticket-less.
+fn refresh_owning(p: &Plugin<TestKind>, json: &'static [u8], owned: &[u8]) -> Outcome {
+    use busbar_contract::abi::mechanism::call::BLOB_OCTETS;
+    let extensions = busbar_contract::abi::mechanism::extensions::encode(&[(
+        busbar_contract::abi::plane::EXT_OWNED,
+        owned,
+    )]);
+    let mut head = in_head();
+    head.extensions = Blob {
+        ptr: extensions.as_ptr(),
+        len: extensions.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    };
+    let mut f = Frame::new(
+        RefreshIn {
+            head,
+            generation: 2,
+            settings: settings(json),
+            secrets: std::ptr::null(),
+            secrets_len: 0,
+        },
+        out_head(),
+    );
+    p.call(slot::REFRESH, &mut f).outcome
+}
+
+/// RED: a need whose `trust_from` is in the OWNED namespace resolves against the owned sections
+/// alone, never the settings (no fallback between the two): its `open` (no owned sections for a
+/// kind that is no plane) and a refresh carrying none declare it WITHOUT a trust (the public roots
+/// alone, the table's to take as optional), even when the settings hold the same path; a refresh
+/// whose owned sections write the anchor declares it with that PEM.
+/// RED before the fix: the path resolved against the settings only, so an owned anchor never
+/// reached the table.
+#[test]
+fn an_owned_trust_from_resolves_against_the_owned_sections_alone() {
+    let table = Arc::new(Recording::default());
+    let p = bound(Box::leak(Box::new(OWNED_TRUSTING)), &table);
+    let decoy: &'static [u8] = br#"{"agent_push":{"ca":"PEM-IN-SETTINGS"},"owned":{"agent_push":{"ca":"PEM-IN-SETTINGS"}}}"#;
+    assert_eq!(open_with(&p, decoy), Outcome::Ready);
+    assert_eq!(
+        refresh_owning(&p, decoy, br#"{"agent_push":{"ca":"PEM-OWNED"}}"#),
+        Outcome::Ready
+    );
+    assert_eq!(refresh_with(&p, decoy), Outcome::Ready);
+    let declared = table.declared.lock().unwrap().clone();
+    let seen: Vec<Option<String>> = declared
+        .iter()
+        .filter(|(owner, need, ..)| (*owner, *need) == (p.instance(), NeedId(0)))
+        .map(|(_, _, spec, _, trust)| {
+            assert_eq!(spec.trust_from, "owned.agent_push.ca");
+            trust.clone()
+        })
+        .collect();
+    assert_eq!(
+        seen,
+        vec![None, Some("PEM-OWNED".to_owned()), None],
+        "the settings are never read for an owned path"
+    );
+}
+
 /// RED (Q-FC7): two instances, each on its own dispatcher, whose first tickets collide (fresh
 /// dispatchers mint identical first tickets). Recycling one's ticket forgets only its own kept
 /// answers: the other's re-issued `ESTABLISH` redeems its stored stream and is never run a second
@@ -746,7 +815,7 @@ use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, Ou
 use busbar_contract::conn::ConnAuth;
 use busbar_contract::conn::PieceKind;
 use busbar_contract::ids::StreamId;
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering};
 
 /// What one open carried: the need, target, head words, fields and body.
@@ -781,10 +850,15 @@ struct Scripted {
     facts: Mutex<Option<ConnFacts>>,
     /// Every read fails with this, the table naming this cause.
     failing: Option<(ConnError, ConnCause)>,
+    /// The member binding every request is authenticated with (`auth_of`); `None` = none.
+    member_auth: Option<busbar_contract::conn::ConnAuth>,
     /// The member binding every request this table carries is authed by (none = no binding).
     auth: Option<Arc<dyn OutboundAuth>>,
     /// An open reached the table while the calling thread held the connector's lock.
     opened_under_lock: AtomicBool,
+    /// Every read that parked: the caller and the ticket it registered interest under, as the
+    /// connector keeps them to wake.
+    parked: Mutex<Vec<(InstanceId, u64)>>,
 }
 
 /// One upgrade call as it reached the table: the stream, the name offered, the trust reference.
@@ -839,14 +913,23 @@ impl DeclaredConns for Scripted {
         self.failing.as_ref().map(|(_, c)| c.clone())
     }
 
-    fn auth_of(&self, _: InstanceId, _: NeedId, _: &str) -> Option<ConnAuth> {
-        self.auth.as_ref().map(|auth| ConnAuth {
-            auth: Arc::clone(auth),
-            handle: 1,
-            style_flags: 0,
-            points: AuthPoints::EMPTY,
-            passthrough: false,
-            lender: None,
+    fn auth_of(
+        &self,
+        _: InstanceId,
+        _: NeedId,
+        _: &str,
+        _: &str,
+    ) -> Option<busbar_contract::conn::ConnAuth> {
+        self.member_auth.clone().or_else(|| {
+            self.auth.as_ref().map(|auth| ConnAuth {
+                auth: Arc::clone(auth),
+                handle: 1,
+                style_flags: 0,
+                points: AuthPoints::EMPTY,
+                passthrough: false,
+                lender: None,
+                per_request: None,
+            })
         })
     }
 }
@@ -891,17 +974,21 @@ impl Conns for Scripted {
         self.writes.lock().unwrap().push(b.to_vec());
         Ok(b.len())
     }
-    fn read(&self, c: InstanceId, id: ConnId, _: u64, buf: &mut [u8]) -> Result<Piece, ConnError> {
+    fn read(
+        &self,
+        c: InstanceId,
+        id: ConnId,
+        ticket: u64,
+        buf: &mut [u8],
+    ) -> Result<Piece, ConnError> {
         self.slab.get(c, id)?;
         if let Some((e, _)) = &self.failing {
             return Err(*e);
         }
-        let (mut p, bytes) = self
-            .script
-            .lock()
-            .unwrap()
-            .pop_front()
-            .ok_or(ConnError::Pending)?;
+        let Some((mut p, bytes)) = self.script.lock().unwrap().pop_front() else {
+            self.parked.lock().unwrap().push((c, ticket));
+            return Err(ConnError::Pending);
+        };
         buf[..bytes.len()].copy_from_slice(&bytes);
         p.len = p.len.min(bytes.len());
         Ok(p)
@@ -1104,7 +1191,9 @@ fn piece(
         status_code: code,
         status_namespace: None,
         retry_after_secs: None,
+        fault: None,
         reason,
+        declared_len: None,
     }
 }
 
@@ -1783,7 +1872,7 @@ impl Seen {
 fn bearer() -> Fields {
     Fields::Ready(vec![AuthField {
         name: b"authorization".to_vec(),
-        value: Redacted::new(b"Bearer member".to_vec()),
+        value: Secret::new(b"Bearer member".to_vec()),
         sensitive: true,
     }])
 }
@@ -1857,7 +1946,10 @@ fn a_members_auth_call_and_its_open_run_outside_the_connectors_lock() {
         auth: Some(probe.clone()),
         ..Scripted::default()
     });
-    let p = bound_over(&table);
+    // Adopted by a dispatcher, as every production instance is: the member's field is revealed
+    // under the seal the host lent it (#1021), and an unadopted instance has none to reveal under.
+    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let p = bound_over_by(&table, dispatcher.adopter());
     whole_request(&p, 0);
     assert_eq!(
         probe.seen.calls.load(AtomicOrdering::SeqCst),
@@ -1921,6 +2013,70 @@ fn a_members_pending_auth_call_is_polled_and_opened_outside_the_connectors_lock(
         "the open ran under the connector's lock"
     );
     assert_eq!(table.opened.lock().unwrap().len(), 1, "one open");
+}
+
+/// RED (#74, A FORGED TICKET THROUGH A CONNECTION SLOT): a plugin hands the read slot a ticket
+/// generation the host never minted. The table parks the read and, as the connector does, wakes it
+/// through the dispatcher's conn waker naming the caller it parked for. That caller, the supplier,
+/// is quarantined, and the latch does not move: a plugin cannot trip the process's latch through a
+/// connection.
+#[test]
+fn red_a_forged_ticket_through_a_connection_slot_quarantines_its_supplier() {
+    let table = Arc::new(Scripted::default());
+    let d = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let latch: &'static crate::dispatch::handle::Latch =
+        Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
+    d.judge_against(latch);
+    let p = bound_over_by(&table, d.adopter());
+    let est = opened_stream(&p, 0);
+    assert!(ready(&est), "{}", error_text(&est));
+    let t = d.mint(0).expect("a ticket");
+    let forged = Ticket {
+        slot: t.slot,
+        generation: t.generation ^ 0x5a5a_5a5a,
+    };
+    let mut buf = [0u8; 16];
+    let i = IoIn {
+        head: ServiceHead {
+            size: std::mem::size_of::<IoIn>() as u32,
+            op: service::READ,
+            handle: CompletionHandle {
+                ticket: forged,
+                seq: 1,
+                _reserved: 0,
+            },
+        },
+        stream: est.value,
+        buf: buf.as_mut_ptr(),
+        len: buf.len(),
+    };
+    let out = call(&p, CONN_SLOTS.read, &i);
+    assert_eq!(out.outcome, RawOutcome::of(Outcome::Pending));
+    let parked = table.parked.lock().unwrap().clone();
+    assert_eq!(
+        parked,
+        vec![(
+            p.instance(),
+            crate::dispatch::conn_services::conn_ticket(forged)
+        )],
+        "the read parked under its caller and the forged ticket"
+    );
+    let (owner, ticket) = parked[0];
+    (d.conn_waker())(owner, ticket);
+    let started = std::time::Instant::now();
+    while !p.is_faulted() {
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(10),
+            "the supplier of the forged ticket was not quarantined"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert_eq!(
+        (latch.forged(), latch.unattributed()),
+        (1, 0),
+        "the forged ticket was not judged, or counted toward the latch"
+    );
+    d.recycle(t);
 }
 
 /// RED (§11.13 M1): a framed stream written raw opens as it was named, outside the lock.
@@ -1997,6 +2153,55 @@ fn a_replayed_identity_writes_the_callers_memory_again() {
     );
 }
 
+/// RED (THE DESIGN §11.12, "on resume the plugin re-issues the SAME handle and receives the stored
+/// result"): a `READ_REPLY` wrote the caller's memory, its piece and its bytes, so a replayed handle
+/// writes both again into the memory the replay lends, never a kept READY over memory nothing
+/// touched. A short answer's re-call starts the op over with fresh buffers: without this its replayed
+/// reads hand it no reply at all (busbar-hook-webrequest's conformance, a forwarded `decide`
+/// re-called on a short buffer). The far end is read once.
+#[test]
+fn a_replayed_read_reply_writes_its_piece_and_bytes_again() {
+    let table = Arc::new(Scripted::default());
+    table.script.lock().unwrap().extend([
+        (
+            piece(PieceKind::Fields, Some(201), Some(6..16), 6),
+            b"x: y\r\nFine By Me".to_vec(),
+        ),
+        (piece(PieceKind::Body, None, None, 3), b"abc".to_vec()),
+        (piece(PieceKind::Completion, None, None, 0), Vec::new()),
+    ]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let mut first = [0_u8; 64];
+    let (o, h) = read_reply(&p, 1, stream, &mut first);
+    assert!(ready(&o));
+    let (_, b) = read_reply(&p, 2, stream, &mut first);
+    assert_eq!(b.kind, REPLY_BODY);
+    let (_, e) = read_reply(&p, 3, stream, &mut first);
+    assert_eq!(e.kind, REPLY_END);
+    let mut again = [0_u8; 64];
+    let (ro, rh) = read_reply(&p, 1, stream, &mut again);
+    assert!(ready(&ro) && ro.len == o.len);
+    assert_eq!(rh, h, "the replayed head's piece");
+    assert_eq!(
+        &again[..16],
+        b"x: y\r\nFine By Me",
+        "the replayed head's bytes"
+    );
+    let (ro, rb) = read_reply(&p, 2, stream, &mut again);
+    assert_eq!((rb.kind, ro.len), (REPLY_BODY, 3));
+    assert_eq!(&again[..3], b"abc", "the replayed body's bytes");
+    assert_eq!(read_reply(&p, 3, stream, &mut again).1.kind, REPLY_END);
+    assert!(
+        table.script.lock().unwrap().is_empty(),
+        "every piece was read from the far end once"
+    );
+    super::forget(p.instance(), T);
+    let mut fresh = [0_u8; 64];
+    let (_, gone) = read_reply(&p, 1, stream, &mut fresh);
+    assert_ne!(gone, h, "a forgotten ticket's read is not replayed");
+}
+
 /// The connector's `RANDOM` slot is RETIRED and served by no host: `random.fill`, a host service,
 /// is the one random service.
 #[test]
@@ -2036,6 +2241,216 @@ fn a_dropped_instance_leaves_nothing_on_the_connectors_maps() {
 // ruling 2026-10-07).
 #[path = "member_secret_tests.rs"]
 mod member_secret_tests;
+// ── a member binding re-resolved per request, and the plugin's waiver of it ─────────────────────
+
+/// A binding whose credential is re-resolved per request: the scripted handles in turn (`None`:
+/// the credential is unavailable), counting how often it is asked.
+struct Resolving {
+    answers: Mutex<std::collections::VecDeque<Option<u64>>>,
+    asked: std::sync::atomic::AtomicU64,
+}
+
+impl busbar_contract::auth_calls::PerRequestHandle for Resolving {
+    fn handle_now(&self) -> Option<u64> {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.answers.lock().unwrap().pop_front().flatten()
+    }
+}
+
+/// An auth binding presenting the handle it is asked on (`authorization: Bearer h<handle>`).
+#[derive(Default)]
+struct ByHandle {
+    calls: std::sync::atomic::AtomicU64,
+}
+
+impl busbar_contract::auth_calls::OutboundAuth for ByHandle {
+    fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+        Ok(1)
+    }
+    fn fields_now(
+        &self,
+        handle: u64,
+        _: &busbar_contract::auth_calls::FieldsRequest,
+    ) -> Option<busbar_contract::auth_calls::Fields> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(busbar_contract::auth_calls::Fields::Ready(vec![
+            busbar_contract::auth_calls::AuthField {
+                name: b"authorization".to_vec(),
+                value: format!("Bearer h{handle}").into_bytes().into(),
+                sensitive: true,
+            },
+        ]))
+    }
+    fn fields(
+        &self,
+        _: u64,
+        _: busbar_contract::auth_calls::FieldsRequest,
+        _: u64,
+    ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+        unreachable!("a header binding answers on the spot")
+    }
+}
+
+/// A framed table whose member binding is re-resolved per request over `answers`.
+fn resolving_table(answers: &[Option<u64>]) -> (Arc<Scripted>, Arc<Resolving>, Arc<ByHandle>) {
+    let per = Arc::new(Resolving {
+        answers: Mutex::new(answers.iter().copied().collect()),
+        asked: std::sync::atomic::AtomicU64::new(0),
+    });
+    let auth = Arc::new(ByHandle::default());
+    let table = Arc::new(Scripted {
+        framed: true,
+        member_auth: Some(busbar_contract::conn::ConnAuth {
+            auth: Arc::clone(&auth) as Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
+            handle: 1,
+            style_flags: 0,
+            points: busbar_contract::abi::auth::AuthPoints::HEAD,
+            passthrough: false,
+            lender: None,
+            per_request: Some(
+                Arc::clone(&per) as Arc<dyn busbar_contract::auth_calls::PerRequestHandle>
+            ),
+        }),
+        ..Scripted::default()
+    });
+    (table, per, auth)
+}
+
+/// `PATCH /v1/x` carrying the host's waiver field before its own `a: 1`.
+const WAIVED_HEAD: &[u8] = b"PATCH/v1/xbusbar-no-member-auth: 1\r\na: 1\r\n";
+
+/// One whole request on a fresh stream (`seq` onwards): its head `head` laid out over `bytes`, then
+/// its end.
+fn whole_request_with(p: &Plugin<TestKind>, seq: u32, head: &RequestPiece, bytes: &[u8]) {
+    let stream = opened_stream(p, seq).value;
+    assert!(ready(&request(p, seq + 1, stream, head, bytes)));
+    assert!(ready(&request(
+        p,
+        seq + 2,
+        stream,
+        &kind_piece(REQUEST_END),
+        b""
+    )));
+}
+
+/// THE PLUGIN'S OWN REQUESTS TO A MEMBER carry the member's binding re-resolved for each one (the
+/// handle its credential resolves to NOW), and THE WAIVER (`abi::auth::NO_MEMBER_AUTH_FIELD`) opens
+/// a request with NO member auth — the binding is not asked and makes no call — and is the host's:
+/// it never reaches the table. RED arm: the same request without it carries the credential.
+#[test]
+fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_table() {
+    let (table, per, auth) = resolving_table(&[Some(4), Some(6)]);
+    // Adopted by a dispatcher, as every production instance is: the credential is revealed under
+    // the seal the host lent it (#1021).
+    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let p = bound_over_by(&table, dispatcher.adopter());
+    let waived = RequestPiece {
+        fields: span(10, WAIVED_HEAD.len() - 10),
+        ..head_piece()
+    };
+    whole_request_with(&p, 0, &waived, WAIVED_HEAD);
+    whole_request_with(&p, 3, &head_piece(), HEAD_BYTES);
+    whole_request_with(&p, 6, &head_piece(), HEAD_BYTES);
+    let fields: Vec<Vec<(String, Vec<u8>)>> = table
+        .opened
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|o| o.4.clone())
+        .collect();
+    assert_eq!(
+        fields,
+        vec![
+            vec![("a".to_owned(), b"1".to_vec())],
+            vec![
+                ("authorization".to_owned(), b"Bearer h4".to_vec()),
+                ("a".to_owned(), b"1".to_vec())
+            ],
+            vec![
+                ("authorization".to_owned(), b"Bearer h6".to_vec()),
+                ("a".to_owned(), b"1".to_vec())
+            ],
+        ],
+        "the waived request presented nothing and its waiver never reached the table; each \
+         other request the handle its credential resolved to for it"
+    );
+    assert_eq!(per.asked.load(std::sync::atomic::Ordering::SeqCst), 2);
+    assert_eq!(auth.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+/// A MEMBER CREDENTIAL THAT NO LONGER RESOLVES refuses the plugin's own request to it: nothing is
+/// opened, nothing presented, and the reply is the refused ack.
+#[test]
+fn a_request_whose_member_credential_no_longer_resolves_is_refused_and_opens_nothing() {
+    let (table, per, auth) = resolving_table(&[None]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    assert!(ready(&request(&p, 1, stream, &head_piece(), HEAD_BYTES)));
+    assert!(ready(&request(
+        &p,
+        2,
+        stream,
+        &kind_piece(REQUEST_END),
+        b""
+    )));
+    let mut buf = [0_u8; 8];
+    let (o, _) = read_reply(&p, 3, stream, &mut buf);
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
+    assert!(table.opened.lock().unwrap().is_empty(), "nothing opened");
+    assert_eq!(per.asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(
+        auth.calls.load(std::sync::atomic::Ordering::SeqCst),
+        0,
+        "nothing presented"
+    );
+}
+
+/// THE REFUSAL NAMES ITS CAUSE: a request refused because its member credential no longer resolves
+/// is the refused ack with `CAUSE_CREDENTIAL_UNAVAILABLE` in `value` and the credential's own text,
+/// so the plugin can tell a vanished secret from the target's, the egress rules' or the far end's
+/// refusal. RED arm: a table's plain refusal names no such cause.
+#[test]
+fn a_request_refused_for_an_unavailable_credential_names_that_cause() {
+    use busbar_contract::abi::host::conn::connector::CAUSE_CREDENTIAL_UNAVAILABLE;
+    let (table, _, _) = resolving_table(&[None]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    whole_request_on(&p, 1, stream);
+    let mut buf = [0_u8; 8];
+    let (o, _) = read_reply(&p, 3, stream, &mut buf);
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
+    assert_eq!(o.value, CAUSE_CREDENTIAL_UNAVAILABLE);
+    assert_eq!(error_text(&o), ConnError::CredentialUnavailable.text());
+
+    let plain = Arc::new(Scripted {
+        failing: Some((
+            ConnError::Refused,
+            ConnCause {
+                stage: 0,
+                text: "".into(),
+            },
+        )),
+        ..Scripted::default()
+    });
+    let p = bound_over(&plain);
+    let stream = opened_stream(&p, 0).value;
+    let (o, _) = read_reply(&p, 1, stream, &mut buf);
+    assert_eq!(o.outcome, RawOutcome::of(Outcome::Refused));
+    assert_ne!(o.value, CAUSE_CREDENTIAL_UNAVAILABLE);
+    assert_eq!(error_text(&o), ConnError::Refused.text());
+}
+
+/// A whole request's head (`HEAD_BYTES`) and end on `stream`, from handle `seq`.
+fn whole_request_on(p: &Plugin<TestKind>, seq: u32, stream: u64) {
+    assert!(ready(&request(p, seq, stream, &head_piece(), HEAD_BYTES)));
+    assert!(ready(&request(
+        p,
+        seq + 1,
+        stream,
+        &kind_piece(REQUEST_END),
+        b""
+    )));
+}
 
 /// The test plugin's door bound as an AUTH-kind instance: the same lifecycle skeleton as
 /// [`TestKind`], under the auth kind's code.

@@ -8,12 +8,13 @@
 //! `busbar_contract::export_door!`), so the two cannot answer differently. `tests/conformance.rs`
 //! loads both through the one loader and requires one transcript (Part 2 #2).
 //!
-//! The composition root links [`door`] on its `plane-door` axis under the llm fold's
-//! development-only switch `llm-on-driver` (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch") and
-//! binds it through the loader's one load beside the dropped-in plane doors. The default build links
-//! no llm door. With the switch on, the serve path composes this door with the kernel-owned sections
-//! it reads and mounts its claims as the data routes, ahead of the root's existing llm row, so every
-//! arrival this door claims is served through the plane driver and the row answers none of them.
+//! The composition root links [`door`] on its `plane-door` axis (its `plane-llm-door` row, carried by
+//! the plane's one switch `plane-llm`, in the default build) and binds it through the loader's one
+//! load beside the dropped-in plane doors. The serve path composes this door with the kernel-owned
+//! sections it reads and mounts its claims as the data routes, ahead of the root's legacy llm row, so
+//! every arrival this door claims is served through the plane driver and the row answers none of
+//! them (`BUSBAR-1.6.0.md` Part 3, section 12; the fold's development-only switch is deleted, status
+//! row 155).
 //!
 //! One unit, as the plane driver serves it:
 //!
@@ -47,26 +48,29 @@ use busbar_contract::abi::hook::{REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQU
 use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_ALL_EXCEPT_DENIED,
 };
-use busbar_contract::abi::host::service::ClockReading;
+use busbar_contract::abi::host::service::{ClockReading, MAX_RANDOM_FILL};
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT,
+    AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT, BLOB_OCTETS,
 };
 use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
+use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::{
     GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
+use busbar_contract::abi::plane::check::check_piece_in;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
     PlaneTail, ProjectIn, ProjectOut, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount,
-    CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE, EMIT_TO_FAR_END,
-    FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE, PRINCIPAL_REQUIRED, REFUSAL_GATE, ROUTE_DIRECT,
-    ROUTE_POOL, SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR,
-    UNITS_REPORTED, VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
+    ANSWER_LAYOUT, CANCEL_ABORTED, CANCEL_OK_PARTIAL, CLAIM_EXACT, CLAIM_PROBE, EMIT_DONE,
+    EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, PIECE_CUT, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
+    PRINCIPAL_REQUIRED, REFUSAL_GATE, REFUSED_UNSUPPORTED_ACTION, ROUTE_DIRECT, ROUTE_POOL,
+    SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED,
+    VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
@@ -79,7 +83,8 @@ use busbar_contract::abi::sdk::{
 use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
 use busbar_contract::ids::{MeterClassDecl, OpClassId};
 use busbar_contract::plane::PlaneMeta;
-use busbar_contract::upstream::Disposition;
+use busbar_contract::provider_keys::EXT_PROVIDER_KEYS;
+use busbar_contract::upstream::{Disposition, StatusClass};
 use serde_json::Value;
 
 use crate::dialect::DIALECTS;
@@ -87,7 +92,9 @@ use crate::exchange::arrive::{self, envelope_for, Arrived, Declined};
 use crate::exchange::attempt::{self, stream_intent, FarRequest};
 use crate::exchange::reply::{At, Fault, Piece, Reply, ReplyCtx, Units, Verdict};
 use crate::exchange::shaping::{sections, Shaping};
+use crate::exchange::webhook::{self, Webhooks};
 use crate::exchange::{handler_of, probe, project, refuse};
+use crate::meta::PROVIDER_KEYS;
 use crate::LlmPlane;
 
 // ── the Statement ────────────────────────────────────────────────────────────────────────────────
@@ -120,12 +127,14 @@ const fn section(name: &'static str, flags: u32) -> Section {
     }
 }
 
-/// `pools:` declared; `providers:`, `models:` and `limits:` read beside it.
+/// `pools:` declared; `providers:`, `models:` and `limits:` read beside it; `webhooks:` its own,
+/// opened with as written (the receivers it switches on, [`webhook`]).
 const SECTIONS: &[Section] = &[
     section(sections::POOLS, SECTION_DECLARING),
     section(sections::PROVIDERS, SECTION_CONSUMED),
     section(sections::MODELS, SECTION_CONSUMED),
     section(sections::LIMITS, SECTION_CONSUMED),
+    section(webhook::SECTION, 0),
 ];
 
 const OPS: &[OpClassId] = <LlmPlane as PlaneMeta>::OP_CLASSES;
@@ -140,9 +149,13 @@ const fn op(i: usize) -> OpClass {
     OpClass { op: name, name }
 }
 
-/// THE TOKEN CLASSES' CARD NAMES, in [`METER`]'s order: the classes 1.5.5's `rate_card:` prices
-/// (`input`, `output`, `cache_read`, `cache_write`), which the previous release's plane declaration
-/// ledgered its four token tiers under, so a door-served count is priced by the card as written.
+/// THE TOKEN CLASSES, THE ONE SOURCE of this plane's token class names (ARCHITECT, `$` meter
+/// classes: "The door's billable classes, which are what the dispatcher checks, are the source"):
+/// the first four of the tail's billable classes, and every key of the plane's `MeterClassDecl` list
+/// ([`crate::meta`]'s `CLASS_*`, read from here, never spelled there). They are 1.5.5's own names,
+/// byte for byte: the tiers its `rate_card:` prices (`input_utok`, `output_utok`, `cache_read_utok`,
+/// `cache_write_utok`), its ledger's `TierTokens` fields and its spend metrics' `tier` label, so a
+/// door-served count is priced by the card as written and ledgered under the tier 1.5.5 wrote.
 pub const TOKEN_CLASSES: [&str; 4] = [
     busbar_contract::records::UNIT_INPUT,
     busbar_contract::records::UNIT_OUTPUT,
@@ -153,9 +166,31 @@ pub const TOKEN_CLASSES: [&str; 4] = [
 const fn billable(i: usize) -> BillableClass {
     BillableClass {
         class: abi_str(TOKEN_CLASSES[i]),
-        family: abi_str(METER[i].family),
+        family: abi_str(busbar_contract::plane::TOKEN_FAMILY),
     }
 }
+
+/// The plane's `MeterClassDecl` list is DERIVED from the token classes above: the same keys, in the
+/// same order, in the token family. A second spelling of a class is refused at compile time.
+const fn meter_derives_from_the_tail() -> bool {
+    if METER.len() != TOKEN_CLASSES.len() {
+        return false;
+    }
+    let mut i = 0;
+    while i < METER.len() {
+        if !const_eq(METER[i].key.as_str(), TOKEN_CLASSES[i])
+            || !const_eq(METER[i].family, busbar_contract::plane::TOKEN_FAMILY)
+        {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+const _: () = assert!(
+    meter_derives_from_the_tail(),
+    "the plane's meter classes are the door's token classes, one source"
+);
 
 const DIALECT_NAMES: &[AbiStr] = &[
     dialect(0),
@@ -185,7 +220,7 @@ const fn open_class(k: usize) -> BillableClass {
 /// the ONE fee decider). It is the last of the tail's billable classes, and never usage.
 pub const FEE_CLASS: &str = busbar_contract::plane::PER_REQUEST;
 /// [`FEE_CLASS`]'s index in the tail's billable classes.
-pub const FEE_CLASS_INDEX: u32 = (METER.len() + OPEN_CLASSES.len()) as u32;
+pub const FEE_CLASS_INDEX: u32 = (TOKEN_CLASSES.len() + OPEN_CLASSES.len()) as u32;
 
 const BILLABLE_CLASSES: &[BillableClass] = &[
     billable(0),
@@ -217,7 +252,7 @@ const FEE_UNITS: &[AbiStr] = &[abi_str(FEE_CLASS)];
 const _: () = assert!(
     DIALECTS.len() == DIALECT_NAMES.len()
         && OPS.len() == OP_CLASSES.len()
-        && METER.len() + OPEN_CLASSES.len() + 1 == BILLABLE_CLASSES.len(),
+        && TOKEN_CLASSES.len() + OPEN_CLASSES.len() + 1 == BILLABLE_CLASSES.len(),
     "the tail states every dialect, op class and token class the plane declares"
 );
 
@@ -352,7 +387,8 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     ingress: INGRESS_REQUEST_RESPONSE | INGRESS_RESPONSE_STREAM,
     // The kernel pushes the caller's body and the far end's answer piece by piece.
     dispatch_shape: SHAPE_PIECEWISE,
-    _reserved: 0,
+    // The layout this plane writes its answers in: the contract's it was built against.
+    answer_layout: ANSWER_LAYOUT,
     scope: abi_str(sections::POOLS),
     label: abi_str(LABEL),
     // What one registration of the `pools:` map is called, in a refusal naming it ("a pool may not
@@ -391,12 +427,26 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     admin_routes: ptr::null(),
     admin_routes_len: 0,
     admin_openapi: Blob::ABSENT,
+    metric_lanes: ptr::null(),
+    metric_lanes_len: 0,
     stream_ceiling_secs: 0,
 };
 
-/// THE STATEMENT: the plane's key and version, its sections, its needs and its tail.
+/// The Statement's extensions: the plane's provider keys ([`crate::meta::PROVIDER_KEYS`]) under the
+/// contract's one key for them, built at compile time.
+const EXTENSIONS: &[u8] = &extensions::entry::<
+    { extensions::entry_len(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes()) },
+>(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes());
+
+/// THE STATEMENT: the plane's key and version, its sections, its needs, its tail and its extensions.
 pub const STATEMENT: Statement = Statement {
     kind_tail: ptr::from_ref(TAIL).cast::<KindTailHead>(),
+    extensions: Blob {
+        ptr: EXTENSIONS.as_ptr(),
+        len: EXTENSIONS.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    },
     sections: SECTIONS.as_ptr(),
     sections_len: SECTIONS.len(),
     needs: NEEDS.as_ptr(),
@@ -442,6 +492,11 @@ struct Answer {
     verdict: u32,
     /// `FAULT_*`: the breaker's reading of this answer, written once, on its first window.
     fault: u8,
+    /// The reason that reading states, in neutral words, written with it (empty: none).
+    fault_reason: Vec<u8>,
+    /// `TAP_FAULT_*`: why the usage tap could not read the body, beside the units; written once,
+    /// on the first window, for the kernel to count (row 155).
+    tap_fault: u8,
     /// The caller's reply is complete.
     done: bool,
     /// The unit's audit rows, `(action, resource)`, each written as a degraded `RECORD_AUDIT`:
@@ -493,15 +548,21 @@ struct UnitState {
     reply: Option<Reply>,
     /// The clock at the attempt's start (monotonic nanoseconds).
     started: Option<u64>,
+    /// The status the current attempt's far end answered under (`0` before its head).
+    far_status: u16,
     /// The answer the driver's re-call is owed.
     pending: Option<Pending>,
-    /// `project` found the body unreadable: the unit's refusal reads the previous release's
-    /// unreadable-body sentence.
-    unreadable: bool,
     /// The far end's last cumulative counts, as the unit last reported them.
     reported: Vec<UnitCount>,
     /// The caller was answered under a success status: the request's fee unit was incurred.
     fee: bool,
+    /// The kernel stated the current attempt's answer will not be failed over (`PIECE_FINAL`): a
+    /// retry verdict on it ends the unit like any other done answer.
+    final_answer: bool,
+    /// A unit the plane answers itself (a webhook delivery, `ROUTE_LOCAL`): no far end, no fee.
+    local: bool,
+    /// The local unit's acknowledgement, answered on the caller's last piece.
+    ack: Option<Vec<u8>>,
 }
 
 impl UnitState {
@@ -516,10 +577,13 @@ impl UnitState {
             request: None,
             reply: None,
             started: None,
+            far_status: 0,
             pending: None,
-            unreadable: false,
             reported: Vec::new(),
             fee: false,
+            final_answer: false,
+            local: false,
+            ack: None,
         }
     }
 
@@ -539,6 +603,8 @@ pub struct LlmDoor {
     units: Mutex<HashMap<u64, UnitState>>,
     tickets: Mutex<HashMap<Ticket, u64>>,
     services: Option<Services>,
+    /// The receivers the `webhooks:` section switched on at open.
+    webhooks: Webhooks,
 }
 
 /// A lock, through a poisoning: the maps it guards hold no invariant a panicking holder breaks.
@@ -556,12 +622,45 @@ impl LlmDoor {
 
     /// One reading of the host's clock; none when the host serves no clock.
     fn clock(&self) -> Option<ClockReading> {
-        let handle = CompletionHandle {
-            ticket: Ticket::NONE,
-            seq: 0,
-            _reserved: 0,
+        self.services.and_then(|s| s.clock_now(UNTICKETED).ok())
+    }
+
+    /// The codec host this instance hands its codecs: the host services it was given at open.
+    fn host(&self) -> DoorHost {
+        DoorHost(self.services)
+    }
+}
+
+/// A ticketless handle: the two services a codec reads never pend, so they are called outside any
+/// op's ticket (the host runs a ticketless call fresh every time and stores nothing).
+const UNTICKETED: CompletionHandle = CompletionHandle {
+    ticket: Ticket::NONE,
+    seq: 0,
+    _reserved: 0,
+};
+
+/// THE DOOR'S CODEC HOST: the [`CodecHost`](busbar_contract::codec::CodecHost) this plane's codecs
+/// are handed, down their call graph, over the host services the instance was given at open — the
+/// host's CSPRNG (`random.fill`, at most [`MAX_RANDOM_FILL`] bytes a call, so a larger draw is
+/// several) and the host's wall clock (`clock.now`, whole seconds). A host that serves neither
+/// answers each one's failure path: no entropy, no clock.
+#[derive(Clone, Copy)]
+struct DoorHost(Option<Services>);
+
+impl busbar_contract::codec::CodecHost for DoorHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        let Some(services) = self.0 else {
+            return false;
         };
-        self.services.and_then(|s| s.clock_now(handle).ok())
+        let most = usize::try_from(MAX_RANDOM_FILL).unwrap_or(usize::MAX);
+        out.chunks_mut(most)
+            .all(|chunk| services.random_fill(UNTICKETED, chunk).is_ok())
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        self.0
+            .and_then(|s| s.clock_now(UNTICKETED).ok())
+            .map(|reading| reading.wall_ns / 1_000_000_000)
     }
 }
 
@@ -611,10 +710,32 @@ pub fn claims() -> Vec<ClaimSpec> {
         .collect()
 }
 
-/// The generation's snapshot: the plane's claims.
-fn snapshot() -> SnapshotSpec {
+/// THE RECEIVERS' CLAIMS: each webhook receiver its `webhooks:` section switches on, an exact path
+/// that ranks above the fallback's prefix claim. None when the section names none, so a document
+/// without it claims exactly what the previous release answered.
+#[must_use]
+pub fn webhook_claims(webhooks: Webhooks) -> Vec<ClaimSpec> {
+    webhooks
+        .openai_responses
+        .then(|| {
+            let mut claim = ClaimSpec::new("POST", webhook::PATH, TRANSPORT, CLAIM_EXACT);
+            claim.refusal_dialect = u16::try_from(dialect_index(RESPONSES)).unwrap_or(0);
+            claim
+        })
+        .into_iter()
+        .collect()
+}
+
+/// The dialect a Responses webhook unit and its refusals wear.
+const RESPONSES: &str = "responses";
+
+/// The generation's snapshot: the plane's claims, and its receivers' claims.
+fn snapshot(webhooks: Webhooks) -> SnapshotSpec {
     SnapshotSpec {
-        claims: claims(),
+        claims: claims()
+            .into_iter()
+            .chain(webhook_claims(webhooks))
+            .collect(),
         ..SnapshotSpec::default()
     }
 }
@@ -688,7 +809,7 @@ pub fn counts(units: &Units) -> Vec<UnitCount> {
             .position(|(class, _)| *class == name.as_str())
         {
             Some(k) => out.push(UnitCount {
-                class: u32::try_from(METER.len() + k).unwrap_or(u32::MAX),
+                class: u32::try_from(TOKEN_CLASSES.len() + k).unwrap_or(u32::MAX),
                 source: UNITS_REPORTED,
                 amount,
             }),
@@ -724,6 +845,29 @@ pub fn breaker_fault(f: Option<&Fault>) -> u8 {
     }
 }
 
+/// THE REASON THE BREAKER'S READING STATES (the far-end fault reading): the plane classifies the
+/// far end's answer and states why in neutral words, which the kernel carries verbatim to the
+/// breaker's record (the member's down reason and its operator diagnostic). They are 1.5.5's own,
+/// byte for byte (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs`, the `HardDown` arm; retired as
+/// `crates/busbar-llm/src/engine/attempt/classify.rs`): an exhausted account is
+/// `billing / insufficient balance`, a refused own credential `auth rejected (HTTP <status>)`, any
+/// other hard-down `request rejected (HTTP <status>)`. Every other reading states none.
+#[must_use]
+pub fn fault_reason(f: Option<&Fault>, status: u16) -> Option<String> {
+    let Some(Fault::Judged {
+        disposition: Disposition::HardDown,
+        class,
+    }) = f
+    else {
+        return None;
+    };
+    Some(match class {
+        Some(StatusClass::Billing) => "billing / insufficient balance".to_string(),
+        Some(StatusClass::Auth) => format!("auth rejected (HTTP {status})"),
+        _ => format!("request rejected (HTTP {status})"),
+    })
+}
+
 fn verdict(v: Verdict) -> u32 {
     match v {
         Verdict::None => VERDICT_NONE,
@@ -743,8 +887,11 @@ fn fee_unit(unit: &mut UnitState, answer: &mut Answer) {
     if !answer.units.is_empty() {
         unit.reported.clone_from(&answer.units);
     }
-    let incurred =
-        !unit.fee && !unit.probe && !answer.to_far_end && (200..=299).contains(&answer.status);
+    let incurred = !unit.fee
+        && !unit.probe
+        && !unit.local
+        && !answer.to_far_end
+        && (200..=299).contains(&answer.status);
     unit.fee |= incurred;
     if unit.fee && (incurred || !answer.units.is_empty()) {
         answer.units.clone_from(&unit.reported);
@@ -795,8 +942,22 @@ fn to_caller(piece: Piece<'_>) -> Answer {
         units: counts(&piece.units),
         verdict: verdict(piece.verdict),
         fault,
+        tap_fault: piece.tap_fault.map_or(
+            busbar_contract::abi::plane::TAP_FAULT_NONE,
+            busbar_contract::codec::UsageTapFault::code,
+        ),
         done: piece.done,
         ..Answer::default()
+    }
+}
+
+/// A far-end reply piece as the caller's answer, with the reason its fault reading states (`status`:
+/// the far end's own, which the reason names).
+fn far_answer(piece: Piece<'_>, status: u16) -> Answer {
+    let reason = fault_reason(piece.fault.as_ref(), status);
+    Answer {
+        fault_reason: reason.map(String::into_bytes).unwrap_or_default(),
+        ..to_caller(piece)
     }
 }
 
@@ -825,6 +986,9 @@ fn at(clock: Option<ClockReading>, started: Option<u64>) -> At {
 /// One piece of a unit, as `on_piece` lends it.
 struct PieceIn<'a> {
     last: bool,
+    /// The far end's answer ended without completing (`PIECE_CUT`, on its last piece): its
+    /// connection failed or the send's deadline passed after its head.
+    cut: bool,
     status: Option<u32>,
     fields: Vec<(&'a [u8], &'a [u8])>,
     bytes: &'a [u8],
@@ -835,20 +999,22 @@ struct PieceIn<'a> {
 }
 
 /// An ATTEMPT: the far-end request for the member the walk picked.
-fn attempt(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
+fn attempt(host: &DoorHost, unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     unit.member = String::from_utf8_lossy(piece.member).into_owned();
+    unit.final_answer = false;
     unit.reply = None;
     unit.request = None;
+    unit.far_status = 0;
     unit.started = piece.clock.map(|c| c.mono_ns);
     let built = if unit.probe {
         unit.shaping
             .lane(&unit.member)
-            .and_then(probe::request)
+            .and_then(|lane| probe::request(host, lane))
             .ok_or(None)
     } else if let Some(arrived) = &unit.arrived {
         let pool = String::from_utf8_lossy(piece.pool);
         let caller = unit.caller_fields();
-        attempt::build(arrived, &caller, &unit.shaping, &pool, &unit.member).map_err(Some)
+        attempt::build(host, arrived, &caller, &unit.shaping, &pool, &unit.member).map_err(Some)
     } else {
         Err(None)
     };
@@ -880,13 +1046,13 @@ fn attempt(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
             answer
         }
         // The attempt answers the caller itself: the far end is not reached.
-        Err(Some(refused)) => answered(refuse::answered(&refused)),
+        Err(Some(refused)) => answered(refuse::answered(host, &refused)),
         Err(None) => Answer::hard(),
     }
 }
 
 /// One piece of the far end's answer.
-fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
+fn far_end(host: &DoorHost, unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     let Some(lane) = unit.shaping.lane(&unit.member) else {
         return Answer::hard();
     };
@@ -912,22 +1078,54 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
             .map(|h| stream_intent(h, arrived.parsed.as_ref()))
             .unwrap_or_default(),
         passthrough: piece.passthrough,
+        translate_cap: unit.shaping.translate_cap(),
     };
     if let Some(status) = piece.status {
-        unit.reply = Some(Reply::new(
-            &ctx,
-            u16::try_from(status).unwrap_or(0),
-            &piece.fields,
-        ));
+        unit.far_status = u16::try_from(status).unwrap_or(0);
+        unit.reply = Some(Reply::new(host, &ctx, unit.far_status, &piece.fields));
     }
     let Some(reply) = unit.reply.as_mut() else {
         return Answer::hard();
     };
-    let mut fed = reply.feed(&ctx, piece.bytes, piece.last, at(piece.clock, unit.started));
+    if piece.cut {
+        // THE FAR END'S ANSWER WAS CUT (`PIECE_CUT`): the caller's answer ends as 1.5.5 ended a cut
+        // one: after a streamed first byte, an in-band error in the caller's own framing; a
+        // buffered answer, the caller's 502; a failure's body, judged on what arrived. The units
+        // the stream stated up to the cut are reported (#62: a cut bills what streamed). The
+        // kernel's far end recorded the compensating transient of a success cut after its head,
+        // so a success's cut states no second reading; a failure's judged reading stands.
+        let arrived = piece.bytes;
+        let mut fed = if arrived.is_empty() {
+            Piece::default()
+        } else {
+            reply.feed(host, &ctx, arrived, false, at(piece.clock, unit.started))
+        };
+        let mut cut = reply.cut(host, &ctx, true);
+        if matches!(cut.fault, Some(Fault::Transient(_))) {
+            cut.fault = None;
+        }
+        // Bytes the cut piece itself carried reach the caller before the cut's own end.
+        if !fed.bytes.is_empty() {
+            let mut bytes = std::mem::take(&mut fed.bytes).into_owned();
+            bytes.extend_from_slice(&cut.bytes);
+            cut.bytes = std::borrow::Cow::Owned(bytes);
+        }
+        if cut.head.is_none() {
+            cut.head = fed.head.take();
+        }
+        return far_answer(cut, unit.far_status);
+    }
+    let mut fed = reply.feed(
+        host,
+        &ctx,
+        piece.bytes,
+        piece.last,
+        at(piece.clock, unit.started),
+    );
     // An answer member the caller's dialect has no form for, one degraded row each (`<path> from
     // <dialect>`, the row 1.5.5 wrote as it delivered the translated answer).
     let dropped = std::mem::take(&mut fed.dropped);
-    let mut answer = to_caller(fed);
+    let mut answer = far_answer(fed, unit.far_status);
     answer.audits = dropped
         .iter()
         .map(|p| {
@@ -941,9 +1139,25 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
 }
 
 /// The plane's answer to one piece.
-fn answer(unit: &mut UnitState, from: u32, piece: &PieceIn<'_>) -> Answer {
+fn answer(host: &DoorHost, unit: &mut UnitState, from: u32, piece: &PieceIn<'_>) -> Answer {
     match from {
-        FROM_KERNEL => attempt(unit, piece),
+        FROM_KERNEL => attempt(host, unit, piece),
+        // A unit the plane answers itself: its acknowledgement, once the caller's body is in.
+        FROM_CALLER if unit.local => {
+            let ack = piece.last.then(|| unit.ack.take()).flatten();
+            ack.map_or_else(Answer::default, |ack| Answer {
+                status: 200,
+                fields: vec![(
+                    b"content-type".to_vec(),
+                    busbar_contract::protocol::APPLICATION_JSON
+                        .as_bytes()
+                        .to_vec(),
+                )],
+                bytes: ack,
+                done: true,
+                ..Answer::default()
+            })
+        }
         // The kernel re-pushes the caller's body on every attempt; what goes to the far end is the
         // body the attempt wrote for this member.
         FROM_CALLER => Answer {
@@ -955,7 +1169,7 @@ fn answer(unit: &mut UnitState, from: u32, piece: &PieceIn<'_>) -> Answer {
                 .unwrap_or_default(),
             ..Answer::default()
         },
-        FROM_FAR_END => far_end(unit, piece),
+        FROM_FAR_END => far_end(host, unit, piece),
         _ => Answer::hard(),
     }
 }
@@ -1016,6 +1230,9 @@ fn deliver(
             });
         }
         units.extend(&p.answer.units);
+        // The reason the answer's fault reading states, on the window that carries the reading.
+        let reason = (p.answer.fault != FAULT_NONE && !p.answer.fault_reason.is_empty())
+            .then(|| arena.span(&p.answer.fault_reason));
         for (action, resource) in &p.answer.audits {
             records.push(RecordWrite {
                 kind: AUDIT_DEGRADED,
@@ -1031,6 +1248,9 @@ fn deliver(
             out.set(|o| &o.verb, verb);
             out.set(|o| &o.target, target);
         }
+        if let Some(reason) = reason {
+            out.set(|o| &o.fault_reason, reason);
+        }
         out.set(|o| &o.reply_status, p.answer.status);
         p.opened = true;
     }
@@ -1044,17 +1264,21 @@ fn deliver(
     let more = p.sent < p.answer.bytes.len();
     let to_far_end = p.answer.to_far_end;
     let done = p.answer.done && !more;
+    // A RETRY verdict the kernel may still fail over keeps the unit for its next ATTEMPT; a done
+    // answer of any other verdict, or one the kernel stated is final (`PIECE_FINAL`), ends it.
+    let retried = p.answer.verdict == VERDICT_RETRY && !unit.final_answer;
     let far = if to_far_end { EMIT_TO_FAR_END } else { 0 };
     out.set(|o| &o.emitted, n as u64);
     out.set(|o| &o.more, u32::from(more));
     out.set(|o| &o.verdict, p.answer.verdict);
     // Once per answer: a reading recorded on every window of a long answer would count it again.
     out.set(|o| &o.fault, std::mem::take(&mut p.answer.fault));
+    out.set(|o| &o.tap_fault, std::mem::take(&mut p.answer.tap_fault));
     out.set(|o| &o.flags, far | if done { EMIT_DONE } else { 0 });
     if !more {
         unit.pending = None;
     }
-    (Outcome::Ready, done && !to_far_end)
+    (Outcome::Ready, done && !to_far_end && !retried)
 }
 
 // ── the slots ────────────────────────────────────────────────────────────────────────────────────
@@ -1094,14 +1318,20 @@ slot!(
             Ok(shaping) => shaping,
             Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
         };
+        let webhooks = match webhook::from_owned(input.field(|i| &i.owned).bytes()) {
+            Ok(webhooks) => webhooks,
+            Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
+        };
         let door = LlmDoor {
             generations: Generations::new(),
             shapings: Mutex::new(BTreeMap::from([(open.generation, Arc::new(shaping))])),
             units: Mutex::new(HashMap::new()),
             tickets: Mutex::new(HashMap::new()),
             services: open.host().and_then(|h| Services::of(&h)),
+            webhooks,
         };
-        out.publish(|o| &o.snapshot, &door.generations, open.generation, &snapshot());
+        let snapshot = snapshot(door.webhooks);
+        out.publish(|o| &o.snapshot, &door.generations, open.generation, &snapshot);
         instance.open(door);
         Outcome::Ready
     }
@@ -1118,7 +1348,8 @@ slot!(
             Err(words) => return out.fail(Refusal::refused(words)),
         };
         guard(&door.shapings).insert(input.generation, Arc::new(shaping));
-        out.publish(|o| &o.snapshot, &door.generations, input.generation, &snapshot());
+        let snapshot = snapshot(door.webhooks);
+        out.publish(|o| &o.snapshot, &door.generations, input.generation, &snapshot);
         Outcome::Ready
     }
 );
@@ -1160,8 +1391,8 @@ slot!(
             }
         }
         // A caller that left a usable part of the answer leaves a PARTIAL unit: the units the
-        // answer stated so far bill (1.5.5's drop arm; item 367 for a buffered relay). Any other
-        // cancel bills nothing.
+        // answer stated so far bill (1.5.5's drop arm; a same-dialect whole body states none while
+        // it relays, so it bills none, as 1.5.5's did). Any other cancel bills nothing.
         out.set(
             |o| &o.cancel.disposition,
             if partial { CANCEL_OK_PARTIAL } else { CANCEL_ABORTED },
@@ -1212,6 +1443,37 @@ slot!(
         let method = String::from_utf8_lossy(input.field(|i| &i.method).bytes()).into_owned();
         let target = String::from_utf8_lossy(input.field(|i| &i.target).bytes()).into_owned();
         let body = input.field(|i| &i.body).bytes();
+        // A WEBHOOK DELIVERY the `webhooks:` section switched on: the plane answers it itself, after
+        // the kernel verified its sender (the line's auth); a body that does not read is refused.
+        let path = target.split_once('?').map_or(target.as_str(), |(p, _)| p);
+        if door.webhooks.openai_responses && webhook::is_receiver(&method, path) {
+            let read = webhook::read_event(body);
+            return match read {
+                Ok(event) => {
+                    out.set(|o| &o.dialect, dialect_index(RESPONSES));
+                    out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
+                    out.local();
+                    unit.local = true;
+                    unit.ack = Some(webhook::ack(&event));
+                    guard(&door.units).insert(given.unit, unit);
+                    Outcome::Ready
+                }
+                Err(message) => {
+                    let declined = Declined {
+                        why: arrive::Decline::WebhookBody,
+                        status: 400,
+                        envelope: RESPONSES,
+                        kind: busbar_contract::protocol::KIND_INVALID_REQUEST,
+                        message: message.into(),
+                    };
+                    out.set(|o| &o.refusal, declined.why.code());
+                    out.set(|o| &o.refusal_status, u32::from(declined.status));
+                    unit.declined = Some(declined);
+                    guard(&door.units).insert(given.unit, unit);
+                    out.fail(Refusal::bare())
+                }
+            };
+        }
         let caller = unit.caller_fields();
         let arrival = arrive::arrive(&method, &target, &caller, body, &*unit.shaping);
         drop(caller);
@@ -1243,6 +1505,11 @@ slot!(
             Err(declined) => {
                 out.set(|o| &o.refusal, declined.why.code());
                 out.set(|o| &o.refusal_status, u32::from(declined.status));
+                // An action the dialect has and the plane does not serve, stated as that outcome:
+                // the caller's request as a dialect read it, never told apart by its status.
+                if declined.why.unsupported_action() {
+                    out.set(|o| &o.refusal_flags, REFUSED_UNSUPPORTED_ACTION);
+                }
                 unit.declined = Some(declined);
                 guard(&door.units).insert(given.unit, unit);
                 out.fail(Refusal::bare())
@@ -1260,14 +1527,23 @@ slot!(
         };
         let given = input.get();
         let key = given.unit;
+        // A piece whose flags the contract refuses (a cut or a final mark off the far end's own
+        // piece) is a FAULT before anything of the unit moves.
+        if check_piece_in(given.from, given.flags).is_err() {
+            return Outcome::Fault;
+        }
         // The unit leaves the map for the call, so its answer is computed with no lock held.
         let Some(mut unit) = guard(&door.units).remove(&key) else {
             return Outcome::Fault;
         };
         guard(&door.tickets).insert(given.head.ticket, key);
         if unit.pending.is_none() {
+            if given.from == FROM_FAR_END && given.flags & PIECE_FINAL != 0 {
+                unit.final_answer = true;
+            }
             let piece = PieceIn {
                 last: given.flags & PIECE_LAST != 0,
+                cut: given.from == FROM_FAR_END && given.flags & PIECE_CUT != 0,
                 status: (given.flags & PIECE_HAS_STATUS != 0).then_some(given.status_code),
                 fields: input
                     .head_fields()
@@ -1280,7 +1556,7 @@ slot!(
                 passthrough: given.passthrough != 0,
                 clock: if given.from == FROM_CALLER { None } else { door.clock() },
             };
-            let mut answer = answer(&mut unit, given.from, &piece);
+            let mut answer = answer(&door.host(), &mut unit, given.from, &piece);
             fee_unit(&mut unit, &mut answer);
             unit.pending = Some(Pending {
                 answer,
@@ -1307,10 +1583,11 @@ slot!(
         };
         let given = input.get();
         let held = guard(&door.units).remove(&given.unit);
+        let host = door.host();
         let rendered = match &held {
             Some(UnitState {
                 declined: Some(d), ..
-            }) if given.plane_code != 0 => refuse::declined(d),
+            }) if given.plane_code != 0 => refuse::declined(&host, d),
             _ => {
                 let arrived = held.as_ref().and_then(|u| u.arrived.as_ref());
                 let envelope = match arrived {
@@ -1325,9 +1602,7 @@ slot!(
                 // A model that resolved to no destination reads the previous release's not-found
                 // sentence, which names the model the caller asked for; every other refusal reads
                 // the kernel's own text.
-                let unreadable = held.as_ref().is_some_and(|u| u.unreadable);
                 let text = match arrived {
-                    _ if unreadable => project::UNREADABLE_BODY_MESSAGE.to_string(),
                     Some(a) if given.reason == crate::refusal::reason::NO_DESTINATION => {
                         refuse::model_not_found(
                             &a.model,
@@ -1340,9 +1615,16 @@ slot!(
                 };
                 let status = u16::try_from(given.status).unwrap_or(500);
                 if given.cause == REFUSAL_GATE {
-                    refuse::gate_refusal(envelope, status, &text)
+                    refuse::gate_refusal(&host, envelope, status, &text)
                 } else {
-                    refuse::kernel_refusal(envelope, given.reason, status, &text, given.retry_after_s)
+                    refuse::kernel_refusal(
+                        &host,
+                        envelope,
+                        given.reason,
+                        status,
+                        &text,
+                        given.retry_after_s,
+                    )
                 }
             }
         };
@@ -1397,8 +1679,8 @@ slot!(
     /// the host's arena and its turns in the host's turn buffer; with a request-stage hook's
     /// rewrite, the rewrite applied to the unit's request first (kept as the unit's request, so
     /// every attempt is written from it), the rewritten body answered and THAT body projected. A
-    /// body the operation's reader refuses is REFUSED, and the unit's refusal then reads the
-    /// previous release's unreadable-body sentence.
+    /// body the operation's reader refuses is projected off its raw JSON, as 1.5.5 projected it,
+    /// and the unit goes on.
     Project, ProjectIn, ProjectOut, |instance, input, mut out| {
         let Some(door) = instance.get() else {
             return Outcome::Failed;
@@ -1415,15 +1697,7 @@ slot!(
         } else {
             project::apply_rewrite(arrived, rewrite)
         };
-        let view = match project::project(arrived) {
-            Ok(view) => view,
-            Err(project::Unreadable) => {
-                if let Some(unit) = units.get_mut(&given.unit) {
-                    unit.unreadable = true;
-                }
-                return Outcome::Refused;
-            }
-        };
+        let view = project::project(arrived);
         let dialect = arrived.dialect;
         let pool = arrived.model.clone();
         drop(units);

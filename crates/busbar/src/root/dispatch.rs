@@ -36,10 +36,25 @@ pub fn boot(workers: usize, services: Arc<dyn HostServices>) -> Arc<Dispatcher> 
     Arc::clone(DISPATCHER.get_or_init(|| Arc::new(build(workers, services))))
 }
 
-/// The dispatcher [`boot`] builds, for `workers` data workers, serving `services`.
+/// The dispatcher [`boot`] builds, for `workers` data workers, serving `services`, lent the
+/// kernel's seal (Part 2 #54: a door it binds reveals a resolved `Secret` it hands a plugin only
+/// under it).
 #[must_use]
 pub fn build(workers: usize, services: Arc<dyn HostServices>) -> Dispatcher {
-    Dispatcher::with_services(config(workers), services)
+    let dispatcher = Dispatcher::with_services(config(workers), services);
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
+    dispatcher
+}
+
+/// THE DISPATCHER'S `bb_*` COUNTERS for the kernel's `/metrics` scrape
+/// (`busbar_kernel::preflight::RootInstall::host_counters`): every family its stats hold
+/// (`DispatchStats::families`), none before the dispatcher is built — a scrape never builds one.
+#[must_use]
+pub fn host_counters() -> Vec<(&'static str, &'static str, u64)> {
+    DISPATCHER
+        .get()
+        .map(|d| d.stats().families().to_vec())
+        .unwrap_or_default()
 }
 
 /// The process's dispatcher (built at boot; built with one worker and no installed services on
@@ -112,8 +127,19 @@ impl busbar_contract::auth_calls::AuthAxis for RootAuthAxis {
         style: &str,
         settings: &serde_json::Value,
     ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
+        self.serving_presenting(style, settings, None)
+    }
+
+    // TRANSITIONAL: deleted with the legacy lane plane (row 155 C): the legacy lane's endpoint Basic, handed across the axis.
+    fn serving_presenting(
+        &self,
+        style: &str,
+        settings: &serde_json::Value,
+        endpoint_basic: Option<&[u8]>,
+    ) -> Result<Option<busbar_contract::auth_calls::OutboundServing>, String> {
+        let endpoint = endpoint_basic.and_then(crate::root::userinfo::UserinfoBasic::from_value);
         Ok(crate::root::door_steps::process_auths()
-            .serving(style, settings)?
+            .serving_with(style, settings, endpoint)?
             .map(
                 |(auth, decl)| busbar_contract::auth_calls::OutboundServing {
                     auth,
@@ -134,10 +160,10 @@ fn conns() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
 #[path = "tests/dispatch.rs"]
 mod tests;
 
-// The suite binds each dialect's declared scheme on the LINKED auth plugins serving its style: the
-// static schemes on `busbar-auth-header`, the signing scheme on `busbar-auth-sigv4` (the default
-// distribution links both). A build without either links no plugin serving that style, so the bind
-// is refused there, exactly as `door_steps`' positive binding proof is gated on `auth-header`.
-#[cfg(all(test, feature = "auth-header", feature = "auth-sigv4"))]
+// The suite binds each dialect's declared scheme on the LINKED auth plugins serving its style (the
+// static schemes and the signing scheme; the default distribution links a plugin serving each). A
+// build missing an auth row may link no plugin serving one of the styles, so the bind is refused
+// there: the suite rides every linked auth row (`linked_every_auth`, build.rs).
+#[cfg(all(test, linked_every_auth))]
 #[path = "tests/declared_credentials.rs"]
 mod declared_credentials_tests;

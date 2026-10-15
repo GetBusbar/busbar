@@ -53,6 +53,8 @@ pub const ORACLE_DATA_ALLOW: &[&str] = &[
     "testing/shadow-oracle/accepted-differences.json",
     "testing/shadow-oracle/cells.json",
     "testing/shadow-oracle/rigs-baseline.json",
+    // The fleet registry test reads the plugin pin table as rows, the way busbar-release's plugin_build does.
+    "testing/shadow-oracle/plugin-digests.tsv",
 ];
 
 /// Oracle CODE paths a gate may NAME but never open, because it writes them into a document it
@@ -107,8 +109,10 @@ pub const ORACLE_PROSE_CITATION_ALLOW: &[(&str, &str)] = &[
 /// split or a fold removes in the normal course — so a walk that lost a SUBTREE fails and a walk
 /// that lost a file does not. Re-measured 2026-10-03 at 180 files (the xtask ports of the retired
 /// scripts: proof manifest, plugin fleet gates, method inventory, documented claims, deferral
-/// words): the floor is 150, the same one-sixth below the population.
-const SRC_FLOOR: usize = 150;
+/// words): the floor is 150, the same one-sixth below the population. Re-measured 2026-10-15 at 203
+/// files after the wave-2 integration's xtask gates and conformance rigs landed: the floor is 169,
+/// the same one-sixth below the population.
+const SRC_FLOOR: usize = 169;
 
 /// Manifests are found by walking the WHOLE tree; this is the floor under that walk.
 ///

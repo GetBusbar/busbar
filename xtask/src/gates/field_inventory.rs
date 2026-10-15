@@ -13,7 +13,7 @@
 //! | `:schema-identity` | a lock's `dialect` agrees with its filename and its spec with the register |
 //! | `:canonical-form` | every lock is byte-equal to its canonical render (what `dialect wire --write` emits); any other layout is refused naming the first differing line |
 //! | `:no-duplicate-fields` | no direction lists a path twice (JSON would silently keep one) |
-//! | `:registration` | the registered dialects and the lock files are the same set, both ways |
+//! | `:registration` | the dialects the llm plane REGISTERS (its own `DIALECTS` table, read from source), the generator's register and the lock files are one set, every way |
 //! | `:both-directions` | every declared direction is present and at or above its armed path floor |
 //! | `:audited-fields` | the eleven fields the 1.6.0 audit found BY HAND are all in the locks |
 //! | `:artifact-drift` | the generated `qa/field-inventory.json` IS the projection of the locks |
@@ -40,6 +40,61 @@ pub const ROW_AUDITED_FIELDS: &str = "field-inventory:audited-fields";
 pub const ROW_ARTIFACT_DRIFT: &str = "field-inventory:artifact-drift";
 
 const LOCK_SUFFIX: &str = ".wire.json";
+
+/// THE REGISTER IS THE PLANE'S OWN TABLE (TODO l.1995 instrument defect 1). The llm plane declares
+/// every dialect it serves as one row of `pub const DIALECTS` in this file, and the shipped binary
+/// prints that table. This gate used to compare two lists typed in xtask (`wire_lock::DIALECTS` and
+/// the lock directory), so a dialect the plane registered with no lock left every row PASS. It now
+/// reads the plane's rows, and the generator's register and the lock files are each held to them.
+pub const REGISTRY: &str = "crates/busbar-plane-llm/src/dialect.rs";
+
+/// The `name: "…"` of every row of the plane's `pub const DIALECTS` table, in production source
+/// (comments and `#[cfg(test)]` modules stripped). The table ends at its closing `];`.
+fn registry_names(text: &str) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    let mut inside = false;
+    for (_, line) in crate::scan::production_lines(text) {
+        let t = line.trim();
+        if !inside {
+            inside = t.starts_with("pub const DIALECTS:");
+            continue;
+        }
+        if t == "];" {
+            break;
+        }
+        if let Some(rest) = t.strip_prefix("name:") {
+            let rest = rest.trim();
+            if let Some(lit) = rest.strip_prefix('"').and_then(|r| r.split_once('"')) {
+                out.insert(lit.0.to_string());
+            }
+        }
+    }
+    out
+}
+
+/// The plane's registered dialects. An unreadable register, or one this reader finds no row in, is
+/// a refusal: a register of zero is a denominator of zero, and zero is the passing answer to every
+/// "is each registered dialect locked" question.
+fn registered(cx: &Ctx) -> Result<BTreeSet<String>, Refusal> {
+    let text = cx.read(REGISTRY).map_err(|e| Refusal {
+        row: ROW_REGISTRATION,
+        why: format!(
+            "the dialect register {REGISTRY} could not be read ({e}); the lock set cannot be held \
+             to what the plane registers"
+        ),
+    })?;
+    let names = registry_names(&text);
+    if names.is_empty() {
+        return Err(Refusal {
+            row: ROW_REGISTRATION,
+            why: format!(
+                "the dialect register {REGISTRY} yielded no `name:` row under `pub const \
+                 DIALECTS`; a register this gate cannot read is not an empty one"
+            ),
+        });
+    }
+    Ok(names)
+}
 
 /// THE FLOOR EVERY (dialect, direction) PAIR IS HELD TO, armed 2026-10-01 at the count each lock
 /// holds (WIRE-GEN). A spec that GAINS paths clears it without an edit; a floor falls only in a
@@ -106,7 +161,29 @@ fn load(cx: &Ctx) -> Result<Loaded, Refusal> {
         .filter_map(|p| p.file_name()?.to_str()?.strip_suffix(LOCK_SUFFIX))
         .map(str::to_string)
         .collect();
-    let want: BTreeSet<String> = DIALECTS.iter().map(|d| d.name.to_string()).collect();
+    let want = registered(cx)?;
+    let generator: BTreeSet<String> = DIALECTS.iter().map(|d| d.name.to_string()).collect();
+    let ungenerated: Vec<&String> = want.difference(&generator).collect();
+    if !ungenerated.is_empty() {
+        return Err(Refusal {
+            row: ROW_REGISTRATION,
+            why: format!(
+                "the plane registers dialect(s) {ungenerated:?} ({REGISTRY}) that \
+                 wire_lock::DIALECTS does not generate a lock for; name their spec roots there \
+                 and run cargo xtask dialect wire --write all"
+            ),
+        });
+    }
+    let unserved: Vec<&String> = generator.difference(&want).collect();
+    if !unserved.is_empty() {
+        return Err(Refusal {
+            row: ROW_REGISTRATION,
+            why: format!(
+                "wire_lock::DIALECTS generates dialect(s) {unserved:?} the plane does not register \
+                 ({REGISTRY}); a lock for a dialect nothing serves is a denominator nothing earns"
+            ),
+        });
+    }
     let missing: Vec<&String> = want.difference(&have).collect();
     if !missing.is_empty() {
         return Err(Refusal {
@@ -122,8 +199,9 @@ fn load(cx: &Ctx) -> Result<Loaded, Refusal> {
         return Err(Refusal {
             row: ROW_REGISTRATION,
             why: format!(
-                "wire lock present for unregistered dialect(s) {extra:?}; register them in \
-                 wire_lock::DIALECTS or the coverage denominator silently excludes a surface"
+                "wire lock present for unregistered dialect(s) {extra:?}; the plane registers \
+                 none of them ({REGISTRY}), so the coverage denominator would silently exclude a \
+                 surface"
             ),
         });
     }
@@ -416,10 +494,14 @@ fn run_with(gate: &dyn Gate, cx: &Ctx, floors: &[(&str, &str, usize)]) -> Verdic
         ),
         row(
             ROW_REGISTRATION,
-            "the registered dialects and the lock files are the same set",
+            "the plane's registered dialects, the generator's register and the lock files are \
+             one set",
             "the lock set and the register disagree",
             &[],
-            format!("{} dialect(s), matched both ways", DIALECTS.len()),
+            format!(
+                "{} dialect(s) registered in {REGISTRY}, each generated and locked",
+                DIALECTS.len()
+            ),
         ),
         row(
             ROW_BOTH_DIRECTIONS,
@@ -551,6 +633,25 @@ impl Gate for FieldInventoryGate {
             ov,
             &["no wire lock for registered dialect"],
         ));
+        report.push(prove_red(
+            cx,
+            self,
+            "a dialect the plane registers with no generator entry and no lock is refused \
+             (TODO l.1995: all rows used to stay PASS)",
+            &[ROW_REGISTRATION],
+            register_plant(cx),
+            &["the plane registers dialect(s) [\"mistral\"]"],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(REGISTRY, String::new());
+        report.push(prove_red(
+            cx,
+            self,
+            "a register this gate reads no row from is refused, never read as empty",
+            &[ROW_REGISTRATION],
+            ov,
+            &["yielded no `name:` row"],
+        ));
         let mut ov = Overlay::new();
         ov.set(
             wire_lock::lock_path("mistral"),
@@ -616,6 +717,22 @@ impl Gate for FieldInventoryGate {
         ));
         report
     }
+}
+
+/// The plane's register with a seventh row, `mistral`, at the top of the table. Nothing else
+/// in the tree moves, which is exactly the add-a-dialect step the gate used to pass.
+fn register_plant(cx: &Ctx) -> Overlay {
+    let mut ov = Overlay::new();
+    let text = cx.read(REGISTRY).unwrap_or_default();
+    ov.set(
+        REGISTRY,
+        text.replacen(
+            "pub const DIALECTS: &[Dialect] = &[\n",
+            "pub const DIALECTS: &[Dialect] = &[\n    Dialect {\n        name: \"mistral\",\n    },\n",
+            1,
+        ),
+    );
+    ov
 }
 
 /// One lock, edited through its own reader and writer, so a case is expressed against the real

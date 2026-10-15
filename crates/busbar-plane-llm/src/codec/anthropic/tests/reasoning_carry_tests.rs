@@ -11,6 +11,7 @@ use busbar_contract::ir::egress_prep::{EgressPrep, LaneCaps};
 /// declares nothing gets `budget_tokens` (see `effort_on_a_default_lane_is_budget_tokens`).
 fn adaptive(ir: &crate::codec::ir::IrRequest) -> serde_json::Value {
     anthropic_writer().write_request_for_lane(
+        crate::codec::test_host::HOST,
         ir,
         "claude-opus-5",
         &LaneCaps {
@@ -55,8 +56,12 @@ fn effort_on_a_default_lane_is_budget_tokens() {
     let ir = super::super::openai_chat::OpenAiReader
         .read_request(&openai_effort_body("high"))
         .expect("parses");
-    let out =
-        anthropic_writer().write_request_for_lane(&ir, "claude-sonnet-4-5", &LaneCaps::default());
+    let out = anthropic_writer().write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &ir,
+        "claude-sonnet-4-5",
+        &LaneCaps::default(),
+    );
     assert_eq!(
         out["thinking"],
         serde_json::json!({"type": "enabled", "budget_tokens": crate::codec::ir::REASONING_BUDGET_DEFAULTS[3]}),
@@ -64,7 +69,10 @@ fn effort_on_a_default_lane_is_budget_tokens() {
     );
     assert!(out.get("output_config").is_none(), "{out}");
     // The model-blind write is the default-lane write.
-    assert_eq!(anthropic_writer().write_request(&ir), out);
+    assert_eq!(
+        anthropic_writer().write_request(crate::codec::test_host::HOST, &ir),
+        out
+    );
 }
 
 /// Anthropic budget -> Gemini `thinkingBudget` is a straight number copy; and Gemini's
@@ -82,7 +90,9 @@ fn budgets_copy_between_anthropic_and_gemini() {
         !ir.extra.contains_key("thinking"),
         "promoted thinking must not also ride extra"
     );
-    let gout = Protocol::gemini().writer().write_request(&ir);
+    let gout = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         gout["generationConfig"]["thinkingConfig"]["thinkingBudget"],
         6000
@@ -97,7 +107,9 @@ fn budgets_copy_between_anthropic_and_gemini() {
         .read_request(&gbody)
         .expect("parses");
     assert_eq!(gir.reasoning, Some(IrReasoningAsk::Dynamic));
-    let back = Protocol::gemini().writer().write_request(&gir);
+    let back = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &gir);
     assert_eq!(
         back["generationConfig"]["thinkingConfig"]["thinkingBudget"], -1,
         "dynamic must round-trip to Gemini as its native -1"
@@ -113,7 +125,8 @@ fn budget_bucketizes_to_effort_words() {
         "thinking": {"type": "enabled", "budget_tokens": 6000}
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = super::super::openai_chat::openai_writer().write_request(&ir);
+    let out = super::super::openai_chat::openai_writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     // 6000 sits between low (4096) and medium (8192) -> "low" (largest entry reached).
     assert_eq!(out["reasoning_effort"], "low");
 }
@@ -138,11 +151,11 @@ fn anthropic_clamps_and_drops_by_max_tokens() {
         ..Default::default()
     };
     // Clamped: 16384 under max_tokens 4096 -> 3072.
-    let out = anthropic_writer().write_request(&budget_ir(4096));
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &budget_ir(4096));
     assert_eq!(out["thinking"]["budget_tokens"], 3072);
 
     // Dropped: max_tokens 1500 leaves <1024 of thinking -> no thinking key at all.
-    let out2 = anthropic_writer().write_request(&budget_ir(1500));
+    let out2 = anthropic_writer().write_request(crate::codec::test_host::HOST, &budget_ir(1500));
     assert!(
         out2.get("thinking").is_none(),
         "no room -> no thinking: {out2}"
@@ -188,7 +201,7 @@ fn thinking_omits_incompatible_sampling_knobs() {
     let ir2 = super::super::openai_chat::OpenAiReader
         .read_request(&plain)
         .expect("parses");
-    let out2 = anthropic_writer().write_request(&ir2);
+    let out2 = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir2);
     assert_eq!(out2["temperature"], 0.5);
 }
 
@@ -207,7 +220,7 @@ fn thinking_omits_top_k() {
     let ir = AnthropicReader.read_request(&body).expect("parses");
     // Precondition: top_k arrived as a first-class field (not stranded in extra).
     assert_eq!(ir.top_k, Some(40), "top_k must be read as first-class");
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         out.get("thinking").is_some(),
         "thinking must be emitted: {out}"
@@ -225,7 +238,7 @@ fn thinking_omits_top_k() {
         "top_k": 40
     });
     let ir2 = AnthropicReader.read_request(&plain).expect("parses");
-    let out2 = anthropic_writer().write_request(&ir2);
+    let out2 = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir2);
     assert_eq!(out2["top_k"], 40);
 }
 
@@ -281,7 +294,9 @@ fn gemini_cross_protocol_egress_requests_include_thoughts() {
     let ir = super::super::openai_chat::OpenAiReader
         .read_request(&openai_effort_body("high"))
         .expect("parses");
-    let out = Protocol::gemini().writer().write_request(&ir);
+    let out = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     let tc = &out["generationConfig"]["thinkingConfig"];
     assert_eq!(
         tc["includeThoughts"], true,
@@ -308,7 +323,9 @@ fn responses_effort_round_trips() {
     // Cross-protocol: extra cleared -> the typed field emits the native shape.
     let mut cleared = ir.clone();
     cleared.extra.clear();
-    let out = Protocol::responses().writer().write_request(&cleared);
+    let out = Protocol::responses()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &cleared);
     assert_eq!(out["reasoning"]["effort"], "medium");
     // Anthropic egress on an adaptive lane: medium -> adaptive thinking at effort medium.
     let mut with_max = cleared;
@@ -328,7 +345,8 @@ fn small_budget_maps_to_low_not_minimal_on_openai() {
         "thinking": {"type": "enabled", "budget_tokens": 1500}  // below low (4096)
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = super::super::openai_chat::openai_writer().write_request(&ir);
+    let out = super::super::openai_chat::openai_writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["reasoning_effort"], "low",
         "must not emit o-series-invalid 'minimal'"
@@ -347,11 +365,13 @@ fn disabled_thinking_stays_in_extra() {
     let ir = AnthropicReader.read_request(&body).expect("parses");
     assert_eq!(ir.reasoning, Some(crate::codec::ir::IrReasoningAsk::Off));
     assert!(ir.extra.contains_key("thinking"));
-    let gout = Protocol::gemini().writer().write_request(&{
-        let mut c = ir.clone();
-        c.extra.clear();
-        c
-    });
+    let gout = Protocol::gemini()
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &{
+            let mut c = ir.clone();
+            c.extra.clear();
+            c
+        });
     // Gemini's OFF is `thinkingBudget: 0`; anything else there would be an enable ask.
     let budget = gout.pointer("/generationConfig/thinkingConfig/thinkingBudget");
     assert!(

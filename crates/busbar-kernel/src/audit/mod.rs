@@ -64,6 +64,7 @@
 pub mod amend;
 pub mod auditlog;
 pub mod journal;
+pub mod stream_registry;
 pub mod vocab {
     pub use busbar_contract::vocab::*;
 }

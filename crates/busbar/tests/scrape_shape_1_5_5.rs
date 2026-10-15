@@ -5,7 +5,7 @@
 //! section at all) exposes NO series named `busbar_plane_*`, `busbar_ledger_*`,
 //! `busbar_journal_*`, `busbar_hold_*` or `busbar_wal_*` on `/metrics` — checked against the
 //! WHOLE exposition, not a request-path subset — even though the binary this test boots has
-//! EVERY plane (LLM, MCP, A2A, voice) compiled in. The plane code being present in the binary
+//! EVERY plane compiled in. The plane code being present in the binary
 //! must not leak a single series onto a deployment that never configured a plane, which is
 //! exactly what distinguishes "compiled in, unmounted" from "mounted and idle".
 //!
@@ -56,7 +56,7 @@ fn free_port() -> u16 {
 }
 
 /// The 1.5.5 shape: one provider, one model, keys on the data plane, an admin token, prometheus
-/// export, memory store (the default). No plane section (`mcp:`, `agents:`, `voice:`), no
+/// export, the default store. No section a later plane owns, no
 /// `data_dir`, no `peers`, no `keyset_ref` anywhere — nothing 1.6.0-additive.
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16) {
     std::fs::write(
@@ -87,7 +87,8 @@ auth:
   chain:
     - keys
   signing_key: {{ file: "{signing}" }}
-  admin_auth: [admin-tokens]
+  admin_auth:
+    - admin-tokens
 export:
   metrics: {{ module: prometheus, settings: {{ buffer_seconds: 60 }} }}
 providers:

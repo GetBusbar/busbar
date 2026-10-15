@@ -1,0 +1,12 @@
+{
+  "name": "webrtc-conformance",
+  "private": true,
+  "type": "module",
+  "description": "Browser cell: headless Chromium and Firefox drive a real offer/answer and media round trip against busbar's terminating datagram path.",
+  "scripts": {
+    "selftest": "node bin/drive.mjs --selftest"
+  },
+  "devDependencies": {
+    "playwright": "1.64.0"
+  }
+}

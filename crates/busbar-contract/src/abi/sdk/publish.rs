@@ -6,8 +6,13 @@
 //! `#![forbid(unsafe_code)]`). A plugin that publishes a value the host reads across calls — a
 //! plane's generation snapshot and the claims and routes it points at — hands the SDK an OWNED
 //! description of it (a [`Publish::Spec`]: `String`s and `Vec`s). The SDK copies every list and
-//! string into an [`Arena`] it owns, lowers the description into the ABI value over that arena, and
-//! keeps both until `retire` of that generation ([`Generations::retire`]) or the instance closes.
+//! string into a [`Backing`] it owns, lowers the description into the ABI value over that backing,
+//! and keeps both until `retire` of that generation ([`Generations::retire`]) or the instance
+//! closes. The storage is a backing, never an "arena": that name is dead everywhere (#41).
+//!
+//! ```compile_fail,E0432
+//! use busbar_contract::abi::sdk::publish::Arena;
+//! ```
 //!
 //! So no safe code can hand the host a pointer into memory it later frees: the plugin never builds
 //! the pointer-bearing ABI value itself (only the SDK implements [`Publish`]), and whatever the
@@ -45,38 +50,40 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use crate::abi::mechanism::call::{AbiStr, Blob, BLOB_ABSENT, BLOB_JSON};
-use crate::abi::plane::{AdminRoute, Claim, PlaneSnapshot};
+use crate::abi::plane::{AdminRoute, Claim, PlaneSnapshot, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN};
+use crate::abi::sdk::door::abi_str;
+use crate::ids::OpClassId;
 
 /// The storage one published generation points into. Only the SDK makes one and writes into it;
 /// its contents never move (every piece is its own heap allocation) and are freed only when the
 /// generation is retired.
-pub struct Arena {
+pub struct Backing {
     bytes: Vec<Box<[u8]>>,
     lists: Vec<Box<dyn Any + Send + Sync>>,
 }
 
-impl std::fmt::Debug for Arena {
+impl std::fmt::Debug for Backing {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Arena")
+        f.debug_struct("Backing")
             .field("bytes", &self.bytes.len())
             .field("lists", &self.lists.len())
             .finish()
     }
 }
 
-/// A list the arena holds: plain ABI values whose pointers point into the same arena.
+/// A list the backing holds: plain ABI values whose pointers point into the same backing.
 struct List<T> {
     _items: Box<[T]>,
 }
 
 // SAFETY: `T` is one of the SDK's sealed `Publish` types or an `AbiStr`: integers and raw
-// pointers into the arena that owns this list, which nothing reads through on a safe path and
+// pointers into the backing that owns this list, which nothing reads through on a safe path and
 // nothing mutates.
 unsafe impl<T> Send for List<T> {}
 // SAFETY: as `Send`.
 unsafe impl<T> Sync for List<T> {}
 
-impl Arena {
+impl Backing {
     const fn new() -> Self {
         Self {
             bytes: Vec::new(),
@@ -84,7 +91,7 @@ impl Arena {
         }
     }
 
-    /// `bytes`, copied into the arena; the pointer to the copy (NULL when empty).
+    /// `bytes`, copied into the backing; the pointer to the copy (NULL when empty).
     fn copy(&mut self, bytes: &[u8]) -> *const u8 {
         if bytes.is_empty() {
             return std::ptr::null();
@@ -167,13 +174,13 @@ mod sealed {
 }
 
 /// An ABI value a plugin publishes, and the owned description it publishes it from. Only the SDK
-/// implements it: lowering is where pointers are made, and they are made into the SDK's arena only.
+/// implements it: lowering is where pointers are made, and they are made into the SDK's backing only.
 pub trait Publish: sealed::Sealed + Copy + 'static {
     /// The owned description a plugin hands the SDK.
     type Spec;
-    /// Lower `spec` for `generation`, every list and string copied into `arena`.
+    /// Lower `spec` for `generation`, every list and string copied into `backing`.
     #[doc(hidden)]
-    fn lower(spec: &Self::Spec, generation: u64, arena: &mut Arena) -> Self;
+    fn lower(spec: &Self::Spec, generation: u64, backing: &mut Backing) -> Self;
 }
 
 /// One claim, owned: see [`Claim`].
@@ -208,11 +215,11 @@ impl ClaimSpec {
 
 impl Publish for Claim {
     type Spec = ClaimSpec;
-    fn lower(spec: &ClaimSpec, _: u64, arena: &mut Arena) -> Self {
+    fn lower(spec: &ClaimSpec, _: u64, backing: &mut Backing) -> Self {
         Self {
-            verb: arena.str(&spec.verb),
-            target: arena.str(&spec.target),
-            carrier: arena.str(&spec.carrier),
+            verb: backing.str(&spec.verb),
+            target: backing.str(&spec.target),
+            carrier: backing.str(&spec.carrier),
             flags: spec.flags,
             refusal_dialect: spec.refusal_dialect,
             _pad: 0,
@@ -255,13 +262,13 @@ impl AdminRouteSpec {
 
 impl Publish for AdminRoute {
     type Spec = AdminRouteSpec;
-    fn lower(spec: &AdminRouteSpec, _: u64, arena: &mut Arena) -> Self {
+    fn lower(spec: &AdminRouteSpec, _: u64, backing: &mut Backing) -> Self {
         Self {
-            verb: arena.str(&spec.verb),
-            target: arena.str(&spec.target),
+            verb: backing.str(&spec.verb),
+            target: backing.str(&spec.target),
             flags: spec.flags,
             _reserved: 0,
-            audit_verb: arena.str(&spec.audit_verb),
+            audit_verb: backing.str(&spec.audit_verb),
         }
     }
 }
@@ -288,10 +295,10 @@ pub struct SnapshotSpec {
 
 impl Publish for PlaneSnapshot {
     type Spec = SnapshotSpec;
-    fn lower(spec: &SnapshotSpec, generation: u64, arena: &mut Arena) -> Self {
-        let (claims, claims_len) = arena.list::<Claim>(&spec.claims);
-        let (admin_routes, admin_routes_len) = arena.list::<AdminRoute>(&spec.admin_routes);
-        let (listed, listed_len) = arena.strs(&spec.listed);
+    fn lower(spec: &SnapshotSpec, generation: u64, backing: &mut Backing) -> Self {
+        let (claims, claims_len) = backing.list::<Claim>(&spec.claims);
+        let (admin_routes, admin_routes_len) = backing.list::<AdminRoute>(&spec.admin_routes);
+        let (listed, listed_len) = backing.strs(&spec.listed);
         Self {
             size: std::mem::size_of::<Self>() as u32,
             _reserved: 0,
@@ -300,26 +307,26 @@ impl Publish for PlaneSnapshot {
             claims_len,
             admin_routes,
             admin_routes_len,
-            openapi: arena.json(spec.openapi.as_deref()),
-            audience: arena.opt_str(spec.audience.as_deref()),
-            resource_metadata: arena.opt_str(spec.resource_metadata.as_deref()),
-            resource_facts: arena.json(spec.resource_facts.as_deref()),
+            openapi: backing.json(spec.openapi.as_deref()),
+            audience: backing.opt_str(spec.audience.as_deref()),
+            resource_metadata: backing.opt_str(spec.resource_metadata.as_deref()),
+            resource_facts: backing.json(spec.resource_facts.as_deref()),
             listed,
             listed_len,
         }
     }
 }
 
-/// One published generation: the value (boxed: its address is what the host holds), the arena
+/// One published generation: the value (boxed: its address is what the host holds), the backing
 /// it points into, and the plugin's own payload for that generation.
 struct Generation<T, P> {
     generation: u64,
     _value: Box<T>,
-    _arena: Arena,
+    _backing: Backing,
     payload: Arc<P>,
 }
 
-// SAFETY: `T: Publish` is plain data whose pointers point into `_arena`, owned by the same value;
+// SAFETY: `T: Publish` is plain data whose pointers point into `_backing`, owned by the same value;
 // nothing reads through them on a safe path, and nothing mutates either after publishing. The
 // payload is the plugin's own `Send + Sync` value behind an `Arc`.
 unsafe impl<T, P: Send + Sync> Send for Generation<T, P> {}
@@ -383,13 +390,13 @@ impl<T: Publish, P> Generations<T, P> {
     /// the address the host reads. Both are held until [`Generations::retire`] of `generation` or
     /// until this drops.
     pub fn publish_with(&self, generation: u64, spec: &T::Spec, payload: P) -> *const T {
-        let mut arena = Arena::new();
-        let value = Box::new(T::lower(spec, generation, &mut arena));
+        let mut backing = Backing::new();
+        let value = Box::new(T::lower(spec, generation, &mut backing));
         let p = std::ptr::from_ref::<T>(&*value);
         self.lock().push(Generation {
             generation,
             _value: value,
-            _arena: arena,
+            _backing: backing,
             payload: Arc::new(payload),
         });
         p
@@ -517,6 +524,76 @@ impl<K: Ord, V> Keyed<K, V> {
     {
         self.lock().get(key).cloned()
     }
+}
+
+/// ONE ROW OF A PLANE'S ROUTE TABLE: the verb, the target, the transport claim it arrives over, and
+/// whether the route admits a caller with no inbound credential at all. A plane states its routes
+/// as a `const` table of these; the claim each row publishes is [`ServedRoute::claim_spec`], so
+/// every plane spells a route's claim flags one way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServedRoute {
+    /// The verb.
+    pub verb: &'static str,
+    /// The target path; a `{name}` segment is a path variable.
+    pub target: &'static str,
+    /// The transport claim it arrives over.
+    pub carrier: &'static str,
+    /// No inbound credential: a discovery document, or a callback that carries its own token.
+    pub open: bool,
+}
+
+impl ServedRoute {
+    /// The claim flags the route states: a target with a path variable is a pattern
+    /// ([`CLAIM_PATTERN`], one level per variable), any other target matches exactly
+    /// ([`CLAIM_EXACT`]); an open route adds [`CLAIM_OPEN`].
+    #[must_use]
+    pub fn claim_flags(&self) -> u32 {
+        let mut flags = if self.target.contains('{') {
+            CLAIM_PATTERN
+        } else {
+            CLAIM_EXACT
+        };
+        if self.open {
+            flags |= CLAIM_OPEN;
+        }
+        flags
+    }
+
+    /// The route as a snapshot claim, its refusal dialect `0`.
+    #[must_use]
+    pub fn claim_spec(&self) -> ClaimSpec {
+        ClaimSpec::new(self.verb, self.target, self.carrier, self.claim_flags())
+    }
+}
+
+/// One admin route in the ABI's spelling, over `'static` strings: `route` is `(verb, target)`
+/// relative to the kernel's admin mount, `flags` its route flags (`0`, or `ROUTE_PUBLIC` and what
+/// rides beside it), `audit_verb` the word the kernel audits it under (empty = never audited). A
+/// `const fn`, so a plane states its admin routes as a `const` table.
+#[must_use]
+pub const fn admin_route(
+    route: (&'static str, &'static str),
+    flags: u32,
+    audit_verb: &'static str,
+) -> AdminRoute {
+    AdminRoute {
+        verb: abi_str(route.0),
+        target: abi_str(route.1),
+        flags,
+        _reserved: 0,
+        audit_verb: abi_str(audit_verb),
+    }
+}
+
+/// The index of `op` in a plane's operation-class list `classes`, in the order its Statement
+/// tail's class table states them, which is the number `arrive` names a class by; `None` when the
+/// list does not hold it.
+#[must_use]
+pub fn class_index(classes: &[OpClassId], op: OpClassId) -> Option<u32> {
+    classes
+        .iter()
+        .position(|c| *c == op)
+        .and_then(|i| u32::try_from(i).ok())
 }
 
 #[cfg(test)]

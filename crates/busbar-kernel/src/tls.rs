@@ -14,6 +14,9 @@ pub fn read_pem(
     what: &str,
 ) -> Result<Vec<u8>, String> {
     resolver
-        .resolve(secret)
+        .resolve_at_config(
+            secret,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
         .map_err(|e| format!("cannot resolve TLS {what} ({}): {e}", secret.describe()))
 }

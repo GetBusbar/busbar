@@ -127,6 +127,17 @@ pub fn strip_comments(src: &[char]) -> Vec<char> {
             i += 1;
             continue;
         }
+        // X-1218: THE CHAR-LITERAL ARM IS CONSTRUCTED. `in_char` was declared, read and only ever
+        // set false, so `'"'` opened a STRING at its inner quote and every comment up to the next
+        // `"` in the file was kept as code. A `'` opens a char (or byte) literal when an escape
+        // follows it (`'\''`, `'\n'`) or a closing `'` sits two places on (`'"'`, `b'/'`); any
+        // other `'` is a lifetime or a label and is ordinary code.
+        if c == '\'' && i + 1 < n && (src[i + 1] == '\\' || (i + 2 < n && src[i + 2] == '\'')) {
+            in_char = true;
+            out.push(c);
+            i += 1;
+            continue;
+        }
         if c == '/' && i + 1 < n && src[i + 1] == '/' {
             while i < n && src[i] != '\n' {
                 out.push(' ');
@@ -976,4 +987,41 @@ pub fn derive_list(attrs: &str) -> String {
         i += 1;
     }
     parts.join(" ")
+}
+
+#[cfg(test)]
+mod char_literal_tests {
+    use super::strip_comments;
+
+    fn strip(src: &str) -> String {
+        strip_comments(&src.chars().collect::<Vec<_>>())
+            .into_iter()
+            .collect()
+    }
+
+    /// X-1218 RED: a `'"'` char literal no longer opens a string, so the comments after it are
+    /// stripped. Before, the inner `"` opened a string that ran to the next `"`, and both comments
+    /// below survived as code.
+    #[test]
+    fn a_quote_char_literal_does_not_open_a_string() {
+        let out =
+            strip("let q = '\"'; // first\nlet e = '\\''; // second\nlet b = b'\"'; /* third */\n");
+        assert!(!out.contains("first"), "{out}");
+        assert!(!out.contains("second"), "{out}");
+        assert!(!out.contains("third"), "{out}");
+        assert!(out.contains("let q = '\"';"), "{out}");
+        assert!(out.contains("let e = '\\'';"), "{out}");
+    }
+
+    /// A lifetime is not a char literal: what follows it is code, and a comment after it is still
+    /// stripped while a URL in a string keeps its `//`.
+    #[test]
+    fn a_lifetime_is_code_and_a_string_keeps_its_slashes() {
+        let out = strip("fn f<'a>(x: &'a str) -> &'a str { \"http://x\" } // gone\n");
+        assert!(
+            out.contains("fn f<'a>(x: &'a str) -> &'a str { \"http://x\" }"),
+            "{out}"
+        );
+        assert!(!out.contains("gone"), "{out}");
+    }
 }

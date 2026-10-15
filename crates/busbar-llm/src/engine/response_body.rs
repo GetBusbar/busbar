@@ -137,14 +137,6 @@ impl std::fmt::Debug for TapCell {
     }
 }
 
-/// Bytes-per-token divisor for the truncated-tail billing FLOOR (the plane's), read by the tests.
-#[cfg(test)]
-pub(crate) use busbar_plane_llm::codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN;
-
-/// The floor over a truncated tail (the plane's reply), read by the tests.
-#[cfg(test)]
-pub(crate) use crate::engine::xchg::reply::wire::estimate_usage_from_truncated_tail;
-
 use crate::engine::xchg::reply::relay::{Fed, Relay};
 
 /// Body wrapper that drives IR-based usage extraction, billing, and mid-stream error handling for
@@ -221,6 +213,7 @@ where
             is_sse,
             op.op_handler,
             usage_sink.is_some(),
+            max_translated_body_bytes(),
             translate,
             json_array,
         );
@@ -310,7 +303,7 @@ where
                 Poll::Ready(Some(Ok(chunk))) => {
                     // The plane's relay: the translated frames, or the far end's own bytes (the
                     // chunk itself, never copied) with a bounded tail-anchored copy kept for usage.
-                    let (fed, truncated_now) = this.relay.feed(&chunk);
+                    let (fed, truncated_now) = this.relay.feed(crate::engine::CODEC_HOST, &chunk);
                     let out = match fed {
                         Fed::Nothing => None,
                         Fed::Bytes(std::borrow::Cow::Borrowed(_)) => Some(None),
@@ -340,7 +333,10 @@ where
                     // streamed before the cut is still billed — by the Drop below (#62: a
                     // mid-stream cut is not a refund).
                     let had_first = this.relay.had_first();
-                    let cut = this.relay.cut(matches!(e, StreamCut::Transport(_)));
+                    let cut = this.relay.cut(
+                        crate::engine::CODEC_HOST,
+                        matches!(e, StreamCut::Transport(_)),
+                    );
                     if let Some(err_bytes) = cut.bytes {
                         // After the first byte of a stream: the breaker records the failure, the
                         // client's stream ends on the plane's in-band error frame in its own
@@ -386,7 +382,7 @@ where
                     this.ended = true;
                     // A cut before the first byte delivered nothing (`Error`); after it, a
                     // non-stream prefix the caller cannot use whole (`Partial`). The usage is what
-                    // the relay had incurred — the figure the Drop bills (item 367).
+                    // the relay had incurred — the figure the Drop bills.
                     this.tap.report(TapReport {
                         lane: this.lane_idx,
                         usage: cut.usage,
@@ -406,9 +402,17 @@ where
                     // time); the breaker hears only a stream the relay saw fail after its first
                     // byte, and a same-protocol non-stream body whose own stop reason says the
                     // generation failed (owner ruling Q31).
-                    let end = this.relay.end();
+                    let end = this.relay.end(crate::engine::CODEC_HOST);
                     if let Some(reason) = end.stream_fault {
                         this.record_transient(reason);
+                    }
+                    // THE USAGE-TAP FAULT the relay's tap returned as data (row 155): the kernel
+                    // counts it, under the caller's dialect the tap read the body as.
+                    if let Some(fault) = end.tap_fault {
+                        busbar_kernel::handlers::usage_tap_fault(
+                            this.relay.ingress(),
+                            fault.reason(),
+                        );
                     }
                     // The stream's drops (design F3 "Drops"), already warned once each: one audit row
                     // per wire path, the twin of the buffered answer's rows.

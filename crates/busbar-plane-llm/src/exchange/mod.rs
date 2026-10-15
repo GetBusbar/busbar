@@ -4,12 +4,14 @@
 
 pub mod arrive;
 pub mod attempt;
+pub mod invoke;
 pub mod multipart;
 pub mod probe;
 pub mod project;
 pub mod refuse;
 pub mod reply;
 pub mod shaping;
+pub mod webhook;
 
 use busbar_contract::codec::OperationHandler;
 use busbar_contract::protocol::ProtocolDecl;

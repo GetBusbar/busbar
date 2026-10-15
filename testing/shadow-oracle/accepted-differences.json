@@ -1290,7 +1290,7 @@
       "kind": "improvement",
       "changelog": "**One stream states one id.**",
       "by": "owner (Matthew Jackson), 2026-09-06 round-5 codec audit",
-      "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error)$",
+      "cells": "^llm\\|(anthropic|cohere|gemini|openai|responses)\\|(anthropic|bedrock|cohere|gemini|openai|responses)\\|request\\|(ok_stream|ok_stream_array|stream_upstream_error@fixture)$",
       "expected_cells": 31,
       "classes": [
         "body",
@@ -1368,7 +1368,7 @@
         "body",
         "effects.script"
       ],
-      "rationale": "RE-MEASURED 2026-09-28 against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green): the five premise figures reproduce to the digit — history-mid-window 2,500,000 / 27,500,000 / 277,530,000 (1.5.5: 25,000,000 / 500,060,000 / 750,090,000), epoch-mid-window total 257,530,000 (1.5.5: 1,000,120,000), rate-history|as-of total 257,530,000 with as_of 0 (1.5.5: 1,000,120,000) — and the three cells score ACCEPTED under this entry. RE-ADJUDICATED 2026-09-24 (items 47/52, P3A-register) under decision #79 (price in force at arrival) and owner ruling Q19/Q32. MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66), against the committed 1.5.5 golden: (1) billing|rate-card|history-mid-window reads 2,500,000 / 27,500,000 / 277,530,000 where 1.5.5 read 25,000,000 / 500,060,000 / 750,090,000 — every read, not only the last, because 1.5.5 repriced chat1 at each read-time card; the moves are in `body` and `effects.script` (the three /usage reads), none in effects.usage. (2) billing|rate-card|epoch-mid-window reads 257,530,000 total where 1.5.5 read 1,000,120,000 — exactly the cell's own 'priced per row at charge time' hypothesis. (3) ledger|rate-history|as-of reads the SAME 257,530,000 and still echoes as_of 0: the move is arrival pricing, NOT the as_of selector (1.6.0 does not honour ?as_of on /admin/usage today; the earlier claim that it does was false). The 2026-09-21 AUDIT NOTE (\"reprice-on-read, M6 not landed\") is superseded by the measurement: arrival pricing is live on GET /admin/usage. PREMISE (evaluated): the five figures above, exactly — a build whose figures differ in any digit withholds this entry, so it cannot forgive a money move the ruling does not describe. OUT OF SCOPE here: ledger|currency|minor-unit-rounding also moves by arrival pricing (rows 18/18/18, total 54 -> 2,500,000/18/2,500,000, total 5,000,018); it is carried by its own owner-signed entry under spec #79, not by this one. PRIOR RATIONALE (2026-09-06/22) is superseded by the above; see git history.",
+      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, bank-auditor grade; where 1.5.5 differs from ledger x card, 1.5.5 was wrong): history-mid-window's right figure is each row's ledger quantity priced at the card in force at that row's arrival, 2,500,000 (chat1 at the boot card) / 27,500,000 (+ chat2 at card A, 25,000,000) / 277,530,000 (+ chat3 at card B, 250,030,000), which is the candidate's figure to the digit. 1.5.5's 25,000,000 / 500,060,000 / 750,090,000 re-priced every earlier row at the card in force at READ time, so 1.5.5 was wrong and this entry registers the fix (PARITY-SCOPE lane, 2026-10-14). The cell definition's sentence \"ONLY the final read moves\" is false arithmetic: all three reads move, as the figures above show. RE-MEASURED 2026-09-28 against origin/predev of 2026-09-28 (release build, the engine oracle-rust.pin names, ./bin/oracle replay --strict over admin.ops, admin.auth, boot.refusal, billing, ledger, teller, crosscut.traps and neutrality, green): the five premise figures reproduce to the digit — history-mid-window 2,500,000 / 27,500,000 / 277,530,000 (1.5.5: 25,000,000 / 500,060,000 / 750,090,000), epoch-mid-window total 257,530,000 (1.5.5: 1,000,120,000), rate-history|as-of total 257,530,000 with as_of 0 (1.5.5: 1,000,120,000) — and the three cells score ACCEPTED under this entry. RE-ADJUDICATED 2026-09-24 (items 47/52, P3A-register) under decision #79 (price in force at arrival) and owner ruling Q19/Q32. MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66), against the committed 1.5.5 golden: (1) billing|rate-card|history-mid-window reads 2,500,000 / 27,500,000 / 277,530,000 where 1.5.5 read 25,000,000 / 500,060,000 / 750,090,000 — every read, not only the last, because 1.5.5 repriced chat1 at each read-time card; the moves are in `body` and `effects.script` (the three /usage reads), none in effects.usage. (2) billing|rate-card|epoch-mid-window reads 257,530,000 total where 1.5.5 read 1,000,120,000 — exactly the cell's own 'priced per row at charge time' hypothesis. (3) ledger|rate-history|as-of reads the SAME 257,530,000 and still echoes as_of 0: the move is arrival pricing, NOT the as_of selector (1.6.0 does not honour ?as_of on /admin/usage today; the earlier claim that it does was false). The 2026-09-21 AUDIT NOTE (\"reprice-on-read, M6 not landed\") is superseded by the measurement: arrival pricing is live on GET /admin/usage. PREMISE (evaluated): the five figures above, exactly — a build whose figures differ in any digit withholds this entry, so it cannot forgive a money move the ruling does not describe. OUT OF SCOPE here: ledger|currency|minor-unit-rounding also moves by arrival pricing (rows 18/18/18, total 54 -> 2,500,000/18/2,500,000, total 5,000,018); it is carried by its own owner-signed entry under spec #79, not by this one. PRIOR RATIONALE (2026-09-06/22) is superseded by the above; see git history.",
       "premise": {
         "all": [
           {
@@ -1412,6 +1412,45 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "Q93 the usage response names the rate-card version that priced it",
+      "kind": "additive",
+      "changelog": "1.6.0 Added: `GET /api/v1/admin/usage` names the rate-card version that priced it, `rate_card_version`.",
+      "by": "owner (Matthew Jackson), OWNER ANSWERS 2026-09-27 Q93 (rate-card-version-visible), option A as recommended",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-27",
+        "ruling": "docs/design/1.6.0-QUESTIONS.md Q93 (OWNER ANSWERS 2026-09-27: Q79-Q95 \"as recommended\"): A, serve the rate-card version on the usage and audit responses as an `additive` register entry (#44, #10); BUSBAR-1.6.0.md l.1248-1249"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^(admin\\.ops\\|GetUsage\\|(ok|no-usage-after-mutation)|billing\\|admin-usage\\|(after-2|past-day)|billing\\|rate-card\\|(epoch|history)-mid-window|ledger\\|rate-history\\|as-of|ledger\\|currency\\|minor-unit-rounding|money\\.reserved-tier\\|absent\\|(anthropic-cache|openai-cached)|plugins\\.abi\\|json-contract\\|store-sqlite@1\\.5-line|usage\\.gemini\\|(stream-truncated\\|recovery|tool-use\\|total-billed|cached-content\\|subtractive|stream-grounded\\|no-tool-use-count|tool-use\\|total-not-a-sum))$",
+      "expected_cells": 16,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "admin.ops|GetUsage|ok",
+            "status": 200
+          },
+          {
+            "cell": "admin.ops|GetUsage|ok",
+            "pointer": "/rate_card_version",
+            "exists": true
+          },
+          {
+            "cell": "admin.ops|GetUsage|ok",
+            "pointer": "/currency",
+            "equals": "USD"
+          }
+        ]
+      },
+      "rationale": "DECISION: Q93 (owner, 2026-09-27, option A) and #44 (\"rate_card_version surfaced on usage+audit endpoints\"). GET /api/v1/admin/usage gains one top-level member, `rate_card_version`: the highest dated rate-card history seq among the cards that priced the response's rows (crates/busbar-core-admin/src/v1/service_operations.rs get_usage, recorded as each row's card resolves; never a pricing input, #79), or null when no history entry priced a row. Asking `?as_of=<it>` re-derives the same figures. CELLS: the 16 golden cells whose recorded body is a GET /api/v1/admin/usage response. BYTES MOVED (golden -> candidate): body gains /rate_card_version; every 1.5.5 member keeps its place and value. Where another entry already forgives a cell's body (D-3, #79 warm-up, S-5, 576, LEDGER-SIMPLE, ABI-o1), that entry's own premise still decides it. The audit half is already served: every audit-chain record GET /api/v1/admin/audit/range returns carries the digest field `rate_card_version` (crates/busbar-kernel-audit/src/expose.rs push_record over recipe.rs:245), a 1.6.0 route with no 1.5.5 golden; GET /api/v1/admin/audit is the admin-action log, which carries no usage and no card. PREMISE (evaluated): the usage read answers 200, still carries 1.5.5's `currency`, and carries the member. Not yet measured: no oracle run executes until #911 lands."
     },
     {
       "id": "F-016 a provider api_key that does not resolve refuses boot",
@@ -1491,6 +1530,77 @@
         "status": 1
       },
       "rationale": "Decision #64, quoted: \"#3: the `auth:` unknown-key error's 'expected one of' list gains `operator_pub` (a real new 1.6.0 auth field, D38 operator-sealing); exit code + main error unchanged — approved, oracle re-blesses `neutrality|NEUT-U-auth|validate`.\" MEASURED (measured 2026-09-24 by P3A-register against a fresh local ./bin/oracle record of HEAD 05c826a66): after D-1's diagnostic-code rewrite the only stderr difference is `operator_pub` inserted into the backtick list after `signing_key`. kind=additive with text_list_growth, so the runner proves the list only GREW (a removed, reordered or respelled key stays red) rather than blanketing the stream; it carries D-1's own diagnostic-code rewrite (an additive entry's list proof reads its OWN transform, not D-1's). PREMISE (evaluated): the exit code is unchanged (1), which is the other half of what #64 approved. (#64's BOOT-135 half needs no entry: boot.refusal|BOOT-135|boot is byte-identical to 1.5.5 again, bd51e2cab.)"
+    },
+    {
+      "id": "#64-class build.auth_modules lists the webhook-signature module",
+      "kind": "additive",
+      "changelog": "1.6.0 Added: `GET /api/v1/admin/info` `build.auth_modules` lists `busbar-auth-webhook-signature`, the linked inbound auth module that verifies Twilio and Standard Webhooks signatures.",
+      "by": "ARCHITECT ruling 2026-10-14 (busbar-e1 relay), the class of OWNER-LOCKED #64 (additive list growth for a real new 1.6.0 surface); the owner signed 2026-10-15",
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-15",
+        "ruling": "OWNER signed in session 2026-10-15: build.auth_modules lists busbar-auth-webhook-signature (additive, #64 class)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      },
+      "cells": "^(admin\\.ops\\|GetInfo\\|ok|admin\\.plugins\\|type-auth@hooks-webrequest)$",
+      "expected_cells": 2,
+      "classes": [
+        "body"
+      ],
+      "premise": {
+        "all": [
+          {
+            "cell": "admin.ops|GetInfo|ok",
+            "status": 200
+          },
+          {
+            "cell": "admin.ops|GetInfo|ok",
+            "pointer": "/build/auth_modules/0",
+            "equals": "keys"
+          },
+          {
+            "cell": "admin.ops|GetInfo|ok",
+            "pointer": "/build/auth_modules/1",
+            "equals": "admin-tokens"
+          },
+          {
+            "cell": "admin.ops|GetInfo|ok",
+            "pointer": "/build/auth_modules/2",
+            "equals": "busbar-auth-webhook-signature"
+          },
+          {
+            "not": {
+              "cell": "admin.ops|GetInfo|ok",
+              "pointer": "/build/auth_modules/3",
+              "exists": true
+            }
+          },
+          {
+            "cell": "admin.plugins|type-auth@hooks-webrequest",
+            "pointer": "/items/0/name",
+            "equals": "keys"
+          },
+          {
+            "cell": "admin.plugins|type-auth@hooks-webrequest",
+            "pointer": "/items/1/name",
+            "equals": "admin-tokens"
+          },
+          {
+            "cell": "admin.plugins|type-auth@hooks-webrequest",
+            "pointer": "/items/2/name",
+            "equals": "busbar-auth-webhook-signature"
+          },
+          {
+            "cell": "admin.plugins|type-auth@hooks-webrequest",
+            "pointer": "/items/2/loader",
+            "equals": "compiled-in"
+          }
+        ]
+      },
+      "rationale": "DECISION: the default build links busbar-auth-webhook-signature (BUSBAR-1.6.0.md l.818-823, OWNER Q99 four auth crates; l.845-852, webhook signatures are verified by ONE mechanism-named inbound auth plugin; l.4835, TWILIO inbound auth). Its door states an inbound capability without FACT_READS_CREDENTIALS, so it is an auth-chain module an operator names, and GET /api/v1/admin/info build.auth_modules (crates/busbar-core-admin/src/v1/service.rs auth_modules_compiled_in) lists it after 1.5.5's two. CELLS: admin.ops|GetInfo|ok and admin.plugins|type-auth@hooks-webrequest (GET /api/v1/admin/plugins?type=auth lists the same compiled-in modules, service_operations.rs list_plugins). BYTES MOVED (golden -> candidate): GetInfo body /build/auth_modules [\"keys\",\"admin-tokens\"] -> [\"keys\",\"admin-tokens\",\"busbar-auth-webhook-signature\"]; the plugins page gains a third item {name: busbar-auth-webhook-signature, loader: compiled-in, type: auth, active: false unless a chain names it} after 1.5.5's two; every other member unchanged. kind=additive: 1.5.5's two names keep their place and value. PREMISE (evaluated): status 200 and the list is exactly 1.5.5's two followed by this one module, so any other change to the list withholds the entry. Not yet measured: no oracle run executes until #911 lands; the first post-#911 run confirms it."
     },
     {
       "id": "M-1 refund reaches the cell the charge reached",
@@ -2005,6 +2115,41 @@
       }
     },
     {
+      "id": "RULE21-576 the plain gemini route bills toolUsePromptTokenCount as input (ledger x rate card)",
+      "kind": "improvement",
+      "changelog": "1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.",
+      "by": "owner (Matthew Jackson), RULE 21 2026-10-14 (\"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"), applying the 2026-10-02 ruling of entry 576 to the llm wire cell",
+      "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens@fixture$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.usage",
+        "effects.metrics"
+      ],
+      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, exact integer minor units; where 1.5.5 differs from ledger x card, 1.5.5 was wrong). The cell's upstream answer (golden/1.5.5/cells/llm__gemini__gemini__request__ok_tool_use_tokens_fixture.json body, the pinned mock's tool-use-tokens verb) reports usageMetadata promptTokenCount 11, toolUsePromptTokenCount 4, candidatesTokenCount 7, totalTokenCount 18. Under entry 576's ruling (owner 2026-10-02: toolUsePromptTokenCount is billed input, in its own meter class beside the prompt; totalTokenCount changes no itemized count, and a total BELOW the itemized sum, 18 < 22, adds no unitemized line) the ledger is tokens_input 15 (11 + 4) and tokens_output 7. The oracle rate card prices every lane at input_utok 100000 and output_utok 200000 (busbar-release recorder/config_emit.rs rate_card): 15 x 100000 + 7 x 200000 = 2,900,000 utok = 290 cents, exact. 1.5.5 ledgered 11 / 7 and spent 250 cents (usage {requests 1, spend_cents 250, tokens 18}; bucket input 11, output 7), dropping the 4 tool-use tokens: 1.5.5 was wrong by 40 cents. The premise holds the candidate to the right figure, so this entry forgives the usage and metrics difference only when the candidate spends exactly 290 cents.",
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|gemini|gemini|request|ok_tool_use_tokens@fixture",
+            "status": 200
+          },
+          {
+            "cell": "llm|gemini|gemini|request|ok_tool_use_tokens@fixture",
+            "pointer": "/effects/usage/spend_cents",
+            "equals": 290
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-14",
+        "ruling": "RULE 21 (OWNER 2026-10-14, verbatim \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"): where v1.5.5 differs from ledger x rate card, 1.5.5 was wrong; register the oracle cell as an accepted difference citing this ruling. Ledger classes per entry 576 (owner 2026-10-02, LEDGER-SIMPLE 2026-10-03)."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
       "id": "LEDGER-SIMPLE a streamed grounded Gemini turn ledgers its stated-total gap as unitemized_tokens",
       "kind": "improvement",
       "changelog": "**Every count a provider reports is ledgered under its own class** (owner ruling LEDGER-100).",
@@ -2218,6 +2363,57 @@
       }
     },
     {
+      "id": "Q33c a streamed chat whose stream_options is not an object is refused 400",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a streamed chat request whose `stream_options` is not a JSON object (a string, number, boolean or array) is refused with a 400 naming the field. 1.5.5 forwarded it to the upstream unchanged.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md l.3897 Q33c (OWNER RULINGS 2026-09-24, second batch)",
+      "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_options_not_object$",
+      "expected_cells": 0,
+      "classes": [
+        "status",
+        "body"
+      ],
+      "rationale": "v1.5.5 crates/busbar/src/proxy/engine/mod.rs:2367-2386 (the include_usage injector) left a non-object `stream_options` untouched and the request went upstream as written. 1.6.0's llm plane refuses it before any send with a 400 carrying DETAIL_STREAM_OPTIONS_NOT_OBJECT (crates/busbar-plane-llm/src/exchange/attempt.rs, `inject_stream_usage`), because usage cannot be asked for on a value that is not an object and an unmetered stream would bill zero tokens. The owner ruled it, verbatim (BUSBAR-1.6.0.md l.3897): \"Q33c: KEEP the 400 for a wrong-typed stream_options (W2.28, 822d3f2b0).\" (answered in 1.6.0-QUESTIONS.md Q35: \"keep the stream_options 400\"). No oracle cell sends a wrong-typed stream_options: the cells are OWED, `cells` names them and expected_cells is 0, the way the client-cancel entry below writes its owed cell. Pinned by exchange_attempt::every_wrong_typed_stream_options_is_refused_before_any_send (string, number, boolean and array; F25 rows 3 and 25). The premise probes the existing same-dialect stream cell.",
+      "premise": {
+        "cell": "llm|openai|openai|request|ok_stream",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-24",
+        "ruling": "BUSBAR-1.6.0.md l.3897 Q33c (OWNER RULINGS 2026-09-24, second batch); 1.6.0-QUESTIONS.md Q35"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "R21 an OpenAI transcription answered in its own dialect is metered",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: an OpenAI transcription answered in its own dialect is now metered as a translated one always was (whisper's duration as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it nothing.",
+      "by": "owner (Matthew Jackson), queue rule 21 (OWNER 2026-10-14: \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\")",
+      "cells": "^llm\\|openai\\|openai\\|request\\|transcription_metered$",
+      "expected_cells": 0,
+      "classes": [
+        "effects.usage"
+      ],
+      "rationale": "v1.5.5 crates/busbar/src/handlers/mod.rs:140 gave a same-dialect OpenAI transcription answer no usage reader, so the request billed no tokens and no duration, while the same answer translated to another caller dialect was metered. Owner rule 21 (2026-10-14): money is ledger quantity times rate card, exact integer; where 1.5.5 differs from that, 1.5.5 was wrong, and the cell is registered citing the ruling. 1.6.0's llm plane reads the transcription's reported usage on the same-dialect path too: whisper's `usage.seconds` as `audio_ms` (whole milliseconds, x 1000), a token-metered model's tokens under the token classes; each is priced by the rate card (an absent card prices 0). No oracle cell sends a transcription: the cells are OWED, `cells` names them and expected_cells is 0, the way the client-cancel entry below writes its owed cell. Pinned by the llm plane's conformance case for `audio_ms` (crates/busbar-plane-llm/tests/conformance.json) and the codec's same-dialect transcription metering test. The premise probes the existing same-dialect openai cell.",
+      "premise": {
+        "cell": "llm|openai|openai|request|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-14",
+        "ruling": "queue rule 21 (MONEY, OWNER 2026-10-14): never an owner question; fix to ledger x rate card and register the cell citing the ruling"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
       "id": "#62 a stream the client cancels after its first byte keeps its charge",
       "kind": "breaking",
       "changelog": "1.6.0 Changed: a streamed answer the client cancels after its first byte keeps its charge. It is billed for what streamed and its request-budget unit is no longer given back; 1.5.5 gave the unit back. A mid-stream cut is not a refund.",
@@ -2243,11 +2439,36 @@
       }
     },
     {
+      "id": "#62 an upstream cut after the first byte bills what streamed",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20)",
+      "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_upstream_cut$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.usage"
+      ],
+      "rationale": "v1.5.5 crates/busbar/src/proxy/response_body.rs:279-283 set `stream_failed` on an upstream transport error after the first byte of a streamed answer, which suppressed the Drop-time token billing: the caller was billed no tokens for what had streamed (the request fee and, on a streamed answer, the request-budget unit were kept). Spec Part 2 #62 (OWNER-LOCKED 2026-09-20, BUSBAR-1.6.0.md l.2252: a stream cut off mid-answer, breaker and timeout named among the causes, bills for what was actually delivered up to the cut; the plane reports the units actually streamed) governs 1.6.0: the kernel's far end marks a cut answer's last piece PIECE_CUT (status row 155, ARCHITECT 2026-10-13), and the llm plane ends the caller's answer in 1.5.5's in-band error and reports the units its stream stated to the caller up to the cut; units the far end produced that never reached the caller are not counted. The request fee and the budget unit are unchanged from 1.5.5. A buffered answer cut mid-body is unchanged: the caller's 502, no tokens. The six `llm|<d>|<d>|request|stream_upstream_cut` cells drop the upstream connection after the first event of a stream (busbar-release #352; golden-add run 38488778377). One diverges: anthropic's first event states 11 input tokens, which 1.6.0 bills and 1.5.5 did not. The other five state no usage before the cut (gemini's first frame states its whole usage, which 1.5.5 billed too), so their usage is 1.5.5's. The premise probes the existing streamed failover cell. The signed line, BUSBAR-1.6.0.md l.2252 (Part 2 #62), verbatim: \"A mid-stream cut is NOT a refund — the customer pays for what actually streamed. OWNER-LOCKED 2026-09-20 (\"LOCKED AGREED\").\" and \"busbar bills for what was actually delivered up to the cut — it does not refund or zero the charge.\"",
+      "premise": {
+        "cell": "route.failover|fb|member-down-stream-openai",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-09-20",
+        "ruling": "BUSBAR-1.6.0.md Part 2 #62 (OWNER-LOCKED 2026-09-20, LOCKED AGREED); applied by ARCHITECT ruling 2026-10-13 (status row 155, row-159 plane-llm L1#2, option (b))"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
       "id": "S-16 same-dialect response headers are the upstream's, all but the governed",
       "kind": "improvement",
       "changelog": "On a same-dialect route the caller receives every upstream response header except hop-by-hop fields, Content-Length, Content-Encoding and the dialect's tenant- and credential-derived headers; 1.5.5 relayed only Content-Type and the dialect's request-id headers.",
       "by": "owner (Matthew Jackson), STANDING RULE LLM DIALECT FIDELITY (2026-10-02), F2 response headers; ARCHITECT ruling 2026-10-02 (FOLD-LLM option B)",
-      "cells": "^llm\\|(anthropic\\|anthropic|bedrock\\|bedrock|cohere\\|cohere|gemini\\|gemini|openai\\|openai|responses\\|responses)\\|request\\|(ok|ok_stream|ok_stream_array|ok_cachepoint_document|ok_tool_use_tokens|ok_citation|stream_upstream_error)$",
+      "cells": "^llm\\|(anthropic\\|anthropic|bedrock\\|bedrock|cohere\\|cohere|gemini\\|gemini|openai\\|openai|responses\\|responses)\\|request\\|(ok|ok_stream|ok_stream_array|ok_cachepoint_document@fixture|ok_tool_use_tokens@fixture|ok_citation@fixture|stream_upstream_error@fixture)$",
       "expected_cells": 21,
       "classes": [
         "headers"
@@ -3014,6 +3235,67 @@
         "who": "owner (Matthew Jackson)",
         "when": "2026-10-02",
         "ruling": "THE LLM DIALECT FIDELITY RULE (owner 2026-10-02, standing, no per-item sign-off), docs/design/BUSBAR-1.6.0.md:4768-4774"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "R-22 a translated Anthropic stream's error event carries request_id",
+      "kind": "improvement",
+      "changelog": "A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires.",
+      "by": "owner (Matthew Jackson), rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS)",
+      "cells": "^llm\\|anthropic\\|(bedrock|cohere|gemini|openai|responses)\\|request\\|stream_upstream_error$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "When a translated stream into Anthropic ingress fails part way, busbar writes the `event: error` frame itself. v1.5.5 wrote `{\"type\":\"error\",\"error\":{\"type\",\"message\"}}` (crates/busbar/src/proto/anthropic/writer.rs:626-666 at the v1.5.5 tag), but the event body is Anthropic's ErrorResponse, and the published schema (testing/llm-conformance/spec-digests.tsv row anthropic) REQUIRES `request_id` (nullable). So the llm spec-conformance rig fails such a row on `required`, and owner rule 22 makes that a defect. 1.6.0 adds a minted `req_...` id, the same mint this writer's buffered error envelope already uses (anthropic/auth.rs error_envelope). It is an additive member; an SDK reads it as the event's request id. Body only. No oracle cell records a translated stream failing part way (the stream_upstream_error cells are same-dialect, where the far end's frame is relayed verbatim), so the cells are OWED: `cells` names them and expected_cells is 0, the way ORPH-Q3b writes owed cells. The premise probes the existing translated Anthropic stream cell.",
+      "premise": {
+        "cell": "llm|anthropic|openai|request|ok_stream",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-14",
+        "ruling": "OWNER rule 22 (2026-10-14): named conformance gaps must be 0, a gap is a defect to fix; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS: the anthropic writer's error frame)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
+      "id": "C-22 bedrock budget refusal is a declared Converse error",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a Bedrock caller whose budget is spent is refused 429 `ThrottlingException`, an error Converse declares; 1.5.5 answered 400 `ServiceQuotaExceededException`, which only InvokeModel declares.",
+      "by": "owner (Matthew Jackson), rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS C)",
+      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|over_budget_total$",
+      "expected_cells": 1,
+      "classes": [
+        "status",
+        "body",
+        "headers"
+      ],
+      "rationale": "1.5.5 answered a Bedrock caller whose group budget is spent with HTTP 400 `__type`/`x-amzn-errortype` `ServiceQuotaExceededException` (golden/1.5.5/cells/llm__bedrock__bedrock__request__over_budget_total.json; v1.5.5 proto bedrock writer quota_exceeded_status() = 400). That exception is not in the `errors` of Converse or ConverseStream in the pinned botocore bedrock-runtime model (testing/llm-conformance/spec-digests.tsv, e5c8122617a2: AccessDenied, InternalServer, ModelError, ModelNotReady, ModelTimeout, ResourceNotFound, ServiceUnavailable, Throttling, Validation); only InvokeModel declares it. So the llm spec-conformance rig failed `error.declared` on this row, and the row sat in testing/llm-conformance/named-gaps.json as a named gap. Owner rule 22 (2026-10-14) makes every named conformance gap a defect to fix in code. 1.6.0 answers 429 `ThrottlingException`, the declared Converse error whose AWS description is 'Your request was denied due to exceeding the account quotas for Amazon Bedrock' (httpStatusCode 429), matching the other five dialects' 429 for the same refusal. Moved classes: status 400 -> 429, body `__type` (the message is unchanged), headers `x-amzn-errortype` and the content-length that follows the body. Not money: the refusal charges nothing on either side and effects.usage is untouched (the metrics outcome label is client_error for both statuses). Code: crates/busbar-plane-llm/src/codec/bedrock/mod.rs error_kind_to_bedrock_type and quota_exceeded_status, crates/busbar-plane-llm/src/refusal.rs (the bedrock OVER_BUDGET row removed, so the class default 429 answers). SCOPE: exactly one cell.",
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|bedrock|bedrock|request|over_budget_total",
+            "status": 429
+          },
+          {
+            "cell": "llm|bedrock|bedrock|request|over_budget_total",
+            "pointer": "/__type",
+            "equals": "ThrottlingException"
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-14",
+        "ruling": "OWNER rule 22 (2026-10-14): named conformance gaps must be 0, a gap is a defect to fix; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS C: ThrottlingException/429)"
       },
       "expires": {
         "baseline": "1.5.5",

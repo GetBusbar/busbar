@@ -7,8 +7,8 @@
 //! only routes `/pa/v1/messages`/`/pb/v1/messages` through the REAL `busbar_llm` plane's
 //! `build_runtime`/`viewer` — same reason as `endpoints_cross_plane.rs` (see its header). What this
 //! test asserts (no tracing event or metric name mentions "alarm"/"dispute" on a 1.5.5-shaped
-//! deployment) is core's own structured-field/metric-set behaviour, not anything about the LLM
-//! dialect — the real plane is present only so the requests have somewhere to route.
+//! deployment) is core's own structured-field/metric-set behaviour, not anything about the routed
+//! plane's dialect — the real plane is present only so the requests have somewhere to route.
 //!
 //! `metric_name_reads_every_exposition_line_shape` (a pure-function test, no `TestApp`/router) names
 //! no plane and stays in `src/tests/alarm_silence_tests.rs`.

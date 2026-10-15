@@ -32,9 +32,12 @@ const OPENAI_COUNT_CLASSES: &[(&str, Class)] = &[
         "prompt_tokens_details.cached_tokens",
         Class::Ledgered(-1, 1, 0, 0),
     ),
+    // A slice of `prompt_tokens` billed at the input tier, as 1.5.5 billed it (it never split a
+    // cache write out of an OpenAI input total: v1.5.5 `crates/busbar/src/proto/openai_chat/reader.rs:693, :966`,
+    // `cache_creation_input_tokens: None`).
     (
         "prompt_tokens_details.cache_write_tokens",
-        Class::Ledgered(-1, 0, 1, 0),
+        Class::SliceOf("prompt_tokens"),
     ),
     (
         "prompt_tokens_details.audio_tokens",
@@ -148,7 +151,10 @@ fn read_all_paths(usage: &serde_json::Value) -> [(Units, Note, u64); 3] {
         "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
         "usage": usage
     });
-    let buffered = OpenAiReader.read_response(&body).expect("read").usage;
+    let buffered = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read")
+        .usage;
     let chunk = serde_json::json!({
         "id": "chatcmpl-census",
         "object": OBJ_CHUNK,
@@ -158,7 +164,12 @@ fn read_all_paths(usage: &serde_json::Value) -> [(Units, Note, u64); 3] {
         "usage": usage
     });
     let streamed = OpenAiReader
-        .read_response_events("", &chunk, &mut StreamDecodeState::default())
+        .read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &chunk,
+            &mut StreamDecodeState::default(),
+        )
         .into_iter()
         .find_map(|e| match e {
             crate::codec::ir::IrStreamEvent::MessageDelta { usage, .. } => Some(usage),

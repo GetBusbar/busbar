@@ -21,7 +21,7 @@ use busbar_contract::caps::{
 /// The kernel seal, for the non-mint calls a test makes that take `&KernelSeal` (reading a verdict
 /// back with `into_result(&seal)`, and the like).
 pub fn seal() -> KernelSeal {
-    KernelSeal::acquire_for_kernel()
+    crate::seal::acquire()
 }
 
 /// `Pass::<S>::mint`: the stage-pass for step `S`, unbound to any request.

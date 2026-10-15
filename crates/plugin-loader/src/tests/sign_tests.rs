@@ -1496,3 +1496,33 @@ fn a_malformed_or_repeated_former_name_fails_structure() {
         assert!(e.contains("former name"), "{bad:?}: {e}");
     }
 }
+
+/// THE DISK NEED (`declares.disk`, THE DESIGN §11.11 R4 as the OWNER amended it 2026-10-13) is a
+/// `kind: secret` fact alone: any other kind stating it is refused at phase 1, naming the kind; a
+/// secret source stating it validates; and a manifest that states none keeps its canonical bytes
+/// (the field is left off the wire when false).
+#[test]
+fn only_a_secret_source_may_declare_a_disk_need() {
+    let mut store = manifest("busbar-store-disk", "disk", "acme");
+    store.declares.disk = true;
+    let err = validate_identity(&store, HOST_IDENTITY).unwrap_err();
+    assert!(
+        err.contains("'store'") && err.contains("disk"),
+        "the refusal names the kind and the need: {err}"
+    );
+
+    let mut secret = manifest("busbar-secret-disk", "disk", "acme");
+    secret.kind = "secret".to_string();
+    secret.declares.disk = true;
+    validate_identity(&secret, HOST_IDENTITY).expect("a secret source may read the disk");
+
+    assert_eq!(
+        serde_json::to_value(Declares::default()).expect("encode"),
+        serde_json::json!({}),
+        "no disk need is left off the wire"
+    );
+    assert_eq!(
+        Declares::from_declares_json(br#"{"disk": true}"#).map(|d| d.disk),
+        Ok(true)
+    );
+}

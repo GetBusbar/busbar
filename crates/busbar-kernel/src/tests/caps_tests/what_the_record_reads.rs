@@ -196,19 +196,22 @@ fn every_token_names_itself_as_the_contract_seal_it_satisfies() {
 
 #[test]
 fn a_secret_slot_says_where_the_substitution_happens_and_nothing_about_the_secret() {
-    // The slot names a LOCATION; the secret never enters it. Its `Debug` is hand-rolled all the same,
-    // because the type sits in the family that touches secrets and a derived one would follow the
-    // struct wherever it grows.
-    let k = seal();
-    let slot = SecretSlot::declare(&Grant::<Sign>::mint(&k), "header:authorization");
-    assert_eq!(slot.location(), "header:authorization");
+    // The slot names a LOCATION and a width; the secret never enters it. There is one `SecretSlot`
+    // (the destination module's, #73 X-1802), and its rendering says where and nothing else.
+    let slot = busbar_contract::SecretSlot {
+        target: "header:authorization",
+        len: 32,
+    };
     let printed = format!("{slot:?}");
     assert!(printed.contains("SecretSlot"), "{printed}");
     assert!(printed.contains("header:authorization"), "{printed}");
 
     // Two slots at two locations are two different renderings; one that had stopped reading the
     // field would print the same thing for both.
-    let other = SecretSlot::declare(&Grant::<Sign>::mint(&k), "body:/auth/token");
+    let other = busbar_contract::SecretSlot {
+        target: "body:/auth/token",
+        len: 32,
+    };
     assert_ne!(format!("{slot:?}"), format!("{other:?}"));
     assert_ne!(slot, other);
 }

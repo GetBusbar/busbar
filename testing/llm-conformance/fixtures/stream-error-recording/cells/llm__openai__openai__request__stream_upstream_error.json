@@ -1,0 +1,9 @@
+{
+ "body": {
+  "text": "data: {\"choices\":[{\"delta\":{\"content\":\"oracle-marker\",\"role\":\"assistant\"},\"finish_reason\":null,\"index\":0}],\"created\":0,\"id\":\"chatcmpl-oracle\",\"model\":\"m-openai-chat\",\"object\":\"chat.completion.chunk\"}\n\ndata: {\"error\":{\"code\":null,\"message\":\"oracle: upstream failed mid-stream\",\"param\":null,\"type\":\"server_error\"}}\n\n"
+ },
+ "headers": {
+  "content-type": "text/event-stream"
+ },
+ "status": 200
+}

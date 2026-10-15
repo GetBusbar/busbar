@@ -13,7 +13,7 @@ fn read(body: &serde_json::Value) -> crate::codec::ir::IrResponse {
     protocol_for("responses")
         .unwrap()
         .reader()
-        .read_response(body)
+        .read_response(crate::codec::test_host::HOST, body)
         .expect("reads")
 }
 
@@ -37,7 +37,7 @@ fn a_web_search_call_reads_as_a_hosted_record_and_writes_back() {
     let out = protocol_for("responses")
         .unwrap()
         .writer()
-        .write_response(&resp);
+        .write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(out["output"][0]["type"], "web_search_call");
     assert_eq!(out["output"][0]["id"], "ws_1");
     assert_eq!(
@@ -60,12 +60,12 @@ fn an_anthropic_web_search_reaches_a_responses_client() {
     let resp = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&anthropic)
+        .read_response(crate::codec::test_host::HOST, &anthropic)
         .expect("reads");
     let out = protocol_for("responses")
         .unwrap()
         .writer()
-        .write_response(&resp);
+        .write_response(crate::codec::test_host::HOST, &resp);
     let item = &out["output"][0];
     assert_eq!(item["type"], "web_search_call", "{out}");
     assert_eq!(item["id"], "srvtoolu_1");
@@ -94,7 +94,7 @@ fn file_citations_read_and_write() {
     let out = protocol_for("responses")
         .unwrap()
         .writer()
-        .write_response(&resp);
+        .write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out["output"][0]["content"][0]["annotations"][0]["file_id"], "file_1",
         "{out}"

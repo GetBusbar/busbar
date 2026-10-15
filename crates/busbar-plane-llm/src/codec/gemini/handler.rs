@@ -4,14 +4,14 @@
 //! Gemini `RequestHandler` + cells. Embeddings via `models/{id}:embedContent`.
 
 use super::{
-    COUNT_LABEL, FIELD_ASPECT_RATIO, FIELD_AUDIO_DURATION_SECONDS, FIELD_BYTES_BASE64_ENCODED,
-    FIELD_CANDIDATES, FIELD_CANDIDATES_TOKEN_COUNT, FIELD_CONTENTS, FIELD_FINISH_REASON,
-    FIELD_GENERATE_CONTENT, FIELD_GENERATION_CONFIG, FIELD_GUIDANCE_SCALE, FIELD_INLINE_DATA,
-    FIELD_INLINE_DATA_SNAKE, FIELD_MIME_TYPE, FIELD_MIME_TYPE_SNAKE, FIELD_NEGATIVE_PROMPT,
-    FIELD_OUTPUT_DIMENSIONALITY, FIELD_PARTS, FIELD_PERSON_GENERATION, FIELD_PREDICTIONS,
-    FIELD_PROMPT_TOKEN_COUNT, FIELD_RESPONSE_MODALITIES, FIELD_SAMPLE_COUNT,
-    FIELD_SAMPLE_IMAGE_SIZE, FIELD_STREAM_GENERATE_CONTENT, FIELD_TOTAL_TOKEN_COUNT,
-    FIELD_USAGE_METADATA, FIELD_VALUES, GEMINI_AUDIO, GEMINI_FINISH_STOP,
+    COUNT_LABEL, FIELD_ASPECT_RATIO, FIELD_BYTES_BASE64_ENCODED, FIELD_CANDIDATES,
+    FIELD_CANDIDATES_TOKEN_COUNT, FIELD_CONTENTS, FIELD_FINISH_REASON, FIELD_GENERATE_CONTENT,
+    FIELD_GENERATION_CONFIG, FIELD_GUIDANCE_SCALE, FIELD_INLINE_DATA, FIELD_INLINE_DATA_SNAKE,
+    FIELD_MIME_TYPE, FIELD_MIME_TYPE_SNAKE, FIELD_NEGATIVE_PROMPT, FIELD_OUTPUT_DIMENSIONALITY,
+    FIELD_PARTS, FIELD_PERSON_GENERATION, FIELD_PREDICTIONS, FIELD_PROMPT_TOKEN_COUNT,
+    FIELD_RESPONSE_MODALITIES, FIELD_SAMPLE_COUNT, FIELD_SAMPLE_IMAGE_SIZE,
+    FIELD_STREAM_GENERATE_CONTENT, FIELD_TOTAL_TOKEN_COUNT, FIELD_USAGE_METADATA, FIELD_VALUES,
+    GEMINI_AUDIO, GEMINI_FINISH_STOP,
 };
 use crate::codec::ir::audio::{SpeechResp, TranscriptionResp};
 use crate::codec::ir::embeddings::{
@@ -224,26 +224,18 @@ pub fn write_transcription_response(r: &crate::codec::ir::audio::TranscriptionRe
             (FIELD_FINISH_REASON): GEMINI_FINISH_STOP,
         }],
     });
-    match &r.usage {
-        Some(busbar_contract::billing::Billing::Tokens(t)) => {
-            body[FIELD_USAGE_METADATA] = json!({
-                (FIELD_PROMPT_TOKEN_COUNT): t.input,
-                (FIELD_CANDIDATES_TOKEN_COUNT): t.output,
-                (FIELD_TOTAL_TOKEN_COUNT): t.input.saturating_add(t.output),
-            });
-        }
-        // whisper-1 bills audio DURATION (produced by the OpenAI transcription reader). Gemini's
-        // usageMetadata is token-shaped and has no seconds field, so surfacing this as a token count
-        // would fabricate tokens and corrupt downstream token pricing. Instead carry the exact
-        // seconds through under an explicit duration field so the billable quantity is not dropped
-        // on an openai->gemini transcription hop (the closest faithful representation).
-        Some(busbar_contract::billing::Billing::Duration { seconds }) => {
-            // The one render boundary — byte-identical to what this wrote before the quantity
-            // became exact (see `billing::duration_seconds_to_wire`).
-            let seconds = busbar_contract::billing::duration_seconds_to_wire(*seconds);
-            body[FIELD_USAGE_METADATA] = json!({ (FIELD_AUDIO_DURATION_SECONDS): seconds });
-        }
-        _ => {}
+    // Only a token-billed answer writes `usageMetadata`. A duration-billed answer (whisper-1's
+    // `Billing::Duration`, an openai->gemini hop) has no member in Gemini's token-shaped
+    // `usageMetadata`: it is written without one, exactly as 1.5.5 wrote it (v1.5.5
+    // `crates/busbar/src/handlers/gemini.rs:259-265` wrote `usageMetadata` only for
+    // `Billing::Tokens`). The billed seconds are read off the EGRESS reader, never off these bytes,
+    // so nothing billed is lost; an invented `audioDurationSeconds` member is not Gemini's wire.
+    if let Some(busbar_contract::billing::Billing::Tokens(t)) = &r.usage {
+        body[FIELD_USAGE_METADATA] = json!({
+            (FIELD_PROMPT_TOKEN_COUNT): t.input,
+            (FIELD_CANDIDATES_TOKEN_COUNT): t.output,
+            (FIELD_TOTAL_TOKEN_COUNT): t.input.saturating_add(t.output),
+        });
     }
     WireBody::json(SlabBytes::from(
         serde_json::to_vec(&body).unwrap_or_default(),
@@ -351,11 +343,10 @@ leaf_op! {
     GeminiImage: COUNT_LABEL,
     ImageReqHandle = read_image_request,
     ImageRespHandle = read_image_response;
-    // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` can read the
-    // response's usage and bill the virtual key's TPM/spend. Token-metered image models expose a
-    // `usageMetadata` object (billed as tokens); Imagen `:predict` per-image responses have none, so
-    // the tap bills 0 tokens and the request still meters once via the per-image cost basis on the
-    // cross-protocol seam — mirrors the OpenAI image cell.
+    // Buffer the same-protocol non-stream 2xx body so the default `extract_usage` runs this op's
+    // reader: a token-reporting image model's `usageMetadata` is RECORDED (never billed, as in
+    // 1.5.5; see `ImageResp::billing`), and an Imagen `:predict` per-image answer bills its
+    // `images` count.
     fn taps_usage(&self) -> bool {
         true
     }
@@ -597,26 +588,10 @@ pub fn read_transcription_response(
         .get(FIELD_USAGE_METADATA)
         .map(
             |u| -> Result<busbar_contract::billing::Billing, CodecError> {
-                // The transcription writer emits `audioDurationSeconds` (not a token count) when the
-                // source billing was whisper-1's `Billing::Duration` (an openai->gemini hop). Reading it
-                // back as Duration preserves the billable seconds; forcing Tokens{0,0} — as the old
-                // reader did — silently discarded the duration. Real Gemini upstreams emit only the
-                // token fields, which take the Tokens branch as before.
-                // THE DURATION IS A MEASUREMENT, so it is read from the wire's DECIMAL TEXT and never
-                // through an `f64` (#81): a quantity that transits a double has already lost the
-                // exactness no later conversion can give back. `u.get(..)` would hand back a `Value`
-                // whose number is already a double, so the read goes to the ORIGINAL BYTES by pointer.
-                if u.get(FIELD_AUDIO_DURATION_SECONDS).is_some() {
-                    let seconds = busbar_contract::Count::read_at(
-                        wire,
-                        "/usageMetadata/audioDurationSeconds",
-                    )
-                    .map_err(|e| CodecError::Malformed(format!("audioDurationSeconds: {e}")))?
-                    .ok_or_else(|| {
-                        CodecError::Malformed("audioDurationSeconds: located then lost".to_string())
-                    })?;
-                    return Ok(busbar_contract::billing::Billing::Duration { seconds });
-                }
+                // Only the token fields are read, exactly as 1.5.5 read them (v1.5.5
+                // `crates/busbar/src/handlers/gemini.rs:229-241`): an upstream cannot pick the
+                // duration meter (`audio_ms`) by sending an `audioDurationSeconds` member Gemini's
+                // `UsageMetadata` does not define. A real Gemini upstream sends only token counts.
                 // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42). The old
                 // `.unwrap_or(0)` wrote "no work happened" for a count the provider really sent and
                 // this build could not read, and every money view over that row was then faithfully
@@ -834,30 +809,29 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
                 .collect()
         })
         .unwrap_or_default();
-    // Token-metered image models (gemini `generateContent`-shaped) carry a `usageMetadata` token
-    // object; Imagen `:predict` per-image responses carry none. Without this the response was billed
-    // NOTHING — `ImageResp::billing()` returns `None` when BOTH `usage` and `cost_basis` are unset.
-    // Parse the token object when present so `billing()` yields `Billing::Tokens` (same field mapping
-    // as the Gemini transcription/embeddings usage readers).
+    // Token-reporting image models (gemini `generateContent`-shaped) carry a `usageMetadata` token
+    // object; Imagen `:predict` per-image responses carry none. The tokens are RECORDED, never
+    // billed (`ImageResp::billing`, 1.5.5 parity: v1.5.5
+    // `crates/busbar/src/handlers/gemini.rs:446-472` billed none).
+    // A recorded count is still a ledger row, so it is read through the one count seam
+    // (`usage_count::recorded_count`): absent is zero; a present count this build cannot read is
+    // UNKNOWN, left out of the record and named on `warnings` and in the log. It is never a 0
+    // (#81, OWNER rule 21) and never a refusal: 1.5.5 served the answer whatever its usage said.
+    let mut warnings = Vec::new();
     let usage = v
         .get(FIELD_USAGE_METADATA)
-        .map(
-            |u| -> Result<busbar_contract::billing::TokenUsage, CodecError> {
-                // BILLED COUNTS: absent is zero, UNREADABLE IS A REFUSAL (#81/#42) — see
-                // `usage_count::billed_count`.
-                Ok(busbar_contract::billing::TokenUsage {
-                    input: crate::codec::usage_count::billed_count(u, FIELD_PROMPT_TOKEN_COUNT)
-                        .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    output: crate::codec::usage_count::billed_count(
-                        u,
-                        FIELD_CANDIDATES_TOKEN_COUNT,
-                    )
-                    .map_err(|e| CodecError::Malformed(e.to_string()))?,
-                    ..Default::default()
-                })
-            },
-        )
-        .transpose()?;
+        .map(|u| crate::codec::ir::image::ImageTokens {
+            input: crate::codec::usage_count::recorded_count(
+                u,
+                FIELD_PROMPT_TOKEN_COUNT,
+                &mut warnings,
+            ),
+            output: crate::codec::usage_count::recorded_count(
+                u,
+                FIELD_CANDIDATES_TOKEN_COUNT,
+                &mut warnings,
+            ),
+        });
     // Per-image (Imagen `:predict`) responses carry no `usageMetadata` — record the per-image cost
     // basis so the op bills as `Billing::Images` rather than nothing. The billable COUNT is
     // recoverable from the response itself (one image per `predictions` entry). Size/quality tiers
@@ -874,6 +848,7 @@ pub fn read_image_response(wire: &[u8]) -> Result<crate::codec::ir::image::Image
         images,
         usage,
         cost_basis,
+        warnings,
         ..Default::default()
     })
 }

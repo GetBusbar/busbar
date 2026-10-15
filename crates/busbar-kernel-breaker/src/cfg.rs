@@ -48,10 +48,10 @@ pub struct BreakerCfg {
     /// The ceiling every escalated cooldown is clamped to. A separate, caller-supplied
     /// `max_honored_retry_after_secs` (see
     /// [`BreakerCell::compute_cooldown_with_retry_after`](crate::cell::BreakerCell::compute_cooldown_with_retry_after))
-    /// is the absolute ceiling on an honored upstream Retry-After, which may legitimately exceed
+    /// is the absolute ceiling on an honored upstream requested wait, which may legitimately exceed
     /// this cap.
     pub max_cooldown_secs: u64,
-    /// Whether an upstream `Retry-After` value is honored as a floor under the computed cooldown.
+    /// Whether an upstream's requested wait is honored as a floor under the computed cooldown.
     pub honor_retry_after: bool,
     /// The trip thresholds this cell evaluates.
     pub trip: TripConfig,

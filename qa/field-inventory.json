@@ -26,6 +26,10 @@
       "streaming": true
     },
     {
+      "dialect": "gemini",
+      "streaming": true
+    },
+    {
       "dialect": "bedrock",
       "streaming": true
     },

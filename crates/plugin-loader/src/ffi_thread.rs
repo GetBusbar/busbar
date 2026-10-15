@@ -58,16 +58,9 @@
 //! | crossing | frequency | routed |
 //! |---|---|---|
 //! | `dlopen` (runs `.init_array`) | per load | yes |
-//! | `busbar_abi`, `busbar_plugin_kind` | per load | yes |
-//! | `busbar_open` (the plugin's constructor) | per load | yes |
-//! | `busbar_set_log_sink` (installs a `tracing` dispatcher INSIDE the plugin) | per load | yes |
-//! | `busbar_close` (the plugin's `Drop`) | per unload | yes |
 //! | `dlclose` (runs `.fini_array`) | per unload | yes |
 //! | `busbar_plugin_door` (the memory-ABI entry, every kind, linked or dropped) | per load | yes |
 //! | a door table's `validate`, `open`, `refresh`, `retire`, `close`, `ready` | per load / reload / unload | yes |
-//! | a plane's `hydrate`, `start`, `claims`, `admission` | per load | yes |
-//! | `busbar_call` | **per request** | no — inline |
-//! | `busbar_free` | **per request** | no — inline |
 //! | a door table's request ops, `tick`, `drive`, `cancel` | **per request** | no — inline |
 //!
 //! Every routed crossing asserts, in debug builds, that it is on a permanent worker
@@ -79,7 +72,7 @@
 //!
 //! # THE RESIDUAL, stated plainly
 //!
-//! Leaving `busbar_call`/`busbar_free` inline is sound only while no plugin first touches a
+//! Leaving a door table's request ops inline is sound only while no plugin first touches a
 //! TLS-with-destructor there rather than in its constructor. That is measured, not assumed — the
 //! four first-party store backends never do (0/200 aarch64 and 0/150 x86_64 e2e runs against a
 //! 14/150 control) — but it is a property of THOSE plugins, not a guarantee this loader can enforce
@@ -87,11 +80,11 @@
 //!
 //! The concrete way a third-party plugin breaks it: statically linking a thread-caching allocator
 //! (jemalloc, mimalloc) puts a TLS destructor in the plugin image that is armed by the first
-//! ALLOCATION, which for many plugins happens inside `busbar_call` rather than `busbar_open`. This
+//! ALLOCATION, which for many plugins happens inside a request op rather than the door's `open`. This
 //! engine links `tikv-jemallocator` itself, so it is not a hypothetical.
 //!
 //! If that residual has to be closed, the cheap way is to confine calls PER PLUGIN rather than
-//! globally: `busbar_open` already runs on a worker, so the loader can sample the process's free
+//! globally: the door's `open` already runs on a worker, so the loader can sample the process's free
 //! `pthread_key` count around it and, for a plugin that consumed one, route that plugin's calls too
 //! — paying the handoff only for plugins that actually use thread-locals.
 
@@ -232,8 +225,7 @@ fn acquire(pool: &'static Mutex<Pool>) -> Lease {
 ///
 /// The `catch_unwind` lives on the WORKER, not the caller: a panic that escaped the trampoline would
 /// unwind past the `done` send and hang the caller forever, so the guard is what makes the
-/// rendezvous total. This also preserves [`crate::ffi_guard`]'s existing contract exactly — it used
-/// to catch here itself — so no call site changes meaning.
+/// rendezvous total: a panic comes back as `Err`, never as an unwind on the caller.
 ///
 /// Neither `F` nor `R` is `Send`, deliberately: the closures capture raw plugin handles and the
 /// returns include raw pointers. Soundness comes from the caller blocking for the entire window (see

@@ -29,8 +29,8 @@
 //! that asked each leg a differently-shaped question would not be comparing them.
 //!
 //! The per-leg CONSTRUCTORS are not here, and deliberately not faked. Building a leg's node means
-//! assembling the ten-odd collaborators its own fixture already assembles (`VoiceNodeParts` alone
-//! names plane, groups, pricer, auth, auth bindings, scope, meter policy, durability, io, origin),
+//! assembling the ten-odd collaborators its own fixture already assembles (one leg's node parts alone
+//! name plane, groups, pricer, auth, auth bindings, scope, meter policy, durability, io, origin),
 //! and the two ways to get them are:
 //!
 //! 1. re-implement each leg's fixture here — which forks the fixture, so the harness would be
@@ -137,10 +137,11 @@ pub fn run<U: Units>(
         },
     );
 
-    if let Ended::Settled { requests, fee, .. } = &ended {
+    if let Ended::Settled { end, requests, fee } = &ended {
         ledger.post(RecordingRow {
             principal: principal.to_string(),
-            amount: meter.total(),
+            // What the posting settled, not a second count beside it (TODO L1689).
+            amount: end.posted().map_or(0, |posted| posted.settled()),
             requests: *requests,
             fee: *fee,
         });

@@ -98,6 +98,81 @@ fn an_empty_ranking_is_the_plain_floor() {
     assert!(node.pick("p", &members, &mut ctx).is_some());
 }
 
+/// F25 row 552: rehomed from crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::ordered_walk_empty_order_is_swrr.
+/// An empty ranking over three healthy members is the weighted floor: nine picks land on more than
+/// one member (it spreads, never pins one); with member 0's breaker tripped Open in the served
+/// breaker, nine more picks land only on member 1 or 2.
+#[test]
+fn ordered_walk_empty_order_is_swrr() {
+    use super::walk_tests::RealBreaker;
+    use busbar_kernel_egress::ports::Clock;
+    use busbar_kernel_egress::select::{pick_among, PickInput};
+
+    let (node, members) = three_lanes();
+    let real = RealBreaker::new();
+    let order: Vec<DestinationId> = Vec::new();
+    let token = super::route_token();
+    let pick = || {
+        let mut ctx = node.request_ctx();
+        pick_among(
+            &PickInput {
+                breaker: real.as_ref(),
+                capacity: node.capacity.as_ref(),
+                floor: &node.floor,
+                pool: "p",
+                members: &members,
+                affinity: None,
+                preference: Some(order.as_slice()),
+                now: node.clock.now_secs(),
+                token: &token,
+            },
+            &mut ctx,
+        )
+        .map(|picked| picked.destination)
+    };
+
+    let seen: std::collections::HashSet<DestinationId> = (0..9)
+        .map(|_| pick().expect("an empty ranking behaves as the floor"))
+        .collect();
+    assert!(
+        seen.len() >= 2,
+        "an empty ranking must distribute across healthy members, not pin one; saw {seen:?}"
+    );
+
+    let _ = real
+        .cell("p", DestinationId::new(0))
+        .hard_down(node.clock.now_secs(), 1_000_000);
+    for _ in 0..9 {
+        let picked = pick().expect("the floor finds a healthy member");
+        assert!(
+            picked == DestinationId::new(1) || picked == DestinationId::new(2),
+            "the floor skips the tripped member 0, got {picked:?}"
+        );
+    }
+}
+
+/// F25 row 553: rehomed from crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::request_ctx_new_huge_deadline_does_not_panic.
+/// A request context built with an operator's extreme failover timeout (u64::MAX, u64::MAX / 2,
+/// 10^18 seconds) constructs without panicking, and reads back a positive remaining budget now.
+#[test]
+fn request_ctx_new_huge_deadline_does_not_panic() {
+    use busbar_kernel_egress::ports::Clock;
+    use busbar_kernel_egress::select::RequestCtx;
+
+    let node = Node::with_lanes(&[]);
+    let (now_secs, now_millis) = (node.clock.now_secs(), node.clock.now_millis());
+    for secs in [u64::MAX, u64::MAX / 2, 1_000_000_000_000_000_000] {
+        let ctx = RequestCtx::new(secs, now_secs, now_millis);
+        let ms = ctx.remaining_ms(now_millis);
+        assert!(
+            ms > 0,
+            "a huge deadline yields a positive remaining budget (secs={secs}), got {ms}"
+        );
+        assert!(!ctx.expired(now_secs), "secs={secs}");
+        assert!(ctx.remaining_secs(now_secs) > 0, "secs={secs}");
+    }
+}
+
 #[test]
 fn a_ranking_never_selects_a_drained_member() {
     let (mut node, mut members) = three_lanes();

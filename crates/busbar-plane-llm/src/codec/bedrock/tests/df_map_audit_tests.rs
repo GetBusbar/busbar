@@ -14,7 +14,7 @@ fn read(body: &serde_json::Value) -> crate::codec::ir::IrResponse {
     protocol_for("bedrock")
         .unwrap()
         .reader()
-        .read_response(body)
+        .read_response(crate::codec::test_host::HOST, body)
         .expect("reads")
 }
 

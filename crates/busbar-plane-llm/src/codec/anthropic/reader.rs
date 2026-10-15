@@ -6,9 +6,9 @@ impl ProtocolReader for AnthropicReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         // The whole usage table, as the buffered read takes it: a truncated turn that ran web
-        // searches ledgers them exactly as its complete twin does. An unreadable billed count
-        // yields NO recovered usage, never a zero one (#42): the caller then bills its
-        // conservative floor estimate for the truncated body instead of $0.
+        // searches ledgers them exactly as its complete twin does. An unreadable billed count is
+        // refused on its own and bills nothing; the readable counts recover (#42; ARCHITECT
+        // ruling 2026-10-15).
         Some(
             crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), USAGE)
                 .ok()?
@@ -467,6 +467,7 @@ impl ProtocolReader for AnthropicReader {
 
     fn read_response_event(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         event_type: &str,
         data: &serde_json::Value,
     ) -> Option<IrStreamEvent> {
@@ -663,6 +664,7 @@ impl ProtocolReader for AnthropicReader {
 
     fn read_response_events(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         event_type: &str,
         data: &serde_json::Value,
         state: &mut crate::codec::ir::StreamDecodeState,
@@ -733,7 +735,7 @@ impl ProtocolReader for AnthropicReader {
             }
         }
         // Anthropic events are otherwise already block-structured (1:1): wrap the singular.
-        match self.read_response_event(event_type, data) {
+        match self.read_response_event(host, event_type, data) {
             Some(ev) => vec![ev],
             None => vec![],
         }
@@ -741,6 +743,7 @@ impl ProtocolReader for AnthropicReader {
 
     fn read_response(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or_else(ir_parse_error)?;
@@ -768,39 +771,12 @@ impl ProtocolReader for AnthropicReader {
 
         // Parse stop_reason (optional)
         // A lane WITH native structured outputs (`LaneCaps::native_structured_output`) asks through
-        // `output_config.format`, so its answer is ordinary text. A lane without it asks through the
-        // synthetic forced tool (the pre-capability default), whose answer is mapped back here.
-        let mut stop_reason = obj
+        // `output_config.format`, so its answer is ordinary text; a lane without it never received
+        // the directive (1.5.5's drop), so no answer block is rewritten here.
+        let stop_reason = obj
             .get(super::STOP_REASON)
             .and_then(|r| r.as_str())
             .map(read_anthropic_stop_reason);
-
-        // response_format tool-forcing MAP-BACK. When busbar translated a cross-protocol
-        // `response_format` directive into Anthropic tool-forcing (see the Anthropic WRITER's
-        // RESPONSE_FORMAT_TOOL_NAME injection), the model answers with a single `tool_use` block whose
-        // name is that sentinel and whose `input` is the schema-conforming JSON. The caller asked for
-        // structured OUTPUT, not a tool CALL, so project that block back to a plain assistant TEXT
-        // block carrying the JSON, and normalize a `tool_use` stop_reason to `end_turn` (a structured
-        // answer is a completed turn, not a tool-call handoff). Only fires on the sentinel name, so a
-        // genuine Anthropic tool_use is never disturbed. Buffered (non-streaming) path only.
-        let mut mapped_forced_tool = false;
-        for block in &mut content {
-            if let crate::codec::ir::IrBlock::ToolUse { name, input, .. } = block {
-                if name == RESPONSE_FORMAT_TOOL_NAME {
-                    let text = serde_json::to_string(input).unwrap_or_default();
-                    *block = crate::codec::ir::IrBlock::Text {
-                        text,
-                        cache_control: None,
-                        citations: Vec::new(),
-                        refusal: false,
-                    };
-                    mapped_forced_tool = true;
-                }
-            }
-        }
-        if mapped_forced_tool && stop_reason == Some(crate::codec::ir::IrStopReason::ToolUse) {
-            stop_reason = Some(crate::codec::ir::IrStopReason::EndTurn);
-        }
 
         // Parse usage. `usage` is OPTIONAL on read here: do NOT `ok_or?` it. A native Anthropic
         // non-streaming `Message` always carries `usage`, but an Anthropic-compatible backend that

@@ -32,7 +32,7 @@ use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 // THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 #[rustfmt::skip]
 #[path = "map.gen.rs"]
@@ -51,7 +51,7 @@ pub fn protocol() -> Protocol {
 /// THE RESPONSES ROUTER DETECTION — its single rung of the old core `protocol_id` ladder:
 /// `/v1/responses` (rung 10).
 fn claims(
-    _h: &busbar_contract::http::HeaderMap,
+    _h: busbar_contract::protocol::HeadFields<'_>,
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
     if path.ends_with("/v1/responses") {
@@ -96,7 +96,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
@@ -108,7 +108,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
         busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
@@ -162,39 +162,25 @@ const DEFAULT_MODEL: &str = crate::codec::dialect::FALLBACK_MODEL;
 /// DoS). The shared `dialect::MAX_OPEN_TOOL_CALLS` (OpenAI's documented parallel-tool-call limit, 128).
 const MAX_OPEN_TOOLS: usize = crate::codec::dialect::MAX_OPEN_TOOL_CALLS;
 
-/// The BYTE ceiling any ONE of the writer's per-item accumulators may reach over the life of a
-/// stream. `MAX_OPEN_TOOLS` bounds how MANY items accumulate; this bounds how large one of them
-/// grows, which is the other half of the same memory-amplification exposure — a backend streaming an
-/// unbounded run of fragments against a single open index needs only one entry to exhaust memory.
-///
-/// The value is `busbar_contract::codec::max_translate_body_bytes()`, the operator-tunable,
-/// live-reconfigurable limit (default 32 MiB) that already bounds a buffered cross-protocol
-/// non-stream body and the Gemini writer's streamed tool-argument buffer. Reusing it — rather than
-/// minting another constant — means an operator who raises the one knob to admit larger payloads
-/// gets that headroom here too, instead of the paths silently diverging. It is read through the
-/// translate-cap reader the host installs (#83a SD-3), a function-pointer call over an atomic load,
-/// cheap enough to take per fragment.
-fn accum_byte_cap() -> usize {
-    busbar_contract::codec::max_translate_body_bytes()
-}
-
 /// Append `fragment` to the per-item string buffer at `index`, honouring BOTH bounds: a new index is
 /// refused once `MAX_OPEN_TOOLS` items are already accumulating, and an existing buffer stops
-/// growing at [`accum_byte_cap`]. Stop-growing, never slice: a fragment that would cross the cap is
-/// dropped whole, which is the policy the Gemini writer's tool-argument accumulator established.
+/// growing at `cap` (the writer's [`ResponsesWriter::accum_byte_cap`]). Stop-growing, never slice: a
+/// fragment that would cross the cap is dropped whole, which is the policy the Gemini writer's
+/// tool-argument accumulator established.
 fn append_capped(
     map: &mut std::collections::BTreeMap<usize, String>,
     index: usize,
     fragment: &str,
+    cap: usize,
 ) {
     match map.get_mut(&index) {
         Some(buf) => {
-            if buf.len().saturating_add(fragment.len()) <= accum_byte_cap() {
+            if buf.len().saturating_add(fragment.len()) <= cap {
                 buf.push_str(fragment);
             }
         }
         None => {
-            if map.len() >= MAX_OPEN_TOOLS || fragment.len() > accum_byte_cap() {
+            if map.len() >= MAX_OPEN_TOOLS || fragment.len() > cap {
                 return;
             }
             map.entry(index).or_default().push_str(fragment);
@@ -286,9 +272,6 @@ const EVT_REASONING_SUMMARY_PART_DONE: &str = "response.reasoning_summary_part.d
 const EVT_RESPONSE_COMPLETED: &str = "response.completed";
 const EVT_RESPONSE_FAILED: &str = "response.failed";
 const EVT_RESPONSE_INCOMPLETE: &str = "response.incomplete";
-/// The Responses stream's TOP-LEVEL mid-stream failure event (`{"type":"error","code","message",
-/// "param"}`), distinct from the terminal `response.failed`.
-const EVT_ERROR: &str = keys::ERROR_WORD;
 /// The `include` entry that asks a Responses backend for per-token logprobs on every `output_text`
 /// part — the Responses spelling of the Chat Completions `logprobs: true` switch.
 const INCLUDE_OUTPUT_TEXT_LOGPROBS: &str = "message.output_text.logprobs";
@@ -414,7 +397,7 @@ const AUTH_FAILURE_MSG: &str = "Incorrect API key provided.";
 /// `const N < 11` fails to build (a monomorphization-time `assert!`), so a too-small width can never
 /// reach the wire. Both live callers use 48 (`ITEM_ID_TOKEN_LEN`/`RESPONSE_ID_TOKEN_LEN`), far above
 /// the floor.
-fn synth_token<const N: usize>() -> String {
+fn synth_token<const N: usize>(host: &dyn busbar_contract::codec::CodecHost) -> String {
     // Compile-time guard: a too-small `N` fails to build rather than emitting a short, low-entropy,
     // fingerprintable id at runtime. An inline `const` item cannot reference the outer fn's const
     // generic (E0401), so the assertion lives on an associated const of a zero-sized generic carrier
@@ -439,7 +422,7 @@ fn synth_token<const N: usize>() -> String {
         // and the loop still terminates — keeping the function infallible and panic-free.
         let mut buf = [0u8; 1];
         loop {
-            if !super::synth_rng::fill_entropy(&mut buf) {
+            if !super::synth_rng::fill_entropy(host, &mut buf) {
                 // Entropy failure: leave this slot at its existing '0' fallback and move on.
                 break;
             }
@@ -470,8 +453,8 @@ fn synth_token<const N: usize>() -> String {
 /// per-`(prefix, index)` determinism within a stream via a per-writer cache (see
 /// `ResponsesWriter::item_id_for`). This free function mints a FRESH opaque id; callers that need
 /// the stream-stable id go through the writer's cache.
-fn synthesize_item_id(prefix: &str) -> String {
-    format!("{prefix}_{}", synth_token::<ITEM_ID_TOKEN_LEN>())
+fn synthesize_item_id(host: &dyn busbar_contract::codec::CodecHost, prefix: &str) -> String {
+    format!("{prefix}_{}", synth_token::<ITEM_ID_TOKEN_LEN>(host))
 }
 
 // THE CREATION TIME IS AN INPUT, NOT A CLOCK READ.
@@ -487,8 +470,11 @@ fn synthesize_item_id(prefix: &str) -> String {
 //   * the streaming path has no answer to carry it, so the value rides the writer instance
 //     (`ResponsesWriter::stamped_at`), set once by whoever opened the stream.
 //
-// With neither supplied the writer stamps `UNSTAMPED_CREATED_AT`, which is what a caller that never
-// offered a time asked for.
+// With neither supplied the writer stamps the HOST's wall clock, read once per stream through the
+// host the caller handed (`CodecHost::wall_clock_now`, the reading the Chat writer's `created`
+// takes too), as 1.5.5 stamped `now_unix_secs()` (v1.5.5
+// `crates/busbar/src/proto/openai_responses/writer.rs:479`); `UNSTAMPED_CREATED_AT` only when the
+// host holds no clock.
 //
 // The rule is about FABRICATING a time, not about clocks as such. The crate does read a monotonic
 // clock in two places — the Bedrock writer and the stream framer both start an `Instant` to MEASURE
@@ -688,11 +674,11 @@ fn read_responses_reasoning_effort(word: &str) -> Option<crate::codec::ir::IrRea
 /// base62 chars (~285 bits) the birthday bound makes a per-process collision astronomically unlikely,
 /// so a counter would only ADD a predictable low-entropy region (a structural fingerprint) for no
 /// uniqueness benefit. Native passthrough never calls this: it carries the upstream id verbatim.
-fn synthesize_response_id() -> String {
+fn synthesize_response_id(host: &dyn busbar_contract::codec::CodecHost) -> String {
     format!(
         "{}{}",
         RESPONSE_ID_PREFIX,
-        synth_token::<RESPONSE_ID_TOKEN_LEN>()
+        synth_token::<RESPONSE_ID_TOKEN_LEN>(host)
     )
 }
 
@@ -2221,10 +2207,13 @@ fn write_text_format(rf: &crate::codec::ir::IrResponseFormat) -> serde_json::Val
 }
 
 /// THE RESPONSES API'S USAGE COUNTS, AS DATA (#42). `input_tokens` is a TOTAL that already INCLUDES
-/// the cached prefix (`input_tokens_details.cached_tokens`) and the cache-write slice
-/// (`input_tokens_details.cache_write_tokens`, "the number of input tokens that were written to
-/// the cache"), so both are subtracted (saturating) to leave the uncached input and carried as the
-/// IR's ADDITIVE cache read / cache creation; `None` when absent, never a spurious `Some(0)`.
+/// the cached prefix (`input_tokens_details.cached_tokens`), so that is subtracted (saturating) to
+/// leave the uncached input and carried as the IR's ADDITIVE cache read; `None` when absent, never a
+/// spurious `Some(0)`. The cache-write slice (`input_tokens_details.cache_write_tokens`) is NOT
+/// split out: it stays inside the input count, billed at the input tier, exactly as 1.5.5 billed it
+/// (v1.5.5 `crates/busbar/src/proto/openai_responses/reader.rs:1022` stream and `:1341` buffered,
+/// `cache_creation_input_tokens: None`). No owner ruling signs moving it to the cache-write tier
+/// (BUSBAR-1.6.0.md, THE LLM DIALECT FIDELITY RULE: "Billing never moves").
 /// `output_tokens_details.reasoning_tokens` is a SLICE of `output_tokens`, carried as attribution.
 /// The buffered response, the stream's terminal usage and a truncated-body recovery read this one
 /// table.
@@ -2234,15 +2223,7 @@ const USAGE: &[UsageCount] = &[
         CountSlot::Input,
         CountRead::Less(&[INPUT_TOKENS_DETAILS, keys::CACHED_TOKENS]),
     ),
-    (
-        CountSlot::Input,
-        CountRead::Less(&[INPUT_TOKENS_DETAILS, keys::CACHE_WRITE_TOKENS]),
-    ),
     (CountSlot::Output, CountRead::Zero(&[keys::OUTPUT_TOKENS])),
-    (
-        CountSlot::CacheWrite,
-        CountRead::Opt(&[INPUT_TOKENS_DETAILS, keys::CACHE_WRITE_TOKENS]),
-    ),
     (
         CountSlot::CacheRead,
         CountRead::Opt(&[INPUT_TOKENS_DETAILS, keys::CACHED_TOKENS]),
@@ -2262,9 +2243,9 @@ const RESPONSES_USAGE_IDENTITY: &str = "openai_responses.usage";
 ///
 /// EVERY COUNT THE PINNED WIRE LOCK (`testing/llm-conformance/wire/responses.wire.json`) DECLARES
 /// UNDER `usage` IS EITHER LEDGERED OR A SLICE OF A LEDGERED TOTAL: `input_tokens` (input, less its
-/// cached and cache-write slices), `cached_tokens` (cache read), `cache_write_tokens` (cache
-/// write), `output_tokens` (output); `output_tokens_details.reasoning_tokens` is a slice of
-/// `output_tokens`. `total_tokens` is OpenAI's sum, never a unit: it is cross-checked against the
+/// cached slice), `cached_tokens` (cache read), `output_tokens` (output);
+/// `input_tokens_details.cache_write_tokens` is a slice of `input_tokens` and bills as input, as in
+/// 1.5.5, and `output_tokens_details.reasoning_tokens` is a slice of `output_tokens`. `total_tokens` is OpenAI's sum, never a unit: it is cross-checked against the
 /// ledgered classes, a gap is WARN-logged and carried as the usage identity note, and a total ABOVE
 /// the itemized classes is the open class `unitemized_tokens` (owner LEDGER-100).
 fn read_responses_usage(
@@ -2272,12 +2253,17 @@ fn read_responses_usage(
     response: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let mut ir = crate::codec::usage_count::read_usage(COUNT_LABEL, usage, USAGE)?;
-    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
-        COUNT_LABEL,
-        RESPONSES_USAGE_IDENTITY,
-        usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
-        &ir,
-    );
+    // A refused count leaves no gap to ledger (`refused_any`): the total is not cross-checked.
+    ir.detail.usage_identity_note = (!crate::codec::usage_count::refused_any(usage, USAGE))
+        .then(|| {
+            crate::codec::usage_count::stated_total_note(
+                COUNT_LABEL,
+                RESPONSES_USAGE_IDENTITY,
+                usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
+                &ir,
+            )
+        })
+        .flatten();
     ir.detail.service_tier = crate::codec::carry::read_word(
         map::WORDS_SERVED_TIER,
         response.and_then(|r| r.get(keys::SERVICE_TIER)),
@@ -2303,10 +2289,8 @@ fn read_responses_usage(
 /// so the counter is stream-scoped by construction and the increments are plain `&self` atomics on
 /// that one owned instance — no thread affinity, so the counter follows the stream across Tokio
 /// worker migrations.
-/// The `created_at` a Responses answer wears when NO caller supplied a creation time.
-///
-/// Zero, and deliberately so: it is the unix epoch, it is obviously not a real reading, and it says
-/// "nobody offered one" without the writer having to invent an answer by reading a clock.
+/// The `created_at` a Responses answer wears when NO caller supplied a creation time AND the host
+/// holds no wall clock (see [`ResponsesWriter::default_created_at`]).
 pub const UNSTAMPED_CREATED_AT: u64 = 0;
 
 pub struct ResponsesWriter {
@@ -2486,6 +2470,11 @@ pub struct ResponsesWriter {
     /// all, and any cross-protocol stream whose caller has no parsed ingress body). A poisoned lock
     /// degrades to `None` (the spec DEFAULTS below), never to a panic on the request path.
     request_echo: std::sync::Mutex<Option<serde_json::Value>>,
+    /// THIS STREAM'S TRANSLATION CAP: the byte ceiling any one per-item accumulator may reach
+    /// ([`Self::accum_byte_cap`]). The plane hands it from its own settings when it opens the
+    /// stream ([`crate::codec::proto_codec::ProtocolWriter::set_translate_cap`]); until then,
+    /// [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`].
+    translate_cap: AtomicUsize,
 }
 
 /// Accumulated function-call item fields for one open `output_index`, finalized into the
@@ -2535,6 +2524,7 @@ pub const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     reasoning_sig_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     failed: AtomicBool::new(false),
     request_echo: std::sync::Mutex::new(None),
+    translate_cap: AtomicUsize::new(busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT),
 };
 
 impl Clone for ResponsesWriter {
@@ -2663,11 +2653,33 @@ impl Clone for ResponsesWriter {
             request_echo: std::sync::Mutex::new(
                 self.request_echo.lock().map(|e| e.clone()).unwrap_or(None),
             ),
+            translate_cap: AtomicUsize::new(self.translate_cap.load(Ordering::Relaxed)),
         }
     }
 }
 
 impl ResponsesWriter {
+    /// The BYTE ceiling any ONE of the writer's per-item accumulators may reach over the life of a
+    /// stream. `MAX_OPEN_TOOLS` bounds how MANY items accumulate; this bounds how large one of them
+    /// grows, which is the other half of the same memory-amplification exposure — a backend
+    /// streaming an unbounded run of fragments against a single open index needs only one entry to
+    /// exhaust memory.
+    ///
+    /// The value is the stream's translation cap, the one the plane's settings carry (the kernel
+    /// hands `limits.request_body_max_bytes`, the operator-tunable limit, default 32 MiB, that
+    /// already bounds a buffered cross-protocol non-stream body and the Gemini writer's streamed
+    /// tool-argument buffer). Reusing it — rather than minting another constant — means an operator
+    /// who raises the one knob to admit larger payloads gets that headroom here too, instead of the
+    /// paths silently diverging. One atomic load, cheap enough to take per fragment.
+    fn accum_byte_cap(&self) -> usize {
+        self.translate_cap.load(Ordering::Relaxed)
+    }
+
+    /// Latch the stream's translation cap (see [`Self::accum_byte_cap`]).
+    fn store_translate_cap(&self, cap: usize) {
+        self.translate_cap.store(cap, Ordering::Relaxed);
+    }
+
     /// Reset the per-stream `sequence_number` counter to 0. Called when the stream's opening
     /// `response.created` event is written so every stream's sequence starts from 0. The reader
     /// gates `MessageStart` on `state.started`, so exactly one reset happens per stream. The
@@ -2776,12 +2788,25 @@ impl ResponsesWriter {
     /// unix time if it was never set (a malformed stream whose terminal event preceded
     /// `MessageStart`, or a poisoned lock). Replaying the captured value keeps every event's
     /// `created_at` identical, matching a native Responses stream.
-    pub fn carried_created_at(&self) -> u64 {
+    pub fn carried_created_at(&self, host: &dyn busbar_contract::codec::CodecHost) -> u64 {
         self.created_at
             .lock()
             .ok()
             .and_then(|c| *c)
-            .unwrap_or(self.stamped_created_at)
+            .unwrap_or_else(|| self.default_created_at(host))
+    }
+
+    /// The `created_at` for an answer that carries none: the caller's stamp when one was given,
+    /// else the wall clock of the HOST the caller handed (`CodecHost::wall_clock_now`, the reading
+    /// the Chat writer stamps), as 1.5.5 stamped `now_unix_secs()` (v1.5.5
+    /// `crates/busbar/src/proto/openai_responses/writer.rs:479`). A translated stream clears the
+    /// upstream's creation time, so without this every translated stream into a Responses client
+    /// carried `created_at: 0` (1970). `UNSTAMPED_CREATED_AT` only when the host holds no clock.
+    pub(crate) fn default_created_at(&self, host: &dyn busbar_contract::codec::CodecHost) -> u64 {
+        if self.stamped_created_at != UNSTAMPED_CREATED_AT {
+            return self.stamped_created_at;
+        }
+        host.wall_clock_now().unwrap_or(UNSTAMPED_CREATED_AT)
     }
 
     /// This writer, stamped with the creation time the caller read.
@@ -2900,7 +2925,7 @@ impl ResponsesWriter {
     /// Append a streamed `arguments` fragment for the function-call item at `index`. Native
     /// `response.output_item.done` carries the COMPLETE accumulated arguments string, so the writer
     /// concatenates the `InputJsonDelta` fragments here. Lock poisoning degrades to a no-op.
-    /// Bounded on BOTH axes, like every accumulator on this writer (see [`accum_byte_cap`]): a NEW
+    /// Bounded on BOTH axes, like every accumulator on this writer (see [`Self::accum_byte_cap`]): a NEW
     /// index is refused once `MAX_OPEN_TOOLS` distinct items are already accumulating (the same line
     /// `mark_tool_open` holds), and an existing buffer stops growing at the translate-body cap.
     /// A refused fragment is dropped WHOLE rather than sliced at the boundary — a cap-truncated
@@ -2911,12 +2936,13 @@ impl ResponsesWriter {
         if let Ok(mut map) = self.tool_calls.lock() {
             match map.get_mut(&index) {
                 Some(entry) => {
-                    if entry.arguments.len().saturating_add(fragment.len()) <= accum_byte_cap() {
+                    if entry.arguments.len().saturating_add(fragment.len()) <= self.accum_byte_cap()
+                    {
                         entry.arguments.push_str(fragment);
                     }
                 }
                 None => {
-                    if map.len() >= MAX_OPEN_TOOLS || fragment.len() > accum_byte_cap() {
+                    if map.len() >= MAX_OPEN_TOOLS || fragment.len() > self.accum_byte_cap() {
                         return;
                     }
                     map.entry(index).or_default().arguments.push_str(fragment);
@@ -2941,12 +2967,12 @@ impl ResponsesWriter {
     /// concatenates the `TextDelta` fragments here. Lock poisoning degrades to a no-op (the terminal
     /// item then carries empty text) rather than panicking on the request path.
     /// Bounded on both axes exactly as `append_tool_arguments` is: a new index is refused past
-    /// `MAX_OPEN_TOOLS`, and an existing buffer stops growing at [`accum_byte_cap`]. A truncated
+    /// `MAX_OPEN_TOOLS`, and an existing buffer stops growing at [`Self::accum_byte_cap`]. A truncated
     /// text item is what the client already gets from any capped stream; an unbounded one is a
     /// per-connection memory-amplification DoS.
     fn append_text(&self, index: usize, fragment: &str) {
         if let Ok(mut map) = self.text_accum.lock() {
-            append_capped(&mut map, index, fragment);
+            append_capped(&mut map, index, fragment, self.accum_byte_cap());
         }
     }
 
@@ -2954,7 +2980,7 @@ impl ResponsesWriter {
     /// `output_text` part they annotate. Lock poisoning degrades to a no-op.
     /// Bounded on both axes, as `append_text` is: a new index is refused past `MAX_OPEN_TOOLS`, and
     /// an item's buffered citations stop accumulating once their carried text weight
-    /// ([`citation_bytes`]) would cross [`accum_byte_cap`]. The whole batch is refused rather than
+    /// ([`citation_bytes`]) would cross [`Self::accum_byte_cap`]. The whole batch is refused rather than
     /// split, so an annotation is never emitted half-formed.
     fn append_citations(&self, index: usize, cits: &[crate::codec::ir::IrCitation]) {
         if cits.is_empty() {
@@ -2965,12 +2991,12 @@ impl ResponsesWriter {
             match map.get_mut(&index) {
                 Some(entry) => {
                     let held: usize = entry.iter().map(citation_bytes).sum();
-                    if held.saturating_add(added) <= accum_byte_cap() {
+                    if held.saturating_add(added) <= self.accum_byte_cap() {
                         entry.extend_from_slice(cits);
                     }
                 }
                 None => {
-                    if map.len() >= MAX_OPEN_TOOLS || added > accum_byte_cap() {
+                    if map.len() >= MAX_OPEN_TOOLS || added > self.accum_byte_cap() {
                         return;
                     }
                     map.entry(index).or_default().extend_from_slice(cits);
@@ -3148,7 +3174,7 @@ impl ResponsesWriter {
     /// Bounded on both axes, as `append_text` is.
     fn append_reasoning(&self, index: usize, fragment: &str) {
         if let Ok(mut map) = self.reasoning_accum.lock() {
-            append_capped(&mut map, index, fragment);
+            append_capped(&mut map, index, fragment, self.accum_byte_cap());
         }
     }
 
@@ -3170,7 +3196,7 @@ impl ResponsesWriter {
             return;
         }
         if let Ok(mut map) = self.reasoning_sig_accum.lock() {
-            append_capped(&mut map, index, fragment);
+            append_capped(&mut map, index, fragment, self.accum_byte_cap());
         }
     }
 
@@ -3192,13 +3218,18 @@ impl ResponsesWriter {
     /// id itself stays opaque — no positional/sequential structure for an observer to fingerprint.
     /// A poisoned lock degrades to a freshly-minted opaque id (still structurally native, just not
     /// cached) rather than panicking on the request path.
-    fn item_id_for(&self, prefix: &'static str, index: usize) -> String {
+    fn item_id_for(
+        &self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        prefix: &'static str,
+        index: usize,
+    ) -> String {
         match self.item_ids.lock() {
             Ok(mut map) => map
                 .entry((prefix, index))
-                .or_insert_with(|| synthesize_item_id(prefix))
+                .or_insert_with(|| synthesize_item_id(host, prefix))
                 .clone(),
-            Err(_) => synthesize_item_id(prefix),
+            Err(_) => synthesize_item_id(host, prefix),
         }
     }
 }
@@ -3294,6 +3325,7 @@ fn read_web_search_call(item: &serde_json::Value) -> crate::codec::ir::IrBlock {
 /// carries none, `status` `completed` when it names none, its results as the search action's
 /// `sources`).
 fn write_web_search_call(
+    host: &dyn busbar_contract::codec::CodecHost,
     call_id: Option<&str>,
     status: Option<&str>,
     results: &[crate::codec::ir::IrSearchResult],
@@ -3304,7 +3336,7 @@ fn write_web_search_call(
         .collect();
     serde_json::json!({
         (keys::TYPE): ITEM_TYPE_WEB_SEARCH_CALL,
-        (keys::ID): call_id.map_or_else(|| synthesize_item_id(ITEM_ID_PREFIX_WEB_SEARCH), String::from),
+        (keys::ID): call_id.map_or_else(|| synthesize_item_id(host, ITEM_ID_PREFIX_WEB_SEARCH), String::from),
         (keys::STATUS): status.unwrap_or(STATUS_COMPLETED),
         (ACTION): { (keys::TYPE): SEARCH, (SOURCES): sources },
     })

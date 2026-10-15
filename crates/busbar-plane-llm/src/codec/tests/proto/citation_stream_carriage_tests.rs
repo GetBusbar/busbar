@@ -196,8 +196,8 @@ fn carried(wire: &[u8]) -> Vec<&'static str> {
 fn streamed_wire(upstream: &str, client: &str, upstream_bytes: &[u8]) -> Vec<u8> {
     match StreamTranslate::new(client, upstream) {
         Some(mut st) => {
-            let mut out = st.feed(upstream_bytes);
-            out.extend_from_slice(&st.finish());
+            let mut out = st.feed(crate::codec::test_host::HOST, upstream_bytes);
+            out.extend_from_slice(&st.finish(crate::codec::test_host::HOST));
             out
         }
         None => upstream_bytes.to_vec(),
@@ -213,12 +213,12 @@ fn buffered_wire(upstream: &str, client: &str, upstream_body: &serde_json::Value
     let ir = protocol_for(upstream)
         .expect("upstream dialect")
         .reader()
-        .read_response(upstream_body)
+        .read_response(crate::codec::test_host::HOST, upstream_body)
         .unwrap_or_else(|e| panic!("{upstream}: buffered read: {e:?}"));
     protocol_for(client)
         .expect("client dialect")
         .writer()
-        .write_response(&ir)
+        .write_response(crate::codec::test_host::HOST, &ir)
         .to_string()
         .into_bytes()
 }

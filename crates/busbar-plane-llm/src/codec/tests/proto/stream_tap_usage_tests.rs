@@ -18,10 +18,13 @@ fn test_stream_inspection_tap_usage_parsing() {
     // Test 1: the A-tap extracts usage from Anthropic-style events (input on message_start, output
     // on message_delta — the start-usage backfill the A-tap reads AFTER).
     let mut t = StreamTranslate::new_same_proto("anthropic").expect("same-proto translator");
-    let _ = t.feed(b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n");
-    let _ = t.feed(b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n");
-    let _ = t.feed(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
-    let _ = t.finish();
+    let _ = t.feed(crate::codec::test_host::HOST, b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\n\n");
+    let _ = t.feed(crate::codec::test_host::HOST, b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\n\n");
+    let _ = t.feed(
+        crate::codec::test_host::HOST,
+        b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    );
+    let _ = t.finish(crate::codec::test_host::HOST);
     let u = t.usage().expect("A-tap captured usage");
     assert_eq!(u.input_tokens, 10, "input_tokens should be 10");
     assert_eq!(u.output_tokens, 5, "output_tokens should be 5");
@@ -34,7 +37,7 @@ fn test_stream_inspection_tap_usage_parsing() {
 
     // Test 2: a genuine SSE error frame DOES set terminal_error (the abnormal-end signal).
     let mut err_t = StreamTranslate::new_same_proto("anthropic").expect("translator");
-    let _ = err_t.feed(b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"boom\"}}\n\n");
+    let _ = err_t.feed(crate::codec::test_host::HOST, b"event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"boom\"}}\n\n");
     assert!(
         err_t.terminal_error().is_some(),
         "an SSE error frame must populate terminal_error"
@@ -50,12 +53,15 @@ fn test_stream_inspection_tap_usage_parsing() {
 #[test]
 fn same_proto_anthropic_bare_cr_frames_still_tap_usage() {
     let mut t = StreamTranslate::new_same_proto("anthropic").expect("same-proto translator");
-    let _ = t.feed(b"event: message_start\rdata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\r\r");
-    let _ = t.feed(b"event: message_delta\rdata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\r\r");
+    let _ = t.feed(crate::codec::test_host::HOST, b"event: message_start\rdata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"role\":\"assistant\",\"usage\":{\"input_tokens\":10,\"output_tokens\":1}}}\r\r");
+    let _ = t.feed(crate::codec::test_host::HOST, b"event: message_delta\rdata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5}}\r\r");
     // A lone trailing CR is not yet knowable (the LF that would pair it may still be in flight), so
     // the stream closes on a terminator the scanner can complete — exactly as a real one does.
-    let _ = t.feed(b"event: message_stop\rdata: {\"type\":\"message_stop\"}\r\n\r\n");
-    let _ = t.finish();
+    let _ = t.feed(
+        crate::codec::test_host::HOST,
+        b"event: message_stop\rdata: {\"type\":\"message_stop\"}\r\n\r\n",
+    );
+    let _ = t.finish(crate::codec::test_host::HOST);
     let u = t
         .usage()
         .expect("a bare-CR framed Anthropic stream must still bill its usage, not zero");
@@ -71,17 +77,17 @@ fn same_proto_anthropic_bare_cr_frames_still_tap_usage() {
 #[test]
 fn same_proto_tap_carries_usage_detail_sub_buckets() {
     let mut t = StreamTranslate::new_same_proto("openai").expect("same-proto translator");
-    let _ = t.feed(
+    let _ = t.feed(crate::codec::test_host::HOST,
         b"data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}],\"usage\":null}\n\n",
     );
-    let _ = t.feed(
+    let _ = t.feed(crate::codec::test_host::HOST,
         b"data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
     );
-    let _ = t.feed(
+    let _ = t.feed(crate::codec::test_host::HOST,
         b"data: {\"id\":\"c\",\"object\":\"chat.completion.chunk\",\"choices\":[],\"usage\":{\"prompt_tokens\":100,\"completion_tokens\":40,\"total_tokens\":140,\"prompt_tokens_details\":{\"cached_tokens\":10,\"audio_tokens\":4},\"completion_tokens_details\":{\"reasoning_tokens\":25,\"audio_tokens\":6,\"accepted_prediction_tokens\":7,\"rejected_prediction_tokens\":3}}}\n\n",
     );
-    let _ = t.feed(b"data: [DONE]\n\n");
-    let _ = t.finish();
+    let _ = t.feed(crate::codec::test_host::HOST, b"data: [DONE]\n\n");
+    let _ = t.finish(crate::codec::test_host::HOST);
     let u = t.usage().expect("A-tap captured usage").clone();
     assert_eq!(u.input_tokens, 90, "uncached input total still carried");
     assert_eq!(u.output_tokens, 40, "output total still carried");
@@ -120,14 +126,17 @@ fn same_proto_tap_carries_usage_detail_sub_buckets() {
 #[test]
 fn same_proto_tap_carries_cohere_billed_units() {
     let mut t = StreamTranslate::new_same_proto("cohere").expect("same-proto translator");
-    let _ = t.feed(b"data: {\"type\":\"message-start\",\"id\":\"m\"}\n\n");
     let _ = t.feed(
+        crate::codec::test_host::HOST,
+        b"data: {\"type\":\"message-start\",\"id\":\"m\"}\n\n",
+    );
+    let _ = t.feed(crate::codec::test_host::HOST,
         b"data: {\"type\":\"content-delta\",\"index\":0,\"delta\":{\"message\":{\"content\":{\"text\":\"hi\"}}}}\n\n",
     );
-    let _ = t.feed(
+    let _ = t.feed(crate::codec::test_host::HOST,
         b"data: {\"type\":\"message-end\",\"delta\":{\"finish_reason\":\"COMPLETE\",\"usage\":{\"tokens\":{\"input_tokens\":100,\"output_tokens\":40},\"billed_units\":{\"input_tokens\":120,\"output_tokens\":50,\"search_units\":2,\"classifications\":3}}}}\n\n",
     );
-    let _ = t.finish();
+    let _ = t.finish(crate::codec::test_host::HOST);
     let u = t.usage().expect("A-tap captured usage").clone();
     assert_eq!(
         u.detail.billed_input_tokens,
@@ -171,9 +180,9 @@ fn anthropic_stream_start_usage_bills_before_the_terminal_delta() {
     let delta = b"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"hel\"}}\n\n";
 
     let mut same = StreamTranslate::new_same_proto("anthropic").expect("same-proto translator");
-    let _ = same.feed(start);
-    let _ = same.feed(block);
-    let _ = same.feed(delta);
+    let _ = same.feed(crate::codec::test_host::HOST, start);
+    let _ = same.feed(crate::codec::test_host::HOST, block);
+    let _ = same.feed(crate::codec::test_host::HOST, delta);
     let u = same
         .usage()
         .expect("same-protocol: the message_start usage the far end reported must bill");
@@ -182,9 +191,9 @@ fn anthropic_stream_start_usage_bills_before_the_terminal_delta() {
     assert_eq!(u.cache_read_input_tokens, Some(7));
 
     let mut cross = StreamTranslate::new("openai", "anthropic").expect("cross-proto translator");
-    let _ = cross.feed(start);
-    let _ = cross.feed(block);
-    let _ = cross.feed(delta);
+    let _ = cross.feed(crate::codec::test_host::HOST, start);
+    let _ = cross.feed(crate::codec::test_host::HOST, block);
+    let _ = cross.feed(crate::codec::test_host::HOST, delta);
     let u = cross
         .usage()
         .expect("cross-protocol: the message_start usage the far end reported must bill");
@@ -194,7 +203,7 @@ fn anthropic_stream_start_usage_bills_before_the_terminal_delta() {
 
     // The terminal delta, when it does arrive, still wins with its cumulative output count and the
     // start's input count is kept (the same totals the completed stream billed before).
-    let _ = cross.feed(b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":42}}\n\n");
+    let _ = cross.feed(crate::codec::test_host::HOST, b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":42}}\n\n");
     let u = cross.usage().expect("usage after the terminal delta");
     assert_eq!(u.input_tokens, 100000);
     assert_eq!(u.output_tokens, 42);

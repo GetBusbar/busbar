@@ -3,8 +3,7 @@
 
 //! THE PLANE TRUST VERB SURFACE on the admin API, written ONCE and parameterised by plane — the
 //! CORE-side half of the neutral seam whose plane-facing half is [`busbar_kernel::admin_verbs`].
-//! Moved here from the kernel's `admin::planeverbs` (P2 D4, ARCHITECT Q-D4-ADMIN (b) 2026-10-04); the
-//! composition root binds [`CorePlaneAdminEnvelope`] into the kernel's `admin_verbs` seam.
+//! Moved here from the kernel's `admin::planeverbs` (P2 D4, ARCHITECT Q-D4-ADMIN (b) 2026-10-04).
 //!
 //! Every plane that fronts a registered upstream owes an operator the same three things, in the same
 //! order: resolve the registration or refuse with a `404`, GO AND LOOK at the upstream, and record
@@ -105,67 +104,6 @@ fn cond_of(
     match cond {
         PlaneAdminCond::MalformedBody => Cond::MalformedBody,
         PlaneAdminCond::InvalidConfig => Cond::InvalidConfig,
-    }
-}
-
-/// THE CORE BACKING for the self-enveloping verb seam
-/// ([`busbar_kernel::admin_verbs::PlaneAdminEnvelope`]) — the one place a plane's `Prebuilt` verb
-/// reaches the frozen envelope helpers (`err_json`/`err_json_cond`/`ok_json`), the neutral→frozen
-/// error boundary ([`to_admin_error`]), and the audit chain ([`audit`]), so the plane names none of
-/// them. A ZST: it carries no state, promoting to `'static` for the composition-root bind.
-///
-/// Every method maps its neutral inputs back onto exactly what the A2A `approve` verb used to call
-/// inline, so the wire bytes, the `#[cfg(test)]` taxonomy `Cond` tag, and the audit row are
-/// byte-identical to the pre-seam handler.
-pub struct CorePlaneAdminEnvelope;
-
-impl busbar_kernel::admin_verbs::PlaneAdminEnvelope for CorePlaneAdminEnvelope {
-    fn plane_error(
-        &self,
-        plane: &'static str,
-        name: &str,
-        err: busbar_kernel::admin_verbs::PlaneVerbError,
-    ) -> axum::response::Response {
-        crate::v1::json::err_json(&to_admin_error(plane, name, err))
-    }
-
-    fn validation(
-        &self,
-        msg: String,
-        cond: Option<busbar_kernel::admin_verbs::PlaneAdminCond>,
-    ) -> axum::response::Response {
-        let e = AdminError::Validation(msg);
-        match cond {
-            Some(cond) => crate::v1::json::err_json_cond(&e, cond_of(cond)),
-            None => crate::v1::json::err_json(&e),
-        }
-    }
-
-    fn not_found(&self, what: String) -> axum::response::Response {
-        crate::v1::json::err_json(&AdminError::not_found(what))
-    }
-
-    fn ok(&self, status: u16, body: String) -> axum::response::Response {
-        // Funnel through the REAL `ok_json` (its status/content-type framing is the single source of
-        // truth) with the ALREADY-serialized body carried verbatim by a `RawValue` — so
-        // `ok_json`'s `serde_json::to_string` re-emits the plane's own bytes, byte-identical to the
-        // plane having handed `ok_json` its view directly.
-        let status = axum::http::StatusCode::from_u16(status).unwrap_or(axum::http::StatusCode::OK);
-        match serde_json::value::RawValue::from_string(body) {
-            Ok(raw) => crate::v1::json::ok_json(status, &raw),
-            Err(_) => crate::v1::json::ok_json(status, &serde_json::json!({})),
-        }
-    }
-
-    fn audit(
-        &self,
-        plane: &'static str,
-        verb: &'static str,
-        name: &str,
-        outcome: &'static str,
-        principal: &busbar_kernel::auth::AuthPrincipal,
-    ) {
-        audit(plane, verb, name, outcome, principal);
     }
 }
 

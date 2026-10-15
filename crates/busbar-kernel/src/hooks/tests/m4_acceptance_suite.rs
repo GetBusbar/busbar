@@ -16,6 +16,20 @@
 //! over the loader's own hook fixture. The kernel's half of the same call path (the budget, the
 //! error `on_error` decides) stays in `tests.rs` above.
 //!
+//! ## THE COUNT, ENUMERATED (ARCHITECT ruling M9, 2026-10-14)
+//!
+//! The suite's size is [`HOOK_PARITY_TESTS`], the length of [`CORPUS`]: every
+//! `#[test]`/`#[tokio::test]` function of the seven v1.5.5 `kind: hook` files, by name, read off
+//! the `v1.5.5` tag (`git show v1.5.5:<file>`, an attribute at the start of a line). It is **181**:
+//! 69 of the v1.5.5 proxy tests (`proxy/tests/hook_seam_tests.rs` 42,
+//! `hook_opt_in_projection_tests.rs` 27) and 112 of core (`hooks/tests/tests.rs` 50,
+//! `scrape_tests.rs` 11, `hooks/wire.rs` 19, the loader's `hook.rs` 16, the in-tree hook's 16).
+//!
+//! The 184 below was `grep -c '#\[(tokio::)?test'` over the same files, which also counts three
+//! COMMENTS that spell an attribute (`hook_seam_tests.rs:2133`, `scrape_tests.rs:236,246`): 43 and
+//! 13 where the files hold 42 and 11 tests. Every other written size is held to this one by
+//! `cargo xtask gate hook-parity-count`.
+//!
 //! ## Reconciliation: 189 counted vs the signed brief's "178+4"
 //!
 //! A direct `#[test]`/`#[tokio::test]` count of the 8 v1.5.5 files named in
@@ -38,7 +52,8 @@
 //!   `an_unsigned_request_is_refused_for_missing_headers`, …) verifying an INBOUND signed-webhook
 //!   admission gate. Same file name, disjoint feature, disjoint kind. This is a misclassification
 //!   in the inventory table, not a hook-kind gap: **excluded from this suite's scope.**
-//! - True `kind: hook` v1.5.5 corpus: **189 − 5 = 184** tests.
+//! - True `kind: hook` v1.5.5 corpus by that attribute count: **189 − 5 = 184**; by name, **181**
+//!   (the enumeration above: the attribute count read three comments as tests).
 //! - Of the 184: 89 already live natively in this crate (`tests.rs` 50→57, `scrape_tests.rs` 13→13,
 //!   `wire_tests.rs` 19→19 on predev — additions are predev-only, nothing v1.5.5 removed); 70 live
 //!   in `busbar-llm/src/engine/tests/{hook_seam_tests.rs,hook_opt_in_projection_tests.rs}` (plane
@@ -87,3 +102,63 @@
 //!
 //! The two ARCHITECT-named timeout tests pass, unignored, in `tests.rs` above (the kernel's half)
 //! and in the loader's `a_slow_hook_is_cut_off_at_its_budget_through_the_axis` (the lane's half).
+
+/// THE SUITE'S SIZE: the one number every writing of it is held to.
+pub(crate) const HOOK_PARITY_TESTS: usize = 181;
+/// Of them, of the v1.5.5 proxy tests' origin (`proxy` rows of [`CORPUS`]).
+pub(crate) const PROXY_ORIGIN: usize = 69;
+/// Of them, of core: the kernel's, the loader's and the in-tree hook's (`core` rows of [`CORPUS`]).
+pub(crate) const CORE_ORIGIN: usize = 112;
+
+/// THE v1.5.5 `kind: hook` CORPUS, by name: one `origin<TAB>v1.5.5 file<TAB>test fn` row per test,
+/// kept as data beside the other v1.5.5 readings rather than in this crate's source: the rows spell
+/// the v1.5.5 files and tests as they were, and a neutral crate's source names no instance (Law 0).
+const CORPUS: &str = "../../testing/hook-parity/v1.5.5-hook-corpus.tsv";
+
+/// [`CORPUS`]'s rows, `(origin, file, test fn)`, its `#` comment lines skipped.
+fn v155_hook_corpus() -> Vec<(String, String, String)> {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(CORPUS);
+    let raw = std::fs::read_to_string(&path)
+        .unwrap_or_else(|e| panic!("the v1.5.5 hook corpus must be readable at {path:?}: {e}"));
+    raw.lines()
+        .filter(|l| !l.trim().is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let mut cols = l.split('\t');
+            let mut next = || cols.next().unwrap_or_default().to_string();
+            let row = (next(), next(), next());
+            assert!(
+                !row.2.is_empty() && cols.next().is_none(),
+                "a corpus row is origin, file and test fn: {l:?}"
+            );
+            row
+        })
+        .collect()
+}
+
+/// THE COUNT IS THE ENUMERATION: the constant is the corpus's length, the split sums to it, and no
+/// test is listed twice. RED on any written figure that is not what the corpus holds.
+#[test]
+fn the_hook_parity_count_is_the_enumerated_corpus() {
+    let corpus = v155_hook_corpus();
+    assert_eq!(corpus.len(), HOOK_PARITY_TESTS);
+    assert!(
+        corpus.iter().all(|(o, _, _)| o == "proxy" || o == "core"),
+        "an origin is `proxy` or `core`"
+    );
+    let proxy = corpus.iter().filter(|(o, _, _)| o == "proxy").count();
+    assert_eq!(proxy, PROXY_ORIGIN);
+    assert_eq!(corpus.len() - proxy, CORE_ORIGIN);
+    assert_eq!(PROXY_ORIGIN + CORE_ORIGIN, HOOK_PARITY_TESTS);
+    let distinct: std::collections::BTreeSet<(&str, &str)> = corpus
+        .iter()
+        .map(|(_, file, name)| (file.as_str(), name.as_str()))
+        .collect();
+    assert_eq!(distinct.len(), corpus.len(), "a test is listed twice");
+    let files: std::collections::BTreeSet<&str> =
+        corpus.iter().map(|(_, file, _)| file.as_str()).collect();
+    assert_eq!(
+        files.len(),
+        7,
+        "the corpus is seven v1.5.5 files: {files:?}"
+    );
+}

@@ -581,8 +581,8 @@ fn kernel_seal() -> KernelSeal {
 /// interner itself: process-wide, filled from the deployment's own tables, and idempotent, so a
 /// second leg over the same lane name leaks nothing further. A per-leg interner would be a leak per
 /// request wearing a test's clothes, which is exactly the shape the rule forbids.
-static LANES: std::sync::LazyLock<std::sync::Mutex<busbar_contract::Registration>> =
-    std::sync::LazyLock::new(|| std::sync::Mutex::new(busbar_contract::Registration::new()));
+static LANES: std::sync::LazyLock<std::sync::Mutex<busbar_kernel::Registration>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(busbar_kernel::Registration::new()));
 
 /// The destination set the trust unit would have sealed, over the lane this deployment CONFIGURED —
 /// the name read back off the running routing tables, not a literal spelled here.

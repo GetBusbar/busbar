@@ -12,10 +12,11 @@
 //! composition's, and a single-plane build links a different protocol set.
 
 use busbar_contract::codec::RequestHandler;
-use busbar_contract::http::{HeaderMap, HeaderName, HeaderValue};
 use busbar_contract::operation::OpVerb;
 use busbar_contract::protocol::ProtocolDecl;
+use busbar_kernel::proto::streaming_content_types as event_content_types;
 use busbar_kernel::proto::{detect_protocol, residual_dialect_for_path, Registry};
+use http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use std::sync::LazyLock;
 
@@ -110,9 +111,9 @@ fn the_derived_protocol_list_is_not_empty() {
 fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
     registered();
     assert_eq!(
-        busbar_kernel::proto::streaming_content_types(),
-        strs(&FIXTURE["streaming_content_types"]).as_slice(),
-        "absorbed proto::streaming_content_types()"
+        event_content_types(),
+        strs(&FIXTURE["event_content_types"]).as_slice(),
+        "the absorbed event-stream content types"
     );
     assert_eq!(
         busbar_kernel::proto::array_stream_shim_keys(),
@@ -190,9 +191,9 @@ fn every_declared_verb_has_a_serving_handler() {
 
 /// A linked protocol that declares no codec still resolves, still dispatches, and MUST NOT be offered
 /// to a provider lane: it is absent from the codec-protocol list, without anything comparing its
-/// name. Every such linked declaration is checked. Since FLIP-MCP the shipped build links none (the
-/// one it linked was the deleted engine's; its plane is served through its door and declares no
-/// protocol row), so the rule over a codec-less declaration is held by the planted one in
+/// name. Every such linked declaration is checked. The shipped build links none (the one it linked
+/// was a deleted engine's; its plane is served through its door and declares no protocol row), so
+/// the rule over a codec-less declaration is held by the planted one in
 /// [`a_codec_less_declaration_does_not_move_the_operator_visible_list_when_it_is_folded_ahead`].
 #[test]
 fn a_declaration_without_a_codec_dispatches_but_is_not_a_provider_protocol() {

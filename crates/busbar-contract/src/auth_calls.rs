@@ -15,7 +15,7 @@
 use std::borrow::Cow;
 use std::future::Future;
 
-use crate::redacted::Redacted;
+use crate::redacted::Secret;
 use std::sync::Arc;
 
 use crate::abi::auth::AuthPoint;
@@ -33,9 +33,9 @@ pub struct VerifyRequest {
     /// The candidate credential the host extracted from the request (the data plane's client token,
     /// the admin plane's Bearer), lent as `verify`'s `credential` blob (`abi::auth::VerifyIn`);
     /// `None` = none presented. SECRET.
-    pub credential: Option<Redacted<Vec<u8>>>,
+    pub credential: Option<Secret<Vec<u8>>>,
     /// The neutral field lines, as presented (name, value). A value may be a credential: secret.
-    pub lines: Vec<(String, Redacted<Vec<u8>>)>,
+    pub lines: Vec<(String, Secret<Vec<u8>>)>,
     /// The peer facts; `Some` only at [`AuthPoint::Peer`].
     pub peer: Option<Vec<u8>>,
     /// The whole body; `Some` only at [`AuthPoint::HeadBody`], bounded by the size gate.
@@ -108,7 +108,7 @@ pub struct VerifiedIdentity {
     /// The credential the identity was verified from, for the kernel to hold on the unit for the
     /// `caller-credential` style (THE DESIGN, "Auth points and guest lists", step 4). SECRET:
     /// the kernel's only, never the transport's; `None` = the plugin named none.
-    pub credential: Option<Redacted<String>>,
+    pub credential: Option<Secret<String>>,
 }
 
 /// A replay claim an identity asks the kernel to make.
@@ -302,6 +302,13 @@ pub trait AuthCalls: Send + Sync {
         Vec::new()
     }
 
+    /// The auth points `verify` is called at, as the tail states them
+    /// ([`AuthTail::inbound_points`](crate::abi::auth::AuthTail::inbound_points); THE DESIGN, "Auth
+    /// points and guest lists"). `{Head}` by default: where 1.5.5's chain verified.
+    fn inbound_points(&self) -> crate::abi::auth::AuthPoints {
+        crate::abi::auth::AuthPoints::HEAD
+    }
+
     /// The inbound carriers `verify` reads (field line names, lower-case), as the Statement's
     /// carrier word marks name them: where the plugin's credential sits. The host names no
     /// credential line itself (THE DESIGN, "Auth points and guest lists").
@@ -407,6 +414,25 @@ pub trait AuthAxis: Send + Sync {
         Ok(None)
     }
 
+    /// [`AuthAxis::serving`] for a binding whose token endpoint the operator spelled with a
+    /// `user:pass@`: the host stripped it from `settings` before any plugin could read it, and
+    /// `endpoint_basic` is the `authorization: Basic` value it spelled, which the host presents on
+    /// the plugin's mint as 1.5.5 sent it. A plugin never receives it. Default: the value is not
+    /// presented. TRANSITIONAL: deleted with the legacy lane plane (row 155 C): the door path's endpoint userinfo is read by the root at
+    /// configuration time and never crosses this axis.
+    ///
+    /// # Errors
+    /// The serving plugin would not open for its outbound styles.
+    fn serving_presenting(
+        &self,
+        style: &str,
+        settings: &serde_json::Value,
+        endpoint_basic: Option<&[u8]>,
+    ) -> Result<Option<OutboundServing>, String> {
+        let _ = endpoint_basic;
+        self.serving(style, settings)
+    }
+
     /// CHECK, NEVER DIAL (the `--validate` dry run): bind `credential` under `settings` on a fresh
     /// instance of the auth plugin serving `style`, one granted no need, and answer the refusals it
     /// names for the credential itself (its `credential:` lines, their text), in its own words.
@@ -481,8 +507,8 @@ pub struct FieldsRequest {
     /// `abi::auth::STYLE_NEEDS_HEADERS`; empty otherwise.
     pub headers: Vec<(Vec<u8>, Vec<u8>)>,
     /// The caller's verified credential, for a passthrough binding (`abi::auth::MODE_PASSTHROUGH`).
-    /// Secret: zeroised when it drops (every copy is its own [`Redacted`]).
-    pub caller_credential: Option<Redacted<Vec<u8>>>,
+    /// Secret: zeroised when it drops (every copy is its own [`Secret`]).
+    pub caller_credential: Option<Secret<Vec<u8>>>,
     /// The call's extensions blob (`abi::mechanism::extensions`), lent as `FieldsIn::head.extensions`:
     /// the per-call scope under `abi::auth::EXT_SCOPE` when the request stated one. Empty = absent.
     pub extensions: Vec<u8>,
@@ -529,7 +555,7 @@ pub struct AuthField {
     /// The field name.
     pub name: Vec<u8>,
     /// The value: credential material, zeroised when it drops, whichever copy it is.
-    pub value: Redacted<Vec<u8>>,
+    pub value: Secret<Vec<u8>>,
     /// `abi::auth::FIELD_SENSITIVE`: never logged, zeroised once the head is encoded.
     pub sensitive: bool,
 }
@@ -539,7 +565,9 @@ impl std::fmt::Debug for AuthField {
         let value = if self.sensitive {
             "<redacted>".to_string()
         } else {
-            String::from_utf8_lossy(self.value.expose_secret()).into_owned()
+            // A field the auth plugin marked NOT sensitive renders as it is: this crate reads its
+            // own `Secret`'s field (the sealed `expose` is the host's accessor).
+            String::from_utf8_lossy(&self.value.0).into_owned()
         };
         f.debug_struct("AuthField")
             .field("name", &String::from_utf8_lossy(&self.name))
@@ -550,9 +578,7 @@ impl std::fmt::Debug for AuthField {
 
 impl PartialEq for AuthField {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name
-            && self.value.expose_secret() == other.value.expose_secret()
-            && self.sensitive == other.sensitive
+        self.name == other.name && self.value == other.value && self.sensitive == other.sensitive
     }
 }
 
@@ -577,6 +603,20 @@ pub enum Fields {
 pub trait Fielding: Future<Output = Fields> + Send + Unpin {
     /// The answer, if it has arrived; never waits.
     fn settled(&mut self) -> Option<Fields>;
+}
+
+/// A BINDING WHOSE CREDENTIAL IS REFRESHED OFF THE REQUEST PATH (a registration's own credential):
+/// the composition root holds the reference and the binding, re-resolves the value once per lease
+/// on a thread of its own, and answers the handle a request's fields are asked of. The binding is
+/// re-opened, and its handle swapped, only when the re-resolved value changed, so handles grow by
+/// rotations and never by requests; a request sees the old handle or the new one, never a half
+/// state.
+pub trait PerRequestHandle: Send + Sync {
+    /// The handle this request's auth call is made on, as the last refresh left it: a load, never a
+    /// resolution, an open or a wait (it is asked on the request path). `None` when the last
+    /// refresh found the credential unavailable (it no longer resolves, or its new value would not
+    /// bind): the request is refused and nothing is presented.
+    fn handle_now(&self) -> Option<u64>;
 }
 
 /// ONE AUTH INSTANCE'S OUTBOUND CALLS, as the kernel's egress walk makes them.

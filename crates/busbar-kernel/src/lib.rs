@@ -140,6 +140,7 @@ pub mod pump;
 pub mod recovery;
 pub mod registry;
 pub mod scratch;
+pub mod seal;
 mod settlement;
 pub mod teller;
 pub mod tick;
@@ -231,7 +232,7 @@ pub mod failover;
 pub mod governance;
 pub mod handlers;
 pub mod hooks;
-pub(crate) mod host_chains;
+pub mod host_chains;
 pub mod host_claims;
 pub mod host_disk;
 pub mod host_records;
@@ -347,6 +348,9 @@ pub use busbar_contract::transport::transport;
 #[path = "tests/transport_tests.rs"]
 mod transport_tests;
 pub mod trust;
+pub mod vocabulary;
+/// The image's word interner, at the crate root where the composition root names it.
+pub use vocabulary::{Registration, MAX_VOCABULARY};
 
 // ── THE CRATE-ROOT SURFACE ───────────────────────────────────────────────────────────────────────
 // The moved crate-root items live in three modules split by concern (`appbuild`, `preflight`,

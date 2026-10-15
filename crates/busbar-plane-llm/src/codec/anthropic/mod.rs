@@ -115,14 +115,14 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// Anthropic's alone among the six (rung 4, catching curl users who omit the version header), then
 /// the `/v1/messages` path (rung 11). Lower strength binds tighter — the shared ladder positions.
 fn claims(
-    h: &busbar_contract::http::HeaderMap,
+    h: busbar_contract::protocol::HeadFields<'_>,
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::ClaimStrength;
-    if h.contains_key(HDR_ANTHROPIC_VERSION) || h.contains_key("anthropic-beta") {
+    use busbar_contract::protocol::{head_field, ClaimStrength};
+    if head_field(h, HDR_ANTHROPIC_VERSION).is_some() || head_field(h, "anthropic-beta").is_some() {
         return Some(ClaimStrength(2));
     }
-    if h.contains_key(HDR_X_API_KEY) {
+    if head_field(h, HDR_X_API_KEY).is_some() {
         return Some(ClaimStrength(4));
     }
     if path.contains("/v1/messages") {
@@ -189,7 +189,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: Some(ANTHROPIC_PING_SSE_FRAME),
     reshapes_body_at_path_base: true,
     max_cache_control_breakpoints: Some(4),
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: Some(1),
@@ -203,7 +203,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "Anthropic/Python 0.39.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
         busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
@@ -317,19 +317,6 @@ const THINKING_TYPE_DISABLED: &str = "disabled";
 /// `text_editor_*`, `code_execution_*`, `computer_*`, `memory_*`, `mcp_toolset`, …) whose schema is
 /// Anthropic's, not the caller's.
 const TOOL_TYPE_CUSTOM: &str = "custom";
-
-/// Used only on a lane WITHOUT native structured outputs (`LaneCaps::native_structured_output`
-/// false — the pre-capability default); a native lane writes `output_config.format` instead.
-/// Synthetic tool NAME used to translate a cross-protocol `response_format` (structured-output /
-/// JSON-schema) directive into Anthropic tool-forcing. Anthropic's Messages API has NO native
-/// `response_format` field; the idiomatic way to obtain schema-constrained JSON from a Claude model
-/// is to synthesize a single tool whose `input_schema` IS the requested JSON schema and pin
-/// `tool_choice` to it (see the Anthropic WRITER). The Anthropic RESPONSE reader recognizes this
-/// name and maps the forced `tool_use` back to a plain assistant text block carrying the JSON, so a
-/// caller that asked for `response_format` (not a tool) receives structured content and never sees
-/// the synthetic tool. Busbar-namespaced to avoid colliding with a caller's own tool, and valid
-/// under Anthropic's `^[a-zA-Z0-9_-]{1,64}$` tool-name constraint.
-const RESPONSE_FORMAT_TOOL_NAME: &str = "busbar_response_format";
 
 /// Anthropic content block `type` values not covered by the delta sub-type constants above.
 const BLOCK_TYPE_REDACTED_THINKING: &str = "redacted_thinking";
@@ -840,49 +827,6 @@ fn stream_error_class(error_type: Option<&str>) -> StatusClass {
         | Some(ERR_TYPE_REQUEST_TOO_LARGE)
         | None => StatusClass::ClientError,
         Some(_unrecognized) => StatusClass::ClientError,
-    }
-}
-
-/// The nine tokens `ErrorResponse.error` is discriminated on. A value outside this set is not a
-/// valid error object, so it can never be written to `error.type` — however plausible it looks.
-const ANTHROPIC_ERROR_TYPES: [&str; 9] = [
-    ERR_TYPE_INVALID_REQUEST,
-    ERR_TYPE_AUTHENTICATION,
-    ERR_TYPE_BILLING,
-    ERR_TYPE_PERMISSION,
-    ERR_TYPE_NOT_FOUND,
-    ERR_TYPE_RATE_LIMIT,
-    ERR_TYPE_TIMEOUT,
-    ERR_TYPE_OVERLOADED,
-    ERR_TYPE_API_ERROR,
-];
-
-/// Choose the `error.type` token for an outgoing error — the inverse of [`stream_error_class`].
-///
-/// A signal that is ALREADY one of the nine is kept verbatim, so a token read off a native upstream
-/// stream round-trips exactly (`permission_error` does not come back as `authentication_error`,
-/// though both read as `Auth`). Anything else is free text — an upstream sentence, a foreign
-/// dialect's code — and cannot go in a discriminator field, so the class supplies the token and the
-/// text is carried as `message` instead, which is where prose belongs.
-///
-/// `Auth` and `ClientError` are many-to-one in the forward map, so the inverse picks the general
-/// member of each (`authentication_error`, `invalid_request_error`). `Network` has no Anthropic
-/// token at all and takes the `api_error` catch-all, as does an absent signal: `null` is not a
-/// member of the set, and an SDK dispatching on the type gets no arm for it.
-fn stream_error_type(err: &IrError) -> &'static str {
-    if let Some(signal) = err.provider_signal.as_deref() {
-        if let Some(known) = ANTHROPIC_ERROR_TYPES.iter().find(|t| **t == signal) {
-            return known;
-        }
-    }
-    match err.class {
-        StatusClass::Overloaded => ERR_TYPE_OVERLOADED,
-        StatusClass::RateLimit => ERR_TYPE_RATE_LIMIT,
-        StatusClass::Timeout => ERR_TYPE_TIMEOUT,
-        StatusClass::Auth => ERR_TYPE_AUTHENTICATION,
-        StatusClass::Billing => ERR_TYPE_BILLING,
-        StatusClass::ClientError | StatusClass::ContextLength => ERR_TYPE_INVALID_REQUEST,
-        StatusClass::ServerError | StatusClass::Network => ERR_TYPE_API_ERROR,
     }
 }
 

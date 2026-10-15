@@ -52,7 +52,7 @@ fn openai_carry_request_sampling_and_output_controls() {
         "max_completion_tokens": 256
     });
     let ir = OpenAiReader.read_request(&body).expect("read");
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
 
     assert_eq!(out["frequency_penalty"], json!(0.5), "frequency_penalty");
     assert_eq!(out["presence_penalty"], json!(0.3), "presence_penalty");
@@ -121,7 +121,7 @@ fn openai_carry_request_provider_specific_extra_fields() {
         "verbosity": "low"
     });
     let ir = OpenAiReader.read_request(&body).expect("read");
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
 
     assert_eq!(out["logit_bias"], json!({"50256": -100}), "logit_bias");
     assert_eq!(out["modalities"], json!(["text", "audio"]), "modalities");
@@ -184,7 +184,7 @@ fn openai_carry_request_message_and_content_fields() {
         ]
     });
     let ir = OpenAiReader.read_request(&body).expect("read");
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     let m = out["messages"].as_array().expect("messages");
 
     // messages[].name — parked in the names sentinel, re-attached on same-protocol re-serialize.
@@ -280,7 +280,9 @@ fn openai_carry_response_identity_and_choice_fields() {
         }],
         "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
     });
-    let ir = OpenAiReader.read_response(&body).expect("read");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
 
     // choices[].message.reasoning_content reaches the IR as a Thinking block (its cross-protocol
     // carrier; OpenAI Chat has no reasoning-content OUTPUT slot, so same-protocol it rides the
@@ -306,7 +308,7 @@ fn openai_carry_response_identity_and_choice_fields() {
         ir.content
     );
 
-    let out = openai_writer().write_response(&ir);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["id"], json!("chatcmpl-x"), "response/id");
     assert_eq!(out["object"], json!("chat.completion"), "response/object");
     assert_eq!(out["created"], json!(123), "response/created");
@@ -356,8 +358,10 @@ fn openai_carry_response_message_refusal() {
             "message": {"role": "assistant", "content": serde_json::Value::Null, "refusal": "I cannot help with that"}}],
         "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
     });
-    let ir = OpenAiReader.read_response(&body).expect("read");
-    let out = openai_writer().write_response(&ir);
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["choices"][0]["message"]["refusal"],
         json!("I cannot help with that"),
@@ -390,7 +394,9 @@ fn openai_carry_response_usage_sub_buckets() {
             }
         }
     });
-    let ir = OpenAiReader.read_response(&body).expect("read");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
     // IR carries each slice (attribution the totals do not distinguish).
     assert_eq!(
         ir.usage.cache_read_input_tokens,
@@ -418,7 +424,7 @@ fn openai_carry_response_usage_sub_buckets() {
         "rejected_prediction_tokens → IR"
     );
 
-    let out = openai_writer().write_response(&ir);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["usage"]["prompt_tokens_details"]["cached_tokens"],
         json!(20),
@@ -457,7 +463,7 @@ fn openai_carry_stream_delta_fields() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
 
     // delta.role — the opening chunk mints the assistant role; the writer re-emits it.
-    let ev = OpenAiReader.read_response_events(
+    let ev = OpenAiReader.read_response_events(crate::codec::test_host::HOST,
         "",
         &json!({"id": "chatcmpl-s", "object": "chat.completion.chunk", "created": 1, "model": "gpt-4o",
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]}),
@@ -475,6 +481,7 @@ fn openai_carry_stream_delta_fields() {
     );
     let (_, start_chunk) = openai_writer()
         .write_response_event(
+            crate::codec::test_host::HOST,
             ev.iter()
                 .find(|e| matches!(e, IrStreamEvent::MessageStart { .. }))
                 .unwrap(),
@@ -487,7 +494,7 @@ fn openai_carry_stream_delta_fields() {
     );
 
     // delta.reasoning_content — a chain-of-thought delta becomes a ThinkingDelta (its IR carrier).
-    let ev = OpenAiReader.read_response_events(
+    let ev = OpenAiReader.read_response_events(crate::codec::test_host::HOST,
         "",
         &json!({"choices": [{"index": 0, "delta": {"reasoning_content": "think"}, "finish_reason": null}]}),
         &mut state,
@@ -501,6 +508,7 @@ fn openai_carry_stream_delta_fields() {
 
     // delta.content — a content delta becomes a TextDelta; the writer re-emits `delta.content`.
     let ev = OpenAiReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &json!({"choices": [{"index": 0, "delta": {"content": "hi"}, "finish_reason": null}]}),
         &mut state,
@@ -518,7 +526,7 @@ fn openai_carry_stream_delta_fields() {
         })
         .expect("a TextDelta");
     let (_, content_chunk) = openai_writer()
-        .write_response_event(text_ev)
+        .write_response_event(crate::codec::test_host::HOST, text_ev)
         .expect("content chunk");
     assert_eq!(
         content_chunk["choices"][0]["delta"]["content"],
@@ -529,13 +537,14 @@ fn openai_carry_stream_delta_fields() {
     // delta.refusal — a streamed refusal is carried as text (Anthropic/Bedrock/Gemini have no
     // distinct refusal delta), and it promotes the terminal stop reason to Refusal.
     let mut refusal_state = crate::codec::ir::StreamDecodeState::default();
-    let _ = OpenAiReader.read_response_events(
+    let _ = OpenAiReader.read_response_events(crate::codec::test_host::HOST,
         "",
         &json!({"id": "chatcmpl-f", "object": "chat.completion.chunk", "created": 1, "model": "gpt-4o",
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]}),
         &mut refusal_state,
     );
     let ev = OpenAiReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &json!({"choices": [{"index": 0, "delta": {"refusal": "no"}, "finish_reason": null}]}),
         &mut refusal_state,
@@ -554,7 +563,7 @@ fn openai_carry_stream_delta_fields() {
     // delta.tool_calls — a streamed tool call opens a ToolUse block carrying id + name; the writer
     // re-emits `delta.tool_calls`.
     let mut tool_state = crate::codec::ir::StreamDecodeState::default();
-    let ev = OpenAiReader.read_response_events(
+    let ev = OpenAiReader.read_response_events(crate::codec::test_host::HOST,
         "",
         &json!({"id": "chatcmpl-t", "object": "chat.completion.chunk", "created": 1, "model": "gpt-4o",
                 "choices": [{"index": 0, "delta": {"tool_calls": [
@@ -575,7 +584,7 @@ fn openai_carry_stream_delta_fields() {
         })
         .expect("a ToolUse BlockStart");
     let (_, tc_chunk) = openai_writer()
-        .write_response_event(start_ev)
+        .write_response_event(crate::codec::test_host::HOST, start_ev)
         .expect("tool_calls chunk");
     assert_eq!(
         tc_chunk["choices"][0]["delta"]["tool_calls"][0]["function"]["name"],
@@ -615,14 +624,14 @@ fn openai_response_provider_specific_fields_drop_only_on_cross_proto_reserialize
     // The billing side-channel tolerates the provider-specific fields (does not error): a same-
     // protocol 2xx still bills correctly while its body relays verbatim to the client.
     let ir = OpenAiReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read must tolerate provider-specific fields");
     assert_eq!(ir.usage.output_tokens, 2, "usage still tapped for billing");
 
     // Cross-protocol re-serialize is the ONLY path that touches these fields. `service_tier` now
     // has a carrier in the IR tier vocabulary (OAI-03: flex/scale), so it survives; `audio` has
     // none and drops cleanly rather than being corrupted.
-    let out = openai_writer().write_response(&ir);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("service_tier"),
         Some(&json!("scale")),

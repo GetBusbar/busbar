@@ -62,7 +62,7 @@ fn closing(a: &Answered) -> (Option<&str>, Option<&str>, Option<&str>) {
 }
 
 #[tokio::test]
-async fn a_framed_streams_messages_and_its_final_status_are_its_framers() {
+async fn a_framed_stream_carries_messages_and_its_final_status_is_its_framers() {
     let _one = PUBLISHING.lock().await;
     let g = governed("serve-framed-status", false);
     // Two messages in; the plane echoes what it arrived with as one message.
@@ -248,7 +248,39 @@ fn lp_door(
         ported: false,
         status_rows: Vec::new(),
         duplex,
+        datagram: false,
     }))
+}
+
+/// A DATAGRAM FRAMER NEVER FRAMES A STREAM: its claim row states a session (an association is
+/// one), yet its calls carry the datagram lane and only the connector's datagram driver drives it.
+/// RED: judged by the claim rows alone, a claim over it would be stream-framed and its `begin`
+/// refused for want of a lane.
+#[test]
+fn a_datagram_framer_is_never_a_streams_framer_though_its_claim_states_a_session() {
+    let facts = |datagram| busbar_core_connector::framer::DoorFacts {
+        name: "dg".into(),
+        claims: vec!["dg"],
+        role: busbar_contract::abi::transport::ROLE_FRAMER,
+        composes_over: Vec::new(),
+        ported: false,
+        status_rows: Vec::new(),
+        duplex: vec!["dg"],
+        datagram,
+    };
+    let stream: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
+        std::sync::Arc::new(Uncrossed(facts(false)));
+    assert!(
+        super::serve_framed::stream_framer("dg", |_| Some(std::sync::Arc::clone(&stream)))
+            .is_some(),
+        "RED arm: the same rows on a stream framer frame the claim"
+    );
+    let datagram: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
+        std::sync::Arc::new(Uncrossed(facts(true)));
+    assert!(
+        super::serve_framed::stream_framer("dg", |_| Some(std::sync::Arc::clone(&datagram)))
+            .is_none()
+    );
 }
 
 /// WHICH CLAIM IS STREAM-FRAMED IS JUDGED PER CLAIM OFF THE STATEMENT (ARCHITECT ruling on Q128 U7
@@ -278,9 +310,9 @@ fn a_claim_stating_no_stream_is_not_stream_framed_though_its_carrier_has_a_frame
 }
 
 /// THE LINE CARRIER IS NEVER FRAMED (SEAM-4l regression): a claim over the root's own line carrier
-/// is served as the line arrived, even where a framer claims that carrier's name (the stdio
+/// is served as the line arrived, even where a framer claims that carrier's name (the line
 /// transport's framer does), while any other carrier such a framer answers is still framed by it.
-/// RED without the line-carrier rule: the stdio line went to the framer and never completed.
+/// RED without the line-carrier rule: the line went to the framer and never completed.
 #[test]
 fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
     use busbar_core_connector::framer::{Call, Crossed, DoorFacts, FramerDoor};
@@ -294,7 +326,7 @@ fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
             unreachable!("never crossed: only the choice is judged")
         }
     }
-    let line = super::lines::LINE_CARRIER;
+    let line = super::lines::carrier().expect("this build links a line carrier");
     let door: Arc<dyn FramerDoor> = Arc::new(Claims(DoorFacts {
         name: "claims-the-line".into(),
         claims: vec![line, "framed"],
@@ -304,6 +336,7 @@ fn the_line_carrier_is_never_handed_to_a_framer_that_claims_its_name() {
         ported: false,
         status_rows: Vec::new(),
         duplex: vec![line, "framed"],
+        datagram: false,
     }));
     let any = |_: &str| Some(Arc::clone(&door));
     assert!(

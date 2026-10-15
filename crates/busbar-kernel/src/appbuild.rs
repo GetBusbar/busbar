@@ -16,8 +16,8 @@ use crate::diagnostics::{
     STORE_SECRET_REF_UNRESOLVED,
 };
 use crate::preflight::{
-    build_secret_resolver, plugin_fetch_downloader, plugins_preflight, resolve_admin_token,
-    resolve_signing_key, validate_secret_refs,
+    build_secret_resolver, plugins_preflight, resolve_admin_token, resolve_signing_key,
+    validate_secret_refs,
 };
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
@@ -155,6 +155,23 @@ pub fn stateful_plane_ephemeral_store_warn(
 /// Map a provider's `Option<config::ProviderAuth>` to the NEUTRAL [`AuthStyleInput`] the carrier holds
 /// (`None` ⇒ the protocol's native auth). The fallback plane maps it to the style its lane's credential
 /// is bound under, on the auth plugin serving that style.
+/// THE TOKEN ENDPOINT AS A PLANE MAY SEE IT (row 74, F25): `token_url` with its userinfo stripped,
+/// and the `Authorization: Basic` value that userinfo spelled, held opaque for the host to present
+/// on the mint as 1.5.5's reqwest POST did (v1.5.5's client-credentials mint, lines 119-126 of
+/// its egress-auth tree). A plane never receives a
+/// URL carrying `user:pass@`. TRANSITIONAL: deleted with the legacy lane plane (row 155 C) (the stripping stays: no plane sees a userinfo URL).
+pub(crate) fn lane_token_endpoint(
+    written: Option<&str>,
+) -> (Option<String>, Option<crate::egress::engine::UrlUserinfo>) {
+    let Some(written) = written else {
+        return (None, None);
+    };
+    (
+        Some(busbar_kernel_egress::trust::net::strip_userinfo(written).into_owned()),
+        crate::egress::engine::UrlUserinfo::of(written),
+    )
+}
+
 fn auth_style_of(auth: Option<config::ProviderAuth>) -> AuthStyleInput {
     match auth {
         None => AuthStyleInput::Default,
@@ -553,8 +570,36 @@ pub fn set_config_projection(project: ConfigProjection) {
     let _ = CONFIG_PROJECTION.set(project);
 }
 
+/// THE COMPOSITION ROOT'S RULES OF A RESOLVED CONFIGURATION: the rules only the root can state
+/// (ones over what the planes it composed declare, and the deployment facts it alone reads), judged
+/// by [`build_app_from_config`] before any part of a configuration is built or installed. A
+/// configuration they refuse is refused there, at boot and at every apply, rebuild or dry run
+/// alike, so a configuration the boot would refuse never goes live through an apply, and the running
+/// generation is untouched. The built [`App`] keeps the rules it was built under
+/// ([`App::root_rules`]), and every build after it passes them on.
+pub trait RootRules: Send + Sync {
+    /// Judge `cfg`.
+    ///
+    /// # Errors
+    ///
+    /// The refusal, in the words the operator reads.
+    fn check(&self, cfg: &config::RootCfg) -> Result<(), String>;
+}
+
+/// The rules of a build with no composition root's rules to judge by (a tool, a test fixture): it
+/// accepts every configuration.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AcceptAll;
+
+impl RootRules for AcceptAll {
+    fn check(&self, _cfg: &config::RootCfg) -> Result<(), String> {
+        Ok(())
+    }
+}
+
 #[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
 #[inline(never)]
+#[allow(clippy::too_many_arguments)] // the build's whole input, one argument each; #1001 added the root's rules
 pub fn build_app_from_config(
     cfg: config::RootCfg,
     plugins_cfg: config::PluginsCfg,
@@ -563,7 +608,11 @@ pub fn build_app_from_config(
     base_group_names: std::collections::HashSet<String>,
     config_paths: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     prior: Option<&state::App>,
+    rules: &std::sync::Arc<dyn RootRules>,
 ) -> Result<(state::App, Option<GovCredentialRotation>, InstalledLimits), String> {
+    // The root's rules of this configuration, before any part of it is built or installed: a
+    // refusal leaves the running generation as it is.
+    rules.check(&cfg)?;
     // The root's projection of this configuration, taken before any part of it is consumed.
     let config_projection = CONFIG_PROJECTION.get().map(|project| project(&cfg));
     // Install the resolved operational limits process-wide BEFORE any subsystem reads them —
@@ -618,12 +667,12 @@ pub fn build_app_from_config(
                 dir.display()
             ));
         }
-        // The root fetches; the kernel's SSRF-guarded downloader is the only way it downloads.
-        let downloader = plugin_fetch_downloader(&cfg.blocked_metadata_hosts);
+        // The root fetches and downloads, through the connector (row 130 E6: the kernel dials
+        // nothing); the operator's metadata denylist extends the download's SSRF pre-check.
         let fetch = crate::preflight::root_rows()
             .plugins_fetch
             .ok_or("plugins.fetch failed:\n  - no composition root installed the plugins fetch")?;
-        let outcomes = fetch(&dir, &targets, prior.is_none(), &downloader)
+        let outcomes = fetch(&dir, &targets, prior.is_none(), &cfg.blocked_metadata_hosts)
             .map_err(|errs| format!("plugins.fetch failed:\n  - {}", errs.join("\n  - ")))?;
         for outcome in &outcomes {
             match outcome {
@@ -677,7 +726,7 @@ pub fn build_app_from_config(
     // first loop already resolves `cfg.providers.get(&mc.provider)` (failing loud via `die` on a
     // missing provider), so the lane-build loop reuses that handle instead of re-looking it up —
     // there is no second lookup and no `expect` on the startup path.
-    let mut lane_provider_cfgs: Vec<&config::ProviderCfg> = Vec::new();
+    let mut lane_provider_cfgs: Vec<&config::ResolvedProvider> = Vec::new();
     let mut by_model = HashMap::new();
     // Per-model configured default_max_tokens (injected at the translation seam for protocols that
     // require max_tokens). Captured here because `cfg.models` is consumed by this loop.
@@ -757,7 +806,10 @@ pub fn build_app_from_config(
                 String::new()
             } else {
                 secret_resolver
-                    .resolve_string(&provider_cfg.api_key)
+                    .resolve_string_at_config(
+                        &provider_cfg.api_key,
+                        &busbar_contract::config_time::ConfigScope::config_time(),
+                    )
                     .map_err(|e| {
                         diag_error!(
                             PROVIDER_API_KEY_UNRESOLVABLE,
@@ -812,7 +864,9 @@ pub fn build_app_from_config(
             "  model {} via {} ({}) max {}{}",
             model,
             mc.provider,
-            provider_cfg.base_url.trim_end_matches('/'),
+            busbar_kernel_egress::trust::net::strip_userinfo(
+                provider_cfg.base_url.trim_end_matches('/')
+            ),
             // Show the operator-facing form: an omitted cap reads "unbounded", not 2^60.
             match mc.max_concurrent {
                 Some(n) => n.to_string(),
@@ -848,7 +902,11 @@ pub fn build_app_from_config(
         // Reuse the provider handle resolved (and validated via `die`) in the lanes_data loop above,
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
         let provider_cfg = lane_provider_cfgs[idx];
-        let Some(protocol) = crate::proto::lane_protocol_name(&provider_cfg.protocol) else {
+        let legacy = crate::plane_host::LegacyLaneKeys::of(provider_cfg);
+        // The provider entry's lane-capability keys, carried unread in its table and resolved
+        // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
+        let lane_caps = legacy.lane_caps(ld.upstream_model.as_deref().unwrap_or(&ld.model));
+        let Some(protocol) = crate::proto::lane_protocol_name(provider_cfg.dialect()) else {
             // The "supported:" roster is DERIVED from the registry (`known_protocols()`), not a
             // hand-maintained literal: the codec dialects are whatever the linked plane crates
             // registered, so a build with the fallback plane compiled out names only what it actually
@@ -857,7 +915,7 @@ pub fn build_app_from_config(
             return Err(format!(
                 "provider '{}' uses unknown protocol '{}' (supported: {})",
                 ld.provider,
-                provider_cfg.protocol,
+                provider_cfg.dialect(),
                 crate::proto::known_protocols().join(", ")
             ));
         };
@@ -869,24 +927,38 @@ pub fn build_app_from_config(
             .cloned()
             .unwrap_or_default();
         // The base URL, trailing-slash-trimmed once here (the plane consumes it verbatim into the
-        // egress-target build + SigV4 signed-host derivation).
-        let base_url = provider_cfg.base_url.trim_end_matches('/').to_string();
+        // egress-target build + SigV4 signed-host derivation), its userinfo stripped as 1.5.5 did
+        // (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`; row 74, F25): every lane table, dial, signed
+        // host and rendering downstream reads the `host[:port]` it dials, never the `user:pass@`.
+        let base_url = busbar_kernel_egress::trust::net::strip_userinfo(
+            provider_cfg.base_url.trim_end_matches('/'),
+        )
+        .into_owned();
+        // ...and the Basic that userinfo spelled, held opaque for the kernel's hop to present as
+        // 1.5.5 did (see `UrlUserinfo`): the plane never reads it. TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
+        let url_userinfo = crate::egress::engine::UrlUserinfo::of(&provider_cfg.base_url);
+        let (token_url, token_userinfo) = lane_token_endpoint(provider_cfg.token_url.as_deref());
         lane_inputs.push(LaneInput {
             model: ld.model.clone(),
             provider: ld.provider.clone(),
             protocol: protocol.to_string(),
             base_url,
+            url_userinfo,
             path: provider_cfg.path.clone(),
             path_base: provider_cfg.path_base.clone(),
-            organization: provider_cfg.organization.clone(),
-            project: provider_cfg.project.clone(),
+            organization: legacy.organization,
+            project: legacy.project,
             upstream_model: ld.upstream_model.clone(),
-            api_key: busbar_contract::redacted::Redacted::new(api_key),
+            api_key: busbar_contract::redacted::Secret::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),
             scope: provider_cfg.scope.clone(),
-            token_url: provider_cfg.token_url.clone(),
+            token_url,
+            token_userinfo,
             subject: provider_cfg.subject.clone(),
-            error_map: provider_cfg.error_map.clone(),
+            error_map: provider_cfg
+                .error_map()
+                .map(|(code, class)| (code.to_string(), class.to_string()))
+                .collect(),
             health: provider_cfg.health.as_ref().map(health_input_of),
             allow_metadata_hosts: provider_cfg.allow_metadata_hosts.clone(),
             context_max: model_context_max.get(&ld.model).copied().flatten(),
@@ -894,17 +966,7 @@ pub fn build_app_from_config(
             attempt_timeout_ms: ld.attempt_timeout_ms,
             reasoning: ld.reasoning,
             prompt_caching: ld.prompt_caching,
-            // The provider entry's lane-capability keys, carried unread and resolved against the
-            // lane's wire model by `ir::lane_caps`, which owns them (architect ruling LANECAPS-MOVE).
-            lane_caps: crate::ir::lane_caps::resolve_lane_caps(
-                crate::ir::lane_caps::ProviderLaneCaps {
-                    max_output_key: provider_cfg.max_output_key,
-                    anthropic_adaptive_thinking: provider_cfg.anthropic_adaptive_thinking,
-                    native_structured_output: provider_cfg.native_structured_output,
-                },
-                &provider_cfg.model_capabilities,
-                ld.upstream_model.as_deref().unwrap_or(&ld.model),
-            ),
+            lane_caps,
             max_concurrent: ld.max,
             limited: ld.limited,
             budget: ld.budget,
@@ -1120,9 +1182,11 @@ pub fn build_app_from_config(
     // orchestrator mounts on the next deploy is a legitimate workflow — and `tls` already accepts
     // exactly that. Rejecting here would make the store stricter than the block beside it.
     if let Some(store_cfg) = cfg.store.as_ref() {
-        if let Err(e) =
-            config::secret::resolve_settings(&store_cfg.settings, secret_resolver.as_ref())
-        {
+        if let Err(e) = config::secret::resolve_settings(
+            &store_cfg.settings,
+            secret_resolver.as_ref(),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        ) {
             diag_warn!(
                 STORE_SECRET_REF_UNRESOLVED,
                 store = %store_cfg.module,
@@ -1191,7 +1255,7 @@ pub fn build_app_from_config(
             });
             // FAIL-CLOSED: a declared ref that no longer resolves ABORTS the apply. The alternative
             // — carry on serving with the old credential — is exactly the defect being fixed.
-            let admin_token: Option<Option<busbar_contract::redacted::Redacted<String>>> =
+            let admin_token: Option<Option<busbar_contract::redacted::Secret<String>>> =
                 if declares_operator {
                     // Declared with no token ref resolves to `None`: the admin API is credential-less
                     // BY CONFIGURATION, so fail closed and disable it rather than keep the old secret.
@@ -1202,8 +1266,8 @@ pub fn build_app_from_config(
                 } else {
                     None
                 };
-            let hash = |t: &busbar_contract::redacted::Redacted<String>| {
-                busbar_contract::redacted::sha256_hex(t.expose_secret().as_bytes())
+            let hash = |t: &busbar_contract::redacted::Secret<String>| {
+                busbar_contract::redacted::sha256_hex(t.expose(&crate::seal::lend()).as_bytes())
             };
             rotated_digest = admin_token.as_ref().map(|t| t.as_ref().map(hash));
             let signer = match auth.and_then(|a| a.signing_key.as_ref()) {
@@ -1213,7 +1277,11 @@ pub fn build_app_from_config(
             if admin_token.is_some() || signer.is_some() {
                 rotate_gov_credentials = Some(Box::new(move || {
                     if let Some(token) = admin_token {
-                        gs.set_admin_token(token.as_ref().map(|r| r.expose_secret().as_str()));
+                        gs.set_admin_token(
+                            token
+                                .as_ref()
+                                .map(|r| r.expose(&crate::seal::lend()).as_str()),
+                        );
                     }
                     if let Some(signer) = signer {
                         gs.set_signing_key(signer);
@@ -1269,8 +1337,12 @@ pub fn build_app_from_config(
         // handed no settings, so it has none to resolve (the built-in store never read its own).
         let resolved = match row.is_some_and(|p| p.in_process()) {
             true => Default::default(),
-            false => config::secret::resolve_settings(&g.settings, secret_resolver.as_ref())
-                .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
+            false => config::secret::resolve_settings(
+                &g.settings,
+                secret_resolver.as_ref(),
+                &busbar_contract::config_time::ConfigScope::config_time(),
+            )
+            .map_err(|e| format!("store '{}' settings: {e}", g.module))?,
         };
         let cfg_json = serde_json::Value::Object(resolved).to_string();
         // The configured store's DOOR (a linked row's, or a dropped-in plugin's verified bytes),
@@ -1290,7 +1362,7 @@ pub fn build_app_from_config(
         // The operator ADMIN credential: the operator-credential entry's `token:` secret ref.
         // FAIL-CLOSED: a configured-but-unresolvable admin token refuses boot (a silently-absent
         // token would lock the admin API while the operator believes it is guarded).
-        let admin_token: Option<busbar_contract::redacted::Redacted<String>> =
+        let admin_token: Option<busbar_contract::redacted::Secret<String>> =
             resolve_admin_token(cfg.auth.as_ref(), &secret_resolver)?;
         // The KEY-SIGNING key: resolve `auth.signing_key` (a secret ref) to 32 ed25519 secret
         // bytes. ABSENT => no signer (1.5.1: busbar no longer auto-generates one; config_validate
@@ -1299,7 +1371,9 @@ pub fn build_app_from_config(
         let signer = resolve_signing_key(cfg.auth.as_ref(), &secret_resolver)?;
         match governance::GovState::new_with_signer(
             store,
-            admin_token.as_ref().map(|r| r.expose_secret().clone()),
+            admin_token
+                .as_ref()
+                .map(|r| r.expose(&crate::seal::lend()).clone()),
             signer,
         ) {
             Ok(gs) => {
@@ -1587,6 +1661,8 @@ pub fn build_app_from_config(
                     prior: prior.map(|p| p as &dyn busbar_kernel::plane_host::PlaneSlots),
                     // The resolved providers: a door plane's probe is handed its referenced ones.
                     providers: Some(&cfg.providers),
+                    // THIS App's hostless-egress driver, held on the plane that builds over it.
+                    hostless: crate::plane::registry::EgressDriver::core(),
                 };
                 (decl.build)(&ctx).map(|obj| (decl.key, obj))
             })
@@ -1743,7 +1819,10 @@ pub fn build_app_from_config(
                 .iter()
                 .map(|(path, reference)| {
                     secret_resolver
-                        .resolve_string(reference)
+                        .resolve_string_at_config(
+                            reference,
+                            &busbar_contract::config_time::ConfigScope::config_time(),
+                        )
                         .map(|value| (path.clone(), value))
                         .map_err(|e| format!("{path}: {e}"))
                 })
@@ -1774,11 +1853,15 @@ pub fn build_app_from_config(
             // otherwise; spawned once per generation).
             // The PRIOR generation's server goes in with it: what the server holds carries across
             // the swap, so a reload does not void its tokens, clients, sessions and replay ledgers.
+            // The deployment's store, when one is configured: the server keeps its records there,
+            // shared by every node on it (the governance state holds the store's calls).
+            let store = governance.as_ref().and_then(|gs| gs.store_calls());
             Some((seam.build)(
                 &checked.block,
                 secrets,
                 protected_resources,
                 prior.and_then(state::App::oauth_as_any),
+                store,
             )?)
         }
     };
@@ -1788,6 +1871,7 @@ pub fn build_app_from_config(
     // read on the hook seam with a single relaxed load.
 
     let app = App {
+        root_rules: std::sync::Arc::clone(rules),
         config_projection,
         plane_sections: Some(cfg.plane_sections.clone()),
         // Telemetry-bank slot table for this generation (built above as a local, BEFORE the
@@ -2036,6 +2120,7 @@ pub fn build_app_from_config(
         cost,
         plugins_dir: std::path::PathBuf::from(&plugins_cfg.dir),
         plugins_cfg,
+        plugin_trust: crate::preflight::root_rows().trust_policy,
         // Where `auth.key_ttl` is finally READ: the self-serve mint's token lifetime.
         // Config-validate already proved this parses; the fallback keeps a bad value from panicking.
         self_key_ttl_secs: cfg

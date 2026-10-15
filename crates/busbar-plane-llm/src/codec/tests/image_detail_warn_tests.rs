@@ -36,7 +36,7 @@ fn warns(egress: &str, blocks: Vec<IrBlock>) -> Vec<String> {
     let mut handle = ChatReqHandle(ir, Default::default());
     let cap = WarnCapture::default();
     tracing::subscriber::with_default(cap.clone(), || {
-        let _ = handle.write_egress_request(egress, "m");
+        let _ = handle.write_egress_request(crate::codec::test_host::HOST, egress, "m");
     });
     cap.messages()
         .into_iter()

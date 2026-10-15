@@ -413,7 +413,7 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     // Before any approval every sighting reports pending, the declared fingerprint (coordinator
     // 2026-10-07, #555 point ii) or another hash, which drifts nothing and writes no demotion
     // (#555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is Pending;
-    // crates/busbar-a2a/src/a2a/registry.rs:123 lowers every registration unpinned).
+    // the retired agent engine's registry lowers every registration unpinned).
     assert_eq!(sight("moved").value, svc::TRUST_NEW);
     assert!(r.s.demotions.get().unwrap().record.list().is_empty());
     assert_eq!(sight("fp").value, svc::TRUST_NEW);
@@ -445,7 +445,7 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     assert_eq!(r.s.trust_unreached(&me, "cp").value, svc::TRUST_NEW);
     // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
     // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    // Pending, and :312, only a pin can change; the retired agent engine's registry).
     r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
     assert_eq!(
         run(|l| r.s.trust_sight(&me, "cp", "moved", l)).value,
@@ -472,6 +472,38 @@ fn the_operators_trust_decisions_are_kept_and_replayed_at_a_restart() {
     );
     let s = fresh.trust_unreached(&caller("nowhere"), "cp");
     assert_eq!((s.outcome, s.error), (Outcome::Refused, NOT_ADMITTED));
+}
+
+/// AN APPROVAL OUTLIVES A RESTART, AND A COUNTERPARTY THAT MOVED WHILE THE NODE WAS DOWN IS DRIFT,
+/// never a first sighting (predev 1d23fca5e6 / c9e5d13f2c, the agent plane's card: approved,
+/// restarted over the same store, the card moved under the same root). The first sighting after the
+/// restart is judged against the approval that was kept: DRIFTED, and the counterparty is
+/// quarantined until the operator rules again. RED arm: an approval held in memory alone would meet
+/// the moved document as NEW, one approval away from serving.
+#[test]
+fn an_approval_outlives_a_restart_and_a_moved_counterparty_is_drift_not_a_first_sighting() {
+    use crate::trust::book::Ruling;
+    let r = rig();
+    let me = caller("inst");
+    assert_eq!(
+        run(|l| r.s.trust_sight(&me, "cp", "c1", l)).value,
+        svc::TRUST_NEW,
+        "a first sighting"
+    );
+    let row = r.s.trust_rule("inst/cp", Ruling::Approve).unwrap();
+    assert_eq!(row.approved.as_deref(), Some("c1"));
+    let fresh = restarted(&r);
+    fresh.admit("inst", trusting(Some("fp"))).unwrap();
+    assert_eq!(
+        run(|l| fresh.trust_sight(&me, "cp", "c2", l)).value,
+        svc::TRUST_DRIFTED,
+        "the moved document is judged against the kept approval"
+    );
+    assert_eq!(
+        fresh.trust_unreached(&me, "cp").value,
+        svc::TRUST_QUARANTINED,
+        "and held out of service until the operator rules"
+    );
 }
 
 /// `trust.decide` (a plane's own administrative verb, ARCHITECT 2026-10-06): the ONE decide path
@@ -631,7 +663,7 @@ fn a_durable_demotion_is_replayed_at_admit() {
     let me = caller("inst");
     // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
     // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    // Pending, and :312, only a pin can change; the retired agent engine's registry).
     r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
         .unwrap();
     assert_eq!(
@@ -761,7 +793,7 @@ fn a_demotion_in_one_instance_is_never_replayed_into_another_with_the_same_count
     let r = rig();
     // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
     // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    // Pending, and :312, only a pin can change; the retired agent engine's registry).
     r.s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
         .unwrap();
     assert_eq!(
@@ -806,7 +838,7 @@ fn an_unprefixed_row_replays_into_the_default_instance_only_and_it_clears_it() {
     pinned.admit(SECTION_KEY, trusting(Some("fp"))).unwrap();
     // A sighting of the declared fingerprint before any approval reports pending (coordinator
     // 2026-10-07, #555 point ii; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending; crates/busbar-a2a/src/a2a/registry.rs:123 lowers every registration unpinned).
+    // Pending; the retired agent engine's registry lowers every registration unpinned).
     assert_eq!(
         run(|l| pinned.trust_sight(&caller(SECTION_KEY), "cp", "fp", l)).value,
         svc::TRUST_NEW
@@ -986,7 +1018,7 @@ fn a_demotion_is_written_on_the_pool_and_the_sighting_answers_after_it() {
     s.admit("inst", trusting(Some("fp"))).unwrap();
     // Approved first: before an approval a declared fingerprint drifts nothing (coordinator
     // 2026-10-07, #555 round 3; predev crates/busbar-kernel/src/trust/mod.rs:289-290, no pin is
-    // Pending, and :312, only a pin can change; crates/busbar-a2a/src/a2a/registry.rs:123).
+    // Pending, and :312, only a pin can change; the retired agent engine's registry).
     s.trust_rule("inst/cp", crate::trust::book::Ruling::Approve)
         .unwrap();
     let (slot, later) = recorder();
@@ -1945,175 +1977,6 @@ fn dest_judge_answers_the_installed_guard_admission() {
     assert_eq!(
         s.judge_dial("api.example.com:443", 0, Box::new(|_| {})),
         Some(Ok("93.184.216.34:443".parse().unwrap()))
-    );
-}
-
-// ── THE CHAINED RECORD KINDS (`PlaneTail::record_chains`; RULE-CHECK 2026-09-30: the call log moves
-//    to the plane over the generic journal append) ─────────────────────────────────────────────────
-
-const CALL: RecordSchemaId = RecordSchemaId::new("call");
-
-/// Services over `store` with the instance `label` declaring `call` chained, length-prefixed, its
-/// scope digested.
-fn chained_services(store: &Arc<MemoryStore>, label: &str) -> KernelServices {
-    let s = KernelServices::new()
-        .with_records(Arc::new(Mem(Arc::clone(store))), store.clone())
-        .with_pool(Arc::new(Inline));
-    s.admit(
-        label,
-        InstanceFacts {
-            record_kinds: vec![KIND, CALL],
-            record_chains: vec![busbar_contract::abi::plane::RecordChain {
-                kind: 1,
-                framing: busbar_contract::abi::plane::CHAIN_LENGTH_PREFIXED,
-                flags: busbar_contract::abi::plane::CHAIN_DIGESTS_SCOPE,
-                _reserved: 0,
-            }],
-            ..InstanceFacts::default()
-        },
-    )
-    .unwrap();
-    s
-}
-
-/// Append `content` to `scope`'s chain as `label`; the ack it heard.
-fn append(
-    s: &KernelServices,
-    label: &str,
-    scope: &[u8],
-    content: &[u8],
-) -> Result<(), &'static str> {
-    let heard = Arc::new(Mutex::new(None));
-    let mine = Arc::clone(&heard);
-    s.record_write(
-        &caller(label),
-        "call",
-        scope,
-        RecordBytes::new(content.to_vec()).unwrap(),
-        Box::new(move |r| *mine.lock().unwrap() = Some(r)),
-    )
-    .unwrap();
-    let r = heard.lock().unwrap().take();
-    r.expect("the append was acknowledged")
-}
-
-/// The neutral bodies the store holds for `label`'s chain of `scope`, in sequence order.
-fn chain_rows(
-    store: &MemoryStore,
-    label: &str,
-    scope: &str,
-) -> Vec<crate::audit::journal::NeutralBody> {
-    use busbar_contract::records::{PlaneSelector, RecordStore as _};
-    let parent = crate::host_chains::chain_parent(label, scope);
-    store
-        .list_plane_records("call", &PlaneSelector::Parent(parent.as_str().into()))
-        .unwrap()
-        .iter()
-        .map(|b| crate::plane::store::decode(b).unwrap())
-        .collect()
-}
-
-#[test]
-fn a_chained_kind_appends_in_sequence_and_never_overwrites_its_scope() {
-    let store = Arc::new(MemoryStore::new());
-    let s = chained_services(&store, "tools-plane");
-    assert_eq!(append(&s, "tools-plane", b"ref-a", b"one"), Ok(()));
-    assert_eq!(append(&s, "tools-plane", b"ref-a", b"two"), Ok(()));
-    let rows = chain_rows(&store, "tools-plane", "ref-a");
-    assert_eq!(
-        rows.iter()
-            .map(|r| (r.seq, r.content.clone()))
-            .collect::<Vec<_>>(),
-        vec![(1, b"one".to_vec()), (2, b"two".to_vec())],
-        "two records under one key are two links, not a put that overwrote the first"
-    );
-    assert_eq!(rows[1].prev_hash, rows[0].hash, "linked");
-    assert_eq!(rows[0].prev_hash, "", "genesis");
-    // Nothing went through the write-behind's put.
-    assert!(s.pending().get("tools-plane", "call", b"ref-a").is_none());
-}
-
-#[test]
-fn the_host_frames_the_prelude_in_the_declared_framing_and_joins_the_planes_bytes_raw() {
-    let store = Arc::new(MemoryStore::new());
-    let s = chained_services(&store, "tools-plane");
-    append(&s, "tools-plane", b"ref-a", b"suffix").unwrap();
-    let row = &chain_rows(&store, "tools-plane", "ref-a")[0];
-    let parent = crate::host_chains::chain_parent("tools-plane", "ref-a");
-    let mut input = crate::audit::frame_prelude(
-        crate::audit::Framing::LengthPrefixed,
-        "",
-        Some(parent.as_str()),
-        1,
-    );
-    input.extend_from_slice(b"suffix");
-    let want: String = <sha2::Sha256 as sha2::Digest>::digest(&input)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect();
-    assert_eq!(
-        row.hash, want,
-        "sha256(prelude(prev, scope, seq) ++ suffix)"
-    );
-}
-
-#[test]
-fn a_restart_resumes_every_chain_from_its_stored_tail() {
-    let store = Arc::new(MemoryStore::new());
-    let first = chained_services(&store, "tools-plane");
-    append(&first, "tools-plane", b"ref-a", b"one").unwrap();
-    append(&first, "tools-plane", b"ref-a", b"two").unwrap();
-    drop(first);
-    let second = chained_services(&store, "tools-plane");
-    append(&second, "tools-plane", b"ref-a", b"three").unwrap();
-    let rows = chain_rows(&store, "tools-plane", "ref-a");
-    assert_eq!(
-        rows.iter().map(|r| r.seq).collect::<Vec<_>>(),
-        vec![1, 2, 3],
-        "the chain resumed at its tail, not forked at seq 1"
-    );
-    assert_eq!(rows[2].prev_hash, rows[1].hash);
-    let chain = second
-        .chained(&caller("tools-plane"), "call")
-        .expect("chained");
-    let plane = crate::plane::store::PlaneStoreView::narrow(store.clone());
-    assert_eq!(
-        chain
-            .verify(plane.as_ref(), "tools-plane", "ref-a")
-            .unwrap(),
-        None
-    );
-    assert_eq!(chain.next_seq("tools-plane", "ref-a"), 4);
-}
-
-#[test]
-fn two_instances_never_share_a_chain_and_an_undeclared_kind_is_not_chained() {
-    let store = Arc::new(MemoryStore::new());
-    let s = chained_services(&store, "one");
-    s.admit(
-        "two",
-        InstanceFacts {
-            record_kinds: vec![CALL],
-            record_chains: vec![busbar_contract::abi::plane::RecordChain {
-                kind: 0,
-                framing: busbar_contract::abi::plane::CHAIN_PIPE_SEPARATED,
-                flags: 0,
-                _reserved: 0,
-            }],
-            ..InstanceFacts::default()
-        },
-    )
-    .unwrap();
-    append(&s, "one", b"ref", b"a").unwrap();
-    append(&s, "two", b"ref", b"b").unwrap();
-    assert_eq!(chain_rows(&store, "one", "ref")[0].seq, 1);
-    assert_eq!(chain_rows(&store, "two", "ref")[0].seq, 1, "its own chain");
-    assert!(s.chained(&caller("one"), "approval").is_none());
-    assert!(s.chained(&caller("three"), "call").is_none());
-    // A key that is not text has no chain parent: refused, never written.
-    assert_eq!(
-        append(&s, "one", &[0xff, 0xfe], b"x"),
-        Err(crate::host_chains::SCOPE_NOT_TEXT)
     );
 }
 

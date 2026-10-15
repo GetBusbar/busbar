@@ -390,3 +390,112 @@ fn a_lane_less_destination_leaves_the_sealed_set_without_refusing_the_step() {
     );
     assert_eq!(sealed[0].lane(), &LaneId::new("lane-a"));
 }
+
+/// F25 row 696: rehomed from crates/busbar-llm/src/unit/tests/chain.rs::the_verify_refusal_carries_the_wire_triple_the_guards_named.
+/// Pins: for a key restricted to another pool, the verify step's refusal carries the SAME reason the
+/// guards name for that request (`PoolNotPermitted`), and that named refusal's wire triple is 403 /
+/// permission / the vendor-plausible permission copy — the same triple the kernel door renders it
+/// with (`door::VerifyRefusal::NotAuthorized`), so the loop's reason and the caller's bytes cannot
+/// come from two different readings.
+#[test]
+fn the_verify_refusal_carries_the_wire_triple_the_guards_named() {
+    let (seal, trust, token) = kernel();
+    let candidates = vec![super::fixtures::kinds::upstream()];
+    let pools = Pools::allowing(&["fast"]);
+    let refusal = Trust
+        .verify(
+            &request(&candidates, "cold"),
+            &pools,
+            &AllYes::default(),
+            &super::fixtures::AllAdmitted,
+            &trust,
+            &token,
+        )
+        .into_result(&seal)
+        .expect_err("the key may not use this pool");
+    let named = busbar_kernel_egress::trust::destination_guard(&pools, "cold", UNPRICED)
+        .expect_err("the guards refuse the same request on the same view");
+    // The two readings of one answer agree: the loop's reason code, and the guards' own triple.
+    assert_eq!(refusal.reason(), named.kind.reason());
+    assert_eq!(refusal.reason(), ReasonCode::PoolNotPermitted);
+    assert_eq!(refusal.step(), Some(StepName::Verify));
+    assert_eq!(named.status, 403);
+    assert_eq!(
+        named.kind,
+        busbar_kernel_egress::trust::RefusalKind::Permission
+    );
+    assert_eq!(
+        named.message,
+        "Your API key does not have permission to access this resource."
+    );
+    // The door's rendering of the same refusal: one status, one kind word, one message, one reason.
+    let door = crate::door::VerifyRefusal::NotAuthorized;
+    assert_eq!(door.reason(), refusal.reason());
+    assert_eq!(door.status(), named.status);
+    assert_eq!(door.kind(), busbar_contract::protocol::KIND_PERMISSION);
+    assert_eq!(door.message(), named.message);
+}
+
+/// F25 row 425: rehomed from crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_governance_guard_passes_when_allowed.
+/// Pins: a governed key allowed on the pool and within its limits is ADMITTED AND CHARGED by the
+/// kernel's governance guard (destination guard, then the admission door): `Ok((Some(grant),
+/// None))`, and the charge landed on the key's own book (the flat fee, 30).
+#[test]
+fn test_governance_guard_passes_when_allowed() {
+    crate::snapshot::init();
+    let at: u64 = 1_700_000_000;
+    let gov = std::sync::Arc::new(
+        crate::governance::GovState::new(
+            std::sync::Arc::new(crate::governance::MemoryStore::new()),
+            Some("admintok".to_string()),
+        )
+        .unwrap(),
+    );
+    let (key, _secret) = gov
+        .create_key(
+            crate::governance::NewKeySpec {
+                name: "restricted".to_string(),
+                allowed_pools: Some(vec!["allowed-only".to_string()]),
+                group: None,
+                labels: Default::default(),
+                ..Default::default()
+            },
+            at,
+        )
+        .unwrap();
+    let app = crate::test_support::TestApp::new()
+        .governance(gov)
+        .keys_chain()
+        .cost(crate::cost::CostModel::flat(30))
+        .build();
+    let ctx = busbar_contract::records::PlaneRequestCtx {
+        key: Some(std::sync::Arc::new(key.clone())),
+    };
+    let spend = || {
+        app.governance
+            .as_ref()
+            .expect("governed")
+            .usage_for(&app.cost, &key.id, at)
+            .unwrap()
+            .map(|u| u.spend_cents)
+            .unwrap_or(0)
+    };
+    assert_eq!(spend(), 0, "precondition: nothing charged yet");
+    let passed = crate::ingress::governance_guard(
+        &app,
+        &ctx,
+        "openai",
+        "allowed-only",
+        std::time::Instant::now(),
+        at,
+    );
+    let Ok((Some(_grant), downgraded)) = passed else {
+        panic!("an allowed, in-limits request is admitted AND charged (Ok(Some(grant)))");
+    };
+    assert_eq!(downgraded, None, "no budget downgrade fired");
+    assert_eq!(
+        spend(),
+        30,
+        "the admission charged the key's flat fee on its own book"
+    );
+}

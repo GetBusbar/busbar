@@ -111,7 +111,7 @@
 //!   FAILED; an out-of-range `order` index is dropped; no `requested_model`/`tool_count`/
 //!   `system_chars`; `SignalBag` flattened in insertion order) is an M3-wire acceptance test, not a
 //!   shape.
-//! - **Acceptance:** 178 v1.5.5 hook tests ported verbatim, plus memory-form RED tests for each
+//! - **Acceptance:** 181 v1.5.5 hook tests ported verbatim, plus memory-form RED tests for each
 //!   malformed class (M4 HOOK-PARITY, after this shape lands).
 //!
 //! ASSUMPTIONS (M3-SHAPES, noted for the SLOT-LOG; none are money- or customer-visible — 1.5.5

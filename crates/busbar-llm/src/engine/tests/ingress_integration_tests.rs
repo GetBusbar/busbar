@@ -11,9 +11,12 @@ use crate::testkit::shell::operation_ingress_inner;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use busbar_kernel::ingress::{
-    admit_check, finish, finish_admitted, finish_rejected, governance_guard, ingress_error,
-    not_found_message, percent_decode, pool_authorized, pool_label,
+use busbar_kernel::{
+    ingress::{
+        admit_check, finish, finish_admitted, finish_rejected, governance_guard, ingress_error,
+        not_found_message, percent_decode, pool_authorized, pool_label,
+    },
+    seal::lend,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -649,6 +652,73 @@ fn anthropic_ok_body() -> serde_json::Value {
         "stop_reason": "end_turn",
         "usage": {"input_tokens": 5, "output_tokens": 3}
     })
+}
+
+/// ROW 74 (F25), THE ORGANIC FORWARD: a lane whose base URL spells `user:pass@` and whose credential
+/// presents no `authorization` (here: a keyless lane, `api_key` empty, so no credential field at
+/// all) reaches its far end at the stripped authority with `authorization: Basic
+/// base64(user:pass)` — what 1.5.5's reqwest build over `{base_url}{path}` sent (v1.5.5
+/// `crates/busbar/src/proxy/engine/mod.rs:1669-1670`). The plane never reads the value: the kernel's
+/// hop presents it from the opaque handle the lane carries.
+#[tokio::test]
+async fn a_userinfo_base_url_presents_its_basic_when_the_credential_names_no_authorization() {
+    use base64::Engine as _;
+    crate::testkit::install_test_seams();
+    busbar_kernel::snapshot::init();
+    let state = StdArc::new(MockServerState::new());
+    state.push(MockResponse::Ok {
+        status: StatusCode::OK,
+        body: openai_ok_body(),
+    });
+    let server = MockServer::new(state.clone()).await;
+    let bare = server.base_url();
+    let planted = bare.replacen("://", "://svcuser:hunter2-P4ss@", 1);
+
+    let app = TestApp::new()
+        .lane(
+            LaneSpec::new("glm-4.5", crate::proto_codec::PROTO_OPENAI, &planted)
+                .provider("zai")
+                .api_key(""),
+        )
+        .pool("co", &[(0, 1)])
+        .build();
+    let (_host, _rt) = crate::engine::test_host_rt(&app);
+    let (addr, handle) = serve(app).await;
+
+    let resp = reqwest::Client::new()
+        .post(format!("http://{addr}/v2/chat"))
+        .credential("t")
+        .body(
+            json!({
+                "model": "co",
+                "messages": [{"role": "user", "content": "hello"}]
+            })
+            .to_string(),
+        )
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        resp.status().as_u16(),
+        200,
+        "served through the userinfo lane"
+    );
+    let expected = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+    );
+    assert_eq!(
+        state.get_last_request_header("authorization").as_deref(),
+        Some(expected.as_str()),
+        "the far end hears the userinfo as 1.5.5 sent it"
+    );
+    assert_eq!(
+        state.get_last_request_header("host").as_deref(),
+        bare.split_once("://").map(|(_, authority)| authority),
+        "dialled at the stripped authority"
+    );
+    handle.abort();
+    server.shutdown().await;
 }
 
 /// Cohere client → OpenAI backend: a native Cohere `/v2/chat` request must round-trip through
@@ -3533,19 +3603,19 @@ async fn test_governance_rejection_bodies_leak_no_internal_vocab() {
     let body = body_string(*resp).await;
     assert_leak_free(&body, &key2.id, "any-pool");
 
-    // Bedrock ingress maps the same over-budget condition to a 400-class
-    // ServiceQuotaExceededException (the native AWS shape), NOT 429.
+    // Bedrock ingress maps the same over-budget condition to 429 ThrottlingException, an error
+    // Converse declares (1.5.5's 400 ServiceQuotaExceededException is one it does not).
     let (app2b, key2b) = governed_app_over_budget();
     let gov2b = busbar_contract::records::PlaneRequestCtx {
         key: Some(std::sync::Arc::new(key2b.clone())),
     };
     let resp = admit_check(&app2b, &gov2b, "bedrock", "", busbar_kernel::store::now())
         .expect_err("a zero-budget group ⇒ over-budget response (bedrock)");
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
     let body = body_string(*resp).await;
     assert!(
-        body.contains("ServiceQuotaExceededException"),
-        "bedrock over-budget body carries native quota exception: {body}"
+        body.contains("ThrottlingException"),
+        "bedrock over-budget body carries the declared Converse exception: {body}"
     );
     assert_leak_free(&body, &key2b.id, "any-pool");
     let _ = &app2b;
@@ -3755,8 +3825,8 @@ fn test_bedrock_errortype_header_matches_body_and_others_omit() {
         ),
         (
             crate::engine::KIND_INSUFFICIENT_QUOTA,
-            StatusCode::BAD_REQUEST,
-            "ServiceQuotaExceededException",
+            StatusCode::TOO_MANY_REQUESTS,
+            "ThrottlingException",
         ),
     ] {
         let resp = ingress_error("bedrock", status, kind, "m");
@@ -5171,7 +5241,7 @@ async fn governed_pool_acl_router(
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
-    (addr, handle, secret.expose_secret().clone())
+    (addr, handle, secret.expose(&lend()).clone())
 }
 
 /// Cohere `/v2/chat` governance pool-ACL 403 must carry the Cohere-native error envelope
@@ -5463,7 +5533,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     // is configured and the key is not allowed on B, so the request must be rejected upfront.
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/A/v1/messages"))
-        .credential(secret.expose_secret())
+        .credential(secret.expose(&lend()))
         .body(json!({"model": "A", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -5552,7 +5622,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/A/v1/messages"))
-        .credential(secret.expose_secret())
+        .credential(secret.expose(&lend()))
         .body(json!({"model": "A", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -5724,7 +5794,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/anthropic/claude-x/v1/messages"))
-        .credential(secret.expose_secret())
+        .credential(secret.expose(&lend()))
         .body(json!({"model": "claude-x", "messages": [], "max_tokens": 16}).to_string())
         .send()
         .await
@@ -6069,7 +6139,7 @@ async fn governed_limit_router(
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
-    (addr, handle, secret.expose_secret().clone())
+    (addr, handle, secret.expose(&lend()).clone())
 }
 
 /// Each first-class ingress route: an over-RPM virtual key is rejected with a PROTOCOL-NATIVE
@@ -6153,8 +6223,8 @@ async fn test_governance_rate_limit_429_native_envelope_all_ingress() {
 
 /// Each first-class ingress route: an over-budget virtual key is rejected with the protocol's
 /// native quota shape before resolution. The over-quota `kind` is `insufficient_quota`; the
-/// status is 429 for every protocol EXCEPT bedrock (whose native `ServiceQuotaExceededException`
-/// is a 400-class error — see `budget_check`). Closes the ingress gap the 403-only set left on
+/// status is 429 for every protocol, bedrock included (`ThrottlingException`, an error Converse
+/// declares — see `budget_check`). Closes the ingress gap the 403-only set left on
 /// the `budget_check` guard.
 #[tokio::test]
 async fn test_governance_over_budget_native_envelope_all_ingress() {
@@ -6183,7 +6253,7 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
         handle.abort();
     }
 
-    // bedrock: native ServiceQuotaExceededException is a 400-class error, not 429.
+    // bedrock: 429 ThrottlingException, an error Converse declares.
     {
         let (addr, handle, secret) = governed_limit_router("budget").await;
         let resp = reqwest::Client::new()
@@ -6193,12 +6263,12 @@ async fn test_governance_over_budget_native_envelope_all_ingress() {
             .send()
             .await
             .unwrap();
-        assert_eq!(resp.status().as_u16(), 400, "bedrock over-budget ⇒ 400");
+        assert_eq!(resp.status().as_u16(), 429, "bedrock over-budget ⇒ 429");
         let body: serde_json::Value = resp.json().await.unwrap();
         assert_eq!(
             body.get("__type").and_then(|t| t.as_str()),
-            Some("ServiceQuotaExceededException"),
-            "bedrock over-budget body __type is ServiceQuotaExceededException; got {body}"
+            Some("ThrottlingException"),
+            "bedrock over-budget body __type is ThrottlingException; got {body}"
         );
         handle.abort();
     }

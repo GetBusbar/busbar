@@ -12,15 +12,17 @@ fn lane(api_key: &str) -> LaneInput {
         provider: "p".to_string(),
         protocol: "widget".to_string(),
         base_url: "https://example.invalid".to_string(),
+        url_userinfo: None,
         path: None,
         path_base: None,
         organization: None,
         project: None,
         upstream_model: None,
-        api_key: busbar_contract::redacted::Redacted::new(api_key.to_string()),
+        api_key: busbar_contract::redacted::Secret::new(api_key.to_string()),
         auth_style: AuthStyleInput::Default,
         scope: None,
         token_url: None,
+        token_userinfo: None,
         subject: None,
         error_map: HashMap::new(),
         health: None,
@@ -60,5 +62,5 @@ fn the_build_carrier_cannot_print_the_provider_credential() {
 #[test]
 fn the_credential_is_reachable_only_through_the_audited_read() {
     let one = lane("sk-live-1");
-    assert_eq!(one.api_key.expose_secret(), "sk-live-1");
+    assert_eq!(one.api_key.expose(&crate::seal::lend()), "sk-live-1");
 }

@@ -185,7 +185,7 @@ write_zero_plugin_config() {
   # separately, for every dialect the plugin carries). This gate's OWN probe methodology (the mock
   # upstream's wire shape, the `/v1/chat/completions` and `/v2/chat` ingress bodies below) is
   # written against real LLM dialects, so `build_binaries`/`run_selftest` explicitly keep
-  # `proto-llm` ON for axis 1 (`--features proto-llm`) — axis 1 stays "every OTHER plugin-kind
+  # `plane-llm` ON for axis 1 (`--features plane-llm`) — axis 1 stays "every OTHER plugin-kind
   # capability compiled out" rather than "the LLM protocol compiled out", which is a distinct claim
   # scripts/proto-deletion-gate.sh already makes.
   #
@@ -193,7 +193,7 @@ write_zero_plugin_config() {
   # the old flag was `proto-openai-chat`, and it covered only the `/v1/chat/completions` probe. The
   # `/v2/chat` probe below is COHERE's — the deliberate cross-protocol translation leg — and it was
   # passing only because cohere was still a core built-in. Under one LLM plugin both probes are
-  # covered by the one `proto-llm` flag, which is the first time this axis has actually been
+  # covered by the one `plane-llm` flag, which is the first time this axis has actually been
   # linking everything it exercises.
   cat >"${work}/providers.yaml" <<EOF
 mock:
@@ -518,13 +518,13 @@ expect_green() {
   return 1
 }
 
-# AXIS 1's FEATURE SET. `proto-llm`, for the probe methodology (see write_zero_plugin_config), and
+# AXIS 1's FEATURE SET. `plane-llm`, for the probe methodology (see write_zero_plugin_config), and
 # `transport-tcp`, the tcp wire's LINKED ROW behind a default-on switch (9f98bb888, spec #3: a
 # transport is compiled in OR dropped in), kept so the axis measures every OTHER plugin capability
 # compiled out against the wire the shipped binary carries. (No layer composes over it any more,
 # ARCHITECT ruling Q128 U7: no transport names another and the carrier is the connector's choice, so
 # its absence would no longer refuse the seal; transport_dropped_in_serves.rs pins that.)
-AXIS1_FEATURES="proto-llm,transport-tcp"
+AXIS1_FEATURES="plane-llm,transport-tcp"
 
 build_binaries() {
   local stage="$1"

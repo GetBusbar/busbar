@@ -23,9 +23,9 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::sdk::door::Entry;
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 use busbar_contract::abi::transport::{
-    slot, FramePiece, FramerOut, FramingIn, HeadSlots, PIECE_CONTINUED, PIECE_END_OF_FRAME,
-    PIECE_FIELDS, PIECE_HAS_CODE, PIECE_STREAM_FAILED, PIECE_WRITABLE, YIELD_ENDED,
-    YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    slot, FramePiece, FramerOut, FramingIn, HeadSlots, PIECE_CONTINUED, PIECE_END,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_STREAM_FAILED,
+    PIECE_WRITABLE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 use hyper_io::{
     field_cut, fill, mark_stream_full, HeadWords, HostIo, Owed, Piece, WRITE_HIGH_WATER,
@@ -165,13 +165,13 @@ impl SafeSlot for FillSlot {
         OWES.with(|c| {
             let mut owes = c.borrow_mut();
             let owes = owes.as_mut().expect("a framing to fill from");
-            fill(owes, i.field(|x| &x.sink), &mut o, |c| {
-                if c == 0 {
-                    1
-                } else {
-                    3
-                }
-            });
+            fill(
+                owes,
+                i.field(|x| &x.sink),
+                &mut o,
+                |c| if c == 0 { 1 } else { 3 },
+                |c| if c == 0 { 0 } else { 2 },
+            );
         });
         if FULL.with(std::cell::Cell::get) {
             mark_stream_full(&mut o);
@@ -268,7 +268,59 @@ fn fill_splits_what_does_not_fit_and_says_more() {
         PIECE_END_OF_FRAME | PIECE_STREAM_FAILED | PIECE_HAS_CODE
     );
     assert_eq!((pieces[1].code, pieces[1].status_class), (5, 3));
+    // The fault reading rides beside the class, from the framer's own fault table.
+    assert_eq!((pieces[0].fault, pieces[1].fault), (0, 2));
     assert_eq!(out.yielded.flags, YIELD_ENDED);
+}
+
+/// A PIECE MAY STATE ITS OWN FAULT READING. A framer that maps an answer into its claim's numbering
+/// from something the numbering does not hold (a bare status line on a call that numbers its statuses otherwise) reads the fault
+/// from that, and `fill` writes the piece's own reading over `fault_of(status)`; a piece that
+/// states none is read by the table as before. RED on a `fill` that ignores the piece's reading.
+#[test]
+fn fill_writes_a_pieces_own_fault_reading_over_the_tables() {
+    let mut o = Owes {
+        io: HostIo::new(0),
+        pieces: VecDeque::from([
+            Piece {
+                status: Some(5),
+                fault: Some(1),
+                ..Piece::fields(1, Bytes::from_static(b"a: b\r\n"))
+            },
+            Piece {
+                status: Some(5),
+                ..Piece::failure(1, "why")
+            },
+        ]),
+        ended: true,
+    };
+    let (_, _, _, pieces, _) = run_fill(&mut o, (8, 32, 4));
+    assert_eq!(pieces.len(), 2);
+    assert_eq!(
+        (pieces[0].code, pieces[0].status_class, pieces[0].fault),
+        (5, 3, 1),
+        "the piece's own reading, its class still the table's"
+    );
+    assert_eq!(pieces[1].fault, 2, "no reading of its own: the table's");
+}
+
+/// RED (the stream-end ruling): the SDK SAYS a stream's end (`Piece::end` -> `PIECE_END` on an
+/// empty END_OF_FRAME piece); an empty data piece is an empty frame and carries no end.
+#[test]
+fn fill_says_the_stream_end_and_an_empty_frame_is_not_it() {
+    let mut o = Owes {
+        io: HostIo::new(0),
+        pieces: VecDeque::from([Piece::data(1, Bytes::new()), Piece::end(1)]),
+        ended: false,
+    };
+    let (_, _, frame, pieces, _) = run_fill(&mut o, (8, 8, 4));
+    assert!(frame.is_empty());
+    assert_eq!(pieces.len(), 2);
+    assert_eq!((pieces[0].len, pieces[0].flags), (0, PIECE_END_OF_FRAME));
+    assert_eq!(
+        (pieces[1].len, pieces[1].flags),
+        (0, PIECE_END | PIECE_END_OF_FRAME)
+    );
 }
 
 /// A STREAM'S OWN BACKPRESSURE through the SDK: an `emit` that left its stream full says so beside
@@ -374,4 +426,34 @@ fn fill_drops_the_head_words_for_a_host_that_takes_no_slots() {
     assert!(heads.is_empty());
     assert!(frame.is_empty());
     assert_eq!(pieces[0].flags, PIECE_FIELDS | PIECE_END_OF_FRAME);
+}
+
+/// A head's declared body length rides its field block's piece as `PIECE_HAS_DECLARED_LEN` and
+/// `declared_len`; a head that declares none sets neither.
+#[test]
+fn fill_states_a_heads_declared_length_where_it_declared_one() {
+    let mut o = Owes {
+        io: HostIo::new(0),
+        pieces: VecDeque::from([
+            Piece {
+                declared_len: Some(1 << 33),
+                ..Piece::fields(1, Bytes::from_static(b"k: v\r\n"))
+            },
+            Piece::fields(3, Bytes::from_static(b"k: v\r\n")),
+        ]),
+        ended: false,
+    };
+    let (_, _, _, pieces, _) = run_fill(&mut o, (1, 64, 4));
+    assert_eq!(pieces.len(), 2);
+    assert_eq!(
+        (pieces[0].flags, pieces[0].declared_len),
+        (
+            PIECE_FIELDS | PIECE_END_OF_FRAME | PIECE_HAS_DECLARED_LEN,
+            1 << 33
+        )
+    );
+    assert_eq!(
+        (pieces[1].flags, pieces[1].declared_len),
+        (PIECE_FIELDS | PIECE_END_OF_FRAME, 0)
+    );
 }

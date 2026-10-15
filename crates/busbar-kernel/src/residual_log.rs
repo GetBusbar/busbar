@@ -6,7 +6,7 @@
 //! A usage count no billing class records is WARNed where the reader found it, never billed, and
 //! settled here as ONE `usage.residual` row per non-empty residual map. The row is money evidence,
 //! so it is DURABLE and NEVER EVICTED: it rides its own per-principal journal stream on the ONE
-//! store-backed chain ([`crate::plane_host::journal`], the same seq-authority, write-through sink,
+//! store-backed chain ([`crate::audit::stream_registry`], the same seq-authority, write-through sink,
 //! boot rehydrate and verifier the call log and the admin audit log use), under the store kind
 //! [`KIND_RESIDUAL`]. It does NOT ride the admin audit ring: that ring is operator-rate and holds
 //! [`crate::audit::MAX_AUDIT_ENTRIES`] rows in RAM, and a residual is request-rate (one per request
@@ -28,14 +28,10 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::audit::journal::NeutralBody;
+use crate::audit::stream_registry::{self, Decode, StreamRecord};
 use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::plane::store::{decode, PlaneStore, KIND_RESIDUAL};
-use crate::plane_host::journal::PlaneJournalRecord;
 use crate::plane_host::USAGE_RESIDUAL_ACTION;
-use busbar_contract::abi::hot::host::HostCtx;
-use busbar_contract::abi::hot::{
-    Framing as AbiFraming, JournalStreamDesc, RawFraming, POD_VERSION,
-};
 use busbar_contract::records::{PlaneSelector, RecordStoreError, RecordStoreResult};
 
 /// The host-assigned `kind_id` the residual stream is registered under. Distinct from the
@@ -196,10 +192,10 @@ fn parse_residual_suffix(content: &[u8]) -> RecordStoreResult<ParsedSuffix> {
 
 /// THE DECODE BRIDGE (reframe): one stored body back into a chain record. `scope` is the store
 /// parent (the principal), never read from the body.
-fn reframe_residual(scope: &str, body: &[u8]) -> RecordStoreResult<PlaneJournalRecord> {
+fn reframe_residual(scope: &str, body: &[u8]) -> RecordStoreResult<StreamRecord> {
     let nb = decode::<NeutralBody>(body)?;
     parse_residual_suffix(&nb.content)?;
-    Ok(PlaneJournalRecord::from_parts(
+    Ok(StreamRecord::from_parts(
         scope.to_string(),
         nb.seq,
         nb.prev_hash,
@@ -208,17 +204,6 @@ fn reframe_residual(scope: &str, body: &[u8]) -> RecordStoreResult<PlaneJournalR
         RESIDUAL_FRAMING,
         RESIDUAL_DIGESTS_SCOPE,
     ))
-}
-
-/// The stream's decode, served by the ONE in-core reframe slot
-/// [`crate::plane_host::journal::reframe_slot`] (so this file stays `deny(unsafe)` and spells no
-/// FFI slot of its own).
-struct ResidualReframe;
-
-impl crate::plane_host::journal::NativeReframe for ResidualReframe {
-    fn reframe(scope: &str, body: &[u8]) -> RecordStoreResult<PlaneJournalRecord> {
-        reframe_residual(scope, body)
-    }
 }
 
 /// One stored body back into its typed row: the read-back a replay and an auditor use.
@@ -246,39 +231,20 @@ pub(crate) fn residual_record_from_body(
 }
 
 /// Register the residual stream under `kind_id` (production pins [`KIND_ID_RESIDUAL`]; a test
-/// passes a fresh id). The host attaches the durable sink from `app.governance` at register time.
+/// passes a fresh id), decoded in core by [`reframe_residual`], its position cache bounded at
+/// [`MAX_TRACKED_PRINCIPALS`]. The durable sink is `app.governance`'s store.
 pub(crate) fn register_residual_stream_as(kind_id: u32, app: &Arc<crate::state::App>) {
-    let kind = KIND_RESIDUAL.as_bytes();
-    let desc = JournalStreamDesc {
-        size: core::mem::size_of::<JournalStreamDesc>() as u32,
-        version: POD_VERSION,
-        framing: RawFraming::of(AbiFraming::LengthPrefixed),
-        digests_scope: 1,
+    stream_registry::register(
         kind_id,
-        _reserved: 0,
-        kind_ptr: kind.as_ptr(),
-        kind_len: kind.len(),
-    };
-    crate::plane_host::with_dispatch_scope(app, |host, _vt| {
-        crate::plane_host::journal::journal_register_capped(
-            host,
-            &desc as *const JournalStreamDesc,
-            crate::plane_host::journal::reframe_slot::<ResidualReframe>,
-            MAX_TRACKED_PRINCIPALS,
-        );
-    });
-}
-
-/// Pack stored bodies into the `journal_seed` wire shape: `u32` count LE, then per body a `u32`
-/// length LE + its bytes.
-fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(&(bodies.len() as u32).to_le_bytes());
-    for b in bodies {
-        out.extend_from_slice(&(b.len() as u32).to_le_bytes());
-        out.extend_from_slice(b);
-    }
-    out
+        KIND_RESIDUAL.to_string(),
+        RESIDUAL_FRAMING,
+        RESIDUAL_DIGESTS_SCOPE,
+        Decode::Native(reframe_residual),
+        MAX_TRACKED_PRINCIPALS,
+        app.governance
+            .as_ref()
+            .map(|gov| crate::plane::store::PlaneStoreView::narrow(gov.store())),
+    );
 }
 
 /// What a replay found. Every number reported, none summed.
@@ -323,7 +289,6 @@ impl PlaneResidualLog {
     /// persisted tail, and report what was found.
     pub fn restore_from_store(
         &self,
-        host: HostCtx,
         store: &dyn PlaneStore,
     ) -> RecordStoreResult<ResidualRestored> {
         let mut out = ResidualRestored::default();
@@ -357,18 +322,11 @@ impl PlaneResidualLog {
             if tail_unreadable {
                 self.unresumable_lock().insert(principal.clone());
             }
-            let packed = pack_bodies(&bodies);
-            let hdr = crate::plane_host::journal::seed_scoped_via_seam(
-                host,
-                self.kind_id,
-                &principal,
-                &packed,
-            )
-            .map_err(|()| {
+            let broke = stream_registry::seed(self.kind_id, &principal, &bodies).map_err(|()| {
                 RecordStoreError("usage.residual chain seed failed at the durable seam".to_string())
             })?;
-            if hdr.broke != 0 {
-                let records: Vec<PlaneJournalRecord> = bodies
+            if broke {
+                let records: Vec<StreamRecord> = bodies
                     .iter()
                     .map(|b| reframe_residual(&principal, b))
                     .collect::<RecordStoreResult<_>>()?;
@@ -403,11 +361,7 @@ impl PlaneResidualLog {
         }
         let content = residual_suffix(&input);
         let (seq, prev_hash, hash) =
-            crate::plane_host::journal::journal_append_scoped_full_hostless(
-                self.kind_id,
-                principal,
-                &content,
-            )?;
+            stream_registry::append_full(self.kind_id, principal, &content)?;
         Ok(ResidualRecorded {
             principal: principal.to_string(),
             seq,
@@ -443,7 +397,7 @@ impl PlaneResidualLog {
         store: &dyn PlaneStore,
         principal: &str,
     ) -> RecordStoreResult<Result<usize, ChainBreak>> {
-        let records: Vec<PlaneJournalRecord> = store
+        let records: Vec<StreamRecord> = store
             .list_plane_records(KIND_RESIDUAL, &PlaneSelector::Parent(principal.into()))?
             .iter()
             .map(|b| reframe_residual(principal, b))
@@ -540,23 +494,21 @@ pub(crate) fn register_and_restore(app: &Arc<crate::state::App>) {
         return;
     };
     let store = crate::plane::store::PlaneStoreView::narrow(gov.store());
-    crate::plane_host::with_dispatch_scope(app, |host, _| {
-        match RESIDUALS.restore_from_store(host, store.as_ref()) {
-            Ok(r) if r.records > 0 || r.unreadable > 0 => tracing::debug!(
-                principals = r.principals,
-                records = r.records,
-                unreadable = r.unreadable,
-                chain_breaks = r.chain_breaks.len(),
-                "usage.residual log replayed from the durable store"
-            ),
-            Ok(_) => {}
-            Err(e) => tracing::error!(
-                error = %e.0,
-                "could not replay the durable usage.residual log; chains start from RAM and an \
-                 evicted principal resumes from the store on its next row"
-            ),
-        }
-    });
+    match RESIDUALS.restore_from_store(store.as_ref()) {
+        Ok(r) if r.records > 0 || r.unreadable > 0 => tracing::debug!(
+            principals = r.principals,
+            records = r.records,
+            unreadable = r.unreadable,
+            chain_breaks = r.chain_breaks.len(),
+            "usage.residual log replayed from the durable store"
+        ),
+        Ok(_) => {}
+        Err(e) => tracing::error!(
+            error = %e.0,
+            "could not replay the durable usage.residual log; chains start from RAM and an \
+             evicted principal resumes from the store on its next row"
+        ),
+    }
 }
 
 /// TEST ONLY: a fresh, process-unique stream id, well above the production ids and the
@@ -572,7 +524,6 @@ fn fresh_test_kind_id() -> u32 {
 #[cfg(test)]
 pub(crate) struct ResidualTestHarness {
     pub(crate) log: PlaneResidualLog,
-    pub(crate) app: Arc<crate::state::App>,
 }
 
 #[cfg(test)]
@@ -585,17 +536,14 @@ impl ResidualTestHarness {
         register_residual_stream_as(kind_id, &app);
         Self {
             log: PlaneResidualLog::with_kind_id(kind_id),
-            app,
         }
     }
 
-    /// REPLAY this harness's stream from `store`, over a live host.
+    /// REPLAY this harness's stream from `store`.
     pub(crate) fn restore_from_store(
         &self,
         store: &dyn PlaneStore,
     ) -> RecordStoreResult<ResidualRestored> {
-        crate::plane_host::with_dispatch_scope(&self.app, |h, _| {
-            self.log.restore_from_store(h, store)
-        })
+        self.log.restore_from_store(store)
     }
 }

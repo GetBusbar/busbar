@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 use busbar_contract::abi::host::service::{ItemSpan, SECRET_LIVE, SECRET_NOT_LIVE};
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use busbar_contract::services::{
     Caller, CredentialRead, DiskDest, HookAsk, HostServices, Later, NestAsk, Ran, Reading,
     RecordsList, Stored,
@@ -81,10 +81,10 @@ impl RootCredentials for AppCredentials {
 }
 
 impl CredentialRead for AppCredentials {
-    fn read(&self, kind: &str, id: &str) -> (Redacted<String>, bool) {
+    fn read(&self, kind: &str, id: &str) -> (Secret<String>, bool) {
         let Some(handle) = self.0.get() else {
             return (
-                Redacted::new(busbar_kernel::auth::DUMMY_SECRET.to_string()),
+                Secret::new(busbar_kernel::auth::DUMMY_SECRET.to_string()),
                 false,
             );
         };
@@ -94,7 +94,7 @@ impl CredentialRead for AppCredentials {
             Some(gov) => gov.credential_secret(kind, id, now),
             // A node without governance holds no credential.
             None => (
-                Redacted::new(busbar_kernel::auth::DUMMY_SECRET.to_string()),
+                Secret::new(busbar_kernel::auth::DUMMY_SECRET.to_string()),
                 false,
             ),
         }
@@ -224,7 +224,10 @@ impl HostServices for CredentialServices {
             return Ran::Now(Stored::refused(NOT_READABLE));
         }
         let (secret, live) = self.credentials.read(kind, id);
-        let bytes = secret.expose_secret().as_bytes().to_vec();
+        let bytes = secret
+            .expose(&busbar_kernel::seal::lend())
+            .as_bytes()
+            .to_vec();
         let span = ItemSpan {
             key: Span {
                 offset: SPAN_ABSENT,

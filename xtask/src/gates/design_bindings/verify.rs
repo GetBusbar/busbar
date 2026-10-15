@@ -256,11 +256,10 @@ pub fn ci_invoked_refs(root: &Path) -> Result<BTreeSet<String>, String> {
     let gate_call = Regex::new(r"cargo[ \t]+xtask[ \t]+gate[ \t]+([a-z0-9][a-z0-9-]*)")?;
     let mut gate_modules: BTreeSet<String> = BTreeSet::new();
 
-    // THE PIPELINE'S TURNSTILE RUNS EVERY REGISTERED GATE. It discovers them with `cargo xtask gate
-    // --list` (busbar-release's `discover_gates`) and runs each by name on every hop, so no
-    // workflow in this tree names them one by one any more. The registry IS that list, so a gate
-    // module is invoked exactly when it is registered; a module that is not registered is run by
-    // nothing and is still refused.
+    // THE PIPELINE RUNS EVERY REGISTERED GATE. ModernCI's `gates` check runs `cargo xtask gate
+    // --all` on every move (`.ci/*.yaml`), so no workflow in this tree names them one by one. The
+    // registry IS that list, so a gate module is invoked exactly when it is registered; a module
+    // that is not registered is run by nothing and is still refused.
     for name in crate::gates::names() {
         gate_modules.insert(xtask_gate_module(name, root));
     }
@@ -403,7 +402,7 @@ pub fn check_verdict(c: &J, ctx: &Ctx) -> (bool, String) {
                     format!(
                         "{k}:{r} (exists on disk, but nothing under .github/workflows invokes it, \
                          directly or through a script one runs, and it is no registered \
-                         gate the turnstile runs -- a gate nobody runs compares nothing)"
+                         gate the pipeline runs -- a gate nobody runs compares nothing)"
                     ),
                 );
             }
@@ -636,7 +635,52 @@ fn tokens(text: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Every `(binding, symbol)` a NOTE names as a witness that resolves to nothing in the tree.
+/// The repository roots a note's FILE citation starts with.
+const PATH_ROOTS: &[&str] = &[
+    "crates/",
+    "xtask/",
+    "scripts/",
+    "qa/",
+    "docs/",
+    "testing/",
+    "conformance/",
+    ".ci/",
+    ".github/",
+];
+
+/// Every FILE PATH a note cites: a run of path characters starting at a [`PATH_ROOTS`] root, with
+/// a `:<line>` suffix and trailing sentence punctuation dropped. A run that touches `{` or `*` is a
+/// pattern over paths, not a citation of one.
+fn cited_paths(text: &str) -> Vec<&str> {
+    let is_path = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-');
+    let b = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        if !is_path(b[i] as char) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && is_path(b[i] as char) {
+            i += 1;
+        }
+        let pattern = |at: Option<&u8>| matches!(at, Some(b'{' | b'*'));
+        if pattern(start.checked_sub(1).and_then(|p| b.get(p))) || pattern(b.get(i)) {
+            continue;
+        }
+        let run = text[start..i].trim_end_matches(['.', '/', '-']);
+        if run.len() > 4 && PATH_ROOTS.iter().any(|r| run.starts_with(r)) {
+            out.push(run);
+        }
+    }
+    out
+}
+
+/// Every `(binding, symbol)` a NOTE names as a witness that resolves to nothing in the tree: a
+/// test-shaped name no `fn` or `.rs` stem answers, or a FILE PATH that is not on disk (X-1207: the
+/// rule used to read identifier-shaped tokens only, so the note that motivated it, PB-58, cited
+/// `crates/busbar-caps/src/decision.rs` for years after the crate was folded away).
 ///
 /// Reads `ctx.notes`, which the self-test can replace through the existing
 /// [`super::NOTE_TABLE_KEY`] overlay — so the rule is plantable without a shipped fiction.
@@ -650,8 +694,34 @@ pub fn note_witness_offenders(ctx: &Ctx) -> Vec<(String, String)> {
             }
             out.push((pb.clone(), tok.to_string()));
         }
+        for path in cited_paths(text) {
+            if seen.insert(path) && !ctx.root.join(path).exists() {
+                out.push((pb.clone(), path.to_string()));
+            }
+        }
     }
     out.sort();
     out.dedup();
     out
+}
+
+#[cfg(test)]
+mod note_path_tests {
+    use super::cited_paths;
+
+    #[test]
+    fn a_note_s_file_citations_are_read_and_patterns_are_not() {
+        let note = "declared in crates/busbar-caps/src/decision.rs, constructed at \
+                    crates/busbar-llm/src/unit/admit.rs:203. See qa/x.toml. Every \
+                    crates/busbar-plane-*/Cargo.toml and crates/{a,b}/src is a pattern; \
+                    admit.rs is a stem, not a path.";
+        assert_eq!(
+            cited_paths(note),
+            vec![
+                "crates/busbar-caps/src/decision.rs",
+                "crates/busbar-llm/src/unit/admit.rs",
+                "qa/x.toml"
+            ]
+        );
+    }
 }

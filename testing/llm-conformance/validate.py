@@ -66,6 +66,45 @@ ORACLE = os.path.join(REPO, "testing", "shadow-oracle")
 DIALECT_SPEC = {"openai": "openai", "responses": "openai", "anthropic": "anthropic",
                 "gemini": "gemini", "bedrock": "bedrock", "cohere": "cohere"}
 
+# STREAM EVENTS THE VENDOR DOCUMENTS OUTSIDE ITS PUBLISHED UNION. Anthropic's streaming contract is
+# two documents, both Anthropic's: the OpenAPI `MessageStreamEvent` union (six members) and the
+# streaming guide (https://docs.anthropic.com/en/docs/build-with-claude/streaming, "Event types"),
+# which adds two more: "Event streams may also include any number of `ping` events" and "We may
+# occasionally send errors in the event stream" as `event: error` carrying the ErrorResponse body.
+# A stream carrying either is an Anthropic stream; v1.5.5 sends `ping` after `message_start` on every
+# translated stream (golden/1.5.5/cells/llm__anthropic__openai__request__ok_stream.json). So the
+# judge models the documented contract instead of forgiving it row by row: each documented event is
+# checked against its OWN shape (ping: exactly {"type":"ping"}; error: the spec's own ErrorResponse),
+# its SSE `event:` name must equal its `type`, and every other `type` still faces the published union
+# -- an undocumented event is still a FAIL. Keyed by the data's `type`.
+ANTHROPIC_DOCUMENTED_EVENTS = {
+    "ping": {"type": "object", "required": ["type"], "additionalProperties": False,
+             "properties": {"type": {"type": "string", "enum": ["ping"]}}},
+    "error": {"$ref": "#/components/schemas/ErrorResponse"},
+}
+
+# IN-STREAM ERRORS THE VENDOR'S OFFICIAL CLIENT DEFINES. A stream that fails part way carries its
+# error in band. Two dialects define that event only in their official SDK, not in their published
+# schema, and the judge models it from there:
+#   openai (chat completions): openai-python src/openai/_streaming.py, Stream.__stream__ (commit
+#     47b9e4e95e44b1e825dc4e0753967c65d0733445): any `data:` object with a truthy `error` raises
+#     APIError with `body=data["error"]` and ends the iteration. Its shape is the spec's own
+#     ErrorResponse ({"error": Error}).
+#   gemini: python-genai google/genai/_api_client.py, BaseApiClient._request_streamed (commit
+#     f1499bb86c707d51b5b2684ff9423653cc74895c): a streamed chunk that starts `{"error":` raises
+#     APIError from `error.code`. Its shape is google.rpc.Status in the REST mapping, the one
+#     transcribed in schemas/google-rpc-status.json.
+# The event is judged against that shape, and it must be the stream's LAST event: the client
+# raises on it and reads nothing after. A stream that ends on it is a failed stream, so the
+# completion sentinel (`[DONE]`) is not owed after it. Any other `error`-keyed object is still
+# judged as a stream chunk. Selected by the SDK's own test, a mapping whose `error` is truthy.
+STREAM_ERROR_ENVELOPE = {"openai": "#/components/schemas/ErrorResponse",
+                         "gemini": "transcribed:google-rpc-status"}
+
+# The outcomes whose request asks for a stream and whose answer is one: the happy stream, a stream
+# the upstream fails part way through (an in-band error), and one it cuts after the first event.
+STREAM_OUTCOMES = {"ok_stream", "stream_upstream_error", "stream_upstream_cut"}
+
 # Per-dialect schema addresses. Error schemas for a given status are derived from the OpenAPI path
 # item where the spec declares them (see error_schema_for); `error` here is the fallback envelope.
 DIALECTS = {
@@ -80,7 +119,8 @@ DIALECTS = {
     "anthropic": dict(path="/v1/messages", request="#/components/schemas/CreateMessageParams",
                       response="#/components/schemas/Message",
                       stream="#/components/schemas/MessageStreamEvent", stream_kind="sse",
-                      error="#/components/schemas/ErrorResponse"),
+                      error="#/components/schemas/ErrorResponse",
+                      documented_events=ANTHROPIC_DOCUMENTED_EVENTS),
     "cohere": dict(path="/v2/chat", request="#/paths/~1v2~1chat/post/requestBody/content/application~1json/schema",
                    response="#/components/schemas/ChatResponseV2",
                    stream="#/components/schemas/StreamedChatResponseV2", stream_kind="sse",
@@ -109,7 +149,9 @@ OUTCOME_REFUSES = {"malformed", "unauthenticated", "out_of_scope", "over_budget"
                    "upstream_down"}
 # `stream_upstream_error` is exempt in both directions: the upstream fails PART WAY THROUGH, so the
 # response legitimately opens 2xx and carries the failure as an in-band event.
-OUTCOME_STATUS_EXEMPT = {"stream_upstream_error"}
+# `stream_upstream_cut` likewise: the upstream drops the connection after the first event, so the
+# response opens 2xx and ends early.
+OUTCOME_STATUS_EXEMPT = {"stream_upstream_error", "stream_upstream_cut"}
 
 
 # ── ledger (same TSV contract as testing/fleet-fixtures/lib.sh `record`) ─────────────────────────
@@ -331,7 +373,14 @@ class Violation:
 # The refusals below are the whole design. Each is a way a "gap" could quietly become a bypass:
 # an entry with no owner or no reason forgives anonymously; an entry with no `cells` list, or a
 # wildcard in one, forgives a rule across every cell that ever produces it; a short or empty
-# `detail_contains` matches violations nobody has looked at. All are load-time errors, not warnings.
+# `detail_contains` matches violations nobody has looked at. An entry naming a row the PRODUCTION
+# cell universe (testing/shadow-oracle/cells.json) does not owe is refused too: no production run can
+# ever judge that row, so the entry can never forgive anything and can never go stale -- it sits in
+# the file counted as a gap and checked by nothing (the three gemini-vertex-* entries did exactly
+# that: they named rows of a hand-copied fixture no gate runs). All are load-time errors, not warnings.
+PRODUCTION_CELLS = os.path.join(REPO, "testing", "shadow-oracle", "cells.json")
+
+
 class NamedGaps:
     def __init__(self, entries):
         self.entries = entries
@@ -339,8 +388,11 @@ class NamedGaps:
         self.judged = set()                                 # every row the validator judged
 
     @staticmethod
-    def load(path):
-        """-> (NamedGaps, [refusal, ...]). A refusal list that is non-empty means: do not run."""
+    def load(path, universe=None):
+        """-> (NamedGaps, [refusal, ...]). A refusal list that is non-empty means: do not run.
+
+        `universe` is the set of row ids the production cell universe owes; a gap row outside it is
+        refused. None (no production cells.json readable) refuses every entry that names a row."""
         if not path or not os.path.exists(path):
             return NamedGaps([]), []
         try:
@@ -359,6 +411,13 @@ class NamedGaps:
         if not isinstance(gaps_field, list):
             return NamedGaps([]), [f"{path}: `gaps` must be a list"]
         bad, seen, ok = [], set(), []
+        # OWNER RULE 22 (2026-10-14): named conformance gaps are ZERO. A violation is a defect to fix
+        # in code, never a named gap, so ANY entry refuses the list. The checks below still run, so a
+        # refusal also names what else is wrong with the entry.
+        if gaps_field:
+            bad.append(f"{path}: `gaps` names {len(gaps_field)} entr{'y' if len(gaps_field) == 1 else 'ies'}: "
+                       "owner rule 22 (2026-10-14) — named conformance gaps are zero; a violation is a defect "
+                       "to fix, never a named gap")
         for i, g in enumerate(gaps_field):
             where = f"{path}: gaps[{i}]"
             if not isinstance(g, dict):
@@ -394,6 +453,9 @@ class NamedGaps:
                         errs.append(f"cell {c!r} is not a `<cell id>#<direction>` row")
                     elif any(ch in c for ch in "*?"):
                         errs.append(f"cell {c!r} carries a wildcard — a gap that matches a pattern of rows is a bypass")
+                    elif universe is None or c not in universe:
+                        errs.append(f"cell {c!r} is not a row the production cell universe ({PRODUCTION_CELLS}) owes — "
+                                    "no production run can judge it, so the entry forgives nothing and can never go stale")
             if errs:
                 bad += [f"{where}: {e}" for e in errs]
             else:
@@ -897,7 +959,7 @@ class Judge:
             inst = json.loads(body_bytes.decode("utf-8"))
         except (ValueError, UnicodeDecodeError) as e:
             return [Violation("/", "body.json", f"request body is not JSON: {e}")], "request"
-        ref = cfg.get("request_stream") if (outcome == "ok_stream" and cfg.get("request_stream")) else cfg["request"]
+        ref = cfg.get("request_stream") if (outcome in STREAM_OUTCOMES and cfg.get("request_stream")) else cfg["request"]
         out = []
         ck.check(inst, {"$ref": ref}, "", out)
         return out, ref.rsplit("/", 1)[-1]
@@ -911,7 +973,7 @@ class Judge:
         out = []
         self.judge_outcome_status(outcome, status, out)
         if 200 <= status < 300:
-            want_stream = outcome == "ok_stream"
+            want_stream = outcome in STREAM_OUTCOMES
             want_stream_array = outcome == "ok_stream_array"
             stream_ct = STREAM_CT[cfg["stream_kind"]]
             if want_stream and ct != stream_ct:
@@ -1000,6 +1062,7 @@ class Judge:
         if not events:
             out.append(Violation("/", "sse.empty", "no events in the stream")); return
         sentinel = cfg.get("sentinel")
+        failed_stream = False
         for i, ev, data in events:
             p = f"sse[{i}]"
             if sentinel and data == sentinel:
@@ -1012,8 +1075,25 @@ class Judge:
                 inst = json.loads(data)
             except ValueError as e:
                 out.append(Violation(p, "sse.data", f"data is not JSON ({e}): {short(data)}")); continue
+            envelope = STREAM_ERROR_ENVELOPE.get(dialect)
+            if envelope and isinstance(inst, dict) and inst.get("error"):
+                if i != len(events) - 1:
+                    out.append(Violation(p, "sse.error", "an in-stream error event before the end of the stream: the client raises on it and reads nothing after"))
+                if envelope.startswith("transcribed:"):
+                    self.rpc_checker.check(inst, self.rpc_status, p + ":", out)
+                else:
+                    ck.check(inst, {"$ref": envelope}, p + ":", out)
+                failed_stream = True
+                continue
+            documented = cfg.get("documented_events") or {}
+            etype = inst.get("type") if isinstance(inst, dict) else None
+            if isinstance(etype, str) and etype in documented:
+                if ev != etype:
+                    out.append(Violation(p, "sse.event", f"a documented '{etype}' event must be sent as `event: {etype}`, got `event: {ev}`"))
+                ck.check(inst, documented[etype], p + ":", out)
+                continue
             ck.check(inst, {"$ref": cfg["stream"]}, p + ":", out)
-        if sentinel and events[-1][2] != sentinel:
+        if sentinel and events[-1][2] != sentinel and not failed_stream:
             out.append(Violation(f"sse[{len(events) - 1}]", "sse.sentinel", f"stream did not end with `data: {sentinel}`"))
 
     def judge_eventstream(self, body_bytes, out):
@@ -1044,13 +1124,19 @@ class Judge:
                     out.append(Violation(p, "eventstream.payload", err)); continue
                 ck.check(inst, {"$ref": "#/shapes/" + members[et]["shape"]}, f"{p}({et}):", out)
             elif mt == "exception":
+                # `:exception-type` names the MEMBER of the event-stream union (AWS event-stream
+                # encoding: `internalServerException`, `modelStreamErrorException`, ...), and that
+                # member must be one of the union's error members; its shape is the member's target.
                 et = h.get(":exception-type")
-                if et not in doc["shapes"]:
-                    out.append(Violation(p, "eventstream.exception-type", f"':exception-type' {et!r} is not a shape of the service")); continue
+                raw = doc["x-botocore-shapes"]
+                member = members.get(et)
+                if member is None or not raw.get(member["shape"], {}).get("exception"):
+                    errs = sorted(m for m, v in members.items() if raw.get(v["shape"], {}).get("exception"))
+                    out.append(Violation(p, "eventstream.exception-type", f"':exception-type' {et!r} is not an error member of ConverseStreamOutput {errs}")); continue
                 inst, err = self.parse_json(fr["payload"])
                 if err:
                     out.append(Violation(p, "eventstream.payload", err)); continue
-                ck.check(inst, {"$ref": "#/shapes/" + et}, f"{p}({et}):", out)
+                ck.check(inst, {"$ref": "#/shapes/" + member["shape"]}, f"{p}({et}):", out)
             else:
                 out.append(Violation(p, "eventstream.message-type", f"':message-type' {mt!r}, expected event or exception"))
 
@@ -1116,7 +1202,11 @@ def main():
     # The gap list is read BEFORE anything is judged, and a malformed entry stops the run rather
     # than being dropped: a gap file that silently loses an entry turns a named gap back into a FAIL,
     # and one that silently KEEPS a malformed entry is the bypass this loader exists to refuse.
-    gaps, gap_refusals = NamedGaps.load(args.named_gaps)
+    try:
+        universe = set(owed_ids(load_cells(PRODUCTION_CELLS)))
+    except (OSError, ValueError, KeyError, TypeError):
+        universe = None
+    gaps, gap_refusals = NamedGaps.load(args.named_gaps, universe)
     if gap_refusals:
         for r in gap_refusals:
             sys.stderr.write(f"validate: REFUSED named gap — {r}\n")

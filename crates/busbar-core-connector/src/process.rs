@@ -27,7 +27,8 @@ use crate::registry::{Entry, Transports};
 use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
 
 /// THE PROCESS'S CONNECTOR over the framer entries `entries` yields, judging every dial through
-/// `dest` ([`judge`], the node's `own_ports` refused to a loopback-allowed need), securing a
+/// `dest` ([`judge`], the node's `own_ports` refused to a loopback-allowed need), dialling a framed
+/// connection through the proxy the process's environment names ([`crate::proxy`]), securing a
 /// connection with the default outbound trust where its target asks for it, waking a plugin's
 /// ticket through `wake`, and keeping a dialled connection whose exchange finished whole under the
 /// deployment's `pool` posture ([`crate::pool`]). The trust is built before `entries` is asked for,
@@ -35,7 +36,8 @@ use crate::{Connector, DialJudge, Judged, Verdict, WakeTicket};
 ///
 /// # Errors
 ///
-/// The default outbound trust will not build, `entries` refuses, two entries claim one scheme, or
+/// The default outbound trust will not build, a proxy variable is set and does not parse,
+/// `entries` refuses, two entries claim one scheme, or
 /// an entry states no claim.
 pub fn build(
     entries: impl FnOnce() -> Result<Vec<Entry>, String>,
@@ -46,9 +48,14 @@ pub fn build(
 ) -> Result<Arc<Connector>, String> {
     let tls = crate::tls::client::build_client_config(&EgressTrust::default())
         .map_err(|e| format!("its connection security: {e}"))?;
+    // THE PROXY ENVIRONMENT, read once (row 130 E5a): a set variable that does not parse refuses
+    // the boot, as the kernel engine's install did.
+    let proxy = crate::proxy::from_env().map_err(|e| format!("its proxy environment: {e}"))?;
     let view = Transports::new(entries()?).map_err(|e| e.to_string())?;
     Ok(Arc::new(
-        Connector::serving(view, judge(dest, own_ports), Some(Arc::new(tls)), wake).pooling(pool),
+        Connector::serving(view, judge(dest, own_ports), Some(Arc::new(tls)), wake)
+            .pooling(pool)
+            .proxying(proxy),
     ))
 }
 

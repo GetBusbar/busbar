@@ -404,3 +404,165 @@ fn every_open_class_becomes_one_reported_count_at_its_tail_index() {
         );
     }
 }
+
+// ── F25 REHOME: the registry facts and the plane's published identity (coverage map v2) ──────────
+
+/// The declaration of the dialect named `name`, from the one table the plane serves through.
+fn decl_named(name: &str) -> Option<&'static busbar_contract::protocol::ProtocolDecl> {
+    busbar_plane_llm::codec::DECLS
+        .iter()
+        .copied()
+        .find(|d| d.name == name)
+}
+
+/// The six dialects 1.5.5 shipped, by the names its registry keyed them under.
+const SHIPPED_DIALECTS: [&str; 6] = [
+    "openai",
+    "anthropic",
+    "gemini",
+    "bedrock",
+    "cohere",
+    "responses",
+];
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/dialect_registry_facts_tests.rs::registry_resolves_openai_and_its_moderation_handler`
+/// (coverage map v2 row 98). 1.5.5: the openai registration resolves a handler whose protocol name
+/// is its own and which serves the moderation operation; a protocol nobody registered resolves to
+/// nothing.
+///
+/// RED: the openai declaration loses its handler or its moderation cell, its handler answers to
+/// another protocol's name, or an unknown name resolves to some declaration.
+#[test]
+fn registry_resolves_openai_and_its_moderation_handler() {
+    use busbar_contract::operation::OpVerb;
+    let handler = decl_named("openai")
+        .and_then(|d| d.handler)
+        .expect("the shipped protocol's handler is registered");
+    assert_eq!(handler.protocol_name(), "openai");
+    assert!(handler.operation_handler(OpVerb::MODERATION).is_some());
+    assert!(
+        decl_named("zzz-unknown").is_none(),
+        "unknown protocol -> None"
+    );
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/dialect_registry_facts_tests.rs::every_protocol_serves_chat_via_its_request_handler`
+/// (coverage map v2 row 99). 1.5.5: chat is reached through the same registry as every other
+/// operation, and all six shipped protocols resolve a handler with a chat operation handler.
+///
+/// RED: any of the six dialects stops resolving a handler, or its handler stops serving chat.
+#[test]
+fn every_protocol_serves_chat_via_its_request_handler() {
+    use busbar_contract::operation::OpVerb;
+    for proto in SHIPPED_DIALECTS {
+        let handler = decl_named(proto)
+            .and_then(|d| d.handler)
+            .unwrap_or_else(|| panic!("{proto}: protocol registered"));
+        assert_eq!(handler.protocol_name(), proto);
+        assert!(
+            handler.operation_handler(OpVerb::CHAT).is_some(),
+            "{proto} must serve chat via operation_handler(Chat)"
+        );
+    }
+    let mut stated: Vec<&str> = DIALECTS.iter().map(|d| d.name).collect();
+    stated.sort_unstable();
+    let mut shipped = SHIPPED_DIALECTS.to_vec();
+    shipped.sort_unstable();
+    assert_eq!(
+        stated, shipped,
+        "the plane states exactly the six shipped dialects"
+    );
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/dialect_registry_facts_tests.rs::chat_declares_its_capabilities`
+/// (coverage map v2 row 100). 1.5.5: the chat cell as production resolves it (openai, chat) streams,
+/// taps usage from a non-stream body, reads the body's `stream` boolean as the caller's intent, and
+/// takes a non-empty top-level `system` as its body affinity key (an empty one is no key).
+///
+/// RED: chat stops streaming, stops tapping non-stream usage, misreads the stream flag, or derives
+/// an affinity key from an empty `system` (or none from a non-empty one).
+#[test]
+fn chat_declares_its_capabilities() {
+    use busbar_contract::operation::OpVerb;
+    let chat = decl_named("openai")
+        .and_then(|d| d.handler)
+        .and_then(|h| h.operation_handler(OpVerb::CHAT))
+        .expect("the shipped protocol serves chat");
+    assert!(chat.streaming(), "chat streams");
+    assert!(chat.taps_usage(), "chat bills tokens from the body");
+    assert!(
+        chat.wants_stream(&serde_json::json!({"stream": true})),
+        "chat reads the stream boolean"
+    );
+    assert!(!chat.wants_stream(&serde_json::json!({})));
+    assert!(!chat.wants_stream(&serde_json::json!({"stream": false})));
+    assert_eq!(
+        chat.body_affinity_key(&serde_json::json!({"system": "you are helpful"})),
+        Some("you are helpful")
+    );
+    assert_eq!(
+        chat.body_affinity_key(&serde_json::json!({"system": ""})),
+        None
+    );
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_affinity_header_session_mode_without_name_uses_default`
+/// (coverage map v2 row 375). 1.5.5: a pool whose `affinity` is `mode: session` with no
+/// `header_name` keys its sticky routing on `x-session-id`.
+///
+/// RED: a session-mode pool with no header name reads another header (or none), so a client's
+/// `x-session-id` stops pinning its session.
+#[test]
+fn test_affinity_header_session_mode_without_name_uses_default() {
+    use busbar_plane_llm::plane_door::affinity_key;
+    let shaping = read_settings(
+        br#"{"providers":{"ant":{"protocol":"anthropic","base_url":"https://anthropic.example"}},
+        "models":{"claude":{"provider":"ant"}},
+        "pools":{"p":{"members":["claude"],"affinity":{"mode":"session"}}}}"#,
+    )
+    .expect("a session-mode pool with no header name reads");
+    assert_eq!(shaping.affinity_header("p"), "x-session-id");
+    let session: &[(&[u8], &[u8])] = &[(b"x-session-id", b"s-7")];
+    assert_eq!(
+        affinity_key(shaping.affinity_header("p"), session, None, None),
+        Some("s-7".to_string()),
+        "the default header is the one the pool keys on"
+    );
+}
+
+/// A `'static` string the door states, as its bytes.
+fn abi_text(s: busbar_contract::abi::mechanism::call::AbiStr) -> &'static [u8] {
+    // SAFETY: every `AbiStr` the door states names a `'static` string of `len` bytes.
+    unsafe { std::slice::from_raw_parts(s.ptr, s.len) }
+}
+
+/// LEGACY `crates/busbar-llm/src/tests/plane_decl_identity_tests.rs::the_plane_declares_its_published_key_and_is_the_fallback`
+/// (coverage map v2 row 643). 1.5.5: the plane's operator-visible identity, as literals: the key
+/// every metric, log and record carries is `llm`, it is the one fallback catch-all, its config
+/// section is `pools`, and a grant on it names a `pool`.
+///
+/// RED: the published key, the fallback flag, the declaring section or the scope kind moves.
+#[test]
+fn the_plane_declares_its_published_key_and_is_the_fallback() {
+    use busbar_contract::abi::mechanism::door::SECTION_DECLARING;
+    assert_eq!(abi_text(STATEMENT.name), b"llm");
+    assert_ne!(
+        TAIL.flags & TAIL_FALLBACK,
+        0,
+        "the fallback catch-all every unclaimed path falls through to"
+    );
+    assert_eq!(abi_text(TAIL.scope), b"pools");
+    // SAFETY: the Statement's sections are a `'static` list of `sections_len` entries.
+    let sections =
+        unsafe { std::slice::from_raw_parts(STATEMENT.sections, STATEMENT.sections_len) };
+    let declaring: Vec<&[u8]> = sections
+        .iter()
+        .filter(|s| s.flags & SECTION_DECLARING != 0)
+        .map(|s| abi_text(s.name))
+        .collect();
+    assert_eq!(declaring, vec![b"pools".as_slice()]);
+    // SAFETY: the tail's `'static` scope-kind list of `scope_kinds_len` entries.
+    let kinds = unsafe { std::slice::from_raw_parts(TAIL.scope_kinds, TAIL.scope_kinds_len) };
+    let kinds: Vec<&[u8]> = kinds.iter().map(|k| abi_text(*k)).collect();
+    assert_eq!(kinds, vec![b"pool".as_slice()]);
+}

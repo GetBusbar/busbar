@@ -22,7 +22,7 @@ use std::task::{Context, Poll};
 
 use crate::abi::mechanism::rendering::ReadNeed;
 use crate::ids::StreamId;
-use crate::transport::wire::WireStatusClass;
+use crate::transport::wire::{WireFault, WireStatusClass};
 use crate::transport::ConnFacts;
 
 /// A plugin instance, as the host numbers it. Never stated by a plugin: the host reads it off the
@@ -68,6 +68,11 @@ pub struct OpenDesc<'a> {
     /// `EstablishIn::member`); empty = none. What the host sealed for that registration alone (its
     /// private reach, [`PollConns::seal_reach`]) applies to this open and to no other.
     pub member: &'a str,
+    /// The UNIT this open serves, by its kernel-minted unit key, where the opener runs one (a
+    /// unit's walk, `UnitRoute::unit`); `0` = none. What the host registered for that unit alone
+    /// applies to this open and to no other; an open whose transport needs no such registration
+    /// ignores it.
+    pub unit: u64,
 }
 
 /// What a piece a connection delivered carries.
@@ -108,10 +113,18 @@ pub struct Piece {
     pub status_namespace: Option<String>,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: Option<u64>,
+    /// The transport's fault reading of the status, for the breaker (`None`: none stated, read as
+    /// the caller's).
+    pub fault: Option<WireFault>,
     /// On the far end's HEAD (a [`PieceKind::Fields`] that ends its frame): where in the caller's
     /// buffer its reason phrase is, exactly as sent, right after the field block's bytes. `None`
     /// where the wire has none (HTTP/2) or the caller's buffer could not also hold it.
     pub reason: Option<core::ops::Range<usize>>,
+    /// On a head ([`PieceKind::Fields`]): the body length the message's head declared on the wire,
+    /// as the framer stated it (`abi::transport::PIECE_HAS_DECLARED_LEN`); `None` where it stated
+    /// none. The host hands it on as the framer stated it, never reading or checking it: a
+    /// statement, not a count of the body pieces to come.
+    pub declared_len: Option<u64>,
 }
 
 /// Why a connection operation did not answer with what was asked. The refusals carry the text an
@@ -136,6 +149,10 @@ pub enum ConnError {
     /// The plugin was handed no connection table: its host's open/refresh tables gave THIS instance
     /// none. Decided per instance, never per image.
     Unarmed,
+    /// The credential the request is sent with, re-resolved for this request, is unavailable:
+    /// nothing was presented and nothing was sent. A cause of its own so the plugin can tell a
+    /// vanished secret from a refusal by the target, the egress rules or the far end.
+    CredentialUnavailable,
 }
 
 impl ConnError {
@@ -151,6 +168,9 @@ impl ConnError {
             Self::Refused => "the connection was refused",
             Self::Fault => "the host failed the connection call",
             Self::Unarmed => "this plugin was handed no connection table",
+            Self::CredentialUnavailable => {
+                "the request's credential is unavailable; nothing was sent"
+            }
         }
     }
 }
@@ -173,6 +193,11 @@ pub type Ticket = u64;
 
 /// The ticket that names no waiting task: a call handed it registers no interest.
 pub const NO_TICKET: Ticket = 0;
+
+/// HOW A TABLE WAKES A CALLER'S TICKET: the caller the interest was registered for, and its ticket.
+/// The caller is named so the host can blame the instance that supplied a ticket it never minted
+/// (#74) rather than whichever thread the wake fires on.
+pub type ConnWake = std::sync::Arc<dyn Fn(InstanceId, Ticket) + Send + Sync>;
 
 /// THE HOST'S CONNECTION TABLE, as the host implements it. Every method names the `caller`, which
 /// the host reads off the instance's own context.
@@ -356,6 +381,7 @@ pub trait DeclaredConns: Conns {
         let _ = (owner, conn);
         None
     }
+
     /// THE HOST WRITES THE AUTHORITY of every connection `owner` opens: an open whose head
     /// carries its own `host` field is refused before anything is dialled. The loader holds it for
     /// every instance of the auth kind, before any of its needs is declared (ARCHITECT ruling on
@@ -367,19 +393,36 @@ pub trait DeclaredConns: Conns {
         let _ = owner;
     }
 
-    /// Hold `binding` as the auth binding of `owner`'s requests on `need` to `origin`
-    /// (`scheme://authority`, [`origin_of`]): a MEMBER's binding, which the plugin's own requests to
-    /// that member are authenticated with (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: the connector holds
-    /// it per (instance, need, target origin), and the open calls its fields). Binding the same
-    /// triple again replaces it. A table that carries no binding drops it.
-    fn bind_auth(&self, owner: InstanceId, need: NeedId, origin: &str, binding: ConnAuth) {
-        let _ = (owner, need, origin, binding);
+    /// Hold `binding` as the auth binding of `owner`'s requests on `need` that name the
+    /// registration `member` ([`OpenDesc::member`]) and reach `origin` (`scheme://authority`,
+    /// [`origin_of`]): that MEMBER's binding, which the plugin's own requests to that member are
+    /// authenticated with (the open calls its fields). The connector keys a binding by (instance,
+    /// need, member, target origin); a request naming no member gets no binding. So several
+    /// registrations at one origin each hold their own, and one that holds none lends none to its
+    /// neighbour. Binding the same member, need and origin again replaces it. A table that carries
+    /// no binding drops it.
+    fn bind_auth(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        member: &str,
+        origin: &str,
+        binding: ConnAuth,
+    ) {
+        let _ = (owner, need, member, origin, binding);
     }
 
-    /// The binding [`DeclaredConns::bind_auth`] holds for `owner`'s requests on `need` to `target`'s
-    /// origin; `None` = the request carries no auth fields.
-    fn auth_of(&self, owner: InstanceId, need: NeedId, target: &str) -> Option<ConnAuth> {
-        let _ = (owner, need, target);
+    /// The binding [`DeclaredConns::bind_auth`] holds for `owner`'s requests on `need` that name
+    /// `member` and reach `target`'s origin; `None` = the request carries no auth fields (a request
+    /// that names no member, or a member that holds no binding there, presents none).
+    fn auth_of(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        member: &str,
+        target: &str,
+    ) -> Option<ConnAuth> {
+        let _ = (owner, need, member, target);
         None
     }
 
@@ -422,7 +465,7 @@ pub fn origin_of(url: &str) -> &str {
 pub trait LendCredential: Send + Sync {
     /// The credential `unit`'s caller presented, while the unit runs; `None` when it presented
     /// none, or the unit is not in flight.
-    fn lent(&self, unit: u64) -> Option<crate::redacted::Redacted<Vec<u8>>>;
+    fn lent(&self, unit: u64) -> Option<crate::redacted::Secret<Vec<u8>>>;
 }
 
 /// ONE MEMBER'S AUTH BINDING, as the connector holds it for a plugin's own requests to that member
@@ -445,6 +488,10 @@ pub struct ConnAuth {
     pub passthrough: bool,
     /// Where a passthrough member's credential is lent from, by unit.
     pub lender: Option<Arc<dyn LendCredential>>,
+    /// A binding refreshed off the request path ([`crate::auth_calls::PerRequestHandle`]): its
+    /// current handle is asked for each request, in place of [`ConnAuth::handle`]. `None` = the
+    /// handle stands for the generation.
+    pub per_request: Option<Arc<dyn crate::auth_calls::PerRequestHandle>>,
 }
 
 impl std::fmt::Debug for ConnAuth {
@@ -644,6 +691,10 @@ pub trait PollConns: Conns {
     /// connector itself — the far end's key pin enforced, busbar's client identity presented — and
     /// its facts say what was observed ([`ConnFacts::peer_key_pin`],
     /// [`ConnFacts::client_identity`]). Empty anchors drop any earlier seal for that target.
+    /// A non-empty `member` keys the seal to that REGISTRATION ([`OpenDesc::member`]): an open
+    /// naming it, to its own target's authority, is held to its anchors alone (none, where they are
+    /// empty), so two registrations at one `host:port` each present their own client identity and
+    /// hold their own pin; an open naming no sealed registration is held to the destination's.
     /// Host-side only, never lowered: the root seals what its configuration states.
     ///
     /// # Errors
@@ -655,10 +706,11 @@ pub trait PollConns: Conns {
         &self,
         owner: InstanceId,
         need: NeedId,
+        member: &str,
         target: &str,
         anchors: &crate::transport::trust::Anchors,
     ) -> Result<(), ConnError> {
-        let _ = (owner, need, target);
+        let _ = (owner, need, member, target);
         if anchors.is_empty() {
             Ok(())
         } else {

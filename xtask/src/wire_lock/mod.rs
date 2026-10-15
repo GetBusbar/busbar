@@ -280,18 +280,17 @@ impl Lock {
         }
         Ok(lock)
     }
-
-    /// Does this lock have a stream section (the dialect's stream is not its response schema)?
-    pub fn streams(&self) -> bool {
-        self.dirs.get("stream").is_some_and(|d| !d.is_empty())
-    }
 }
 
 /// `qa/field-inventory.json`, derived from the locks in [`DIALECTS`] order.
+///
+/// Every registered dialect streams: one with a stream section streams its own events, one without
+/// (gemini: `streamGenerateContent` frames are `GenerateContentResponse`) streams frames of its
+/// response schema. A lock's stream section says what the frames are, never whether the dialect
+/// streams, so the corpus owes `ok_stream` for every egress dialect (busbar row 562).
 pub fn render_inventory(locks: &[Lock]) -> String {
     let streaming: Vec<Value> = locks
         .iter()
-        .filter(|l| l.streams())
         .map(|l| json!({"dialect": l.dialect, "streaming": true}))
         .collect();
     let doc = json!({

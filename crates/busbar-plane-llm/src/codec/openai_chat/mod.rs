@@ -64,7 +64,7 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// (rung 7), then the OpenAI-family JSON/audio/image ops (`/v1/embeddings`, `/v1/moderations`,
 /// `/v1/images/…`, `/v1/audio/…`, rung 14, the loosest path claims). Lower strength binds tighter.
 fn claims(
-    _h: &busbar_contract::http::HeaderMap,
+    _h: busbar_contract::protocol::HeadFields<'_>,
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
     use busbar_contract::protocol::ClaimStrength;
@@ -131,7 +131,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: true,
     max_citations_per_delta: None,
@@ -143,7 +143,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
         busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
@@ -188,28 +188,23 @@ const MAX_TOOL_INDEX: u64 = 127;
 const MAX_OPEN_TOOLS: usize = crate::codec::dialect::MAX_OPEN_TOOL_CALLS;
 
 /// OPENAI CHAT'S USAGE COUNTS, AS DATA (#42). `prompt_tokens` is a TOTAL that already INCLUDES the
-/// cached prefix (`prompt_tokens_details.cached_tokens`) and the cache-write slice
-/// (`prompt_tokens_details.cache_write_tokens`), so both are subtracted (saturating) to leave the
-/// uncached input and carried as the IR's ADDITIVE cache read / cache creation — the cache write is
-/// its own tier, never inside the plain input total. The `*_details` sub-buckets
-/// (reasoning, audio, predicted outputs) are SLICES of the totals, carried as attribution: a lenient
-/// read, never a refusal. The buffered response, the stream's `include_usage` chunk and a
-/// truncated-body recovery read this one table.
+/// cached prefix (`prompt_tokens_details.cached_tokens`), so that is subtracted (saturating) to
+/// leave the uncached input and carried as the IR's ADDITIVE cache read. The cache-write slice
+/// (`prompt_tokens_details.cache_write_tokens`) is NOT split out: it stays inside the input count,
+/// billed at the input tier, exactly as 1.5.5 billed it (v1.5.5
+/// `crates/busbar/src/proto/openai_chat/reader.rs:966`, `cache_creation_input_tokens: None`; stream
+/// `:693`). Moving it to the cache-write tier would change what a key is charged, and no owner
+/// ruling signs that move (BUSBAR-1.6.0.md, THE LLM DIALECT FIDELITY RULE: "Billing never moves").
+/// The `*_details` sub-buckets (reasoning, audio, predicted outputs) are SLICES of the totals,
+/// carried as attribution: a lenient read, never a refusal. The buffered response, the stream's
+/// `include_usage` chunk and a truncated-body recovery read this one table.
 const USAGE: &[UsageCount] = &[
     (CountSlot::Input, CountRead::Zero(&[PROMPT_TOKENS])),
     (
         CountSlot::Input,
         CountRead::Less(&[PROMPT_TOKENS_DETAILS, keys::CACHED_TOKENS]),
     ),
-    (
-        CountSlot::Input,
-        CountRead::Less(&[PROMPT_TOKENS_DETAILS, keys::CACHE_WRITE_TOKENS]),
-    ),
     (CountSlot::Output, CountRead::Zero(&[COMPLETION_TOKENS])),
-    (
-        CountSlot::CacheWrite,
-        CountRead::Opt(&[PROMPT_TOKENS_DETAILS, keys::CACHE_WRITE_TOKENS]),
-    ),
     (
         CountSlot::CacheRead,
         CountRead::Opt(&[PROMPT_TOKENS_DETAILS, keys::CACHED_TOKENS]),
@@ -246,10 +241,10 @@ const OPENAI_USAGE_IDENTITY: &str = "openai.usage";
 ///
 /// EVERY COUNT THE PINNED WIRE LOCK (`testing/llm-conformance/wire/openai.wire.json`) DECLARES
 /// UNDER `usage` IS EITHER LEDGERED OR A SLICE OF A LEDGERED TOTAL. Ledgered: `prompt_tokens`
-/// (input, less its cached and cache-write slices), `cached_tokens` (cache read),
-/// `cache_write_tokens` (cache write), `completion_tokens` (output). Slices, read for attribution
-/// where the IR has a slot and never ledgered twice: `prompt_tokens_details.{audio,image,text}_tokens`
-/// partition `prompt_tokens`, `completion_tokens_details.{reasoning,audio,text,accepted_prediction,
+/// (input, less its cached slice), `cached_tokens` (cache read), `completion_tokens` (output).
+/// Slices, never ledgered twice: `prompt_tokens_details.cache_write_tokens` sits inside
+/// `prompt_tokens` and bills as input, as in 1.5.5; `prompt_tokens_details.{audio,image,text}_tokens`
+/// partition `prompt_tokens` (read for attribution where the IR has a slot), `completion_tokens_details.{reasoning,audio,text,accepted_prediction,
 /// rejected_prediction}_tokens` sit inside `completion_tokens` (OpenAI bills rejected predictions as
 /// completion tokens, and counts them there). `total_tokens` is OpenAI's sum, never a unit: it is
 /// cross-checked against the ledgered classes, a gap is WARN-logged and carried as the usage
@@ -260,12 +255,17 @@ fn read_openai_usage(
     tier: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let mut ir = crate::codec::usage_count::read_usage(VENDOR_NAME, usage, USAGE)?;
-    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
-        VENDOR_NAME,
-        OPENAI_USAGE_IDENTITY,
-        usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
-        &ir,
-    );
+    // A refused count leaves no gap to ledger (`refused_any`): the total is not cross-checked.
+    ir.detail.usage_identity_note = (!crate::codec::usage_count::refused_any(usage, USAGE))
+        .then(|| {
+            crate::codec::usage_count::stated_total_note(
+                VENDOR_NAME,
+                OPENAI_USAGE_IDENTITY,
+                usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
+                &ir,
+            )
+        })
+        .flatten();
     ir.detail.service_tier = crate::codec::carry::read_word(map::WORDS_SERVED_TIER, tier);
     ir.detail.by_modality = usage.and_then(read_by_modality);
     Ok(ir)
@@ -637,7 +637,7 @@ const BASE62: &[u8; 62] = crate::codec::dialect::BASE62_ALPHABET;
 /// which yields an exactly-uniform draw over 0..62. Discards are rare (8/256 ≈ 3.1%), so we refill the
 /// entropy buffer on demand rather than over-allocating up front; on an entropy failure the loop
 /// stops and the remaining slots keep their '0' fill, preserving the panic-free contract.
-fn synth_completion_id() -> String {
+fn synth_completion_id(host: &dyn busbar_contract::codec::CodecHost) -> String {
     // Largest multiple of 62 that fits in a u8; bytes >= this are rejected to keep the draw uniform.
     const BASE62_REJECT_FLOOR: u8 = crate::codec::dialect::BASE62_REJECT_THRESHOLD; // 4 * 62
     let mut token = [b'0'; COMPLETION_ID_TOKEN_LEN];
@@ -646,7 +646,7 @@ fn synth_completion_id() -> String {
     // bytes we draw another; on an entropy failure we stop and leave '0' fill.
     'outer: while filled < COMPLETION_ID_TOKEN_LEN {
         let mut batch = [0u8; COMPLETION_ID_TOKEN_LEN];
-        if !super::synth_rng::fill_entropy(&mut batch) {
+        if !super::synth_rng::fill_entropy(host, &mut batch) {
             // Near-impossible entropy failure: keep the remaining '0' fill rather than panic.
             break 'outer;
         }

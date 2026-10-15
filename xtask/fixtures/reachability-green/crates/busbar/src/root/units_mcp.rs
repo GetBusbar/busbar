@@ -24,3 +24,7 @@ pub fn answer() -> u64 {
 #[cfg(test)]
 #[path = "tests/units_mcp.rs"]
 mod tests;
+
+/// The root unit the generated table reaches when the manifest lists this module under
+/// `[package.metadata.busbar.root-units]` — the self-test's generated-table cases plant that row.
+pub const ROOT_UNIT: fn() -> u64 = answer;

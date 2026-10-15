@@ -194,3 +194,68 @@ fn the_refusing_resolver_names_the_invariant_and_the_name() {
         "the refusal must name the invariant and the name it was asked about, got: {err}"
     );
 }
+
+/// F25 row 106: rehomed from crates/busbar-llm/src/engine/tests/egress_differential_tests.rs::
+/// the_pin_never_consults_the_resolver_and_the_doctrine_refuses_other_names, on the served engine.
+/// The pin makes the resolver STRUCTURALLY unreachable for the pinned host: a REBINDING resolver
+/// (the fixture first, `203.0.113.9` after) wired in as the client's DNS is never consulted for the
+/// pinned name (zero calls across the exchange, which answers 200). The production posture
+/// (`EngineSpec::pinned`) goes one step further: any other name is refused with the doctrine text
+/// in the error's cause chain.
+#[tokio::test]
+async fn the_pin_never_consults_the_resolver_and_the_doctrine_refuses_other_names() {
+    use super::engine::{egress_request, Dns, PinnedDest, ResolveNames};
+    use crate::egress::fixtures::{spawn_http, CannedResponse, RebindingResolver};
+
+    let fixture = spawn_http(CannedResponse::ok("pinned"), 4);
+    let evil: SocketAddr = "203.0.113.9:80".parse().expect("addr");
+    let rebinding = Arc::new(RebindingResolver::new(fixture.addr, evil));
+    let client = build_client(&EngineSpec {
+        pin: Some(PinnedDest {
+            host: Arc::from("pinned.test"),
+            addr: fixture.addr.ip(),
+        }),
+        dns: Dns::Custom(Arc::clone(&rebinding) as Arc<dyn ResolveNames>),
+        ..EngineSpec::pinned(
+            Arc::from("pinned.test"),
+            fixture.addr.ip(),
+            None,
+            Vec::new(),
+        )
+    })
+    .expect("a pinned client builds");
+    let resp = client
+        .request(egress_request(
+            format!("http://pinned.test:{}/v1/x", fixture.addr.port())
+                .parse()
+                .expect("uri"),
+            http::HeaderMap::new(),
+            bytes::Bytes::new(),
+        ))
+        .await
+        .expect("pinned hop");
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        rebinding.calls(),
+        0,
+        "the pinned name must resolve through the pin, NEVER the resolver"
+    );
+
+    // The production posture: any other name is refused with the doctrine message.
+    let production = build("pinned.test", fixture.addr);
+    let err = production
+        .request(egress_request(
+            format!("http://other.test:{}/v1/x", fixture.addr.port())
+                .parse()
+                .expect("uri"),
+            http::HeaderMap::new(),
+            bytes::Bytes::new(),
+        ))
+        .await
+        .expect_err("a second lookup must refuse");
+    let rendered = super::with_cause(&err);
+    assert!(
+        rendered.contains("resolves each name exactly once"),
+        "the refusal must carry the doctrine text: {rendered}"
+    );
+}

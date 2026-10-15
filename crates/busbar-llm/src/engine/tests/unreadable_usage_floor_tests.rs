@@ -1,23 +1,16 @@
-//! A USAGE THE READER REFUSES, AFTER THE BODY WAS DELIVERED, BILLS THE FLOOR — NEVER 0.
+//! A USAGE COUNT THE READER REFUSES, AFTER THE BODY WAS DELIVERED, IS REFUSED ON ITS OWN.
 //!
 //! Item 133 made every dialect reader REFUSE a present-but-unreadable billed count
-//! (`{"input_tokens":"1500"}`) instead of reading it as zero. On the relay paths that refusal lands
-//! AFTER the client has the body, so there is nothing left to refuse: the request used to bill 0
-//! tokens for the whole response, with a warning. That is a LEDGER fault — the book records that no
-//! work happened. The ruling: an unreadable usage after delivery is NO USAGE RECOVERED, and bills
-//! exactly what the truncated-tail path bills when it recovers nothing — the conservative floor over
-//! the delivered bytes (`estimate_usage_from_truncated_tail`), attributed to the output tier.
+//! (`{"input_tokens":"1500"}`) instead of reading it as zero. ARCHITECT ruling 2026-10-15: each
+//! usage field is judged on its own. The unreadable one is REFUSED — it bills nothing, it is warned
+//! loudly, and no floor stands in for it (#77(2)) — and the readable ones bill as stated. So
+//! `{"input_tokens":"1500","output_tokens":9}` bills (0, 9), v1.5.5's figure for that body, reached
+//! without reading the refused count as anything.
 use super::*;
 use crate::test_support::engine_kit::EngineTestKit as _;
 use busbar_kernel::governance::NewKeySpec;
 use bytes::Bytes;
 use http_body_util::BodyExt as _;
-
-/// The floor the truncated-tail path bills for `delivered` bytes — the figure a refused usage must
-/// now bill, read off the SAME function rather than re-derived here.
-fn floor_for(delivered: usize) -> u64 {
-    estimate_usage_from_truncated_tail(delivered).output
-}
 
 /// Drive ONE same-protocol, non-stream anthropic body through `FirstByteBody` to its end and return
 /// the tokens the key's ledger holds afterwards.
@@ -105,30 +98,25 @@ fn message_with_usage(usage: &str) -> String {
 }
 
 #[tokio::test]
-async fn buffered_relay_refused_usage_bills_the_floor_not_zero() {
+async fn buffered_relay_refused_usage_bills_only_the_readable_counts() {
     // CONTROL: the same body with a READABLE usage bills exactly what it says.
     let readable = message_with_usage(r#"{"input_tokens":1500,"output_tokens":9}"#);
     assert_eq!(billed_tokens_for(&readable).await, 1509);
 
-    // THE DEFECT: a stringified count the reader refuses. At the pin this billed 0.
+    // A stringified count the reader refuses: it bills nothing, the readable count bills.
     let refused = message_with_usage(r#"{"input_tokens":"1500","output_tokens":9}"#);
-    let billed = billed_tokens_for(&refused).await;
-    assert_ne!(
-        billed, 0,
-        "a refused usage on a delivered body must never bill 0"
-    );
     assert_eq!(
-        billed,
-        floor_for(refused.len()),
-        "a refused usage bills the no-usage-recovered floor over the delivered bytes"
+        billed_tokens_for(&refused).await,
+        9,
+        "the refused input_tokens bills nothing; output_tokens bills as stated: (0, 9)"
     );
 }
 
 /// The STREAMING twin: an OpenAI same-protocol stream whose usage chunk carries a count the reader
-/// refuses ends in an `ir_parse` error after the frames were relayed. It bills the floor over the
-/// bytes the upstream sent (the same measure the truncated-tail floor is taken over), never 0.
+/// refuses (`"prompt_tokens":"1500"`) bills its readable `completion_tokens` (9) and nothing for the
+/// refused one: (0, 9), v1.5.5's figure for that stream (v1.5.5 `proto/openai_chat/reader.rs:678`).
 #[tokio::test]
-async fn stream_refused_usage_bills_the_floor_not_zero() {
+async fn stream_refused_usage_bills_only_the_readable_counts() {
     use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
     use busbar_kernel::test_support::engine_kit::TestAppKit;
     crate::testkit::install_test_seams();
@@ -143,9 +131,6 @@ async fn stream_refused_usage_bills_the_floor_not_zero() {
     usage["choices"] = serde_json::json!([]);
     usage["usage"] = serde_json::json!({"prompt_tokens": "1500", "completion_tokens": 9});
     let events = vec![first.to_string(), last.to_string(), usage.to_string()];
-    // The bytes the upstream sent: each event framed `data: …\n\n`, then the `[DONE]` frame.
-    let upstream: usize = events.iter().map(|e| e.len() + 8).sum::<usize>()
-        + busbar_plane_llm::codec::dialect::SSE_DONE_FRAME.len();
     let state = Arc::new(MockServerState::new());
     state.push(MockResponse::Sse {
         events,
@@ -214,14 +199,9 @@ async fn stream_refused_usage_bills_the_floor_not_zero() {
         .expect("usage read")
         .expect("the key exists")
         .tokens;
-    assert_ne!(
-        tokens, 0,
-        "a refused usage on a delivered stream must never bill 0"
-    );
     assert_eq!(
-        tokens,
-        floor_for(upstream),
-        "a refused stream usage bills the floor over the bytes the upstream sent"
+        tokens, 9,
+        "the refused prompt_tokens bills nothing; completion_tokens bills as stated: (0, 9)"
     );
     server.shutdown().await;
 }

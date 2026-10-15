@@ -24,7 +24,7 @@
 //!
 //! Pre-RESOLVED secrets and the rate-card-derived costs ARE carried (fidelity: the plane cannot
 //! re-resolve a secret ref — it has no `SecretResolver` — nor re-price without the rate card). A
-//! resolved secret is carried in `busbar_contract::redacted::Redacted`, never as a bare `String`: this carrier is
+//! resolved secret is carried in `busbar_contract::redacted::Secret`, never as a bare `String`: this carrier is
 //! formatted on the build path, so the wrapper is what keeps the credential out of a trace line.
 //! Pool-hook ROUTING POLICIES are NOT: their resolved value is the core-owned
 //! `busbar_kernel::hooks::ResolvedPolicy` (an `Arc<dyn RoutingPolicy>` over a dlopen plugin), which
@@ -89,8 +89,13 @@ pub struct LaneInput {
     /// The lane's protocol NAME (the registry's interned dialect key), carried as an owned `String`;
     /// the plane re-interns it against the protocol registry.
     pub protocol: String,
-    /// The provider's upstream base URL, already trailing-slash-trimmed.
+    /// The provider's upstream base URL, already trailing-slash-trimmed, its userinfo stripped.
     pub base_url: String,
+    /// The `Authorization: Basic` the operator's base URL spelled as `user:pass@` (row 74, F25),
+    /// opaque: the plane hands it back to the kernel's hop on each request it sends to this lane,
+    /// and the hop presents it as 1.5.5 did. `None` when the base URL spelled no userinfo.
+    /// TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
+    pub url_userinfo: Option<crate::egress::engine::UrlUserinfo>,
     /// Optional upstream request-path override.
     pub path: Option<String>,
     /// Optional path-BASE override (URL-model protocols).
@@ -103,19 +108,25 @@ pub struct LaneInput {
     /// Optional upstream model-name override (the wire model), else the config key.
     pub upstream_model: Option<String>,
     /// The PRE-RESOLVED provider credential — the resolved secret, carried because the plane cannot
-    /// re-resolve a secret ref (it has no `SecretResolver`). Held in the SAME `busbar_contract::redacted::Redacted`
+    /// re-resolve a secret ref (it has no `SecretResolver`). Held in the SAME `busbar_contract::redacted::Secret`
     /// wrapper the `Lane` it feeds holds it in, for the whole of its life here rather than only after
     /// it lands: a bare `String` on a carrier that a build trace, a panic message or an error `{:?}`
     /// can reach is the plaintext in a log, and the wrapper is what makes that structurally impossible
     /// (it prints `[REDACTED]`, does not serialize, and zeroizes on drop). Read through
-    /// `expose_secret` at the one place the credential is actually built.
-    pub api_key: busbar_contract::redacted::Redacted<String>,
+    /// the sealed `expose` at the one place the credential is actually built.
+    pub api_key: busbar_contract::redacted::Secret<String>,
     /// The provider's auth-style override (neutral).
     pub auth_style: AuthStyleInput,
     /// OAuth scope (`auth: oauth-client-credentials` / an override for `jwt-bearer`).
     pub scope: Option<String>,
-    /// OAuth token endpoint (`auth: oauth-client-credentials`).
+    /// OAuth token endpoint (`auth: oauth-client-credentials`), its userinfo stripped: a plane never
+    /// receives a URL carrying `user:pass@` (row 74, F25).
     pub token_url: Option<String>,
+    /// The `Authorization: Basic` the operator's `token_url` spelled as `user:pass@`, opaque: the
+    /// plane hands it back to the kernel's bind, and the host presents it on the mint as 1.5.5 did.
+    /// `None` when the endpoint spelled no userinfo.
+    /// TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
+    pub token_userinfo: Option<crate::egress::engine::UrlUserinfo>,
     /// JWT-bearer `sub` claim (`auth: jwt-bearer`).
     pub subject: Option<String>,
     /// The provider's response error-map (upstream code → canonical), cloned verbatim.
@@ -149,7 +160,7 @@ pub struct LaneInput {
 
 /// HAND-ROLLED, never derived. This carrier holds a resolved provider credential, and a type that
 /// does is one the construction gate names as a secret carrier and holds to writing this impl —
-/// belt and braces over the `Redacted` field, so neither the wrapper nor the derive is the single
+/// belt and braces over the `Secret` field, so neither the wrapper nor the derive is the single
 /// thing standing between the credential and a log line. What a reader of a build trace needs is
 /// which lane this is and where it points; nothing else printed here is a secret.
 impl std::fmt::Debug for LaneInput {
@@ -355,6 +366,42 @@ pub struct AuthReach(pub std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxi
 impl std::fmt::Debug for AuthReach {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("AuthReach")
+    }
+}
+
+/// TRANSITIONAL (row 155 B1b; deleted with the legacy lane carrier, which goes with the legacy llm
+/// crate): the plane keys of a resolved provider's table that [`LaneInput`] still carries typed,
+/// read off the table. The door path never reads this; its plane parses the table itself. A key
+/// that does not read is unset, as an absent one is: the entry was judged when it was parsed.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+pub struct LegacyLaneKeys {
+    /// The provider's configured tenant (`LaneInput::organization`).
+    pub organization: Option<String>,
+    /// See `organization`.
+    pub project: Option<String>,
+    /// The provider-level lane capabilities, read off the same table.
+    #[serde(flatten)]
+    provider_caps: crate::ir::lane_caps::ProviderLaneCaps,
+    model_capabilities: Vec<crate::ir::lane_caps::ModelCapabilities>,
+}
+
+impl LegacyLaneKeys {
+    /// The keys `provider`'s table carries.
+    #[must_use]
+    pub fn of(provider: &crate::config::ResolvedProvider) -> Self {
+        serde_json::from_value(serde_json::Value::Object(provider.table.clone()))
+            .unwrap_or_default()
+    }
+
+    /// The lane capabilities these keys resolve to for `wire_model` (`LaneInput::lane_caps`).
+    #[must_use]
+    pub fn lane_caps(&self, wire_model: &str) -> busbar_contract::ir::egress_prep::LaneCaps {
+        crate::ir::lane_caps::resolve_lane_caps(
+            self.provider_caps,
+            &self.model_capabilities,
+            wire_model,
+        )
     }
 }
 

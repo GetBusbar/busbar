@@ -111,7 +111,27 @@ pub(crate) const KEY_FAMILY_PARAMS: &str = concat!(
     r#"{"header":"x-api-key","#,
     r#""families":[{"prefix":"sk-ant-api","header":"x-api-key","trim_start":true},"#,
     r#"{"prefix":"sk-ant-oat"}],"#,
-    r#""own":{"header":"x-api-key"},"passthrough":{}}"#,
+    r#""own":{"header":"x-api-key"},"passthrough":{},"protocol":"anthropic"}"#,
+);
+
+/// The bearer-presented dialects' parameters (their codecs' `EgressScheme::Static` with no
+/// credential families, the operator's and a passthrough caller's credential both as a bearer),
+/// naming the dialect as the `protocol` a credential no header may carry is logged under (1.5.5's
+/// `protocol=` field).
+pub(crate) const OPENAI_PARAMS: &str =
+    r#"{"families":[],"own":{},"passthrough":{},"protocol":"openai"}"#;
+/// [`OPENAI_PARAMS`] for the responses dialect.
+pub(crate) const RESPONSES_PARAMS: &str =
+    r#"{"families":[],"own":{},"passthrough":{},"protocol":"responses"}"#;
+/// [`OPENAI_PARAMS`] for the cohere dialect.
+pub(crate) const COHERE_PARAMS: &str =
+    r#"{"families":[],"own":{},"passthrough":{},"protocol":"cohere"}"#;
+/// The `x-goog-api-key`-presented dialect's parameters (its codec's `EgressScheme::Static`): the
+/// operator's and a passthrough caller's credential verbatim in `x-goog-api-key`, under its
+/// `protocol`.
+pub(crate) const GEMINI_PARAMS: &str = concat!(
+    r#"{"families":[],"own":{"header":"x-goog-api-key"},"#,
+    r#""passthrough":{"header":"x-goog-api-key"},"protocol":"gemini"}"#,
 );
 
 /// The `sigv4` style's parameters for the signed dialect (its codec's `EgressScheme::SigV4`): the
@@ -161,7 +181,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         egress_style: "bearer",
-        egress_params: "",
+        egress_params: OPENAI_PARAMS,
         governed_headers: OPENAI_GOVERNED,
         governed_query: &[],
         tenant_headers: OPENAI_TENANT,
@@ -180,7 +200,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "api-key",
         egress_scheme: "bearer",
         egress_style: "x-goog-api-key",
-        egress_params: "",
+        egress_params: GEMINI_PARAMS,
         governed_headers: &["authorization", "x-goog-api-key", "x-goog-user-project"],
         governed_query: &["key"],
         tenant_headers: &[],
@@ -222,7 +242,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         egress_style: "bearer",
-        egress_params: "",
+        egress_params: RESPONSES_PARAMS,
         governed_headers: OPENAI_GOVERNED,
         governed_query: &[],
         tenant_headers: OPENAI_TENANT,
@@ -241,7 +261,7 @@ pub const DIALECTS: &[Dialect] = &[
         scheme_alt: "bearer",
         egress_scheme: "bearer",
         egress_style: "bearer",
-        egress_params: "",
+        egress_params: COHERE_PARAMS,
         governed_headers: &["authorization"],
         governed_query: &[],
         tenant_headers: &[],

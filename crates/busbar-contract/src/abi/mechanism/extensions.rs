@@ -30,6 +30,49 @@ pub fn encode(entries: &[(&str, &[u8])]) -> Vec<u8> {
     out
 }
 
+/// The length of the one entry `key` and `value` encode to: what [`entry`] is sized by.
+#[must_use]
+pub const fn entry_len(key: &str, value: &[u8]) -> usize {
+    2 + key.len() + 4 + value.len()
+}
+
+/// ONE ENTRY, built at compile time: the bytes [`encode`] writes for `[(key, value)]`, as an array a
+/// `'static` Statement can point at (a door's `Statement::extensions` is `const` data).
+///
+/// # Panics
+///
+/// `N` is not [`entry_len`] of `key` and `value`, or either is past its length field's range; in a
+/// `const`, that is a compile error.
+#[must_use]
+pub const fn entry<const N: usize>(key: &str, value: &[u8]) -> [u8; N] {
+    assert!(N == entry_len(key, value), "N is not entry_len(key, value)");
+    assert!(key.len() <= u16::MAX as usize, "the key is past u16");
+    assert!(value.len() <= u32::MAX as usize, "the value is past u32");
+    let mut out = [0u8; N];
+    let k = (key.len() as u16).to_le_bytes();
+    out[0] = k[0];
+    out[1] = k[1];
+    let key = key.as_bytes();
+    let mut i = 0;
+    while i < key.len() {
+        out[2 + i] = key[i];
+        i += 1;
+    }
+    let at = 2 + key.len();
+    let v = (value.len() as u32).to_le_bytes();
+    let mut i = 0;
+    while i < 4 {
+        out[at + i] = v[i];
+        i += 1;
+    }
+    let mut i = 0;
+    while i < value.len() {
+        out[at + 4 + i] = value[i];
+        i += 1;
+    }
+    out
+}
+
 /// Every whole entry of `blob`, in order: `(key, value)`.
 pub fn entries(blob: &[u8]) -> impl Iterator<Item = (&[u8], &[u8])> {
     let mut at = 0usize;

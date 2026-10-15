@@ -22,3 +22,6 @@ a `src/lib.rs` each), so `reachability:plane-crates` has a census to read: four 
 plane by the key their `impl PlaneMeta` declares, and `busbar-plane-mcp` declares none and maps as the
 mcp row's linked crate. The self-test plants a sixth plane crate the roster does not name, a crate
 mapped by its name alone, and a tree with none — each RED.
+
+Its root `Cargo.toml` is the manifest the plane-crates row reads for the planes the root PINS
+(#935); it pins none, because all five plane crates are laid under `crates/` here.

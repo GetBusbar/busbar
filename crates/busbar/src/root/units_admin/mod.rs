@@ -63,9 +63,9 @@ use busbar_kernel_ledger::{
     cost::{Money, MoneyError},
 };
 
-/// The transport an admin claim is declared over, and therefore the one a sealed destination for an
-/// admin verb carries.
-const ADMIN_TRANSPORT: &str = "http";
+/// The transport an admin claim is declared over — read off the admin plane's own claim, never named
+/// here — and therefore the one a sealed destination for an admin verb carries.
+const ADMIN_TRANSPORT: &str = busbar_core_admin::admin_codec::claims::CLAIMS[0].transport;
 
 /// One admin request, exactly as it arrived.
 ///
@@ -1232,13 +1232,12 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 return bound::trust_list_effect(&self.trust).map(|a| a.pack());
             }
             KernelVerb::TrustApprove | KernelVerb::TrustRevoke => {
-                let decision = if verb == KernelVerb::TrustApprove {
+                let ruling = if verb == KernelVerb::TrustApprove {
                     busbar_kernel::trust::book::Ruling::Approve
                 } else {
                     busbar_kernel::trust::book::Ruling::Revoke
                 };
-                return bound::trust_decide_effect(request, decision, &self.trust)
-                    .map(|a| a.pack());
+                return bound::trust_decide_effect(request, ruling, &self.trust).map(|a| a.pack());
             }
             // The two writes replay under contract D-3: a retry carrying the same `Idempotency-Key`
             // with the same body answers the first answer, byte for byte, and runs nothing again.
@@ -1329,6 +1328,32 @@ fn json_answer(body: Vec<u8>) -> AdminAnswer {
     }
 }
 
+/// Whether `view` already holds `correction`: an amendment entry by the same signer for the same
+/// reason over the same window, carrying every figure the correction names. That is what the same
+/// signed body produces each time it is applied, so a second one is a replay (TODO M28).
+fn already_applied(
+    view: busbar_kernel_ledger::cost::HistoryView<'_>,
+    correction: &crate::root::kernel::Correction,
+) -> bool {
+    view.entries().iter().any(|entry| {
+        matches!(
+            entry.author(),
+            busbar_kernel_ledger::cost::Author::Amend { .. }
+        ) && entry.author() == &correction.author
+            && entry.effective_from() == correction.effective_from
+            && entry.effective_until() == correction.effective_until
+            && correction.fee.is_none_or(|fee| entry.card().fee() == fee)
+            && correction.cells.iter().all(|(cell, nanos)| {
+                entry
+                    .card()
+                    .lane_rates(&cell.lane)
+                    .filter(|rates| rates.class_priced(&cell.class))
+                    .map(|rates| rates.nanos_per_unit(&cell.class))
+                    == Some(*nanos)
+            })
+    })
+}
+
 /// The effect half of `amend_rate_history`: decode the correction, validate its shape, append
 /// the signed back-dated entry to this root's dated rate-card history, and answer with the entry it
 /// sealed.
@@ -1381,6 +1406,14 @@ fn amend_rate_history_effect(
         Some(v) => Some(v.as_u64().ok_or(GovernanceError::Validation)?),
     };
     if effective_until.is_some_and(|until| until <= effective_from) {
+        return Err(GovernanceError::Validation);
+    }
+    // A CORRECTION IS BACK-DATED OR IT IS NOT A CORRECTION (TODO M28; #79 "an entry whose
+    // `effective_from` lies in the past"). A window that opens after the instant the correction
+    // arrived prices a future no booked line has reached yet: that is a forward price, which is a
+    // configuration write, and an amendment signed today must not be able to stand in for one.
+    // `arrival_secs` is the second the call arrived in, so its first instant is never after it.
+    if effective_from > arrival_secs.saturating_mul(1000) {
         return Err(GovernanceError::Validation);
     }
 
@@ -1565,6 +1598,20 @@ fn amend_rate_history_effect(
     };
     let seq = history
         .amend(&correction, |card, base| {
+            // A SIGNED CORRECTION APPLIES ONCE (TODO M28). The signature covers the window, the
+            // cells, the fee and the reason, and nothing that makes one submission different from
+            // the next — so the same signed bytes, sent again after a later correction moved the
+            // window on, would put the earlier price back with no new operator act. Under the apply
+            // lock (this closure runs inside it, ahead of the seal), a correction the history
+            // already holds — same signer, same reason, same window, same figures — is refused and
+            // nothing is recorded. Re-asserting a price on purpose is a new correction: sign it with
+            // the reason it is being re-asserted for.
+            if history
+                .pin()
+                .is_some_and(|pinned| already_applied(pinned.view(), &correction))
+            {
+                return Err(GovernanceError::Conflict);
+            }
             let record = AmendmentRecord {
                 effective_from,
                 effective_until,

@@ -19,9 +19,9 @@
 //! key of the test's own.)
 
 #![cfg(unix)]
-// The config serves `providers:`/`models:`, so the build must link the plane that takes body
-// ingress: the linked table's answer, never a feature name.
-#![cfg(linked_axis_body_ingress)]
+// The config serves `providers:`/`models:`, so the build must link the plane door that declares
+// `pools:` (`linked_section_pools`): the linked table's answer, never a feature name.
+#![cfg(linked_section_pools)]
 // The linked door is an export door: the test is that axis's, and its collector proves the sink.
 #![cfg(linked_axis_export_doors)]
 

@@ -174,8 +174,9 @@ pub enum Dest {
     /// An authority: the address the destination judge pinned (`ip:port`), or a unix-domain path
     /// (`unix:/path`).
     Authority(String),
-    /// A program: its absolute path, arguments and whole environment.
-    Program(busbar_contract::conn::Program),
+    /// A program: its absolute path, arguments and whole environment, and its environment
+    /// references as config time resolved them ([`crate::spawn_env::HeldEnv`]).
+    Program(busbar_contract::conn::Program, crate::spawn_env::HeldEnv),
 }
 
 impl Dest {
@@ -183,7 +184,7 @@ impl Dest {
     fn admission(&self) -> Admission {
         match self {
             Self::Authority(a) => Admission::Dial(vec![a.clone()]),
-            Self::Program(p) => Admission::Spawn(p.clone()),
+            Self::Program(p, env) => Admission::Spawn(p.clone(), env.clone()),
         }
     }
 }
@@ -239,7 +240,7 @@ impl Carried {
         let mut wr = Driven::of(door.as_ref()).ok_or_else(refused)?;
         let rd = Driven::of(door.as_ref()).ok_or_else(refused)?;
         let (args, env): (Vec<AbiStr>, Vec<Field>) = match dest {
-            Dest::Program(p) => (
+            Dest::Program(p, _) => (
                 p.args.iter().map(|a| abi(a.as_bytes())).collect(),
                 p.env
                     .iter()
@@ -262,7 +263,7 @@ impl Carried {
                 env: std::ptr::null(),
                 env_len: 0,
             },
-            Dest::Program(p) => Destination {
+            Dest::Program(p, _) => Destination {
                 kind: DEST_PROGRAM,
                 _reserved: 0,
                 authority: abi(b""),

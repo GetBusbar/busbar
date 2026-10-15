@@ -90,7 +90,7 @@ fn one_entry(
 type Rates4 = [f64; 4];
 
 /// A `busbar-kernel` cost model — behind `GET /groups/{g}/usage`, `GET /keys/{id}/usage`, the
-/// `/metrics` gauges, the hook seam's `budget_state`, and the live LLM door `try_admit`.
+/// `/metrics` gauges, the hook seam's `budget_state`, and the live node door `try_admit`.
 fn kernel_cost_model(
     rates: Option<&[(&str, Rates4)]>,
     per_request_fee: i64,
@@ -122,10 +122,10 @@ fn ledger_card(rates: Option<&[(&str, Rates4)]>, fee: i64) -> RateCard {
                 (
                     *lane,
                     ledger_cost::TierRates {
-                        input: r[0],
-                        output: r[1],
-                        cache_read: r[2],
-                        cache_write: r[3],
+                        input: busbar_kernel_ledger::cost::representable_nano_rate(r[0]),
+                        output: busbar_kernel_ledger::cost::representable_nano_rate(r[1]),
+                        cache_read: busbar_kernel_ledger::cost::representable_nano_rate(r[2]),
+                        cache_write: busbar_kernel_ledger::cost::representable_nano_rate(r[3]),
                     },
                 )
             })
@@ -675,7 +675,7 @@ fn d9_a_sub_day_back_dated_correction_is_a_no_op_for_the_admin_read() {
 /// D2 — ITEM 123, INVERTED FROM ITS BASELINE TO THE CONVERGENCE. This case used to MEASURE the
 /// residue: the enforcement side (the kernel's cost model and the door) projected its unit
 /// map onto the RESERVED FOUR before handing the row to the one function, so an open meter class
-/// (a2a `hops`, a rerank's `search_units`) priced there as nothing — 200 micro-units against the
+/// (an agent hop's `hops`, a rerank's `search_units`) priced there as nothing — 200 micro-units against the
 /// one function's 5,200, and 0 at the door. Item 123 converged it: every class reaches the one
 /// function on both sides, and the card (built from config's `units:` on the kernel side) prices
 /// it. So the figures now AGREE — and a card silent about the class REFUSES on both sides (#42)
@@ -746,48 +746,70 @@ fn d2_an_open_meter_class_is_handed_to_the_one_function_by_the_enforcement_side(
     }
 }
 
-/// D7 — `nano_rate` TAKES AN `f64` (#77(8), #81). PARKED (`qa/evidence/1.6.0-money-sweep.md`): the double picks
-/// the wrong side of a decimal half-boundary. Kept verbatim as the parked measurement — card-build
-/// quantisation is outside this collapse, which keeps it byte-identical (#44).
-fn nano_rate_exact_from_text(decimal: &str) -> u64 {
+/// D7 — A RATE IS ITS DECIMAL, EXACTLY, OR IT IS REFUSED: NEVER ROUNDED (#81, #77(8); both
+/// OWNER-LOCKED). 1.5.5 multiplied the configured double by a thousand and rounded
+/// (`(utok * 1000.0).round()`, v1.5.5 `crates/busbar/src/cost.rs:99`), so a rate past the third
+/// decimal of micro-units was priced at a figure nobody configured, and the double picked the wrong
+/// side of a decimal half-boundary (the measurement this cell used to park,
+/// `qa/evidence/1.6.0-money-sweep.md`). #81 retires that rounding as a SIGNED divergence from 1.5.5
+/// (a value that does not fit the scale exactly is refused, never a rounded guess) and #77(8) bans
+/// binary floating point on the money path, so the card holds whole nano-units only (#870).
+///
+/// The exact conversion, from the decimal's own text: `Some(nanos)` for a whole number of
+/// nano-units (at most three decimals of micro-units), `None` for a rate the card cannot hold.
+fn nano_rate_exact_from_text(decimal: &str) -> Option<u64> {
     let count = busbar_contract::count::Count::parse(decimal).expect("a decimal literal");
     let scaled = count.micros() * 1_000;
-    let rounded = (scaled + 500_000) / 1_000_000;
-    u64::try_from(rounded).expect("inside the range")
+    (scaled % 1_000_000 == 0).then(|| u64::try_from(scaled / 1_000_000).expect("inside the range"))
 }
 
+/// Every half-boundary rate (four decimals and more, ending in 5: the ones 1.5.5 rounded) is
+/// refused on both readings, never rounded to a neighbour; every whole-nano rate (three decimals)
+/// converts to exactly the integer its decimal names.
+///
+/// RED: a half-boundary rate priced at any figure (rounded either way), or a whole-nano rate off its
+/// decimal by any amount.
 #[test]
-fn d7_the_f64_rate_conversion_rounds_the_wrong_way_at_a_decimal_half_boundary() {
-    rule("D7  `nano_rate(f64)` vs the exact decimal conversion (#77(8), #81)");
-    let mut disagreements: Vec<(String, u64, u64)> = Vec::new();
+fn d7_a_rate_converts_from_its_decimal_exactly_and_is_never_rounded() {
+    rule("D7  `nano_rate`: the decimal exactly, or refused, never rounded (#81, #77(8))");
+    let (mut refused, mut exact) = (0u64, 0u64);
     for thousandths in 1u64..200_000 {
-        let text = format!(
+        let half = format!(
             "{}.{:04}",
             thousandths / 10_000,
             (thousandths % 10_000) * 10 + 5
         );
-        let exact = nano_rate_exact_from_text(&text);
-        let through_f64 = ledger_cost::nano_rate(text.parse::<f64>().expect("parses"));
-        if exact != through_f64 {
-            disagreements.push((text, exact, through_f64));
-            if disagreements.len() == 5 {
-                break;
-            }
-        }
-    }
-    for (text, exact, through_f64) in &disagreements {
-        row(
-            &format!("rate `{text}` micro-units/token  exact / via f64"),
-            (exact, through_f64),
+        assert_eq!(
+            nano_rate_exact_from_text(&half),
+            None,
+            "{half}: no whole nano-unit"
         );
+        let double = half.parse::<f64>().expect("parses");
+        assert_eq!(
+            ledger_cost::nano_rate(double),
+            0,
+            "{half} micro-units/token is refused, never rounded (#81)"
+        );
+        assert_eq!(
+            ledger_cost::representable_nano_rate(double),
+            None,
+            "{half} micro-units/token is a rate the card cannot hold"
+        );
+        refused += 1;
+
+        let whole = format!("{}.{:03}", thousandths / 1_000, thousandths % 1_000);
+        let nanos = nano_rate_exact_from_text(&whole).expect("three decimals are whole nano-units");
+        assert_eq!(
+            ledger_cost::nano_rate(whole.parse::<f64>().expect("parses")),
+            nanos,
+            "{whole} micro-units/token is exactly {nanos} nano-units"
+        );
+        exact += 1;
     }
-    assert!(
-        !disagreements.is_empty(),
-        "the scan found no disagreement — which would mean the f64 path is exact, and it is not"
+    row(
+        "half-boundary rates refused / whole-nano rates exact",
+        (refused, exact),
     );
-    for (_, exact, through_f64) in &disagreements {
-        assert_eq!(exact.abs_diff(*through_f64), 1);
-    }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
@@ -952,7 +974,7 @@ fn census(sources: &[(String, String)]) -> Vec<String> {
         "crates/busbar-kernel/src/cost.rs",
         // The DATED budget ledger (OWNER RULING Q14): each era of a budget cell at the card its era
         // resolves to — behind `/keys` and `/groups` usage, the `/metrics` spend gauges, the hook
-        // seam's `budget_state` and the live LLM gate `try_admit`.
+        // seam's `budget_state` and the live node gate `try_admit`.
         "crates/busbar-kernel-ledger/src/usage/dated.rs",
     ];
     let mut findings = Vec::new();
@@ -1030,8 +1052,8 @@ fn census(sources: &[(String, String)]) -> Vec<String> {
 /// Derivation-named functions the census SEES and that are not routed through the one function,
 /// each owned outside this collapse and named with its reason. Armed at today's measured count.
 ///
-/// EMPTY: the last entry (busbar-voice's `#[cfg(test)]` MockMeteringHost `price_usage`) went with the
-/// D2 lease (OWNER RULING Q21b, P2-voice f87fd3800) — struck, as the census asks of a fixed one.
+/// EMPTY: the last entry (the session plane's `#[cfg(test)]` MockMeteringHost `price_usage`) went
+/// with the D2 lease (OWNER RULING Q21b, f87fd3800) — struck, as the census asks of a fixed one.
 const KNOWN_OUTSIDE_THIS_COLLAPSE: &[(&str, &str, usize, &str)] = &[];
 
 /// THE TREE HOLDS ONE `f`. Every derivation routes through it; no copy of the tier rule or the
@@ -1258,5 +1280,172 @@ fn census_flags_a_planted_scale_copy() {
         findings.len(),
         3,
         "a comment is prose, not a scale: {findings:?}"
+    );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// LEDGER-100 ON THE GOVERNANCE BOOK — an open class is one line, priced by the card (#42, #71).
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The lane the open-class cases accrue on, and the instant they accrue at.
+const OPEN_LANE: &str = "m";
+const OPEN_AT: u64 = 1_700_000_000;
+
+/// What one accrual of `units` on [`OPEN_LANE`] left on a fresh governance book priced by
+/// `card_yaml` (`None`: no card, billing off): the key's derived spend in whole cents (`Err`: the
+/// read refused, #42), and the book's line map for the lane (every class with a non-zero count).
+fn accrued_on_the_book(
+    card_yaml: Option<&str>,
+    units: &[(&str, u64)],
+) -> (Result<i64, String>, BTreeMap<String, u64>) {
+    let gov = busbar_kernel::governance::GovState::new(
+        std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new()),
+        None,
+    )
+    .expect("a governance book over a memory store");
+    let card: Option<BTreeMap<String, busbar_kernel::config::RateEntryCfg>> =
+        card_yaml.map(|yaml| serde_yaml::from_str(yaml).expect("the card parses"));
+    let cost = busbar_kernel::cost::CostModel::resolve_parts(card.as_ref(), 0, &BTreeMap::new());
+    let (key, _secret) = gov
+        .create_key(
+            busbar_kernel::governance::NewKeySpec {
+                name: "open-class".to_string(),
+                ..Default::default()
+            },
+            OPEN_AT,
+        )
+        .expect("create key");
+    let counts: BTreeMap<String, u64> = units
+        .iter()
+        .map(|(class, count)| ((*class).to_string(), *count))
+        .collect();
+    gov.record_usage(&cost, &key, "", OPEN_LANE, &counts, OPEN_AT);
+    let spend = gov
+        .usage_for(&cost, &key.id, OPEN_AT)
+        .map(|usage| usage.expect("the key exists").spend_cents)
+        .map_err(|refusal| format!("{refusal:?}"));
+    gov.flush_budgets();
+    let lines = gov
+        .store()
+        .get_usage(
+            &key.id,
+            busbar_kernel::governance::budget_window(
+                busbar_kernel::governance::WINDOW_TOTAL,
+                OPEN_AT,
+            ),
+        )
+        .expect("the governance ledger reads")
+        .models
+        .iter()
+        .find(|row| row.model == OPEN_LANE)
+        .map(|row| {
+            row.usage_units
+                .iter()
+                .filter(|(_, count)| **count > 0)
+                .map(|(class, count)| (class.clone(), *count))
+                .collect()
+        })
+        .unwrap_or_default();
+    (spend, lines)
+}
+
+/// The open classes the linked fallback plane declares (its billable classes past the reserved
+/// four), read off its own declaration so this file spells none of them.
+#[cfg(linked_axis_body_ingress)]
+mod declared {
+    include!(concat!(env!("OUT_DIR"), "/linked_planes.rs"));
+
+    pub(super) fn open_classes() -> Vec<&'static str> {
+        LINKED_PLANES
+            .iter()
+            .find(|decl| decl.fallback)
+            .expect("the build links the fallback plane the open classes are declared on")
+            .billable_classes
+            .iter()
+            .map(|billable| billable.class)
+            .filter(|class| !busbar_contract::records::RESERVED_UNITS.contains(class))
+            .collect()
+    }
+}
+
+/// EVERY DECLARED OPEN CLASS LEDGERS ONE LINE, PRICED BY THE CARD (LEDGER-100; #42's three arms).
+///
+/// Legacy: the retiring engine crate's `src/engine/tests/ledger_100_tests.rs::every_open_class_ledgers_one_line_priced_by_the_card`
+/// (coverage map row 496, REHOME). 1.5.5 behaviour pinned, for EVERY open meter class the fallback
+/// plane declares: 3 units on a card pricing the class at 10,000 micro-units (one cent) each derive
+/// a spend of 3 cents and leave exactly one ledger line `{class: 3}`; a present card silent about
+/// the class REFUSES the read (never a silent 0); no card (billing off) reads 0 and the one line is
+/// still recorded. The old home (`d2_…` above) priced one open class alone.
+///
+/// RED: an open class that is dropped, warned, folded into a residual or into another class (no
+/// line, or a second line), priced at anything but the card's rate, priced 0 by a silent card, or
+/// not recorded when billing is off.
+#[cfg(linked_axis_body_ingress)]
+#[test]
+fn every_open_class_ledgers_one_line_priced_by_the_card() {
+    let classes = declared::open_classes();
+    assert!(
+        !classes.is_empty(),
+        "the fallback plane declares open classes: nothing to price"
+    );
+    for class in classes {
+        let one_line = BTreeMap::from([(class.to_string(), 3)]);
+        let priced = format!("{OPEN_LANE}: {{ units: {{ {class}: 10000 }} }}\n");
+        let (spend, lines) = accrued_on_the_book(Some(&priced), &[(class, 3)]);
+        assert_eq!(spend, Ok(3), "{class}: 3 units at 1 cent each");
+        assert_eq!(lines, one_line, "{class}: exactly one ledger line");
+
+        let silent = format!("{OPEN_LANE}: {{ input_utok: 1 }}\n");
+        let (spend, _) = accrued_on_the_book(Some(&silent), &[(class, 3)]);
+        assert!(
+            spend.is_err(),
+            "{class}: a present card silent about the class REFUSES (#42), never a silent 0: \
+             {spend:?}"
+        );
+
+        let (spend, lines) = accrued_on_the_book(None, &[(class, 3)]);
+        assert_eq!(spend, Ok(0), "{class}: no card, billing off reads 0");
+        assert_eq!(lines, one_line, "{class}: the line is still the record");
+    }
+}
+
+/// AN OPEN CLASS BESIDE THE TOKENS MOVES NO TOKEN LINE (LEDGER-100).
+///
+/// Legacy: the retiring engine crate's `src/engine/tests/ledger_100_tests.rs::an_open_class_beside_the_tokens_moves_no_token_line`
+/// (coverage map row 497, REHOME). 1.5.5 behaviour pinned: a turn of 2 input tokens at 1 cent and 1
+/// output token at 2 cents derives 4 cents on lines `{input: 2, output: 1}`; the same turn with 5
+/// `classifications` at 1 cent beside it derives 9 cents on lines `{classifications: 5, input: 2,
+/// output: 1}` — the open class adds its own line and its own price, and the token lines and their
+/// price do not move. The old home priced an open class alone.
+///
+/// RED: an open class that moves a token line (counted into `input`/`output`), replaces it, or is
+/// priced at anything but its own rate beside the tokens.
+#[test]
+fn an_open_class_beside_the_tokens_moves_no_token_line() {
+    let card = format!(
+        "{OPEN_LANE}: {{ input_utok: 10000, output_utok: 20000, units: {{ classifications: 10000 }} }}\n"
+    );
+    let (spend, lines) = accrued_on_the_book(Some(&card), &[(INPUT, 2), (OUTPUT, 1)]);
+    assert_eq!(spend, Ok(4), "2 in at 1 cent + 1 out at 2 cents");
+    assert_eq!(
+        lines,
+        BTreeMap::from([(INPUT.to_string(), 2), (OUTPUT.to_string(), 1)])
+    );
+    let (spend, lines) = accrued_on_the_book(
+        Some(&card),
+        &[(INPUT, 2), (OUTPUT, 1), ("classifications", 5)],
+    );
+    assert_eq!(
+        spend,
+        Ok(9),
+        "the same 4 cents plus 5 classifications at 1 cent"
+    );
+    assert_eq!(
+        lines,
+        BTreeMap::from([
+            ("classifications".to_string(), 5),
+            (INPUT.to_string(), 2),
+            (OUTPUT.to_string(), 1),
+        ])
     );
 }

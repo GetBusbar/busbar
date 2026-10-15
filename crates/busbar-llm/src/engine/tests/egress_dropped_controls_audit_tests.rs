@@ -18,12 +18,14 @@ fn http() -> busbar_contract::transport::transport::Transport {
 }
 
 /// Cross-protocol OpenAI → Anthropic request carrying `response_format` to a lane that declares NO
-/// native structured outputs (the default — `LaneCaps::native_structured_output` false) forwards
-/// (Ok, body rebuilt) TRANSLATED to Anthropic tool-forcing rather than dropped, so NO
-/// `response_format on anthropic` degraded audit event is recorded. The lane that DOES declare the
-/// capability is `native_structured_output_lane_drops_schema_less_json_with_audit` below.
+/// native structured outputs (the default, `LaneCaps::native_structured_output` false) forwards
+/// (Ok, body rebuilt) with `response_format` DROPPED, exactly as 1.5.5 wrote it (v1.5.5
+/// `crates/busbar/src/proto/anthropic/writer.rs:343-347`: no `response_format`, no forced
+/// tool), and the drop is recorded as the `response_format on anthropic` degraded audit event.
+/// ARCHITECT ruling 2026-10-13 (F25 row 107): 1.5.5 wins over the post-1.5.5
+/// `busbar_response_format` forced tool, which is gone. RED while that forced tool was written.
 #[test]
-fn openai_to_anthropic_response_format_forwards_and_translates_not_dropped() {
+fn openai_to_anthropic_response_format_forwards_dropped_and_audited() {
     crate::testkit::install_test_seams();
     let app = TestApp::new()
         .lane(LaneSpec::new(
@@ -54,33 +56,27 @@ fn openai_to_anthropic_response_format_forwards_and_translates_not_dropped() {
         &hop_bytes,
         caller,
     );
-    let bytes = out.expect("translate-and-allow: a translated response_format must forward");
+    let bytes = out.expect("audit-and-allow: a dropped response_format must still forward");
     assert!(
         !bytes.is_empty(),
         "the request body must still be rebuilt and forwarded"
     );
-    // The rebuilt Anthropic body must carry the tool-forcing translation, not a bare response_format.
+    // The rebuilt Anthropic body carries neither the directive nor a forced tool in its place.
     let rebuilt: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert!(
-        rebuilt.get("response_format").is_none(),
-        "Anthropic egress must not carry a bare response_format; got {rebuilt}"
-    );
-    assert_eq!(
-        rebuilt.pointer("/tool_choice/name"),
-        Some(&json!("busbar_response_format")),
-        "response_format must be translated to forced tool-use; got {rebuilt}"
-    );
-    // And NO `response_format on anthropic` degraded event may be recorded — it is honored, not dropped.
+    assert!(rebuilt.get("response_format").is_none(), "{rebuilt}");
+    assert!(rebuilt.get("tool_choice").is_none(), "{rebuilt}");
+    assert!(rebuilt.get("tools").is_none(), "{rebuilt}");
+    // And the drop is a first-class `degraded` audit event.
     let entries = crate::test_support::engine_kit::CORE_ENGINE_KIT.audit_entries();
-    let dropped = entries.iter().any(|e| {
-        e.principal == caller
-            && e.action == "egress.control_unrepresentable"
-            && e.resource == "response_format on anthropic"
-    });
-    assert!(
-        !dropped,
-        "response_format is now translated on Anthropic; no `degraded` drop event must be recorded"
-    );
+    let hit = entries
+        .iter()
+        .find(|e| {
+            e.principal == caller
+                && e.action == "egress.control_unrepresentable"
+                && e.outcome == "degraded"
+        })
+        .expect("a first-class `degraded` audit event must be recorded for the drop");
+    assert_eq!(hit.resource, "response_format on anthropic");
 }
 
 /// Cross-protocol OpenAI → Bedrock request carrying `tool_choice:"none"` STILL forwards (the backend
@@ -139,9 +135,11 @@ fn openai_to_bedrock_tool_choice_none_forwards_and_audits_degraded() {
 
 /// Direct unit test of the handler/Op seam (`OpDispatch::egress_dropped_controls`, forwarding the
 /// writer vtable's `dropped_egress_controls_for_lane`): an Anthropic lane with the default
-/// capabilities TRANSLATES `response_format` (tool-forcing), so it drops nothing here, while a lane
-/// declaring native structured outputs drops the schema-less `json_object`; the Bedrock egress still
-/// drops BOTH `response_format` and `tool_choice=none`.
+/// capabilities DROPS `response_format`, as 1.5.5 did (v1.5.5
+/// `crates/busbar/src/proto/anthropic/writer.rs:343-347`; ARCHITECT ruling 2026-10-13, F25 row
+/// 109), and so does a lane declaring native structured outputs for the schema-less
+/// `json_object`; the Bedrock egress drops BOTH `response_format` and `tool_choice=none`. RED while
+/// the default lane reported nothing because it wrote the post-1.5.5 forced tool.
 #[test]
 fn egress_dropped_controls_reports_the_right_controls_per_dialect() {
     crate::testkit::install_test_seams();
@@ -163,9 +161,12 @@ fn egress_dropped_controls_reports_the_right_controls_per_dialect() {
 
     // The dropped-controls audit inverted onto the handle at the G6 A4b dissolve: `ir` is the chat
     // `Box<dyn IrHandle>` and answers per egress protocol string.
-    // Anthropic: response_format is TRANSLATED to tool-forcing (owner-reported bug fix), not
-    // dropped — and Anthropic natively models every other control here, so it drops nothing.
-    assert!(ir.egress_dropped_controls("anthropic").is_empty());
+    // Anthropic: response_format has no 1.5.5 form on a default lane and is dropped; Anthropic
+    // natively models every other control here.
+    assert_eq!(
+        ir.egress_dropped_controls("anthropic"),
+        vec!["response_format"]
+    );
     // Bedrock: neither response_format nor tool_choice=none has a native representation.
     assert_eq!(
         ir.egress_dropped_controls("bedrock"),

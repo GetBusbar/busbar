@@ -51,6 +51,8 @@ fn build(
         std::collections::HashSet::new(),
         (None, None),
         None,
+        &(std::sync::Arc::new(busbar_kernel::appbuild::AcceptAll)
+            as std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>),
     )
     .expect("the app builds")
 }

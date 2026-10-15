@@ -186,6 +186,8 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **A translated Anthropic stream's error event is the published shape.** A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires. 1.5.5's event lacked
+  it.
 - **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
@@ -405,25 +407,31 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   series by their labels; a histogram's or summary's lines stay together in their usual order
   (buckets ascending, then `_sum`, then `_count`). Every name, label and value is unchanged, and
   the order served is one 1.5.5 could already print.
+- **The streaming plane serves the protected-resource metadata its challenge points at.** A caller
+  refused at a realtime door is pointed at
+  `<public_url>/.well-known/oauth-protected-resource/v1/realtime`, and nothing served that path. It
+  now answers the RFC 9728 document: the plane's audience as `resource` and
+  `bearer_methods_supported: ["header"]`, the same document the MCP route serves.
 - **A wedged hook comes back.** A hook that wedged is no longer lost until restart: it is
   quarantined, backed off from 1 s doubling to 30 s, and then given one trial call on a fresh
   instance, and a successful trial returns it to service. 1.5.5 had no quarantine to exit.
 
 ### Breaking
 
-The accepted-differences register for this release has exactly eight entries of kind `breaking`
+The accepted-differences register for this release has exactly nine entries of kind `breaking`
 presented here: two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is
 unchanged in both), one confined to Cohere backends that report `usage.billed_units`, one field
 removed from the hook view, one Gemini turn's server-side-tool tokens now billed, one key-rotate
 endpoint that now refuses an overlong id like its siblings, one where rate cards become a dated
-history so a card's own effective date bounds what it reprices, and one provider credential that no
-longer degrades to an empty key.
+history so a card's own effective date bounds what it reprices, one provider credential that no
+longer degrades to an empty key, and one Bedrock budget refusal that now answers an error Converse
+declares.
 (Two more register entries are also of kind `breaking` but are presented above under Improvements
 instead, because each waives only a caller-additive or documentation-only surface rather than a
 money or status class: F-003 — the CLI `--help`/`--version` text is a parseable contract surface —
 and F-011c — `openapi.json`'s overlay-delete endpoint prose, registered breaking only because the
 oracle tool cannot leaf-correct a string under a `paths` key, not because the endpoint's behaviour
-changed. A reader counting `kind: breaking` rows in the register will find ten, not eight. One
+changed. A reader counting `kind: breaking` rows in the register will find eleven, not nine. One
 further entry, AUTH-ROW's, is also registered `breaking` and presented under Improvements: the
 differ accepts a `status` class on no other kind, and what it waives is a misconfigured admin-auth
 provider that answered 401 now authenticating.)
@@ -432,6 +440,13 @@ as an improvement or does not exist: a config written for 1.5.5 boots, validates
 identically (once it carries the `store:` block that `--migrate-config` inserts), and every 1.5.5 key and
 minted secret carries over.
 
+- 1.6.0 Changed: a Bedrock caller whose budget is spent is refused 429 `ThrottlingException`, an
+  error Converse declares; 1.5.5 answered 400 `ServiceQuotaExceededException`, which only
+  InvokeModel declares. The message, the `Retry-After` header and the charge (none) are unchanged,
+  and the five other dialects already answered an exhausted budget with 429. **Migration:** a
+  Bedrock client that matched `ServiceQuotaExceededException` on Converse must match
+  `ThrottlingException`; the AWS SDKs retry it under their standard retry mode, as they retry the
+  other dialects' 429.
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
   auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a
   fallback, least-bad or queue hop relayed the upstream's 401/403 body verbatim and left the
@@ -515,6 +530,7 @@ minted secret carries over.
   `POST /api/v1/admin/ledger/amend-rate-history` verb rather than editing the live card. See [the
   1.6.0 migration guide](docs/migration-1.6.md).
 
+- 1.6.0 Changed: an OpenAI transcription answered in its own dialect is now metered as a translated one always was (whisper's duration as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it nothing.
 - 1.6.0 Changed: a failed request's flat fee is refunded from the window bucket it was charged to, even when that bucket has rolled into the next window.
   A request that arrives just before a window boundary can be charged on a group bucket another
   request has already rolled into the next window. 1.5.5 refunded such a request only against a
@@ -635,6 +651,12 @@ Busbar no longer lists, builds, tests, bundles or release-notifies it; its repos
 (`GetBusbar/busbar-hook-headroom`) stays where it is. A tarball you already installed is an ordinary
 `kind: hook` plugin and loads under the same trust rules as any other.
 
+**A store plugin refuses an `op_id` replayed with different value fields** with the diagnostic
+`STORE_OPID_CONFLICT` (new in the 1.6.0 store ABI, owner ruling 2026-09-28): nothing is applied, and
+the first write under that `op_id` stands. The same `op_id` with the same fields is answered as the
+original write, never applied twice. **Migration:** none; a store built against the 1.6.0 SDK
+answers it through the SDK's store door.
+
 **A plugin declares the contract-ABI range it supports** (`contract_abi: {min, max}` in its signed
 `declares` section), and Busbar refuses at load a plugin whose range shares no version with its own,
 naming both ranges. A manifest packed before the field existed is judged on its `abi_version` alone,
@@ -681,8 +703,8 @@ improvements above. One documented disagreement
 runs the other way: Anthropic's published stream-event union has no `ping` member although the
 docs say `ping` events occur and real Anthropic streams carry them. Busbar keeps emitting
 `event: ping` in cross-protocol Anthropic streams — a client that cannot take it is not an
-Anthropic client — and records the row as a named gap of the spec, re-judged whenever the pin
-moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
+Anthropic client — and the gate judges the stream against both of Anthropic's documents: the
+published union plus the `ping` and in-stream `error` events the streaming guide documents. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
 `testing/llm-conformance/README.md`.
 
 Three request fields now cross between dialects that 1.5.5 dropped on every crossing: Gemini's
@@ -710,8 +732,11 @@ each dialect translates, field by field, is listed in the generated
   (`unitemized_tokens`), a per-image answer's `images`, a transcription's reported duration
   (`audio_ms`, whole milliseconds) and each Bedrock guardrail policy-unit count (`guardrail_*`),
   each priced by the rate card (absent card: 0). The token classes, their figures and every
-  `tokens:` cap count exactly what 1.5.5 counted. A Bedrock guardrail usage count that is present
-  but not a count is refused, like every other billed count.
+  `tokens:` cap count exactly what 1.5.5 counted, with one correction: an OpenAI transcription
+  answered in its own dialect is now metered as a translated one always was (whisper's duration
+  as `audio_ms`, a token-metered model's tokens under the token classes), where 1.5.5 billed it
+  nothing. A Bedrock guardrail usage count that is present but not a count is refused, like every
+  other billed count.
 - **`busbar --migrate-config` leaves your 1.5.5 pool members exactly as written.** Only the four
   retired spellings named under [Breaking](#breaking) above are rewritten; nothing else in a pool,
   provider or model block is touched.
@@ -721,6 +746,11 @@ each dialect translates, field by field, is listed in the generated
 
 ### Added
 
+- **`/metrics` carries two plugin-health counters.** `bb_deadline_without_wake_total` counts plugin
+  operations settled by their deadline without ever being woken, and `bb_plugin_quarantined_total`
+  counts plugin instances the crossing watchdog quarantined. Each is one counter family with its
+  `# HELP` and `# TYPE` lines, summed over every plugin, and is 0 on a healthy node. Nothing that
+  1.5.5 exposed changed. See [the observability guide](docs/observability.md).
 - **A plugin's inbound listener binds what its settings block states, capped at 1024 connections.**
   A need a plugin declares inbound names a settings block `{listen, tls: {cert, key, client_ca?},
   max_conns?}` (1.5.5's `listen` / `tls` shape; `cert` and `key` are secret references). The listener
@@ -782,6 +812,44 @@ each dialect translates, field by field, is listed in the generated
   the node sealed the record. It does not prove the chain was never rewritten by someone holding
   the key; that takes a head recorded off the node. **Migration:** none; every 1.5.5 audit field is
   unchanged.
+- 1.6.0 Added: the LLM plane receives OpenAI Responses background-turn webhooks at `POST /v1/llm/webhooks/openai` when `webhooks: { openai_responses: true }` is set.
+  The receiver is off by default, and a config without the `webhooks:` block answers on that path
+  exactly as 1.5.5 did. The delivery's Standard Webhooks signature is verified by an
+  `identity-providers:` entry using `module: busbar-auth-webhook-signature` (`variant:
+  standard-webhooks`, the `whsec_` secret as its `signing-secret`) on `auth.chain`. An unsigned or
+  forged delivery is a 401, and a replayed `webhook-id` is refused. A verified delivery is
+  acknowledged `200 {"received":true,"response_id":"resp_…","type":"response.completed"}` and
+  bills nothing; a body that is not a Responses event is a 400. The block is read at boot.
+  **Migration:** none. The build-time `webhook-receiver` feature and its `BUSBAR_LLM_WEBHOOK_SECRET`
+  variable are gone.
+- 1.6.0 Added: an `agent_push: { ca: <PEM> }` block names the CA the A2A plane's push deliveries trust on top of the public roots.
+  A caller's webhook whose certificate chains to that CA is delivered to; one chaining to any other
+  private CA is refused, as before. The block is the A2A plane's own, beside `agents:`, and is off
+  when absent: without it a delivery trusts the public roots alone, exactly as it did. A `ca` that is
+  not a usable PEM certificate refuses the boot, naming `agent_push.ca`, and a config apply carrying
+  one is refused with the same words while the running configuration stays in force. It is read at
+  boot and at every config apply. **Migration:** none.
+- 1.6.0 Added: `GET /api/v1/admin/usage` names the rate-card version that priced it, `rate_card_version`.
+  It is the seq of the newest dated rate-card history entry that priced a row of the response, so
+  asking `GET /api/v1/admin/usage?as_of=<rate_card_version>` re-derives the same figures, and an
+  invoice cut from the response names the card behind it. `null` when no history entry priced a
+  row (no rows, or no rate card). Every 1.5.5 member is unchanged. The per-record version is on
+  each audit-chain record served by `GET /api/v1/admin/audit/range`. **Migration:** none.
+- 1.6.0 Added: a model entry's `protocol: bedrock-invoke` serves an Anthropic model over Amazon Bedrock's `InvokeModel` and `InvokeModelWithResponseStream`.
+  The request and answer are the Anthropic Messages API's own bodies and events, so an Anthropic
+  caller's request is relayed inside the envelope, with `model` and `stream` moved off the body,
+  `anthropic_version: bedrock-2023-05-31` stated, and `anthropic-beta` carried as `anthropic_beta`.
+  The answer, its stream and its usage read exactly as on an Anthropic provider. The model's provider
+  is a Bedrock provider and keeps its SigV4 credential; a provider cannot default to
+  `bedrock-invoke`, and `protocol:` on a provider still lists 1.5.5's six protocols. **Migration:**
+  none.
+- 1.6.0 Added: `GET /api/v1/admin/info` `build.auth_modules` lists `busbar-auth-webhook-signature`, the linked inbound auth module that verifies Twilio and Standard Webhooks signatures.
+  It is listed after 1.5.5's `keys` and `admin-tokens`, both unchanged, there and in
+  `GET /api/v1/admin/plugins?type=auth` (a compiled-in item, active when a chain names it). An operator names it in an
+  `identity-providers:` entry (`module: busbar-auth-webhook-signature`, `variant: twilio` or
+  `standard-webhooks`) and puts that entry on `auth.chain`; a request carrying none of the variant's
+  headers passes it untouched. **Migration:** none; a client that reads the list as a set of names
+  it knows is unaffected.
 - 1.6.0 Added: `GET /api/v1/admin/ledger/checkpoints` lists sealed checkpoints, sealed every 10,000 journal records or every 60 seconds with a change, whichever comes first.
   The read serves the latest 1,024 seals, oldest first; the journal keeps every seal. A node that
   has not reached either threshold serves an empty list. **Migration:** none.
@@ -976,6 +1044,8 @@ each dialect translates, field by field, is listed in the generated
   word, a tool-choice form or modality with no counterpart, extra choices or candidates, a Bedrock-only
   answer member, a Responses answer's request echoes) is now audited like a writer's drop, and every
   drop names the caller's own wire path, never an internal name.
+- 1.6.0 Changed: a streamed chat request whose `stream_options` is not a JSON object (a string, number, boolean or array) is refused with a 400 naming the field. 1.5.5 forwarded it to the upstream unchanged.
+- 1.6.0 Changed: a streamed answer whose upstream connection fails after its first byte is billed for the tokens that streamed before the failure. 1.5.5 billed no tokens for it. A mid-stream cut is not a refund.
 - 1.6.0 Changed: a streamed answer the client cancels after its first byte keeps its charge. It is billed for what streamed and its request-budget unit is no longer given back; 1.5.5 gave the unit back. A mid-stream cut is not a refund.
 
 ### Fixed

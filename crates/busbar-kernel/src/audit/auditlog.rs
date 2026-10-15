@@ -2,8 +2,8 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! THE ADMIN AUDIT CHAIN, ON THE NEUTRAL JOURNAL SEAM: the admin-mutation log's hash-chained records
-//! written through the SAME store-backed [`crate::plane_host::journal`] every other registered stream
-//! (each plane's own call/event log) uses, addressed by a registered `kind_id`.
+//! written through the SAME store-backed [`crate::audit::stream_registry`] every other registered
+//! stream (each plane's own call/event log) uses, addressed by a registered `kind_id`.
 //!
 //! ## Why the record shape lives here and not in the seam
 //!
@@ -48,18 +48,13 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::audit::journal::NeutralBody;
+use crate::audit::stream_registry::{self, Decode, StreamRecord};
 use crate::audit::{verify_chain, ChainBreak, Framing};
 use crate::audit_ring::{AuditEntry, MAX_AUDIT_ENTRIES};
 use crate::plane::store::{decode, encode, PlaneStore, PlaneStoreView, KIND_AUDIT};
-use crate::plane_host::journal::PlaneJournalRecord;
-use busbar_contract::abi::hot::host::HostCtx;
-use busbar_contract::abi::hot::{
-    Framing as AbiFraming, JournalStreamDesc, RawFraming, ReframeOut, Seq, StatusClass, POD_VERSION,
-};
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult,
 };
-use core::mem::MaybeUninit;
 
 /// The host-assigned `kind_id` the admin `audit` durable stream is registered under and addressed by
 /// on every scoped op. Process-global, distinct from each plane's own registered stream ids (e.g. a
@@ -92,41 +87,10 @@ const ADMIN_LOG: &str = "admin";
 const AUDIT_FRAMING: Framing = Framing::PipeSeparated;
 const AUDIT_DIGESTS_SCOPE: bool = false;
 
-/// The admin `audit` stream's FFI reframe slot: delegates the raw-buffer work to the audited
-/// [`crate::plane_host::journal::reframe_bridge`] (so this file stays `deny(unsafe)`) over the native
-/// [`reframe_audit`] decode, which handles BOTH the neutral body and a legacy `serde(AuditRecord)` row.
-extern "C-unwind" fn reframe_audit_ffi(
-    _host: HostCtx,
-    _kind_id: u32,
-    body_ptr: *const u8,
-    body_len: usize,
-    out: *mut MaybeUninit<ReframeOut>,
-    prev_buf: *mut u8,
-    prev_cap: usize,
-    hash_buf: *mut u8,
-    hash_cap: usize,
-    suffix_buf: *mut u8,
-    suffix_cap: usize,
-) -> StatusClass {
-    crate::plane_host::journal::reframe_bridge(
-        body_ptr,
-        body_len,
-        out,
-        prev_buf,
-        prev_cap,
-        hash_buf,
-        hash_cap,
-        suffix_buf,
-        suffix_cap,
-        reframe_audit,
-    )
-}
-
-/// REGISTER the admin `audit` durable stream with the host (once, at boot, before the migration):
-/// `PipeSeparated` framing with the scope OUT of the digest (`digests_scope = 0`), under
-/// [`KIND_ID_AUDIT`]. The admin log has one scope, so its position cache is bounded by construction —
-/// it registers uncapped through the ABI `journal_register`, exactly as a plane's own multi-scope
-/// stream does. The host attaches the durable sink from `app.governance` at register time.
+/// REGISTER the admin `audit` durable stream (once, at boot, before the migration): `PipeSeparated`
+/// framing with the scope OUT of the digest (`digests_scope = 0`), under [`KIND_ID_AUDIT`], decoded in
+/// core by [`reframe_audit`]. The admin log has one scope, so its position cache is bounded by
+/// construction — it registers uncapped. The durable sink is `app.governance`'s store.
 pub(crate) fn register_audit_stream(app: &Arc<crate::state::App>) {
     register_audit_stream_as(KIND_ID_AUDIT, app);
 }
@@ -134,37 +98,17 @@ pub(crate) fn register_audit_stream(app: &Arc<crate::state::App>) {
 /// Register the `audit` stream under an ARBITRARY `kind_id` — production pins [`KIND_ID_AUDIT`], a TEST
 /// drives over a FRESH id so parallel tests never share one process-global chain.
 pub(crate) fn register_audit_stream_as(kind_id: u32, app: &Arc<crate::state::App>) {
-    let kind = KIND_AUDIT.as_bytes();
-    let desc = JournalStreamDesc {
-        size: core::mem::size_of::<JournalStreamDesc>() as u32,
-        version: POD_VERSION,
-        framing: RawFraming::of(AbiFraming::PipeSeparated),
-        digests_scope: 0,
+    stream_registry::register(
         kind_id,
-        _reserved: 0,
-        kind_ptr: kind.as_ptr(),
-        kind_len: kind.len(),
-    };
-    crate::plane_host::with_dispatch_scope(app, |host, vt| {
-        (vt.journal_register
-            .expect("journal_register is a wired host slot"))(
-            host,
-            &desc as *const JournalStreamDesc,
-            reframe_audit_ffi,
-        );
-    });
-}
-
-/// Pack a set of stored bodies into the [`journal_seed`](crate::plane_host::journal) wire shape:
-/// `u32` count LE, then per body a `u32` length LE + its bytes — the inverse of the host's unpack.
-fn pack_bodies(bodies: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(&(bodies.len() as u32).to_le_bytes());
-    for b in bodies {
-        out.extend_from_slice(&(b.len() as u32).to_le_bytes());
-        out.extend_from_slice(b);
-    }
-    out
+        KIND_AUDIT.to_string(),
+        AUDIT_FRAMING,
+        AUDIT_DIGESTS_SCOPE,
+        Decode::Native(reframe_audit),
+        usize::MAX,
+        app.governance
+            .as_ref()
+            .map(|gov| PlaneStoreView::narrow(gov.store())),
+    );
 }
 
 /// The admin audit's LEGACY pre-framed content SUFFIX (Option A leading `|`): `|ts|action|resource|
@@ -299,9 +243,9 @@ fn parse_audit_suffix(content: &[u8]) -> (u64, String, String, String, String, u
 /// writes); a legacy row lacks the required `content` field and falls through to the typed decode,
 /// whose fields rebuild the identical suffix. `scope` is the constant `admin` log, supplied by the
 /// caller and never read from the body.
-fn reframe_audit(scope: &str, body: &[u8]) -> RecordStoreResult<PlaneJournalRecord> {
+fn reframe_audit(scope: &str, body: &[u8]) -> RecordStoreResult<StreamRecord> {
     if let Ok(nb) = decode::<NeutralBody>(body) {
-        return Ok(PlaneJournalRecord::from_parts(
+        return Ok(StreamRecord::from_parts(
             scope.to_string(),
             nb.seq,
             nb.prev_hash,
@@ -319,7 +263,7 @@ fn reframe_audit(scope: &str, body: &[u8]) -> RecordStoreResult<PlaneJournalReco
         &row.outcome,
         &row.principal,
     );
-    Ok(PlaneJournalRecord::from_parts(
+    Ok(StreamRecord::from_parts(
         scope.to_string(),
         row.seq,
         row.prev_hash,
@@ -478,7 +422,6 @@ impl PlaneAuditLog {
     /// chain still resumes from the broken tail.
     pub(crate) fn restore_from_store(
         &self,
-        host: HostCtx,
         store: &dyn PlaneStore,
     ) -> RecordStoreResult<AuditRestored> {
         let scopes = store.list_plane_record_parents(KIND_AUDIT)?;
@@ -521,7 +464,7 @@ impl PlaneAuditLog {
                 }
             }
             out.records += good_bodies.len();
-            if let Some(brk) = self.seed_chain(host, scope, &good_bodies)? {
+            if let Some(brk) = self.seed_chain(scope, &good_bodies)? {
                 crate::diagnostics::diag_error!(
                     crate::diagnostics::PLANE_AUDITLOG_CHAIN_VERIFY_FAILED,
                     break_detail = %brk,
@@ -535,27 +478,17 @@ impl PlaneAuditLog {
         Ok(out)
     }
 
-    /// SEED the admin chain's host-side position from its raw stored bodies through the durable seam.
+    /// SEED the admin chain's position from its raw stored bodies through the stream registry.
     /// On a break the RICH [`ChainBreak`] is recomputed locally (read-only, touching no position) so the
     /// operator diagnostic still names WHICH break and WHERE; a clean verify returns `None`.
-    fn seed_chain(
-        &self,
-        host: HostCtx,
-        scope: &str,
-        bodies: &[Vec<u8>],
-    ) -> RecordStoreResult<Option<ChainBreak>> {
-        let packed = pack_bodies(bodies);
-        let hdr =
-            crate::plane_host::journal::seed_scoped_via_seam(host, self.kind_id, scope, &packed)
-                .map_err(|()| {
-                    RecordStoreError(
-                        "admin audit chain seed failed at the durable seam".to_string(),
-                    )
-                })?;
-        if hdr.broke == 0 {
+    fn seed_chain(&self, scope: &str, bodies: &[Vec<u8>]) -> RecordStoreResult<Option<ChainBreak>> {
+        let broke = stream_registry::seed(self.kind_id, scope, bodies).map_err(|()| {
+            RecordStoreError("admin audit chain seed failed at the durable seam".to_string())
+        })?;
+        if !broke {
             return Ok(None);
         }
-        let records: Vec<PlaneJournalRecord> = bodies
+        let records: Vec<StreamRecord> = bodies
             .iter()
             .map(|b| reframe_audit(scope, b))
             .collect::<RecordStoreResult<_>>()?;
@@ -695,8 +628,8 @@ fn enqueue_pending_audit(scope: &str, suffix: Vec<u8>) {
     });
 }
 
-/// Drain [`PENDING_AUDIT`] through the REAL seam — [`KIND_ID_AUDIT`], hostless (draining never has a
-/// live `HostCtx` to reuse, since a queued row may outlive the call that queued it). Called by both
+/// Drain [`PENDING_AUDIT`] through the REAL stream — [`KIND_ID_AUDIT`], hostless (a queued row may
+/// outlive the call that queued it). Called by both
 /// [`emit`] and [`emit_admin_hostless`] before their own write, so a healthy backend recovers
 /// everything an earlier outage queued before today's mutation is recorded. A row that recovers is
 /// rebuilt into an [`AuditEntry`] via [`parse_audit_suffix`] (the same decode [`audit_entry_from_body`]
@@ -728,14 +661,7 @@ fn queue_unwritten(latch: &AtomicBool, scope: &str, suffix: Vec<u8>) {
 
 fn drain_pending_audit() {
     PENDING_AUDIT.drain_with(
-        |scope, suffix| {
-            crate::plane_host::journal::journal_append_scoped_full_hostless(
-                KIND_ID_AUDIT,
-                scope,
-                suffix,
-            )
-            .map_err(|_| ())
-        },
+        |scope, suffix| stream_registry::append_full(KIND_ID_AUDIT, scope, suffix).map_err(|_| ()),
         |p, seq, prev_hash, hash| {
             let (ts, action, resource, outcome, principal, scheme) = parse_audit_suffix(&p.suffix);
             AUDIT_LOG.push_entry(AuditEntry {
@@ -768,18 +694,10 @@ fn drain_pending_audit() {
 /// The chain position is left untouched on failure, so the next mutation reuses the sequence and the
 /// chain stays contiguous.
 #[allow(dead_code)] // wired at the converted admin/plane call sites; no caller until then
-pub(crate) fn emit(host: HostCtx, scope: &str, suffix: Vec<u8>) {
+pub(crate) fn emit(scope: &str, suffix: Vec<u8>) {
     static WRITE_FAILED_LATCHED: AtomicBool = AtomicBool::new(false);
     drain_pending_audit();
-    let seq = crate::plane_host::journal::journal_append_scoped(
-        host,
-        KIND_ID_AUDIT,
-        scope.as_ptr(),
-        scope.len(),
-        suffix.as_ptr(),
-        suffix.len(),
-    );
-    if seq == Seq::NONE {
+    if stream_registry::append_full(KIND_ID_AUDIT, scope, &suffix).is_err() {
         queue_unwritten(&WRITE_FAILED_LATCHED, scope, suffix);
     } else {
         WRITE_FAILED_LATCHED.store(false, Ordering::Relaxed);
@@ -851,7 +769,7 @@ pub(crate) fn migrate_legacy_table_to_plane_records(
 /// then RESTORE the audit log FROM `plane_records` — the ONE durable audit source now. The restore
 /// seeds BOTH the host-side chain position (so a later append continues the same chain) AND the
 /// process-global [`AUDIT_LOG`] read-model ring `GET /audit` serves, from the persisted SEAM records —
-/// replacing the legacy-table restore. Driven with a live `HostCtx` over `app`. A restore chain-verify
+/// replacing the legacy-table restore. A restore chain-verify
 /// break is logged inside [`PlaneAuditLog`]; a migration or store read error is surfaced here as the
 /// boot diagnostic.
 pub(crate) fn register_and_migrate(
@@ -881,23 +799,21 @@ pub(crate) fn register_and_migrate(
     // ring from the persisted seam records, so the seam read source is populated from the durable tail
     // at boot exactly as the legacy ring was — but FROM `plane_records`, not the legacy table.
     let plane_store = PlaneStoreView::narrow(store.clone());
-    crate::plane_host::with_dispatch_scope(app, |host, _vt| {
-        match AUDIT_LOG.restore_from_store(host, plane_store.as_ref()) {
-            Ok(restored) if restored.records > 0 || restored.unreadable > 0 => tracing::info!(
-                records = restored.records,
-                unreadable = restored.unreadable,
-                chain_breaks = restored.chain_breaks.len(),
-                "admin audit restored from the durable plane_records seam"
-            ),
-            Ok(_) => {}
-            Err(e) => crate::diagnostics::diag_warn!(
-                crate::diagnostics::BOOT_AUDIT_RESTORE_READ_FAILED,
-                error = %e.0,
-                "could not read the durable audit plane_records to seed the journal seam; the seam \
-                 read model starts empty and resumes from the persisted tail on the next successful read"
-            ),
-        }
-    });
+    match AUDIT_LOG.restore_from_store(plane_store.as_ref()) {
+        Ok(restored) if restored.records > 0 || restored.unreadable > 0 => tracing::info!(
+            records = restored.records,
+            unreadable = restored.unreadable,
+            chain_breaks = restored.chain_breaks.len(),
+            "admin audit restored from the durable plane_records seam"
+        ),
+        Ok(_) => {}
+        Err(e) => crate::diagnostics::diag_warn!(
+            crate::diagnostics::BOOT_AUDIT_RESTORE_READ_FAILED,
+            error = %e.0,
+            "could not read the durable audit plane_records to seed the journal seam; the seam \
+             read model starts empty and resumes from the persisted tail on the next successful read"
+        ),
+    }
 }
 
 /// THE ADMIN-AUDIT CHOKEPOINT EMITTER, hostless. Called once from
@@ -905,8 +821,8 @@ pub(crate) fn register_and_migrate(
 /// — with the SAME `ts` `record_by` sealed the legacy ring under (never a second clock read, which
 /// would let the seam and the legacy ring diverge by up to a second). `record_by` is a method on the
 /// process-global `AUDIT` static and has NO `app`/host to open a dispatch scope with, so it reaches the
-/// chain through the HOSTLESS seam append ([`crate::plane_host::journal::journal_append_scoped_full_hostless`]),
-/// which resolves the registered `audit` stream from the process-global stream registry, mints
+/// chain through the HOSTLESS append ([`stream_registry::append_full`]), which resolves the registered
+/// `audit` stream from the process-global stream registry, mints
 /// `(seq, prev_hash, hash)` through the ONE core chain, and persists the neutral body — then the minted
 /// record is pushed into the process-global [`AUDIT_LOG`] read-model ring.
 ///
@@ -928,11 +844,7 @@ pub(crate) fn emit_admin_hostless(
     // actually has to run, not just on the still-dead-code `emit`.
     drain_pending_audit();
     let suffix = audit_suffix_safe(ts, action, resource, outcome, principal);
-    match crate::plane_host::journal::journal_append_scoped_full_hostless(
-        KIND_ID_AUDIT,
-        ADMIN_LOG,
-        &suffix,
-    ) {
+    match stream_registry::append_full(KIND_ID_AUDIT, ADMIN_LOG, &suffix) {
         Ok((seq, prev_hash, hash)) => {
             WRITE_FAILED_LATCHED.store(false, Ordering::Relaxed);
             AUDIT_LOG.push_entry(AuditEntry {
@@ -973,8 +885,8 @@ pub fn emit_admin_hostless_now(action: &str, resource: &str, outcome: &str, prin
 
 /// MIRROR one admin-audit record onto the durable journal seam beside its legacy-ring write. Mints the
 /// timestamp plane-side (the same clock the ring uses at the same logical point) and appends the
-/// scopeless suffix under the constant `admin` scope, opening a fresh dispatch scope to reach the
-/// host-side chain. Fire-and-forget (see [`emit`]): it NEVER fails the mutation it records. The one call
+/// scopeless suffix under the constant `admin` scope on the registered `audit` stream.
+/// Fire-and-forget (see [`emit`]): it NEVER fails the mutation it records. The one call
 /// a plane-side audit site adds while the ring stays authoritative for reads (the dual-write window).
 #[allow(dead_code)] // called from the plane-gated audit sites; no caller with every plane compiled out
 pub(crate) fn mirror(
@@ -986,10 +898,10 @@ pub(crate) fn mirror(
 ) {
     let ts = crate::plane_host::clock_now_secs_over(app);
     let suffix = audit_suffix_safe(ts, action, resource, outcome, principal);
-    crate::plane_host::with_dispatch_scope(app, |host, _| emit(host, ADMIN_LOG, suffix));
+    emit(ADMIN_LOG, suffix);
 }
 
-// ── TEST HARNESS — the chain position is host-side now, so a test drives it over a host ────────────
+// ── TEST HARNESS — a test drives the chain over its own registered stream id ───────────────────────
 
 /// TEST ONLY: a fresh, process-unique `audit` stream id, well above the production ids (1/2/3) and the
 /// `plane_host::journal` test range (base 10_000) and each plane's own reserved test-id ranges
@@ -1002,7 +914,7 @@ pub(crate) fn fresh_test_kind_id() -> u32 {
 
 /// TEST ONLY: the PRODUCTION `audit` stream ([`KIND_ID_AUDIT`]), registered ONCE against a shared
 /// no-sink app so the live-server `GET /audit` tests mint sequences without racing to re-register (a
-/// re-register resets every position — see [`crate::plane_host::journal::register_stream`]). Audit is the ONLY seam stream with a
+/// re-register resets every position — see [`stream_registry::register`]). Audit is the ONLY seam stream with a
 /// mounted read verb (`get_audit`) exercised by live-server assertions, so it is the only one that
 /// needs the process-wide registration the test HTTP harness never boots through `register_and_migrate`.
 ///
@@ -1045,7 +957,6 @@ pub(crate) fn ensure_global_audit_stream_registered() {
 #[cfg(test)]
 pub(crate) struct AuditTestHarness {
     pub(crate) log: PlaneAuditLog,
-    pub(crate) app: Arc<crate::state::App>,
 }
 
 #[cfg(test)]
@@ -1058,36 +969,22 @@ impl AuditTestHarness {
         register_audit_stream_as(kind_id, &app);
         Self {
             log: PlaneAuditLog::with_kind_id(kind_id),
-            app,
         }
-    }
-
-    /// Drive one synchronous chain op with a live `HostCtx` over this harness's app.
-    pub(crate) fn host<R>(&self, f: impl FnOnce(HostCtx) -> R) -> R {
-        crate::plane_host::with_dispatch_scope(&self.app, |h, _| f(h))
     }
 
     pub(crate) fn restore_from_store(
         &self,
         store: &dyn PlaneStore,
     ) -> RecordStoreResult<AuditRestored> {
-        self.host(|host| self.log.restore_from_store(host, store))
+        self.log.restore_from_store(store)
     }
 
-    /// Append one record through the SEAM over THIS harness's isolated stream id and return the MINTED
+    /// Append one record through the stream registry over THIS harness's isolated stream id and return the MINTED
     /// `(seq, prev_hash, hash)`. The production [`emit`] pins [`KIND_ID_AUDIT`] (which a parallel test
     /// must not share) and surfaces only fire-and-forget; a test drives the same chain-mint path over
     /// its own id and reads back the link the append sealed.
     pub(crate) fn emit_full(&self, scope: &str, suffix: Vec<u8>) -> (u64, String, String) {
-        self.host(|host| {
-            crate::plane_host::journal::journal_append_scoped_full(
-                host,
-                self.log.kind_id,
-                scope,
-                &suffix,
-            )
-            .expect("seam append")
-        })
+        stream_registry::append_full(self.log.kind_id, scope, &suffix).expect("seam append")
     }
 }
 

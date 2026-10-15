@@ -60,22 +60,27 @@ pub fn mint_request_body(ttl_secs: u64, config: &SessionConfig) -> Result<Vec<u8
 pub struct Minted {
     /// The `ek_` secret the browser presents.
     pub value: String,
-    /// When it expires, in Unix seconds; `0` when the provider did not say.
+    /// When it expires, in Unix seconds, as the provider stated it. Never zero: a secret whose
+    /// expiry the provider did not state is refused, not handed to a browser as "expires at 0".
     pub expires_at_unix: u64,
 }
 
 #[derive(serde::Deserialize)]
 struct ClientSecretResponse {
     value: String,
-    #[serde(default)]
-    expires_at: u64,
+    expires_at: Option<u64>,
 }
 
 /// Read a successful mint answer's body.
 ///
 /// # Errors
-/// A body that does not parse, or a value that is not an `ek_` ephemeral secret, each with the text
-/// the caller reports.
+/// A body that does not parse, a value that is not an `ek_` ephemeral secret, or a secret with no
+/// stated expiry, each with the text the caller reports.
+///
+/// THE EXPIRY IS PART OF THE SECRET (X-2204). A browser holds an `ek_` only for as long as it says
+/// it lives; one the provider minted without saying when it dies was carried out as
+/// `expires_at_unix: 0`, a figure that is not an instant, so a client could neither schedule its
+/// refresh nor tell the secret was already past. An answer with no `expires_at`, or `0`, is refused.
 pub fn read_minted(body: &[u8]) -> Result<Minted, String> {
     let parsed: ClientSecretResponse = serde_json::from_slice(body).map_err(|e| {
         format!(
@@ -86,9 +91,13 @@ pub fn read_minted(body: &[u8]) -> Result<Minted, String> {
     if !parsed.value.starts_with(EK_PREFIX) {
         return Err("client-secret response value is not an ek_ ephemeral secret".into());
     }
+    let expires_at_unix = parsed
+        .expires_at
+        .filter(|at| *at != 0)
+        .ok_or("client-secret response states no expiry for the ek_ secret")?;
     Ok(Minted {
         value: parsed.value,
-        expires_at_unix: parsed.expires_at,
+        expires_at_unix,
     })
 }
 

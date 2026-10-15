@@ -71,6 +71,9 @@ pub(crate) struct PoolKey {
     /// Whether the dial was judged under the need's private reach to the destination: a line
     /// dialled under one is never lent to an exchange judged without it.
     pub(crate) reach: bool,
+    /// The registration whose own sealed anchors the dial was held to (`None`: the destination's):
+    /// a line that presented one registration's client identity is never lent to another's open.
+    pub(crate) anchored_as: Option<String>,
 }
 
 /// One pooled line: in use (`idle` = `None`), or idle since the instant named.

@@ -57,7 +57,8 @@ use busbar_kernel::{
         UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR, USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
     },
     handlers::{request_handler, Op, OpDispatch},
-    proto::convert_headers,
+    // The kernel's codec host: the host services every codec the linked engine drives is handed.
+    proto::{convert_headers, CODEC_HOST},
 };
 // App-retype WEDGE 3 (THE FLIP): the engine no longer names core's `state::App`. The forward
 // path threads the neutral `host: &Arc<dyn EngineHost>` (minted core-side, carried on the arrival) and
@@ -118,8 +119,7 @@ pub(crate) use busbar_kernel::proxy::{
 // historical `EgressClientSpec`/`EgressError` short names are preserved via the same aliases core used.
 #[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use busbar_kernel::egress::engine::{
-    egress_request, install_proxy_tunnel_if_configured, EngineError as EgressError,
-    EngineSpec as EgressClientSpec,
+    egress_request, EngineError as EgressError, EngineSpec as EgressClientSpec,
 };
 
 // The NEUTRAL content-type / disposition / error-KIND vocabulary named at its TRUE substrate home
@@ -254,6 +254,9 @@ mod probe_guard_tests;
 #[path = "tests/probe_release_owner_tests.rs"]
 mod probe_release_owner_tests;
 #[cfg(test)]
+#[path = "tests/provider_keys_drift_tests.rs"]
+mod provider_keys_drift_tests;
+#[cfg(test)]
 #[path = "tests/request_short_circuit_tests.rs"]
 mod request_short_circuit_tests;
 #[cfg(test)]
@@ -286,6 +289,9 @@ mod translate_offload_tests;
 #[cfg(test)]
 #[path = "tests/usage_tap_tests.rs"]
 mod usage_tap_tests;
+#[cfg(test)]
+#[path = "tests/view_parity_tests.rs"]
+mod view_parity_tests;
 // `alloc_gate` (the per-request allocation-count PERF gate) needs THIS crate's test binary to install
 // the counting `#[global_allocator]` its instrument reads (`crate::CountingJemalloc`), ported below in
 // `lib.rs` under the same target gate.

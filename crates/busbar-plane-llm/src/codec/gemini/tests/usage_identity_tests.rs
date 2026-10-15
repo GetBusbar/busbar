@@ -191,7 +191,9 @@ fn billed_figures_for_every_recording_are_pinned() {
         ("grounding", RESP_GROUNDING, 50, 172),      // 18 prompt + 32 tool-use; 89 + 83 out
     ] {
         let v: serde_json::Value = serde_json::from_str(body).expect("parses");
-        let ir = reader.read_response(&v).expect("read");
+        let ir = reader
+            .read_response(crate::codec::test_host::HOST, &v)
+            .expect("read");
         assert_eq!(ir.usage.input_tokens, want_in, "{name}: input_tokens");
         assert_eq!(ir.usage.output_tokens, want_out, "{name}: output_tokens");
         // No cache was involved in any of these captures.
@@ -217,7 +219,10 @@ fn billed_figures_for_every_recording_are_pinned() {
 #[test]
 fn a_grounded_turn_bills_the_tool_use_term() {
     let v: serde_json::Value = serde_json::from_str(RESP_GROUNDING).expect("parses");
-    let ir = Protocol::gemini().reader().read_response(&v).expect("read");
+    let ir = Protocol::gemini()
+        .reader()
+        .read_response(crate::codec::test_host::HOST, &v)
+        .expect("read");
     assert_eq!(
         ir.usage.input_tokens, 50,
         "18 uncached prompt + the 32-token additive tool-use term"
@@ -260,7 +265,7 @@ fn an_unmodelled_term_is_reported_and_ledgered_as_unitemized_tokens() {
     });
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     // The buckets exactly as sent; the 7 tokens no counter itemizes are folded into none of them.
     assert_eq!(ir.usage.input_tokens, 10);
@@ -300,7 +305,7 @@ fn a_total_above_its_terms_ledgers_the_itemized_counts_on_every_path() {
     let body: serde_json::Value = serde_json::from_str(RESP).unwrap();
     let ir = Protocol::gemini()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read");
     let ledgered = ir.usage.to_token_usage();
     assert_eq!((ledgered.input, ledgered.output), (50, 7));
@@ -348,7 +353,7 @@ fn a_total_that_closes_or_is_absent_adds_nothing() {
         });
         let ir = Protocol::gemini()
             .reader()
-            .read_response(&body)
+            .read_response(crate::codec::test_host::HOST, &body)
             .expect("read");
         assert_eq!((ir.usage.input_tokens, ir.usage.output_tokens), (10, out));
     }
@@ -379,8 +384,13 @@ fn a_truncated_grounded_turn_bills_the_tool_use_term_too() {
 #[test]
 fn the_writer_reconstructs_the_recorded_wire_shape() {
     let v: serde_json::Value = serde_json::from_str(RESP_GROUNDING).expect("parses");
-    let ir = Protocol::gemini().reader().read_response(&v).expect("read");
-    let out = Protocol::gemini().writer().write_response(&ir);
+    let ir = Protocol::gemini()
+        .reader()
+        .read_response(crate::codec::test_host::HOST, &v)
+        .expect("read");
+    let out = Protocol::gemini()
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     let meta = &out["usageMetadata"];
     assert_eq!(
         meta["promptTokenCount"], 18,
@@ -405,7 +415,9 @@ fn a_reconciling_turn_reports_no_discrepancy() {
         ("thinking", RESP_THINKING),
     ] {
         let v: serde_json::Value = serde_json::from_str(body).expect("parses");
-        let ir = reader.read_response(&v).expect("read");
+        let ir = reader
+            .read_response(crate::codec::test_host::HOST, &v)
+            .expect("read");
         assert_eq!(
             ir.usage.detail.usage_identity_note, None,
             "{name}: counters reconcile, so there is nothing to report"
@@ -463,7 +475,10 @@ fn sse_early_frame_usage_metadata_carries_no_counters() {
     );
     // Which is exactly why the identity check treats an absent total as "nothing to check"
     // rather than as zero: this frame must not be reported as a discrepancy.
-    let ir = Protocol::gemini().reader().read_response(&v).expect("read");
+    let ir = Protocol::gemini()
+        .reader()
+        .read_response(crate::codec::test_host::HOST, &v)
+        .expect("read");
     assert_eq!(
         ir.usage.detail.usage_identity_note, None,
         "a counterless frame states no total, so there is no identity to violate"
@@ -515,8 +530,8 @@ fn relay_grounded_stream() -> (String, busbar_contract::billing::TokenUsage) {
     let mut t = crate::codec::proto_stream::StreamTranslate::new("openai", "gemini")
         .expect("openai ingress over a gemini egress");
     t.set_client_include_usage(true);
-    let mut out = t.feed(GROUNDED_STREAM.as_bytes());
-    out.extend(t.finish());
+    let mut out = t.feed(crate::codec::test_host::HOST, GROUNDED_STREAM.as_bytes());
+    out.extend(t.finish(crate::codec::test_host::HOST));
     let billed = t
         .usage()
         .expect("the stream's usage is captured for billing")
@@ -634,7 +649,7 @@ fn every_usage_count_in_the_wire_lock_is_ledgered_in_its_class() {
         };
         let buffered = Protocol::gemini()
             .reader()
-            .read_response(&body)
+            .read_response(crate::codec::test_host::HOST, &body)
             .expect("read")
             .usage
             .to_token_usage();

@@ -1577,6 +1577,7 @@ pub(crate) async fn reset_overlay_section(
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
                     Some(&snapshot),
+                    &snapshot.root_rules,
                 )
             })
             .map_err(AdminError::Validation)?;
@@ -2263,6 +2264,7 @@ pub(crate) fn rebuild_app_from_disk(
         base_group_names,
         (Some(config_path), Some(providers_path)),
         Some(current.as_ref()),
+        &current.root_rules,
     )
 }
 
@@ -2522,6 +2524,7 @@ pub(crate) async fn apply_config(
                             snapshot.providers_path.clone(),
                         ),
                         Some(&snapshot),
+                        &snapshot.root_rules,
                     )
                 })
                 .map_err(AdminError::Validation)?;
@@ -3053,6 +3056,7 @@ pub(crate) async fn put_config_settings(
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
                     Some(&snapshot),
+                    &snapshot.root_rules,
                 )
             })
             .map_err(AdminError::Validation)?;
@@ -5199,7 +5203,10 @@ pub(crate) async fn openapi(
     if let Some(filtered) = openapi_for_configured_planes(&openapi_json(), configured) {
         return (
             StatusCode::OK,
-            [(CONTENT_TYPE, busbar_kernel::proxy::APPLICATION_JSON), VARY],
+            [
+                (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
+                VARY,
+            ],
             filtered,
         )
             .into_response();
@@ -5208,7 +5215,7 @@ pub(crate) async fn openapi(
         (
             StatusCode::OK,
             [
-                (CONTENT_TYPE, busbar_kernel::proxy::APPLICATION_JSON),
+                (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
                 (axum::http::header::CONTENT_ENCODING, "gzip"),
                 VARY,
             ],
@@ -5218,7 +5225,10 @@ pub(crate) async fn openapi(
     } else {
         (
             StatusCode::OK,
-            [(CONTENT_TYPE, busbar_kernel::proxy::APPLICATION_JSON), VARY],
+            [
+                (CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON),
+                VARY,
+            ],
             openapi_json(),
         )
             .into_response()

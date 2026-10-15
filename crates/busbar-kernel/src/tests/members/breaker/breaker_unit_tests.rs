@@ -492,3 +492,54 @@ fn a_refusal_never_reports_a_state_that_would_have_admitted() {
         "an admission was refused with a state that would have admitted"
     );
 }
+
+/// RED (ARCHITECT row 68): six 502s in a row that the plane reads as HEALTHY are six successes:
+/// they never trip a cell, even one that benches nothing below its trip threshold. The same six read
+/// as TRANSIENT trip it, so the cell under test is one six failures do trip.
+#[test]
+fn six_healthy_502s_in_a_row_do_not_trip_a_cell() {
+    use busbar_kernel_breaker::classify::{Reading, WireFault};
+    use busbar_kernel_breaker::port::{classify_upstream, UpstreamStatus};
+    let cfg = BreakerCfg {
+        bench_below_trip_threshold: false,
+        ..BreakerCfg::default()
+    };
+    let read = |fault| {
+        classify_upstream(UpstreamStatus {
+            reading: Reading::Answered(Some(fault)),
+            retry_after: None,
+        })
+        .outcome
+    };
+    assert_eq!(read(WireFault::Healthy), Outcome::Success);
+    let healthy: BreakerUnit = BreakerUnit::new();
+    let now = 1_000;
+    for i in 0..6 {
+        let tripped = healthy.observe(
+            "pool",
+            DestinationId::new(1),
+            read(WireFault::Healthy),
+            &cfg,
+            now,
+            &route_token(),
+        );
+        assert!(!tripped, "healthy answer {i} must not trip");
+    }
+    assert_eq!(
+        healthy.state("pool", DestinationId::new(1), now, &route_token()),
+        LaneState::Ready
+    );
+
+    let transient: BreakerUnit = BreakerUnit::new();
+    let tripped = (0..6).any(|_| {
+        transient.observe(
+            "pool",
+            DestinationId::new(1),
+            read(WireFault::Transient),
+            &cfg,
+            now,
+            &route_token(),
+        )
+    });
+    assert!(tripped, "six transient 502s trip the same cell");
+}

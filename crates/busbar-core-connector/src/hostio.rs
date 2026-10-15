@@ -26,15 +26,18 @@
 use std::collections::HashMap;
 use std::io::{self, Read, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::task::{Context, Poll, Waker};
+use std::time::Duration;
 
 use busbar_contract::abi::host::io::{DIR_BOTH, DIR_READ, DIR_WRITE};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::conn::Program;
 use busbar_contract::io_host::{IoHost, IoRefusal, IoResult, Spawn};
 
+use crate::compose::{DEFAULT_OPEN_TIMEOUT, MAX_PENDING_LOOKUPS};
 use crate::io::{self as reactor, Direction, Registered};
 use crate::socket::{self, Sock};
 
@@ -46,8 +49,8 @@ pub enum Admission {
     Dial(Vec<String>),
     /// `listen` on exactly this bind (`ip:port`).
     Bind(String),
-    /// `spawn` of exactly this program.
-    Spawn(Program),
+    /// `spawn` of exactly this program, its environment references as config time resolved them.
+    Spawn(Program, crate::spawn_env::HeldEnv),
 }
 
 /// Why an `open` failed, as the connector's own dial reported it: refused (no one listens), or
@@ -596,14 +599,14 @@ impl IoHost for HostIo {
 
     fn spawn(&self, owner: u64, ticket: Ticket, spawn: &Spawn<'_>) -> IoResult<u64> {
         // The admitted program's environment REFERENCES: never in the destination the carrier was
-        // handed (it carries the written values only), resolved below, at the spawn.
-        let mut env_refs = Vec::new();
+        // handed (it carries the written values only), held since config time resolved them.
+        let mut held = None;
         self.admits(ticket, |a| {
-            let admitted = matches!(a, Admission::Spawn(p) if p.command == spawn.program
+            let admitted = matches!(a, Admission::Spawn(p, _) if p.command == spawn.program
                 && p.args.iter().map(String::as_str).eq(spawn.args.iter().copied())
                 && p.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).eq(spawn.env.iter().copied()));
-            if let (true, Admission::Spawn(p)) = (admitted, a) {
-                env_refs.clone_from(&p.env_refs);
+            if let (true, Admission::Spawn(_, env)) = (admitted, a) {
+                held = Some(env.clone());
             }
             admitted
         })?;
@@ -615,20 +618,34 @@ impl IoHost for HostIo {
         if tokio::runtime::Handle::try_current().is_err() {
             return Err(IoRefusal::Failed(reactor::NOT_ON_A_WORKER.into()));
         }
-        // The environment's references resolve here, at the spawn, and nowhere earlier: a value
-        // exists only in the child's environment. One that does not resolve spawns nothing.
-        let resolved = crate::compose::resolve_spawn_env(&env_refs).map_err(IoRefusal::Refused)?;
+        // The environment's references were resolved at config time and are HELD for the spawn
+        // (`crate::spawn_env`): the spawn loads them and resolves nothing, so no secret resolution
+        // runs on the request a spawn serves. One that did not resolve at its last load or refresh
+        // spawns nothing.
+        let held = held.map(|env| env.now());
+        let resolved = match held.as_deref().map(crate::spawn_env::Resolved::env) {
+            None => &[][..],
+            Some(Ok(env)) => env,
+            Some(Err(why)) => return Err(IoRefusal::Refused(why.to_owned())),
+        };
         // Two OS pipes: the child reads one and writes the other; the host keeps the far ends.
         // The child's error output is the host's own (a spawned command inherits it).
         let (child_reads, host_writes) = std::io::pipe().map_err(|e| failed(&e))?;
         let (host_reads, child_writes) = std::io::pipe().map_err(|e| failed(&e))?;
         // The command (and the child's ends of the pipes it holds) is dropped with this statement,
         // so the child sees the end of its input when the host closes its end.
+        // The held values are revealed into the child's environment under the kernel's seal (Part
+        // 2 #54): the one place a program's secret leaves the host's records.
+        let seal = busbar_kernel::seal::lend();
         let child = tokio::process::Command::new(spawn.program)
             .args(spawn.args)
             .env_clear()
             .envs(spawn.env.iter().copied())
-            .envs(resolved.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .envs(
+                resolved
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.expose(&seal).as_str())),
+            )
             .stdin(child_reads)
             .stdout(child_writes)
             .kill_on_drop(true)
@@ -678,15 +695,24 @@ impl IoHost for HostIo {
 /// would quietly decide which address the guard gets to judge, and the guard judges all of them; a
 /// name answering one address under both a v4 and a v6 query is ONE fact.
 ///
-/// ## Why a thread of its own
+/// ## Why a thread of its own, and why it is never joined
 ///
 /// The seam is synchronous, so this runs `getaddrinfo` and waits. Not `Handle::current().block_on`
 /// and not `block_in_place`: both make assumptions about the caller (that there IS a runtime, that
 /// it is multi-threaded) that a synchronous seam cannot make, and its callers reach it from
 /// different postures — a foreign thread already inside `Runtime::block_on`, a boxed future on a
 /// shared worker, a plain `async fn`. A thread with its own current-thread runtime has no such
-/// precondition and cannot panic on the caller's behalf. (Moved verbatim from the kernel's deleted
+/// precondition and cannot panic on the caller's behalf. (Moved from the kernel's deleted
 /// `net_guard::SystemResolver`.)
+///
+/// The wait is BOUNDED by the dial's own bound, [`DEFAULT_OPEN_TIMEOUT`] (the open's bound when
+/// the caller states none; the seam carries no deadline, so this lookup states none): `getaddrinfo`
+/// can wedge, and a join with no bound would hold the caller for as long as it does. The answer
+/// comes back over a channel the caller waits on for at most that long; a lookup with no answer by
+/// then is a resolution FAILURE (`Err`), which the guard reads as an unresolvable name. The wedged
+/// thread is let go, never joined: it ends when its lookup does, and its answer, if one comes, has
+/// no one to hear it. Let-go threads are CAPPED: at most [`MAX_PENDING_LOOKUPS`] lookups are in
+/// flight at once, and one more is refused at once (an unresolvable name) until one ends.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SystemNames;
 
@@ -696,29 +722,93 @@ impl busbar_kernel_egress::trust::net::Resolver for SystemNames {
         // by the caller that built the pin, so asking the resolver about one would be asking a
         // second question.
         let target = format!("{host}:0");
-        std::thread::scope(|s| {
-            s.spawn(|| {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| format!("name lookup: could not start a runtime: {e}"))?;
-                rt.block_on(async move {
-                    let answered = tokio::net::lookup_host(target)
-                        .await
-                        .map_err(|e| e.to_string())?;
-                    let mut out: Vec<IpAddr> = Vec::new();
-                    for sa in answered {
-                        let ip = sa.ip();
-                        if !out.contains(&ip) {
-                            out.push(ip);
-                        }
+        within(DEFAULT_OPEN_TIMEOUT, move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| format!("name lookup: could not start a runtime: {e}"))?;
+            rt.block_on(async move {
+                let answered = tokio::net::lookup_host(target)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                let mut out: Vec<IpAddr> = Vec::new();
+                for sa in answered {
+                    let ip = sa.ip();
+                    if !out.contains(&ip) {
+                        out.push(ip);
                     }
-                    Ok(out)
-                })
+                }
+                Ok(out)
             })
-            .join()
-            .map_err(|_| "name lookup: the worker thread panicked".to_string())?
         })
+    }
+}
+
+/// The name lookups in flight now, against [`MAX_PENDING_LOOKUPS`].
+static PENDING_LOOKUPS: AtomicUsize = AtomicUsize::new(0);
+
+/// Runs one `lookup` on a thread of its own and waits for its answer at most `bound`: no answer by
+/// then, or a lookup that died without one, is an `Err`. The thread is never joined, so a lookup
+/// that never returns holds only itself and one of the [`MAX_PENDING_LOOKUPS`] places.
+fn within<F>(bound: Duration, lookup: F) -> Result<Vec<IpAddr>, String>
+where
+    F: FnOnce() -> Result<Vec<IpAddr>, String> + Send + 'static,
+{
+    within_capped(bound, MAX_PENDING_LOOKUPS, &PENDING_LOOKUPS, lookup)
+}
+
+/// [`within`] with its cap and its count stated: a lookup takes a place in `in_flight` BEFORE its
+/// thread starts, and with `cap` places taken it is refused at once, no thread started. The place is
+/// given back when the lookup ends (answers, errs or panics), even if no one is waiting for it.
+fn within_capped<F>(
+    bound: Duration,
+    cap: usize,
+    in_flight: &'static AtomicUsize,
+    lookup: F,
+) -> Result<Vec<IpAddr>, String>
+where
+    F: FnOnce() -> Result<Vec<IpAddr>, String> + Send + 'static,
+{
+    let place = LookupPlace::take(cap, in_flight)
+        .ok_or_else(|| format!("name lookup: {cap} lookups already in flight"))?;
+    let (answer, answered) = std::sync::mpsc::sync_channel(1);
+    std::thread::Builder::new()
+        .name("busbar-names".into())
+        .spawn(move || {
+            // Given back when this thread ends, an unwinding panic included.
+            let _place = place;
+            // The caller may have stopped waiting: then no one hears this, and that is fine.
+            let _ = answer.send(lookup());
+        })
+        // A thread that never started dropped its closure, and the place with it.
+        .map_err(|e| format!("name lookup: could not start a thread: {e}"))?;
+    match answered.recv_timeout(bound) {
+        Ok(found) => found,
+        Err(RecvTimeoutError::Timeout) => Err(format!("name lookup: no answer within {bound:?}")),
+        Err(RecvTimeoutError::Disconnected) => {
+            Err("name lookup: the worker thread panicked".to_string())
+        }
+    }
+}
+
+/// One taken place among the lookups in flight; dropping it gives the place back.
+struct LookupPlace(&'static AtomicUsize);
+
+impl LookupPlace {
+    /// Takes a place if fewer than `cap` are taken.
+    fn take(cap: usize, in_flight: &'static AtomicUsize) -> Option<Self> {
+        in_flight
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                (n < cap).then_some(n + 1)
+            })
+            .ok()
+            .map(|_| Self(in_flight))
+    }
+}
+
+impl Drop for LookupPlace {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
     }
 }
 

@@ -5,8 +5,8 @@
 use super::*;
 use crate::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
 use busbar_contract::caps::KernelSeal;
-use busbar_contract::Registration;
 use busbar_kernel::store::{now as store_now, BreakerState};
+use busbar_kernel::Registration;
 use serde_json::json;
 
 /// A kernel seal for the length of one leg, and the step-5 token minted from it — exactly as

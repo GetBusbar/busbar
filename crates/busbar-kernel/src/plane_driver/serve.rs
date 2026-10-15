@@ -19,8 +19,10 @@
 //!   past the snapshot never crosses.
 //! - A [`ROUTE_PUBLIC`] route is never on the admin table: it is served on the DATA listener's
 //!   mount at its own target to a caller that presents no busbar credential ([`answer_public`],
-//!   SEAM-4o), by the same `serve` op, the data listener's arrival gates (its body cap and rate
-//!   gates) still applying; it meters nothing, and its audit row is written as an admin route's.
+//!   SEAM-4o), by the same `serve` op (a route stating `ROUTE_CARRIES_OWN_TOKEN` is lent the
+//!   request's `authorization`, the plane's own token, and no other credential field), the data
+//!   listener's arrival gates (its body cap and rate gates) still applying; it meters nothing, and
+//!   its audit row is written as an admin route's.
 
 use std::sync::{Arc, Mutex, PoisonError, RwLock};
 
@@ -32,7 +34,8 @@ use busbar_contract::abi::host::conn::connector::NEVER_KEPT;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    FieldList, OutField, ServeIn, ServeOut, AUDIT_APPLIED, AUDIT_REJECTED, ROUTE_PUBLIC,
+    FieldList, OutField, ServeIn, ServeOut, AUDIT_APPLIED, AUDIT_REJECTED, ROUTE_CARRIES_OWN_TOKEN,
+    ROUTE_PUBLIC,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::ReasonCode;
@@ -275,12 +278,19 @@ pub async fn answer_public(
     let Some((table, index, name)) = found else {
         return status_only(404);
     };
+    let route = &table.routes[index];
+    // A ROUTE THE PLANE ADDRESSES BY ITS OWN TOKEN (`ROUTE_CARRIES_OWN_TOKEN`; `BUSBAR-1.6.0.md`
+    // l.4882): `authorization` crosses, as busbar's own correlation value and no caller's
+    // credential; every other never-kept field stays struck.
+    let own_token = route.flags & ROUTE_CARRIES_OWN_TOKEN != 0;
     let head: HeadFields = headers
         .iter()
-        .filter(|(n, _)| !NEVER_KEPT.contains(&n.as_str()))
+        .filter(|(n, _)| {
+            !NEVER_KEPT.contains(&n.as_str())
+                || (own_token && *n == axum::http::header::AUTHORIZATION)
+        })
         .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
         .collect();
-    let route = &table.routes[index];
     let served = serve(
         &*table.calls,
         table.caps,
@@ -291,6 +301,19 @@ pub async fn answer_public(
         body,
     )
     .await;
+    // Its record writes go before its reply, as an admin route's do (SEAM-L(t)): a public route's
+    // answer that moved the plane's records (a callback's reported move) is written, never dropped.
+    let served = match served {
+        Ok(s) => write_served_records(
+            table.records.as_ref(),
+            &super::CoreAudit,
+            &s,
+            AuthPrincipal(None).actor_id(),
+        )
+        .await
+        .map(|()| s),
+        Err(e) => Err(e),
+    };
     match served.and_then(|s| reply(&s).map(|resp| (s.audit, resp))) {
         Ok((audit, resp)) => {
             let outcome = match audit {

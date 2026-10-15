@@ -16,8 +16,12 @@ pub(crate) struct Lane {
     pub(crate) model: String,
     pub(crate) provider: String,
     pub(crate) base_url: String,
+    /// The `user:pass@` the operator's base URL spelled, as the kernel holds it: opaque, handed back
+    /// to the kernel's egress hop on every request this lane sends, which presents it as 1.5.5 did
+    /// (row 74, F25). This plane never reads it. TRANSITIONAL: deleted with busbar-llm (row 155 C).
+    pub(crate) url_userinfo: Option<busbar_kernel::egress::engine::UrlUserinfo>,
     /// THE DIAL TARGET THIS LANE NAMES, as the node's interned `&'static str` — `base_url` seated
-    /// through `busbar_contract::Registration` ONCE, here, when the generation's lane table is
+    /// through `busbar_kernel::Registration` ONCE, here, when the generation's lane table is
     /// built. A planned leg names its upstream as a borrowed static string, and a configured
     /// `base_url` is a runtime `String`, so something has to bridge them; doing it while the plan is
     /// being built means one process-wide vocabulary acquisition per candidate per request to
@@ -40,9 +44,9 @@ pub(crate) struct Lane {
     /// writer reads it; other protocols ignore `SigningContext::host`.
     pub(crate) signing_host: String,
     /// The resolved provider credential (api key / SigV4 secret material / OAuth credential string),
-    /// held [`busbar_contract::redacted::Redacted`] so it never leaks via `Debug`/logs and zeroizes on drop. Reach
-    /// the plaintext only at the egress seam via `expose_secret()`.
-    pub(crate) api_key: busbar_contract::redacted::Redacted<String>,
+    /// held [`busbar_contract::redacted::Secret`] so it never leaks via `Debug`/logs and zeroizes on drop. Reach
+    /// the plaintext only at the egress seam via the sealed `expose(seal)`.
+    pub(crate) api_key: busbar_contract::redacted::Secret<String>,
     /// This lane's protocol, as the registry's interned `&'static str` NAME. Post-G6-A4b the concrete
     /// `Protocol` (reader + writer) lives in the `busbar-llm` plugin and core names none of it; a lane
     /// reaches its dialect's neutral computed-codec facade via `proto::decl_for(self.protocol).dialect()`

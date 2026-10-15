@@ -126,6 +126,26 @@ impl Gate for DenylistGate {
             &["scanned"],
         ));
 
+        // X-1206: A LINE THE READER CANNOT PLACE. The subset reader used to drop it in silence, so
+        // the gate judged a config shorter than the file. A stray line planted into the real
+        // config is now a red run naming the line.
+        let mut stray = Overlay::new();
+        stray.set(
+            "qa/construction.toml",
+            format!(
+                "{}\nthis line is neither a header nor key = value\n",
+                cx.read("qa/construction.toml").unwrap_or_default()
+            ),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a config line the reader cannot place is a red run, not a dropped line",
+            &[ROW_SCAN],
+            stray,
+            &["does not read whole", "this line is neither a header"],
+        ));
+
         // Two REAL red proofs, driven through `Gate::run` over fixture trees whose input is gone:
         // "0 crates scanned, 0 hits" printed as OK is a proof of nothing dressed as a proof of
         // purity. The renamed-table fixture carries a genuinely libc-dependent plane crate

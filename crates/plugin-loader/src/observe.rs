@@ -40,7 +40,8 @@ use busbar_contract::abi::mechanism::observe::Envelope;
 
 /// What the HOST does with what a plugin reported.
 ///
-/// Implemented by the engine and installed once, at boot, via [`install_plugin_observer`]. Receives
+/// Implemented by the engine and installed once, at boot, on the dispatcher's [`Observing`]
+/// ([`Observing::install_observer`]). Receives
 /// the RAW entries exactly as they came off the wire — deliberately not parsed here, because
 /// validating is the host's job and a loader that pre-parsed would be deciding which entries are
 /// worth showing the thing whose job that is.
@@ -89,137 +90,190 @@ struct Observation {
 struct Intake {
     tx: std::sync::mpsc::SyncSender<Observation>,
     /// Back-channels queued, and back-channels the observer has had: equal once it caught up.
+    counts: std::sync::Arc<IntakeCounts>,
+}
+
+/// What an intake has been handed, what its observer has had, and what it dropped not yet reported.
+#[derive(Default)]
+struct IntakeCounts {
     sent: std::sync::atomic::AtomicU64,
     #[cfg_attr(not(test), allow(dead_code))]
-    done: std::sync::Arc<std::sync::atomic::AtomicU64>,
-    /// Back-channels dropped at a full intake, not yet reported to the observer.
-    dropped: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    done: std::sync::atomic::AtomicU64,
+    dropped: std::sync::atomic::AtomicU64,
 }
 
-static INTAKE: std::sync::OnceLock<Option<Intake>> = std::sync::OnceLock::new();
-
-/// The intake, started on first use once an observer is installed; `None` with no observer (the
-/// back-channel is dropped, the safe state the module doc describes) or no thread to drain it.
-fn intake() -> Option<&'static Intake> {
-    use std::sync::atomic::{AtomicU64, Ordering};
-    use std::sync::Arc;
-    let observer = *OBSERVER.get()?;
-    INTAKE
-        .get_or_init(|| {
-            let (tx, rx) = std::sync::mpsc::sync_channel::<Observation>(INTAKE_BOUND);
-            let done = Arc::new(AtomicU64::new(0));
-            let dropped = Arc::new(AtomicU64::new(0));
-            let (d, x) = (done.clone(), dropped.clone());
-            std::thread::Builder::new()
-                .name("busbar-plugin-observe".into())
-                .spawn(move || {
-                    for o in rx {
-                        #[cfg(test)]
-                        testing::OBSERVING.store(o.scope, Ordering::SeqCst);
-                        observer.observe(&o.plugin, &o.kind, &o.metrics, &o.diagnostics);
-                        // Counted only after the observer had it: a back-channel dropped while
-                        // this one was folded is reported here, the intake being full then.
-                        let lost = x.swap(0, Ordering::AcqRel);
-                        if lost > 0 {
-                            observer.dropped(lost);
-                        }
-                        d.fetch_add(1, Ordering::Release);
-                    }
-                })
-                .ok()?;
-            Some(Intake {
-                tx,
-                sent: AtomicU64::new(0),
-                done,
-                dropped,
-            })
-        })
-        .as_ref()
+/// THE HOST'S OBSERVABILITY FOR ONE DISPATCHER: the observer the host installed on it, the host's
+/// own series predicate, and the bounded intake that hands the observer every back-channel.
+///
+/// Held by the dispatcher ([`crate::dispatch::Dispatcher::observing`]) and reached by every door it
+/// binds through that door's envelope sink, never through a process-global: the kernel installs
+/// Rust code into no static seam of the loader (`door-only` static-seam rule, `BUSBAR-1.6.0.md`
+/// l.1475-1478 and l.1543). The composition root installs onto the process's one dispatcher.
+///
+/// Installs are first-wins and one-way, the posture the metrics recorder and the push export sinks
+/// take: a config apply that re-pointed where plugin telemetry went mid-flight would make an
+/// exposition mean two different things across one scrape. Restart to re-point.
+pub struct Observing {
+    observer: std::sync::OnceLock<&'static dyn PluginObserver>,
+    host_series: std::sync::OnceLock<fn(&str) -> bool>,
+    intake: std::sync::OnceLock<Option<Intake>>,
 }
 
-/// Hand one back-channel to the intake: queued when there is room, else dropped and counted. Never
-/// blocks the calling plugin call.
-fn enqueue(
-    plugin: &str,
-    kind: &str,
-    metrics: &[serde_json::Value],
-    diagnostics: &[serde_json::Value],
-) {
-    use std::sync::atomic::Ordering;
-    let Some(intake) = intake() else {
-        return;
-    };
-    let observation = Observation {
-        plugin: plugin.to_string(),
-        kind: kind.to_string(),
-        metrics: metrics.to_vec(),
-        diagnostics: diagnostics.to_vec(),
-        #[cfg(test)]
-        scope: testing::scope(),
-    };
-    // Counted before the send: the observer thread may finish it before `try_send` returns.
-    intake.sent.fetch_add(1, Ordering::AcqRel);
-    if intake.tx.try_send(observation).is_err() {
-        intake.sent.fetch_sub(1, Ordering::AcqRel);
-        intake.dropped.fetch_add(1, Ordering::AcqRel);
+impl std::fmt::Debug for Observing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Observing")
+            .field("observer", &self.observer.get().is_some())
+            .field("host_series", &self.host_series.get().is_some())
+            .finish_non_exhaustive()
     }
 }
 
-/// Wait (at most ten seconds) until the observer has had every back-channel queued so far: what a
-/// reader of what the observer was handed waits for, the intake being asynchronous.
+impl Default for Observing {
+    /// Nothing installed: every back-channel is dropped, the safe state the module doc describes.
+    /// In this crate's own test binary the shared recorder (`testing`) stands installed instead,
+    /// so every dispatcher a test builds folds into the one log its readers serialize over.
+    fn default() -> Self {
+        let observing = Self {
+            observer: std::sync::OnceLock::new(),
+            host_series: std::sync::OnceLock::new(),
+            intake: std::sync::OnceLock::new(),
+        };
+        #[cfg(test)]
+        let _ = observing.observer.set(&testing::RECORDING);
+        observing
+    }
+}
+
+impl Observing {
+    /// Install the host's observer. Idempotent-by-refusal: the FIRST install wins and a later one
+    /// is ignored, returning `false`.
+    pub fn install_observer(&self, observer: &'static dyn PluginObserver) -> bool {
+        self.observer.set(observer).is_ok()
+    }
+
+    /// Install the host's series predicate (the composition root names the host's metric catalog).
+    /// The first install wins; a later one returns `false`.
+    pub fn install_host_series(&self, is_host_series: fn(&str) -> bool) -> bool {
+        self.host_series.set(is_host_series).is_ok()
+    }
+
+    /// Whether the host itself emits the series `name`: `false` with no predicate installed.
+    fn is_host_series(&self, name: &str) -> bool {
+        self.host_series.get().is_some_and(|is| is(name))
+    }
+
+    /// The intake, started on first use once an observer is installed; `None` with no observer
+    /// (the back-channel is dropped) or no thread to drain it.
+    fn intake(&self) -> Option<&Intake> {
+        use std::sync::atomic::Ordering;
+        use std::sync::Arc;
+        let observer = *self.observer.get()?;
+        self.intake
+            .get_or_init(|| {
+                let (tx, rx) = std::sync::mpsc::sync_channel::<Observation>(INTAKE_BOUND);
+                let counts = Arc::new(IntakeCounts::default());
+                let c = Arc::clone(&counts);
+                std::thread::Builder::new()
+                    .name("busbar-plugin-observe".into())
+                    .spawn(move || {
+                        for o in rx {
+                            #[cfg(test)]
+                            testing::OBSERVING.store(o.scope, Ordering::SeqCst);
+                            observer.observe(&o.plugin, &o.kind, &o.metrics, &o.diagnostics);
+                            // Counted only after the observer had it: a back-channel dropped while
+                            // this one was folded is reported here, the intake being full then.
+                            let lost = c.dropped.swap(0, Ordering::AcqRel);
+                            if lost > 0 {
+                                observer.dropped(lost);
+                            }
+                            c.done.fetch_add(1, Ordering::Release);
+                        }
+                    })
+                    .ok()?;
+                #[cfg(test)]
+                testing::INTAKES
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(Arc::downgrade(&counts));
+                Some(Intake { tx, counts })
+            })
+            .as_ref()
+    }
+
+    /// Hand one back-channel to the intake: queued when there is room, else dropped and counted.
+    /// Never blocks the calling plugin call.
+    fn enqueue(
+        &self,
+        plugin: &str,
+        kind: &str,
+        metrics: &[serde_json::Value],
+        diagnostics: &[serde_json::Value],
+    ) {
+        use std::sync::atomic::Ordering;
+        let Some(intake) = self.intake() else {
+            return;
+        };
+        let observation = Observation {
+            plugin: plugin.to_string(),
+            kind: kind.to_string(),
+            metrics: metrics.to_vec(),
+            diagnostics: diagnostics.to_vec(),
+            #[cfg(test)]
+            scope: testing::scope(),
+        };
+        // Counted before the send: the observer thread may finish it before `try_send` returns.
+        intake.counts.sent.fetch_add(1, Ordering::AcqRel);
+        if intake.tx.try_send(observation).is_err() {
+            intake.counts.sent.fetch_sub(1, Ordering::AcqRel);
+            intake.counts.dropped.fetch_add(1, Ordering::AcqRel);
+        }
+    }
+
+    /// Hand one decoded envelope's back-channel to the installed observer's intake, if any. A
+    /// no-op when the envelope is bare, so the common case costs one pair of `is_empty` checks and
+    /// no call at all.
+    pub(crate) fn fold<R>(&self, plugin: &str, kind: &str, envelope: &Envelope<R>) {
+        if envelope.is_bare() {
+            return;
+        }
+        self.enqueue(plugin, kind, &envelope.metrics, &envelope.diagnostics);
+    }
+
+    /// Hand already-decoded entries to the installed observer, if any: the memory ABI's envelope,
+    /// made the same JSON entries the cold wire carries ([`EnvelopeObserver`]).
+    pub(crate) fn fold_entries(
+        &self,
+        plugin: &str,
+        kind: &str,
+        metrics: &[serde_json::Value],
+        diagnostics: &[serde_json::Value],
+    ) {
+        if metrics.is_empty() && diagnostics.is_empty() {
+            return;
+        }
+        self.enqueue(plugin, kind, metrics, diagnostics);
+    }
+}
+
+/// Wait (at most ten seconds) until every intake's observer has had every back-channel queued so
+/// far: what a reader of what the observer was handed waits for, the intake being asynchronous.
 #[cfg(test)]
 pub(crate) fn settle() {
     use std::sync::atomic::Ordering;
-    let Some(Some(intake)) = INTAKE.get() else {
-        return;
-    };
+    let live: Vec<_> = testing::INTAKES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter_map(std::sync::Weak::upgrade)
+        .collect();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    while intake.done.load(Ordering::Acquire) < intake.sent.load(Ordering::Acquire)
-        && std::time::Instant::now() < deadline
-    {
-        std::thread::sleep(std::time::Duration::from_millis(1));
+    for counts in live {
+        while counts.done.load(Ordering::Acquire) < counts.sent.load(Ordering::Acquire)
+            && std::time::Instant::now() < deadline
+        {
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
     }
-}
-
-/// The installed observer, or `None` — see the module doc for why "none" is a correct, safe state
-/// rather than a misconfiguration.
-///
-/// A `&'static dyn` rather than an `Arc`: there is exactly one for the life of the process, it is
-/// installed before any plugin loads, and a refcount bump per plugin call buys nothing.
-static OBSERVER: std::sync::OnceLock<&'static dyn PluginObserver> = std::sync::OnceLock::new();
-
-/// Install the host's observer. Idempotent-by-refusal: the FIRST install wins and a later one is
-/// ignored, returning `false`.
-///
-/// `OnceLock` rather than a swappable cell on purpose, and the same posture the metrics recorder and
-/// the push export sinks already take: a config apply that re-pointed where plugin telemetry went
-/// mid-flight would make an exposition mean two different things across one scrape. Restart to
-/// re-point.
-pub fn install_plugin_observer(observer: &'static dyn PluginObserver) -> bool {
-    OBSERVER.set(observer).is_ok()
-}
-
-/// Hand one decoded envelope's back-channel to the installed observer's intake, if any. A no-op when
-/// the envelope is bare, so the common case costs one pair of `is_empty` checks and no call at all.
-pub(crate) fn fold<R>(plugin: &str, kind: &str, envelope: &Envelope<R>) {
-    if envelope.is_bare() {
-        return;
-    }
-    enqueue(plugin, kind, &envelope.metrics, &envelope.diagnostics);
-}
-
-/// Hand already-decoded entries to the installed observer, if any: the memory ABI's envelope, made
-/// the same JSON entries the cold wire carries ([`EnvelopeObserver`]).
-pub(crate) fn fold_entries(
-    plugin: &str,
-    kind: &str,
-    metrics: &[serde_json::Value],
-    diagnostics: &[serde_json::Value],
-) {
-    if metrics.is_empty() && diagnostics.is_empty() {
-        return;
-    }
-    enqueue(plugin, kind, metrics, diagnostics);
 }
 
 /// THE MEMORY ABI'S ENVELOPE, INTO THE HOST'S OBSERVABILITY (DECISIONS #85, OWNER-LOCKED: every
@@ -233,6 +287,8 @@ pub(crate) fn fold_entries(
 /// these, standing before the sink its binder gave ([`Self::before`]; ARCHITECT ruling ENVELOPE-ALL
 /// 2026-10-03: #85 is uniform), so no binder can leave an envelope unobserved.
 pub struct EnvelopeObserver {
+    /// The host's observability of the dispatcher the door is bound on.
+    observing: std::sync::Arc<Observing>,
     plugin: String,
     kind: &'static str,
     families: Vec<busbar_contract::abi::mechanism::rendering::ReadFamily>,
@@ -254,21 +310,28 @@ impl EnvelopeObserver {
     /// not read back names no family, so no metric of it is folded (the dispatcher already refused
     /// such a door at its load).
     #[must_use]
-    pub fn of(plugin: &str, kind: &'static str, stated: &[u8]) -> Self {
+    pub fn of(
+        observing: std::sync::Arc<Observing>,
+        plugin: &str,
+        kind: &'static str,
+        stated: &[u8],
+    ) -> Self {
         let families = busbar_contract::abi::mechanism::rendering::read(stated)
             .map(|r| r.families)
             .unwrap_or_default();
-        Self::with_families(plugin, kind, families)
+        Self::with_families(observing, plugin, kind, families)
     }
 
     /// The sink for `plugin`, of `kind`, whose Statement declares `families`.
     #[must_use]
     pub fn with_families(
+        observing: std::sync::Arc<Observing>,
         plugin: &str,
         kind: &'static str,
         families: Vec<busbar_contract::abi::mechanism::rendering::ReadFamily>,
     ) -> Self {
         Self {
+            observing,
             plugin: plugin.to_string(),
             kind,
             families,
@@ -279,6 +342,7 @@ impl EnvelopeObserver {
     /// [`Self::with_families`], handing every entry to `then` (the binder's sink) as well.
     #[must_use]
     pub fn before(
+        observing: std::sync::Arc<Observing>,
         then: std::sync::Arc<dyn crate::dispatch::EnvelopeSink>,
         plugin: &str,
         kind: &'static str,
@@ -286,7 +350,7 @@ impl EnvelopeObserver {
     ) -> Self {
         Self {
             then: Some(then),
-            ..Self::with_families(plugin, kind, families)
+            ..Self::with_families(observing, plugin, kind, families)
         }
     }
 }
@@ -316,7 +380,8 @@ impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
         let Ok(entry) = serde_json::to_value(metric) else {
             return;
         };
-        fold_entries(&self.plugin, self.kind, &[entry], &[]);
+        self.observing
+            .fold_entries(&self.plugin, self.kind, &[entry], &[]);
     }
 
     fn diag(&self, d: crate::dispatch::Diagnostic<'_>) {
@@ -341,7 +406,8 @@ impl crate::dispatch::EnvelopeSink for EnvelopeObserver {
         let Ok(entry) = serde_json::to_value(diagnostic) else {
             return;
         };
-        fold_entries(&self.plugin, self.kind, &[], &[entry]);
+        self.observing
+            .fold_entries(&self.plugin, self.kind, &[], &[entry]);
     }
 
     fn dropped(&self, why: crate::dispatch::Dropped) {
@@ -373,20 +439,13 @@ static GRANTS: std::sync::RwLock<
     >,
 > = std::sync::RwLock::new(None);
 
-/// The HOST's own series — installed once by the composition root, which is the one place that
-/// names the host's metric catalog. A first-party claim on one of them is refused at open: two
-/// writers of one series is a merge nobody could read back apart.
-static HOST_SERIES: std::sync::OnceLock<fn(&str) -> bool> = std::sync::OnceLock::new();
-
-/// Install the host's series predicate. The first install wins; a later one returns `false`.
-pub fn install_host_series(is_host_series: fn(&str) -> bool) -> bool {
-    HOST_SERIES.set(is_host_series).is_ok()
-}
-
 /// Grant `plugin`'s declared series, when it is `first_party`. A claim on a series the host
-/// emits, or on one another plugin was already granted, is refused naming both; a plugin that is
-/// not first-party is granted nothing (and refused nothing — it keeps today's rule).
+/// emits (the predicate the composition root installed on `observing`, the one place that names
+/// the host's metric catalog: two writers of one series is a merge nobody could read back apart),
+/// or on one another plugin was already granted, is refused naming both; a plugin that is not
+/// first-party is granted nothing (and refused nothing — it keeps today's rule).
 pub fn grant_series(
+    observing: &Observing,
     plugin: &str,
     first_party: bool,
     declared: &[busbar_contract::abi::mechanism::observe::SeriesDecl],
@@ -402,11 +461,10 @@ pub fn grant_series(
     if declared.is_empty() {
         return Ok(());
     }
-    let is_host = HOST_SERIES.get().copied().unwrap_or(|_| false);
     let mut guard = GRANTS.write().unwrap_or_else(|e| e.into_inner());
     let grants = guard.get_or_insert_with(Default::default);
     for d in declared {
-        if is_host(&d.name) {
+        if observing.is_host_series(&d.name) {
             return Err(format!(
                 "plugin '{plugin}' declares the series '{}', which the host itself emits",
                 d.name
@@ -460,14 +518,10 @@ pub fn shed_series(plugin: &str) -> Vec<String> {
 
 /// THE ONE recording observer for this crate's whole test binary.
 ///
-/// It has to be one, and shared, because [`install_plugin_observer`] is deliberately a
-/// process-global `OnceLock` — the engine installs exactly one observer for the life of the process
-/// and a config apply may not re-point it mid-flight. A test module that installed its own would
-/// therefore either win the race and silently blind every other module, or lose it and assert over
-/// an empty log. Both failure modes look like a passing test.
-///
-/// So the recorder lives here, next to the seam it observes, and every test module that needs to see
-/// what the host was handed goes through [`testing::exclusive`].
+/// It has to be one, and shared: every [`Observing`] this test binary builds (one per dispatcher)
+/// stands with it installed, so a test reads what any door it bound folded, on whichever
+/// dispatcher, in one log — and every test module that needs to see what the host was handed goes
+/// through [`testing::exclusive`].
 #[cfg(test)]
 pub(crate) mod testing {
     use super::PluginObserver;
@@ -480,7 +534,14 @@ pub(crate) mod testing {
         Vec<serde_json::Value>,
     );
 
-    struct Recording;
+    pub(super) struct Recording;
+
+    /// The recorder every [`super::Observing`] of this test binary stands with.
+    pub(super) static RECORDING: Recording = Recording;
+
+    /// Every intake this test binary started, for [`super::settle`].
+    pub(super) static INTAKES: std::sync::Mutex<Vec<std::sync::Weak<super::IntakeCounts>>> =
+        std::sync::Mutex::new(Vec::new());
 
     /// Every fold the recorder was handed, filed under the test that reported it (its scope).
     static FOLDS: std::sync::Mutex<Vec<(u64, Fold)>> = std::sync::Mutex::new(Vec::new());
@@ -549,19 +610,17 @@ pub(crate) mod testing {
         }
     }
 
-    /// Take EXCLUSIVE use of the fold log for the rest of the caller's test, installing the shared
-    /// recorder on first use, giving the calling thread a fresh test scope ([`scope`]) and clearing
-    /// whatever a previous test left behind. Hold the returned guard for as long as you intend to
-    /// read [`folds`].
+    /// THE TEST BINARY'S OWN [`super::Observing`], for a test that folds with no dispatcher.
+    pub(crate) fn observing() -> std::sync::Arc<super::Observing> {
+        static ONE: std::sync::OnceLock<std::sync::Arc<super::Observing>> =
+            std::sync::OnceLock::new();
+        std::sync::Arc::clone(ONE.get_or_init(Default::default))
+    }
+
+    /// Take EXCLUSIVE use of the fold log for the rest of the caller's test, giving the calling
+    /// thread a fresh test scope ([`scope`]) and clearing whatever a previous test left behind.
+    /// Hold the returned guard for as long as you intend to read [`folds`].
     pub(crate) fn exclusive() -> std::sync::MutexGuard<'static, ()> {
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            assert!(
-                super::install_plugin_observer(&Recording),
-                "the test binary's first install must win — something else installed an observer \
-                 first and every fold assertion below would be reading an empty log"
-            );
-        });
         let guard = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         let fresh = NEXT_SCOPE.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         SCOPE.with(|s| s.set(fresh));

@@ -118,11 +118,10 @@ fn sparse_zero_and_absent_cache_tiers_are_both_omitted() {
 }
 
 /// END TO END, through a real dialect reader this crate owns (not cohere/openai_responses): a
-/// present-but-unparseable top-level `cache_read_input_tokens`/`cache_creation_input_tokens` REFUSES
-/// the buffered response outright (item 133's path — `read_count_opt` over `usage_count::billed_count`)
-/// and never reaches `TokenUsage`, let alone `tier_usage()`. This is the proof that the `None`
-/// `tier_usage()` sees can only ever mean "legitimately absent": the alternative cause never survives
-/// to become a `TokenUsage` at all. Nothing in this crate's existing suites drove an unreadable
+/// present-but-unparseable top-level `cache_read_input_tokens`/`cache_creation_input_tokens` is
+/// REFUSED on its own (item 133's path over `usage_count::billed_count`; ARCHITECT ruling
+/// 2026-10-15: each usage field is judged on its own): it bills nothing, the readable counts beside
+/// it bill as stated, and it never reaches `tier_usage()` as a priced tier. Nothing in this crate's existing suites drove an unreadable
 /// TOP-LEVEL cache count through a buffered response before this test (the item-133 refusal suite,
 /// `anthropic/tests/unreadable_count_refusal_tests.rs`, covers `input_tokens`/`output_tokens` and the
 /// nested 5m/1h cache-creation detail tiers, never the top-level `cache_read_input_tokens`/
@@ -142,10 +141,15 @@ fn unreadable_top_level_cache_count_refuses_before_reaching_tier_usage() {
             "cache_read_input_tokens": "1000",
         }
     });
-    AnthropicReader.read_response(&body).expect_err(
-        "a present, unreadable cache_read_input_tokens must refuse — never reach tier_usage() as a \
-         collapsed None",
+    let ir = AnthropicReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("a refused cache_read_input_tokens refuses only itself");
+    let usage = tier_usage(&ir.usage.to_token_usage());
+    assert_eq!(
+        unit(&usage, busbar_contract::records::UNIT_CACHE_READ),
+        None
     );
+    assert_eq!(unit(&usage, busbar_contract::records::UNIT_INPUT), Some(5));
 
     let body = serde_json::json!({
         "role": "assistant",
@@ -157,10 +161,15 @@ fn unreadable_top_level_cache_count_refuses_before_reaching_tier_usage() {
             "cache_creation_input_tokens": "200",
         }
     });
-    AnthropicReader.read_response(&body).expect_err(
-        "a present, unreadable cache_creation_input_tokens must refuse — never reach tier_usage() \
-         as a collapsed None",
+    let ir = AnthropicReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("a refused cache_creation_input_tokens refuses only itself");
+    let usage = tier_usage(&ir.usage.to_token_usage());
+    assert_eq!(
+        unit(&usage, busbar_contract::records::UNIT_CACHE_WRITE),
+        None
     );
+    assert_eq!(unit(&usage, busbar_contract::records::UNIT_OUTPUT), Some(9));
 
     // Control: the SAME shape with a readable cache count reads fine and prices through tier_usage
     // as a real, present tier — proving the refusal above is about readability, not the field's mere
@@ -176,7 +185,7 @@ fn unreadable_top_level_cache_count_refuses_before_reaching_tier_usage() {
         }
     });
     let ir = AnthropicReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("a readable cache_read_input_tokens must read, not refuse");
     let tu = ir.usage.to_token_usage();
     let usage = tier_usage(&tu);
@@ -296,4 +305,93 @@ fn a_transcription_duration_ledgers_one_audio_ms_line() {
 #[test]
 fn a_flat_answer_ledgers_no_open_class() {
     assert!(non_token_open(busbar_contract::billing::Billing::Flat).is_empty());
+}
+
+// ── F25 REHOME (rows 504, 505): the router shim keys ─────────────────────────────────────────────
+
+const SHIM: &str = crate::codec::gemini::GEMINI_JSON_ARRAY_SHIM_KEY;
+
+/// F25 REHOME row 504, from `crates/busbar-llm/src/engine/tests/mid_stream_error_tests.rs:294` (`test_strip_router_shim_keys`):
+/// `strip_router_shim_keys` removes the never-native shim keys per egress — the gemini array key for
+/// every egress, `stream` for a path-model egress (bedrock, gemini) — and never `model`; a
+/// body-model egress (openai) keeps its genuine `model` and `stream`.
+#[test]
+fn strip_router_shim_keys_removes_the_never_native_keys_per_egress() {
+    use super::strip_router_shim_keys;
+    use serde_json::json;
+    let mut v = json!({"model": "p", "stream": true, (SHIM): true, "messages": []});
+    assert!(strip_router_shim_keys(&mut v, "bedrock"));
+    assert_eq!(
+        v["model"], "p",
+        "model NOT stripped here (rewrite_model owns it)"
+    );
+    assert!(v.get("stream").is_none(), "bedrock: stream shim stripped");
+    assert!(
+        v.get(SHIM).is_none(),
+        "gemini array shim key stripped on every protocol"
+    );
+    assert!(v.get("messages").is_some(), "real fields retained");
+
+    let mut v = json!({"stream": true, (SHIM): true});
+    assert!(strip_router_shim_keys(&mut v, "gemini"));
+    assert!(v.get("stream").is_none() && v.get(SHIM).is_none());
+
+    let mut v = json!({"model": "gpt-4o", "stream": true, (SHIM): true});
+    assert!(strip_router_shim_keys(&mut v, "openai"));
+    assert_eq!(
+        v["model"], "gpt-4o",
+        "openai model is genuine, not stripped"
+    );
+    assert_eq!(v["stream"], true, "openai stream is genuine, not stripped");
+    assert!(
+        v.get(SHIM).is_none(),
+        "gemini array key stripped even for body-model ingress"
+    );
+}
+
+/// F25 REHOME row 505, from `crates/busbar-llm/src/engine/tests/mid_stream_error_tests.rs:337`
+/// (`test_shim_strip_ordering_cross_protocol_keeps_model`): a path-model ingress (gemini) crossing to
+/// a body-model egress (openai) reaches the far end WITH the authoritative model: strip, then
+/// `rewrite_model_if_needed`, leaves `model: gpt-4o` and the writer-authored `stream: true`, with
+/// the array key gone; within one dialect (gemini→gemini) the relay sends the caller's own bytes,
+/// with the spliced `model` and `stream` removed.
+#[test]
+fn shim_strip_then_rewrite_model_keeps_the_model_cross_protocol() {
+    use super::strip_router_shim_keys;
+    use serde_json::json;
+    let mut v = json!({"model": "router-placeholder", "stream": true, (SHIM): true});
+    strip_router_shim_keys(&mut v, "openai");
+    crate::codec::proto_codec::protocol_for("openai")
+        .expect("openai")
+        .writer()
+        .rewrite_model_if_needed(&mut v, "gpt-4o");
+    assert_eq!(
+        v["model"], "gpt-4o",
+        "cross-protocol egress body MUST carry the authoritative model"
+    );
+    assert_eq!(
+        v["stream"], true,
+        "writer-authored `stream` survives for a body-model egress"
+    );
+    assert!(
+        v.get(SHIM).is_none(),
+        "gemini array key stripped cross-protocol"
+    );
+
+    let caller = br#"{ "contents": [ ], "z" : 1.0 }"#;
+    let carried = br#"{"model":"router-placeholder","stream":true, "contents": [ ], "z" : 1.0 }"#;
+    let far = crate::exchange::shaping::FarShape {
+        dialect: "gemini",
+        wire_model: "gemini-1.5-pro",
+        default_max_tokens: None,
+        prompt_caching: false,
+        caps: Default::default(),
+        path_base: None,
+    };
+    let relayed = crate::exchange::attempt::relay_request(far, "application/json", carried);
+    assert_eq!(
+        relayed.bytes.as_ref(),
+        caller.as_slice(),
+        "same-protocol gemini relay sends the caller's bytes, no body model or stream"
+    );
 }

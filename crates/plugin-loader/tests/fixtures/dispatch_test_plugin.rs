@@ -50,7 +50,7 @@ pub const PEND_AFTER: &[u8] = b"pend:after";
 pub const PEND_BEFORE: &[u8] = b"pend:before";
 /// `tick` mode: a spurious wake at once, the real one later.
 pub const PEND_SPURIOUS: &[u8] = b"pend:spurious";
-/// `tick` mode: wakes for stale generations of the ticket, the real one later.
+/// `tick` mode: wakes for two recycled tickets this plugin held before, the real one later.
 pub const PEND_STALE: &[u8] = b"pend:stale";
 /// `tick` mode: no wake; `wake_at_ns = now_ns + 30ms`.
 pub const PEND_TIMER: &[u8] = b"pend:timer";
@@ -100,6 +100,12 @@ pub const KIND_REJECTS: u64 = 0xDEAD;
 pub const SHORT: u64 = 0x5807;
 /// `tick` mode: panic. `tick` has no guard, so the process aborts.
 pub const PANIC: &[u8] = b"panic";
+/// `tick`: hand the host's `wake` a context one tag bit off the one this crossing was handed (#74:
+/// the host refuses it and quarantines this instance), then answer READY.
+pub const FORGE: &[u8] = b"forge";
+/// `tick`, on a ticket: wake this ticket's slot at a generation the host never minted (#74: a
+/// forged ticket generation; the host quarantines this instance), then answer READY.
+pub const FORGE_TICKET: &[u8] = b"forgeticket";
 
 /// Family index of the `invocations` gauge.
 pub const GAUGE_INVOCATIONS: u32 = 2;
@@ -295,6 +301,10 @@ unsafe impl Send for Gauges {}
 #[derive(Default)]
 struct State {
     tickets: HashMap<Ticket, TicketState>,
+    /// Every ticket a `pend:*` op was handed, in the order it was first handed: what `pend:stale`
+    /// wakes late. `tickets` forgets a ticket the moment its op answers READY, so it holds no
+    /// recycled ticket to wake.
+    handed: Vec<Ticket>,
     held: Vec<(Ticket, Arc<AtomicBool>)>,
     /// `cancel`'s answer per held ticket: `Some(d)` a disposition, `None` FAULT.
     dispositions: HashMap<Ticket, Option<u32>>,
@@ -517,6 +527,24 @@ extern "C" fn tick(instance: *mut c_void, input: *const c_void, out: *mut c_void
             hang_until(key);
             return say(out, Outcome::Ready);
         }
+        if mode == FORGE_TICKET {
+            let t = tin.head.ticket;
+            (me.wake)(
+                tin.head.host,
+                Ticket {
+                    slot: t.slot,
+                    generation: t.generation ^ 0x5a5a_5a5a,
+                },
+            );
+            return say(out, Outcome::Ready);
+        }
+        if mode == FORGE {
+            let forged = HostCtx {
+                handle: tin.head.host.handle ^ (1 << 24),
+            };
+            (me.wake)(forged, tin.head.ticket);
+            return say(out, Outcome::Ready);
+        }
         if mode == DRIVE_HANGS {
             me.drive_hangs.store(true, Ordering::SeqCst);
             return say(out, Outcome::Ready);
@@ -667,6 +695,9 @@ unsafe fn pend(me: &Inst, tin: &TickIn, mode: &[u8], out: *mut c_void) -> RawOut
     me.invocations.fetch_add(1, Ordering::SeqCst);
     let resume = tin.head.flags & FLAG_RESUME != 0;
     let mut st = me.state.lock().unwrap();
+    if !resume && t.generation != 0 && !st.handed.contains(&t) {
+        st.handed.push(t);
+    }
     let ts = st.tickets.entry(t).or_default();
     ts.invocations += 1;
     let ready = ts.ready.clone();
@@ -682,11 +713,20 @@ unsafe fn pend(me: &Inst, tin: &TickIn, mode: &[u8], out: *mut c_void) -> RawOut
                 later(w, t, ready, 60);
             }
             PEND_STALE => {
-                for g in [t.generation.wrapping_sub(1), t.generation.wrapping_add(1)] {
-                    w.wake(Ticket {
-                        slot: t.slot,
-                        generation: g,
-                    });
+                // Two tickets this plugin was handed before, each recycled since: late wakes for
+                // generations the host really minted (H2), never a generation it did not (#74: a
+                // ticket generation is a keyed permutation of the slot's counter, so a guessed one
+                // is a forgery and quarantines the instance).
+                let stale: Vec<Ticket> = st
+                    .handed
+                    .iter()
+                    .rev()
+                    .filter(|k| **k != t)
+                    .take(2)
+                    .copied()
+                    .collect();
+                for old in stale {
+                    w.wake(old);
                 }
                 later(w, t, ready, 60);
             }

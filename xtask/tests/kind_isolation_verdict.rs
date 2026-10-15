@@ -78,7 +78,9 @@ fn pinned_store_lib(cx: &Ctx) -> String {
 
 #[test]
 fn a_planted_store_crate_coupling_is_found_exactly_as_the_serial_gate_found_it() {
-    let cx = Ctx::new(repo_root()).expect("the real tree opens with a writable scratch dir");
+    let cx = Ctx::new(repo_root())
+        .and_then(|cx| cx.with_pinned_planes())
+        .expect("the real tree opens with a writable scratch dir and its pinned planes");
     let lib = pinned_store_lib(&cx);
     let mut ov = Overlay::new();
     ov.set(PLANT, PLANT_TEXT);

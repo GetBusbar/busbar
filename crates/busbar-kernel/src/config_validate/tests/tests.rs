@@ -22,7 +22,11 @@ fn make_root_cfg(
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
         auth: None,
-        providers,
+        // Each whole-entry fixture as the resolved provider `resolve` would produce from it.
+        providers: providers
+            .into_iter()
+            .map(|(name, p)| (name, p.into()))
+            .collect(),
         models,
         pools,
         upstream_credentials: crate::auth::UpstreamCreds::Own,
@@ -3207,6 +3211,120 @@ fn test_validate_accepts_uppercase_url_scheme() {
     assert!(!scheme_is("httpsx://h", "https"));
 }
 
+/// ROW 74 (F25): a provider `base_url` carrying `user:pass@` is ACCEPTED, as 1.5.5 accepted it
+/// (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`), and a PLANTED SCAN over every base-URL refusal
+/// this validator writes — the scheme arm, the plaintext-to-a-public-host arm, the metadata arm and
+/// the two composed (`path`, `path_base`) arms — finds neither half of the planted spelling in any
+/// error it returns, while each still names the host it is about. RED before the fix: every arm
+/// echoed the base URL as written.
+#[test]
+fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
+    const PLANTED: &str = "svcuser:hunter2-P4ss@";
+    let with_base = |base_url: String, path: Option<&str>, path_base: Option<&str>| {
+        let (mut providers, models, _) = valid_maps();
+        let p = providers.get_mut("myprovider").expect("the provider");
+        p.base_url = base_url;
+        p.path = path.map(str::to_string);
+        p.path_base = path_base.map(str::to_string);
+        validate(&make_root_cfg(providers, models, HashMap::new()))
+    };
+
+    let accepted = with_base(format!("https://{PLANTED}api.example.com"), None, None);
+    assert!(
+        accepted.is_ok(),
+        "a base_url spelling user:pass@ validates, as in 1.5.5: {accepted:?}"
+    );
+
+    let secure = format!("https://{PLANTED}api.example.com");
+    // The same URL in the plaintext scheme (a public host, so refused).
+    let plaintext = secure.replacen("s://", "://", 1);
+    let planted = [
+        (
+            format!("ftp://{PLANTED}api.example.com"),
+            None,
+            None,
+            "api.example.com",
+        ),
+        (plaintext, None, None, "api.example.com"),
+        (
+            format!("https://{PLANTED}169.254.169.254"),
+            Some("/v1"),
+            Some("/v1beta"),
+            "169.254.169.254",
+        ),
+    ];
+    for (base_url, path, path_base, host) in planted {
+        let errors = with_base(base_url, path, path_base).expect_err("the planted base is refused");
+        let about: Vec<&String> = errors.iter().filter(|e| e.contains("base_url")).collect();
+        assert!(
+            !about.is_empty(),
+            "a base_url refusal was written: {errors:?}"
+        );
+        for e in &errors {
+            assert!(
+                !e.contains("hunter2") && !e.contains("svcuser"),
+                "a validation error repeated the planted spelling: {e}"
+            );
+        }
+        assert!(
+            about.iter().all(|e| e.contains(host)),
+            "each refusal still names the host it is about: {about:?}"
+        );
+    }
+    // The token endpoint (row 74, F25): accepted as 1.5.5 accepted it, and repeated redacted.
+    let with_token_url = |token_url: String| {
+        let mut providers = HashMap::new();
+        let mut p = make_provider(proto_b(), "https://api.example.com", "API_KEY");
+        p.token_url = Some(token_url);
+        p.scope = Some("api://x/.default".into());
+        // The style as the operator's config spells it (a fixture), read by the config's own parser.
+        p.auth = Some(
+            serde_yaml::from_str(include_str!("fixtures/client_credentials_style.yaml"))
+                .expect("a provider style"),
+        );
+        providers.insert("myprovider".to_string(), p);
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("myprovider", 10));
+        let mut pools = HashMap::new();
+        pools.insert("p".to_string(), make_pool(vec![make_member("m")]));
+        validate(&make_root_cfg(providers, models, pools))
+    };
+    let accepted = with_token_url(format!("https://{PLANTED}login.example.com/token"));
+    assert!(
+        accepted.is_ok(),
+        "a token_url spelling user:pass@ validates, as in 1.5.5: {accepted:?}"
+    );
+    let plaintext = format!("https://{PLANTED}login.example.com/token").replacen("s://", "://", 1);
+    for (token_url, host) in [
+        (
+            format!("ftp://{PLANTED}login.example.com/token"),
+            "login.example.com",
+        ),
+        (plaintext, "login.example.com"),
+        (
+            format!("https://{PLANTED}169.254.169.254/token"),
+            "169.254.169.254",
+        ),
+    ] {
+        let errors = with_token_url(token_url).expect_err("the planted endpoint is refused");
+        let about: Vec<&String> = errors.iter().filter(|e| e.contains("token_url")).collect();
+        assert!(
+            !about.is_empty(),
+            "a token_url refusal was written: {errors:?}"
+        );
+        for e in &errors {
+            assert!(
+                !e.contains("hunter2") && !e.contains("svcuser"),
+                "a validation error repeated the planted spelling: {e}"
+            );
+        }
+        assert!(
+            about.iter().all(|e| e.contains(host)),
+            "each refusal still names the host it is about: {about:?}"
+        );
+    }
+}
+
 /// An EMPTY `affinity.header_name` must be REJECTED at boot. It passes
 /// the ASCII + length checks but silently disables session affinity at runtime
 /// (`headers.get("")` is always None) — the exact silent-disable the validator's comment promises
@@ -4177,17 +4295,23 @@ fn test_validate_absent_card_boots_free_no_refusal() {
 }
 
 /// #77(5), item 22: A RATE THE CARD CANNOT HOLD IS A BOOT REFUSAL, naming the model, the class and
-/// the rate. The card quantises a rate to integer nano-units once; a positive rate below half a
-/// nano-unit (`0.0004`, or `$0.10/GB` a byte = `0.00009313`) or one past the integer's range has no
-/// representation, and the card holds it as an UNPRICED cell (`RateCard::refused_cells`) that
-/// refuses at runtime. Validation refuses the whole configuration first, so it never boots with a
-/// class it claims to price and cannot. 1.5.5 booted these configs and billed the class at 0.
+/// the rate. The card holds integer nano-units and never rounds (OWNER rule 21): a positive rate that
+/// is not a whole number of them (`0.0004`, `0.0005`, `0.0015`, `0.5005`, or `$0.10/GB` a byte =
+/// `0.00009313`) or one past the integer's range has no representation, and the card holds it as an
+/// UNPRICED cell (`RateCard::refused_cells`) that refuses at runtime. Validation refuses the whole
+/// configuration first, so it never boots with a class it claims to price and cannot. 1.5.5 booted
+/// these configs and billed them at a rounded rate (or at 0).
 #[test]
 fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
     for (tier, v) in [
         ("input_utok", 0.0004),
         ("output_utok", 0.000_093_13),
         ("cache_write_utok", 2.0e16),
+        // OWNER rule 21: half a nano-unit, and a rate between two of them, are refused — never
+        // rounded to 1, 2 or 501.
+        ("input_utok", 0.0005),
+        ("output_utok", 0.0015),
+        ("cache_write_utok", 0.5005),
     ] {
         let mut cfg = cost_cfg(&["m"]);
         let mut entry = priced_entry();
@@ -4204,10 +4328,10 @@ fn test_validate_rate_card_refuses_a_rate_the_card_cannot_hold() {
             "must name the model, class and rate ({want}): {errs:?}"
         );
     }
-    // The boundary and the explicit zero both hold: 0.0005 is one nano-unit, 0 is a free class.
+    // The boundary and the explicit zero both hold: 0.001 is one nano-unit, 0 is a free class.
     let mut cfg = cost_cfg(&["m"]);
     let mut entry = priced_entry();
-    entry.input_utok = 0.0005;
+    entry.input_utok = 0.001;
     entry.cache_read_utok = 0.0;
     cfg.rate_card = Some([("m".to_string(), entry)].into_iter().collect());
     assert!(validate(&cfg).is_ok(), "{:?}", validate(&cfg));
@@ -5614,15 +5738,10 @@ fn an_empty_protocol_set_refuses_every_provider_naming_the_build() {
 
     // The populated set still takes the unknown-protocol arm — the two refusals stay distinct.
     let mut errors = Vec::new();
-    super::validate_provider_protocol_with(
-        &[proto_a(), "openai_chat"],
-        "prov-c",
-        "nope",
-        &mut errors,
-    );
+    super::validate_provider_protocol_with(&[proto_a(), proto_b()], "prov-c", "nope", &mut errors);
     assert_eq!(errors.len(), 1);
     assert!(
-        errors[0].contains(&format!("must be one of: {}, openai_chat", proto_a())),
+        errors[0].contains(&format!("must be one of: {}, {}", proto_a(), proto_b())),
         "the populated set names the choices: {}",
         errors[0]
     );

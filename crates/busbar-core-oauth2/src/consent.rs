@@ -120,6 +120,21 @@ impl Sessions {
         id
     }
 
+    /// Record a session the deployment's store holds (opened on any node), for this request's
+    /// synchronous callbacks.
+    pub(crate) fn hydrate(&self, id: &str, subject: &str) {
+        let mut inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        inner
+            .live
+            .entry(id.to_string())
+            .or_insert_with(|| (subject.to_string(), Instant::now() + SESSION_TTL));
+    }
+
+    /// Plant an answer this node won in the deployment's store, for the approval callback to spend.
+    pub(crate) fn plant(&self, id: &str, key: String, approve: bool) {
+        self.stake(id, key, approve);
+    }
+
     /// The operator behind this session, if it is still live.
     fn subject(&self, id: &str) -> Option<String> {
         let inner = self.inner.lock().unwrap_or_else(|p| p.into_inner());

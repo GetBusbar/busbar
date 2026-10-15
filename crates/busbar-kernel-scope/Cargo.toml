@@ -8,7 +8,8 @@
 #
 # WHAT LIVES HERE. `admin_required_scope(method, path)` — THE admin-API scope matrix, ported from
 # 1.5.5's `openapi.json` at the tag (66 operations, 34 read-only / 32 full), which the kernel's admin
-# gate calls — the table it is proven against, and the egress grant gate. The two-rung `Scope` chain
+# gate calls, proven in its tests against the 1.5.5 admin document in the oracle corpus
+# (testing/shadow-oracle/fixtures/openapi-1.5.5.json) — and the egress grant gate. The two-rung `Scope` chain
 # and the `Grants` bitset are re-exported from `busbar_contract::authz`, their one home.
 [package]
 name = "busbar-kernel-scope"
@@ -16,7 +17,7 @@ version = "1.6.0"
 publish = false            # internal workspace crate; never goes to crates.io
 edition = "2021"
 rust-version = "1.97"
-description = "The APPROVE step's scope half: the admin-API scope matrix, the 1.5.5 admin scope table as data, and the egress grant gate."
+description = "The APPROVE step's scope half: the admin-API scope matrix and the egress grant gate."
 license = "Apache-2.0"
 
 [lib]
@@ -25,3 +26,7 @@ path = "src/lib.rs"
 
 [dependencies]
 busbar-contract = { path = "../busbar-contract" }
+
+[dev-dependencies]
+# The table test reads the 1.5.5 admin document (the oracle corpus's openapi-1.5.5.json).
+serde_json = { workspace = true }

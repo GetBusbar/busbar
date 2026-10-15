@@ -223,8 +223,8 @@ pub struct Wake {
     wake: WakeFn,
 }
 
-// SAFETY: the context is the host's per-instance state and the wake a plain code address; the
-// mechanism states the wake callable from any thread for the instance's life.
+// SAFETY: the context is an opaque `u64` handle (#74: no host address crosses) and the wake a plain
+// code address; the mechanism states the wake callable from any thread for the instance's life.
 unsafe impl Send for Wake {}
 // SAFETY: as above.
 unsafe impl Sync for Wake {}
@@ -252,8 +252,8 @@ pub struct Services {
     table: *const HostSlots,
 }
 
-// SAFETY: the table is the host's static and the context the host's leaked per-instance state; the
-// host states both are callable from any thread for the instance's life.
+// SAFETY: the table is the host's static and the context an opaque `u64` handle (#74); the host
+// states both are usable from any thread for the instance's life.
 unsafe impl Send for Services {}
 // SAFETY: as above.
 unsafe impl Sync for Services {}

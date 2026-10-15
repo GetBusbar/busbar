@@ -23,7 +23,8 @@ use crate::json_lite::{self, Json, Obj};
 
 const USAGE: &str = "\
 usage:
-  cargo xtask ledger sync [--write]      derive the scope list from the tree
+  cargo xtask ledger sync [--write] [--drop ID,..]   derive the scope list from the tree; a gone
+                                         scope with an open HIGH/MEDIUM is kept unless --drop names it
   cargo xtask ledger status              print the table and write qa/evidence/AUDIT-STATUS.md
   cargo xtask ledger next                the worklist, worst first
   cargo xtask ledger record --scope S --round N --result R --report P --auditor A [--counts ..] [--at REV]
@@ -57,7 +58,8 @@ const MOVE_SUB: &str = "move";
 /// auditor believed they had named the commit they read, and the record would claim a tree nobody
 /// looked at. An unexpected positional has always been an error; a misspelt flag is the same
 /// mistake.
-const OPTIONS: [&str; 10] = [
+const OPTIONS: [&str; 11] = [
+    "drop",
     "ledger",
     "report-md",
     "scope",
@@ -136,7 +138,12 @@ pub fn main(root: &std::path::Path, args: &[String]) -> i32 {
     }
 
     match a.sub.as_deref() {
-        Some("sync") => cmd_sync(&git, &register, a.flags.iter().any(|f| f == "write")),
+        Some("sync") => cmd_sync(
+            &git,
+            &register,
+            a.flags.iter().any(|f| f == "write"),
+            a.map.get("drop").map(String::as_str),
+        ),
         Some("status") => cmd_status(&git, &register, &report),
         Some("next") => cmd_next(&git, &register),
         Some("record") => cmd_record(&git, &register, &a),
@@ -170,7 +177,32 @@ fn ids(scopes: &[Json]) -> Vec<String> {
         .collect()
 }
 
-fn cmd_sync(git: &Git, register: &std::path::Path, write: bool) -> i32 {
+/// The scopes `sync` would drop (their path is gone) that still carry an OPEN HIGH or MEDIUM finding,
+/// each with the counts that hold it open. L-R23: `sync --write` used to drop them with the record
+/// and exit 0, so a finding nobody fixed left the register by deleting the directory it was in.
+fn dropped_open(existing: &[Json], removed: &[&String]) -> Vec<(String, String)> {
+    existing
+        .iter()
+        .filter_map(|sc| {
+            let id = sc.get("id").as_str()?;
+            if !removed.iter().any(|r| r.as_str() == id) {
+                return None;
+            }
+            let found = audit::open_findings(sc, None)?;
+            let counts = found.get("counts");
+            let held: Vec<String> = ["HIGH", "MEDIUM"]
+                .iter()
+                .filter_map(|k| {
+                    let n = counts.get(k).as_i64().unwrap_or(0);
+                    (n > 0).then(|| format!("{k} {n}"))
+                })
+                .collect();
+            (!held.is_empty()).then(|| (id.to_string(), held.join(", ")))
+        })
+        .collect()
+}
+
+fn cmd_sync(git: &Git, register: &std::path::Path, write: bool, drop: Option<&str>) -> i32 {
     let mounted = match git.mounted_at("HEAD") {
         Ok(m) => m,
         Err(e) => return die(e),
@@ -194,6 +226,42 @@ fn cmd_sync(git: &Git, register: &std::path::Path, write: bool) -> i32 {
     }
     for sid in &removed {
         println!("- {sid}  (path gone from the tree; its audit record goes with it)");
+    }
+
+    // A GONE SCOPE THAT STILL HOLDS AN OPEN HIGH/MEDIUM IS NOT DROPPED IN SILENCE. It goes only when
+    // `--drop` names it — the declaration that the finding left with the code, reviewed in the
+    // diff that carries it. A named id that is not such a scope is refused too: a declaration that
+    // covers nothing is a standing excuse.
+    let open = dropped_open(&existing, &removed);
+    let declared: Vec<&str> = drop
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|d| !d.is_empty())
+        .collect();
+    let undeclared: Vec<&(String, String)> = open
+        .iter()
+        .filter(|(id, _)| !declared.contains(&id.as_str()))
+        .collect();
+    let idle: Vec<&&str> = declared
+        .iter()
+        .filter(|d| !open.iter().any(|(id, _)| id == **d))
+        .collect();
+    if !undeclared.is_empty() || !idle.is_empty() {
+        for (id, held) in &undeclared {
+            eprintln!(
+                "sync: REFUSED -- {id} is gone from the tree with open findings ({held}); fix and \
+                 record them, `ledger move` the record to where the code went, or name the scope \
+                 in --drop"
+            );
+        }
+        for d in &idle {
+            eprintln!(
+                "sync: REFUSED -- --drop names {d}, which is not a gone scope with open findings"
+            );
+        }
+        eprintln!("sync: nothing written");
+        return 1;
     }
 
     let merged = audit::merge(&derived, &existing);
@@ -2024,6 +2092,59 @@ mod move_tests {
         let never_read =
             crate::json_lite::parse(r#"{"result": "unaudited"}"#).expect("the fixture parses");
         assert!(super::round_from_record(&never_read).is_none());
+    }
+
+    /// L-R23 RED: a scope whose path is gone while it holds an open HIGH finding is NOT dropped by
+    /// `sync --write` (exit 1, register untouched); `--drop` naming it is the one way through, and a
+    /// `--drop` naming nothing open is refused too.
+    #[test]
+    fn sync_keeps_a_gone_scope_with_open_findings_unless_drop_names_it() {
+        let s = scratch("drop-open");
+        s.crate_at("keep", "pub fn k() {}\n");
+        s.crate_at("gone", "pub fn g() {}\n");
+        s.commit("base");
+        assert_eq!(s.xtask(&["sync", "--write"]), 0);
+        assert_eq!(
+            s.xtask(&[
+                "record",
+                "--scope",
+                "crates/gone/src",
+                "--round",
+                "1",
+                "--result",
+                "findings",
+                "--report",
+                "a path admits an unmetered call",
+                "--auditor",
+                "alice",
+                "--counts",
+                "HIGH=1",
+            ]),
+            0
+        );
+        s.run(&["rm", "-rq", "crates/gone"]);
+        s.commit("delete the crate the finding was in");
+        let before = s.raw();
+
+        assert_eq!(
+            s.xtask(&["sync", "--write"]),
+            1,
+            "an open HIGH is not dropped"
+        );
+        assert_eq!(s.raw(), before, "a refused sync writes nothing");
+        assert_eq!(
+            s.xtask(&["sync", "--write", "--drop", "crates/keep/src"]),
+            1,
+            "a --drop naming a scope with nothing open is refused"
+        );
+        assert_eq!(s.raw(), before);
+
+        assert_eq!(
+            s.xtask(&["sync", "--write", "--drop", "crates/gone/src"]),
+            0
+        );
+        assert!(s.scope("crates/gone/src").is_none(), "named, it goes");
+        assert!(s.scope("crates/keep/src").is_some());
     }
 
     /// THE LAUNDERING, AND THE REPAIR, IN ONE TEST — because a tool whose reason for existing is

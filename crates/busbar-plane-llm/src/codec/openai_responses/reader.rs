@@ -4,8 +4,9 @@ use crate::codec::dialect::ir_parse_error;
 impl ProtocolReader for ResponsesReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        // Every count is read through the dialect's usage table (`USAGE`): an unreadable one yields
-        // NO recovered usage, never a zero one (#42). A truncated body reads the same cache tiers an
+        // Every count is read through the dialect's usage table (`USAGE`): an unreadable one is
+        // refused on its own and bills nothing (#42; ARCHITECT ruling 2026-10-15), the readable
+        // ones recover. A truncated body reads the same cache tiers an
         // untruncated one does.
         Some(read_responses_usage(Some(&v), None).ok()?.to_token_usage())
     }
@@ -724,6 +725,7 @@ impl ProtocolReader for ResponsesReader {
 
     fn read_response_events(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         event_type: &str,
         data: &serde_json::Value,
         state: &mut crate::codec::ir::StreamDecodeState,
@@ -1435,44 +1437,9 @@ impl ProtocolReader for ResponsesReader {
                 }
             }
 
-            // RSP-12: the TOP-LEVEL `error` stream event (`{"type":"error","code","message","param"}`)
-            // is the Responses stream's own mid-stream failure frame — distinct from a terminal
-            // `response.failed`. Unhandled, the stream just ended: the translator never saw an
-            // `Error`, so `terminal_error` stayed empty, the breaker recorded a clean close, and a
-            // cross-protocol client got a truncated SUCCESS. Surface it exactly as the
-            // `response.failed` arms do — the class derived from the code through the shared
-            // `class_for_response_failed`, then close every open block and stop.
-            EVT_ERROR => {
-                let provider_signal = data
-                    .get(keys::CODE)
-                    .and_then(|c| c.as_str())
-                    .filter(|c| !c.is_empty())
-                    .or_else(|| {
-                        data.get(keys::ERROR_WORD)
-                            .and_then(|e| e.get(keys::CODE))
-                            .and_then(|c| c.as_str())
-                    })
-                    .unwrap_or(SIGNAL_RESPONSE_FAILED)
-                    .to_string();
-                out.push(IrStreamEvent::Error(IrError {
-                    class: class_for_response_failed(&provider_signal),
-                    provider_signal: Some(provider_signal),
-                    retry_after: None,
-                }));
-                let mut indices: Vec<usize> = state
-                    .open_tools
-                    .iter()
-                    .map(|&key| key.checked_sub(TEXT_INDEX_KEY_OFFSET).unwrap_or(key))
-                    .collect();
-                state.open_tools.clear();
-                indices.sort_unstable();
-                indices.dedup();
-                for index in indices {
-                    out.push(IrStreamEvent::BlockStop { index });
-                }
-                out.push(IrStreamEvent::MessageStop);
-            }
-
+            // The TOP-LEVEL `error` stream event (`{"type":"error","code","message","param"}`) has no
+            // arm, as in 1.5.5 (v1.5.5 proto/openai_responses/reader.rs:542-1103): it ends nothing and
+            // fails nothing, so the stream bills and closes as 1.5.5's did (row 155, codec L3#10).
             _ => {}
         }
 
@@ -1481,6 +1448,7 @@ impl ProtocolReader for ResponsesReader {
 
     fn read_response(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or_else(ir_parse_error)?;

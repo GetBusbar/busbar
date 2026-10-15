@@ -267,10 +267,6 @@ fn attribution_fields_round_trip_and_are_backward_compatible() {
 /// partitioned on write and reassembled on read.
 #[test]
 fn scope_kinds_survive_store_round_trip() {
-    // The plane scope kinds are registered at boot from each `PlaneDecl.scope_kinds`; a unit test
-    // registers them itself (idempotent) so the neutral crate's SOURCE names no plane kind.
-    register_scope_kind("grid_server");
-    register_scope_kind("grid_tool");
     let mut k = sample_key();
     k.allowed_scopes = Some(vec![
         ScopeRef::pool("fast"),
@@ -298,22 +294,18 @@ fn scope_kinds_survive_store_round_trip() {
     assert!(rt.scope_allowed("pool", "fast"));
 }
 
-/// A scope kind this process NEVER registered round-trips VERBATIM under its own
-/// `allowed_{kind}s` field (1.6.0 SDK-SCOPEKINDS) - never remapped into `allowed_pools` (the pre-P0
-/// escalation) and never dropped (which would widen the grant toward the `None` wildcard).
+/// Any scope kind round-trips VERBATIM under its own `allowed_{kind}s` field (1.6.0
+/// SDK-SCOPEKINDS) - never remapped into `allowed_pools` (the pre-P0 escalation) and never dropped
+/// (which would widen the grant toward the `None` wildcard).
 ///
 /// This replaces the old "unregistered kind is a hard serialize error" rule. That rule made the
-/// wire consult a process-global registry, and a dropped-in store plugin's copy of it is never
+/// wire consult a process-global registry, and a dropped-in store plugin's copy of it was never
 /// populated, so the plugin could not hand back a key carrying a plane grant it had just stored.
-/// Kind validation is the engine's; the wire is an opaque carrier. The kind below is one no test
-/// in this crate registers, so this runs against an unregistered kind whatever the test order.
+/// The registry is gone (the contract holds no static, THE DESIGN A.8); the wire is an opaque
+/// carrier, and a kind nobody declared round-trips like any other.
 #[test]
 fn unregistered_scope_kind_round_trips_verbatim_under_its_own_field() {
     let kind = "sdk_scopekinds_never_registered";
-    assert!(
-        !scope_kinds::is_registered(kind),
-        "fixture precondition: the kind must be unregistered"
-    );
     let mut k = sample_key();
     k.allowed_scopes = Some(vec![ScopeRef {
         kind: kind.to_string(),
@@ -343,8 +335,6 @@ fn unregistered_scope_kind_round_trips_verbatim_under_its_own_field() {
 /// `allowed_pools: []` beside a GRID field stays the EMPTY pool set - never "all".
 #[test]
 fn grid_scope_wire_fields_are_additive() {
-    register_scope_kind("grid_server");
-    register_scope_kind("grid_tool");
     // Pool-only and None grants must not grow grid fields on the wire.
     let pool_only = sample_key();
     let v = serde_json::to_value(&pool_only).unwrap();

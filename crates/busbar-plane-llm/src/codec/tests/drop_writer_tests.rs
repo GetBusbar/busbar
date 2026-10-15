@@ -37,7 +37,13 @@ fn translate(ingress: &str, egress: &str, body: &Value) -> (Vec<String>, WarnCap
     };
     let cap = WarnCapture::default();
     let out = tracing::subscriber::with_default(cap.clone(), || {
-        handler.translate_request(TranslateReqInput::Json(body), Some(egress), &prep, "m")
+        handler.translate_request(
+            crate::codec::test_host::HOST,
+            TranslateReqInput::Json(body),
+            Some(egress),
+            &prep,
+            "m",
+        )
     });
     let Ok(out) = out else {
         panic!("{ingress} -> {egress}: the request must translate");
@@ -59,11 +65,12 @@ fn answer(egress: &str, ingress: &str, body: &Value) -> (Vec<String>, WarnCaptur
         request: None,
         now_s: 1,
         elapsed_ms: None,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let bytes = serde_json::to_vec(body).unwrap();
     let cap = WarnCapture::default();
     let whole = tracing::subscriber::with_default(cap.clone(), || {
-        crate::exchange::reply::whole::translate(&ctx, 200, &bytes)
+        crate::exchange::reply::whole::translate(crate::codec::test_host::HOST, &ctx, 200, &bytes)
     });
     (whole.dropped, cap)
 }
@@ -103,8 +110,8 @@ fn on_the_drop_path(audited: &[String], cap: &WarnCapture, path: &str, diag: &st
 
 // ───────────────────────────── (1) a member, by the caller's row ─────────────────────────────
 
-/// openai_chat writer: a Gemini caller's reasoning-off ask (`thinkingBudget: 0`) on a Chat lane that
-/// does not declare `"none"` is named by Gemini's own row for it.
+/// A Gemini caller's reasoning-off ask (`thinkingBudget: 0`), which carries no ask across dialects
+/// (1.5.5), is named by Gemini's own row for it.
 #[test]
 fn a_request_member_drop_is_named_by_the_callers_row() {
     let (audited, cap) = translate(
@@ -118,7 +125,7 @@ fn a_request_member_drop_is_named_by_the_callers_row() {
         &cap,
         "generationConfig.thinkingConfig.thinkingBudget",
         "BUSBAR-7079",
-        "omitting reasoning OFF on OpenAI Chat egress",
+        "dropping thinkingBudget 0 (reasoning off) across dialects",
     );
 }
 
@@ -249,7 +256,9 @@ fn outside_an_attempt_the_writers_own_warn_is_said() {
     };
     let cap = WarnCapture::default();
     let writer = crate::codec::gemini::GeminiWriter;
-    tracing::subscriber::with_default(cap.clone(), || writer.write_request(&ir));
+    tracing::subscriber::with_default(cap.clone(), || {
+        writer.write_request(crate::codec::test_host::HOST, &ir)
+    });
     let text = "dropping parallel_tool_calls on Gemini egress";
     assert_eq!(cap.count(text), 1, "{:?}", cap.messages());
     assert!(
@@ -286,7 +295,13 @@ fn translate_body(ingress: &str, egress: &str, body: &Value) -> (Value, Vec<Stri
     };
     let cap = WarnCapture::default();
     let out = tracing::subscriber::with_default(cap.clone(), || {
-        handler.translate_request(TranslateReqInput::Json(body), Some(egress), &prep, "m")
+        handler.translate_request(
+            crate::codec::test_host::HOST,
+            TranslateReqInput::Json(body),
+            Some(egress),
+            &prep,
+            "m",
+        )
     });
     let Ok(out) = out else {
         panic!("{ingress} -> {egress}: the request must translate");
@@ -317,7 +332,13 @@ fn refused_natively(ingress: &str, egress: &str, body: &Value) {
         lane_caps: Default::default(),
         thought_signature_fill: false,
     };
-    let out = handler.translate_request(TranslateReqInput::Json(body), Some(egress), &prep, "m");
+    let out = handler.translate_request(
+        crate::codec::test_host::HOST,
+        TranslateReqInput::Json(body),
+        Some(egress),
+        &prep,
+        "m",
+    );
     assert!(
         matches!(
             out,

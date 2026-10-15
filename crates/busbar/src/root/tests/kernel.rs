@@ -202,10 +202,10 @@ fn the_card_an_apply_builds_carries_its_configured_fee_at_the_one_scale() {
 #[test]
 fn a_card_edit_mid_window_prices_an_open_class_in_both_eras_and_refuses_neither() {
     let zero = busbar_contract::billing::RawTierRates {
-        input: 0.0,
-        output: 0.0,
-        cache_read: 0.0,
-        cache_write: 0.0,
+        input: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+        output: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+        cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+        cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
     };
     let lanes = [("rerank".to_string(), zero)];
     let era = |nanos: u64| [("rerank".to_string(), "search_units".to_string(), nanos)];
@@ -306,6 +306,7 @@ fn a_unit_this_root_did_not_compose_is_not_sealed_as_an_admin_read() {
     );
     let seal = busbar_kernel::test_support::tokens::seal();
     let ctx = UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: busbar_contract::ids::UnitKey::new(9),
         origin: busbar_contract::caps::OriginKind::Client,
         session: None,
@@ -406,6 +407,125 @@ fn the_units_assemble_from_values_configuration_decided() {
     let durability = units.durability.lock().expect("durability lock");
     assert!(!durability.on_disk());
     assert!(durability.ledger.is_dual_writing());
+}
+
+/// A store that writes down every primitive it is asked for, so a test can say WHICH store a call
+/// landed on rather than inferring it from an `Ok`.
+#[cfg(feature = "root-admin")]
+#[derive(Default)]
+struct ReachedStore(Mutex<Vec<String>>);
+
+#[cfg(feature = "root-admin")]
+impl ReachedStore {
+    fn note(&self, line: String) {
+        self.0.lock().expect("the log lock").push(line);
+    }
+
+    fn reached(&self) -> Vec<String> {
+        self.0.lock().expect("the log lock").clone()
+    }
+}
+
+#[cfg(feature = "root-admin")]
+impl busbar_contract::verb_store::Store for ReachedStore {
+    fn chain_break(
+        &self,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        self.note("chain_break".to_string());
+        Ok(())
+    }
+
+    fn store_restore(
+        &self,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+        backup_ref: &str,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        self.note(format!("store_restore {backup_ref}"));
+        Ok(())
+    }
+
+    fn reseal_epoch_floor(
+        &self,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        self.note("reseal_epoch_floor".to_string());
+        Ok(())
+    }
+
+    fn replay_new_verb(
+        &self,
+        key: &(String, String),
+    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
+        self.note(format!("replay_new_verb {} {}", key.0, key.1));
+        Ok(None)
+    }
+
+    fn commit_new_verb_replay(
+        &self,
+        key: &(String, String),
+        _response: &[u8],
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        self.note(format!("commit_new_verb_replay {} {}", key.0, key.1));
+        Ok(())
+    }
+}
+
+/// ROW 113: THE ADMIN UNITS OVER A BOOK REACH THAT BOOK'S STORE, for every recovery primitive and
+/// the replay slot.
+///
+/// `ProductionUnits::admin_over_book` is the one composition `main` serves the admin listener
+/// through, and the `route` step hands `units.store` to the verbs unit. So the store the units hold
+/// IS the store every disaster-recovery verb lands on. The book here carries a store that writes
+/// down what reached it; each primitive is driven through the units' handle and must appear on that
+/// store, in order, with the backup the operator named. RED: units that hold no store (the refusing
+/// stand-in this row deleted) fail the `expect`; units that hold any other store leave this one's
+/// log empty.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() {
+    let configured = Arc::new(ReachedStore::default());
+    let mut book = crate::root::durability::node_book();
+    book.verb_store = Some(Arc::clone(&configured) as _);
+    let units = ProductionUnits::admin_over_book(
+        Arc::new(crate::root::units_admin::RefusingDispatch),
+        crate::root::units_admin::open_door(),
+        &book,
+    );
+    let store = units
+        .store
+        .as_ref()
+        .expect("units over a book with a configured store hold a store");
+
+    let key = (
+        "idem-row-113".to_string(),
+        "POST /api/v1/admin/keys".to_string(),
+    );
+    store
+        .chain_break(&units.admin_token)
+        .expect("chain_break applies");
+    store
+        .store_restore(&units.admin_token, "nightly")
+        .expect("store_restore applies");
+    store
+        .reseal_epoch_floor(&units.admin_token)
+        .expect("reseal_epoch_floor applies");
+    store
+        .commit_new_verb_replay(&key, b"first answer")
+        .expect("the replay slot commits");
+    store.replay_new_verb(&key).expect("the replay slot reads");
+
+    assert_eq!(
+        configured.reached(),
+        vec![
+            "chain_break".to_string(),
+            "store_restore nightly".to_string(),
+            "reseal_epoch_floor".to_string(),
+            "commit_new_verb_replay idem-row-113 POST /api/v1/admin/keys".to_string(),
+            "replay_new_verb idem-row-113 POST /api/v1/admin/keys".to_string(),
+        ],
+        "every recovery primitive and the replay slot landed on the book's configured store"
+    );
 }
 
 /// **The units carry no metering policy, and the root has no pool-expansion boot check** (items
@@ -613,10 +733,10 @@ const REBOOT_CHANGED: u64 = 50_000;
 
 fn tiers(input: f64) -> busbar_contract::billing::RawTierRates {
     busbar_contract::billing::RawTierRates {
-        input,
-        output: 0.0,
-        cache_read: 0.0,
-        cache_write: 0.0,
+        input: busbar_kernel_ledger::cost::representable_nano_rate(input),
+        output: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+        cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+        cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
     }
 }
 
@@ -854,10 +974,10 @@ fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i6
 
 /// **A RESTART NEVER REPRICES WHAT ALREADY HAPPENED** (#79, OWNER RULING Q14).
 ///
-/// Card A prices [`FLAT_LANE`] at 3 micro-units an input token (the `mcp` plane's lane at 6); a
-/// million tokens are earned on each. Card B is applied live — 5 (plane 10) — and another million is
-/// earned on each. The node restarts. Every posting on the chain is replayed at the card in force
-/// when it ARRIVED: flat 3,000,000,000 + 5,000,000,000 = 8,000,000,000 nano-units, plane
+/// Card A prices [`FLAT_LANE`] at 3 micro-units an input token (a plane's lane, [`PLANE_LANE`],
+/// at 6); a million tokens are earned on each. Card B is applied live — 5 (plane 10) — and another
+/// million is earned on each. The node restarts. Every posting on the chain is replayed at the card
+/// in force when it ARRIVED: flat 3,000,000,000 + 5,000,000,000 = 8,000,000,000 nano-units, plane
 /// 6,000,000,000 + 10,000,000,000 = 16,000,000,000 — the figures the node served before the
 /// restart. Before the applied cards were journalled, the rebuilt history was the boot card B from
 /// instant zero and the same chain replayed as 10,000,000,000 and 20,000,000,000.
@@ -2141,13 +2261,13 @@ fn applying_rates_registers_the_classes_a_unit_may_report() {
     );
     for class in busbar_contract::records::RESERVED_UNITS {
         assert!(
-            busbar_contract::Registration::resolve(class).is_some(),
+            busbar_kernel::Registration::resolve(class).is_some(),
             "{class}"
         );
     }
-    assert!(busbar_contract::Registration::resolve("configured_open_units").is_some());
+    assert!(busbar_kernel::Registration::resolve("configured_open_units").is_some());
     assert_eq!(
-        busbar_contract::Registration::resolve("a_class_nobody_declared_or_configured"),
+        busbar_kernel::Registration::resolve("a_class_nobody_declared_or_configured"),
         None
     );
 }

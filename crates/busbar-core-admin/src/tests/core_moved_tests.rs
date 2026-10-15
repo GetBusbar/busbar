@@ -284,7 +284,7 @@ async fn split_admin_listener_no_double_exposure() {
     let app = crate::new_test_app()
         .lane(LaneSpec::new(
             "test-model",
-            busbar_kernel::proto::PROTO_ANTHROPIC,
+            crate::linked_protocol(),
             "http://127.0.0.1:1",
         ))
         .pool("pa", &[(0, 1)])
@@ -481,5 +481,11 @@ fn dp_gov_with_key() -> (std::sync::Arc<busbar_kernel::governance::GovState>, St
             1_000_000_000,
         )
         .unwrap();
-    (gov, secret.expose_secret().as_str().to_string())
+    (
+        gov,
+        secret
+            .expose(&busbar_kernel::seal::lend())
+            .as_str()
+            .to_string(),
+    )
 }

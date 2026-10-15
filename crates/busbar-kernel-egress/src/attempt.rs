@@ -15,3 +15,7 @@
 pub fn attempt_cap_ms(ms: u64, remaining_ms: u64) -> u64 {
     ms.min(remaining_ms.max(1))
 }
+
+#[cfg(test)]
+#[path = "tests/attempt_tests.rs"]
+mod attempt_tests;

@@ -111,6 +111,9 @@ frame.
 
 Observed here, from the live API: `trafficType`, `promptTokensDetails`,
 `candidatesTokensDetails`, `toolUsePromptTokensDetails`, `createTime`, `responseId`,
-`thoughtSignature`, `avgLogprobs`. Recorded in
-`testing/llm-conformance/named-gaps.json` where they are the reason a row would
-otherwise fail against the vendor's own published schema.
+`thoughtSignature`, `avgLogprobs`. The pinned schema is the Gemini API's
+(`generativelanguage` v1beta). These bytes are Vertex AI's, and Vertex's own published
+document (`aiplatform` v1beta1 discovery, fetched 2026-10-13) declares
+`GenerateContentResponse.createTime`, `UsageMetadata.trafficType` and
+`GroundingChunkWeb.domain`. So the difference is between Google's two surfaces, not a
+gap in either one. No conformance gate judges these files: they are codec evidence only.

@@ -697,6 +697,12 @@ fn on_disk_unmembered(cx: &Ctx, declared: &[String]) -> Vec<String> {
         if crate::gates::kind_isolation::off_tree_manifest_reason(&rel).is_some() {
             continue;
         }
+        // A PINNED PLANE laid by the context's base layer (ARCHITECT row 106 (A)) is a git
+        // dependency read from its checkout, never a crate on disk: no member line names it, and
+        // no path dependency can reach it.
+        if cx.in_base(&rel) && !cx.abs(&rel).exists() {
+            continue;
+        }
         if !rel
             .split('/')
             .next()

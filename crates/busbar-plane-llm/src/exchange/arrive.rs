@@ -46,6 +46,8 @@ pub enum Decline {
     ProviderMismatch = 9,
     /// A dialect path hit with a method other than POST.
     MethodNotAllowed = 10,
+    /// A webhook delivery whose body does not read ([`super::webhook::read_event`]).
+    WebhookBody = 11,
 }
 
 impl Decline {
@@ -53,6 +55,16 @@ impl Decline {
     #[must_use]
     pub const fn code(self) -> u32 {
         self as u32
+    }
+
+    /// The arrival names an action its dialect has that this plane does not serve: a resolved
+    /// operation with no handler, or a path-model URL naming no model and action this plane
+    /// serves (`REFUSED_UNSUPPORTED_ACTION`, which the root counts as a refusal of a read request,
+    /// as 1.5.5's ingress counted its unsupported-action and malformed-path answers). A path no
+    /// dialect claims, or a verb a dialect path does not take, is none.
+    #[must_use]
+    pub const fn unsupported_action(self) -> bool {
+        matches!(self, Decline::UnsupportedOperation | Decline::PathNotFound)
     }
 }
 

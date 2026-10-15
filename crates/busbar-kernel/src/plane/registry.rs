@@ -329,15 +329,6 @@ pub fn merged_boot_plane_decls(
             .position(|k| *k == d.key)
             .unwrap_or(canonical.len())
     });
-    // REGISTER EACH PLANE'S SCOPE KINDS with the neutral `busbar_contract` scope-kind wire registry, so a
-    // `VirtualKey` grant of a plane's kind (`mcp_server`, …) serializes to its `allowed_{kind}s` wire
-    // field instead of failing the write. The kind strings are DATA off each `PlaneDecl.scope_kinds`
-    // — core names no plane vocabulary here. Idempotent, so re-folding under the test surface is safe.
-    for d in &decls {
-        for kind in d.scope_kinds {
-            busbar_contract::records::register_scope_kind(kind);
-        }
-    }
     // PLANE-OWNED-CONFIG DUP-CLAIM GUARD (1.6.0 config-seam, stage 1). Refuse the boot if two planes
     // claim the same top-level config section, or if a plane claims a section core STILL owns
     // concretely (`CORE_OWNED_CONCRETE_SECTIONS`) — the invariant that makes the later section moves
@@ -601,7 +592,7 @@ pub fn build_dispatch(
 }
 
 // `registry_tests` MOVED to `crates/busbar/tests/registry_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
-// cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp`/`busbar_a2a` `PLANE_DECL`s and their
+// cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp` and agent-engine `PLANE_DECL`s and their
 // real runtime objects, which only type-checks with ONE `busbar_kernel` in the graph — an
 // integration-test target, never this `#[cfg(test)]` unit module. See that file's header. The two
 // `#[cfg(test)]` seams it used to reach through (`builtin_plane_decls`, `default_section_plane_test_runtime`
@@ -653,7 +644,48 @@ pub struct BuildCtx<'a> {
     /// handed the dialect facts of the providers its section references, as its served instance
     /// is; `None` = none (a test build that states none).
     pub providers:
-        Option<&'a std::collections::HashMap<String, crate::config::providers::ProviderCfg>>,
+        Option<&'a std::collections::HashMap<String, crate::config::providers::ResolvedProvider>>,
+    /// THE HOSTLESS-EGRESS DRIVER of the App this generation builds, handed to a plane's `build` on
+    /// this context rather than read off a process-wide static: a plane that runs a governed hop
+    /// holds the driver of the App that built it, so two Apps in one process each drive their own.
+    /// [`EgressDriver::core`] in the App build; `Default` (no driver) where a test states none.
+    pub hostless: EgressDriver,
+}
+
+/// THE HOSTLESS-EGRESS DRIVER A PLANE'S `build` IS HANDED ([`BuildCtx::hostless`]): the
+/// neutral `&dyn HostlessEgress` a plane runs a governed hop through, or none. A field of the
+/// build context in every build, empty in a build that compiles no egress seam, so a test that
+/// spells a `BuildCtx` literal states `Default::default()` whatever features are unified.
+#[derive(Clone, Copy, Default)]
+pub struct EgressDriver(
+    #[cfg(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay")))]
+    Option<&'static dyn crate::egress::seam::HostlessEgress>,
+);
+
+impl EgressDriver {
+    /// The App's own driver: the core-backed `CoreHostlessEgress` (the `plane_host` FFI egress
+    /// vtable) where the egress seam is compiled, none where it is not.
+    #[must_use]
+    pub fn core() -> Self {
+        #[cfg(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay")))]
+        {
+            Self(Some(&crate::egress::seam::CoreHostlessEgress))
+        }
+        #[cfg(not(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay"))))]
+        {
+            Self()
+        }
+    }
+}
+
+#[cfg(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay")))]
+impl EgressDriver {
+    /// The driver, or `None` when this context carries none: a plane that gets `None` has no egress
+    /// backend behind it and refuses the hop rather than inventing one.
+    #[must_use]
+    pub fn get(self) -> Option<&'static dyn crate::egress::seam::HostlessEgress> {
+        self.0
+    }
 }
 
 /// A PLANE BOOT HOOK — [`PlaneDecl::hydrate`] or [`PlaneDecl::start`]. Handed the [`PlaneBootCtx`] for
@@ -1078,7 +1110,7 @@ plane_behaviour! {
     /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])
     /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,
     /// [`crate::config::providers::ProviderDeploy`]) INTO THE RESOLVED
-    /// [`crate::config::providers::ProviderCfg`] a lane is built from — the providers/models/pools
+    /// [`crate::config::providers::ResolvedProvider`] a lane is built from — the providers/models/pools
     /// LOGIC seam (1.6.0 pools stage-B). `busbar_kernel::config::resolve` calls this at the EXACT point
     /// the per-deployment merge always ran (right after the catalog lookup, itself unconditional core
     /// orchestration — "provider referenced but not found in providers.yaml" stays a core error), so
@@ -1099,7 +1131,7 @@ plane_behaviour! {
         fn(
             &crate::config::providers::ProviderDef,
             &crate::config::providers::ProviderDeploy,
-        ) -> crate::config::providers::ProviderCfg,
+        ) -> crate::config::providers::ResolvedProvider,
     >,
 }
 

@@ -4,21 +4,16 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: session-scope — the plane's one declared scope kind is a gate, not vocabulary.
+# LEG: session-scope — the plane's `session` grant kind, at the door.
 #
-# Holding a key that is valid for the voice door's AUDIENCE is not the same as being GRANTED a session
-# on it: the audience check answers "is this token for this door", the grant answers "may this caller
-# walk through it". The plane declares a `session` scope kind, which is what an operator's
-# `allowed_scopes: [{ kind: session, value: … }]` entry validates against, and this leg judges that
-# the door actually asks the question — the way MCP double-gates a tool and A2A gates an agent.
+# THE DOOR'S HALF (judged, linked AND dropped door): the tail declares the `session` grant kind; every
+# one of the five doors asks for a principal (none admits anonymously) under the one session-open
+# operation; an unpublished claim is refused 404 with the plane's own code; a grant refusal renders as
+# the dialect's permission_error. RED arm: a door that admits anonymously fails.
 #
-# The whole grant semantic is judged, not just the happy path: a key with no scope list at all is the
-# store's wildcard and is granted every kind; a key with an explicit list must carry the session grant
-# for this voice pool, so a model-plane key, a session grant aimed at another pool, and an empty list
-# are all refused.
-#
-# WAS RED: any key valid for the plane's audience opened a session, and the declared scope kind was
-# vocabulary nothing consulted.
+# THE KERNEL'S HALF: matching the presenting key's grants (wildcard, an explicit session grant, one aimed
+# at another pool, an empty list) — the approve step (served leg:
+# crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_refuses_a_grant_short_of_the_operation).
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

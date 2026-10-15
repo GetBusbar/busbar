@@ -31,6 +31,7 @@ fn principal() -> PrincipalId {
 
 fn ctx() -> UnitCtx {
     UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: UnitKey::new(1),
         origin: OriginKind::Client,
         session: None,

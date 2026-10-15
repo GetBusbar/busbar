@@ -168,6 +168,7 @@ async fn same_protocol_rerank_books(protocol: &'static str, body: &str) -> TwoBo
             request: None,
             handler: op.op_handler,
             meter: true,
+            translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
         })
         .0;
     let tap = TapCell::new();

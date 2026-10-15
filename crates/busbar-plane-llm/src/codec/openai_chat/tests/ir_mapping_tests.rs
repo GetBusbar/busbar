@@ -32,7 +32,9 @@ fn xreq(ingress: &'static str, egress: &str, body: &Value) -> Value {
             lane_caps: Default::default(),
         },
     );
-    egress_p.writer().write_request(&req)
+    egress_p
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &req)
 }
 
 /// Cross-protocol BUFFERED RESPONSE: `egress` (backend) reader → the ingress seam → `ingress` writer.
@@ -41,18 +43,20 @@ fn xresp(egress: &str, ingress: &'static str, body: &Value) -> Value {
     let ingress_p = crate::codec::proto_codec::protocol_for(ingress).expect("ingress protocol");
     let mut resp = egress_p
         .reader()
-        .read_response(body)
+        .read_response(crate::codec::test_host::HOST, body)
         .expect("backend body reads");
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut resp, ingress, 1_752_000_000);
-    ingress_p.writer().write_response(&resp)
+    ingress_p
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &resp)
 }
 
 /// Cross-protocol STREAM: raw `egress` (backend) SSE bytes → `ingress` client bytes.
 fn xstream(egress: &str, ingress: &str, raw: &str) -> String {
     let mut st = crate::codec::proto_stream::StreamTranslate::new(ingress, egress)
         .expect("stream translator");
-    let mut out = st.feed(raw.as_bytes());
-    out.extend(st.finish());
+    let mut out = st.feed(crate::codec::test_host::HOST, raw.as_bytes());
+    out.extend(st.finish(crate::codec::test_host::HOST));
     String::from_utf8_lossy(&out).into_owned()
 }
 
@@ -75,7 +79,7 @@ fn oai_stream_events(chunks: &[Value]) -> Vec<crate::codec::ir::IrStreamEvent> {
     let mut st = crate::codec::ir::StreamDecodeState::default();
     let mut out = Vec::new();
     for c in chunks {
-        out.extend(reader.read_response_events("", c, &mut st));
+        out.extend(reader.read_response_events(crate::codec::test_host::HOST, "", c, &mut st));
     }
     out
 }
@@ -118,7 +122,7 @@ fn oai01_codec_writes_source_spelling_or_max_tokens() {
                 key: 9
             }))
             .expect("reads");
-        let out = super::openai_writer().write_request(&ir);
+        let out = super::openai_writer().write_request(crate::codec::test_host::HOST, &ir);
         assert_eq!(out[key], json!(9), "{out}");
         assert!(out.get(other).is_none(), "{out}");
         assert!(
@@ -172,7 +176,7 @@ fn oai10_xhigh_effort_maps_to_high() {
             crate::codec::ir::IrReasoningEffort::XHigh
         ))
     );
-    let same = super::openai_writer().write_request(&ir);
+    let same = super::openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(same["reasoning_effort"], json!("xhigh"), "{same}");
 
     // Cross-protocol: the ask reaches a Gemini lane as a thinking budget (the High table entry).
@@ -424,21 +428,24 @@ fn oai03_service_tier_maps_both_ways() {
     use crate::codec::proto_codec::ProtocolWriter;
     let w = super::openai_writer();
     let (_, chunk) = w
-        .write_response_event(&crate::codec::ir::IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: crate::codec::ir::IrUsage {
-                input_tokens: 3,
-                output_tokens: 1,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-                detail: crate::codec::ir::IrUsageDetail {
-                    service_tier: Some("standard".to_string()),
-                    ..Default::default()
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: crate::codec::ir::IrUsage {
+                    input_tokens: 3,
+                    output_tokens: 1,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    detail: crate::codec::ir::IrUsageDetail {
+                        service_tier: Some("standard".to_string()),
+                        ..Default::default()
+                    },
                 },
+                stop_detail: None,
             },
-            stop_detail: None,
-        })
+        )
         .expect("terminal chunk");
     assert_eq!(chunk["service_tier"], json!("default"), "{chunk}");
 }
@@ -487,8 +494,10 @@ fn oai12_refusal_text_is_written_to_message_refusal() {
                      "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 3, "completion_tokens": 1, "total_tokens": 4}
     });
-    let ir = super::OpenAiReader.read_response(&body).expect("reads");
-    let out = super::openai_writer().write_response(&ir);
+    let ir = super::OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("reads");
+    let out = super::openai_writer().write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["choices"][0]["message"]["refusal"],
         json!("no"),
@@ -571,7 +580,7 @@ fn oai09_custom_tool_is_not_an_empty_name_function() {
     assert_eq!(tools[0]["name"], json!("f"), "{out}");
 
     let ir = super::OpenAiReader.read_request(&body).expect("reads");
-    let same = super::openai_writer().write_request(&ir);
+    let same = super::openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     // The custom tool rides the typed hosted-tool slot and is written after
     // the function tools (same members, same object).
     assert!(
@@ -667,7 +676,7 @@ fn oai07_legacy_function_calling_request_maps() {
     let ir = super::OpenAiReader
         .read_request(&legacy_request())
         .expect("reads");
-    let same = super::openai_writer().write_request(&ir);
+    let same = super::openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert!(same.get("tools").is_none(), "{same}");
     assert!(same.get("tool_choice").is_none(), "{same}");
     assert_eq!(same["functions"], legacy_request()["functions"], "{same}");
@@ -709,10 +718,20 @@ fn oai01_lane_max_output_key_decides_the_cross_protocol_spelling() {
         .expect("reads");
     ir.extra.clear();
     let w = super::openai_writer();
-    let on = w.write_request_for_lane(&ir, "gpt-5", &completion_lane);
+    let on = w.write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &ir,
+        "gpt-5",
+        &completion_lane,
+    );
     assert_eq!(on["max_completion_tokens"], json!(100), "{on}");
     assert!(on.get("max_tokens").is_none(), "{on}");
-    let off = w.write_request_for_lane(&ir, "llama-3", &LaneCaps::default());
+    let off = w.write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &ir,
+        "llama-3",
+        &LaneCaps::default(),
+    );
     assert_eq!(off["max_tokens"], json!(100), "{off}");
     assert!(off.get("max_completion_tokens").is_none(), "{off}");
 
@@ -723,6 +742,11 @@ fn oai01_lane_max_output_key_decides_the_cross_protocol_spelling() {
             "max_completion_tokens": 5}),
         )
         .expect("reads");
-    let kept = w.write_request_for_lane(&origin, "llama-3", &LaneCaps::default());
+    let kept = w.write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &origin,
+        "llama-3",
+        &LaneCaps::default(),
+    );
     assert_eq!(kept["max_completion_tokens"], json!(5), "{kept}");
 }

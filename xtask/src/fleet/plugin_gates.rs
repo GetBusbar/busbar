@@ -49,6 +49,9 @@ usage:
   cargo xtask plugin-gates former-names <plugins.yaml> [<repo>] [--declared \"<name> ...\"]
   (every entry, or <repo>'s, declares the 1.5.5 manifest name `legacy:` freezes for its repo;
    --declared: judge that list, what a release packs, instead of the entry's `former_names:`)
+  cargo xtask plugin-gates plane <busbar-root> <plugin repo dir> <logic package>
+  (a plane repo's change, judged at its busbar pin by busbar's plane gates: no row that passes over
+   busbar's pinned plane may fail with the change laid in its place)
   cargo xtask plugin-gates selftest";
 
 type Res<T> = Result<T, String>;
@@ -1600,6 +1603,34 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
             true,
         ),
         ("bothways both arms", Ok(bothways(&both)), false),
+        (
+            "plane unchanged",
+            Ok(plane_regressions(
+                "g",
+                "g:a\tPASS\tt\td\n\tcell\nb\tFAIL\tt\td\n",
+                "g:a\tPASS\tt\td\nb\tFAIL\tt\td\n",
+            )),
+            false,
+        ),
+        (
+            "plane regressed",
+            Ok(plane_regressions(
+                "g",
+                "g:a\tPASS\tt\td\ng:b\tPASS\tt\td\n",
+                "g:a\tPASS\tt\td\ng:b\tFAIL\tt\td\n",
+            )),
+            true,
+        ),
+        (
+            "plane answered nothing",
+            Ok(plane_regressions("g", "g:a\tPASS\tt\td\n", "")),
+            true,
+        ),
+        (
+            "plane pin answered nothing",
+            Ok(plane_regressions("g", "", "g:a\tPASS\tt\td\n")),
+            true,
+        ),
         ("bothways no RED arm", Ok(bothways(&both[..1])), true),
         ("bothways no equality arm", Ok(bothways(&both[1..])), true),
     ];
@@ -1726,6 +1757,104 @@ fn selftest() -> i32 {
     i32::from(!fails.is_empty())
 }
 
+// -- plane: busbar's plane gates over a plane repo's change ---------------------------------------
+
+/// THE GATES A PLANE REPO'S CHANGE IS JUDGED BY at its busbar pin (ARCHITECT row 106 (A),
+/// condition 7): the plane is judged where its source changes, by the rows busbar holds it to.
+pub const PLANE_GATES: &[&str] = &["plane-purity", "structure-lint", "config-schema"];
+
+/// The ids of a `gate --format=tsv` verdict's rows that PASS (a cell line is indented and skipped).
+fn passing_rows(tsv: &str) -> BTreeSet<String> {
+    tsv.lines()
+        .filter(|l| !l.starts_with('\t'))
+        .filter_map(|l| {
+            let mut cols = l.split('\t');
+            let id = cols.next()?;
+            (cols.next()? == "PASS").then(|| id.to_string())
+        })
+        .collect()
+}
+
+/// `gate`'s rows that pass over busbar's pinned plane (`pin`) and do not pass with the change laid
+/// in its place (`change`). A pin verdict with no passing row is itself a finding: a gate that
+/// answered nothing judged nothing.
+fn plane_regressions(gate: &str, pin: &str, change: &str) -> Vec<String> {
+    let (pin, change) = (passing_rows(pin), passing_rows(change));
+    if pin.is_empty() {
+        return vec![format!(
+            "PLANE-GATES {gate} answered no passing row over busbar's pinned plane"
+        )];
+    }
+    pin.difference(&change)
+        .map(|id| {
+            format!(
+                "PLANE-GATES {gate}: `{id}` passes over busbar's pinned plane and not over this change"
+            )
+        })
+        .collect()
+}
+
+/// `plane <busbar-root> <plugin repo dir> <package>`: [`PLANE_GATES`] run by this binary over the
+/// busbar checkout at the plugin's pin, once as it pins the plane and once with the plugin repo's
+/// `package` laid in its place (`BUSBAR_PLANE_SOURCE`, [`crate::gates::kind_isolation::plane_base`]).
+fn plane(root: &Path, plugin: &Path, package: &str) -> Res<Vec<String>> {
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let meta = std::process::Command::new(&cargo)
+        .args([
+            "metadata",
+            "--format-version",
+            "1",
+            "--no-deps",
+            "--manifest-path",
+        ])
+        .arg(plugin.join("Cargo.toml"))
+        .output()
+        .map_err(|e| format!("plugin-gates plane: cargo metadata: {e}"))?;
+    let meta: Value = serde_json::from_slice(&meta.stdout).map_err(|e| {
+        format!(
+            "plugin-gates plane: cargo metadata of {}: {e}",
+            plugin.display()
+        )
+    })?;
+    let dir = meta["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["name"] == package)
+        .and_then(|p| p["manifest_path"].as_str())
+        .and_then(|m| Path::new(m).parent())
+        .map(Path::to_path_buf)
+        .ok_or_else(|| {
+            format!(
+                "plugin-gates plane: {} has no package {package}",
+                plugin.display()
+            )
+        })?;
+    let exe =
+        std::env::current_exe().map_err(|e| format!("plugin-gates plane: this binary: {e}"))?;
+    let env = crate::gates::kind_isolation::PLANE_SOURCE_ENV;
+    let verdict = |gate: &str, over: Option<String>| -> Res<String> {
+        let mut c = std::process::Command::new(&exe);
+        c.args(["gate", gate, "--format=tsv"])
+            .current_dir(root)
+            .env_remove(env);
+        if let Some(v) = over {
+            c.env(env, v);
+        }
+        let out = c
+            .output()
+            .map_err(|e| format!("plugin-gates plane: gate {gate}: {e}"))?;
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let mut out = Vec::new();
+    for gate in PLANE_GATES {
+        let pin = verdict(gate, None)?;
+        let change = verdict(gate, Some(format!("{package}={}", dir.display())))?;
+        out.extend(plane_regressions(gate, &pin, &change));
+    }
+    Ok(out)
+}
+
 // -- entry ---------------------------------------------------------------------------------------
 
 fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
@@ -1787,6 +1916,7 @@ fn run(cmd: &str, args: &[String]) -> Res<Vec<String>> {
             )
         }
         "bothways" => Ok(bothways(&splitlines(&read(a(0)?)?))),
+        "plane" => plane(Path::new(a(0)?), Path::new(a(1)?), a(2)?),
         "declares" => declares(Path::new(a(0)?), a(1)?, &read(a(2)?)?),
         "former-names" => {
             let mut rest = args[1..].iter();
@@ -1875,6 +2005,10 @@ mod tests {
         parity_declared_extra_line => "parity declared extra line",
         parity_declared_extra_line_with_an_advisory => "parity declared extra line with an advisory",
         bothways_both_arms => "bothways both arms",
+        plane_unchanged => "plane unchanged",
+        plane_regressed => "plane regressed",
+        plane_answered_nothing => "plane answered nothing",
+        plane_pin_answered_nothing => "plane pin answered nothing",
         bothways_no_red_arm => "bothways no RED arm",
         bothways_no_equality_arm => "bothways no equality arm",
         declares_current => "declares current",

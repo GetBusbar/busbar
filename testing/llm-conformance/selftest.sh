@@ -33,15 +33,17 @@
 #          (closed object, no "error" property), so a PASS here is proof the checker judged it
 #          against the dialect's ERROR envelope, not the success schema
 #
-# The named-gap list (named-gaps.json) is the one thing here that can turn a red row green, so its
-# every arm is planted on a REAL violation the validator made:
+# The named-gap list (named-gaps.json) was the one thing here that could turn a red row green. Owner
+# rule 22 (2026-10-14) makes it admit nothing, and every arm is planted on a REAL violation the
+# validator made to prove that:
 #
-#   (i) a gap naming that violation      -> the row leaves the owed set as a gap, never as a PASS,
-#                                           carrying the owner and the reason
-#   (j) a SECOND, unnamed violation on the same row -> still RED (a gap forgives what it names)
-#   (k) the same gap where the row is clean        -> RED as stale, before the verdict
+#   OWNER RULE 22 (2026-10-14): named conformance gaps are zero, so EVERY arm is RED:
+#   (i) a gap naming that violation      -> REFUSED at load; nothing is judged
+#   (j) the same gap over a second violation -> REFUSED at load
+#   (k) the same gap where the row is clean        -> REFUSED at load
 #   (l) an entry with no owner and no reason       -> REFUSED at load; nothing is judged
 #   (m) an entry whose cell carries a wildcard     -> REFUSED at load; nothing is judged
+#   (m3) an entry naming a row the production cell universe does not owe -> REFUSED at load
 #   (m2) `gaps` given in the OTHER shape (an object, not the list this loader promises) rather than
 #       simply absent (the shape (f2)'s ceiling-only gapfile legitimately uses) -> REFUSED by name
 #
@@ -160,14 +162,14 @@ RUN_ARGS="--gaps $W/no-gaps.json"
 rc="$(run "$W/f-rec" "$W/f")"
 RUN_ARGS=""
 if [ "$rc" != 0 ] && [ "$(count "$W/f" SKIP)" = 2 ] && [ "$(count "$W/f" PASS)" = 4 ] && grep -q 'named gap' "$W/f/ledger.tsv" \
-   && [ "$(wc -l <"$W/f/owed-gaps.txt" | tr -d ' ')" = 2 ] && grep -q 'is a gap NO entry names' "$W/f/ledger.tsv"; then
-  say PASS "(f) unrecorded cell -> 2 named SKIP rows (never PASS), and RED because no entry admits them"
+   && [ "$(wc -l <"$W/f/owed-gaps.txt" | tr -d ' ')" = 2 ] && grep -q 'owner rule 22' "$W/f/ledger.tsv"; then
+  say PASS "(f) unrecorded cell -> 2 named SKIP rows (never PASS), and RED: owner rule 22, no gap is admitted"
 else
   say FAIL "(f) unrecorded cell rc=$rc pass=$(count "$W/f" PASS) skip=$(count "$W/f" SKIP) gaps=$(wc -l <"$W/f/owed-gaps.txt" 2>/dev/null | tr -d ' ')"; tail -8 "$W/f.log"
 fi
 
-# (f2) the SAME two gaps, named with an owner and a rationale and counted -> GREEN, gap still a gap.
-# The rows stay SKIP and stay out of the owed set; what changed is that somebody signed for them.
+# (f2) the SAME two gaps, named with an owner and a rationale and counted -> still RED. Owner rule 22
+# (2026-10-14): named conformance gaps are zero, so signing for a gap admits nothing.
 cat >"$W/gaps-f.json" <<'EOF'
 {"gaps": [],
  "expected": 2,
@@ -178,8 +180,9 @@ EOF
 RUN_ARGS="--gaps $W/gaps-f.json"
 rc="$(run "$W/f-rec" "$W/f2")"
 RUN_ARGS=""
-if [ "$rc" = 0 ] && [ "$(count "$W/f2" SKIP)" = 2 ] && [ "$(count "$W/f2" PASS)" = 5 ] && grep -q 'each named by' "$W/f2/ledger.tsv"; then
-  say PASS "(f2) the same two gaps, named and counted -> GREEN, still SKIP, still out of the owed set"
+if [ "$rc" != 0 ] && [ "$(count "$W/f2" SKIP)" = 2 ] && grep -q '`accepted` names 1 entry: owner rule 22' "$W/f2/ledger.tsv" \
+   && grep -q '`expected` is 2: owner rule 22' "$W/f2/ledger.tsv"; then
+  say PASS "(f2) the same two gaps, named and counted -> RED: owner rule 22 admits no named gap"
 else
   say FAIL "(f2) named gaps rc=$rc pass=$(count "$W/f2" PASS) skip=$(count "$W/f2" SKIP)"; tail -8 "$W/f2.log"
 fi
@@ -198,7 +201,7 @@ EOF
 RUN_ARGS="--gaps $W/gaps-f3.json"
 rc="$(run "$W/f3-rec" "$W/f3")"
 RUN_ARGS=""
-if [ "$rc" != 0 ] && [ "$(count "$W/f3" SKIP)" = 4 ] && grep -q '4 gap(s) observed, 2 declared' "$W/f3/ledger.tsv"; then
+if [ "$rc" != 0 ] && [ "$(count "$W/f3" SKIP)" = 4 ] && grep -q '4 gap(s) observed, 2 declared' "$W/f3/ledger.tsv" && grep -q 'owner rule 22' "$W/f3/ledger.tsv"; then
   say PASS "(f3) a gap inside an entry that already names it, beyond the declared count -> RED on the count"
 else
   say FAIL "(f3) gap count rc=$rc skip=$(count "$W/f3" SKIP): $(awk -F'\t' '$1 ~ /named-gaps/{print $2" "$4}' "$W/f3/ledger.tsv")"; tail -8 "$W/f3.log"
@@ -248,20 +251,19 @@ GAP_OK='{"gaps":[{"id":"selftest-cohere-usage","owner":"the selftest","rule":"ty
   "accepted":[{"cells":"^llm\\|cohere\\|cohere\\|request\\|ok#response$","owner":"the selftest",
                "rationale":"the one row the planted gap above forgives; declared here so the forgiven row is inside the ceiling as well as named"}]}'
 
-# (i) a gap naming the one real violation -> that row is a named gap, the run is GREEN, and the
-#     reason and owner travel with it
+# (i) a gap naming the one real violation -> REFUSED at load, nothing judged: owner rule 22
+#     (2026-10-14) admits no named gap, however well it is written
 g="$(gapfile ok "$GAP_OK")"
 rc="$(run_gaps "$W/b-rec" "$W/i" "$W/b-rec/cells.json" "$g")"
-if [ "$rc" = 0 ] && [ "$(count "$W/i" FAIL)" = 0 ] && [ "$(count "$W/i" SKIP)" = 1 ] \
-   && grep -q 'selftest-cohere-usage (the selftest)' "$W/i/ledger.tsv" \
-   && grep -qx 'llm|cohere|cohere|request|ok#response' "$W/i/owed-gaps.txt"; then
-  say PASS "(i) a named gap on a real violation -> GREEN, the row is a gap (never a PASS), owner and reason carried"
+if [ "$rc" != 0 ] && grep -q 'REFUSED named gap.*owner rule 22' "$W/i.log" \
+   && [ "$(awk 'NF{n++} END{print n+0}' "$W/i/ledger.tsv")" = 0 ]; then
+  say PASS "(i) a well-formed named gap on a real violation -> REFUSED at load (owner rule 22), nothing judged"
 else
   say FAIL "(i) named gap rc=$rc fail=$(count "$W/i" FAIL) skip=$(count "$W/i" SKIP)"; tail -10 "$W/i.log"
 fi
 
-# (j) THE SAME GAP, plus a SECOND violation on the same row it does not name -> still FAIL. A gap
-#     forgives what it names and nothing else, which is the difference between a gap and a mute.
+# (j) THE SAME GAP, plus a SECOND violation on the same row it does not name -> REFUSED at load
+#     too: no list carrying a gap is loaded at all.
 cp -R "$W/b-rec" "$W/j-rec"
 python3 - "$W/j-rec/raw/llm__cohere__cohere__request__ok/body" <<'EOF'
 import json,sys
@@ -269,9 +271,9 @@ p=sys.argv[1]; d=json.load(open(p)); d["id"]=12345
 open(p,"w").write(json.dumps(d,separators=(",",":")))
 EOF
 rc="$(run_gaps "$W/j-rec" "$W/j" "$W/j-rec/cells.json" "$g")"
-if [ "$rc" != 0 ] && [ "$(count "$W/j" FAIL)" = 1 ] && grep -q '/id type' "$W/j/ledger.tsv" \
-   && ! grep -q 'input_tokens' "$W/j/ledger.tsv"; then
-  say PASS "(j) an UNNAMED violation on the same row -> still RED; only the named one is forgiven"
+if [ "$rc" != 0 ] && grep -q 'REFUSED named gap.*owner rule 22' "$W/j.log" \
+   && [ "$(awk 'NF{n++} END{print n+0}' "$W/j/ledger.tsv")" = 0 ]; then
+  say PASS "(j) the same gap over a second violation -> REFUSED at load (owner rule 22), nothing judged"
 else
   say FAIL "(j) partial gap rc=$rc fails=$(count "$W/j" FAIL): $(fail_rows "$W/j")"
 fi
@@ -296,9 +298,9 @@ GAP_GAPS_ONLY='{"gaps":[{"id":"selftest-cohere-usage-gapsonly","owner":"the self
   "accepted":[]}'
 g="$(gapfile gapsonly "$GAP_GAPS_ONLY")"
 rc="$(run_gaps "$W/b-rec" "$W/i2" "$W/b-rec/cells.json" "$g")"
-if [ "$rc" = 0 ] && [ "$(count "$W/i2" FAIL)" = 0 ] && [ "$(count "$W/i2" SKIP)" = 1 ] \
-   && grep -q 'each named by' "$W/i2/ledger.tsv"; then
-  say PASS "(i2) a gaps-named SKIP with no matching accepted entry -> GREEN, reconciled against gaps not accepted"
+if [ "$rc" != 0 ] && grep -q 'REFUSED named gap.*owner rule 22' "$W/i2.log" \
+   && [ "$(awk 'NF{n++} END{print n+0}' "$W/i2/ledger.tsv")" = 0 ]; then
+  say PASS "(i2) a gaps-only list -> REFUSED at load (owner rule 22), nothing judged"
 else
   say FAIL "(i2) gaps-only reconciliation rc=$rc fail=$(count "$W/i2" FAIL) skip=$(count "$W/i2" SKIP)"; tail -10 "$W/i2.log"
 fi
@@ -309,18 +311,17 @@ fi
 RUN_ARGS="--gaps $W/no-gaps.json"
 rc="$(run "$W/f-rec" "$W/j2")"
 RUN_ARGS=""
-if [ "$rc" != 0 ] && [ "$(count "$W/j2" SKIP)" = 2 ] && grep -q 'is a gap NO entry names' "$W/j2/ledger.tsv"; then
+if [ "$rc" != 0 ] && [ "$(count "$W/j2" SKIP)" = 2 ] && grep -q 'is a gap NO entry names' "$W/j2/ledger.tsv" && grep -q 'owner rule 22' "$W/j2/ledger.tsv"; then
   say PASS "(j2) an unrecorded-cell SKIP (neither gaps nor accepted names it) -> still RED"
 else
   say FAIL "(j2) unnamed SKIP rc=$rc skip=$(count "$W/j2" SKIP)"; tail -8 "$W/j2.log"
 fi
 
-# (k) the same gap against the UNMUTATED fixture: the row is judged and comes back clean, so the
-#     entry forgives nothing -> STALE, and stale is RED. This is what stops a fixed gap from sitting
-#     in the file as the place a future real failure would land unseen.
+# (k) the same gap against the UNMUTATED fixture, where it would be STALE -> REFUSED at load before
+#     staleness is reached (owner rule 22). Either way it is RED.
 rc="$(run_gaps "$FIX" "$W/k" "$FIX/cells.json" "$g")"
-if [ "$rc" != 0 ] && grep -q 'selftest-cohere-usage' "$W/k/stale-gaps.txt" && grep -q 'STALE NAMED GAPS' "$W/k.log"; then
-  say PASS "(k) a gap whose named row comes back clean -> RED as stale, before the verdict"
+if [ "$rc" != 0 ] && grep -q 'REFUSED named gap.*owner rule 22' "$W/k.log"; then
+  say PASS "(k) a gap whose named row would come back clean -> REFUSED at load (owner rule 22)"
 else
   say FAIL "(k) stale gap rc=$rc stale=$(cat "$W/k/stale-gaps.txt" 2>/dev/null)"; tail -8 "$W/k.log"
 fi
@@ -360,6 +361,152 @@ if [ "$rc" != 0 ] && grep -q '`gaps` must be a list' "$W/m2.log" \
 else
   say FAIL "(m2) malshaped gaps rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/m2/ledger.tsv")"; tail -8 "$W/m2.log"
 fi
+
+# (m3) a well-formed entry naming a row the PRODUCTION cell universe (testing/shadow-oracle/cells.json)
+# does not owe -> REFUSED by name. No production run can judge such a row, so the entry can never
+# forgive anything and can never go stale: it only sits in the file looking like a gap someone owns.
+# The row used is one of the three gemini-vertex-* entries that sat in named-gaps.json that way.
+g5="$(gapfile orphan '{"gaps":[{"id":"orphan-row","owner":"the selftest","rule":"additionalProperties","detail_contains":"is not declared by the spec","cells":["llm|gemini|gemini|vertex|ok#response"],"why":"a planted entry naming a row no production cell universe owes, to prove the loader refuses it"}]}')"
+rc="$(run_gaps "$W/b-rec" "$W/m3" "$W/b-rec/cells.json" "$g5")"
+if [ "$rc" != 0 ] && grep -q 'is not a row the production cell universe' "$W/m3.log" \
+   && [ "$(awk 'NF{n++} END{print n+0}' "$W/m3/ledger.tsv")" = 0 ]; then
+  say PASS "(m3) a gap naming a row production never owes -> REFUSED by name, nothing judged"
+else
+  say FAIL "(m3) orphan gap rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/m3/ledger.tsv")"; tail -8 "$W/m3.log"
+fi
+
+# ── ANTHROPIC'S DOCUMENTED STREAM EVENTS (ping, error) ──────────────────────────────────────────
+# Anthropic's published MessageStreamEvent union has six members; its streaming guide documents two
+# more, `ping` ("any number of ping events") and `error`. 1.5.5 sends a ping after message_start on
+# every translated stream. The judge models both documents (validate.py ANTHROPIC_DOCUMENTED_EVENTS)
+# rather than forgiving the rows as named gaps, so these cases prove the model is exact:
+#   (v)  the 1.5.5 event sequence, ping included                       -> GREEN, no SKIP, no named gap
+#   (v2) plus a documented `event: error` carrying the ErrorResponse    -> GREEN
+#   (v3) the ping's type renamed to an UNDOCUMENTED one                 -> RED (the union still judges it)
+#   (v4) a ping sent under another event name                           -> RED on sse.event
+#   (v5) a ping carrying a member the documented shape does not have    -> RED on additionalProperties
+FIX3="${here}/fixtures/anthropic-stream-recording"
+ANTH_BODY="raw/llm__anthropic__openai__request__ok_stream/body"
+RUN_ARGS="--gaps $W/no-gaps.json"
+rc="$(run "$FIX3" "$W/v")"
+if [ "$rc" = 0 ] && [ "$(count "$W/v" PASS)" = 3 ] && [ "$(count "$W/v" FAIL)" = 0 ] && [ "$(count "$W/v" SKIP)" = 0 ]; then
+  say PASS "(v) Anthropic stream with the documented ping -> GREEN, judged (no SKIP, no named gap)"
+else
+  say FAIL "(v) anthropic ping rc=$rc pass=$(count "$W/v" PASS) fail=$(count "$W/v" FAIL) skip=$(count "$W/v" SKIP): $(fail_rows "$W/v")"
+fi
+anth_mutate() {  # anth_mutate <case> <python replacing text in body s>
+  cp -R "$FIX3" "$W/$1-rec"
+  python3 - "$W/$1-rec/$ANTH_BODY" "$2" <<'PY'
+import sys
+p, code = sys.argv[1], sys.argv[2]
+s = open(p).read(); n = {"s": s}; exec(code, n)
+assert n["s"] != s, "mutation changed nothing"
+open(p, "w").write(n["s"])
+PY
+}
+anth_mutate v2 's = s.replace("event: message_stop\n", "event: error\ndata: {\"error\":{\"message\":\"Overloaded\",\"type\":\"overloaded_error\"},\"request_id\":null,\"type\":\"error\"}\n\nevent: message_stop\n")'
+rc="$(run "$W/v2-rec" "$W/v2")"
+if [ "$rc" = 0 ] && [ "$(count "$W/v2" FAIL)" = 0 ] && [ "$(count "$W/v2" SKIP)" = 0 ]; then
+  say PASS "(v2) a documented in-stream error event -> GREEN against the spec's own ErrorResponse"
+else
+  say FAIL "(v2) anthropic error event rc=$rc: $(fail_rows "$W/v2")"
+fi
+anth_mutate v3 's = s.replace("event: ping\ndata: {\"type\":\"ping\"}", "event: keepalive\ndata: {\"type\":\"keepalive\"}")'
+rc="$(run "$W/v3-rec" "$W/v3")"
+if [ "$rc" != 0 ] && [ "$(count "$W/v3" FAIL)" = 1 ] && grep -q "'keepalive' is not one of" "$W/v3/ledger.tsv"; then
+  say PASS "(v3) an UNDOCUMENTED event type -> RED, the published union still judges it"
+else
+  say FAIL "(v3) undocumented event rc=$rc: $(fail_rows "$W/v3")"
+fi
+anth_mutate v4 's = s.replace("event: ping\n", "event: message_delta\n")'
+rc="$(run "$W/v4-rec" "$W/v4")"
+if [ "$rc" != 0 ] && [ "$(count "$W/v4" FAIL)" = 1 ] && grep -q 'sse.event' "$W/v4/ledger.tsv"; then
+  say PASS "(v4) a ping under another SSE event name -> RED on sse.event"
+else
+  say FAIL "(v4) misnamed ping rc=$rc: $(fail_rows "$W/v4")"
+fi
+anth_mutate v5 's = s.replace("data: {\"type\":\"ping\"}", "data: {\"seq\":1,\"type\":\"ping\"}")'
+rc="$(run "$W/v5-rec" "$W/v5")"
+if [ "$rc" != 0 ] && [ "$(count "$W/v5" FAIL)" = 1 ] && grep -q "seq" "$W/v5/ledger.tsv"; then
+  say PASS "(v5) a ping with an undocumented member -> RED, the documented shape is closed"
+else
+  say FAIL "(v5) widened ping rc=$rc: $(fail_rows "$W/v5")"
+fi
+RUN_ARGS=""
+
+# ── STREAMS THAT FAIL OR END EARLY (stream_upstream_error, stream_upstream_cut) ─────────────────
+# The mock's in-band failure for each dialect, as a same-dialect relay hands it on, and a stream the
+# upstream cut after its first event. Both outcomes ask for a stream and open 2xx. The openai and
+# gemini in-stream errors exist only in the vendor's official SDK (validate.py STREAM_ERROR_ENVELOPE);
+# bedrock's is a member of the event-stream union, named by its member name.
+#   (x)  the four rows                                                   -> GREEN, judged, no SKIP
+#   (x2) an openai chunk AFTER the in-stream error                       -> RED on sse.error
+#   (x3) a gemini in-stream error whose code is not an integer           -> RED (google.rpc.Status)
+#   (x4) a bedrock exception frame naming no error member of the union   -> RED
+#   (x5) an openai stream with neither the error nor [DONE] at its end   -> RED on sse.sentinel
+FIX4="${here}/fixtures/stream-error-recording"
+SE_OAI="raw/llm__openai__openai__request__stream_upstream_error/body"
+SE_GEM="raw/llm__gemini__gemini__request__stream_upstream_error/body"
+SE_BED="raw/llm__bedrock__bedrock__request__stream_upstream_error/body"
+RUN_ARGS="--gaps $W/no-gaps.json"
+rc="$(run "$FIX4" "$W/x")"
+if [ "$rc" = 0 ] && [ "$(count "$W/x" PASS)" = 9 ] && [ "$(count "$W/x" FAIL)" = 0 ] && [ "$(count "$W/x" SKIP)" = 0 ]; then
+  say PASS "(x) in-stream errors (openai, gemini, bedrock) and an upstream cut -> GREEN, 8/8 rows judged"
+else
+  say FAIL "(x) stream errors rc=$rc pass=$(count "$W/x" PASS) fail=$(count "$W/x" FAIL) skip=$(count "$W/x" SKIP): $(fail_rows "$W/x")"
+fi
+se_mutate() {  # se_mutate <case> <body path> <python editing bytes b>
+  cp -R "$FIX4" "$W/$1-rec"
+  python3 - "$W/$1-rec/$2" "$3" <<'PY'
+import sys
+p, code = sys.argv[1], sys.argv[2]
+b = open(p, "rb").read(); n = {"b": b}; exec(code, n)
+assert n["b"] != b, "mutation changed nothing"
+open(p, "wb").write(n["b"])
+PY
+}
+se_mutate x2 "$SE_OAI" 'b = b + b"data: {\"choices\":[],\"created\":0,\"id\":\"chatcmpl-oracle\",\"model\":\"m-openai-chat\",\"object\":\"chat.completion.chunk\"}\n\n"'
+rc="$(run "$W/x2-rec" "$W/x2")"
+if [ "$rc" != 0 ] && [ "$(count "$W/x2" FAIL)" = 1 ] && grep -q 'sse.error' "$W/x2/ledger.tsv"; then
+  say PASS "(x2) an openai chunk after the in-stream error -> RED, the error ends the stream"
+else
+  say FAIL "(x2) chunk after error rc=$rc: $(fail_rows "$W/x2")"
+fi
+se_mutate x3 "$SE_GEM" 'b = b.replace(b"\"code\":500", b"\"code\":\"500\"")'
+rc="$(run "$W/x3-rec" "$W/x3")"
+if [ "$rc" != 0 ] && [ "$(count "$W/x3" FAIL)" = 1 ] && grep -q '/error/code' "$W/x3/ledger.tsv"; then
+  say PASS "(x3) a gemini in-stream error that is not a google.rpc.Status -> RED"
+else
+  say FAIL "(x3) malformed gemini error rc=$rc: $(fail_rows "$W/x3")"
+fi
+se_mutate x4 "$SE_BED" '
+import struct, zlib
+out, i = b"", 0
+while i < len(b):
+    total, hl = struct.unpack(">II", b[i:i + 8])
+    fr = b[i:i + total]; i += total
+    h, pl = fr[12:12 + hl], fr[12 + hl:total - 4]
+    if b":exception-type" in h:
+        h = h.replace(b"\x07\x00\x17internalServerException", b"\x07\x00\x1dserviceQuotaExceededException")
+        t = 12 + len(h) + len(pl) + 4
+        pre = struct.pack(">II", t, len(h)); pre += struct.pack(">I", zlib.crc32(pre))
+        fr = pre + h + pl; fr += struct.pack(">I", zlib.crc32(fr))
+    out += fr
+b = out'
+rc="$(run "$W/x4-rec" "$W/x4")"
+if [ "$rc" != 0 ] && [ "$(count "$W/x4" FAIL)" = 1 ] && grep -q 'not an error member of ConverseStreamOutput' "$W/x4/ledger.tsv"; then
+  say PASS "(x4) a bedrock exception frame naming no error member of the stream union -> RED"
+else
+  say FAIL "(x4) bedrock exception member rc=$rc: $(fail_rows "$W/x4")"
+fi
+se_mutate x5 "$SE_OAI" 'b = b[:b.rfind(b"data: {\"error\"")]'
+rc="$(run "$W/x5-rec" "$W/x5")"
+if [ "$rc" != 0 ] && [ "$(count "$W/x5" FAIL)" = 1 ] && grep -q 'sse.sentinel' "$W/x5/ledger.tsv"; then
+  say PASS "(x5) an openai stream ending on neither the error nor [DONE] -> RED on sse.sentinel"
+else
+  say FAIL "(x5) unterminated openai stream rc=$rc: $(fail_rows "$W/x5")"
+fi
+RUN_ARGS=""
 
 # ── THE SIDE OF 2xx THE OUTCOME ASKED FOR ───────────────────────────────────────────────────────
 # (p) a cell whose whole point is a REFUSAL — no credential at all — answered HTTP 200 with a

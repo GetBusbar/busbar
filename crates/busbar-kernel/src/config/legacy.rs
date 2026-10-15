@@ -84,6 +84,15 @@ pub fn text(key: &str) -> &'static str {
         .map_or("", |(_, v)| v)
 }
 
+/// The `left:right` pairs of a `left:right | left:right` row, in row order; none when the table
+/// has no such row.
+pub fn pairs(key: &str) -> Vec<(&'static str, &'static str)> {
+    text(key)
+        .split(" | ")
+        .filter_map(|pair| pair.split_once(':'))
+        .collect()
+}
+
 /// The FORMER NAMES the plugin config names `alias` by is declared to answer to (its
 /// `former.<alias>` row, space-separated); none when the table has no such row.
 pub fn former_names(alias: &str) -> Vec<String> {

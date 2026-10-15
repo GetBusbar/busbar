@@ -22,7 +22,7 @@
 // The fixture boots a REAL busbar with a configured provider; a `--no-default-features` build has
 // no wire codec compiled in and fails closed at boot, which is correct product behavior, not the
 // seam under test here.
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_section_pools)]
 // The config names `module: prometheus`, the linked scrape sink on the export-doors axis: a build
 // that links no export door (the single-plane rows link only the exports axis) refuses that module at
 // boot ("unknown exporter 'prometheus'"), which is correct product behaviour, not what this measures.
@@ -111,6 +111,8 @@ models:
 
 struct Scrape {
     status: u16,
+    /// The `content-type` value the answer carried (empty when absent).
+    content_type: String,
     body: String,
 }
 
@@ -200,6 +202,36 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
          exposition:\n{}",
         reference.body
     );
+    // THE 1.5.5 SHAPE: the settled exposition carries the scrape-time lane families the configured
+    // model's lane renders (RED: a door served without the fallback plane's tables, which scraped
+    // no lane at all), and every `# HELP` / `# TYPE` line of a family 1.5.5 also exposed is the 1.5.5
+    // golden's line, byte for byte (`ops.scrape|metrics|key`).
+    for family in LANE_FAMILIES {
+        assert!(
+            reference_names.contains(*family),
+            "the settled exposition lacks the 1.5.5 lane family `{family}`; exposition:\n{}",
+            reference.body
+        );
+    }
+    let golden = golden_meta_lines();
+    let mut drifted = Vec::new();
+    for line in meta_lines(&reference.body) {
+        let name = meta_name(&line);
+        let kind = &line[..6];
+        if let Some(want) = golden
+            .iter()
+            .find(|g| meta_name(g) == name && g.starts_with(kind))
+        {
+            if *want != line {
+                drifted.push(format!("got  {line}\nwant {want}"));
+            }
+        }
+    }
+    assert!(
+        drifted.is_empty(),
+        "HELP/TYPE lines differ from the 1.5.5 golden:\n{}",
+        drifted.join("\n")
+    );
 
     let _ = child.kill();
     let _ = child.wait();
@@ -230,6 +262,115 @@ fn metrics_scrape_is_never_a_200_with_an_empty_body() {
         violations.join("\n---\n")
     );
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The scrape-time lane families a configured model's lane renders on every scrape, pool or none
+/// (`busbar_kernel::snapshot`: the direct-model loop emits these three for every routed model).
+const LANE_FAMILIES: &[&str] = &[
+    "busbar_lane_state",
+    "busbar_lane_available",
+    "busbar_lane_inflight",
+];
+
+/// Every `# HELP` and `# TYPE` line of an exposition, in order.
+fn meta_lines(body: &str) -> Vec<String> {
+    body.lines()
+        .filter(|l| l.starts_with("# HELP ") || l.starts_with("# TYPE "))
+        .map(str::to_string)
+        .collect()
+}
+
+/// The family a `# HELP` / `# TYPE` line names.
+fn meta_name(line: &str) -> &str {
+    line[7..].split(' ').next().unwrap_or("")
+}
+
+/// The 1.5.5 golden's `# HELP` / `# TYPE` lines, read from the shadow-oracle cell that scraped a
+/// served 1.5.5 node (`ops.scrape|metrics|key`), so the claim is the golden's and is never re-typed.
+fn golden_meta_lines() -> Vec<String> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testing/shadow-oracle/golden/1.5.5/cells/ops.scrape__metrics__key.json");
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!("the 1.5.5 golden scrape cell must be readable at {path:?}: {e}")
+    });
+    let cell: serde_json::Value = serde_json::from_str(&raw).expect("the golden cell is JSON");
+    let text = cell["body"]["text"]
+        .as_str()
+        .expect("the golden scrape cell carries its body text");
+    let lines = meta_lines(text);
+    assert!(
+        lines.iter().any(|l| meta_name(l) == LANE_FAMILIES[0]),
+        "the golden scrape names no `{}`: the derivation did not bite",
+        LANE_FAMILIES[0]
+    );
+    lines
+}
+
+/// RED (coordinator ruling 2026-10-14, THE DESIGN A.4.3 / A.8): the process dispatcher's `bb_*`
+/// counters are on the real binary's `/metrics`, one family each with its `# HELP` and
+/// `# TYPE … counter` lines and a sample — `bb_deadline_without_wake_total` and
+/// `bb_plugin_quarantined_total`. Before the composition root handed the scrape its dispatcher's
+/// counters (`RootInstall::host_counters`) neither family was exported at all.
+#[test]
+fn the_dispatchers_bb_counters_are_scraped_with_help_and_type() {
+    let dir = fixture_dir();
+    let data_port = free_port();
+    let admin_port = free_port();
+    write_configs(&dir, data_port, admin_port);
+    let log_path = dir.join("out.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let log_err = log.try_clone().unwrap();
+    let mut child = Command::new(common::boot::exe())
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env("MOCK_KEY", "x")
+        .env("RUST_LOG", "warn")
+        .stdout(log)
+        .stderr(log_err)
+        .spawn()
+        .expect("spawn busbar");
+    let scrape = wait_for_full_scrape(data_port, Duration::from_secs(30));
+    let _ = child.kill();
+    let _ = child.wait();
+    let scrape = scrape.unwrap_or_else(|| {
+        panic!(
+            "busbar never answered a full /metrics exposition; log:\n{}",
+            read_to_string(&log_path)
+        )
+    });
+    for (name, help) in [
+        (
+            "bb_deadline_without_wake_total",
+            "Plugin operations that waited and were settled by their deadline without ever being \
+             woken; 0 while every plugin wakes what it parks",
+        ),
+        (
+            "bb_plugin_quarantined_total",
+            "Plugin instances the crossing watchdog quarantined for overrunning their call budget, \
+             summed over every plugin",
+        ),
+    ] {
+        let lines: Vec<&str> = scrape.body.lines().collect();
+        assert!(
+            lines.contains(&format!("# HELP {name} {help}").as_str()),
+            "{name}: no HELP line; exposition:\n{}",
+            scrape.body
+        );
+        assert!(
+            lines.contains(&format!("# TYPE {name} counter").as_str()),
+            "{name}: no TYPE counter line; exposition:\n{}",
+            scrape.body
+        );
+        assert!(
+            lines.iter().any(|l| l
+                .strip_prefix(name)
+                .and_then(|v| v.strip_prefix(' '))
+                .is_some_and(|v| v.parse::<u64>().is_ok())),
+            "{name}: no sample; exposition:\n{}",
+            scrape.body
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -281,6 +422,7 @@ fn parse_response(raw: &[u8]) -> Scrape {
     let Some(split) = text.find("\r\n\r\n") else {
         return Scrape {
             status: 0,
+            content_type: String::new(),
             body: String::new(),
         };
     };
@@ -292,7 +434,18 @@ fn parse_response(raw: &[u8]) -> Scrape {
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    Scrape { status, body }
+    let content_type = head
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-type"))
+        .map(|(_, value)| value.trim().to_string())
+        .unwrap_or_default();
+    Scrape {
+        status,
+        content_type,
+        body,
+    }
 }
 
 fn read_to_string(path: &Path) -> String {
@@ -301,4 +454,58 @@ fn read_to_string(path: &Path) -> String {
         let _ = f.read_to_string(&mut s);
     }
     s
+}
+
+/// LEGACY the retiring engine crate's `src/engine/tests/forward_pool_integration_tests.rs::test_metrics_admitted_in_open_relay_mode`
+/// (coverage map v2 row 137). 1.5.5: under an open auth chain (`chain: []`) a `GET /metrics` with
+/// no credential is admitted: `200`, a `content-type` that starts `text/plain` (the Prometheus text
+/// exposition), and a body that carries a series (the legacy test seeded the request counter in
+/// process; a spawned node with no traffic yet renders its scrape-time lane series, `busbar_lane_state`).
+///
+/// RED: the open-chain scrape is refused, answers another content type (a JSON or empty-typed
+/// body a Prometheus scraper rejects), or the exposition lacks the request counter.
+#[test]
+fn test_metrics_admitted_in_open_relay_mode() {
+    let dir = fixture_dir();
+    let data_port = free_port();
+    let admin_port = free_port();
+    write_configs(&dir, data_port, admin_port);
+    let log_path = dir.join("out.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let log_err = log.try_clone().unwrap();
+    let mut child = Command::new(common::boot::exe())
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env("MOCK_KEY", "x")
+        .env("RUST_LOG", "warn")
+        .stdout(log)
+        .stderr(log_err)
+        .spawn()
+        .expect("spawn busbar");
+    let scraped = wait_for_full_scrape(data_port, Duration::from_secs(30));
+    let _ = child.kill();
+    let _ = child.wait();
+    let Scrape {
+        status,
+        content_type,
+        body,
+    } = scraped.unwrap_or_else(|| {
+        panic!(
+            "busbar never answered a full GET /metrics within 30s; log:\n{}",
+            read_to_string(&log_path)
+        )
+    });
+    assert_eq!(
+        status, 200,
+        "an open chain admits the scrape with no credential"
+    );
+    assert!(
+        content_type.starts_with("text/plain"),
+        "content-type was {content_type}"
+    );
+    assert!(
+        body.contains("busbar_lane_state"),
+        "exposition should contain a metric; got:\n{body}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

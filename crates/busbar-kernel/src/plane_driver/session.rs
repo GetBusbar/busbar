@@ -226,7 +226,9 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
             priced,
         };
         d.sweep();
-        let (near, far) = (d.calls.mint(), d.calls.mint());
+        // Both legs on one worker: the session's crossings are ordered as one unit's.
+        let near = d.calls.mint();
+        let far = near.and_then(|n| d.calls.mint_beside(n));
         let (Some(near), Some(far)) = (near, far) else {
             for t in [near, far].into_iter().flatten() {
                 d.calls.recycle(t);
@@ -301,6 +303,7 @@ impl<S: crate::plane_driver::DriverSteps + Sync, F: FarEnd, C: SessionCaller>
                 attempt_no: 0,
                 src: Src::None,
                 head: false,
+                reason: 0,
             };
             let piece = match next {
                 Err(cause) | Ok(Next::Halt(Halt::Cause(cause))) => return End::Cancel(cause, None),

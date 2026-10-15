@@ -35,7 +35,7 @@ fn every_writer_emits_its_native_shape() {
     });
 
     // OpenAI: {type:"json_schema", json_schema:{name, schema}} — schema NESTED under .schema.
-    let o = openai_writer().write_request(&req);
+    let o = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         o.pointer("/response_format/type"),
         Some(&serde_json::json!("json_schema"))
@@ -52,7 +52,7 @@ fn every_writer_emits_its_native_shape() {
 
     // Cohere: {type:"json_object", json_schema:<schema DIRECTLY>}.
     let cohere_writer = CohereWriter;
-    let c = cohere_writer.write_request(&req);
+    let c = cohere_writer.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         c.pointer("/response_format/type"),
         Some(&serde_json::json!("json_object"))
@@ -68,7 +68,7 @@ fn every_writer_emits_its_native_shape() {
 
     // Gemini: generationConfig.responseMimeType + responseSchema; no top-level response_format.
     let gemini_writer = GeminiWriter;
-    let g = gemini_writer.write_request(&req);
+    let g = gemini_writer.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         g.pointer("/generationConfig/responseMimeType"),
         Some(&serde_json::json!("application/json"))
@@ -84,7 +84,7 @@ fn every_writer_emits_its_native_shape() {
 
     // Responses: text.format FLAT json_schema (name/schema beside type, not nested).
     let responses_writer = ResponsesWriter;
-    let r = responses_writer.write_request(&req);
+    let r = responses_writer.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         r.pointer("/text/format/type"),
         Some(&serde_json::json!("json_schema"))
@@ -185,12 +185,12 @@ fn tool_choice_without_tools_is_omitted_on_every_writer() {
         let value = tracing::subscriber::with_default(subscriber, f);
         (value, cap)
     };
-    let (a, cap_a) = run(&|| anthropic_writer().write_request(&req));
-    let (o, cap_o) = run(&|| openai_writer().write_request(&req));
-    let (g, cap_g) = run(&|| gemini_writer.write_request(&req));
-    let (b, cap_b) = run(&|| bedrock_writer.write_request(&req));
-    let (c, cap_c) = run(&|| cohere_writer.write_request(&req));
-    let (r, cap_r) = run(&|| responses_writer.write_request(&req));
+    let (a, cap_a) = run(&|| anthropic_writer().write_request(crate::codec::test_host::HOST, &req));
+    let (o, cap_o) = run(&|| openai_writer().write_request(crate::codec::test_host::HOST, &req));
+    let (g, cap_g) = run(&|| gemini_writer.write_request(crate::codec::test_host::HOST, &req));
+    let (b, cap_b) = run(&|| bedrock_writer.write_request(crate::codec::test_host::HOST, &req));
+    let (c, cap_c) = run(&|| cohere_writer.write_request(crate::codec::test_host::HOST, &req));
+    let (r, cap_r) = run(&|| responses_writer.write_request(crate::codec::test_host::HOST, &req));
 
     assert!(
         a.get("tool_choice").is_none(),
@@ -282,7 +282,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
         Some((4, "OpenAI")),
         "openai must publish its documented stop-sequence cap of 4"
     );
-    let o = openai_writer.write_request(&req);
+    let o = openai_writer.write_request(crate::codec::test_host::HOST, &req);
     let o_stop = o["stop"].as_array().expect("openai stop array");
     assert_eq!(
         o_stop.len(),
@@ -296,7 +296,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
         Some((5, "Gemini")),
         "gemini must publish its documented stop-sequence cap of 5"
     );
-    let g = gemini_writer.write_request(&req);
+    let g = gemini_writer.write_request(crate::codec::test_host::HOST, &req);
     let g_stop = g["generationConfig"]["stopSequences"]
         .as_array()
         .expect("gemini stopSequences array");
@@ -313,7 +313,7 @@ fn stop_sequences_clamped_per_vendor_cap() {
     );
 
     // Anthropic and Bedrock publish no fixed cap — UNCHANGED, still carrying all 8.
-    let a = anthropic_writer().write_request(&req);
+    let a = anthropic_writer().write_request(crate::codec::test_host::HOST, &req);
     let a_stop = a["stop_sequences"]
         .as_array()
         .expect("anthropic stop_sequences array");
@@ -355,9 +355,9 @@ fn parallel_tool_calls_discarded_on_gemini_cohere_bedrock_warns() {
     let cohere_writer = CohereWriter;
     let bedrock_writer = BedrockWriter;
     tracing::subscriber::with_default(subscriber, || {
-        gemini_writer.write_request(&with_flag);
-        cohere_writer.write_request(&with_flag);
-        bedrock_writer.write_request(&with_flag);
+        gemini_writer.write_request(crate::codec::test_host::HOST, &with_flag);
+        cohere_writer.write_request(crate::codec::test_host::HOST, &with_flag);
+        bedrock_writer.write_request(crate::codec::test_host::HOST, &with_flag);
     });
     assert!(
         cap.contains("parallel_tool_calls") && cap.contains("Gemini"),
@@ -381,13 +381,83 @@ fn parallel_tool_calls_discarded_on_gemini_cohere_bedrock_warns() {
     let subscriber2 = cap2.clone();
     let without_flag = req(None);
     tracing::subscriber::with_default(subscriber2, || {
-        gemini_writer.write_request(&without_flag);
-        cohere_writer.write_request(&without_flag);
-        bedrock_writer.write_request(&without_flag);
+        gemini_writer.write_request(crate::codec::test_host::HOST, &without_flag);
+        cohere_writer.write_request(crate::codec::test_host::HOST, &without_flag);
+        bedrock_writer.write_request(crate::codec::test_host::HOST, &without_flag);
     });
     assert!(
         !cap2.contains("parallel_tool_calls"),
         "a request that never carried the flag must not warn about dropping it: {:?}",
         cap2.messages()
+    );
+}
+
+// ── F25 REHOME (rows 613, 614): the Cohere stop-sequence cap ─────────────────────────────────────
+
+/// The production request translate steps onto `egress` (reader → egress seam → writer).
+fn rehome_xreq(ingress: &'static str, egress: &str, body: &serde_json::Value) -> serde_json::Value {
+    let ingress_p = crate::codec::proto_codec::protocol_for(ingress).expect("ingress");
+    let egress_p = crate::codec::proto_codec::protocol_for(egress).expect("egress");
+    let mut req = ingress_p.reader().read_request(body).expect("read_request");
+    crate::codec::chat_handle::chat_prepare_for_egress(
+        &mut req,
+        &busbar_contract::ir::egress_prep::EgressPrep {
+            thought_signature_fill: false,
+            ingress_protocol: ingress,
+            egress_requires_max_tokens: egress_p.decl().is_some_and(|d| d.requires_max_tokens),
+            lane_default_max_tokens: None,
+            global_default_max_tokens: 4096,
+            reasoning_allowed: true,
+            reasoning_budgets: crate::codec::ir::REASONING_BUDGET_DEFAULTS,
+            prompt_caching_allowed: true,
+            cache_control_cap: None,
+            lane_caps: Default::default(),
+        },
+    );
+    egress_p
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &req)
+}
+
+/// F25 REHOME row 613, from `crates/busbar-llm/src/engine/tests/stop_sequence_cap_degrade_tests.rs:23`
+/// (`openai_to_cohere_over_cap_stop_sequences_is_clamped_not_rejected`): an OpenAI caller's six stop
+/// sequences onto a Cohere lane are CLAMPED to Cohere's cap of 5 and forwarded, not rejected
+/// (v1.5.4's truncate-and-forward).
+#[test]
+fn openai_to_cohere_over_cap_stop_sequences_are_clamped_not_rejected() {
+    let out = rehome_xreq(
+        "openai",
+        "cohere",
+        &serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stop": ["a", "b", "c", "d", "e", "f"]
+        }),
+    );
+    assert_eq!(
+        out.get("stop_sequences"),
+        Some(&serde_json::json!(["a", "b", "c", "d", "e"])),
+        "an over-cap stop list is clamped to Cohere's cap of 5: {out}"
+    );
+}
+
+/// F25 REHOME row 614, from `crates/busbar-llm/src/engine/tests/stop_sequence_cap_degrade_tests.rs:63`
+/// (`openai_to_cohere_exactly_cap_stop_sequences_is_allowed`): exactly five stop sequences is within
+/// Cohere's cap and is forwarded whole.
+#[test]
+fn openai_to_cohere_exactly_cap_stop_sequences_are_forwarded_whole() {
+    let out = rehome_xreq(
+        "openai",
+        "cohere",
+        &serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stop": ["a", "b", "c", "d", "e"]
+        }),
+    );
+    assert_eq!(
+        out.get("stop_sequences"),
+        Some(&serde_json::json!(["a", "b", "c", "d", "e"])),
+        "an at-cap stop list is forwarded whole: {out}"
     );
 }

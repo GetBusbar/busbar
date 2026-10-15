@@ -394,7 +394,10 @@ pub fn split_url(url: &str) -> Result<(bool, String, u16, String), AddressRefusa
 ///
 /// Only the authority is touched. A `@` later in the path is part of what the operator wrote and
 /// says nothing about a secret.
-fn redact_userinfo(url: &str) -> String {
+///
+/// Public so a message that repeats an operator's URL outside this guard (a boot validation error,
+/// an egress fault's target) renders it the same way.
+pub fn redact_userinfo(url: &str) -> String {
     let (prefix, rest) = match url.split_once("://") {
         Some((scheme, rest)) => (&url[..scheme.len() + 3], rest),
         None => ("", url),
@@ -403,6 +406,29 @@ fn redact_userinfo(url: &str) -> String {
     match rest[..authority_end].rfind('@') {
         Some(at) => format!("{prefix}<redacted>@{}", &rest[at + 1..]),
         None => url.to_string(),
+    }
+}
+
+/// A provider BASE URL with its authority's userinfo removed: `scheme://user:pass@host:port/path`
+/// becomes `scheme://host:port/path`, and a URL with none comes back borrowed, untouched.
+///
+/// 1.5.5 accepted `user:pass@` in a provider's `base_url` and dialled, sent and signed the host
+/// after it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`, `host_from_base`; row 74, F25). This is
+/// that rule, applied ONCE where the base URL enters the served flow, so the host dialled, the
+/// certificate name, the `Host`/`:authority` on the wire and a signed host are all the stripped
+/// `host[:port]`, and the userinfo reaches no connection, no message and no table. It is
+/// deliberately NOT [`split_url`]'s behaviour: every other dial target keeps the refusal there.
+///
+/// The authority ends where [`split_url`]'s reader ends it — the first `/`, `?`, `#` or `\` — and
+/// the userinfo is everything before its LAST `@`, because a password may itself carry an `@`.
+pub fn strip_userinfo(url: &str) -> std::borrow::Cow<'_, str> {
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return std::borrow::Cow::Borrowed(url);
+    };
+    let authority_end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
+    match rest[..authority_end].rfind('@') {
+        Some(at) => std::borrow::Cow::Owned(format!("{scheme}://{}", &rest[at + 1..])),
+        None => std::borrow::Cow::Borrowed(url),
     }
 }
 

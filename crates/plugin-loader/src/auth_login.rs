@@ -290,7 +290,15 @@ unsafe impl Send for CompleteHeld {}
 unsafe impl Sync for CompleteHeld {}
 
 impl CompleteHeld {
-    fn new(req: &LoginCallback, buf_cap: usize, groups_cap: u32) -> Arc<Self> {
+    /// `seal` is the host's, lent to the dispatcher: the submitted fields are revealed under it to
+    /// be lent to the plugin's `complete_login`. The caller refuses a login that submits any when
+    /// none was lent, so `None` here reveals nothing.
+    fn new(
+        req: &LoginCallback,
+        seal: Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)>,
+        buf_cap: usize,
+        groups_cap: u32,
+    ) -> Arc<Self> {
         let login = &req.login;
         let mut held = Self {
             code: login.code.as_ref().map(|c| c.as_bytes().to_vec()),
@@ -301,10 +309,10 @@ impl CompleteHeld {
             submitted: login
                 .submitted
                 .iter()
-                .map(|(n, v)| (n.clone(), v.expose_secret().as_bytes().to_vec()))
+                .filter_map(|(n, v)| Some((n.clone(), v.expose(seal?).as_bytes().to_vec())))
                 .collect(),
             named: Vec::new(),
-            id: Held::new(&VerifyRequest::default(), buf_cap, groups_cap, 0),
+            id: Held::new(&VerifyRequest::default(), seal, buf_cap, groups_cap, 0),
         };
         held.named = held
             .submitted
@@ -385,7 +393,13 @@ pub(super) fn complete(shared: &Arc<Shared>, request: LoginCallback) -> Box<dyn 
     let Some(ticket) = shared.ticket() else {
         return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
     };
-    let held = CompleteHeld::new(&request, IDENTITY_BUF_BYTES, IDENTITY_GROUPS);
+    // No seal lent to the dispatcher: the submitted fields are not revealed, and the login is
+    // refused.
+    let seal = shared.dispatcher.seal();
+    if !request.login.submitted.is_empty() && seal.is_none() {
+        return Box::new(LoginSettled(Some(LoginOutcome::Reject)));
+    }
+    let held = CompleteHeld::new(&request, seal, IDENTITY_BUF_BYTES, IDENTITY_GROUPS);
     let reply = submit_complete(shared, ticket, &held);
     Box::new(Complete {
         shared: shared.clone(),
@@ -448,7 +462,8 @@ impl Complete {
             if done.short && !self.recalled {
                 self.recalled = true;
                 if let Some((cap, groups, _)) = out.as_ref().and_then(|o| grown(o, &self.held.id)) {
-                    self.held = CompleteHeld::new(&self.request, cap, groups);
+                    let seal = self.shared.dispatcher.seal();
+                    self.held = CompleteHeld::new(&self.request, seal, cap, groups);
                     self.reply = Some(submit_complete(&self.shared, self.ticket, &self.held));
                     continue;
                 }

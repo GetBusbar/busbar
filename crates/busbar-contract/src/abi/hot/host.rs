@@ -533,14 +533,14 @@ pub type CounterAddFn = extern "C-unwind" fn(
     delta: u64,
 ) -> StatusClass;
 
-// ── THE HOST SERVICES (minor 30; ARCHITECT SD-3 queue (6), DEC-SERVE G2). The contract ports a
-//    codec reaches — `busbar_contract::codec::{fill_entropy, wall_clock_now,
-//    usage_tap_fault_should_warn, max_translate_body_bytes}` — are process-wide `OnceLock`s the host
-//    arms in ITS image. A plane dropped in as a `cdylib` carries its own copy of the contract, whose
-//    ports nothing armed, so it read the failure path of every one. These four slots carry the
-//    host's own services across the seam; the dropped-in door arms the plane image's ports over
-//    them (`services::arm`) when the host opens the door. Process-wide, so `host` may be
-//    `HostCtx::NULL`. ──
+// ── THE HOST SERVICES (minor 30; ARCHITECT SD-3 queue (6), DEC-SERVE G2). The host's entropy and
+//    its wall clock, carried across the seam, each slot filled by the HOST from its own services
+//    (the kernel's table serves them). The contract holds neither: a codec is HANDED them, as a
+//    `codec::CodecHost`, down its call graph, and there is no contract port to arm. The usage-tap
+//    fault latch is RETIRED (row 155): the fault crosses as data on the plane's answer
+//    (`abi::plane::OnPieceOut::tap_fault`). So is the translate cap: the kernel hands it in the
+//    settings the plane is opened and refreshed with. No host serves either slot and no plane calls
+//    them. Process-wide, so `host` may be `HostCtx::NULL`. ──
 /// Fill `out_len` bytes at `out` from the host's entropy source (its CSPRNG). [`StatusClass::Ok`]
 /// when every byte was written; [`StatusClass::Refused`] when the host has no entropy to give or
 /// `out` is NULL with a non-zero length (the bytes are then unspecified); [`StatusClass::Fault`] on
@@ -550,9 +550,9 @@ pub type EntropyFillFn =
 /// The host's wall clock in whole seconds since the Unix epoch; `0` when the host holds no clock
 /// (the fail-closed reading, never a real second).
 pub type WallClockFn = extern "C-unwind" fn(host: HostCtx) -> u64;
-/// Count one usage-tap fault of `reason` for `protocol` (two borrowed UTF-8 ranges, live for the
-/// call) and answer `true` only the FIRST time the host sees that pair, so the caller warns once.
-/// `false` for a range that is not UTF-8 or a caught panic.
+/// RETIRED (row 155): the slot's shape, kept so the table's layout holds. A usage-tap fault is data
+/// on the plane's answer (`abi::plane::OnPieceOut::tap_fault`), counted by the kernel; no host
+/// serves this slot and no plane calls it.
 pub type TapFaultLatchFn = extern "C-unwind" fn(
     host: HostCtx,
     protocol_ptr: *const u8,
@@ -560,8 +560,9 @@ pub type TapFaultLatchFn = extern "C-unwind" fn(
     reason_ptr: *const u8,
     reason_len: usize,
 ) -> bool;
-/// The operator's per-response translation cap in bytes, as the host holds it NOW (the operator may
-/// reload it live).
+/// RETIRED (row 155): the slot's shape, kept so the table's layout holds. The translate cap reaches
+/// a plane in the settings it is opened and refreshed with; no host serves this slot and no plane
+/// calls it.
 pub type TranslateCapFn = extern "C-unwind" fn(host: HostCtx) -> u64;
 
 /// The `#[repr(C)]` inbound-capability vtable a plane calls back into. Leads with the FROZEN
@@ -707,16 +708,16 @@ pub struct PlaneHostVtable {
     //    same sized/versioned discipline (the minor-25 bump). ──────────────────────────────────────────
     /// Add to one series of a metric family the plane declared.
     pub counter_add: Option<CounterAddFn>,
-    // ── APPENDED (minor-30, the HOST-SERVICES seam): the contract ports a codec reaches (entropy,
-    //    wall clock, usage-tap fault latch, translate cap), so a dropped-in plane gets the services a
-    //    linked one does. Trailing slots, append-only, same sized/versioned discipline. ─────────────
+    // ── APPENDED (minor-30, the HOST-SERVICES seam): the host's entropy and wall clock (the
+    //    host fills them; the contract holds neither), and the retired usage-tap fault latch and
+    //    translate cap. Trailing slots, append-only, same sized/versioned discipline. ─────────────
     /// Fill a buffer from the host's entropy source.
     pub entropy_fill: Option<EntropyFillFn>,
     /// Read the host's wall clock (whole Unix seconds).
     pub wall_clock: Option<WallClockFn>,
-    /// Count a usage-tap fault and answer whether it is the first of its kind.
+    /// RETIRED (row 155): always `None`; the usage-tap fault is data on the plane's answer.
     pub tap_fault_latch: Option<TapFaultLatchFn>,
-    /// Read the operator's live translation cap.
+    /// RETIRED (row 155): always `None`; the translate cap reaches a plane in its settings.
     pub translate_cap: Option<TranslateCapFn>,
     // ── EXTENSION POINT (reserved) ──────────────────────────────────────────────────────────────
     // New inbound capabilities append as trailing `Option` slots BELOW this line and bump the
@@ -793,7 +794,7 @@ impl PlaneHostVtable {
 
     /// CHECK a peer-supplied `*const PlaneHostVtable` before ANY slot is read, and return the number
     /// of bytes this side will honour — the missing half of the sized-struct discipline on the table
-    /// itself. `size` was written at construction (`EMPTY`/`SERVICES`) and, until this existed, was never
+    /// itself. `size` was written at construction (`EMPTY`) and, until this existed, was never
     /// read by anything: the field the guard was written for was inert.
     ///
     /// Two refusals and one clamp:
@@ -927,17 +928,6 @@ impl PlaneHostVtable {
         wall_clock: None,
         tap_fault_latch: None,
         translate_cap: None,
-    };
-
-    /// [`EMPTY`](Self::EMPTY) plus the four HOST SERVICES, each served from THIS image's own armed
-    /// contract ports ([`super::services`]). A host grants them by building its table over this
-    /// (`..PlaneHostVtable::SERVICES`): the services are the contract's, so the host adds no code.
-    pub const SERVICES: PlaneHostVtable = PlaneHostVtable {
-        entropy_fill: Some(super::services::entropy_fill),
-        wall_clock: Some(super::services::wall_clock),
-        tap_fault_latch: Some(super::services::tap_fault_latch),
-        translate_cap: Some(super::services::translate_cap),
-        ..Self::EMPTY
     };
 }
 

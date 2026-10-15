@@ -308,6 +308,8 @@ pub struct VerdictDoc {
     pub reason: Option<String>,
     pub issuer: Option<String>,
     pub expires: Option<String>,
+    /// certified tier only: the issued certificate's id (verdict.schema.json `cert_id`).
+    pub cert_id: Option<String>,
 }
 
 fn read_verdict(cx: &Ctx, suite: &Suite) -> Result<Option<VerdictDoc>, String> {
@@ -347,6 +349,7 @@ fn read_verdict(cx: &Ctx, suite: &Suite) -> Result<Option<VerdictDoc>, String> {
         reason: opt("reason"),
         issuer: opt("issuer"),
         expires: opt("expires"),
+        cert_id: opt("cert_id"),
     }))
 }
 
@@ -515,6 +518,74 @@ pub fn stale_against(a: &Assessment, release: &str) -> Vec<String> {
         .collect()
 }
 
+/// Today in UTC, `YYYY-MM-DD`: the clock a certificate's `expires` is held to.
+fn today_utc() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let (y, m, d) = crate::gates::changelog::civil_from_days(secs.div_euclid(86_400));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// The `YYYY-MM-DD` a timestamp opens with, or `None` when it opens with no such date.
+fn iso_date(t: &str) -> Option<&str> {
+    let d = t.get(..10)?;
+    let b = d.as_bytes();
+    let digits = |r: std::ops::Range<usize>| b[r].iter().all(u8::is_ascii_digit);
+    (digits(0..4) && b[4] == b'-' && digits(5..7) && b[7] == b'-' && digits(8..10)).then_some(d)
+}
+
+/// WHY A GREEN `certified` VERDICT MAY NOT BE CLAIMED, or `None` when it may (X-1219).
+///
+/// The tier was declared and never constructed: `cert_id` lived only in the schema's prose,
+/// `expires` was checked for PRESENCE and never compared to a clock, and no fixture ever carried a
+/// certified suite. A certified claim now needs the whole issued artifact — `cert_id`, `issuer`,
+/// `expires` — with `expires` a date past the day the verdict was generated and past
+/// than `today`. An expired certificate is not a certificate.
+pub fn certified_refusal(suite: &str, v: &VerdictDoc, today: &str) -> Option<String> {
+    let missing: Vec<&str> = [
+        ("cert_id", v.cert_id.is_none()),
+        ("issuer", v.issuer.is_none()),
+        ("expires", v.expires.is_none()),
+    ]
+    .iter()
+    .filter(|(_, gone)| *gone)
+    .map(|(k, _)| *k)
+    .collect();
+    if !missing.is_empty() {
+        return Some(format!(
+            "suite `{suite}` is tier=certified and green, but its verdict carries no {} — a \
+             certified claim without the issued artifact is refused",
+            missing.join("/")
+        ));
+    }
+    let expires = v.expires.as_deref().unwrap_or_default();
+    let Some(until) = iso_date(expires) else {
+        return Some(format!(
+            "suite `{suite}` is tier=certified, but its `expires` ('{expires}') is not a \
+             YYYY-MM-DD date — a validity end nobody can compare is refused"
+        ));
+    };
+    if let Some(at) = iso_date(&v.generated_at) {
+        if until <= at {
+            return Some(format!(
+                "suite `{suite}`'s certificate {} expired {until}, on or before the verdict was \
+                 generated ({at}) — refused",
+                v.cert_id.as_deref().unwrap_or_default()
+            ));
+        }
+    }
+    if until <= today {
+        return Some(format!(
+            "suite `{suite}`'s certificate {} expired {until} (today is {today}) — an expired \
+             certificate is not a certified claim",
+            v.cert_id.as_deref().unwrap_or_default()
+        ));
+    }
+    None
+}
+
 fn short(sha: &str) -> String {
     sha.chars().take(9).collect()
 }
@@ -541,12 +612,10 @@ pub fn render_manifest(cx: &Ctx, suites: &[Suite]) -> Result<String, String> {
                 .verdict
                 .as_ref()
                 .expect("a resolved pass carries the verdict it resolved from");
-            if s.tier == Tier::Certified && (v.issuer.is_none() || v.expires.is_none()) {
-                return Err(format!(
-                    "suite `{}` is tier=certified and green, but its verdict carries no \
-                     issuer/expires — a certified claim without the issued artifact is refused",
-                    s.id
-                ));
+            if s.tier == Tier::Certified {
+                if let Some(why) = certified_refusal(&s.id, v, &today_utc()) {
+                    return Err(why);
+                }
             }
             let claim = claim_for(s.tier, "pass", s, v.issuer.as_deref());
             e.insert("claim".into(), json!(claim));
@@ -769,4 +838,66 @@ pub fn no_orphan_claims(readme: &str, suites: &[Suite]) -> Vec<Orphan> {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod certified_tests {
+    use super::*;
+
+    fn verdict(cert_id: Option<&str>, expires: Option<&str>) -> VerdictDoc {
+        VerdictDoc {
+            status: "pass".into(),
+            armed: true,
+            commit: "c".into(),
+            spec_version: String::new(),
+            evidence: String::new(),
+            run_id: String::new(),
+            generated_at: "2026-10-01T00:00:00Z".into(),
+            reason: None,
+            issuer: Some("Standards Body".into()),
+            expires: expires.map(str::to_string),
+            cert_id: cert_id.map(str::to_string),
+        }
+    }
+
+    /// X-1219 RED: the certified tier is CONSTRUCTED. A whole, unexpired certificate may be
+    /// claimed; one with no `cert_id`, one whose `expires` is not a date, and one that has expired
+    /// (against the clock, and against its own verdict's date) are each refused.
+    #[test]
+    fn a_certified_claim_needs_a_whole_unexpired_certificate() {
+        let today = "2026-10-14";
+        assert_eq!(
+            certified_refusal("s", &verdict(Some("CERT-1"), Some("2027-10-01")), today),
+            None
+        );
+        let no_id = certified_refusal("s", &verdict(None, Some("2027-10-01")), today);
+        assert!(
+            no_id.as_deref().is_some_and(|w| w.contains("cert_id")),
+            "{no_id:?}"
+        );
+        let undated = certified_refusal("s", &verdict(Some("CERT-1"), Some("next year")), today);
+        assert!(
+            undated.as_deref().is_some_and(|w| w.contains("not a")),
+            "{undated:?}"
+        );
+        let expired = certified_refusal("s", &verdict(Some("CERT-1"), Some("2026-10-02")), today);
+        assert!(
+            expired
+                .as_deref()
+                .is_some_and(|w| w.contains("today is 2026-10-14")),
+            "{expired:?}"
+        );
+        let before = certified_refusal("s", &verdict(Some("CERT-1"), Some("2026-09-30")), today);
+        assert!(
+            before
+                .as_deref()
+                .is_some_and(|w| w.contains("before the verdict")),
+            "{before:?}"
+        );
+    }
+
+    #[test]
+    fn today_is_an_iso_date() {
+        assert!(iso_date(&today_utc()).is_some());
+    }
 }

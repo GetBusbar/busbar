@@ -4,31 +4,15 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: exit-terminal — one voice session ends ONCE: exactly one metering-lease settlement and exactly
-# one admin-audit row, even when the session is INTERRUPTED (torn down before it runs a single frame,
-# and independently closed twice — the shape a parked per-frame handler's stale guard plus the node's
-# own sweep produce, BUSBAR-1.6.0.md THE DESIGN, §1's teller loop, the "exit" step — ONE exit path).
+# LEG: exit-terminal — one session ends ONCE (BUSBAR-1.6.0.md THE DESIGN §1, the exit step).
 #
-# TWO INDEPENDENT PROOFS, both over the substrate's `FixtureHost` (the same faithful in-memory
-# `CostHold`/audit-ring stand-in the admit/route/audit legs use):
+# THE DOOR'S HALF (judged, linked AND dropped door): the caller's end settles the open turn's audio
+# seconds once and carries the session's end exactly once (cumulative units final); afterwards the
+# stream is refused on every side (a collection and a far-end piece) and `drive` names nothing; a
+# session torn down before its first frame ends with no units and no fee. RED arm: a second end fails.
 #
-#   1. METERING SETTLES EXACTLY ONCE UNDER A DOUBLE CLOSE. `MeteringHost::cost_close` is the primitive
-#      `LeaseCloseGuard::drop` calls, and its OWN contract is that a redundant close is a harmless
-#      `None` -- "no double refund" (see `runtime/metering.rs`'s doc comment on `LeaseCloseGuard`).
-#      This leg reserves, settles a real increment, then closes the SAME lease id TWICE directly
-#      against the host: the FIRST close must return the exact settled amount: the SECOND -- the
-#      "interrupted, closed again" case -- must return nothing, proving there is nothing left to
-#      double-settle.
-#   2. THE SESSION'S ONE AUDIT ROW SURVIVES AN INTERRUPTION. A session opened through the real
-#      `topology::begin_session` (lands its one `audit-record` row, see the `audit-record` leg), then
-#      torn down immediately -- the core dropped and the D2 close guard dropped -- without ever
-#      running a frame. Exactly one audit row must remain: not zero (the interruption did not erase
-#      the row the open already wrote) and not two (nothing re-fires on teardown).
-#
-# WAS RED: before `open_admitted_session` wrote its one audit row (see `audit-record`), there was no
-# row to prove survives anything at all; and before this leg existed, nothing exercised the SAME
-# double-close shape production's own `LeaseCloseGuard`/parked-handler race notes as the reason a
-# by-value guard (not a refcount-gated `Drop`) is required.
+# THE KERNEL'S HALF: sealing the session's one line and evicting its durable row (served leg:
+# crates/busbar/src/root/tests/gauntlet_kernel.rs::served_rider_ends_each_call_once).
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

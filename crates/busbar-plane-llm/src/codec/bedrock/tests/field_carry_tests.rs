@@ -45,7 +45,7 @@ fn bedrock_carry_request_stop_sequences() {
         vec!["STOP".to_string(), "END".to_string()],
         "stopSequences must reach IrRequest.stop"
     );
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/inferenceConfig/stopSequences"),
         Some(&serde_json::json!(["STOP", "END"])),
@@ -88,7 +88,7 @@ fn bedrock_carry_request_tool_config() {
         "toolConfig.toolChoice `{{any:{{}}}}` must reach IrRequest.tool_choice as Required"
     );
 
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/toolConfig/tools/0/toolSpec/name")
             .and_then(|v| v.as_str()),
@@ -103,7 +103,9 @@ fn bedrock_carry_request_tool_config() {
     // Cross-protocol proof: the force-tool-use directive projects into OpenAI's `required`, not
     // degrading to `auto` — the exact loss `IrToolChoice` exists to prevent.
     if let Some(openai) = super::super::proto_codec::protocol_for("openai") {
-        let oai = openai.writer().write_request(&ir);
+        let oai = openai
+            .writer()
+            .write_request(crate::codec::test_host::HOST, &ir);
         assert_eq!(
             oai.pointer("/tool_choice").and_then(|v| v.as_str()),
             Some("required"),
@@ -144,7 +146,7 @@ fn bedrock_carry_request_tool_use() {
         }
         other => panic!("expected ToolUse, got {other:?}"),
     }
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/messages/0/content/0/toolUse/toolUseId")
             .and_then(|v| v.as_str()),
@@ -202,7 +204,7 @@ fn bedrock_carry_request_tool_result() {
         }
         other => panic!("expected ToolResult, got {other:?}"),
     }
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/messages/0/content/0/toolResult/toolUseId")
             .and_then(|v| v.as_str()),
@@ -272,7 +274,7 @@ fn bedrock_carry_request_reasoning_content() {
         }
         other => panic!("expected redacted Thinking, got {other:?}"),
     }
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/messages/0/content/0/reasoningContent/reasoningText/text")
             .and_then(|v| v.as_str()),
@@ -309,7 +311,7 @@ fn bedrock_carry_request_additional_model_request_fields() {
         "additionalModelRequestFields": {"custom_param": 42, "nested": {"a": true}}
     });
     let ir = reader.read_request(&body).expect("read");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/additionalModelRequestFields/custom_param")
             .and_then(|v| v.as_i64()),
@@ -335,7 +337,7 @@ fn bedrock_carry_request_additional_model_response_field_paths() {
         "additionalModelResponseFieldPaths": ["/foo/bar", "/baz"]
     });
     let ir = reader.read_request(&body).expect("read");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/additionalModelResponseFieldPaths"),
         Some(&serde_json::json!(["/foo/bar", "/baz"])),
@@ -354,7 +356,7 @@ fn bedrock_carry_request_prompt_variables() {
         "promptVariables": {"topic": {"text": "weather"}}
     });
     let ir = reader.read_request(&body).expect("read");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/promptVariables/topic/text")
             .and_then(|v| v.as_str()),
@@ -374,7 +376,7 @@ fn bedrock_carry_request_request_metadata() {
         "requestMetadata": {"team": "search", "env": "prod"}
     });
     let ir = reader.read_request(&body).expect("read");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/requestMetadata/team")
             .and_then(|v| v.as_str()),
@@ -399,7 +401,7 @@ fn bedrock_carry_request_performance_config() {
         "performanceConfig": {"latency": "optimized"}
     });
     let ir = reader.read_request(&body).expect("read");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/performanceConfig/latency")
             .and_then(|v| v.as_str()),
@@ -421,7 +423,7 @@ fn bedrock_carry_request_image_s3_location() {
         ]}]
     });
     let ir = reader.read_request(&body).expect("read");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/messages/0/content/0/image/source/s3Location/uri")
             .and_then(|v| v.as_str()),
@@ -457,7 +459,7 @@ fn bedrock_carry_request_document_provider_fields() {
         ]}]
     });
     let ir = reader.read_request(&body).expect("read");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let doc = out
         .pointer("/messages/0/content/1/document")
         .unwrap_or_else(|| panic!("document block must re-emit exactly once; got {out}"));
@@ -502,7 +504,7 @@ fn bedrock_carry_request_video_s3_location() {
         ]}]
     });
     let ir = reader.read_request(&body).expect("read");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/messages/0/content/1/video/source/s3Location/uri")
             .and_then(|v| v.as_str()),
@@ -525,7 +527,7 @@ fn bedrock_carry_request_cache_point() {
         ]}]
     });
     let ir = reader.read_request(&body).expect("read");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let content = out
         .pointer("/messages/0/content")
         .and_then(|c| c.as_array())
@@ -554,7 +556,7 @@ fn bedrock_carry_request_guard_content() {
         ]}]
     });
     let ir = reader.read_request(&body).expect("read");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let content = out
         .pointer("/messages/0/content")
         .and_then(|c| c.as_array())
@@ -589,7 +591,9 @@ fn bedrock_carry_response_output_and_stop_reason() {
         "stopReason": "tool_use",
         "usage": {"inputTokens": 3, "outputTokens": 4, "totalTokens": 7}
     });
-    let resp = reader.read_response(&body).expect("read");
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
     // output.message.role
     assert_eq!(
         resp.role,
@@ -613,7 +617,7 @@ fn bedrock_carry_response_output_and_stop_reason() {
         "stopReason `tool_use` must reach IrResponse.stop_reason"
     );
 
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.pointer("/output/message/role").and_then(|v| v.as_str()),
         Some("assistant"),
@@ -653,7 +657,9 @@ fn bedrock_carry_response_usage() {
             "cacheWriteInputTokens": 10
         }
     });
-    let resp = reader.read_response(&body).expect("read");
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
     assert_eq!(
         resp.usage.input_tokens, 100,
         "usage.inputTokens must reach IrUsage"
@@ -673,7 +679,7 @@ fn bedrock_carry_response_usage() {
         "usage.cacheWriteInputTokens must reach IrUsage.cache_creation_input_tokens"
     );
 
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.pointer("/usage/inputTokens").and_then(|v| v.as_u64()),
         Some(100),
@@ -766,15 +772,19 @@ fn bedrock_carry_response_trace_documented_drop() {
             "promptRouter": {"invokedModelId": "arn:aws:...:model/x"}
         }
     });
-    let resp = reader.read_response(&body).expect("read");
-    let out = writer.write_response(&resp);
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert!(
         out.pointer("/trace").is_none(),
         "trace (guardrail + promptRouter) has no cross-protocol carrier and must drop; got {out}"
     );
     // Cross-protocol egress likewise carries neither.
     if let Some(anthropic) = super::super::proto_codec::protocol_for("anthropic") {
-        let a = anthropic.writer().write_response(&resp);
+        let a = anthropic
+            .writer()
+            .write_response(crate::codec::test_host::HOST, &resp);
         assert!(
             a.to_string().find("promptRouter").is_none()
                 && a.to_string().find("guardrail").is_none(),
@@ -795,8 +805,10 @@ fn bedrock_carry_response_additional_model_response_fields_documented_drop() {
         "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
         "additionalModelResponseFields": {"foo": "bar"}
     });
-    let resp = reader.read_response(&body).expect("read");
-    let out = writer.write_response(&resp);
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert!(
         out.pointer("/additionalModelResponseFields").is_none(),
         "additionalModelResponseFields has no cross-protocol carrier and must drop; got {out}"
@@ -815,8 +827,10 @@ fn bedrock_carry_response_performance_config_documented_drop() {
         "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
         "performanceConfig": {"latency": "optimized"}
     });
-    let resp = reader.read_response(&body).expect("read");
-    let out = writer.write_response(&resp);
+    let resp = reader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert!(
         out.pointer("/performanceConfig").is_none(),
         "response performanceConfig has no cross-protocol carrier and must drop; got {out}"
@@ -841,6 +855,7 @@ fn bedrock_carry_stream_frame_types() {
     // ---- READ: each native frame → the expected IR event -----------------------------------
     // messageStart
     let ev = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStart", "role": "assistant"}),
         &mut state,
@@ -852,6 +867,7 @@ fn bedrock_carry_stream_frame_types() {
 
     // contentBlockStart (toolUse — the only native ContentBlockStart$start member)
     let ev = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "contentBlockStart",
@@ -870,6 +886,7 @@ fn bedrock_carry_stream_frame_types() {
 
     // contentBlockDelta (tool input json delta)
     let ev = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "contentBlockDelta",
@@ -885,6 +902,7 @@ fn bedrock_carry_stream_frame_types() {
 
     // contentBlockStop
     let ev = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "contentBlockStop", "contentBlockIndex": 0}),
         &mut state,
@@ -896,6 +914,7 @@ fn bedrock_carry_stream_frame_types() {
 
     // messageStop — its stopReason is BUFFERED and paired with the following metadata usage.
     let ev = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStop", "stopReason": "tool_use"}),
         &mut state,
@@ -907,6 +926,7 @@ fn bedrock_carry_stream_frame_types() {
 
     // metadata — emits the combined MessageDelta (buffered stopReason + usage) then MessageStop.
     let ev = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "metadata", "usage": {"inputTokens": 9, "outputTokens": 3}}),
         &mut state,
@@ -927,44 +947,56 @@ fn bedrock_carry_stream_frame_types() {
     // ---- WRITE: each IR event → its native frame type --------------------------------------
     assert_eq!(
         writer
-            .write_response_event(&IrStreamEvent::MessageStart {
-                role: crate::codec::ir::IrRole::Assistant,
-                usage: None,
-                id: None,
-                created: None,
-                model: None,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::MessageStart {
+                    role: crate::codec::ir::IrRole::Assistant,
+                    usage: None,
+                    id: None,
+                    created: None,
+                    model: None,
+                }
+            )
             .map(|(t, _)| t),
         Some("messageStart".to_string()),
         "IrStreamEvent::MessageStart must write a messageStart frame"
     );
     assert_eq!(
         writer
-            .write_response_event(&IrStreamEvent::BlockStart {
-                index: 0,
-                block: crate::codec::ir::IrBlockMeta::ToolUse {
-                    id: "t1".into(),
-                    name: "go".into()
-                },
-                refusal: false,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockStart {
+                    index: 0,
+                    block: crate::codec::ir::IrBlockMeta::ToolUse {
+                        id: "t1".into(),
+                        name: "go".into()
+                    },
+                    refusal: false,
+                }
+            )
             .map(|(t, _)| t),
         Some("contentBlockStart".to_string()),
         "a ToolUse BlockStart must write a contentBlockStart frame"
     );
     assert_eq!(
         writer
-            .write_response_event(&IrStreamEvent::BlockDelta {
-                index: 0,
-                delta: IrDelta::TextDelta("hi".into()),
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockDelta {
+                    index: 0,
+                    delta: IrDelta::TextDelta("hi".into()),
+                }
+            )
             .map(|(t, _)| t),
         Some("contentBlockDelta".to_string()),
         "a BlockDelta must write a contentBlockDelta frame"
     );
     assert_eq!(
         writer
-            .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::BlockStop { index: 0 }
+            )
             .map(|(t, _)| t),
         Some("contentBlockStop".to_string()),
         "a BlockStop must write a contentBlockStop frame"
@@ -973,36 +1005,42 @@ fn bedrock_carry_stream_frame_types() {
     // frames the IR's single combined delta fans out to on a Bedrock ingress).
     assert_eq!(
         writer
-            .write_response_event(&IrStreamEvent::MessageDelta {
-                stop_reason: Some(crate::codec::ir::IrStopReason::ToolUse),
-                stop_sequence: None,
-                usage: crate::codec::ir::IrUsage {
-                    input_tokens: 0,
-                    output_tokens: 0,
-                    cache_creation_input_tokens: None,
-                    cache_read_input_tokens: None,
-                    detail: crate::codec::ir::IrUsageDetail::default(),
-                },
-                stop_detail: None,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::MessageDelta {
+                    stop_reason: Some(crate::codec::ir::IrStopReason::ToolUse),
+                    stop_sequence: None,
+                    usage: crate::codec::ir::IrUsage {
+                        input_tokens: 0,
+                        output_tokens: 0,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        detail: crate::codec::ir::IrUsageDetail::default(),
+                    },
+                    stop_detail: None,
+                }
+            )
             .map(|(t, _)| t),
         Some("messageStop".to_string()),
         "a stop-only MessageDelta must write a messageStop frame"
     );
     assert_eq!(
         writer
-            .write_response_event(&IrStreamEvent::MessageDelta {
-                stop_reason: None,
-                stop_sequence: None,
-                usage: crate::codec::ir::IrUsage {
-                    input_tokens: 9,
-                    output_tokens: 3,
-                    cache_creation_input_tokens: None,
-                    cache_read_input_tokens: None,
-                    detail: crate::codec::ir::IrUsageDetail::default(),
-                },
-                stop_detail: None,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &IrStreamEvent::MessageDelta {
+                    stop_reason: None,
+                    stop_sequence: None,
+                    usage: crate::codec::ir::IrUsage {
+                        input_tokens: 9,
+                        output_tokens: 3,
+                        cache_creation_input_tokens: None,
+                        cache_read_input_tokens: None,
+                        detail: crate::codec::ir::IrUsageDetail::default(),
+                    },
+                    stop_detail: None,
+                }
+            )
             .map(|(t, _)| t),
         Some("metadata".to_string()),
         "a usage-only MessageDelta must write a metadata frame"

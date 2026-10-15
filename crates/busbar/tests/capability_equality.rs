@@ -43,7 +43,7 @@
 //! ## The ROOT LEG column — the same matrix, judged a second time over the loop
 //!
 //! Every plane now also runs through the composition root — `root-llm` (the node, behind
-//! `proto-llm`) / `root-admin` behind their features, `root-mcp` through the MCP plane's memory-ABI
+//! `plane-llm`) / `root-admin` behind their features, `root-mcp` through the MCP plane's memory-ABI
 //! door on the kernel's plane driver (`root/serve.rs`, its cells in the `#[path]` test file
 //! `root/tests/serve_tests.rs`, gated by `plane-mcp`), `root-a2a` / `root-voice` on the kernel-loop
 //! rider those planes are served through (`root/gauntlet_kernel.rs`, the voice leg on its session
@@ -64,7 +64,7 @@
 //!   cell.
 //! * The evidence for a leg lives in the binary crate's own `#[cfg(test)] mod tests` inside
 //!   `src/root/` leg file, compiled only when that leg's feature is on. Cargo features reach an
-//!   integration test target too, so a `#[cfg(all(feature = "proto-llm", …))]` test here runs in
+//!   integration test target too, so a `#[cfg(all(feature = "plane-llm", …))]` test here runs in
 //!   EXACTLY the build where the legs exist — and is absent, rather than lying, in a build where
 //!   they do not.
 //!
@@ -229,7 +229,7 @@ fn named_test_is_real(root: &Path, id: &str, test: &str, kind: &str) -> Result<(
     let (file, func) = test.split_once("::").ok_or_else(|| {
         format!("{kind} `{id}`: `test` must be `<repo-relative file>::<test fn>`, got {test:?}")
     })?;
-    let path = root.join(file);
+    let path = source_of(root, file);
     let src = std::fs::read_to_string(&path).map_err(|e| {
         format!(
             "{kind} `{id}` is `proven` by {test}, but {file} cannot be read ({e}). A verdict whose \
@@ -484,7 +484,7 @@ fn sibling_tests_file(file: &str) -> String {
 /// carries one file further down (`#[cfg(test)] #[path = "tests/serve_tests.rs"] mod door_tests;`).
 /// Only a `#[path]` ATTRIBUTE counts: a line that merely mentions one in a comment declares nothing.
 fn path_declarations(root: &Path, file: &str) -> Vec<String> {
-    let Ok(src) = std::fs::read_to_string(root.join(file)) else {
+    let Ok(src) = std::fs::read_to_string(source_of(root, file)) else {
         return Vec::new();
     };
     let dir = file.rsplit_once('/').map_or("", |(dir, _)| dir);
@@ -507,11 +507,61 @@ fn path_declarations(root: &Path, file: &str) -> Vec<String> {
         .collect()
 }
 
+/// The root module that includes the door planes' own root cells (`root/serve.rs`'s
+/// `include!(concat!(env!("OUT_DIR"), "/door_cells.rs"))`).
+const DOOR_CELLS_MODULE: &str = "serve";
+
+// `DOOR_CELLS_FILES`: every linked plane door's root cells, as the ledger cites them beside the
+// file its crate states under its `links` name (the root's `build.rs`, from the same
+// `DEP_BUSBAR_DOOR_CELLS_<CRATE>_CELLS` it compiles the cells from).
+include!(concat!(env!("OUT_DIR"), "/door_cells_files.rs"));
+
+thread_local! {
+    /// A self-test's door cells beside the build's: `(citation, file)` rows a fixture plants, so a
+    /// pinned door's cells (a file outside the repo) are proven to resolve without a real pin.
+    static PLANTED_CELLS: std::cell::RefCell<Vec<(String, PathBuf)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// THE DOOR PLANES' OWN ROOT CELLS the composition root compiles: every linked plane door's
+/// `tests/root/mod.rs`, cited as `crates/<crate>/tests/root/mod.rs` (its census mount) and read from
+/// the file its crate states — a path dependency's in the repo, a pinned one's in its checkout,
+/// through the ONE resolver the root's `build.rs` runs. A root leg's evidence may live there: the
+/// cells are written in the plane's own words in the plane's crate (the composition root names no
+/// plane) and compiled into the root's serve module.
+fn door_cells_files() -> Vec<(String, PathBuf)> {
+    DOOR_CELLS_FILES
+        .iter()
+        .map(|(cited, at)| ((*cited).to_string(), PathBuf::from(at)))
+        .chain(PLANTED_CELLS.with(|p| p.borrow().clone()))
+        .collect()
+}
+
+/// Where `file` (a repo-relative citation) is read from: a door plane's cells from the file its
+/// crate states, everything else from `root` (or a moved plane's pinned checkout).
+fn source_of(root: &Path, file: &str) -> PathBuf {
+    door_cells_files()
+        .into_iter()
+        .find(|(cited, _)| cited == file)
+        // Otherwise a plane that left for its own repo is read from its pinned checkout, at the path
+        // it had here.
+        .map_or_else(|| common::pinned_planes::resolve(root, file), |(_, at)| at)
+}
+
+/// Whether `file` is a door plane's own root cells.
+fn is_door_cells(file: &str) -> bool {
+    door_cells_files().iter().any(|(cited, _)| cited == file)
+}
+
 /// THE MODULE THAT DECLARES a leg's file, as the composition root's `mod.rs` names it: the file's
 /// own stem when it sits in [`ROOT_DIR`]; the module directory it lives under (`units_admin/…`);
 /// or, for a `#[path]` test file in `root/tests/`, the stem of the root file whose `#[path]`
 /// declares it. `None` when no root file declares it.
 fn declaring_module(root: &Path, file: &str) -> Option<String> {
+    // A door plane's own root cells: the serve module includes them (`door_cells.rs`).
+    if is_door_cells(file) {
+        return Some(DOOR_CELLS_MODULE.to_string());
+    }
     let rel = file.strip_prefix(ROOT_DIR)?;
     let stem = |f: &str| {
         Path::new(f)
@@ -577,13 +627,14 @@ fn verify_root(
         let file = meta["file"]
             .as_str()
             .ok_or_else(|| format!("root leg `{leg}` names no `file`"))?;
-        if !file.starts_with(ROOT_DIR) {
+        if !file.starts_with(ROOT_DIR) && !is_door_cells(file) {
             return Err(format!(
-                "root leg `{leg}` names file {file:?}, which is not under {ROOT_DIR}. A leg's \
-                 evidence lives in the composition root or it is not that leg's evidence."
+                "root leg `{leg}` names file {file:?}, which is not under {ROOT_DIR} and is no \
+                 door plane's own root cells (its crate's `tests/root/mod.rs`, a linked plane door's). A \
+                 leg's evidence lives in the composition root or it is not that leg's evidence."
             ));
         }
-        if !root.join(file).is_file() {
+        if !source_of(root, file).is_file() {
             return Err(format!(
                 "root leg `{leg}` names {file}, which does not exist."
             ));
@@ -1150,7 +1201,9 @@ fn plane_keys_from_single_source(root: &Path) -> Vec<String> {
 }
 
 /// The workspace's `crates/busbar-plane-*` members, by directory suffix (`plane-decisions`), read off
-/// the root `Cargo.toml`'s `members` list — the list cargo builds, not a list somebody keeps.
+/// the root `Cargo.toml`'s `members` list — the list cargo builds, not a list somebody keeps — and
+/// the planes it PINS: a plane that left for its own repo is still a plane this workspace links
+/// (`common::pinned_planes`, ARCHITECT row 106 (A)), read from its checkout.
 fn workspace_pure_plane_crates(root: &Path) -> BTreeSet<String> {
     let manifest = std::fs::read_to_string(root.join("Cargo.toml")).expect("the root Cargo.toml");
     let members = manifest
@@ -1163,6 +1216,11 @@ fn workspace_pure_plane_crates(root: &Path) -> BTreeSet<String> {
         .filter_map(|m| m.trim().trim_matches('"').strip_prefix("crates/busbar-"))
         .filter(|suffix| suffix.starts_with("plane-"))
         .map(str::to_string)
+        .chain(
+            common::pinned_planes::pinned_rows(root)
+                .into_iter()
+                .filter_map(|(name, _)| name.strip_prefix("busbar-").map(str::to_string)),
+        )
         .collect()
 }
 
@@ -1222,7 +1280,7 @@ fn every_workspace_plane_crate_maps_to_at_least_one_ledger_column() {
     let crates = workspace_plane_crates(&root);
     for key in &crates {
         // Every enumerated plane must be a crate on disk, or a source and the tree disagree.
-        let crate_dir = root.join(format!("crates/busbar-{key}"));
+        let crate_dir = common::pinned_planes::resolve(&root, &format!("crates/busbar-{key}"));
         assert!(
             crate_dir.is_dir(),
             "plane `{key}` is enumerated but crates/busbar-{key} does not exist; \
@@ -1594,6 +1652,11 @@ mod tests {
 /// Two legs over two planes, one leg per plane, with a planted root file per leg. `leg-a` proves its
 /// one non-n/a cell; `leg-b` proves one and names one honest gap.
 fn root_fixture(root: &Path) -> serde_json::Value {
+    root_fixture_citing(root, "crates/busbar/src/root/units_a.rs")
+}
+
+/// [`root_fixture`], its `leg-a` citing `leg_a` as its evidence file.
+fn root_fixture_citing(root: &Path, leg_a: &str) -> serde_json::Value {
     let dir = root.join(ROOT_DIR);
     std::fs::create_dir_all(&dir).expect("fixture root dir");
     // A ROOT LEG IS A PRODUCTION FILE that carries its own test module, which is exactly why the
@@ -1605,7 +1668,7 @@ fn root_fixture(root: &Path) -> serde_json::Value {
         "capabilities": { "cap-a": ARG, "cap-b": ARG },
         "planes": { "p1": "first fixture plane", "p2": "second fixture plane" },
         "root_legs": {
-            "leg-a": { "file": "crates/busbar/src/root/units_a.rs", "columns": ["p1"], "note": ARG },
+            "leg-a": { "file": leg_a, "columns": ["p1"], "note": ARG },
             "leg-b": { "file": "crates/busbar/src/root/units_b.rs", "columns": ["p2"], "note": ARG }
         },
         "cells": [
@@ -1662,6 +1725,44 @@ fn selftest_root_evidence_that_vanished_or_came_from_another_leg_is_red() {
     assert!(err2.contains("proven by its own cells"), "got: {err2}");
 
     for r in [root, root2] {
+        let _ = std::fs::remove_dir_all(&r);
+    }
+}
+
+/// A PINNED DOOR'S CELLS RESOLVE: a root leg citing `crates/<crate>/tests/root/mod.rs` of a door
+/// plane that lives OUTSIDE the repo (a pinned checkout) is read from the file its crate states,
+/// through the build's one resolver (`DOOR_CELLS_FILES`), and a ledger citation into it verifies.
+/// RED: with no door stating those cells, the same citation is no root cells and is refused.
+#[test]
+fn selftest_a_pinned_doors_cells_resolve_and_a_citation_into_them_verifies() {
+    let root = scratch("root-pinned-cells");
+    let checkout = scratch("root-pinned-checkout");
+    std::fs::create_dir_all(checkout.join("tests/root")).unwrap();
+    let cells = checkout.join("tests/root/mod.rs");
+    std::fs::write(&cells, GREEN_ROOT_FIXTURE_LEG).unwrap();
+    let cited = "crates/busbar-plane-pinned-fixture/tests/root/mod.rs";
+    let mut doc = root_fixture_citing(&root, cited);
+    doc["cells"][0]["root"]["test"] = format!("{cited}::the_loop_cell").into();
+    assert!(!root.join(cited).exists(), "the cells are outside the repo");
+
+    let err = verify_root(&doc, &root, &FIXTURE_LEGS, 1)
+        .expect_err("a citation no door's cells resolve is refused");
+    assert!(err.contains("no door plane's own root cells"), "got: {err}");
+
+    PLANTED_CELLS.with(|p| p.borrow_mut().push((cited.to_string(), cells.clone())));
+    let s = verify_root(&doc, &root, &FIXTURE_LEGS, 1)
+        .expect("a pinned door's cells resolve and the citation into them verifies");
+    assert_eq!(
+        s.per_leg["leg-a"].0, 1,
+        "the pinned cell proves leg-a's cell"
+    );
+    assert_eq!(
+        declaring_module(&root, cited).as_deref(),
+        Some(DOOR_CELLS_MODULE),
+        "a door's cells are the serve module's"
+    );
+    PLANTED_CELLS.with(|p| p.borrow_mut().clear());
+    for r in [root, checkout] {
         let _ = std::fs::remove_dir_all(&r);
     }
 }
@@ -1790,5 +1891,50 @@ fn selftest_root_verdict_disagreeing_with_the_cell_or_an_unowned_column_is_red()
 
     for r in [root, root2, root3, root4] {
         let _ = std::fs::remove_dir_all(&r);
+    }
+}
+
+/// A PINNED PLANE'S EVIDENCE IS READ FROM ITS CHECKOUT, AND IS RED WITHOUT IT (ARCHITECT row 106
+/// (A), conditions 3 and 5). Every proven cell citing a test under `crates/<pinned plane>/` names a
+/// file the tree no longer has on disk: read where the tree has it, the cell's evidence is gone and
+/// the cell is RED; read through `common::pinned_planes`, it is the real test, in test code, that
+/// asserts. Both halves, so the resolution can neither be skipped nor be a no-op.
+#[test]
+fn a_pinned_planes_evidence_is_read_from_its_checkout_and_is_red_without_it() {
+    fn cited(v: &serde_json::Value, prefixes: &[String], out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, x) in m {
+                    match x.as_str() {
+                        Some(s) if k == "test" && prefixes.iter().any(|p| s.starts_with(p)) => {
+                            out.push(s.to_string());
+                        }
+                        _ => cited(x, prefixes, out),
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| cited(x, prefixes, out)),
+            _ => {}
+        }
+    }
+    let root = repo_root();
+    let prefixes: Vec<String> = common::pinned_planes::pinned_rows(&root)
+        .into_iter()
+        .map(|(name, _)| format!("crates/{name}/"))
+        .collect();
+    assert!(!prefixes.is_empty(), "the workspace pins a plane today");
+    let mut tests = Vec::new();
+    cited(&real_doc(), &prefixes, &mut tests);
+    assert!(
+        !tests.is_empty(),
+        "no proven cell cites a pinned plane's test, so this arm proves nothing"
+    );
+    for test in &tests {
+        let (file, _) = test.split_once("::").expect("`<file>::<fn>`");
+        assert!(
+            std::fs::read_to_string(root.join(file)).is_err(),
+            "{file} is on disk: a pinned plane's source re-entered the tree"
+        );
+        named_test_is_real(&root, "pinned", test, "cell").unwrap_or_else(|e| panic!("{e}"));
     }
 }

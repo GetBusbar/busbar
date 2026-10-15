@@ -19,13 +19,13 @@
 //! This file is config grammar: the config-schema gate tracks it, so the two `Deserialize` shapes
 //! below are frozen additive-only exactly as they were while the kernel declared them.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
 
 /// The spelling of a cross-protocol output-token cap a provider expects (see
 /// `ProviderDef::max_output_key`).
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MaxOutputKeyCfg {
     /// `max_tokens` — the default.
@@ -36,7 +36,7 @@ pub enum MaxOutputKeyCfg {
 
 /// One per-model capability rule (see `ProviderDef::model_capabilities`). Every key but `models` is
 /// optional; an absent key leaves the value the provider level (or the default) set.
-#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelCapabilities {
     /// Wire-model globs (`*` matches any run of characters), e.g. `claude-opus-4-7*`.
@@ -60,8 +60,9 @@ pub struct ModelCapabilities {
 }
 
 /// The three capabilities a provider entry declares at PROVIDER level (each `None` = not declared),
-/// named field by field so the caller cannot hand one capability's value to another.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// named field by field so the caller cannot hand one capability's value to another. Read off a
+/// provider's table as its keys are written there (an absent key is `None`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub struct ProviderLaneCaps {
     /// The entry's `max_output_key`.
     pub max_output_key: Option<MaxOutputKeyCfg>,

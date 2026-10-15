@@ -21,9 +21,9 @@
 //! by `--validate` as an unknown exporter. No feature name is spelled.
 
 #![cfg(unix)]
-// The config serves `providers:`/`models:`, so the build must link the plane that takes body
-// ingress: the linked table's answer, never a feature name.
-#![cfg(linked_axis_body_ingress)]
+// The config serves `providers:`/`models:`, so the build must link the plane door that declares
+// `pools:` (`linked_section_pools`): the linked table's answer, never a feature name.
+#![cfg(linked_section_pools)]
 // A build that links no export sink has no row to load as the wrong kind: the test is the export
 // door axis's, so it compiles where the build links that axis and asserts the binary agrees.
 #![cfg(linked_axis_export_doors)]

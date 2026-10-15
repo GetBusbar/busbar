@@ -3,7 +3,7 @@
 
 //! **A DROPPED-IN TRANSPORT REGISTERS THROUGH THE SAME REGISTRATION AS A LINKED ONE, AND SERVES** —
 //! end to end, over the REAL binary (#2 rule (1): same contract, same loading path; #3
-//! OWNER-LOCKED: a transport is swappable, compiled in OR dropped in; #30: it rides the HOT lane).
+//! OWNER-LOCKED: a transport is swappable, compiled in OR dropped in), through its door.
 //!
 //! The in-tree transport `cdylib` is found by its KIND (the one library beside the binary the loader
 //! admits as `kind: transport`) and packed into `plugins.dir` as a tarball. The root names no wire:
@@ -24,12 +24,12 @@
 
 #![cfg(unix)]
 // THE PINNED EXCHANGE IS A PROVIDER-LANE ROUTE (`GET /v1/models`, answered from the configured
-// provider/model pair), so this proof needs the row carrying the body-ingress axis — the plane that
+// provider/model pair), so this proof needs the door that declares `pools:` — the plane that
 // owns provider lanes — linked; read off the linked set, as thread_per_core_serves.rs gates. A
-// single-plane build without that axis has no wire codec and refuses the provider at boot
+// single-plane build without that door has no wire codec and refuses the provider at boot
 // (BUSBAR-9007), which is correct product behaviour, not what this test measures. The dropped-in
-// wire itself is proven in every build that links that axis, including the no-tcp feature row.
-#![cfg(linked_axis_body_ingress)]
+// wire itself is proven in every build that links that door, including the no-tcp feature row.
+#![cfg(linked_section_pools)]
 
 mod common;
 

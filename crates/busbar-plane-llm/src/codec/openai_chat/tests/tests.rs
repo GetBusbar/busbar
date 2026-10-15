@@ -89,18 +89,21 @@ fn test_split_openai_trailing_usage_noop_without_usage() {
 fn test_folded_usage_without_a_finish_reason_still_unfolds() {
     let writer = OpenAiWriter;
     let (_, mut chunk) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: None,
-            stop_sequence: None,
-            usage: IrUsage {
-                input_tokens: 7,
-                output_tokens: 3,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-                detail: crate::codec::ir::IrUsageDetail::default(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: None,
+                stop_sequence: None,
+                usage: IrUsage {
+                    input_tokens: 7,
+                    output_tokens: 3,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    detail: crate::codec::ir::IrUsageDetail::default(),
+                },
+                stop_detail: None,
             },
-            stop_detail: None,
-        })
+        )
         .expect("a terminal MessageDelta with counts writes a chunk");
     assert!(
         chunk.get("usage").is_some(),
@@ -163,7 +166,7 @@ fn stream_tool_use_block_start_uses_ir_index() {
         refusal: false,
     };
     let (_, chunk) = w
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("tool-use start emits a chunk");
     let tc = &chunk["choices"][0]["delta"]["tool_calls"][0];
     assert_eq!(tc["index"], serde_json::json!(2));
@@ -179,7 +182,7 @@ fn stream_input_json_delta_uses_ir_index() {
         delta: IrDelta::InputJsonDelta("{\"q\":1}".to_string()),
     };
     let (_, chunk) = w
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("json delta emits a chunk");
     let tc = &chunk["choices"][0]["delta"]["tool_calls"][0];
     assert_eq!(tc["index"], serde_json::json!(3));
@@ -202,10 +205,22 @@ fn stream_parallel_tool_calls_do_not_collide_at_index_zero() {
         delta: IrDelta::InputJsonDelta(frag.to_string()),
     };
 
-    let s1 = w.write_response_event(&mk_start(1, "a")).unwrap().1;
-    let s2 = w.write_response_event(&mk_start(2, "b")).unwrap().1;
-    let d1 = w.write_response_event(&mk_delta(1, "x")).unwrap().1;
-    let d2 = w.write_response_event(&mk_delta(2, "y")).unwrap().1;
+    let s1 = w
+        .write_response_event(crate::codec::test_host::HOST, &mk_start(1, "a"))
+        .unwrap()
+        .1;
+    let s2 = w
+        .write_response_event(crate::codec::test_host::HOST, &mk_start(2, "b"))
+        .unwrap()
+        .1;
+    let d1 = w
+        .write_response_event(crate::codec::test_host::HOST, &mk_delta(1, "x"))
+        .unwrap()
+        .1;
+    let d2 = w
+        .write_response_event(crate::codec::test_host::HOST, &mk_delta(2, "y"))
+        .unwrap()
+        .1;
 
     let idx = |v: &serde_json::Value| v["choices"][0]["delta"]["tool_calls"][0]["index"].clone();
     // Two distinct tool calls keep distinct indices...
@@ -396,7 +411,7 @@ fn write_request_tool_result_multi_text_concatenates_without_separator() {
         system_role: None,
         output_modalities: None,
     };
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let tool_msg = out["messages"]
         .as_array()
         .and_then(|a| a.iter().find(|m| m["role"] == "tool"))
@@ -421,7 +436,7 @@ fn write_request_forces_logprobs_flag_when_only_top_logprobs_present() {
         }))
         .expect("parses");
     ir.logprobs = None; // only the top-count is set
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["logprobs"], true, "enabling flag must be forced");
     assert_eq!(out["top_logprobs"], 5);
 }
@@ -467,7 +482,7 @@ fn write_request_emits_max_tokens_from_modeled_cap() {
         system_role: None,
         output_modalities: None,
     };
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(out["max_tokens"], serde_json::json!(512));
     // No stray `max_completion_tokens` (it is folded into the single modeled cap).
     assert!(out
@@ -487,7 +502,7 @@ fn max_completion_tokens_survives_read_write_roundtrip() {
         "max_completion_tokens": 777
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["max_completion_tokens"],
         serde_json::json!(777),
@@ -517,7 +532,7 @@ fn max_completion_tokens_maps_to_max_tokens_cross_protocol() {
     });
     let mut ir = OpenAiReader.read_request(&body).expect("parses");
     ir.extra.clear(); // the translate seam clears extra on a cross-protocol hop
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["max_tokens"],
         serde_json::json!(777),
@@ -560,7 +575,7 @@ fn response_format_survives_same_protocol_roundtrip() {
             description: None,
         })
     );
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["response_format"],
         serde_json::json!({
@@ -612,7 +627,7 @@ fn write_request_omits_token_cap_when_absent() {
         system_role: None,
         output_modalities: None,
     };
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let obj = out.as_object().expect("object");
     assert!(obj.get("max_completion_tokens").is_none());
     assert!(obj.get("max_tokens").is_none());
@@ -667,7 +682,7 @@ fn write_request_keeps_tool_use_on_user_message() {
         system_role: None,
         output_modalities: None,
     };
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let msgs = out["messages"].as_array().expect("messages array");
     let user_msg = &msgs[0];
     let tcs = user_msg["tool_calls"]
@@ -731,7 +746,7 @@ fn write_request_pure_tool_result_message_emits_only_flat_entries() {
         system_role: None,
         output_modalities: None,
     };
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let msgs = out["messages"].as_array().expect("messages array");
     assert_eq!(
         msgs.len(),
@@ -803,7 +818,7 @@ fn write_request_tool_role_mixed_content_not_dropped() {
         system_role: None,
         output_modalities: None,
     };
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let msgs = out["messages"].as_array().expect("messages array");
     // One flat tool-result entry, plus the msg_obj carrying the stray text + tool_calls.
     assert_eq!(
@@ -888,7 +903,7 @@ fn write_request_tool_result_on_user_message_emits_tool_message() {
         system_role: None,
         output_modalities: None,
     };
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let msgs = out["messages"].as_array().expect("messages array");
     // Exactly one flat tool-result entry; the now-empty User msg_obj (content null, no tool_calls)
     // is NOT re-pushed, so the ToolResult is neither dropped nor duplicated.
@@ -942,7 +957,7 @@ fn write_response_joins_text_blocks_and_keeps_tool_calls() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     let msg = &out["choices"][0]["message"];
     assert_eq!(msg["content"], serde_json::json!("Hello world"));
     assert_eq!(msg["tool_calls"][0]["id"], serde_json::json!("c1"));
@@ -982,7 +997,7 @@ fn write_response_content_null_when_no_text() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out["choices"][0]["message"]["content"],
         serde_json::Value::Null
@@ -993,7 +1008,12 @@ fn write_response_content_null_when_no_text() {
 
 #[test]
 fn write_error_native_openai_shape() {
-    let v = openai_writer().write_error(404, ERR_TYPE_NOT_FOUND, "model 'gpt-z' not found");
+    let v = openai_writer().write_error(
+        crate::codec::test_host::HOST,
+        404,
+        ERR_TYPE_NOT_FOUND,
+        "model 'gpt-z' not found",
+    );
     // Exact native shape: error.{message,type,param,code}, with param/code null.
     assert_eq!(
         v["error"]["message"],
@@ -1021,7 +1041,7 @@ fn write_error_maps_kind_vocabulary() {
             ERR_TYPE_INVALID_REQUEST,
         ),
     ] {
-        let v = openai_writer().write_error(400, kind, "x");
+        let v = openai_writer().write_error(crate::codec::test_host::HOST, 400, kind, "x");
         assert_eq!(v["error"]["type"], serde_json::json!(want), "kind={kind}");
     }
 }
@@ -1029,9 +1049,9 @@ fn write_error_maps_kind_vocabulary() {
 #[test]
 fn write_error_empty_kind_falls_back_to_status_bucket() {
     // Empty kind with a 5xx status derives "server_error"; with a 4xx, "invalid_request_error".
-    let v5 = openai_writer().write_error(503, "", "down");
+    let v5 = openai_writer().write_error(crate::codec::test_host::HOST, 503, "", "down");
     assert_eq!(v5["error"]["type"], serde_json::json!("server_error")); // golden wire-contract literal (kept bare on purpose)
-    let v4 = openai_writer().write_error(400, "", "bad");
+    let v4 = openai_writer().write_error(crate::codec::test_host::HOST, 400, "", "bad");
     assert_eq!(
         v4["error"]["type"],
         serde_json::json!("invalid_request_error") // golden wire-contract literal (kept bare on purpose)
@@ -1055,7 +1075,9 @@ fn read_response_captures_upstream_identity() {
         }],
         "usage": {"prompt_tokens": 3, "completion_tokens": 4}
     });
-    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(ir.id.as_deref(), Some("chatcmpl-abc123"));
     assert_eq!(ir.created, Some(1_700_000_000));
     assert_eq!(ir.model.as_deref(), Some("gpt-4o"));
@@ -1078,8 +1100,10 @@ fn same_protocol_roundtrip_preserves_identity() {
         }],
         "usage": {"prompt_tokens": 10, "completion_tokens": 2}
     });
-    let ir = OpenAiReader.read_response(&body).expect("read_response");
-    let out = openai_writer().write_response(&ir);
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["id"], serde_json::json!("chatcmpl-xyz789"));
     assert_eq!(out["object"], serde_json::json!("chat.completion")); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(out["created"], serde_json::json!(1_711_111_111u64));
@@ -1115,7 +1139,7 @@ fn cross_protocol_write_synthesizes_valid_id() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     let id = out["id"].as_str().expect("synthesized id is a string");
     assert!(
         id.starts_with("chatcmpl-"), // golden wire-contract literal (kept bare on purpose)
@@ -1163,7 +1187,7 @@ fn cross_protocol_write_response_emits_fallback_model() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     let obj = out.as_object().expect("response object");
     assert!(
         obj.contains_key("model"),
@@ -1199,7 +1223,7 @@ fn write_response_preserves_upstream_model_over_fallback() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(out["model"], serde_json::json!("gpt-4o-mini"));
 }
 
@@ -1215,7 +1239,7 @@ fn stream_message_start_emits_fallback_model_when_none() {
         model: None,
     };
     let (_, chunk) = openai_writer()
-        .write_response_event(&no_model)
+        .write_response_event(crate::codec::test_host::HOST, &no_model)
         .expect("message start emits a chunk");
     let obj = chunk.as_object().expect("chunk object");
     assert!(
@@ -1237,7 +1261,7 @@ fn stream_message_start_preserves_upstream_model_over_fallback() {
         model: Some("gpt-4o-2024-08-06".to_string()),
     };
     let (_, chunk) = openai_writer()
-        .write_response_event(&with_model)
+        .write_response_event(crate::codec::test_host::HOST, &with_model)
         .expect("message start emits a chunk");
     assert_eq!(chunk["model"], serde_json::json!("gpt-4o-2024-08-06"));
 }
@@ -1245,8 +1269,8 @@ fn stream_message_start_preserves_upstream_model_over_fallback() {
 #[test]
 fn synth_completion_ids_are_unique() {
     // Two synthesized ids minted back-to-back must differ (atomic counter guarantees it).
-    let a = synth_completion_id();
-    let b = synth_completion_id();
+    let a = synth_completion_id(crate::codec::test_host::HOST);
+    let b = synth_completion_id(crate::codec::test_host::HOST);
     assert_ne!(a, b);
     assert!(a.starts_with("chatcmpl-") && b.starts_with("chatcmpl-")); // golden wire-contract literal (kept bare on purpose)
 }
@@ -1262,7 +1286,7 @@ fn stream_message_start_emits_identity() {
         model: Some("gpt-4o".to_string()),
     };
     let (_, chunk) = openai_writer()
-        .write_response_event(&with_id)
+        .write_response_event(crate::codec::test_host::HOST, &with_id)
         .expect("message start emits a chunk");
     assert_eq!(chunk["id"], serde_json::json!("chatcmpl-stream1"));
     assert_eq!(chunk["object"], serde_json::json!("chat.completion.chunk")); // golden wire-contract literal (kept bare on purpose)
@@ -1278,7 +1302,7 @@ fn stream_message_start_emits_identity() {
         model: None,
     };
     let (_, chunk2) = openai_writer()
-        .write_response_event(&no_id)
+        .write_response_event(crate::codec::test_host::HOST, &no_id)
         .expect("message start emits a chunk");
     assert!(chunk2["id"]
         .as_str()
@@ -1293,6 +1317,7 @@ fn stream_read_captures_chunk_identity() {
     let reader = OpenAiReader;
     let mut st = crate::codec::ir::StreamDecodeState::default();
     let ev = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-stream9",
@@ -1330,6 +1355,7 @@ fn text_then_tool_closes_text_block_before_opening_tool() {
     let mut events = Vec::new();
     // Chunk 1: assistant preamble TEXT.
     events.extend(reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-x", "object": OBJ_CHUNK, "created": 1u64, "model": "gpt-4o",
@@ -1340,6 +1366,7 @@ fn text_then_tool_closes_text_block_before_opening_tool() {
     ));
     // Chunk 2: a tool call begins.
     events.extend(reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "choices": [{"index": 0, "delta": {"tool_calls": [{
@@ -1383,6 +1410,7 @@ fn preamble_text_then_tool_then_text_opens_a_fresh_balanced_text_block() {
     let mut events = Vec::new();
     // Chunk 1: assistant preamble TEXT.
     events.extend(reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-x", "object": OBJ_CHUNK, "created": 1u64, "model": "gpt-4o",
@@ -1393,6 +1421,7 @@ fn preamble_text_then_tool_then_text_opens_a_fresh_balanced_text_block() {
     ));
     // Chunk 2: a tool call begins (closes the text block).
     events.extend(reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "choices": [{"index": 0, "delta": {"tool_calls": [{
@@ -1404,6 +1433,7 @@ fn preamble_text_then_tool_then_text_opens_a_fresh_balanced_text_block() {
     ));
     // Chunk 3: the backend resumes TEXT after the tool call (the out-of-spec reopen trigger).
     events.extend(reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "choices": [{"index": 0, "delta": {"content": "…done."}, "finish_reason": null}]
@@ -1412,6 +1442,7 @@ fn preamble_text_then_tool_then_text_opens_a_fresh_balanced_text_block() {
     ));
     // Chunk 4: finish.
     events.extend(reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "choices": [{"index": 0, "delta": {}, "finish_reason": "tool_calls"}]
@@ -1482,7 +1513,7 @@ fn write_response_total_tokens_saturates_on_overflow() {
         ..Default::default()
     };
     // Must not panic (debug) or wrap (release); saturates at u64::MAX.
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(out["usage"]["total_tokens"], serde_json::json!(u64::MAX));
 }
 
@@ -1523,7 +1554,7 @@ fn read_request_preserves_sampling_params_in_extra() {
     );
     // And they reach the upstream body on write: promoted controls via the typed fields, the
     // rest via the extra-forwarding loop.
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["top_p"], serde_json::json!(0.9));
     assert_eq!(out["stop"], serde_json::json!(["\n\n"]));
     assert_eq!(out["frequency_penalty"], serde_json::json!(0.5));
@@ -1568,7 +1599,7 @@ fn unknown_reasoning_effort_survives_in_extra() {
     );
 
     // And it reaches the upstream body on a same-protocol write via the extra-forwarding loop.
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["reasoning_effort"], serde_json::json!("ultra"));
 }
 
@@ -1621,7 +1652,7 @@ fn write_request_tool_call_only_assistant_has_null_content() {
         system_role: None,
         output_modalities: None,
     };
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let msg = &out["messages"][0];
     assert_eq!(msg["content"], serde_json::Value::Null);
     assert_eq!(msg["tool_calls"][0]["id"], serde_json::json!("t1"));
@@ -1726,7 +1757,7 @@ fn stream_error_uses_enumerated_openai_type() {
             retry_after: None,
         });
         let (_, chunk) = openai_writer()
-            .write_response_event(&ev)
+            .write_response_event(crate::codec::test_host::HOST, &ev)
             .expect("error emits a chunk");
         assert_eq!(
             chunk["error"]["type"],
@@ -1901,7 +1932,7 @@ fn write_request_non_text_system_block_does_not_vanish_silently() {
         system_role: None,
         output_modalities: None,
     };
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let msgs = out["messages"].as_array().expect("messages");
     // Both system blocks produce a system message (text forwarded, image projected to "").
     assert_eq!(msgs[0]["role"], serde_json::json!("system"));
@@ -1916,7 +1947,7 @@ fn write_request_non_text_system_block_does_not_vanish_silently() {
 fn synth_completion_id_matches_native_length_and_alphabet() {
     // Native OpenAI chat-completion ids are `chatcmpl-` + 24 base62 chars (33 chars total). A
     // too-short or wrong-alphabet suffix is an SDK-/tooling-visible proxy tell.
-    let id = synth_completion_id();
+    let id = synth_completion_id(crate::codec::test_host::HOST);
     let suffix = id
         .strip_prefix("chatcmpl-") // golden wire-contract literal (kept bare on purpose)
         .expect("synthesized id has the chatcmpl- prefix");
@@ -1951,7 +1982,7 @@ fn synth_completion_id_burst_is_unique_and_unbiased() {
     let mut low_bucket: u64 = 0;
     let mut total_chars: u64 = 0;
     for _ in 0..N {
-        let id = synth_completion_id();
+        let id = synth_completion_id(crate::codec::test_host::HOST);
         assert_eq!(
             id.len(),
             "chatcmpl-".len() + COMPLETION_ID_TOKEN_LEN, // golden wire-contract literal (kept bare on purpose)
@@ -1993,7 +2024,7 @@ fn synth_completion_id_unique_even_with_identical_entropy() {
     // MSB-first into the leading chars, so adjacent ids differ in those positions.
     let mut seen = std::collections::HashSet::new();
     for _ in 0..10_000 {
-        let id = synth_completion_id();
+        let id = synth_completion_id(crate::codec::test_host::HOST);
         assert_eq!(id.len(), "chatcmpl-".len() + 24); // golden wire-contract literal (kept bare on purpose)
         assert!(seen.insert(id.clone()), "duplicate synthesized id: {id}");
     }
@@ -2016,7 +2047,7 @@ fn stream_message_delta_none_stop_reason_serializes_null_not_empty_string() {
         stop_detail: None,
     };
     let (_, chunk) = openai_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("message delta emits a chunk");
     let fr = &chunk["choices"][0]["finish_reason"];
     // Must be JSON null, never the empty string (a non-spec value strict SDKs reject).
@@ -2048,7 +2079,7 @@ fn stream_message_delta_maps_stop_reasons_to_openai_enum() {
             stop_detail: None,
         };
         let (_, chunk) = openai_writer()
-            .write_response_event(&ev)
+            .write_response_event(crate::codec::test_host::HOST, &ev)
             .expect("message delta emits a chunk");
         assert_eq!(
             chunk["choices"][0]["finish_reason"], want,
@@ -2113,7 +2144,7 @@ fn write_request_assistant_tool_result_block_not_emitted_as_content() {
         system_role: None,
         output_modalities: None,
     };
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let msgs = out["messages"].as_array().expect("messages array");
     // The assistant message: its content array carries ONLY the text block, never the ToolResult.
     let assistant = msgs
@@ -2186,7 +2217,7 @@ fn write_request_thinking_block_dropped_from_message_content() {
         system_role: None,
         output_modalities: None,
     };
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let content = out["messages"][0]["content"]
         .as_array()
         .expect("content array");
@@ -2228,7 +2259,9 @@ fn read_response_empty_string_content_yields_no_text_block() {
         }],
         "usage": {"prompt_tokens": 1, "completion_tokens": 0}
     });
-    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert!(ir
         .content
         .iter()
@@ -2247,6 +2280,7 @@ fn stream_trailing_usage_only_chunk_emits_message_delta_with_usage() {
     let mut st = crate::codec::ir::StreamDecodeState::default();
     // Prime the stream with a normal first chunk so `started` is set (MessageStart already out).
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-u1",
@@ -2258,6 +2292,7 @@ fn stream_trailing_usage_only_chunk_emits_message_delta_with_usage() {
     );
     // Trailing usage-only chunk: empty choices, no finish_reason, top-level usage present.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-u1",
@@ -2305,6 +2340,7 @@ fn stream_usage_on_finish_chunk_still_captured() {
     let reader = OpenAiReader;
     let mut st = crate::codec::ir::StreamDecodeState::default();
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-u2",
@@ -2342,7 +2378,7 @@ fn stream_error_envelope_includes_null_code_and_param() {
         retry_after: None,
     });
     let (_, chunk) = openai_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("error emits a chunk");
     assert_eq!(chunk["error"]["message"], serde_json::json!("slow down"));
     assert_eq!(
@@ -2368,9 +2404,10 @@ fn stream_error_shape_matches_write_error_shape() {
         retry_after: None,
     });
     let (_, stream_chunk) = openai_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("error emits a chunk");
-    let non_stream = openai_writer().write_error(401, "auth", "nope");
+    let non_stream =
+        openai_writer().write_error(crate::codec::test_host::HOST, 401, "auth", "nope");
     let mut stream_keys: Vec<&String> = stream_chunk["error"]
         .as_object()
         .expect("stream error object")
@@ -2417,7 +2454,7 @@ fn write_response_falls_back_to_stop_when_stop_reason_none() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     let choice = out["choices"][0].as_object().expect("choice object");
     assert!(
         choice.contains_key("finish_reason"),
@@ -2467,7 +2504,7 @@ fn write_response_maps_finish_reason_enum_values() {
             stop_detail: None,
             ..Default::default()
         };
-        let out = openai_writer().write_response(&resp);
+        let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
         assert_eq!(
             out["choices"][0]["finish_reason"], want,
             "stop_reason={stop_reason:?}"
@@ -2487,6 +2524,7 @@ fn stream_tool_call_index_u64_max_does_not_panic_or_wrap() {
     let reader = OpenAiReader;
     let mut st = crate::codec::ir::StreamDecodeState::default();
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-ov",
@@ -2533,6 +2571,7 @@ fn stream_tool_call_index_close_does_not_overflow_on_finish() {
     let reader = OpenAiReader;
     let mut st = crate::codec::ir::StreamDecodeState::default();
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-c",
@@ -2551,6 +2590,7 @@ fn stream_tool_call_index_close_does_not_overflow_on_finish() {
         &mut st,
     );
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-c",
@@ -2580,6 +2620,7 @@ fn stream_tool_arg_delta_uses_recorded_block_start_index() {
     let mut st = crate::codec::ir::StreamDecodeState::default();
     // Chunk 1: tool opens first (claims its BlockStart IR index, recorded in tool_ir_index).
     let open_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-c3", "created": 1_700_000_000u64, "model": "gpt-4o",
@@ -2603,6 +2644,7 @@ fn stream_tool_arg_delta_uses_recorded_block_start_index() {
         .expect("tool BlockStart");
     // Chunk 2: text arrives AFTER the tool opened (shifts the recomputed tool base).
     let _ = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-c3", "created": 1_700_000_000u64, "model": "gpt-4o",
@@ -2612,6 +2654,7 @@ fn stream_tool_arg_delta_uses_recorded_block_start_index() {
     );
     // Chunk 3: more tool args for the SAME tool (oai index 0).
     let arg_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-c3", "created": 1_700_000_000u64, "model": "gpt-4o",
@@ -2651,6 +2694,7 @@ fn stream_tool_only_yields_zero_based_tool_indices() {
     let reader = OpenAiReader;
     let mut st = crate::codec::ir::StreamDecodeState::default();
     let start_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-to",
@@ -2694,6 +2738,7 @@ fn stream_tool_only_yields_zero_based_tool_indices() {
     assert_eq!(delta_idx, Some(0));
     // ...and the finish-path BlockStop closes at the SAME 0 index.
     let finish_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-to",
@@ -2723,6 +2768,7 @@ fn stream_text_then_tool_keeps_text_at_zero_tool_after() {
     let mut st = crate::codec::ir::StreamDecodeState::default();
     // Text first → opens at index 0.
     let text_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-tt",
@@ -2750,6 +2796,7 @@ fn stream_text_then_tool_keeps_text_at_zero_tool_after() {
     assert_eq!(text_idx, 0, "text owns index 0");
     // Then a tool call → must open at index 1 (just past the text block).
     let tool_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-tt",
@@ -2795,6 +2842,7 @@ fn stream_text_then_tool_keeps_text_at_zero_tool_after() {
     );
     // Finish then closes only the still-open tool at 1 (text already closed above).
     let finish_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-tt",
@@ -2829,6 +2877,7 @@ fn stream_tool_then_text_no_index_collision_and_stops_pair() {
 
     // Tool call FIRST (oai index 0) → opens at IR index 0 (no text seen yet, so text_base = 0).
     let tool_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-tf",
@@ -2862,6 +2911,7 @@ fn stream_tool_then_text_no_index_collision_and_stops_pair() {
     // Text arrives AFTER the tool. It must NOT reuse index 0 (the tool holds it); it lands just
     // past the open tools at index 1.
     let text_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-tf",
@@ -2895,6 +2945,7 @@ fn stream_tool_then_text_no_index_collision_and_stops_pair() {
     // A second tool (oai index 1) arrives after text → text_base is now 1, so it lands at
     // index 1 + 1 = 2 (no collision with text at 1 or tool0 at 0).
     let tool2_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-tf",
@@ -2938,6 +2989,7 @@ fn stream_tool_then_text_no_index_collision_and_stops_pair() {
     // tool — pushing its BlockStop to index 1 (tool0 opened at 0) and clobbering text's stop, so the
     // multiset of stops diverged from the starts.
     let finish_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-tf",
@@ -2977,6 +3029,7 @@ fn stream_open_tools_is_capped() {
     let mut block_starts = 0usize;
     for i in 0..(MAX_OPEN_TOOLS as u64 + 50) {
         let evs = reader.read_response_events(
+            crate::codec::test_host::HOST,
             "",
             &serde_json::json!({
                 "id": "chatcmpl-cap",
@@ -3012,7 +3065,7 @@ fn stream_open_tools_is_capped() {
 
 #[test]
 fn synth_completion_id_has_single_hyphen_after_prefix() {
-    let id = synth_completion_id();
+    let id = synth_completion_id(crate::codec::test_host::HOST);
     assert!(
         id.starts_with("chatcmpl-"), // golden wire-contract literal (kept bare on purpose)
         "id must keep the native prefix: {id}"
@@ -3036,8 +3089,8 @@ fn synth_completion_id_has_single_hyphen_after_prefix() {
 fn synth_completion_ids_are_distinct_within_process() {
     // The monotonic atomic counter alone guarantees distinctness even when minted back-to-back
     // within the same second (where the timestamp field is identical).
-    let a = synth_completion_id();
-    let b = synth_completion_id();
+    let a = synth_completion_id(crate::codec::test_host::HOST);
+    let b = synth_completion_id(crate::codec::test_host::HOST);
     assert_ne!(a, b);
 }
 
@@ -3111,7 +3164,12 @@ fn read_request_reads_string_form_tool_message_content() {
 #[test]
 fn write_error_emits_invalid_api_key_code_for_auth_failure() {
     let w = OpenAiWriter;
-    let body = w.write_error(401, ERR_TYPE_AUTHENTICATION, "Incorrect API key provided");
+    let body = w.write_error(
+        crate::codec::test_host::HOST,
+        401,
+        ERR_TYPE_AUTHENTICATION,
+        "Incorrect API key provided",
+    );
     assert_eq!(
         body["error"]["type"],
         serde_json::json!("authentication_error") // golden wire-contract literal (kept bare on purpose)
@@ -3128,7 +3186,7 @@ fn write_error_keeps_null_code_for_non_auth_errors() {
         (429, ERR_TYPE_RATE_LIMIT),
         (500, ERR_TYPE_SERVER_ERROR),
     ] {
-        let body = w.write_error(status, kind, "boom");
+        let body = w.write_error(crate::codec::test_host::HOST, status, kind, "boom");
         assert_eq!(
             body["error"]["code"],
             serde_json::Value::Null,
@@ -3146,7 +3204,7 @@ fn stream_error_auth_event_carries_invalid_api_key_code() {
         retry_after: None,
     });
     let (_, chunk) = w
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("error event emits a body");
     assert_eq!(
         chunk["error"]["type"],
@@ -3166,7 +3224,7 @@ fn stream_error_billing_event_maps_to_insufficient_quota() {
         retry_after: None,
     });
     let (_, chunk) = w
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("error event emits a body");
     // Quota exhaustion is `insufficient_quota`, NOT the access-control `permission_error`.
     assert_eq!(
@@ -3183,7 +3241,12 @@ fn stream_error_billing_event_maps_to_insufficient_quota() {
         serde_json::json!("insufficient_quota") // golden wire-contract literal (kept bare on purpose)
     );
     // The streaming Billing mapping matches the non-stream `write_error("insufficient_quota")`.
-    let non_stream = w.write_error(429, ERR_TYPE_INSUFFICIENT_QUOTA, "over quota");
+    let non_stream = w.write_error(
+        crate::codec::test_host::HOST,
+        429,
+        ERR_TYPE_INSUFFICIENT_QUOTA,
+        "over quota",
+    );
     assert_eq!(
         chunk["error"]["type"], non_stream["error"]["type"],
         "stream and non-stream billing type must agree"
@@ -3211,7 +3274,7 @@ fn stream_message_delta_emits_usage_when_counts_nonzero() {
         stop_detail: None,
     };
     let (_, chunk) = openai_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("message delta emits a chunk");
     // finish_reason still maps correctly...
     assert_eq!(
@@ -3241,7 +3304,7 @@ fn stream_message_delta_omits_usage_when_all_counts_zero() {
         stop_detail: None,
     };
     let (_, chunk) = openai_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("message delta emits a chunk");
     assert!(
         chunk.get("usage").is_none(),
@@ -3309,7 +3372,7 @@ fn write_request_tools_use_nested_function_shape() {
         "properties": {"city": {"type": "string"}}
     });
     let req = req_with_tool(schema.clone(), Some("Look up the weather"));
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let tool = &out["tools"][0];
     // Native Chat Completions shape: {"type":"function","function":{name,description,parameters}}.
     assert_eq!(tool["type"], serde_json::json!("function")); // golden wire-contract literal (kept bare on purpose)
@@ -3336,7 +3399,7 @@ fn write_request_tool_round_trips_through_read_openai_tool() {
     // The writer's nested output must be readable by the reader (writer is the reader's inverse).
     let schema = serde_json::json!({"type": "object"});
     let req = req_with_tool(schema.clone(), Some("desc"));
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let ir = read_openai_tool(&out["tools"][0]).expect("nested tool parses");
     assert_eq!(ir.name, "get_weather");
     assert_eq!(ir.description.as_deref(), Some("desc"));
@@ -3346,7 +3409,7 @@ fn write_request_tool_round_trips_through_read_openai_tool() {
 #[test]
 fn write_request_tool_without_description_omits_it_inside_function() {
     let req = req_with_tool(serde_json::json!({"type": "object"}), None);
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let func = &out["tools"][0]["function"];
     assert!(func.get("description").is_none());
     // parameters always present (defaults to {} when schema is null) inside `function`.
@@ -3356,7 +3419,7 @@ fn write_request_tool_without_description_omits_it_inside_function() {
 #[test]
 fn write_request_tool_null_schema_defaults_to_empty_object_in_function() {
     let req = req_with_tool(serde_json::Value::Null, None);
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         out["tools"][0]["function"]["parameters"],
         serde_json::json!({})
@@ -3379,7 +3442,12 @@ fn write_error_overloaded_maps_to_server_error() {
         "network",
         "5xx",
     ] {
-        let v = openai_writer().write_error(503, kind, "Service overloaded");
+        let v = openai_writer().write_error(
+            crate::codec::test_host::HOST,
+            503,
+            kind,
+            "Service overloaded",
+        );
         assert_eq!(
             v["error"]["type"],
             serde_json::json!("server_error"), // golden wire-contract literal (kept bare on purpose)
@@ -3395,7 +3463,12 @@ fn write_error_overloaded_maps_to_server_error() {
 fn write_error_insufficient_quota_keeps_type_and_sets_code() {
     // The over-budget governance path passes "insufficient_quota"; real OpenAI sets BOTH the type
     // and the code to that value.
-    let v = openai_writer().write_error(429, ERR_TYPE_INSUFFICIENT_QUOTA, "quota exceeded");
+    let v = openai_writer().write_error(
+        crate::codec::test_host::HOST,
+        429,
+        ERR_TYPE_INSUFFICIENT_QUOTA,
+        "quota exceeded",
+    );
     assert_eq!(v["error"]["type"], serde_json::json!("insufficient_quota")); // golden wire-contract literal (kept bare on purpose)
     assert_eq!(v["error"]["code"], serde_json::json!("insufficient_quota"));
     // golden wire-contract literal (kept bare on purpose)
@@ -3444,7 +3517,10 @@ fn response_with_finish(finish: &str) -> serde_json::Value {
 #[test]
 fn read_response_normalizes_content_filter_to_safety() {
     let ir = OpenAiReader
-        .read_response(&response_with_finish(FINISH_CONTENT_FILTER))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &response_with_finish(FINISH_CONTENT_FILTER),
+        )
         .expect("parses");
     assert_eq!(ir.stop_reason, Some(crate::codec::ir::IrStopReason::Safety));
 }
@@ -3452,7 +3528,10 @@ fn read_response_normalizes_content_filter_to_safety() {
 #[test]
 fn read_response_normalizes_function_call_to_tool_use() {
     let ir = OpenAiReader
-        .read_response(&response_with_finish(FINISH_FUNCTION_CALL))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &response_with_finish(FINISH_FUNCTION_CALL),
+        )
         .expect("parses");
     assert_eq!(
         ir.stop_reason,
@@ -3485,7 +3564,7 @@ fn write_response_safety_round_trips_to_content_filter() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out["choices"][0]["finish_reason"],
         serde_json::json!("content_filter")
@@ -3507,7 +3586,7 @@ fn stream_message_delta_safety_round_trips_to_content_filter() {
         stop_detail: None,
     };
     let (_, chunk) = openai_writer()
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("message delta emits a chunk");
     assert_eq!(
         chunk["choices"][0]["finish_reason"],
@@ -3525,7 +3604,8 @@ fn stream_read_normalizes_content_filter_to_safety() {
         "choices": [{"index": 0, "delta": {}, "finish_reason": FINISH_CONTENT_FILTER}]
     });
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let events = OpenAiReader.read_response_events("", &chunk, &mut state);
+    let events =
+        OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut state);
     let stop = events.iter().find_map(|e| match e {
         IrStreamEvent::MessageDelta { stop_reason, .. } => *stop_reason,
         _ => None,
@@ -3545,7 +3625,7 @@ fn singular_read_response_event_delegates_to_fanout() {
         "model": "gpt-4o",
         "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": null}]
     });
-    let ev = OpenAiReader.read_response_event("", &chunk);
+    let ev = OpenAiReader.read_response_event(crate::codec::test_host::HOST, "", &chunk);
     assert!(
         matches!(ev, Some(IrStreamEvent::MessageStart { .. })),
         "singular event must surface the fan-out's first event, got {ev:?}"
@@ -3557,7 +3637,9 @@ fn singular_read_response_event_delegates_to_fanout() {
 #[test]
 fn singular_read_response_event_empty_chunk_yields_none() {
     let done = serde_json::Value::String(crate::codec::dialect::SSE_DONE_SENTINEL.to_string());
-    assert!(OpenAiReader.read_response_event("", &done).is_none());
+    assert!(OpenAiReader
+        .read_response_event(crate::codec::test_host::HOST, "", &done)
+        .is_none());
 }
 
 // Under `stream_options:{include_usage:true}` the OpenAI API sets
@@ -3572,7 +3654,8 @@ fn null_usage_on_content_chunk_emits_no_message_delta() {
         "choices": [{"index": 0, "delta": {"content": "hello"}, "finish_reason": null}],
         "usage": null
     });
-    let evs = OpenAiReader.read_response_events("", &chunk, &mut state);
+    let evs =
+        OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut state);
     assert!(
         !evs.iter()
             .any(|e| matches!(e, IrStreamEvent::MessageDelta { .. })),
@@ -3603,7 +3686,12 @@ fn trailing_usage_only_chunk_emits_message_delta_with_real_tokens() {
         serde_json::json!({"choices":[{"index":0,"delta":{},"finish_reason":FINISH_STOP}],"usage":null}),
         serde_json::json!({"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}),
     ] {
-        all.extend(OpenAiReader.read_response_events("", &chunk, &mut state));
+        all.extend(OpenAiReader.read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &chunk,
+            &mut state,
+        ));
     }
     // The trailing usage-only chunk yields a MessageDelta with stop_reason:None and real tokens.
     let trailing = all.iter().rev().find_map(|e| match e {
@@ -3652,7 +3740,7 @@ fn read_response_tolerates_missing_usage() {
         // NOTE: no "usage" field.
     });
     let ir = OpenAiReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("a 200 body with no usage must read back, not hard-fail");
     assert_eq!(ir.usage.input_tokens, 0);
     assert_eq!(ir.usage.output_tokens, 0);
@@ -3717,7 +3805,7 @@ fn write_request_string_tool_arguments_emitted_verbatim() {
         system_role: None,
         output_modalities: None,
     };
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     let args = &out["messages"][0]["tool_calls"][0]["function"]["arguments"];
     assert_eq!(
         args,
@@ -3757,7 +3845,7 @@ fn write_response_string_tool_arguments_emitted_verbatim() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     let args = &out["choices"][0]["message"]["tool_calls"][0]["function"]["arguments"];
     assert_eq!(
         args,
@@ -3779,7 +3867,8 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
         "id": "chatcmpl-x", "object": OBJ_CHUNK, "created": 1u64, "model": "gpt-4o",
         "choices": [{"index": 0, "delta": {"content": "hello"}, "finish_reason": null}]
     });
-    let evs1 = OpenAiReader.read_response_events("", &c1, &mut state);
+    let evs1 =
+        OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &c1, &mut state);
     assert!(
         evs1.iter().any(|e| matches!(
             e,
@@ -3798,7 +3887,8 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
     let c2 = serde_json::json!({
         "choices": [{"index": 0, "delta": {"reasoning_content": "late thought"}, "finish_reason": null}]
     });
-    let evs2 = OpenAiReader.read_response_events("", &c2, &mut state);
+    let evs2 =
+        OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &c2, &mut state);
     assert!(
         matches!(evs2.first(), Some(IrStreamEvent::BlockStop { index: 0 })),
         "the open text block closes at its own index first, got {evs2:?}"
@@ -3833,7 +3923,8 @@ fn late_reasoning_delta_after_text_does_not_shift_indices() {
     let c3 = serde_json::json!({
         "choices": [{"index": 0, "delta": {"content": " world"}, "finish_reason": null}]
     });
-    let evs3 = OpenAiReader.read_response_events("", &c3, &mut state);
+    let evs3 =
+        OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &c3, &mut state);
     assert!(
         matches!(evs3.first(), Some(IrStreamEvent::BlockStop { index: 1 })),
         "the thinking block closes at its own index, got {evs3:?}"
@@ -3861,7 +3952,7 @@ fn early_reasoning_delta_still_opens_thinking_at_index_0() {
         "id": "chatcmpl-x", "object": OBJ_CHUNK, "created": 1u64, "model": "gpt-4o",
         "choices": [{"index": 0, "delta": {"reasoning_content": "thinking..."}, "finish_reason": null}]
     });
-    let evs = OpenAiReader.read_response_events("", &c, &mut state);
+    let evs = OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &c, &mut state);
     assert!(
         evs.iter().any(|e| matches!(
             e,
@@ -3887,7 +3978,7 @@ fn logprobs_only_chunk_closes_thinking_before_opening_text() {
         "id": "chatcmpl-x", "object": OBJ_CHUNK, "created": 1u64, "model": "gpt-4o",
         "choices": [{"index": 0, "delta": {"reasoning_content": "thinking..."}, "finish_reason": null}]
     });
-    let _ = OpenAiReader.read_response_events("", &c1, &mut state);
+    let _ = OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &c1, &mut state);
     assert!(state.thinking_block_open, "thinking block should be open");
 
     // (b) a chunk with NO content delta but choice-level logprobs.content populated.
@@ -3900,7 +3991,7 @@ fn logprobs_only_chunk_closes_thinking_before_opening_text() {
             "finish_reason": null
         }]
     });
-    let evs = OpenAiReader.read_response_events("", &c2, &mut state);
+    let evs = OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &c2, &mut state);
 
     // The thinking block's BlockStop{index:0} must appear, and it must come before the text
     // BlockStart — i.e. no two blocks are ever open at once.
@@ -4046,7 +4137,7 @@ fn test_openai_tool_choice_required_roundtrips() {
     );
     // It must NOT linger in `extra` (that would double-emit and not survive the seam).
     assert!(!ir.extra.contains_key("tool_choice"));
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["tool_choice"], serde_json::json!("required"));
 }
 
@@ -4065,7 +4156,7 @@ fn test_openai_tool_choice_specific_function() {
             name: "get_weather".to_string()
         })
     );
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["tool_choice"],
         serde_json::json!({"type": "function", "function": {"name": "get_weather"}}) // golden wire-contract literal (kept bare on purpose)
@@ -4080,7 +4171,7 @@ fn test_openai_tool_choice_absent_is_none() {
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
     assert_eq!(ir.tool_choice, None);
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         out.get("tool_choice").is_none(),
         "no tool_choice should be emitted when the caller omitted it"
@@ -4394,7 +4485,7 @@ fn test_n_gt_1_clamped_to_one_on_cross_protocol_egress() {
         Some(1),
         "n>1 must clamp to 1 on the cross-protocol seam"
     );
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["n"],
         serde_json::json!(1),
@@ -4430,7 +4521,7 @@ fn test_openai_tool_choice_auto_roundtrips() {
     let ir = OpenAiReader.read_request(&body).expect("parses");
     assert_eq!(ir.tool_choice, Some(crate::codec::ir::IrToolChoice::Auto));
     assert!(!ir.extra.contains_key("tool_choice"));
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["tool_choice"], serde_json::json!("auto"));
 }
 
@@ -4445,7 +4536,7 @@ fn test_openai_tool_choice_none_roundtrips() {
     let ir = OpenAiReader.read_request(&body).expect("parses");
     assert_eq!(ir.tool_choice, Some(crate::codec::ir::IrToolChoice::None));
     assert!(!ir.extra.contains_key("tool_choice"));
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["tool_choice"], serde_json::json!("none"));
 }
 
@@ -4481,7 +4572,7 @@ fn test_anthropic_to_openai_tool_choice_directions() {
             }],
             ..test_ir_request()
         };
-        let out = openai_writer().write_request(&ir);
+        let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
         assert_eq!(out["tool_choice"], expected, "tool_choice {tc:?}");
     }
 }
@@ -4568,7 +4659,7 @@ fn phase0_sampling_fields_written_from_ir() {
         }),
         ..test_ir_request()
     };
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["frequency_penalty"], serde_json::json!(1.5));
     assert_eq!(out["presence_penalty"], serde_json::json!(-2.0));
     assert_eq!(out["seed"], serde_json::json!(1234));
@@ -4591,7 +4682,7 @@ fn phase0_sampling_fields_written_from_ir() {
 #[test]
 fn phase0_sampling_fields_omitted_when_absent() {
     // None on every sampling field => the writer emits none of the keys.
-    let out = openai_writer().write_request(&test_ir_request());
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &test_ir_request());
     let obj = out.as_object().expect("object");
     assert!(obj.get("frequency_penalty").is_none());
     assert!(obj.get("presence_penalty").is_none());
@@ -4613,7 +4704,7 @@ fn phase0_sampling_fields_roundtrip_same_protocol() {
         "response_format": { "type": RESP_FORMAT_JSON_OBJECT }
     });
     let ir = OpenAiReader.read_request(&body).expect("parses");
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["frequency_penalty"], serde_json::json!(0.75));
     assert_eq!(out["presence_penalty"], serde_json::json!(0.1));
     assert_eq!(out["seed"], serde_json::json!(-7));
@@ -4684,7 +4775,7 @@ fn test_write_request_file_id_image_dropped_not_corrupted() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
         !wire.contains("file-abc123") && !wire.contains("file_id"),
@@ -4770,7 +4861,7 @@ fn test_write_request_image_s3_dropped_not_corrupted() {
         system_role: None,
         output_modalities: None,
     };
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     let wire = serde_json::to_string(&out).unwrap();
     assert!(
         !wire.contains("image_s3")
@@ -4855,7 +4946,9 @@ fn read_response_subtracts_cached_prefix_from_prompt_tokens() {
             "prompt_tokens_details": {"cached_tokens": 80}
         }
     });
-    let resp = OpenAiReader.read_response(&body).expect("read_response");
+    let resp = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         resp.usage.input_tokens, 20,
         "input_tokens must be prompt_tokens(100) MINUS cached(80) = 20 (uncached)"
@@ -4895,7 +4988,7 @@ fn write_response_reconstructs_prompt_tokens_total_with_cached_details() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out["usage"]["prompt_tokens"],
         serde_json::json!(100),
@@ -4935,7 +5028,7 @@ fn write_response_omits_cached_details_when_no_cache_read() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(out["usage"]["prompt_tokens"], serde_json::json!(7));
     assert!(
         out["usage"].get("prompt_tokens_details").is_none(),
@@ -4943,7 +5036,7 @@ fn write_response_omits_cached_details_when_no_cache_read() {
     );
     // And a Some(0) cache read still emits the details object with 0 (native shape carries it).
     resp.usage.cache_read_input_tokens = Some(0);
-    let out2 = openai_writer().write_response(&resp);
+    let out2 = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out2["usage"]["prompt_tokens_details"]["cached_tokens"],
         serde_json::json!(0)
@@ -4988,7 +5081,7 @@ fn response_format_json_schema_round_trips() {
     assert!(!ir.extra.contains_key("response_format"));
 
     // WRITE re-emits the native nested json_schema shape.
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["response_format"]["type"],
         serde_json::json!("json_schema")
@@ -5026,12 +5119,14 @@ fn read_response_unknown_finish_reason_maps_to_other_and_degrades_to_stop() {
         }],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
     });
-    let resp = OpenAiReader.read_response(&body).expect("read_response");
+    let resp = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         resp.stop_reason,
         Some(crate::codec::ir::IrStopReason::Other)
     );
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out["choices"][0]["finish_reason"],
         serde_json::json!("stop"),
@@ -5046,7 +5141,7 @@ fn read_response_unknown_finish_reason_maps_to_other_and_degrades_to_stop() {
 fn write_request_stop_sequences_array_and_empty_omitted() {
     let mut req = test_ir_request();
     req.stop = vec![".".to_string(), "!".to_string()];
-    let out = openai_writer().write_request(&req);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         out["stop"],
         serde_json::json!([".", "!"]),
@@ -5056,7 +5151,7 @@ fn write_request_stop_sequences_array_and_empty_omitted() {
     // Empty stop → no `stop` key emitted.
     let mut empty = test_ir_request();
     empty.stop = vec![];
-    let out_empty = openai_writer().write_request(&empty);
+    let out_empty = openai_writer().write_request(crate::codec::test_host::HOST, &empty);
     assert!(
         out_empty.get("stop").is_none(),
         "an empty stop vec must be omitted, not emitted as []"
@@ -5081,7 +5176,9 @@ fn read_response_surfaces_a_refusal_as_text_and_promotes_the_stop_reason() {
         "usage": {"prompt_tokens": 5, "completion_tokens": 7}
     });
 
-    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         ir.content,
         vec![IrBlock::Text {
@@ -5113,7 +5210,9 @@ fn read_response_refusal_does_not_override_a_length_stop() {
         "usage": {"prompt_tokens": 5, "completion_tokens": 7}
     });
 
-    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         ir.stop_reason,
         Some(crate::codec::ir::IrStopReason::MaxTokens)
@@ -5129,7 +5228,8 @@ fn stream_refusal_deltas_open_a_text_block_and_promote_the_stop_reason() {
     let c1 = serde_json::json!({
         "choices": [{"index": 0, "delta": {"role": "assistant", "refusal": "I can't "}, "finish_reason": null}]
     });
-    let evs1 = OpenAiReader.read_response_events("", &c1, &mut state);
+    let evs1 =
+        OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &c1, &mut state);
     assert!(
         evs1.iter().any(|e| matches!(
             e,
@@ -5156,7 +5256,8 @@ fn stream_refusal_deltas_open_a_text_block_and_promote_the_stop_reason() {
     let c2 = serde_json::json!({
         "choices": [{"index": 0, "delta": {"refusal": "help with that."}, "finish_reason": null}]
     });
-    let evs2 = OpenAiReader.read_response_events("", &c2, &mut state);
+    let evs2 =
+        OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &c2, &mut state);
     assert!(
         evs2.iter().any(|e| matches!(
             e,
@@ -5171,7 +5272,8 @@ fn stream_refusal_deltas_open_a_text_block_and_promote_the_stop_reason() {
     let c3 = serde_json::json!({
         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]
     });
-    let evs3 = OpenAiReader.read_response_events("", &c3, &mut state);
+    let evs3 =
+        OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &c3, &mut state);
     assert!(
         evs3.iter().any(|e| matches!(
             e,
@@ -5242,7 +5344,7 @@ fn write_response_carries_citations_with_join_relative_offsets() {
         ..Default::default()
     };
 
-    let v = openai_writer().write_response(&resp);
+    let v = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     let anns = v["choices"][0]["message"]["annotations"]
         .as_array()
         .expect("annotations must be emitted when sources exist");
@@ -5343,7 +5445,7 @@ fn url_annotation_base_accumulates_in_characters() {
         stop_detail: None,
         ..Default::default()
     };
-    let v = openai_writer().write_response(&resp);
+    let v = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     let anns = v["choices"][0]["message"]["annotations"]
         .as_array()
         .expect("annotations must be emitted");
@@ -5418,7 +5520,7 @@ fn write_response_omits_annotations_when_there_are_no_citations() {
         stop_detail: None,
         ..Default::default()
     };
-    let v = openai_writer().write_response(&resp);
+    let v = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert!(v["choices"][0]["message"].get("annotations").is_none());
 }
 
@@ -5458,7 +5560,7 @@ fn image_detail_is_carried_and_only_an_unknown_word_warns() {
         ir.messages[0].content
     );
     assert!(!cap.contains("detail"), "{:?}", cap.messages());
-    let out = openai_writer().write_request(&ir);
+    let out = openai_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["messages"][0]["content"][0]["image_url"]["detail"],
         serde_json::json!("high")
@@ -5544,7 +5646,9 @@ fn chat_response_annotations_read_into_ir_citations() {
         }],
         "usage": {"prompt_tokens": 3, "completion_tokens": 4}
     });
-    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     let text_block = ir
         .content
         .iter()
@@ -5594,7 +5698,9 @@ fn openai_annotation_without_a_url_is_skipped() {
         }],
         "usage": {"prompt_tokens": 3, "completion_tokens": 4}
     });
-    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     let text_block = ir
         .content
         .iter()
@@ -5637,8 +5743,11 @@ fn openai_chat_citation_survives_the_hop_to_anthropic() {
         }],
         "usage": {"prompt_tokens": 3, "completion_tokens": 4}
     });
-    let ir = OpenAiReader.read_response(&body).expect("read_response");
-    let out = super::super::anthropic::anthropic_writer().write_response(&ir);
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
+    let out = super::super::anthropic::anthropic_writer()
+        .write_response(crate::codec::test_host::HOST, &ir);
     let content = out["content"].as_array().expect("content array");
     let citation = content
         .iter()
@@ -5667,7 +5776,9 @@ fn response_blank_tool_call_id_is_synthesized() {
         }],
         "usage": {"prompt_tokens": 3, "completion_tokens": 4}
     });
-    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     let ids: Vec<&str> = ir
         .content
         .iter()
@@ -5734,7 +5845,9 @@ fn openai_write_drops_thinking_observably() {
 
     let cap = WarnCapture::default();
     let sub = cap.clone();
-    let out = tracing::subscriber::with_default(sub, || openai_writer().write_response(&resp));
+    let out = tracing::subscriber::with_default(sub, || {
+        openai_writer().write_response(crate::codec::test_host::HOST, &resp)
+    });
 
     // The reasoning text never leaks into the completion content, and the drop warned.
     assert_eq!(out["choices"][0]["message"]["content"], "the answer");
@@ -5765,7 +5878,9 @@ fn response_object_tool_arguments_preserved() {
         }],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1}
     });
-    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     let input = ir
         .content
         .iter()
@@ -5799,7 +5914,9 @@ fn response_array_content_image_drop_warns() {
     let cap = WarnCapture::default();
     let sub = cap.clone();
     let ir = tracing::subscriber::with_default(sub, || {
-        OpenAiReader.read_response(&body).expect("read_response")
+        OpenAiReader
+            .read_response(crate::codec::test_host::HOST, &body)
+            .expect("read_response")
     });
     // The text survives; the image did not, and the drop warned.
     assert!(ir.content.iter().any(|b| matches!(b, IrBlock::Text { .. })));
@@ -5822,6 +5939,7 @@ fn stream_usage_subbuckets_match_buffered() {
     let mut st = crate::codec::ir::StreamDecodeState::default();
     // A trailing usage-only chunk (empty choices) carrying the full details.
     let events = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-x", "object": OBJ_CHUNK, "created": 1u64, "model": "gpt-4o",
@@ -5885,7 +6003,10 @@ fn plain_ir_response(
 
 #[test]
 fn write_response_emits_required_null_logprobs_and_refusal_when_backend_carried_none() {
-    let out = openai_writer().write_response(&plain_ir_response(Vec::new()));
+    let out = openai_writer().write_response(
+        crate::codec::test_host::HOST,
+        &plain_ir_response(Vec::new()),
+    );
     let choice = out["choices"][0].as_object().expect("choice is an object");
     assert_eq!(
         choice.get("logprobs"),
@@ -5911,7 +6032,8 @@ fn write_response_passes_carried_logprobs_through_instead_of_null() {
         bytes: None,
         top: vec![],
     }];
-    let out = openai_writer().write_response(&plain_ir_response(carried));
+    let out =
+        openai_writer().write_response(crate::codec::test_host::HOST, &plain_ir_response(carried));
     assert_eq!(
         out["choices"][0]["logprobs"]["content"][0]["token"],
         serde_json::json!("Hi"),
@@ -5934,7 +6056,7 @@ fn write_response_tool_call_only_turn_still_carries_refusal_and_logprobs() {
         cache_control: None,
     }];
     resp.stop_reason = Some(crate::codec::ir::IrStopReason::ToolUse);
-    let out = openai_writer().write_response(&resp);
+    let out = openai_writer().write_response(crate::codec::test_host::HOST, &resp);
     let message = &out["choices"][0]["message"];
     assert_eq!(message["content"], serde_json::Value::Null);
     assert_eq!(message["refusal"], serde_json::Value::Null);
@@ -5957,6 +6079,7 @@ fn test_stream_inline_error_chunk_surfaces_ir_error() {
     // A normal content chunk first: the stream is well underway and has already been partially
     // served (and, before the fix, partially billed) when the failure lands.
     let content = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": "chatcmpl-x",
@@ -5973,6 +6096,7 @@ fn test_stream_inline_error_chunk_surfaces_ir_error() {
     );
 
     let err_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "error": {
@@ -6031,7 +6155,12 @@ fn test_stream_inline_error_class_derivation() {
     ];
     for (chunk, expect) in cases {
         let mut state = crate::codec::ir::StreamDecodeState::default();
-        let evs = OpenAiReader.read_response_events("", &chunk, &mut state);
+        let evs = OpenAiReader.read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &chunk,
+            &mut state,
+        );
         match evs.as_slice() {
             [IrStreamEvent::Error(err)] => {
                 assert_eq!(err.class, expect, "wrong class for {chunk}: {evs:?}")
@@ -6051,17 +6180,18 @@ fn test_inline_error_chunk_reaches_anthropic_ingress_as_an_error_frame() {
     let mut t = crate::codec::proto_stream::StreamTranslate::new("anthropic", "openai")
         .expect("anthropic-ingress / openai-egress translator");
 
-    let mut out = t.feed(
+    let mut out = t.feed(crate::codec::test_host::HOST,
         br#"data: {"id":"chatcmpl-x","object":"chat.completion.chunk","created":1,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant","content":"hel"}}]}
 
 "#,
     );
     out.extend_from_slice(&t.feed(
+        crate::codec::test_host::HOST,
         br#"data: {"error":{"message":"upstream exploded","type":"server_error"}}
 
 "#,
     ));
-    out.extend_from_slice(&t.finish());
+    out.extend_from_slice(&t.finish(crate::codec::test_host::HOST));
     let wire = String::from_utf8_lossy(&out).to_string();
 
     assert!(
@@ -6098,7 +6228,7 @@ fn status_word_golden() {
             retry_after: None,
         });
         let (_, chunk) = openai_writer()
-            .write_response_event(&ev)
+            .write_response_event(crate::codec::test_host::HOST, &ev)
             .expect("error emits a chunk");
         assert_eq!(
             chunk["error"]["type"],
@@ -6147,7 +6277,9 @@ fn a_custom_tool_call_in_history_is_skipped_not_refused() {
             ]}}],
         "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
     });
-    assert!(OpenAiReader.read_response(&answer).is_ok());
+    assert!(OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &answer)
+        .is_ok());
     let malformed = serde_json::json!({
         "model": "gpt-4o",
         "messages": [{"role": "assistant", "tool_calls": [{"id": "call_x", "type": "function"}]}]

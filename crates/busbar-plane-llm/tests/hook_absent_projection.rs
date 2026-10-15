@@ -5,7 +5,7 @@
 //! predev-only `busbar-llm` test `hook_non_chat_projection_tests::
 //! absent_semantics_hold_for_opless_and_bodyless`, whose `read_hook_facts` is the plane's `project`
 //! on the driver): an arrival the plane has no operation reader for, or one with no body, projects
-//! the EMPTY view (no turn, no system text, no size signal) and is never refused as unreadable.
+//! the EMPTY view (no turn, no system text, no size signal).
 
 use busbar_plane_llm::exchange::arrive::Arrived;
 use busbar_plane_llm::exchange::project::{project, HookView};
@@ -32,12 +32,10 @@ fn absent_semantics_hold_for_opless_and_bodyless() {
         "not-a-protocol",
         &serde_json::to_vec(&v).expect("serializes"),
         Some(v),
-    ))
-    .expect("an opless arrival is not unreadable");
+    ));
     assert_eq!(view, HookView::default());
     // No body at all: the empty view.
-    let view =
-        project(&arrived("openai", b"", None)).expect("a bodyless arrival is not unreadable");
+    let view = project(&arrived("openai", b"", None));
     assert_eq!(view.turns, Vec::<(String, String)>::new());
     assert_eq!(
         (view.system, view.text_chars, view.turn_count),

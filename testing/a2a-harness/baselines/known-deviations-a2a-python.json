@@ -17,7 +17,7 @@
       "judgement": "Real defect in a2a-sdk 1.1.2. The default for includeArtifacts is false, and the spec is explicit that the field must then be absent rather than empty. Confirmed as a control defect and not a misreading by the first control, a2a-go v2.4.0, whose ListTasks the harness could not reach for other reasons, and by direct reading of the clause, which admits no other interpretation.",
       "impact_if_a_subject_did_this": "Task listings carry every artifact of every task. On an agent with large artifacts this turns a cheap paginated poll into an unbounded transfer, and it discloses artifact content to any caller authorised only to enumerate tasks.",
       "first_seen": "2026-08-08",
-      "upstream": "not yet reported"
+      "upstream": "drafted 2026-10-14 in testing/upstream-issue-drafts.txt; filing held for the owner's OK"
     }
   ]
 }

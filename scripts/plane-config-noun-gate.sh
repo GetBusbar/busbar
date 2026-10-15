@@ -117,6 +117,13 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # reached through the surviving root rather than through a path that stopped existing.
 CORE_ROOTS="crates/busbar-kernel/src"
 
+# SECTION NOUNS KEPT BY NAME (ARCHITECT 2026-10-05, Q7): `streams` is the 1.5.5 customer config key
+# of the streaming plane, whose legacy crate (`busbar-voice`, the one that declared it in a PlaneDecl)
+# the P3 flip deleted. The plane is a door now (`busbar-plane-streaming`) and declares no PlaneDecl,
+# so the noun cannot be read off one; it is kept here by name rather than dropped from the scan. The
+# floor below counts it.
+NAMED_NOUNS="streams"
+
 # Resolve the four section nouns from each plane crate's DECLARED PlaneDecl.config_section — never a
 # restated literal. `<key> -> crates/busbar-<key>/src`; read the `config_section: "<noun>",` line.
 #
@@ -154,6 +161,7 @@ section_nouns() {
     fi
     [ -n "$noun" ] && out="${out:+$out }$noun"
   done
+  for noun in $NAMED_NOUNS; do out="${out:+$out }$noun"; done
   printf '%s' "$out"
 }
 
@@ -169,7 +177,7 @@ core_files() {
 }
 
 # ── THE ROOT GUARD and THE ZERO-FILE GUARD ────────────────────────────────────────────────────────
-# Copied, deliberately, from scripts/plane-grep-gate.sh. `find "$r" … 2>/dev/null` swallows the
+# Copied, deliberately, from the retired substring-dialect meter. `find "$r" … 2>/dev/null` swallows the
 # diagnostic for a root that was renamed, split or drained, and the pipe loses find's status: the
 # code stream comes back empty, every noun counts 0, and the report prints "four-noun config-parse
 # debt: 0" about a crate this gate never opened. Renaming crates/busbar-core printed that PASS. The
@@ -214,7 +222,7 @@ require_nouns() {
   # shellcheck disable=SC2086  # the split is the count; `set -f` makes it glob-safe
   set -f; set -- $nouns;      got=$#; set +f
   # shellcheck disable=SC2086  # same
-  set -f; set -- $PLANE_KEYS; want=$#; set +f
+  set -f; set -- $PLANE_KEYS $NAMED_NOUNS; want=$#; set +f
   [ "$got" -eq "$want" ] && return 0
   red "plane-config-noun gate: FAIL — resolved $got section noun(s) for $want plane key(s): [$nouns]"
   note "Each plane declares its own noun via PlaneDecl.config_section; a plane that resolves to nothing"
@@ -343,7 +351,12 @@ FIX
     fail=1; note "FAILED: the noun floor refuses this tree's own decls (resolved $ncount: $nouns)"
   fi
   # ── RED: a SHORT noun set — the way this meter reads zero debt over nouns it never searched for. ──
-  if ( require_nouns "tools agents pools" ) >/dev/null 2>&1; then
+  # The short set is THIS tree's resolved set less its last noun: one short of the plane count,
+  # whatever that count is. It was the literal "tools agents pools" — three nouns, short of four
+  # planes — and when mcp left PLANE_KEYS the count became three, the literal became a full set, and
+  # this case went FAILED on a floor that still refuses a short set.
+  local short; short="$(printf '%s\n' $nouns | sed '$d' | tr '\n' ' ')"
+  if ( require_nouns "$short" ) >/dev/null 2>&1; then
     fail=1; note "FAILED: a noun set short of the plane count was accepted (the debt would undercount silently)"
   else
     note "RED noun-floor: a noun set short of the plane count is refused, not scanned as partial"

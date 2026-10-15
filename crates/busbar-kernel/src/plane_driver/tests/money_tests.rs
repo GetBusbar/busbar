@@ -29,6 +29,7 @@ const INPUT: u32 = 0;
 
 fn ctx(key: u64) -> UnitCtx {
     UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: UnitKey::new(key),
         origin: OriginKind::Client,
         session: None,
@@ -304,6 +305,139 @@ fn a_fee_unit_count_is_never_ledgered_as_usage() {
         (40, 5),
         "the input counts and the admission's fee, nothing else"
     );
+}
+
+// ── F25 rows 380, 626, 718: the arrival window and the fee unit, rehomed from the legacy engine's
+// money tests onto the served money seam (the rule the root opens every plane unit under:
+// `FeeRefund::PlaneFeeUnits`, door_steps.rs).
+
+/// The rig's group `g` month bucket (its budget window), read at `at`: its tokens and its spend in
+/// cents, the flat fee included.
+fn group_month(r: &Rig, at: u64) -> (u64, i64) {
+    let u = r
+        .gov
+        .derived_bucket_usage(
+            &r.cost,
+            "group:g@month",
+            crate::governance::WINDOW_MONTH,
+            true,
+            at,
+        )
+        .expect("usage");
+    (u.tokens, u.spend_cents)
+}
+
+/// The wall clock, asserted to fall in a different budget window than the unit's arrival, or the
+/// window attribution under test is masked.
+fn a_later_window() -> u64 {
+    let today = crate::store::now();
+    assert_ne!(
+        crate::governance::budget_window(crate::governance::WINDOW_MONTH, NOW),
+        crate::governance::budget_window(crate::governance::WINDOW_MONTH, today),
+        "test precondition: the arrival must be a different window than now"
+    );
+    today
+}
+
+/// F25 row 380: rehomed from crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::
+/// test_flat_fee_charge_and_refund_use_charged_at_window (#29, flat-fee side). The admission
+/// charges the 30-cent flat fee into the ARRIVAL (`charged_at`) window; a non-2xx end refunds it in
+/// that SAME window (net 0 there), and nothing ever lands in the wall clock's window.
+#[test]
+fn test_flat_fee_charge_and_refund_use_charged_at_window() {
+    let r = rig_with(
+        Some(1_000_000),
+        30,
+        ExhaustionMode::FinishUnit,
+        plane_fees(),
+    );
+    let today = a_later_window();
+    admit(&r);
+    assert_eq!(
+        group_month(&r, NOW).1,
+        30,
+        "admission charged the flat fee into the charged_at window"
+    );
+    assert_eq!(usage(&r).1, 30, "and onto the key");
+    assert_eq!(group_month(&r, today).1, 0, "nothing in the now window");
+
+    r.money.settle_end(UnitKey::new(1), 503);
+    assert_eq!(
+        group_month(&r, NOW).1,
+        0,
+        "non-2xx refund must land in the charged_at window (net 0)"
+    );
+    assert_eq!(usage(&r).1, 0);
+    assert_eq!(
+        group_month(&r, today).1,
+        0,
+        "neither charge nor refund may leak into the wall-clock 'now' window (#29)"
+    );
+}
+
+/// F25 row 626: rehomed from crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::
+/// test_nonstream_token_fee_uses_charged_at_window_not_clock (#29, token side). A completion's
+/// 600 input + 400 output tokens ledger into the ARRIVAL (`charged_at`) window of the bound group's
+/// windowed bucket, never the wall clock's, and the key's all-time bucket holds all 1000.
+#[test]
+fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
+    let r = rig_with(Some(1_000_000), 0, ExhaustionMode::FinishUnit, plane_fees());
+    let today = a_later_window();
+    let report = [
+        UnitCount {
+            class: INPUT,
+            source: UNITS_REPORTED,
+            amount: 600,
+        },
+        UnitCount {
+            class: 1,
+            source: UNITS_REPORTED,
+            amount: 400,
+        },
+        fee_reported(1),
+    ];
+    let _ = r.money.checkpoint(&ctx(1), &report);
+    r.money.settle_end(UnitKey::new(1), 200);
+    assert_eq!(
+        group_month(&r, NOW).0,
+        1000,
+        "token accrual must be attributed to the charged_at (header-arrival) window"
+    );
+    assert_eq!(
+        group_month(&r, today).0,
+        0,
+        "token accrual must NOT leak into the wall-clock 'now' window (the #29 split bug)"
+    );
+    assert_eq!(
+        usage(&r).0,
+        1000,
+        "the key's all-time bucket sees the tokens"
+    );
+}
+
+/// F25 row 718: rehomed from crates/busbar-llm/src/unit/tests/meter.rs::
+/// the_fee_unit_is_one_per_delivered_request_that_routed_upstream. One flat fee per delivered
+/// request that routed upstream, at the ledger: a delivered 2xx whose plane reported its fee unit
+/// keeps the 5 cents; delivered with no upstream leg (no fee unit reported), routed but
+/// undelivered (502, 404) and neither (503, nothing reported) each end at 0.
+#[test]
+fn the_fee_unit_is_one_per_delivered_request_that_routed_upstream() {
+    for (status, report, fee, why) in [
+        (200u32, Some(1u64), 5i64, "delivered and routed upstream"),
+        (200, Some(0), 0, "delivered, but no upstream leg"),
+        (502, Some(0), 0, "routed upstream, but undelivered (502)"),
+        (404, Some(0), 0, "routed upstream, but undelivered (404)"),
+        (503, None, 0, "neither delivered nor routed"),
+    ] {
+        let r = rig_with(None, 5, ExhaustionMode::FinishUnit, plane_fees());
+        admit(&r);
+        assert_eq!(usage(&r).1, 5, "{why}: the admission charged the fee");
+        if let Some(n) = report {
+            let _ = r.money.checkpoint(&ctx(1), &[fee_reported(n)]);
+        }
+        r.money.settle_end(UnitKey::new(1), status);
+        assert_eq!(usage(&r).1, fee, "{why}");
+    }
 }
 
 // THE SERVING MEMBER (v1.5.5 crates/busbar/src/proxy/usage.rs `record_resp_usage` :31-40 and
@@ -781,8 +915,10 @@ fn a_floor_count_bills_like_a_reported_one() {
 fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
     let facts = crate::plane_driver::cancel::Facts {
         headed: false,
+        status: 0,
         far_end_answered: true,
         streamed: true,
+        cut: false,
         relayed: false,
         units: vec![
             floor(INPUT, 40),
@@ -1061,4 +1197,66 @@ fn a_unit_with_no_new_counts_writes_nothing() {
         "a closed unit writes nothing"
     );
     assert!(site.taken().is_empty());
+}
+
+/// EVERY VERIFIED PRINCIPAL IS LENT A STABLE, NON-EMPTY CALLER REFERENCE (row 159 H2): a book with
+/// no signing material (an OIDC or plugin-auth chain names no `auth.signing_key`) lends one keyed by
+/// the deployment keyset it binds, through the live slot every plane driver holds, so two principals
+/// get two references and one principal gets one reference on every node of the deployment. RED:
+/// with the slot read before the keyset is bound (or never bound), every principal is lent nothing,
+/// which the plane reads as the one ungoverned owner.
+#[test]
+fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
+    let node = |material: Option<[u8; 32]>| {
+        let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+        let money = PlaneMoney::new(Arc::clone(&gov), Arc::new(Posted::default()));
+        let slot = money.caller_refs().expect("the book lends a slot");
+        if let Some(m) = material {
+            gov.bind_deployment_caller_ref(m);
+        }
+        let lent = |p: &str| {
+            slot.read()
+                .unwrap()
+                .as_ref()
+                .map(|k| k.caller_ref(p))
+                .unwrap_or_default()
+        };
+        (lent("oidc:alice"), lent("oidc:bob"))
+    };
+    // The RED shape: nothing bound, nothing lent, and the two principals are indistinguishable.
+    assert_eq!(node(None), (String::new(), String::new()));
+    let keyset = [7u8; 32];
+    let (alice, bob) = node(Some(keyset));
+    assert!(
+        !alice.is_empty() && !bob.is_empty(),
+        "a verified principal was lent nothing"
+    );
+    assert_ne!(alice, bob, "two principals share one reference");
+    // A second node of the same deployment binds the same keyset: the same references.
+    assert_eq!(node(Some(keyset)), (alice.clone(), bob));
+    // Another deployment's keyset gives another reference.
+    assert_ne!(node(Some([8u8; 32])).0, alice);
+}
+
+/// The signing material, when the node has one, still keys the reference (it wins over the
+/// deployment keyset), and a reload that drops it falls back to the keyset, never to nothing.
+#[test]
+fn the_signing_material_keys_the_reference_and_the_keyset_backs_it() {
+    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+    let slot = gov.caller_ref_slot();
+    gov.bind_deployment_caller_ref([7u8; 32]);
+    let by_keyset = slot.read().unwrap().as_ref().unwrap().caller_ref("p");
+    gov.set_signing_key(Some(
+        crate::governance::signing::TokenSigner::from_secret_bytes(&[9u8; 32], "k"),
+    ));
+    let by_signer = slot.read().unwrap().as_ref().unwrap().caller_ref("p");
+    assert_ne!(
+        by_signer, by_keyset,
+        "the signing material did not key the reference"
+    );
+    gov.set_signing_key(None);
+    assert_eq!(
+        slot.read().unwrap().as_ref().unwrap().caller_ref("p"),
+        by_keyset
+    );
 }

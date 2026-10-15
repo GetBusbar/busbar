@@ -61,57 +61,25 @@ impl ScopeRef {
     }
 }
 
-/// THE NEUTRAL SCOPE-KIND REGISTRY — the ENGINE's vocabulary of `ScopeRef` kinds (beyond the
-/// built-in `pool`). This crate names NO concrete plane kind: the registry starts with only `pool`
-/// (core's own admission kind) and every plane kind (`mcp_server`, `mcp_tool`, an A2A `agent`, …) is
-/// registered at boot by the composition root, which iterates each installed `PlaneDecl.scope_kinds`
-/// and calls [`register_scope_kind`]. The wire-field NAME for a kind is the frozen convention
-/// `allowed_{kind}s` (`pool`→`allowed_pools`, `mcp_server`→`allowed_mcp_servers`, …), so the config
-/// grammar keys stay byte-identical while the vocabulary itself lives here rather than being
-/// hard-coded.
+/// THE SCOPE-KIND WIRE CONVENTION. A [`ScopeRef`] kind beyond the built-in `pool` (core's own
+/// admission kind) is a plane's own (`mcp_server`, `mcp_tool`, an A2A `agent`, …) and is DATA off
+/// its `PlaneDecl.scope_kinds`; this crate names no concrete plane kind and holds no registry of
+/// them. The wire-field NAME for a kind is the frozen convention `allowed_{kind}s`
+/// (`pool`→`allowed_pools`, `mcp_server`→`allowed_mcp_servers`, …), so the config grammar keys
+/// stay byte-identical.
 ///
-/// ## The registry does NOT gate the wire (1.6.0 SDK-SCOPEKINDS)
+/// ## The wire is a carrier, and holds no process state (THE DESIGN A.8)
 ///
-/// The [`VirtualKey`] wire is a pure, lossless CARRIER: every kind, registered or not, serializes to
-/// its own `allowed_{kind}s` field and reads back as the same kind (the naming convention is a
-/// bijection, see [`scope_kinds::kind_for_wire_field`]). It used to refuse to serialize an
-/// unregistered kind, and that made a DROPPED-IN store plugin unable to hand back a key it had just
-/// been given: a `cdylib` statically links its own copy of this crate, so its registry is a
-/// DIFFERENT, EMPTY static that the engine's boot registration never reaches, while a compiled-in
-/// store shares the engine's. The same plugin behaved differently by build (DECISIONS #11 / spec
-/// Part 2 #2). Kind VALIDATION is the engine's — it owns the registry and asks
-/// [`scope_kinds::is_registered`]; a plugin is an opaque carrier of the kind string.
+/// The [`VirtualKey`] wire is a pure, lossless CARRIER: every kind serializes to its own
+/// `allowed_{kind}s` field and reads back as the same kind (the naming convention is a bijection,
+/// see [`scope_kinds::kind_for_wire_field`]). It used to keep a process-global registry of kinds and
+/// refuse to serialize an unregistered one, which made a DROPPED-IN store plugin unable to hand back
+/// a key it had just been given: a `cdylib` statically links its own copy of this crate, so its
+/// registry was a different, empty static. The refusal went first (1.6.0 SDK-SCOPEKINDS); the
+/// registry it consulted went with it, because nothing read it after, and `busbar-contract` holds
+/// no `static` (THE DESIGN A.8 "Statelessness", `BUSBAR-1.6.0.md` l.3701; C.2 l.3893). A plugin is
+/// an opaque carrier of the kind string.
 pub mod scope_kinds {
-    use std::collections::BTreeSet;
-    use std::sync::RwLock;
-
-    /// The built-in kind every deployment always has — core's admission-pool topology. Seeded so a
-    /// pool grant serializes with no registration and so the pool-only wire shape is unconditional.
-    const BUILTIN_POOL_KIND: &str = "pool";
-
-    static REGISTERED: RwLock<BTreeSet<String>> = RwLock::new(BTreeSet::new());
-
-    /// REGISTER a scope kind into the engine's vocabulary. Idempotent. Called at boot for every
-    /// `PlaneDecl.scope_kinds` entry — the composition root supplies the string, so no plane token
-    /// is ever a literal in a neutral crate. Registration is NOT required to persist a grant of the
-    /// kind: the wire carries every kind (see the module doc).
-    pub fn register(kind: &str) {
-        let mut w = REGISTERED.write().unwrap_or_else(|e| e.into_inner());
-        w.insert(kind.to_string());
-    }
-
-    /// Whether `kind` is in the ENGINE's vocabulary. `pool` is always registered. Only meaningful in
-    /// the engine's own process: a dropped-in plugin's copy of this registry is never populated.
-    pub fn is_registered(kind: &str) -> bool {
-        if kind == BUILTIN_POOL_KIND {
-            return true;
-        }
-        REGISTERED
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains(kind)
-    }
-
     /// The frozen wire-field name for a scope `kind` — `allowed_{kind}s`.
     pub fn wire_field_for(kind: &str) -> String {
         format!("allowed_{kind}s")
@@ -127,20 +95,13 @@ pub mod scope_kinds {
     }
 }
 
-/// REGISTER a `ScopeRef` kind's wire field — see [`scope_kinds`]. The composition root calls this at
-/// boot for every installed plane's declared `scope_kinds`, so this neutral crate carries no plane
-/// vocabulary of its own.
-pub fn register_scope_kind(kind: &str) {
-    scope_kinds::register(kind);
-}
-
-/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.6.0): each REGISTERED
-/// scope kind gets its OWN named wire field, `allowed_{kind}s` — `allowed_pools` (kind `pool`),
+/// The KIND-PARTITIONED wire shape for [`VirtualKey::allowed_scopes`] (1.6.0): each scope kind
+/// gets its OWN named wire field, `allowed_{kind}s` — `allowed_pools` (kind `pool`),
 /// `allowed_mcp_servers` (kind `mcp_server`), `allowed_mcp_tools` (kind `mcp_tool`) — each a plain
 /// array of bare value strings, never a `{kind, value}` object. The in-memory
-/// `Option<Vec<ScopeRef>>` is partitioned by kind on write and reassembled on read. The kind
-/// vocabulary lives in the neutral [`scope_kinds`] registry (populated at boot from each installed
-/// `PlaneDecl.scope_kinds`), NOT hard-coded here — so this crate names no concrete plane.
+/// `Option<Vec<ScopeRef>>` is partitioned by kind on write and reassembled on read. The kind is
+/// the entry's own data, named by the [`scope_kinds`] convention, NOT hard-coded here — so this
+/// crate names no concrete plane.
 ///
 /// Wire-compat invariants, all pinned by tests:
 /// - the pool-only shape stays BYTE-IDENTICAL to the pre-generalization

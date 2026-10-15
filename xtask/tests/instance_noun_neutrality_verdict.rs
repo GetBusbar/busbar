@@ -89,9 +89,9 @@ count = 1
 ];
 
 /// `Row::tsv` of every row, in order, as the serial census printed it over [`TREE`].
-const PINNED: &str = r#"instance-noun-neutrality:scan-floor	PASS	the crates tree was scanned	the scan cleared its floors and named nothing
+const PINNED: &str = r#"instance-noun-neutrality:scan-floor	PASS	the crates tree was scanned	5 file(s) scanned, every one of the 4 crate root(s) on the tree among them
 instance-noun-neutrality:mcp	FAIL	`mcp` (plane) is named in 1 file(s) outside its family [busbar-mcp, busbar-plane-mcp]	tracked known-debt census — 1: crates/busbar-core/src/lib.rs×3 [core]
-instance-noun-neutrality:a2a	FAIL	`a2a` (plane) is named in 2 file(s) outside its family [busbar-a2a, busbar-plane-a2a]	tracked known-debt census — 2: crates/busbar-core/src/lib.rs×1 [core] | crates/busbar-mcp/src/lib.rs×2 [cross-plugin]
+instance-noun-neutrality:a2a	FAIL	`a2a` (plane) is named in 2 file(s) outside its family [busbar-plane-a2a]	tracked known-debt census — 2: crates/busbar-core/src/lib.rs×1 [core] | crates/busbar-mcp/src/lib.rs×2 [cross-plugin]
 instance-noun-neutrality:llm	PASS	no crate outside the plane family names `llm`	the scan cleared its floors and named nothing
 instance-noun-neutrality:streaming	FAIL	`streaming` (plane) is named in 2 file(s) outside its family [busbar-plane-streaming, busbar-voice]	tracked known-debt census — 2: crates/busbar-core/src/lib.rs×2 [core] | crates/busbar/src/main.rs×1 [composition-root]
 instance-noun-neutrality:voice	PASS	no crate outside the plane family names `voice`	the scan cleared its floors and named nothing

@@ -37,7 +37,7 @@ use std::time::{Duration, Instant};
 use busbar_contract::abi::host::conn::connector::{
     CAUSE_CONNECT, CAUSE_DEADLINE, CAUSE_EXCHANGE, CAUSE_FRAMER, CAUSE_SECURITY,
 };
-use busbar_contract::abi::transport::{CLOSE_NORMAL, SIDE_ACCEPT, SIDE_DIAL};
+use busbar_contract::abi::transport::{CLOSE_NORMAL, FAULT_NONE, SIDE_ACCEPT, SIDE_DIAL};
 use busbar_contract::conn::ConnCause;
 
 use crate::carrier::{Carried, Dest, DialFailure};
@@ -50,6 +50,12 @@ const READ_CHUNK: usize = 16 * 1024;
 
 /// The open's bound when the caller states none.
 pub const DEFAULT_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The most name lookups the host keeps in flight at once. A lookup that outlives its bound is let
+/// go, not joined, and holds its place until it ends; at this many a new lookup is refused at once
+/// (an unresolvable name), so a resolver that wedges again and again holds at most this many
+/// threads.
+pub const MAX_PENDING_LOOKUPS: usize = 64;
 
 /// The stream a dialled connection's own exchange rides.
 pub const EXCHANGE_STREAM: u64 = 1;
@@ -223,6 +229,18 @@ pub struct Connection {
     security_error: Option<String>,
     /// Why the connection failed, once it has (its stage and the underlying error's own text).
     cause: Option<ConnCause>,
+    /// THE PROXY TUNNEL a dial through a proxy asks for before anything else rides the socket
+    /// ([`crate::proxy`]); `None` once the proxy answered, and on every direct connection.
+    tunnel: Option<Tunnel>,
+}
+
+/// A CONNECT exchange in flight: the request (until it is queued), the proxy's answer so far, and
+/// the authority asked for (for the refusal's words).
+struct Tunnel {
+    request: Vec<u8>,
+    asked: bool,
+    head: Vec<u8>,
+    authority: String,
 }
 
 /// THE REFUSAL OF A FAR END WHOSE KEY IS NOT THE PINNED ONE (the transport pin, ARCHITECT 2026-10-03): the handshake's chain
@@ -418,6 +436,13 @@ impl Planned {
         self.located.secure
     }
 
+    /// Whether a framer rides the dial (an application protocol over the stream), not a carrier
+    /// carried as itself: the dials the proxy environment applies to ([`crate::proxy`]).
+    #[must_use]
+    pub fn framed(&self) -> bool {
+        self.door.is_some()
+    }
+
     /// The name the entry located for connection security, where it names one.
     #[must_use]
     pub fn name(&self) -> Option<&str> {
@@ -453,6 +478,33 @@ impl Planned {
     /// [`Failure::Refused`] when security is asked for and none is set; [`Failure::Failed`] off a
     /// worker or when the socket cannot be made.
     pub fn dial_at(self, addr: std::net::SocketAddr) -> Result<Connection, Failure> {
+        self.dial_via(addr, None)
+    }
+
+    /// Dial the PROXY at `proxy` and, once it connects, ask it for a tunnel to this plan's
+    /// authority with `connect` (the CONNECT request, [`crate::proxy::connect_request`]); the
+    /// secure layer (this plan's name and the target's certificate) and the framing run over the
+    /// tunnel once the proxy answers 2xx ([`crate::proxy`]). The connection comes back at once, its
+    /// open in flight.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::dial_at`].
+    pub fn dial_through(
+        self,
+        proxy: std::net::SocketAddr,
+        connect: Vec<u8>,
+    ) -> Result<Connection, Failure> {
+        self.dial_via(proxy, Some(connect))
+    }
+
+    /// Dial `addr`; with `connect`, `addr` is a proxy and `connect` the tunnel request.
+    fn dial_via(
+        self,
+        addr: std::net::SocketAddr,
+        connect: Option<Vec<u8>>,
+    ) -> Result<Connection, Failure> {
+        let authority_for_tunnel = self.located.authority.clone();
         let Self {
             door,
             via,
@@ -510,14 +562,21 @@ impl Planned {
         )
         .map_err(dial_failure)?;
         let offered_name = tls.as_ref().and(located.name.clone());
-        Connection::open_dialled(
+        let mut conn = Connection::open_dialled(
             door,
             carried,
             dial,
             (tls, presented),
             offered_name,
             &located.offer,
-        )
+        )?;
+        conn.tunnel = connect.map(|request| Tunnel {
+            request,
+            asked: false,
+            head: Vec::new(),
+            authority: authority_for_tunnel,
+        });
+        Ok(conn)
     }
 }
 
@@ -617,55 +676,14 @@ impl Connection {
             presented,
             security_error: None,
             cause: None,
+            tunnel: None,
         })
     }
 }
 
-/// How a program's environment REFERENCE (`Program::env_refs`) turns into its value at the
-/// spawn: a string secret resolved through the secret plugins the build links. `Err` names the
-/// reference's source, never a byte of the secret.
-pub type SpawnSecretFn = fn(&busbar_contract::secret_ref::SecretRef) -> Result<String, String>;
-
-/// The installed [`SpawnSecretFn`]; until one is installed no reference resolves, and a program
-/// that states one is not spawned (fail-closed).
-static SPAWN_SECRETS: std::sync::OnceLock<SpawnSecretFn> = std::sync::OnceLock::new();
-
-/// Install how a program's environment references resolve at the spawn (the host's `io.spawn`,
-/// [`crate::hostio::HostIo`]); the first install holds. Answers whether this one was installed.
-pub fn install_spawn_secrets(resolve: SpawnSecretFn) -> bool {
-    SPAWN_SECRETS.set(resolve).is_ok()
-}
-
-/// A program's environment REFERENCES resolved NOW, at the spawn (a template's every `${VAR}`
-/// through the `env` module), name and value in the settings' order. The host's `io.spawn` calls
-/// this and nothing earlier does: the value exists only in the child's environment, never in the
-/// table that holds the program and never in the destination the carrier is handed.
-///
-/// # Errors
-///
-/// The refusal's text, naming the variable and the reference's source (never a value), when a
-/// reference does not resolve or no resolver is installed.
-pub(crate) fn resolve_spawn_env(
-    env_refs: &[(String, busbar_contract::secret_ref::SecretRef)],
-) -> Result<Vec<(String, String)>, String> {
-    let mut env = Vec::with_capacity(env_refs.len());
-    for (name, reference) in env_refs {
-        let resolve = SPAWN_SECRETS.get().ok_or_else(|| {
-            format!(
-                "the program's environment `{name}` is a secret reference and no secret \
-                 resolver is installed"
-            )
-        })?;
-        let value = reference.resolve_template(&|r| resolve(r)).map_err(|e| {
-            format!(
-                "the program's environment `{name}` ({}) did not resolve: {e}",
-                reference.describe()
-            )
-        })?;
-        env.push((name.clone(), value));
-    }
-    Ok(env)
-}
+/// How a program's environment references resolve: at config time, held for its spawns
+/// ([`crate::spawn_env`]).
+pub use crate::spawn_env::{install_spawn_secrets, SpawnSecretFn};
 
 impl Connection {
     /// SPAWN `program` through the carrier `via` (the host spawns it: no shell, its absolute path
@@ -681,6 +699,7 @@ impl Connection {
     pub fn spawn(
         via: &Via,
         program: &busbar_contract::conn::Program,
+        env: &crate::spawn_env::HeldEnv,
         dial: Dial,
     ) -> Result<Self, Failure> {
         if !program.command.starts_with('/') {
@@ -691,7 +710,7 @@ impl Connection {
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Program(program.clone()),
+            &Dest::Program(program.clone(), env.clone()),
         )
         .map_err(dial_failure)?;
         let established = Established {
@@ -709,6 +728,7 @@ impl Connection {
         let mut conn = Self {
             framer_error: None,
             cause: None,
+            tunnel: None,
             security_error: None,
             key_pin: None,
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -858,6 +878,7 @@ impl Connection {
             presented: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             security_error: None,
             cause: None,
+            tunnel: None,
         };
         if conn.tls.is_none() {
             conn.begin()?;
@@ -1310,16 +1331,26 @@ impl Connection {
     /// moved; `Ok(false)` = nothing can until a waker fires.
     fn drive(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
         let mut moved = false;
-        if matches!(self.phase, Phase::Connecting) {
+        if self.tunnel.as_ref().is_some_and(|t| t.asked) {
+            // THE PROXY'S ANSWER: what the tunnel request owes is written, and the proxy's head is
+            // read raw (nothing of it reaches the secure layer or the framer).
+            moved |= self.flush(cx)?;
+            moved |= self.tunnel_read(cx)?;
+        } else if matches!(self.phase, Phase::Connecting) {
             // The carrier's `flush` on a fresh dial: its connect settled (or the far end refused).
             match self.carried.poll_connected(cx) {
                 Poll::Ready(Ok(())) => {
                     moved = true;
-                    if self.tls.is_some() {
-                        self.phase = Phase::Handshaking;
-                        self.tls_out()?;
+                    if let Some(t) = self.tunnel.as_mut() {
+                        // Connected to the PROXY: ask it for the tunnel first, under the CONNECT
+                        // handshake's own bound.
+                        t.asked = true;
+                        let request = std::mem::take(&mut t.request);
+                        self.queue(&request, false);
+                        self.open_deadline = Some(Instant::now() + crate::proxy::CONNECT_HANDSHAKE);
+                        moved |= self.flush(cx)?;
                     } else {
-                        self.begin()?;
+                        self.connected()?;
                     }
                 }
                 Poll::Ready(Err(e)) => return Err(Failure::Refused(e)),
@@ -1335,6 +1366,49 @@ impl Connection {
         }
         moved |= self.keep_deadlines(cx)?;
         Ok(moved)
+    }
+
+    /// The socket reaches the far end: connection security's handshake starts, or the framing
+    /// begins.
+    fn connected(&mut self) -> Result<(), Failure> {
+        if self.tls.is_some() {
+            self.phase = Phase::Handshaking;
+            self.tls_out()
+        } else {
+            self.begin()
+        }
+    }
+
+    /// Read the proxy's answer to the tunnel request: once its head is whole and 2xx the socket is
+    /// the target's ([`Self::connected`]), and any bytes after the head are the target's own.
+    fn tunnel_read(&mut self, cx: &mut Context<'_>) -> Result<bool, Failure> {
+        let mut buf = [0_u8; 256];
+        let n = match self.carried.poll_read(cx, &mut buf) {
+            Poll::Pending => return Ok(false),
+            Poll::Ready(Err(e)) => return Err(failed(e)),
+            Poll::Ready(Ok((0, _))) => {
+                return Err(Failure::Failed(
+                    "proxy closed the connection during CONNECT".into(),
+                ))
+            }
+            Poll::Ready(Ok((n, _))) => n,
+        };
+        let Some(t) = self.tunnel.as_mut() else {
+            return Ok(false);
+        };
+        t.head.extend_from_slice(&buf[..n]);
+        let Some(end) =
+            crate::proxy::connect_answer(&t.head, &t.authority).map_err(Failure::Refused)?
+        else {
+            return Ok(true);
+        };
+        let rest = t.head.split_off(end);
+        self.tunnel = None;
+        self.connected()?;
+        if !rest.is_empty() {
+            self.feed(&rest, false, false)?;
+        }
+        Ok(true)
     }
 
     /// The bytes of the pieces read and not yet taken.
@@ -1612,11 +1686,14 @@ impl Connection {
                     end_of_frame,
                     status_code: None,
                     status_class: 0,
+                    fault: FAULT_NONE,
                     retry_after_secs: None,
+                    declared_len: None,
                     fields: false,
                     text: false,
                     reason: None,
                     failed: false,
+                    end: false,
                 });
             }
             if end {

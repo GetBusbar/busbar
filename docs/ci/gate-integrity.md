@@ -36,18 +36,18 @@ be promoted.
 
 ## What the pipeline holds mechanically
 
-Pull requests into `predev` are judged by ModernCI (required check `ci`). The promotion up the
-branch ladder runs `.github/workflows/promote.yml`, where the pinned release engine in busbar-release
-plans the hop from the PR's base branch.
+ModernCI judges every move up the branch ladder from this repository's branch files and posts one
+check, `ci` (OWNER 2026-10-12, "ModernCI only"; `docs/design/BUSBAR-1.6.0.md` Part 6). The
+busbar-release hop (`promote.yml`) is deleted.
 
-| check | what it is | required on |
+| move | branch file | what it runs |
 | --- | --- | --- |
-| `preflight` | formatting, `Cargo.lock` current, the generated C header current, on a free runner | dev (promote.yml) |
-| `hop` | the engine admits the candidate: EVERY registered `cargo xtask gate`, plus the oracle and conformance where the rung asks, then the fast-forward of the base | dev (promote.yml) |
+| a lane into `predev` | `.ci/default.yaml` | preflight (formatting, `Cargo.lock` current, the generated C header current), EVERY registered `cargo xtask gate`, clippy, compile, test, doctest, deletion matrix, `cargo deny`; no worse than predev |
+| `predev` into `dev` | `.ci/predev.yaml` | the gates, the oracle against the 1.5.5 golden, conformance, the done-oracle, the Q128 audit |
 
-`ship-ready` is a registered gate like the rest: it runs on every hop, with `XTASK_SHIP_TARGET` set to
-the hop's base branch, so it is strict for `qa` and `main` and carries the dev line's standing reds
-for `predev` and `dev`.
+`ship-ready` is a registered gate like the rest: it runs on every move, with `XTASK_SHIP_TARGET` set
+to the move's target branch, so it is strict for `qa` and `main` and carries the dev line's standing
+reds for `predev` and `dev`.
 
 ### Which executable scenario runs on the dev push
 
@@ -115,9 +115,8 @@ green-with-the-list-printed on the dev line and red for `qa`/`main` while anythi
 
 ## The landing runner
 
-Promotion is `promote.yml`'s hop (busbar-release `ci/promote/`): a pull request into `qa` or `main`
-is admitted by the engine or not at all, and the hop has no override flag. A lane lands on
-`predev` when ModernCI's `ci` check is green; CI is the proof.
+Every move is ModernCI's: a lane lands on `predev`, and a branch is promoted, only when ModernCI's
+`ci` check is green on the move's branch file, and there is no override flag. CI is the proof.
 
 ## The sentence this all exists for
 

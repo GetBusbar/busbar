@@ -15,7 +15,7 @@
 // The fixture boots a REAL busbar with a configured provider; a `--no-default-features` build has
 // no wire codec compiled in and fail-closes at boot, which is correct product behaviour, not a
 // regression. Full-feature builds run it.
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_section_pools)]
 
 mod common;
 
@@ -85,7 +85,8 @@ auth:
   chain:
     - keys
   signing_key: {{ file: "{signing}" }}
-  admin_auth: [admin-tokens]
+  admin_auth:
+    - admin-tokens
 export:
   metrics: {{ module: prometheus, settings: {{ buffer_seconds: 60 }} }}
 providers:

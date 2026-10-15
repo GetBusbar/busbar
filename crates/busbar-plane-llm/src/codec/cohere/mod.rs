@@ -40,7 +40,7 @@ pub fn protocol() -> Protocol {
 /// (`/v2/chat`, `/v1/chat`, rung 8) and the v2 embed/rerank paths (`/v2/embed`, `/v2/rerank`, rung
 /// 9). Lower strength binds tighter — the shared ladder positions.
 fn claims(
-    _h: &busbar_contract::http::HeaderMap,
+    _h: busbar_contract::protocol::HeadFields<'_>,
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
     use busbar_contract::protocol::ClaimStrength;
@@ -96,7 +96,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     // Cohere v2's `citation-start` event carries a SINGLE Citation at `delta.message.citations`
@@ -113,7 +113,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "cohere-python/5.11.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
         busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
@@ -356,7 +356,8 @@ const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::B
 const PARKED: &[crate::codec::drops::Parked] = &[];
 
 /// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
-// The prompt-cache hit count is read into the usage; the serving model is read beside the id.
+// The prompt-cache hit count is a slice of the input count the usage carries (never dropped); the
+// serving model is read beside the id.
 const RESPONSE_CODE: &[&str] = &["usage.cached_tokens", "model"];
 const STREAM_CODE: &[&str] = &[];
 
@@ -794,11 +795,12 @@ fn read_cohere_stop_reason(token: &str) -> crate::codec::ir::IrStopReason {
         // `ERROR_TOXIC` is the content-moderation stop; generic `ERROR` is an infra failure.
         COHERE_FINISH_ERROR_TOXIC => S::Safety,
         COHERE_FINISH_ERROR => S::Error,
-        // `TIMEOUT`: the upstream stopped generating because it ran out of time — a failure to
-        // finish, not a natural stop. It used to fall to `Other`, which every writer renders as a
-        // natural end of turn, so a cut-off answer reached a foreign client as a complete one
-        // (COH-16).
-        COHERE_FINISH_TIMEOUT => S::Error,
+        // `TIMEOUT` reads as `Other`, as in 1.5.5 (v1.5.5 `crates/busbar/src/proto/cohere/mod.rs:179-191`,
+        // `_ => S::Other`): the answer Cohere returned is served and billed as 1.5.5 served and
+        // billed it. Reading it as `Error` turned a translated buffered answer into a billed 502
+        // and a lane fault, a money and serving change no owner ruling signs (CHANGELOG 1.6.0
+        // registers only the generic stream `ERROR`).
+        COHERE_FINISH_TIMEOUT => S::Other,
         _ => S::Other,
     }
 }
@@ -837,8 +839,8 @@ fn write_cohere_stop_reason(reason: crate::codec::ir::IrStopReason) -> &'static 
 /// The two sides count the prompt differently. The IR's `input_tokens` is the UNCACHED share only,
 /// with the cache read and the cache write carried ADDITIVELY beside it (`IrUsage`'s documented
 /// convention). Cohere's `tokens.input_tokens` is the whole prompt, the cached share included, and
-/// it reports the cache hit separately as `usage.cached_tokens` — which is exactly why this
-/// dialect's reader SUBTRACTS `cached_tokens` out of `tokens.input_tokens` on the way in.
+/// it reports the cache hit separately as `usage.cached_tokens` (a slice this dialect's reader
+/// leaves inside the input count, as 1.5.5 did).
 ///
 /// The writer used to copy the IR's uncached count straight into `tokens.input_tokens`, so a
 /// Cohere-dialect client of a foreign backend was told a prompt SMALLER than the one it sent: an
@@ -884,11 +886,11 @@ fn format_uuid_layout(bytes: &[u8; 16]) -> String {
 /// id is collision-free in practice for a per-process id stream. Never panics on the request path:
 /// on the near-impossible entropy failure the buffer stays zeroed and the version/variant
 /// stamping still yields a well-formed (if non-random) v4.
-fn synthesize_cohere_id() -> String {
+fn synthesize_cohere_id(host: &dyn busbar_contract::codec::CodecHost) -> String {
     let mut bytes = [0u8; 16];
     // OS CSPRNG. Ignore failure (no unwrap/expect/panic on the request path): the version/variant
     // stamping below still produces a valid v4 even if the buffer stays all-zero.
-    let _ = super::synth_rng::fill_entropy(&mut bytes);
+    let _ = super::synth_rng::fill_entropy(host, &mut bytes);
 
     // RFC-4122 v4: high nibble of byte 6 (the 3rd group's first nibble) = 4; top two bits of byte 8
     // (the 4th group's first nibble) = 10.

@@ -544,6 +544,7 @@ async fn apply(
                     base_group_names,
                     (Some(config_path), Some(providers_path)),
                     Some(&snapshot),
+                    &snapshot.root_rules,
                 )
             })();
             let (built, gov_rotate, limits) = match built {

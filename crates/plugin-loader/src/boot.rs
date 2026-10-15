@@ -209,6 +209,10 @@ pub struct Candidate {
     pub stated: Vec<u8>,
     /// Where it comes from.
     pub origin: Origin,
+    /// Whether its source reads the local disk (`declares.disk`, a `kind: secret` source only; THE
+    /// DESIGN §11.11 R4): its `resolve` runs on the host's disk lane at config time, never on a
+    /// request path.
+    pub disk: bool,
 }
 
 impl Candidate {
@@ -253,6 +257,7 @@ impl Candidate {
             version: r.version,
             stated,
             origin,
+            disk: false,
         })
     }
 
@@ -270,6 +275,15 @@ impl Candidate {
     ) -> Result<Self, String> {
         Self::from_rendering(stated, Some(&manifest.alias), origin)
             .map(|c| c.answering(&manifest.former_names))
+            .map(|c| c.reading_disk(manifest.declares.disk))
+    }
+
+    /// This candidate, its source reading the local disk when `disk` (its `declares.disk`: a
+    /// dropped-in plugin's signed manifest, or a linked row's `declares.json`).
+    #[must_use]
+    pub fn reading_disk(mut self, disk: bool) -> Self {
+        self.disk = disk;
+        self
     }
 
     /// This candidate, answering also to each of `names` it does not already answer to (a plugin's
@@ -518,13 +532,11 @@ pub fn registry(
 // ── THE PLANES ───────────────────────────────────────────────────────────────────────────────────
 
 /// The plane axis, discovered ([`crate::PluginRegistry::open_planes`]): the planes that state
-/// themselves through a door, not yet bound, and the HOT-lane planes (M6-HOT-PLANE) already opened.
+/// themselves through a door, not yet bound.
 #[derive(Default)]
 pub struct PlaneSet {
     /// Each plane with a door: linked rows first, then the dropped-in ones in scan order.
     pub doors: Vec<Candidate>,
-    /// Each HOT-lane plane (no Statement), opened.
-    pub hot: Vec<crate::DynPlane>,
 }
 
 /// THE PLANES' ONE LOAD: every door plane of a [`PlaneSet`] selected under its own name and bound

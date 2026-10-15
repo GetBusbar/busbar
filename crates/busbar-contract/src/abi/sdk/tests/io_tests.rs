@@ -93,13 +93,7 @@ static TABLE: IoSlots = IoSlots {
 };
 
 fn io(ticket: Ticket) -> Io<'static> {
-    Io::new(
-        HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
-        &TABLE,
-        ticket,
-    )
+    Io::new(HostCtx::NONE, &TABLE, ticket)
 }
 
 #[test]
@@ -136,13 +130,7 @@ fn a_slot_that_may_pend_is_not_made_on_no_ticket_and_an_absent_slot_is_unarmed()
         io(TICKET).write(2, b"x"),
         Poll::Ready(Err(IoFailure::Unarmed))
     );
-    let bare = Io::new(
-        HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
-        std::ptr::null(),
-        TICKET,
-    );
+    let bare = Io::new(HostCtx::NONE, std::ptr::null(), TICKET);
     assert!(!bare.armed());
 }
 

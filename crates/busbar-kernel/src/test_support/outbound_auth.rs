@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use busbar_contract::auth_calls::{
     AuthAxis, AuthCalls, AuthField, Fielding, Fields, FieldsRequest, OutboundAuth, OutboundServing,
 };
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 
 /// The double's axis: answers no inbound module, serves every outbound style.
 #[must_use]
@@ -27,7 +27,10 @@ pub fn axis() -> Arc<dyn AuthAxis> {
 /// loader's stand-in rows for the inbound chain, this double for every outbound style.
 #[must_use]
 pub fn stand_in(registry: Arc<busbar_plugin_loader::PluginRegistry>) -> Arc<dyn AuthAxis> {
-    Arc::new(StandIn(busbar_plugin_loader::auth_axis::stand_in(registry)))
+    Arc::new(StandIn(busbar_plugin_loader::auth_axis::stand_in(
+        registry,
+        crate::seal::lend(),
+    )))
 }
 
 struct StandIn(Arc<dyn AuthAxis>);
@@ -126,7 +129,7 @@ fn bearer(credential: &[u8]) -> Fields {
     value.extend_from_slice(credential);
     Fields::Ready(vec![AuthField {
         name: b"authorization".to_vec(),
-        value: Redacted::new(value),
+        value: Secret::new(value),
         sensitive: false,
     }])
 }
@@ -146,7 +149,7 @@ impl OutboundAuth for Double {
 
     fn fields_now(&self, handle: u64, request: &FieldsRequest) -> Option<Fields> {
         if let Some(caller) = &request.caller_credential {
-            return Some(bearer(caller.expose_secret()));
+            return Some(bearer(caller.expose(&crate::seal::lend())));
         }
         let bound = self.bound.lock().unwrap_or_else(|p| p.into_inner());
         Some(bound.get(&handle).map_or(Fields::Refused, |c| bearer(c)))

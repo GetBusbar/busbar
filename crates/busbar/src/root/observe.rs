@@ -46,8 +46,11 @@ impl Grants for LoaderGrants {
     }
 }
 
-/// Join the loader's observer to the kernel's fold. The first install wins; a second boot inside
-/// one test binary installs nothing, which is not an error.
+/// Join the loader's observer to the kernel's fold, on the process's one dispatcher (every door
+/// binds on it, so every door's envelope folds through it). The first install wins; a second boot
+/// inside one test binary installs nothing, which is not an error.
 pub fn install() {
-    let _ = crate::root::loader::observe::install_plugin_observer(&Observer);
+    let _ = crate::root::dispatch::dispatcher()
+        .observing()
+        .install_observer(&Observer);
 }

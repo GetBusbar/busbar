@@ -15,7 +15,6 @@
 use core::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Which way bytes are moving.
@@ -46,6 +45,46 @@ pub enum WireStatusClass {
     FarEndFault,
     /// The upstream reported something outside the three classes above.
     Other,
+}
+
+/// The transport's reading of what an answer means to the BREAKER — the fault, where the answer
+/// was one, and whose.
+///
+/// A separate fact from [`WireStatusClass`], on purpose: that class is the fee decision's leg and
+/// is read by the ledger; this one is read by the breaker, and the two disagree where the money and
+/// the destination's health do (a request the far end throttled is not billed to the destination,
+/// yet it is the destination that is busy). The transport states each from its own declared table
+/// of its own numbering, so no reader above it ever reads a code band.
+///
+/// `None` on a piece (no reading stated) is read as the caller's: the breaker records nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum WireFault {
+    /// The caller's own fault: the destination is healthy and nothing is recorded against it.
+    Caller,
+    /// A transient fault of the destination: it counts toward a trip, the stated wait floors the
+    /// cooldown.
+    Transient,
+    /// The destination is down for every caller (a refused credential or account): every pool's
+    /// cell for it trips.
+    Hard,
+    /// The destination answered and is healthy, whatever the answer's status: a SUCCESS is
+    /// recorded against it, and the answer is relayed as it came.
+    Healthy,
+}
+
+impl WireFault {
+    /// The reading a piece's `FAULT_*` byte states; `None` for `FAULT_NONE` or a byte no reading
+    /// names (the piece checker refuses the latter before this reads it).
+    #[must_use]
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            crate::abi::transport::FAULT_CALLER => Some(Self::Caller),
+            crate::abi::transport::FAULT_TRANSIENT => Some(Self::Transient),
+            crate::abi::transport::FAULT_HARD => Some(Self::Hard),
+            crate::abi::transport::FAULT_HEALTHY => Some(Self::Healthy),
+            _ => None,
+        }
+    }
 }
 
 /// Which frame carries a transport's status class.
@@ -387,62 +426,6 @@ pub struct Handoff {
     pub to: &'static str,
     /// The transport fact key both legs must agree on.
     pub binding_fact: &'static str,
-}
-
-/// A listening socket a transport opened.
-///
-/// The kernel holds it; a plane never sees one. The handle is opaque because what is behind it is
-/// the transport's business and nothing else's.
-///
-/// The identity is the contract's, minted here at construction and never by a transport, because a
-/// node always holds at least two listeners — data and admin — and the only thing that told them
-/// apart was a bound address string a configuration is free to duplicate. A transport keying its
-/// own per-listener state on that string was keying it on something two listeners could share.
-#[derive(Clone)]
-pub struct Listener {
-    id: u64,
-    handle: Arc<dyn ListenerHandle>,
-}
-
-/// The next listener identity. Node-local and monotonic; nothing outside the node ever sees one.
-static NEXT_LISTENER_ID: AtomicU64 = AtomicU64::new(1);
-
-impl Listener {
-    /// Wrap a transport's own listener, giving it an identity nothing else holds.
-    #[must_use]
-    pub fn new(handle: Arc<dyn ListenerHandle>) -> Self {
-        Self {
-            id: NEXT_LISTENER_ID.fetch_add(1, Ordering::Relaxed),
-            handle,
-        }
-    }
-
-    /// The listener's node-local identity.
-    #[must_use]
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
-    /// The local address the listener is bound to.
-    #[must_use]
-    pub fn local_addr(&self) -> String {
-        self.handle.local_addr()
-    }
-}
-
-impl fmt::Debug for Listener {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Listener")
-            .field("id", &self.id)
-            .field("local_addr", &self.handle.local_addr())
-            .finish()
-    }
-}
-
-/// What a transport puts behind a [`Listener`].
-pub trait ListenerHandle: Send + Sync {
-    /// The local address the listener is bound to.
-    fn local_addr(&self) -> String;
 }
 
 /// A connection a transport accepted or dialled.

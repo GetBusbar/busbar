@@ -45,6 +45,7 @@ pub fn agnostic_envelope(kind: &str, message: &str) -> Value {
 /// RENDER one refusal in `envelope`'s dialect (empty or unknown: the agnostic envelope).
 #[must_use]
 pub fn render(
+    host: &dyn busbar_contract::codec::CodecHost,
     envelope: &str,
     status: u16,
     kind: &str,
@@ -53,7 +54,7 @@ pub fn render(
 ) -> Rendered {
     let dialect = decl(envelope).and_then(|d| d.dialect());
     let written = match &dialect {
-        Some(di) => di.write_error(status, kind, message),
+        Some(di) => di.write_error(host, status, kind, message),
         None => agnostic_envelope(kind, message),
     };
     let body = crate::codec::json::to_vec(&written).unwrap_or_else(|_| {
@@ -64,7 +65,7 @@ pub fn render(
         APPLICATION_JSON.as_bytes().to_vec(),
     )];
     if let Some(di) = &dialect {
-        fields.extend(di.error_response_fields(kind, &written));
+        fields.extend(di.error_response_fields(host, kind, &written));
     }
     if retry_after_s != 0 {
         fields.push((
@@ -134,8 +135,13 @@ pub fn gate_kind(status: u16) -> &'static str {
 /// RENDER A HOOK'S REFUSAL in `envelope`'s dialect: the hook's own status and words, as the
 /// kernel's hook engine clamped and sanitised them.
 #[must_use]
-pub fn gate_refusal(envelope: &str, status: u16, text: &str) -> Rendered {
-    render(envelope, status, gate_kind(status), text, 0)
+pub fn gate_refusal(
+    host: &dyn busbar_contract::codec::CodecHost,
+    envelope: &str,
+    status: u16,
+    text: &str,
+) -> Rendered {
+    render(host, envelope, status, gate_kind(status), text, 0)
 }
 
 /// The sentence the previous release answered a model with when it named no pool and no configured
@@ -158,6 +164,7 @@ fn is_authentication(reason: &str) -> bool {
 /// `status` the status the kernel chose, `text` its message.
 #[must_use]
 pub fn kernel_refusal(
+    host: &dyn busbar_contract::codec::CodecHost,
     envelope: &str,
     reason: u32,
     status: u16,
@@ -171,9 +178,10 @@ pub fn kernel_refusal(
             d.auth_failure_status_and_kind.1
         });
         let message = d.map_or("authentication failed", |d| d.auth_failure_message);
-        return render(envelope, status, kind, message, retry_after_s);
+        return render(host, envelope, status, kind, message, retry_after_s);
     }
     render(
+        host,
         envelope,
         status,
         kind_of(spelling, status),
@@ -184,12 +192,18 @@ pub fn kernel_refusal(
 
 /// RENDER one of the plane's own arrival refusals.
 #[must_use]
-pub fn declined(d: &super::arrive::Declined) -> Rendered {
-    render(d.envelope, d.status, d.kind, &d.message, 0)
+pub fn declined(
+    host: &dyn busbar_contract::codec::CodecHost,
+    d: &super::arrive::Declined,
+) -> Rendered {
+    render(host, d.envelope, d.status, d.kind, &d.message, 0)
 }
 
 /// RENDER a refusal an attempt answers without reaching the far end.
 #[must_use]
-pub fn answered(a: &super::attempt::Answer) -> Rendered {
-    render(a.envelope, a.status, a.kind, &a.message, 0)
+pub fn answered(
+    host: &dyn busbar_contract::codec::CodecHost,
+    a: &super::attempt::Answer,
+) -> Rendered {
+    render(host, a.envelope, a.status, a.kind, &a.message, 0)
 }

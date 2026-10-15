@@ -27,7 +27,7 @@ use std::sync::Arc;
 use busbar_contract::abi::secret::{
     ERROR_KIND_DENIED, ERROR_KIND_INVALID, ERROR_KIND_NOT_FOUND, ERROR_KIND_UNAVAILABLE,
 };
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use busbar_contract::secret::{SecretAxis, SecretCalls, SecretRefused};
 use busbar_contract::secret_ref::{
     SecretRef, SECRET_ENV_SETTING_KEY, SECRET_FILE_SETTING_PATH, SECRET_MODULE_ENV,
@@ -153,12 +153,12 @@ fn resolve_file(settings: &[u8]) -> Result<Vec<u8>, SecretRefused> {
 }
 
 impl SecretCalls for Double {
-    fn resolve(&self, settings: &[u8]) -> Result<Redacted<Vec<u8>>, SecretRefused> {
+    fn resolve(&self, settings: &[u8]) -> Result<Secret<Vec<u8>>, SecretRefused> {
         match self {
             Double::Env => resolve_env(settings),
             Double::File => resolve_file(settings),
         }
-        .map(Redacted::new)
+        .map(Secret::new)
     }
 }
 

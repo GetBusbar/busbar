@@ -181,6 +181,16 @@ fn tokens(src: &str) -> Vec<Tok> {
     out
 }
 
+/// The name a file's DOOR-CELLS include stands under in [`FileItems::decls`]: the composition root's
+/// `include!(concat!(env!("OUT_DIR"), "/door_cells.rs"))`, which its build script writes as one
+/// `#[path]` module per `plane-door` row of the crate's `[package.metadata.busbar.linked]` (each a
+/// door plane's own root cells, at its crate's `tests/root/mod.rs`). Not an identifier, so no real
+/// module is ever mistaken for it; [`module_tree`] reads the rows off the manifest instead.
+pub const DOOR_CELLS: &str = "<door-cells>";
+
+/// The generated file the composition root includes its door planes' own root cells from.
+const DOOR_CELLS_FILE: &str = "/door_cells.rs";
+
 /// The module declarations and fn definitions of one file, each with its inline nesting.
 #[must_use]
 pub fn file_items(src: &str) -> FileItems {
@@ -233,6 +243,20 @@ pub fn file_items(src: &str) -> FileItems {
                     i += 2;
                     continue;
                 }
+            }
+            // `include!(concat!(env!("OUT_DIR"), "/door_cells.rs"))`: the door planes' own root
+            // cells, one module per manifest row ([`DOOR_CELLS`]).
+            Tok::Ident(kw)
+                if kw == "include"
+                    && matches!(t.get(i + 1), Some(Tok::Punct('!')))
+                    && t.iter()
+                        .skip(i + 2)
+                        .take(14)
+                        .any(|tok| matches!(tok, Tok::Str(s) if s == DOOR_CELLS_FILE)) =>
+            {
+                let nest: Vec<String> = stack.iter().map(|(m, _)| m.clone()).collect();
+                items.decls.push((nest, DOOR_CELLS.to_string(), None));
+                pending_path = None;
             }
             Tok::Punct('{') => {
                 depth += 1;
@@ -291,6 +315,69 @@ pub struct ModuleTree {
     pub items: BTreeMap<String, FileItems>,
 }
 
+/// The `[table]` rows of a Cargo manifest, `key = value` one per line, both sides unquoted (the
+/// shape the composition root's build script reads its own metadata tables in).
+fn manifest_rows(manifest: &str, table: &str) -> Vec<(String, String)> {
+    let header = format!("[{table}]");
+    let mut in_table = false;
+    let mut rows = Vec::new();
+    for line in manifest.lines() {
+        let code = line.split('#').next().unwrap_or("").trim();
+        if code.starts_with('[') {
+            in_table = code == header;
+            continue;
+        }
+        if let (true, Some((k, v))) = (in_table, code.split_once('=')) {
+            rows.push((
+                k.trim().trim_matches('"').to_string(),
+                v.trim().trim_matches('"').to_string(),
+            ));
+        }
+    }
+    rows
+}
+
+/// The `linked-axes` word of a plane's memory-ABI door row (the build script's `PLANE_DOOR_AXIS`).
+const PLANE_DOOR_AXIS: &str = "plane-door";
+
+/// THE DOOR-CELLS MODULES of the crate whose root file is `root_file`: for every
+/// `[package.metadata.busbar.linked]` row of its manifest (cargo feature -> plane crate) whose
+/// `[package.metadata.busbar.linked-axes]` value names the `plane-door` axis (the rows its build
+/// script mounts cells for), the module its build script names for the feature and the
+/// repo-relative `tests/root/mod.rs` of the crate its `[dependencies]` row names: at the row's
+/// `path` for a path dependency, and at the crate's census mount (`crates/<crate>`, a sibling of the
+/// root's own directory, where the base layer lays the pinned checkout) for a PINNED one. The root's
+/// build script compiles both alike (`DEP_BUSBAR_DOOR_CELLS_<CRATE>_CELLS`) and cites a door's cells
+/// by that same mount (`DOOR_CELLS_FILES`), so a plane door that left for its own repo keeps its root
+/// cells: they are read from the pin, never skipped.
+pub fn door_cells(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Vec<(String, String)> {
+    let crate_dir = parent(&parent(root_file));
+    let Some(manifest) = read(&join(&crate_dir, "Cargo.toml")) else {
+        return Vec::new();
+    };
+    let deps = manifest_rows(&manifest, "dependencies");
+    let axes = manifest_rows(&manifest, "package.metadata.busbar.linked-axes");
+    manifest_rows(&manifest, "package.metadata.busbar.linked")
+        .into_iter()
+        .filter(|(feature, _)| {
+            axes.iter()
+                .any(|(f, a)| f == feature && a.split_whitespace().any(|x| x == PLANE_DOOR_AXIS))
+        })
+        .filter_map(|(feature, krate)| {
+            let dep = deps.iter().find(|(k, _)| *k == krate)?;
+            let dir = match dep
+                .1
+                .split_once("path")
+                .and_then(|(_, at)| at.split('"').nth(1))
+            {
+                Some(path) => join(&crate_dir, path),
+                None => join(&parent(&crate_dir), &krate),
+            };
+            Some((feature.replace('-', "_"), join(&dir, "tests/root/mod.rs")))
+        })
+        .collect()
+}
+
 /// Walk the crate whose root file is `root_file` (repo-relative, e.g. `crates/busbar/src/main.rs`),
 /// reading each file through `read` (repo-relative path -> its text, `None` when absent).
 #[must_use]
@@ -324,6 +411,20 @@ pub fn module_tree(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Mo
             }
         };
         for (nest, name, path_attr) in &items.decls {
+            if name == DOOR_CELLS {
+                for (ident, cells) in door_cells(read, root_file) {
+                    let child_module = std::iter::once(module.as_str())
+                        .filter(|m| !m.is_empty())
+                        .map(str::to_string)
+                        .chain(nest.iter().cloned())
+                        .chain(std::iter::once(ident))
+                        .collect::<Vec<_>>()
+                        .join("::");
+                    let cells_dir = parent(&cells);
+                    work.push((cells, child_module, cells_dir, None));
+                }
+                continue;
+            }
             let child_module = std::iter::once(module.as_str())
                 .filter(|m| !m.is_empty())
                 .map(str::to_string)

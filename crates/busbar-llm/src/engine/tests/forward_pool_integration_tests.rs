@@ -2,9 +2,9 @@ use super::auth_dispatch_tests::{credential_header_value, PresentCredential as _
 use crate::engine::forward_with_pool;
 use crate::engine::AppEngineExt as _;
 use crate::test_support::*;
-use busbar_kernel::auth::AuthMiddleware;
 use busbar_kernel::config::auth::AuthCfg;
 use busbar_kernel::store::now;
+use busbar_kernel::{auth::AuthMiddleware, seal::lend};
 // The common vocabulary the former `use super::*` (busbar-core `test_support`) re-exported into this
 // integration suite, now that it lives in the plane crate and globs the plane's `test_support`.
 use axum::{
@@ -431,7 +431,7 @@ async fn test_cross_protocol_nonstream_records_tokens_for_tpm() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.expose_secret().as_str();
+    let secret = token.expose(&lend()).as_str();
     let groups = std::collections::BTreeMap::from([(
         "tpmgrp".to_string(),
         busbar_kernel::config::groups::GroupCfg {
@@ -568,7 +568,7 @@ async fn test_cross_protocol_stream_records_tokens_for_tpm() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.expose_secret().as_str();
+    let secret = token.expose(&lend()).as_str();
     let groups = std::collections::BTreeMap::from([(
         "tpmsgrp".to_string(),
         busbar_kernel::config::groups::GroupCfg {
@@ -1043,7 +1043,7 @@ async fn test_governance_vkey_auth_and_pool_acl() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.expose_secret().as_str();
+    let secret = token.expose(&lend()).as_str();
 
     let app = TestApp::new().keys_chain().governance_kit(gov).build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
@@ -1124,7 +1124,7 @@ async fn test_governance_budget_over_quota() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.expose_secret().as_str();
+    let secret = token.expose(&lend()).as_str();
     // Pre-seed usage past the group's 100c budget (window 0 = "total") in the DURABLE store:
     // 250 requests at a 1c flat fee derive to 250 cents of spend on the group's total bucket.
     store
@@ -1247,7 +1247,7 @@ async fn over_budget_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.expose_secret().clone();
+    let secret = token.expose(&lend()).clone();
     // Seed 250 requests on the GROUP's total bucket: at a 1c flat fee the DERIVED spend is
     // 250 cents, past the group's 100-cent cap, so admission rejects before any forwarding.
     store
@@ -1430,8 +1430,8 @@ async fn test_budget_over_quota_gemini_envelope() {
 }
 
 /// Bedrock ingress (`/model/x/converse`): an over-budget rejection must carry the native AWS
-/// JSON-1.1 error envelope (`__type == "ServiceQuotaExceededException"`) at a 400-class status
-/// (the native AWS shape for ServiceQuotaExceededException — NOT 429) AND the
+/// JSON-1.1 error envelope (`__type == "ThrottlingException"`, an error Converse declares;
+/// 1.5.5's 400 `ServiceQuotaExceededException` is one it does not) at 429 AND the
 /// `x-amzn-errortype` / `x-amzn-RequestId` headers a native Bedrock runtime response carries.
 #[tokio::test]
 async fn test_budget_over_quota_bedrock_envelope() {
@@ -1446,7 +1446,7 @@ async fn test_budget_over_quota_bedrock_envelope() {
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 400, "bedrock over-budget → 400");
+    assert_eq!(r.status().as_u16(), 429, "bedrock over-budget → 429");
     // Headers: a native Bedrock error always carries x-amzn-RequestId and x-amzn-errortype.
     let errortype_hdr = r
         .headers()
@@ -1455,7 +1455,7 @@ async fn test_budget_over_quota_bedrock_envelope() {
         .map(|s| s.to_string());
     assert_eq!(
         errortype_hdr.as_deref(),
-        Some("ServiceQuotaExceededException"),
+        Some("ThrottlingException"),
         "bedrock over-budget carries x-amzn-errortype header matching __type"
     );
     assert!(
@@ -1465,8 +1465,8 @@ async fn test_budget_over_quota_bedrock_envelope() {
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(
         body.get("__type").and_then(|t| t.as_str()),
-        Some("ServiceQuotaExceededException"),
-        "bedrock over-budget envelope carries __type == ServiceQuotaExceededException; got {body}"
+        Some("ThrottlingException"),
+        "bedrock over-budget envelope carries __type == ThrottlingException; got {body}"
     );
     handle.abort();
 }
@@ -1500,7 +1500,7 @@ async fn test_governance_rate_limit_429() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.expose_secret().as_str();
+    let secret = token.expose(&lend()).as_str();
 
     let groups = std::collections::BTreeMap::from([(
         "rl2".to_string(),
@@ -1613,7 +1613,7 @@ async fn over_rpm_router() -> (std::net::SocketAddr, tokio::task::JoinHandle<()>
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.expose_secret().clone();
+    let secret = token.expose(&lend()).clone();
 
     let groups = std::collections::BTreeMap::from([(
         "rl0".to_string(),
@@ -3513,7 +3513,8 @@ mod disposition_matrix_tests {
                     anthropic_adaptive_thinking: None,
                     native_structured_output: None,
                     model_capabilities: Vec::new(),
-                },
+                }
+                .into(),
             );
             let mut models = HashMap::new();
             models.insert("m".to_string(), model.clone());

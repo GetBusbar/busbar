@@ -5,8 +5,8 @@
 //! configuration section is present … A plugin that loads (or costs anything) without its verb
 //! configured is a bug"; Part 0: the new planes are "purely additive and off by default").
 //!
-//! Items 39/40: every non-LLM plane is LINKED into the default build (Part 2 #17 is locked), so the
-//! gate is config, never a feature flag. Before this, `boot::hydrate_all` / `boot::start_planes`
+//! Items 39/40: every plane beyond the catch-all one is LINKED into the default build (Part 2 #17
+//! is locked), so the gate is config, never a feature flag. Before this, `boot::hydrate_all` / `boot::start_planes`
 //! folded EVERY linked plane's hooks and `appbuild` asked EVERY linked plane to `build` its slot, so
 //! a plane with no config section still restored, started and — given a `public_url:` — mounted and
 //! admitted. These drive the core folds over a probe plane that counts every hook it is handed: an

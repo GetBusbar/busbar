@@ -1068,12 +1068,25 @@ def ledger(key):
 
 waived = ledger("waived")
 justified_skips = ledger("skipped")
+# NOT APPLICABLE (ARCHITECT ruling 2026-10-14 under owner rule 22, named conformance gaps are zero): a
+# MUST the suite exercises only against an agent-card state busbar never serves -- a capability the
+# spec makes optional switched OFF (busbar always serves push, streaming and the extended card), or
+# an optional extension declared required (busbar implements none). It reports SKIPPED, but it is
+# not a gap: there is no busbar behaviour for it to verify. Each entry names the spec and TCK
+# `citation` that make it so, and its premise (the card the suite read) is evaluated like every
+# other entry's, so the day busbar serves that state the entry is RED and must be retired.
+not_applicable = ledger("not_applicable") if "not_applicable" in pin else {}
+for rid, e in not_applicable.items():
+    if not isinstance(e.get("citation"), str) or not e["citation"].strip():
+        sys.exit("\n%s `not_applicable` entry %s names no spec `citation`; a requirement is not\n"
+                 "applicable only where the spec says the feature is optional." % (waivers_path, rid))
 # An EMPTY list is accepted: a ledger that forgives nothing is the strictest one there is, and a
 # waiver retired because its requirement now passes must leave a ledger the gate still reads. What
 # is refused is a ledger with no list at all (`ledger` above), the shape a misspelt key takes.
-both = sorted(set(waived) & set(justified_skips))
+both = sorted((set(waived) & set(justified_skips)) | (set(waived) & set(not_applicable))
+              | (set(justified_skips) & set(not_applicable)))
 if both:
-    sys.exit("\n%s names %s as both waived and skipped." % (waivers_path, ", ".join(both)))
+    sys.exit("\n%s names %s in more than one list." % (waivers_path, ", ".join(both)))
 
 card = report.get("agent_card")
 
@@ -1135,14 +1148,15 @@ not_tested = sorted(k for k, v in must.items() if v.get("status") == "NOT TESTED
 failing = sorted(k for k, v in must.items() if v.get("status") == "FAIL")
 skipped = sorted(k for k, v in must.items() if v.get("status") == "SKIPPED")
 unwaived = sorted(k for k in failing if k not in waived)
-unjustified_skips = sorted(k for k in skipped if k not in justified_skips)
+unjustified_skips = sorted(k for k in skipped if k not in justified_skips and k not in not_applicable)
 executed = sorted(k for k, v in must.items() if v.get("status") in ("PASS", "FAIL"))
 
 # EVERY LEDGER ENTRY IS EVALUATED, AND ITS REQUIREMENT MUST BE IN THE STATE IT FORGIVES. A waiver
 # whose requirement now passes, or a justified SKIP whose requirement now runs, is a forgiveness of
 # something that is no longer happening: its premise is false, it is RED until it is retired.
 ledger_held, ledger_false = [], []
-for key, entries, want in (("waived", waived, "FAIL"), ("skipped", justified_skips, "SKIPPED")):
+for key, entries, want in (("waived", waived, "FAIL"), ("skipped", justified_skips, "SKIPPED"),
+                           ("not_applicable", not_applicable, "SKIPPED")):
     for rid in sorted(entries):
         got = must.get(rid, {}).get("status")
         if got != want:
@@ -1599,6 +1613,19 @@ PY
   _selftest_red "a required-extension premise that is false" "IS FALSE" \
     "per.pop('PUSH-DELIVER-001'); card['capabilities']['extensions'] = [{'uri': 'urn:x', 'required': True}]" \
     <(printf '{"waived": [], "skipped": [{"id": "CAP-SKIP-001", "why": "w", "premise": [{"kind": "card_lacks_required_extension", "uri": "urn:x"}]}]}\n')
+
+  # GREEN 5: a SKIPPED MUST recorded NOT APPLICABLE, with its citation and a holding premise.
+  _selftest_green "a not-applicable entry with a citation and a holding premise," \
+    "per.pop('PUSH-DELIVER-001')" \
+    <(printf '{"waived": [], "skipped": [], "not_applicable": [{"id": "CAP-SKIP-001", "why": "w", "citation": "spec 3.3.4", "premise": [{"kind": "card_equals", "path": "capabilities.streaming", "value": true}]}]}\n')
+  # RED 26: the same entry with no citation is refused.
+  _selftest_red "a not-applicable entry with no citation" "names no spec" \
+    "per.pop('PUSH-DELIVER-001')" \
+    <(printf '{"waived": [], "skipped": [], "not_applicable": [{"id": "CAP-SKIP-001", "why": "w", "premise": [{"kind": "card_equals", "path": "capabilities.streaming", "value": true}]}]}\n')
+  # RED 27: a not-applicable entry whose premise is false (the card now serves the state) is RED.
+  _selftest_red "a not-applicable entry whose premise is false" "IS FALSE" \
+    "per.pop('PUSH-DELIVER-001'); card['capabilities']['streaming'] = False" \
+    <(printf '{"waived": [], "skipped": [], "not_applicable": [{"id": "CAP-SKIP-001", "why": "w", "citation": "spec 3.3.4", "premise": [{"kind": "card_equals", "path": "capabilities.streaming", "value": true}]}]}\n')
 
   # GREEN 3: a clean report (no FAIL, no SKIP, no NOT TESTED) under an EMPTY ledger is accepted: an
   # empty ledger forgives nothing, which is the strictest ledger there is, and none of the checks

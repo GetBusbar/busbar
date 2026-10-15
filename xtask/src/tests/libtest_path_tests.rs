@@ -181,3 +181,74 @@ fn an_unreached_file_or_an_absent_fn_is_refused() {
         "a commented-out declaration is no module and no fn"
     );
 }
+
+/// A DOOR PLANE'S OWN ROOT CELLS: the composition root's serve module includes the build script's
+/// `door_cells.rs`, one `#[path]` module per `plane-door` row of `[package.metadata.busbar.linked]`, each at its
+/// plane crate's `tests/root/mod.rs`. The tree reads the rows off the manifest, so a cell there is
+/// `root::serve::<feature>::<fn>`. RED arm: with no row, the plane crate's file is reached by no
+/// declaration and its cell resolves nowhere.
+#[test]
+fn a_door_cells_include_reaches_each_rows_plane_crate_cells() {
+    let files = |manifest: &str| {
+        tree_of(&[
+            ("c/src/main.rs", "mod root;\nfn main() {}\n"),
+            ("c/src/root/mod.rs", "pub mod serve;\n"),
+            (
+                "c/src/root/serve.rs",
+                "pub fn serve() {}\n\
+                 #[cfg(all(test, linked_axis_node))]\n\
+                 include!(concat!(env!(\"OUT_DIR\"), \"/door_cells.rs\"));\n",
+            ),
+            ("c/Cargo.toml", manifest),
+            (
+                "q/tests/root/mod.rs",
+                "mod inner {\n    #[test]\n    fn a_plane_cell() {}\n}\n",
+            ),
+        ])
+    };
+    let with_row = "[dependencies]\nplane-q = { path = \"../q\", optional = true }\n\n\
+                    [package.metadata.busbar.linked]\nplane-q-door = \"plane-q\"\n\n\
+                    [package.metadata.busbar.linked-axes]\nplane-q-door = \"plane-door\"\n";
+    let tree = files(with_row);
+    assert_eq!(
+        resolve(&tree, "q/tests/root/mod.rs", "a_plane_cell").as_deref(),
+        Ok("root::serve::plane_q_door::inner::a_plane_cell")
+    );
+    let tree = files("[dependencies]\nplane-q = { path = \"../q\", optional = true }\n");
+    assert!(
+        resolve(&tree, "q/tests/root/mod.rs", "a_plane_cell").is_err(),
+        "no row, no module"
+    );
+}
+
+/// A PINNED DOOR PLANE'S ROOT CELLS: a row whose dependency names no `path` (a plane that left for
+/// its own repo, `{ workspace = true }`) is read at the crate's census mount, the sibling of the
+/// root's directory the base layer lays the checkout at — the root's build script compiles it the
+/// same way. RED before: a row with no `path` was skipped, so a pinned door's cells resolved nowhere.
+#[test]
+fn a_pinned_door_planes_cells_are_read_at_its_census_mount() {
+    let tree = tree_of(&[
+        ("c/src/main.rs", "mod root;\nfn main() {}\n"),
+        ("c/src/root/mod.rs", "pub mod serve;\n"),
+        (
+            "c/src/root/serve.rs",
+            "pub fn serve() {}\n\
+             #[cfg(all(test, linked_axis_node))]\n\
+             include!(concat!(env!(\"OUT_DIR\"), \"/door_cells.rs\"));\n",
+        ),
+        (
+            "c/Cargo.toml",
+            "[dependencies]\nplane-q = { workspace = true, optional = true }\n\n\
+             [package.metadata.busbar.linked]\nplane-q-door = \"plane-q\"\n\n\
+             [package.metadata.busbar.linked-axes]\nplane-q-door = \"plane-door\"\n",
+        ),
+        (
+            "plane-q/tests/root/mod.rs",
+            "#[test]\nfn a_pinned_cell() {}\n",
+        ),
+    ]);
+    assert_eq!(
+        resolve(&tree, "plane-q/tests/root/mod.rs", "a_pinned_cell").as_deref(),
+        Ok("root::serve::plane_q_door::a_pinned_cell")
+    );
+}

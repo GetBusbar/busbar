@@ -162,6 +162,27 @@ fn stated_with(f: ManifestFacts) -> Vec<u8> {
     b
 }
 
+/// RED (THE DESIGN C.1, `BUSBAR-1.6.0.md` l.3868: "`Plugin<K>` is `!Clone`"): a loaded plugin's
+/// handle cannot be copied; a holder that shares the instance shares an `Arc<Plugin<K>>`. The
+/// probe below is AMBIGUOUS, and so does not compile, exactly when `Plugin<K>` implements `Clone`
+/// (both impls of `NotClone` apply); with no `Clone` impl only the first applies.
+#[test]
+fn a_plugin_handle_is_not_clone() {
+    trait NotClone<A> {
+        fn verdict() -> &'static str {
+            "a Plugin is not Clone"
+        }
+    }
+    impl<T: ?Sized> NotClone<()> for T {}
+    #[allow(dead_code)]
+    struct WhenClone;
+    impl<T: Clone> NotClone<WhenClone> for T {}
+    assert_eq!(
+        <Plugin<TestKind> as NotClone<_>>::verdict(),
+        "a Plugin is not Clone"
+    );
+}
+
 fn row() -> LinkedRow {
     LinkedRow::of(plug::busbar_plugin_door).expect("the linked row states its Statement")
 }
@@ -290,6 +311,7 @@ fn config() -> DispatchConfig {
             ..Budgets::default()
         },
         watchdog_period: Duration::from_millis(20),
+        ..DispatchConfig::default()
     }
 }
 
@@ -550,7 +572,12 @@ fn script(load: &dyn Fn(Arc<Recorder>) -> Plugin<TestKind>) -> Vec<String> {
         .outcome;
     let p2 = load(sink.clone());
     let fresh = d.mint(1).expect("the fresh worker mints");
-    let fresh_stale = fresh.generation > 1;
+    let fresh_stale = crate::dispatch::handle::ticket_count(
+        d.ticket_key(),
+        1,
+        crate::dispatch::ticket::decode(fresh.slot).1,
+        fresh.generation,
+    ) > 1;
     d.recycle(fresh);
     let opened2 = open(&d, &p2, 1);
     let unhang = p2.call(TICK, &mut frame(b"unhang:script")).outcome;
@@ -714,7 +741,7 @@ mod open_faults_on_its_resume {
     /// Crossings that were handed the freed box.
     static STALE: AtomicU32 = AtomicU32::new(0);
     /// The pended `open`'s wake, its context and its ticket.
-    static WAKE: Mutex<Option<(WakeFn, usize, Ticket)>> = Mutex::new(None);
+    static WAKE: Mutex<Option<(WakeFn, HostCtx, Ticket)>> = Mutex::new(None);
 
     fn real() -> OpsHead {
         REAL.lock().unwrap().expect("the door was restated")
@@ -749,7 +776,7 @@ mod open_faults_on_its_resume {
                 let ticket = (*input.cast::<InHead>()).ticket;
                 let tables = &*(*input.cast::<OpenIn>()).host;
                 let wake = tables.wake.expect("the host hands a wake");
-                *WAKE.lock().unwrap() = Some((wake, tables.ctx.ptr as usize, ticket));
+                *WAKE.lock().unwrap() = Some((wake, tables.ctx, ticket));
                 (*out.cast::<busbar_contract::abi::mechanism::call::OutHead>()).outcome =
                     RawOutcome::of(Outcome::Pending);
             }
@@ -824,12 +851,7 @@ mod open_faults_on_its_resume {
             .outcome;
 
         let (wake, ctx, ticket) = WAKE.lock().unwrap().take().expect("the open pended");
-        wake(
-            HostCtx {
-                ptr: ctx as *mut c_void,
-            },
-            ticket,
-        );
+        wake(ctx, ticket);
         let opened = reply.wait(WAIT).expect("the open answers");
         assert_eq!(opened.outcome, Outcome::Fault);
         assert_ne!(FREED.load(Ordering::SeqCst), 0, "the resume freed the box");
@@ -1197,15 +1219,30 @@ fn red_a_stale_generation_wake_is_dropped() {
             break t;
         }
     };
-    assert_eq!(t.generation, old.generation + 1);
+    // One mint on: the generation is the slot's next COUNT, permuted (#74), never the next integer.
+    let idx = crate::dispatch::ticket::decode(t.slot).1;
+    assert_eq!(
+        crate::dispatch::handle::ticket_count(d.ticket_key(), 0, idx, t.generation),
+        crate::dispatch::handle::ticket_count(d.ticket_key(), 0, idx, old.generation) + 1
+    );
+    assert_ne!(t.generation, old.generation);
     let reply = d.submit(&p, t, TICK, frame(plug::PEND_HOLD), DeadlineClass::Call, 0);
     until("the held op", || d.is_pending(t));
     let stale0 = d.stats().stale_wakes;
     let crossings0 = p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst);
-    crate::dispatch::ticket::host_wake(p.inner.ctx(), old);
+    // Woken from INSIDE a crossing of `p`, so a forgery would have someone to quarantine.
+    crate::dispatch::plugin::with_crossing(Some(&*p.inner), || {
+        crate::dispatch::ticket::host_wake(p.inner.ctx(), old);
+    });
     until("the stale wake is counted", || {
         d.stats().stale_wakes > stale0
     });
+    // A generation the slot really minted is a late wake, not a forgery (#74): the instance that
+    // woke it is not quarantined.
+    assert!(
+        !p.is_faulted(),
+        "a stale wake for a generation the host minted was judged a forgery"
+    );
     // The wake was processed (counted) and resumed nothing: no crossing happened.
     assert_eq!(
         p.inner.crossings.load(std::sync::atomic::Ordering::SeqCst),
@@ -1866,17 +1903,76 @@ fn red_a_hung_ticketless_call_faults_its_instance() {
     let d = Dispatcher::new(config());
     let (p, _sink) = opened(&d);
     let (p2, _s2) = opened(&d);
-    let hung = p.clone();
+    // One instance, shared with the hung caller (a `Plugin` is `!Clone`).
+    let p = Arc::new(p);
+    let hung = Arc::clone(&p);
     let caller =
         std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:ticketless")).outcome);
     until("the watchdog faults the instance", || p.is_faulted());
     assert!(!p2.is_faulted(), "only the hung instance");
+    assert_eq!(
+        d.stats().quarantined,
+        1,
+        "bb_plugin_quarantined_total counts the quarantine (the default N is the first breach)"
+    );
     assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Fault);
     assert_eq!(
         p2.call(TICK, &mut frame(b"unhang:ticketless")).outcome,
         Outcome::Ready
     );
     caller.join().unwrap();
+}
+
+/// THE DESIGN A.8: "on a breach of the threshold, N times, the instance is quarantined". With
+/// N = 2 the first breach is counted ONCE (however many scans see the call hung), the instance
+/// keeps serving, and nothing is quarantined; the second breach quarantines it, counts
+/// `bb_plugin_quarantined_total`, and every new call is FAULT without a crossing.
+#[test]
+fn red_an_instance_is_quarantined_on_its_nth_breach_and_not_before() {
+    let d = Dispatcher::new(DispatchConfig {
+        quarantine_after: 2,
+        ..config()
+    });
+    let (p, _sink) = opened(&d);
+    let p = Arc::new(p);
+    let (p2, _s2) = opened(&d);
+    let breaches = || p.inner.breaches.load(std::sync::atomic::Ordering::SeqCst);
+
+    let hung = Arc::clone(&p);
+    let first =
+        std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:quarantine-n-1")).outcome);
+    until("the watchdog counts the first breach", || breaches() == 1);
+    // Several scans pass while the call stays hung; it is still one breach.
+    std::thread::sleep(Duration::from_millis(120));
+    assert_eq!(breaches(), 1, "a hung call is one breach, not one per scan");
+    assert!(!p.is_faulted(), "one breach of two quarantines nothing");
+    assert_eq!(d.stats().quarantined, 0);
+    assert_eq!(
+        p2.call(TICK, &mut frame(b"unhang:quarantine-n-1")).outcome,
+        Outcome::Ready
+    );
+    first.join().unwrap();
+    assert_eq!(
+        p.call(TICK, &mut frame(answer(1))).outcome,
+        Outcome::Ready,
+        "below N the instance keeps serving"
+    );
+
+    let hung = Arc::clone(&p);
+    let second =
+        std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:quarantine-n-2")).outcome);
+    until("the second breach quarantines the instance", || {
+        p.is_faulted()
+    });
+    assert_eq!(breaches(), 2);
+    assert_eq!(d.stats().quarantined, 1, "bb_plugin_quarantined_total");
+    assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Fault);
+    assert!(!p2.is_faulted(), "only the breaching instance");
+    assert_eq!(
+        p2.call(TICK, &mut frame(b"unhang:quarantine-n-2")).outcome,
+        Outcome::Ready
+    );
+    second.join().unwrap();
 }
 
 #[test]
@@ -2108,7 +2204,8 @@ fn red_a_hung_ticketless_open_is_watched_from_bind() {
         },
     )
     .unwrap();
-    let hung = p.clone();
+    let p = Arc::new(p);
+    let hung = Arc::clone(&p);
     let caller = std::thread::spawn(move || {
         let mut f = open_frame();
         let settings = b"hang:open";
@@ -2442,9 +2539,10 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
     ];
     // SAFETY: an all-zero Claim is a valid row (no strings, no lists).
     let row: &'static Claim = Box::leak(Box::new(unsafe { std::mem::zeroed::<Claim>() }));
-    // SAFETY: an all-zero TransportTail is a valid value; its size and rows are set below.
+    // SAFETY: an all-zero TransportTail is a valid value; its size, piece and rows are set below.
     let mut t: TransportTail = unsafe { std::mem::zeroed() };
     t.head.size = std::mem::size_of::<TransportTail>() as u32;
+    t.frame_piece_size = std::mem::size_of::<busbar_contract::abi::transport::FramePiece>() as u32;
     t.claim_rows = row;
     t.claim_rows_len = 1;
     let tail = (Box::leak(Box::new(t)) as *const TransportTail).cast::<KindTailHead>();
@@ -2460,7 +2558,9 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
         crate::dispatch::load::kind_tail(&st(2, KindCode::Transport)),
         Err(LoadError::KindTail(why)) if why.contains("tail.claim_rows")
     ));
-    assert!(crate::dispatch::load::kind_tail(&st(0, KindCode::Plane)).is_ok());
+    // A kind with no tail rule at admit (a plane's states its answer layout, judged below in
+    // `a_plane_built_against_another_answer_layout_is_refused_at_load`).
+    assert!(crate::dispatch::load::kind_tail(&st(0, KindCode::Hook)).is_ok());
     // A transport naming claims with no tail at all has no rows: refused, not skipped.
     let untailed = Statement {
         kind_tail: std::ptr::null(),
@@ -2470,6 +2570,171 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
         crate::dispatch::load::kind_tail(&untailed),
         Err(LoadError::KindTail(_))
     ));
+}
+
+/// THE PIECE STRIDE AT LOAD (busbar #1032): a framer writes `FramerSink::pieces` at its own
+/// `FramePiece` size, and the host reads them at its own. RED: a transport whose tail states a
+/// piece size other than the host's (the 40-byte piece before #1032), or none (a tail that
+/// predates the word), is refused at load, naming the plugin, both sizes and the rebuild. GREEN:
+/// the host's size loads.
+#[test]
+fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::transport::{Claim, FramePiece, TransportTail, FRAME_PIECE_SIZE};
+    const NAMES: &[AbiStr] = &[busbar_contract::abi::sdk::door::abi_str("tele")];
+    let host = std::mem::size_of::<FramePiece>() as u32;
+    assert_eq!(
+        host, FRAME_PIECE_SIZE,
+        "the contract states the host's piece"
+    );
+    // SAFETY: an all-zero Claim is a valid row (no strings, no lists).
+    let row: &'static Claim = Box::leak(Box::new(unsafe { std::mem::zeroed::<Claim>() }));
+    let tail = |size: usize, piece: u32| {
+        // SAFETY: an all-zero TransportTail is a valid value; its size, piece and rows are set.
+        let mut t: TransportTail = unsafe { std::mem::zeroed() };
+        t.head.size = size as u32;
+        t.frame_piece_size = piece;
+        t.claim_rows = row;
+        t.claim_rows_len = 1;
+        (Box::leak(Box::new(t)) as *const TransportTail).cast::<KindTailHead>()
+    };
+    // Through the load path's own Statement read (`validate`, the pack tool's rendering and
+    // `statement_of` all go through it), on a transport door.
+    let load = |kind_tail: *const KindTailHead| {
+        let st: &'static Statement = Box::leak(Box::new(Statement {
+            size: std::mem::size_of::<Statement>() as u32,
+            kind: KindCode::Transport as u32,
+            kind_abi: KindCode::Transport.abi_version(),
+            kind_tail,
+            claims: NAMES.as_ptr(),
+            claims_len: NAMES.len(),
+            ..busbar_contract::abi::sdk::door::statement("sockets", "1.0.0", 1)
+        }));
+        let door = Door {
+            magic: DOOR_MAGIC,
+            mechanism_version: MECHANISM_VERSION,
+            size: std::mem::size_of::<Door>() as u32,
+            kind: KindCode::Transport as u32,
+            kind_abi: KindCode::Transport.abi_version(),
+            statement: st,
+            ops: std::ptr::null(),
+            ready: None,
+        };
+        crate::dispatch::load::statement(&door).map(|_| ())
+    };
+    let whole = std::mem::size_of::<TransportTail>();
+
+    // GREEN: the host's piece loads.
+    assert_eq!(load(tail(whole, host)), Ok(()), "the host's piece loads");
+
+    // RED: the piece before #1032, read at the wrong stride, is refused.
+    let refused = load(tail(whole, 40)).expect_err("a 40-byte piece is refused");
+    assert_eq!(
+        refused,
+        LoadError::FramePieceSize {
+            plugin: "sockets".into(),
+            stated: 40,
+            host,
+        }
+    );
+    let said = refused.to_string();
+    assert!(
+        said.contains("'sockets'")
+            && said.contains("40-byte")
+            && said.contains(&format!("{host}-byte"))
+            && said.contains("rebuild against this busbar-contract"),
+        "{said}"
+    );
+
+    // RED: a tail that stops short of the word (built before it) states no piece: refused the same.
+    let before = std::mem::offset_of!(TransportTail, frame_piece_size);
+    assert_eq!(
+        load(tail(before, host)),
+        Err(LoadError::FramePieceSize {
+            plugin: "sockets".into(),
+            stated: 0,
+            host,
+        }),
+        "a tail that predates the piece size is refused, never read past its end"
+    );
+}
+
+/// THE PLANE'S ANSWER LAYOUT AT LOAD: a plane writes every `out` at its own layout (`OnPieceOut`
+/// grew 240 -> 248 bytes and `ArriveOut`'s padding became `refusal_flags` under plane ABI v1), and
+/// the host reads them at its own. RED: a plane whose tail states another `ANSWER_LAYOUT` than the
+/// host's, or none (a tail that predates the word), is refused at load, naming the plugin, both
+/// layouts and the rebuild. GREEN: the host's layout loads.
+#[test]
+fn a_plane_built_against_another_answer_layout_is_refused_at_load() {
+    use busbar_contract::abi::plane::{PlaneTail, ANSWER_LAYOUT};
+    let host = ANSWER_LAYOUT;
+    let tail = |size: usize, layout: u32| {
+        // SAFETY: an all-zero PlaneTail is a valid value; its size and layout are set.
+        let mut t: PlaneTail = unsafe { std::mem::zeroed() };
+        t.head.size = size as u32;
+        t.answer_layout = layout;
+        (Box::leak(Box::new(t)) as *const PlaneTail).cast::<KindTailHead>()
+    };
+    // Through the load path's own Statement read (`validate`, the pack tool's rendering and
+    // `statement_of` all go through it), on a plane door.
+    let load = |kind_tail: *const KindTailHead| {
+        let st: &'static Statement = Box::leak(Box::new(Statement {
+            size: std::mem::size_of::<Statement>() as u32,
+            kind: KindCode::Plane as u32,
+            kind_abi: KindCode::Plane.abi_version(),
+            kind_tail,
+            ..busbar_contract::abi::sdk::door::statement("tools", "1.0.0", 1)
+        }));
+        let door = Door {
+            magic: DOOR_MAGIC,
+            mechanism_version: MECHANISM_VERSION,
+            size: std::mem::size_of::<Door>() as u32,
+            kind: KindCode::Plane as u32,
+            kind_abi: KindCode::Plane.abi_version(),
+            statement: st,
+            ops: std::ptr::null(),
+            ready: None,
+        };
+        crate::dispatch::load::statement(&door).map(|_| ())
+    };
+    let whole = std::mem::size_of::<PlaneTail>();
+
+    // GREEN: the host's layout loads.
+    assert_eq!(load(tail(whole, host)), Ok(()), "the host's layout loads");
+
+    // RED: a plane built against another contract's answers is refused, older and newer alike.
+    for other in [host - 1, host + 1] {
+        let refused = load(tail(whole, other)).expect_err("another answer layout is refused");
+        assert_eq!(
+            refused,
+            LoadError::PlaneLayout {
+                plugin: "tools".into(),
+                stated: other,
+                host,
+            }
+        );
+        let said = refused.to_string();
+        assert!(
+            said.contains("'tools'")
+                && said.contains(&format!("plane layout {other}"))
+                && said.contains(&format!("plane layout {host}"))
+                && said.contains("rebuild against this busbar-contract"),
+            "{said}"
+        );
+    }
+
+    // RED: a tail that stops short of the word (built before it) states no layout: refused the
+    // same, never read past its end.
+    let before = std::mem::offset_of!(PlaneTail, answer_layout);
+    assert_eq!(
+        load(tail(before, host)),
+        Err(LoadError::PlaneLayout {
+            plugin: "tools".into(),
+            stated: 0,
+            host,
+        }),
+        "a tail that predates the answer layout is refused, never read past its end"
+    );
 }
 
 // ── THE WORKERS' RUNTIME ─────────────────────────────────────────────────────────────────────────
@@ -2503,4 +2768,648 @@ fn a_dispatcher_built_and_first_submitted_inside_a_runtime_runs_in_no_runtime_un
         "a second install is ignored"
     );
     assert!(d.installed_runtime().is_some());
+}
+
+/// #74, ONE GUESS: an instance that hands the host's `wake` a context the host did not mint, from
+/// inside its own crossing, is quarantined (N = 1). The crossing is a `tick`, a lifecycle op, so
+/// this is the FFI-worker path: the mark travels with the crossing onto the plugin thread. The
+/// forging op ITSELF answers FAULT (its answer is not judged and its envelope not read), the
+/// instance is faulted and its every later op is FAULT without a crossing, and its own handle is
+/// REVOKED. The control: an instance that only hands back its own context is never faulted.
+#[test]
+fn a_forged_context_quarantines_the_instance_that_forged_it() {
+    let d = Dispatcher::new(config());
+    let honest = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &honest, 0), Outcome::Ready);
+    assert_eq!(
+        honest.call(TICK, &mut frame(plug::COUNT)).outcome,
+        Outcome::Ready
+    );
+    assert!(!honest.is_faulted(), "an honest instance was faulted");
+
+    let forger = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
+    assert_eq!(
+        forger.call(TICK, &mut frame(plug::FORGE)).outcome,
+        Outcome::Fault,
+        "the forging op answered other than FAULT"
+    );
+    assert!(
+        forger.is_faulted(),
+        "the forging instance was not quarantined"
+    );
+    assert_eq!(
+        forger.call(TICK, &mut frame(plug::COUNT)).outcome,
+        Outcome::Fault,
+        "a quarantined instance was called again"
+    );
+    let latch = crate::dispatch::handle::Latch::new();
+    assert!(
+        crate::dispatch::handle::resolve_in(forger.inner.ctx(), &latch, None).is_none(),
+        "the quarantined instance's own handle still names it"
+    );
+    assert_eq!(
+        latch.forged(),
+        0,
+        "a revoked handle was counted as a forgery"
+    );
+    assert!(
+        !honest.is_faulted(),
+        "the quarantine reached another instance"
+    );
+    assert!(crate::dispatch::handle::resolve_in(honest.inner.ctx(), &latch, None).is_some());
+}
+
+/// #74, IN A REAL CROSSING: another instance's handle is a forgery, revoked or not, and quarantines
+/// the instance crossing; the latch does not move (the forgery had someone to blame). Driven under
+/// `with_crossing` with a real instance, as a crossing states it.
+#[test]
+fn inside_a_crossing_another_instances_handle_quarantines_the_crossing() {
+    let d = Dispatcher::new(config());
+    let crossing = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &crossing, 0), Outcome::Ready);
+    let other = linked(Arc::new(Recorder::default()));
+    let (own_ctx, other_ctx) = (crossing.inner.ctx(), other.inner.ctx());
+    // The other instance revoked first: a revoked handle of ANOTHER instance is still a forgery.
+    other.inner.revoke();
+    let latch = crate::dispatch::handle::Latch::new();
+    let (own, theirs) = crate::dispatch::plugin::with_crossing(Some(&*crossing.inner), || {
+        let own = crate::dispatch::handle::resolve_in(
+            own_ctx,
+            &latch,
+            crate::dispatch::plugin::crossing_wake(),
+        )
+        .is_some();
+        let theirs = crate::dispatch::handle::resolve_in(
+            other_ctx,
+            &latch,
+            crate::dispatch::plugin::crossing_wake(),
+        )
+        .is_some();
+        (own, theirs)
+    });
+    assert!(own, "the crossing's own handle was refused");
+    assert!(
+        !theirs,
+        "another instance's handle resolved inside a crossing"
+    );
+    assert_eq!(latch.forged(), 1, "the forgery was not counted");
+    assert_eq!(
+        latch.unattributed(),
+        0,
+        "an attributed forgery moved the latch"
+    );
+    assert!(
+        crossing.is_faulted(),
+        "the crossing instance was not quarantined"
+    );
+}
+
+/// #74, THE INLINE HOT-LANE SLOT: a call into plugin code that is no mechanism crossing, nested in
+/// one, runs with the mark nulled. A forgery made inside it blames no one (the outer instance stays
+/// unquarantined, the latch counts it) and the outer crossing's mark is restored after it.
+#[test]
+fn a_forgery_inside_an_inline_slot_leaves_the_outer_crossing_alone() {
+    let d = Dispatcher::new(config());
+    let outer = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &outer, 0), Outcome::Ready);
+    let forged = busbar_contract::abi::mechanism::ticket::HostCtx {
+        handle: outer.inner.ctx().handle ^ (1 << crate::dispatch::handle::HANDLE_ID_BITS),
+    };
+    let latch = crate::dispatch::handle::Latch::new();
+    let restored = crate::dispatch::plugin::with_crossing(Some(&*outer.inner), || {
+        crate::dispatch::plugin::without_crossing(|| {
+            assert!(crate::dispatch::plugin::crossing_wake().is_none());
+            assert!(crate::dispatch::handle::resolve_in(
+                forged,
+                &latch,
+                crate::dispatch::plugin::crossing_wake(),
+            )
+            .is_none());
+        });
+        crate::dispatch::plugin::crossing_wake().is_some_and(|w| std::ptr::eq(w, outer.inner.wake))
+    });
+    assert!(restored, "the outer crossing's mark was not restored");
+    assert!(
+        !outer.is_faulted(),
+        "the outer instance was quarantined for an inline forgery"
+    );
+    assert_eq!(
+        latch.unattributed(),
+        1,
+        "the unattributed forgery was not counted"
+    );
+}
+
+/// #74, REVOCATION: a closed instance's handle, a dropped one's and a watchdog-faulted one's name
+/// nothing, and none of the three is counted as a forgery (their tags are the host's own).
+#[test]
+fn a_closed_a_dropped_and_a_watchdog_faulted_instance_name_nothing() {
+    let d = Dispatcher::new(config());
+    let latch = crate::dispatch::handle::Latch::new();
+    let resolves = |ctx| crate::dispatch::handle::resolve_in(ctx, &latch, None).is_some();
+
+    let closed = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &closed, 0), Outcome::Ready);
+    let ctx = closed.inner.ctx();
+    assert!(resolves(ctx));
+    let t = d.mint(0).expect("a ticket");
+    let _ = d
+        .submit(
+            &closed,
+            t,
+            slot::CLOSE,
+            Frame::new(in_head(), out_head()),
+            DeadlineClass::Call,
+            0,
+        )
+        .wait(WAIT);
+    d.recycle(t);
+    assert!(!resolves(ctx), "a closed instance's handle still names it");
+
+    let dropped = linked(Arc::new(Recorder::default()));
+    let ctx = dropped.inner.ctx();
+    assert!(resolves(ctx));
+    drop(dropped);
+    assert!(!resolves(ctx), "a dropped instance's handle still names it");
+
+    let hung = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &hung, 1), Outcome::Ready);
+    let ctx = hung.inner.ctx();
+    let t = d.mint(1).expect("a ticket");
+    let reply = d.submit(
+        &hung,
+        t,
+        TICK,
+        frame(b"hang:revoked"),
+        DeadlineClass::Call,
+        0,
+    );
+    until("the watchdog faults the hung instance", || {
+        hung.is_faulted()
+    });
+    assert!(
+        !resolves(ctx),
+        "a watchdog-faulted instance's handle still names it"
+    );
+    let releaser = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &releaser, 0), Outcome::Ready);
+    let _ = releaser.call(TICK, &mut frame(b"unhang:revoked"));
+    let _ = reply.wait(WAIT);
+
+    assert_eq!(
+        latch.forged(),
+        0,
+        "a revoked handle was counted as a forgery"
+    );
+}
+
+/// #74, REVOCATION ON THE WATCHDOG'S TICKET-LESS PATH: an instance adopted by the dispatcher whose
+/// ticket-less call hangs past its budget is faulted by the watchdog (`ticketless`), and its handle
+/// names nothing from then on, with no forgery counted.
+#[test]
+fn a_ticketless_hang_faulted_by_the_watchdog_revokes_the_handle() {
+    let d = Dispatcher::new(config());
+    let bind_adopted = || Bind {
+        dispatcher: d.adopter(),
+        ..bind(Arc::new(Recorder::default()))
+    };
+    let hung = load_linked::<TestKind>(&row(), bind_adopted()).expect("the linked door loads");
+    assert_eq!(open(&d, &hung, 0), Outcome::Ready);
+    let ctx = hung.inner.ctx();
+    let latch = crate::dispatch::handle::Latch::new();
+    assert!(crate::dispatch::handle::resolve_in(ctx, &latch, None).is_some());
+    std::thread::scope(|scope| {
+        let caller = scope.spawn(|| hung.call(TICK, &mut frame(b"hang:ticketless")).outcome);
+        until("the watchdog faults the ticket-less hang", || {
+            hung.is_faulted()
+        });
+        assert!(
+            crate::dispatch::handle::resolve_in(ctx, &latch, None).is_none(),
+            "a watchdog-faulted instance's handle still names it"
+        );
+        let releaser =
+            load_linked::<TestKind>(&row(), bind_adopted()).expect("the linked door loads");
+        assert_eq!(open(&d, &releaser, 0), Outcome::Ready);
+        let _ = releaser.call(TICK, &mut frame(b"unhang:ticketless"));
+        let _ = caller.join();
+    });
+    assert_eq!(
+        latch.forged(),
+        0,
+        "a revoked handle was counted as a forgery"
+    );
+}
+
+/// #74, THE KEY AT BOOT: a loader boot whose OS random source cannot answer is refused
+/// (`LoadError::Entropy`), the dispatcher never built; there is no fallback key. Driven through the
+/// test seam, which makes this thread's draw a fresh one against a failing source.
+#[test]
+fn a_boot_whose_entropy_fails_is_refused() {
+    crate::dispatch::handle::ENTROPY_FAILS.with(|f| f.set(true));
+    let refused = Dispatcher::try_new(config());
+    let bound = load_linked::<TestKind>(&row(), bind(Arc::new(Recorder::default())));
+    crate::dispatch::handle::ENTROPY_FAILS.with(|f| f.set(false));
+    assert!(
+        matches!(refused, Err(LoadError::Entropy(_))),
+        "a failing entropy source did not refuse the boot"
+    );
+    assert!(
+        matches!(bound, Err(LoadError::Entropy(_))),
+        "a failing entropy source did not refuse the bind"
+    );
+}
+
+/// #74, THE TICKET HALF: a wake for a generation the host never minted is a FORGERY. The generation
+/// is a keyed permutation of the slot's counter, so the worker names the mint it would be by the
+/// inverse and finds none; the instance whose context woke it (its supplier) is quarantined (its
+/// handle revoked, every later op FAULT). The control: an honest instance stays unfaulted.
+#[test]
+fn a_forged_ticket_generation_quarantines_the_instance_that_woke_it() {
+    let d = Dispatcher::new(config());
+    let honest = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &honest, 0), Outcome::Ready);
+    let forger = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
+    let t = d.mint(0).expect("a ticket");
+    let _ = d
+        .submit(
+            &forger,
+            t,
+            TICK,
+            frame(plug::FORGE_TICKET),
+            DeadlineClass::Call,
+            0,
+        )
+        .wait(WAIT);
+    d.recycle(t);
+    until("the forger is quarantined", || forger.is_faulted());
+    let latch = crate::dispatch::handle::Latch::new();
+    assert!(crate::dispatch::handle::resolve_in(forger.inner.ctx(), &latch, None).is_none());
+    assert_eq!(
+        forger.call(TICK, &mut frame(plug::COUNT)).outcome,
+        Outcome::Fault
+    );
+    assert!(
+        !honest.is_faulted(),
+        "the quarantine reached another instance"
+    );
+}
+
+/// A generation of `t`'s slot the host never minted, but for a 1-in-2^32 chance.
+fn forged_generation(t: Ticket) -> Ticket {
+    Ticket {
+        slot: t.slot,
+        generation: t.generation ^ 0x5a5a_5a5a,
+    }
+}
+
+/// RED (#74, ATTRIBUTION CARRIED, NEVER READ OFF THE THREAD): instance A takes a service call on a
+/// forged ticket; its completion fires from inside instance B's crossing. The completer carries A
+/// as the ticket's supplier, so A is quarantined and B, the crossing the wake happened to fire in,
+/// is not. A wake that read the thread's crossing would blame B.
+#[test]
+fn red_a_completion_fired_in_another_crossing_quarantines_its_supplier() {
+    use crate::dispatch::services::{serve, Ran, Stored};
+    use busbar_contract::abi::host::service::{op, ServiceHead};
+    use busbar_contract::abi::mechanism::ticket::CompletionHandle;
+
+    let d = Dispatcher::new(config());
+    let supplier = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &supplier, 0), Outcome::Ready);
+    let bystander = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &bystander, 0), Outcome::Ready);
+    let t = d.mint(0).expect("a ticket");
+    let head = ServiceHead {
+        size: 0,
+        op: op::RECORDS_GET,
+        handle: CompletionHandle {
+            ticket: forged_generation(t),
+            seq: 0,
+            _reserved: 0,
+        },
+    };
+    let waking = crate::dispatch::ticket::Waking::of(supplier.inner.wake)
+        .expect("the supplier is bound to the dispatcher");
+    let held = Mutex::new(None);
+    // SAFETY: no buffers; the service pends.
+    let pended = unsafe {
+        serve(&d.service_store(), &waking, &head, None, |c| {
+            *held.lock().unwrap() = c;
+            Ran::Later
+        })
+    };
+    assert_eq!(pended.outcome, Outcome::Pending);
+    let completer = held.lock().unwrap().take().expect("the call's completer");
+    crate::dispatch::plugin::with_crossing(Some(&*bystander.inner), || {
+        completer.complete(Stored::ready(1));
+    });
+    until("the supplier is quarantined", || supplier.is_faulted());
+    assert!(
+        !bystander.is_faulted(),
+        "the instance whose crossing the completion fired in was blamed"
+    );
+    d.recycle(t);
+}
+
+/// RED (#74, NO ONE TO BLAME): a forged generation the HOST wakes for itself (the connector's
+/// readiness under the root's own identity, which no instance's context named) counts toward the
+/// latch and quarantines no one; a plugin's own wake from its own thread, outside any crossing,
+/// names its supplier and quarantines it, the latch unmoved. Judged against this test's own latch.
+#[test]
+fn red_an_off_crossing_forged_ticket_counts_toward_the_latch() {
+    let d = Dispatcher::new(config());
+    let latch: &'static crate::dispatch::handle::Latch =
+        Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
+    d.judge_against(latch);
+    let honest = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &honest, 0), Outcome::Ready);
+    let forger = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
+    let t = d.mint(0).expect("a ticket");
+
+    // The root's own identity on the connector: no instance supplied the ticket.
+    (d.conn_waker())(
+        busbar_contract::conn::InstanceId(0),
+        crate::dispatch::conn_services::conn_ticket(forged_generation(t)),
+    );
+    until("the host's forged wake is counted", || {
+        latch.unattributed() == 1
+    });
+    assert!(
+        !honest.is_faulted() && !forger.is_faulted(),
+        "the host's own wake blamed an instance"
+    );
+
+    crate::dispatch::ticket::host_wake(forger.inner.ctx(), forged_generation(t));
+    until("the supplier is quarantined", || forger.is_faulted());
+    assert_eq!(
+        (latch.forged(), latch.unattributed()),
+        (2, 1),
+        "a supplied forged ticket was counted toward the latch"
+    );
+    assert!(
+        !honest.is_faulted(),
+        "the quarantine reached another instance"
+    );
+    d.recycle(t);
+}
+
+/// A test latch of the test's own, judged against by `d`.
+fn own_latch(d: &Dispatcher) -> &'static crate::dispatch::handle::Latch {
+    let latch: &'static crate::dispatch::handle::Latch =
+        Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
+    d.judge_against(latch);
+    latch
+}
+
+/// RED (#74, INLINE TICKETS): an inline ticket's generation is the keyed permutation of its slot's
+/// counter, as a worker slot's, so a plugin that guesses `encode(INLINE_WORKER, i)` with a small
+/// generation (what the plain counter from 1 handed out) does not hit a held ticket, and its miss is
+/// a FORGERY: the supplier is quarantined, the latch unmoved. A guess at an inline slot no ticket
+/// ever used is a forgery too.
+#[test]
+fn red_a_guessed_inline_ticket_quarantines_its_supplier() {
+    use crate::dispatch::inline::INLINE_WORKER;
+    use crate::dispatch::ticket::encode;
+    let d = Dispatcher::new(config());
+    let latch = own_latch(&d);
+    let held = d.inline_ticket().expect("an inline ticket");
+    let live = held.ticket();
+    assert!(
+        (1..=1024).all(|g| g != live.generation),
+        "a held inline ticket's generation is a small counter"
+    );
+    let guesser = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &guesser, 0), Outcome::Ready);
+    let prober = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &prober, 0), Outcome::Ready);
+    crate::dispatch::ticket::host_wake(
+        guesser.inner.ctx(),
+        Ticket {
+            slot: live.slot,
+            generation: 1,
+        },
+    );
+    assert!(
+        guesser.is_faulted(),
+        "a guessed inline generation was not judged a forgery"
+    );
+    assert!(
+        !prober.is_faulted(),
+        "the quarantine reached another instance"
+    );
+    assert_eq!((latch.forged(), latch.unattributed()), (1, 0));
+
+    crate::dispatch::ticket::host_wake(
+        prober.inner.ctx(),
+        Ticket {
+            slot: encode(INLINE_WORKER, 999),
+            generation: 1,
+        },
+    );
+    assert!(
+        prober.is_faulted(),
+        "a wake for an inline slot never used was not a forgery"
+    );
+    assert_eq!((latch.forged(), latch.unattributed()), (2, 0));
+    drop(held);
+}
+
+/// RED (#74, INLINE WRAP AND LATE WAKES): an inline slot whose counter is spent is RETIRED, never
+/// handed out again, and a late wake for a generation it really minted is not a forgery.
+#[test]
+fn red_an_inline_slot_whose_counter_is_spent_is_retired() {
+    let d = Dispatcher::new(config());
+    let latch = own_latch(&d);
+    let waker = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &waker, 0), Outcome::Ready);
+    let held = d.inline_ticket().expect("an inline ticket");
+    let seeded = d.inline_tickets().seed_count(held.ticket(), u32::MAX - 1);
+    drop(held);
+    let last = d.inline_ticket().expect("an inline ticket");
+    assert_eq!(
+        last.ticket().slot,
+        seeded.slot,
+        "the slot's last count is handed out"
+    );
+    let last_ticket = last.ticket();
+    drop(last);
+    let mut kept = Vec::new();
+    for _ in 0..8 {
+        let fresh = d.inline_ticket().expect("a fresh inline slot");
+        assert_ne!(
+            fresh.ticket().slot,
+            seeded.slot,
+            "a retired inline slot was handed out again"
+        );
+        kept.push(fresh);
+    }
+    for late in [seeded, last_ticket] {
+        crate::dispatch::ticket::host_wake(waker.inner.ctx(), late);
+    }
+    assert!(
+        !waker.is_faulted(),
+        "a late wake for a minted inline generation was judged a forgery"
+    );
+    assert_eq!(latch.forged(), 0);
+}
+
+/// A task waker that counts its wakes.
+#[derive(Default)]
+struct Counted(std::sync::atomic::AtomicUsize);
+
+impl std::task::Wake for Counted {
+    fn wake(self: Arc<Self>) {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Counted {
+    fn woken(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// RED (#74, A HELD WAKER OUTLIVES ITS GENERATION): the host's I/O holds the waker of an inline
+/// ticket's task (`waker_of`, what `io.*` registers with the reactor); the connection ends, the slot
+/// is recycled and re-minted to a new connection whose task registers. The old readiness then fires:
+/// it wakes NEITHER task (the old one's waker went with its generation, the new one's is not its
+/// to wake). The control: the new generation's own waker wakes the new task.
+#[test]
+fn red_an_io_held_waker_fired_after_recycle_does_not_wake_the_new_task() {
+    let d = Dispatcher::new(config());
+    let old_task = Arc::new(Counted::default());
+    let held = d.inline_ticket().expect("an inline ticket");
+    held.register(&std::task::Waker::from(old_task.clone()));
+    let io_held = d
+        .inline_tickets()
+        .waker_of(held.ticket())
+        .expect("the held ticket's waker");
+    drop(held);
+    let new_task = Arc::new(Counted::default());
+    let next = d.inline_ticket().expect("the slot again");
+    next.register(&std::task::Waker::from(new_task.clone()));
+    io_held.wake_by_ref();
+    io_held.wake();
+    assert_eq!(
+        new_task.woken(),
+        0,
+        "a stale I/O waker woke the next connection's task"
+    );
+    assert_eq!(old_task.woken(), 0, "a recycled ticket's task was woken");
+    d.inline_tickets()
+        .waker_of(next.ticket())
+        .expect("the new ticket's waker")
+        .wake();
+    assert_eq!(
+        new_task.woken(),
+        1,
+        "the new generation's own waker did not wake its task"
+    );
+}
+
+/// RED (#74, A WAKE RACING A RECYCLE): a wake for an inline ticket looks the slot up; between that
+/// lookup and the wake (the test hook), the ticket is dropped and the slot re-minted to a new task.
+/// The wake checks the generation and takes the waker in one section, so it reaches no task: it is
+/// a late wake of a generation the slot minted, not a forgery. A check made outside the section
+/// would wake the new task.
+#[test]
+fn red_a_wake_interleaved_with_recycle_and_re_mint_does_not_reach_the_new_task() {
+    let d = Dispatcher::new(config());
+    let held = d.inline_ticket().expect("an inline ticket");
+    let old = held.ticket();
+    let new_task = Arc::new(Counted::default());
+    let next: Arc<Mutex<Option<crate::dispatch::InlineTicket>>> = Arc::default();
+    let (tickets, task, slot) = (d.inline_tickets_arc(), new_task.clone(), next.clone());
+    crate::dispatch::inline::BETWEEN_LOOKUP_AND_WAKE.with(|h| {
+        *h.borrow_mut() = Some(Box::new(move || {
+            drop(held);
+            let t = tickets.mint().expect("the slot again");
+            t.register(&std::task::Waker::from(task));
+            *slot.lock().unwrap() = Some(t);
+        }));
+    });
+    let judged = d.inline_tickets().wake(old);
+    assert_eq!(judged, crate::dispatch::inline::Judged::Stale);
+    let re_minted = next
+        .lock()
+        .unwrap()
+        .take()
+        .expect("the hook re-minted the slot");
+    assert_eq!(
+        re_minted.ticket().slot,
+        old.slot,
+        "the race re-minted another slot"
+    );
+    assert_eq!(
+        new_task.woken(),
+        0,
+        "a wake for the recycled generation woke the new task"
+    );
+}
+
+/// RED (#74, A WORKER THE DISPATCHER DOES NOT RUN): a wake for `encode(n, 0)`, `n` past the
+/// dispatcher's workers and short of the inline worker, names a slot nothing minted: a forgery,
+/// blamed on its supplier, not merely a stale wake.
+#[test]
+fn red_a_wake_for_a_worker_the_dispatcher_does_not_run_is_a_forgery() {
+    let d = Dispatcher::new(config());
+    let latch = own_latch(&d);
+    let forger = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
+    crate::dispatch::ticket::host_wake(
+        forger.inner.ctx(),
+        Ticket {
+            slot: crate::dispatch::ticket::encode(d.workers(), 0),
+            generation: 1,
+        },
+    );
+    assert!(
+        forger.is_faulted(),
+        "a wake for a worker no one runs was not a forgery"
+    );
+    assert_eq!((latch.forged(), latch.unattributed()), (1, 0));
+}
+
+/// RED (#74, COUNTER WRAP): a slot whose mint counter is spent is RETIRED, never handed out again:
+/// a counter that wrapped would re-mint generations the slot already handed out, and a plugin that
+/// kept one would wake the slot's next op. Seeded one short of `u32::MAX`; the slot's last mint is
+/// at `u32::MAX`; after it the worker takes fresh slots, and a wake on the retired slot's last
+/// generation is a late wake, not a forgery.
+#[test]
+fn red_a_slot_whose_counter_is_spent_is_retired() {
+    let d = Dispatcher::new(config());
+    let latch: &'static crate::dispatch::handle::Latch =
+        Box::leak(Box::new(crate::dispatch::handle::Latch::new()));
+    d.judge_against(latch);
+    let t = d.mint(0).expect("a ticket");
+    let t = d.seed_count(t, u32::MAX - 1);
+    d.recycle(t);
+    until("the recycle lands", || d.slot_state(t).1);
+    let last = d.mint(0).expect("a ticket");
+    assert_eq!(last.slot, t.slot, "the slot's last count is handed out");
+    assert_eq!(d.slot_state(last).2, u32::MAX);
+    d.recycle(last);
+    until("the last recycle lands", || !d.slot_state(last).0);
+    let (_, free, count) = d.slot_state(last);
+    assert!(!free, "a spent slot went back on the free list");
+    assert_eq!(count, u32::MAX, "a spent counter wrapped");
+    for _ in 0..8 {
+        let n = d.mint(0).expect("a fresh slot");
+        assert_ne!(n.slot, last.slot, "a retired slot was handed out again");
+    }
+    let stale0 = d.stats().stale_wakes;
+    (d.conn_waker())(
+        busbar_contract::conn::InstanceId(0),
+        crate::dispatch::conn_services::conn_ticket(last),
+    );
+    until("the late wake is counted", || {
+        d.stats().stale_wakes > stale0
+    });
+    assert_eq!(
+        latch.forged(),
+        0,
+        "a retired slot's own generation was judged a forgery"
+    );
 }

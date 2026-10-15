@@ -396,6 +396,13 @@ impl AuditChain {
         self
     }
 
+    /// A secret derived from the key this chain signs with, under `label`
+    /// ([`crate::sign::AuditSigningKey::derived_secret`]); `None` when it signs with none.
+    #[must_use]
+    pub fn derived_secret(&self, label: &[u8]) -> Option<[u8; 32]> {
+        self.signer.as_ref().map(|k| k.derived_secret(label))
+    }
+
     /// SEAL AS THIS NODE from here on: every record names `node` ([`AuditRecord::node`]).
     ///
     /// A builder, like [`Self::signing_with`], and the composition root names the node it runs as.

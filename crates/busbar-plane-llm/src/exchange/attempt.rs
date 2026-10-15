@@ -298,6 +298,7 @@ fn static_name(name: &str) -> &'static str {
 #[allow(clippy::too_many_arguments)]
 #[must_use]
 pub fn translate_request<'a>(
+    host: &dyn busbar_contract::codec::CodecHost,
     ingress: &str,
     operation: OpVerb,
     lane: FarShape<'_>,
@@ -315,6 +316,7 @@ pub fn translate_request<'a>(
         dropped_controls: Vec::new(),
     };
     t.outcome = translate_into(
+        host,
         &mut t,
         ingress,
         envelope,
@@ -332,6 +334,7 @@ pub fn translate_request<'a>(
 
 #[allow(clippy::too_many_arguments)]
 fn translate_into<'a>(
+    host: &dyn busbar_contract::codec::CodecHost,
     t: &mut Translation<'a>,
     ingress: &str,
     envelope: &'static str,
@@ -379,6 +382,7 @@ fn translate_into<'a>(
         };
         let translated = ih
             .translate_request(
+                host,
                 TranslateReqInput::Opaque {
                     bytes: hop_bytes,
                     content_type,
@@ -425,6 +429,7 @@ fn translate_into<'a>(
     };
     let translated = ingress_handler
         .translate_request(
+            host,
             TranslateReqInput::Json(&body),
             handler_of(egress).map(|_| egress),
             &prep,
@@ -469,6 +474,7 @@ pub fn upstream_path(lane: &Lane, operation: OpVerb, stream: bool) -> Option<Str
     let rh = decl(lane.dialect).and_then(|d| d.handler)?;
     Some(match &lane.path {
         Some(p) => p.clone(),
+        None if lane.invoke => super::invoke::path(lane.wire_model(), stream),
         None => rh.upstream_path(&EgressCtx {
             operation,
             model: lane.wire_model(),
@@ -740,6 +746,7 @@ fn forward_over(
 ///
 /// The caller's refusal when the request cannot be written for this far end.
 pub fn build(
+    host: &dyn busbar_contract::codec::CodecHost,
     arrived: &Arrived,
     caller: HeadFields<'_>,
     shaping: &Shaping,
@@ -762,6 +769,7 @@ pub fn build(
     };
     let reasoning = shaping.reasoning(pool, member).unwrap_or(lane.reasoning);
     let t = translate_request(
+        host,
         ingress,
         arrived.operation,
         lane.shape(),
@@ -801,6 +809,14 @@ pub fn build(
         body_is_json,
         intent.wants_stream,
     )?;
+    // THE INVOKE ENVELOPE around the carried dialect's request ([`super::invoke`]).
+    let (fields, body, pristine) = if lane.invoke {
+        let (fields, beta) = super::invoke::fields(fields, intent.wants_stream);
+        let body = super::invoke::body(&body, &beta).ok_or_else(|| internal(ingress))?;
+        (fields, body, false)
+    } else {
+        (fields, body, pristine)
+    };
     Ok(FarRequest {
         verb: "POST",
         target,

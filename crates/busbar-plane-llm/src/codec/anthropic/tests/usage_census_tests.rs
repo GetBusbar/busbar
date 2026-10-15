@@ -62,7 +62,7 @@ fn buffered_and_truncated(usage: &serde_json::Value) -> [Ledgered; 2] {
         "usage": usage
     });
     let buffered = AnthropicReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read")
         .usage
         .to_token_usage();
@@ -86,10 +86,19 @@ fn streamed(usage: &serde_json::Value) -> Ledgered {
         "delta": {"stop_reason": "end_turn", "stop_sequence": null},
         "usage": usage
     });
-    let _ = t.feed(format!("event: message_start\ndata: {start}\n\n").as_bytes());
-    let _ = t.feed(format!("event: message_delta\ndata: {delta}\n\n").as_bytes());
-    let _ = t.feed(b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n");
-    let _ = t.finish();
+    let _ = t.feed(
+        crate::codec::test_host::HOST,
+        format!("event: message_start\ndata: {start}\n\n").as_bytes(),
+    );
+    let _ = t.feed(
+        crate::codec::test_host::HOST,
+        format!("event: message_delta\ndata: {delta}\n\n").as_bytes(),
+    );
+    let _ = t.feed(
+        crate::codec::test_host::HOST,
+        b"event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    );
+    let _ = t.finish(crate::codec::test_host::HOST);
     ledgered(&t.usage().expect("the tap captured usage").to_token_usage())
 }
 
@@ -165,7 +174,7 @@ fn web_searches_ledger_as_search_units_and_none_is_no_row() {
         "usage": none
     });
     let u = AnthropicReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read")
         .usage
         .to_token_usage();

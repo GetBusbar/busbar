@@ -19,7 +19,8 @@
 //! The same call with the meter's own answer type compiles, so the fixture above fails for the one
 //! reason it is meant to and not because something was misspelled:
 //!
-//! ```
+#![cfg_attr(feature = "test-seal", doc = "```")]
+#![cfg_attr(not(feature = "test-seal"), doc = "```ignore")]
 //! use busbar_contract::caps::{Consumption, SeatVerdict, Grant, KernelSeal, Meter, Pass, Usage};
 //! let seal = KernelSeal::acquire_for_kernel();
 //! let token: Pass<Meter> = Pass::mint(&seal);
@@ -44,7 +45,8 @@
 //!         | StaleSlice | DurabilityUnavailable | TierMismatch | Replayed | InFlight
 //!         | DestinationBudgetExhausted | BreakerOpen | DestinationUnreachable | MeterDisputed
 //!         | HandoffMismatch | PlanePanic | TaskLost | Stalled | SecretPlaceholder | Drain
-//!         | Superseded | ClientGone | DeadlineExceeded | Untrusted => false,
+//!         | Superseded | ClientGone | DeadlineExceeded | Untrusted
+//!         | CredentialUnavailable => false,
 //!     }
 //! }
 //! assert!(is_the_callers_money(ReasonCode::OverBudget));
@@ -218,6 +220,9 @@ reasons! {
     /// counterparty or capability the unit rests on (ARCHITECT 2026-10-06: trust is the kernel's
     /// Approve step; a plane only states facts).
     Untrusted => "untrusted", Untrusted,
+    /// The member's own credential, re-resolved for this request, is unavailable (it no longer
+    /// resolves, or its new value would not bind): nothing was dialled.
+    CredentialUnavailable => "credential_unavailable", CredentialUnavailable,
 }
 
 impl std::fmt::Display for ReasonCode {

@@ -79,7 +79,7 @@ macro_rules! leaf_op {
                 Ok(Box::new($crate::codec::leaf_handles::$req($read_req(body, content_type)?)))
             }
             fn read_response(
-                &self,
+                &self,_host: &dyn busbar_contract::codec::CodecHost,
                 wire: &[u8],
             ) -> Result<Box<dyn busbar_contract::ir::handle::IrHandle>, busbar_contract::codec::CodecError>
             {
@@ -215,6 +215,7 @@ pub mod wire_shim;
 /// Returns `None` for a protocol name the registry does not know.
 #[must_use]
 pub fn write_error_envelope(
+    host: &dyn busbar_contract::codec::CodecHost,
     ingress_protocol: &str,
     status: u16,
     kind: &str,
@@ -225,7 +226,7 @@ pub fn write_error_envelope(
     Some(
         protocol
             .writer()
-            .write_error_from_entropy(status, kind, message, entropy),
+            .write_error_from_entropy(host, status, kind, message, entropy),
     )
 }
 
@@ -249,18 +250,18 @@ pub fn decl_of(name: &str) -> Option<&'static busbar_contract::protocol::Protoco
     DECLS.iter().copied().find(|d| d.name == name)
 }
 
-/// THIS CRATE'S TEST HOST (#83a SD-3: the test registration and the classifier are dev-only): the
-/// host services a composition root arms behind the contract seams, armed for this crate's test
-/// binary by the test itself, so the codec's tests prove the codec's own seam and never reach the
-/// host crate.
+#[cfg(test)]
+#[path = "tests/codec_host_tests.rs"]
+mod codec_host_tests;
+/// THIS CRATE'S TEST HOST (#83a SD-3: the test host and the classifier are dev-only): the codec
+/// host a shipped binary's host hands the codec, provided for this crate's test binary by the test
+/// itself, so the codec's tests prove the codec's own seam and never reach the host crate.
 #[cfg(test)]
 #[path = "tests/test_host.rs"]
 pub(crate) mod test_host;
 #[cfg(test)]
 #[path = "tests/usage_census.rs"]
 pub(crate) mod usage_census;
-#[cfg(test)]
-pub(crate) use test_host::ensure_test_protocols_registered;
 
 /// EVERY DIALECT THIS PLUGIN DECLARES, in the order an operator sees.
 ///

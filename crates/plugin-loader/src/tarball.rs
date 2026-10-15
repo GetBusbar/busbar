@@ -11,6 +11,12 @@
 //! bounds on member count and decompressed sizes so a hostile archive (zip-bomb, entry flood,
 //! path-traversal names) is refused before it can cost anything. [`package`] is the inverse, used
 //! by the release pipeline, the packaging CLI, and tests.
+//!
+//! A member's NAME may carry a relative directory prefix (`pkg/manifest.json`, `pkg/lib/x.so`):
+//! the member is keyed on its basename, exactly as 1.5.5 unpacked it (v1.5.5
+//! `crates/plugin-loader/src/tarball.rs`, `unpack`), so a tarball a 1.5.5 operator built that way
+//! still loads (ARCHITECT ruling on X-2017, 2026-10-14). A directory ENTRY, a link, an absolute
+//! name or a parent reference is refused.
 
 use crate::sign::Manifest;
 use std::io::Read as _;
@@ -141,8 +147,10 @@ impl<R: std::io::Read> std::io::Read for EofAsKind<R> {
 
 /// Unpack a plugin tarball FULLY IN MEMORY, fail-closed: the archive must contain EXACTLY one
 /// `manifest.json` and EXACTLY one other regular file (the library), nothing else - no
-/// directories, links, absolute paths, or parent references. Returns the parsed manifest + the
-/// exact library bytes; every failure names the specific violation.
+/// directory entries, links, absolute paths, or parent references. A member name with a relative
+/// directory prefix is keyed on its basename (`pkg/manifest.json` is the manifest, `pkg/lib/x.so`
+/// is the library `x.so`), as in 1.5.5. Returns the parsed manifest + the exact library bytes;
+/// every failure names the specific violation.
 ///
 /// NOTE: this performs NO signature/trust/structure checks - it is pure decoding. The caller runs
 /// phase 1 (structural) and phase 2 (trust) over the returned parts.

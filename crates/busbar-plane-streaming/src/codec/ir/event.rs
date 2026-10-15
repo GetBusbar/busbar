@@ -21,7 +21,7 @@ pub enum IrClientEvent {
     AudioFrame(IrAudioFrame),
     /// A session-control / config event the client sent (reconciled against the locked config).
     Control(IrDuplexControl),
-    /// A server-side tool RESULT the plane authored back toward the upstream (`CallResult`).
+    /// The caller's tool RESULT, carried toward the upstream (`CallResult`).
     Tool(IrDuplexTool),
 }
 
