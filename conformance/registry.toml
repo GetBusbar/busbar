@@ -124,6 +124,16 @@ verdict = "conformance-verdict-voice-openai-realtime"
 plane = "streaming"
 public = "true"
 
+[[suite]]
+id = "webrtc-browser"
+standard = "WebRTC (browser interop: ICE, DTLS-SRTP, SCTP data channels)"
+plan = "headless Chromium and Firefox against busbar's terminating datagram path; control: the browser against itself; negative control: a broken line echo"
+tier = "spec-conformant"
+label = "WebRTC browsers"
+verdict = "conformance-verdict-webrtc-browser"
+plane = "streaming"
+public = "true"
+
 # ── PLANNED for 1.6.0 (no verdict yet → not-run → renders NOTHING) ────────────────────────────────
 
 [[suite]]

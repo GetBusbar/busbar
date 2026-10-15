@@ -4208,6 +4208,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "webrtc-conformance-subject"
+version = "0.0.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-core-connector",
+ "busbar-plugin-loader",
+ "busbar-transport-webrtc",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "winapi"
 version = "0.3.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"

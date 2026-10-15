@@ -4324,6 +4324,21 @@
    ]
   },
   {
+   "id": "testing/webrtc-conformance",
+   "kind": "instrument",
+   "paths": [
+    "testing/webrtc-conformance"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "testing/ws-conformance",
    "kind": "instrument",
    "paths": [
@@ -4365,6 +4380,7 @@
     "testing/plane-copies",
     "testing/shadow-oracle",
     "testing/voice-conformance",
+    "testing/webrtc-conformance",
     "testing/ws-conformance"
    ],
    "rounds": [
