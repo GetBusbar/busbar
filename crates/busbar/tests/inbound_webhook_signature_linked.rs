@@ -1,23 +1,24 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **THE WEBHOOK-SIGNATURE AUTH PLUGIN IS LINKED** under its own feature (`auth-webhook-signature`,
-//! not default: its inbound verify is an auth-chain module, so linking it lists it in
-//! `GET /api/v1/admin/info` `build.auth_modules`, which the default build holds to 1.5.5's
-//! `["keys","admin-tokens"]`). Driven through the real binary's `--validate`.
+//! **THE WEBHOOK-SIGNATURE AUTH PLUGIN IS LINKED**, default-on (ARCHITECT 2026-10-14): its inbound
+//! verify is an auth-chain module, so linking it lists it in `GET /api/v1/admin/info`
+//! `build.auth_modules` after 1.5.5's two (accepted difference `#64-class build.auth_modules lists
+//! the webhook-signature module`). Driven through the real binary's `--validate`.
 //!
 //! An `auth.chain` module that no installed or linked plugin answers is refused with "no plugin
 //! matching" / "was not loaded" (`cli_validate`'s `validate_fails_on_unresolvable_auth_chain_plugin`).
-//! With the row linked, the same chain naming `busbar-auth-webhook-signature` resolves to the linked
-//! door, so that refusal is gone. RED without the link: the refusal is exactly what prints.
-#![cfg(feature = "auth-webhook-signature")]
+//! With the row linked, the same chain naming the webhook-signature module resolves to the linked
+//! door, so that refusal is gone. RED without the link: the refusal is exactly what prints. The case
+//! rides every linked auth row (`linked_every_auth`, build.rs) rather than spelling one row's feature.
+#![cfg(linked_every_auth)]
 
 use std::path::PathBuf;
 use std::process::Command;
 
 fn fixture_dir() -> PathBuf {
     let d = std::env::temp_dir().join(format!(
-        "busbar-auth-webhook-signature-linked-{}-{}",
+        "busbar-webhook-signature-linked-{}-{}",
         std::process::id(),
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)

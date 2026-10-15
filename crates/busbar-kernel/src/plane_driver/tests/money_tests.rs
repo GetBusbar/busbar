@@ -308,7 +308,7 @@ fn a_fee_unit_count_is_never_ledgered_as_usage() {
 }
 
 // ── F25 rows 380, 626, 718: the arrival window and the fee unit, rehomed from the legacy engine's
-// money tests onto the served money seam (the rule the root opens every LLM unit under:
+// money tests onto the served money seam (the rule the root opens every plane unit under:
 // `FeeRefund::PlaneFeeUnits`, door_steps.rs).
 
 /// The rig's group `g` month bucket (its budget window), read at `at`: its tokens and its spend in
