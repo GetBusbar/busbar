@@ -28,6 +28,14 @@
 //! global allocation(s)` panic is the RED evidence, `BUSBAR_ALLOC_INJECT` the real plant). A bench
 //! that did not run is RED, never skipped-green.
 //!
+//! THE DOOR LANE'S WITNESS (`hot-path-alloc:door-ready-zero`). The POD batch above is the HOT lane's
+//! `PlaneHostVtable`, which row 84 deletes with `abi/hot`; the request path crosses the door lane.
+//! `crates/busbar/tests/door_ready_alloc.rs` is that lane's counting-allocator witness (A.8: "0 for
+//! each request-path op"): every op the plane contract marks `request_path`, READY through the one
+//! dispatcher, zero host allocations. This row holds its clauses as code, so the witness cannot lose
+//! its allocator, its contract-table coverage or its zero assertion while the gate stays green; the
+//! test itself runs in the workspace suite.
+//!
 //! THE PENDING-RIDER DEPENDENCY. As with the perf instrument, `PlaneHostVtable`
 //! (`crates/busbar-contract/src/abi/hot/host.rs`) has no production caller yet — the keystone
 //! loop-unification (`crates/busbar/src/root/kernel.rs` + `main.rs`, reserved for the keystone wave)
@@ -48,7 +56,10 @@ pub const ROW_INSTRUMENT: &str = "hot-path-alloc:instrument-present";
 pub const ROW_GLOBAL_ALLOCATOR: &str = "hot-path-alloc:global-allocator";
 pub const ROW_POD_BATCH: &str = "hot-path-alloc:pod-batch-zero";
 
+pub const ROW_DOOR_READY: &str = "hot-path-alloc:door-ready-zero";
+
 const BENCH_REL: &str = "crates/busbar-kernel/benches/plane_host_vtable_alloc.rs";
+const DOOR_REL: &str = "crates/busbar/tests/door_ready_alloc.rs";
 const MANIFEST_REL: &str = "crates/busbar-kernel/Cargo.toml";
 const BENCH_NAME: &str = "plane_host_vtable_alloc";
 
@@ -77,6 +88,35 @@ const CLAIMS: &[Claim] = &[
         bad: "the instrument no longer asserts zero allocations across the isolated POD batch",
     },
 ];
+
+/// The door lane's witness: a counting allocator, every request-path op of the contract table
+/// measured, and zero asserted.
+const DOOR_CLAIM: Claim = Claim {
+    row: ROW_DOOR_READY,
+    clauses: &[
+        "#[global_allocator]",
+        "impl GlobalAlloc for",
+        "COUNTED.try_with(|c| c.set(c.get() + 1))",
+        "CONTRACTS.iter().filter(|c| c.request_path)",
+        "unmeasured(|| op(i, input, out))",
+        "assert!(planted >= 1,",
+        "assert_eq!(in_plugin, 0,",
+        "assert_eq!(allocated.len(), 0,",
+    ],
+    ok: "the door witness asserts zero host allocations for every request-path op",
+    bad: "the door witness no longer asserts zero host allocations for every request-path op",
+};
+
+fn door_row(cx: &Ctx) -> Row {
+    match cx.read(DOOR_REL).and_then(|t| code_tokens(&t)) {
+        Ok(code) => claim_row_over(&DOOR_CLAIM, DOOR_REL, &code, "door alloc"),
+        Err(e) => Row::fail(
+            ROW_DOOR_READY,
+            DOOR_CLAIM.bad,
+            format!("{DOOR_REL}: {e} — the door alloc witness could not be read"),
+        ),
+    }
+}
 
 fn instrument_row(cx: &Ctx) -> Row {
     if !cx.exists(BENCH_REL) {
@@ -114,6 +154,7 @@ impl Gate for HotPathAllocGate {
     fn owed(&self) -> Vec<String> {
         std::iter::once(ROW_INSTRUMENT.to_string())
             .chain(CLAIMS.iter().map(|c| c.row.to_string()))
+            .chain(std::iter::once(ROW_DOOR_READY.to_string()))
             .collect()
     }
 
@@ -147,6 +188,7 @@ fn text_rows(cx: &Ctx) -> Vec<Row> {
             )),
         }
     }
+    rows.push(door_row(cx));
     rows
 }
 
@@ -202,6 +244,19 @@ fn text_cases<'a>(cx: &'a Ctx, gate: &'a dyn Gate, report: &mut Report<'a>) {
                 &[*clause],
             ));
         }
+    }
+    let door = cx.read(DOOR_REL).unwrap_or_default();
+    for clause in DOOR_CLAIM.clauses {
+        let mut ov = Overlay::new();
+        ov.set(DOOR_REL, strike_clause(&door, clause));
+        report.push(prove_red(
+            cx,
+            gate,
+            format!("a door alloc witness that drops `{clause}` is RED"),
+            &[ROW_DOOR_READY],
+            ov,
+            &[*clause],
+        ));
     }
 }
 
@@ -383,6 +438,19 @@ mod tests {
             "name = \"plane_host_vtable_alloc\"\nharness = false",
             "name = \"plane_host_vtable_alloc\"",
             ROW_INSTRUMENT,
+        );
+        assert_eq!(st, Status::Fail);
+    }
+
+    /// The door witness's zero: `assert_eq!(allocated.len(), allocated.len(), ..)` keeps the
+    /// allocator and the coverage and asserts nothing.
+    #[test]
+    fn a_door_witness_that_compares_nothing_is_red() {
+        let st = status_with(
+            DOOR_REL,
+            "allocated.len(),\n        0,",
+            "allocated.len(),\n        allocated.len(),",
+            ROW_DOOR_READY,
         );
         assert_eq!(st, Status::Fail);
     }
