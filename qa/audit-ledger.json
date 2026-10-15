@@ -1346,16 +1346,37 @@
    "paths": [
     "crates/busbar-plane-llm/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "347b47495b11b2629d2815efbc1c92dc1d71bf4f64f1d14ecf8ff9036dc43e72",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 20,
+    "MEDIUM": 27,
+    "LOW": 19,
+    "NIT": 4
+   },
+   "report": "The llm plane's door is linked only under a development switch; the default build uses its codecs and reply relay through the legacy engine. Several token and billing behaviours differ from 1.5.5 with no registered difference: cache-write tokens billed as their own class, image tokens billed, failed streams billed, cached tokens moved, thinking switched on, hosted tools forwarded. The codec keeps per-thread state. On the door path failover, cuts and a model's protocol override are wrong. Read in three parts; large codec core files sampled.",
+   "auditor": "opus-ledger-plane-llm-parts",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-llm/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-plane-llm-parts",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "347b47495b11b2629d2815efbc1c92dc1d71bf4f64f1d14ecf8ff9036dc43e72",
+     "counts": {
+      "HIGH": 20,
+      "MEDIUM": 27,
+      "LOW": 19,
+      "NIT": 4
+     },
+     "report": "The llm plane's door is linked only under a development switch; the default build uses its codecs and reply relay through the legacy engine. Several token and billing behaviours differ from 1.5.5 with no registered difference: cache-write tokens billed as their own class, image tokens billed, failed streams billed, cached tokens moved, thinking switched on, hosted tools forwarded. The codec keeps per-thread state. On the door path failover, cuts and a model's protocol override are wrong. Read in three parts; large codec core files sampled."
+    }
    ]
   },
   {
@@ -1782,16 +1803,37 @@
    "paths": [
     "crates/busbar-transport-ws/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "5ddb8018f2d064714d89d6374b0d97d60d665d5f2cf3ca8f02b9c42730c16266",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 6,
+    "LOW": 4,
+    "NIT": 0
+   },
+   "report": "The ws plugin is now one sans-IO framer behind its memory-ABI door. It runs tungstenite over an in-memory pipe, with no runtime, no global state and no lower layer named. It puts the dial's head fields on the upgrade request and the failure's close code on the wire. Its admitted claim row still contradicts its own declarations, and it claims ws without wss. An IPv6-literal target cannot be dialled. An abrupt disconnect is reported as a framing failure. Every connection shares two instance-wide locks, and each message is copied several times. Read fully.",
+   "auditor": "opus-ledger-pinned-transport-ws",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-ws/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-transport-ws",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "5ddb8018f2d064714d89d6374b0d97d60d665d5f2cf3ca8f02b9c42730c16266",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 6,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "The ws plugin is now one sans-IO framer behind its memory-ABI door. It runs tungstenite over an in-memory pipe, with no runtime, no global state and no lower layer named. It puts the dial's head fields on the upgrade request and the failure's close code on the wire. Its admitted claim row still contradicts its own declarations, and it claims ws without wss. An IPv6-literal target cannot be dialled. An abrupt disconnect is reported as a framing failure. Every connection shares two instance-wide locks, and each message is copied several times. Read fully."
+    }
    ]
   },
   {
