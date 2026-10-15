@@ -1349,7 +1349,10 @@ step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh 
 # CORE_ROOTS section), so the gate runs again and the true residual is 17, not 16 -- 16 was the wrong
 # number, not the comment that used to claim 19. Lower this number the moment a section is evicted;
 # a fall is reported as a fall and tells you what to lower it to.
-CONFIG_NOUN_FLOOR=17
+# RE-MEASURED 2026-10-13 on predev 163843dd2c: 10 (pools 5 · agents 2 · streams 3). streams fell 7 -> 3,
+# and `tools` is no longer a scanned noun since mcp left PLANE_KEYS (5e52651535): the gate reads its
+# nouns off the PLANE_KEYS planes' PlaneDecls. The floor follows the measure down, never up.
+CONFIG_NOUN_FLOOR=10
 config_noun_residual() {
   local out rc line count
   out="$(GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1)"; rc=$?
@@ -1561,10 +1564,14 @@ if [ -f qa/audit-ledger.json ]; then
   # The `audit-ledger` GATE was deleted with the old register; what survives, and what
   # judges a restored register, is `cargo xtask ledger`. Its rules' own RED proofs are its unit
   # tests, declared by count so a filter that drifts off them is RED rather than vacuously green.
-  # 29 = the 24 audit/audit_cmd rule tests + the five pinned-scope tests (xtask/src/audit_pinned/
-  # pinned_tests.rs: a moved pin reads stale, a byte-identical pin carries the record, an
-  # unproducible pin is RED naming it, a twin / non-plugin git dep is not mounted, the tree wins).
-  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 29 cargo test -p xtask --lib audit
+  # 27 = the 11 audit rule tests (xtask/src/audit.rs) + the 11 audit_cmd tests (hygiene_tests 4,
+  # move_tests 7) + the five pinned-scope tests (xtask/src/audit_pinned/pinned_tests.rs: a moved pin
+  # reads stale, a byte-identical pin carries the record, an unproducible pin is RED naming it, a
+  # twin / non-plugin git dep is not mounted, the tree wins). THE FILTER NAMES THE THREE MODULES, not
+  # the bare substring `audit`: that substring also selected q128's two `an_audit_of_*` tests and the
+  # construction gate's two `no_response_escapes_audit_tests`, so the run passed 31 against a declared
+  # 29 and this step was RED on tests that are not the ledger's rules (they run in TEST).
+  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 27 cargo test -p xtask --lib -- audit:: audit_cmd:: audit_pinned::
   step "audit-ledger --check"  cargo xtask ledger --check
 else
   absent_step "audit ledger" "qa/audit-ledger.json"
