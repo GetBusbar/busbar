@@ -415,9 +415,21 @@ The guard itself (`crates/busbar-a2a/src/a2a/pushnotify.rs:53-75`) refuses:
 - an **empty** resolution — "checked nothing" must never read as "found nothing wrong";
 - **any** resolved address that is internal: loopback, private, link-local, unique-local, CGNAT, unspecified, multicast, broadcast, or cloud metadata. There is no "prefer the public one".
 
+**Which certificates a delivery trusts.** A delivery's connection verifies the webhook's certificate chain and name against the public roots. An operator whose callers' webhooks sit under a private CA writes that CA, as PEM, in the plane's own `agent_push:` block, beside `agents:`:
+
+```yaml
+agent_push:
+  ca: |
+    -----BEGIN CERTIFICATE-----
+    …
+    -----END CERTIFICATE-----
+```
+
+The CA is trusted **on top of** the public roots, never instead of them, and chain and name verification stay on (it is the connector's per-connection operator CA, the push need's `trust_from` naming `owned.agent_push.ca`: `crates/busbar-plane-a2a/src/door.rs` `PUSH_TRUST_FROM`). A webhook under any other private CA is refused. The block is optional: without it a delivery trusts the public roots alone. Its one key is `ca`; any other key, or a `ca` that is not text, refuses the configuration, and a `ca` that is not a usable PEM certificate refuses the boot, naming `agent_push.ca`. A config apply re-reads it under the same rule: an apply carrying an unusable `ca` is refused with the same words, before anything of it is built, and the running configuration (its anchor among it) stays in force.
+
 **The callback credential is the caller's own**, presented as `Authorization: <scheme> <credentials>`, and it is attached only **after** the guard passes, so a refused destination can never see it (`pushdeliver.rs:102-121`, `:226-236`). It lives in a process-local map, never persisted, never logged, never echoed on a read verb — the store seam has no notion of a secret. The consequence, stated because it is operationally visible: **a credential does not survive a restart while the URL does, so Busbar keeps delivering without the header.**
 
-**There is no retry loop.** Delivery is best-effort and a failure never touches the task (`pushdeliver.rs:49-54`). Success is HTTP `200..300`. Every attempt is chained to the task's own provenance under one of three kinds, and the split is deliberate so an operator is sent to the right place:
+**A failed delivery is retried, at most three attempts in all.** The second attempt waits 250 ms and the third 500 ms, each moved by up to 20% either way, and only a failure the receiver might not repeat is retried: a transport error, a `5xx` or a `429`. A refused destination or any other `4xx` ends the delivery at once, because it would answer the same "no" again. Every retry re-runs the destination guard (`crates/busbar-plane-a2a/src/push.rs:48-52`, `Deliveries::settle`). Delivery is best-effort beyond that, and a failure never touches the task. Success is HTTP `200..300`. Every attempt is chained to the task's own provenance under one of three kinds, and the split is deliberate so an operator is sent to the right place:
 
 | Provenance kind | When |
 |---|---|

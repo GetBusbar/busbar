@@ -231,3 +231,92 @@ fn a_refresh_with_a_changed_ca_re_declares_the_trust() {
         assert_eq!(exchange(&c, &far).await.as_deref(), Ok(&b"hello"[..]));
     });
 }
+
+/// THE OWNED NAMESPACE (`owned.<section>.<key>`, ARCHITECT ruling 2026-10-14): an anchor named in
+/// a plane's other owned sections is OPTIONAL. Absent, the need is declared, not refused, and its
+/// connections trust the public roots alone, so a private CA's far end is refused as it is over a
+/// need naming no anchor.
+/// RED before the fix: a `trust_from` that resolved to nothing refused the need whatever its
+/// namespace, so a deployment that wrote no `agent_push:` section lost push delivery entirely.
+#[test]
+fn an_absent_owned_trust_anchor_declares_the_need_over_the_public_roots_alone() {
+    let (_, leaf, key) = private_ca();
+    worker().block_on(async move {
+        let far = tls_far_end(leaf, key).await;
+        let c = secure_connector();
+        let need = trusting_need("owned.agent_push.ca");
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, None, None),
+            Ok(()),
+            "an owned anchor the operator did not write refuses nothing"
+        );
+        assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(0)), Some(Ok(())));
+        assert_eq!(
+            exchange(&c, &far).await,
+            Err(ConnError::Refused),
+            "the public roots alone refuse a private CA's certificate"
+        );
+    });
+}
+
+/// RED: an owned anchor the operator wrote is the operator CA added on top of the public roots, as
+/// a `settings.` one is: the far end under it is served, and one under another CA is refused.
+#[test]
+fn an_owned_trust_anchor_serves_its_ca_and_refuses_another() {
+    let (ca_pem, leaf, key) = private_ca();
+    let (other_pem, _, _) = private_ca();
+    worker().block_on(async move {
+        let far = tls_far_end(leaf, key).await;
+        let c = secure_connector();
+        let need = trusting_need("owned.agent_push.ca");
+        let declare =
+            |pem: &str| DeclaredConns::declare(&c, OWNER, NeedId(0), &need, None, Some(pem));
+        assert_eq!(declare(&ca_pem), Ok(()));
+        assert_eq!(exchange(&c, &far).await.as_deref(), Ok(&b"hello"[..]));
+        assert_eq!(declare(&other_pem), Ok(()));
+        assert_eq!(
+            exchange(&c, &far).await,
+            Err(ConnError::Refused),
+            "a far end under a CA the operator did not write is refused"
+        );
+    });
+}
+
+/// RED: an owned anchor the operator wrote that is no trust anchor refuses the need, exactly as a
+/// `settings.` one does: optional means absent is fine, never that a broken value is ignored.
+#[test]
+fn a_written_owned_trust_anchor_that_does_not_parse_refuses_the_need() {
+    let (ca_pem, _, _) = private_ca();
+    let c = secure_connector();
+    let need = trusting_need("owned.agent_push.ca");
+    let torn = &ca_pem[..ca_pem.len() / 2];
+    for bad in ["not a certificate", torn] {
+        assert_eq!(
+            DeclaredConns::declare(&c, OWNER, NeedId(0), &need, None, Some(bad)),
+            Err(ConnError::Refused),
+            "{bad:?}"
+        );
+        assert_eq!(
+            DeclaredConns::declared(&c, OWNER, NeedId(0)),
+            Some(Err(ConnError::Refused))
+        );
+    }
+}
+
+/// A `settings.` anchor keeps today's REQUIRED semantics: one that resolved to nothing still refuses
+/// the need (the owned namespace's optionality is keyed to the namespace, nothing else).
+#[test]
+fn a_settings_trust_anchor_stays_required() {
+    let c = secure_connector();
+    assert_eq!(
+        DeclaredConns::declare(
+            &c,
+            OWNER,
+            NeedId(0),
+            &trusting_need("settings.ca"),
+            None,
+            None
+        ),
+        Err(ConnError::Refused)
+    );
+}

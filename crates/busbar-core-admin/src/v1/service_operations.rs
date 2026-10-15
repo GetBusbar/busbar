@@ -1280,8 +1280,10 @@ impl AdminService {
             }
         };
         let plugins_dir = self.app.plugins_dir.to_string_lossy().into_owned();
+        // The running generation's root rules: a dry run judges what an apply would.
+        let rules = std::sync::Arc::clone(&self.app.root_rules);
         match tokio::task::spawn_blocking(move || {
-            validate_config_blocking(deploy, &defs, plugins_dir)
+            validate_config_blocking(deploy, &defs, plugins_dir, &rules)
         })
         .await
         {
@@ -1784,6 +1786,7 @@ fn validate_config_blocking(
     mut deploy: DeployCfg,
     defs: &std::collections::HashMap<String, ProviderDef>,
     plugins_dir: String,
+    rules: &std::sync::Arc<dyn busbar_kernel::appbuild::RootRules>,
 ) -> ConfigValidateView {
     // Resolve first (cross-references config.yaml providers against providers.yaml defs); if that
     // fails there is no RootCfg to hand to the semantic validator, so return the resolve errors.
@@ -1793,6 +1796,14 @@ fn validate_config_blocking(
     };
     if let Err(errors) = busbar_kernel::config_validate::validate(&root) {
         return ConfigValidateView { ok: false, errors };
+    }
+    // The composition root's rules, as an apply's build judges them first: a dry run never answers
+    // green for a configuration the apply would refuse.
+    if let Err(e) = rules.check(&root) {
+        return ConfigValidateView {
+            ok: false,
+            errors: vec![e],
+        };
     }
     // SECURITY (R3-B): the pre-flight below SCANS `plugins.dir` — `fs::read_dir` plus a read of
     // every tarball it finds (`plugins_preflight` → `scan_and_validate`). On THIS endpoint

@@ -2476,6 +2476,55 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
     assert_eq!(caps.len(), 3, "one entry per NAMED provider: {caps:?}");
 }
 
+/// THE ROOT'S RULES RUN FIRST (`appbuild::RootRules`, passed to the build): a configuration the
+/// rules refuse is refused by the build itself, with the rules' words, before anything of it is
+/// built or installed, so an apply carrying it never reaches a swap; one they pass builds as before,
+/// and the built `App` keeps the rules it was built under, for every build after it to pass on.
+/// RED before the fix: the build had no root rules, so a configuration only the root could judge
+/// went live through an apply.
+#[test]
+fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
+    const REFUSED: &str = "https://refused.root-rules.test";
+    struct Refusing;
+    impl crate::appbuild::RootRules for Refusing {
+        fn check(&self, cfg: &crate::config::RootCfg) -> Result<(), String> {
+            if cfg.public_url.as_deref() == Some(REFUSED) {
+                Err("`agent_push.ca` is not a usable trust anchor".to_string())
+            } else {
+                Ok(())
+            }
+        }
+    }
+    crate::snapshot::init();
+    let rules: std::sync::Arc<dyn crate::appbuild::RootRules> = std::sync::Arc::new(Refusing);
+    let build = |public_url: Option<&str>| {
+        let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::env(
+            "BUSBAR_TEST_NO_SUCH_KEY_ROOT_RULES",
+        ));
+        cfg.public_url = public_url.map(str::to_string);
+        crate::build_app_from_config(
+            cfg,
+            crate::config::PluginsCfg::default(),
+            None,
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+            (None, None),
+            None,
+            &rules,
+        )
+    };
+    assert_eq!(
+        build(Some(REFUSED)).map(|_| ()),
+        Err("`agent_push.ca` is not a usable trust anchor".to_string()),
+        "the rules' words, before anything is built"
+    );
+    let (app, _, _) = build(None).expect("a configuration they pass builds as before");
+    assert!(
+        std::sync::Arc::ptr_eq(&app.root_rules, &rules),
+        "the built App keeps the rules it was built under"
+    );
+}
+
 // ── STEP 2.3: THE TYPE-ERASED PLANE SLOT MAP (`App::plane_slot`) ─────────────────────────────
 //
 // Additive: `App::mcp` / `App::a2a` still exist and every existing reader is untouched. These
@@ -2511,6 +2560,8 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
             std::collections::HashSet::new(),
             (None, None),
             prior,
+            &(std::sync::Arc::new(crate::appbuild::AcceptAll)
+                as std::sync::Arc<dyn crate::appbuild::RootRules>),
         )
         .expect("boot must succeed")
         .0

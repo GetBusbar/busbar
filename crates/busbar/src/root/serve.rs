@@ -595,8 +595,17 @@ impl DoorApply {
         // with the generation's unified pools at its reserved `pools` key ([`with_pools`]); the plane
         // is handed it with the core-owned `work:` struck ([`handed_settings`]).
         let section = applied_section(app, &self.facts.plane, self.served_facts.section, &now);
+        // ITS OTHER OWNED SECTIONS as the applied configuration writes them (the raw sections the
+        // generation's projection carries), handed as boot hands them.
+        let owned = app
+            .config_projection
+            .as_ref()
+            .and_then(|p| p.downcast_ref::<crate::root::door_steps::DoorConfig>())
+            .map(|c| owned_sections(&self.served_facts, &c.sections))
+            .unwrap_or_default();
         match self.refreshed(
             &section,
+            &owned,
             now.generation + 1,
             Arc::clone(&app.secret_resolver) as Arc<dyn busbar_contract::secret::SecretResolve>,
         ) {
@@ -623,6 +632,7 @@ impl DoorApply {
     fn refreshed(
         &self,
         section: &serde_yaml::Value,
+        owned: &serde_json::Map<String, serde_json::Value>,
         generation: u64,
         secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     ) -> Result<DoorLive, String> {
@@ -634,6 +644,7 @@ impl DoorApply {
         crate::root::loader::dispatch::kinds::plane::refresh_door(
             &self.plugin,
             &settings,
+            &owned_bytes(owned)?,
             generation,
         )?;
         let table = routes_of(
@@ -767,8 +778,15 @@ impl DoorAppliers {
             let walked = walked_section(facts, section, sections);
             let now = p.current();
             let next = now.generation + 1;
+            let owned = match owned_bytes(&owned_sections(facts, sections)) {
+                Ok(owned) => owned,
+                Err(e) => {
+                    tracing::error!(plane = name, error = %e, "door plane's new configuration is not JSON; it keeps serving the previous one");
+                    continue;
+                }
+            };
             if let Err(e) = crate::root::loader::dispatch::kinds::plane::refresh_door(
-                &p.plugin, &settings, next,
+                &p.plugin, &settings, &owned, next,
             ) {
                 tracing::error!(plane = name, error = %e, "door plane did not refresh onto the new configuration; it keeps serving the previous one");
                 continue;
@@ -869,6 +887,16 @@ impl Served {
     #[must_use]
     pub fn appliers(&self) -> DoorAppliers {
         DoorAppliers(self.planes.iter().map(|p| Arc::clone(&p.live)).collect())
+    }
+
+    /// Every need `trust_from` the served planes state, plane by plane (what the root's rules hold
+    /// the owned trust anchors from, `door_steps::Rules::hold_owned_anchors`).
+    #[must_use]
+    pub fn need_trust(&self) -> Vec<&'static str> {
+        self.planes
+            .iter()
+            .flat_map(|p| p.live.served_facts.need_trust.iter().copied())
+            .collect()
     }
 }
 
@@ -1421,16 +1449,7 @@ pub(crate) fn compose_planes_over(
         let walked = walked_section(&served_facts, section, sections);
         // The plane's other owned sections this document writes, as written, by section name: it
         // reads them beside its settings (ARCHITECT Q-L3B-AUD). Names come from its Statement.
-        let owned: serde_json::Map<String, serde_json::Value> = served_facts
-            .owns
-            .iter()
-            .filter_map(|name| {
-                let value = serde_json::to_value(sections.get(name)?).ok()?;
-                // A secret reference at every credential position `${VAR}` filled, never the bytes.
-                let value = busbar_kernel::config::filled::plane_bound(&[name], value);
-                Some(((*name).to_string(), value))
-            })
-            .collect();
+        let owned = owned_sections(&served_facts, sections);
         // The dialect facts of the providers its walked section references (THE DESIGN §4): it
         // resolves model to dialect itself. Read off the providers its egress is sealed over.
         let dialects = egress
@@ -1445,6 +1464,11 @@ pub(crate) fn compose_planes_over(
             &dialects,
         )
         .map_err(|e| format!("{instance}: {e}"))?;
+        // ITS OWNED TRUST ANCHORS, judged by the one rule a config apply is judged by too (the
+        // root's rules, [`crate::root::door_steps::Rules`], before the build): an anchor the
+        // operator wrote that is no trust anchor refuses the boot, naming the key.
+        crate::root::door_steps::owned_anchors_refusal(&served_facts.need_trust, sections)
+            .map_err(|e| format!("{instance}: {e}"))?;
         let section = &walked;
         let calls = Arc::new(PlaneInstance::new(
             plugin.clone(),
@@ -1847,6 +1871,34 @@ fn arm_probes(
     let _ = (driver, served_facts, live, egress, schedule);
 }
 
+/// THE PLANE'S OTHER OWNED SECTIONS `sections` writes, as written, by section name (the names its
+/// Statement owns): what `open` hands it in `PlaneOpenIn::owned` and a config apply's `refresh`
+/// under `abi::plane::EXT_OWNED`. A secret reference at every credential position `${VAR}` filled,
+/// never the bytes.
+fn owned_sections(
+    facts: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    facts
+        .owns
+        .iter()
+        .filter_map(|name| {
+            let value = serde_json::to_value(sections.get(name)?).ok()?;
+            let value = busbar_kernel::config::filled::plane_bound(&[name], value);
+            Some(((*name).to_string(), value))
+        })
+        .collect()
+}
+
+/// `owned` as the JSON bytes a plane is handed (empty when it writes none).
+fn owned_bytes(owned: &serde_json::Map<String, serde_json::Value>) -> Result<Vec<u8>, String> {
+    if owned.is_empty() {
+        Ok(Vec::new())
+    } else {
+        serde_json::to_vec(owned).map_err(|e| format!("its owned sections: {e}"))
+    }
+}
+
 /// THE SETTINGS A DOOR PLANE OPENS WITH (spec Part 1 §4: one validated JSON object `{section:
 /// value}`): a plane that declares the kernel-owned `pools` map (the previous release's top-level
 /// model-serving layout) is handed it and each section it reads beside it (`SECTION_CONSUMED`)
@@ -1909,11 +1961,7 @@ fn open(
 ) -> Result<OwnedSnapshot, String> {
     // The reserved `work:` bounds are core-owned: the kernel reads them; the plane never sees them.
     let settings = handed_settings(path, section)?;
-    let owned = if owned.is_empty() {
-        Vec::new()
-    } else {
-        serde_json::to_vec(owned).map_err(|e| format!("its owned sections: {e}"))?
-    };
+    let owned = owned_bytes(owned)?;
     let url = public_url.unwrap_or_default();
     // Each points into `dialects`, which outlives the call.
     let providers = crate::root::loader::dispatch::kinds::plane::provider_facts(dialects);

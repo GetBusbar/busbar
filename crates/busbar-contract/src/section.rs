@@ -187,6 +187,24 @@ pub fn member_program(target_from: &str) -> bool {
     target_from == MEMBER_PROGRAM
 }
 
+/// THE OWNED-SECTION PATH of a need's `trust_from` (ARCHITECT ruling on the a2a push trust,
+/// 2026-10-14): `owned.<section>.<key>[...]` names a value in one of the plane's OTHER OWNED
+/// SECTIONS (the Statement's sections beside its declaring one, lifted raw and handed at `open` in
+/// `PlaneOpenIn::owned` and at `refresh` under `abi::plane::EXT_OWNED`), never in its own settings:
+/// a namespace of its own, with no fallback between it and `settings.`. An owned section is
+/// operator-OPTIONAL, so a trust anchor named here is optional by definition: absent, the need is
+/// secured with the public roots alone; present, it is the operator CA added on top of them, and one
+/// that does not parse into a trust anchor is refused, as a `settings.` anchor is.
+pub const OWNED_PATH_PREFIX: &str = "owned.";
+
+/// The path inside the owned sections an owned-section path names ([`OWNED_PATH_PREFIX`]):
+/// `<section>.<key>[...]`; `None` for any other path.
+#[must_use]
+pub fn owned_path(path: &str) -> Option<&str> {
+    path.strip_prefix(OWNED_PATH_PREFIX)
+        .filter(|rest| !rest.is_empty() && rest.split('.').all(|segment| !segment.is_empty()))
+}
+
 /// One plane's top-level section, split into its two reserved knobs and its registrations.
 ///
 /// Insertion-ordered, because catalogue construction and every operator-facing listing read it and a

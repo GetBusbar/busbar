@@ -789,6 +789,23 @@ each dialect translates, field by field, is listed in the generated
   the node sealed the record. It does not prove the chain was never rewritten by someone holding
   the key; that takes a head recorded off the node. **Migration:** none; every 1.5.5 audit field is
   unchanged.
+- 1.6.0 Added: the LLM plane receives OpenAI Responses background-turn webhooks at `POST /v1/llm/webhooks/openai` when `webhooks: { openai_responses: true }` is set.
+  The receiver is off by default, and a config without the `webhooks:` block answers on that path
+  exactly as 1.5.5 did. The delivery's Standard Webhooks signature is verified by an
+  `identity-providers:` entry using `module: busbar-auth-webhook-signature` (`variant:
+  standard-webhooks`, the `whsec_` secret as its `signing-secret`) on `auth.chain`. An unsigned or
+  forged delivery is a 401, and a replayed `webhook-id` is refused. A verified delivery is
+  acknowledged `200 {"received":true,"response_id":"resp_…","type":"response.completed"}` and
+  bills nothing; a body that is not a Responses event is a 400. The block is read at boot.
+  **Migration:** none. The build-time `webhook-receiver` feature and its `BUSBAR_LLM_WEBHOOK_SECRET`
+  variable are gone.
+- 1.6.0 Added: an `agent_push: { ca: <PEM> }` block names the CA the A2A plane's push deliveries trust on top of the public roots.
+  A caller's webhook whose certificate chains to that CA is delivered to; one chaining to any other
+  private CA is refused, as before. The block is the A2A plane's own, beside `agents:`, and is off
+  when absent: without it a delivery trusts the public roots alone, exactly as it did. A `ca` that is
+  not a usable PEM certificate refuses the boot, naming `agent_push.ca`, and a config apply carrying
+  one is refused with the same words while the running configuration stays in force. It is read at
+  boot and at every config apply. **Migration:** none.
 - 1.6.0 Added: `GET /api/v1/admin/ledger/checkpoints` lists sealed checkpoints, sealed every 10,000 journal records or every 60 seconds with a change, whichever comes first.
   The read serves the latest 1,024 seals, oldest first; the journal keeps every seal. A node that
   has not reached either threshold serves an empty list. **Migration:** none.

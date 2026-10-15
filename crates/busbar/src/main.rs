@@ -810,6 +810,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // What the door planes are sealed over, projected from every configuration as it is built
     // (`root::door_steps::door_config`), so a config apply refreshes them onto the new generation.
     busbar_kernel::appbuild::set_config_projection(root::door_steps::door_config);
+    // THE ROOT'S RULES every configuration is judged by before a generation is built from it
+    // (`busbar_kernel::appbuild::RootRules`): handed to the boot build here, kept by each generation
+    // and passed on by every apply, rebuild and dry run. They hold the owned trust anchors the door
+    // planes name once the planes are composed (below), so an apply carrying one the boot would
+    // refuse is refused, its running generation untouched.
+    let root_rules = Arc::new(root::door_steps::Rules::default());
 
     // The configured store's name, captured before `cfg` is consumed: the boot book's journal is
     // kept in that store, and a store that cannot keep it is refused by name.
@@ -838,6 +844,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         base_group_names,
         (Some(config_path.clone()), Some(providers_path.clone())),
         None,
+        &(Arc::clone(&root_rules) as Arc<dyn busbar_kernel::appbuild::RootRules>),
     )
     .unwrap_or_else(|e| die(e));
     // BOOT KEEPS THEM IMMEDIATELY. The admin applies defer this to after their persist-and-swap,
@@ -962,6 +969,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         }),
     )
     .unwrap_or_else(|e| die(e));
+    root_rules.hold_owned_anchors(&served.need_trust());
     served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's

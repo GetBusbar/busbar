@@ -1688,10 +1688,17 @@ impl DeclaredConns for Connector {
         // A member-target need (`settings.*.<key>`) is pinned by no one target: each member's route
         // is sealed at its own, and dials it like any need the plugin names per open.
         let per_member = |path: &str| busbar_contract::section::member_target(path).is_some();
-        let unresolved = (!spec.target_from.is_empty()
-            && !per_member(&spec.target_from)
-            && target.is_none())
-            || (!spec.trust_from.is_empty() && !per_member(&spec.trust_from) && trust.is_none());
+        // A trust anchor in an OWNED section (`owned.<section>.<key>`) is optional by definition
+        // (the section is the operator's to write or not; ARCHITECT ruling 2026-10-14): absent, the
+        // need's connections trust the public roots alone, as one naming no anchor does; present, it
+        // is parsed below and refused when it is no trust anchor, exactly as a `settings.` one is.
+        let optional_trust = busbar_contract::section::owned_path(&spec.trust_from).is_some();
+        let unresolved =
+            (!spec.target_from.is_empty() && !per_member(&spec.target_from) && target.is_none())
+                || (!spec.trust_from.is_empty()
+                    && !per_member(&spec.trust_from)
+                    && !optional_trust
+                    && trust.is_none());
         // USERINFO IS NOT PART OF A SETTINGS-DERIVED TARGET (ARCHITECT ruling, row 159 audit,
         // the settings-URL userinfo finding): a target read from the plugin's own settings through `target_from`
         // is declared without its userinfo, which is dropped here — never recorded, judged or
