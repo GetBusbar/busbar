@@ -2005,6 +2005,41 @@
       }
     },
     {
+      "id": "RULE21-576 the plain gemini route bills toolUsePromptTokenCount as input (ledger x rate card)",
+      "kind": "improvement",
+      "changelog": "1.6.0 Improvements: a Gemini turn that used a server-side tool bills the tool-use tokens Google charges for.",
+      "by": "owner (Matthew Jackson), RULE 21 2026-10-14 (\"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"), applying the 2026-10-02 ruling of entry 576 to the llm wire cell",
+      "cells": "^llm\\|gemini\\|gemini\\|request\\|ok_tool_use_tokens@fixture$",
+      "expected_cells": 1,
+      "classes": [
+        "effects.usage",
+        "effects.metrics"
+      ],
+      "rationale": "RULE 21 (OWNER 2026-10-14, money is ledger x rate card, exact integer minor units; where 1.5.5 differs from ledger x card, 1.5.5 was wrong). The cell's upstream answer (golden/1.5.5/cells/llm__gemini__gemini__request__ok_tool_use_tokens_fixture.json body, the pinned mock's tool-use-tokens verb) reports usageMetadata promptTokenCount 11, toolUsePromptTokenCount 4, candidatesTokenCount 7, totalTokenCount 18. Under entry 576's ruling (owner 2026-10-02: toolUsePromptTokenCount is billed input, in its own meter class beside the prompt; totalTokenCount changes no itemized count, and a total BELOW the itemized sum, 18 < 22, adds no unitemized line) the ledger is tokens_input 15 (11 + 4) and tokens_output 7. The oracle rate card prices every lane at input_utok 100000 and output_utok 200000 (busbar-release recorder/config_emit.rs rate_card): 15 x 100000 + 7 x 200000 = 2,900,000 utok = 290 cents, exact. 1.5.5 ledgered 11 / 7 and spent 250 cents (usage {requests 1, spend_cents 250, tokens 18}; bucket input 11, output 7), dropping the 4 tool-use tokens: 1.5.5 was wrong by 40 cents. The premise holds the candidate to the right figure, so this entry forgives the usage and metrics difference only when the candidate spends exactly 290 cents.",
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|gemini|gemini|request|ok_tool_use_tokens@fixture",
+            "status": 200
+          },
+          {
+            "cell": "llm|gemini|gemini|request|ok_tool_use_tokens@fixture",
+            "pointer": "/effects/usage/spend_cents",
+            "equals": 290
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-14",
+        "ruling": "RULE 21 (OWNER 2026-10-14, verbatim \"money is bank auditor grade. its either right or its wrong. make it right.\" / \"money - ledger * ratecard\"): where v1.5.5 differs from ledger x rate card, 1.5.5 was wrong; register the oracle cell as an accepted difference citing this ruling. Ledger classes per entry 576 (owner 2026-10-02, LEDGER-SIMPLE 2026-10-03)."
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
+    },
+    {
       "id": "LEDGER-SIMPLE a streamed grounded Gemini turn ledgers its stated-total gap as unitemized_tokens",
       "kind": "improvement",
       "changelog": "**Every count a provider reports is ledgered under its own class** (owner ruling LEDGER-100).",
