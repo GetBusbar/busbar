@@ -644,7 +644,10 @@ plugins:
     pending_crate: true
   - repo: busbar-secret-c
     kind: secret
-    alias: c
+    # Its alias is the repo's own name, not the bare language letter: a one-character alias is a word
+    # every one-letter string literal spells, so no instance census could tell the plugin from text.
+    # It has no 1.5.5 spelling to keep (registered 2026-10-02, decision #84).
+    alias: secret-c
     crate: busbar-secret-c
     version_line: "1.0"
     service: none
