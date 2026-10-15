@@ -64,7 +64,7 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// (rung 7), then the OpenAI-family JSON/audio/image ops (`/v1/embeddings`, `/v1/moderations`,
 /// `/v1/images/…`, `/v1/audio/…`, rung 14, the loosest path claims). Lower strength binds tighter.
 fn claims(
-    _h: &busbar_contract::http::HeaderMap,
+    _h: busbar_contract::protocol::HeadFields<'_>,
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
     use busbar_contract::protocol::ClaimStrength;
@@ -131,7 +131,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: true,
     max_citations_per_delta: None,
@@ -143,7 +143,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
         busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
