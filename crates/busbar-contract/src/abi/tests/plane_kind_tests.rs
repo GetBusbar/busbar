@@ -87,7 +87,9 @@ fn the_section_and_ingress_flags_are_single_distinct_bits() {
 /// that names no slot is kept nameless rather than guessed into one.
 #[test]
 fn the_cli_help_grammar_reads_bare_and_slotted_rows() {
-    let rows = |help: &str| cli_help::rows(help).collect::<Vec<_>>();
+    fn rows(help: &str) -> Vec<(&str, &str)> {
+        cli_help::rows(help).collect()
+    }
     assert!(rows("").is_empty());
     assert_eq!(
         rows("    --x   a flag"),
