@@ -85,7 +85,8 @@ auth:
   chain:
     - keys
   signing_key: {{ file: "{signing}" }}
-  admin_auth: [admin-tokens]
+  admin_auth:
+    - admin-tokens
 export:
   metrics: {{ module: prometheus, settings: {{ buffer_seconds: 60 }} }}
 providers:

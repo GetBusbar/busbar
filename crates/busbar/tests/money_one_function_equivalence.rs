@@ -90,7 +90,7 @@ fn one_entry(
 type Rates4 = [f64; 4];
 
 /// A `busbar-kernel` cost model — behind `GET /groups/{g}/usage`, `GET /keys/{id}/usage`, the
-/// `/metrics` gauges, the hook seam's `budget_state`, and the live LLM door `try_admit`.
+/// `/metrics` gauges, the hook seam's `budget_state`, and the live node door `try_admit`.
 fn kernel_cost_model(
     rates: Option<&[(&str, Rates4)]>,
     per_request_fee: i64,
@@ -675,7 +675,7 @@ fn d9_a_sub_day_back_dated_correction_is_a_no_op_for_the_admin_read() {
 /// D2 — ITEM 123, INVERTED FROM ITS BASELINE TO THE CONVERGENCE. This case used to MEASURE the
 /// residue: the enforcement side (the kernel's cost model and the door) projected its unit
 /// map onto the RESERVED FOUR before handing the row to the one function, so an open meter class
-/// (a2a `hops`, a rerank's `search_units`) priced there as nothing — 200 micro-units against the
+/// (an agent hop's `hops`, a rerank's `search_units`) priced there as nothing — 200 micro-units against the
 /// one function's 5,200, and 0 at the door. Item 123 converged it: every class reaches the one
 /// function on both sides, and the card (built from config's `units:` on the kernel side) prices
 /// it. So the figures now AGREE — and a card silent about the class REFUSES on both sides (#42)
@@ -952,7 +952,7 @@ fn census(sources: &[(String, String)]) -> Vec<String> {
         "crates/busbar-kernel/src/cost.rs",
         // The DATED budget ledger (OWNER RULING Q14): each era of a budget cell at the card its era
         // resolves to — behind `/keys` and `/groups` usage, the `/metrics` spend gauges, the hook
-        // seam's `budget_state` and the live LLM gate `try_admit`.
+        // seam's `budget_state` and the live node gate `try_admit`.
         "crates/busbar-kernel-ledger/src/usage/dated.rs",
     ];
     let mut findings = Vec::new();
@@ -1030,8 +1030,8 @@ fn census(sources: &[(String, String)]) -> Vec<String> {
 /// Derivation-named functions the census SEES and that are not routed through the one function,
 /// each owned outside this collapse and named with its reason. Armed at today's measured count.
 ///
-/// EMPTY: the last entry (busbar-voice's `#[cfg(test)]` MockMeteringHost `price_usage`) went with the
-/// D2 lease (OWNER RULING Q21b, P2-voice f87fd3800) — struck, as the census asks of a fixed one.
+/// EMPTY: the last entry (the session plane's `#[cfg(test)]` MockMeteringHost `price_usage`) went
+/// with the D2 lease (OWNER RULING Q21b, f87fd3800) — struck, as the census asks of a fixed one.
 const KNOWN_OUTSIDE_THIS_COLLAPSE: &[(&str, &str, usize, &str)] = &[];
 
 /// THE TREE HOLDS ONE `f`. Every derivation routes through it; no copy of the tier rule or the
