@@ -126,7 +126,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     let mut model_protocols: HashMap<&str, &str> = HashMap::new();
     for (model_name, model_cfg) in &cfg.models {
         if let Some(provider_name) = cfg.providers.get(&model_cfg.provider) {
-            model_protocols.insert(model_name.as_str(), provider_name.protocol.as_str());
+            model_protocols.insert(model_name.as_str(), provider_name.dialect());
         } else {
             errors.push(format!(
                 "model '{}' references unknown provider '{}'",
@@ -2165,7 +2165,7 @@ fn validate_providers_with(
         // confusing error per provider, none of them naming the actual cause. It is still a refusal
         // (a proxy with no protocol cannot serve a provider lane, and accepting the config would be
         // the fail-OPEN answer), but it refuses ONCE and says why.
-        validate_provider_protocol_with(known, provider_name, &provider_cfg.protocol, errors);
+        validate_provider_protocol_with(known, provider_name, provider_cfg.dialect(), errors);
 
         // Per-provider active-health-probe settings. `interval_secs`/`timeout_secs` are floored at 1
         // by the prober at use, but a literal 0 in config signals operator confusion (a 0 interval/
@@ -2198,7 +2198,7 @@ fn validate_providers_with(
             }
         }
 
-        for (code, mapped_class) in &provider_cfg.error_map {
+        for (code, mapped_class) in provider_cfg.error_map() {
             if crate::config::status_class_from_str(mapped_class).is_none() {
                 errors.push(format!(
                     "provider '{provider_name}' error_map code '{code}': invalid StatusClass '{mapped_class}', must be one of: rate_limit, overloaded, server_error, timeout, network, auth, billing, client_error, context_length"
@@ -2532,7 +2532,7 @@ impl MetadataPosture {
 
     /// The posture `provider` is judged under: its own allow-overrides, then this (global) one's.
     #[must_use]
-    pub fn for_provider(&self, provider: &crate::config::ProviderCfg) -> Self {
+    pub fn for_provider(&self, provider: &crate::config::ResolvedProvider) -> Self {
         Self {
             allow_overrides: provider
                 .allow_metadata_hosts

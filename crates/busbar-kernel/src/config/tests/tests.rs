@@ -1461,17 +1461,18 @@ fn test_resolve_provider_from_def() {
         .providers
         .get("z.ai")
         .expect("z.ai should be in resolved providers");
-    assert_eq!(provider_cfg.protocol, CATALOG_PROTOCOL);
+    assert_eq!(provider_cfg.dialect(), CATALOG_PROTOCOL);
     assert_eq!(provider_cfg.base_url, "https://api.z.ai/api/model-1");
     assert_eq!(provider_cfg.api_key.env_var(), Some("ZAI_KEY"));
-    assert_eq!(
-        provider_cfg.error_map.get("1113"),
-        Some(&"billing".to_string())
-    );
-    assert_eq!(
-        provider_cfg.error_map.get("1302"),
-        Some(&"rate_limit".to_string())
-    );
+    assert_eq!(error_class(provider_cfg, "1113"), Some("billing"));
+    assert_eq!(error_class(provider_cfg, "1302"), Some("rate_limit"));
+}
+
+/// The class a resolved provider's error map gives `code`.
+fn error_class<'a>(p: &'a ResolvedProvider, code: &str) -> Option<&'a str> {
+    p.error_map()
+        .find(|(c, _)| *c == code)
+        .map(|(_, class)| class)
 }
 
 // THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B) MOVED to
@@ -1557,7 +1558,8 @@ fn test_resolve_override_wins() {
         .get("custom")
         .expect("custom should be in resolved providers");
     assert_eq!(
-        provider_cfg.protocol, "acme",
+        provider_cfg.dialect(),
+        "acme",
         "protocol override should win"
     );
     assert_eq!(
@@ -1565,10 +1567,7 @@ fn test_resolve_override_wins() {
         "base_url override should win"
     );
     assert_eq!(provider_cfg.api_key.env_var(), Some("CUSTOM_KEY"));
-    assert_eq!(
-        provider_cfg.error_map.get("9999"),
-        Some(&"client_error".to_string())
-    );
+    assert_eq!(error_class(provider_cfg, "9999"), Some("client_error"));
 }
 
 #[test]
@@ -1589,7 +1588,7 @@ fn test_resolve_empty_error_map_allowed_in_def() {
         .providers
         .get("minimal")
         .expect("minimal should exist");
-    assert!(provider_cfg.error_map.is_empty());
+    assert_eq!(provider_cfg.error_map().count(), 0);
 }
 
 // ── on_exhausted (keyword bare, reference structured) ────────────────────────────────────────────

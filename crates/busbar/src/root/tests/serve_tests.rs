@@ -315,7 +315,10 @@ async fn a_claimed_request_is_served_through_the_door_and_its_money_posted() {
     ))
     .expect("a provider entry");
     let providers = provider_routes(
-        &std::collections::HashMap::from([("typesafe".to_string(), provider)]),
+        &std::collections::HashMap::from([(
+            "typesafe".to_string(),
+            busbar_kernel::config::ResolvedProvider::from(provider),
+        )]),
         &busbar_kernel::config_validate::MetadataPosture::default(),
     );
     let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
@@ -3087,7 +3090,10 @@ async fn serve_configured(
     ))
     .expect("a provider entry");
     let providers = provider_routes(
-        &std::collections::HashMap::from([("typesafe".to_string(), provider)]),
+        &std::collections::HashMap::from([(
+            "typesafe".to_string(),
+            busbar_kernel::config::ResolvedProvider::from(provider),
+        )]),
         &busbar_kernel::config_validate::MetadataPosture::default(),
     );
     let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =

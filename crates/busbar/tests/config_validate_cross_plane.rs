@@ -40,7 +40,10 @@ fn make_root_cfg(
         admin_listen: config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
         auth: None,
-        providers,
+        providers: providers
+            .into_iter()
+            .map(|(name, p)| (name, p.into()))
+            .collect(),
         models,
         pools,
         upstream_credentials: busbar_kernel::auth::UpstreamCreds::Own,

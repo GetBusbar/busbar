@@ -22,7 +22,11 @@ fn make_root_cfg(
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
         auth: None,
-        providers,
+        // Each whole-entry fixture as the resolved provider `resolve` would produce from it.
+        providers: providers
+            .into_iter()
+            .map(|(name, p)| (name, p.into()))
+            .collect(),
         models,
         pools,
         upstream_credentials: crate::auth::UpstreamCreds::Own,

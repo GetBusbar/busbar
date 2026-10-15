@@ -369,6 +369,46 @@ impl std::fmt::Debug for AuthReach {
     }
 }
 
+/// TRANSITIONAL (row 155 B1b; deleted with the legacy lane carrier, which goes with the legacy llm
+/// crate): the plane keys of a resolved provider's table that [`LaneInput`] still carries typed,
+/// read off the table. The door path never reads this; its plane parses the table itself. A key
+/// that does not read is unset, as an absent one is: the entry was judged when it was parsed.
+#[derive(serde::Deserialize, Default)]
+#[serde(default)]
+pub struct LegacyLaneKeys {
+    /// The provider's configured tenant (`LaneInput::organization`).
+    pub organization: Option<String>,
+    /// See `organization`.
+    pub project: Option<String>,
+    max_output_key: Option<crate::ir::lane_caps::MaxOutputKeyCfg>,
+    anthropic_adaptive_thinking: Option<bool>,
+    native_structured_output: Option<bool>,
+    model_capabilities: Vec<crate::ir::lane_caps::ModelCapabilities>,
+}
+
+impl LegacyLaneKeys {
+    /// The keys `provider`'s table carries.
+    #[must_use]
+    pub fn of(provider: &crate::config::ResolvedProvider) -> Self {
+        serde_json::from_value(serde_json::Value::Object(provider.table.clone()))
+            .unwrap_or_default()
+    }
+
+    /// The lane capabilities these keys resolve to for `wire_model` (`LaneInput::lane_caps`).
+    #[must_use]
+    pub fn lane_caps(&self, wire_model: &str) -> busbar_contract::ir::egress_prep::LaneCaps {
+        crate::ir::lane_caps::resolve_lane_caps(
+            crate::ir::lane_caps::ProviderLaneCaps {
+                max_output_key: self.max_output_key,
+                anthropic_adaptive_thinking: self.anthropic_adaptive_thinking,
+                native_structured_output: self.native_structured_output,
+            },
+            &self.model_capabilities,
+            wire_model,
+        )
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/build_input_tests.rs"]
 mod tests;

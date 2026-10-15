@@ -552,10 +552,9 @@ fn build<const I: usize>(
     let dialects = busbar_contract::plane_calls::dialect_facts(&section.value, |name| {
         ctx.providers?.get(name).map(|p| {
             (
-                p.protocol.clone(),
-                p.error_map
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
+                p.dialect().to_string(),
+                p.error_map()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
                     .collect(),
             )
         })

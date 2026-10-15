@@ -694,7 +694,7 @@ pub fn build_app_from_config(
     // first loop already resolves `cfg.providers.get(&mc.provider)` (failing loud via `die` on a
     // missing provider), so the lane-build loop reuses that handle instead of re-looking it up —
     // there is no second lookup and no `expect` on the startup path.
-    let mut lane_provider_cfgs: Vec<&config::ProviderCfg> = Vec::new();
+    let mut lane_provider_cfgs: Vec<&config::ResolvedProvider> = Vec::new();
     let mut by_model = HashMap::new();
     // Per-model configured default_max_tokens (injected at the translation seam for protocols that
     // require max_tokens). Captured here because `cfg.models` is consumed by this loop.
@@ -867,7 +867,11 @@ pub fn build_app_from_config(
         // Reuse the provider handle resolved (and validated via `die`) in the lanes_data loop above,
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
         let provider_cfg = lane_provider_cfgs[idx];
-        let Some(protocol) = crate::proto::lane_protocol_name(&provider_cfg.protocol) else {
+        let legacy = crate::plane_host::LegacyLaneKeys::of(provider_cfg);
+        // The provider entry's lane-capability keys, carried unread in its table and resolved
+        // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
+        let lane_caps = legacy.lane_caps(ld.upstream_model.as_deref().unwrap_or(&ld.model));
+        let Some(protocol) = crate::proto::lane_protocol_name(provider_cfg.dialect()) else {
             // The "supported:" roster is DERIVED from the registry (`known_protocols()`), not a
             // hand-maintained literal: the codec dialects are whatever the linked plane crates
             // registered, so a build with the fallback plane compiled out names only what it actually
@@ -876,7 +880,7 @@ pub fn build_app_from_config(
             return Err(format!(
                 "provider '{}' uses unknown protocol '{}' (supported: {})",
                 ld.provider,
-                provider_cfg.protocol,
+                provider_cfg.dialect(),
                 crate::proto::known_protocols().join(", ")
             ));
         };
@@ -907,8 +911,8 @@ pub fn build_app_from_config(
             url_userinfo,
             path: provider_cfg.path.clone(),
             path_base: provider_cfg.path_base.clone(),
-            organization: provider_cfg.organization.clone(),
-            project: provider_cfg.project.clone(),
+            organization: legacy.organization,
+            project: legacy.project,
             upstream_model: ld.upstream_model.clone(),
             api_key: busbar_contract::redacted::Redacted::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),
@@ -916,7 +920,10 @@ pub fn build_app_from_config(
             token_url,
             token_userinfo,
             subject: provider_cfg.subject.clone(),
-            error_map: provider_cfg.error_map.clone(),
+            error_map: provider_cfg
+                .error_map()
+                .map(|(code, class)| (code.to_string(), class.to_string()))
+                .collect(),
             health: provider_cfg.health.as_ref().map(health_input_of),
             allow_metadata_hosts: provider_cfg.allow_metadata_hosts.clone(),
             context_max: model_context_max.get(&ld.model).copied().flatten(),
@@ -924,17 +931,7 @@ pub fn build_app_from_config(
             attempt_timeout_ms: ld.attempt_timeout_ms,
             reasoning: ld.reasoning,
             prompt_caching: ld.prompt_caching,
-            // The provider entry's lane-capability keys, carried unread and resolved against the
-            // lane's wire model by `ir::lane_caps`, which owns them (architect ruling LANECAPS-MOVE).
-            lane_caps: crate::ir::lane_caps::resolve_lane_caps(
-                crate::ir::lane_caps::ProviderLaneCaps {
-                    max_output_key: provider_cfg.max_output_key,
-                    anthropic_adaptive_thinking: provider_cfg.anthropic_adaptive_thinking,
-                    native_structured_output: provider_cfg.native_structured_output,
-                },
-                &provider_cfg.model_capabilities,
-                ld.upstream_model.as_deref().unwrap_or(&ld.model),
-            ),
+            lane_caps,
             max_concurrent: ld.max,
             limited: ld.limited,
             budget: ld.budget,
