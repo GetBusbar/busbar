@@ -370,6 +370,14 @@ pub(crate) struct Instance {
     /// (an `open` in flight that pended) is not open.
     opened: AtomicBool,
     pub(crate) faulted: AtomicBool,
+    /// The watchdog's breaches of this instance's watch budget so far; the
+    /// [`DispatchConfig::quarantine_after`](super::DispatchConfig::quarantine_after)th quarantines
+    /// it ([`Instance::faulted`]).
+    pub(crate) breaches: AtomicU32,
+    /// The ticket-less calls the watchdog has already counted as breaches: every call id below
+    /// this one (ids are minted in order, and a call stays hung on the list until it returns, so
+    /// each is counted once, not once per scan).
+    pub(crate) ticketless_counted: AtomicU64,
     /// `close` of an OPEN instance answered READY, or any `close` answered FAULT: every later op
     /// answers FAULT without a crossing. (Closing a half-open box frees the box; the instance never
     /// opened, so it is not closed.)
@@ -1459,6 +1467,8 @@ impl<K: Kind> Plugin<K> {
                 ptr: AtomicPtr::new(std::ptr::null_mut()),
                 opened: AtomicBool::new(false),
                 faulted: AtomicBool::new(false),
+                breaches: AtomicU32::new(0),
+                ticketless_counted: AtomicU64::new(0),
                 closed: AtomicBool::new(false),
                 gate: AtomicU32::new(0),
                 crossings: AtomicU64::new(0),

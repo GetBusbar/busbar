@@ -290,6 +290,7 @@ fn config() -> DispatchConfig {
             ..Budgets::default()
         },
         watchdog_period: Duration::from_millis(20),
+        ..DispatchConfig::default()
     }
 }
 
@@ -1871,12 +1872,68 @@ fn red_a_hung_ticketless_call_faults_its_instance() {
         std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:ticketless")).outcome);
     until("the watchdog faults the instance", || p.is_faulted());
     assert!(!p2.is_faulted(), "only the hung instance");
+    assert_eq!(
+        d.stats().quarantined,
+        1,
+        "bb_plugin_quarantined_total counts the quarantine (the default N is the first breach)"
+    );
     assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Fault);
     assert_eq!(
         p2.call(TICK, &mut frame(b"unhang:ticketless")).outcome,
         Outcome::Ready
     );
     caller.join().unwrap();
+}
+
+/// THE DESIGN A.8: "on a breach of the threshold, N times, the instance is quarantined". With
+/// N = 2 the first breach is counted ONCE (however many scans see the call hung), the instance
+/// keeps serving, and nothing is quarantined; the second breach quarantines it, counts
+/// `bb_plugin_quarantined_total`, and every new call is FAULT without a crossing.
+#[test]
+fn red_an_instance_is_quarantined_on_its_nth_breach_and_not_before() {
+    let d = Dispatcher::new(DispatchConfig {
+        quarantine_after: 2,
+        ..config()
+    });
+    let (p, _sink) = opened(&d);
+    let (p2, _s2) = opened(&d);
+    let breaches = || p.inner.breaches.load(std::sync::atomic::Ordering::SeqCst);
+
+    let hung = p.clone();
+    let first =
+        std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:quarantine-n-1")).outcome);
+    until("the watchdog counts the first breach", || breaches() == 1);
+    // Several scans pass while the call stays hung; it is still one breach.
+    std::thread::sleep(Duration::from_millis(120));
+    assert_eq!(breaches(), 1, "a hung call is one breach, not one per scan");
+    assert!(!p.is_faulted(), "one breach of two quarantines nothing");
+    assert_eq!(d.stats().quarantined, 0);
+    assert_eq!(
+        p2.call(TICK, &mut frame(b"unhang:quarantine-n-1")).outcome,
+        Outcome::Ready
+    );
+    first.join().unwrap();
+    assert_eq!(
+        p.call(TICK, &mut frame(answer(1))).outcome,
+        Outcome::Ready,
+        "below N the instance keeps serving"
+    );
+
+    let hung = p.clone();
+    let second =
+        std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:quarantine-n-2")).outcome);
+    until("the second breach quarantines the instance", || {
+        p.is_faulted()
+    });
+    assert_eq!(breaches(), 2);
+    assert_eq!(d.stats().quarantined, 1, "bb_plugin_quarantined_total");
+    assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Fault);
+    assert!(!p2.is_faulted(), "only the breaching instance");
+    assert_eq!(
+        p2.call(TICK, &mut frame(b"unhang:quarantine-n-2")).outcome,
+        Outcome::Ready
+    );
+    second.join().unwrap();
 }
 
 #[test]
