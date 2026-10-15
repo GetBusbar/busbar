@@ -66,7 +66,9 @@ pub const DEFAULT_EGRESS_CLASS: u32 = 0;
 /// destination guard, the same judge the connector dials by (OWNER ruling DESTINATION GUARD).
 #[must_use]
 pub fn kernel_services(dest: Arc<dyn DestJudge>) -> KernelServices {
-    KernelServices::new().with_dest_judge(dest)
+    KernelServices::new()
+        .with_dest_judge(dest)
+        .with_disk_lane(crate::root::linked::disk_lane())
 }
 
 /// THE COMPOSITION, once the configuration loads: the kernel's host services, judging by `dest`,

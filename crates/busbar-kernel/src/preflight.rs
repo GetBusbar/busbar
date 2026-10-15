@@ -1205,26 +1205,36 @@ pub(crate) fn build_secret_resolver(
     // resolver, over its settings as written: the keys its Statement names as secret references are
     // resolved through the linked plugins and lent to `open`, never substituted into the settings.
     let opened = OpenedSecrets::default();
-    Ok(config::secret::SecretResolver::with_plugin(Box::new(
-        move |module: &str, settings: &str| -> Result<Vec<u8>, String> {
-            if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
-                // Keyed by the plugin's CANONICAL name, so an alias and its canonical spelling
-                // open the plugin once.
-                let canonical = registry.resolve(module).map(|p| p.key().to_string());
-                let key = canonical.as_deref().unwrap_or(module);
-                return opened.resolve(key, settings, || {
-                    let raw = canonical.as_ref().and_then(|name| raw_config.get(name));
-                    let linked = config::secret::SecretResolver::builtins_only();
-                    axis.open(module, raw.unwrap_or(&serde_json::Value::Null), &|r| {
-                        linked.resolve(r)
-                    })
-                });
-            }
-            // No door answers it: no such secret plugin, or a 1.5.5 JSON-contract one, which this
-            // host does not load (THE DESIGN §11.8). Refused in the registry's own words.
-            Err(registry.secret_refusal(module))
-        },
-    )))
+    Ok(config::secret::SecretResolver::with_scoped_plugin(
+        Box::new(
+            move |module: &str,
+                  settings: &str,
+                  scope: Option<&busbar_contract::config_time::ConfigScope>|
+                  -> Result<Vec<u8>, String> {
+                if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
+                    // Keyed by the plugin's CANONICAL name, so an alias and its canonical spelling
+                    // open the plugin once.
+                    let canonical = registry.resolve(module).map(|p| p.key().to_string());
+                    let key = canonical.as_deref().unwrap_or(module);
+                    return opened.resolve(key, settings, scope, || {
+                        let raw = canonical.as_ref().and_then(|name| raw_config.get(name));
+                        let linked = config::secret::SecretResolver::builtins_only();
+                        axis.open(
+                            module,
+                            raw.unwrap_or(&serde_json::Value::Null),
+                            &|r| match scope {
+                                Some(scope) => linked.resolve_at_config(r, scope),
+                                None => linked.resolve(r),
+                            },
+                        )
+                    });
+                }
+                // No door answers it: no such secret plugin, or a 1.5.5 JSON-contract one, which this
+                // host does not load (THE DESIGN §11.8). Refused in the registry's own words.
+                Err(registry.secret_refusal(module))
+            },
+        ),
+    ))
 }
 
 /// THE SECRET PLUGINS A RESOLVER OPENED, one handle per plugin (audit kernel-K1 #6).
@@ -1257,18 +1267,22 @@ impl OpenedSecrets {
     }
 
     /// Resolve `settings` through the plugin opened under `key`, with no lock held while the plugin
-    /// answers.
+    /// answers — at config time when the caller holds the proof `scope` (THE DESIGN §11.11 R4: a
+    /// source that reads the disk answers only so).
     pub(crate) fn resolve(
         &self,
         key: &str,
         settings: &str,
+        scope: Option<&busbar_contract::config_time::ConfigScope>,
         open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
     ) -> Result<Vec<u8>, String> {
         let calls = self.calls(key, open)?;
-        calls
-            .resolve(settings.as_bytes())
-            .map(|m| m.expose_secret().clone())
-            .map_err(|r| r.text)
+        match scope {
+            Some(scope) => calls.resolve_at_config(settings.as_bytes(), scope),
+            None => calls.resolve(settings.as_bytes()),
+        }
+        .map(|m| m.expose_secret().clone())
+        .map_err(|r| r.text)
     }
 }
 

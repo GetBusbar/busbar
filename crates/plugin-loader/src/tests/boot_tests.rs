@@ -37,6 +37,7 @@ fn cand(kind: KindCode, name: &str, aliases: &[&str], sugar: &[&str], verbs: &[&
             file: format!("{name}.tar.gz"),
             bytes: Arc::new(Vec::new()),
         },
+        disk: false,
     }
 }
 

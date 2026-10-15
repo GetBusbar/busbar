@@ -315,7 +315,8 @@ fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
 #[test]
 fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
     use busbar_contract::secret::SecretAxis;
-    let axis = super::link_secrets(crate::LINKED.secrets).expect("the linked secret doors state");
+    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
+        .expect("the linked secret doors state");
     assert!(axis.linked("env") && axis.linked("file") && !axis.answers("vault"));
     let env = axis.shared("env").expect("env opens");
     assert!(

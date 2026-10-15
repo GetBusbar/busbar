@@ -41,7 +41,7 @@ fn a_slow_secret_source_does_not_stall_another_modules_resolution() {
     // The slow module's resolution is in the plugin, waiting.
     let slow_side = {
         let opened = Arc::clone(&opened);
-        std::thread::spawn(move || opened.resolve("slow-source", "slow", || Ok(slow)))
+        std::thread::spawn(move || opened.resolve("slow-source", "slow", None, || Ok(slow)))
     };
     std::thread::sleep(Duration::from_millis(200));
 
@@ -51,7 +51,7 @@ fn a_slow_secret_source_does_not_stall_another_modules_resolution() {
         let opened = Arc::clone(&opened);
         std::thread::spawn(move || {
             let fast: Arc<dyn SecretCalls> = Arc::new(Source { gate: None });
-            let _ = done_tx.send(opened.resolve("fast-source", "fast", || Ok(fast)));
+            let _ = done_tx.send(opened.resolve("fast-source", "fast", None, || Ok(fast)));
         });
     }
     let answered = done.recv_timeout(Duration::from_secs(3));
@@ -74,7 +74,52 @@ fn a_plugin_is_opened_once_under_its_key() {
         opens.fetch_add(1, Ordering::SeqCst);
         Ok(Arc::new(Source { gate: None }) as Arc<dyn SecretCalls>)
     };
-    assert_eq!(opened.resolve("one-source", "a", open), Ok(b"a".to_vec()));
-    assert_eq!(opened.resolve("one-source", "b", open), Ok(b"b".to_vec()));
+    assert_eq!(
+        opened.resolve("one-source", "a", None, open),
+        Ok(b"a".to_vec())
+    );
+    assert_eq!(
+        opened.resolve("one-source", "b", None, open),
+        Ok(b"b".to_vec())
+    );
     assert_eq!(opens.load(Ordering::SeqCst), 1);
+}
+
+/// A source that reads the disk, as the loader serves one (THE DESIGN §11.11 R4): refused without
+/// the config-time proof, answering with it.
+struct DiskSource;
+
+impl SecretCalls for DiskSource {
+    fn resolve(&self, _settings: &[u8]) -> Result<Redacted<Vec<u8>>, SecretRefused> {
+        Err(SecretRefused {
+            error_kind: busbar_contract::abi::secret::ERROR_KIND_DENIED,
+            text: busbar_contract::config_time::RESOLVE_OFF_CONFIG_TIME.to_string(),
+        })
+    }
+
+    fn resolve_at_config(
+        &self,
+        settings: &[u8],
+        _scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Result<Redacted<Vec<u8>>, SecretRefused> {
+        Ok(Redacted::new(settings.to_vec()))
+    }
+}
+
+/// A DROPPED-IN source answers through the opened handle with the caller's proof: at config time it
+/// resolves, and without the proof (a request path) it is refused. RED before: `OpenedSecrets`
+/// dropped the proof and asked the request-path form whatever the caller held.
+#[test]
+fn a_dropped_in_source_is_handed_the_callers_config_time_proof() {
+    let opened = OpenedSecrets::default();
+    let open = || Ok(Arc::new(DiskSource) as Arc<dyn SecretCalls>);
+    let scope = busbar_contract::config_time::ConfigScope::config_time();
+    assert_eq!(
+        opened.resolve("disk-source", "at-config", Some(&scope), open),
+        Ok(b"at-config".to_vec())
+    );
+    let refused = opened
+        .resolve("disk-source", "on-a-request", None, open)
+        .expect_err("a request path is refused");
+    assert!(refused.contains("never on a request path"), "{refused}");
 }

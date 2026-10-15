@@ -45,11 +45,15 @@ pub const LANE_FULL: &str = "the host's disk lane is full";
 /// A FAILED append's text when the lane thread could not be started or has gone.
 pub const LANE_GONE: &str = "the host's disk lane is not running";
 
-/// One append the lane owes.
-struct Job {
-    dest: DiskDest,
-    bytes: Vec<u8>,
-    later: Later,
+/// One job the lane owes: an append, or a config-time read a disk-declared secret source runs here
+/// (THE DESIGN §11.11 R4 as the OWNER amended it, 2026-10-13).
+enum Job {
+    Append {
+        dest: DiskDest,
+        bytes: Vec<u8>,
+        later: Later,
+    },
+    Run(Box<dyn FnOnce() + Send>),
 }
 
 /// THE LANE: one thread, started on the first append, fed through a bounded queue.
@@ -68,13 +72,34 @@ impl DiskLane {
         let Some(tx) = self.tx.get_or_init(start) else {
             return Err(refused(LANE_GONE));
         };
-        match tx.try_send(Job { dest, bytes, later }) {
+        match tx.try_send(Job::Append { dest, bytes, later }) {
             Ok(()) => Ok(()),
             Err(TrySendError::Full(_)) => Err(refused(LANE_FULL)),
             Err(TrySendError::Disconnected(_)) => Err(refused(LANE_GONE)),
         }
     }
+
+    /// Run `job` on the lane thread, in order with the appends: a disk-declared secret source's
+    /// config-time `resolve` (THE DESIGN §11.11 R4, OWNER 2026-10-13). The lane's bound holds it as
+    /// it holds an append; the caller waits for the job's own answer with its own deadline.
+    ///
+    /// # Errors
+    ///
+    /// The lane is full ([`LANE_FULL`]) or not running ([`LANE_GONE`]); `job` is dropped unrun.
+    pub fn run(&self, job: Box<dyn FnOnce() + Send>) -> Result<(), &'static str> {
+        let Some(tx) = self.tx.get_or_init(start) else {
+            return Err(LANE_GONE);
+        };
+        match tx.try_send(Job::Run(job)) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_)) => Err(LANE_FULL),
+            Err(TrySendError::Disconnected(_)) => Err(LANE_GONE),
+        }
+    }
 }
+
+/// The name of the lane's one thread: a job can tell it runs there.
+pub const LANE_THREAD: &str = "busbar-disk-lane";
 
 /// A FAILED report for an append that never reached the file.
 const fn refused(why: &'static str) -> DiskReport {
@@ -90,11 +115,20 @@ const fn refused(why: &'static str) -> DiskReport {
 fn start() -> Option<SyncSender<Job>> {
     let (tx, rx) = sync_channel::<Job>(LANE_BOUND);
     std::thread::Builder::new()
-        .name("busbar-disk-lane".into())
+        .name(LANE_THREAD.into())
         .spawn(move || {
             for job in rx {
-                let report = append(&job.dest, &job.bytes);
-                (job.later)(report.stored());
+                match job {
+                    Job::Append { dest, bytes, later } => {
+                        let report = append(&dest, &bytes);
+                        later(report.stored());
+                    }
+                    // A job that panics is its own failure, never the lane's: the appends behind it
+                    // still run.
+                    Job::Run(run) => {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+                    }
+                }
             }
         })
         .ok()

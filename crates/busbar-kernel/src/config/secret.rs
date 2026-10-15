@@ -50,13 +50,25 @@ pub struct SecretResolver {
     /// Resolve one non-built-in reference through a loaded `kind: secret` plugin: given the module
     /// name + its settings JSON, return the secret bytes (or a fail-closed error). `None` when no
     /// plugin registry is available (built-ins only).
-    plugin: Option<PluginResolveFn>,
+    plugin: Option<ScopedPluginResolveFn>,
 }
 
 /// The boxed closure a [`SecretResolver`] delegates a non-built-in module to: `(module, settings
 /// JSON) -> secret bytes` (fail-closed on error). Boxed so `config` stays free of a `plugin-loader`
 /// dependency (the engine wires the registry in at `build_app`).
 pub(crate) type PluginResolveFn = Box<dyn Fn(&str, &str) -> Result<Vec<u8>, String> + Send + Sync>;
+
+/// [`PluginResolveFn`] handed the config-time proof when the caller holds one (THE DESIGN §11.11
+/// R4): a dropped-in source that reads the disk resolves only with it.
+pub(crate) type ScopedPluginResolveFn = Box<
+    dyn Fn(
+            &str,
+            &str,
+            Option<&busbar_contract::config_time::ConfigScope>,
+        ) -> Result<Vec<u8>, String>
+        + Send
+        + Sync,
+>;
 
 impl SecretResolver {
     /// A resolver over the linked secret plugins alone (no cold lane): what the build links (`env`
@@ -68,6 +80,19 @@ impl SecretResolver {
     /// A resolver whose non-built-in modules resolve through `plugin` (a `kind: secret` plugin
     /// loader). Built-ins still short-circuit to the inline `env` / `file` path.
     pub fn with_plugin(plugin: PluginResolveFn) -> Self {
+        Self {
+            plugin: Some(Box::new(
+                move |module: &str,
+                      settings: &str,
+                      _: Option<&busbar_contract::config_time::ConfigScope>| {
+                    plugin(module, settings)
+                },
+            )),
+        }
+    }
+
+    /// [`Self::with_plugin`], the plugin handed the caller's config-time proof when it holds one.
+    pub(crate) fn with_scoped_plugin(plugin: ScopedPluginResolveFn) -> Self {
         Self {
             plugin: Some(plugin),
         }
@@ -130,7 +155,7 @@ impl SecretResolver {
                 secret.describe()
             ));
         };
-        let bytes = f(module, &settings).map_err(|e| {
+        let bytes = f(module, &settings, scope).map_err(|e| {
             format!(
                 "secret module '{module}' (a kind: secret plugin) failed to resolve {}: {e}",
                 secret.describe()

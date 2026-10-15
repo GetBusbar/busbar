@@ -27,7 +27,10 @@ use busbar_contract::abi::mechanism::call::{
 use busbar_contract::abi::mechanism::door::DoorFn;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ReleaseIn};
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::secret::{slot, ResolveIn, ResolveOut, ERROR_KIND_INTERNAL};
+use busbar_contract::abi::secret::{
+    slot, ResolveIn, ResolveOut, ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_UNAVAILABLE,
+};
+use busbar_contract::config_time::{ConfigScope, RESOLVE_OFF_CONFIG_TIME};
 use busbar_contract::conn::DeclaredConns;
 use busbar_contract::redacted::Redacted;
 use busbar_contract::secret::{SecretAxis, SecretCalls, SecretRefused};
@@ -50,17 +53,41 @@ const WAIT: Duration = Duration::from_secs(40);
 /// How many calls one secret instance holds in flight, at most.
 const MAX_INFLIGHT_CAP: u32 = 16;
 
-/// ONE OPENED SECRET PLUGIN INSTANCE: its calls through the one dispatcher. Closed on drop.
+/// The host's hook onto its one bounded disk lane (THE DESIGN §11.11 R4): run a job on the lane
+/// thread, or say why it was not taken (the lane is full or not running).
+pub type DiskRun = fn(Box<dyn FnOnce() + Send>) -> Result<(), String>;
+
+/// Where a secret instance's `resolve` runs.
+#[derive(Debug, Clone, Copy)]
+enum Disk {
+    /// On the dispatcher, from any caller: a source that does not read the disk.
+    No,
+    /// On the host's disk lane, at config time only: a source that declares a disk need.
+    Lane(DiskRun),
+    /// A source that declares a disk need, on a host that wired no lane: every resolve refused.
+    Unwired,
+}
+
+/// ONE OPENED SECRET PLUGIN INSTANCE: its calls through the one dispatcher, or — for a source that
+/// declares a disk need — on the host's disk lane at config time only. Closed when its last handle
+/// drops (a lane job holds one).
 pub struct LoadedSecret {
-    plugin: Plugin<Secret>,
+    opened: Arc<Opened>,
     dispatcher: Arc<Dispatcher>,
     next_worker: AtomicU32,
+    disk: Disk,
+}
+
+/// The opened instance itself, shared with a lane job running its `resolve`. Closed on drop.
+struct Opened {
+    plugin: Plugin<Secret>,
 }
 
 impl std::fmt::Debug for LoadedSecret {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("LoadedSecret")
-            .field("plugin", &self.plugin.name())
+            .field("plugin", &self.opened.plugin.name())
+            .field("disk", &self.disk)
             .finish_non_exhaustive()
     }
 }
@@ -80,6 +107,14 @@ fn blob(bytes: &[u8], fmt: u32, flags: u32) -> Blob {
 
 fn refused(error_kind: u32, text: String) -> SecretRefused {
     SecretRefused { error_kind, text }
+}
+
+/// The text of a refused answer: the plugin's own, else `fallback`.
+fn answer_text(error: Option<&[u8]>, fallback: String) -> String {
+    error
+        .map(|e| String::from_utf8_lossy(e).into_owned())
+        .filter(|t| !t.is_empty())
+        .unwrap_or(fallback)
 }
 
 impl LoadedSecret {
@@ -120,17 +155,58 @@ impl LoadedSecret {
             return Err(c.open_failure(plugin.name()));
         }
         Ok(Self {
-            plugin,
+            opened: Arc::new(Opened { plugin }),
             dispatcher,
             next_worker: AtomicU32::new(0),
+            disk: Disk::No,
         })
+    }
+
+    /// This instance as a source that reads the disk (its `declares.disk`, THE DESIGN §11.11 R4):
+    /// its `resolve` runs on the host's disk lane `lane` at config time only, and is refused without
+    /// the config-time proof. With no lane wired, every resolve is refused.
+    #[must_use]
+    pub fn reading_disk(mut self, lane: Option<DiskRun>) -> Self {
+        self.disk = lane.map_or(Disk::Unwired, Disk::Lane);
+        self
     }
 
     /// The plugin's Statement name.
     pub fn name(&self) -> &str {
-        self.plugin.name()
+        self.opened.plugin.name()
     }
 
+    /// `resolve` on the host's disk lane: the job runs the plugin's `resolve` on the lane thread
+    /// (a ticket-less crossing, which may not pend) and the caller waits for its answer, bounded by
+    /// [`WAIT`] whatever the lane does.
+    fn resolve_on_lane(
+        &self,
+        lane: DiskRun,
+        settings: &[u8],
+    ) -> Result<Redacted<Vec<u8>>, SecretRefused> {
+        let name = self.name().to_string();
+        let opened = Arc::clone(&self.opened);
+        let owned = settings.to_vec();
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        lane(Box::new(move || {
+            let _ = tx.send(opened.resolve_here(&owned));
+        }))
+        .map_err(|e| {
+            refused(
+                ERROR_KIND_UNAVAILABLE,
+                format!("secret module '{name}' could not reach the host's disk lane: {e}"),
+            )
+        })?;
+        rx.recv_timeout(WAIT).unwrap_or_else(|_| {
+            Err(refused(
+                ERROR_KIND_INTERNAL,
+                format!("secret module '{name}' did not answer its resolve on the disk lane"),
+            ))
+        })
+    }
+}
+
+impl Opened {
     /// Hand `lease` back (ticket-less; a release never pends).
     fn release(&self, lease: u64) {
         let mut f = Frame::new(
@@ -142,9 +218,60 @@ impl LoadedSecret {
         );
         let _ = self.plugin.call(life::RELEASE, &mut f);
     }
+
+    /// `resolve` on THIS thread, ticket-less: the disk lane's crossing. The material is copied out
+    /// of the plugin's lease and the lease released before this returns.
+    fn resolve_here(&self, settings: &[u8]) -> Result<Redacted<Vec<u8>>, SecretRefused> {
+        let name = self.plugin.name();
+        let mut f = Frame::new(
+            ResolveIn {
+                head: in_head(),
+                settings: blob(settings, BLOB_JSON, 0),
+            },
+            ResolveOut {
+                head: out_head(),
+                secret: NO_BLOB,
+                error_kind: 0,
+                _reserved: 0,
+            },
+        );
+        let c = self.plugin.call(slot::RESOLVE, &mut f);
+        match c.outcome {
+            Outcome::Ready => {
+                let b = f.out.secret;
+                // SAFETY: a READY resolve's `secret` names plugin memory held under the answer's
+                // lease until `release` (the secret kind's answer rule, checked by `check_resolve`
+                // in the crossing); it is copied here, before the release below.
+                let material = if b.ptr.is_null() || b.len == 0 {
+                    Vec::new()
+                } else {
+                    unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec()
+                };
+                let material = Redacted::new(material);
+                if c.lease != 0 {
+                    self.release(c.lease);
+                }
+                Ok(material)
+            }
+            Outcome::Failed | Outcome::Refused => Err(refused(
+                f.out.error_kind,
+                answer_text(
+                    c.error.as_deref(),
+                    format!("secret module '{name}' failed to resolve"),
+                ),
+            )),
+            o => Err(refused(
+                ERROR_KIND_INTERNAL,
+                answer_text(
+                    c.error.as_deref(),
+                    format!("secret module '{name}' answered {o:?} to resolve"),
+                ),
+            )),
+        }
+    }
 }
 
-impl Drop for LoadedSecret {
+impl Drop for Opened {
     fn drop(&mut self) {
         let mut f: Frame<InHead, OutHead> = Frame::new(in_head(), out_head());
         let _ = self.plugin.call(life::CLOSE, &mut f);
@@ -153,7 +280,15 @@ impl Drop for LoadedSecret {
 
 impl SecretCalls for LoadedSecret {
     fn resolve(&self, settings: &[u8]) -> Result<Redacted<Vec<u8>>, SecretRefused> {
-        let name = self.plugin.name();
+        let name = self.name();
+        if !matches!(self.disk, Disk::No) {
+            // A source that reads the disk answers at config time only (THE DESIGN §11.11 R4).
+            return Err(refused(
+                ERROR_KIND_DENIED,
+                format!("secret module '{name}': {RESOLVE_OFF_CONFIG_TIME}"),
+            ));
+        }
+        let plugin = &self.opened.plugin;
         let workers = self.dispatcher.workers().max(1);
         let worker = self.next_worker.fetch_add(1, Ordering::Relaxed) % workers;
         let Some(ticket) = self.dispatcher.mint(worker) else {
@@ -181,7 +316,7 @@ impl SecretCalls for LoadedSecret {
         let done = self
             .dispatcher
             .submit_lent(
-                &self.plugin,
+                plugin,
                 ticket,
                 slot::RESOLVE,
                 frame,
@@ -197,13 +332,6 @@ impl SecretCalls for LoadedSecret {
                 format!("secret module '{name}' did not answer its resolve"),
             ));
         };
-        let text = |fallback: String| {
-            done.error
-                .as_deref()
-                .map(|e| String::from_utf8_lossy(e).into_owned())
-                .filter(|t| !t.is_empty())
-                .unwrap_or(fallback)
-        };
         match (done.outcome, done.frame.as_deref()) {
             (Outcome::Ready, Some(f)) => {
                 let b = f.out.secret;
@@ -217,17 +345,41 @@ impl SecretCalls for LoadedSecret {
                 };
                 let material = Redacted::new(material);
                 if done.lease != 0 {
-                    self.release(done.lease);
+                    self.opened.release(done.lease);
                 }
                 Ok(material)
             }
             (Outcome::Failed | Outcome::Refused, f) => Err(refused(
                 f.map_or(ERROR_KIND_INTERNAL, |f| f.out.error_kind),
-                text(format!("secret module '{name}' failed to resolve")),
+                answer_text(
+                    done.error.as_deref(),
+                    format!("secret module '{name}' failed to resolve"),
+                ),
             )),
             (o, _) => Err(refused(
                 ERROR_KIND_INTERNAL,
-                text(format!("secret module '{name}' answered {o:?} to resolve")),
+                answer_text(
+                    done.error.as_deref(),
+                    format!("secret module '{name}' answered {o:?} to resolve"),
+                ),
+            )),
+        }
+    }
+
+    fn resolve_at_config(
+        &self,
+        settings: &[u8],
+        _scope: &ConfigScope,
+    ) -> Result<Redacted<Vec<u8>>, SecretRefused> {
+        match self.disk {
+            Disk::No => self.resolve(settings),
+            Disk::Lane(lane) => self.resolve_on_lane(lane, settings),
+            Disk::Unwired => Err(refused(
+                ERROR_KIND_UNAVAILABLE,
+                format!(
+                    "secret module '{}' reads the disk and the host wired no disk lane",
+                    self.name()
+                ),
             )),
         }
     }
@@ -252,6 +404,9 @@ pub struct SecretRows {
     dropped: RwLock<Vec<Candidate>>,
     /// Each linked module's shared instance, opened outside the map's lock ([`OpenOnce`]).
     shared: OpenOnce<String, LoadedSecret>,
+    /// The host's one disk lane, where a source that declares a disk need resolves at config time.
+    /// `None` = no lane is wired (such a source refuses every resolve).
+    disk_run: Option<DiskRun>,
 }
 
 impl std::fmt::Debug for SecretRows {
@@ -287,6 +442,43 @@ impl SecretRows {
             linked: Vec::new(),
             dropped: RwLock::new(Vec::new()),
             shared: OpenOnce::new(),
+            disk_run: None,
+        }
+    }
+
+    /// A source that declares a disk need resolves on the host's one disk lane `run`, at config
+    /// time only (THE DESIGN §11.11 R4, as the OWNER amended it 2026-10-13).
+    #[must_use]
+    pub fn with_disk_lane(mut self, run: DiskRun) -> Self {
+        self.disk_run = Some(run);
+        self
+    }
+
+    /// The LINKED row `door` states, its `declares.json` `json` read as a dropped-in copy's signed
+    /// `declares` is: its disk need.
+    ///
+    /// # Errors
+    /// The door does not state itself, no linked row is that door's plugin, or `json` is not a
+    /// `declares` section.
+    pub fn declare_linked(&mut self, door: DoorFn, json: &str) -> Result<&mut Self, String> {
+        let name = Candidate::linked(door)?.name;
+        let declares = crate::sign::Declares::from_declares_json(json.as_bytes())
+            .map_err(|e| format!("linked secret '{name}': its declares section: {e}"))?;
+        let row = self
+            .linked
+            .iter_mut()
+            .find(|c| c.name == name)
+            .ok_or_else(|| format!("linked secret '{name}' declares, but no linked row is it"))?;
+        row.disk = declares.disk;
+        Ok(self)
+    }
+
+    /// `opened` as `c` declares it: on the disk lane when its source reads the disk.
+    fn placed(&self, c: &Candidate, opened: LoadedSecret) -> LoadedSecret {
+        if c.disk {
+            opened.reading_disk(self.disk_run)
+        } else {
+            opened
         }
     }
 
@@ -455,6 +647,7 @@ impl SecretAxis for SecretRows {
         let label = Self::label(module);
         let (s, _) = self.shared.get_or_open(&c.name, || {
             LoadedSecret::open(self.load(c, &label)?, (self.dispatcher)(), &[], &[])
+                .map(|opened| self.placed(c, opened))
         })?;
         Ok(s)
     }
@@ -487,15 +680,20 @@ impl SecretAxis for SecretRows {
         } else {
             settings.to_string().into_bytes()
         };
-        Ok(Arc::new(LoadedSecret::open(
+        let opened = LoadedSecret::open(
             self.load(&c, &Self::label(module))?,
             (self.dispatcher)(),
             &bytes,
             &secrets,
-        )?))
+        )?;
+        Ok(Arc::new(self.placed(&c, opened)))
     }
 }
 
 #[cfg(test)]
 #[path = "tests/secret_calls_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/secret_disk_tests.rs"]
+mod disk_tests;

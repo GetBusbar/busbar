@@ -72,6 +72,10 @@ pub struct Linked {
     /// Each plane door row's place among [`Linked::planes`] (how many plane rows precede it in
     /// manifest order), parallel to [`Linked::plane_doors`]: where its folded registry row goes.
     pub plane_door_slots: &'static [usize],
+    /// Each linked secret door's DECLARED METADATA, `(door, declares)`: its `declares.json` (named by
+    /// `[package.metadata.busbar.linked-declares]`), read as a dropped-in copy's signed `declares`
+    /// is — its disk need (THE DESIGN §11.11 R4). A door with no row declares none.
+    pub secret_declares: &'static [(busbar_contract::abi::mechanism::door::DoorFn, &'static str)],
     /// Each linked plane door's DECLARED METADATA, `(row, door, declares)`: its manifest `declares`
     /// section as JSON (the crate's `declares.json`, named by `[package.metadata.busbar.linked-declares]`),
     /// read as every default-linked plugin's is, beside the door it belongs to. A linked door is
@@ -349,7 +353,7 @@ pub fn register_protocols(linked: &Linked, units: &[&RootUnit]) {
 /// names (Q-STORE = (B)). A linked secret door that does not state itself refuses the boot (exit 2)
 /// before anything resolves a store or a secret.
 pub fn register_stores(linked: &Linked) {
-    match link_secrets(linked.secrets) {
+    match link_secrets(linked.secrets, linked.secret_declares) {
         Ok(secrets) => busbar_kernel::preflight::install_linked_rows(RootInstall {
             stores: linked.stores,
             registry_build: Some(crate::root::boot::registry),
@@ -403,6 +407,7 @@ static SECRETS: std::sync::OnceLock<crate::root::loader::secret_calls::SecretRow
 /// A linked secret door that does not state itself, naming why.
 pub fn link_secrets(
     doors: &[busbar_contract::abi::mechanism::door::DoorFn],
+    declares: &[(busbar_contract::abi::mechanism::door::DoorFn, &str)],
 ) -> Result<&'static crate::root::loader::secret_calls::SecretRows, String> {
     if let Some(rows) = SECRETS.get() {
         return Ok(rows);
@@ -411,13 +416,33 @@ pub fn link_secrets(
         crate::root::dispatch::dispatcher,
         conns,
     )
-    .with_logs(|| crate::root::boot::plugin_logs().clone());
+    .with_logs(|| crate::root::boot::plugin_logs().clone())
+    .with_disk_lane(disk_run);
     for door in doors {
         rows.link(*door)
             .map_err(|e| format!("a linked secret plugin does not state itself: {e}"))?;
     }
+    for (door, json) in declares {
+        rows.declare_linked(*door, json)?;
+    }
     rows.with_former_names(busbar_kernel::config::legacy::former_names)?;
     Ok(SECRETS.get_or_init(|| rows))
+}
+
+/// THE PROCESS'S ONE DISK LANE (THE DESIGN §11.11 R4): the kernel's host services append on it
+/// ([`crate::root::serve::kernel_services`]) and a disk-declared secret source's config-time
+/// `resolve` runs on it ([`disk_run`]).
+static DISK: std::sync::OnceLock<std::sync::Arc<busbar_kernel::host_disk::DiskLane>> =
+    std::sync::OnceLock::new();
+
+/// The process's one disk lane.
+pub fn disk_lane() -> std::sync::Arc<busbar_kernel::host_disk::DiskLane> {
+    DISK.get_or_init(std::sync::Arc::default).clone()
+}
+
+/// The secret axis's hook onto [`disk_lane`]: a job submitted to the lane thread.
+fn disk_run(job: Box<dyn FnOnce() + Send>) -> Result<(), String> {
+    disk_lane().run(job).map_err(str::to_string)
 }
 
 /// The host's one connection table (`root::connector::the()`), on which a secret plugin that declares
@@ -431,6 +456,7 @@ pub fn secret_rows() -> &'static crate::root::loader::secret_calls::SecretRows {
     SECRETS.get_or_init(|| {
         crate::root::loader::secret_calls::SecretRows::new(crate::root::dispatch::dispatcher, conns)
             .with_logs(|| crate::root::boot::plugin_logs().clone())
+            .with_disk_lane(disk_run)
     })
 }
 
