@@ -443,6 +443,11 @@ extern "C" {
 #define BB_PLANE_PIN_FINGERPRINT UINT32_C(1) /* [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`. */
 #define BB_PLANE_MECHANISM_ROOT UINT32_C(1) /* [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key */
 #define BB_PLANE_MECHANISM_PEER_KEY UINT32_C(2) /* [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin */
+#define BB_PLANE_CLI_HELP_MARK "\x1e" /* Opens a row (ASCII record separator). */
+#define BB_PLANE_CLI_HELP_NAME_END "\x1f" /* Ends a row's slot name (ASCII unit separator). */
+#define BB_PLANE_CLI_HELP_TAGLINE "tagline" /* The one-line description the help opens with (the first one stated is printed). */
+#define BB_PLANE_CLI_HELP_FLAG "flag" /* A block of the help's `Flags:` rows; its first word is the flag the host accepts. */
+#define BB_PLANE_CLI_HELP_ENDPOINT "endpoint" /* A block of the help's `ENDPOINTS` rows. */
 #define BB_PLANE_MAX_METRIC_LANES ((size_t)16) /* The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]). */
 #define BB_PLANE_EXT_OWNED "owned" /* A plane `refresh`'s EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in */
 
