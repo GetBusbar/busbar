@@ -238,6 +238,7 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
                     flags,
                     fault: 0,
                     retry_after_secs: 0,
+                    declared_len: 0,
                 });
             }
             frame_len += len as usize;
