@@ -238,6 +238,88 @@ pub const SERVED_OP_CLASSES: &[ServedOpClass] = &[ServedOpClass {
     name: "LLM",
 }];
 
+/// THE PROVIDER KEYS THIS PLANE OWNS, per form of a `providers:` entry (row 155 B1c, ARCHITECT
+/// ruling "Option A"): the descriptor this plane states in its Statement's extensions under
+/// `busbar_contract::provider_keys::EXT_PROVIDER_KEYS`, in the contract's neutral shape vocabulary,
+/// so the kernel parses an entry without holding one of these names.
+///
+/// Each form's keys are in the order of the previous release's frozen grammar for that form (the
+/// catalog definition, the operator deployment, the whole resolved entry), with the kernel's own keys
+/// left out; each says whether it must be written, and each form whether it refuses a key it does not
+/// name. A test holds every form to the frozen grammar, key by key. Read by nothing yet: the kernel
+/// keeps it at its door fold.
+pub const PROVIDER_KEYS: &str = r#"{
+  "catalog": {
+    "deny_unknown": false,
+    "keys": [
+      {"name": "protocol", "shape": "str", "required": true},
+      {"name": "error_map", "shape": "str-map", "required": false},
+      {"name": "organization", "shape": "str", "required": false},
+      {"name": "project", "shape": "str", "required": false},
+      {"name": "max_output_key", "shape": {"one-of": ["max_tokens", "max_completion_tokens"]}, "required": false},
+      {"name": "anthropic_adaptive_thinking", "shape": "bool", "required": false},
+      {"name": "native_structured_output", "shape": "bool", "required": false},
+      {"name": "model_capabilities", "shape": {"list": {"table": {
+        "deny_unknown": true,
+        "keys": [
+          {"name": "models", "shape": {"list": "str"}, "required": true},
+          {"name": "max_output_key", "shape": {"one-of": ["max_tokens", "max_completion_tokens"]}, "required": false},
+          {"name": "anthropic_adaptive_thinking", "shape": "bool", "required": false},
+          {"name": "native_structured_output", "shape": "bool", "required": false},
+          {"name": "reasoning_none", "shape": "bool", "required": false},
+          {"name": "thinking_always_on", "shape": "bool", "required": false}
+        ]
+      }}}, "required": false}
+    ]
+  },
+  "deployment": {
+    "deny_unknown": true,
+    "keys": [
+      {"name": "protocol", "shape": "str", "required": false},
+      {"name": "error_map", "shape": "str-map", "required": false},
+      {"name": "organization", "shape": "str", "required": false},
+      {"name": "project", "shape": "str", "required": false},
+      {"name": "max_output_key", "shape": {"one-of": ["max_tokens", "max_completion_tokens"]}, "required": false},
+      {"name": "anthropic_adaptive_thinking", "shape": "bool", "required": false},
+      {"name": "native_structured_output", "shape": "bool", "required": false},
+      {"name": "model_capabilities", "shape": {"list": {"table": {
+        "deny_unknown": true,
+        "keys": [
+          {"name": "models", "shape": {"list": "str"}, "required": true},
+          {"name": "max_output_key", "shape": {"one-of": ["max_tokens", "max_completion_tokens"]}, "required": false},
+          {"name": "anthropic_adaptive_thinking", "shape": "bool", "required": false},
+          {"name": "native_structured_output", "shape": "bool", "required": false},
+          {"name": "reasoning_none", "shape": "bool", "required": false},
+          {"name": "thinking_always_on", "shape": "bool", "required": false}
+        ]
+      }}}, "required": false}
+    ]
+  },
+  "entry": {
+    "deny_unknown": true,
+    "keys": [
+      {"name": "protocol", "shape": "str", "required": false},
+      {"name": "error_map", "shape": "str-map", "required": true},
+      {"name": "organization", "shape": "str", "required": false},
+      {"name": "project", "shape": "str", "required": false},
+      {"name": "max_output_key", "shape": {"one-of": ["max_tokens", "max_completion_tokens"]}, "required": false},
+      {"name": "anthropic_adaptive_thinking", "shape": "bool", "required": false},
+      {"name": "native_structured_output", "shape": "bool", "required": false},
+      {"name": "model_capabilities", "shape": {"list": {"table": {
+        "deny_unknown": true,
+        "keys": [
+          {"name": "models", "shape": {"list": "str"}, "required": true},
+          {"name": "max_output_key", "shape": {"one-of": ["max_tokens", "max_completion_tokens"]}, "required": false},
+          {"name": "anthropic_adaptive_thinking", "shape": "bool", "required": false},
+          {"name": "native_structured_output", "shape": "bool", "required": false},
+          {"name": "reasoning_none", "shape": "bool", "required": false},
+          {"name": "thinking_always_on", "shape": "bool", "required": false}
+        ]
+      }}}, "required": false}
+    ]
+  }
+}"#;
+
 impl PlaneMeta for LlmPlane {
     const KEY: &'static str = "llm";
     const CLAIMS: &'static [busbar_contract::grammar::Claim] = claims::CLAIMS;

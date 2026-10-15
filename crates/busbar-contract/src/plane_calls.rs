@@ -273,6 +273,11 @@ pub struct PlaneRegistration {
     /// Whether the tail states `TAIL_FALLBACK`: the plane is the catch-all every unclaimed path
     /// falls through to, and its card is the flat one (at most one registered plane).
     pub fallback: bool,
+    /// The provider-key descriptor its Statement states under
+    /// [`crate::provider_keys::EXT_PROVIDER_KEYS`] (row 155 B1c): the `providers:` entry keys the
+    /// plane owns, per form, in their frozen order and the neutral shape vocabulary; `None` = it
+    /// states none. The kernel's door fold keeps it; nothing parses an entry from it yet.
+    pub provider_keys: Option<crate::provider_keys::ProviderKeys>,
     /// The door's own `validate` over a whole section (its settings, JSON): `Ok`, or the door's
     /// words. The kernel runs it where the section is parsed and where an admin write lands.
     pub validate: SectionJudge,
