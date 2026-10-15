@@ -44,9 +44,9 @@ macro_rules! hyper_io {
             use $crate::abi::sdk::{HostBuf, Lent, Out};
             use $crate::abi::transport::{
                 FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_CONTINUED,
-                PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER,
-                PIECE_STREAM_FAILED, PIECE_WRITABLE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
-                YIELD_STREAM_FULL,
+                PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE,
+                PIECE_HAS_DECLARED_LEN, PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_WRITABLE,
+                YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
             };
 
             /// The most bytes `hyper` may leave in the pipe's write half before its writes pend.

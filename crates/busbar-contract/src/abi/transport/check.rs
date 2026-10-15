@@ -739,6 +739,8 @@ pub fn check_emit_status(i: &EmitIn, answers_head: bool) -> Result<(), Fault> {
         (false, s) if s != 0 => Err(fault(Rule::Contradiction, "emit.status")),
         _ => Ok(()),
     }
+}
+
 /// Every fault row: names a claim, `lo <= hi`, and a fault reading that is stated (never
 /// `FAULT_NONE`: a code the table does not cover already reads none).
 ///
