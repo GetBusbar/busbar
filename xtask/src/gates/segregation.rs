@@ -53,6 +53,8 @@ pub const ORACLE_DATA_ALLOW: &[&str] = &[
     "testing/shadow-oracle/accepted-differences.json",
     "testing/shadow-oracle/cells.json",
     "testing/shadow-oracle/rigs-baseline.json",
+    // The fleet registry test reads the plugin pin table as rows, the way busbar-release's plugin_build does.
+    "testing/shadow-oracle/plugin-digests.tsv",
 ];
 
 /// Oracle CODE paths a gate may NAME but never open, because it writes them into a document it
