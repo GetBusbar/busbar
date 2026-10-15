@@ -15,8 +15,8 @@ fn cohere_stop_reason_codec_round_trips_and_never_leaks() {
     // it. `S::Safety` is a served, filtered answer, not a failure: it writes `COMPLETE` (COH-15),
     // never the `ERROR` that reads as an infrastructure fault.
     assert_eq!(write_cohere_stop_reason(S::Safety), "COMPLETE"); // golden wire-contract literal (kept bare on purpose)
-                                                                 // v2 `TIMEOUT` is the upstream failing to finish: `Error`, not `Other` (COH-16).
-    assert_eq!(read_cohere_stop_reason("TIMEOUT"), S::Error);
+                                                                 // v2 `TIMEOUT` reads as `Other`, as in 1.5.5 (v1.5.5 proto/cohere/mod.rs:179-191).
+    assert_eq!(read_cohere_stop_reason("TIMEOUT"), S::Other);
     // A reason with no Cohere analog (`refusal`) or an unknown native token (`ERROR_LIMIT` →
     // Other) degrades to the safe terminal COMPLETE rather than leak an off-spec finish_reason.
     assert_eq!(read_cohere_stop_reason("ERROR_LIMIT"), S::Other);
