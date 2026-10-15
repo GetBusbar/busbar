@@ -629,6 +629,15 @@ allowed to reach Audit without Route and Meter rather than pretended to stop at 
 
 [[rules.teller-step-order.arm_may_omit]]
 function = "under_hold"
+arm = "if !presented(&token, ctx)"
+steps = ["route", "meter"]
+why = """THE STAGE'S COMPARE (#74): the Route stage was handed a pass of another call, so the unit is \
+refused as a replay before any leg is dialled — there is no Route leg to await and no spend to meter. \
+The refusal is the unit's outcome and the same terminal audit seals it. (Was an early `return`; now an \
+arm, so the loop has no early exit.)"""
+
+[[rules.teller-step-order.arm_may_omit]]
+function = "under_hold"
 arm = "Err(refusal)"
 steps = ["meter"]
 why = """The Route leg refused, so there is no completed leg to meter. The refusal becomes the \

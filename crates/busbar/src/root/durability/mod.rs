@@ -992,7 +992,7 @@ impl Durability {
         let settlement = self
             .ledger
             .post_counted(at.key, at.window, posted, counts.fee_count);
-        self.journal_settlement_as(
+        self.journal_settlement_kind(
             at,
             settlement,
             self.incarnation,
@@ -1188,7 +1188,7 @@ impl Durability {
         arrived_ms: u64,
         refusal: Option<String>,
     ) -> Result<Settled, DurabilityLost> {
-        self.journal_settlement_as(
+        self.journal_settlement_kind(
             at,
             settlement,
             incarnation,
@@ -1203,7 +1203,7 @@ impl Durability {
     /// `Settlement`, or the `Counted` row a hold closes with when its counts priced to nothing
     /// ([`Durability::close_counted`]).
     #[allow(clippy::too_many_arguments)]
-    fn journal_settlement_as(
+    fn journal_settlement_kind(
         &mut self,
         at: &Settling<'_>,
         settlement: Settlement,
