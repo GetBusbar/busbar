@@ -4213,6 +4213,7 @@ version = "0.0.0"
 dependencies = [
  "busbar-contract",
  "busbar-core-connector",
+ "busbar-kernel",
  "busbar-plugin-loader",
  "busbar-transport-webrtc",
  "serde_json",
@@ -4359,6 +4360,7 @@ version = "0.0.0"
 dependencies = [
  "busbar-contract",
  "busbar-core-connector",
+ "busbar-kernel",
  "busbar-plugin-loader",
  "busbar-transport-tcp",
  "busbar-transport-ws",
