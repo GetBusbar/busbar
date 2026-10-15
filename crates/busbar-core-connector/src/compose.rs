@@ -51,6 +51,12 @@ const READ_CHUNK: usize = 16 * 1024;
 /// The open's bound when the caller states none.
 pub const DEFAULT_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// The most name lookups the host keeps in flight at once. A lookup that outlives its bound is let
+/// go, not joined, and holds its place until it ends; at this many a new lookup is refused at once
+/// (an unresolvable name), so a resolver that wedges again and again holds at most this many
+/// threads.
+pub const MAX_PENDING_LOOKUPS: usize = 64;
+
 /// The stream a dialled connection's own exchange rides.
 pub const EXCHANGE_STREAM: u64 = 1;
 
