@@ -46,6 +46,18 @@
 //! after boot rather than at it. There is no [`Restored`] to return it on, so the break is RECORDED on
 //! the journal ([`Journal::take_resume_breaks`] drains it) instead of discarded — the resume still
 //! proceeds from the tail, but the evidence is never silently dropped.
+//!
+//! ## No store call under the position map
+//!
+//! The store is plugin code, and no plugin code runs under a host lock (BUSBAR-1.6.0.md §11.13 M1).
+//! So the position map is held only to read a position or commit one, never across a store call:
+//! an append CLAIMS its scope ([`Journal::claim`]), reads the cached position, crosses the store
+//! with the map released, then commits. The claim orders writers of ONE scope (two appends to a
+//! scope cannot both build on the same position); appends to OTHER scopes of the kind never wait
+//! on it, and a store that appends to another scope from inside its own write cannot deadlock. A
+//! restore claims each scope the same way while it reads that scope back, so an append and a
+//! restore of one scope never interleave and a restore never commits a position older than an
+//! append already made durable.
 
 // Two downstream plugins each wire this in production for their own evidence stream. But with both
 // of those plugins compiled out (`--no-default-features`) nothing instantiates a `Journal`, so every
@@ -55,8 +67,10 @@
 // says nothing a reader can act on.
 #![cfg_attr(not(test), allow(dead_code))]
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
+use std::thread::ThreadId;
 
 use indexmap::IndexMap;
 
@@ -160,6 +174,32 @@ pub(crate) struct Journal<R> {
     /// drains it via [`Journal::take_resume_breaks`] and reports it in its own vocabulary, the same way
     /// it drains `Restored::chain_breaks` from a boot rehydrate; the journal itself does not judge.
     resume_breaks: Mutex<Vec<ChainBreak>>,
+    /// The scopes whose store crossing is running right now, each with the thread running it. An
+    /// append or a restore holds its scope here (never the position map) while the store answers,
+    /// so a second writer of the SAME scope waits on [`Journal::released`] and every other scope
+    /// proceeds. The thread is kept so a store that re-enters its own scope on the same thread is
+    /// refused instead of waiting on itself forever.
+    claimed: Mutex<HashMap<String, ThreadId>>,
+    /// Signalled whenever a claim is released.
+    released: Condvar,
+}
+
+/// One scope's claim on its store crossing. Dropping it, on success, on error and on unwind alike,
+/// releases the scope and wakes the writers waiting on it.
+struct ScopeClaim<'a> {
+    claimed: &'a Mutex<HashMap<String, ThreadId>>,
+    released: &'a Condvar,
+    scope: String,
+}
+
+impl Drop for ScopeClaim<'_> {
+    fn drop(&mut self) {
+        self.claimed
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&self.scope);
+        self.released.notify_all();
+    }
 }
 
 impl<R: ChainedRecord> Journal<R> {
@@ -171,7 +211,49 @@ impl<R: ChainedRecord> Journal<R> {
             sink: Mutex::new(None),
             cap,
             resume_breaks: Mutex::new(Vec::new()),
+            claimed: Mutex::new(HashMap::new()),
+            released: Condvar::new(),
         }
+    }
+
+    /// CLAIM `scope` for one store crossing: wait while another thread holds it, then hold it until
+    /// the returned claim drops. Only the claim map is locked, and only to test and mark it; the
+    /// wait releases it. A claim the CALLING thread already holds is refused: that is a store
+    /// re-entering the journal for the scope it is writing, which would otherwise wait on itself.
+    fn claim(&self, scope: &str) -> RecordStoreResult<ScopeClaim<'_>> {
+        let me = std::thread::current().id();
+        let mut claimed = self.claimed.lock().unwrap_or_else(PoisonError::into_inner);
+        loop {
+            let holder = claimed.get(scope).copied();
+            match holder {
+                None => break,
+                Some(owner) if owner == me => {
+                    return Err(RecordStoreError(
+                        "a journal scope was re-entered from inside its own store call on the same \
+                         thread; refused rather than waiting on itself"
+                            .to_string(),
+                    ));
+                }
+                Some(_) => {
+                    claimed = self
+                        .released
+                        .wait(claimed)
+                        .unwrap_or_else(PoisonError::into_inner);
+                }
+            }
+        }
+        claimed.insert(scope.to_string(), me);
+        Ok(ScopeClaim {
+            claimed: &self.claimed,
+            released: &self.released,
+            scope: scope.to_string(),
+        })
+    }
+
+    /// Commit `chain` as `scope`'s position under a short hold of the position map.
+    fn commit(&self, scope: &str, chain: Chain<R>) {
+        let mut positions = self.positions();
+        Self::commit_position(&mut positions, &self.overflowed, self.cap, scope, chain);
     }
 
     /// Drain the chain breaks the RUNTIME resume path recorded since the last drain — the runtime
@@ -309,8 +391,9 @@ impl<R: ChainedRecord> Journal<R> {
     {
         let scopes = store.list_plane_record_parents(R::KIND)?;
         let mut out = Restored::default();
-        let mut positions = self.positions();
         for scope in &scopes {
+            // The scope is claimed, not the position map, while the store answers.
+            let _claim = self.claim(scope)?;
             let records: Vec<R> = store
                 .list_plane_records(R::KIND, &PlaneSelector::Parent(scope.as_str().into()))?
                 .iter()
@@ -318,13 +401,7 @@ impl<R: ChainedRecord> Journal<R> {
                 .collect::<RecordStoreResult<_>>()?;
             if records.is_empty() {
                 out.empty_scopes.push(scope.clone());
-                Self::commit_position(
-                    &mut positions,
-                    &self.overflowed,
-                    self.cap,
-                    scope,
-                    Chain::new(),
-                );
+                self.commit(scope, Chain::new());
                 out.scopes += 1;
                 continue;
             }
@@ -336,7 +413,7 @@ impl<R: ChainedRecord> Journal<R> {
                 }
             };
             out.records += records.len();
-            Self::commit_position(&mut positions, &self.overflowed, self.cap, scope, chain);
+            self.commit(scope, chain);
             out.scopes += 1;
         }
         Ok(out)
@@ -355,8 +432,7 @@ impl<R: ChainedRecord> Journal<R> {
             Ok(c) => (c, None),
             Err(b) => (Chain::from_persisted_unverified(records), Some(b)),
         };
-        let mut positions = self.positions();
-        Self::commit_position(&mut positions, &self.overflowed, self.cap, scope, chain);
+        self.commit(scope, chain);
         brk
     }
 
@@ -391,6 +467,13 @@ impl<R: ChainedRecord> Journal<R> {
     /// THE ONE APPEND, typed and neutral alike: chain `input` onto `scope`'s position (a cache miss
     /// resolved by `resume`), write the record's `envelope` through when a sink is attached, and
     /// advance the position only once that durable write has succeeded.
+    ///
+    /// The scope is CLAIMED for the whole append, and the position map is held only to read the
+    /// cached position and to commit the new one: the resume read and the durable write cross the
+    /// store with no host lock held. The claim is what keeps two appends to one scope from minting
+    /// the same sequence. A failed write commits nothing, so the next append reuses the sequence.
+    /// The scope may be evicted or forgotten while its write is in flight; the commit then puts the
+    /// durable tail back as the most-recently-used position, the same position a resume would read.
     fn append_with(
         &self,
         scope: &str,
@@ -398,9 +481,10 @@ impl<R: ChainedRecord> Journal<R> {
         resume: impl FnOnce() -> Result<Chain<R>, JournalError>,
         envelope: impl FnOnce(&R) -> RecordStoreResult<PlaneRecord>,
     ) -> Result<R, JournalError> {
-        let mut positions = self.positions();
-        let mut candidate = match positions.get(scope) {
-            Some(chain) => chain.clone(),
+        let _claim = self.claim(scope).map_err(JournalError::Store)?;
+        let cached = self.positions().get(scope).cloned();
+        let mut candidate = match cached {
+            Some(chain) => chain,
             None => resume()?,
         };
         let record = candidate.append(scope, input);
@@ -410,7 +494,7 @@ impl<R: ChainedRecord> Journal<R> {
                 .append_plane_record(envelope.view())
                 .map_err(JournalError::Store)?;
         }
-        Self::commit_position(&mut positions, &self.overflowed, self.cap, scope, candidate);
+        self.commit(scope, candidate);
         Ok(record)
     }
 
@@ -566,8 +650,10 @@ impl<R: NeutralRecord> Journal<R> {
     ) -> RecordStoreResult<Restored> {
         let scopes = store.list_plane_record_parents(kind)?;
         let mut out = Restored::default();
-        let mut positions = self.positions();
         for scope in &scopes {
+            // The scope is claimed, not the position map, while the store answers and the bodies
+            // are reframed.
+            let _claim = self.claim(scope)?;
             // Reframe per-record: an undecodable body is SKIPPED and counted, never `?`-aborted —
             // aborting here would drop every scope after this one, the all-or-nothing failure a
             // chain break is already spared from. The skip is reported LOUDLY at the site with a
@@ -604,13 +690,7 @@ impl<R: NeutralRecord> Journal<R> {
                 if store_returned_nothing {
                     out.empty_scopes.push(scope.clone());
                 }
-                Self::commit_position(
-                    &mut positions,
-                    &self.overflowed,
-                    self.cap,
-                    scope,
-                    Chain::new(),
-                );
+                self.commit(scope, Chain::new());
                 out.scopes += 1;
                 continue;
             }
@@ -622,7 +702,7 @@ impl<R: NeutralRecord> Journal<R> {
                 }
             };
             out.records += records.len();
-            Self::commit_position(&mut positions, &self.overflowed, self.cap, scope, chain);
+            self.commit(scope, chain);
             out.scopes += 1;
         }
         Ok(out)
@@ -671,3 +751,7 @@ impl<R: NeutralRecord> Journal<R> {
 #[cfg(test)]
 #[path = "tests/journal_tests.rs"]
 mod journal_tests;
+
+#[cfg(test)]
+#[path = "tests/journal_lock_tests.rs"]
+mod journal_lock_tests;
