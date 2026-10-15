@@ -44,6 +44,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "aes"
+version = "0.8.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b169f7a6d4742236a0a00c541b845991d0ac43e546831af1249753ab4c3aa3a0"
+dependencies = [
+ "cfg-if",
+ "cipher",
+ "cpufeatures 0.2.17",
+ "zeroize",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -349,6 +361,7 @@ dependencies = [
  "busbar-transport-stdio",
  "busbar-transport-tcp",
  "busbar-transport-tcp-plugin",
+ "busbar-transport-webrtc",
  "busbar-transport-ws",
  "busbar-voice",
  "bytes",
@@ -380,6 +393,7 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-rustls",
+ "tokio-util",
  "tower",
  "tracing",
  "tracing-subscriber",
@@ -565,6 +579,7 @@ dependencies = [
  "axum",
  "busbar-contract",
  "busbar-kernel",
+ "busbar-kernel-egress",
  "busbar-plugin-loader",
  "busbar-transport-tcp-plugin",
  "bytes",
@@ -709,9 +724,8 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bumpalo",
- "busbar-a2a",
  "busbar-contract",
- "busbar-hook-ranking",
+ "busbar-kernel",
  "busbar-kernel-audit",
  "busbar-kernel-breaker",
  "busbar-kernel-egress",
@@ -719,9 +733,7 @@ dependencies = [
  "busbar-kernel-ledger",
  "busbar-kernel-scope",
  "busbar-kernel-wal",
- "busbar-llm",
  "busbar-plugin-loader",
- "busbar-store-memory",
  "bytes",
  "crc32fast",
  "criterion",
@@ -755,7 +767,6 @@ dependencies = [
  "tikv-jemallocator",
  "tokio",
  "tokio-tungstenite",
- "tokio-util",
  "tower",
  "tracing",
  "tracing-log",
@@ -977,10 +988,9 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.5.0"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=848851e63ac7a454eb3d5daf9e11d739c48d738b#848851e63ac7a454eb3d5daf9e11d739c48d738b"
 dependencies = [
  "busbar-contract",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -999,7 +1009,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=2d1dbfdabf57842875b52f25a7fda73e7e32a73f#2d1dbfdabf57842875b52f25a7fda73e7e32a73f"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=a6e29e36da98a20324e484f32abad1a535023993#a6e29e36da98a20324e484f32abad1a535023993"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -1034,6 +1044,19 @@ source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=b3047ce8748d
 dependencies = [
  "busbar-contract",
  "busbar-transport-tcp",
+]
+
+[[package]]
+name = "busbar-transport-webrtc"
+version = "1.6.0"
+dependencies = [
+ "aes",
+ "busbar-contract",
+ "busbar-plugin-loader",
+ "busbar-transport-webrtc",
+ "ring",
+ "str0m",
+ "zeroize",
 ]
 
 [[package]]
@@ -1162,6 +1185,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "cipher"
+version = "0.4.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "773f3b9af64447d2ce9850330c473515014aa235e6a783b02db81ff39e4a3dad"
+dependencies = [
+ "crypto-common",
+ "inout",
+]
+
+[[package]]
 name = "clap"
 version = "4.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1185,6 +1218,16 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
+
+[[package]]
+name = "combine"
+version = "4.6.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfc320937d09e6de266b31b9afb480f197d7a861be86be7cb2ea7e5d1bfffc5e"
+dependencies = [
+ "bytes",
+ "memchr",
+]
 
 [[package]]
 name = "const-oid"
@@ -1226,6 +1269,21 @@ checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "crc"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
 
 [[package]]
 name = "crc32fast"
@@ -2008,10 +2066,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "inout"
+version = "0.1.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "879f10e63c20629ecabbb64a8010319738c66a5cd0c29b02d63d272b03751d01"
+dependencies = [
+ "generic-array",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d98f6fed1fde3f8c21bc40a1abb88dd75e67924f9cffc3ef95607bad8017f8e2"
+
+[[package]]
+name = "is"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6edbbdc611843e8c65878ee735f68c495cede11ae5a9582b17fe0369c456ef5"
+dependencies = [
+ "crc",
+ "serde",
+ "str0m-proto",
+ "subtle",
+ "tracing",
+]
 
 [[package]]
 name = "itertools"
@@ -3278,9 +3358,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.45"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "once_cell",
  "ring",
@@ -3380,6 +3460,21 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "sctp-proto"
+version = "0.10.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "250132c5814c3d4f01269ee7a261450bc38dd5119280262d3c13a40062cfde55"
+dependencies = [
+ "bytes",
+ "crc",
+ "log",
+ "rand 0.9.4",
+ "rustc-hash",
+ "slab",
+ "thiserror",
+]
 
 [[package]]
 name = "semver"
@@ -3620,6 +3715,40 @@ checksum = "d91ed6c858b01f942cd56b37a94b3e0a1798290327d1236e4d9cf4eaca44d29d"
 dependencies = [
  "base64ct",
  "der",
+]
+
+[[package]]
+name = "str0m"
+version = "0.24.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e80c4a4ef148e4a9fd15b9525c7f376d97e86729f19880b591ad220f1288c0f"
+dependencies = [
+ "arrayvec",
+ "base64ct",
+ "combine",
+ "dimpl",
+ "fastrand",
+ "is",
+ "sctp-proto",
+ "serde",
+ "str0m-proto",
+ "subtle",
+ "time",
+ "tracing",
+]
+
+[[package]]
+name = "str0m-proto"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8f3d99f2cf6c76a502e45feb896ea71e54787ede8744bcdb215acfbfcb905dd"
+dependencies = [
+ "base64ct",
+ "dimpl",
+ "fastrand",
+ "serde",
+ "subtle",
+ "time",
 ]
 
 [[package]]
@@ -4590,6 +4719,7 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "ed25519-dalek",
+ "libc",
  "proc-macro2",
  "rcgen",
  "ring",

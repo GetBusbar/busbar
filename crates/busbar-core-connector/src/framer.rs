@@ -130,7 +130,7 @@ impl std::fmt::Display for Refused {
 
 impl std::error::Error for Refused {}
 
-fn refused(c: Crossed) -> Refused {
+pub(crate) fn refused(c: Crossed) -> Refused {
     Refused {
         outcome: c.outcome,
         error: String::from_utf8_lossy(c.error.as_deref().unwrap_or_default()).into_owned(),
@@ -379,14 +379,14 @@ impl Buffers {
     }
 
     /// The default buffers for a framing on `side`.
-    fn for_side(side: u32) -> Self {
+    pub(crate) fn for_side(side: u32) -> Self {
         Self {
             side,
             ..Self::default()
         }
     }
 
-    fn sink(&mut self) -> FramerSink {
+    pub(crate) fn sink(&mut self) -> FramerSink {
         FramerSink {
             wire: self.wire.as_mut_ptr(),
             wire_cap: self.wire.len(),
@@ -401,8 +401,18 @@ impl Buffers {
         }
     }
 
+    /// The first `len` bytes the last answer wrote into the wire buffer; `None` = out of bounds.
+    pub(crate) fn wire_written(&self, len: u64) -> Option<&[u8]> {
+        self.wire.get(..usize::try_from(len).ok()?)
+    }
+
+    /// The first `len` bytes the last answer wrote into the frame buffer; `None` = out of bounds.
+    pub(crate) fn frame_written(&self, len: u64) -> Option<&[u8]> {
+        self.frame.get(..usize::try_from(len).ok()?)
+    }
+
     /// Take what one READY answer wrote; `false` = it owes more (`YIELD_MORE`).
-    fn take(&mut self, o: &FramerOut, into: &mut Yielded) -> Result<bool, Refused> {
+    pub(crate) fn take(&mut self, o: &FramerOut, into: &mut Yielded) -> Result<bool, Refused> {
         let y = &o.yielded;
         let bad = |what: &str| Refused {
             outcome: Outcome::Fault,
@@ -552,7 +562,7 @@ impl std::fmt::Debug for Framing {
     }
 }
 
-fn ready(c: Crossed) -> Result<(), Refused> {
+pub(crate) fn ready(c: Crossed) -> Result<(), Refused> {
     if c.outcome == Outcome::Ready {
         Ok(())
     } else {

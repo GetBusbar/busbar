@@ -480,17 +480,16 @@ impl GovState {
     /// is read.
     ///
     /// Deliberately returns the secret rather than a ready-made HMAC, so this module keeps knowing
-    /// nothing about what any consumer seals: a plane's ask-state codec
-    /// ([`crate::plane::approvals::Sealer::derive`]) does its own domain-separated derivation, which is
-    /// what keeps its blobs and this module's virtual-key tokens unable to verify as one another.
-    /// Secret-equivalent: never log it, never put it in a `Debug`.
+    /// nothing about what any consumer seals: a consumer does its own domain-separated derivation,
+    /// which is what keeps its blobs and this module's virtual-key tokens unable to verify as one
+    /// another. Secret-equivalent: never log it, never put it in a `Debug`.
     ///
     /// The FLEET-SHARED property is the reason this is usable for a state seal at all. One logical
     /// caller-facing exchange spans several independent requests, which different nodes may serve;
     /// a per-process key would make the second request fail on whichever node did not mint the first.
-    // Its consumer is the ask-state sealer (`crate::plane::approvals::Sealer`), driven by whichever
-    // plane seals caller-facing state; with no such plane installed it has no caller. Unconditional
-    // allow — the neutral seam names no plane feature.
+    // No in-core consumer: a plane seals its caller-facing state over the host's `sign` (ARCHITECT
+    // Q-L3B-ASK; the in-core ask-state sealer is deleted, audit K2-H3). Unconditional allow — the
+    // neutral seam names no plane feature.
     #[allow(dead_code)]
     pub fn signing_secret(&self) -> Option<[u8; 32]> {
         self.signing_material().map(|m| m.signer.secret_bytes())

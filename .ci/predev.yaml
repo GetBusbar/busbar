@@ -1,0 +1,155 @@
+# What predev must pass to move into dev: the `dev` rung (gates, oracle, conformance), the 1.6.0
+# done-oracle, and the Q128 architecture audit (`cargo xtask q128 audit`). ModernCI names a branch
+# file for the branch being moved, so the move predev -> dev reads this file, and ModernCI alone
+# judges it: promote.yml, the busbar-release hop that judged it before, is deleted (OWNER
+# 2026-10-12, "ModernCI only"; docs/design/BUSBAR-1.6.0.md Part 6, "BUSBAR-RELEASE RETIRED FROM
+# BUSBAR"). Its green landing is DEV-GREEN.
+to: dev
+on_green: merge
+# The owner's approval on the pull request holds the merge too; q128-audit gates the move on the
+# audit's record for the commit (no open BLOCK).
+approve: true
+# 8h: plane-delete --all (40-90 min), two LTO release builds and the workspace tests do not fit in 6h.
+deadline: 8h
+env:
+  RUSTFLAGS: "-D warnings"
+  CARGO_TERM_COLOR: never
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_INCREMENTAL: "0"
+on:
+  move: [gates, oracle, conformance, verify-done, q128-audit, test-gated]
+checks:
+  gates:
+    # The rung re-runs every registered gate on the commit, ABSOLUTE (no `baseline`: every row
+    # green, not "no worse than dev"; dev holds no xtask and no ledgers to be measured against).
+    # The base-relative rules (new edges, minted rows) take predev's own last landed commit as their
+    # base: every lane move already judged its delta against predev, so dev is never the base.
+    run: |
+      export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
+      cargo xtask gate --all --format=tsv
+    # The base-relative rules read history: only a backend with the repo's history runs this check.
+    requires: [git-history]
+  oracle:
+    # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
+    # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
+    # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
+    # holds none: the first move) and runs it only at that pin's sha256 for this architecture, its
+    # .sig verified against busbar-release's release key; no line for this architecture is no judge.
+    # BUSBAR_RELEASE_TOKEN (a secret ModernCI gives this check) reads the private release. The 1.5.5
+    # golden is add-only from dev to this commit wherever dev holds it (none before the first move);
+    # then the candidate's release binary is recorded over the corpus and replayed against the
+    # committed 1.5.5 golden, strict: green is every cell byte-green or forgiven by an owner-signed
+    # accepted difference.
+    run: |
+      ./bin/oracle tool-dir >/dev/null
+      if git cat-file -e "$MODERNCI_TO_SHA:testing/shadow-oracle/golden/1.5.5" 2>/dev/null; then
+        ./bin/oracle golden-guard --repo . --base "$MODERNCI_TO_SHA" --head HEAD
+      else
+        echo "golden-guard: dev ($MODERNCI_TO_SHA) holds no golden/1.5.5; nothing to hold add-only"
+      fi
+      cargo build --locked --release -p busbar --bin busbar
+      ./bin/oracle fetch-golden
+      rm -rf target/oracle/recordings/candidate target/oracle/reports/dev
+      ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
+      ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
+    needs: [gates]
+  conformance:
+    # Every registered suite recorded on this commit (the llm rigs judge the oracle's candidate
+    # recording), then every MUST a fresh pass for it. A not-run suite denies.
+    # The instruments the rigs call from PATH are provided here, each fetched once per pin (sha256
+    # checked) into a cache that outlives the run: Go (h2spec publishes no linux/arm64 binary, so it
+    # is built from its tagged source), h2spec v2.6.0, testssl.sh v3.2.0, slsa-verifier v2.7.1. The self-hosted OIDF suite (oidf-oauth2, fapi2) runs in the backend's docker. A suite
+    # whose instrument cannot be provided stays not-run and denies; nothing here marks one optional.
+    run: |
+      set -euo pipefail
+      T="${XDG_CACHE_HOME:-$HOME/.cache}/busbar-conformance-tools"
+      mkdir -p "$T/bin"
+      case "$(uname -m)" in
+        aarch64|arm64) GOARCH=arm64; GO_SHA=4a97373d49fcacdcf3694fea368a500b00ee3e963974f3e7514132717632f052; SLSA_SHA=5d3b2349ede7bfec19e7a21569f18b9f7410145ad12e9584b175370669e14061 ;;
+        x86_64) GOARCH=amd64; GO_SHA=42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d; SLSA_SHA=946dbec729094195e88ef78e1734324a27869f03e2c6bd2f61cbc06bd5350339 ;;
+        *) echo "conformance tools: no pins for $(uname -m)"; exit 1 ;;
+      esac
+      fetch() { # url sha256 dest
+        if [ -f "$3" ] && echo "$2  $3" | sha256sum -c - >/dev/null 2>&1; then return 0; fi
+        curl -fsSL --retry 3 -o "$3.part" "$1" && echo "$2  $3.part" | sha256sum -c - >/dev/null && mv "$3.part" "$3"
+      }
+      if [ ! -x "$T/go/bin/go" ]; then
+        fetch "https://go.dev/dl/go1.26.9.linux-$GOARCH.tar.gz" "$GO_SHA" "$T/go.tgz"
+        rm -rf "$T/go"; tar -C "$T" -xzf "$T/go.tgz"
+      fi
+      if [ ! -x "$T/bin/h2spec" ]; then
+        rm -rf "$T/h2spec-src"; git clone -q --depth 1 --branch v2.6.0 https://github.com/summerwind/h2spec "$T/h2spec-src"
+        [ "$(git -C "$T/h2spec-src" rev-parse HEAD)" = 70ac2294010887f48b18e2d64f5cccd48421fad1 ] || { echo "h2spec v2.6.0 is not the pinned commit"; exit 1; }
+        (cd "$T/h2spec-src" && GOPATH="$T/gopath" GOFLAGS=-mod=mod "$T/go/bin/go" build -o "$T/bin/h2spec" ./cmd/h2spec)
+      fi
+      fetch "https://github.com/slsa-framework/slsa-verifier/releases/download/v2.7.1/slsa-verifier-linux-$GOARCH" "$SLSA_SHA" "$T/bin/slsa-verifier"
+      chmod +x "$T/bin/slsa-verifier"
+      if [ ! -x "$T/bin/testssl.sh" ]; then
+        fetch "https://github.com/testssl/testssl.sh/archive/refs/tags/v3.2.0.tar.gz" f3969c152c0fe99a2a90e8c8675ab677d77608ac77c957a95497387c36363c32 "$T/testssl.tgz"
+        rm -rf "$T/testssl"; mkdir "$T/testssl"; tar -C "$T/testssl" --strip-components=1 -xzf "$T/testssl.tgz"
+        ln -sf "$T/testssl/testssl.sh" "$T/bin/testssl.sh"
+      fi
+      export PATH="$T/bin:$PATH"
+      cargo xtask conformance record --all --recording target/oracle/recordings/candidate
+      cargo xtask conformance check --musts --sha "$MODERNCI_COMMIT" --format=tsv
+    needs: [oracle]
+    # The self-hosted OIDF suite runs in the backend's docker; ModernCI places this check only on a
+    # backend probed to have all of these, and says which one is missing otherwise.
+    requires: [docker, docker-compose, python3-venv, curl, git]
+  verify-done:
+    # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer). Its PARITY group
+    # obtains the judge through bin/oracle as the oracle check does (BUSBAR_RELEASE_TOKEN).
+    run: bash scripts/verify-1.6.0-done.sh
+    needs: [gates]
+    # It reads merge-bases and tags (the config-schema baseline is tag v1.5.3): full history and tags.
+    requires: [git-history]
+  q128-audit:
+    # DEV-GREEN item 5 (docs/design/BUSBAR-1.6.0.md l.2910-2912; 1.6.0-QUESTIONS.md Q128, option
+    # A): one fresh, independent architecture audit on this commit with no open BLOCK, and a clean
+    # audit ledger. The auditor records the audit in qa/q128-audit.json; this judges that record and
+    # the ledger on the commit, writes target/q128-audit.json (every finding, severity
+    # BLOCK/HIGH/MEDIUM/LOW, scope, evidence) and exits 1 on any open BLOCK. An audit of another
+    # tree, or none, is a BLOCK.
+    run: cargo xtask q128 audit
+    needs: [gates]
+    # The audit is judged against this commit's history: full history and tags.
+    requires: [git-history]
+  test-gated:
+    # The feature-gated suites the `test` check never builds (row 164): `test` runs default features
+    # only. A, the busbar/kernel/core-admin gates at once (test-harness, llm-on-driver,
+    # transport-webrtc, openapi-schema, timing), filtered to the gated binaries and modules so the
+    # default suites do not run twice; B, the plugin-pack CLI (pack); C, the loom models in release.
+    run: |
+      meta=$(cargo metadata --format-version 1 --locked)
+      cargo build --locked $(echo "$meta" | jq -r '.workspace_members as $m | .packages[] | select(.id as $i | $m | index($i)) | select(any(.targets[]; .kind | index("cdylib"))) | "-p " + .name')
+      # The example cdylibs the tests dlopen, built BY NAME and always: the loader's (the neutral frame
+      # door and the other door fixtures, which busbar's and the connector's tests load too) and
+      # busbar's test plane. A run scoped to `busbar` alone builds no other package's examples, and a
+      # test whose fixture is absent fails rather than skips; no variable tells this step the
+      # affected set, so the build does not wait on one.
+      cargo build --locked -p busbar-plugin-loader --examples
+      cargo build --locked -p busbar --examples
+      plugin() {
+        man=$(echo "$meta" | jq -r --arg p "$1" 'first(.packages[] | select(.name == $p) | .manifest_path) // empty')
+        if [ -z "$man" ]; then [ "$3" = optional ] && return 0; echo "busbar resolves no $1"; return 1; fi
+        ws="$(dirname "$man")/Cargo.toml"
+        pkgs=$(cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -r '.packages[].name')
+        if ! printf '%s\n' $pkgs | grep -qx "$2"; then [ "$3" = optional ] && return 0; echo "$1 has no $2"; return 1; fi
+        if [ "$3" = dropped-in ] && cargo metadata --format-version 1 --no-deps --manifest-path "$ws" | jq -e --arg p "$2" '.packages[] | select(.name == $p) | .features | has("dropped-in")' >/dev/null; then
+          cargo build --locked --manifest-path "$ws" -p "$2" --features dropped-in --target-dir "$PWD/target"
+        else
+          cargo build --locked --manifest-path "$ws" -p "$2" --target-dir "$PWD/target"
+        fi
+      }
+      plugin busbar-transport-tcp-plugin busbar-transport-tcp-plugin dropped-in
+      plugin busbar-transport-http busbar-transport-http-plugin dropped-in
+      plugin busbar-secret-env busbar-secret-env-plugin optional
+      plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
+      cargo build --workspace --locked
+      cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/llm-on-driver,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
+      cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
+      timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
+    # Absolute at this rung, as every check of this move (no `baseline`: dev holds no suites to be
+    # measured against).
+    requires: [git-history]
+    needs: [gates]

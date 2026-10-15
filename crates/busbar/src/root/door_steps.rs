@@ -459,7 +459,8 @@ pub struct DoorFacts {
     pub keeps: Vec<busbar_kernel::plane_driver::ResponseKeep>,
     /// The plane's dialect names, by the index `arrive` answers, and each provider's dialect: an
     /// attempt whose far end speaks another dialect than the caller's is counted as a translation
-    /// (`busbar_translations_total`), as the previous release counted it. Empty = none counted.
+    /// (`busbar_translations_total`), as the previous release counted it, and a usage-tap fault
+    /// an answer carries is counted under the unit's dialect. Empty = none counted.
     pub translations: (Arc<[String]>, Arc<BTreeMap<String, String>>),
     /// The plane's declared breaker fact (`declares.breaker`, ARCHITECT Q4): whether a transient
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
@@ -499,6 +500,9 @@ struct DoorUnit {
     recorded: Option<u64>,
     /// A `ROUTE_SCOPE` unit several entries reach: those entries, named in its refusal's words.
     reachable: Vec<String>,
+    /// The pool a budget `on_exhaust: downgrade` re-admitted the unit through, where one did: its
+    /// charge landed there and its walk routes there.
+    downgraded: Option<String>,
 }
 
 /// ONE UNIT'S KERNEL STEPS (see the module doc), lent to the plane driver for the unit's life.
@@ -638,6 +642,46 @@ impl<'s> DoorSteps<'s> {
         self.lock().charged
     }
 
+    /// The pool a budget `on_exhaust: downgrade` re-admitted the unit through, where one did: the
+    /// pool its charge landed on, its walk routes over and its request is counted under (1.5.5's
+    /// `ingress::dispatch`: "dispatch through the pool the charge actually landed on").
+    #[must_use]
+    pub fn downgraded(&self) -> Option<String> {
+        self.lock().downgraded.clone()
+    }
+
+    /// WHETHER A BUDGET DOWNGRADE MAY SEND THE UNIT TO `to` (1.5.5's `admit_check` guard, hop by
+    /// hop): `to` is a pool of this section not yet visited, the visited set is smaller than the
+    /// pool count, and the caller's grant reaches `to` and every pool its `on_exhausted` fallback
+    /// chain spills into (a downgrade never routes a key into a pool it may not use).
+    fn downgrade_reaches(&self, key: &VirtualKey, to: &str, visited: &[String]) -> bool {
+        let pools = self.pools.pools();
+        if visited.iter().any(|v| v == to)
+            || visited.len() >= pools.len()
+            || !pools.contains_key(to)
+        {
+            return false;
+        }
+        let mut seen: Vec<&str> = Vec::new();
+        let mut at = Some(to);
+        while let Some(pool) = at {
+            if seen.contains(&pool) {
+                break;
+            }
+            if !self.pools.granted(
+                self.facts.scope_kind.as_deref(),
+                Some(key),
+                ROUTE_POOL,
+                Some(pool.as_bytes()),
+            ) {
+                return false;
+            }
+            seen.push(pool);
+            at = self.pools.fallback(pool);
+        }
+        true
+    }
+
     /// The pool a unit's charge and refund land on: the plane's own (#47 per-plane fees), the
     /// route's label qualified by the plane's key (a direct route's label is 1.5.5's empty one).
     fn charged_pool(&self, label: &str) -> String {
@@ -668,26 +712,51 @@ impl<'s> DoorSteps<'s> {
             let u = self.lock();
             (u.routed.clone(), u.expected.clone())
         };
-        let label = routed.as_ref().map_or("", |(label, _)| label.as_str());
-        let pool = self.charged_pool(label);
-        let lanes: Vec<String> = routed
-            .iter()
-            .flat_map(|(_, members)| members)
-            .map(|m| plane_lane(&self.facts.plane, m))
-            .collect();
-        let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
         let units = self.expected_units(&expected);
-        let grant = gov
-            .try_admit_estimated(&self.app.cost, key, &pool, self.arrived, &models, &units)
-            .map_err(|blocked| {
-                // The plane serving the `pools` map answers a blocked admission in the previous
-                // release's words (`busbar_kernel::ingress::limit_refusal`).
-                if self.facts.plane.is_empty() {
-                    self.lock().refused.1 =
-                        Some(busbar_kernel::ingress::limit_refusal("", &blocked).2);
+        let lanes_of = |routed: &Option<Routed>| -> Vec<String> {
+            routed
+                .iter()
+                .flat_map(|(_, members)| members)
+                .map(|m| plane_lane(&self.facts.plane, m))
+                .collect()
+        };
+        // BUDGET DOWNGRADE (1.5.5 `ingress::admit_check`): a budget block whose limit declared
+        // `on_exhaust: downgrade` re-admits through its `downgrade_to` pool instead of refusing. The
+        // chain may cascade; the visited set bounds it, and every hop re-judges the caller's grant.
+        // The charge lands on the EFFECTIVE pool and the unit's walk routes there.
+        let mut routed = routed;
+        let mut visited: Vec<String> = Vec::new();
+        let (grant, pool, lanes) = loop {
+            let label = routed.as_ref().map_or("", |(label, _)| label.as_str());
+            let pool = self.charged_pool(label);
+            let lanes = lanes_of(&routed);
+            let models: Vec<&str> = lanes.iter().map(String::as_str).collect();
+            match gov.try_admit_estimated(&self.app.cost, key, &pool, self.arrived, &models, &units)
+            {
+                Ok(grant) => break (grant, pool, lanes),
+                Err(LimitBlocked::Limit {
+                    downgrade_to: Some(to),
+                    ..
+                }) if self.downgrade_reaches(key, &to, &visited) => {
+                    routed = self.pools.resolve(ROUTE_POOL, Some(to.as_bytes()));
+                    visited.push(to);
                 }
-                refusal_for(&blocked)
-            })?;
+                Err(blocked) => {
+                    // The plane serving the `pools` map answers a blocked admission in the
+                    // previous release's words (`busbar_kernel::ingress::limit_refusal`).
+                    if self.facts.plane.is_empty() {
+                        self.lock().refused.1 =
+                            Some(busbar_kernel::ingress::limit_refusal("", &blocked).2);
+                    }
+                    return Err(refusal_for(&blocked));
+                }
+            }
+        };
+        if let Some(to) = visited.last() {
+            let mut u = self.lock();
+            u.routed = routed;
+            u.downgraded = Some(to.clone());
+        }
         money.open(
             ctx.key,
             UnitMoney {
@@ -758,6 +827,13 @@ impl DriverSteps for DoorSteps<'_> {
             if from != to {
                 busbar_kernel::telemetry::translation(from, to);
             }
+        }
+    }
+
+    fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
+        // The unit's dialect is the ingress protocol its tap read the body as (row 155).
+        if let Some(protocol) = self.facts.translations.0.get(dialect as usize) {
+            busbar_kernel::handlers::usage_tap_fault(protocol, reason);
         }
     }
 
@@ -1601,8 +1677,32 @@ pub struct OutboundAuths {
     linked: Vec<busbar_kernel::preflight::LinkedAuth>,
     dropped: Option<&'static crate::root::loader::PluginRegistry>,
     conns: crate::root::loader::dispatch::ConnTable,
-    opened:
-        Mutex<HashMap<String, Arc<crate::root::loader::dispatch::auth_outbound::OutboundInstance>>>,
+    /// Every auth row's outbound facts, read once at the first serving (each row bound once to
+    /// read them), so a serving binds only the row it opens.
+    facts: std::sync::OnceLock<Vec<AuthRowFacts>>,
+    /// The opened instances, by key: opened OUTSIDE the map's lock (THE DESIGN §11.13 M1: the
+    /// plugin's validate and open crossings never run under a host lock).
+    opened: crate::root::loader::open_once::OpenOnce<
+        String,
+        crate::root::loader::dispatch::auth_outbound::OutboundInstance,
+    >,
+}
+
+/// One auth row's outbound facts: where its door is, the styles its Statement states, and whether
+/// its needs take their target from its settings (one instance per binding's settings).
+struct AuthRowFacts {
+    name: String,
+    door: AuthRowDoor,
+    styles: Vec<crate::root::loader::dispatch::kinds::auth::OutboundStyle>,
+    per_binding: bool,
+}
+
+/// Where an auth row's door is: the build's linked row, or the plugins directory's loadable row,
+/// by index.
+#[derive(Clone, Copy)]
+enum AuthRowDoor {
+    Linked(usize),
+    Dropped(usize),
 }
 
 impl std::fmt::Debug for OutboundAuths {
@@ -1633,19 +1733,16 @@ impl OutboundAuths {
             linked: linked.to_vec(),
             dropped,
             conns,
-            opened: Mutex::new(HashMap::new()),
+            facts: std::sync::OnceLock::new(),
+            opened: crate::root::loader::open_once::OpenOnce::new(),
         }
     }
 
     /// The bind one auth row is loaded under: its needs on the connection table, its diagnostics
     /// (a mint that failed and will retry, a credential it could not present) in its own log file
     /// under the configured `plugins.logs` (THE DESIGN #85) AND, each declared one, in the main log
-    /// in the line 1.5.5 wrote there ([`MainLogSink`]).
-    fn bind(&self, name: &str) -> crate::root::loader::dispatch::Bind {
-        self.bind_with(name, self.conns.clone())
-    }
-
-    /// [`Self::bind`] with the needs declared on `conns` (`ConnTable::NoNeeds`: no need is granted).
+    /// in the line 1.5.5 wrote there ([`MainLogSink`]). Its needs are declared on `conns`
+    /// (`ConnTable::NoNeeds`: no need is granted).
     fn bind_with(
         &self,
         name: &str,
@@ -1672,63 +1769,89 @@ impl OutboundAuths {
         }
     }
 
-    /// Every auth row's loaded door, linked first, then dropped in. A row that will not load is
-    /// passed over (its own open names why where it is configured).
-    fn rows(
+    /// One auth row's door, loaded (bound) afresh. `None` when it will not load (its own open names
+    /// why where it is configured).
+    fn load(
         &self,
-    ) -> Vec<(
-        String,
+        name: &str,
+        door: AuthRowDoor,
+    ) -> Option<
         crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::auth::Auth>,
-    )> {
-        self.rows_with(true)
+    > {
+        self.load_with(name, door, self.conns.clone())
     }
 
-    /// [`Self::rows`], each loaded with its needs granted (`granted`) or with none.
-    fn rows_with(
+    /// [`Self::load`] with the needs declared on `conns` (`ConnTable::NoNeeds`: no need is granted,
+    /// so a row that declares one will not load).
+    fn load_with(
         &self,
-        granted: bool,
-    ) -> Vec<(
-        String,
+        name: &str,
+        door: AuthRowDoor,
+        conns: crate::root::loader::dispatch::ConnTable,
+    ) -> Option<
         crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::auth::Auth>,
-    )> {
+    > {
         use crate::root::loader::dispatch::kinds::auth::Auth;
         use crate::root::loader::dispatch::{load_dropped_bytes, load_linked, LinkedRow};
-        let bind = |name: &str| {
-            self.bind_with(
-                name,
-                if granted {
-                    self.conns.clone()
-                } else {
-                    crate::root::loader::dispatch::ConnTable::NoNeeds
-                },
-            )
-        };
-        let mut rows = Vec::new();
-        for (name, _, door) in &self.linked {
-            if let Ok(plugin) =
-                LinkedRow::of(*door).and_then(|row| load_linked::<Auth>(&row, bind(name)))
-            {
-                rows.push(((*name).to_string(), plugin));
+        match door {
+            AuthRowDoor::Linked(i) => {
+                let (_, _, door) = self.linked.get(i)?;
+                LinkedRow::of(*door)
+                    .and_then(|row| load_linked::<Auth>(&row, self.bind_with(name, conns)))
+                    .ok()
+            }
+            AuthRowDoor::Dropped(i) => {
+                let row = self.dropped?.loadable().get(i)?;
+                let Ok(Some(stated)) = row.manifest.stated_rendering() else {
+                    return None;
+                };
+                load_dropped_bytes::<Auth>(
+                    &row.lib_bytes,
+                    name,
+                    &stated,
+                    self.bind_with(name, conns),
+                )
+                .ok()
             }
         }
-        let dropped = self.dropped.map_or(&[][..], |r| r.loadable());
-        for row in dropped.iter().filter(|r| r.manifest.kind == "auth") {
-            let name = &row.manifest.name;
-            let Ok(Some(stated)) = row.manifest.stated_rendering() else {
-                continue;
-            };
-            if let Ok(plugin) =
-                load_dropped_bytes::<Auth>(&row.lib_bytes, name, &stated, bind(name))
-            {
-                rows.push((name.clone(), plugin));
-            }
-        }
-        rows
+    }
+
+    /// Every auth row's outbound facts, linked first, then dropped in, read once: each row is bound
+    /// once to read them, then let go. A row that will not load is passed over.
+    fn facts(&self) -> &[AuthRowFacts] {
+        use crate::root::loader::dispatch::auth_outbound::outbound_styles;
+        self.facts.get_or_init(|| {
+            let linked = self
+                .linked
+                .iter()
+                .enumerate()
+                .map(|(i, (name, _, _))| ((*name).to_string(), AuthRowDoor::Linked(i)));
+            let dropped = self
+                .dropped
+                .map_or(&[][..], |r| r.loadable())
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| r.manifest.kind == "auth")
+                .map(|(i, r)| (r.manifest.name.clone(), AuthRowDoor::Dropped(i)));
+            linked
+                .chain(dropped)
+                .filter_map(|(name, door)| {
+                    let plugin = self.load(&name, door)?;
+                    Some(AuthRowFacts {
+                        styles: outbound_styles(&plugin),
+                        per_binding: plugin.targets_from_settings(),
+                        name,
+                        door,
+                    })
+                })
+                .collect()
+        })
     }
 
     /// The auth plugin serving `style` for a binding under `settings`, its instance opened (once
     /// per plugin, or once per binding's settings for a plugin whose needs take their target from
-    /// them) and its tick schedule running; `None` when no row states it.
+    /// them) and its tick schedule running; `None` when no row states it. Only the serving row is
+    /// bound, and only when its instance is not open yet; its open runs with no lock held.
     ///
     /// # Errors
     ///
@@ -1738,37 +1861,41 @@ impl OutboundAuths {
         style: &str,
         settings: &serde_json::Value,
     ) -> Result<Option<Serving>, String> {
-        use crate::root::loader::dispatch::auth_outbound::{outbound_style, OutboundInstance};
-        for (name, plugin) in self.rows() {
-            let Some(decl) = outbound_style(&plugin, style) else {
+        use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
+        for row in self.facts() {
+            let Some(decl) = row.styles.iter().find(|s| s.name == style).cloned() else {
                 continue;
             };
-            let per_binding = plugin.targets_from_settings();
-            let settings = if per_binding {
+            let settings = if row.per_binding {
                 serde_json::to_vec(settings).map_err(|e| e.to_string())?
             } else {
                 b"{}".to_vec()
             };
-            let key = if per_binding {
-                format!("{name}\0{}", String::from_utf8_lossy(&settings))
+            let key = if row.per_binding {
+                format!("{}\0{}", row.name, String::from_utf8_lossy(&settings))
             } else {
-                name
+                row.name.clone()
             };
-            let mut opened = self.opened.lock().unwrap_or_else(|p| p.into_inner());
-            let instance = match opened.get(&key) {
-                Some(instance) => Arc::clone(instance),
+            let instance = match self.opened.get(&key) {
+                Some(instance) => instance,
                 None => {
-                    let instance = Arc::new(OutboundInstance::open_with(
-                        plugin,
-                        Arc::clone(&self.dispatcher),
-                        0,
-                        &settings,
-                    )?);
-                    // ITS TICK SCHEDULE, on the runtime the composition runs on.
-                    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
-                        runtime.spawn(Arc::clone(&instance).ticks());
+                    let Some(plugin) = self.load(&row.name, row.door) else {
+                        continue;
+                    };
+                    let (instance, installed) = self.opened.get_or_open(&key, || {
+                        OutboundInstance::open_with(
+                            plugin,
+                            Arc::clone(&self.dispatcher),
+                            0,
+                            &settings,
+                        )
+                    })?;
+                    // ITS TICK SCHEDULE, once per instance, on the runtime the composition runs on.
+                    if installed {
+                        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                            runtime.spawn(Arc::clone(&instance).ticks());
+                        }
                     }
-                    opened.insert(key, Arc::clone(&instance));
                     instance
                 }
             };
@@ -1796,11 +1923,15 @@ impl OutboundAuths {
         credential: &[u8],
         settings: &serde_json::Value,
     ) -> Result<Vec<String>, String> {
-        use crate::root::loader::dispatch::auth_outbound::{outbound_style, OutboundInstance};
-        for (_, plugin) in self.rows_with(false) {
-            if outbound_style(&plugin, style).is_none() {
+        use crate::root::loader::dispatch::auth_outbound::OutboundInstance;
+        use crate::root::loader::dispatch::ConnTable;
+        for row in self.facts() {
+            if !row.styles.iter().any(|s| s.name == style) {
                 continue;
             }
+            let Some(plugin) = self.load_with(&row.name, row.door, ConnTable::NoNeeds) else {
+                continue;
+            };
             let bytes = serde_json::to_vec(settings).map_err(|e| e.to_string())?;
             let instance =
                 OutboundInstance::open_with(plugin, Arc::clone(&self.dispatcher), 0, &bytes)?;

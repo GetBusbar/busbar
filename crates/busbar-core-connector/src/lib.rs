@@ -16,9 +16,12 @@
 //! * [`guard`] is THE DESTINATION GUARD, the one check deciding which addresses any outbound
 //!   connection may be dialled at (private refused unless allowlisted, metadata always).
 //! * [`tls`] is connection security — core-only, never a plugin, never crossing the ABI.
-//! * [`dtls`] is its datagram sibling — the DTLS engine a WebRTC association runs on (the RFC 7983
+//! * [`dtls`] is its datagram sibling — the DTLS engine a media association runs on (the RFC 7983
 //!   demux, the ICE-gated bind, the SRTP exporter), on ring like [`tls`].
 //! * [`udp`] is the host's datagram socket: one bound port, a peer per datagram.
+//! * [`datagram`] drives one association's datagram framer over the port and the dtls engine: the
+//!   datagram lane on every call, the keying-material item presented once, routes and path
+//!   requests only where the secure layer allows them.
 //!
 //! * [`hostio`] is THE HOST'S I/O (`io.*`): the one place that holds an OS handle (a stream, a
 //!   listener, a program's pipes) and moves bytes over it, admitting only what the destination
@@ -47,6 +50,7 @@
 
 pub mod carrier;
 pub mod compose;
+pub mod datagram;
 pub mod dtls;
 pub mod endpoint;
 pub mod framed_stream;
@@ -70,7 +74,7 @@ pub mod tls;
 pub mod udp;
 pub mod wire;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::future::Future as _;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -209,7 +213,10 @@ impl DialJudge for LiteralsOnly {
 
 /// THE SCHEME RULE OF A NEED'S EGRESS CLASS (`abi::host::conn::connector`, `EGRESS_*`), held
 /// against the address the judge pinned: open-web dials over connection security only;
-/// loopback-allowed over connection security, or in plaintext to loopback only; every other
+/// loopback-allowed over connection security, or in plaintext only to a target whose host is
+/// WRITTEN as loopback ([`guard::names_loopback`]: a loopback literal in any spelling, `localhost`,
+/// `*.localhost`), as 1.5.5's collector and webrequest guards ruled on the URL's host and never on
+/// what a name resolved to (ARCHITECT parity ruling A3); every other
 /// class takes the scheme its target names (operator-infrastructure's plaintext included). Which
 /// addresses may be dialled at all is the destination guard's ([`guard`]), the same in every class.
 /// THE LANDING RULE rides with it: a dial stated `within` an address set (`EstablishIn::within`)
@@ -223,11 +230,17 @@ fn scheme_admits(egress_class: u32, secure: bool) -> bool {
     egress_class != EGRESS_OPEN_WEB || secure
 }
 
-fn class_admits(egress_class: u32, secure: bool, within: &[IpAddr], addr: SocketAddr) -> bool {
+fn class_admits(
+    egress_class: u32,
+    secure: bool,
+    within: &[IpAddr],
+    authority: &str,
+    addr: SocketAddr,
+) -> bool {
     (within.is_empty() || within.contains(&addr.ip()))
         && match egress_class {
             EGRESS_OPEN_WEB => secure,
-            EGRESS_LOOPBACK_ALLOWED => secure || guard::is_loopback(addr.ip()),
+            EGRESS_LOOPBACK_ALLOWED => secure || guard::names_loopback(&host_of(authority)),
             _ => true,
         }
 }
@@ -256,16 +269,23 @@ fn pended_verdict(v: Verdict) -> ConnError {
 /// value, or a field that states the message's own framing (`content-length`,
 /// `transfer-encoding`, any case), refuses the whole open before anything is dialled or sent. The
 /// framer writes the framing for the bytes it sends; a plugin's own would describe another wire.
-fn head_is_refused(desc: &OpenDesc<'_>) -> bool {
+/// Where the host writes the opener's authority (`authority_held`,
+/// [`DeclaredConns::hold_authority`]: every instance of the auth kind), a `host` field of the
+/// plugin's own refuses the open too, as 1.5.5 refused it on an auth module's request; every other
+/// opener (a plane's upstream, which may sign its `host`) keeps the field it wrote.
+fn head_is_refused(desc: &OpenDesc<'_>, authority_held: bool) -> bool {
     const FRAMING: [&str; 2] = ["content-length", "transfer-encoding"];
+    const AUTHORITY: &str = "host";
     let breaks = |b: &[u8]| b.iter().any(|c| matches!(c, b'\r' | b'\n' | b'\0'));
     breaks(desc.target.as_bytes())
         || breaks(desc.method)
         || breaks(desc.head_target)
         || desc.fields.iter().any(|(name, value)| {
+            let name_is = |f: &str| name.trim().eq_ignore_ascii_case(f);
             breaks(name.as_bytes())
                 || breaks(value)
-                || FRAMING.iter().any(|f| name.trim().eq_ignore_ascii_case(f))
+                || FRAMING.iter().any(|f| name_is(f))
+                || (authority_held && name_is(AUTHORITY))
         })
 }
 
@@ -481,6 +501,9 @@ pub struct Connector {
     /// Each member's auth binding, by (instance, need, target origin): what a plugin's own request
     /// to that member is authenticated with ([`DeclaredConns::bind_auth`]).
     auths: Mutex<HashMap<(InstanceId, NeedId, String), busbar_contract::conn::ConnAuth>>,
+    /// The instances whose connections' authority the host writes
+    /// ([`DeclaredConns::hold_authority`]): their opens are refused a `host` field of their own.
+    authority_held: Mutex<HashSet<InstanceId>>,
     /// THE HOST'S I/O every carrier is served from ([`hostio`]): the one holder of OS handles.
     io: Arc<HostIo>,
 }
@@ -506,6 +529,7 @@ impl Default for Connector {
             anchored: Mutex::new(HashMap::new()),
             reaching: Mutex::new(HashMap::new()),
             auths: Mutex::new(HashMap::new()),
+            authority_held: Mutex::new(HashSet::new()),
             io: hostio::process(),
         }
     }
@@ -815,7 +839,14 @@ impl Connector {
                 .judge
                 .judge_dial(&located.authority, judged_class, Box::new(|_| {}))
             {
-                Some(Ok(addr)) if class_admits(egress_class, located.secure, &[], addr) => {}
+                Some(Ok(addr))
+                    if class_admits(
+                        egress_class,
+                        located.secure,
+                        &[],
+                        &located.authority,
+                        addr,
+                    ) => {}
                 Some(_) => return Err(ConnError::Refused),
                 None => {}
             }
@@ -1091,7 +1122,8 @@ impl Connector {
         };
         let addr = got.map_err(pended_verdict)?;
         let secure = j.planned.as_ref().is_some_and(Planned::secure);
-        if !class_admits(j.egress_class, secure, &j.within, addr) {
+        let authority = j.planned.as_ref().map_or("", Planned::authority);
+        if !class_admits(j.egress_class, secure, &j.within, authority, addr) {
             // The refusal stays the connection's answer.
             j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
             return Err(ConnError::Refused);
@@ -1156,7 +1188,15 @@ impl Connector {
         Ok(match judged {
             // Decided at once: a refusal answers the open, as 1.5.5 answered it.
             Some(Err(_)) => return Err(ConnError::Refused),
-            Some(Ok(addr)) if !class_admits(egress_class, planned.secure(), within, addr) => {
+            Some(Ok(addr))
+                if !class_admits(
+                    egress_class,
+                    planned.secure(),
+                    within,
+                    planned.authority(),
+                    addr,
+                ) =>
+            {
                 return Err(ConnError::Refused)
             }
             Some(Ok(addr)) => (Some(planned.dial_at(addr).map_err(|f| map(&f))?), None),
@@ -1395,6 +1435,13 @@ fn carries_userinfo(target: &str) -> bool {
 }
 
 impl DeclaredConns for Connector {
+    fn hold_authority(&self, owner: InstanceId) {
+        self.authority_held
+            .lock()
+            .expect("authority held")
+            .insert(owner);
+    }
+
     fn declare(
         &self,
         owner: InstanceId,
@@ -1467,7 +1514,10 @@ impl DeclaredConns for Connector {
     /// connector's default trust for a need that names none, offering `name` or the endpoint's
     /// host name, bounded by the open's default timeout. A framed need's stream is refused (its
     /// framer, not the plugin, speaks on it), and so is a `trust` reference other than the need's
-    /// own `trust_from`.
+    /// own `trust_from`. So is an upgrade asked for while bytes the far end sent in the clear are
+    /// still unread at any layer (a short read's rest, a piece parked on the line, the
+    /// connection's inbox): read after it they would pass as the verified far end's (STARTTLS
+    /// response injection), so the connection fails, closed.
     fn upgrade_secure(
         &self,
         caller: InstanceId,
@@ -1517,14 +1567,26 @@ impl DeclaredConns for Connector {
             Some(n) => n.to_owned(),
             None => host_of(&line.target().ok_or(ConnError::Closed)?),
         };
-        match line.upgrade_secure(
+        // What a short read left of a clear piece is the far end's clear bytes, unread: the line
+        // refuses the upgrade over it and fails the connection, and the rest is never read, the
+        // failure is. Held across the upgrade, so no read takes a piece meanwhile.
+        let mut rest = held.rest.lock().expect("rest");
+        let answer = line.upgrade_secure(
             &config,
             &name,
             DEFAULT_OPEN_TIMEOUT,
+            rest.0.is_some(),
             &mut Context::from_waker(&waker),
-        ) {
+        );
+        match answer {
             Poll::Ready(Ok(())) => Ok(()),
-            Poll::Ready(Err(f)) => Err(map(&f)),
+            Poll::Ready(Err(f)) => {
+                if matches!(&f, Failure::Refused(t) if t == compose::UPGRADE_OVER_CLEAR_BYTES) {
+                    rest.0 = None;
+                    rest.1.clear();
+                }
+                Err(map(&f))
+            }
             Poll::Pending => Err(ConnError::Pending),
         }
     }
@@ -1616,7 +1678,12 @@ impl Conns for Connector {
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
         self.slab.check_need(caller, need)?;
-        if head_is_refused(desc) {
+        let authority_held = self
+            .authority_held
+            .lock()
+            .expect("authority held")
+            .contains(&caller);
+        if head_is_refused(desc, authority_held) {
             return Err(ConnError::Refused);
         }
         // A need declared without a transport (an inbound need) dials nothing.

@@ -48,7 +48,7 @@ use busbar_kernel::{
     build_app_from_config, build_split_routers_serving_doors, load_config_from_disk, LoadedConfig,
     ENV_CONFIG,
 };
-use busbar_kernel::{config, config_validate, diagnostics, export, snapshot, tls};
+use busbar_kernel::{config, config_validate, diagnostics, export, snapshot};
 // The root's own binds listen through the connector's listener (the one listener source).
 #[cfg(unix)]
 use busbar_core_connector::listen::{AcceptLimits, Listening, DEFAULT_HANDSHAKE_TIMEOUT};
@@ -1332,7 +1332,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // it binds no listener at all (a child that opened ports would be a network server its
     // supervisor never asked for) and speaks newline-delimited JSON-RPC on its own stdin/stdout.
     // EOF on stdin is the shutdown signal, and the tail below is the listener path's own shutdown
-    // tail: the final budget/metering flush, then the tracer.
+    // tail (`root::shutdown::tail`): the final budget/metering flush, the plane record write-behind
+    // and the journal's lane to the store, all drained before the process exits.
     // The mode is served when a served door plane, compiled in or dropped in, claims the stdio
     // transport. With none there is nothing to serve on stdin/stdout, so the build falls through to
     // its listener path.
@@ -1341,12 +1342,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             root::kernel::ROOT_CARD.pin()
         })
         .await;
-        if let Some(gov) = app_handle.load().governance.clone() {
-            let n = gov.flush_budgets();
-            tracing::info!(flushed = n, "budget counters flushed on shutdown");
-            let m = gov.flush_metering();
-            tracing::info!(flushed = m, "metering rows flushed on shutdown");
-        }
+        let gov = app_handle.load().governance.clone();
+        root::shutdown::tail(gov, &late_services, book.as_ref().map(|b| &b.durability)).await;
         std::process::exit(code);
     }
 
@@ -1444,8 +1441,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     #[cfg(not(unix))]
     {
         let _ = data_workers; // sized the runtime in main(); no per-worker listeners here
-        let data_listener = tls::SocketAdmits::new(bind_listener(&listen).await);
-        let admin_listener = tls::SocketAdmits::new(bind_listener(&admin_listen).await);
+        let data_listener = root::listener::SocketAdmits::new(bind_listener(&listen).await);
+        let admin_listener = root::listener::SocketAdmits::new(bind_listener(&admin_listen).await);
         tokio::join!(
             serve_listener(
                 data_listener,
@@ -1469,39 +1466,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             ),
         );
     }
-    // BUDGET WRITE-BEHIND: one FINAL, SYNCHRONOUS flush after the graceful drain, so a graceful stop
-    // persists the freshest accrued spend/requests before the process exits. The background flusher's
-    // shutdown arm also flushes, but it is a fire-and-forget task that could lose the race with process
-    // exit; flushing inline here on the run task guarantees durability (this call blocks briefly under
-    // the budget lock, off any request path — the listeners have already drained).
-    if let Some(gov) = app_handle.load().governance.clone() {
-        let n = gov.flush_budgets();
-        tracing::info!(flushed = n, "budget counters flushed on shutdown");
-        // The flusher task's own shutdown arm also flushes metering, but it is fire-and-forget and
-        // can lose the race with process exit (same reason the budget flush above is inline here).
-        let m = gov.flush_metering();
-        tracing::info!(flushed = m, "metering rows flushed on shutdown");
-    }
-    // THE PLANE RECORD WRITE-BEHIND, drained before the store closes (`root::serve::drain_records`).
-    if !root::serve::drain_records(&late_services).await {
-        tracing::warn!("plane record writes were still queued at shutdown");
-    }
-    // THE JOURNAL'S LANE TO THE STORE, drained the same way and under the same deadline: on a node
-    // with no data directory the store is where the chain is kept.
-    if let Some(lane) = book.as_ref().and_then(|book| {
-        book.durability
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .lane()
-            .cloned()
-    }) {
-        let drained = tokio::task::spawn_blocking(move || lane.drain(root::serve::RECORD_DRAIN))
-            .await
-            .unwrap_or(false);
-        if !drained {
-            tracing::warn!("journal records were still queued for the store at shutdown");
-        }
-    }
+    // THE ONE SHUTDOWN TAIL (`root::shutdown::tail`), the same one the line-serve mode runs: the
+    // budget/metering write-behind flushed, then the plane records and the journal lane drained.
+    let gov = app_handle.load().governance.clone();
+    root::shutdown::tail(gov, &late_services, book.as_ref().map(|b| &b.durability)).await;
     // No state snapshot on shutdown: reliability state is RAM-only (re-learned on boot) and the
     // audit log is written through to the durable store as it happens (store-or-RAM rule — there is
     // no side-car state file to flush).
@@ -1587,12 +1555,14 @@ fn serve_thread_per_core(
         "thread-per-core data plane: one SO_REUSEPORT listener per worker (admin + background \
          tasks stay on the control runtime)"
     );
-    // The connection-placement balancer (see `tls::ConnBalancer`): one handle per worker, fixing
-    // SO_REUSEPORT's few-connection imbalance at ACCEPT time (placement only, never migration).
-    let mut balancers: Vec<Option<tls::ConnBalancer>> = tls::ConnBalancer::build(cores.len())
-        .into_iter()
-        .map(Some)
-        .collect();
+    // The connection-placement balancer (see `root::listener::ConnBalancer`): one handle per
+    // worker, fixing SO_REUSEPORT's few-connection imbalance at ACCEPT time (placement only, never
+    // migration).
+    let mut balancers: Vec<Option<root::listener::ConnBalancer>> =
+        root::listener::ConnBalancer::build(cores.len())
+            .into_iter()
+            .map(Some)
+            .collect();
     let mut handles = Vec::with_capacity(cores.len());
     for (i, core_id) in cores.into_iter().enumerate() {
         let router = data_router.clone();
@@ -1689,15 +1659,15 @@ fn serve_thread_per_core(
                                      // once-per-listener-not-once-per-worker fix (see its own doc); grouping the existing seven into a
                                      // struct is a larger refactor this fix does not need.
 async fn serve_listener(
-    listener: impl tls::Admits,
+    listener: impl busbar_core_connector::listen::Admits,
     router: Router,
     tls_cfg: Option<busbar_kernel::config::sections::TlsCfg>,
     secret_resolver: Arc<busbar_kernel::config::secret::SecretResolver>,
     label: &str,
     shutdown: impl std::future::Future<Output = ()> + Send + 'static,
     // The data workers' connection-placement balancer (`None` for the admin listener and
-    // non-unix builds — those accept exactly as before). See `tls::ConnBalancer`.
-    balancer: Option<tls::ConnBalancer>,
+    // non-unix builds — those accept exactly as before). See `root::listener::ConnBalancer`.
+    balancer: Option<root::listener::ConnBalancer>,
     // Whether THIS call logs "busbar listening" at INFO. `true` for the admin listener and for the
     // single data listener on non-unix builds (both call this exactly once); on unix's
     // thread-per-core data plane, `serve_thread_per_core` calls this once PER WORKER on the SAME
@@ -1712,7 +1682,9 @@ async fn serve_listener(
             } else {
                 tracing::debug!(listen = %label, "busbar listening");
             }
-            if let Err(e) = tls::serve_admitted(listener, router, None, shutdown, balancer).await {
+            if let Err(e) =
+                root::listener::serve_admitted(listener, router, None, shutdown, balancer).await
+            {
                 die(format!("server error on '{label}': {e}"));
             }
         }
@@ -1721,8 +1693,8 @@ async fn serve_listener(
             // `serve_listener` is never spawned as a task: the admin call runs directly under
             // `run()` on the control thread, and each per-worker data call is the FIRST thing its
             // freshly-built runtime `block_on`s — in both shapes this resolve parks a thread that
-            // is not yet serving anything. It also completes before `tls::serve` below is reached,
-            // so no connection on this listener can be waiting on it.
+            // is not yet serving anything. It also completes before `listener::serve_admitted`
+            // below is reached, so no connection on this listener can be waiting on it.
             //
             // The built-in axum/hyper listener below always declares itself TLS-capable
             // (`transport_capable = true`); `prepare` still fails closed rather than silently
@@ -1738,7 +1710,8 @@ async fn serve_listener(
                 tracing::debug!(listen = %label, mtls, "busbar listening (TLS)");
             }
             if let Err(e) =
-                tls::serve_admitted(listener, router, Some(security), shutdown, balancer).await
+                root::listener::serve_admitted(listener, router, Some(security), shutdown, balancer)
+                    .await
             {
                 die(format!("server error on '{label}': {e}"));
             }

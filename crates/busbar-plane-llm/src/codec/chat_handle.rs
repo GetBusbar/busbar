@@ -584,68 +584,43 @@ impl OperationHandler for ChatOperation {
         &self,
         ingress_protocol: &str,
         body: &[u8],
-    ) -> Option<busbar_contract::billing::TokenUsage> {
+    ) -> Result<Option<busbar_contract::billing::TokenUsage>, busbar_contract::codec::UsageTapFault>
+    {
         // Same-protocol usage tap (verbatim from the former `ChatOperation`; `crate::codec::` re-pathed).
+        // Each way the tap cannot read the body is RETURNED as its fault: the door carries it out on
+        // its answer and the kernel counts it and warns once per (protocol, reason) (row 155). The
+        // codec's own line is the per-request detail, at debug.
+        use busbar_contract::codec::UsageTapFault;
         let Some(p) = super::proto_codec::protocol_for(ingress_protocol) else {
-            if busbar_contract::codec::usage_tap_fault_should_warn(
-                ingress_protocol,
-                "unknown_protocol",
-            ) {
-                ::tracing::warn!(diag = %crate::codec::diagnostics::USAGE_TAP_UNKNOWN_PROTOCOL.banner(),
-                    protocol = ingress_protocol,
-                    "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
-                     billing 0 tokens for this request"
-                );
-            } else {
-                ::tracing::debug!(diag = %crate::codec::diagnostics::USAGE_TAP_UNKNOWN_PROTOCOL.banner(),
-                    protocol = ingress_protocol,
-                    "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
-                     billing 0 tokens for this request"
-                );
-            }
-            return None;
+            ::tracing::debug!(diag = %crate::codec::diagnostics::USAGE_TAP_UNKNOWN_PROTOCOL.banner(),
+                protocol = ingress_protocol,
+                "usage tap: unknown ingress protocol for a same-protocol 2xx body; \
+                 billing 0 tokens for this request"
+            );
+            return Err(UsageTapFault::UnknownProtocol);
         };
         let v = match crate::codec::json::parse::<Value>(body) {
             Ok(v) => v,
             Err(_e) => {
-                if busbar_contract::codec::usage_tap_fault_should_warn(ingress_protocol, "bad_json")
-                {
-                    ::tracing::warn!(diag = %crate::codec::diagnostics::USAGE_TAP_BAD_JSON.banner(),
-                        protocol = ingress_protocol,
-                        error = %crate::codec::json::parse_err_log(body.len()),
-                        "usage tap: failed to parse a same-protocol 2xx body as JSON; \
-                         billing 0 tokens for this request"
-                    );
-                } else {
-                    ::tracing::debug!(diag = %crate::codec::diagnostics::USAGE_TAP_BAD_JSON.banner(),
-                        protocol = ingress_protocol,
-                        error = %crate::codec::json::parse_err_log(body.len()),
-                        "usage tap: failed to parse a same-protocol 2xx body as JSON; \
-                         billing 0 tokens for this request"
-                    );
-                }
-                return None;
+                ::tracing::debug!(diag = %crate::codec::diagnostics::USAGE_TAP_BAD_JSON.banner(),
+                    protocol = ingress_protocol,
+                    error = %crate::codec::json::parse_err_log(body.len()),
+                    "usage tap: failed to parse a same-protocol 2xx body as JSON; \
+                     billing 0 tokens for this request"
+                );
+                return Err(UsageTapFault::BadJson);
             }
         };
         match p.reader().read_response(&v) {
-            Ok(ir) => Some(ir.usage.to_token_usage()),
+            Ok(ir) => Ok(Some(ir.usage.to_token_usage())),
             Err(e) => {
-                if busbar_contract::codec::usage_tap_fault_should_warn(ingress_protocol, "decode") {
-                    ::tracing::warn!(diag = %busbar_contract::diagnostic::USAGE_TAP_DECODE_FAILED.banner(),
-                        protocol = ingress_protocol,
-                        error = ?e,
-                        "usage tap: read_response failed to decode a same-protocol 2xx body; \
-                         billing 0 tokens for this request"
-                    );
-                } else {
-                    ::tracing::debug!(diag = %busbar_contract::diagnostic::USAGE_TAP_DECODE_FAILED.banner(),
-                        protocol = ingress_protocol,
-                        error = ?e,
-                        "usage tap: read_response still failing to decode a same-protocol 2xx body; \
-                         billing 0 tokens for this request"
-                    );
-                }
-                None
+                ::tracing::debug!(diag = %busbar_contract::diagnostic::USAGE_TAP_DECODE_FAILED.banner(),
+                    protocol = ingress_protocol,
+                    error = ?e,
+                    "usage tap: read_response failed to decode a same-protocol 2xx body; \
+                     billing 0 tokens for this request"
+                );
+                Err(UsageTapFault::Decode)
             }
         }
     }

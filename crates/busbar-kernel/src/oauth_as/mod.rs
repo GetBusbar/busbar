@@ -67,13 +67,14 @@
 //!   feature this tree does not enable — the handover is a marked TODO in [`cimd`] tied to
 //!   `chore/1.6.0-oauth-as-0.9.3`, and it replaces one call, not the seam. That
 //!   fetch is an SSRF surface by construction — the URL is attacker-supplied — and it goes through
-//!   [`crate::net_guard`]'s resolve-then-pin guard rather than a second copy of it; a drifted copy
-//!   of exactly that guard was a live cloud-metadata bypass on the MCP plane.
+//!   the egress unit's (`busbar_kernel_egress::trust::net`) resolve-then-pin guard rather than a
+//!   second copy of it; a drifted copy of exactly that guard was a live cloud-metadata bypass on
+//!   the MCP plane.
 //!
 //!   **It reaches for CORE, not for a plane.** An earlier draft of this note pointed at
 //!   `a2a::fetch::fetch_card`, which would have made an authorization server's security control a
 //!   dependency on the A2A plane's internals — and would have meant that deleting that plane broke
-//!   the AS. The guard now lives in `net_guard` with the knobs as parameters, so this path supplies
+//!   the AS. The guard now lives in the egress unit with the knobs as parameters, so this path supplies
 //!   its OWN bounds — a client metadata document is a few kilobytes and the fetch is on an
 //!   interactive authorization request, so 5 KB and 10 s, not the card fetch's 512 KB — and gets
 //!   the same resolve-then-pin, the same unconditional cloud-metadata refusal and the same

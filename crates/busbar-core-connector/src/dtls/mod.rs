@@ -11,7 +11,7 @@
 //!
 //! # One UDP port, three protocols (RFC 7983 §7)
 //!
-//! A WebRTC association multiplexes STUN, DTLS and SRTP on one 5-tuple. [`classify`] splits them by
+//! A media association multiplexes STUN, DTLS and SRTP on one 5-tuple. [`classify`] splits them by
 //! the first byte, and [`Association::ingest`] is the record layer's host side:
 //!
 //! * **STUN** goes up the raw lane to the framer's ICE agent — except the answers to core's own
@@ -33,6 +33,16 @@
 //! [`Association::rebind_path`] after a network change); core applies the choice only once the
 //! path is proven, and refuses it outright onto a path it never heard. The DTLS session (and so
 //! SCTP) follows a rebind: same keys, same association, the call is not dropped.
+//!
+//! # The dialling side: admitted candidates
+//!
+//! A dialling association has heard nothing yet: the far end's description advertised where it
+//! listens, and the HOST judged each address with its destination guard before anything is sent
+//! there. A judged address is an ADMITTED CANDIDATE ([`Association::admit_candidate`]): core probes
+//! it at once, the framer's own checks may go to it, and a bind to it is accepted on the same terms
+//! as a heard path — applied only once core's probe is answered from that path. A candidate the
+//! guard refused is never admitted, so nothing but the bound path and admitted candidates ever
+//! receives a byte.
 //!
 //! Consent freshness (RFC 7675 §5.1): the bound path is re-probed every [`CONSENT_INTERVAL`]; with
 //! no proof for [`CONSENT_TIMEOUT`] the association fails and sends nothing more.
@@ -62,7 +72,7 @@
 mod ring;
 pub mod stun;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -71,7 +81,7 @@ use ::ring::rand::{SecureRandom as _, SystemRandom};
 pub use stun::IceCredentials;
 use zeroize::Zeroizing;
 
-/// How many distinct heard paths one association remembers.
+/// How many distinct heard paths (and, apart, admitted candidates) one association remembers.
 const MAX_HEARD_PATHS: usize = 16;
 /// How many probes may be in flight.
 const MAX_PROBES: usize = 32;
@@ -86,7 +96,7 @@ pub const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
 /// How long a probe is awaited before a heard path is probed again.
 const PROBE_RETRY: Duration = Duration::from_millis(500);
 
-/// What one datagram on a WebRTC port is (RFC 7983 §7).
+/// What one datagram on a media port is (RFC 7983 §7).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
     /// First byte 0–3: STUN.
@@ -208,6 +218,17 @@ pub enum SrtpProfile {
     AeadAes256Gcm,
 }
 
+impl SrtpProfile {
+    /// The profile's registry code (RFC 7714 §14.2), as the keying-material item names it.
+    #[must_use]
+    pub fn code(self) -> u32 {
+        match self {
+            SrtpProfile::AeadAes128Gcm => 0x0007,
+            SrtpProfile::AeadAes256Gcm => 0x0008,
+        }
+    }
+}
+
 /// The DTLS-SRTP exporter's output (RFC 5764 §4.2): the profile and the keying material, zeroed
 /// on drop. The one secret the framer holds — it protects media, like the headers a request framer
 /// sees.
@@ -242,7 +263,7 @@ pub enum Up {
     Connected,
     /// The exported SRTP keying material.
     Keyed(SrtpKeying),
-    /// Decrypted DTLS application data (SCTP, for WebRTC).
+    /// Decrypted DTLS application data (SCTP, for the data channels).
     Plaintext(Vec<u8>),
     /// The peer closed the DTLS session.
     Closed,
@@ -284,7 +305,7 @@ pub enum Bind {
     WhenProven,
 }
 
-/// One WebRTC association's DTLS engine and demux.
+/// One media association's DTLS engine and demux.
 pub struct Association {
     cert: Arc<SessionCert>,
     role: Role,
@@ -293,6 +314,10 @@ pub struct Association {
     dtls: Option<dimpl::Dtls>,
     /// Paths a verified check came from, and when the last one did.
     heard: HashMap<SocketAddr, Instant>,
+    /// Far-end candidates the host's destination guard admitted (the dialling side).
+    candidates: HashSet<SocketAddr>,
+    /// Core's probes say ICE-CONTROLLING (the dialling side) rather than ICE-CONTROLLED.
+    controlling: bool,
     proven: HashMap<SocketAddr, Instant>,
     probes: HashMap<[u8; 12], (SocketAddr, Instant)>,
     tie_breaker: [u8; 8],
@@ -339,6 +364,8 @@ impl Association {
             remote_fingerprint,
             dtls: None,
             heard: HashMap::new(),
+            candidates: HashSet::new(),
+            controlling: false,
             proven: HashMap::new(),
             probes: HashMap::new(),
             tie_breaker,
@@ -379,7 +406,9 @@ impl Association {
                 }
                 Verdict::Raw
             }
-            Class::Media if self.heard.contains_key(&path) => Verdict::Raw,
+            Class::Media if self.heard.contains_key(&path) || self.bound == Some(path) => {
+                Verdict::Raw
+            }
             Class::Dtls => {
                 if self.bound == Some(path) {
                     if let Some(dtls) = self.dtls.as_mut() {
@@ -389,7 +418,9 @@ impl Association {
                         }
                     }
                     self.drive();
-                } else if self.heard.contains_key(&path) && self.early.len() < MAX_EARLY {
+                } else if (self.heard.contains_key(&path) || self.candidates.contains(&path))
+                    && self.early.len() < MAX_EARLY
+                {
                     self.early.push((path, datagram.to_vec()));
                 }
                 Verdict::Kept
@@ -409,7 +440,7 @@ impl Association {
         if self.failed.is_some() {
             return Err(BindRefused::Failed);
         }
-        if !self.heard.contains_key(&path) {
+        if !self.heard.contains_key(&path) && !self.candidates.contains(&path) {
             return Err(BindRefused::Unchecked);
         }
         self.wanted = Some(path);
@@ -441,7 +472,7 @@ impl Association {
         if self.bound != Some(old) {
             return Err(BindRefused::NotBound);
         }
-        if !self.heard.contains_key(&new) {
+        if !self.heard.contains_key(&new) && !self.candidates.contains(&new) {
             return Err(BindRefused::Unchecked);
         }
         self.wanted = Some(new);
@@ -455,7 +486,8 @@ impl Association {
     }
 
     /// May the framer send `datagram` (clear lane) to `path`? A STUN success response — the framer
-    /// answering a check — to a heard or proven path; anything else only to the bound path.
+    /// answering a check — to a heard or proven path; a check of its own to an admitted candidate;
+    /// anything else only to the bound path.
     #[must_use]
     pub fn may_send_clear(&self, path: SocketAddr, datagram: &[u8]) -> bool {
         if self.failed.is_some() {
@@ -464,10 +496,30 @@ impl Association {
         if stun::is_binding_success(datagram) {
             return self.heard.contains_key(&path) || self.proven.contains_key(&path);
         }
+        if stun::is_binding_request(datagram) && self.candidates.contains(&path) {
+            return true;
+        }
         self.bound == Some(path)
     }
 
-    /// Seal `plaintext` (SCTP, for WebRTC) as DTLS application data toward the bound path.
+    /// The host's destination guard admitted `path`, a far-end candidate the description advertised
+    /// (the dialling side; module docs): probe it now, and let a bind to it apply once it is proven.
+    /// `false` = not admitted (the association failed, or it already holds as many candidates as it
+    /// remembers heard paths).
+    pub fn admit_candidate(&mut self, path: SocketAddr, now: Instant) -> bool {
+        if self.failed.is_some() {
+            return false;
+        }
+        if !self.candidates.contains(&path) && self.candidates.len() >= MAX_HEARD_PATHS {
+            return false;
+        }
+        self.controlling = true;
+        self.candidates.insert(path);
+        self.probe(path, now);
+        true
+    }
+
+    /// Seal `plaintext` (SCTP, for the data channels) as DTLS application data toward the bound path.
     ///
     /// # Errors
     ///
@@ -564,6 +616,23 @@ impl Association {
         self.bound
     }
 
+    /// Whether a verified check came from `path` (or core's own probe proved it) and consent has
+    /// not aged it out, or the host admitted it as a candidate: the only paths whose datagrams the
+    /// framer is handed.
+    #[must_use]
+    pub fn knows(&self, path: SocketAddr) -> bool {
+        self.heard.contains_key(&path)
+            || self.proven.contains_key(&path)
+            || self.candidates.contains(&path)
+    }
+
+    /// Whether the far end's certificate matched the fingerprint its description carried. Nothing
+    /// is exported, connected or opened before it does.
+    #[must_use]
+    pub fn peer_verified(&self) -> bool {
+        self.peer_verified && self.failed.is_none()
+    }
+
     /// Record a verified check from `path`. At the cap the oldest heard path that is neither bound
     /// nor awaited makes room, so a flood of spoofed sources can neither grow the set nor lock a
     /// real new path out of it.
@@ -615,8 +684,10 @@ impl Association {
             return;
         }
         self.probes.insert(txid, (path, now));
-        self.wire
-            .push_back((path, stun::probe(&self.keys, txid, self.tie_breaker)));
+        self.wire.push_back((
+            path,
+            stun::probe(&self.keys, txid, self.tie_breaker, self.controlling),
+        ));
     }
 
     /// A probe to `path` was answered: apply a bind waiting on it.
