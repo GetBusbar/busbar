@@ -46,7 +46,18 @@ pub fn request(lane: &Lane) -> Option<FarRequest> {
     if lane.path_base.is_some() {
         return None;
     }
-    let (target, _canonical) = wire_and_canonical_path(&probe_path(lane));
+    // A lane over the invoke envelope is probed through it: its target, and its body's edits.
+    let path = match &lane.path {
+        None if lane.invoke => super::invoke::path(lane.wire_model(), false),
+        _ => probe_path(lane),
+    };
+    let body = probe_body(lane.dialect, lane.wire_model());
+    let body = if lane.invoke {
+        super::invoke::body(&body, &[])?
+    } else {
+        body
+    };
+    let (target, _canonical) = wire_and_canonical_path(&path);
     let user_agent = decl(lane.dialect).map_or(EGRESS_UA_DEFAULT, |d| d.egress_user_agent);
     Some(FarRequest {
         verb: "POST",
@@ -59,7 +70,7 @@ pub fn request(lane: &Lane) -> Option<FarRequest> {
             ("user-agent".to_string(), user_agent.as_bytes().to_vec()),
             ("accept".to_string(), APPLICATION_JSON.as_bytes().to_vec()),
         ],
-        body: probe_body(lane.dialect, lane.wire_model()),
+        body,
         pristine: false,
         dropped_controls: Vec::new(),
     })

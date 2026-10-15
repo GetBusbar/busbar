@@ -469,6 +469,7 @@ pub fn upstream_path(lane: &Lane, operation: OpVerb, stream: bool) -> Option<Str
     let rh = decl(lane.dialect).and_then(|d| d.handler)?;
     Some(match &lane.path {
         Some(p) => p.clone(),
+        None if lane.invoke => super::invoke::path(lane.wire_model(), stream),
         None => rh.upstream_path(&EgressCtx {
             operation,
             model: lane.wire_model(),
@@ -801,6 +802,14 @@ pub fn build(
         body_is_json,
         intent.wants_stream,
     )?;
+    // THE INVOKE ENVELOPE around the carried dialect's request ([`super::invoke`]).
+    let (fields, body, pristine) = if lane.invoke {
+        let (fields, beta) = super::invoke::fields(fields, intent.wants_stream);
+        let body = super::invoke::body(&body, &beta).ok_or_else(|| internal(ingress))?;
+        (fields, body, false)
+    } else {
+        (fields, body, pristine)
+    };
     Ok(FarRequest {
         verb: "POST",
         target,
