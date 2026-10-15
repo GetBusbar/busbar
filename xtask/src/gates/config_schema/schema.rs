@@ -736,7 +736,14 @@ struct Lift {
     any: BTreeSet<String>,
     /// The sections a map carrier holds: the owned declaring sections no one-key carrier names.
     owned: BTreeSet<String>,
+    /// The sections the RAW carrier ([`RAW_CARRIER`]) holds: a section a plane owns BESIDE its
+    /// declaring one when that plane is not the endpoint door's owner ([`super::declared`]'s `raw`).
+    raw: BTreeSet<String>,
 }
+
+/// THE RAW CARRIER: the frozen struct's skipped field the pre-pass banks every RAW-lifted section
+/// into (`DeployCfg::plane_raw`, `Dest::Raw`), whatever key it was lifted from.
+const RAW_CARRIER: &str = "plane_raw";
 
 impl Lift {
     fn read(
@@ -789,6 +796,7 @@ impl Lift {
             carriers,
             any,
             owned,
+            raw: declared.raw.clone(),
         })
     }
 
@@ -800,8 +808,8 @@ impl Lift {
 }
 
 /// `"lit"` → `lit`; `[path::]LIFTED_*KEYS[n]` → the n-th literal of that list; `[path::]Kernel(e)`
-/// → `e` resolved the same way; `[path::]Door` → THE door section the plane declarations declare
-/// (refused when they declare more than one: one carrier type carries one key); anything else
+/// → `e` resolved the same way; `[path::]Door` → THE door section the endpoint owner's declaration
+/// declares (refused when it declares more than one: one carrier type carries one key); anything else
 /// (`ByField`) `None`, so the carrier is matched by its field's own name.
 fn resolve_lift_key(
     expr: &str,
@@ -882,6 +890,15 @@ fn parse_struct(
             // A MAP carrier is grammar under every section it holds, each recorded as the key an
             // operator writes; a one-key carrier or field of the same struct keeps its own entry.
             let bare = inner.rsplit("::").next().unwrap_or(&inner).trim();
+            if name == RAW_CARRIER {
+                for key in &lifted.raw {
+                    if !fields.contains_key(key) {
+                        fields.insert(key.clone(), field_value(&inner, true));
+                        carried.insert(key.clone());
+                    }
+                }
+                continue;
+            }
             if lifted.any.contains(bare) {
                 for key in &lifted.owned {
                     if !fields.contains_key(key) {

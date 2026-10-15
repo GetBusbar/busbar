@@ -183,7 +183,7 @@ fn an_unreached_file_or_an_absent_fn_is_refused() {
 }
 
 /// A DOOR PLANE'S OWN ROOT CELLS: the composition root's serve module includes the build script's
-/// `door_cells.rs`, one `#[path]` module per `[package.metadata.busbar.door-cells]` row, each at its
+/// `door_cells.rs`, one `#[path]` module per `plane-door` row of `[package.metadata.busbar.linked]`, each at its
 /// plane crate's `tests/root/mod.rs`. The tree reads the rows off the manifest, so a cell there is
 /// `root::serve::<feature>::<fn>`. RED arm: with no row, the plane crate's file is reached by no
 /// declaration and its cell resolves nowhere.
@@ -207,7 +207,8 @@ fn a_door_cells_include_reaches_each_rows_plane_crate_cells() {
         ])
     };
     let with_row = "[dependencies]\nplane-q = { path = \"../q\", optional = true }\n\n\
-                    [package.metadata.busbar.door-cells]\nplane-q-door = \"plane-q\"\n";
+                    [package.metadata.busbar.linked]\nplane-q-door = \"plane-q\"\n\n\
+                    [package.metadata.busbar.linked-axes]\nplane-q-door = \"plane-door\"\n";
     let tree = files(with_row);
     assert_eq!(
         resolve(&tree, "q/tests/root/mod.rs", "a_plane_cell").as_deref(),

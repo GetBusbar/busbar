@@ -380,9 +380,9 @@ pub struct LegacyLaneKeys {
     pub organization: Option<String>,
     /// See `organization`.
     pub project: Option<String>,
-    max_output_key: Option<crate::ir::lane_caps::MaxOutputKeyCfg>,
-    anthropic_adaptive_thinking: Option<bool>,
-    native_structured_output: Option<bool>,
+    /// The provider-level lane capabilities, read off the same table.
+    #[serde(flatten)]
+    provider_caps: crate::ir::lane_caps::ProviderLaneCaps,
     model_capabilities: Vec<crate::ir::lane_caps::ModelCapabilities>,
 }
 
@@ -398,11 +398,7 @@ impl LegacyLaneKeys {
     #[must_use]
     pub fn lane_caps(&self, wire_model: &str) -> busbar_contract::ir::egress_prep::LaneCaps {
         crate::ir::lane_caps::resolve_lane_caps(
-            crate::ir::lane_caps::ProviderLaneCaps {
-                max_output_key: self.max_output_key,
-                anthropic_adaptive_thinking: self.anthropic_adaptive_thinking,
-                native_structured_output: self.native_structured_output,
-            },
+            self.provider_caps,
             &self.model_capabilities,
             wire_model,
         )

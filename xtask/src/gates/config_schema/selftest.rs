@@ -503,11 +503,13 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &["cannot resolve"],
     ));
 
-    // Two door sections: the one door carrier cannot say which it carries.
+    // Two door sections: the one door carrier cannot say which it carries. A door is a section
+    // declared beside the ENDPOINT OWNER's declaring section (`EndpointSection::OWNER`, `tools`), so
+    // the plant declares two beside that one.
     let mut ov = Overlay::new();
     ov.set(
         plane_fixture,
-        declaration("\"zz_declaring\"", "\"zz_second_door\""),
+        declaration("\"tools\"", "\"zz_door_a\", \"zz_door_b\""),
     );
     report.push(prove_rows_red(
         cx,
@@ -516,6 +518,21 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
         &[ROW_TRACKED_SOURCES],
         ov,
         &["One carrier type carries one key"],
+    ));
+
+    // A section any OTHER plane owns beside its declaring one is no door: the pre-pass lifts it
+    // RAW (`Dest::Raw`), into `DeployCfg::plane_raw`, which carries it.
+    let mut ov = Overlay::new();
+    ov.set(
+        plane_fixture,
+        declaration("\"zz_owner\"", "\"zz_owner\", \"zz_raw_beside\""),
+    );
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a section a non-owner plane owns beside its declaring one is RAW, carried, never a door",
+        &[ROW_TRACKED_SOURCES],
+        ov,
     ));
 
     // THE MAP CARRIER (`Declared::Any`): a plane that OWNS its declaring section is carried by the

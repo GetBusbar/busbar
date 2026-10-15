@@ -669,7 +669,7 @@ pub fn check_root_column(cx: &Ctx, m: &Matrix) -> RootProblems {
     let mut leg_of_plane: BTreeMap<String, String> = BTreeMap::new();
     let mut leg_file: BTreeMap<String, String> = BTreeMap::new();
     // A door plane's own root cells (its crate's `tests/root/mod.rs`, a
-    // `[package.metadata.busbar.door-cells]` row) compile into the root's serve module, so a leg's
+    // `plane-door` row of `[package.metadata.busbar.linked]`) compile into the root's serve module, so a leg's
     // evidence may live there: the cells are written in the plane's own words in the plane's crate.
     let door_cells: BTreeSet<String> =
         crate::libtest_path::door_cells(&|rel: &str| cx.read(rel).ok(), BUSBAR_MAIN)

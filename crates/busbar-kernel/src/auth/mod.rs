@@ -780,7 +780,9 @@ impl AuthMiddleware {
                 // that does not: a keys-only chain refuses a foreign token anyway, for a different
                 // reason, and every assertion about the plane boundary passes vacuously.
                 #[cfg(any(test, feature = "test-support"))]
-                "test-idp-module" => chain.push(stand_in(&entry.name, Box::new(TestIdpModule))),
+                "test-idp-module" => {
+                    chain.push(stand_in(&entry.name, Box::new(TestIdpModule)));
+                }
                 other => {
                     // Resolve any SecretRef-typed setting (e.g. a `licenseKey`) against the secret
                     // store BEFORE the settings cross the ABI (ADR-0010). FAIL-CLOSED: an

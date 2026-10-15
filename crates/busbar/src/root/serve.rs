@@ -868,8 +868,8 @@ pub struct Served {
     /// checkpoint flush tick ([`Served::spawn_ticks`]).
     pub epoch: busbar_kernel::plane_driver::FlushEpoch,
     /// THE CLAIM DOORS, by the claim their datagram framer answers: the datagram port each one's
-    /// inbound need binds ([`datagram::ClaimDoor`]). Empty = no datagram claim is served.
-    pub claim_doors: datagram::ClaimDoors,
+    /// inbound need binds ([`serve_datagram::ClaimDoor`]). Empty = no datagram claim is served.
+    pub claim_doors: serve_datagram::ClaimDoors,
 }
 
 /// The framer that answers a claim, by its name (`Connector::framer_for`).
@@ -3130,7 +3130,7 @@ impl DataRoutes {
                 Body::empty(),
             );
         };
-        let opened = match datagram::Opened::open(&claim_door, framer, &arrival.body) {
+        let opened = match serve_datagram::Opened::open(&claim_door, framer, &arrival.body) {
             Ok(o) => o,
             Err(_) => {
                 return stated(
@@ -3139,7 +3139,7 @@ impl DataRoutes {
                 )
             }
         };
-        let datagram::Opened {
+        let serve_datagram::Opened {
             description,
             caller,
             head,
@@ -4297,7 +4297,7 @@ mod serve_framed;
 
 // The datagram-session path (row 132), reached from every build's data routes as the framed one.
 #[path = "serve_datagram.rs"]
-pub mod datagram;
+pub mod serve_datagram;
 
 #[cfg(test)]
 #[path = "tests/serve.rs"]

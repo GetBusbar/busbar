@@ -131,7 +131,7 @@ pub(crate) const NOT_APPLICABLE: &[(&str, &str, &str)] = &[
     (
         "hooks-gate",
         "a2a-client",
-        "busbar-originated A2A traffic is not a second gate point: originate (mirror_push_config, refresh_listed_tasks) is called only from receive.rs::admitted, downstream of the proven inbound hooks gate, and push delivery targets the caller's own webhook, which the agent-submission gate has no semantic target for. Same rationale the mcp-client cell is proven under.",
+        "busbar-originated A2A traffic is not a second gate point: originate (mirror_push_config, refresh_listed_tasks) is called only from receive.rs::admitted, downstream of the proven inbound hooks gate, and push delivery targets the caller's own webhook, which the agent-submission gate has no semantic target for. Same rationale the other outbound client cells are proven under.",
     ),
     (
         "disposition",

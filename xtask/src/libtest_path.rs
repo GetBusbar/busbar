@@ -183,7 +183,7 @@ fn tokens(src: &str) -> Vec<Tok> {
 
 /// The name a file's DOOR-CELLS include stands under in [`FileItems::decls`]: the composition root's
 /// `include!(concat!(env!("OUT_DIR"), "/door_cells.rs"))`, which its build script writes as one
-/// `#[path]` module per `[package.metadata.busbar.door-cells]` row of the crate's manifest (each a
+/// `#[path]` module per `plane-door` row of the crate's `[package.metadata.busbar.linked]` (each a
 /// door plane's own root cells, at its crate's `tests/root/mod.rs`). Not an identifier, so no real
 /// module is ever mistaken for it; [`module_tree`] reads the rows off the manifest instead.
 pub const DOOR_CELLS: &str = "<door-cells>";
@@ -337,19 +337,28 @@ fn manifest_rows(manifest: &str, table: &str) -> Vec<(String, String)> {
     rows
 }
 
+/// The `linked-axes` word of a plane's memory-ABI door row (the build script's `PLANE_DOOR_AXIS`).
+const PLANE_DOOR_AXIS: &str = "plane-door";
+
 /// THE DOOR-CELLS MODULES of the crate whose root file is `root_file`: for every
-/// `[package.metadata.busbar.door-cells]` row of its manifest (cargo feature -> plane crate), the
-/// module its build script names for the feature and the repo-relative `tests/root/mod.rs` of the
-/// crate its `[dependencies]` row's `path` names. A row whose crate names no path is skipped here:
-/// the build script refuses it, so no build has that module.
+/// `[package.metadata.busbar.linked]` row of its manifest (cargo feature -> plane crate) whose
+/// `[package.metadata.busbar.linked-axes]` value names the `plane-door` axis (the rows its build
+/// script mounts cells for), the module its build script names for the feature and the
+/// repo-relative `tests/root/mod.rs` of the crate its `[dependencies]` row's `path` names. A row
+/// whose crate names no path is skipped here: its cells are not in this tree.
 pub fn door_cells(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Vec<(String, String)> {
     let crate_dir = parent(&parent(root_file));
     let Some(manifest) = read(&join(&crate_dir, "Cargo.toml")) else {
         return Vec::new();
     };
     let deps = manifest_rows(&manifest, "dependencies");
-    manifest_rows(&manifest, "package.metadata.busbar.door-cells")
+    let axes = manifest_rows(&manifest, "package.metadata.busbar.linked-axes");
+    manifest_rows(&manifest, "package.metadata.busbar.linked")
         .into_iter()
+        .filter(|(feature, _)| {
+            axes.iter()
+                .any(|(f, a)| f == feature && a.split_whitespace().any(|x| x == PLANE_DOOR_AXIS))
+        })
         .filter_map(|(feature, krate)| {
             let dep = deps.iter().find(|(k, _)| *k == krate)?;
             let path = dep.1.split_once("path")?.1.split('"').nth(1)?;

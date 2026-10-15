@@ -9,8 +9,10 @@
 //! of what the planes' `PLANE_DECLARATION` items say, minus the sections core still owns concretely
 //! (`CORE_OWNED_CONCRETE_SECTIONS` — a frozen field, never lifted).
 //!
-//! A section a plane declares BESIDE its own declaring section is that plane's endpoint DOOR: the
-//! pre-pass carrier written `Declared::Door` is tied to it here.
+//! A section a plane declares BESIDE its own declaring section is that plane's endpoint DOOR when
+//! the plane is the one the kernel names the door's owner (`EndpointSection::OWNER`): the pre-pass
+//! carrier written `Declared::Door` is tied to it here. Any other plane's beside section is lifted
+//! RAW (`Dest::for_declared`), carried by `DeployCfg::plane_raw`.
 //!
 //! Every census here refuses to come back empty or unreadable: a declaration this reader cannot
 //! resolve, or a tree with no declaration at all, is a coverage hole and a hard error — never a
@@ -32,14 +34,19 @@ const ITEM: &str = "const PLANE_DECLARATION";
 const DOOR_SECTIONS: &str = ": &[Section] =";
 /// The kernel's reserved list: sections core still declares as concrete `DeployCfg` fields.
 const CORE_OWNED: &str = "CORE_OWNED_CONCRETE_SECTIONS";
+/// Where the kernel names the plane whose beside section is THE endpoint door
+/// (`impl EndpointSection { const OWNER … }`).
+const OWNER_HOME: &str = "crates/busbar-kernel/src/plane/config.rs";
 
 /// What the plane declarations declare, ready for the lift reader.
 #[derive(Debug, Default, Clone)]
 pub struct Declarations {
     /// Every declared top-level section a plane owns, minus core's concrete ones.
     pub sections: BTreeSet<String>,
-    /// The subset declared BESIDE a plane's own declaring section — its endpoint door.
+    /// The subset declared BESIDE the endpoint owner's declaring section — its endpoint door.
     pub doors: BTreeSet<String>,
+    /// The subset declared BESIDE any other plane's declaring section: lifted RAW.
+    pub raw: BTreeSet<String>,
     /// The subset that is a plane's declaring section AND listed in its own owned sections: a plane
     /// that parses its own grammar, carried by the pre-pass's map carrier (`Declared::Any`).
     pub owned: BTreeSet<String>,
@@ -302,6 +309,64 @@ fn resolve(
     }
 }
 
+/// THE ENDPOINT DOOR'S OWNER: the declaring section the kernel's `EndpointSection::OWNER` names,
+/// read through the constants it is written as (`Type::CONST`, `LIST[n]`, a literal). Unreadable is
+/// a hard error: without it every beside section would be read as THE door, or none.
+fn endpoint_owner(cx: &Ctx) -> Result<String, String> {
+    let text = stripped(&cx.read(OWNER_HOME)?);
+    let expr = const_value(&text, Some("EndpointSection"), "OWNER").ok_or_else(|| {
+        format!("config-schema: no `const OWNER` in `impl EndpointSection` under {OWNER_HOME}")
+    })?;
+    owner_expr(&text, expr, 0)
+}
+
+/// The section `expr` names in [`OWNER_HOME`]'s text: a `"literal"`, `Type::CONST` (read off
+/// `impl Type`), or `[path::]LIST[n]` (the n-th element of `const LIST`).
+fn owner_expr(text: &str, expr: &str, depth: usize) -> Result<String, String> {
+    let e = expr.trim();
+    let fail = || {
+        format!(
+            "config-schema: the endpoint door's owner in {OWNER_HOME} is written `{e}`, which this \
+             reader cannot resolve to one section"
+        )
+    };
+    if depth > 4 {
+        return Err(fail());
+    }
+    if let Some(lit) = e.strip_prefix('"').and_then(|v| v.strip_suffix('"')) {
+        return Ok(lit.to_string());
+    }
+    if let Some((head, idx)) = e.strip_suffix(']').and_then(|x| x.rsplit_once('[')) {
+        let name = head.rsplit("::").next().unwrap_or(head).trim();
+        let n: usize = idx.trim().parse().map_err(|_| fail())?;
+        let list = const_value(text, None, name)
+            .and_then(|v| v.strip_prefix('['))
+            .and_then(|v| v.strip_suffix(']'))
+            .ok_or_else(fail)?;
+        let item = list.split(',').nth(n).ok_or_else(fail)?;
+        return owner_expr(text, item, depth + 1);
+    }
+    if let Some((ty, name)) = e.rsplit_once("::") {
+        let ty = ty.rsplit("::").next().unwrap_or(ty).trim();
+        let value = const_value(text, Some(ty), name.trim()).ok_or_else(fail)?;
+        return owner_expr(text, value, depth + 1);
+    }
+    Err(fail())
+}
+
+/// The value of `const name: … = <value>;` in `text`, inside `impl holder { … }` when a holder is
+/// named.
+fn const_value<'a>(text: &'a str, holder: Option<&str>, name: &str) -> Option<&'a str> {
+    let scope = match holder {
+        Some(h) => block(text, text.find(&format!("impl {h} {{"))?)?,
+        None => text,
+    };
+    let rest = &scope[scope.find(&format!("const {name}:"))?..];
+    let eq = rest.find('=')?;
+    let end = eq + rest[eq..].find(';')?;
+    Some(rest[eq + 1..end].trim())
+}
+
 /// The text of the `{ … }` block starting at the first `{` at or after `from`.
 fn block(text: &str, from: usize) -> Option<&str> {
     let open = from + text[from..].find('{')?;
@@ -382,6 +447,7 @@ pub fn read(cx: &Ctx) -> Result<Declarations, String> {
         })?
         .into_iter()
         .collect();
+    let owner = endpoint_owner(cx)?;
     let mut out = Declarations::default();
     let mut seen = 0usize;
     for (path, f) in &files {
@@ -402,8 +468,10 @@ pub fn read(cx: &Ctx) -> Result<Declarations, String> {
                 if core_owned.contains(&section) {
                     continue;
                 }
-                if door {
+                if door && declaring == owner {
                     out.doors.insert(section.clone());
+                } else if door {
+                    out.raw.insert(section.clone());
                 }
                 out.sections.insert(section);
             }

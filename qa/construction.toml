@@ -1306,6 +1306,10 @@ known_sites = [
   # operating-system failure text ONCE and answers `OS_REFUSED` past `MAX_WORDS` of them — the
   # leak-once intern shape of vocabulary.rs `key` above, its allocation bounded by the cap.
   "crates/busbar-kernel/src/host_disk.rs::os_words",
+  # REVIEWED 2026-10-15 (the secret sources' config-time disk lane, #864): `start` is the lane
+  # thread's job loop. A `Job::Run` closure is a config-time secret read that holds no unit and no
+  # hold; `catch_unwind` there keeps one panicking job from ending the lane for the appends behind it.
+  "crates/busbar-kernel/src/host_disk.rs::start",
   # REVIEWED 2026-10-07 (`Vec::leak`/`String::leak`/`.leak()` joined the symbol list; every site
   # below was read then). Each is a boot- or load-time, fixed-size allocation of non-hold data
   # (names, registry rows, declaration tables, interned path patterns), made once per plane, plugin

@@ -60,8 +60,9 @@ pub struct ModelCapabilities {
 }
 
 /// The three capabilities a provider entry declares at PROVIDER level (each `None` = not declared),
-/// named field by field so the caller cannot hand one capability's value to another.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+/// named field by field so the caller cannot hand one capability's value to another. Read off a
+/// provider's table as its keys are written there (an absent key is `None`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
 pub struct ProviderLaneCaps {
     /// The entry's `max_output_key`.
     pub max_output_key: Option<MaxOutputKeyCfg>,

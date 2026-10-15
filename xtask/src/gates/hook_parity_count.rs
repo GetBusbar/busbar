@@ -8,7 +8,7 @@
 //!
 //! THE NUMBER LIVES ONCE, where ARCHITECT ruling M9 (2026-10-14) puts it: the hook acceptance suite's
 //! enumeration, `crates/busbar-kernel/src/hooks/tests/m4_acceptance_suite.rs` ([`SOURCE`]), whose
-//! `HOOK_PARITY_TESTS`, `LLM_ORIGIN` and `KERNEL_LOADER_RANKING_ORIGIN` its own test holds to the
+//! `HOOK_PARITY_TESTS`, `PROXY_ORIGIN` and `CORE_ORIGIN` its own test holds to the
 //! corpus it lists. This gate reads those three constants from that file and holds every other
 //! writing to them.
 //!
@@ -53,8 +53,8 @@ fn owed(cx: &Ctx) -> Result<Owed, String> {
     let text = cx.read(SOURCE).map_err(|e| format!("{SOURCE}: {e}"))?;
     let owed = Owed {
         size: constant(&text, "HOOK_PARITY_TESTS")?,
-        llm: constant(&text, "LLM_ORIGIN")?,
-        rest: constant(&text, "KERNEL_LOADER_RANKING_ORIGIN")?,
+        llm: constant(&text, "PROXY_ORIGIN")?,
+        rest: constant(&text, "CORE_ORIGIN")?,
     };
     if owed.llm + owed.rest != owed.size || owed.size == 0 {
         return Err(format!(
@@ -340,11 +340,7 @@ impl Gate for HookParityCountGate {
                     "HOOK_PARITY_TESTS: usize = 182",
                     1,
                 )
-                .replacen(
-                    "KERNEL_LOADER_RANKING_ORIGIN: usize = 112",
-                    "KERNEL_LOADER_RANKING_ORIGIN: usize = 113",
-                    1,
-                ),
+                .replacen("CORE_ORIGIN: usize = 112", "CORE_ORIGIN: usize = 113", 1),
         );
         report.push(prove_red(
             cx,
@@ -405,6 +401,6 @@ mod tests {
     fn the_constants_are_read_from_the_enumeration() {
         let text = "pub(crate) const HOOK_PARITY_TESTS: usize = 181;\n";
         assert_eq!(constant(text, "HOOK_PARITY_TESTS"), Ok(181));
-        assert!(constant(text, "LLM_ORIGIN").is_err());
+        assert!(constant(text, "PROXY_ORIGIN").is_err());
     }
 }
