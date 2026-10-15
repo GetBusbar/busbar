@@ -13,7 +13,7 @@ fn row(
     LinkedTransport {
         key,
         composes_over: &[],
-        build: |_, _| unreachable!("the carrier is read off the rows, never off a built wire"),
+        build: |_| unreachable!("the carrier is read off the rows, never off a built wire"),
         claims,
         upgrades: Vec::new,
         lines,

@@ -105,11 +105,6 @@ file = "crates/busbar-contract/src/testkit/warn_capture.rs"
 item = "ONCE"
 
 [[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/transport/wire.rs"
-item = "NEXT_LISTENER_ID"
-
-[[finding]]
 rule = "contract-stateless:thread-local"
 file = "crates/busbar-contract/src/abi/hot/host.rs"
 item = "thread_local!"

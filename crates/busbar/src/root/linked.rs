@@ -177,7 +177,8 @@ pub struct LinkedTransport {
     pub key: &'static str,
     /// The layers it declares, in the order it would take one.
     pub composes_over: &'static [&'static str],
-    /// Build the wire over `lower`.
+    /// Open the row's door and serve it over the host's sockets (it is handed no layer: no transport
+    /// names another).
     pub build: BuildTransport,
     /// Every scheme its entry claims, its own first: a door row's are read off the door's
     /// Statement (ONE ENTRY PER PLUGIN, the schemes are its claims), and the seal registers each.
@@ -199,11 +200,11 @@ pub type ClaimsOf = fn() -> Vec<&'static str>;
 /// A row's offered auth points, read when the guest lists seal.
 pub type OfferedOf = fn() -> busbar_contract::abi::auth::AuthPoints;
 
-/// A wire's build: handed the layer built beneath it, where one is, and the deployment's settings.
+/// A wire's build: handed the deployment's settings, it answers the wire the host serves the row's
+/// door over.
 pub type BuildTransport = fn(
-    Option<Arc<dyn busbar_contract::Transport>>,
     &busbar_contract::transport::TransportSettings,
-) -> Arc<dyn busbar_contract::Transport>;
+) -> Arc<busbar_core_connector::wire::HostWire>;
 
 /// One linked plane's contribution to the boot seal: the pure plane registered under its own key,
 /// and the claims that plane declares.

@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! The registry's boot check over what a node was actually composed out of, the kind's ABI, and the
-//! identity a listener carries.
+//! The registry's boot check over what a node was actually composed out of, and the kind's ABI.
 //!
 //! `COMPOSES_OVER` was declared, typed, and read by nothing: a transport could name a layer no
 //! deployment had, and a composition root could build one over a layer it never declared, and both
 //! booted. A declaration nothing checks is the frame-honesty problem one layer up — the stack a
 //! node reports is the stack its declarations describe, so the description has to be true.
 
-use busbar_contract::transport::{
-    check_composition, CompositionError, Listener, ListenerHandle, Registered,
-};
-use std::sync::Arc;
+use busbar_contract::transport::{check_composition, CompositionError, Registered};
 
 fn declared(
     key: &'static str,
@@ -29,8 +25,8 @@ fn declared(
 #[test]
 fn the_real_stack_boots() {
     // `tcp → tls → http → { sse, ws, grpc }`, with `stdio` standing on its own — the seven
-    // transports' actual `TransportMeta::COMPOSES_OVER` declarations and `Transport::composed_over`
-    // answers, side by side. `tcp`, `tls` and `http` each open their own socket and answer `None`
+    // transports' actual `TransportMeta::COMPOSES_OVER` declarations and the `composed_over` each
+    // registered row records, side by side. `tcp`, `tls` and `http` each open their own socket and answer `None`
     // regardless of what they declare; `sse`, `ws` and `grpc` are only ever built by holding (or
     // being handed) another instance, so they name it; `stdio` composes over nothing at all.
     let registry = [
@@ -103,34 +99,4 @@ fn the_transport_kind_has_one_abi_generation() {
         busbar_contract::transport::TRANSPORT_ABI,
         busbar_contract::transport::AbiVersion(1)
     );
-}
-
-struct Bound(&'static str);
-impl ListenerHandle for Bound {
-    fn local_addr(&self) -> String {
-        self.0.to_string()
-    }
-}
-
-#[test]
-fn two_listeners_on_one_address_are_still_two_listeners() {
-    // A node always holds at least two — data and admin — and a configuration is free to give them
-    // the same bound address. A transport keying per-listener state on the address string was
-    // keying it on something two listeners could share.
-    let data = Listener::new(Arc::new(Bound("127.0.0.1:8080")));
-    let admin = Listener::new(Arc::new(Bound("127.0.0.1:8080")));
-    assert_eq!(data.local_addr(), admin.local_addr());
-    assert_ne!(data.id(), admin.id(), "the identity is not the address");
-}
-
-#[test]
-fn a_listener_keeps_its_identity_across_clones() {
-    let listener = Listener::new(Arc::new(Bound("127.0.0.1:0")));
-    let held = listener.clone();
-    assert_eq!(
-        listener.id(),
-        held.id(),
-        "cloning a handle is not a new listener"
-    );
-    assert!(format!("{listener:?}").contains(&listener.id().to_string()));
 }

@@ -985,8 +985,11 @@ transport_file = "crates/busbar-contract/src/transport/mod.rs"
 # `Store` stood here until the `kinds::Store` journal trait was struck from busbar-contract
 # (STORE-NOALLOC, ARCHITECT R7 2026-10-01): it had no implementor and no caller; the store kind is
 # its v3 table and `abi::sdk::store::StoreSlots`. Struck in the same commit, as above.
+# `Transport` stood here until the legacy `busbar_contract::Transport` trait was struck (TODO step
+# 36): a transport reaches the connector only as its memory-ABI framer door, and the trait had no
+# implementor left. Struck in the same commit, as above.
 traits = [
-  "Plane", "SessionPlane", "Transport",
+  "Plane", "SessionPlane",
 ]
 max_defaulted = 0
 

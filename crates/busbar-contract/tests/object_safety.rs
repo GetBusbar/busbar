@@ -1,4 +1,4 @@
-//! One object-safety fixture per kind trait, and a working implementation of the two largest.
+//! One object-safety fixture per kind trait, and a working implementation of the plane.
 //!
 //! The honesty table of the design lists object safety as a compile-time property proven by a
 //! fixture per kind. That is what the assertions below are: each one only compiles if the trait
@@ -13,8 +13,7 @@ use busbar_contract::bounded::{
     Facts, Ir, Labels, PlaneAlloc, PlaneAllocBudget, ScratchBytes, Span,
 };
 use busbar_contract::dest::{
-    AuthDecoration, DestinationFacts, EgressBody, RoutePlan, TransportKeyHandle,
-    VerifiedDestination,
+    AuthDecoration, DestinationFacts, EgressBody, RoutePlan, VerifiedDestination,
 };
 use busbar_contract::ids::{
     AdminVerbId, LaneId, MeterClassDecl, OpClassId, RecordSchemaId, SchemeKey, StreamId,
@@ -27,23 +26,19 @@ use busbar_contract::plane::{
     Ingress, Plane, PlaneMeta, PlaneSessionState, Progress, Response, SessionPlane, UnitDraft,
 };
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
-use busbar_contract::transport::{
-    Carrier, FrameStream, Framer, Fut, Transport, TransportConfigView, TransportMeta,
-};
+use busbar_contract::transport::{Carrier, Framer, TransportMeta};
 use busbar_contract::unit::{
     AuditFacts, Clock, ConfigView, Ctx, FinishClass, Refusal, SessionView, TransportView, Unit,
     UnitEnd, UsageLocators,
 };
 use busbar_contract::wire::{
-    ArrivalRecord, CloseReason, Conn, Decode, DiscardCode, Encode, Frame, FrameCursor, Listener,
-    StatusAt, TransportError, Unit0Trigger,
+    Decode, DiscardCode, Encode, Frame, FrameCursor, StatusAt, Unit0Trigger,
 };
 
 // ── the fixture per kind: each of these only compiles if the trait is object-safe ─────────────
 
 const _PLANE: Option<&dyn Plane> = None;
 const _SESSION_PLANE: Option<&dyn SessionPlane> = None;
-const _TRANSPORT: Option<&dyn Transport> = None;
 // The two transport roles (TRANSPORT-STACK): a transport plugin is one or the other.
 const _CARRIER: Option<&dyn Carrier> = None;
 const _FRAMER: Option<&dyn Framer> = None;
@@ -99,12 +94,6 @@ impl ConfigView for EmptyConfig {
         None
     }
     fn get_bool(&self, _key: &str) -> Option<bool> {
-        None
-    }
-}
-
-impl TransportConfigView for EmptyConfig {
-    fn bind(&self) -> Option<&str> {
         None
     }
 }
@@ -296,9 +285,10 @@ impl SessionPlane for FixturePlane {
     }
 }
 
-// ── a transport, implemented in full ──────────────────────────────────────────────────────────
+// ── a transport's declarations ────────────────────────────────────────────────────────────────
 
-/// The smallest transport that answers every call the pump makes.
+/// A transport's declarations. A transport is a memory-ABI framer door, not a trait object (step
+/// 36), so what a fixture can state of one is its kind and its declared facts.
 struct FixtureTransport;
 
 impl Plugin for FixtureTransport {
@@ -331,93 +321,6 @@ impl TransportMeta for FixtureTransport {
     const STATUS_NAMESPACE: Option<&'static str> = Some("fixture");
 }
 
-impl Transport for FixtureTransport {
-    fn arrival(&self, conn: &Conn) -> ArrivalRecord {
-        ArrivalRecord {
-            source: conn.peer(),
-            port: 0,
-            alpn: None,
-            sni: None,
-            peer_cert: None,
-            transport_chain: vec!["fixture"],
-        }
-    }
-
-    fn listen<'a>(
-        &'a self,
-        _cfg: &'a dyn TransportConfigView,
-        _keys: &'a TransportKeyHandle,
-    ) -> Fut<'a, Listener> {
-        Box::pin(async { Err(TransportError::Refused) })
-    }
-
-    fn accept<'a>(&'a self, _l: &'a Listener) -> Fut<'a, Conn> {
-        Box::pin(async { Err(TransportError::Closed) })
-    }
-
-    fn dial<'a>(
-        &'a self,
-        _dest: &'a VerifiedDestination,
-        _keys: &'a TransportKeyHandle,
-    ) -> Fut<'a, Conn> {
-        Box::pin(async { Err(TransportError::Refused) })
-    }
-
-    fn frames(&self, _conn: Conn) -> FrameStream {
-        Box::pin(futures::stream::empty())
-    }
-
-    fn write<'a>(
-        &'a self,
-        _conn: &'a Conn,
-        _stream: StreamId,
-        bytes: ScratchBytes<'a>,
-    ) -> Fut<'a, usize> {
-        let n = bytes.len();
-        Box::pin(async move { Ok(n) })
-    }
-
-    fn encode_envelope<'a>(
-        &self,
-        _fields: &[(&str, &[u8])],
-        body: &[u8],
-        arena: &'a dyn PlaneAlloc,
-    ) -> Result<ScratchBytes<'a>, Encode> {
-        arena
-            .alloc_bytes(body)
-            .map_err(|_| Encode::ScratchExhausted)
-    }
-
-    fn adopt<'a>(
-        &'a self,
-        _from: &'a dyn Transport,
-        _conn: Conn,
-        _keys: &'a TransportKeyHandle,
-    ) -> Fut<'a, Conn> {
-        Box::pin(async { Err(TransportError::HandoffMismatch) })
-    }
-
-    fn detach(&self, _conn: &Conn) -> Option<busbar_contract::wire::RawStream> {
-        None
-    }
-
-    fn composed_over(&self) -> Option<&'static str> {
-        None
-    }
-
-    fn close(&self, _conn: Conn, _reason: CloseReason) {}
-
-    fn unit0_refusal<'a>(
-        &'a self,
-        _conn: Conn,
-        _stream: Option<StreamId>,
-        _refusal: &'a Refusal,
-        _bytes: ScratchBytes<'a>,
-    ) -> Fut<'a, ()> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
 // ── the tests ─────────────────────────────────────────────────────────────────────────────────
 
 /// Every kind can be held behind a pointer, which is how the registry holds one.
@@ -425,11 +328,9 @@ impl Transport for FixtureTransport {
 fn every_kind_is_object_safe() {
     let plane: &dyn Plane = &FixturePlane;
     let session_plane: &dyn SessionPlane = &FixturePlane;
-    let transport: &dyn Transport = &FixtureTransport;
 
     assert_eq!(plane.kind(), Kind::Plane);
     assert_eq!(session_plane.key(), "fixture");
-    assert_eq!(transport.kind(), Kind::Transport);
 }
 
 /// A plane call runs, with a real context, and the borrow story holds.
