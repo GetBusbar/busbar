@@ -113,6 +113,7 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 
 mod auth;
 mod carrier;
+mod datagram;
 mod export;
 
 pub use auth::{
