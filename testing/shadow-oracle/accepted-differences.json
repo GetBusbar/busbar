@@ -3019,6 +3019,31 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "R-22 a translated Anthropic stream's error event carries request_id",
+      "kind": "improvement",
+      "changelog": "A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires.",
+      "by": "owner (Matthew Jackson), rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS)",
+      "cells": "^llm\\|anthropic\\|(bedrock|cohere|gemini|openai|responses)\\|request\\|stream_upstream_error$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "When a translated stream into Anthropic ingress fails part way, busbar writes the `event: error` frame itself. v1.5.5 wrote `{\"type\":\"error\",\"error\":{\"type\",\"message\"}}` (crates/busbar/src/proto/anthropic/writer.rs:626-666 at the v1.5.5 tag), but the event body is Anthropic's ErrorResponse, and the published schema (testing/llm-conformance/spec-digests.tsv row anthropic) REQUIRES `request_id` (nullable). So the llm spec-conformance rig fails such a row on `required`, and owner rule 22 makes that a defect. 1.6.0 adds a minted `req_...` id, the same mint this writer's buffered error envelope already uses (anthropic/auth.rs error_envelope). It is an additive member; an SDK reads it as the event's request id. Body only. No oracle cell records a translated stream failing part way (the stream_upstream_error cells are same-dialect, where the far end's frame is relayed verbatim), so the cells are OWED: `cells` names them and expected_cells is 0, the way ORPH-Q3b writes owed cells. The premise probes the existing translated Anthropic stream cell.",
+      "premise": {
+        "cell": "llm|anthropic|openai|request|ok_stream",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-14",
+        "ruling": "OWNER rule 22 (2026-10-14): named conformance gaps must be 0, a gap is a defect to fix; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS: the anthropic writer's error frame)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }

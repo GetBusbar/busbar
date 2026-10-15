@@ -49,11 +49,12 @@ use busbar_contract::abi::host::conn::connector::{
 };
 use busbar_contract::abi::host::service::ClockReading;
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT,
+    AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT, BLOB_OCTETS,
 };
 use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
+use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::{
     GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
@@ -79,6 +80,7 @@ use busbar_contract::abi::sdk::{
 use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
 use busbar_contract::ids::{MeterClassDecl, OpClassId};
 use busbar_contract::plane::PlaneMeta;
+use busbar_contract::provider_keys::EXT_PROVIDER_KEYS;
 use busbar_contract::upstream::Disposition;
 use serde_json::Value;
 
@@ -88,6 +90,7 @@ use crate::exchange::attempt::{self, stream_intent, FarRequest};
 use crate::exchange::reply::{At, Fault, Piece, Reply, ReplyCtx, Units, Verdict};
 use crate::exchange::shaping::{sections, Shaping};
 use crate::exchange::{handler_of, probe, project, refuse};
+use crate::meta::PROVIDER_KEYS;
 use crate::LlmPlane;
 
 // ── the Statement ────────────────────────────────────────────────────────────────────────────────
@@ -391,12 +394,26 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     admin_routes: ptr::null(),
     admin_routes_len: 0,
     admin_openapi: Blob::ABSENT,
+    metric_lanes: ptr::null(),
+    metric_lanes_len: 0,
     stream_ceiling_secs: 0,
 };
 
-/// THE STATEMENT: the plane's key and version, its sections, its needs and its tail.
+/// The Statement's extensions: the plane's provider keys ([`crate::meta::PROVIDER_KEYS`]) under the
+/// contract's one key for them, built at compile time.
+const EXTENSIONS: &[u8] = &extensions::entry::<
+    { extensions::entry_len(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes()) },
+>(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes());
+
+/// THE STATEMENT: the plane's key and version, its sections, its needs, its tail and its extensions.
 pub const STATEMENT: Statement = Statement {
     kind_tail: ptr::from_ref(TAIL).cast::<KindTailHead>(),
+    extensions: Blob {
+        ptr: EXTENSIONS.as_ptr(),
+        len: EXTENSIONS.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    },
     sections: SECTIONS.as_ptr(),
     sections_len: SECTIONS.len(),
     needs: NEEDS.as_ptr(),
@@ -498,9 +515,6 @@ struct UnitState {
     started: Option<u64>,
     /// The answer the driver's re-call is owed.
     pending: Option<Pending>,
-    /// `project` found the body unreadable: the unit's refusal reads the previous release's
-    /// unreadable-body sentence.
-    unreadable: bool,
     /// The far end's last cumulative counts, as the unit last reported them.
     reported: Vec<UnitCount>,
     /// The caller was answered under a success status: the request's fee unit was incurred.
@@ -520,7 +534,6 @@ impl UnitState {
             reply: None,
             started: None,
             pending: None,
-            unreadable: false,
             reported: Vec::new(),
             fee: false,
         }
@@ -919,6 +932,7 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
             .map(|h| stream_intent(h, arrived.parsed.as_ref()))
             .unwrap_or_default(),
         passthrough: piece.passthrough,
+        translate_cap: unit.shaping.translate_cap(),
     };
     if let Some(status) = piece.status {
         unit.reply = Some(Reply::new(
@@ -1333,9 +1347,7 @@ slot!(
                 // A model that resolved to no destination reads the previous release's not-found
                 // sentence, which names the model the caller asked for; every other refusal reads
                 // the kernel's own text.
-                let unreadable = held.as_ref().is_some_and(|u| u.unreadable);
                 let text = match arrived {
-                    _ if unreadable => project::UNREADABLE_BODY_MESSAGE.to_string(),
                     Some(a) if given.reason == crate::refusal::reason::NO_DESTINATION => {
                         refuse::model_not_found(
                             &a.model,
@@ -1405,8 +1417,8 @@ slot!(
     /// the host's arena and its turns in the host's turn buffer; with a request-stage hook's
     /// rewrite, the rewrite applied to the unit's request first (kept as the unit's request, so
     /// every attempt is written from it), the rewritten body answered and THAT body projected. A
-    /// body the operation's reader refuses is REFUSED, and the unit's refusal then reads the
-    /// previous release's unreadable-body sentence.
+    /// body the operation's reader refuses is projected off its raw JSON, as 1.5.5 projected it,
+    /// and the unit goes on.
     Project, ProjectIn, ProjectOut, |instance, input, mut out| {
         let Some(door) = instance.get() else {
             return Outcome::Failed;
@@ -1423,15 +1435,7 @@ slot!(
         } else {
             project::apply_rewrite(arrived, rewrite)
         };
-        let view = match project::project(arrived) {
-            Ok(view) => view,
-            Err(project::Unreadable) => {
-                if let Some(unit) = units.get_mut(&given.unit) {
-                    unit.unreadable = true;
-                }
-                return Outcome::Refused;
-            }
-        };
+        let view = project::project(arrived);
         let dialect = arrived.dialect;
         let pool = arrived.model.clone();
         drop(units);

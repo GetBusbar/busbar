@@ -346,7 +346,8 @@ identity-providers:
   admin-tokens: {{ module: admin-tokens, token: {{ env: BUSBAR_ADMIN_TOKEN }} }}
 auth:
   chain: [keys]
-  admin_auth: [admin-tokens]
+  admin_auth:
+    - admin-tokens
   signing_key: {{ file: {key} }}
 {section}tools:
   probe:

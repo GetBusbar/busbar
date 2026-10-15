@@ -651,15 +651,15 @@ A scheduled trust sweep could not even be ATTEMPTED for a registration (a local 
 **What to do:** Investigate the logged reason for the named subject — typically a local resource or config problem preventing the sweep from starting. Trust state is preserved, not demoted; resolve the cause so the registration is re-verified on schedule.
 
 <a id="trust-sweep-contact-failed"></a>
-### BUSBAR-4018 — Scheduled trust sweep could not authenticate the upstream (failed contact recorded)
+### BUSBAR-4018 — Scheduled trust sweep could not authenticate the upstream (failed contact recorded) — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `trust-sweep-contact-failed`
 
-A scheduled trust sweep reached the upstream but could not authenticate it, so busbar records a failed contact against the registration. Repeated failed contacts feed the anomaly breaker toward suspension (see BUSBAR-4021).
+RETIRED. Nothing emits this code, and no anomaly breaker counts a failed contact toward suspension (there is none). A registration stops serving only on a drift (BUSBAR-4019) or an operator's suspension.
 
-**What to do:** Investigate the named upstream's reachability and credentials for the logged subject. A transient failure is recorded and self-heals on a later clean sweep; persistent failures will suspend the registration.
+**What to do:** Nothing emits this code. See BUSBAR-4019.
 
 <a id="trust-upstream-drifted"></a>
 ### BUSBAR-4019 — Upstream drifted from the approved pin (registration demoted)
@@ -684,15 +684,15 @@ A scheduled trust sweep made a clean observation, but the recovery backoff since
 **What to do:** None — self-heals. The registration recovers automatically once enough consecutive clean observations accumulate past the recovery backoff.
 
 <a id="trust-registration-suspended"></a>
-### BUSBAR-4021 — Anomaly breaker suspended a trust registration
+### BUSBAR-4021 — Anomaly breaker suspended a trust registration — RETIRED *(retired)*
 
 - **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `trust-registration-suspended`
 
-The trust anomaly breaker suspended a registration — accumulated failed contacts or drift crossed its threshold — so the registration stops serving until the condition clears or an operator intervenes. A transition event, emitted once per suspension.
+RETIRED. Nothing emits this code: no anomaly breaker suspends a trust registration. The one breaker that was to raise it was never armed (no configuration set its thresholds) and is deleted, so a registration stops serving only on a drift (BUSBAR-4019) or an operator's suspension.
 
-**What to do:** Investigate the named subject's upstream (see the preceding contact-failure or drift diagnostics for the cause). Resolve the underlying fault; the registration recovers or requires re-approval depending on why it was suspended.
+**What to do:** Nothing emits this code. See BUSBAR-4019.
 
 <a id="trust-sweep-panicked"></a>
 ### BUSBAR-4022 — Scheduled trust sweep panicked (job continues)
@@ -1440,22 +1440,22 @@ A request-log webhook exporter could not be built from its configuration and has
 <a id="webhook-delivery-non-2xx"></a>
 ### BUSBAR-7071 — Webhook log delivery returned non-2xx (log dropped)
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `webhook-delivery-non-2xx`
 
-A request-log webhook delivery got a non-2xx response from the sink, so that one log line was dropped (deliveries are fire-and-forget and never retried). This can recur per request when a sink is unhealthy, so it is logged at debug.
+A request-log webhook delivery got a non-2xx response from the sink, so that one log line was dropped (deliveries are fire-and-forget and never retried). It is warned on every dropped line, as 1.5.5 warned it: an unhealthy sink is the operator's to fix.
 
 **What to do:** If logs are being lost, check the webhook sink's health and the delivery counters. `busbar_webhook_logs_dropped_total` tracks the volume.
 
 <a id="webhook-delivery-transport-error"></a>
 ### BUSBAR-7072 — Webhook log delivery transport error (log dropped)
 
-- **Severity:** benign_recurring
+- **Severity:** actionable
 - **Since:** 1.6.0
 - **Slug:** `webhook-delivery-transport-error`
 
-A request-log webhook delivery failed with a transport error (connection/timeout/DNS), so that one log line was dropped. Deliveries are fire-and-forget and never retried; this can recur per request when a sink is unreachable, so it is logged at debug.
+A request-log webhook delivery failed with a transport error (connection/timeout/DNS), so that one log line was dropped. Deliveries are fire-and-forget and never retried. It is warned on every dropped line, as 1.5.5 warned it: an unreachable sink is the operator's to fix.
 
 **What to do:** If logs are being lost, check the webhook sink's reachability and the delivery counters. `busbar_webhook_logs_dropped_total` tracks the volume.
 
@@ -1755,17 +1755,6 @@ On the request path, verify-on-call needed to re-verify an upstream whose record
 The submit-time retention sweep found an ACTIVE task idle past the abandonment ceiling (24h since its last update) and tried to settle it as `canceled` through the normal durable write path, but the row upsert or chained event append failed. The task stays active in the working set (never ahead of the store) and the next sweep retries. Typically a durable-store outage. Warned once on the transition into the failing state; subsequent failures hold at debug to avoid spam.
 
 **What to do:** Investigate the durable task-store outage. Abandoned tasks settle (and then age out of the working set) once the store accepts writes again.
-
-<a id="plane-sse-frame-not-utf8"></a>
-### BUSBAR-7104 — A relayed SSE frame was not valid UTF-8 and was dropped
-
-- **Severity:** actionable
-- **Since:** 1.6.0
-- **Slug:** `plane-sse-frame-not-utf8`
-
-The shared SSE frame reader (the JSON-RPC plane relays) assembled a complete event whose bytes are not valid UTF-8. The event-stream format is UTF-8 BY DEFINITION, so this is a malformed backend; the frame is DROPPED rather than lossily transcoded, which would hand the client a corrupted payload. The stream itself continues, so a client sees a missing event, not a failure. The `bytes` field carries the size of the frame that was dropped.
-
-**What to do:** Investigate the named backend agent: its event stream is emitting non-UTF-8 bytes, which no conforming event-stream consumer can read. Until it is fixed the affected events are lost; busbar relays every well-formed event around them.
 
 ## 8xxx — Governance & cost
 

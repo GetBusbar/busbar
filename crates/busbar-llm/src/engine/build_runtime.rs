@@ -125,7 +125,7 @@ pub(crate) fn build_runtime(
     // registered, and interns a name the root has not reached yet at most once for the image. What
     // it buys is that the lane table is seated with its static names at BUILD time, off the request
     // path, and therefore before this generation can be published.
-    let mut registration = busbar_contract::Registration::new();
+    let mut registration = busbar_kernel::Registration::new();
 
     // ── lanes (one per model, in the carrier's deterministic sorted order — `lanes[i]` IS lane `i`) ──
     let mut lanes: Vec<Lane> = Vec::with_capacity(input.lanes.len());
@@ -318,8 +318,8 @@ pub(crate) fn build_runtime(
     let client = if let (true, Some(pr)) = (reuse_prior_client, prior_rt) {
         pr.client.clone()
     } else {
-        crate::engine::install_proxy_tunnel_if_configured()
-            .unwrap_or_else(|e| panic!("upstream proxy tunnel: {e}"));
+        // The proxy choice is the connector's parse of the process environment, installed into the
+        // engine by the composition root at boot (status row 130 E5a); nothing is read here.
         let shard_count = busbar_kernel::topology::UpstreamClients::shard_count();
         let idle_per_host_per_shard = input
             .client_settings

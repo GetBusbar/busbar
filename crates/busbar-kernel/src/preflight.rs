@@ -96,14 +96,16 @@ pub enum Fetched {
     },
 }
 
-/// THE ROOT'S PLUGINS FETCH: every `plugins.fetch` target into `dir`, through the kernel's
-/// SSRF-guarded `download` (the root never downloads by any other path); `fatal_on_miss` at boot,
-/// a [`Fetched::Warned`] per problem on reload. Errors are every problem at boot.
+/// THE ROOT'S PLUGINS FETCH: every `plugins.fetch` target into `dir`, downloaded by the root
+/// through the connector (status row 130 E6: the kernel dials nothing), the operator's extra
+/// cloud-metadata denylist (`security.blocked_metadata_hosts`) the download's SSRF pre-check
+/// extends; `fatal_on_miss` at boot, a [`Fetched::Warned`] per problem on reload. Errors are every
+/// problem at boot.
 pub type PluginsFetch = fn(
     &std::path::Path,
     &[config::FetchTarget],
     bool,
-    &dyn Fn(&str) -> Result<Vec<u8>, String>,
+    &[String],
 ) -> Result<Vec<Fetched>, Vec<String>>;
 
 /// WHAT THE COMPOSITION ROOT INSTALLS into the kernel, by name: its linked entries and its registry
@@ -133,6 +135,10 @@ pub struct RootInstall {
     /// the process's one dispatcher (ARCHITECT ruling 2026-09-29, the opener seam). `None` = no
     /// export module resolves.
     pub export_axis: Option<&'static dyn busbar_contract::export_calls::ExportAxis>,
+    /// The root's ONE plugin trust builder — the one boot admits plugins under — carried onto every
+    /// [`crate::state::App`] so the operator surface judges a plugin exactly as boot does. `None` =
+    /// no trust resolves (the admin catalog lists the linked rows alone; an upload is refused).
+    pub trust_policy: Option<TrustPolicyBuild>,
 }
 
 /// THE ROOT'S HOOK AXIS over one plugin registry (each configuration's registry gets its own).
@@ -144,6 +150,15 @@ pub type HookAxisBuild =
     fn(
         &std::sync::Arc<PluginRegistry>,
     ) -> Result<std::sync::Arc<dyn busbar_contract::hook_calls::HookAxis>, String>;
+
+/// THE ROOT'S PLUGIN TRUST BUILDER: the `plugins:` block, and the binary version a floor reads, to
+/// the policy a plugin is judged under (the root's `trust_policy`, a `test-harness` build's
+/// first-party key included). No other builder judges a plugin.
+///
+/// # Errors
+/// A reserved or malformed publisher, or the root's own refusal.
+pub type TrustPolicyBuild =
+    fn(&config::PluginsCfg, &str) -> Result<busbar_plugin_loader::sign::TrustPolicy, String>;
 
 /// A test build has no root: its store double ([`crate::test_support::store_double`]) and ranking
 /// double stand in for the root's entries, the in-crate secret double
@@ -157,6 +172,7 @@ const STAND_IN: RootInstall = RootInstall {
     store_axis: Some(crate::test_support::store_axis_stand_in),
     secret_axis: Some(&crate::test_support::SecretsStandIn),
     export_axis: Some(&crate::test_support::export_axis::STAND_IN),
+    trust_policy: Some(crate::test_support::trust_policy_stand_in),
 };
 
 /// The hook doors a test build links in place of the root's (the stand-in hook axis,
@@ -1245,136 +1261,56 @@ impl OpenedSecrets {
     }
 }
 
-/// The `plugins.fetch` download closure the engine hands to the root's fetch ([`PluginsFetch`]).
-/// Enforces the SAME cloud-metadata SSRF denylist provider URLs face (fetch is off-box, key-adjacent
-/// I/O) and requires https for a public host, then performs the GET. The GET runs on a DEDICATED
-/// std::thread with its own current-thread runtime, so it is safe whether the caller sits on a tokio
-/// worker (boot) or a `spawn_blocking` thread (reload) — a nested `block_on` on a runtime thread would
-/// otherwise panic. The loader owns cache/verify/atomic-write; this owns network + SSRF.
-pub fn plugin_fetch_downloader(blocked: &[String]) -> impl Fn(&str) -> Result<Vec<u8>, String> {
-    plugin_fetch_downloader_with_cap(blocked, config::DEFAULT_PLUGIN_FETCH_MAX_BYTES)
-}
-
-/// Same as [`plugin_fetch_downloader`] with an explicit download-size cap — split out so a test can
-/// exercise the over-cap rejection path against a small in-memory server without actually moving
-/// hundreds of megabytes through loopback. Production always calls [`plugin_fetch_downloader`], which
-/// pins `cap` to [`config::DEFAULT_PLUGIN_FETCH_MAX_BYTES`].
-pub(crate) fn plugin_fetch_downloader_with_cap(
-    blocked: &[String],
-    cap: usize,
-) -> impl Fn(&str) -> Result<Vec<u8>, String> {
-    let blocked: Vec<String> = blocked.to_vec();
-    move |url: &str| -> Result<Vec<u8>, String> {
-        // Scheme: https required for a public host; plaintext http only for loopback/private (a local
-        // dev registry). Mirrors the provider base_url rule.
-        let https = config_validate::scheme_is(url, "https");
-        if !https {
-            let host_local = config_validate::extract_normalized_host(url)
-                .as_deref()
-                .map(config_validate::host_is_private_or_loopback)
-                .unwrap_or(false);
-            if !(config_validate::scheme_is(url, "http") && host_local) {
-                return Err(format!(
-                    "plugins.fetch url must use https for a public host (got '{url}')"
-                ));
-            }
-        }
-        // SSRF: never fetch from a cloud-metadata host (no per-provider carve-outs; the operator
-        // denylist still extends the built-in list).
-        if let Some(bad) = config_validate::ssrf_blocked_host(url, &[], false, &blocked) {
+/// THE `plugins.fetch` PRE-CHECK, before any dial (status row 130 E6: the root downloads through
+/// the connector; the rules are the kernel's deleted downloader's, verbatim): https required for a
+/// public host, plaintext http only for a loopback or private one (a local dev registry, the
+/// provider base_url rule); never a cloud-metadata host (no per-provider carve-outs; the operator's
+/// `blocked` denylist extends the built-in list). `Ok` answers whether the URL is secured.
+///
+/// # Errors
+///
+/// The refusal, in 1.5.5's words.
+pub fn plugin_fetch_admits(url: &str, blocked: &[String]) -> Result<bool, String> {
+    let https = config_validate::scheme_is(url, "https");
+    if !https {
+        let host_local = config_validate::extract_normalized_host(url)
+            .as_deref()
+            .map(config_validate::host_is_private_or_loopback)
+            .unwrap_or(false);
+        if !(config_validate::scheme_is(url, "http") && host_local) {
             return Err(format!(
-                "plugins.fetch url '{url}' targets a blocked cloud-metadata host '{bad}'"
+                "plugins.fetch url must use https for a public host (got '{url}')"
             ));
         }
-        let url = url.to_string();
-        std::thread::scope(|s| {
-            s.spawn(|| -> Result<Vec<u8>, String> {
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| format!("fetch runtime: {e}"))?;
-                rt.block_on(async {
-                    // The ENGINE, on a cold one-shot posture (`pooled_webpki` values, one idle slot):
-                    // webpki trust, system DNS, boot-env proxy — and redirect non-following is
-                    // STRUCTURAL now (hyper follows nothing), where reqwest needed
-                    // `Policy::none()`: the SSRF guard above only vets the ORIGINAL url, so a 3xx
-                    // `Location` from the semi-trusted plugin registry could otherwise bounce the
-                    // fetch to an internal/cloud-metadata target with no re-check — the same
-                    // redirect-SSRF vector the OTLP exporter and provider clients already close.
-                    // A redirect arrives as a 3xx status and falls into the non-success arm below.
-                    let client = crate::proxy::build_egress_client(
-                        &crate::proxy::EgressClientSpec::pooled_webpki(1, 4, false, false),
-                    );
-                    let uri: http::Uri = url
-                        .parse()
-                        .map_err(|e| format!("GET {url}: not a valid URI: {e}"))?;
-                    let request = busbar_kernel::egress::engine::client_request(
-                        http::Method::GET,
-                        uri,
-                        http::HeaderMap::new(),
-                        bytes::Bytes::new(),
-                    );
-                    let resp = client
-                        .request(request)
-                        .await
-                        // 1.5.5-faithful wording, formatted IN-HOUSE so it does not track the
-                        // egress client's version-specific error text: the older client rendered
-                        // every send failure as `error sending request for url (URL)` — the url,
-                        // and no flattened cause chain. Reproduced verbatim here rather than via
-                        // `with_cause(&e)`, whose output follows the newer client's spelling.
-                        .map_err(|_e| {
-                            format!("GET {url}: error sending request for url ({url})")
-                        })?;
-                    let status = resp.status();
-                    if !status.is_success() {
-                        if status.is_redirection() {
-                            return Err(format!(
-                                "GET {url}: HTTP {status} — refusing to follow a plugins.fetch \
-                                 redirect (redirect-SSRF guard)"
-                            ));
-                        }
-                        return Err(format!("GET {url}: HTTP {status}"));
-                    }
-                    // A declared Content-Length over the cap is rejected BEFORE reading a single body
-                    // byte — the fast, cheap path for the common case of an honest oversized response.
-                    // Not load-bearing on its own (a dishonest/absent header falls through to the
-                    // streamed cap below), just an early exit.
-                    if let Some(len) = resp
-                        .headers()
-                        .get(http::header::CONTENT_LENGTH)
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.parse::<u64>().ok())
-                    {
-                        if len as usize > cap {
-                            return Err(format!(
-                                "GET {url}: declared Content-Length {len} exceeds the {cap}-byte \
-                                 plugins.fetch download cap"
-                            ));
-                        }
-                    }
-                    // Stream with a running byte counter (never a whole-body buffer, which would
-                    // hold the ENTIRE — possibly multi-gigabyte — body before any cap could apply)
-                    // so a mistyped or compromised URL serving an unbounded body is rejected with a
-                    // clear error instead of OOMing busbar on boot or `/plugins/reload`.
-                    use http_body_util::BodyExt;
-                    let (bytes, end) =
-                        crate::proxy::read_capped(resp.into_body().into_data_stream(), cap).await;
-                    match end {
-                        crate::proxy::ReadEnd::Complete => Ok(bytes.to_vec()),
-                        crate::proxy::ReadEnd::Truncated => Err(format!(
-                            "GET {url}: response exceeded the {cap}-byte plugins.fetch download cap; \
-                             refusing to buffer a truncated download"
-                        )),
-                        crate::proxy::ReadEnd::TransportError => {
-                            Err(format!("read body {url}: connection failed mid-download"))
-                        }
-                    }
-                })
-            })
-            .join()
-            .map_err(|_| "plugins.fetch download thread panicked".to_string())?
-        })
     }
+    if let Some(bad) = config_validate::ssrf_blocked_host(url, &[], false, blocked) {
+        return Err(format!(
+            "plugins.fetch url '{url}' targets a blocked cloud-metadata host '{bad}'"
+        ));
+    }
+    Ok(https)
+}
+
+/// THE `plugins.fetch` VERDICT ON AN ANSWER'S STATUS `code`, in 1.5.5's words: `None` for a
+/// success; a redirect is refused and never followed (the pre-check vets only the original url, so
+/// a `Location` from the semi-trusted registry could otherwise bounce the fetch to an internal
+/// target); any other status is refused with its code and reason (`404 Not Found`).
+#[must_use]
+pub fn plugin_fetch_status_refusal(url: &str, code: u32) -> Option<String> {
+    if (200..300).contains(&code) {
+        return None;
+    }
+    let shown = u16::try_from(code)
+        .ok()
+        .and_then(|c| http::StatusCode::from_u16(c).ok())
+        .map_or_else(|| code.to_string(), |s| s.to_string());
+    if (300..400).contains(&code) {
+        return Some(format!(
+            "GET {url}: HTTP {shown} — refusing to follow a plugins.fetch redirect \
+             (redirect-SSRF guard)"
+        ));
+    }
+    Some(format!("GET {url}: HTTP {shown}"))
 }
 
 #[cfg(test)]

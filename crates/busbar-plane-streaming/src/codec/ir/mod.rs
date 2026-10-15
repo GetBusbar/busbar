@@ -3,7 +3,7 @@
 
 //! THE PLANE-4 DUPLEX / SESSION IR — the plane's OWN vocabulary.
 //!
-//! These are the nouns that live ONLY in `busbar-voice`
+//! These are the nouns that live ONLY in this plane
 //! (`docs/design/BUSBAR-1.6.0.md` #18/#45): the four-layer duplex/session IR and its
 //! reader/writer pair. Per `BUSBAR-1.6.0.md` #18/#45 "pass-through is still an IR" — the layers differ in HOW MUCH the IR
 //! reshapes the wire, from full normalization (tool-call) to identity (media):

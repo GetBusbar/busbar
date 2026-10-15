@@ -229,6 +229,7 @@ extern "C" {
 #define BB_AUTH_MODE_PASSTHROUGH UINT32_C(2) /* [`FieldsIn::mode`]: pass the caller's verified credential ([`FieldsIn::caller_credential`]). */
 #define BB_AUTH_EXT_SCOPE "scope" /* `fields`' EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in */
 #define BB_AUTH_SCOPE_REQUEST_FIELD "busbar-auth-scope" /* THE REQUEST FIELD BY WHICH A PLUGIN STATES ITS PER-CALL SCOPE to the host: a field of this name */
+#define BB_AUTH_NO_MEMBER_AUTH_FIELD "busbar-no-member-auth" /* THE REQUEST FIELD BY WHICH A PLUGIN WAIVES ITS MEMBER'S BINDING FOR ONE REQUEST: a field of this */
 #define BB_AUTH_FIELD_SENSITIVE UINT32_C(1) /* [`FieldSpan::flags`]: when SET, an h2 encoder sends the field never-indexed. 1.5.5 sent its */
 #define BB_AUTH_FIELD_QUERY UINT32_C(2) /* [`FieldSpan::flags`]: this field is a QUERY PARAMETER, not a header. The host's framer appends */
 #define BB_AUTH_FORM_TEXT UINT32_C(1) /* [`LoginField::kind`]: plain text. */
@@ -360,6 +361,7 @@ extern "C" {
 #define BB_PLANE_TAIL_FALLBACK UINT32_C(1) /* [`PlaneTail::flags`]: the one plane that is the fallback catch-all. */
 #define BB_PLANE_TAIL_PROBES UINT32_C(2) /* [`PlaneTail::flags`]: the plane answers health probes. A probe is a kernel-originated unit */
 #define BB_PLANE_TAIL_HOOKS_GATED UINT32_C(4) /* [`PlaneTail::flags`]: the plane's request-stage hooks run GATE-FIRST (spec Part 3 section 12 */
+#define BB_PLANE_TAIL_REFUSED_PIECE UINT32_C(8) /* [`PlaneTail::flags`]: the plane takes a unit's refusal as a piece first where the unit's hop */
 #define BB_PLANE_CLAIM_OPEN UINT32_C(1) /* [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it */
 #define BB_PLANE_CLAIM_EXACT UINT32_C(2) /* [`Claim::flags`]: the target matches exactly. Without it (and without [`CLAIM_PATTERN`]), the */
 #define BB_PLANE_CLAIM_PATTERN UINT32_C(4) /* [`Claim::flags`]: the target is a path pattern. Each `/`-separated segment is a literal, or a */
@@ -386,10 +388,11 @@ extern "C" {
 #define BB_PLANE_ROUTE_LOCAL UINT8_C(2) /* [`ArriveOut::route`]: the plane ANSWERS THIS UNIT ITSELF and names no entry */
 #define BB_PLANE_ROUTE_SCOPE UINT8_C(3) /* [`ArriveOut::route`]: the unit names no entry and is ROUTED BY THE PRINCIPAL'S SCOPE */
 #define BB_PLANE_ROUTE_SCOPE_SEPARATOR ", " /* What joins the reachable entries a [`ROUTE_SCOPE`] refusal's [`RefusalIn::text`] names. */
+#define BB_PLANE_ROUTE_SCOPE_LOCAL UINT8_C(4) /* [`ArriveOut::route`]: the plane ANSWERS THIS UNIT ITSELF at the ONE entry the principal's grant */
 #define BB_PLANE_ROUTE_ONCE UINT8_C(1) /* [`ArriveOut::route_flags`]: the unit's operation is performed AT MOST ONCE (ARCHITECT round 4 */
 #define BB_PLANE_ROUTE_SESSION UINT8_C(2) /* [`ArriveOut::route_flags`]: the unit is served as a DUPLEX SESSION (K6; ARCHITECT round 5 */
 #define BB_PLANE_ROUTE_STREAM UINT8_C(4) /* [`ArriveOut::route_flags`]: the caller asked for its answer STREAMED (ARCHITECT Q1 ArriveOut, */
-#define BB_PLANE_ROUTE_COUNTED UINT8_C(8) /* [`ArriveOut::route_flags`], on a unit the plane answers itself ([`ROUTE_LOCAL`]) alone: the plane */
+#define BB_PLANE_ROUTE_COUNTED UINT8_C(8) /* [`ArriveOut::route_flags`], on a unit the plane answers itself ([`ROUTE_LOCAL`] or */
 #define BB_PLANE_FROM_CALLER UINT32_C(0) /* [`OnPieceIn::from`]: the piece is the caller's. */
 #define BB_PLANE_FROM_FAR_END UINT32_C(1) /* [`OnPieceIn::from`]: the piece is the far end's. */
 #define BB_PLANE_FROM_KERNEL UINT32_C(2) /* [`OnPieceIn::from`]: the piece is the kernel's. With [`OnPieceIn::attempt_no`] above `0` it */
@@ -398,6 +401,7 @@ extern "C" {
 #define BB_PLANE_PIECE_HAS_STATUS UINT32_C(4) /* [`OnPieceIn::flags`]: `status_code`/`status_class` are set. */
 #define BB_PLANE_PIECE_FIELDS UINT32_C(8) /* [`OnPieceIn::flags`], [`FROM_FAR_END`]: the bytes are a head of the far end's fields that */
 #define BB_PLANE_PIECE_CATALOGUE_MOVED UINT32_C(16) /* [`OnPieceIn::flags`]: the CATALOGUE-MOVED TICK. With [`FROM_KERNEL`], `attempt_no == 0` and no */
+#define BB_PLANE_PIECE_REFUSED UINT32_C(32) /* [`OnPieceIn::flags`]: the REFUSED PIECE. With [`FROM_KERNEL`], [`PIECE_LAST`], */
 #define BB_PLANE_EMIT_TO_FAR_END UINT32_C(1) /* [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller). */
 #define BB_PLANE_EMIT_DONE UINT32_C(2) /* [`OnPieceOut::flags`]: the unit's reply is complete. */
 #define BB_PLANE_PIECE_OUT_TEXT UINT32_C(4) /* [`OnPieceOut::flags`]: the bytes this answer emits are ONE text message (a carrier with text and */
@@ -418,6 +422,7 @@ extern "C" {
 #define BB_PLANE_RECORD_PUT UINT32_C(1) /* [`RecordWrite::op`]: put, the one write to a record kind of the plane's own. A put of an EMPTY */
 #define BB_PLANE_RECORD_AUDIT UINT32_C(3) /* [`RecordWrite::op`]: THE UNIT'S AUDIT RECORD, a row on the kernel's own audit chain (the one */
 #define BB_PLANE_ROUTE_PUBLIC UINT32_C(1) /* [`AdminRoute::flags`]: a public route. [`slot::SERVE`] serves it to an unauthenticated caller; */
+#define BB_PLANE_ROUTE_CARRIES_OWN_TOKEN UINT32_C(2) /* [`AdminRoute::flags`], on a [`ROUTE_PUBLIC`] route only: the route is addressed by the plane's */
 #define BB_PLANE_AUDIT_NONE UINT32_C(0) /* [`ServeOut::audit`]: no audit row. */
 #define BB_PLANE_AUDIT_APPLIED UINT32_C(1) /* [`ServeOut::audit`]: the request applied; the row's outcome is `applied`. */
 #define BB_PLANE_AUDIT_REJECTED UINT32_C(2) /* [`ServeOut::audit`]: the request was rejected after it was judged; the row's outcome is */
@@ -434,6 +439,7 @@ extern "C" {
 #define BB_PLANE_PIN_FINGERPRINT UINT32_C(1) /* [`TrustKey::flags`], on a [`TRUST_PIN`] key only: the pin object may also carry `fingerprint`. */
 #define BB_PLANE_MECHANISM_ROOT UINT32_C(1) /* [`PinMechanism::flags`]: the mechanism is an authenticity root, so a pin naming it needs key */
 #define BB_PLANE_MECHANISM_PEER_KEY UINT32_C(2) /* [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin */
+#define BB_PLANE_MAX_METRIC_LANES ((size_t)16) /* The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]). */
 
 /* transport */
 #define BB_TRANSPORT_MAX_PIECES UINT64_C(4096) /* The most frame pieces one framer answer may produce. */
@@ -501,10 +507,11 @@ extern "C" {
 #define BB_TRANSPORT_STATUS_CALLER_FAULT UINT8_C(2) /* Status class: the caller's fault. */
 #define BB_TRANSPORT_STATUS_FAR_END_FAULT UINT8_C(3) /* Status class: the far end's fault. */
 #define BB_TRANSPORT_STATUS_OTHER UINT8_C(4) /* Status class: other. */
-#define BB_TRANSPORT_FAULT_NONE UINT8_C(0) /* Fault reading: none stated. The breaker reads an answer with no fault reading as the caller's */
+#define BB_TRANSPORT_FAULT_NONE UINT8_C(0) /* Fault reading: none stated — no reading, the status table decides. On a frame piece that table */
 #define BB_TRANSPORT_FAULT_CALLER UINT8_C(1) /* Fault reading: the caller's own fault. The destination is healthy and nothing is recorded. */
 #define BB_TRANSPORT_FAULT_TRANSIENT UINT8_C(2) /* Fault reading: a transient fault of the destination. Its cell counts it toward a trip, and the */
 #define BB_TRANSPORT_FAULT_HARD UINT8_C(3) /* Fault reading: the destination itself is down for every caller (its credential or its account */
+#define BB_TRANSPORT_FAULT_HEALTHY UINT8_C(4) /* Fault reading: the destination is HEALTHY. It answered; the breaker records a SUCCESS against */
 #define BB_TRANSPORT_STATUS_AT_NONE UINT8_C(0) /* [`Claim::status_at`]: no status. */
 #define BB_TRANSPORT_STATUS_AT_FIRST_FRAME UINT8_C(1) /* [`Claim::status_at`]: the first frame carries the status. */
 #define BB_TRANSPORT_STATUS_AT_TERMINAL UINT8_C(2) /* [`Claim::status_at`]: the terminal frame carries the status. */
@@ -527,7 +534,9 @@ extern "C" {
 #define BB_TRANSPORT_PIECE_FIELDS UINT16_C(16) /* [`FramePiece::flags`]: the piece's bytes are a FIELD BLOCK (the far end's head or its trailers), */
 #define BB_TRANSPORT_PIECE_CONTINUED UINT16_C(32) /* [`FramePiece::flags`], with [`PIECE_FIELDS`]: the piece's first byte CONTINUES a line an earlier */
 #define BB_TRANSPORT_PIECE_TEXT UINT16_C(64) /* [`FramePiece::flags`]: the piece's bytes belong to a TEXT message, not a binary one, on a wire */
+#define BB_TRANSPORT_PIECE_END UINT16_C(128) /* [`FramePiece::flags`]: the stream ENDS whole here; no piece of it follows. The ONLY way a */
 #define BB_TRANSPORT_PIECE_WRITABLE UINT16_C(256) /* [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with */
+#define BB_TRANSPORT_PIECE_HAS_DECLARED_LEN UINT16_C(512) /* [`FramePiece::flags`], with [`PIECE_FIELDS`]: `declared_len` is present, the body length the */
 #define BB_TRANSPORT_EMIT_TEXT UINT32_C(1) /* [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are */
 #define BB_TRANSPORT_WRITE_END_OF_FRAME UINT32_C(1) /* [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that */
 #define BB_TRANSPORT_READ_END_OF_FRAME UINT32_C(1) /* [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier */
@@ -586,6 +595,7 @@ extern "C" {
 #define BB_HCONN_CAUSE_EXCHANGE UINT64_C(3) /* `ServiceOut::value` on a failure: the open connection failed; `error` is the socket's error. */
 #define BB_HCONN_CAUSE_DEADLINE UINT64_C(4) /* `ServiceOut::value` on a failure: a deadline the host keeps passed. */
 #define BB_HCONN_CAUSE_FRAMER UINT64_C(5) /* `ServiceOut::value` on a failure: the open connection's framer failed it; `error` is its own. */
+#define BB_HCONN_CAUSE_CREDENTIAL_UNAVAILABLE UINT64_C(6) /* `ServiceOut::value` on a refusal: the request's credential is unavailable; nothing was sent. */
 #define BB_HCONN_UPGRADE_VERIFY_OFF UINT32_C(1) /* [`UpgradeIn::flags`]: run the handshake WITHOUT verifying the far end's certificate (1.5.5's */
 #define BB_HCONN_UPGRADE_IN_V1_SIZE ((size_t)64) /* The size of an [`UpgradeIn`] from before [`UpgradeIn::flags`]: the host reads its flags as `0`. */
 #define BB_HCONN_CHECKIN_REUSE UINT32_C(0) /* [`CheckinIn::disposition`]: return the stream to the pool as is. */
@@ -818,6 +828,7 @@ typedef uint32_t bb_plane_RefusalCode;
 #define BB_PLANE_RefusalCode_ClientGone ((bb_plane_RefusalCode)40)
 #define BB_PLANE_RefusalCode_DeadlineExceeded ((bb_plane_RefusalCode)41)
 #define BB_PLANE_RefusalCode_Untrusted ((bb_plane_RefusalCode)42)
+#define BB_PLANE_RefusalCode_CredentialUnavailable ((bb_plane_RefusalCode)43)
 
 /* ---- forward declarations ---- */
 typedef struct bb_mech_AbiStr bb_mech_AbiStr;
@@ -1012,6 +1023,7 @@ typedef struct bb_transport_DatagramYield bb_transport_DatagramYield;
 typedef struct bb_transport_Ops bb_transport_Ops;
 typedef struct bb_transport_Claim bb_transport_Claim;
 typedef struct bb_transport_StatusRow bb_transport_StatusRow;
+typedef struct bb_transport_FaultRow bb_transport_FaultRow;
 typedef struct bb_transport_SettingDecl bb_transport_SettingDecl;
 typedef struct bb_transport_TransportTail bb_transport_TransportTail;
 typedef struct bb_transport_Destination bb_transport_Destination;
@@ -1153,9 +1165,9 @@ struct bb_mech_Blob {
     uint32_t flags;
 };
 
-/* The host's context for one plugin instance: opaque to the plugin, handed back on `wake`. */
+/* The host's context for one plugin instance: an opaque handle the host verifies on every call. */
 struct bb_mech_HostCtx {
-    void *ptr;
+    uint64_t handle;
 };
 
 /* A ticket: `(slot, generation)`. UNIQUE PER INSTANCE across all workers, so a plugin may key its */
@@ -2617,6 +2629,8 @@ struct bb_plane_PlaneTail {
     size_t admin_routes_len;
     bb_mech_Blob admin_openapi;
     uint64_t stream_ceiling_secs;
+    const bb_mech_AbiStr *metric_lanes;
+    size_t metric_lanes_len;
 };
 
 /* One path the built plane answers on. One route — a verb, a target and whether the target is */
@@ -2772,7 +2786,7 @@ struct bb_plane_OnPieceIn {
     const bb_mech_Field *head_fields;
     size_t head_fields_len;
     uint32_t passthrough;
-    uint32_t _reserved_tail;
+    uint32_t reason;
 };
 
 /* `on_piece`'s `out`. */
@@ -2802,6 +2816,9 @@ struct bb_plane_OnPieceOut {
     uint32_t _final_reserved;
     bb_mech_Span final_message;
     bb_mech_Span final_details;
+    bb_mech_Span metric_pool;
+    bb_mech_Span metric_lane;
+    bb_mech_Span wait_member;
 };
 
 /* `refusal`'s `in`. */
@@ -3056,6 +3073,14 @@ struct bb_transport_StatusRow {
     uint32_t class_;
 };
 
+/* One fault-table row: a code range of a claim's numbering and the fault reading it means to the */
+struct bb_transport_FaultRow {
+    uint32_t claim;
+    uint32_t lo;
+    uint32_t hi;
+    uint32_t fault;
+};
+
 /* One customer setting the transport reads, at its 1.5.5 path (the connector deals the value to */
 struct bb_transport_SettingDecl {
     bb_mech_AbiStr path;
@@ -3085,6 +3110,8 @@ struct bb_transport_TransportTail {
     size_t status_rows_len;
     const bb_transport_SettingDecl *settings;
     size_t settings_len;
+    const bb_transport_FaultRow *fault_rows;
+    size_t fault_rows_len;
 };
 
 /* A carrier's destination, borrowed for the call. */
@@ -3119,9 +3146,10 @@ struct bb_transport_FramePiece {
     uint64_t len;
     uint32_t code;
     uint8_t status_class;
-    uint8_t _reserved;
+    uint8_t fault;
     uint16_t flags;
     uint64_t retry_after_secs;
+    uint64_t declared_len;
 };
 
 /* The HOST buffers every framer op writes into, and the host's clock at the call. */
@@ -3267,6 +3295,8 @@ struct bb_transport_LocateIn {
     size_t name_cap;
     uint8_t *alpn_buf;
     size_t alpn_cap;
+    uint32_t accept;
+    uint32_t _accept_reserved;
 };
 
 /* `locate`'s `out`. */
@@ -3327,6 +3357,8 @@ struct bb_transport_EmitIn {
     bb_transport_FramerSink sink;
     uint64_t deadline_ns;
     const bb_transport_DatagramLane *lane;
+    uint32_t status;
+    uint32_t _status_reserved;
 };
 
 /* `encode`'s `in`. The rendered bytes go into `sink.wire`. */
@@ -3971,7 +4003,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 286 of 290 structures are pinned by the golden ---- */
+/* ---- layout proof: 287 of 291 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -4194,7 +4226,7 @@ BB_ASSERT(offsetof(bb_mech_CompletionHandle, seq) == 8, "bb_mech_CompletionHandl
 BB_ASSERT(offsetof(bb_mech_CompletionHandle, _reserved) == 12, "bb_mech_CompletionHandle._reserved: offset");
 BB_ASSERT(sizeof(bb_mech_HostCtx) == 8, "bb_mech_HostCtx: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_HostCtx) == 8, "bb_mech_HostCtx: alignment");
-BB_ASSERT(offsetof(bb_mech_HostCtx, ptr) == 0, "bb_mech_HostCtx.ptr: offset");
+BB_ASSERT(offsetof(bb_mech_HostCtx, handle) == 0, "bb_mech_HostCtx.handle: offset");
 BB_ASSERT(sizeof(bb_mech_HostTables) == 48, "bb_mech_HostTables: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_HostTables) == 8, "bb_mech_HostTables: alignment");
 BB_ASSERT(offsetof(bb_mech_HostTables, size) == 0, "bb_mech_HostTables.size: offset");
@@ -5101,7 +5133,7 @@ BB_ASSERT(offsetof(bb_plane_TrustKey, flags) == 20, "bb_plane_TrustKey.flags: of
 BB_ASSERT(offsetof(bb_plane_TrustKey, default_) == 24, "bb_plane_TrustKey.default_: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms) == 40, "bb_plane_TrustKey.mechanisms: offset");
 BB_ASSERT(offsetof(bb_plane_TrustKey, mechanisms_len) == 48, "bb_plane_TrustKey.mechanisms_len: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneTail) == 408, "bb_plane_PlaneTail: size");
+BB_ASSERT(sizeof(bb_plane_PlaneTail) == 424, "bb_plane_PlaneTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneTail) == 8, "bb_plane_PlaneTail: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, head) == 0, "bb_plane_PlaneTail.head: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, flags) == 8, "bb_plane_PlaneTail.flags: offset");
@@ -5145,6 +5177,8 @@ BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_routes) == 360, "bb_plane_PlaneTail
 BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_routes_len) == 368, "bb_plane_PlaneTail.admin_routes_len: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, admin_openapi) == 376, "bb_plane_PlaneTail.admin_openapi: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneTail, stream_ceiling_secs) == 400, "bb_plane_PlaneTail.stream_ceiling_secs: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneTail, metric_lanes) == 408, "bb_plane_PlaneTail.metric_lanes: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneTail, metric_lanes_len) == 416, "bb_plane_PlaneTail.metric_lanes_len: offset");
 BB_ASSERT(sizeof(bb_plane_Claim) == 56, "bb_plane_Claim: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_Claim) == 8, "bb_plane_Claim: alignment");
 BB_ASSERT(offsetof(bb_plane_Claim, verb) == 0, "bb_plane_Claim.verb: offset");
@@ -5274,8 +5308,8 @@ BB_ASSERT(offsetof(bb_plane_OnPieceIn, dialect) == 284, "bb_plane_OnPieceIn.dial
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, head_fields) == 288, "bb_plane_OnPieceIn.head_fields: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, head_fields_len) == 296, "bb_plane_OnPieceIn.head_fields_len: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceIn, passthrough) == 304, "bb_plane_OnPieceIn.passthrough: offset");
-BB_ASSERT(offsetof(bb_plane_OnPieceIn, _reserved_tail) == 308, "bb_plane_OnPieceIn._reserved_tail: offset");
-BB_ASSERT(sizeof(bb_plane_OnPieceOut) == 216, "bb_plane_OnPieceOut: size");
+BB_ASSERT(offsetof(bb_plane_OnPieceIn, reason) == 308, "bb_plane_OnPieceIn.reason: offset");
+BB_ASSERT(sizeof(bb_plane_OnPieceOut) == 240, "bb_plane_OnPieceOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_OnPieceOut) == 8, "bb_plane_OnPieceOut: alignment");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, head) == 0, "bb_plane_OnPieceOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, emitted) == 96, "bb_plane_OnPieceOut.emitted: offset");
@@ -5302,6 +5336,9 @@ BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_status) == 192, "bb_plane_OnPieceO
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, _final_reserved) == 196, "bb_plane_OnPieceOut._final_reserved: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_message) == 200, "bb_plane_OnPieceOut.final_message: offset");
 BB_ASSERT(offsetof(bb_plane_OnPieceOut, final_details) == 208, "bb_plane_OnPieceOut.final_details: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, metric_pool) == 216, "bb_plane_OnPieceOut.metric_pool: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, metric_lane) == 224, "bb_plane_OnPieceOut.metric_lane: offset");
+BB_ASSERT(offsetof(bb_plane_OnPieceOut, wait_member) == 232, "bb_plane_OnPieceOut.wait_member: offset");
 BB_ASSERT(sizeof(bb_plane_RefusalIn) == 240, "bb_plane_RefusalIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_RefusalIn) == 8, "bb_plane_RefusalIn: alignment");
 BB_ASSERT(offsetof(bb_plane_RefusalIn, head) == 0, "bb_plane_RefusalIn.head: offset");
@@ -5503,13 +5540,19 @@ BB_ASSERT(offsetof(bb_transport_StatusRow, claim) == 0, "bb_transport_StatusRow.
 BB_ASSERT(offsetof(bb_transport_StatusRow, lo) == 4, "bb_transport_StatusRow.lo: offset");
 BB_ASSERT(offsetof(bb_transport_StatusRow, hi) == 8, "bb_transport_StatusRow.hi: offset");
 BB_ASSERT(offsetof(bb_transport_StatusRow, class_) == 12, "bb_transport_StatusRow.class_: offset");
+BB_ASSERT(sizeof(bb_transport_FaultRow) == 16, "bb_transport_FaultRow: size");
+BB_ASSERT(BB_ALIGNOF(bb_transport_FaultRow) == 4, "bb_transport_FaultRow: alignment");
+BB_ASSERT(offsetof(bb_transport_FaultRow, claim) == 0, "bb_transport_FaultRow.claim: offset");
+BB_ASSERT(offsetof(bb_transport_FaultRow, lo) == 4, "bb_transport_FaultRow.lo: offset");
+BB_ASSERT(offsetof(bb_transport_FaultRow, hi) == 8, "bb_transport_FaultRow.hi: offset");
+BB_ASSERT(offsetof(bb_transport_FaultRow, fault) == 12, "bb_transport_FaultRow.fault: offset");
 BB_ASSERT(sizeof(bb_transport_SettingDecl) == 40, "bb_transport_SettingDecl: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_SettingDecl) == 8, "bb_transport_SettingDecl: alignment");
 BB_ASSERT(offsetof(bb_transport_SettingDecl, path) == 0, "bb_transport_SettingDecl.path: offset");
 BB_ASSERT(offsetof(bb_transport_SettingDecl, kind) == 16, "bb_transport_SettingDecl.kind: offset");
 BB_ASSERT(offsetof(bb_transport_SettingDecl, _reserved) == 20, "bb_transport_SettingDecl._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_SettingDecl, default_) == 24, "bb_transport_SettingDecl.default_: offset");
-BB_ASSERT(sizeof(bb_transport_TransportTail) == 168, "bb_transport_TransportTail: size");
+BB_ASSERT(sizeof(bb_transport_TransportTail) == 184, "bb_transport_TransportTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_TransportTail) == 8, "bb_transport_TransportTail: alignment");
 BB_ASSERT(offsetof(bb_transport_TransportTail, head) == 0, "bb_transport_TransportTail.head: offset");
 BB_ASSERT(offsetof(bb_transport_TransportTail, role) == 8, "bb_transport_TransportTail.role: offset");
@@ -5530,6 +5573,8 @@ BB_ASSERT(offsetof(bb_transport_TransportTail, status_rows) == 136, "bb_transpor
 BB_ASSERT(offsetof(bb_transport_TransportTail, status_rows_len) == 144, "bb_transport_TransportTail.status_rows_len: offset");
 BB_ASSERT(offsetof(bb_transport_TransportTail, settings) == 152, "bb_transport_TransportTail.settings: offset");
 BB_ASSERT(offsetof(bb_transport_TransportTail, settings_len) == 160, "bb_transport_TransportTail.settings_len: offset");
+BB_ASSERT(offsetof(bb_transport_TransportTail, fault_rows) == 168, "bb_transport_TransportTail.fault_rows: offset");
+BB_ASSERT(offsetof(bb_transport_TransportTail, fault_rows_len) == 176, "bb_transport_TransportTail.fault_rows_len: offset");
 BB_ASSERT(sizeof(bb_transport_Destination) == 72, "bb_transport_Destination: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_Destination) == 8, "bb_transport_Destination: alignment");
 BB_ASSERT(offsetof(bb_transport_Destination, kind) == 0, "bb_transport_Destination.kind: offset");
@@ -5551,16 +5596,17 @@ BB_ASSERT(offsetof(bb_transport_ConnFacts, peer_issuer) == 56, "bb_transport_Con
 BB_ASSERT(offsetof(bb_transport_ConnFacts, peer_fingerprint) == 72, "bb_transport_ConnFacts.peer_fingerprint: offset");
 BB_ASSERT(offsetof(bb_transport_ConnFacts, claim) == 88, "bb_transport_ConnFacts.claim: offset");
 BB_ASSERT(offsetof(bb_transport_ConnFacts, local_certificate) == 104, "bb_transport_ConnFacts.local_certificate: offset");
-BB_ASSERT(sizeof(bb_transport_FramePiece) == 40, "bb_transport_FramePiece: size");
+BB_ASSERT(sizeof(bb_transport_FramePiece) == 48, "bb_transport_FramePiece: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FramePiece) == 8, "bb_transport_FramePiece: alignment");
 BB_ASSERT(offsetof(bb_transport_FramePiece, stream) == 0, "bb_transport_FramePiece.stream: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, offset) == 8, "bb_transport_FramePiece.offset: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, len) == 16, "bb_transport_FramePiece.len: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, code) == 24, "bb_transport_FramePiece.code: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, status_class) == 28, "bb_transport_FramePiece.status_class: offset");
-BB_ASSERT(offsetof(bb_transport_FramePiece, _reserved) == 29, "bb_transport_FramePiece._reserved: offset");
+BB_ASSERT(offsetof(bb_transport_FramePiece, fault) == 29, "bb_transport_FramePiece.fault: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, flags) == 30, "bb_transport_FramePiece.flags: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, retry_after_secs) == 32, "bb_transport_FramePiece.retry_after_secs: offset");
+BB_ASSERT(offsetof(bb_transport_FramePiece, declared_len) == 40, "bb_transport_FramePiece.declared_len: offset");
 BB_ASSERT(sizeof(bb_transport_FrameSpan) == 16, "bb_transport_FrameSpan: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FrameSpan) == 8, "bb_transport_FrameSpan: alignment");
 BB_ASSERT(offsetof(bb_transport_FrameSpan, offset) == 0, "bb_transport_FrameSpan.offset: offset");
@@ -5666,7 +5712,7 @@ BB_ASSERT(offsetof(bb_transport_ArrivalOut, peer_written) == 96, "bb_transport_A
 BB_ASSERT(offsetof(bb_transport_ArrivalOut, peer_needed) == 104, "bb_transport_ArrivalOut.peer_needed: offset");
 BB_ASSERT(offsetof(bb_transport_ArrivalOut, local_port) == 112, "bb_transport_ArrivalOut.local_port: offset");
 BB_ASSERT(offsetof(bb_transport_ArrivalOut, _reserved) == 116, "bb_transport_ArrivalOut._reserved: offset");
-BB_ASSERT(sizeof(bb_transport_LocateIn) == 152, "bb_transport_LocateIn: size");
+BB_ASSERT(sizeof(bb_transport_LocateIn) == 160, "bb_transport_LocateIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_LocateIn) == 8, "bb_transport_LocateIn: alignment");
 BB_ASSERT(offsetof(bb_transport_LocateIn, head) == 0, "bb_transport_LocateIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_LocateIn, target) == 88, "bb_transport_LocateIn.target: offset");
@@ -5676,6 +5722,8 @@ BB_ASSERT(offsetof(bb_transport_LocateIn, name_buf) == 120, "bb_transport_Locate
 BB_ASSERT(offsetof(bb_transport_LocateIn, name_cap) == 128, "bb_transport_LocateIn.name_cap: offset");
 BB_ASSERT(offsetof(bb_transport_LocateIn, alpn_buf) == 136, "bb_transport_LocateIn.alpn_buf: offset");
 BB_ASSERT(offsetof(bb_transport_LocateIn, alpn_cap) == 144, "bb_transport_LocateIn.alpn_cap: offset");
+BB_ASSERT(offsetof(bb_transport_LocateIn, accept) == 152, "bb_transport_LocateIn.accept: offset");
+BB_ASSERT(offsetof(bb_transport_LocateIn, _accept_reserved) == 156, "bb_transport_LocateIn._accept_reserved: offset");
 BB_ASSERT(sizeof(bb_transport_LocateOut) == 152, "bb_transport_LocateOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_LocateOut) == 8, "bb_transport_LocateOut: alignment");
 BB_ASSERT(offsetof(bb_transport_LocateOut, head) == 0, "bb_transport_LocateOut.head: offset");
@@ -5714,7 +5762,7 @@ BB_ASSERT(offsetof(bb_transport_IngestIn, end) == 112, "bb_transport_IngestIn.en
 BB_ASSERT(offsetof(bb_transport_IngestIn, _reserved) == 116, "bb_transport_IngestIn._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_IngestIn, sink) == 120, "bb_transport_IngestIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_IngestIn, lane) == 200, "bb_transport_IngestIn.lane: offset");
-BB_ASSERT(sizeof(bb_transport_EmitIn) == 224, "bb_transport_EmitIn: size");
+BB_ASSERT(sizeof(bb_transport_EmitIn) == 232, "bb_transport_EmitIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_EmitIn) == 8, "bb_transport_EmitIn: alignment");
 BB_ASSERT(offsetof(bb_transport_EmitIn, head) == 0, "bb_transport_EmitIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, framing) == 88, "bb_transport_EmitIn.framing: offset");
@@ -5726,6 +5774,8 @@ BB_ASSERT(offsetof(bb_transport_EmitIn, flags) == 124, "bb_transport_EmitIn.flag
 BB_ASSERT(offsetof(bb_transport_EmitIn, sink) == 128, "bb_transport_EmitIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, deadline_ns) == 208, "bb_transport_EmitIn.deadline_ns: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, lane) == 216, "bb_transport_EmitIn.lane: offset");
+BB_ASSERT(offsetof(bb_transport_EmitIn, status) == 224, "bb_transport_EmitIn.status: offset");
+BB_ASSERT(offsetof(bb_transport_EmitIn, _status_reserved) == 228, "bb_transport_EmitIn._status_reserved: offset");
 BB_ASSERT(sizeof(bb_transport_EncodeIn) == 232, "bb_transport_EncodeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_EncodeIn) == 8, "bb_transport_EncodeIn: alignment");
 BB_ASSERT(offsetof(bb_transport_EncodeIn, head) == 0, "bb_transport_EncodeIn.head: offset");

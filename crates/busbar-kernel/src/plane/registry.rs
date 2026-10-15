@@ -601,7 +601,7 @@ pub fn build_dispatch(
 }
 
 // `registry_tests` MOVED to `crates/busbar/tests/registry_cross_plane.rs` (the A6/HostCtx dev-dependency-cycle
-// cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp`/`busbar_a2a` `PLANE_DECL`s and their
+// cleanup): most of it drove the REAL `busbar_llm`/`busbar_mcp` and agent-engine `PLANE_DECL`s and their
 // real runtime objects, which only type-checks with ONE `busbar_kernel` in the graph — an
 // integration-test target, never this `#[cfg(test)]` unit module. See that file's header. The two
 // `#[cfg(test)]` seams it used to reach through (`builtin_plane_decls`, `default_section_plane_test_runtime`
@@ -654,6 +654,47 @@ pub struct BuildCtx<'a> {
     /// is; `None` = none (a test build that states none).
     pub providers:
         Option<&'a std::collections::HashMap<String, crate::config::providers::ProviderCfg>>,
+    /// THE HOSTLESS-EGRESS DRIVER of the App this generation builds, handed to a plane's `build` on
+    /// this context rather than read off a process-wide static: a plane that runs a governed hop
+    /// holds the driver of the App that built it, so two Apps in one process each drive their own.
+    /// [`EgressDriver::core`] in the App build; `Default` (no driver) where a test states none.
+    pub hostless: EgressDriver,
+}
+
+/// THE HOSTLESS-EGRESS DRIVER A PLANE'S `build` IS HANDED ([`BuildCtx::hostless`]): the
+/// neutral `&dyn HostlessEgress` a plane runs a governed hop through, or none. A field of the
+/// build context in every build, empty in a build that compiles no egress seam, so a test that
+/// spells a `BuildCtx` literal states `Default::default()` whatever features are unified.
+#[derive(Clone, Copy, Default)]
+pub struct EgressDriver(
+    #[cfg(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay")))]
+    Option<&'static dyn crate::egress::seam::HostlessEgress>,
+);
+
+impl EgressDriver {
+    /// The App's own driver: the core-backed `CoreHostlessEgress` (the `plane_host` FFI egress
+    /// vtable) where the egress seam is compiled, none where it is not.
+    #[must_use]
+    pub fn core() -> Self {
+        #[cfg(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay")))]
+        {
+            Self(Some(&crate::egress::seam::CoreHostlessEgress))
+        }
+        #[cfg(not(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay"))))]
+        {
+            Self()
+        }
+    }
+}
+
+#[cfg(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay")))]
+impl EgressDriver {
+    /// The driver, or `None` when this context carries none: a plane that gets `None` has no egress
+    /// backend behind it and refuses the hop rather than inventing one.
+    #[must_use]
+    pub fn get(self) -> Option<&'static dyn crate::egress::seam::HostlessEgress> {
+        self.0
+    }
 }
 
 /// A PLANE BOOT HOOK — [`PlaneDecl::hydrate`] or [`PlaneDecl::start`]. Handed the [`PlaneBootCtx`] for

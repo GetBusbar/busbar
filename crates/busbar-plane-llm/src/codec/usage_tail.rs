@@ -85,177 +85,182 @@ pub fn isolate_tail_usage_object(tail: &[u8], key: &[u8]) -> Option<serde_json::
     crate::codec::json::parse(obj).ok()
 }
 
-/// The longest string value [`first_string_value_after`] reads. A stop-reason token is a short enum
-/// member (`ERROR`, `MALFORMED_FUNCTION_CALL`); a value that runs past this is not one, and reading
-/// it would be work proportional to the body rather than to the field.
+/// The longest string value [`StopKeyScanner`] reads. A stop-reason token is a short enum member
+/// (`ERROR`, `MALFORMED_FUNCTION_CALL`); a value that runs past this is not one, and reading it
+/// would be work proportional to the body rather than to the field.
 const MAX_TOKEN_BYTES: usize = 64;
-
-/// The string value of the FIRST `key` (quotes included, e.g. `b"\"finish_reason\""`) in `buf`,
-/// without parsing the document: locate the key, skip `:` and whitespace, and read the quoted value
-/// that follows, bounded at [`MAX_TOKEN_BYTES`]. `None` when the key is absent, its value is not a
-/// plain string, or the value is longer than a token.
-///
-/// The one scan the key location costs is the only body-size-proportional work; everything after it
-/// is bounded. A key spelled inside a delivered string value cannot match: there its closing quote
-/// is escaped (`\"`), and the needle requires a bare `"` right after the key's last letter.
-pub fn first_string_value_after<'b>(buf: &'b [u8], key: &[u8]) -> Option<&'b str> {
-    if key.is_empty() || buf.len() < key.len() {
-        return None;
-    }
-    let key_pos = (0..=buf.len() - key.len()).find(|&i| &buf[i..i + key.len()] == key)?;
-    let mut i = key_pos + key.len();
-    while i < buf.len() && buf[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    if buf.get(i) != Some(&b':') {
-        return None;
-    }
-    i += 1;
-    while i < buf.len() && buf[i].is_ascii_whitespace() {
-        i += 1;
-    }
-    if buf.get(i) != Some(&b'"') {
-        return None;
-    }
-    let start = i + 1;
-    let end = buf
-        .get(start..buf.len().min(start + MAX_TOKEN_BYTES + 1))?
-        .iter()
-        .position(|&c| c == b'"' || c == b'\\')
-        .map(|n| start + n)?;
-    if buf[end] != b'"' {
-        // An escape inside the value: not a plain enum token.
-        return None;
-    }
-    std::str::from_utf8(&buf[start..end]).ok()
-}
 
 /// The longest stop-reason KEY (quotes included) [`StopKeyScanner`] can look for. Every dialect's
 /// key is a short field name; the bound is what lets the scanner carry its state inline.
 pub const MAX_STOP_KEY_BYTES: usize = 32;
 
-/// Where [`StopKeyScanner`] is in the `"key" : "token"` grammar.
+/// The deepest container nesting [`StopKeyScanner`] tracks the container kinds of. A dialect's stop
+/// field sits a few levels deep; a body nested past this is still scanned, and its deeper
+/// containers are never the stop field's.
+const MAX_TRACKED_DEPTH: u16 = 64;
+
+/// A dialect's non-stream stop-reason field, located STRUCTURALLY: the member `key` (quotes
+/// included, e.g. `b"\"finish_reason\""`) of an object at container nesting `depth`, counting every
+/// `{` and `[` from the document root (`1` is a top-level member; a Gemini candidate's member,
+/// `{"candidates":[{…}]}`, is `3`). Only that member is the field: the same name spelled deeper —
+/// inside a tool call's `args` object, say — is content, never the stop reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StopKey {
+    pub key: &'static [u8],
+    pub depth: u16,
+}
+
+/// Where [`StopKeyScanner`] is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ScanState {
-    /// Looking for the first occurrence of the key.
+    /// Walking the document for the first member named `key` at `depth`.
     Seeking,
-    /// Just past the key: whitespace, then `:`.
-    BeforeColon,
     /// Just past the `:`: whitespace, then the opening `"`.
     BeforeQuote,
     /// Inside the value, collecting the token.
     InToken,
     /// The token is complete.
     Found,
-    /// The first key was not followed by a plain token: no answer, and none will come.
+    /// The first such member's value is not a plain token: no answer, and none will come.
     Gone,
 }
 
-/// [`first_string_value_after`], INCREMENTALLY: fed a body chunk by chunk as it passes through a
-/// relay, it answers exactly what `first_string_value_after` would answer over the whole body,
-/// without keeping a copy of it.
-///
-/// The state it carries across a chunk boundary is bounded and inline (no heap): at most the last
-/// `key.len() - 1` bytes while seeking (a key split across two chunks), then at most
-/// [`MAX_TOKEN_BYTES`] of the token. Per chunk the work is the key search over that chunk, then
-/// bounded work after the key.
+/// The string value of the FIRST member [`StopKey`] names, read INCREMENTALLY: fed a body chunk by
+/// chunk as it passes through a relay, it walks the JSON lexically (strings, escapes, container
+/// nesting) without parsing or keeping a copy of the body. The state it carries is bounded and
+/// inline (no heap): the nesting depth, a bit per tracked container, the match position in the key
+/// and at most [`MAX_TOKEN_BYTES`] of the token. A member of the same name at another depth — a
+/// tool's `args` object that happens to hold `"finishReason":"MALFORMED_FUNCTION_CALL"` — or the
+/// name spelled inside a string value never matches.
 #[derive(Clone, Debug)]
 pub struct StopKeyScanner {
-    key: &'static [u8],
+    /// The key's name, quotes stripped.
+    name: &'static [u8],
+    depth: u16,
     state: ScanState,
-    carry: [u8; MAX_STOP_KEY_BYTES],
-    carry_len: usize,
+    /// The current container nesting.
+    level: u16,
+    /// Bit `n` set: the container at nesting `n + 1` is an object.
+    objects: u64,
+    in_string: bool,
+    escaped: bool,
+    /// The string being walked is a candidate member name at the key's depth.
+    candidate: bool,
+    /// How many bytes of `name` the candidate has matched.
+    matched: usize,
+    /// A candidate that matched `name` whole has just closed: the next non-whitespace byte decides
+    /// whether it was a member name (`:`) or a value.
+    closed_match: bool,
     token: [u8; MAX_TOKEN_BYTES],
     token_len: usize,
 }
 
-fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    if hay.len() < needle.len() {
-        return None;
-    }
-    hay.windows(needle.len()).position(|w| w == needle)
-}
-
 impl StopKeyScanner {
-    /// A scanner for `key` (quotes included). `None` for an empty key or one longer than
-    /// [`MAX_STOP_KEY_BYTES`].
-    pub fn new(key: &'static [u8]) -> Option<Self> {
-        (!key.is_empty() && key.len() <= MAX_STOP_KEY_BYTES).then_some(Self {
-            key,
+    /// A scanner for `key`. `None` for an empty or unquoted key, one longer than
+    /// [`MAX_STOP_KEY_BYTES`], or a depth of `0`.
+    pub fn new(key: StopKey) -> Option<Self> {
+        let k = key.key;
+        let well_formed = k.len() > 2
+            && k.len() <= MAX_STOP_KEY_BYTES
+            && k[0] == b'"'
+            && k[k.len() - 1] == b'"'
+            && key.depth > 0;
+        well_formed.then_some(Self {
+            name: &k[1..k.len() - 1],
+            depth: key.depth,
             state: ScanState::Seeking,
-            carry: [0; MAX_STOP_KEY_BYTES],
-            carry_len: 0,
+            level: 0,
+            objects: 0,
+            in_string: false,
+            escaped: false,
+            candidate: false,
+            matched: 0,
+            closed_match: false,
             token: [0; MAX_TOKEN_BYTES],
             token_len: 0,
         })
     }
 
+    /// Whether the innermost open container is an object.
+    fn in_object(&self) -> bool {
+        self.level > 0
+            && self.level <= MAX_TRACKED_DEPTH
+            && self.objects & (1u64 << (self.level - 1)) != 0
+    }
+
     /// Feed the next chunk of the body.
     pub fn feed(&mut self, chunk: &[u8]) {
-        let mut rest = chunk;
-        if self.state == ScanState::Seeking {
-            let k = self.key.len();
-            let mut found = false;
-            // A key that STARTS in the carried tail of the previous chunks and ends in this one.
-            // Only a match starting inside the carry counts here: one starting in `chunk` is found
-            // by the search below, and a carry match is always the earlier of the two.
-            if self.carry_len > 0 {
-                let take = chunk.len().min(k - 1);
-                let mut joint = [0u8; 2 * MAX_STOP_KEY_BYTES];
-                joint[..self.carry_len].copy_from_slice(&self.carry[..self.carry_len]);
-                joint[self.carry_len..self.carry_len + take].copy_from_slice(&chunk[..take]);
-                if let Some(p) = find(&joint[..self.carry_len + take], self.key) {
-                    if p < self.carry_len {
-                        rest = &chunk[p + k - self.carry_len..];
-                        found = true;
-                    }
-                }
-            }
-            if !found {
-                if let Some(p) = find(chunk, self.key) {
-                    rest = &chunk[p + k..];
-                    found = true;
-                }
-            }
-            if !found {
-                // Keep the last `k - 1` bytes of everything seen, for a key split at the boundary.
-                let keep = k - 1;
-                if chunk.len() >= keep {
-                    self.carry[..keep].copy_from_slice(&chunk[chunk.len() - keep..]);
-                    self.carry_len = keep;
-                } else {
-                    let total = self.carry_len + chunk.len();
-                    let drop = total.saturating_sub(keep);
-                    self.carry.copy_within(drop..self.carry_len, 0);
-                    let kept = self.carry_len - drop;
-                    self.carry[kept..kept + chunk.len()].copy_from_slice(chunk);
-                    self.carry_len = kept + chunk.len();
-                }
-                return;
-            }
-            self.carry_len = 0;
-            self.state = ScanState::BeforeColon;
-        }
-        for &c in rest {
-            self.state = match self.state {
-                ScanState::BeforeColon if c.is_ascii_whitespace() => ScanState::BeforeColon,
-                ScanState::BeforeColon if c == b':' => ScanState::BeforeQuote,
-                ScanState::BeforeQuote if c.is_ascii_whitespace() => ScanState::BeforeQuote,
-                ScanState::BeforeQuote if c == b'"' => ScanState::InToken,
-                ScanState::InToken if c == b'"' => ScanState::Found,
+        for &c in chunk {
+            match self.state {
+                ScanState::Found | ScanState::Gone => return,
+                ScanState::Seeking => self.seek(c),
+                ScanState::BeforeQuote if c.is_ascii_whitespace() => {}
+                ScanState::BeforeQuote if c == b'"' => self.state = ScanState::InToken,
+                ScanState::BeforeQuote => self.state = ScanState::Gone,
+                ScanState::InToken if c == b'"' => self.state = ScanState::Found,
                 ScanState::InToken if c == b'\\' || self.token_len == MAX_TOKEN_BYTES => {
-                    ScanState::Gone
+                    self.state = ScanState::Gone;
                 }
                 ScanState::InToken => {
                     self.token[self.token_len] = c;
                     self.token_len += 1;
-                    ScanState::InToken
                 }
-                ScanState::Found | ScanState::Gone => break,
-                ScanState::Seeking | ScanState::BeforeColon | ScanState::BeforeQuote => {
-                    ScanState::Gone
+            }
+        }
+    }
+
+    /// One byte of the document walk while seeking.
+    fn seek(&mut self, c: u8) {
+        if self.in_string {
+            if self.escaped {
+                self.escaped = false;
+                self.candidate = false;
+            } else if c == b'\\' {
+                self.escaped = true;
+                self.candidate = false;
+            } else if c == b'"' {
+                self.in_string = false;
+                self.closed_match = self.candidate && self.matched == self.name.len();
+                self.candidate = false;
+            } else if self.candidate {
+                if self.name.get(self.matched) == Some(&c) {
+                    self.matched += 1;
+                } else {
+                    self.candidate = false;
                 }
-            };
+            }
+            return;
+        }
+        if self.closed_match {
+            if c.is_ascii_whitespace() {
+                return;
+            }
+            self.closed_match = false;
+            if c == b':' {
+                // The member this scanner looks for: its value decides the answer.
+                self.state = ScanState::BeforeQuote;
+                return;
+            }
+        }
+        match c {
+            b'"' => {
+                self.in_string = true;
+                self.candidate = self.level == self.depth && self.in_object();
+                self.matched = 0;
+            }
+            b'{' | b'[' => {
+                self.level = self.level.saturating_add(1);
+                if self.level <= MAX_TRACKED_DEPTH {
+                    let bit = 1u64 << (self.level - 1);
+                    if c == b'{' {
+                        self.objects |= bit;
+                    } else {
+                        self.objects &= !bit;
+                    }
+                }
+            }
+            b'}' | b']' => self.level = self.level.saturating_sub(1),
+            _ => {}
         }
     }
 

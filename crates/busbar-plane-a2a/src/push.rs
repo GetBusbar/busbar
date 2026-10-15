@@ -1,0 +1,746 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (C) 2026 Busbar Inc and contributors
+
+//! PUSH DELIVERY, IN PLANE MEMORY (`BUSBAR-1.6.0.md`, the a2a plane rulings: push delivery retries
+//! at most three times, 250/500 ms ±20 %, on a transport error, 5xx or 429 only, on an async timer,
+//! holding no slot, re-running the destination judge on every attempt; event-stream sink delivery
+//! through a per-task ordered bounded queue, 64, drop-oldest, counted).
+//!
+//! Everything here is sans I/O. The instance holds one [`Deliveries`] and one [`Tokens`]:
+//!
+//! * [`Deliveries::enqueue`] files a notification behind its task's earlier ones; past
+//!   [`QUEUE_CAPACITY`] the oldest waiting one is dropped and counted.
+//! * [`Deliveries::due`] hands out, per task, only the HEAD of its queue, once its time has come and
+//!   while no attempt on it is open, so a task's notifications reach the receiver in the order its
+//!   state changed.
+//! * Each attempt re-runs the destination judge, then dials the plane's outbound `open-web` need
+//!   ([`crate::door_statement::NEED_OPEN_WEB`]) with [`request`]; its end is [`Attempted`].
+//! * [`Deliveries::settle`] pops the head, or puts it back with its next time when the end is
+//!   retryable and attempts remain. [`Deliveries::next_tick_ns`] is the lifecycle tick's
+//!   `next_tick_ns`: nothing waits on a slot or a thread between attempts.
+//! * [`Deliveries::next_due`] is the one head the door's `tick` attempts on one op.
+//! * Every attempt's end is OWED to its task's chain ([`Deliveries::owe`]): a `tick` answer carries
+//!   no record write, so the outcome waits in plane memory, bounded, until a piece of its caller's
+//!   files it ([`Deliveries::take_owed`]).
+//!
+//! Before each dial, [`Deliveries::rebound`] keeps predev's anti-rebinding rule: the destination's
+//! fresh addresses must overlap those an earlier delivery to it reached ([`Deliveries::reached`]),
+//! a bounded set in plane memory.
+//!
+//! The caller's webhook credential ([`DeliveryAuth`]) has its home in the push_config host record
+//! (a sealed field of it, `PushConfig::authentication`). It is held here, in plane memory, only
+//! while a delivery is in flight, never logged or printed, and joins the request only after the
+//! judge has passed. busbar's own callback token
+//! ([`Tokens`]) is a capability for one task, `<task-id>.<signature>`, minted through the host's
+//! signing service (the plane never holds the key) and verified by signing again and comparing in
+//! constant time; it is never logged or audited. [`PushLimiter`] bounds how often one task's token
+//! may be spent, exactly as 1.5.5 bounded it.
+
+use std::collections::{BTreeMap, VecDeque};
+
+use busbar_contract::abi::sdk::exchange::Request;
+use busbar_contract::abi::sdk::publish::Keyed;
+use busbar_contract::vocab;
+
+use crate::a2a::task::Task;
+
+/// At most this many attempts for one notification: the first and up to two retries.
+pub const MAX_ATTEMPTS: u32 = 3;
+
+/// The wait before the 2nd and the 3rd attempt, before jitter, milliseconds.
+pub const RETRY_DELAYS_MS: [u64; (MAX_ATTEMPTS - 1) as usize] = [250, 500];
+
+/// The jitter on each wait, in percent either way.
+pub const JITTER_PERCENT: u64 = 20;
+
+/// The most notifications one task's queue holds; past it, the oldest waiting one is dropped.
+pub const QUEUE_CAPACITY: usize = 64;
+
+/// The most callback tokens one instance holds; past it, no token is minted (and busbar registers
+/// no callback of its own with that backend).
+pub const MAX_TOKENS: usize = 4096;
+
+/// The domain a callback token's signature is made in: what the host signs is this, then the task
+/// id, so no other signature the instance asks for verifies as a token.
+pub const TOKEN_DOMAIN: &[u8] = b"busbar-a2a-push-token\0";
+
+/// The fixed push-rate window, seconds (1.5.5's `PUSH_RATE_WINDOW_SECS`).
+pub const PUSH_RATE_WINDOW_SECS: u64 = 60;
+
+/// The pushes one task's token may spend in one window (1.5.5's `PUSH_RATE_LIMIT`).
+pub const PUSH_RATE_LIMIT: u32 = 60;
+
+/// The scheme busbar's callback token rides on: registered as the config's
+/// `authentication.scheme` (its `credentials` = the token), presented back as
+/// `Authorization: Bearer <token>`.
+pub const TOKEN_SCHEME: &str = "Bearer";
+
+/// The most destinations whose reached addresses one instance holds; past it, the oldest-keyed one
+/// is dropped, and its next delivery is judged as a first one (never unjudged).
+pub const MAX_DESTINATIONS: usize = 4096;
+
+/// The most reached addresses held for one destination.
+pub const MAX_REACHED: usize = 16;
+
+/// The most attempt outcomes held for their chains at once; past it, the oldest is dropped and
+/// counted.
+pub const MAX_OWED: usize = 4096;
+
+/// The field every delivery carries, and its value.
+pub const CONTENT_TYPE: (&str, &str) = ("content-type", "application/json");
+
+/// The field a webhook credential is presented on.
+pub const AUTHORIZATION: &str = "authorization";
+
+/// THE A2A PUSH NOTIFICATION BODY: a `StreamResponse` with the task nested under `"task"`, under
+/// busbar's ids. Not a JSON-RPC envelope: the receiver is not a JSON-RPC peer and correlates on
+/// the task id (A2A 4.3.3). `status.timestamp` is RFC 3339, as every revision types it.
+#[must_use]
+pub fn notification_body(task: &Task) -> Vec<u8> {
+    let doc = serde_json::json!({
+        "task": {
+            "id": task.task_id,
+            "contextId": task.context_id,
+            "kind": "task",
+            "status": {
+                "state": task.state.as_str(),
+                "timestamp": busbar_contract::civil::rfc3339_from_secs(task.updated_at),
+            },
+        }
+    });
+    serde_json::to_vec(&doc).unwrap_or_default()
+}
+
+/// THE CREDENTIAL THE CALLER ASKED BUSBAR TO PRESENT AT ITS WEBHOOK. The caller's own secret for
+/// the caller's own receiver. Its home is the push_config host record (a sealed field of it); plane
+/// memory holds it only while a delivery is in flight; it is never logged, printed, or echoed on a
+/// read verb.
+#[derive(Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeliveryAuth {
+    /// The HTTP authentication scheme, as the caller wrote it.
+    pub scheme: String,
+    /// The credential itself (predev `pushdeliver.rs:117` held it redacted in memory). Its one way
+    /// onto the wire is [`DeliveryAuth::header_value`]; the record's serde form carries it as the
+    /// plain string the sealed field always held.
+    #[serde(with = "sealed_credential")]
+    pub credentials: PushCredential,
+}
+
+/// THE CALLER'S WEBHOOK CREDENTIAL AS THE PLANE HOLDS IT: caller payload the A2A body carried, not
+/// secret material the kernel resolved, so it is the plane's own type and never the contract's
+/// `Redacted` (whose accessor no plane reaches, DECISIONS #40). Logs, audit records, metrics and
+/// error text never carry its value (BUSBAR-1.6.0.md THE DESIGN §6): no `Display`, no
+/// `Serialize`, and its `Debug` prints `[redacted]`. Its readers are [`DeliveryAuth::header_value`],
+/// the `Authorization` field [`request`] writes, and the push_config record's serde form.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PushCredential(String);
+
+impl PushCredential {
+    /// Hold `value` as the caller's webhook credential.
+    #[must_use]
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    /// Whether the caller gave no credential bytes (a bare scheme).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The bytes, for this module's two readers alone.
+    fn reveal(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for PushCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted]")
+    }
+}
+
+impl DeliveryAuth {
+    /// The `Authorization` value: `<scheme> <credentials>`, or the bare scheme when there are none.
+    #[must_use]
+    pub fn header_value(&self) -> String {
+        if self.credentials.is_empty() {
+            self.scheme.clone()
+        } else {
+            format!("{} {}", self.scheme, self.credentials.reveal())
+        }
+    }
+}
+
+/// The push_config record's form of [`DeliveryAuth::credentials`]: the plain string, written into
+/// the sealed field and read straight back into a [`PushCredential`].
+mod sealed_credential {
+    use super::PushCredential;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &PushCredential, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(value.reveal())
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<PushCredential, D::Error> {
+        String::deserialize(d).map(PushCredential::new)
+    }
+}
+
+/// Written, not derived: the credential never reaches a log line, an assert message or a panic.
+impl std::fmt::Debug for DeliveryAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "DeliveryAuth {{ scheme: {:?}, credentials: <redacted> }}",
+            self.scheme
+        )
+    }
+}
+
+/// How one attempt ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Attempted {
+    /// The receiver answered 2xx.
+    Delivered,
+    /// The destination judge refused (its `DEST_*` verdict); nothing went out.
+    Judged(u64),
+    /// The destination now resolves only to addresses no earlier delivery reached (a rebinding);
+    /// nothing went out.
+    Moved,
+    /// The connection or the exchange failed.
+    Transport,
+    /// The receiver answered this non-2xx status.
+    Status(u16),
+}
+
+impl Attempted {
+    /// The end of an exchange that reached a receiver.
+    #[must_use]
+    pub const fn of_status(status: u16) -> Self {
+        match status {
+            200..=299 => Self::Delivered,
+            s => Self::Status(s),
+        }
+    }
+
+    /// Worth another attempt: a transport error, a 5xx or a 429. A judge refusal or any other 4xx
+    /// would answer the same "no" again.
+    #[must_use]
+    pub const fn retryable(self) -> bool {
+        match self {
+            Self::Transport | Self::Status(429) => true,
+            Self::Status(s) => matches!(s, 500..=599),
+            Self::Delivered | Self::Judged(_) | Self::Moved => false,
+        }
+    }
+
+    /// The task-chain record kind the attempt files: delivered, refused before anything went out,
+    /// or failed at the receiver.
+    #[must_use]
+    pub const fn record_kind(self) -> &'static str {
+        match self {
+            Self::Delivered => vocab::EV_PUSH_DELIVERED,
+            Self::Judged(_) | Self::Moved => vocab::EV_PUSH_REFUSED,
+            Self::Transport | Self::Status(_) => vocab::EV_PUSH_FAILED,
+        }
+    }
+}
+
+/// `base_ms` moved by up to ±[`JITTER_PERCENT`], `byte` (a random byte) choosing where: `0` is the
+/// low end, `255` the high end.
+#[must_use]
+pub fn jittered_ms(base_ms: u64, byte: u8) -> u64 {
+    let span = 2 * JITTER_PERCENT;
+    base_ms * (100 - JITTER_PERCENT + span * u64::from(byte) / 255) / 100
+}
+
+/// One notification to deliver.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivery {
+    /// The task it is about.
+    pub task_id: String,
+    /// Who holds the task (the row's principal: the caller reference its records are keyed by).
+    pub caller: String,
+    /// The caller's callback URL.
+    pub url: String,
+    /// The body ([`notification_body`]).
+    pub body: Vec<u8>,
+    /// The task had reached a terminal state: the last delivery it gets.
+    pub terminal: bool,
+}
+
+impl Delivery {
+    /// The notification for `task`, when it has a callback.
+    #[must_use]
+    pub fn of(task: &Task) -> Option<Self> {
+        Some(Self {
+            task_id: task.task_id.clone(),
+            caller: task.principal.clone(),
+            url: task.push_callback.clone()?,
+            body: notification_body(task),
+            terminal: task.state.is_terminal(),
+        })
+    }
+}
+
+/// One queued notification and where its attempts stand.
+#[derive(Debug)]
+struct Waiting {
+    delivery: Delivery,
+    attempts: u32,
+    not_before_ns: u64,
+    open: bool,
+}
+
+/// One attempt's end, owed to its task's chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Owed {
+    /// Who holds the task.
+    pub caller: String,
+    /// The task.
+    pub task_id: String,
+    /// The task-chain record kind the attempt files ([`Attempted::record_kind`]).
+    pub kind: &'static str,
+}
+
+/// The instance's push book: the queues, the drops, the credentials, the outcomes owed.
+#[derive(Debug, Default)]
+struct Book {
+    queues: BTreeMap<String, VecDeque<Waiting>>,
+    dropped: u64,
+    auths: BTreeMap<String, DeliveryAuth>,
+    reached: BTreeMap<String, Vec<String>>,
+    owed: VecDeque<Owed>,
+    unfiled: u64,
+}
+
+/// What [`Deliveries::settle`] did with the head of a task's queue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeliverySettled {
+    /// It is done (delivered, refused, or out of attempts): the record kind to file.
+    Done(&'static str),
+    /// It waits for another attempt at this time.
+    Retry(u64),
+    /// No attempt was open on that task.
+    Unknown,
+}
+
+/// THE INSTANCE'S DELIVERIES, held in plane memory (never process-global).
+#[derive(Debug, Default)]
+pub struct Deliveries {
+    book: Keyed<(), Book>,
+    wake: Wakeup,
+}
+
+/// The way to wake the instance's driver ticket (R-PUSH): armed by the first `tick`, which is the
+/// op that carries the ticket.
+type Wakeup = Keyed<(), Box<dyn Fn() + Send + Sync>>;
+
+impl Deliveries {
+    /// None queued.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn with<R>(&self, f: impl FnOnce(&mut Book) -> R) -> R {
+        self.book
+            .with_all(|m| f(m.entry(()).or_insert_with(Book::default)))
+    }
+
+    /// Arm the wake of the instance's driver ticket, once: a queued delivery is attempted on that
+    /// wake, not at the next scheduled `tick` (R-PUSH: a wake runs `drive`, then re-polls `tick`).
+    pub fn arm(&self, wake: impl FnOnce() -> Box<dyn Fn() + Send + Sync>) {
+        self.wake.with_all(|armed| {
+            armed.entry(()).or_insert_with(wake);
+        });
+    }
+
+    /// Wake the driver ticket so the kernel ticks now; a no-op until armed (the first `tick` runs
+    /// at boot and finds what is queued). The host's wake never blocks and never reaches back here.
+    pub fn wake(&self) {
+        self.wake.with(&(), |armed| {
+            if let Some(wake) = armed {
+                wake();
+            }
+        });
+    }
+
+    /// File `delivery` behind its task's earlier ones. Answers whether the oldest waiting one was
+    /// dropped (and counted) to make room. An attempt in progress is never the one dropped.
+    pub fn enqueue(&self, delivery: Delivery, now_ns: u64) -> bool {
+        self.with(|b| {
+            let queue = b.queues.entry(delivery.task_id.clone()).or_default();
+            let mut dropped = false;
+            if queue.len() >= QUEUE_CAPACITY {
+                let oldest = usize::from(queue.front().is_some_and(|w| w.open));
+                dropped = queue.remove(oldest).is_some();
+                b.dropped += u64::from(dropped);
+            }
+            queue.push_back(Waiting {
+                delivery,
+                attempts: 0,
+                not_before_ns: now_ns,
+                open: false,
+            });
+            dropped
+        })
+    }
+
+    /// How many notifications were dropped from full queues.
+    #[must_use]
+    pub fn dropped(&self) -> u64 {
+        self.with(|b| b.dropped)
+    }
+
+    /// How many notifications `task_id`'s queue holds.
+    #[must_use]
+    pub fn depth(&self, task_id: &str) -> usize {
+        self.with(|b| b.queues.get(task_id).map_or(0, VecDeque::len))
+    }
+
+    /// The deliveries to attempt now: each task's head, when its time has come and no attempt on
+    /// it is open. Each is marked open until [`Deliveries::settle`].
+    #[must_use]
+    pub fn due(&self, now_ns: u64) -> Vec<Delivery> {
+        self.with(|b| {
+            b.queues
+                .values_mut()
+                .filter_map(VecDeque::front_mut)
+                .filter(|w| !w.open && w.not_before_ns <= now_ns)
+                .map(|w| {
+                    w.open = true;
+                    w.attempts += 1;
+                    w.delivery.clone()
+                })
+                .collect()
+        })
+    }
+
+    /// THE ONE DELIVERY TO ATTEMPT NOW, for one `tick` op: of the heads whose time has come and no
+    /// attempt is open on, the one waiting longest (then the lowest task id). Marked open until
+    /// [`Deliveries::settle`]; `None` when none is due.
+    #[must_use]
+    pub fn next_due(&self, now_ns: u64) -> Option<Delivery> {
+        self.with(|b| {
+            let head = b
+                .queues
+                .values_mut()
+                .filter_map(VecDeque::front_mut)
+                .filter(|w| !w.open && w.not_before_ns <= now_ns)
+                .min_by(|x, y| {
+                    (x.not_before_ns, &x.delivery.task_id)
+                        .cmp(&(y.not_before_ns, &y.delivery.task_id))
+                })?;
+            head.open = true;
+            head.attempts += 1;
+            Some(head.delivery.clone())
+        })
+    }
+
+    /// OWE `end`'s record kind to `delivery`'s task chain. Past [`MAX_OWED`] the oldest owed is
+    /// dropped and counted ([`Deliveries::unfiled`]).
+    pub fn owe(&self, delivery: &Delivery, end: Attempted) {
+        self.with(|b| {
+            if b.owed.len() >= MAX_OWED {
+                b.owed.pop_front();
+                b.unfiled += 1;
+            }
+            b.owed.push_back(Owed {
+                caller: delivery.caller.clone(),
+                task_id: delivery.task_id.clone(),
+                kind: end.record_kind(),
+            });
+        });
+    }
+
+    /// TAKE what `caller`'s chains are owed, oldest first: at most one per task (each is one
+    /// change of that task's chain, and one piece makes one change of a chain), and none for
+    /// `except` (the task the piece itself changes). The rest stay owed.
+    #[must_use]
+    pub fn take_owed(&self, caller: &str, except: Option<&str>) -> Vec<Owed> {
+        self.with(|b| {
+            let mut taken: Vec<Owed> = Vec::new();
+            let mut kept = VecDeque::with_capacity(b.owed.len());
+            for owed in b.owed.drain(..) {
+                let mine = owed.caller == caller
+                    && except != Some(owed.task_id.as_str())
+                    && !taken.iter().any(|t| t.task_id == owed.task_id);
+                if mine {
+                    taken.push(owed);
+                } else {
+                    kept.push_back(owed);
+                }
+            }
+            b.owed = kept;
+            taken
+        })
+    }
+
+    /// How many owed outcomes were dropped unfiled from a full book.
+    #[must_use]
+    pub fn unfiled(&self) -> u64 {
+        self.with(|b| b.unfiled)
+    }
+
+    /// Settle the open attempt on `task_id`'s head: done, or back in the queue for its next
+    /// attempt (`jitter` is a random byte, [`jittered_ms`]). A terminal task's last delivery
+    /// forgets its credential.
+    pub fn settle(
+        &self,
+        task_id: &str,
+        end: Attempted,
+        now_ns: u64,
+        jitter: u8,
+    ) -> DeliverySettled {
+        self.with(|b| {
+            let Some(queue) = b.queues.get_mut(task_id) else {
+                return DeliverySettled::Unknown;
+            };
+            let Some(head) = queue.front_mut().filter(|w| w.open) else {
+                return DeliverySettled::Unknown;
+            };
+            head.open = false;
+            if end.retryable() && head.attempts < MAX_ATTEMPTS {
+                let wait = jittered_ms(RETRY_DELAYS_MS[(head.attempts - 1) as usize], jitter);
+                head.not_before_ns = now_ns.saturating_add(wait.saturating_mul(1_000_000));
+                return DeliverySettled::Retry(head.not_before_ns);
+            }
+            let terminal = queue.pop_front().is_some_and(|w| w.delivery.terminal);
+            if queue.is_empty() {
+                b.queues.remove(task_id);
+            }
+            if terminal {
+                b.auths.remove(task_id);
+            }
+            DeliverySettled::Done(end.record_kind())
+        })
+    }
+
+    /// When the lifecycle tick is next wanted: the earliest head no attempt is open on; `0` when
+    /// none waits.
+    #[must_use]
+    pub fn next_tick_ns(&self) -> u64 {
+        self.with(|b| {
+            b.queues
+                .values()
+                .filter_map(VecDeque::front)
+                .filter(|w| !w.open)
+                .map(|w| w.not_before_ns.max(1))
+                .min()
+                .unwrap_or(0)
+        })
+    }
+
+    /// predev's anti-rebinding rule, before a dial: `fresh` (the addresses the destination `url`
+    /// resolves to now, each already judged) must share at least one address with those an earlier
+    /// delivery to `url` reached. `None` = nothing reached before (a first delivery, a restart, or a
+    /// dropped entry): the judge alone decides. `Some(Attempted::Moved)` = refused, nothing goes out.
+    #[must_use]
+    pub fn rebound(&self, url: &str, fresh: &[String]) -> Option<Attempted> {
+        self.with(|b| {
+            let before = b.reached.get(url)?;
+            (!fresh.iter().any(|a| before.contains(a))).then_some(Attempted::Moved)
+        })
+    }
+
+    /// Record the addresses a delivery to `url` reached (after its request went out), replacing the
+    /// earlier set, so the next delivery must overlap them. Bounded by [`MAX_REACHED`] per
+    /// destination and [`MAX_DESTINATIONS`] in all.
+    pub fn reached(&self, url: &str, addrs: &[String]) {
+        if addrs.is_empty() {
+            return;
+        }
+        self.with(|b| {
+            if !b.reached.contains_key(url) && b.reached.len() >= MAX_DESTINATIONS {
+                b.reached.pop_first();
+            }
+            let kept = addrs.iter().take(MAX_REACHED).cloned().collect();
+            b.reached.insert(url.to_string(), kept);
+        });
+    }
+
+    /// Hold the credential `task_id`'s receiver wants presented; `None` drops the one held (a
+    /// replaced config that names none has withdrawn it).
+    pub fn remember_auth(&self, task_id: &str, auth: Option<DeliveryAuth>) {
+        self.with(|b| match auth {
+            Some(a) => b.auths.insert(task_id.to_string(), a),
+            None => b.auths.remove(task_id),
+        });
+    }
+
+    /// The request for `delivery`, its credential attached. Call it only once the destination
+    /// judge has passed: no refused destination ever sees the credential.
+    #[must_use]
+    pub fn request(&self, delivery: &Delivery) -> Request {
+        let auth = self.with(|b| b.auths.get(&delivery.task_id).cloned());
+        request(delivery, auth.as_ref())
+    }
+}
+
+/// The POST one delivery sends: the callback's path and query as the target, the content type,
+/// the caller's credential when it gave one, and the body.
+#[must_use]
+pub fn request(delivery: &Delivery, auth: Option<&DeliveryAuth>) -> Request {
+    let target = url::Url::parse(&delivery.url).map_or_else(
+        |_| "/".to_string(),
+        |u| match u.query() {
+            Some(q) => format!("{}?{q}", u.path()),
+            None => u.path().to_string(),
+        },
+    );
+    let mut fields = vec![(
+        CONTENT_TYPE.0.as_bytes().to_vec(),
+        CONTENT_TYPE.1.as_bytes().to_vec(),
+    )];
+    if let Some(auth) = auth {
+        fields.push((
+            AUTHORIZATION.as_bytes().to_vec(),
+            auth.header_value().into_bytes(),
+        ));
+    }
+    Request {
+        method: b"POST".to_vec(),
+        target: target.into_bytes(),
+        fields,
+        body: delivery.body.clone(),
+        timeout_ms: 0,
+    }
+}
+
+/// What the host signs for `task_id`'s callback token ([`TOKEN_DOMAIN`], then the id).
+#[must_use]
+pub fn token_input(task_id: &str) -> Vec<u8> {
+    let mut input = TOKEN_DOMAIN.to_vec();
+    input.extend_from_slice(task_id.as_bytes());
+    input
+}
+
+/// The signature bytes a token carries: its first [`TOKEN_MAC_BYTES`], so the token keeps
+/// predev's wire shape (`<task-id>.` and 64 lower-case hex digits).
+pub const TOKEN_MAC_BYTES: usize = 32;
+
+/// A signature, as the lower-case hex a token carries it in (its first [`TOKEN_MAC_BYTES`]).
+#[must_use]
+pub fn hex(signature: &[u8]) -> String {
+    busbar_contract::abi::sdk::digest::lower_hex(&signature[..signature.len().min(TOKEN_MAC_BYTES)])
+}
+
+/// BUSBAR'S OWN CALLBACK TOKENS: `<task-id>.<hex signature>`, one per task, the signature the
+/// host's over [`token_input`]. A capability for that task alone. The instance remembers whose
+/// task each minted token names (a task's records are keyed under its caller), so a restart refuses
+/// every earlier token, as 1.5.5's process-local secret did.
+#[derive(Debug, Default)]
+pub struct Tokens {
+    callers: Keyed<String, String>,
+}
+
+impl Tokens {
+    /// None minted.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The token for `caller`'s task `task_id` over the host's `signature` of [`token_input`];
+    /// `None` past [`MAX_TOKENS`] or for an empty id or signature.
+    #[must_use]
+    pub fn mint(&self, caller: &str, task_id: &str, signature: &[u8]) -> Option<String> {
+        if task_id.is_empty() || signature.is_empty() {
+            return None;
+        }
+        let held = self.callers.with_all(|m| {
+            if m.contains_key(task_id) {
+                return true;
+            }
+            if m.len() >= MAX_TOKENS {
+                return false;
+            }
+            m.insert(task_id.to_string(), caller.to_string());
+            true
+        });
+        held.then(|| format!("{task_id}.{}", hex(signature)))
+    }
+
+    /// The task a presented token CLAIMS, its caller, and its signature as presented: `None` for a
+    /// token this instance never minted for that task. Not yet a verdict: the claim holds only when
+    /// [`verified`] says the host's signature of [`token_input`] is the one presented.
+    #[must_use]
+    pub fn claim<'t>(&self, presented: &'t str) -> Option<(String, String, &'t str)> {
+        let (task_id, signature) = presented.rsplit_once('.')?;
+        if task_id.is_empty() || signature.is_empty() {
+            return None;
+        }
+        let caller = self.callers.get(&task_id.to_string())?;
+        Some((task_id.to_string(), caller, signature))
+    }
+
+    /// The claim an `Authorization` value (`Bearer <token>`, the scheme case-insensitive) makes
+    /// ([`Tokens::claim`]).
+    #[must_use]
+    pub fn claim_of_authorization<'t>(
+        &self,
+        authorization: &'t str,
+    ) -> Option<(String, String, &'t str)> {
+        let (scheme, token) = authorization.split_once(' ')?;
+        if !scheme.eq_ignore_ascii_case(TOKEN_SCHEME) {
+            return None;
+        }
+        self.claim(token.trim())
+    }
+
+    /// Drop `task_id`'s token (its task reached a terminal state).
+    pub fn forget(&self, task_id: &str) {
+        self.callers.remove(&task_id.to_string());
+    }
+}
+
+/// Whether `presented` is the host's `signature` of the claimed task's [`token_input`], compared in
+/// constant time.
+#[must_use]
+pub fn verified(signature: &[u8], presented: &str) -> bool {
+    busbar_contract::constant_time_eq(&hex(signature), presented)
+}
+
+/// THE PUSH-VOLUME BOUND (1.5.5's `PushLimiter`, exactly): a fixed window of
+/// [`PUSH_RATE_WINDOW_SECS`], [`PUSH_RATE_LIMIT`] pushes per task in it, judged against the newest
+/// window ever seen (a wall clock that steps back cannot reopen a spent budget), every window older
+/// than the one judged dropped on each check.
+#[derive(Debug, Default)]
+pub struct PushLimiter {
+    latest: Keyed<(), u64>,
+    windows: Keyed<String, (u64, u32)>,
+}
+
+impl PushLimiter {
+    /// No push spent.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Spend one push from `task_id`'s budget at `now` (unix seconds): `false` once the window's
+    /// budget is spent.
+    pub fn admit(&self, task_id: &str, now: u64) -> bool {
+        let arrived_in = now - (now % PUSH_RATE_WINDOW_SECS);
+        let window = self.latest.with_all(|m| {
+            let w = arrived_in.max(m.get(&()).copied().unwrap_or(0));
+            m.insert((), w);
+            w
+        });
+        self.windows.with_all(|m| {
+            m.retain(|_, (w, _)| *w >= window);
+            let entry = m.entry(task_id.to_string()).or_insert((window, 0));
+            if entry.1 >= PUSH_RATE_LIMIT {
+                return false;
+            }
+            entry.1 += 1;
+            true
+        })
+    }
+}
+
+#[cfg(test)]
+#[path = "tests/push.rs"]
+mod tests;

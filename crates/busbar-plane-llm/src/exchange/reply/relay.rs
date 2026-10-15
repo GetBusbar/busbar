@@ -118,6 +118,7 @@ pub struct Relay {
     far_is_stream: bool,
     handler: &'static dyn OperationHandler,
     meter: bool,
+    translate_cap: usize,
     translate: Option<Box<dyn StreamTranslator>>,
     json_array: Option<Box<dyn ArrayStreamFramer>>,
     nonstream_buf: Vec<u8>,
@@ -160,6 +161,9 @@ pub struct RelayCtx<'a> {
     /// Read the usage: keep the bounded copy of a same-dialect whole body and read the usage at
     /// the end. Off, the bytes relay and nothing is read for usage.
     pub meter: bool,
+    /// The TRANSLATION CAP the plane enforces, the one its settings carry: the bound on the
+    /// same-dialect copy kept for usage, and on what the translator's writer accumulates.
+    pub translate_cap: usize,
 }
 
 /// A relay's translator and JSON-array framer, before the relay is opened over them.
@@ -186,6 +190,7 @@ pub fn parts_on(ctx: &RelayCtx<'_>, clock: fn() -> std::time::Instant) -> Parts 
         ctx.egress,
         ctx.far_is_stream,
         clock,
+        ctx.translate_cap,
     )
     .map(|mut t| {
         t.set_client_include_usage(ctx.client_include_usage);
@@ -220,18 +225,21 @@ impl Relay {
             ctx.far_is_stream,
             ctx.handler,
             ctx.meter,
+            ctx.translate_cap,
             translate,
             json_array,
         )
     }
 
-    /// OPEN the relay over a translator and a framer already made (see [`parts`]).
+    /// OPEN the relay over a translator and a framer already made (see [`parts`]), its same-dialect
+    /// usage copy bounded at the plane's `translate_cap`.
     #[must_use]
     pub fn from_parts(
         ingress: &str,
         far_is_stream: bool,
         handler: &'static dyn OperationHandler,
         meter: bool,
+        translate_cap: usize,
         translate: Option<Box<dyn StreamTranslator>>,
         json_array: Option<Box<dyn ArrayStreamFramer>>,
     ) -> Self {
@@ -252,6 +260,7 @@ impl Relay {
             far_is_stream,
             handler,
             meter,
+            translate_cap,
             translate,
             json_array,
             nonstream_buf: Vec::new(),
@@ -300,7 +309,7 @@ impl Relay {
         }
         let mut truncated_now = false;
         if !self.far_is_stream && self.handler.taps_usage() && self.meter {
-            let cap = crate::codec::wire_shim::max_translated_body_bytes();
+            let cap = self.translate_cap;
             self.nonstream_buf.extend_from_slice(chunk);
             if self.nonstream_buf.len() > cap {
                 let excess = self.nonstream_buf.len() - cap;

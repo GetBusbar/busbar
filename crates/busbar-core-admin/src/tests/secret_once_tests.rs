@@ -11,9 +11,8 @@
 //! named seam, `Kernel::admin_token`, exactly as the composition root lends it to the unit; this
 //! file spells no token constructor and never the seal.
 //!
-//! Two types carry the name: the capability (`busbar_contract::caps::SecretOnce`, bound to a unit
-//! and a target) and the ABI destination's placeholder (`busbar_contract::SecretOnce`). Each is
-//! named by its full path below so a reader never has to guess which one a test holds.
+//! One type carries the name, `busbar_contract::SecretOnce` (#73, X-1802): the capability
+//! module's second copy folded into it, so the placeholder these tests read is the one a verb mints.
 
 use busbar_contract::caps::UnitKey;
 use busbar_kernel::teller::Kernel;
@@ -21,7 +20,7 @@ use busbar_kernel::teller::Kernel;
 #[test]
 fn the_one_shot_secret_capability_never_prints_what_it_carries() {
     let kernel = Kernel::new();
-    let once = busbar_contract::caps::SecretOnce::mint(
+    let once = busbar_contract::SecretOnce::mint(
         &kernel.admin_token(),
         0xdead_beef_dead_beef_dead_beef_dead_beef,
         UnitKey::new(1),
@@ -42,7 +41,7 @@ fn a_one_shot_secret_is_bound_to_one_unit_and_one_target() {
     // The mint is reversed unless the nonce appears exactly once at exactly this target, so both
     // facts have to be readable — and the nonce, which IS the secret, must not be.
     let kernel = Kernel::new();
-    let once = busbar_contract::caps::SecretOnce::mint(
+    let once = busbar_contract::SecretOnce::mint(
         &kernel.admin_token(),
         42,
         UnitKey::new(6),
@@ -55,7 +54,7 @@ fn a_one_shot_secret_is_bound_to_one_unit_and_one_target() {
 
     // A second placeholder at a different target is a different capability, and the accessor is what
     // the substitution site reads to tell them apart.
-    let elsewhere = busbar_contract::caps::SecretOnce::mint(
+    let elsewhere = busbar_contract::SecretOnce::mint(
         &kernel.admin_token(),
         42,
         UnitKey::new(6),
@@ -73,7 +72,12 @@ fn a_one_time_placeholder_does_not_print_its_nonce() {
     // the types the contract implements its sealed `KernelSeal` for (#65).
     let kernel = Kernel::new();
     let nonce = 0x0dd1_c0ff_ee15_dead_beef_cafe_f00d_1234_u128;
-    let once = busbar_contract::SecretOnce::mint(&kernel.admin_token(), nonce, "body.secret");
+    let once = busbar_contract::SecretOnce::mint(
+        &kernel.admin_token(),
+        nonce,
+        UnitKey::new(3),
+        "body.secret",
+    );
     let printed = format!("{once:?}");
     assert!(
         !printed.contains(&nonce.to_string()) && !printed.contains(&format!("{nonce:x}")),

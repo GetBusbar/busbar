@@ -5,14 +5,31 @@
 //! Neither `Clone` nor `Copy`: the loop mints a fresh one per step call and drops it when the call
 //! returns, and it is handed to a unit BY REFERENCE, never by value, so a unit never owns one.
 //!
-//! # The one hole, named out loud
+//! # How the kernel, and only the kernel, holds a seal (#65)
 //!
 //! A token's real constructor is private to this crate, which is what makes the compile-fail
-//! fixtures below genuine. But the kernel is a DIFFERENT crate, and Rust has no way to say "this
-//! public function may be called by exactly one other crate", so there is exactly one hole:
-//! [`KernelSeal`]. Every mint takes one by reference, and the only way to obtain a `KernelSeal` is
-//! a hidden constructor CI's symbol scan confines to the kernel's own source. See the crate-level
-//! table: the SHAPE of every token rule is compile-time, WHO may hold a seal is a lint.
+//! fixtures below genuine. Every mint takes a [`KernelSeal`] by reference, and the seal's own
+//! constructor is private to this crate too. The kernel is a DIFFERENT crate, and Rust has no way
+//! to say "this public function may be called by exactly one other crate", so the seal does not
+//! cross by a public constructor. It crosses by a SYMBOL only the kernel defines:
+//! [`KernelSeal::deliver`] builds a seal and hands it to `__busbar_kernel_root`, which
+//! `busbar-kernel` alone defines. The kernel wraps the seal in a type private to the kernel and
+//! hands it back opaque; only kernel code can open it. A caller outside the kernel that calls
+//! `deliver` gets a box it cannot open, and a second crate that defines the symbol to catch the
+//! seal fails to link (the kernel's definition is always linked: the kernel's own minter lives
+//! beside it). A release build has no other way to a seal. The fixture below is data,
+//! `fixtures/no_release_seal.md` (like `lint_rules.txt` beside it): the seal scans count every
+//! spelling of the minter in Rust source outside the kernel as a mint, and this one is the proof
+//! that it does NOT compile:
+//!
+#![cfg_attr(
+    not(feature = "test-seal"),
+    doc = include_str!("fixtures/no_release_seal.md")
+)]
+//!
+//! `acquire_for_kernel` survives ONLY for tests (`cfg(test)` or the dev-only `test-seal` feature,
+//! which `tests/test_seal_is_dev_only.rs` keeps off every non-dev edge), so the test suites that
+//! mint tokens to show a step's shape keep doing so, and nothing that ships can.
 //!
 //! # The unified vocabulary (#73)
 //!
@@ -47,9 +64,10 @@
 //! ```
 //!
 //! With the seal, every one of those mints is a plain call — the fixtures above fail for the one
-//! reason they are meant to:
+//! reason they are meant to (the test seal stands in for the kernel's here):
 //!
-//! ```
+#![cfg_attr(feature = "test-seal", doc = "```")]
+#![cfg_attr(not(feature = "test-seal"), doc = "```ignore")]
 //! use busbar_contract::caps::{Admittance, Dial, Grant, KernelSeal, Recover};
 //! let seal = KernelSeal::acquire_for_kernel();
 //! let _admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);
@@ -78,34 +96,46 @@ use std::marker::PhantomData;
 pub struct KernelSeal(());
 
 impl KernelSeal {
-    /// Obtain the seal. **Kernel only**, and enforced by CI's symbol scan rather than by the type
-    /// system — see the lint hooks module for the exact list.
+    /// A seal for TESTS. **Absent from every release build:** it exists only under `cfg(test)`
+    /// or the dev-only `test-seal` feature, and the kernel's production path never names it (it
+    /// takes its seal through [`KernelSeal::deliver`] and the kernel's own symbol, #65).
     ///
-    /// **This is the one remaining cross-crate hole, and it is `pub` on purpose (#65).** Rust has
-    /// no way to say "callable by exactly one other crate", and the sole production caller —
-    /// `crates/busbar-kernel/src/teller.rs` — is in a DIFFERENT crate, so `pub(crate)` would lock
-    /// out the one caller that is supposed to have it. `#[doc(hidden)]` hides this from rustdoc; it
-    /// restricts nobody. Anything that can name `busbar-contract` can still call this.
-    ///
-    /// What CHANGED in 1.6.0 is that the scan guarding it is now load-bearing instead of
-    /// decorative. [`KernelSeal`](crate::plugin::KernelSeal) — the TRAIT the kernel-built views
-    /// take — is now SEALED, and it has exactly three implementors, all at the foot of this file: a
-    /// real [`Pass`], a real [`Grant`], and `plugin::TestKernelSeal`. The third exists only when the
+    /// The seal TRAIT the kernel-built views take, [`KernelSeal`](crate::plugin::KernelSeal), is
+    /// SEALED, and it has exactly three implementors, all at the foot of this file: a real
+    /// [`Pass`], a real [`Grant`], and `plugin::TestKernelSeal`. The third exists only when the
     /// dev-only `test-seal` feature is on — the contract's one named dev-only exemption (#65, item
     /// 112), declared in the plugin module so a plane's own harness can name it, and absent from
     /// every release build because no non-dev dependency edge enables the feature. So in a release
-    /// build the only way to obtain a `&dyn KernelSeal` is to hold a real `Pass` or `Grant`, and the
-    /// only way to mint one of those is this function. Before the seal, a forger skipped this symbol
-    /// entirely by implementing the trait on a type of its own, which no amount of scanning for THIS
-    /// name could ever see. Every release-build path to a kernel-built view now runs through the one
-    /// symbol CI watches.
-    ///
-    /// Closing this hole in the type system means moving the token types into the kernel crate, or
-    /// gating them on a feature the whole graph would unify anyway. Both are owner rulings, not
-    /// changes this function's doc comment gets to make.
+    /// build the only way to obtain a `&dyn KernelSeal` is to hold a real `Pass` or `Grant`, the
+    /// only way to mint one of those is a seal, and the only seal a release build has is the one
+    /// the kernel opens out of its own symbol.
     #[doc(hidden)]
+    #[cfg(any(test, feature = "test-seal"))]
     pub fn acquire_for_kernel() -> Self {
         KernelSeal(())
+    }
+
+    /// Hand a seal to the kernel, and to nothing else (#65; ARCHITECT ruling 2026-10-14).
+    ///
+    /// The seal goes to `__busbar_kernel_root`, a symbol only `busbar-kernel` defines. The kernel
+    /// wraps it in a type private to the kernel and hands it back boxed as `dyn Any`: the kernel
+    /// downcasts it to that type and takes the seal out; any other caller holds a box it cannot
+    /// open (it cannot name the type to downcast to). A crate that defined the symbol itself to
+    /// catch the seal would be a second definition of a symbol the kernel always links: a link
+    /// error, never a quiet interception.
+    ///
+    /// `#[inline]` on purpose: the call is instantiated only in the crate that calls it, so an
+    /// image with no kernel in it (a dropped plugin, this crate's own tests) never references the
+    /// symbol.
+    ///
+    /// The symbol is declared, and the one `unsafe` call made, in [`crate::abi`]: the contract's
+    /// unsafe lives in that module and nowhere else (the unsafe policy in `lib.rs`), so this
+    /// module stays `forbid(unsafe_code)`.
+    #[doc(hidden)]
+    #[inline]
+    #[must_use]
+    pub fn deliver() -> Box<dyn std::any::Any + Send + Sync> {
+        crate::abi::kernel_root(KernelSeal(()))
     }
 }
 

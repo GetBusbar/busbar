@@ -42,7 +42,8 @@
 //!
 //! THE REPLAY RULE (`abi::sdk::conn`): the host never runs a service twice. A ticketed service's
 //! answer is kept under its completion handle, and a re-issued handle answers it again without a
-//! second run; the worker forgets a ticket's answers when it recycles the ticket, a driver
+//! second run (a `READ_REPLY`'s with its piece and its bytes, written again into what the replay
+//! lends); the worker forgets a ticket's answers when it recycles the ticket, a driver
 //! ticket's when its next tick starts, and any other ticket's when a new op (not a short answer's
 //! re-call) starts on it ([`forget`]).
 
@@ -56,9 +57,10 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use busbar_contract::abi::host::conn::connector::{
     service, ConnectorSlots, EstablishIn, FactsIn, IdentityIn, IoIn, ProcessIdentity, ReplyIn,
-    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn, REPLY_ACK, REPLY_BODY,
-    REPLY_END, REPLY_HEAD, REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE,
-    UPGRADE_VERIFY_OFF, WITHIN_SEPARATOR,
+    ReplyPiece, RequestIn, RequestPiece, StreamFacts, StreamIn, UpgradeIn,
+    CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE, REPLY_ACK, REPLY_BODY, REPLY_END, REPLY_HEAD,
+    REQUEST_BODY, REQUEST_END, REQUEST_HEAD, SERVICES, UPGRADE_IN_V1_SIZE, UPGRADE_VERIFY_OFF,
+    WITHIN_SEPARATOR,
 };
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
@@ -69,8 +71,6 @@ use busbar_contract::conn::{
     ConnError, ConnId, DeclaredConns, InstanceId, NeedId, OpenDesc, PieceKind,
 };
 use std::future::Future as _;
-
-use super::ticket::InstanceWake;
 
 /// The table an instance with a declared need is handed.
 pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
@@ -137,7 +137,9 @@ impl Answer {
         }
     }
 
-    /// A connection table's refusal, as the plugin reads it.
+    /// A connection table's refusal, as the plugin reads it. An unavailable credential is a refusal
+    /// that names its own cause ([`CAUSE_CREDENTIAL_UNAVAILABLE`] in `value`), so the plugin can
+    /// tell it from the target's, the egress rules' or the far end's.
     const fn of(e: ConnError) -> Self {
         let outcome = match e {
             ConnError::Pending => Outcome::Pending,
@@ -145,9 +147,17 @@ impl Answer {
             ConnError::NotOwner
             | ConnError::UndeclaredNeed
             | ConnError::Refused
-            | ConnError::Unarmed => Outcome::Refused,
+            | ConnError::Unarmed
+            | ConnError::CredentialUnavailable => Outcome::Refused,
         };
-        Self::with(outcome, e.text())
+        let value = match e {
+            ConnError::CredentialUnavailable => CAUSE_CREDENTIAL_UNAVAILABLE,
+            _ => CAUSE_NONE,
+        };
+        Self {
+            value,
+            ..Self::with(outcome, e.text())
+        }
     }
 
     /// A connection table's refusal of `conn`, naming why the connection failed where the table
@@ -199,12 +209,7 @@ fn interned(text: &str) -> &'static str {
 
 /// The instance a context names, and its connection table.
 pub(crate) fn armed(ctx: HostCtx) -> Option<&'static (InstanceId, Arc<dyn DeclaredConns>)> {
-    if ctx.ptr.is_null() {
-        return None;
-    }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
-    let wake: &'static InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
-    wake.conn.get()
+    super::handle::resolve(ctx)?.conn.get()
 }
 
 /// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and covers its
@@ -231,6 +236,10 @@ fn slot(
             // A never-pend service that writes the caller's memory is run afresh on a replay: a
             // kept answer would say the bytes were written into memory this call never touched.
             Some((id, table)) if service == service::IDENTITY => body(*id, table, head),
+            Some((id, table)) if service == service::READ_REPLY => {
+                replay_read(*id, head.handle, input);
+                kept(*id, head.handle, || body(*id, table, head))
+            }
             Some((id, table)) => kept(*id, head.handle, || body(*id, table, head)),
             None => Answer::of(ConnError::Unarmed),
         }
@@ -543,20 +552,18 @@ extern "C" fn upgrade_secure(
 /// The first unverified handshake an instance's connection ran (the operator's opt-in, ARCHITECT
 /// ruling 2026-10-03 on Q-L16-4) is logged at WARN, naming the instance: once per instance.
 fn warn_unverified(ctx: HostCtx) {
-    static WARNED: OnceLock<Mutex<std::collections::HashSet<usize>>> = OnceLock::new();
-    if ctx.ptr.is_null() {
+    static WARNED: OnceLock<Mutex<std::collections::HashSet<u64>>> = OnceLock::new();
+    let Some(wake) = super::handle::resolve(ctx) else {
         return;
-    }
+    };
     let first = WARNED
         .get_or_init(Mutex::default)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(ctx.ptr as usize);
+        .insert(ctx.handle);
     if !first {
         return;
     }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
-    let wake: &InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
     let instance = wake
         .caller
         .get()
@@ -675,12 +682,55 @@ fn kept(id: InstanceId, h: CompletionHandle, run: impl FnOnce() -> Answer) -> An
     a
 }
 
+/// Every ticketed `READ_REPLY`'s piece and the bytes it wrote, by instance and ticket, then by the
+/// handle's issue order, kept beside its answer: the read wrote the caller's memory, so its replay
+/// writes them again ([`replay_read`]), as a replayed `IDENTITY` does. A short answer's re-call
+/// starts the op over with fresh buffers, and its kept reads are the far end's whole reply.
+type KeptReads = HashMap<(InstanceId, Ticket), HashMap<u32, (ReplyPiece, Box<[u8]>)>>;
+
+fn kept_reads() -> MutexGuard<'static, KeptReads> {
+    static KEPT: OnceLock<Mutex<KeptReads>> = OnceLock::new();
+    KEPT.get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Keep what a ticketed read wrote: its piece and its bytes.
+fn keep_read(id: InstanceId, h: CompletionHandle, piece: ReplyPiece, bytes: &[u8]) {
+    if !h.ticket.is_none() {
+        kept_reads()
+            .entry((id, h.ticket))
+            .or_default()
+            .insert(h.seq, (piece, bytes.into()));
+    }
+}
+
+/// A replayed read: what it wrote, written again into the piece slot and the buffer the replay's
+/// `in` lends (as much of the bytes as the buffer holds).
+fn replay_read(id: InstanceId, h: CompletionHandle, input: *const c_void) {
+    let all = kept_reads();
+    let Some((piece, kept)) = all.get(&(id, h.ticket)).and_then(|r| r.get(&h.seq)) else {
+        return;
+    };
+    // SAFETY: `slot` checked the head covers a `ReplyIn`.
+    let i = unsafe { input.cast::<ReplyIn>().read_unaligned() };
+    // SAFETY: the caller's buffer, lent for this call only.
+    let (false, Some(buf)) = (i.piece.is_null(), unsafe { bytes(i.buf, i.len) }) else {
+        return;
+    };
+    let n = kept.len().min(buf.len());
+    buf[..n].copy_from_slice(&kept[..n]);
+    // SAFETY: the caller's descriptor slot, checked non-NULL.
+    unsafe { i.piece.write_unaligned(*piece) };
+}
+
 /// Forget every answer instance `id` kept under `ticket` (its worker recycled it, a driver
 /// ticket's tick started, or a new op started on it); how many there were. Keyed by the instance as well as the ticket:
 /// tickets are minted per dispatcher, so another dispatcher's instance may hold an identical
 /// ticket, and its kept answers are never its neighbour's to drop (dropping them would make it run
 /// a stored establish or write a second time).
 pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> usize {
+    kept_reads().remove(&(id, ticket));
     kept_answers()
         .remove(&(id, ticket))
         .map_or(0, |issued| issued.len())
@@ -689,8 +739,11 @@ pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> usize {
 /// Forget every answer the instances `ids` kept under worker `worker`'s tickets: it was replaced.
 /// Another dispatcher's worker of the same index is not touched.
 pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
-    kept_answers()
-        .retain(|(id, t), _| !(ids.contains(id) && super::ticket::decode(t.slot).0 == worker));
+    let gone = |(id, t): &(InstanceId, Ticket)| {
+        ids.contains(id) && super::ticket::decode(t.slot).0 == worker
+    };
+    kept_reads().retain(|k, _| !gone(k));
+    kept_answers().retain(|k, _| !gone(k));
 }
 
 /// FORGET EVERYTHING instance `id` holds on the connector's process-wide maps — its held streams
@@ -702,6 +755,7 @@ pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
 pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
     held_facts().retain(|(i, _), _| *i != id);
     kept_answers().retain(|(i, _), _| *i != id);
+    kept_reads().retain(|(i, _), _| *i != id);
     let gone: Vec<Stream> = {
         let mut all = held_conns();
         let keys: Vec<(InstanceId, u64)> = all.keys().filter(|(i, _)| *i == id).copied().collect();
@@ -751,7 +805,7 @@ enum Conn {
     /// Its open was refused or failed: the reply's failed ack.
     Failed(ConnError),
     /// The request is whole and its member's auth call is in flight: it opens when the fields
-    /// answer (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE: the open calls the member binding's fields).
+    /// answer (the open calls the member binding's fields).
     Authing(Box<Authing>),
     /// One call has taken the stream out to open it, or to make or poll its member's auth call,
     /// OUTSIDE the connector's lock (THE DESIGN §11.13 M1: no plugin code runs under a host lock;
@@ -1008,25 +1062,54 @@ extern "C" fn write_request(
                     // (`abi::auth::SCOPE_REQUEST_FIELD`): out of the request before anything is
                     // encoded, lent to the member's auth call. No wire carries it.
                     let mut scope = None;
+                    // THE PLUGIN'S WAIVER of the member's binding for this request
+                    // (`abi::auth::NO_MEMBER_AUTH_FIELD`): the host's own field too, taken out here,
+                    // and the request is opened with no member auth.
+                    let mut waived = false;
                     h.fields.retain(|(name, value)| {
                         if busbar_contract::abi::auth::is_scope_field(name.as_bytes()) {
                             scope.get_or_insert_with(|| value.clone());
+                            false
+                        } else if busbar_contract::abi::auth::is_no_member_auth_field(
+                            name.as_bytes(),
+                        ) {
+                            waived = true;
                             false
                         } else {
                             true
                         }
                     });
                     let at = (target.as_str(), within.as_slice(), member.as_str());
-                    // THE MEMBER'S BINDING (ARCHITECT round 5 Q-L3B-DOOR-EXCHANGE): a request to a
-                    // member the connector holds a binding for carries that binding's auth fields,
-                    // as the member's relayed calls do. The request is handed over whole; what
-                    // became of it is the reply's to say.
-                    let conn = match table.auth_of(id, need, &target) {
+                    // THE MEMBER'S BINDING: a request to a member the connector holds a binding
+                    // for carries that binding's auth fields, as the member's relayed calls do. The
+                    // connector keys a binding by (instance, need, member, target origin); a
+                    // request naming no member gets no binding. It is the binding of the member the
+                    // stream NAMES (`EstablishIn::member`), never of another registration at the
+                    // same origin. The request is handed over whole; what became of it is the
+                    // reply's to say.
+                    let bound = if waived {
+                        None
+                    } else {
+                        table.auth_of(id, need, &member, &target)
+                    };
+                    // A refreshed binding answers this request's handle with a load (never a
+                    // resolution inside this crossing); one whose credential its last refresh
+                    // found unavailable refuses the request under its own cause, nothing
+                    // presented.
+                    let handle = bound.as_ref().and_then(|b| match &b.per_request {
+                        Some(per) => per.handle_now(),
+                        None => Some(b.handle),
+                    });
+                    let conn = match bound {
                         None => open_with(table, id, need, at, &h, &body, &[]),
+                        Some(_) if handle.is_none() => {
+                            Conn::Failed(ConnError::CredentialUnavailable)
+                        }
                         Some(binding) => match auth_request(&binding, &h, &target, &body, scope) {
                             None => Conn::Failed(ConnError::Refused),
                             Some(request) => {
-                                match binding.auth.fields_now(binding.handle, &request) {
+                                let handle = handle.unwrap_or(binding.handle);
+                                match binding.auth.fields_now(handle, &request) {
                                     Some(Fields::Ready(auth)) => {
                                         open_with(table, id, need, at, &h, &body, &auth)
                                     }
@@ -1034,7 +1117,7 @@ extern "C" fn write_request(
                                         Conn::Failed(ConnError::Refused)
                                     }
                                     None => Conn::Authing(Box::new(Authing {
-                                        fielding: binding.auth.fields(binding.handle, request, 0),
+                                        fielding: binding.auth.fields(handle, request, 0),
                                         need,
                                         target,
                                         within,
@@ -1186,11 +1269,10 @@ fn ticket_waker(ctx: HostCtx, ticket: Ticket) -> Option<std::task::Waker> {
             }
         }
     }
-    if ctx.ptr.is_null() || ticket.is_none() {
+    if ticket.is_none() {
         return None;
     }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
-    let wake: &'static InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    let wake = super::handle::resolve(ctx)?;
     let route = wake.route.get()?.clone();
     Some(std::task::Waker::from(Arc::new(TicketWaker {
         route,
@@ -1220,6 +1302,10 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             if let Some(p) = piece {
                 // SAFETY: the caller's descriptor slot, checked non-NULL.
                 unsafe { i.piece.write_unaligned(p) };
+                if answer.outcome != Outcome::Pending {
+                    let n = usize::try_from(answer.len).map_or(buf.len(), |n| n.min(buf.len()));
+                    keep_read(id, head.handle, p, &buf[..n]);
+                }
             }
             answer
         },

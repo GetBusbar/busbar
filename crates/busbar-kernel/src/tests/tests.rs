@@ -29,9 +29,9 @@ use crate::appbuild::{
 #[allow(unused_imports)]
 use crate::preflight::{
     build_secret_resolver, is_real_auth_plugin_ref, is_real_identity_provider_plugin_ref,
-    parse_signing_secret, plugin_fetch_downloader, plugin_fetch_downloader_with_cap,
-    resolve_admin_token, resolve_signing_key, valid_identity_provider_modules,
-    validate_secret_module, validate_secret_modules, validate_secret_refs,
+    parse_signing_secret, resolve_admin_token, resolve_signing_key,
+    valid_identity_provider_modules, validate_secret_module, validate_secret_modules,
+    validate_secret_refs,
 };
 #[allow(unused_imports)]
 use crate::router::{
@@ -2291,160 +2291,6 @@ fn is_real_auth_plugin_ref_exempts_keys_always_and_test_groups_module_only_in_te
     assert!(is_real_auth_plugin_ref("test-idp-double", false));
 }
 
-/// `plugins.fetch` (resource/DoS finding): a mistyped or compromised fetch URL serving an
-/// oversized body must be rejected under a size cap, never buffered whole into memory via
-/// `resp.bytes()`. Drives the REAL downloader (`plugin_fetch_downloader_with_cap`, which
-/// `plugin_fetch_downloader` pins to `config::DEFAULT_PLUGIN_FETCH_MAX_BYTES` in production)
-/// against a local server that serves a body larger than a small test cap, from BOTH an honest
-/// `Content-Length` (the fast pre-check) and a chunked/no-Content-Length transfer (the streamed
-/// cap, which must catch a body a lying/absent header would otherwise let through).
-#[tokio::test]
-async fn plugin_fetch_downloader_rejects_an_oversized_body() {
-    // NO "let the server start" SLEEP in any of the three legs below (nor in the redirect test that
-    // follows): `TcpListener::bind` already listens, so the kernel queues the client's SYN in the
-    // accept backlog whether or not the spawned serve task has reached its first `accept()` yet. A
-    // wall-clock pause there synchronises nothing — it is a fixed tax on every run, and a bound that
-    // a loaded machine can outlast.
-    const CAP: usize = 64;
-    let oversized = vec![b'x'; CAP * 4];
-
-    // (a) Content-Length present and honest: rejected before any streamed read.
-    {
-        let body = oversized.clone();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let router = Router::new().route(
-            "/big",
-            axum::routing::get(move || async move { axum::body::Bytes::from(body) }),
-        );
-        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-
-        let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
-        let url = format!("http://{addr}/big");
-        let result = tokio::task::spawn_blocking(move || downloader(&url))
-            .await
-            .unwrap();
-        server.abort();
-
-        let err = result.expect_err("an over-cap plugins.fetch download must be a clear error");
-        assert!(
-            err.contains("cap"),
-            "expected an error naming the size cap, got: {err}"
-        );
-    }
-
-    // (b) No Content-Length (axum's `Body::from_stream`, so the header is omitted): the streamed
-    // cap in `read_capped` must still catch it — the Content-Length pre-check is a fast path, not
-    // the only defense.
-    {
-        let body = oversized.clone();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let router = Router::new().route(
-            "/big-streamed",
-            axum::routing::get(move || async move {
-                let chunks: Vec<Result<Vec<u8>, std::io::Error>> =
-                    body.chunks(8).map(|c| Ok(c.to_vec())).collect();
-                let stream = futures::stream::iter(chunks);
-                axum::body::Body::from_stream(stream)
-            }),
-        );
-        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-
-        let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
-        let url = format!("http://{addr}/big-streamed");
-        let result = tokio::task::spawn_blocking(move || downloader(&url))
-            .await
-            .unwrap();
-        server.abort();
-
-        let err = result.expect_err(
-            "an over-cap plugins.fetch download with no Content-Length must still be rejected",
-        );
-        assert!(
-            err.contains("cap"),
-            "expected an error naming the size cap, got: {err}"
-        );
-    }
-
-    // Sanity: a within-cap body still downloads successfully (the cap does not false-positive on
-    // legitimate small artifacts).
-    {
-        let small = vec![b'y'; CAP / 2];
-        let expected = small.clone();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let router = Router::new().route(
-            "/small",
-            axum::routing::get(move || async move { axum::body::Bytes::from(small) }),
-        );
-        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-
-        let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
-        let url = format!("http://{addr}/small");
-        let result = tokio::task::spawn_blocking(move || downloader(&url))
-            .await
-            .unwrap();
-        server.abort();
-
-        assert_eq!(
-            result.expect("a within-cap download must succeed"),
-            expected,
-            "the downloaded bytes must match the served body exactly"
-        );
-    }
-}
-
-/// `plugins.fetch` must NOT follow HTTP redirects: the SSRF guard vets only the original URL, so a
-/// 3xx `Location` from the semi-trusted registry that points at an internal/metadata-looking target
-/// must be refused rather than fetched. Drives the REAL downloader against a loopback server whose
-/// first path answers `302 Location: /metadata` and whose redirect target serves a distinctive body;
-/// the download must return an Err and must NOT contain the redirect target's bytes.
-#[tokio::test]
-async fn plugin_fetch_downloader_refuses_to_follow_a_redirect() {
-    const CAP: usize = 4096;
-    // A body only reachable via the redirect. If the downloader followed the 302, it would return
-    // these bytes instead of an error.
-    const SECRET_BODY: &[u8] = b"internal-metadata-token-should-never-be-returned";
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let router = Router::new()
-        .route(
-            "/artifact",
-            axum::routing::get(|| async {
-                (
-                    axum::http::StatusCode::FOUND,
-                    [(axum::http::header::LOCATION, "/metadata")],
-                )
-            }),
-        )
-        .route(
-            "/metadata",
-            axum::routing::get(|| async { axum::body::Bytes::from_static(SECRET_BODY) }),
-        );
-    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-
-    let downloader = plugin_fetch_downloader_with_cap(&[], CAP);
-    let url = format!("http://{addr}/artifact");
-    let result = tokio::task::spawn_blocking(move || downloader(&url))
-        .await
-        .unwrap();
-    server.abort();
-
-    let err = result.expect_err("a plugins.fetch redirect must be refused, not followed");
-    assert!(
-        !err.as_bytes()
-            .windows(SECRET_BODY.len())
-            .any(|w| w == SECRET_BODY),
-        "the redirect target's body must never appear — the redirect was followed: {err}"
-    );
-    assert!(
-        err.contains("302") || err.to_lowercase().contains("redirect"),
-        "expected an error naming the refused redirect, got: {err}"
-    );
-}
-
 /// Source review of the boot-logging matrix: the enabled/disabled boot lines and
 /// the two-part referenced-but-missing diagnosis are present in `plugins_preflight`. Guards the
 /// observability wording against silent removal.
@@ -2983,4 +2829,45 @@ pub(crate) fn frozen_str(key: &str) -> String {
     v.as_str()
         .unwrap_or_else(|| panic!("frozen `{key}` is not a string"))
         .to_string()
+}
+
+/// F25 row 634: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect.
+/// Pins: an ingress name that resolves to no protocol is answered in the kernel's OWN envelope —
+/// the status as given (503), `application/json`, the agnostic `kind` stated VERBATIM
+/// (`overloaded`, never rewritten onto a dialect's vocabulary), the message verbatim — and with no
+/// dialect's error headers (the content type is the only header).
+#[tokio::test]
+async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
+    let resp = crate::proxy::ingress_error(
+        "no-such-protocol",
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        crate::proxy::KIND_OVERLOADED,
+        "everything is on fire",
+    );
+    assert_eq!(resp.status(), axum::http::StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        resp.headers().get("x-amzn-requestid").is_none(),
+        "an unresolved ingress must not carry a dialect's error headers"
+    );
+    assert_eq!(
+        resp.headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .and_then(|h| h.to_str().ok()),
+        Some("application/json")
+    );
+    assert_eq!(
+        resp.headers().len(),
+        1,
+        "no dialect attached a header of its own: {:?}",
+        resp.headers()
+    );
+    use http_body_util::BodyExt as _;
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).expect("valid JSON envelope");
+    assert_eq!(
+        v["error"]["type"],
+        crate::proxy::KIND_OVERLOADED,
+        "the kernel's envelope states the agnostic kind verbatim"
+    );
+    assert_eq!(v["error"]["message"], "everything is on fire");
 }

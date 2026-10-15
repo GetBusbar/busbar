@@ -629,13 +629,13 @@ fn a_json_error_shaped_speech_body_is_not_served_as_audio() {
     );
 }
 
-// FIND-3 (money): whisper-1 transcription bills audio DURATION. On an openai->gemini transcription
-// hop the gemini response writer previously surfaced only `Billing::Tokens` and DROPPED a
-// `Billing::Duration`. Assert the seconds survive the hop. Fails pre-fix (usageMetadata absent).
+// A duration-billed transcription (whisper-1's `Billing::Duration`, an openai->gemini hop) reaches a
+// Gemini client with NO `usageMetadata`, exactly as 1.5.5 wrote it (v1.5.5
+// `crates/busbar/src/handlers/gemini.rs:259-265` wrote `usageMetadata` only for `Billing::Tokens`).
+// Gemini's `UsageMetadata` has no seconds member; the billed seconds are read off the egress reader,
+// never off these bytes. RED while the writer invented `usageMetadata.audioDurationSeconds`.
 #[test]
-fn openai_whisper_duration_carries_through_gemini_transcription_write() {
-    // A `Billing::Duration` is exactly what the OpenAI whisper-1 transcription reader produces from
-    // `usage.type == "duration"`; feed it to the gemini response writer and assert it is not dropped.
+fn a_duration_billed_transcription_writes_no_usage_metadata() {
     let ir = TranscriptionResp {
         text: "hi".into(),
         usage: Some(busbar_contract::billing::Billing::Duration {
@@ -645,12 +645,7 @@ fn openai_whisper_duration_carries_through_gemini_transcription_write() {
     };
     let out = super::write_transcription_response(&ir).bytes;
     let v: Value = serde_json::from_slice(&out).unwrap();
-    assert_eq!(
-        v.pointer("/usageMetadata/audioDurationSeconds")
-            .and_then(Value::as_f64),
-        Some(12.5),
-        "gemini transcription writer must carry the whisper duration through: {v}"
-    );
+    assert!(v.get("usageMetadata").is_none(), "{v}");
 }
 
 // carryable-flatten #6: the gemini transcription writer REPLACED the caller's prompt with a fixed
@@ -831,34 +826,6 @@ fn transcription_transcribe_round_trips_as_transcribe() {
     assert!(
         back.target_language.is_none(),
         "a transcribe request must not gain a target_language"
-    );
-}
-
-// L3: whisper Duration billing (an openai->gemini hop emits `audioDurationSeconds`) must read back
-// as Duration, not be flattened to Tokens{0,0}. Fails pre-fix: the reader forced Tokens.
-#[test]
-fn transcription_response_round_trips_audio_duration() {
-    let resp = crate::codec::ir::audio::TranscriptionResp {
-        text: "hello".into(),
-        usage: Some(busbar_contract::billing::Billing::Duration {
-            seconds: busbar_contract::Count::parse("12.5").expect("12.5 is an exact decimal"),
-        }),
-        ..Default::default()
-    };
-    let wb = write_transcription_response(&resp);
-    let v: Value = serde_json::from_slice(&wb.bytes).unwrap();
-    assert_eq!(
-        v.pointer("/usageMetadata/audioDurationSeconds"),
-        Some(&json!(12.5)),
-        "duration must be emitted under audioDurationSeconds: {v}"
-    );
-    let back = read_transcription_response(&wb.bytes).expect("re-read");
-    assert_eq!(
-        back.usage,
-        Some(busbar_contract::billing::Billing::Duration {
-            seconds: busbar_contract::Count::parse("12.5").expect("12.5 is an exact decimal"),
-        }),
-        "duration must round-trip as Duration, not collapse to Tokens{{0,0}}"
     );
 }
 

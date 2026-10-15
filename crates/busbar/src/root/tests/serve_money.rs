@@ -827,10 +827,11 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         .expect("mint");
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let providers = BTreeMap::new();
-    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
+        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let reach = crate::root::door_steps::DoorReach {
         providers: &providers,
-        secrets: &secrets,
+        secrets: std::sync::Arc::clone(&secrets),
         auths: Arc::new(crate::root::door_steps::OutboundAuths::new(
             Arc::clone(&dispatcher),
             crate::LINKED.auths,
@@ -840,6 +841,7 @@ async fn the_boot_composition_serves_a_dropped_in_door_plane_in_every_build() {
         conns: Arc::new(busbar_core_connector::Connector::new()),
         models: None,
         stream_ceiling_secs: 1,
+        catalog: None,
         upgrades: Vec::new(),
     };
     let mut sections = BTreeMap::new();

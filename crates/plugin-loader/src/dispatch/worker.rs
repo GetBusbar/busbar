@@ -104,7 +104,21 @@ pub struct DispatchConfig {
     pub budgets: Budgets,
     /// How often the watchdog looks.
     pub watchdog_period: Duration,
+    /// THE QUARANTINE COUNT, N (THE DESIGN A.8): the breaches of the watch budget an instance
+    /// survives before it is quarantined. Every breach replaces its worker and settles the hung
+    /// op as FAULT; the Nth also quarantines the instance — every new call answers FAULT without a
+    /// crossing (a hook's caller goes to its `on_error`, and the hook door's timed trial brings a
+    /// fresh instance back, R2), with a diagnostic and `bb_plugin_quarantined_total`. Clamped to
+    /// at least 1; the default [`DEFAULT_QUARANTINE_AFTER`] quarantines on the first breach.
+    pub quarantine_after: u32,
 }
+
+/// The default [`DispatchConfig::quarantine_after`]: the first breach quarantines, as before the
+/// count existed.
+pub const DEFAULT_QUARANTINE_AFTER: u32 = 1;
+
+/// The quarantine counter's exposition name (THE DESIGN A.8), labelled by plugin.
+pub const QUARANTINED_TOTAL: &str = "bb_plugin_quarantined_total";
 
 impl Default for DispatchConfig {
     fn default() -> Self {
@@ -112,6 +126,7 @@ impl Default for DispatchConfig {
             workers: 1,
             budgets: Budgets::default(),
             watchdog_period: Duration::from_millis(50),
+            quarantine_after: DEFAULT_QUARANTINE_AFTER,
         }
     }
 }
@@ -123,6 +138,9 @@ pub struct DispatchStats {
     pub stale_wakes: u64,
     /// Workers the watchdog replaced.
     pub replacements: u64,
+    /// Instances the watchdog quarantined: `bb_plugin_quarantined_total` (THE DESIGN A.8), the
+    /// process's sum over every plugin.
+    pub quarantined: u64,
     /// WriteBehind ops that completed after their caller stopped waiting.
     pub write_behind_late: u64,
     /// Library unloads still running on their reapers, process-wide: a count that stays up names a
@@ -135,12 +153,18 @@ pub struct DispatchStats {
     /// cancelled, a WriteBehind op's caller released), never woken before it. A door whose every
     /// wait is woken keeps it 0; every conformance script requires 0.
     pub deadline_without_wake: u64,
+    /// Contexts plugins handed the host that it did not mint, process-wide (#74,
+    /// `dispatch::handle`): each inside a crossing quarantined its instance.
+    pub forged_handles: u64,
+    /// The off-crossing latch tripped (#74): nothing resolves outside a crossing any more.
+    pub handles_latched: bool,
 }
 
 #[derive(Debug, Default)]
 pub(crate) struct Stats {
     stale_wakes: AtomicU64,
     pub(crate) replacements: AtomicU64,
+    pub(crate) quarantined: AtomicU64,
     write_behind_late: AtomicU64,
     driver_kept_high: AtomicU64,
     deadline_without_wake: AtomicU64,
@@ -149,6 +173,8 @@ pub(crate) struct Stats {
 /// What a worker thread needs besides its worker.
 pub(crate) struct Env {
     pub(crate) budgets: Budgets,
+    /// [`DispatchConfig::quarantine_after`], at least 1.
+    pub(crate) quarantine_after: u32,
     pub(crate) stats: Arc<Stats>,
     /// The host services' stored results.
     pub(crate) services: Arc<ServiceStore>,
@@ -169,6 +195,9 @@ pub(crate) struct Env {
     pub(crate) io: std::sync::OnceLock<Arc<dyn busbar_contract::io_host::IoHost>>,
     /// The tickets of ops driven inline on the calling thread (a carrier's connection sides).
     pub(crate) inline: Arc<super::inline::InlineTickets>,
+    /// THE HOST'S OBSERVABILITY of every door this dispatcher binds: the observer and the series
+    /// predicate the host installs on it ([`Dispatcher::observing`]), never a process-global seam.
+    pub(crate) observing: Arc<crate::observe::Observing>,
 }
 
 /// One op's completion.
@@ -491,6 +520,8 @@ pub(crate) struct Driven {
     /// drives `drive` this way, as a wake, THE DESIGN §11.4).
     answers: Mutex<(u64, Option<Outcome>)>,
     answered: Condvar,
+    /// A wake's `drive` ran: the host re-polls `tick` (R-PUSH).
+    woke: tokio::sync::Notify,
 }
 
 impl Driven {
@@ -547,6 +578,16 @@ impl Driven {
     #[cfg(any(test, feature = "conformance"))]
     pub(crate) fn drain(&self) -> Vec<u64> {
         std::mem::take(&mut *self.names.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// A wake of the driver ticket has run its `drive`.
+    fn drove(&self) {
+        self.woke.notify_one();
+    }
+
+    /// Waits until a wake's `drive` has run, once per run; never parks a thread.
+    pub(crate) async fn woken(&self) {
+        self.woke.notified().await;
     }
 
     /// Every name held, once one is; never parks a thread.
@@ -1186,6 +1227,9 @@ impl Worker {
                     inst.driven.name(frame.named());
                 }
                 inst.driven.answer(c.outcome);
+                if c.outcome != Outcome::Pending {
+                    inst.driven.drove();
+                }
                 let e = &mut st.entries[idx as usize];
                 if e.generation == generation {
                     if let Some(d) = e.driver.as_mut() {
@@ -1355,6 +1399,14 @@ impl Adopter {
         Self { pool: Weak::new() }
     }
 
+    /// The host's observability of the dispatcher this adopter belongs to; `None` when it adopts
+    /// for no dispatcher (or that one is gone), and the door's back-channel is then dropped.
+    pub(crate) fn observing(&self) -> Option<Arc<crate::observe::Observing>> {
+        self.pool
+            .upgrade()
+            .map(|pool| Arc::clone(&pool.env.observing))
+    }
+
     /// Route `inst`'s wakes to the dispatcher and put it under its watchdog; `false` when the
     /// instance already belongs to another dispatcher (or this one is gone).
     pub(crate) fn adopt(&self, inst: &Arc<Instance>) -> bool {
@@ -1390,8 +1442,23 @@ impl std::fmt::Debug for Dispatcher {
 impl Dispatcher {
     /// Workers and a watchdog, per `config`, with no host services bound: every service answers
     /// REFUSED.
+    ///
+    /// # Panics
+    ///
+    /// When the OS random source cannot answer the handle key (#74): a boot with no key is refused,
+    /// never run under a weaker one. [`Dispatcher::try_new`] answers the refusal instead.
     pub fn new(config: DispatchConfig) -> Self {
-        Self::build(config, None)
+        Self::try_new(config).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// THE LOADER'S BOOT (#74): the handle key drawn first, then the dispatcher.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
+    pub fn try_new(config: DispatchConfig) -> Result<Self, super::LoadError> {
+        super::handle::arm()?;
+        Ok(Self::build(config, None))
     }
 
     /// The connection table's wake: its wake number ([`super::conn_services::conn_ticket`]) routed to
@@ -1404,6 +1471,15 @@ impl Dispatcher {
                 pool.wake(super::conn_services::ticket_of(n));
             }
         })
+    }
+
+    /// THE HOST'S OBSERVABILITY of the doors this dispatcher binds: the composition root installs
+    /// its plugin observer ([`crate::observe::Observing::install_observer`]) and its own series
+    /// predicate ([`crate::observe::Observing::install_host_series`]) here, before the first door
+    /// binds, and every door's envelope folds through it.
+    #[must_use]
+    pub fn observing(&self) -> &crate::observe::Observing {
+        &self.pool.env.observing
     }
 
     /// INSTALL THE PROCESS'S RUNTIME every worker runs its crossings inside (see `Env::runtime`):
@@ -1421,8 +1497,25 @@ impl Dispatcher {
     }
 
     /// Workers and a watchdog, per `config`, serving the host services the kernel implements.
+    ///
+    /// # Panics
+    ///
+    /// As [`Dispatcher::new`]; [`Dispatcher::try_with_services`] answers the refusal instead.
     pub fn with_services(config: DispatchConfig, provider: Arc<dyn HostServices>) -> Self {
-        Self::build(config, Some(provider))
+        Self::try_with_services(config, provider).unwrap_or_else(|e| panic!("{e}"))
+    }
+
+    /// [`Dispatcher::try_new`], serving `provider`.
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::Entropy`](super::LoadError::Entropy) when the OS random source cannot answer.
+    pub fn try_with_services(
+        config: DispatchConfig,
+        provider: Arc<dyn HostServices>,
+    ) -> Result<Self, super::LoadError> {
+        super::handle::arm()?;
+        Ok(Self::build(config, Some(provider)))
     }
 
     fn build(config: DispatchConfig, provider: Option<Arc<dyn HostServices>>) -> Self {
@@ -1430,12 +1523,14 @@ impl Dispatcher {
         let n = config.workers.clamp(1, MAX_WORKERS - 1);
         let env = Arc::new(Env {
             budgets: config.budgets,
+            quarantine_after: config.quarantine_after.max(1),
             stats: Arc::default(),
             services: Arc::default(),
             provider,
             runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
             inline: Arc::default(),
+            observing: Arc::default(),
         });
         let mut started = Vec::new();
         let slots = (0..n)
@@ -1477,10 +1572,13 @@ impl Dispatcher {
         DispatchStats {
             stale_wakes: s.stale_wakes.load(Ordering::Relaxed),
             replacements: s.replacements.load(Ordering::Relaxed),
+            quarantined: s.quarantined.load(Ordering::Relaxed),
             write_behind_late: s.write_behind_late.load(Ordering::Relaxed),
             live_reapers: super::load::live_reapers(),
             driver_kept_high: s.driver_kept_high.load(Ordering::Relaxed),
             deadline_without_wake: s.deadline_without_wake.load(Ordering::Relaxed),
+            forged_handles: super::handle::forged(),
+            handles_latched: super::handle::latched(),
         }
     }
 

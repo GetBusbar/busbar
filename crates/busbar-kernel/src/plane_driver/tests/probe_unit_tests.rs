@@ -5,7 +5,8 @@
 //! that declares probes: the probe unit arrives on the probe claim, pushes its ATTEMPT piece alone,
 //! sends the request the plane emitted to the ONE member it is pinned to (past that member's
 //! breaker), and the far end's answer is recorded on every cell of it. Proven: a probe recovers a
-//! tripped member; a client-fault answer records nothing; a probe that brings no answer is a
+//! tripped member; a client-fault answer records nothing; the plane's stated fault reading of the
+//! probe's answer is recorded as an organic answer's is; a probe that brings no answer is a
 //! transient and tries no other member; the unit is zero-billed; a passthrough member, a plane
 //! that does not declare probes and a plane that refuses the probe are never sent one.
 
@@ -51,6 +52,8 @@ struct Prober {
     claims: Mutex<Vec<u32>>,
     /// Every `on_piece`'s source and attempt number.
     pieces: Mutex<Vec<(u32, u32)>>,
+    /// The breaker fault reading (`FAULT_*`) it states of the far end's answer.
+    fault: u8,
     next: AtomicU32,
 }
 
@@ -222,6 +225,7 @@ impl PlaneCalls for Prober {
                 o.units_written = 1;
                 o.reply_status = i.status_code;
                 o.flags = EMIT_DONE;
+                o.fault = self.fault;
             }
             _ => {}
         }
@@ -336,6 +340,284 @@ fn probed(p: &Probing) -> Vec<(DestinationId, Outcome)> {
     p.book.probed.lock().unwrap().clone()
 }
 
+// ── the probe's answer in the served breaker (F25 row 155 rehomes) ─────────────────────────────
+
+/// THE SERVED BREAKER for the probe cases that pin a cell's state: busbar-kernel-breaker's unit
+/// bound to the egress port as the composition root's `BreakerAdapter` binds it
+/// (`crates/busbar/src/root/adapters.rs`), every pool under the default ladder.
+struct Cells(busbar_kernel_breaker::BreakerUnit);
+
+fn unit_outcome(outcome: Outcome) -> busbar_kernel_breaker::Outcome {
+    use busbar_kernel_breaker::Outcome as B;
+    match outcome {
+        Outcome::Success => B::Success,
+        Outcome::Transient { retry_after } => B::Transient { retry_after },
+        Outcome::HardDown => B::HardDown,
+        Outcome::RecordNothing => B::RecordNothing,
+    }
+}
+
+fn port_outcome(outcome: busbar_kernel_breaker::Outcome) -> Outcome {
+    use busbar_kernel_breaker::Outcome as B;
+    match outcome {
+        B::Success => Outcome::Success,
+        B::Transient { retry_after } => Outcome::Transient { retry_after },
+        B::HardDown => Outcome::HardDown,
+        B::RecordNothing => Outcome::RecordNothing,
+    }
+}
+
+impl crate::proxy::egress_unit::ports::Breaker for Cells {
+    fn try_admit(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+    ) -> Result<Admit, Unavailable> {
+        use busbar_kernel_breaker::LaneState;
+        match self.0.try_admit(pool, destination, now) {
+            Ok(admit) => Ok(Admit {
+                probe_epoch: admit.probe_epoch,
+            }),
+            Err(LaneState::Suppressed { until }) => Err(Unavailable::BreakerOpen { until }),
+            Err(LaneState::BudgetExhausted) => Err(Unavailable::BudgetExhausted),
+            Err(LaneState::ProbeInFlight | LaneState::Ready) => Err(Unavailable::ProbeInFlight),
+        }
+    }
+
+    fn ready(&self, pool: &str, destination: DestinationId, now: u64, token: &Pass<Route>) -> bool {
+        busbar_kernel_breaker::Breaker::state(&self.0, pool, destination, now, token)
+            == busbar_kernel_breaker::LaneState::Ready
+    }
+
+    fn admissible(&self, destination: DestinationId) -> bool {
+        self.0.budget_remaining(destination) != Some(0)
+    }
+
+    fn cooldown_remaining(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        now: u64,
+        token: &Pass<Route>,
+    ) -> u64 {
+        match busbar_kernel_breaker::Breaker::state(&self.0, pool, destination, now, token) {
+            busbar_kernel_breaker::LaneState::Suppressed { until } => until.saturating_sub(now),
+            _ => 0,
+        }
+    }
+
+    fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
+        use busbar_kernel_breaker::port::UpstreamCode;
+        let code = match status.code {
+            None => match status.class {
+                Some(WireStatusClass::CallerFault) => Some(UpstreamCode::Http(400)),
+                Some(WireStatusClass::FarEndFault) => Some(UpstreamCode::Http(500)),
+                Some(WireStatusClass::Success | WireStatusClass::Other) | None => None,
+            },
+            Some(code) => code
+                .http()
+                .and_then(|n| u16::try_from(n).ok())
+                .map(UpstreamCode::Http)
+                .or_else(|| {
+                    code.grpc()
+                        .and_then(|n| u8::try_from(n).ok())
+                        .map(UpstreamCode::Grpc)
+                }),
+        };
+        let classified = busbar_kernel_breaker::port::classify_upstream(
+            &HashMap::new(),
+            busbar_kernel_breaker::port::UpstreamStatus {
+                code,
+                retry_after: status.retry_after,
+            },
+            &busbar_kernel_breaker::classify::NoopDiagnostics,
+        );
+        Classified {
+            disposition: classified.disposition,
+            outcome: port_outcome(classified.outcome),
+            label: classified.label,
+        }
+    }
+
+    fn observe(
+        &self,
+        pool: &str,
+        destination: DestinationId,
+        outcome: Outcome,
+        now: u64,
+        token: &Pass<Route>,
+    ) -> bool {
+        busbar_kernel_breaker::Breaker::observe(
+            &self.0,
+            pool,
+            destination,
+            unit_outcome(outcome),
+            &busbar_kernel_breaker::cfg::BreakerCfg::default(),
+            now,
+            token,
+        )
+    }
+
+    fn suppressing(&self, destination: DestinationId, now: u64) -> bool {
+        self.0.suppressing(destination, now)
+    }
+
+    fn probed(&self, destination: DestinationId, outcome: Outcome, now: u64, token: &Pass<Route>) {
+        self.0.probed(
+            destination,
+            unit_outcome(outcome),
+            &|_: &str| Some(busbar_kernel_breaker::cfg::BreakerCfg::default()),
+            now,
+            token,
+        );
+    }
+
+    fn release_probe(&self, pool: &str, destination: DestinationId, epoch: u64, now: u64) {
+        self.0.release_probe(pool, destination, epoch, now);
+    }
+
+    fn spend_budget(&self, destination: DestinationId) -> bool {
+        self.0.spend_budget(destination)
+    }
+
+    fn refund_budget(&self, destination: DestinationId) {
+        self.0.refund_budget(destination);
+    }
+}
+
+/// The probe target over the SERVED breaker for a plane that declares probes: the rig's first
+/// member (`a.test`, answering `script`, destination [`TRIPPED`]), its cell in pool [`POOL`] made
+/// as organic traffic makes it. Answers the target, the breaker and the connection table.
+fn probing_served(script: Script) -> (PlaneProbes, Arc<Cells>, Arc<Table>) {
+    let mut r = rig(&[("a.test", script)], OnExhausted::Status503, None);
+    let cells = Arc::new(Cells(busbar_kernel_breaker::BreakerUnit::new()));
+    let _ = cells.0.cell(POOL, TRIPPED);
+    r.egress.breaker = Arc::clone(&cells) as Arc<dyn crate::proxy::egress_unit::ports::Breaker>;
+    let driver = PlaneDriver::new(
+        Arc::new(Prober::default()),
+        DriverConfig {
+            caps: BufferCaps::default(),
+            op_classes: vec![OpClassId::new("probe")],
+            status_of: refusal_status,
+            refusal_statuses: Vec::new(),
+            caller_refs: None,
+        },
+        Arc::new(Till::default()),
+        Arc::new(crate::host_services::KernelServices::new()),
+        ("probe", &serde_yaml::Value::Null),
+    )
+    .expect("the instance is admitted");
+    let probes = PlaneProbes::new(
+        TAIL_PROBES,
+        Arc::new(driver),
+        Arc::new(r.egress),
+        Arc::new(Kernel::new()),
+        Arc::new(UnitKeyMint::default()),
+        vec![TRIPPED],
+    )
+    .expect("the plane declares probes");
+    (probes, cells, r.table)
+}
+
+/// F25 row 189: rehomed from crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_health_probe_failure_records_transient.
+/// A probe whose far end ANSWERS 500 `{"error":"down"}` records exactly one transient against the
+/// member in the served breaker: its default cell's and its pool cell's error counts each rise by 1.
+#[tokio::test]
+async fn test_health_probe_failure_records_transient() {
+    let (probes, cells, table) =
+        probing_served(Script::Answer(500, None, vec![b"{\"error\":\"down\"}"]));
+    let before = (
+        cells.0.cell("", TRIPPED).err_count(),
+        cells.0.cell(POOL, TRIPPED).err_count(),
+    );
+
+    probes.probe(0, TIMEOUT).await;
+
+    assert_eq!(table.opened.lock().unwrap().len(), 1, "the probe was sent");
+    assert_eq!(
+        cells.0.cell("", TRIPPED).err_count(),
+        before.0 + 1,
+        "a failing health probe records a transient error"
+    );
+    assert_eq!(cells.0.cell(POOL, TRIPPED).err_count(), before.1 + 1);
+}
+
+/// F25 row 221: rehomed from crates/busbar-llm/src/engine/tests/health_tests.rs::test_probe_auth_failure_is_hard_down_not_transient.
+/// A 401 probe answer parks the member hard-down: the default cell is Open and the pool cell carries
+/// the long sticky hard-down cooldown (more than 60 s), and no transient is recorded.
+#[tokio::test]
+async fn test_probe_auth_failure_is_hard_down_not_transient() {
+    let (probes, cells, _table) = probing_served(Script::Answer(401, None, vec![b"unauthorized"]));
+
+    probes.probe(0, TIMEOUT).await;
+
+    let now = Wall.now_secs();
+    assert!(
+        matches!(
+            cells.0.cell("", TRIPPED).state(),
+            busbar_kernel_breaker::cell::BreakerState::Open { .. }
+        ),
+        "a 401 probe trips the default cell Open (hard-down), got {:?}",
+        cells.0.cell("", TRIPPED).state()
+    );
+    assert!(
+        cells
+            .0
+            .cell(POOL, TRIPPED)
+            .cooldown_until()
+            .saturating_sub(now)
+            > 60,
+        "a 401 probe arms the long sticky hard-down cooldown on the pool cell, not a short \
+         transient one"
+    );
+    assert_eq!(
+        cells.0.cell("", TRIPPED).err_count(),
+        0,
+        "and it is not recorded as a transient"
+    );
+}
+
+/// F25 row 222: rehomed from crates/busbar-llm/src/engine/tests/health_tests.rs::test_probe_server_error_is_transient_not_hard_down.
+/// A single 503 probe answer is a transient: one failure is recorded, and the default cell stays
+/// Closed (one sub-threshold transient under the default error-rate breaker), never the hard-down.
+#[tokio::test]
+async fn test_probe_server_error_is_transient_not_hard_down() {
+    let (probes, cells, _table) = probing_served(Script::Answer(
+        503,
+        None,
+        vec![b"{\"error\":\"upstream down\"}"],
+    ));
+
+    probes.probe(0, TIMEOUT).await;
+
+    assert_eq!(
+        cells.0.cell("", TRIPPED).state(),
+        busbar_kernel_breaker::cell::BreakerState::Closed,
+        "a single 503 probe records a transient, no immediate hard-down trip"
+    );
+    assert_eq!(cells.0.cell("", TRIPPED).err_count(), 1);
+}
+
+/// F25 row 234: rehomed from crates/busbar-llm/src/engine/tests/health_tests.rs::test_probe_with_an_unrepresentable_timeout_still_classifies.
+/// A probe under a timeout the clock cannot represent (2^63 s) runs to its classification and does
+/// not panic: the far end's 401 still parks the member, its default cell Open.
+#[tokio::test]
+async fn test_probe_with_an_unrepresentable_timeout_still_classifies() {
+    let (probes, cells, _table) = probing_served(Script::Answer(401, None, vec![b"unauthorized"]));
+
+    probes.probe(0, Duration::from_secs(1u64 << 63)).await;
+
+    assert!(
+        matches!(
+            cells.0.cell("", TRIPPED).state(),
+            busbar_kernel_breaker::cell::BreakerState::Open { .. }
+        ),
+        "the probe completes and classifies the 401, got {:?}",
+        cells.0.cell("", TRIPPED).state()
+    );
+}
+
 // ── the cases ───────────────────────────────────────────────────────────────────────────────────
 
 /// THE ACCEPTANCE: a tripped member is probed past its breaker; the plane's probe request goes to
@@ -398,6 +680,70 @@ async fn a_client_fault_answer_records_nothing() {
     p.probes.probe(0, TIMEOUT).await;
     assert_eq!(probed(&p), vec![(TRIPPED, Outcome::RecordNothing)]);
     assert!(p.probes.suppressing(0), "still tripped");
+}
+
+/// THE PLANE'S READING OF A PROBE ANSWER is recorded as an organic answer's is (Part 3 §12: the
+/// breaker service classifies the probe's answer as it classifies organic traffic): a 502 the plane
+/// reads HEALTHY is a success on every cell and recovers the member. RED before the plane's reading
+/// was read on a probe: the transport's 502 was recorded at once, a transient, and the member stayed
+/// tripped.
+#[tokio::test]
+async fn a_probe_answer_the_plane_reads_healthy_records_success() {
+    let hosts = [(
+        "a.test",
+        Script::Answer(502, None, vec![b"an error, well formed"]),
+    )];
+    let plane = Prober {
+        fault: FAULT_HEALTHY,
+        ..Prober::default()
+    };
+    let p = probing(&hosts, plane, TAIL_PROBES).expect("the plane declares probes");
+    p.probes.probe(0, TIMEOUT).await;
+    assert_eq!(probed(&p), vec![(TRIPPED, Outcome::Success)]);
+    assert!(!p.probes.suppressing(0), "recovered");
+    assert!(
+        p.book.observed.lock().unwrap().is_empty(),
+        "nothing organic"
+    );
+}
+
+/// A probe answer the plane reads as a FAULT records that fault, over the transport's reading: a
+/// 400 (the caller's, by the table: nothing) the plane reads TRANSIENT is a transient, and a 502
+/// (transient, by the table) the plane reads HARD is a hard-down. RED before the plane's reading
+/// was read on a probe: the table's reading was recorded (nothing; a transient).
+#[tokio::test]
+async fn a_probe_answer_the_plane_reads_as_a_fault_records_that_fault() {
+    for (code, fault, outcome) in [
+        (
+            400,
+            FAULT_TRANSIENT,
+            Outcome::Transient { retry_after: None },
+        ),
+        (502, FAULT_HARD, Outcome::HardDown),
+    ] {
+        let hosts = [("a.test", Script::Answer(code, None, vec![b"no"]))];
+        let plane = Prober {
+            fault,
+            ..Prober::default()
+        };
+        let p = probing(&hosts, plane, TAIL_PROBES).expect("the plane declares probes");
+        p.probes.probe(0, TIMEOUT).await;
+        assert_eq!(probed(&p), vec![(TRIPPED, outcome)], "{code}");
+        assert!(p.probes.suppressing(0), "{code}: still tripped");
+    }
+}
+
+/// A probe answer the plane states NO reading of is recorded with the transport's: the table's
+/// transient for a 502.
+#[tokio::test]
+async fn a_probe_answer_the_plane_states_no_reading_of_records_the_tables() {
+    let hosts = [("a.test", Script::Answer(502, None, vec![b"down"]))];
+    let p = probing(&hosts, Prober::default(), TAIL_PROBES).expect("the plane declares probes");
+    p.probes.probe(0, TIMEOUT).await;
+    assert_eq!(
+        probed(&p),
+        vec![(TRIPPED, Outcome::Transient { retry_after: None })]
+    );
 }
 
 /// A probe that brings no answer is a transient on the member, and the probe tries no other.

@@ -27,8 +27,8 @@
 //!
 //! Four rows:
 //!
-//! * `blocking-ffi:plane-roots` — mcp and a2a resolve. They are 71 of the 238 files scanned against
-//!   a floor of 100, and both cross the hook/store seams from async code, so a plane that SPLIT into
+//! * `blocking-ffi:plane-roots` — mcp resolves (and a2a did, until FLIP-A2A deleted its engine).
+//!   They were 71 of the 238 files scanned against a floor of 100, and both cross the hook/store seams from async code, so a plane that SPLIT into
 //!   its own crate would leave the floor cleared and 71 of the most relevant files unscanned.
 //! * `blocking-ffi:scan-floor` — the aggregate floor.
 //! * `blocking-ffi:scan-status` — THE SCAN THE GATE REPORTS ON IS THE SCAN IT ACTUALLY TOOK. The
@@ -71,7 +71,10 @@ pub const ROW_NO_INLINE: &str = "blocking-ffi:no-inline-ffi";
 // under `crates/busbar-kernel/src`.
 const CORE: &str = "crates/busbar-kernel/src";
 const FIXED_ROOTS: &[&str] = &[CORE, "crates/busbar/src", "crates/busbar-llm/src"];
-const PLANE_KEYS: &[&str] = &["mcp", "a2a"];
+// `a2a` is struck: FLIP-A2A deleted crates/busbar-a2a, and the A2A plane is crates/busbar-plane-a2a,
+// a memory-ABI door that declares no `PLANE_DECL` (so no root resolves for it). Its source is still
+// read: the scan population is every crate under `crates/` (`population::source_population`).
+const PLANE_KEYS: &[&str] = &["mcp"];
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 // THE FLOOR MOVED TO `gates::population`, along with the scan set it is a floor on.
 

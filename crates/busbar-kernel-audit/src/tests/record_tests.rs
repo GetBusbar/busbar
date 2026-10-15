@@ -312,3 +312,30 @@ fn the_on_disk_tag_vocabulary_is_the_literal_text_and_not_a_rendering_of_a_type(
         assert_eq!(subject_tag(&subject), frozen, "subject on disk");
     }
 }
+
+/// A SECRET DERIVED FROM THE DEPLOYMENT KEY (row 159 H2) is one value per key and label: the same
+/// key gives the same secret (every node of a deployment holds one keyset), another label or another
+/// key gives another, and none is the seed. A chain that signs with no key derives nothing.
+#[test]
+fn a_derived_secret_is_one_per_key_and_label_and_never_the_seed() {
+    use crate::sign::AuditSigningKey;
+    let seed = [3u8; 32];
+    let (a, again) = (
+        AuditSigningKey::from_seed(&seed),
+        AuditSigningKey::from_seed(&seed),
+    );
+    let label = b"busbar deployment keyset: caller-ref material v1";
+    assert_eq!(a.derived_secret(label), again.derived_secret(label));
+    assert_ne!(a.derived_secret(label), a.derived_secret(b"another label"));
+    assert_ne!(
+        a.derived_secret(label),
+        AuditSigningKey::from_seed(&[4u8; 32]).derived_secret(label)
+    );
+    assert_ne!(a.derived_secret(label), seed);
+    let chain = crate::record::AuditChain::default();
+    assert_eq!(chain.derived_secret(label), None);
+    assert_eq!(
+        chain.signing_with(again).derived_secret(label),
+        Some(a.derived_secret(label))
+    );
+}

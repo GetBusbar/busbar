@@ -57,12 +57,10 @@ const BANNED_PATHS: &[&str] = &["std::net", "tokio::net"];
 ///
 /// `busbar-mcp` is not here either (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted, and the
 /// mcp plane is its door crate `busbar-plane-mcp`, a `gate.plugin_kinds.plane` row this wall already
-/// scans. Its eight pins in the ledger drained with it and are struck there.
-const LEGACY: &[&str] = &[
-    "crates/busbar-llm",
-    "crates/busbar-a2a",
-    "crates/busbar-voice",
-];
+/// scans. Its eight pins in the ledger drained with it and are struck there. `busbar-a2a` likewise
+/// (FLIP-A2A): the a2a plane is its door crate `busbar-plane-a2a`, a `gate.plugin_kinds.plane` row.
+/// `busbar-voice` likewise (FLIP-STREAMING).
+const LEGACY: &[&str] = &["crates/busbar-llm"];
 
 /// The external source a plugin repository resolves from.
 const EXTERNAL_SOURCE: &str = "git+https://github.com/GetBusbar/";

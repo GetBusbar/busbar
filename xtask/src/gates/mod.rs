@@ -21,6 +21,7 @@
 pub mod abi_freeze;
 pub mod abi_header;
 pub mod abi_location;
+pub mod admin_config_parity;
 pub mod blocking_ffi;
 pub mod c1_literals;
 pub mod changelog;
@@ -29,6 +30,7 @@ pub mod config_schema;
 pub mod conformance_sync;
 pub mod construction;
 pub mod contract_stateless;
+pub mod default_measurements;
 pub mod deferral_words;
 pub mod denylist_gate;
 pub mod dep_wall;
@@ -134,6 +136,7 @@ pub const REPORT_ONLY: &[Posture] = &[
             rows: CONSTRUCTION_STANDING_REDS,
             list: "CONSTRUCTION_STANDING_REDS",
             mirror: None,
+            figures: CONSTRUCTION_STANDING_FIGURES,
         }),
     },
     Posture {
@@ -179,6 +182,7 @@ pub const REPORT_ONLY: &[Posture] = &[
             rows: QA_NAMES_STANDING_REDS,
             list: "QA_NAMES_STANDING_REDS",
             mirror: None,
+            figures: &[],
         }),
     },
     Posture {
@@ -200,6 +204,7 @@ pub const REPORT_ONLY: &[Posture] = &[
             rows: MONEY_INVARIANTS_STANDING_REDS,
             list: "MONEY_INVARIANTS_STANDING_REDS",
             mirror: None,
+            figures: &[],
         }),
     },
     Posture {
@@ -219,11 +224,15 @@ pub const REPORT_ONLY: &[Posture] = &[
             rows: CONFORMANCE_SYNC_STANDING_REDS,
             list: "CONFORMANCE_SYNC_STANDING_REDS",
             mirror: None,
+            figures: &[],
         }),
     },
     Posture {
         name: "structure-lint",
-        why: "RED ON TWO NAMED ROWS (axis:purity, plane-dup:unledgered), AND THEY ARE TRUE FINDINGS. be9c473f5 derived the plane set, \
+        why: "NO STANDING RED LEFT. Both named rows drained: `axis:purity` went green, and \
+              `plane-dup:unledgered` is ARMED at its measured count (`plane_dups::UNLEDGERED_ARMED`, \
+              Law 9; ARCHITECT ruling on #787), green at it, red above it (a new plane-local copy) \
+              and below it (a drain that did not lower the count). The history: be9c473f5 derived the plane set, \
               the protocol crates and the tree-wide scope from the tree instead of from lists that \
               had gone stale, and the lint then saw what it had been blind to: \
               `plane-dup:unledgered` (24 plane-local reimplementations of a shared concern), \
@@ -243,6 +252,7 @@ pub const REPORT_ONLY: &[Posture] = &[
             rows: STRUCTURE_LINT_STANDING_REDS,
             list: "STRUCTURE_LINT_STANDING_REDS",
             mirror: None,
+            figures: STRUCTURE_LINT_STANDING_FIGURES,
         }),
     },
     Posture {
@@ -412,8 +422,24 @@ pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
     // and collapse each second spelling. Strike each line in the commit that turns its row green.
     // `structure-lint:axis:purity` STRUCK 2026-10-02 (GATE-GREEN, ee06655df0): the contract asks no
     // claim its transport and the ABI handshake has one home, so the row is green.
-    "structure-lint:plane-dup:unledgered",
+    // `structure-lint:plane-dup:unledgered` STRUCK at #787 (ARCHITECT ruling): the row is ARMED at
+    // the measured count (`plane_dups::UNLEDGERED_ARMED`, Law 9): predev's carried findings and the
+    // a2a plane's pre-existing files its home move made visible, the door code #787 added drained
+    // through the SDK or renamed; green at it and red above or below.
 ];
+
+/// THE FIGURE EACH CONSTRUCTION STANDING RED IS EXCUSED AT: the count its row measures, the
+/// leading number of its detail, as the gate's own run records it ("3 production call site(s) of
+/// pick_among(" in ModernCI's judgements of predev at 00555bd98a and 40a4080937). A name alone
+/// excused every finding the row would ever hold, so a fourth pick site read as the standing red.
+/// A measurement above its figure is a NEW red; lower it in the commit that drains a site.
+pub const CONSTRUCTION_STANDING_FIGURES: &[(&str, u64)] = &[("one-pick-site", 3)];
+
+/// THE FIGURE EACH STRUCTURE-LINT STANDING RED IS EXCUSED AT, read the same way
+/// ("22 finding(s): PLANE-DUPLICATE ..." on predev at 00555bd98a and 40a4080937). One more
+/// plane-local reimplementation is a NEW red, not one more line inside an excused row.
+pub const STRUCTURE_LINT_STANDING_FIGURES: &[(&str, u64)] =
+    &[("structure-lint:plane-dup:unledgered", 22)];
 
 /// One entry of [`REPORT_ONLY`].
 pub struct Posture {
@@ -437,7 +463,8 @@ pub enum Excused {
     /// It fails the excuse in BOTH directions, and the second is the one that gives it an expiry:
     ///
     /// * a non-PASS row (or a reconciliation problem) this list does not name is a NEW red, and the
-    ///   gate is scored — which is the whole signal `Excused::Whole` threw away;
+    ///   gate is scored — which is the whole signal `Excused::Whole` threw away; so is a named row
+    ///   measuring above its standing figure, and a named row that did not run;
     /// * a name on this list that is NOT red any more is a STALE entry, and the gate is scored for
     ///   that too. Without it the list only ever grows and drifts back into being a blanket.
     OnlyRows(StandingReds),
@@ -454,6 +481,9 @@ pub struct StandingReds {
     pub list: &'static str,
     /// Any other place that must be struck in the same commit, or `None`.
     pub mirror: Option<&'static str>,
+    /// The figure each named row is excused AT: `(row id, the most its detail's leading count may
+    /// read)`. A named row with no figure, or measuring above it, is not excused.
+    pub figures: &'static [(&'static str, u64)],
 }
 
 /// The constant an operator edits to carry (or strike) a standing red of gate `name`, if the gate
@@ -537,7 +567,8 @@ pub fn excused_from_all(name: &str, cx: &Ctx, verdict: &Verdict) -> Option<Strin
             let unexplained = only_rows_unexplained(sr, verdict);
             if unexplained.is_empty() {
                 Some(format!(
-                    "{} — red on exactly the {} named standing row(s) and nothing else",
+                    "{} — red on exactly the {} named standing row(s), each at or below its \
+                     standing figure, and nothing else",
                     p.why,
                     sr.rows.len()
                 ))
@@ -554,10 +585,16 @@ pub fn excused_from_all(name: &str, cx: &Ctx, verdict: &Verdict) -> Option<Strin
 /// Every reason an [`Excused::OnlyRows`] posture does NOT hold over `verdict`: each NEW red, and
 /// each STALE name. Empty means the excuse holds.
 ///
+/// A NAMED ROW IS EXCUSED AT ITS FIGURE, NOT BY ITS NAME. The list used to compare ids only, so a
+/// new violation inside an excused row (a fourth pick site, one more plane-local duplicate) changed
+/// nothing the excuse looked at. Each named row's measurement, the leading count of its detail, is
+/// held to its entry in [`StandingReds::figures`]; above it, or with no figure to hold, the row is a
+/// NEW red. The reconciler's `<id>: FAIL` line is excused only beside an excused row.
+///
 /// A row that emitted nothing at all reaches the verdict as a reconciliation problem
-/// (`"<id>: … DID NOT RUN"`), never as a row, so the named ids are matched against both. A rule
-/// that stopped running is not a rule that is red for a known reason: a problem about an id the
-/// list does not name fails the excuse exactly like a new red row.
+/// (`"<id>: … DID NOT RUN"`), never as a row, and it is NEVER excused, named or not: a rule that
+/// stopped running (its table deleted, its config unreadable) is not a rule that is red for a known
+/// reason.
 fn only_rows_unexplained(sr: &StandingReds, verdict: &Verdict) -> Vec<String> {
     let named = sr.rows;
     let red_now: BTreeSet<&str> = verdict
@@ -567,19 +604,42 @@ fn only_rows_unexplained(sr: &StandingReds, verdict: &Verdict) -> Vec<String> {
         .map(|r| r.id.as_str())
         .collect();
 
-    let mut unexplained: Vec<String> = verdict
+    let mut unexplained: Vec<String> = Vec::new();
+    let mut excused: BTreeSet<&str> = BTreeSet::new();
+    for r in verdict
         .rows
         .iter()
         .filter(|r| r.status != crate::ledger::Status::Pass)
-        .filter(|r| !named.contains(&r.id.as_str()))
-        .map(|r| format!("NEW RED {} {}", r.id, r.detail))
-        .collect();
+    {
+        if !named.contains(&r.id.as_str()) {
+            unexplained.push(format!("NEW RED {} {}", r.id, r.detail));
+            continue;
+        }
+        match over_its_figure(sr, r) {
+            None => {
+                excused.insert(r.id.as_str());
+            }
+            Some(why) => unexplained.push(why),
+        }
+    }
     unexplained.extend(
         verdict
             .problems
             .iter()
-            .filter(|t| !named.iter().any(|id| t.starts_with(&format!("{id}: "))))
+            .filter(|t| !excused.iter().any(|id| **t == format!("{id}: FAIL")))
             .map(|t| format!("NEW RED {t}")),
+    );
+    // A figure for a row the list does not name excuses nothing and says something false.
+    unexplained.extend(
+        sr.figures
+            .iter()
+            .filter(|(id, _)| !named.contains(id))
+            .map(|(id, n)| {
+                format!(
+                    "STALE figure {n} for `{id}`, which {} does not name — strike the figure",
+                    sr.list
+                )
+            }),
     );
     // THE EXPIRY. A named row that is green again is a list that has outlived its facts.
     let also = sr
@@ -605,6 +665,36 @@ fn only_rows_unexplained(sr: &StandingReds, verdict: &Verdict) -> Vec<String> {
             }),
     );
     unexplained
+}
+
+/// Why the named red row `r` is NOT excused at its standing figure, or `None` when it is: its
+/// detail's leading count is at or below the figure [`StandingReds::figures`] holds for it.
+fn over_its_figure(sr: &StandingReds, r: &Row) -> Option<String> {
+    let Some(&(_, held)) = sr.figures.iter().find(|(id, _)| *id == r.id) else {
+        return Some(format!(
+            "NEW RED {} is named on {} with no standing figure, so nothing bounds how red it may \
+             get: {}",
+            r.id, sr.list, r.detail
+        ));
+    };
+    match r
+        .detail
+        .split_whitespace()
+        .next()
+        .and_then(|w| w.parse::<u64>().ok())
+    {
+        Some(n) if n <= held => None,
+        Some(n) => Some(format!(
+            "NEW RED {} measures {n}, above its standing figure {held} (beside {}): the rise is a \
+             new finding inside a standing row: {}",
+            r.id, sr.list, r.detail
+        )),
+        None => Some(format!(
+            "NEW RED {}: its detail opens with no count to hold against its standing figure \
+             {held}: {}",
+            r.id, r.detail
+        )),
+    }
 }
 
 impl Registration {
@@ -3190,6 +3280,20 @@ pub static REGISTRY: &[Registration] = &[
         summary: "DECISIONS #15 banned-word shapes over the 1.6.0 docs (report-only) + the pinned positive control",
     },
     Registration {
+        name: "default-measurements",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(default_measurements::DefaultMeasurementsGate),
+        summary: "a manifest comment that authorises a default by a measurement names the registered gate that re-runs it",
+    },
+    Registration {
+        name: "admin-config-parity",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(admin_config_parity::AdminConfigParityGate),
+        summary: "#52: the admin config doors parse the whole document with the boot loader's parser, and are mounted",
+    },
+    Registration {
         name: "design-docs-allowlist",
         batch: 1,
         tier: Tier::Fast,
@@ -3356,7 +3460,7 @@ pub static REGISTRY: &[Registration] = &[
     },
     // THE ONE-MEMORY-ABI GATES (M0 ABI-SPEC; the design's locked plugin ABI). REPORT-ONLY: each is
     // armed at today's count as a drain-only ledger qa/<name>.toml whose rows are the M2 work
-    // list, and the pipeline's turnstile runs them like every registered gate.
+    // list, and the pipeline (ModernCI's `gates` check) runs them like every registered gate.
     Registration {
         name: "one-memory-abi",
         batch: 1,
@@ -3578,8 +3682,8 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(hot_path_alloc::HotPathAllocGate),
-        summary: "the alloc instrument asserts 0 global allocations across the isolated POD \
-                  host-call batch",
+        summary: "the alloc instruments assert 0 global allocations across the isolated POD \
+                  host-call batch and 0 host allocations per READY request-path door op",
     },
     Registration {
         name: "teller-steps",
@@ -4403,7 +4507,7 @@ mod posture_tests {
         let cx = Ctx::workspace().expect("the workspace opens");
         let standing: Vec<Row> = CONSTRUCTION_STANDING_REDS
             .iter()
-            .map(|id| Row::fail(*id, "t", "the standing red this list was written for"))
+            .map(|id| standing_at_figure(id, 0))
             .collect();
 
         // 1. Red on exactly the named rows: excused.
@@ -4432,6 +4536,83 @@ mod posture_tests {
         );
     }
 
+    /// A construction standing red as its row records it: the held figure plus `over`, as the
+    /// leading count of the detail, the way `one-pick-site` writes `3 production call site(s)`.
+    fn standing_at_figure(id: &str, over: u64) -> Row {
+        let held = CONSTRUCTION_STANDING_FIGURES
+            .iter()
+            .find(|(f, _)| *f == id)
+            .map(|(_, n)| *n)
+            .unwrap_or_else(|| panic!("{id} is on CONSTRUCTION_STANDING_REDS with no figure"));
+        Row::fail(
+            id,
+            "t",
+            format!(
+                "{} finding(s): the standing red this list was written for",
+                held + over
+            ),
+        )
+    }
+
+    /// XTASK-D FINDING 1, THE RISE. The excuse matched by row id only, so a fourth pick site kept
+    /// `one-pick-site` FAIL and excused: the finding count inside the row was compared with
+    /// nothing. Each named row is held to its standing figure; one more finding is scored.
+    #[test]
+    fn a_standing_row_measuring_above_its_figure_is_not_excused() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let at: Vec<Row> = CONSTRUCTION_STANDING_REDS
+            .iter()
+            .map(|id| standing_at_figure(id, 0))
+            .collect();
+        let mut v = verdict(at);
+        v.problems = CONSTRUCTION_STANDING_REDS
+            .iter()
+            .map(|id| format!("{id}: FAIL"))
+            .collect();
+        assert!(
+            excused_from_all("construction", &cx, &v).is_some(),
+            "at its figure, with the reconciler's FAIL line beside it, the standing red is excused"
+        );
+        let over: Vec<Row> = CONSTRUCTION_STANDING_REDS
+            .iter()
+            .map(|id| standing_at_figure(id, 1))
+            .collect();
+        assert!(
+            excused_from_all("construction", &cx, &verdict(over)).is_none(),
+            "a standing row one finding above its figure is a new red inside an excused row"
+        );
+        let bare: Vec<Row> = STRUCTURE_LINT_STANDING_REDS
+            .iter()
+            .map(|id| Row::fail(*id, "t", "no count at all"))
+            .collect();
+        assert!(
+            excused_from_all("structure-lint", &cx, &verdict(bare)).is_none(),
+            "a standing row whose detail carries no count has nothing to hold to its figure"
+        );
+    }
+
+    /// XTASK-D FINDING 1, THE VANISHED ROW. Deleting `[rules.one-pick-site]` makes the rule Err,
+    /// its row is never emitted and the reconciler says `one-pick-site: owed but no row was
+    /// recorded — DID NOT RUN`. The excuse swallowed every problem about a NAMED id and counted
+    /// that same problem as "still red" for its staleness check, so the deleted table was excused
+    /// for ever. A named row that did not run is never excused.
+    #[test]
+    fn a_named_row_that_did_not_run_is_not_excused() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let mut v = verdict(Vec::new());
+        v.problems = CONSTRUCTION_STANDING_REDS
+            .iter()
+            .map(|id| {
+                format!("{id}: owed but no row was recorded — DID NOT RUN, which is not a pass")
+            })
+            .collect();
+        v.red = true;
+        assert!(
+            excused_from_all("construction", &cx, &v).is_none(),
+            "a standing red whose rule stopped running is not red for a known reason"
+        );
+    }
+
     /// A row that emitted nothing at all reaches the verdict as a reconciliation PROBLEM, never as
     /// a row. A rule that stopped running is not a rule that is red for a known reason, so a
     /// problem about an id the list does not name must fail the excuse like any new red.
@@ -4441,7 +4622,7 @@ mod posture_tests {
         let mut v = verdict(
             CONSTRUCTION_STANDING_REDS
                 .iter()
-                .map(|id| Row::fail(*id, "t", "standing"))
+                .map(|id| standing_at_figure(id, 0))
                 .collect(),
         );
         v.problems
@@ -4623,6 +4804,7 @@ mod posture_tests {
             rows: &["qa-names:path-names-a-live-path"],
             list: "QA_NAMES_STANDING_REDS",
             mirror: None,
+            figures: &[],
         };
         let lines = only_rows_unexplained(&sr, &verdict(vec![]));
         assert_eq!(lines.len(), 1, "{lines:?}");
@@ -4680,6 +4862,7 @@ mod posture_tests {
             rows: MONEY_INVARIANTS_STANDING_REDS,
             list: "MONEY_INVARIANTS_STANDING_REDS",
             mirror: None,
+            figures: &[],
         };
         assert!(
             only_rows_unexplained(&sr, &v).is_empty(),
@@ -4712,6 +4895,7 @@ mod posture_tests {
             rows: CONFORMANCE_SYNC_STANDING_REDS,
             list: "CONFORMANCE_SYNC_STANDING_REDS",
             mirror: None,
+            figures: &[],
         };
         assert!(
             only_rows_unexplained(&sr, &v).is_empty(),
@@ -4744,6 +4928,7 @@ mod posture_tests {
             rows: STRUCTURE_LINT_STANDING_REDS,
             list: "STRUCTURE_LINT_STANDING_REDS",
             mirror: None,
+            figures: STRUCTURE_LINT_STANDING_FIGURES,
         };
         assert!(
             only_rows_unexplained(&sr, &v).is_empty(),

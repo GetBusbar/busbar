@@ -545,10 +545,8 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     // `crates/busbar-voice-codec/src` home is struck.
     CountRoot {
         area: "the audio codecs, engine and plane",
-        homes: &[
-            "crates/busbar-voice/src",
-            "crates/busbar-plane-streaming/src",
-        ],
+        // `crates/busbar-voice/src` is struck: FLIP-STREAMING deleted the legacy streams crate.
+        homes: &["crates/busbar-plane-streaming/src"],
         floor: 28,
     },
     // THE ONE FOLD THIS GROUP WAS BUILT FOR ACTUALLY HAPPENED, AND THE GROUP DID NOT MOVE WITH IT.
@@ -583,11 +581,7 @@ pub const COUNT_READ_ROOTS: &[CountRoot] = &[
     },
     CountRoot {
         area: "the agent codec, node and plane",
-        homes: &[
-            "crates/busbar-a2a/src/a2a",
-            "crates/busbar-a2a/src",
-            "crates/busbar-plane-a2a/src",
-        ],
+        homes: &["crates/busbar-plane-a2a/src"],
         floor: 40,
     },
     CountRoot {
@@ -806,7 +800,8 @@ pub const PENDING_CEILING: usize = 0;
 /// reads are gone FAILS the row until it is deleted: a standing permission nobody uses is a
 /// permission the next read takes. RETIRED AT THE RE-KEY, each measured matching nothing on predev
 /// `5e672d125d` (the row's own "now match nothing" note): `openai_chat/handler.rs` `get(keys::END)`
-/// and the two `get("channels")` rows (`topology/twilio.rs`, `twilio.rs`) — their reads were already
+/// and the `get("channels")` row (`topology/twilio.rs`; the legacy `twilio.rs` copy went with
+/// FLIP-STREAMING's deletion of `plane.rs` and friends) — their reads were already
 /// inside the window of the `get(keys::START)` / `get("sampleRate")` rows, and they are counted by
 /// those items' rows now. `audio::Segment`, `get(keys::START)` and `get(keys::END)` fold into the one
 /// `read_transcription_response` row.
@@ -864,13 +859,6 @@ pub const ALLOWED_COUNT_READS: &[Allow] = &[
     },
     Allow {
         file: "crates/busbar-plane-streaming/src/codec/topology/twilio.rs",
-        item: "decode",
-        reads: 2,
-        class: AllowClass::NotACount,
-        why: "a media format's sample rate and channel count, not metered quantities",
-    },
-    Allow {
-        file: "crates/busbar-plane-streaming/src/twilio.rs",
         item: "decode",
         reads: 2,
         class: AllowClass::NotACount,
@@ -2842,10 +2830,10 @@ impl Gate for NoFloatMoneyGate {
         //
         // 1. A NEW defaulted read placed right after two allowed media-format reads, in the same
         //    item, is a finding: it used to sit inside the allowance's 200-byte window and ride it.
-        let twilio = "crates/busbar-plane-streaming/src/twilio.rs";
+        let twilio = "crates/busbar-plane-streaming/src/codec/topology/twilio.rs";
         match cx.read(twilio) {
             Ok(text) => {
-                let at = "            if encoding != ASSUMED_ENCODING";
+                let at = "                let media_format = MediaFormat {";
                 if text.contains(at) {
                     let mut ov = Overlay::new();
                     ov.set(
@@ -2853,7 +2841,7 @@ impl Gate for NoFloatMoneyGate {
                         text.replacen(
                             at,
                             &format!(
-                                "            let _planted_billed = mf.get(\"usage\").and_then(serde_json::Value::as_u64).unwrap_or(0);\n{at}"
+                                "                let _planted_billed = mf.get(\"usage\").and_then(serde_json::Value::as_u64).unwrap_or(0);\n{at}"
                             ),
                             1,
                         ),
@@ -3417,8 +3405,8 @@ mod tests {
     #[test]
     fn a_nested_home_is_counted_once_against_the_area_floor() {
         let cx = cx();
-        const OUTER: &[&str] = &["crates/busbar-a2a/src"];
-        let inner = "crates/busbar-a2a/src/a2a";
+        const OUTER: &[&str] = &["crates/busbar-plane-a2a/src"];
+        let inner = "crates/busbar-plane-a2a/src/a2a";
         let alone = walk_area(
             &cx,
             &CountRoot {
@@ -3434,8 +3422,10 @@ mod tests {
             .count();
         assert!(nested_count > 0, "the control needs a populated inner home");
         let floor = alone.len() + 1;
-        let homes: &'static [&'static str] =
-            &["crates/busbar-a2a/src/a2a", "crates/busbar-a2a/src"];
+        let homes: &'static [&'static str] = &[
+            "crates/busbar-plane-a2a/src/a2a",
+            "crates/busbar-plane-a2a/src",
+        ];
         let got = walk_area(
             &cx,
             &CountRoot {

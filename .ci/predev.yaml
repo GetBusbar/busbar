@@ -53,6 +53,9 @@ checks:
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
     needs: [gates]
+    # The candidate recording is kept as the check's artifact (ModernCI 0.4.1103), fetched with
+    # `modernci call artifact`, so a red cell can be read from the bytes the judge saw.
+    outputs: [target/oracle/recordings/candidate]
   conformance:
     # Every registered suite recorded on this commit (the llm rigs judge the oracle's candidate
     # recording), then every MUST a fresh pass for it. A not-run suite denies.

@@ -246,6 +246,7 @@ fn opened() -> OutboundInstance {
             ..Budgets::default()
         },
         watchdog_period: Duration::from_millis(20),
+        ..DispatchConfig::default()
     }));
     let row = LinkedRow::of(plugin::door).expect("the test auth door states its Statement");
     let p = load_linked::<Auth>(

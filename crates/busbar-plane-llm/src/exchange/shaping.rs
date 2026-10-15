@@ -13,6 +13,7 @@
 //! | `upstream_model`, `default_max_tokens`, `reasoning`, `prompt_caching` | the model |
 //! | `context_max` (one value per model across every pool), a member's own `reasoning` | the pools |
 //! | the global `default_max_tokens` and the effort → thinking-budget table | `limits` |
+//! | the translation cap, `request_body_max_bytes` (the operator's one knob) | `limits` |
 //!
 //! Each derivation is the previous release's (its boot build of the same tables), so a request is
 //! written the same way whichever build holds the tables. The grammar was already judged by the
@@ -143,6 +144,9 @@ pub struct Shaping {
     pub default_max_tokens: u32,
     /// The effort → thinking-budget table.
     pub reasoning_budgets: [u32; 4],
+    /// The translation cap the kernel handed in `limits.request_body_max_bytes`, if it handed one
+    /// ([`Self::translate_cap`]).
+    pub request_body_max_bytes: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -214,6 +218,10 @@ struct ModelCfg {
     reasoning: Option<bool>,
     #[serde(default)]
     prompt_caching: Option<bool>,
+    /// The model's dialect override (#51): the wire protocol this model is spoken in when it
+    /// differs from its provider's; absent = the provider's.
+    #[serde(default)]
+    protocol: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -234,6 +242,8 @@ struct LimitsCfg {
     default_max_tokens: Option<u32>,
     #[serde(default)]
     reasoning_effort_budgets: Option<Budgets>,
+    #[serde(default)]
+    request_body_max_bytes: Option<usize>,
 }
 
 /// A `*` glob over a model name: the only wildcard `model_capabilities` takes.
@@ -415,12 +425,19 @@ impl Shaping {
                     m.provider
                 )
             })?;
-            let asked = p.protocol.as_deref().unwrap_or(DEFAULT_PROTOCOL);
+            // #51: the model's own `protocol` overrides its provider's default; the plane serves the
+            // resolved dialect only if it knows it (fail-closed).
+            let asked = m
+                .protocol
+                .as_deref()
+                .or(p.protocol.as_deref())
+                .unwrap_or(DEFAULT_PROTOCOL);
             let decl = DECLS
                 .iter()
                 .find(|d| d.name == asked && d.codec.is_some())
-                .ok_or_else(|| {
-                    format!("provider '{}' uses unknown protocol '{asked}'", m.provider)
+                .ok_or_else(|| match m.protocol {
+                    Some(_) => format!("model '{name}' uses unknown protocol '{asked}'"),
+                    None => format!("provider '{}' uses unknown protocol '{asked}'", m.provider),
                 })?;
             let dialect = decl.name;
             let statics = match p.auth.as_deref() {
@@ -477,7 +494,20 @@ impl Shaping {
                 budgets.and_then(|b| b.medium).unwrap_or(medium),
                 budgets.and_then(|b| b.high).unwrap_or(high),
             ],
+            request_body_max_bytes: limits.as_ref().and_then(|l| l.request_body_max_bytes),
         })
+    }
+
+    /// THE TRANSLATION CAP this generation enforces, in bytes: the one the kernel handed in the
+    /// settings the plane was opened or refreshed with (`limits.request_body_max_bytes`, the
+    /// operator's one knob for the inbound body limit and this egress cap), else
+    /// [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`], the kernel's own default. It
+    /// bounds a whole answer taken for translation (past it, the caller's 500), the same-dialect copy
+    /// kept for usage, and what a translating writer accumulates per item.
+    #[must_use]
+    pub fn translate_cap(&self) -> usize {
+        self.request_body_max_bytes
+            .unwrap_or(busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT)
     }
 
     /// The far end a pool member names.

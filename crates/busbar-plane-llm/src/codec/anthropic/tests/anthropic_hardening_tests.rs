@@ -3089,15 +3089,12 @@ fn write_request_projects_response_format_to_native_output_config() {
     );
 }
 
-/// Only a lane WITHOUT native structured outputs (the default) is sent the forced tool; a native
-/// lane's answer is ordinary text and never carries the sentinel name.
-/// response_format tool-forcing MAP-BACK. The Anthropic response reader must project a forced
-/// `tool_use` block named `busbar_response_format` back to a plain assistant TEXT block carrying the
-/// tool input as JSON (the structured output the caller expects), and normalize the `tool_use`
-/// stop_reason to `end_turn`. A genuine (non-sentinel) tool_use must be left untouched.
+/// A `tool_use` named `busbar_response_format` is an ordinary tool call: no lane is sent a synthetic
+/// forced tool any more (1.5.5 dropped `response_format` on a lane without native structured outputs,
+/// v1.5.5 `crates/busbar/src/proto/anthropic/writer.rs:343-347`), so the reader rewrites no block
+/// and keeps the `tool_use` stop reason. RED while the reader turned it into text and `end_turn`.
 #[test]
-fn read_response_maps_forced_response_format_tool_use_back_to_text() {
-    // Forced sentinel tool_use → structured text + end_turn.
+fn read_response_rewrites_no_tool_use_block() {
     let body = serde_json::json!({
         "role": "assistant",
         "content": [{
@@ -3112,38 +3109,10 @@ fn read_response_maps_forced_response_format_tool_use_back_to_text() {
     let resp = AnthropicReader
         .read_response(&body)
         .expect("valid response");
-    assert_eq!(resp.content.len(), 1, "one content block");
-    match &resp.content[0] {
-        crate::codec::ir::IrBlock::Text { text, .. } => {
-            let v: serde_json::Value = serde_json::from_str(text).expect("text is JSON");
-            assert_eq!(v.pointer("/answer"), Some(&serde_json::json!("42")));
-        }
-        other => panic!("forced tool_use must map back to a Text block; got {other:?}"),
-    }
-    assert_eq!(
-        resp.stop_reason,
-        Some(crate::codec::ir::IrStopReason::EndTurn),
-        "a forced-response-format tool_use stop_reason must normalize to end_turn"
-    );
-
-    // Regression proof: a genuine, non-sentinel tool_use is NOT rewritten.
-    let native = serde_json::json!({
-        "role": "assistant",
-        "content": [{
-            "type": "tool_use",
-            "id": "toolu_2",
-            "name": "get_weather",
-            "input": {"city": "SF"}
-        }],
-        "stop_reason": "tool_use",
-        "usage": {"input_tokens": 3, "output_tokens": 5}
-    });
-    let resp = AnthropicReader
-        .read_response(&native)
-        .expect("valid response");
     assert!(
-        matches!(&resp.content[0], crate::codec::ir::IrBlock::ToolUse { name, .. } if name == "get_weather"),
-        "a native tool_use must be left as a ToolUse block"
+        matches!(&resp.content[0], crate::codec::ir::IrBlock::ToolUse { name, .. } if name == "busbar_response_format"),
+        "a tool_use stays a ToolUse block: {:?}",
+        resp.content
     );
     assert_eq!(
         resp.stop_reason,

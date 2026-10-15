@@ -267,17 +267,10 @@ impl NamedMapSection {
             // and then refused by boot. The typed parse that builds the object the overlay installs is
             // deferred to `install`'s `PlaneCfg::insert_def`, so core names no plane entry type here.
             //
-            // With the section's owning plane compiled out there is no registered decl: a definition
-            // then names a plane this build does not carry, refused HERE exactly as `resolve` refuses
-            // a present plane section — naming the SECTION (its plane-declared grammar
-            // key), not a hard-coded plane.
+            // With the owning plane compiled out the section is an unknown key ([`unknown_section`]).
             NamedMapSection::Plane(_) => {
                 if crate::plane::registry::plane_decl_for_config_section(self.key()).is_none() {
-                    let section = self.key();
-                    return Err(format!(
-                        "`{section}.{name}`: this build was compiled without the plane that owns the \
-                         `{section}:` section, so it cannot register this definition."
-                    ));
+                    return Err(unknown_section(self.key()));
                 }
                 plane_config_validate(self, name, def)?;
                 Ok(NamedDef::Plane {
@@ -432,10 +425,7 @@ impl NamedDef {
                 // not.
                 NamedMapSection::Plane(key) => match deploy.plane_section_mut(key) {
                     Some(cfg) => cfg.insert_def(name, &def),
-                    None => Err(format!(
-                        "`{key}`: this build was compiled without the plane that owns this section, \
-                         so it cannot install this definition."
-                    )),
+                    None => Err(unknown_section(key)),
                 },
                 // Only the `Plane` arm of `parse_def` constructs `NamedDef::Plane`.
                 NamedMapSection::IdentityProviders | NamedMapSection::Export => {
@@ -444,6 +434,12 @@ impl NamedDef {
             },
         }
     }
+}
+
+/// A section no registered plane declares, in serde's unknown-field words, as the config parse and
+/// 1.5.5 refuse a key they do not know (S11b (c) Option A, l.3977; Q67; #49).
+fn unknown_section(key: &str) -> String {
+    format!("unknown field `{key}`")
 }
 
 /// Which of the three generic route SHAPES a path is. The error taxonomy declares ONE error set per

@@ -300,6 +300,52 @@ def _tokens(src):
     return out
 
 
+# The name a file's door-cells include stands under in its decls: the composition root's
+# `include!(concat!(env!("OUT_DIR"), "/door_cells.rs"))`, which its build script writes as one
+# `#[path]` module per `[package.metadata.busbar.door-cells]` row (each a door plane's own root cells,
+# at its crate's `tests/root/mod.rs`). Not an identifier, so no real module is mistaken for it.
+DOOR_CELLS = "<door-cells>"
+DOOR_CELLS_FILE = "/door_cells.rs"
+
+
+def _manifest_rows(manifest, table):
+    """The `key = value` rows of `[table]` in a Cargo manifest, one per line, both sides unquoted."""
+    rows, inside = [], False
+    for line in manifest.splitlines():
+        code = line.split("#", 1)[0].strip()
+        if code.startswith("["):
+            inside = code == f"[{table}]"
+            continue
+        if inside and "=" in code:
+            k, v = code.split("=", 1)
+            rows.append((k.strip().strip('"'), v.strip().strip('"')))
+    return rows
+
+
+def _door_cells(read, root_file):
+    """(module name, repo-relative `tests/root/mod.rs`) for every door-cells row of the manifest of
+    the crate whose root file is `root_file`: the module the build script names for the feature, at
+    the crate its `[dependencies]` row's `path` names."""
+    norm = lambda p: os.path.normpath(p).replace(os.sep, "/")
+    crate_dir = os.path.dirname(os.path.dirname(root_file))
+    manifest = read(norm(os.path.join(crate_dir, "Cargo.toml")))
+    if manifest is None:
+        return []
+    deps = dict(_manifest_rows(manifest, "dependencies"))
+    out = []
+    for feature, krate in _manifest_rows(manifest, "package.metadata.busbar.door-cells"):
+        dep = deps.get(krate)
+        if dep is None or "path" not in dep:
+            continue
+        parts = dep.split("path", 1)[1].split('"')
+        if len(parts) < 2:
+            continue
+        out.append(
+            (feature.replace("-", "_"), norm(os.path.join(crate_dir, parts[1], "tests/root/mod.rs")))
+        )
+    return out
+
+
 def _file_items(src):
     """(decls, fns) of one file: decls are (inline nesting, name, `#[path]` or None) for every
     `mod <name>;`; fns are (inline nesting, name) for every `fn <name>`."""
@@ -336,6 +382,13 @@ def _file_items(src):
             fns.append(([m for m, _ in stack], at(i + 1)[1]))
             i += 2
             continue
+        # `include!(concat!(env!("OUT_DIR"), "/door_cells.rs"))`: the door planes' own root cells,
+        # one module per manifest row (DOOR_CELLS).
+        if (kind, val) == ("id", "include") and at(i + 1) == ("p", "!") and any(
+            at(k) == ("str", DOOR_CELLS_FILE) for k in range(i + 2, i + 16)
+        ):
+            decls.append(([m for m, _ in stack], DOOR_CELLS, None))
+            pending = None
         if (kind, val) == ("p", "{"):
             depth += 1
             pending = None
@@ -371,6 +424,11 @@ def module_tree(read, root_file):
                 continue
             items[file] = _file_items(src)
         for nest, name, path_attr in items[file][0]:
+            if name == DOOR_CELLS:
+                for ident, cells in _door_cells(read, root_file):
+                    child = "::".join([m for m in [module] if m] + nest + [ident])
+                    work.append((cells, child, os.path.dirname(cells), None))
+                continue
             child_module = "::".join([m for m in [module] if m] + nest + [name])
             inline_dir = d
             if nest:
@@ -717,6 +775,36 @@ def selftest():
         "an unreached file is refused naming it",
         "orphan.rs" in (resolve(door, "c/src/root/tests/orphan.rs", "a_cell")[1] or ""),
         "an unreached file resolved",
+    )
+
+    # A door plane's own root cells: the serve module's door-cells include reaches each manifest
+    # row's plane crate `tests/root/mod.rs` under `root::serve::<feature>`; with no row, nothing.
+    def cells_tree(manifest):
+        files = {
+            "c/src/main.rs": "mod root;\nfn main() {}\n",
+            "c/src/root/mod.rs": "pub mod serve;\n",
+            "c/src/root/serve.rs": 'pub fn serve() {}\n#[cfg(test)]\n'
+            'include!(concat!(env!("OUT_DIR"), "/door_cells.rs"));\n',
+            "c/Cargo.toml": manifest,
+            "q/tests/root/mod.rs": "mod inner {\n    #[test]\n    fn a_plane_cell() {}\n}\n",
+        }
+        return module_tree(lambda p: files.get(p), "c/src/main.rs")
+
+    dep = '[dependencies]\nplane-q = { path = "../q", optional = true }\n'
+    got, why = resolve(
+        cells_tree(dep + '\n[package.metadata.busbar.door-cells]\nplane-q-door = "plane-q"\n'),
+        "q/tests/root/mod.rs",
+        "a_plane_cell",
+    )
+    case(
+        "a door-cells row reaches its plane crate's root cells",
+        got == "root::serve::plane_q_door::inner::a_plane_cell",
+        f"{got} {why}",
+    )
+    case(
+        "with no door-cells row the plane crate's cells are reached by nothing",
+        resolve(cells_tree(dep), "q/tests/root/mod.rs", "a_plane_cell")[0] is None,
+        "a cell resolved with no row",
     )
 
     # (5) The real ledger is accepted and yields a count -- the printer reaches its subject.

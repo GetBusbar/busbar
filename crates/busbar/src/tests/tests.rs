@@ -1362,17 +1362,17 @@ fn book_call_sites(src: &std::path::Path) -> Vec<String> {
 /// ITEMS 244, 247, 259 — THREE DOC CLAIMS IN `main.rs` THAT THE CODE BESIDE THEM CONTRADICTED.
 ///
 /// Read off the source, because each claim is prose and the code that falsifies it sits beside it:
-/// `register_planes` registers every linked entry, and the manifest links the A2A plane's crate (so
-/// "A2A is still built into core ... not pushed here yet" was false); `main()`/`run()` call into
-/// `root::` throughout (so "Nothing in `main()` calls into it yet" was false); and exactly one root
-/// unit binds the boot book — the LLM arm's — while the admin views share it (so "Every plane's exit
-/// arm settles onto it" was false for mcp/a2a/voice).
+/// `register_planes` registers every linked entry, and the manifest links the plane crate the old
+/// doc said was "still built into core ... not pushed here yet" (so that was false); `main()`/`run()`
+/// call into `root::` throughout (so "Nothing in `main()` calls into it yet" was false); and exactly
+/// one root unit binds the boot book — the node's arm — while the admin views share it (so "Every
+/// plane's exit arm settles onto it" was false for every other plane).
 #[test]
 fn main_rs_doc_claims_match_the_code_beside_them() {
     const MAIN: &str = include_str!("../main.rs");
     const MANIFEST: &str = include_str!("../../Cargo.toml");
 
-    // 244: the A2A plane IS registered — its crate is a linked row and `register_planes` registers
+    // 244: that plane IS registered — its crate is a linked row and `register_planes` registers
     // every linked entry — so its doc may not say otherwise.
     // The manifest's linked row for the plane the old doc said was not pushed — manifest data, kept
     // in a fixture so this test names no plane.
@@ -1400,7 +1400,7 @@ fn main_rs_doc_claims_match_the_code_beside_them() {
         "the `mod root;` doc says main() does not call into the root, and it does"
     );
 
-    // 259: exactly one root unit binds the boot book (the LLM arm), so the book's doc may not claim
+    // 259: exactly one root unit binds the boot book (the node's arm), so the book's doc may not claim
     // every plane settles onto it.
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/root");
     let binders = std::fs::read_dir(&root)

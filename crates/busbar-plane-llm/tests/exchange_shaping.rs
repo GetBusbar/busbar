@@ -104,6 +104,26 @@ fn empty_settings_are_an_empty_generation_with_the_defaults() {
     assert_eq!(s.reasoning_budgets, DEFAULT_REASONING_BUDGETS);
 }
 
+/// THE TRANSLATE CAP IS THE SETTINGS' (row 155): the cap a generation enforces is the
+/// `limits.request_body_max_bytes` the kernel handed in the settings it was opened or refreshed
+/// with, and the kernel's own 32 MiB default when it handed none.
+#[test]
+fn the_translate_cap_is_the_one_the_settings_carry_else_the_default() {
+    let s = Shaping::from_settings(&json!({ "limits": { "request_body_max_bytes": 131072 } }))
+        .expect("reads");
+    assert_eq!(s.translate_cap(), 131_072);
+    let s = Shaping::from_settings(&settings()).expect("reads");
+    assert_eq!(
+        s.translate_cap(),
+        busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT
+    );
+    let s = Shaping::from_settings(&json!({})).expect("reads");
+    assert_eq!(
+        s.translate_cap(),
+        busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT
+    );
+}
+
 #[test]
 fn the_glob_takes_prefix_suffix_and_middle_wildcards() {
     assert!(glob_match("gpt-*", "gpt-4o"));
@@ -111,4 +131,80 @@ fn the_glob_takes_prefix_suffix_and_middle_wildcards() {
     assert!(glob_match("a*c*e", "abcde"));
     assert!(!glob_match("a*c*e", "abde"));
     assert!(glob_match("exact", "exact") && !glob_match("exact", "exactly"));
+}
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/attempt_timeout_precedence_tests.rs::effective_reasoning_member_override_wins`
+/// (coverage map v2 row 43). 1.5.5: the pool member's `reasoning` override wins over the model's
+/// flag in both directions (true over false AND false over true); a member with no override
+/// inherits the model's flag, true or false; a pool or member with no candidate row uses the
+/// model's flag.
+///
+/// RED: a member's `reasoning: false` stops beating a model's `reasoning: true` (the arm the
+/// neighbouring test never drives), or a route with no member row stops reading the model's flag.
+#[test]
+fn effective_reasoning_member_override_wins() {
+    let mut v = settings();
+    // `claude` states `reasoning: true` at the model level; `quiet` turns it off in its pool only.
+    v["pools"]["quiet"] = json!({ "members": [ { "model": "claude", "reasoning": false } ] });
+    let s = Shaping::from_settings(&v).expect("reads");
+    assert_eq!(
+        s.reasoning("main", "gpt"),
+        Some(true),
+        "member true beats model false"
+    );
+    assert_eq!(
+        s.reasoning("quiet", "claude"),
+        Some(false),
+        "member false beats model true"
+    );
+    assert_eq!(
+        s.reasoning("main", "claude"),
+        Some(true),
+        "no member override inherits model true"
+    );
+    assert_eq!(
+        s.reasoning("alt", "gpt"),
+        Some(false),
+        "no member override inherits model false"
+    );
+    assert_eq!(
+        s.reasoning("alt", "claude"),
+        Some(true),
+        "a pool with no row for the member uses the model flag"
+    );
+    assert_eq!(
+        s.reasoning("no-such-pool", "gpt"),
+        Some(false),
+        "no candidate row uses the model flag"
+    );
+    assert_eq!(
+        s.reasoning("no-such-pool", "claude"),
+        Some(true),
+        "no candidate row uses the model flag"
+    );
+}
+
+/// A MODEL'S OWN `protocol` OVERRIDES ITS PROVIDER'S (#51, THE DESIGN section 2, the BEDROCK-INVOKE ruling): the
+/// model is spoken in the dialect it names, a sibling model on the same provider keeps the
+/// provider's, and a dialect the plane does not serve is refused naming the model (fail-closed).
+/// RED: a plane that reads only the provider's `protocol` writes the overriding model's requests
+/// in `openai` and accepts an unknown override.
+#[test]
+fn a_models_protocol_overrides_its_providers_and_an_unknown_one_is_refused() {
+    let mut v = settings();
+    v["models"]["gpt-as-ant"] = json!({ "provider": "oai", "protocol": "anthropic" });
+    let s = Shaping::from_settings(&v).expect("reads");
+    assert_eq!(s.lane("gpt-as-ant").expect("the lane").dialect, "anthropic");
+    assert_eq!(
+        s.lane("gpt").expect("the sibling").dialect,
+        "openai",
+        "a model naming no protocol keeps its provider's"
+    );
+    let mut v = settings();
+    v["models"]["gpt"]["protocol"] = json!("klingon");
+    let refused = Shaping::from_settings(&v).unwrap_err();
+    assert!(
+        refused.contains("model 'gpt' uses unknown protocol 'klingon'"),
+        "{refused}"
+    );
 }

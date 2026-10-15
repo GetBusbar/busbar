@@ -131,6 +131,12 @@ impl GovState {
             budget: Sharded::new(),
             pending_metering: PendingMetering::new(),
             money_view: money_view::MoneyView::default(),
+            caller_refs: Arc::new(RwLock::new(
+                signer
+                    .as_ref()
+                    .map(|s| Arc::new(crate::auth::CallerRefKey::derive(&s.secret_bytes()))),
+            )),
+            deployment_caller_ref: RwLock::new(None),
             signing: RwLock::new(signer.map(|s| Arc::new(SigningMaterial::new(s)))),
             denylist,
             refresh_lock: std::sync::Mutex::new(()),
@@ -407,13 +413,49 @@ impl GovState {
     }
 
     /// THE CALLER-REFERENCE KEY a door plane's units are lent their caller's opaque reference under
-    /// (`crate::auth::CallerRefKey`): derived from this node's token-signing material, so the same
-    /// principal has the same reference on every node sharing that material and across restarts.
-    /// `None` when signing is disabled (the node keeps no material, and no reference is lent).
+    /// (`crate::auth::CallerRefKey`, HKDF label `busbar caller-ref v1`): derived from this node's
+    /// token-signing material, else from the DEPLOYMENT KEYSET the book binds
+    /// ([`Self::bind_deployment_caller_ref`]; row 159 H2). Either way the same principal has the same
+    /// reference on every node of the deployment and across restarts, and a verified principal is
+    /// never lent an empty one. `None` before either is bound.
     #[must_use]
-    pub fn caller_ref_key(&self) -> Option<crate::auth::CallerRefKey> {
-        self.signing_material()
-            .map(|m| crate::auth::CallerRefKey::derive(&m.signer.secret_bytes()))
+    pub fn caller_ref_key(&self) -> Option<Arc<crate::auth::CallerRefKey>> {
+        self.caller_refs
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// The live slot [`Self::caller_ref_key`] reads, shared with every plane driver.
+    #[must_use]
+    pub fn caller_ref_slot(&self) -> crate::plane_driver::CallerRefs {
+        Arc::clone(&self.caller_refs)
+    }
+
+    /// BIND THE DEPLOYMENT KEYSET'S caller-reference material (the book, at boot): the key a
+    /// verified principal's reference is derived under when the node keeps no signing material.
+    /// Every node of a deployment binds the same keyset, so a principal's reference is one across
+    /// nodes and restarts.
+    pub fn bind_deployment_caller_ref(&self, material: [u8; 32]) {
+        *self
+            .deployment_caller_ref
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) = Some(material);
+        self.refresh_caller_refs();
+    }
+
+    /// Re-derive [`Self::caller_ref_key`]: the signing material when the node has one, else the
+    /// deployment keyset's material, else none.
+    fn refresh_caller_refs(&self) {
+        let key = match self.signing_material() {
+            Some(m) => Some(crate::auth::CallerRefKey::derive(&m.signer.secret_bytes())),
+            None => self
+                .deployment_caller_ref
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .map(|m| crate::auth::CallerRefKey::derive(&m)),
+        };
+        *self.caller_refs.write().unwrap_or_else(|e| e.into_inner()) = key.map(Arc::new);
     }
 
     /// The signing key id (`kid`) this node stamps into minted tokens, if signing is enabled.
@@ -924,6 +966,7 @@ impl GovState {
     pub fn set_signing_key(&self, signer: Option<crate::governance::signing::TokenSigner>) {
         let next = signer.map(|s| Arc::new(SigningMaterial::new(s)));
         *self.signing.write().unwrap_or_else(|e| e.into_inner()) = next;
+        self.refresh_caller_refs();
     }
 
     /// The current signing material, as a cheap `Arc` clone (the lock is held only for the clone,

@@ -32,6 +32,11 @@ use busbar_kernel_wal::{BodyReader, BodyWriter, Entry, RecordClass};
 
 use crate::root::durability::Durability;
 
+/// THE LABEL the deployment keyset derives the caller-reference material under (row 159 H2): with
+/// no `auth.signing_key`, a verified principal's reference is keyed by the deployment keyset, so it
+/// is one value on every node of the deployment and across restarts, and never empty.
+pub const CALLER_REF_MATERIAL: &[u8] = b"busbar deployment keyset: caller-ref material v1";
+
 /// The keyset cache's file name under `data_dir`. One 64-hex-character ed25519 seed, mode 0600.
 pub const KEYSET_FILE: &str = "deployment-keyset";
 

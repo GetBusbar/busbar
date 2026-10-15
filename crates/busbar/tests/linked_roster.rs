@@ -24,7 +24,7 @@ fn every_test_linked_crate_registers_one_plane() {
     assert_eq!(
         keys.len(),
         linked::linked_count(),
-        "each test-linked crate registers exactly one plane: {keys:?}"
+        "each test-linked row registers exactly one plane: {keys:?}"
     );
     let mut dedup = keys.clone();
     dedup.sort_unstable();

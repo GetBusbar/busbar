@@ -55,12 +55,13 @@
 //! mark is the framer's to bound: it may fail the stream. This is the stream's, never the
 //! connection's: [`YIELD_MORE`] still means only that a host buffer filled.
 //!
-//! STREAMS END BY PIECE. A frame is one or more pieces on one stream; the last carries
-//! [`PIECE_END_OF_FRAME`]. A stream's frames END with an EMPTY piece (length `0`) carrying
-//! [`PIECE_END_OF_FRAME`]; a stream that FAILED ends instead with a piece carrying
+//! STREAMS END BY FLAG. A frame is one or more pieces on one stream; the last carries
+//! [`PIECE_END_OF_FRAME`]. A stream's frames END with a piece carrying [`PIECE_END`] (with
+//! [`PIECE_END_OF_FRAME`], and no bytes); a stream that FAILED ends instead with a piece carrying
 //! [`PIECE_STREAM_FAILED`] and [`PIECE_END_OF_FRAME`], its bytes the reason (never secret material).
-//! A failed stream fails alone: its siblings on the connection carry on. [`YIELD_ENDED`] ends the
-//! CONNECTION, never one stream.
+//! Nothing else ends a stream: an EMPTY piece is an empty frame (a wire's empty message, text or
+//! binary), never the stream's end. A failed stream fails alone: its siblings on the connection
+//! carry on. [`YIELD_ENDED`] ends the CONNECTION, never one stream.
 //!
 //! FIELDS BY PIECE. A frame whose pieces carry [`PIECE_FIELDS`] is a FIELD BLOCK, never payload: the
 //! far end's HEAD (a response's head fields, a call's initial metadata) is ONE such frame, the
@@ -103,6 +104,7 @@
 //! | `composes_over` | [`TransportTail::composes_over`]; [`TransportTail::role`] states the role outright |
 //! | `selector_forms`, `egress_selector_forms`, `transport_facts`, `status_namespace`, `session`, `session_bound`, `unit0_trigger`, `status_at` | per claim, [`Claim`] |
 //! | `handoff_*`, `upgrades_to`, `handshake_frame_kind`, `handshake_max_steps` | [`TransportTail`] |
+//! | (none: new here) | [`TransportTail::fault_rows`], each claim's breaker reading of its numbering; [`FramePiece::fault`] |
 //! | `framing`, `decodes_payload` | [`TransportTail::framing`], [`FACT_DECODES_PAYLOAD`] |
 //! | `claims` | the Statement's `claims` (the names) and [`TransportTail::claim_rows`] (each name's row, by index) |
 //! | `init` + `WireSettings` + `WireWaker` | lifecycle `open` (settings blob, host tables with `wake`); the settings a transport reads are declared in [`TransportTail::settings`] |
@@ -367,9 +369,11 @@ pub const STATUS_FAR_END_FAULT: u8 = 3;
 /// Status class: other.
 pub const STATUS_OTHER: u8 = 4;
 
-/// Fault reading: none stated. The breaker reads an answer with no fault reading as the caller's
-/// (it records nothing against the destination): a framer that states no fault table never trips
-/// anything.
+/// Fault reading: none stated — no reading, the status table decides. On a frame piece that table
+/// is the framer's own fault table, and an answer it covers with no reading is read as the
+/// caller's (nothing is recorded against the destination): a framer that states no fault table
+/// never trips anything. On a plane's `OnPieceOut::fault` it is the transport's reading of the
+/// same answer that stands.
 pub const FAULT_NONE: u8 = 0;
 /// Fault reading: the caller's own fault. The destination is healthy and nothing is recorded.
 pub const FAULT_CALLER: u8 = 1;
@@ -379,6 +383,10 @@ pub const FAULT_TRANSIENT: u8 = 2;
 /// Fault reading: the destination itself is down for every caller (its credential or its account
 /// was refused), so every pool's cell for it trips at once.
 pub const FAULT_HARD: u8 = 3;
+/// Fault reading: the destination is HEALTHY. It answered; the breaker records a SUCCESS against
+/// it whatever the answer's status (a well-formed protocol error from a reachable destination, as
+/// 1.5.5 counted it: "the backend was reachable and answered"). The answer is relayed as it came.
+pub const FAULT_HEALTHY: u8 = 4;
 
 /// [`Claim::status_at`]: no status.
 pub const STATUS_AT_NONE: u8 = 0;
@@ -435,15 +443,26 @@ pub const PIECE_CONTINUED: u16 = 32;
 
 /// [`FramePiece::flags`]: the piece's bytes belong to a TEXT message, not a binary one, on a wire
 /// whose messages are one or the other (ws's TEXT and BINARY opcodes). Absent means binary, the
-/// meaning every framer that never sets it keeps. On every message-bearing piece (`len > 0`) of a
-/// text message; never on an empty piece, a field block or a failed stream's reason. The host reads
-/// it into `FrameMeta::text`, the bit's one home above the ABI.
+/// meaning every framer that never sets it keeps. On every piece of a text message, an EMPTY text
+/// message's one piece too; never on a field block, a failed stream's reason or a stream's
+/// [`PIECE_END`]. The host reads it into `FrameMeta::text`, the bit's one home above the ABI.
 pub const PIECE_TEXT: u16 = 64;
+
+/// [`FramePiece::flags`]: the stream ENDS whole here; no piece of it follows. The ONLY way a
+/// stream ends whole (an empty piece without it is an empty frame, never the end). Always with
+/// [`PIECE_END_OF_FRAME`] and on an EMPTY piece (`len == 0`): an end that carried bytes would make
+/// them a message the end swallows. Never with [`PIECE_STREAM_FAILED`] (a failed stream's piece
+/// ends it failed), [`PIECE_FIELDS`] (an empty fields piece is an empty head) or [`PIECE_TEXT`].
+pub const PIECE_END: u16 = 128;
 
 /// [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with
 /// [`YIELD_STREAM_FULL`] drained below the framer's low-water mark, and the host may emit on the
 /// stream again. Always an EMPTY piece, with no other flag: it ends no frame and no stream.
 pub const PIECE_WRITABLE: u16 = 256;
+
+/// [`FramePiece::flags`], with [`PIECE_FIELDS`]: `declared_len` is present, the body length the
+/// message's head declared on the wire. Never on any other piece.
+pub const PIECE_HAS_DECLARED_LEN: u16 = 512;
 
 /// [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are
 /// one or the other (ws sends them under its TEXT opcode); read on the call that completes the
@@ -516,6 +535,26 @@ pub struct StatusRow {
     pub class: u32,
 }
 
+/// One fault-table row: a code range of a claim's numbering and the fault reading it means to the
+/// breaker (`FAULT_*`). The framer reads its own table to fill [`FramePiece::fault`]; the host reads
+/// the piece's reading and never a code band. A separate table from the status rows on purpose: the
+/// status class is the fee decision's leg and is never bent to serve the breaker.
+///
+/// A claim that states status rows states fault rows too, or the load is refused
+/// ([`check::check_fault_cover`]): an answer the framer can class it can also read for the breaker.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct FaultRow {
+    /// Index into [`TransportTail::claim_rows`] (and so into the Statement's `claims`).
+    pub claim: u32,
+    /// The lowest code, inclusive.
+    pub lo: u32,
+    /// The highest code, inclusive.
+    pub hi: u32,
+    /// The fault reading (`FAULT_CALLER` | `FAULT_TRANSIENT` | `FAULT_HARD` | `FAULT_HEALTHY`).
+    pub fault: u32,
+}
+
 /// One customer setting the transport reads, at its 1.5.5 path (the connector deals the value to
 /// the plugin's `validate`/`open`).
 #[repr(C)]
@@ -575,6 +614,10 @@ pub struct TransportTail {
     pub settings: *const SettingDecl,
     /// How many.
     pub settings_len: usize,
+    /// The fault table (appended: a tail that predates it reads NULL/`0`, no fault table).
+    pub fault_rows: *const FaultRow,
+    /// How many.
+    pub fault_rows_len: usize,
 }
 
 // ── shared shapes ────────────────────────────────────────────────────────────────────────────────
@@ -643,12 +686,18 @@ pub struct FramePiece {
     pub code: u32,
     /// `STATUS_*`.
     pub status_class: u8,
-    /// Alignment padding.
-    pub _reserved: u8,
+    /// `FAULT_*`: the framer's fault reading of `code`, from its own fault table
+    /// ([`TransportTail::fault_rows`]); [`FAULT_NONE`] where it states none. Lives in what was
+    /// alignment padding, so the piece did not grow.
+    pub fault: u8,
     /// `PIECE_*` bits (a `u16`: room past the first eight).
     pub flags: u16,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: u64,
+    /// With [`PIECE_HAS_DECLARED_LEN`], on a head's field block: the body length the message's
+    /// head declared on the wire, as the framer read it. A statement, never a count of the body
+    /// bytes the pieces carry; the field block itself never holds it. A tail addition (pre-tag v1).
+    pub declared_len: u64,
 }
 
 /// A byte range of a host buffer a piece's bytes were written into; `len == 0` = absent. A
@@ -664,7 +713,8 @@ pub struct FrameSpan {
 
 // The piece's size and its flags' place are fixed: a framer built against another layout is refused
 // at compile time, never read wrong at run time.
-const _: () = assert!(core::mem::size_of::<FramePiece>() == 40);
+const _: () = assert!(core::mem::size_of::<FramePiece>() == 48);
+const _: () = assert!(core::mem::offset_of!(FramePiece, fault) == 29);
 const _: () = assert!(core::mem::offset_of!(FramePiece, flags) == 30);
 
 /// The HOST buffers every framer op writes into, and the host's clock at the call.
@@ -938,6 +988,14 @@ pub struct LocateIn {
     pub alpn_buf: *mut u8,
     /// Its capacity.
     pub alpn_cap: usize,
+    /// `1` = answer the protocol offer an ACCEPTING listener makes in the handshake, for a listener
+    /// framed by this entry (`target` may be empty: a listener names no far end); `0` = the
+    /// offer a dial to `target` makes, as before. THE ALPN OFFER IS THE FRAMER'S on both sides
+    /// (`BUSBAR-1.6.0.md` l.477-478), and the two may differ (v1.5.5's client offered `h2,
+    /// http/1.1`, its listener `http/1.1` alone). A tail addition (pre-tag v1).
+    pub accept: u32,
+    /// Alignment padding.
+    pub _accept_reserved: u32,
 }
 
 /// `locate`'s `out`.
@@ -1062,6 +1120,15 @@ pub struct EmitIn {
     pub deadline_ns: u64,
     /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
     pub lane: *const DatagramLane,
+    /// THE ANSWER'S STATUS (INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.4913): on an ACCEPTED stream's FIRST
+    /// emit, the one carrying the answer's head (its bytes `encode` rendered), the status the answer
+    /// carries, in the numbering of the claim the stream arrived on; a status that asks the far end
+    /// to switch protocols hands the connection to the claimed upgrade framer ([`slot::DETACH`]).
+    /// `0` on every other emit, where a stated status is refused
+    /// ([`check::check_emit_status`]). Never a `:status` field. A tail addition (pre-tag v1).
+    pub status: u32,
+    /// Alignment padding.
+    pub _status_reserved: u32,
 }
 
 /// `encode`'s `in`. The rendered bytes go into `sink.wire`.

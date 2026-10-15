@@ -463,10 +463,18 @@ fn file_literals(rel: &str, text: &str) -> std::sync::Arc<Vec<(usize, String)>> 
         return std::sync::Arc::clone(found);
     }
     let mut out = Vec::new();
-    for (i, raw) in text.lines().enumerate() {
-        if !raw.contains('"') {
+    let rust = rel.ends_with(".rs");
+    for (i, line) in text.lines().enumerate() {
+        if !line.contains('"') {
             continue;
         }
+        // An `extern "…"` ABI string is Rust syntax, not vocabulary (ARCHITECT ruling on #787).
+        let unabi = if rust {
+            without_abi_strings(line)
+        } else {
+            std::borrow::Cow::Borrowed(line)
+        };
+        let raw: &str = &unabi;
         // Every literal on its own, and then any string the JOINED reading adds — a name split
         // across `concat!("ot", "lp")` is one name to the compiler and one hit here.
         let own: Vec<String> = decoded_literals(raw)
@@ -491,6 +499,74 @@ fn file_literals(rel: &str, text: &str) -> std::sync::Arc<Vec<(usize, String)>> 
         .expect("never poisoned")
         .insert(key, std::sync::Arc::clone(&out));
     out
+}
+
+/// `line` without the string of an ABI POSITION: the literal right after the keyword `extern`
+/// (`extern "C" fn`, `extern "C-unwind" {`, `unsafe extern "C"`) and the value of an `abi = "…"`
+/// argument (an attribute's ABI form). That string names a calling convention: it is Rust syntax,
+/// not instance vocabulary, so the instance axes do not read it (ARCHITECT ruling on #787: a
+/// scanner precision fix, not a Law 0 drain). Exactly that position: the same word in any other
+/// literal, the next one on the line included, is still read.
+fn without_abi_strings(line: &str) -> std::borrow::Cow<'_, str> {
+    if !line.contains("extern") && !line.contains("abi") {
+        return std::borrow::Cow::Borrowed(line);
+    }
+    let bytes = line.as_bytes();
+    let word_at = |at: usize, word: &str| {
+        bytes[at..].starts_with(word.as_bytes())
+            && (at == 0 || !(bytes[at - 1].is_ascii_alphanumeric() || bytes[at - 1] == b'_'))
+            && bytes
+                .get(at + word.len())
+                .is_none_or(|b| !(b.is_ascii_alphanumeric() || *b == b'_'))
+    };
+    let skip_ws = |mut at: usize| {
+        while bytes.get(at).is_some_and(u8::is_ascii_whitespace) {
+            at += 1;
+        }
+        at
+    };
+    // Bytes are walked for the syntax (a quote and a backslash are one byte in UTF-8 and never a
+    // continuation byte); the text is copied in slices, so a multi-byte character is never split.
+    let mut out = String::with_capacity(line.len());
+    let mut copied = 0usize;
+    let mut at = 0usize;
+    let mut in_str = false;
+    while at < bytes.len() {
+        let b = bytes[at];
+        if in_str {
+            if b == b'\\' {
+                at += 2;
+                continue;
+            }
+            if b == b'"' {
+                in_str = false;
+            }
+            at += 1;
+            continue;
+        }
+        let abi_after = if word_at(at, "extern") {
+            Some(skip_ws(at + "extern".len()))
+        } else if word_at(at, "abi") {
+            let eq = skip_ws(at + "abi".len());
+            (bytes.get(eq) == Some(&b'=')).then(|| skip_ws(eq + 1))
+        } else {
+            None
+        };
+        if let Some(open) = abi_after.filter(|o| bytes.get(*o) == Some(&b'"')) {
+            if let Some(len) = line[open + 1..].find('"') {
+                out.push_str(&line[copied..open]);
+                at = open + 1 + len + 1;
+                copied = at;
+                continue;
+            }
+        }
+        if b == b'"' {
+            in_str = true;
+        }
+        at += 1;
+    }
+    out.push_str(&line[copied.min(line.len())..]);
+    std::borrow::Cow::Owned(out)
 }
 
 /// THE INSTANCE NAMES THAT ARE ALSO AN HTTP WORD (TODO: "a word collision never raises a cell: it
@@ -588,8 +664,47 @@ fn placement_variant(lines: &[&str], at: usize) -> bool {
     name.trim_start_matches('"').ends_with("Placement")
 }
 
-/// THE FIVE AXES, MEASURED over every `Family::Neutral` crate.
-pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) -> Instances {
+/// Whether line `at` (0-based) of `lines`, a file at `rel`, is the line a `[[shape-word]]` row's
+/// `holder` names: in a `.rs` file the line declaring `const <holder>:`; in a `.json` file a line
+/// inside the object keyed `"<holder>"` (the nearest enclosing `"<key>": {` at a lower indent).
+fn holds(rel: &str, lines: &[&str], at: usize, holder: &str) -> bool {
+    let Some(line) = lines.get(at) else {
+        return false;
+    };
+    if rel.ends_with(".rs") {
+        return line.contains(&format!("const {holder}:"));
+    }
+    if !rel.ends_with(".json") {
+        return false;
+    }
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut depth = indent(line);
+    for l in lines[..at].iter().rev() {
+        if l.trim().is_empty() || indent(l) >= depth {
+            continue;
+        }
+        depth = indent(l);
+        let t = l.trim();
+        if t.ends_with('{') {
+            return t.trim_end_matches('{').trim().trim_end_matches(':').trim()
+                == format!("\"{holder}\"");
+        }
+    }
+    false
+}
+
+/// THE FIVE AXES, MEASURED over every `Family::Neutral` crate, with the `[[shape-word]]` rows'
+/// NAMED RESERVATIONS (ARCHITECT ruling on #787):
+/// each row reserves exactly one literal hit, its word in its file on the line its holder names,
+/// and nothing else. Also answers a finding per row that reserved nothing: a reservation over no
+/// spelling is a dead allowance.
+pub fn measure_reserved(
+    crates: &[CrateInfo],
+    files: &[(String, String)],
+    vocab: &Vocab,
+    shapes: &[super::super::ShapeWord],
+) -> (Instances, Vec<String>) {
+    let mut spent: BTreeSet<usize> = BTreeSet::new();
     let by_dir: BTreeMap<&str, &CrateInfo> = crates
         .iter()
         .filter(|c| c.family == Family::Neutral)
@@ -617,6 +732,17 @@ pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) 
             continue;
         };
         let lits = file_literals(rel, text);
+        let reserving: Vec<usize> = shapes
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| row.file == *rel)
+            .map(|(i, _)| i)
+            .collect();
+        let all_lines: Vec<&str> = if reserving.is_empty() {
+            Vec::new()
+        } else {
+            text.lines().collect()
+        };
         let collides = |l: &String| COLLIDING_LITERALS.contains(&l.as_str());
         let lines: Vec<&str> = if lits.iter().any(|(_, l)| collides(l)) {
             text.lines().collect()
@@ -629,6 +755,16 @@ pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) 
             let Some(kinds) = lookup.get(lit) else {
                 continue;
             };
+            // A NAMED SHAPE RESERVATION takes this one hit, and only it.
+            let reserved = reserving.iter().copied().find(|i| {
+                !spent.contains(i)
+                    && shapes[*i].word == *lit
+                    && holds(rel, &all_lines, line - 1, &shapes[*i].holder)
+            });
+            if let Some(i) = reserved {
+                spent.insert(i);
+                continue;
+            }
             if let Some(w) = COLLIDING_LITERALS.iter().find(|w| **w == lit.as_str()) {
                 let left = words_left
                     .entry((*line, *w))
@@ -649,7 +785,20 @@ pub fn measure(crates: &[CrateInfo], files: &[(String, String)], vocab: &Vocab) 
             }
         }
     }
-    out
+    let stale = shapes
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !spent.contains(i))
+        .map(|(_, row)| {
+            format!(
+                "shape-word-unused\t{} in {} at {}\tthe `[[shape-word]]` row ({}) reserves a \
+                 spelling that is not there. A reservation over nothing is a dead allowance: strike \
+                 the row",
+                row.word, row.file, row.holder, row.cite
+            )
+        })
+        .collect();
+    (out, stale)
 }
 
 /// The files a cell's number is made of, heaviest first.
@@ -1104,6 +1253,103 @@ pub fn selftest<'a>(
             &super::fixture_subject("auth"),
             "planted_header_pick.rs",
         ],
+    ));
+
+    // AN `extern "…"` ABI STRING IS SYNTAX, NOT VOCABULARY (ARCHITECT ruling on #787): the `c`
+    // secret plugin's name (plugins.yaml `busbar-secret-c`) is the lower-cased string of every
+    // `extern "C"`, and that position is not read. GREEN: a neutral crate's `extern "C" fn` and an
+    // attribute's `abi = "C"` name no instance. RED: the same plugin named as a value, alone or on
+    // the very line of an `extern "C"`, still counts.
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "an `extern \"C\"` ABI string names no secret instance",
+        &[ROW_MATRIX],
+        super::fixture_files(&[(
+            "planted_abi.rs",
+            "pub extern \"C\" fn planted_abi() {}\npub unsafe extern \"C-unwind\" fn planted_unwind() {}\n#[planted(abi = \"C\")]\npub struct PlantedAbi;\n",
+        )]),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `\"c\"` literal naming the secret plugin in a neutral crate still counts",
+        &[ROW_MATRIX],
+        super::fixture_files(&[(
+            "planted_secret_c.rs",
+            "pub fn pick(module: &str) -> bool {\n    module == \"c\"\n}\n",
+        )]),
+        &[
+            "unlisted-instance",
+            &super::fixture_subject("secret"),
+            "planted_secret_c.rs",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "the secret plugin's name on the line of an `extern \"C\"` still counts",
+        &[ROW_MATRIX],
+        super::fixture_files(&[(
+            "planted_abi_and_name.rs",
+            "pub extern \"C\" fn planted_module() -> *const u8 { \"C\".as_ptr() }\n",
+        )]),
+        &[
+            "unlisted-instance",
+            &super::fixture_subject("secret"),
+            "planted_abi_and_name.rs",
+        ],
+    ));
+
+    // A NAMED SHAPE RESERVATION (ARCHITECT ruling on #787). A `[[shape-word]]` row reserves ONE
+    // spelling of a word that is a shape (the 1.5.5 placement key `header`): the constant its
+    // holder names, in the file it names. GREEN with the row; the same row beside a second spelling
+    // of the word in that file is RED (the reservation is never word-wide); a row whose holder
+    // spells nothing is RED as a dead allowance.
+    let ledger = cx.read(super::LEDGER).unwrap_or_default();
+    let shape_file = format!("{FIXTURE_DIR}/src/planted_shape.rs");
+    let reserved = |source: &str, holder: &str| {
+        let mut ov = super::fixture_files(&[("planted_shape.rs", source)]);
+        ov.set(
+            super::LEDGER,
+            format!(
+                "{}\n\n[[shape-word]]\nword = \"header\"\nfile = \"{shape_file}\"\nholder = \
+                 \"{holder}\"\ncite = \"BUSBAR-1.6.0.md:2284\"\n",
+                ledger.trim_end()
+            ),
+        );
+        ov
+    };
+    let shape = "pub const PLANTED_PLACEMENT_KEY: &str = \"header\";\n";
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "a `[[shape-word]]` row reserves the one constant it names",
+        &[ROW_MATRIX],
+        reserved(shape, "PLANTED_PLACEMENT_KEY"),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a second spelling of a reserved word in the same file still counts",
+        &[ROW_MATRIX],
+        reserved(
+            &format!("{shape}pub fn pick(module: &str) -> bool {{\n    module == \"header\"\n}}\n"),
+            "PLANTED_PLACEMENT_KEY",
+        ),
+        &[
+            "unlisted-instance",
+            &super::fixture_subject("auth"),
+            "planted_shape.rs",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[[shape-word]]` row whose holder spells nothing is a dead allowance",
+        &[ROW_MATRIX],
+        reserved(shape, "NO_SUCH_CONSTANT"),
+        &["shape-word-unused", "NO_SUCH_CONSTANT"],
     ));
 
     // A CRATE IS NEVER MEASURED AGAINST ITS OWN NAME — the store instance writing its own id is

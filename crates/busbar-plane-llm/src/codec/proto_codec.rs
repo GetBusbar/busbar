@@ -110,17 +110,19 @@ pub trait ProtocolReader: Send + Sync {
     /// plain token. Defaulted to `None`: only a dialect whose stop vocabulary can say
     /// [`crate::codec::ir::IrStopReason::Error`] needs to answer.
     fn raw_stop_reason(&self, body: &[u8]) -> Option<crate::codec::ir::IrStopReason> {
-        let key = self.stop_reason_key()?;
-        crate::codec::usage_tail::first_string_value_after(body, key)
+        let mut scan = crate::codec::usage_tail::StopKeyScanner::new(self.stop_reason_key()?)?;
+        scan.feed(body);
+        scan.token()
             .and_then(|token| self.stop_reason_of_token(token))
     }
 
-    /// This dialect's non-stream stop-reason KEY as it appears on the wire, quotes included (e.g.
-    /// `"finish_reason"`): the field [`Self::raw_stop_reason`] — and the relay's incremental
-    /// [`crate::codec::usage_tail::StopKeyScanner`], which answers the same over a body it never holds —
-    /// locate. The FIRST occurrence in the body is the one read, so it must be the one
-    /// [`Self::read_response`] reads. `None` (the default): this dialect is not scanned.
-    fn stop_reason_key(&self) -> Option<&'static [u8]> {
+    /// This dialect's non-stream stop-reason FIELD, located structurally (a member name, quotes
+    /// included, at a container depth — see [`crate::codec::usage_tail::StopKey`]): the field
+    /// [`Self::raw_stop_reason`] and the relay's incremental
+    /// [`crate::codec::usage_tail::StopKeyScanner`] read. The FIRST such member in the body is the
+    /// one read, so it must be the one [`Self::read_response`] reads. `None` (the default): this
+    /// dialect is not scanned.
+    fn stop_reason_key(&self) -> Option<crate::codec::usage_tail::StopKey> {
         None
     }
 
@@ -674,6 +676,14 @@ pub trait ProtocolWriter: Send + Sync {
     /// held ingress writer). Default no-op: every writer without such a requirement ignores it.
     fn set_request_echo(&self, _ingress_request_body: &serde_json::Value) {}
 
+    /// Hand this writer the TRANSLATION CAP its plane enforces (the one the kernel handed the plane
+    /// in its settings, `limits.request_body_max_bytes`): the byte ceiling any one of its per-item
+    /// accumulators may reach over the life of a stream. `&self`, latched by interior mutability as
+    /// [`Self::set_request_echo`] is. A writer holds
+    /// [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`] until it is handed one. Default
+    /// no-op: a writer that accumulates nothing bounds nothing.
+    fn set_translate_cap(&self, _cap: usize) {}
+
     /// Clone this writer as a trait object.
     fn clone_box(&self) -> Box<dyn ProtocolWriter>;
 }
@@ -1188,15 +1198,19 @@ impl DialectCodec for DialectRef {
     fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>) {
         with_writer(self.0, |w| w.inject_response_metrics(value, elapsed_ms));
     }
-    fn attach_error_response_headers(
+    fn error_response_fields(
         &self,
-        headers: &mut busbar_contract::http::HeaderMap,
         kind: &str,
         envelope: &serde_json::Value,
-    ) {
+    ) -> Vec<(String, Vec<u8>)> {
+        let mut headers = busbar_contract::http::HeaderMap::new();
         with_writer(self.0, |w| {
-            w.attach_error_response_headers(headers, kind, envelope)
+            w.attach_error_response_headers(&mut headers, kind, envelope)
         });
+        headers
+            .iter()
+            .map(|(n, v)| (n.as_str().to_string(), v.as_bytes().to_vec()))
+            .collect()
     }
     fn extract_error(
         &self,

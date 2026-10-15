@@ -54,7 +54,7 @@ struct FarEnd {
 
 impl FarEnd {
     /// The streams the client opened a request on (a HEADERS frame each), in order.
-    fn request_streams(&self) -> Vec<u32> {
+    fn request_stream_ids(&self) -> Vec<u32> {
         self.frames
             .lock()
             .expect("frames")
@@ -294,8 +294,14 @@ fn connector(settings: &TransportSettings, trust: &EgressTrust) -> Connector {
         Arc::new(|_| {}),
     )
     .pooling(crate::root::connector::pool_posture(settings));
-    c.declare_need(OWNER, NEED, "http", DEFAULT_CLASS)
-        .expect("the http door serves the need");
+    // The need's scheme is the request/response wire, as the admin plane's one claim declares it.
+    c.declare_need(
+        OWNER,
+        NEED,
+        busbar_core_admin::admin_codec::claims::TRANSPORT,
+        DEFAULT_CLASS,
+    )
+    .expect("the request/response framer's door serves the need");
     c
 }
 
@@ -373,7 +379,11 @@ async fn h2c_prior_knowledge_two_requests_ride_one_connection() {
         assert_eq!(body, b"ok");
     }
     assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "one connection");
-    assert_eq!(far.request_streams(), vec![1, 3], "stream 1, then stream 3");
+    assert_eq!(
+        far.request_stream_ids(),
+        vec![1, 3],
+        "stream 1, then stream 3"
+    );
 }
 
 /// The deprecated env pin opens the door the same way: `client_settings` reads it over the config.
@@ -388,7 +398,7 @@ async fn the_deprecated_env_pin_turns_prior_knowledge_on() {
     let c = connector(&settings, &EgressTrust::default());
     let (status, body) = ask(&c, &format!("http://127.0.0.1:{port}/v1/chat/completions")).await;
     assert_eq!((status, body.as_slice()), (Some(200), &b"ok"[..]));
-    assert_eq!(far.request_streams(), vec![1]);
+    assert_eq!(far.request_stream_ids(), vec![1]);
 }
 
 /// ALPN OVER TLS: the connector offers the framer's `h2, http/1.1` in the ClientHello (no offer of
@@ -418,7 +428,7 @@ async fn alpn_h2_over_tls_is_the_framers_offer_and_one_connection_carries_two() 
         vec![Some(b"h2".to_vec())]
     );
     assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "one connection");
-    assert_eq!(far.request_streams(), vec![1, 3]);
+    assert_eq!(far.request_stream_ids(), vec![1, 3]);
 }
 
 /// Under the http1-only key the offer is `http/1.1` alone, as 1.5.5's was.
@@ -480,7 +490,7 @@ async fn an_http1_keep_alive_connection_carries_the_next_request() {
         assert_eq!((status, body.as_slice()), (Some(200), &b"ok"[..]));
     }
     assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "one connection");
-    assert_eq!(far.request_streams().len(), 2, "two requests");
+    assert_eq!(far.request_stream_ids().len(), 2, "two requests");
 }
 
 /// A cleartext HTTP/1.1 far end that answers each connection's one request `200` with an empty
@@ -619,7 +629,7 @@ async fn without_a_pool_each_request_dials() {
         assert_eq!(status, Some(200));
     }
     assert_eq!(far.accepted.load(Ordering::SeqCst), 2);
-    assert_eq!(far.request_streams(), vec![1, 1]);
+    assert_eq!(far.request_stream_ids(), vec![1, 1]);
 }
 
 /// Drive `conn` until `ready` holds (each read attempt bounded, its piece, if any, ignored).
@@ -656,13 +666,13 @@ async fn concurrent_h2c_requests_share_one_connection() {
     assert_eq!((ra.0, ra.1.as_slice()), (Some(200), &b"ok"[..]));
     assert_eq!((rb.0, rb.1.as_slice()), (Some(200), &b"ok"[..]));
     assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "one connection");
-    assert_eq!(far.request_streams(), vec![1, 3], "two streams of it");
+    assert_eq!(far.request_stream_ids(), vec![1, 3], "two requests on it");
     // The shared line goes back to the pool whole: a third request rides it as stream 5.
     far.hold.store(0, Ordering::SeqCst);
     let (status, _) = ask(&c, &url).await;
     assert_eq!(status, Some(200));
     assert_eq!(far.accepted.load(Ordering::SeqCst), 1);
-    assert_eq!(far.request_streams(), vec![1, 3, 5]);
+    assert_eq!(far.request_stream_ids(), vec![1, 3, 5]);
 }
 
 /// Over TLS the protocol is known once the handshake agreed it: a request opened while the first
@@ -678,7 +688,7 @@ async fn a_concurrent_request_rides_an_agreed_h2_tls_connection() {
     let c = connector(&pooled(TransportSettings::default()), &trust);
     let url = format!("https://127.0.0.1:{port}/v1/chat/completions");
     let a = start(&c, &url);
-    drive_until(&c, a, || far.request_streams().len() == 1).await;
+    drive_until(&c, a, || far.request_stream_ids().len() == 1).await;
     let b = start(&c, &url);
     let (ra, rb) = tokio::join!(finish(&c, a), finish(&c, b));
     assert_eq!((ra.0, rb.0), (Some(200), Some(200)));
@@ -688,7 +698,7 @@ async fn a_concurrent_request_rides_an_agreed_h2_tls_connection() {
         1,
         "one handshake"
     );
-    assert_eq!(far.request_streams(), vec![1, 3]);
+    assert_eq!(far.request_stream_ids(), vec![1, 3]);
 }
 
 /// HTTP/1.1 stays one request per connection: two concurrent requests take two connections.
@@ -766,7 +776,7 @@ async fn a_lent_line_reset_before_any_byte_left_is_redialled_once() {
     let c = connector(&settings, &EgressTrust::default());
     let url = format!("http://127.0.0.1:{port}/v1/chat/completions");
     let a = start(&c, &url);
-    drive_until(&c, a, || far.request_streams().len() == 1).await;
+    drive_until(&c, a, || far.request_stream_ids().len() == 1).await;
     rst.send(()).await.expect("the reset");
     // The reset reaches this side; nothing drives the line meanwhile.
     tokio::time::sleep(Duration::from_millis(200)).await;
@@ -779,7 +789,7 @@ async fn a_lent_line_reset_before_any_byte_left_is_redialled_once() {
         "the redial is one fresh connection"
     );
     assert_eq!(
-        far.request_streams(),
+        far.request_stream_ids(),
         vec![1, 1],
         "the cut request once, the redialled one once, as stream 1 of its own connection"
     );
@@ -886,7 +896,7 @@ async fn a_request_whose_bytes_left_is_not_redialled() {
     assert!(!answered, "nothing answered the request the close cut");
     assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "no redial");
     assert_eq!(
-        far.request_streams(),
+        far.request_stream_ids(),
         vec![1, 3],
         "the cut request was sent once"
     );
@@ -983,7 +993,7 @@ async fn a_request_whose_opening_left_before_the_line_failed_is_not_redialled() 
     let c = connector(&pooled(TransportSettings::default()), &trust);
     let url = format!("https://127.0.0.1:{port}/v1/chat/completions");
     let a = start(&c, &url);
-    drive_until(&c, a, || far.request_streams().len() == 1).await;
+    drive_until(&c, a, || far.request_stream_ids().len() == 1).await;
     break_in.send(()).await.expect("the break");
     wrote.await.expect("the record is on the wire");
     // The record reaches this side; nothing drives the line meanwhile.
@@ -1006,7 +1016,7 @@ async fn a_request_whose_opening_left_before_the_line_failed_is_not_redialled() 
     }
     // The far end reads what left on its own time: wait for it, never driving this side.
     for _ in 0..250 {
-        if far.request_streams().len() >= 2 {
+        if far.request_stream_ids().len() >= 2 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -1016,7 +1026,7 @@ async fn a_request_whose_opening_left_before_the_line_failed_is_not_redialled() 
     assert!(!answered, "nothing answered the request the break cut");
     assert_eq!(far.accepted.load(Ordering::SeqCst), 1, "no redial");
     assert_eq!(
-        far.request_streams(),
+        far.request_stream_ids(),
         vec![1, 3],
         "the cut request was sent once"
     );

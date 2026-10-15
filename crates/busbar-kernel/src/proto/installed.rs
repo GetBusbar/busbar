@@ -250,14 +250,13 @@ static REGISTRY: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
 /// [`registry`]'s initializer.
 static INSTALLED: std::sync::OnceLock<Vec<&'static ProtocolDecl>> = std::sync::OnceLock::new();
 
-/// Arm the HOST SERVICES a protocol cell reaches through the contract: the translate-body cap reader
-/// (`proxy::max_translate_body_bytes`, the live operator knob), the host entropy source (the OS
-/// CSPRNG) and the host wall clock (`store::now`). Called wherever protocols become reachable —
+/// Arm the HOST SERVICES a protocol cell reaches through the contract: the host entropy source (the
+/// OS CSPRNG) and the host wall clock (`store::now`). Called wherever protocols become reachable —
 /// [`install_protocols`] and the test registration seams — so no cell can be dispatched before they
 /// are armed. Idempotent. A usage-tap fault is no service: the plane returns it on its answer and
-/// the kernel counts it (`handlers::usage_tap_fault`).
+/// the kernel counts it (`handlers::usage_tap_fault`). Nor is the translate cap: the kernel hands it
+/// to a plane in its settings (`limits.request_body_max_bytes`).
 fn arm_host_services() {
-    busbar_contract::codec::install_translate_cap_reader(crate::proxy::max_translate_body_bytes);
     busbar_contract::codec::install_entropy_source(os_entropy);
     busbar_contract::codec::install_wall_clock(crate::store::now);
 }
@@ -416,12 +415,17 @@ pub fn registry() -> &'static Registry {
 /// THE GENERIC ROUTER DETECTION FOLD — `(path, headers)` → which registered protocol a request
 /// speaks, or `None` for a path that names none. Folds every registered protocol's
 /// [`ProtocolDecl::claims`] predicate in REGISTRATION ORDER and keeps the TIGHTEST claim (lowest
-/// [`ClaimStrength`]); a tie breaks by registration order. Byte-identical to the old ladder.
+/// [`ClaimStrength`]); a tie breaks by registration order. Byte-identical to the old ladder. The
+/// head crosses the seam as neutral field pairs, in the map's order (a name's first value first).
 pub fn detect_protocol(path: &str, headers: &http::HeaderMap) -> Option<&'static str> {
+    let fields: Vec<(&[u8], &[u8])> = headers
+        .iter()
+        .map(|(n, v)| (n.as_str().as_bytes(), v.as_bytes()))
+        .collect();
     registry()
         .decls()
         .iter()
-        .filter_map(|d| d.claims.and_then(|c| c(headers, path)).map(|s| (s, d.name)))
+        .filter_map(|d| d.claim_over(path, &fields).map(|s| (s, d.name)))
         .min_by(|a, b| a.0.cmp(&b.0))
         .map(|(_, name)| name)
 }

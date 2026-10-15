@@ -109,8 +109,12 @@ fn item16_synthesized_stream_keeps_a_summary_in_summary() {
         .expect("read");
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir, "responses", 0);
     let out = String::from_utf8(
-        crate::codec::proto_stream::StreamTranslate::synthesize_from_response("responses", &ir)
-            .expect("synthesized"),
+        crate::codec::proto_stream::StreamTranslate::synthesize_from_response(
+            "responses",
+            &ir,
+            busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+        )
+        .expect("synthesized"),
     )
     .unwrap();
     let item = sse_payloads(&out)

@@ -739,6 +739,62 @@ fn a_sibling_crates_declares_file_is_never_this_crates() {
     std::fs::remove_dir_all(&tree).unwrap();
 }
 
+/// The panic text of `run`, which must fail.
+fn panic_text(run: impl FnOnce()) -> String {
+    let e = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run))
+        .expect_err("the proof passed where it must fail");
+    e.downcast_ref::<String>()
+        .cloned()
+        .or_else(|| e.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_default()
+}
+
+/// RED (status row 114): a plugin with NO declares file fails the declared-needs proof by name,
+/// where it used to print and pass; given one stating the Statement's needs, it passes.
+#[test]
+fn red_a_plugin_with_no_declares_file_fails_the_declared_needs_proof() {
+    use crate::dispatch_test_plugin as plug;
+    let root = std::env::temp_dir().join(format!("declares-none-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let dir = root.join("plugin");
+    std::fs::create_dir_all(&dir).unwrap();
+    let s = super::Subject::new(plug::busbar_plugin_door, "unused", "{}");
+    let at = dir.to_str().unwrap();
+    let why = panic_text(|| super::needs_declared(&s, at));
+    assert!(why.contains("no declares.json for the plugin at"), "{why}");
+    std::fs::write(dir.join("declares.json"), r#"{"needs": []}"#).unwrap();
+    super::needs_declared(&s, at);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+/// RED (status row 114): an outbound RED arm never passes unrun. Over a door that states no
+/// outbound family (the export test door), the arm runs nothing only while `conformance.json`
+/// drives no outbound style either; inputs that drive one over such a door fail by name, where
+/// every arm used to print and pass.
+#[test]
+fn red_an_outbound_arm_over_a_door_without_the_family_never_passes_unrun() {
+    use super::{outbound_plant, Subject};
+    use crate::dispatch_test_plugin as plug;
+    fn must_not_run(_: &Subject) {
+        panic!("an outbound arm ran over a door that states no outbound family");
+    }
+    outbound_plant(
+        &Subject::new(plug::busbar_plugin_door, "unused", "{}"),
+        must_not_run,
+    );
+    let driven = Subject::new(
+        plug::busbar_plugin_door,
+        "unused",
+        r#"{"auth": {"outbound": [{"style": "bearer"}]}}"#,
+    );
+    let why = panic_text(|| outbound_plant(&driven, must_not_run));
+    assert!(
+        why.contains("the door states the outbound family: false")
+            && why.contains("`auth.outbound`: true"),
+        "{why}"
+    );
+}
+
 /// The host's secret lending, as the suite lends it: each secret-ref key (a dotted path) is taken
 /// out of the settings and its string lent, in the Statement's order; an absent key lends empty
 /// bytes; settings with no refs pass through byte for byte.
@@ -911,6 +967,7 @@ mod lent_ops {
                 ..Budgets::default()
             },
             watchdog_period: Duration::from_millis(20),
+            ..DispatchConfig::default()
         });
         let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "abandoned")).expect("it loads");

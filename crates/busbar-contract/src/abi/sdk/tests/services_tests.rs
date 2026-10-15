@@ -126,9 +126,7 @@ fn services(t: &HostSlots) -> Services {
     let tables = HostTables {
         size: size_of::<HostTables>() as u32,
         _reserved: 0,
-        ctx: HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
+        ctx: HostCtx::NONE,
         wake: None,
         conns: std::ptr::null(),
         services: t,
@@ -171,9 +169,7 @@ fn no_table_is_no_services() {
     let tables = HostTables {
         size: size_of::<HostTables>() as u32,
         _reserved: 0,
-        ctx: HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
+        ctx: HostCtx::NONE,
         wake: None,
         conns: std::ptr::null(),
         services: std::ptr::null(),

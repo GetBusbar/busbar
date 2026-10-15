@@ -555,11 +555,12 @@ pub(crate) extern "C-unwind" fn egress_open(
             // socket rather than a child's stdio. The governance path is identical (resolve-then-pin,
             // SPKI, mTLS, breaker, meter); joining it is append-only (no ABI change). Refused honestly.
             EgressKind::RawConn => StatusClass::Unsupported,
-            // A governed child process, its stdin/stdout the duplex `PipeId` — spawned ONLY under the
-            // HOST program allowlist. FFI-F3: no operator config wires a subprocess program allowlist
-            // over the FFI seam today, so the host authorizes NO program (`&[]`) and every plane-driven
-            // subprocess open is REFUSED at the allowlist. See [`super::pipe`].
-            EgressKind::Subprocess => super::pipe::open_subprocess(state, d, &[], out),
+            // A governed child process. FFI-F3: no operator configuration wires a subprocess program
+            // allowlist over the FFI seam, so the host authorizes NO program and every plane-driven
+            // subprocess open is REFUSED, before anything on the descriptor is decoded or resolved.
+            // The spawning path it once reached ran in no served path and is struck (row 166, F11):
+            // see [`super::pipe`].
+            EgressKind::Subprocess => StatusClass::Refused,
         }
     })
 }
@@ -819,7 +820,7 @@ fn open_http(
             scope,
             EgressFailClass::Fault,
             0,
-            "governed egress could not start its streaming task".to_string(),
+            "governed egress could not start its stream task".to_string(),
             &fault_url,
         );
         return StatusClass::Fault;

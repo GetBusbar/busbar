@@ -32,7 +32,7 @@ use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 // THIS crate's own `proto_codec` rather than the `busbar_contract::protocol::*` glob.
 #[allow(unused_imports)]
 use super::proto_codec::{Protocol, ProtocolReader, ProtocolWriter, StreamFraming};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 #[rustfmt::skip]
 #[path = "map.gen.rs"]
@@ -51,7 +51,7 @@ pub fn protocol() -> Protocol {
 /// THE RESPONSES ROUTER DETECTION — its single rung of the old core `protocol_id` ladder:
 /// `/v1/responses` (rung 10).
 fn claims(
-    _h: &busbar_contract::http::HeaderMap,
+    _h: busbar_contract::protocol::HeadFields<'_>,
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
     if path.ends_with("/v1/responses") {
@@ -96,7 +96,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
@@ -108,7 +108,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "OpenAI/Python 1.54.0",
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::UNAUTHORIZED,
+        busbar_contract::http::StatusCode::UNAUTHORIZED.as_u16(),
         busbar_contract::protocol::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,
@@ -162,39 +162,25 @@ const DEFAULT_MODEL: &str = crate::codec::dialect::FALLBACK_MODEL;
 /// DoS). The shared `dialect::MAX_OPEN_TOOL_CALLS` (OpenAI's documented parallel-tool-call limit, 128).
 const MAX_OPEN_TOOLS: usize = crate::codec::dialect::MAX_OPEN_TOOL_CALLS;
 
-/// The BYTE ceiling any ONE of the writer's per-item accumulators may reach over the life of a
-/// stream. `MAX_OPEN_TOOLS` bounds how MANY items accumulate; this bounds how large one of them
-/// grows, which is the other half of the same memory-amplification exposure — a backend streaming an
-/// unbounded run of fragments against a single open index needs only one entry to exhaust memory.
-///
-/// The value is `busbar_contract::codec::max_translate_body_bytes()`, the operator-tunable,
-/// live-reconfigurable limit (default 32 MiB) that already bounds a buffered cross-protocol
-/// non-stream body and the Gemini writer's streamed tool-argument buffer. Reusing it — rather than
-/// minting another constant — means an operator who raises the one knob to admit larger payloads
-/// gets that headroom here too, instead of the paths silently diverging. It is read through the
-/// translate-cap reader the host installs (#83a SD-3), a function-pointer call over an atomic load,
-/// cheap enough to take per fragment.
-fn accum_byte_cap() -> usize {
-    busbar_contract::codec::max_translate_body_bytes()
-}
-
 /// Append `fragment` to the per-item string buffer at `index`, honouring BOTH bounds: a new index is
 /// refused once `MAX_OPEN_TOOLS` items are already accumulating, and an existing buffer stops
-/// growing at [`accum_byte_cap`]. Stop-growing, never slice: a fragment that would cross the cap is
-/// dropped whole, which is the policy the Gemini writer's tool-argument accumulator established.
+/// growing at `cap` (the writer's [`ResponsesWriter::accum_byte_cap`]). Stop-growing, never slice: a
+/// fragment that would cross the cap is dropped whole, which is the policy the Gemini writer's
+/// tool-argument accumulator established.
 fn append_capped(
     map: &mut std::collections::BTreeMap<usize, String>,
     index: usize,
     fragment: &str,
+    cap: usize,
 ) {
     match map.get_mut(&index) {
         Some(buf) => {
-            if buf.len().saturating_add(fragment.len()) <= accum_byte_cap() {
+            if buf.len().saturating_add(fragment.len()) <= cap {
                 buf.push_str(fragment);
             }
         }
         None => {
-            if map.len() >= MAX_OPEN_TOOLS || fragment.len() > accum_byte_cap() {
+            if map.len() >= MAX_OPEN_TOOLS || fragment.len() > cap {
                 return;
             }
             map.entry(index).or_default().push_str(fragment);
@@ -487,8 +473,11 @@ fn synthesize_item_id(prefix: &str) -> String {
 //   * the streaming path has no answer to carry it, so the value rides the writer instance
 //     (`ResponsesWriter::stamped_at`), set once by whoever opened the stream.
 //
-// With neither supplied the writer stamps `UNSTAMPED_CREATED_AT`, which is what a caller that never
-// offered a time asked for.
+// With neither supplied the writer stamps the HOST's wall clock, read once per stream through the
+// host-installed reader (`busbar_contract::codec::wall_clock_now`, the reading the Chat writer's
+// `created` takes too), as 1.5.5 stamped `now_unix_secs()` (v1.5.5
+// `crates/busbar/src/proto/openai_responses/writer.rs:479`); `UNSTAMPED_CREATED_AT` only in a
+// process whose host installed no clock.
 //
 // The rule is about FABRICATING a time, not about clocks as such. The crate does read a monotonic
 // clock in two places — the Bedrock writer and the stream framer both start an `Instant` to MEASURE
@@ -2303,10 +2292,8 @@ fn read_responses_usage(
 /// so the counter is stream-scoped by construction and the increments are plain `&self` atomics on
 /// that one owned instance — no thread affinity, so the counter follows the stream across Tokio
 /// worker migrations.
-/// The `created_at` a Responses answer wears when NO caller supplied a creation time.
-///
-/// Zero, and deliberately so: it is the unix epoch, it is obviously not a real reading, and it says
-/// "nobody offered one" without the writer having to invent an answer by reading a clock.
+/// The `created_at` a Responses answer wears when NO caller supplied a creation time AND the host
+/// installed no wall clock (see [`ResponsesWriter::default_created_at`]).
 pub const UNSTAMPED_CREATED_AT: u64 = 0;
 
 pub struct ResponsesWriter {
@@ -2486,6 +2473,11 @@ pub struct ResponsesWriter {
     /// all, and any cross-protocol stream whose caller has no parsed ingress body). A poisoned lock
     /// degrades to `None` (the spec DEFAULTS below), never to a panic on the request path.
     request_echo: std::sync::Mutex<Option<serde_json::Value>>,
+    /// THIS STREAM'S TRANSLATION CAP: the byte ceiling any one per-item accumulator may reach
+    /// ([`Self::accum_byte_cap`]). The plane hands it from its own settings when it opens the
+    /// stream ([`crate::codec::proto_codec::ProtocolWriter::set_translate_cap`]); until then,
+    /// [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`].
+    translate_cap: AtomicUsize,
 }
 
 /// Accumulated function-call item fields for one open `output_index`, finalized into the
@@ -2535,6 +2527,7 @@ pub const ResponsesWriter: ResponsesWriter = ResponsesWriter {
     reasoning_sig_accum: std::sync::Mutex::new(std::collections::BTreeMap::new()),
     failed: AtomicBool::new(false),
     request_echo: std::sync::Mutex::new(None),
+    translate_cap: AtomicUsize::new(busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT),
 };
 
 impl Clone for ResponsesWriter {
@@ -2663,11 +2656,33 @@ impl Clone for ResponsesWriter {
             request_echo: std::sync::Mutex::new(
                 self.request_echo.lock().map(|e| e.clone()).unwrap_or(None),
             ),
+            translate_cap: AtomicUsize::new(self.translate_cap.load(Ordering::Relaxed)),
         }
     }
 }
 
 impl ResponsesWriter {
+    /// The BYTE ceiling any ONE of the writer's per-item accumulators may reach over the life of a
+    /// stream. `MAX_OPEN_TOOLS` bounds how MANY items accumulate; this bounds how large one of them
+    /// grows, which is the other half of the same memory-amplification exposure — a backend
+    /// streaming an unbounded run of fragments against a single open index needs only one entry to
+    /// exhaust memory.
+    ///
+    /// The value is the stream's translation cap, the one the plane's settings carry (the kernel
+    /// hands `limits.request_body_max_bytes`, the operator-tunable limit, default 32 MiB, that
+    /// already bounds a buffered cross-protocol non-stream body and the Gemini writer's streamed
+    /// tool-argument buffer). Reusing it — rather than minting another constant — means an operator
+    /// who raises the one knob to admit larger payloads gets that headroom here too, instead of the
+    /// paths silently diverging. One atomic load, cheap enough to take per fragment.
+    fn accum_byte_cap(&self) -> usize {
+        self.translate_cap.load(Ordering::Relaxed)
+    }
+
+    /// Latch the stream's translation cap (see [`Self::accum_byte_cap`]).
+    fn store_translate_cap(&self, cap: usize) {
+        self.translate_cap.store(cap, Ordering::Relaxed);
+    }
+
     /// Reset the per-stream `sequence_number` counter to 0. Called when the stream's opening
     /// `response.created` event is written so every stream's sequence starts from 0. The reader
     /// gates `MessageStart` on `state.started`, so exactly one reset happens per stream. The
@@ -2781,7 +2796,20 @@ impl ResponsesWriter {
             .lock()
             .ok()
             .and_then(|c| *c)
-            .unwrap_or(self.stamped_created_at)
+            .unwrap_or_else(|| self.default_created_at())
+    }
+
+    /// The `created_at` for an answer that carries none: the caller's stamp when one was given,
+    /// else the HOST's wall clock (`busbar_contract::codec::wall_clock_now`, the reading the Chat
+    /// writer stamps), as 1.5.5 stamped `now_unix_secs()` (v1.5.5
+    /// `crates/busbar/src/proto/openai_responses/writer.rs:479`). A translated stream clears the
+    /// upstream's creation time, so without this every translated stream into a Responses client
+    /// carried `created_at: 0` (1970). `UNSTAMPED_CREATED_AT` only when the host installed no clock.
+    pub(crate) fn default_created_at(&self) -> u64 {
+        if self.stamped_created_at != UNSTAMPED_CREATED_AT {
+            return self.stamped_created_at;
+        }
+        busbar_contract::codec::wall_clock_now().unwrap_or(UNSTAMPED_CREATED_AT)
     }
 
     /// This writer, stamped with the creation time the caller read.
@@ -2900,7 +2928,7 @@ impl ResponsesWriter {
     /// Append a streamed `arguments` fragment for the function-call item at `index`. Native
     /// `response.output_item.done` carries the COMPLETE accumulated arguments string, so the writer
     /// concatenates the `InputJsonDelta` fragments here. Lock poisoning degrades to a no-op.
-    /// Bounded on BOTH axes, like every accumulator on this writer (see [`accum_byte_cap`]): a NEW
+    /// Bounded on BOTH axes, like every accumulator on this writer (see [`Self::accum_byte_cap`]): a NEW
     /// index is refused once `MAX_OPEN_TOOLS` distinct items are already accumulating (the same line
     /// `mark_tool_open` holds), and an existing buffer stops growing at the translate-body cap.
     /// A refused fragment is dropped WHOLE rather than sliced at the boundary — a cap-truncated
@@ -2911,12 +2939,13 @@ impl ResponsesWriter {
         if let Ok(mut map) = self.tool_calls.lock() {
             match map.get_mut(&index) {
                 Some(entry) => {
-                    if entry.arguments.len().saturating_add(fragment.len()) <= accum_byte_cap() {
+                    if entry.arguments.len().saturating_add(fragment.len()) <= self.accum_byte_cap()
+                    {
                         entry.arguments.push_str(fragment);
                     }
                 }
                 None => {
-                    if map.len() >= MAX_OPEN_TOOLS || fragment.len() > accum_byte_cap() {
+                    if map.len() >= MAX_OPEN_TOOLS || fragment.len() > self.accum_byte_cap() {
                         return;
                     }
                     map.entry(index).or_default().arguments.push_str(fragment);
@@ -2941,12 +2970,12 @@ impl ResponsesWriter {
     /// concatenates the `TextDelta` fragments here. Lock poisoning degrades to a no-op (the terminal
     /// item then carries empty text) rather than panicking on the request path.
     /// Bounded on both axes exactly as `append_tool_arguments` is: a new index is refused past
-    /// `MAX_OPEN_TOOLS`, and an existing buffer stops growing at [`accum_byte_cap`]. A truncated
+    /// `MAX_OPEN_TOOLS`, and an existing buffer stops growing at [`Self::accum_byte_cap`]. A truncated
     /// text item is what the client already gets from any capped stream; an unbounded one is a
     /// per-connection memory-amplification DoS.
     fn append_text(&self, index: usize, fragment: &str) {
         if let Ok(mut map) = self.text_accum.lock() {
-            append_capped(&mut map, index, fragment);
+            append_capped(&mut map, index, fragment, self.accum_byte_cap());
         }
     }
 
@@ -2954,7 +2983,7 @@ impl ResponsesWriter {
     /// `output_text` part they annotate. Lock poisoning degrades to a no-op.
     /// Bounded on both axes, as `append_text` is: a new index is refused past `MAX_OPEN_TOOLS`, and
     /// an item's buffered citations stop accumulating once their carried text weight
-    /// ([`citation_bytes`]) would cross [`accum_byte_cap`]. The whole batch is refused rather than
+    /// ([`citation_bytes`]) would cross [`Self::accum_byte_cap`]. The whole batch is refused rather than
     /// split, so an annotation is never emitted half-formed.
     fn append_citations(&self, index: usize, cits: &[crate::codec::ir::IrCitation]) {
         if cits.is_empty() {
@@ -2965,12 +2994,12 @@ impl ResponsesWriter {
             match map.get_mut(&index) {
                 Some(entry) => {
                     let held: usize = entry.iter().map(citation_bytes).sum();
-                    if held.saturating_add(added) <= accum_byte_cap() {
+                    if held.saturating_add(added) <= self.accum_byte_cap() {
                         entry.extend_from_slice(cits);
                     }
                 }
                 None => {
-                    if map.len() >= MAX_OPEN_TOOLS || added > accum_byte_cap() {
+                    if map.len() >= MAX_OPEN_TOOLS || added > self.accum_byte_cap() {
                         return;
                     }
                     map.entry(index).or_default().extend_from_slice(cits);
@@ -3148,7 +3177,7 @@ impl ResponsesWriter {
     /// Bounded on both axes, as `append_text` is.
     fn append_reasoning(&self, index: usize, fragment: &str) {
         if let Ok(mut map) = self.reasoning_accum.lock() {
-            append_capped(&mut map, index, fragment);
+            append_capped(&mut map, index, fragment, self.accum_byte_cap());
         }
     }
 
@@ -3170,7 +3199,7 @@ impl ResponsesWriter {
             return;
         }
         if let Ok(mut map) = self.reasoning_sig_accum.lock() {
-            append_capped(&mut map, index, fragment);
+            append_capped(&mut map, index, fragment, self.accum_byte_cap());
         }
     }
 

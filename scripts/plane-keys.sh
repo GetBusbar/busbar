@@ -5,8 +5,8 @@
 # plane-keys.sh — THE ONE LIST OF PLANE KEYS.
 #
 # WHY THIS FILE EXISTS. The set of protocol PLANES the tree carries — {llm, mcp, a2a, voice} — was
-# spelled as a constant in a dozen gate scripts (plane-delete-test's `PLANES`, plane-grep-gate's
-# per-crate needle sets, plane-purity-lint's `PLANE_ROOTS`, plane-abi-neutrality's ban list). Each
+# spelled as a constant in a dozen gate scripts (plane-delete-test's `PLANES`, the retired substring
+# meter's per-crate needle sets, plane-purity-lint's `PLANE_ROOTS`, plane-abi-neutrality's ban list). Each
 # copy is one more place that silently NO-OPs on the day a plane is added and someone forgets a row:
 # a gate that scans zero files of a plane it never heard of still prints `ok`. `voice` (Plane 4)
 # arriving as a skeleton crate is exactly that day. There is one list of plane keys and it lives
@@ -34,17 +34,19 @@
 # (jev) — so the LOCKED roster is five: llm, mcp, a2a, streaming, decisions. `PLANE_KEYS` here still
 # says `voice`, and still omits `decisions`, on purpose: every existing consumer of this exact
 # variable treats each entry as a literal `crates/busbar-<key>` directory suffix
-# (`plane_src_roots`/`neutral_src_roots` below) OR — scripts/plane-grep-gate.sh — as a literal GREP
+# (`plane_src_roots`/`neutral_src_roots` below) OR — in the retired substring meter — as a literal GREP
 # NEEDLE banned from the other planes' and the neutral crates' source. Spelling this `streaming`
 # before `crates/busbar-voice` is actually renamed would make every one of those consumers open a
 # directory that is not there, exactly the silent-zero-files failure mode this file exists to
 # prevent (see the header). Adding `decisions` here today is worse than a no-op: this repo's own
 # comment convention cites its own governance items as "DECISIONS #<n>" constantly, so the bare word
-# `decisions` used as scripts/plane-grep-gate.sh's needle would flood that gate — a sibling gate this
+# `decisions` used as the retired substring meter's needle would flood it — a sibling gate this
 # change does not own — with false positives on its own commit-message vocabulary. Both changes wait
 # for their crate/wiring counterpart to land; until then, PLANE_KEYS states what is TRUE ON DISK, and
 # PLANE_KEYS_LOCKED (below) states what is true IN DOCTRINE, so no caller can mistake one for the
 # other by reading only this line.
+# `voice` is struck: FLIP-STREAMING deleted crates/busbar-voice; the streaming plane is
+# crates/busbar-plane-streaming (plane_ondisk_key below), scanned by the plane-kind regime.
 #
 # `mcp` IS STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05) — the named change this header asks for. Every
 # consumer reads a key here as a literal `crates/busbar-<key>` LEGACY-ENGINE directory, and
@@ -52,13 +54,22 @@
 # `crates/busbar-plane-mcp`, which the plane-kind regime scans whole. It stays on the doctrine roster
 # (`PLANE_KEYS_LOCKED`) and reaches the deletion harness as `plane-mcp` (`plane_ondisk_key`), the way
 # `decisions` does as `plane-decisions`.
-PLANE_KEYS="llm a2a voice"
+#
+# `a2a` IS STRUCK the same way (FLIP-A2A): `crates/busbar-a2a` is deleted and the A2A plane is
+# `crates/busbar-plane-a2a`, served through its memory-ABI door (`plane-a2a-door`), scanned by the
+# plane-kind regime and reaching the deletion harness as `plane-a2a`.
+PLANE_KEYS="llm"
 
 # PLANE_KEYS_KIND_ONLY — plane keys whose plane has NO legacy-engine crate any more and lives only in
-# its plane-kind crate `crates/busbar-plane-<key>` (P3 DEL-MCP, ARCHITECT 2026-10-05: `mcp`). Never a
+# its plane-kind crate `crates/busbar-plane-<key>` (P3 DEL-MCP, ARCHITECT 2026-10-05: `mcp`; FLIP-A2A:
+# `a2a`; FLIP-STREAMING: `streaming`, whose legacy crate was `crates/busbar-voice`). Never a
 # `crates/busbar-<key>` root; STILL a plane noun, so a needle gate that bans the other planes' keys
 # keeps banning it (`plane_noun_keys_other`). Leaving PLANE_KEYS must not let the word in.
-PLANE_KEYS_KIND_ONLY="mcp"
+# `decisions` (#48) never had a legacy-engine crate: one plane-kind crate, located by its door row
+# alone, so it is kind-only from birth and on this list so a vanished door row is PLANE-ROOT-MISSING
+# (xtask/src/planes.rs, the twin, pinned equal by xtask/tests/infra.rs). As a needle it reaches only
+# the report-only meter that sources this list (plane-noun-gate.sh).
+PLANE_KEYS_KIND_ONLY="mcp a2a streaming decisions"
 
 # The protocol subset: every plane key except `llm`. Derived from PLANE_KEYS so adding a plane in
 # one place flows here automatically.
@@ -91,11 +102,12 @@ PLANE_KEYS_LOCKED="llm mcp a2a streaming decisions"
 # entry here returns empty: a caller must report that plane as a NAMED GAP, never as a silent pass.
 plane_ondisk_key() {
   case "$1" in
-    streaming) printf 'voice' ;;
+    streaming) printf 'plane-streaming' ;;
     decisions) printf 'plane-decisions' ;;
-    # P3 DEL-MCP: the engine is deleted; the plane is its one plane-kind crate.
+    # P3 DEL-MCP / FLIP-A2A: the engine is deleted; the plane is its one plane-kind crate.
     mcp) printf 'plane-mcp' ;;
-    llm | a2a) printf '%s' "$1" ;;
+    a2a) printf 'plane-a2a' ;;
+    llm) printf '%s' "$1" ;;
     *) printf '' ;;
   esac
 }
@@ -158,7 +170,7 @@ plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src 
 # `crates/busbar-substrate/src` are gone from disk and `crates/busbar-kernel/src` is where the neutral
 # side lives now. What must NOT happen is the directory vanishing while the entry stays: a root that is
 # listed but absent means the gate scans zero files of it and reports the passing answer to every ban.
-# The consumers (scripts/plane-noun-gate.sh, scripts/plane-grep-gate.sh) therefore treat a
+# The consumers (scripts/plane-noun-gate.sh and the retired substring meter) therefore treat a
 # listed-but-missing root as RED and refuse a zero-file scan outright — which is exactly how these two
 # stale entries were caught — so the only way a root leaves the set is through this line.
 #
@@ -168,8 +180,8 @@ plane_src_roots() {   # echo "crates/busbar-<k>/src crates/busbar-<k>-codec/src 
 # THIS LINE WAS THREE ROOTS WHILE THE TWIN WAS TWENTY-ONE, and that test was red on it: the Rust
 # side enrolled the kernel's decomposed crates, the money path (busbar-kernel-ledger), the ABI and
 # contract surfaces (busbar-contract, which holds the plugin ABI since #84), the loader/SDK and the compiled-in cleanliness
-# crates, and this line did not follow. Both shell meters that source it (plane-grep-gate.sh,
-# plane-noun-gate.sh) therefore scanned 220 of 427 neutral files and printed 0 for needles that are
+# crates, and this line did not follow. Both shell meters that sourced it (the retired substring
+# meter, plane-noun-gate.sh) therefore scanned 220 of 427 neutral files and printed 0 for needles that are
 # not 0 -- the ZERO those meters document as the signal to arm their hard gates. The list below is
 # the twin's, same order, one line (the pinning test parses this exact line).
 NEUTRAL_ROOTS_LIST="crates/busbar-kernel/src crates/busbar-kernel-audit/src crates/busbar-kernel-breaker/src crates/busbar-kernel-egress/src crates/busbar-kernel-identity/src crates/busbar-kernel-ledger/src crates/busbar-kernel-scope/src crates/busbar-kernel-wal/src crates/busbar-contract/src crates/plugin-loader/src crates/busbar-core-admin/src crates/busbar-core-connector/src crates/busbar-core-oauth2/src"

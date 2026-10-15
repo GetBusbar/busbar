@@ -121,6 +121,32 @@ pub use outbound::{
     red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte,
 };
 
+/// **AN OUTBOUND RED ARM NEVER PASSES UNRUN** (status row 114: no test passes by skipping its
+/// subject). The arm's subject is a door whose auth tail states the outbound family
+/// (`CAP_OUTBOUND`), and `conformance.json` drives that family exactly then (`auth.outbound`, which
+/// the outbound script requires of such a door). `arm` plants over such a door; over any other the
+/// two sources must AGREE there is nothing to plant. A door that lost `CAP_OUTBOUND` while its
+/// inputs still drive outbound styles, or the reverse, fails here by name, where every arm used to
+/// print and pass.
+///
+/// # Panics
+/// When the door's tail and its inputs disagree on the outbound family, or when `arm` does.
+pub fn outbound_plant(s: &Subject, arm: fn(&Subject)) {
+    s.apply_env();
+    let states = s.kind() == busbar_contract::abi::mechanism::KindCode::Auth
+        && stated(s).caps & auth::CAP_OUTBOUND != 0;
+    let drives = !s.kind_inputs("auth")["outbound"].is_null();
+    assert_eq!(
+        states, drives,
+        "the door states the outbound family: {states}; conformance.json drives `auth.outbound`: \
+         {drives}. The outbound RED arms plant over a door that states the family and is driven \
+         through it, and never pass unrun"
+    );
+    if states {
+        arm(s);
+    }
+}
+
 use super::{
     bind_far, called, close, crossings, dispatcher, input, load, open, output, ready_step, refresh,
     release, tick, validate, Fold, Leg, Recorder, Subject,

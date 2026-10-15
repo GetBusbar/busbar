@@ -362,8 +362,11 @@ impl Image {
     /// One guarded crossing into slot `what`.
     fn call(&self, what: &str, f: impl FnOnce(*mut c_void) -> RawWireOutcome) -> WireOutcome {
         let ptr = self.state.ptr;
-        crate::ffi_guard(&self.wire.path, what, || f(ptr))
-            .map_or(WireOutcome::Fault, RawWireOutcome::outcome)
+        // No mechanism crossing: the mark is nulled for it (#74).
+        crate::dispatch::plugin::without_crossing(|| {
+            crate::ffi_guard(&self.wire.path, what, || f(ptr))
+        })
+        .map_or(WireOutcome::Fault, RawWireOutcome::outcome)
     }
 
     fn key(&self) -> &'static str {

@@ -344,6 +344,7 @@ fn planed(ingress: &'static str, egress: &'static str, req: &Value, far: &Far, n
         lane: &lane,
         intent: stream_intent(handler, arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let head: Vec<(&[u8], &[u8])> = far
         .head
@@ -609,6 +610,7 @@ fn native_stream(dialect: &'static str) -> (Vec<u8>, &'static str) {
             request: None,
             handler,
             meter: true,
+            translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
         },
     );
     let mut out = Vec::new();

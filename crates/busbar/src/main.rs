@@ -10,7 +10,7 @@
 // linked crates' own docs and the README for what a running deployment answers on the wire and the
 // `--help` output above for the CLI surface this binary exposes.
 //
-// See `register_protocols`/`register_planes`/`register_diagnostics`/`register_ws_arrivals` below
+// See `register_protocols`/`register_planes`/`register_diagnostics` below
 // for the composition root's one write into each axis: each linked crate contributes its own
 // declarations here, under its own Cargo feature, and nowhere else.
 
@@ -110,11 +110,11 @@ fn safe_mode_requested(mut args: impl Iterator<Item = String>) -> bool {
 /// its spelling, and the root reads it off the plane's declared rows. A scanner like
 /// `safe_mode_requested` rather than a `handle_cli_flags` exit arm, because it modifies how `run()`
 /// serves rather than replacing the run.
-fn stdio_serve_requested(args: impl Iterator<Item = String>) -> bool {
+fn line_flag_passed(args: impl Iterator<Item = String>) -> bool {
     line_serve_requested(&root::cli::help_rows(), args)
 }
 
-/// [`stdio_serve_requested`] over the `Flags:` rows `planes` declare.
+/// [`line_flag_passed`] over the `Flags:` rows `planes` declare.
 fn line_serve_requested(
     planes: &[&[root::linked::CliHelpRow]],
     mut args: impl Iterator<Item = String>,
@@ -253,6 +253,9 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
 // feature) drops the crate edge and the registration together, exactly as the feature-gated line per
 // crate this replaced did.
 include!(concat!(env!("OUT_DIR"), "/linked.rs"));
+// `LINKED_HOOK_NAMES`: each linked hook row's name as the admin surface prints it (the manifest's
+// `linked-name` rows), handed to the admin crate below so it names no hook plugin.
+include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
 /// REGISTER THE LINKED PROTOCOLS — the composition root's one write into the protocol axis, over
 /// every entry in [`LINKED`] (see [`root::linked::register_protocols`]).
@@ -314,6 +317,9 @@ fn register_planes() {
     // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
     // through the seam whenever this (mandatory) sibling is linked, which is every real build.
     busbar_core_admin::install();
+    // The hook rows this build links, by the names the admin surface prints (Law 1: the admin crate
+    // spells no hook plugin; which hooks a build carries is the manifest's data).
+    busbar_core_admin::v1::service::install_hook_plugins(LINKED_HOOK_NAMES);
 
     // THE ROOT UNITS' SEALS. Each reads what its unit composes against the axes installed above and
     // against nothing else — it binds no listener, opens no store, reads no configuration and writes
@@ -329,14 +335,6 @@ fn register_planes() {
 /// catalog. Installed BEFORE any reader; a build with a plane compiled out contributes nothing.
 fn register_diagnostics() {
     root::linked::register_diagnostics(&LINKED);
-}
-
-/// REGISTER THE LINKED DUPLEX PLANES' INBOUND WS-ACCEPT ARRIVALS — the composition root's one write
-/// into the neutral WS-accept registry. Installed BEFORE the router is built (in `run()`), so
-/// `take_ws_arrivals` drains a populated set; a build with no duplex plane installs nothing and the
-/// router mounts no WS-accept route.
-fn register_ws_arrivals() {
-    root::linked::register_ws_arrivals(&LINKED);
 }
 
 /// The data-plane worker count and its warnings, resolved once at the top of `main()`.
@@ -356,6 +354,12 @@ fn main() {
     // It serves the kernel's host services through `LateServices`, installed once the config is
     // composed (`root::serve::compose`, in `run()`).
     let late_services = root::serve::LateServices::new();
+    // THE HANDLE KEY (#74), drawn before the dispatcher exists: a process whose OS random source
+    // cannot answer refuses to boot rather than mint plugin handles under a weaker key.
+    if let Err(e) = root::loader::dispatch::handle::arm() {
+        eprintln!("busbar: {e}");
+        std::process::exit(1);
+    }
     let dispatcher = root::dispatch::boot(WORKERS.0, late_services.clone());
     root::doors::install_dispatcher(dispatcher);
     // PROTOCOL REGISTRATION FIRST — before the CLI flags, because `--validate` reads the protocol
@@ -370,8 +374,8 @@ fn main() {
     register_planes();
     // HOST-SELECTION SEAM INSTALL (loop unification, DECISIONS #28), after the planes are registered
     // and mirroring `busbar_admin::install()`: inject the kernel-loop runners into the neutral
-    // per-capability-keyed seam. LIVE — it flips every plane in the build (mcp, a2a, llm-native,
-    // voice) onto the unified kernel loop, whose runner opens a zero hold and reports no evidence, so
+    // per-capability-keyed seam. LIVE — it flips every plane in the build onto the unified kernel
+    // loop, whose runner opens a zero hold and reports no evidence, so
     // each plane's own metering inside `drive` stays what settles (item 125, measured money-neutral).
     root::gauntlet_install::install();
     // DIAGNOSTICS REGISTRATION, same slot and the same reason: a rendered catalog or a `by_code`
@@ -379,12 +383,6 @@ fn main() {
     // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
     // nothing and the catalog is the neutral built-ins alone.
     register_diagnostics();
-    // INBOUND WS-ACCEPT ARRIVAL REGISTRATION, same slot and the same reason as the axes above: the
-    // core router drains the installed arrivals at build (`take_ws_arrivals`), which happens later in
-    // `run()` — so the duplex planes' arrivals must be installed here, before the router is built. Each
-    // duplex entry installs its `WsArrivalSpec`s; a build with no duplex plane installs nothing and
-    // the router mounts no WS-accept route — strong-form deletable.
-    register_ws_arrivals();
     // THE COMPOSITION ROOT'S OWN SEAL is NOT here, and it is the one boot step that is not: it
     // composes the transports a switched-over plane would serve through, and the http one carries
     // the operator's `limits.request_body_max_bytes`, so it cannot run before the configuration it
@@ -392,12 +390,10 @@ fn main() {
     // listener is bound. Every axis above is installed by then, which is the ordering the seal
     // needed from this slot in the first place.
     // THE ROOT-BOUND SEAMS the linked entries drive, each bound once here beside the plane axis and
-    // only when some entry drives it: the hostless-egress driver and the egress-trust host (the
-    // "both ends" binding of the outbound hop — a plane holds only `&dyn HostlessEgress` and never
-    // names the core driver; the trust host is a byte-for-byte pass-through nothing on the shipped
-    // path consults yet), the parse-time section list a cross-plane hook refusal reads (after the
-    // plane axis, before the CLI flags read `--validate`), and the envelope a self-enveloping admin
-    // verb builds its own reply through. A build whose entries drive none of them binds none.
+    // only when some entry drives it: the parse-time section list a cross-plane hook refusal reads
+    // (after the plane axis, before the CLI flags read `--validate`), and the envelope a
+    // self-enveloping admin verb builds its own reply through. A build whose entries drive none of
+    // them binds none.
     root::linked::register_seams();
     // CLI flags next — BEFORE building any runtime. They must work without a configured deployment,
     // and `--version` / `--validate` should never spin up a thread pool.
@@ -600,8 +596,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // as `Server-Timing: busbar` above, so they too default off and are gated by ONE process-wide
     // decision read at every emission site (`proxy::wire::maybe_attach_route_policy`).
     busbar_kernel::proxy::configure_route_policy_headers(response_headers_cfg.route_policy);
-    // METRICS OPT-IN, read here and nowhere else: 1.5.3 the switch is the built-in `prometheus`
-    // EXPORTER (`export.prometheus`) — present ⇒ install the recorder (COLLECTION) with the operator's
+    // METRICS OPT-IN, read here and nowhere else: 1.5.3 the switch is the built-in scrape
+    // EXPORTER (its `export:` entry) — present ⇒ install the recorder (COLLECTION) with the operator's
     // REQUIRED `buffer_seconds` retention window; absent ⇒ metrics stay off for the life of the
     // process. Called before the App/router is built so the `/metrics` plugin route (DISTRIBUTION, via
     // the built-in exporter) sees a settled recorder decision.
@@ -634,9 +630,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // request-path logging is captured.
     // A plane's line-serve flag reserves stdout for the plane's channel, so its logs move to
     // stderr — see `init_logging`'s `stdout_reserved`.
-    if let Err(e) =
-        busbar_kernel::observability::init_logging(stdio_serve_requested(std::env::args()))
-    {
+    if let Err(e) = busbar_kernel::observability::init_logging(line_flag_passed(std::env::args())) {
         eprintln!("busbar: tracing subscriber already initialized: {e}");
     }
 
@@ -721,7 +715,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     let admin_tls_cfg = cfg.admin_tls.clone();
     let req_body_max = cfg.limits.request_body_max_bytes;
     let max_inbound = cfg.limits.max_inbound_concurrent;
-    // THE MONEY THE ROOT-DRIVEN LLM NODE PRICES WITH is not captured here and handed over once. It
+    // THE MONEY THE ROOT-DRIVEN PLANE NODE PRICES WITH is not captured here and handed over once. It
     // arrives through the engine's rate-apply seam, installed a few lines down and raised by the ONE
     // place a deployment's rates are resolved — which runs at boot AND on every live apply/reload. A
     // reading taken here instead would be the boot's rates forever: the usage projection would
@@ -829,7 +823,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // `serve_listener` below, so neither listener has been bound, let alone is accepting.
     //
     // The marker sits DIRECTLY above the call it exempts, and must: the lint carries an allow across
-    // the comment block that starts it and no further, so the voice-credential capture that used to
+    // the comment block that starts it and no further, so the session-credential capture that used to
     // stand between the two silently ate this exemption and left the build itself flagged.
     let (boot_app, _boot_gov_rotate, boot_limits) = build_app_from_config(
         cfg,
@@ -860,8 +854,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // (the pre-any-mutation state).
     busbar_kernel::admin::seam::record_boot(&app);
 
-    // DURABLE STATE HYDRATION — the audit ring, the A2A task table, the MCP per-call log and
-    // the MCP demotion/spent-approval records, restored from the configured governance store
+    // DURABLE STATE HYDRATION — the audit ring, the planes' task tables, per-call logs and
+    // demotion/spent-approval records, restored from the configured governance store
     // BEFORE a listener is bound. One boot entry point (`busbar_kernel::boot::hydrate_all`)
     // rather than four widened statics: the sinks (`AUDIT`, `TASKS`, `CALLS`) and their
     // restore verbs stay crate-private in core, so nothing outside the engine can swap a sink
@@ -917,13 +911,15 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     };
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
-        secrets: &*app.secret_resolver,
+        secrets: Arc::clone(&app.secret_resolver)
+            as Arc<dyn busbar_contract::secret::SecretResolve>,
         auths: std::sync::Arc::clone(&door_auths),
         conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
         stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
             busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
             |l| l.upstream_request_timeout_secs,
         ),
+        catalog: Some(&deploy.models),
         models: Some(&door_models),
         upgrades: root::serve::upgrade_carriers(LINKED.transports),
     };
@@ -1032,17 +1028,31 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // THE DOOR PLANES' DATA ROUTES (`root::serve::data_routes`): each served plane's claims, as its
     // guest-list lines beside the kernel's own, onto the data router at its construction.
     // Every config apply refreshes each served door plane onto the generation it installed
-    // (ARCHITECT Q-DEL-A2A-APPLY), bound on the handle once the routers are built.
+    // (the ARCHITECT ruling on a served door plane's apply), bound on the handle once the routers are built.
     let door_appliers = served.appliers();
     #[cfg(linked_axis_node)]
     let door_post = served.post.clone();
-    // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with the stdio serve mode asked for and a
-    // served plane claiming the stdio transport, the served planes are kept for the process's own
+    // THE LINE CARRIER (SEAM-S1, `root::serve::lines`): with a plane's line-serve flag passed and a
+    // served plane claiming the line carrier, the served planes are kept for the process's own
     // stdin/stdout, and the data router is built with none of them (it is never bound in this mode).
+    // The line carrier is the one linked claim whose row opens on its first line; a build whose
+    // transports state two is refused here, before anything is served.
+    if let Some(refusal) = root::serve::lines::refusal() {
+        die(refusal);
+    }
     let mut served = served;
-    let line_served = (stdio_serve_requested(std::env::args())
+    let line_served = (line_flag_passed(std::env::args())
         && root::serve::lines::line_claim(&served).is_some())
     .then(|| std::mem::take(&mut served));
+    // Each data-chain auth with the points its opened instance declares (THE DESIGN §6): a line's
+    // point set is their union, and the guest list's seal judges it.
+    let data_chain: Vec<root::serve::ChainAuth> = data_chain
+        .into_iter()
+        .map(|provider| {
+            let points = app.auth.position_points(&provider);
+            (provider, points)
+        })
+        .collect();
     let (doors, sessions, refusals) = root::serve::data_mounts(
         served,
         &data_chain,
@@ -1103,7 +1113,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             };
             let reach = root::door_steps::DoorReach {
                 providers: &cfg.providers,
-                secrets: &*next.secret_resolver,
+                secrets: Arc::clone(&next.secret_resolver)
+                    as Arc<dyn busbar_contract::secret::SecretResolve>,
                 auths: std::sync::Arc::clone(&auths),
                 conns: Arc::clone(root::connector::the())
                     as Arc<dyn busbar_contract::conn::PollConns>,
@@ -1112,6 +1123,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                     |l| l.upstream_request_timeout_secs,
                 ),
                 models: Some(&models),
+                catalog: None,
                 upgrades: upgrades.clone(),
             };
             door_appliers.refresh_models(
@@ -1138,7 +1150,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // answers the admin operations is unchanged; what the wrap adds is the path a request takes to
     // reach it — through the kernel's loop, past the auth, scope, admission, usage and audit units,
     // and out through the one exit. Off, this line does not exist and the surface is the one it was.
-    // THE PROCESS'S ONE BOOK. The LLM plane's exit arm settles onto it (its root unit's book step,
+    // THE PROCESS'S ONE BOOK. The node plane's exit arm settles onto it (its root unit's book step,
     // below) and the administrative ledger views read it; no other plane binds an exit arm to it.
     // It is ONE book, and that matters: a mount that opened its own would post
     // onto books nothing serves and serve books nothing posts to, and both halves of that would look
@@ -1203,68 +1215,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // never one with the surface.)
     #[cfg(feature = "root-admin")]
     let admin_router = match &book {
-        Some(book) => root::units_admin::mount(
+        Some(book) => root::units_admin::mount_node(
             admin_router,
-            root::kernel::new_kernel(),
-            // The same ingress cap the router below the wrap was built with, because the wrap reads the
-            // body before that router's own limit can.
             req_body_max,
-            |dispatch| {
-                // THE ADMIN DOOR: the deployment's live `admin_auth` chain, read per unit off the same
-                // snapshot the kernel middleware reads and `PUT /api/v1/admin/admin-auth` swaps.
-                // Over the book boot opened AND the store boot bound beside it, so the three
-                // disaster-recovery verbs reach the configured store (row 113).
-                let mut units = root::kernel::ProductionUnits::admin_over_book(
-                    dispatch,
-                    root::units_admin::live_admin_door(std::sync::Arc::clone(&app_handle)),
-                    book,
-                );
-                // D38 PRODUCTION SEALING (composition-root, binding-only). Replace the assembly's
-                // `UnsealedPosture` default with the posture THIS fleet sealed: `SealedPosture` carries
-                // the boot-resolved operator key, so `operator.pub` present ⇒ `OperatorState::Set` (a
-                // valid-signed `amend_rate_history` is now performable + ed25519-verified) and absent ⇒
-                // `OperatorState::Unset` (amend refused at the ceremony gate, byte-identical to before).
-                // Bound over the SAME public `posture` seam `AdminBinding::with_posture_view` sets — and
-                // the same one the ledger view beside it is bound through — so this is a binding, not a
-                // structural change to the units.
-                units.admin.posture =
-                    std::sync::Arc::new(root::units_admin::SealedPosture::new(operator_key));
-                // Q64/Q67: an `adjust` names the pool its unit was dispatched through, checked against
-                // the pools this node has CONFIGURED — read off the live snapshot on every call, so a
-                // config apply that adds or removes a pool is what the check sees.
-                let live = std::sync::Arc::clone(&app_handle);
-                units.admin.pools = std::sync::Arc::new(move |pool: &str| {
-                    busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
-                });
-                // Q71(2): `plane_facts` / `plane_record_write` read the planes this node serves off the
-                // live snapshot (Law 7) and write through the configured store's plane-facing seam.
-                units.admin.planes =
-                    root::units_admin::live_planes(std::sync::Arc::clone(&app_handle));
-                units.admin.records = Some(root::units_admin::live_records(std::sync::Arc::clone(
-                    &app_handle,
-                )));
-                // ARCHITECT 2026-10-06: the trust verbs read and decide over the kernel's trust
-                // book — the composed services, reached through the late install.
-                let late = std::sync::Arc::clone(&late_services);
-                units.admin.trust = std::sync::Arc::new(move || late.kernel());
-                // The root breaker is the kernel's own: one cell set on the node, read through the
-                // live snapshot so an apply's rebuilt store is the one it observes into.
-                units.breaker = root::adapters::BreakerAdapter::over_kernel(
-                    std::sync::Arc::clone(&app_handle),
-                    breaker_policy,
-                );
-                // THE REVOCATION SET the authenticate step gates an identification with: the same
-                // governance state's directory, so the revocation set is the one this node keeps. No
-                // governance state is no directory, left as the assembly built it.
-                match app_handle.load().governance.clone() {
-                    Some(gov) => units.with_auth_bindings(
-                        root::kernel::auth_bindings::AuthBindings::new(std::sync::Arc::new(
-                            root::kernel::auth_bindings::GovernanceDirectory::new(gov),
-                        )),
-                    ),
-                    None => units,
-                }
-            },
+            &app_handle,
+            book,
+            operator_key,
+            &late_services,
+            breaker_policy,
         ),
         None => admin_router,
     };
@@ -1315,18 +1273,18 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         ));
     }
 
-    // START EVERY PLANE'S BACKGROUND WORK — the MCP tool-list refresh sweep and the A2A
-    // re-verification job — through ONE boot entry point that folds over the plane registry and calls
-    // each plane's declared `start` hook (MCP before A2A, the order they have always started in). Each
+    // START EVERY PLANE'S BACKGROUND WORK — a plane's refresh sweep, a plane's re-verification
+    // job — through ONE boot entry point that folds over the plane registry and calls each plane's
+    // declared `start` hook, in the registry's order (the order they have always started in). Each
     // job MOVED into its plane's own hook beside the code it starts, so the sweeper types, the
     // live-fetch transport and the identity resolver stay crate-private in their planes rather than
     // being reached here by name. Spawned ONCE, here, rather than on apply, for the reason the flusher
     // is: a second job against the same registry would double every fetch and race every ledger stamp.
-    // Fatal if an A2A outbound client identity does not resolve, exactly as before — the refusal text
+    // Fatal if a plane's outbound client identity does not resolve, exactly as before — the refusal text
     // is the plane hook's, propagated through `start_planes`.
     busbar_kernel::boot::start_planes(&app_handle).unwrap_or_else(|e| die(e));
 
-    // THE STDIO SERVE MODE (a plane's declared line-serve flag). The SAME boot ran above — config load, plugin
+    // THE LINE SERVE MODE (a plane's declared line-serve flag). The SAME boot ran above — config load, plugin
     // preflight, governance, the flusher and the refresh jobs — and the SAME dispatch will serve
     // every frame; what changes is only the transport: busbar is somebody's CHILD PROCESS here, so
     // it binds no listener at all (a child that opened ports would be a network server its
@@ -1359,8 +1317,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         // The WORKER-SHUTDOWN WATCH: the broadcast, refolded into a level (a `watch<bool>`) so
         // detached work spawned at any moment — including after the signal — can still observe
         // that shutdown has fired. Each data worker registers a clone
-        // (`busbar_kernel::detached::set_worker_shutdown`) beside its detached tracker, and an MCP task
-        // runner selects on it to write its CANCELLED terminal status within the drain grace
+        // (`busbar_kernel::detached::set_worker_shutdown`) beside its detached tracker, and a plane's
+        // task runner selects on it to write its CANCELLED terminal status within the drain grace
         // instead of being aborted with a caller left polling forever.
         let (worker_shutdown_tx, worker_shutdown_rx) = tokio::sync::watch::channel(false);
         {
@@ -1484,7 +1442,7 @@ const ROOT_BIND_LIMITS: AcceptLimits = AcceptLimits {
     handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
 };
 
-/// Bind a TCP listener or `die` with a clear, address-named message. Shared by the data and admin
+/// Bind a listener or `die` with a clear, address-named message. Shared by the data and admin
 /// listeners so both fail fast and identically on a bad bind.
 #[cfg(not(unix))]
 async fn bind_listener(addr: &str) -> tokio::net::TcpListener {
@@ -1585,13 +1543,13 @@ fn serve_thread_per_core(
                 // stripes per worker (the egress client shard today; SWRR/breaker scratch in later
                 // stages) indexes by this id. Set after the pin, before the runtime serves.
                 busbar_kernel::topology::set_worker_id(i);
-                // Detached-work tracker (request-outliving spawns: webhook/tap deliveries, MCP
-                // runners, A2A watchers) — the post-drain grace below waits on it so a graceful
+                // Detached-work tracker (request-outliving spawns: webhook/tap deliveries, plane
+                // task runners and watchers) — the post-drain grace below waits on it so a graceful
                 // stop gives such work a bounded window instead of an instant abort.
                 let detached = busbar_kernel::detached::DetachedTasks::new();
                 busbar_kernel::detached::set_worker_detached(detached.clone());
                 // The shutdown level, registered beside the tracker: detached work spawned on
-                // this worker captures it and can settle its own terminal state (an MCP task
+                // this worker captures it and can settle its own terminal state (a plane's task
                 // runner writes CANCELLED) inside the drain grace below instead of being aborted
                 // silently when the runtime drops.
                 busbar_kernel::detached::set_worker_shutdown(worker_shutdown);

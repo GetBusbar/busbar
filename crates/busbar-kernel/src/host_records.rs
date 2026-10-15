@@ -274,6 +274,10 @@ pub struct Write {
     pub seq: u64,
     /// Its writer's answer.
     pub owed: Owed,
+    /// The declared framing of a chained kind's write: an APPEND to the chain `key` names (an
+    /// empty value drops the chain), sealed by [`crate::host_chains::ChainBook`] and never laid on
+    /// the overlay. `None` for a put.
+    pub chain: Option<crate::host_chains::ChainFraming>,
 }
 
 #[derive(Debug, Default)]
@@ -325,8 +329,14 @@ impl WriteBehind {
 
     /// THE FLUSH: write every queued write to `rows`, in order, at most [`BATCH_CAP`] a batch; answer each once
     /// the store took it and acknowledge it in `pending`; end when nothing is queued. A write the
-    /// store refuses answers [`WRITE_FAILED`] and leaves the overlay; the rest go on.
-    pub fn flush(&self, pending: &PendingRecords, rows: &dyn RecordRows) {
+    /// store refuses answers [`WRITE_FAILED`] and leaves the overlay; the rest go on. A chained
+    /// kind's write is sealed onto its chain by `chains` (one flush at a time, so in queue order).
+    pub fn flush(
+        &self,
+        pending: &PendingRecords,
+        rows: &dyn RecordRows,
+        chains: &crate::host_chains::ChainBook,
+    ) {
         loop {
             let batch = {
                 let mut q = self.lock();
@@ -339,6 +349,23 @@ impl WriteBehind {
                 batch
             };
             for w in batch {
+                if let Some(framing) = w.chain {
+                    let scope = String::from_utf8_lossy(&w.key);
+                    let took = if w.value.as_slice().is_empty() {
+                        chains.drop_chain(rows, &w.instance, w.schema, &scope)
+                    } else {
+                        chains.append(
+                            rows,
+                            &w.instance,
+                            w.schema,
+                            &scope,
+                            w.value.as_slice(),
+                            framing,
+                        )
+                    };
+                    w.owed.answer(took);
+                    continue;
+                }
                 let key = record_key(&w.instance, &w.key);
                 let took = rows.record_put(w.schema, &key, &w.value);
                 pending.acked(&w.instance, w.schema.as_str(), &w.key, w.seq);

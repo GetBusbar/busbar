@@ -302,6 +302,13 @@ pub trait AuthCalls: Send + Sync {
         Vec::new()
     }
 
+    /// The auth points `verify` is called at, as the tail states them
+    /// ([`AuthTail::inbound_points`](crate::abi::auth::AuthTail::inbound_points); THE DESIGN, "Auth
+    /// points and guest lists"). `{Head}` by default: where 1.5.5's chain verified.
+    fn inbound_points(&self) -> crate::abi::auth::AuthPoints {
+        crate::abi::auth::AuthPoints::HEAD
+    }
+
     /// The inbound carriers `verify` reads (field line names, lower-case), as the Statement's
     /// carrier word marks name them: where the plugin's credential sits. The host names no
     /// credential line itself (THE DESIGN, "Auth points and guest lists").
@@ -577,6 +584,20 @@ pub enum Fields {
 pub trait Fielding: Future<Output = Fields> + Send + Unpin {
     /// The answer, if it has arrived; never waits.
     fn settled(&mut self) -> Option<Fields>;
+}
+
+/// A BINDING WHOSE CREDENTIAL IS REFRESHED OFF THE REQUEST PATH (a registration's own credential):
+/// the composition root holds the reference and the binding, re-resolves the value once per lease
+/// on a thread of its own, and answers the handle a request's fields are asked of. The binding is
+/// re-opened, and its handle swapped, only when the re-resolved value changed, so handles grow by
+/// rotations and never by requests; a request sees the old handle or the new one, never a half
+/// state.
+pub trait PerRequestHandle: Send + Sync {
+    /// The handle this request's auth call is made on, as the last refresh left it: a load, never a
+    /// resolution, an open or a wait (it is asked on the request path). `None` when the last
+    /// refresh found the credential unavailable (it no longer resolves, or its new value would not
+    /// bind): the request is refused and nothing is presented.
+    fn handle_now(&self) -> Option<u64>;
 }
 
 /// ONE AUTH INSTANCE'S OUTBOUND CALLS, as the kernel's egress walk makes them.

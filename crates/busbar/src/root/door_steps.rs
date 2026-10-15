@@ -10,9 +10,9 @@
 //! |---|---|
 //! | arrival | proceeds: the data listener's gates ran before the data door |
 //! | authenticate | the auth gate's verdict (the unit's principal); a unit with no key on a claim that takes a credential is refused (ARCHITECT P3 (a)) |
-//! | verify | the route the plane's `arrive` named, resolved against its section ([`DoorPools`], ARCHITECT Q-SW6/Q-FL3), a `ROUTE_SCOPE` unit to the one entry the principal's grant reaches among the plane's candidates (Q-DEL-A2A-SELECT, -SCOPE-TRUST); each member sealed under its (plane key, entry) |
+//! | verify | the route the plane's `arrive` named, resolved against its section ([`DoorPools`], ARCHITECT Q-SW6/Q-FL3), a `ROUTE_SCOPE` unit to the one entry the principal's grant reaches among the plane's candidates (Q-DEL-A2A-SELECT, -SCOPE-TRUST); each member sealed under its (plane key, entry); a `ROUTE_SCOPE_LOCAL` unit resolved the same way and sealed nothing, the plane told its one entry |
 //! | approve | the caller's grant of the plane's scope kind over the route as named, then its fallback pool |
-//! | admit | a unit its plane answers itself (`ROUTE_LOCAL`) is admitted with no walk and nothing held or charged, unless the plane counts it as an admitted call (`ROUTE_COUNTED`) or states expected units: then a keyed one is charged on the plane's pool as below; `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
+//! | admit | a unit its plane answers itself (`ROUTE_LOCAL`, `ROUTE_SCOPE_LOCAL` once resolved) is admitted with no walk and nothing held or charged, unless the plane counts it as an admitted call (`ROUTE_COUNTED`) or states expected units: then a keyed one is charged on the plane's pool as below; `$`: a keyed unit is admitted and charged by the governance book's one check-then-charge (`GovState::try_admit_estimated`, the plane's expected units the estimate), its money facts opened on the money steps (`PlaneMoney::open`); a route its section does not hold is refused after the charge (1.5.5's order); an anonymous unit on an open claim is admitted with nothing held and no money |
 //! | meter | the plane's last far-end-reported counts, as the unit's usage lines (an estimate never bills) |
 //! | audit | the record's facts: the decoded operation class and how the unit finished |
 //!
@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex};
 
 use busbar_contract::abi::plane::{
-    units_bill, UnitCount, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE,
+    units_bill, UnitCount, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL,
     ROUTE_SCOPE_SEPARATOR,
 };
 use busbar_contract::caps::{
@@ -234,6 +234,18 @@ impl DoorPools {
             .unwrap_or(0)
     }
 
+    /// The first pool (in name order) whose members are each admitted on their own grant
+    /// (`member_granted`) that names `entry` among its members: the pool a unit naming `entry`
+    /// routes over.
+    #[must_use]
+    pub fn member_pool(&self, entry: &str) -> Option<&str> {
+        self.pools
+            .iter()
+            .filter(|(name, _)| self.member_granted.contains(*name))
+            .find(|(_, members)| members.iter().any(|m| m == entry))
+            .map(|(name, _)| name.as_str())
+    }
+
     /// The pool `pool` spills into when its members are spent, where its section names one.
     #[must_use]
     pub fn fallback(&self, pool: &str) -> Option<&str> {
@@ -249,7 +261,8 @@ const FALLBACK_POOL_KEY: &str = "fallback_pool";
 impl DoorPools {
     /// WHETHER THE CALLER'S GRANT ADMITS THE ROUTE AS NAMED, judged before its destination (1.5.5's
     /// order: the pool's grant, then its fallback pool's; an unknown pool is refused by its grant
-    /// first, and only then by its absence). A direct route's grant names its entry. Ungoverned
+    /// first, and only then by its absence). A direct route's grant names its entry; a direct
+    /// route to an entry the section does not hold is absent before its grant. Ungoverned
     /// (`key` is `None`): nothing to enforce. A plane that states no scope kind has no resource a
     /// grant names, so it scopes nothing. None named: nothing to judge here (the route's absence
     /// refuses it).
@@ -274,12 +287,57 @@ impl DoorPools {
         if class == ROUTE_POOL && self.member_granted.contains(name) {
             return true;
         }
+        // A DIRECT route to an entry the section does not hold has no scope to be granted on: it
+        // is absent before any grant is judged, and its absence refuses it (predev's inbound
+        // authorization, whose grant list for an unknown id is empty). A pool keeps 1.5.5's order
+        // above: its grant, then its absence.
+        if class == ROUTE_DIRECT && !self.entries.iter().any(|e| e == name) {
+            return true;
+        }
         let fallback = (class == ROUTE_POOL)
             .then(|| self.fallbacks.get(name))
             .flatten();
         std::iter::once(name)
             .chain(fallback.map(String::as_str))
             .all(|granted| key.scope_allowed(kind, granted))
+    }
+}
+
+impl DoorPools {
+    /// [`DoorPools::granted`], and for a POOL route over a pool whose members are each admitted on
+    /// their own grant: the caller's grant on the member the unit is ADDRESSED to, its stated trust
+    /// `counterparty`, where that names a member of the pool, before anything is charged (QP2,
+    /// coordinator 2026-10-07: the grant on the addressed member, judged before the charge as
+    /// predev's admission judged it). A counterparty that names no member of the pool leaves the
+    /// members to the plane, as before.
+    #[must_use]
+    pub fn granted_to(
+        &self,
+        kind: Option<&str>,
+        key: Option<&VirtualKey>,
+        (class, named): (u8, Option<&[u8]>),
+        counterparty: Option<&[u8]>,
+    ) -> bool {
+        if !self.granted(kind, key, class, named) {
+            return false;
+        }
+        let (Some(kind), Some(key)) = (kind, key) else {
+            return true;
+        };
+        let Some(pool) = named.and_then(|n| std::str::from_utf8(n).ok()) else {
+            return true;
+        };
+        if class != ROUTE_POOL || !self.member_granted.contains(pool) {
+            return true;
+        }
+        let member = counterparty
+            .and_then(|c| std::str::from_utf8(c).ok())
+            .filter(|c| {
+                self.pools
+                    .get(pool)
+                    .is_some_and(|m| m.iter().any(|m| m == c))
+            });
+        member.is_none_or(|member| key.scope_allowed(kind, member))
     }
 }
 
@@ -466,6 +524,9 @@ pub struct DoorFacts {
     /// failure below the trip threshold benches a member's cell. `None`: it declares none, and
     /// every cell keeps the host's default.
     pub bench_below_trip_threshold: Option<bool>,
+    /// Its declared counter lane words (`PlaneTail::metric_lanes`): beside its entry names, the
+    /// words its attempts may state as their `lane` label ([`label_bound`]).
+    pub metric_lanes: Vec<String>,
     /// Its stated stream ceiling, seconds (its tail's `stream_ceiling_secs`): the deadline of a
     /// unit whose `arrive` states `ROUTE_STREAM`, from the moment its route is known. `0` = none.
     pub stream_ceiling_secs: u64,
@@ -503,6 +564,11 @@ struct DoorUnit {
     /// The pool a budget `on_exhaust: downgrade` re-admitted the unit through, where one did: its
     /// charge landed there and its walk routes there.
     downgraded: Option<String>,
+    /// A `ROUTE_SCOPE_LOCAL` unit's one entry, its scope resolved at verify: the plane answers it
+    /// there, with no route walked.
+    resolved: Option<String>,
+    /// The counterparty its `arrive` stated among its trust facts: the entry it is addressed to.
+    counterparty: Option<Vec<u8>>,
 }
 
 /// ONE UNIT'S KERNEL STEPS (see the module doc), lent to the plane driver for the unit's life.
@@ -844,9 +910,17 @@ impl DriverSteps for DoorSteps<'_> {
         let scoped = u
             .named
             .as_ref()
-            .is_some_and(|(class, _)| *class == ROUTE_SCOPE);
+            .is_some_and(|(class, _)| *class == ROUTE_SCOPE || *class == ROUTE_SCOPE_LOCAL);
         (reason == ReasonCode::NoDestination && scoped)
             .then(|| u.reachable.join(ROUTE_SCOPE_SEPARATOR).into_bytes())
+    }
+
+    fn counterparty(&self, _ctx: &UnitCtx, counterparty: &[u8]) {
+        self.lock().counterparty = Some(counterparty.to_vec());
+    }
+
+    fn resolved(&self, _ctx: &UnitCtx) -> Option<Vec<u8>> {
+        self.lock().resolved.clone().map(String::into_bytes)
     }
 
     fn route_flags(&self, _ctx: &UnitCtx, flags: u8) {
@@ -914,15 +988,17 @@ impl Units for DoorSteps<'_> {
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> SeatVerdict<Verify> {
-        // A UNIT ROUTED BY SCOPE (ROUTE_SCOPE, ARCHITECT Q-DEL-A2A-SELECT: scope seals the
+        // A UNIT ROUTED BY SCOPE (ROUTE_SCOPE, the ARCHITECT scope-select ruling: scope seals the
         // destinations): the one entry the principal's grant of the plane's scope kind reaches is
         // its route, directly; zero or several seal nothing and it is refused at admission, the
         // several named in its refusal's words.
         let named_scope = match &self.lock().named {
-            Some((ROUTE_SCOPE, candidates)) => Some(candidates.clone()),
+            Some((class @ (ROUTE_SCOPE | ROUTE_SCOPE_LOCAL), candidates)) => {
+                Some((*class, candidates.clone()))
+            }
             _ => None,
         };
-        if let Some(candidates) = named_scope {
+        if let Some((class, candidates)) = named_scope {
             // The plane's candidates (the entries that would serve the unit, ARCHITECT
             // Q-DEL-A2A-SCOPE-TRUST); none named = every entry.
             let candidates: Option<Vec<String>> = candidates.map(|c| {
@@ -949,7 +1025,21 @@ impl Units for DoorSteps<'_> {
                 .collect();
             let mut u = self.lock();
             match reachable.as_slice() {
-                [one] => u.named = Some((ROUTE_DIRECT, Some(one.as_bytes().to_vec()))),
+                // A UNIT THE PLANE ANSWERS AT THE ONE ENTRY (ROUTE_SCOPE_LOCAL, COORDINATOR ruling
+                // 2026-10-07): resolved as a scope's, and routed nowhere (no pool, no breaker, no
+                // egress), as predev answered its local verbs at the agent `select` chose before
+                // any pool was read (receive.rs:1257-1279, :1559-1593, before `pool_of` :1839).
+                [one] if class == ROUTE_SCOPE_LOCAL => u.resolved = Some(one.clone()),
+                // The one entry, routed as an addressed unit naming it is: over the pool of
+                // members each admitted on their own grant that it is a member of, else directly
+                // (predev's unaddressed request reached the same pool walk as an addressed one,
+                // receive.rs:1262-1268 converging at :1839 and :1916).
+                [one] => {
+                    u.named = Some(match self.pools.member_pool(one) {
+                        Some(pool) => (ROUTE_POOL, Some(pool.as_bytes().to_vec())),
+                        None => (ROUTE_DIRECT, Some(one.as_bytes().to_vec())),
+                    });
+                }
                 [] => {}
                 _ => u.reachable = reachable,
             }
@@ -996,14 +1086,16 @@ impl Units for DoorSteps<'_> {
         _destinations: &[VerifiedDestination],
     ) -> SeatVerdict<Approve> {
         let (class, named) = self.lock().named.clone().unwrap_or((ROUTE_POOL, None));
+        let counterparty = self.lock().counterparty.clone();
         // A unit routed by scope that no one entry reached names its candidates, not a route: the
         // grant was the resolution itself, and admission refuses it (no destination).
         if class == ROUTE_SCOPE
-            || self.pools.granted(
+            || class == ROUTE_SCOPE_LOCAL
+            || self.pools.granted_to(
                 self.facts.scope_kind.as_deref(),
                 self.key.as_deref(),
-                class,
-                named.as_deref(),
+                (class, named.as_deref()),
+                counterparty.as_deref(),
             )
         {
             SeatVerdict::proceed(token, busbar_contract::ScopeFacts::default())
@@ -1026,7 +1118,7 @@ impl Units for DoorSteps<'_> {
         // is audited as every unit is.
         // A local unit whose plane EXPECTS units (its admission estimate) is charged as any keyed
         // unit is: the plane's own round, on the caller's budget (the served engine charged busbar's
-        // own ask round before it was asked; lane-dg-mcp 05e053183a). So is one the plane answers
+        // own ask round before it was asked; 05e053183a). So is one the plane answers
         // AS AN ADMITTED CALL (ROUTE_COUNTED): a keyed one passes the one check-then-charge on the
         // plane's pool, counting its request (R2, 1.5.5's rule), and keeps only the fee units the
         // plane reports.
@@ -1035,16 +1127,17 @@ impl Units for DoorSteps<'_> {
             let local = u
                 .named
                 .as_ref()
-                .is_some_and(|(class, _)| *class == ROUTE_LOCAL);
+                .is_some_and(|(class, _)| *class == ROUTE_LOCAL || *class == ROUTE_SCOPE_LOCAL);
             (local, local && u.counted, !u.expected.is_empty())
         };
-        // A UNIT ROUTED BY SCOPE that no one entry reached (Q-DEL-A2A-SELECT): refused before
+        // A UNIT ROUTED BY SCOPE that no one entry reached (the scope-select ruling): refused before
         // anything is charged, as 1.5.5 chose the agent before its admission.
-        let unrouted_scope = self
-            .lock()
-            .named
-            .as_ref()
-            .is_some_and(|(class, _)| *class == ROUTE_SCOPE);
+        let unrouted_scope = {
+            let u = self.lock();
+            u.named.as_ref().is_some_and(|(class, _)| {
+                *class == ROUTE_SCOPE || (*class == ROUTE_SCOPE_LOCAL && u.resolved.is_none())
+            })
+        };
         if unrouted_scope && !matches!(admission(self.key.as_ref(), self.open), Admission::Refused)
         {
             return SeatVerdict::refuse(token, Refusal::new(ReasonCode::NoDestination));
@@ -1202,8 +1295,38 @@ pub fn door_facts(
         keeps,
         translations: (Arc::from(Vec::new()), Arc::default()),
         bench_below_trip_threshold: None,
+        metric_lanes: Vec::new(),
         stream_ceiling_secs: 0,
     }
+}
+
+/// THE BOUND ON A PLANE'S STATED COUNTER LABELS over its section's `pools`
+/// ([`crate::root::egress_ports::LabelBound`]): for each pool the walk keys by name — a named
+/// pool's label, and each entry's own pool (`plane_lane(plane, entry)`, a direct route's) — the
+/// configured pool labels and entry names that walk can reach (a named pool's members, then its
+/// fallback pool's, and so on), and the plane's declared lane words `vocabulary`.
+#[must_use]
+pub fn label_bound(
+    plane: &str,
+    pools: &DoorPools,
+    vocabulary: &[String],
+) -> crate::root::egress_ports::LabelBound {
+    let mut bound = crate::root::egress_ports::LabelBound::new(vocabulary.iter().cloned());
+    for label in pools.pools().keys() {
+        let mut labels = Vec::new();
+        let mut entries = Vec::new();
+        let mut at = Some(label.as_str());
+        while let Some(pool) = at.filter(|p| !labels.iter().any(|l: &String| l == p)) {
+            labels.push(pool.to_string());
+            entries.extend(pools.pools().get(pool).into_iter().flatten().cloned());
+            at = pools.fallback(pool);
+        }
+        bound = bound.reaching(label, labels, entries);
+    }
+    for entry in pools.entries() {
+        bound = bound.reaching(&plane_lane(plane, entry), [], [entry.clone()]);
+    }
+    bound
 }
 
 // ── the egress ───────────────────────────────────────────────────────────────────────────────────
@@ -1251,21 +1374,30 @@ pub fn compose_egress(
             *keep = keep_of(*need);
         }
         // THE MEMBER'S TRUST ANCHORS, SEALED INTO THE CONNECTOR (the transport pin, ARCHITECT 2026-10-03): every connection
-        // to the member, the walk's and the plane's own, is held to them by the connector itself.
-        conns
-            .anchor(caller, route.need, &route.base_url, &route.anchors)
-            .map_err(|e| format!("member '{entry}': its trust anchors could not be sealed: {e}"))?;
-        // THE REGISTRATION'S PRIVATE REACH, sealed for this registration alone (SEAM-4k): the
-        // member route's dials name it, and no other registration at the same authority holds it.
-        conns
-            .seal_reach(
-                caller,
-                route.need,
-                &route.provider,
-                &route.base_url,
-                route.anchors.private_reach,
-            )
-            .map_err(|e| format!("member '{entry}': its private reach could not be sealed: {e}"))?;
+        // to the member, the walk's and the plane's own, is held to them by the connector itself,
+        // on EVERY need the member rides (its own and each beside it, at the base each dials),
+        // kept under the member's name, so a registration sharing its authority presents its own
+        // client identity and never this one's.
+        for (need, base_url) in ridden(&route) {
+            conns
+                .anchor(caller, need, &route.provider, &base_url, &route.anchors)
+                .map_err(|e| {
+                    format!("member '{entry}': its trust anchors could not be sealed: {e}")
+                })?;
+            // THE REGISTRATION'S PRIVATE REACH, sealed for this registration alone (SEAM-4k): the
+            // member route's dials name it, and no other registration at the same authority holds it.
+            conns
+                .seal_reach(
+                    caller,
+                    need,
+                    &route.provider,
+                    &base_url,
+                    route.anchors.private_reach,
+                )
+                .map_err(|e| {
+                    format!("member '{entry}': its private reach could not be sealed: {e}")
+                })?;
+        }
         let destination = busbar_contract::dest::DestinationId::new(id);
         let name = plane_lane(&facts.plane, entry);
         // The member's attempt bound is its entry's `timeout:` (ARCHITECT timeout ruling): every
@@ -1321,7 +1453,13 @@ pub fn compose_egress(
         capacity: Arc::new(crate::root::egress_ports::MemberPermits::new(Vec::new())),
         clock: Arc::new(crate::root::egress_ports::NodeClock::new()),
         journal,
-        telemetry: Arc::new(crate::root::egress_ports::WalkTelemetry::new(names)),
+        telemetry: Arc::new(
+            crate::root::egress_ports::WalkTelemetry::new(names).bounded(label_bound(
+                &facts.plane,
+                pools,
+                &facts.metric_lanes,
+            )),
+        ),
         floor: busbar_kernel_egress::WeightedFloor::new(),
         pools: built,
         routes: sealed,
@@ -1370,7 +1508,8 @@ pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::An
 /// dialect fields of the providers it references and resolves model -> dialect itself"): `providers`
 /// (catalog-merged, each provider's dialect fields: no `base_url`, no credential reference, no
 /// health or token endpoint), `models`, `pools` (each pool's members and its fallback pool) and
-/// `limits` (the output-cap default and the effort budgets). The previous release kept these in the
+/// `limits` (the output-cap default, the effort budgets and the translation cap,
+/// `request_body_max_bytes`). The previous release kept these in the
 /// kernel; they are the root's to hand a door plane whose Statement names them. `pools` is present
 /// whenever `models` is: a deployment with models and no pools routes to its models directly.
 #[must_use]
@@ -1475,6 +1614,12 @@ pub fn kernel_sections(
             "prompt_caching",
             model.prompt_caching.map(|v| json!(v)),
         );
+        // The model's dialect override (#51), for the plane to resolve and judge.
+        opt(
+            &mut m,
+            MODEL_PROTOCOL_KEYS[0],
+            model.protocol.as_ref().map(|v| json!(v)),
+        );
         models.insert(name.clone(), Value::Object(m));
     }
     let mut pools = Map::new();
@@ -1507,8 +1652,11 @@ pub fn kernel_sections(
         }
         pools.insert(name.clone(), Value::Object(p));
     }
+    // The translation cap (row 155): the operator's one knob for the inbound body limit and the
+    // egress translate cap, handed so the plane enforces the kernel's value from its own settings.
     let limits = json!({
         "default_max_tokens": cfg.limits.default_max_tokens,
+        "request_body_max_bytes": cfg.limits.request_body_max_bytes,
         "reasoning_effort_budgets": {
             "minimal": cfg.limits.reasoning_effort_budgets.minimal,
             "low": cfg.limits.reasoning_effort_budgets.low,
@@ -1596,12 +1744,12 @@ impl StyleParams {
 
 /// The `auth:` spelling of a provider's style override, as config writes it.
 fn style_word(auth: busbar_kernel::config::ProviderAuth) -> &'static str {
-    use busbar_kernel::config::ProviderAuth;
+    use busbar_kernel::config::ProviderAuth as Style;
     match auth {
-        ProviderAuth::Bearer => "bearer",
-        ProviderAuth::ApiKey => "api-key",
-        ProviderAuth::JwtBearer => "jwt-bearer",
-        ProviderAuth::OAuthClientCredentials => "oauth-client-credentials",
+        Style::Bearer => "bearer",
+        Style::ApiKey => "api-key",
+        Style::JwtBearer => "jwt-bearer",
+        Style::OAuthClientCredentials => "oauth-client-credentials",
     }
 }
 
@@ -2065,14 +2213,17 @@ pub fn process_auths() -> Arc<OutboundAuths> {
 pub struct DoorReach<'a> {
     /// The providers, by name ([`provider_routes`]).
     pub providers: &'a BTreeMap<String, ProviderRoute>,
-    /// The secret seam.
-    pub secrets: &'a dyn busbar_contract::secret::SecretResolve,
+    /// The secret seam (shared: a binding refreshed once per lease holds it for its generation).
+    pub secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     /// The auth plugins.
     pub auths: Arc<OutboundAuths>,
     /// The process's connector.
     pub conns: Arc<dyn busbar_contract::conn::PollConns>,
     /// Whole seconds.
     pub stream_ceiling_secs: u64,
+    /// The top-level models catalog a section's `session.model` names an entry of
+    /// (`root::serve::catalog_routes`, ARCHITECT Q-L5B-ROUTE); `None` = the section's own table.
+    pub catalog: Option<&'a std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
     /// The model-serving pools the plane serving the `pools` map walks
     /// ([`crate::root::model_egress`]); `None` where none is composed.
     pub models: Option<&'a crate::root::model_egress::ModelServing>,
@@ -2182,15 +2333,395 @@ fn token_exchange_binding(
         style_flags: decl.flags,
         points: busbar_contract::abi::auth::AuthPoints(decl.points),
         passthrough: false,
+        per_request: None,
     }))
 }
 
-/// THE DOOR'S OWN REQUESTS TO ITS REGISTRATION MEMBERS carry each member's binding (ARCHITECT
-/// round 5 Q-L3B-DOOR-EXCHANGE; round 4 (d): "admin connect + verify-on-call fetches use the same
-/// binding"): every registration member's route with an auth binding (`routes`, on the plane's
-/// member-target need `served` states) is held on the plane's connection table `table` per
-/// (`instance`, need, target origin), its passthrough credential lent from the unit records
-/// `units` by the unit the request is made inside.
+/// THE `upstream_credential:` BINDING of the registration `registration` (the member
+/// `member_name`): busbar's own credential for the member, its `secret` reference resolved here
+/// (the plane validates the block and never resolves it: `BUSBAR-1.6.0.md` Part 3 section 4,
+/// "credentials are auth objects, never a host-minted header"), opened by the auth plugin serving
+/// the style its `placement` names: `bearer` (absent = it) presents `authorization: Bearer
+/// <secret>`, `{header: <name>}` presents the secret verbatim in that header (the `api-key` style
+/// over that header). The kernel presents it on every request to the member through the auth
+/// kind's per-request call, which reads the binding's current handle and nothing else; the
+/// credential is re-resolved OFF the request path, by the host's refresher once per lease
+/// (`lease_ttl_ms`, [`refresher`]; ARCHITECT ruling on #787, THE DESIGN §11: no blocking, plugin
+/// memory valid to its next refresh generation). `None` when the registration states no such
+/// block.
+///
+/// # Errors
+///
+/// The block is malformed, its secret does not resolve, or no auth plugin serves or will bind the
+/// style: the load is refused, naming the member.
+fn upstream_credential_binding(
+    member_name: &str,
+    registration: &serde_yaml::Value,
+    reach: &DoorReach<'_>,
+) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
+    Ok(
+        upstream_credential(member_name, registration, reach)?.map(|(binding, per)| {
+            refresher::keep(&per);
+            binding
+        }),
+    )
+}
+
+/// [`upstream_credential_binding`]'s binding and the [`PerHop`] it presents through, opened over
+/// the value resolved now and kept by nothing: the caller hands it to the [`refresher`] (or, in a
+/// cell, refreshes it by hand).
+fn upstream_credential(
+    member_name: &str,
+    registration: &serde_yaml::Value,
+    reach: &DoorReach<'_>,
+) -> Result<Option<(busbar_kernel::plane_driver::AuthBinding, Arc<PerHop>)>, String> {
+    use busbar_contract::section::{
+        CREDENTIAL_LEASE_TTL_KEY, CREDENTIAL_PLACEMENT_KEY, CREDENTIAL_SECRET_KEY,
+        PLACEMENT_BEARER, PLACEMENT_HEADER_KEY, UPSTREAM_CREDENTIAL_KEY,
+    };
+    /// The style a `bearer` placement is bound under.
+    const BEARER_STYLE: &str = "bearer";
+    /// The style a `{header: <name>}` placement is bound under: the named header, verbatim.
+    const HEADER_STYLE: &str = "api-key";
+    let Some(block) = registration.get(UPSTREAM_CREDENTIAL_KEY) else {
+        return Ok(None);
+    };
+    let secret: busbar_contract::secret_ref::SecretRef = block
+        .get(CREDENTIAL_SECRET_KEY)
+        .cloned()
+        .ok_or_else(|| {
+            format!(
+                "member '{member_name}': its `{UPSTREAM_CREDENTIAL_KEY}` states no \
+                 `{CREDENTIAL_SECRET_KEY}`"
+            )
+        })
+        .and_then(|v| {
+            // The decoder's own error is NOT carried: its input is where an operator pastes the
+            // secret itself, and a decoder names what it could not read (a flow map `{sk-...}` is
+            // an "unknown field" quoting it). The refusal names the binding and the shapes.
+            serde_yaml::from_value(v).map_err(|_| {
+                format!(
+                    "member '{member_name}': its \
+                     `{UPSTREAM_CREDENTIAL_KEY}.{CREDENTIAL_SECRET_KEY}` is not a secret \
+                     reference (the value is not echoed): use {{ env: <VAR> }}, \
+                     {{ file: <path> }} or {{ module: <secret-module>, settings: {{…}} }}"
+                )
+            })
+        })?;
+    let (style, header) = match block.get(CREDENTIAL_PLACEMENT_KEY) {
+        None => (BEARER_STYLE, None),
+        Some(p) if p.as_str() == Some(PLACEMENT_BEARER) => (BEARER_STYLE, None),
+        Some(p) => match p
+            .get(PLACEMENT_HEADER_KEY)
+            .and_then(serde_yaml::Value::as_str)
+        {
+            Some(header) if !header.is_empty() => (HEADER_STYLE, Some(header.to_string())),
+            _ => {
+                return Err(format!(
+                    "member '{member_name}': its upstream credential's placement is neither \
+                     `{PLACEMENT_BEARER}` nor `{{{PLACEMENT_HEADER_KEY}: <name>}}`"
+                ))
+            }
+        },
+    };
+    // THE LEASE: how long one resolution of the credential may be presented, and so how often
+    // the refresher re-resolves it (the grammar's `lease_ttl_ms`, greater than zero).
+    let lease = block
+        .get(CREDENTIAL_LEASE_TTL_KEY)
+        .and_then(serde_yaml::Value::as_u64)
+        .filter(|ms| *ms > 0)
+        .map(std::time::Duration::from_millis)
+        .ok_or_else(|| {
+            format!(
+                "member '{member_name}': its \
+                 `{UPSTREAM_CREDENTIAL_KEY}.{CREDENTIAL_LEASE_TTL_KEY}` is not a lease in \
+                 milliseconds greater than zero"
+            )
+        })?;
+    let settings = placement_settings(header.as_deref());
+    let credential = busbar_contract::redacted::Redacted::new(
+        reach
+            .secrets
+            .resolve_string(&secret)
+            .map_err(|e| {
+                format!(
+                    "member '{member_name}': busbar's own upstream credential for it cannot \
+                     resolve: {e}"
+                )
+            })?
+            .into_bytes(),
+    );
+    let (auth, decl) = reach.auths.serving(style, &settings)?.ok_or_else(|| {
+        format!(
+            "member '{member_name}': no linked or dropped-in auth plugin serves the style \
+             '{style}' its upstream credential is presented under"
+        )
+    })?;
+    let handle = auth
+        .open_outbound(style, credential.expose_secret(), &settings)
+        .map_err(|e| format!("member '{member_name}' {e}"))?;
+    // The binding holds the reference and the digest of the value its handle was opened with,
+    // never the value.
+    let per = Arc::new(PerHop {
+        secret,
+        secrets: Arc::clone(&reach.secrets),
+        auth: Arc::clone(&auth),
+        style,
+        header,
+        lease,
+        held: arc_swap::ArcSwapOption::from_pointee(Held {
+            digest: busbar_contract::abi::sdk::digest::sha256(credential.expose_secret()),
+            handle,
+        }),
+        refreshing: Mutex::new(()),
+    });
+    drop(credential);
+    Ok(Some((
+        busbar_kernel::plane_driver::AuthBinding {
+            auth,
+            handle,
+            style_flags: decl.flags,
+            points: busbar_contract::abi::auth::AuthPoints(decl.points),
+            passthrough: false,
+            per_request: Some(
+                Arc::clone(&per) as Arc<dyn busbar_contract::auth_calls::PerRequestHandle>
+            ),
+        },
+        per,
+    )))
+}
+
+/// THE OUTBOUND SETTINGS an `upstream_credential:` placement opens its style under: none for
+/// `bearer`, `{header: <name>}` for a named header. Built from the typed placement each time a
+/// binding opens, so no binding holds a settings bag.
+fn placement_settings(header: Option<&str>) -> serde_json::Value {
+    header.map_or_else(
+        || serde_json::json!({}),
+        |name| serde_json::json!({ busbar_contract::section::PLACEMENT_HEADER_KEY: name }),
+    )
+}
+
+/// What a [`PerHop`] presents now: the handle its auth instance opened, and the SHA-256 of the
+/// value it was opened with (the value itself is never kept).
+struct Held {
+    digest: [u8; 32],
+    handle: u64,
+}
+
+/// A REGISTRATION'S OWN CREDENTIAL, REFRESHED OFF THE REQUEST PATH (`upstream_credential:`): the
+/// reference, the secret seam it resolves through, the auth instance, the style it is bound under,
+/// the header a named-header placement names and its lease, and, in one swap cell, what it
+/// presents now ([`Held`]; empty = refused). A hop only LOADS the cell ([`PerHop::handle_now`]):
+/// no resolution, no open, no lock (ARCHITECT ruling on #787: a secret resolution blocks its
+/// thread up to its deadline, `busbar_contract::secret::SecretCalls`, and is never made on the
+/// request path). [`PerHop::refresh`] re-resolves the value, re-opens the binding only when its
+/// digest changed (handles grow by rotations, never by hops), and swaps the cell whole, so a hop
+/// sees the old handle or the new one; a value that no longer resolves or binds EMPTIES the cell,
+/// so every hop after it is refused, never served a stale credential.
+struct PerHop {
+    secret: busbar_contract::secret_ref::SecretRef,
+    secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
+    auth: Arc<dyn busbar_contract::auth_calls::OutboundAuth>,
+    style: &'static str,
+    header: Option<String>,
+    /// The lease: how often the [`refresher`] re-resolves the credential.
+    lease: std::time::Duration,
+    held: arc_swap::ArcSwapOption<Held>,
+    /// Taken by [`PerHop::refresh`] alone, so two refreshes never open the same rotation twice;
+    /// no hop ever waits on it.
+    refreshing: Mutex<()>,
+}
+
+impl PerHop {
+    /// RE-RESOLVE the credential and swap what the binding presents: the same value keeps its
+    /// handle; a changed one is opened (outside every lock a hop could wait on) and swapped in
+    /// whole; one that no longer resolves, or whose new value will not bind, empties the cell (fail
+    /// closed). Off the request path only: the binding's build, and the [`refresher`]'s own thread.
+    fn refresh(&self) {
+        let _one = self
+            .refreshing
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Ok(value) = self.secrets.resolve_string(&self.secret) else {
+            self.held.store(None);
+            return;
+        };
+        let value = busbar_contract::redacted::Redacted::new(value.into_bytes());
+        let digest = busbar_contract::abi::sdk::digest::sha256(value.expose_secret());
+        if self
+            .held
+            .load()
+            .as_ref()
+            .is_some_and(|held| busbar_contract::redacted::constant_time_eq(&held.digest, &digest))
+        {
+            return;
+        }
+        let opened = self.auth.open_outbound(
+            self.style,
+            value.expose_secret(),
+            &placement_settings(self.header.as_deref()),
+        );
+        drop(value);
+        self.held
+            .store(opened.ok().map(|handle| Arc::new(Held { digest, handle })));
+    }
+}
+
+/// A `PerHop` NAMES NO CREDENTIAL in a debug line: it holds the reference and a digest, never the
+/// value, and renders neither (a derived `Debug` over a reference to a literal or a digest would put
+/// the one in a log line and a guessing oracle for the other in it).
+impl std::fmt::Debug for PerHop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let handle = self.held.load().as_ref().map(|held| held.handle);
+        f.debug_struct("PerHop")
+            .field("secret", &"<redacted; refreshed once per lease>")
+            .field("style", &self.style)
+            .field("carried_in", &self.header)
+            .field("lease", &self.lease)
+            .field("handle", &handle)
+            .finish_non_exhaustive()
+    }
+}
+
+impl busbar_contract::auth_calls::PerRequestHandle for PerHop {
+    fn handle_now(&self) -> Option<u64> {
+        self.held.load().as_ref().map(|held| held.handle)
+    }
+}
+
+/// THE HOST'S CREDENTIAL REFRESHER: one thread of its own (never a runtime worker, never a
+/// dispatcher worker's crossing) that re-resolves each live [`PerHop`] once per its lease. It keeps
+/// each binding WEAKLY, so a binding its generation dropped (a config apply builds the next
+/// generation's bindings, and the last request on the old one lets it go) is forgotten at its next
+/// due time, never refreshed again.
+mod refresher {
+    use super::PerHop;
+    use std::sync::{Arc, Condvar, Mutex, Once, Weak};
+    use std::time::Instant;
+
+    /// One kept binding and when it is next due.
+    struct Kept {
+        per: Weak<PerHop>,
+        due: Instant,
+    }
+
+    /// The kept bindings, and the signal a new one wakes the thread with.
+    struct Book {
+        kept: Mutex<Vec<Kept>>,
+        woken: Condvar,
+    }
+
+    /// The process's one book.
+    static BOOK: Book = Book {
+        kept: Mutex::new(Vec::new()),
+        woken: Condvar::new(),
+    };
+
+    /// The process's one book, its thread started the first time it is reached.
+    fn book() -> &'static Book {
+        static STARTED: Once = Once::new();
+        STARTED.call_once(|| {
+            std::thread::Builder::new()
+                .name("busbar-cred-refresh".into())
+                .spawn(|| run(&BOOK))
+                .unwrap_or_else(|e| {
+                    eprintln!("busbar: the credential refresher did not start: {e}");
+                    std::process::exit(2);
+                });
+        });
+        &BOOK
+    }
+
+    /// Keep `per`, first due one lease from now (its build has just resolved it).
+    pub(super) fn keep(per: &Arc<PerHop>) {
+        let book = book();
+        book.kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(Kept {
+                per: Arc::downgrade(per),
+                due: Instant::now() + per.lease,
+            });
+        book.woken.notify_one();
+    }
+
+    /// The thread: refresh every binding that is due, forget every one dropped, sleep to the next
+    /// due time (or a new binding). The book's lock is never held across a refresh.
+    fn run(book: &'static Book) {
+        let mut kept = book
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        loop {
+            let now = Instant::now();
+            kept.retain(|k| k.per.strong_count() > 0);
+            let mut due = Vec::new();
+            for k in kept.iter_mut().filter(|k| k.due <= now) {
+                if let Some(per) = k.per.upgrade() {
+                    k.due = now + per.lease;
+                    due.push(per);
+                }
+            }
+            if !due.is_empty() {
+                drop(kept);
+                for per in due {
+                    per.refresh();
+                }
+                kept = book
+                    .kept
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                continue;
+            }
+            let next = kept.iter().map(|k| k.due).min();
+            kept = match next {
+                Some(at) => {
+                    book.woken
+                        .wait_timeout(kept, at.saturating_duration_since(now))
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .0
+                }
+                None => book
+                    .woken
+                    .wait(kept)
+                    .unwrap_or_else(std::sync::PoisonError::into_inner),
+            };
+        }
+    }
+
+    /// Refresh every live kept binding NOW, on the calling thread (a cell that rotates or removes
+    /// a served credential, then asserts what the first hop after the refresh presents).
+    #[cfg(test)]
+    #[allow(dead_code)] // reached only by a door plane's own root cells, which a build may not link
+    pub(crate) fn refresh_all() {
+        let live: Vec<Arc<PerHop>> = book()
+            .kept
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .iter()
+            .filter_map(|k| k.per.upgrade())
+            .collect();
+        for per in live {
+            per.refresh();
+        }
+    }
+}
+
+/// [`refresher`]'s refresh of every live served credential, for the door planes' own root cells.
+#[cfg(test)]
+#[allow(dead_code)] // reached only by a door plane's own root cells, which a build may not link
+pub(crate) fn refresh_credentials() {
+    refresher::refresh_all();
+}
+
+/// THE DOOR'S OWN REQUESTS TO ITS REGISTRATION MEMBERS carry each member's binding (round 4 (d):
+/// "admin connect + verify-on-call fetches use the same binding"): every registration member's
+/// route with an auth binding (`routes`, on the plane's member-target need `served` states) is held
+/// on the plane's connection table `table`, its passthrough credential lent from the unit records
+/// `units` by the unit the request is made inside. The connector keys a binding by (`instance`,
+/// need, member, target origin); a request naming no member gets no binding. So two registrations
+/// at one origin each present their own, and one with no binding presents none (predev `creds.rs`
+/// `Lease::header_for`, `LeaseError::WrongAgent`).
 pub fn bind_member_fetches(
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     routes: &BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>,
@@ -2198,35 +2729,68 @@ pub fn bind_member_fetches(
     table: &dyn busbar_contract::conn::DeclaredConns,
     units: &Arc<busbar_kernel::host_units::UnitRecords>,
 ) {
-    let Some(need) = served
-        .need_targets
-        .iter()
-        .enumerate()
-        .find_map(|(at, path)| {
-            busbar_contract::section::member_target(path)?;
-            Some(busbar_contract::conn::NeedId(u32::try_from(at).ok()?))
-        })
-    else {
-        return;
-    };
-    for route in routes.values().filter(|r| r.need == need) {
+    let targeted = member_target_needs(served);
+    for (member, route) in routes {
         let Some(binding) = &route.auth else {
             continue;
         };
-        table.bind_auth(
-            instance,
-            need,
-            busbar_contract::conn::origin_of(&route.base_url),
-            busbar_contract::conn::ConnAuth {
-                auth: Arc::clone(&binding.auth),
-                handle: binding.handle,
-                style_flags: binding.style_flags,
-                points: binding.points,
-                passthrough: binding.passthrough,
-                lender: Some(Arc::clone(units) as Arc<dyn busbar_contract::conn::LendCredential>),
-            },
-        );
+        // EVERY member-target need the member rides carries its binding: the plane's own requests
+        // on any of them present what the walk's do.
+        for (need, base_url) in ridden(route) {
+            if !targeted.iter().any(|(n, _)| *n == need) {
+                continue;
+            }
+            table.bind_auth(
+                instance,
+                need,
+                member,
+                busbar_contract::conn::origin_of(&base_url),
+                busbar_contract::conn::ConnAuth {
+                    auth: Arc::clone(&binding.auth),
+                    handle: binding.handle,
+                    style_flags: binding.style_flags,
+                    points: binding.points,
+                    passthrough: binding.passthrough,
+                    per_request: binding.per_request.clone(),
+                    lender: Some(
+                        Arc::clone(units) as Arc<dyn busbar_contract::conn::LendCredential>
+                    ),
+                },
+            );
+        }
     }
+}
+
+/// THE MEMBER-TARGET NEEDS a plane states (`settings.*.<key>`,
+/// `busbar_contract::section::member_target`), in its Statement's order, each with the
+/// registration key its target is read from.
+fn member_target_needs(
+    served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
+) -> Vec<(busbar_contract::conn::NeedId, &'static str)> {
+    served
+        .need_targets
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(|(at, path)| {
+            let key = busbar_contract::section::member_target(path)?;
+            Some((busbar_contract::conn::NeedId(u32::try_from(at).ok()?), key))
+        })
+        .collect()
+}
+
+/// EVERY NEED A MEMBER ROUTE RIDES, its own first, each with the base URL it dials
+/// (`MemberRoute::ride`).
+fn ridden(
+    route: &busbar_kernel::plane_driver::MemberRoute,
+) -> Vec<(busbar_contract::conn::NeedId, String)> {
+    std::iter::once(route.need)
+        .chain(route.rides.iter().map(|(need, _)| *need))
+        .filter_map(|need| {
+            let ride = route.ride(need.0.checked_add(1)?)?;
+            Some((ride.need, ride.base_url.to_string()))
+        })
+        .collect()
 }
 
 /// THE MEMBERS' ROUTES of one door plane (THE DESIGN §6 steps 2-3, sealed at its composition):
@@ -2261,15 +2825,11 @@ pub fn member_routes(
     let mut resolved = Vec::new();
     let mut registered = BTreeMap::new();
     // A REGISTRATION MEMBER (ARCHITECT Q-L3B-ROUTES): where the plane's need states a member-target
-    // path, an entry the section registers is reached at its own target, read off the registration.
-    let member_target = served
-        .need_targets
-        .iter()
-        .enumerate()
-        .find_map(|(at, path)| {
-            let key = busbar_contract::section::member_target(path)?;
-            Some((busbar_contract::conn::NeedId(u32::try_from(at).ok()?), key))
-        });
+    // path, an entry the section registers is reached at its own target, read off the registration;
+    // on EVERY member-target need the plane states (the providers' rides, ARCHITECT Q-L5B-NEEDS):
+    // the first as its own, each other one riding beside it at the target it names.
+    let member_targets = member_target_needs(served);
+    let member_target = member_targets.first().copied();
     // A PROGRAM MEMBER (ARCHITECT round 5 Q-L3B-STDIO-UPSTREAM (A)): where the plane's need states
     // the member-program path, an entry whose registration names a program is reached at its own
     // long-lived program, which the connector keeps per member (the loader declared each one from
@@ -2289,15 +2849,28 @@ pub fn member_routes(
                     .and_then(|r| entry_text(r, key).filter(|t| !t.is_empty()).map(|t| (r, t)))
                 {
                     let anchors =
-                        registration_anchors(entry, registration, need, served, reach.secrets)?;
-                    registered.insert(
-                        entry.clone(),
-                        (need, origin_of(target).to_string(), anchors),
-                    );
+                        registration_anchors(entry, registration, need, served, &*reach.secrets)?;
+                    let base_url = origin_of(target).to_string();
+                    // Each other member-target need the registration names a target for rides
+                    // beside its own, held to the same anchors; one whose target is another
+                    // origin dials that origin.
+                    let mut rides = Vec::new();
+                    let mut spelled = Vec::new();
+                    for (other, key) in member_targets.iter().skip(1) {
+                        let Some(at) = entry_text(registration, key).filter(|t| !t.is_empty())
+                        else {
+                            continue;
+                        };
+                        rides.push(*other);
+                        if origin_of(at) != base_url {
+                            spelled.push((*other, origin_of(at).to_string()));
+                        }
+                    }
+                    registered.insert(entry.clone(), (need, base_url, anchors, rides, spelled));
                     continue;
                 }
             }
-            // A PROGRAM MEMBER (Q-L3B-STDIO-UPSTREAM (A)): a registration that names a program is
+            // A PROGRAM MEMBER (the program-upstream ruling (A)): a registration that names a program is
             // reached at its own long-lived child, the connector keeps it per member.
             if let Some(need) = member_program {
                 if registration
@@ -2389,7 +2962,7 @@ pub fn member_routes(
     let section_default = section
         .get(busbar_contract::section::UPSTREAM_CREDENTIALS_KEY)
         .and_then(serde_yaml::Value::as_str);
-    for (entry, (need, base_url, anchors)) in registered {
+    for (entry, (need, base_url, anchors, rides, spelled)) in registered {
         let mode = section
             .get(entry.as_str())
             .and_then(|r| entry_text(r, busbar_contract::section::UPSTREAM_CREDENTIALS_KEY))
@@ -2414,26 +2987,34 @@ pub fn member_routes(
                 style_flags: decl.flags,
                 points: busbar_contract::abi::auth::AuthPoints(decl.points),
                 passthrough: true,
+                per_request: None,
             })
         } else {
             // A `token_exchange:` registration (ARCHITECT round 5 Q-L3B-EXCHANGE (B)): busbar's own
-            // subject token, exchanged per call for the caller's down-scope the plane states.
+            // subject token, exchanged per call for the caller's down-scope the plane states; else
+            // an `upstream_credential:` registration: busbar's own credential, presented per request.
             match section.get(entry.as_str()) {
-                Some(registration) => token_exchange_binding(&entry, registration, reach)?,
+                Some(registration) => match token_exchange_binding(&entry, registration, reach)? {
+                    Some(binding) => Some(binding),
+                    None => upstream_credential_binding(&entry, registration, reach)?,
+                },
                 None => None,
             }
         };
         routes.insert(
             entry.clone(),
             MemberRoute {
-                rides: Vec::new(),
+                rides: rides
+                    .into_iter()
+                    .map(|n| (n, busbar_kernel::plane_driver::ResponseKeep::default()))
+                    .collect(),
                 need,
                 base_url,
                 auth,
                 provider: entry,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),
                 anchors,
-                spelled: Vec::new(),
+                spelled,
             },
         );
     }
@@ -2507,6 +3088,7 @@ pub fn member_routes(
                     style_flags: decl.flags,
                     points: busbar_contract::abi::auth::AuthPoints(decl.points),
                     passthrough: false,
+                    per_request: None,
                 }),
                 provider: r.name,
                 keep: busbar_kernel::plane_driver::ResponseKeep::default(),

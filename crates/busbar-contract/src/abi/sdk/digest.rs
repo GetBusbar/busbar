@@ -26,6 +26,13 @@ pub fn sha256_tagged(data: &[u8]) -> String {
     format!("sha256/{}", STANDARD.encode(sha256(data)))
 }
 
+/// `bytes` as lower-case hex, two digits a byte: the one spelling a plugin renders a digest or a
+/// signature in, so no plugin writes an encoder of its own.
+#[must_use]
+pub fn lower_hex(bytes: &[u8]) -> String {
+    hex::encode(bytes)
+}
+
 #[cfg(test)]
 #[path = "tests/digest_tests.rs"]
 mod tests;

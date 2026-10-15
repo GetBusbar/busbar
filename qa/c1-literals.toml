@@ -36,11 +36,6 @@ item = "ranking (hooks-ranking)"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel-scope/src/lib.rs"
-item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/api.rs"
 item = "openapi"
 
@@ -51,43 +46,8 @@ item = "openapi"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/auth/token.rs"
-item = "github"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate.rs"
-item = "otlp"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate.rs"
-item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate.rs"
-item = "webhook"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate_export.rs"
-item = "otlp"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/mod.rs"
 item = "github"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/mod.rs"
-item = "otlp"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/mod.rs"
-item = "prometheus"
 
 [[finding]]
 rule = "c1-literals:literal"
@@ -96,18 +56,8 @@ item = "ranking"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/mod.rs"
-item = "webhook"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/named_map.rs"
 item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/providers.rs"
-item = "anthropic"
 
 [[finding]]
 rule = "c1-literals:literal"
@@ -161,18 +111,8 @@ item = "prometheus"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/observability.rs"
-item = "webhook"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/plane/registry.rs"
 item = "openapi"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/plane_host/egress.rs"
-item = "streaming"
 
 [[finding]]
 rule = "c1-literals:literal"

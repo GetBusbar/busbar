@@ -15,9 +15,10 @@
 //! - [`admin_required_scope`] — THE admin-API scope matrix: derived from HTTP method and path alone
 //!   (never the request body, so a crafted request cannot escalate). It is the only copy: the
 //!   kernel's admin gate and the root's approve step both call it.
-//! - [`ADMIN_SCOPE_TABLE`] — the 66 operations that matrix was mechanically extracted from at the
-//!   1.5.5 tag (`v1.5.5`, `crates/busbar/src/admin/v1/json/openapi.json`), kept here as DATA so the
-//!   rule above can be proven against every one of them instead of a hand-picked sample.
+//! - The 66 operations that matrix was mechanically extracted from at the 1.5.5 tag are the
+//!   oracle corpus's DATA (`testing/shadow-oracle/fixtures/openapi-1.5.5.json`, each operation's
+//!   `x-busbar-required-scope`): the rule above is proven against every one of them, read from the
+//!   1.5.5 document itself, instead of a hand-picked sample or a second copy here.
 //! - [`egress`] — the egress gate: a virtual-key grant check before busbar spends its own outbound
 //!   credential.
 
@@ -30,7 +31,7 @@ pub mod egress;
 /// The two-rung authorization chain and a principal's grant set, from their one home.
 pub use busbar_contract::authz::{Grants, Scope};
 
-/// The frozen Admin API v1 path prefix every operation in [`ADMIN_SCOPE_TABLE`] is mounted under.
+/// The frozen Admin API v1 path prefix every admin operation is mounted under.
 ///
 /// The contract's own, re-exported: the prefix is closed structure of the node's surface, and every
 /// crate that has to name it names one literal.
@@ -77,120 +78,6 @@ pub fn admin_required_scope(method: &str, path: &str) -> Scope {
         return Scope::ReadOnly;
     }
     Scope::Full
-}
-
-/// One admin operation in the 1.5.5 scope table.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AdminOperation {
-    /// The HTTP method.
-    pub method: &'static str,
-    /// The absolute path, `ADMIN_PREFIX`-rooted.
-    pub path: &'static str,
-    /// The scope 1.5.5 requires for this operation.
-    pub scope: Scope,
-}
-
-/// The 1.5.5 admin scope table, as data: 66 operations over 49 paths (34 `read-only`, 32 `full`),
-/// derived mechanically from 1.5.5's `openapi.json` at the `v1.5.5` tag
-/// (`crates/busbar/src/admin/v1/json/openapi.json`'s `x-busbar-required-scope` annotations).
-/// `POST /config/validate` and `POST /plugins/inspect` are read-only. This is the "1.5.5 scope
-/// table as data" [`admin_required_scope`] is proven against, row for row, in the table test.
-pub static ADMIN_SCOPE_TABLE: &[AdminOperation] = &[
-    op("DELETE", "/api/v1/admin/export/{name}", Scope::Full),
-    op("DELETE", "/api/v1/admin/groups/{name}", Scope::Full),
-    op("DELETE", "/api/v1/admin/hooks/{name}", Scope::Full),
-    op(
-        "DELETE",
-        "/api/v1/admin/identity-providers/{name}",
-        Scope::Full,
-    ),
-    op("DELETE", "/api/v1/admin/keys/{id}", Scope::Full),
-    op("DELETE", "/api/v1/admin/overlay/{section}", Scope::Full),
-    op("DELETE", "/api/v1/admin/plugins/{file}", Scope::Full),
-    op("GET", "/api/v1/admin/admin-auth", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/audit", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/auth", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/config", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/config/diff", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/config/settings", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/config/versions", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/config/versions/{v}", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/export", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/export/{name}", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/groups", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/groups/{name}", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/groups/{name}/usage", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/hooks", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/hooks/{name}", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/hooks/{name}/health", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/hooks/{name}/schema", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/hooks/{name}/status", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/identity-providers", Scope::ReadOnly),
-    op(
-        "GET",
-        "/api/v1/admin/identity-providers/{name}",
-        Scope::ReadOnly,
-    ),
-    op("GET", "/api/v1/admin/info", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/keys", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/keys/{id}", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/keys/{id}/usage", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/models", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/openapi.json", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/plugins", Scope::ReadOnly),
-    op(
-        "GET",
-        "/api/v1/admin/plugins/{file}/schema",
-        Scope::ReadOnly,
-    ),
-    op("GET", "/api/v1/admin/pools", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/pools/{name}", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/providers", Scope::ReadOnly),
-    op("GET", "/api/v1/admin/usage", Scope::ReadOnly),
-    op("PATCH", "/api/v1/admin/export/{name}/settings", Scope::Full),
-    op("PATCH", "/api/v1/admin/groups/{name}", Scope::Full),
-    op("PATCH", "/api/v1/admin/hooks/{name}/settings", Scope::Full),
-    op(
-        "PATCH",
-        "/api/v1/admin/identity-providers/{name}/settings",
-        Scope::Full,
-    ),
-    op("PATCH", "/api/v1/admin/keys/{id}", Scope::Full),
-    op("POST", "/api/v1/admin/auth/cache/flush", Scope::Full),
-    op("POST", "/api/v1/admin/config/apply", Scope::Full),
-    op("POST", "/api/v1/admin/config/reload", Scope::Full),
-    op("POST", "/api/v1/admin/config/rollback", Scope::Full),
-    op("POST", "/api/v1/admin/config/validate", Scope::ReadOnly),
-    op("POST", "/api/v1/admin/groups", Scope::Full),
-    op("POST", "/api/v1/admin/hooks", Scope::Full),
-    op("POST", "/api/v1/admin/keys", Scope::Full),
-    op("POST", "/api/v1/admin/keys/{id}/revoke", Scope::Full),
-    op("POST", "/api/v1/admin/keys/{id}/rotate", Scope::Full),
-    op("POST", "/api/v1/admin/plugins", Scope::Full),
-    op("POST", "/api/v1/admin/plugins/inspect", Scope::ReadOnly),
-    op("POST", "/api/v1/admin/plugins/reload", Scope::Full),
-    op("POST", "/api/v1/admin/plugins/rollback", Scope::Full),
-    op("POST", "/api/v1/admin/restart", Scope::Full),
-    op("POST", "/api/v1/admin/signing-key/rotate", Scope::Full),
-    op("PUT", "/api/v1/admin/admin-auth", Scope::Full),
-    op("PUT", "/api/v1/admin/config/settings", Scope::Full),
-    op("PUT", "/api/v1/admin/export/{name}", Scope::Full),
-    op("PUT", "/api/v1/admin/groups/{name}", Scope::Full),
-    op("PUT", "/api/v1/admin/hooks/{name}", Scope::Full),
-    op(
-        "PUT",
-        "/api/v1/admin/identity-providers/{name}",
-        Scope::Full,
-    ),
-];
-
-/// `const fn` builder for [`ADMIN_SCOPE_TABLE`] rows, so the table above is data, not a macro.
-const fn op(method: &'static str, path: &'static str, scope: Scope) -> AdminOperation {
-    AdminOperation {
-        method,
-        path,
-        scope,
-    }
 }
 
 #[cfg(test)]

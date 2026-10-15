@@ -47,6 +47,7 @@ pub mod answer;
 pub mod auth_outbound;
 pub mod auth_ticks;
 pub mod conn_services;
+pub mod handle;
 pub mod inline;
 pub mod io_slots;
 pub mod kinds;
@@ -92,7 +93,10 @@ pub use plugin::{
 };
 pub use services::{HostServices, Later, Ran, Reading, Stored};
 pub use validate::Violation;
-pub use worker::{Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Lent, Reply};
+pub use worker::{
+    Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Lent, Reply,
+    DEFAULT_QUARANTINE_AFTER, QUARANTINED_TOTAL,
+};
 
 /// A kind, as the dispatcher sees it: its code, its table and its timeout outcome. Implemented once
 /// per kind ([`kinds`]); `Ops` is that kind's `abi/<kind>/Ops`.
@@ -353,9 +357,7 @@ pub fn in_head() -> InHead {
         flags: 0,
         deadline_class: 0,
         _reserved: [0; 3],
-        host: HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
+        host: HostCtx::NONE,
         ticket: Ticket::NONE,
         deadline_ns: 0,
         trace_id: [0; 16],

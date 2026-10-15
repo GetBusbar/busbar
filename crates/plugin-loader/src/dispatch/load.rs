@@ -104,6 +104,17 @@ impl LinkedRow {
     }
 }
 
+/// A compiled-in door's Statement, checked as [`rendering_of`] checks it, for a kind's own reader
+/// of its tail (`kinds::transport::stated`).
+///
+/// # Errors
+///
+/// The refusal the door or its Statement earns.
+pub(crate) fn statement_of(door_fn: DoorFn) -> Result<Statement, LoadError> {
+    let (door, _) = read_door(door_fn(), None)?;
+    statement(&door)
+}
+
 /// THE RENDERING a door's Statement makes, for any kind: the door's head checks (magic, mechanism,
 /// size, a known kind at this host's ABI version for it) and the Statement's, then
 /// [`render`]. The pack tool signs it into a dropped plugin's manifest; [`LinkedRow::of`] states it
@@ -317,6 +328,12 @@ pub enum LoadError {
         /// How many needs it declares.
         needs: usize,
     },
+    /// The host has minted every instance handle its handle can index (#74, `dispatch::handle`):
+    /// a bind is refused rather than a handle reused.
+    HandlesSpent,
+    /// The OS random source could not answer the host's key draw (#74): the loader refuses to boot
+    /// rather than mint handles under a weaker key.
+    Entropy(String),
 }
 
 /// What every refusal of a plugin built against an older contract tells the operator to do.
@@ -391,6 +408,15 @@ impl fmt::Display for LoadError {
             Self::NoConnectionTable { plugin, needs } => write!(
                 f,
                 "plugin '{plugin}' declares {needs} connection need(s) and was bound with no connection table"
+            ),
+            Self::HandlesSpent => write!(
+                f,
+                "the host has minted every instance handle it can index; restart the process"
+            ),
+            Self::Entropy(why) => write!(
+                f,
+                "the OS random source could not answer the host's handle key ({why}); the loader \
+                 refuses to boot"
             ),
         }
     }

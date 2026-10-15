@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! The root's boot stages: its `plugins.fetch` runs the loader's fetch, and only ever downloads
-//! through the kernel's SSRF-guarded downloader.
+//! through its SSRF-guarded download over the one connector (`root::plugin_fetch`).
 
 use super::*;
 
@@ -27,7 +27,10 @@ fn scratch(tag: &str) -> std::path::PathBuf {
 }
 
 /// A PIN-CACHED entry skips the network: the file already on disk hashes to the pin, so the
-/// root's fetch reports it cached and never calls the downloader (which would fail the test).
+/// loader's fetch the root delegates to reports it cached and never calls the download (which
+/// would fail the test). The root's `plugins_fetch` downloads only through the connector
+/// (`root::plugin_fetch`, row 130 E6), so the panicking download is handed to the loader's fetch
+/// directly; the root maps its outcome one to one.
 #[test]
 fn a_pin_cached_fetch_never_downloads() {
     let dir = scratch("cached");
@@ -39,19 +42,25 @@ fn a_pin_cached_fetch_never_downloads() {
         filename: "cached-blob.dat".into(),
     };
     let never = |url: &str| -> Result<Vec<u8>, String> { panic!("downloaded {url}") };
-    let got = plugins_fetch(&dir, &[target], true, &never).expect("the cached pin fetches");
+    let spec = super::super::loader::FetchSpec {
+        url: target.url.clone(),
+        sha256: target.sha256.clone(),
+        filename: target.filename.clone(),
+    };
+    let got = super::super::loader::fetch_plugins(&dir, &[spec], true, &never)
+        .expect("the cached pin fetches");
     assert_eq!(
         got,
-        vec![Fetched::Cached {
+        vec![super::super::loader::FetchOutcome::Cached {
             filename: "cached-blob.dat".into()
         }]
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// THE ROOT'S FETCH CANNOT BYPASS THE GUARD: a cloud-metadata URL fetched through the root, with
-/// the kernel's SSRF-guarded downloader, is refused with the same message the loader's fetch gives
-/// that downloader directly, and nothing is written.
+/// THE ROOT'S FETCH CANNOT BYPASS THE GUARD: a cloud-metadata URL fetched through the root is
+/// refused, before any dial, with the same message the loader's fetch gives the root's
+/// SSRF-guarded download directly, and nothing is written.
 #[test]
 fn the_roots_fetch_refuses_a_metadata_host_through_the_kernels_guard() {
     let dir = scratch("ssrf");
@@ -60,8 +69,8 @@ fn the_roots_fetch_refuses_a_metadata_host_through_the_kernels_guard() {
         sha256: None,
         filename: "plugin.tar.gz".into(),
     };
-    let guard = busbar_kernel::preflight::plugin_fetch_downloader(&[]);
-    let via_root = plugins_fetch(&dir, std::slice::from_ref(&target), true, &guard).unwrap_err();
+    let guard = crate::root::plugin_fetch::downloader(&[]);
+    let via_root = plugins_fetch(&dir, std::slice::from_ref(&target), true, &[]).unwrap_err();
     let spec = super::super::loader::FetchSpec {
         url: target.url.clone(),
         sha256: None,
@@ -554,6 +563,85 @@ fn a_test_harness_build_takes_its_first_party_key_from_the_harness_variable() {
             ..
         })
     ));
+}
+
+/// THE ADMIN CATALOG'S ROW for a plugin a harness key signed first-party, read over
+/// `GET /api/v1/admin/plugins?type=store` on a snapshot carrying the root's trust builder
+/// ([`trust_policy`], what `root::linked::register_stores` installs for every snapshot), with the
+/// harness variable set to that key: the row's (`valid`, `trust`). The key is not the kernel test
+/// build's stand-in release key, so only the root's harness seam can admit it.
+async fn the_admin_catalog_row_for_a_harness_signed_plugin(
+    tag: &str,
+) -> (serde_json::Value, serde_json::Value) {
+    use crate::root::loader::sign::SigningKey;
+    use tower::ServiceExt as _;
+    let test_key = SigningKey::from_bytes(&[0x6b; 32]);
+    let artifact = b"\x7fELF admin catalog under the root's trust";
+    let manifest = first_party_signed_by(&test_key, artifact);
+    let dir = scratch(tag);
+    std::fs::write(
+        dir.join("harness-seam.tar.gz"),
+        crate::root::loader::tarball::package(&manifest, "lib.so", artifact).expect("it packs"),
+    )
+    .expect("the tarball is written");
+    let app = busbar_kernel::test_support::TestApp::new()
+        .admin_chain(vec![])
+        .plugins_dir(dir.clone())
+        .plugin_trust(trust_policy)
+        .build();
+    let router = busbar_core_admin::build_router(app);
+    let request = axum::http::Request::builder()
+        .uri("/api/v1/admin/plugins?type=store")
+        .body(axum::body::Body::empty())
+        .expect("a request");
+    std::env::set_var(
+        HARNESS_KEY_VAR,
+        hex::encode(test_key.verifying_key().as_bytes()),
+    );
+    let response = router.oneshot(request).await;
+    std::env::remove_var(HARNESS_KEY_VAR);
+    let response = response.expect("the admin surface answers");
+    assert_eq!(response.status().as_u16(), 200);
+    let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+        .await
+        .expect("the body");
+    let _ = std::fs::remove_dir_all(&dir);
+    let page: serde_json::Value = serde_json::from_slice(&bytes).expect("a JSON page");
+    let row = page["items"]
+        .as_array()
+        // The row is found by its tarball's name, wherever the row states it.
+        .and_then(|rows| {
+            rows.iter()
+                .find(|r| r.to_string().contains("harness-seam.tar.gz"))
+        })
+        .unwrap_or_else(|| panic!("the dropped plugin is listed: {page}"))
+        .clone();
+    (row["valid"].clone(), row["trust"].clone())
+}
+
+/// **THE ADMIN CATALOG JUDGES UNDER BOOT'S TRUST (the fleet e2e that read it red).** In a
+/// `test-harness` build with the harness key set, the catalog row for a plugin that key signed
+/// first-party reads valid and trusted — the verdict boot admits it under — because the admin
+/// surface resolves through the root's one builder, harness key included, and builds none of its
+/// own. RED before: the admin crate built its own policy without the harness key and reported the
+/// row rejected (`first-party plugin only`) while boot admitted the plugin.
+#[cfg(feature = "test-harness")]
+#[tokio::test]
+async fn a_test_harness_admin_catalog_reads_a_harness_signed_plugin_as_valid() {
+    let (valid, trust) =
+        the_admin_catalog_row_for_a_harness_signed_plugin("admin-trust-green").await;
+    assert_eq!(valid, serde_json::json!(true), "trust: {trust}");
+    assert_eq!(trust, serde_json::json!("trusted"));
+}
+
+/// The red arm: in a build WITHOUT `test-harness`, the same plugin under the same variable is
+/// refused by the admin catalog, as boot refuses it — the harness key reaches neither.
+#[cfg(not(feature = "test-harness"))]
+#[tokio::test]
+async fn an_admin_catalog_without_test_harness_refuses_a_harness_signed_plugin() {
+    let (valid, trust) = the_admin_catalog_row_for_a_harness_signed_plugin("admin-trust-red").await;
+    assert_eq!(valid, serde_json::json!(false), "trust: {trust}");
+    assert_eq!(trust, serde_json::json!("rejected"));
 }
 
 /// The features a `[features]` table turns on from `root`, transitively: only the package's own

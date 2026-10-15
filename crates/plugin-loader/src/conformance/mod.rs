@@ -113,9 +113,12 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 
 mod auth;
 mod carrier;
+mod datagram;
 mod export;
 
-pub use auth::{red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte};
+pub use auth::{
+    outbound_plant, red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte,
+};
 mod hook;
 pub mod host_io;
 mod plane;
@@ -800,9 +803,15 @@ pub fn load<K: Kind>(s: &Subject, leg: Leg, b: Bind) -> Result<Plugin<K>, LoadEr
 /// The crossings `p` has made, by the dispatcher's own crossing gate: every crossing, and of them
 /// the RESUME re-invocations, counted apart (Q-P4-5).
 pub(crate) fn crossings<K: Kind>(p: &Plugin<K>) -> Counts<'_> {
+    crossings_of(&p.inner)
+}
+
+/// The crossings the instance `inner` has made ([`crossings`], read off the instance itself): for a
+/// fold that hands its plugin on by value (a `Plugin` is `!Clone`) and keeps reading the gate.
+pub(crate) fn crossings_of(inner: &crate::dispatch::plugin::Instance) -> Counts<'_> {
     Counts {
-        total: &p.inner.crossings,
-        resumes: &p.inner.resumes,
+        total: &inner.crossings,
+        resumes: &inner.resumes,
     }
 }
 
@@ -1377,6 +1386,18 @@ pub fn both_ways(s: &Subject) {
     }
 }
 
+/// RED (TODO L-R22): a plane declaring a billable class no conformance case reports is refused by
+/// the plane script's class contract. Nothing to plant for a door of another kind.
+///
+/// # Panics
+/// When a declared class no case reports passes the comparator.
+pub fn red_unreported_class(s: &Subject) {
+    s.apply_env();
+    if s.kind() == KindCode::Plane {
+        plane::red_unreported_class(s);
+    }
+}
+
 /// **RED: the exact comparator refuses a moved count.** The linked leg's real fold passes it; the
 /// same fold with any one step's pinned count moved by one does not, nor does a fold whose every
 /// count doubled (the "above zero" check a loose comparator would wave through).
@@ -1636,8 +1657,8 @@ pub fn red_ready(s: &Subject) {
             load_linked::<Store>(&row, s.bind(&d, "red-ready")).expect("the restated door loads");
         assert!(p.has_ready());
         let name = p.name().to_owned();
-        let held = p.clone();
-        let (before, _) = crossings(&held).read();
+        let held = Arc::clone(&p.inner);
+        let (before, _) = crossings_of(&held).read();
         let minted = store::LegMint::take(0);
         let refused =
             crate::store_v3::LoadedStore::open(p, Arc::clone(&d), &settings, minted.mint())
@@ -1648,7 +1669,7 @@ pub fn red_ready(s: &Subject) {
             format!("plugin '{name}' ready failed: {READY_FAILURE}")
         );
         assert_eq!(
-            crossings(&held).read().0 - before,
+            crossings_of(&held).read().0 - before,
             2,
             "one open and one ready, first invocations, the ready not retried"
         );
@@ -1869,15 +1890,20 @@ pub fn declares_file(manifest_dir: &str) -> Option<PathBuf> {
 /// **THE DECLARED NEEDS ARE THE STATEMENT'S**, on the subject: its declares file's `needs` names
 /// exactly the transport schemes its door's Statement does ([`declared_needs_are`]).
 ///
+/// A plugin with no declares file FAILS here (status row 114: no proof passes by skipping its
+/// subject): every plugin repo holds one (plugin-ci's declares step refuses a repo without it), and
+/// a crate in busbar's own tree holds its own beside its `Cargo.toml` ([`declares_file`]).
+///
 /// # Panics
-/// Its `needs` is not the Statement's.
+/// No declares file is found, or its `needs` is not the Statement's.
 pub fn needs_declared(s: &Subject, manifest_dir: &str) {
-    let Some(file) = declares_file(manifest_dir) else {
-        eprintln!(
-            "no declares.json beside {manifest_dir}: plugin-ci's declares step owns its presence"
-        );
-        return;
-    };
+    let file = declares_file(manifest_dir).unwrap_or_else(|| {
+        panic!(
+            "no declares.json for the plugin at {manifest_dir} (its repo's root or one directory \
+             below it; in busbar's tree, the crate's own directory): the declared needs are proven \
+             against it, never passed unread"
+        )
+    });
     let text = std::fs::read_to_string(&file)
         .unwrap_or_else(|e| panic!("{} does not read: {e}", file.display()));
     if let Err(e) = declared_needs_are(&text, &need_schemes(&s.needs())) {
@@ -1935,6 +1961,13 @@ macro_rules! conformance_suite {
             $crate::conformance::red_count(&__busbar_conformance_subject());
         }
 
+        /// RED: a plane declaring a billable class no case reports is refused (a door of another
+        /// kind has nothing to plant).
+        #[test]
+        fn red_a_declared_class_no_case_reports_is_refused() {
+            $crate::conformance::red_unreported_class(&__busbar_conformance_subject());
+        }
+
         /// RED: the door at its kind ABI ± 1 is refused, linked and dropped in.
         #[test]
         fn red_a_door_at_another_kind_abi_is_refused() {
@@ -1972,24 +2005,33 @@ macro_rules! conformance_suite {
         }
 
         /// RED: an outbound auth door writing one wrong field byte fails the outbound script
-        /// (nothing to plant for a door with no outbound family).
+        /// (over a door with no outbound family, the door and its inputs agree there is none).
         #[test]
         fn red_an_outbound_field_byte_off_is_refused() {
-            $crate::conformance::red_outbound_wrong_byte(&__busbar_conformance_subject());
+            $crate::conformance::outbound_plant(
+                &__busbar_conformance_subject(),
+                $crate::conformance::red_outbound_wrong_byte,
+            );
         }
 
         /// RED: an outbound auth door whose `fields` writes nothing fails the outbound script
-        /// (nothing to plant for a door with no outbound family).
+        /// (over a door with no outbound family, the door and its inputs agree there is none).
         #[test]
         fn red_an_outbound_door_writing_no_field_is_refused() {
-            $crate::conformance::red_outbound_writes_nothing(&__busbar_conformance_subject());
+            $crate::conformance::outbound_plant(
+                &__busbar_conformance_subject(),
+                $crate::conformance::red_outbound_writes_nothing,
+            );
         }
 
         /// RED: an outbound auth door fetching its token twice fails the outbound script
-        /// (nothing to plant for a door whose styles mint no token).
+        /// (over a door with no outbound family, the door and its inputs agree there is none).
         #[test]
         fn red_a_second_token_fetch_is_refused() {
-            $crate::conformance::red_outbound_double_fetch(&__busbar_conformance_subject());
+            $crate::conformance::outbound_plant(
+                &__busbar_conformance_subject(),
+                $crate::conformance::red_outbound_double_fetch,
+            );
         }
 
         /// RED: a networked door bound to serve with no connection table is refused by name.

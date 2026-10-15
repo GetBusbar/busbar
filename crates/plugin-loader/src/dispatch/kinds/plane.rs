@@ -43,10 +43,10 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::plane::check::{
     check_arrive, check_billable_classes, check_cancel, check_cancel_records, check_drive,
-    check_fee_units, check_on_piece, check_pin_mechanisms, check_project, check_record_chains,
-    check_refusal, check_refusal_records, check_refusal_statuses, check_route_cost, check_sections,
-    check_serve, check_serve_records, check_snapshot, check_tail, check_trust_keys, Bounds, Caps,
-    ProjectHost, MAX_SESSIONS,
+    check_fee_units, check_metric_lanes, check_on_piece, check_pin_mechanisms, check_project,
+    check_record_chains, check_refusal, check_refusal_records, check_refusal_statuses,
+    check_route_cost, check_sections, check_serve, check_serve_records, check_snapshot, check_tail,
+    check_trust_keys, Bounds, Caps, ProjectHost, MAX_SESSIONS,
 };
 use busbar_contract::abi::plane::{
     self, slot, ArriveIn, ArriveOut, BillableClass, OnPieceIn, OnPieceOut, PinMechanism,
@@ -139,6 +139,9 @@ pub struct ServedFacts {
     /// whether a unit incurred its fee (THE DESIGN §7, "the plane reports ... whether a fee unit was
     /// incurred").
     pub fee_units: Vec<&'static str>,
+    /// The tail's counter lane words (`PlaneTail::metric_lanes`): the words beside the operator's
+    /// entry names a stated attempt `lane` label may carry.
+    pub metric_lanes: Vec<&'static str>,
     /// Each need's response-head rule, in Statement need order (`Need::keep_mode`, its kept and
     /// denied names): what of a far end's head the host hands the plane on that need.
     pub keeps: Vec<NeedKeep>,
@@ -181,6 +184,10 @@ pub struct ServedFacts {
     /// The tail's `stream_ceiling_secs`: how long a unit whose `arrive` states `ROUTE_STREAM` may
     /// run once its route is known; `0` = no ceiling.
     pub stream_ceiling_secs: u64,
+    /// The provider-key descriptor the Statement's extensions state
+    /// (`busbar_contract::provider_keys::EXT_PROVIDER_KEYS`), judged in the neutral shape
+    /// vocabulary at bind; `None` = it states none.
+    pub provider_keys: Option<busbar_contract::provider_keys::ProviderKeys>,
 }
 
 /// ONE NEED'S RESPONSE-HEAD RULE, as its Statement declares it.
@@ -229,6 +236,8 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
         tail.billable_classes_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    check_metric_lanes(&listed(tail.metric_lanes, tail.metric_lanes_len))
+        .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
     // A plane declares exactly one section: its verb. The loader's Statement check already
     // refused a NULL list with a count.
     let sections = if st.sections_len == 0 {
@@ -311,6 +320,10 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .into_iter()
                 .map(kept)
                 .collect(),
+            metric_lanes: listed(tail.metric_lanes, tail.metric_lanes_len)
+                .into_iter()
+                .map(kept)
+                .collect(),
             keeps: listed(st.needs, st.needs_len)
                 .into_iter()
                 .map(|n| NeedKeep {
@@ -364,8 +377,25 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
             caller_credential_refusal: kept(tail.caller_credential_refusal),
             tail_flags: tail.flags,
             stream_ceiling_secs: tail.stream_ceiling_secs,
+            provider_keys: stated_provider_keys(st.extensions)?,
         },
     })
+}
+
+/// The provider-key descriptor a Statement's extensions state, judged: a descriptor naming a shape
+/// outside the neutral vocabulary, or not a descriptor at all, refuses the plane at bind. `None` when
+/// the extensions state none.
+fn stated_provider_keys(
+    ext: Blob,
+) -> Result<Option<busbar_contract::provider_keys::ProviderKeys>, String> {
+    if ext.ptr.is_null() || ext.len == 0 {
+        return Ok(None);
+    }
+    // SAFETY: a non-NULL Statement blob is `len` bytes of `'static` plugin data, read here while the
+    // plugin is loaded; the descriptor is decoded into owned values before this returns.
+    let bytes = unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) };
+    busbar_contract::provider_keys::stated(bytes)
+        .map_err(|e| format!("the plane's provider keys are refused: {e}"))
 }
 
 /// A tail string, kept for the process (`""` when absent).
@@ -612,6 +642,7 @@ pub fn registration(
         trust_keys: declared.trust_keys.clone(),
         caller_credential_refusal: (!refusal.is_empty()).then_some(refusal),
         fallback: served.fallback,
+        provider_keys: served.provider_keys.clone(),
         validate: Arc::new(move |settings: &[u8]| validate(&judge, settings)),
         facing: Arc::new(
             move |settings: &[u8],

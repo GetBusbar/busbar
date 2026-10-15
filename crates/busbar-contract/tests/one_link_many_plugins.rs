@@ -12,103 +12,42 @@
 //! crate are a compile error ("symbol `busbar_abi` is already defined"), which is what this file is:
 //! two plugins in one link, which only compiles when no plugin defines a frozen symbol of its own.
 //!
-//! It also pins the other half: each plugin's LINKED entry is still its own, and with more than one
+//! It also pins the other half: each plugin's LINKED door is still its own, and with more than one
 //! door registered the SDK's symbols answer as no plugin — never as whichever registered last.
 
-use busbar_contract::abi::cold::STATUS_PROTOCOL;
 use busbar_contract::abi::sdk::__door;
 
+/// Two transports' doors in one link (#84 merge: the transport door is the shared one). Before the
+/// merge a transport defined `busbar_abi` / `busbar_plugin_kind` itself, and two of them in one
+/// link were the duplicate definition fat LTO refuses.
 mod first {
-    /// The image's one handle type (it never opens: its constructor refuses).
-    type Handle = Box<String>;
-
-    fn open(_cfg: &str) -> Result<Handle, String> {
-        Err("first plugin refuses".into())
-    }
-
-    /// It serves no request: this image exists to prove its door's registration.
-    ///
-    /// # Safety
-    /// Called only through the SDK boundary, which never dereferences on its behalf.
-    unsafe fn dispatch(
-        _handle: *mut std::ffi::c_void,
-        _bytes: &[u8],
-    ) -> busbar_contract::abi::sdk::BoundaryOutcome {
-        busbar_contract::abi::sdk::BoundaryOutcome::Unsupported("no request is served here".into())
-    }
-
-    busbar_contract::export_plugin!(
-        kind = "auth",
-        dispatch = dispatch,
-        ctor = open,
-        handle = Handle
-    );
-}
-
-mod second {
-    /// The image's one handle type (it never opens: its constructor refuses).
-    type Handle = Box<String>;
-
-    fn open(_cfg: &str) -> Result<Handle, String> {
-        Err("second plugin refuses".into())
-    }
-
-    /// It serves no request: this image exists to prove its door's registration.
-    ///
-    /// # Safety
-    /// Called only through the SDK boundary, which never dereferences on its behalf.
-    unsafe fn dispatch(
-        _handle: *mut std::ffi::c_void,
-        _bytes: &[u8],
-    ) -> busbar_contract::abi::sdk::BoundaryOutcome {
-        busbar_contract::abi::sdk::BoundaryOutcome::Unsupported("no request is served here".into())
-    }
-
-    busbar_contract::export_plugin!(
-        kind = "auth",
-        dispatch = dispatch,
-        ctor = open,
-        handle = Handle
-    );
-}
-
-/// A transport's door in the same link (#84 merge: the transport door is the shared one). Before
-/// the merge a transport defined `busbar_abi` / `busbar_plugin_kind` itself, and this module beside
-/// the two above was the duplicate definition fat LTO refuses.
-mod third {
-    static DECL: [u8; 8] = *b"BUSPLANE";
+    pub(super) static DECL: [u8; 8] = *b"BUSFIRST";
     busbar_contract::export_transport!(DECL);
 }
 
-/// Open `entry` with an empty config and return (status, error text).
-fn open_through(entry: &busbar_contract::abi::sdk::ColdEntry) -> (i32, String) {
-    let cfg = b"{}";
-    let mut handle: *mut std::ffi::c_void = std::ptr::null_mut();
-    let mut err: *mut u8 = std::ptr::null_mut();
-    let mut err_len = 0usize;
-    // SAFETY: every pointer is a live local; the buffer is returned through the same entry's `free`.
-    unsafe {
-        let status = (entry.open)(cfg.as_ptr(), cfg.len(), &mut handle, &mut err, &mut err_len);
-        let text = if err.is_null() {
-            String::new()
-        } else {
-            let text =
-                String::from_utf8_lossy(std::slice::from_raw_parts(err, err_len)).into_owned();
-            (entry.free)(err, err_len);
-            text
-        };
-        (status, text)
+mod second {
+    pub(super) static DECL: [u8; 8] = *b"BUSSECND";
+    busbar_contract::export_transport!(DECL);
+}
+
+/// The decl a module's door hands back.
+fn decl_of(door: &__door::Door) -> *const u8 {
+    match door {
+        __door::Door::Transport(decl) => decl().cast(),
+        __door::Door::Plane(decl) => std::ptr::addr_of!(**decl).cast(),
     }
 }
 
 #[test]
-fn each_linked_entry_is_its_own_plugin() {
-    let (s1, e1) = open_through(&first::BUSBAR_COLD_ENTRY);
-    let (s2, e2) = open_through(&second::BUSBAR_COLD_ENTRY);
-    assert_eq!(s1, busbar_contract::abi::cold::STATUS_ERR);
-    assert_eq!(s2, busbar_contract::abi::cold::STATUS_ERR);
-    assert!(e1.contains("first plugin refuses"), "{e1}");
-    assert!(e2.contains("second plugin refuses"), "{e2}");
+fn each_linked_door_is_its_own_plugin() {
+    assert_eq!(
+        decl_of(&first::__BUSBAR_DOOR),
+        std::ptr::addr_of!(first::DECL).cast::<u8>()
+    );
+    assert_eq!(
+        decl_of(&second::__BUSBAR_DOOR),
+        std::ptr::addr_of!(second::DECL).cast::<u8>()
+    );
 }
 
 #[test]
@@ -122,14 +61,6 @@ fn two_doors_in_one_image_answer_as_no_plugin() {
     unsafe {
         assert!(__door::busbar_plane_decl().is_null());
         assert!(__door::busbar_transport_decl().is_null());
-        let status = __door::busbar_open(
-            std::ptr::null(),
-            0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
-        );
-        assert_eq!(status, STATUS_PROTOCOL);
     }
 }
 

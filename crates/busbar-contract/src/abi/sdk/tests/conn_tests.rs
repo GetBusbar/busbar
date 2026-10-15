@@ -125,9 +125,7 @@ fn host(conns: *const ConnectorSlots) -> Host {
     Host::of(&HostTables {
         size: std::mem::size_of::<HostTables>() as u32,
         _reserved: 0,
-        ctx: HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
+        ctx: HostCtx::NONE,
         wake: None,
         conns,
         services: services(),
@@ -242,9 +240,7 @@ fn open_learns_the_hosts_verdict_on_a_need() {
     let bare = Host::of(&HostTables {
         size: std::mem::size_of::<HostTables>() as u32,
         _reserved: 0,
-        ctx: HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
+        ctx: HostCtx::NONE,
         wake: None,
         conns: &SLOTS,
         services: std::ptr::null(),
@@ -285,5 +281,73 @@ fn close_is_made_on_no_ticket() {
     assert_eq!(
         c.establish(0, None, ""),
         Poll::Ready(Err(ConnFailure::NoTicket))
+    );
+}
+
+/// The cause `read_reply` names: `value` of the refused ack the scripted host answers.
+static REFUSED_CAUSE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The host's text on that refusal.
+const REFUSED_TEXT: &str = "the connection was refused";
+
+/// `read_reply`: the refused ack, naming [`REFUSED_CAUSE`] with [`REFUSED_TEXT`].
+extern "C" fn refused_reply(_: HostCtx, _: *const c_void, o: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the SDK's `out`, live for the call.
+    let out = unsafe { &mut *o };
+    out.value = REFUSED_CAUSE.load(std::sync::atomic::Ordering::SeqCst);
+    out.error = AbiStr {
+        ptr: REFUSED_TEXT.as_ptr(),
+        len: REFUSED_TEXT.len(),
+    };
+    out.outcome = RawOutcome::of(Outcome::Refused);
+    RawOutcome::of(Outcome::Refused)
+}
+
+static REFUSING: ConnectorSlots = ConnectorSlots {
+    size: std::mem::size_of::<ConnectorSlots>() as u32,
+    slots: crate::abi::host::conn::connector::SERVICES,
+    establish: None,
+    reject_endpoint: None,
+    side_stream: None,
+    read: None,
+    write: None,
+    upgrade_secure: None,
+    facts: None,
+    checkout: None,
+    checkin: None,
+    close: None,
+    random: None,
+    identity: None,
+    read_reply: Some(refused_reply),
+    write_request: None,
+};
+
+/// A refusal naming `CAUSE_CREDENTIAL_UNAVAILABLE` reads as [`ConnFailure::CredentialUnavailable`]:
+/// the plugin tells a vanished credential from any other refusal. RED arm: the same refusal naming
+/// no cause is the host's plain refusal, with its text.
+#[test]
+fn a_refusal_naming_an_unavailable_credential_reads_as_its_own_failure() {
+    use crate::abi::host::conn::connector::{CAUSE_CREDENTIAL_UNAVAILABLE, CAUSE_NONE};
+    let _g = SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let h = host(&REFUSING);
+    let mut buf = [0_u8; 8];
+    let mut slot = ReplyPiece::default();
+    REFUSED_CAUSE.store(
+        CAUSE_CREDENTIAL_UNAVAILABLE,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let mut c = h.connector(TICKET);
+    assert_eq!(
+        c.read_reply(1, &mut buf, &mut slot),
+        Poll::Ready(Err(ConnFailure::CredentialUnavailable))
+    );
+    assert_eq!(c.cause(), CAUSE_CREDENTIAL_UNAVAILABLE);
+    REFUSED_CAUSE.store(CAUSE_NONE, std::sync::atomic::Ordering::SeqCst);
+    let mut c = h.connector(TICKET);
+    assert_eq!(
+        c.read_reply(1, &mut buf, &mut slot),
+        Poll::Ready(Err(ConnFailure::Refused(REFUSED_TEXT.to_string())))
     );
 }

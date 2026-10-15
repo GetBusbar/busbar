@@ -2493,23 +2493,19 @@ async fn declared_error_set_is_exactly_what_the_handlers_emit() {
     drive_key_cap_and_delegation_errors().await;
     drive_named_map_errors().await;
     drive_door_verb_errors().await;
+    drive_agent_door_verb_errors().await;
     drive_unpriced_usage_reads().await;
-    // Every linked plane's own error-surface driver (its trust verbs), called here for the same reason
-    // as every line above it: a condition witnessed only by a sibling test is witnessed nowhere. Looped
-    // from the kernel's test-seam registry, so this names no plane; a plane whose driver went missing
-    // leaves its declared verbs unwitnessed and fails the over-claim walk below, and an empty registry
-    // is refused outright rather than read as "no plane verbs to witness".
+    // Every linked engine plane's own error-surface driver (its trust verbs), called here for the
+    // same reason as every line above it: a condition witnessed only by a sibling test is witnessed
+    // nowhere. Looped from the kernel's test-seam registry, so this names no plane. Since FLIP-A2A no
+    // engine plane mounts trust verbs (each verb-mounting plane is served through its door, and its
+    // verbs are driven by its door driver above), so the registry may hold none; a plane whose driver
+    // went missing still leaves its declared verbs unwitnessed and fails the over-claim walk below.
     crate::ensure_seam();
-    let plane_drivers: Vec<_> = busbar_kernel::test_support::seam::test_plane_seams()
+    for drive in busbar_kernel::test_support::seam::test_plane_seams()
         .iter()
         .filter_map(|seam| seam.error_surface_driver)
-        .collect();
-    assert!(
-        !plane_drivers.is_empty(),
-        "no linked plane registered an error-surface driver: the plane verbs' declared errors \
-         would go unwitnessed"
-    );
-    for drive in plane_drivers {
+    {
         drive().await;
     }
 
@@ -3035,6 +3031,7 @@ async fn named_map_app_opts(
                     public_url: Some("https://busbar.example"),
                     prior: None,
                     providers: None,
+                    hostless: busbar_kernel::plane::registry::EgressDriver::core(),
                 };
                 if let Some(slot) = (decl.build)(&ctx) {
                     builder.install_plane_runtime(decl.key, slot);
@@ -3056,6 +3053,7 @@ async fn named_map_app_opts(
             public_url: Some("https://busbar.example"),
             prior: None,
             providers: None,
+            hostless: busbar_kernel::plane::registry::EgressDriver::core(),
         };
         if let Some(plane) = (decl.build)(&ctx) {
             builder.install_plane_runtime(decl.key, plane);
@@ -3872,6 +3870,85 @@ async fn drive_door_verb_errors() {
         .await
         .unwrap();
     assert_eq!(r.status(), 400);
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(
+        body.pointer("/error/code").unwrap(),
+        "invalid_request",
+        "{body}"
+    );
+    handle.abort();
+}
+
+/// The DER `SubjectPublicKeyInfo` of `issuer`'s Ed25519 key (RFC 8410 section 4), base64: the key
+/// a registration pinned by its card issuer names.
+fn issuer_key_info(issuer: &ed25519_dalek::SigningKey) -> String {
+    use base64::Engine as _;
+    let mut der = vec![
+        0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+    ];
+    der.extend_from_slice(issuer.verifying_key().as_bytes());
+    base64::engine::general_purpose::STANDARD.encode(der)
+}
+
+/// THE AGENT DOOR'S TRUST VERBS' DECLARED ERRORS, produced through the admin router by the linked
+/// door's own `serve` op (ARCHITECT Q-L3B-VERBS), the door published over the section the
+/// named-map fixture boots with:
+/// * an unregistered name is `404 not_found` on `connect` and `approve` (before anything is read);
+/// * `approve` whose body is not the one-field `{"fingerprint": …}` document (an unknown field
+///   beside it) is `400 invalid_request`, naming the one field the body may carry;
+/// * `approve` naming a fingerprint for an agent whose card cannot be fetched is
+///   `400 invalid_request`: the look reports the card unauthenticated, which no approval can agree
+///   with.
+async fn drive_agent_door_verb_errors() {
+    let issuer = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+    let section = serde_json::json!({
+        "base-agent": {
+            "url": "http://127.0.0.1:1/closed",
+            "allow_private": true,
+            "pin": {"mechanism": "jws_issuer_key", "key": issuer_key_info(&issuer)}
+        }
+    });
+    let _published = publish_door("agents", &section.to_string());
+    let (_dir, _overlay, addr, handle) = named_map_app("agent-door-verbs", false).await;
+    let client = reqwest::Client::new();
+    let send = |path: &str, body: &str| {
+        client
+            .post(format!("http://{addr}/api/v1/admin{path}"))
+            .header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+            .body(body.to_string())
+            .send()
+    };
+    for path in ["/agents/nope/connect", "/agents/nope/approve"] {
+        let r = send(path, r#"{"fingerprint": "sha256:aa"}"#).await.unwrap();
+        assert_eq!(r.status(), 404, "{path}");
+        let body: serde_json::Value = r.json().await.unwrap();
+        assert_eq!(body.pointer("/error/code").unwrap(), "not_found", "{body}");
+    }
+    let r = send(
+        "/agents/base-agent/approve",
+        r#"{"fingerprint": "sha256:aa", "and": "more"}"#,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 400, "approve with an unknown body field");
+    let body: serde_json::Value = r.json().await.unwrap();
+    assert_eq!(
+        body.pointer("/error/code").unwrap(),
+        "invalid_request",
+        "{body}"
+    );
+    assert!(
+        body.to_string().contains("fingerprint"),
+        "the malformed-body refusal names the one field the body may carry: {body}"
+    );
+    let r = send(
+        "/agents/base-agent/approve",
+        r#"{"fingerprint": "sha256:aa"}"#,
+    )
+    .await
+    .unwrap();
+    assert_eq!(r.status(), 400, "approve of an unverified card");
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(
         body.pointer("/error/code").unwrap(),

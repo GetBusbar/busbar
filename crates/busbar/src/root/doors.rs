@@ -161,6 +161,7 @@ impl Dispatched {
             composes_over: stated.composes_over,
             ported: stated.ported,
             status_rows: stated.status_rows,
+            datagram: stated.datagram,
             duplex: stated
                 .upgrades
                 .iter()
@@ -508,5 +509,19 @@ pub fn claims_of(door: DoorFn) -> Vec<&'static str> {
 pub fn upgrades_of(door: DoorFn) -> Vec<&'static str> {
     super::loader::dispatch::kinds::transport::linked_facts(door)
         .map(|facts| facts.upgrades)
+        .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
+}
+
+/// The claims a linked row's door opens on their FIRST LINE (their row's `unit0_trigger`), read off
+/// the door's Statement: the carriers of whole lines, one of which the process's own stdin/stdout
+/// serves (`crate::root::serve::lines::line_carrier`).
+///
+/// # Panics
+///
+/// The build's own door is refused, as [`build`] panics for it.
+#[must_use]
+pub fn lines_of(door: DoorFn) -> Vec<&'static str> {
+    super::loader::dispatch::kinds::transport::linked_facts(door)
+        .map(|facts| facts.lines)
         .unwrap_or_else(|e| panic!("a linked transport door is refused: {e}"))
 }

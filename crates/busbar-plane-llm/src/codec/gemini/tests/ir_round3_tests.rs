@@ -84,8 +84,12 @@ fn item17_generated_image_streams_to_a_gemini_client() {
     let mut ir = bedrock_image_answer();
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir, "gemini", 0);
     let out = String::from_utf8(
-        crate::codec::proto_stream::StreamTranslate::synthesize_from_response("gemini", &ir)
-            .expect("synthesized"),
+        crate::codec::proto_stream::StreamTranslate::synthesize_from_response(
+            "gemini",
+            &ir,
+            busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+        )
+        .expect("synthesized"),
     )
     .unwrap();
     let inline = sse_payloads(&out)
@@ -102,8 +106,12 @@ fn item17_generated_image_streams_to_a_gemini_client() {
     let mut ir = bedrock_image_answer();
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir, "anthropic", 0);
     let out = String::from_utf8(
-        crate::codec::proto_stream::StreamTranslate::synthesize_from_response("anthropic", &ir)
-            .expect("synthesized"),
+        crate::codec::proto_stream::StreamTranslate::synthesize_from_response(
+            "anthropic",
+            &ir,
+            busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+        )
+        .expect("synthesized"),
     )
     .unwrap();
     let payloads = sse_payloads(&out);

@@ -97,7 +97,7 @@ impl Kernel {
     /// Take the seal. Boot only.
     pub fn new() -> Self {
         Kernel {
-            seal: KernelSeal::acquire_for_kernel(),
+            seal: crate::seal::acquire(),
             call_gen: AtomicU64::new(0),
         }
     }
@@ -1033,22 +1033,25 @@ pub fn open_unit<U: Units>(kernel: &Kernel, units: &U, ctx: &UnitCtx, run: Run<'
 /// admitted has done anything, and the N+1th unit is measured against a gauge that has already
 /// forgotten the N in flight. So the slot holds it, beside the leases, and the same two ends give
 /// it back.
+///
+/// No early return here either (`loop_battery::the_loop_has_no_early_exits` holds the whole file):
+/// an exempt origin is the branch not taken, never an exit.
 fn draw_lease(ctx: &UnitCtx, run: &Run<'_>, groups: &GroupLeaseSlip) {
-    if !takes_lease(ctx.origin, ctx.kernel_verb_only) {
-        return;
-    }
-    for bucket in std::iter::once(IN_FLIGHT).chain(groups.taken()) {
-        run.gauge.record(&bucket);
-        if !run.leases.take(bucket) {
-            run.gauge.release(&bucket);
+    if takes_lease(ctx.origin, ctx.kernel_verb_only) {
+        for bucket in std::iter::once(IN_FLIGHT).chain(groups.taken()) {
+            run.gauge.record(&bucket);
+            if !run.leases.take(bucket) {
+                run.gauge.release(&bucket);
+            }
         }
-    }
-    // AND THE DOOR'S OWN COUNT, onto the same slot. The kernel's leases are a reading; the door's
-    // count is the cap, and a cap released the moment it is taken is a comparison against zero. It
-    // is parked here because this is the one place that has both the door's answer and the slot,
-    // and it goes back where the leases go back: at whichever of the unit's two ends arrives first.
-    if let Some(grant) = groups.grant_taken() {
-        run.leases.hold_grant(grant);
+        // AND THE DOOR'S OWN COUNT, onto the same slot. The kernel's leases are a reading; the
+        // door's count is the cap, and a cap released the moment it is taken is a comparison
+        // against zero. It is parked here because this is the one place that has both the door's
+        // answer and the slot, and it goes back where the leases go back: at whichever of the
+        // unit's two ends arrives first.
+        if let Some(grant) = groups.grant_taken() {
+            run.leases.hold_grant(grant);
+        }
     }
 }
 

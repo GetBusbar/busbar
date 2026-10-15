@@ -28,19 +28,25 @@ use super::kinds::plane::Plane;
 use super::{in_head, now_ns, Dispatcher, Done, Frame, InFrame, OutFrame, Plugin, Reply};
 
 /// One open plane instance, the dispatcher that adopted it, and the worker its unit tickets are
-/// minted on.
+/// minted on. The instance is shared, never copied: a [`Plugin`] is `!Clone`, so a holder that
+/// keeps the plugin beside this one shares the same `Arc`.
 #[derive(Debug, Clone)]
 pub struct PlaneInstance {
-    plugin: Plugin<Plane>,
+    plugin: Arc<Plugin<Plane>>,
     dispatcher: Arc<Dispatcher>,
     worker: u32,
 }
 
 impl PlaneInstance {
-    /// `plugin`, adopted by `dispatcher`, its unit tickets minted on `worker`.
-    pub fn new(plugin: Plugin<Plane>, dispatcher: Arc<Dispatcher>, worker: u32) -> Self {
+    /// `plugin` (owned, or shared through its `Arc`), adopted by `dispatcher`, its unit tickets
+    /// minted on `worker`.
+    pub fn new(
+        plugin: impl Into<Arc<Plugin<Plane>>>,
+        dispatcher: Arc<Dispatcher>,
+        worker: u32,
+    ) -> Self {
         PlaneInstance {
-            plugin,
+            plugin: plugin.into(),
             dispatcher,
             worker,
         }
@@ -155,7 +161,18 @@ impl PlaneCalls for PlaneInstance {
     }
 
     fn driver(&self) -> Option<Ticket> {
-        self.dispatcher.driver(&self.plugin, self.worker)
+        self.dispatcher.driver(&*self.plugin, self.worker)
+    }
+
+    fn woke(&self) -> Pin<Box<dyn Future<Output = bool> + Send>> {
+        let inst = self.plugin.inner.clone();
+        Box::pin(async move {
+            if !inst.is_open() {
+                return false;
+            }
+            inst.driven.woken().await;
+            true
+        })
     }
 
     fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>> {
@@ -174,7 +191,7 @@ impl PlaneCalls for PlaneInstance {
         driver: Ticket,
         now_ns: u64,
     ) -> Pin<Box<dyn Future<Output = Option<u64>> + Send>> {
-        let reply = self.dispatcher.tick(&self.plugin, driver, now_ns);
+        let reply = self.dispatcher.tick(&*self.plugin, driver, now_ns);
         Box::pin(async move {
             let done = reply.await;
             matches!(done.outcome, Outcome::Ready | Outcome::Pending)
@@ -194,7 +211,7 @@ impl PlaneCalls for PlaneInstance {
         // The unit's buffers ride with the job: a crossing the watchdog answered FAULT still owns
         // them until it returns.
         let reply = self.dispatcher.submit_lent(
-            &self.plugin,
+            &*self.plugin,
             ticket,
             slot::ON_PIECE,
             Frame::new(input, out),
@@ -215,7 +232,7 @@ impl PlaneCalls for PlaneInstance {
         input.head = in_head();
         // As `on_piece`'s: the request's buffers ride with the job.
         let reply = self.dispatcher.submit_lent(
-            &self.plugin,
+            &*self.plugin,
             ticket,
             slot::SERVE,
             Frame::new(input, out),

@@ -17,7 +17,7 @@ pub(crate) struct Lane {
     pub(crate) provider: String,
     pub(crate) base_url: String,
     /// THE DIAL TARGET THIS LANE NAMES, as the node's interned `&'static str` — `base_url` seated
-    /// through `busbar_contract::Registration` ONCE, here, when the generation's lane table is
+    /// through `busbar_kernel::Registration` ONCE, here, when the generation's lane table is
     /// built. A planned leg names its upstream as a borrowed static string, and a configured
     /// `base_url` is a runtime `String`, so something has to bridge them; doing it while the plan is
     /// being built means one process-wide vocabulary acquisition per candidate per request to

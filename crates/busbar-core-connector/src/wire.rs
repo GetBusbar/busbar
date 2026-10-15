@@ -27,7 +27,7 @@ use std::task::{Context, Poll, Waker};
 use std::time::Duration;
 
 use busbar_contract::abi::transport::{
-    CLOSE_NORMAL, ROLE_CARRIER, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL,
+    CLOSE_NORMAL, FAULT_NONE, ROLE_CARRIER, ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL,
 };
 use busbar_contract::transport::wire::{
     ArrivalRecord, CloseReason, Conn, ConnHandle, Direction as FrameDirection, FrameMeta, RawIo,
@@ -662,6 +662,11 @@ impl HostWire {
                         ended = true;
                         return Poll::Ready(Some(Err(TransportError::Framing)));
                     }
+                    // A stream's end (`PIECE_END`) is said, and is no frame: an empty frame is an
+                    // empty message, handed up as one.
+                    if got.ends_stream() {
+                        continue;
+                    }
                     let n = got.bytes.len() as u64;
                     let frame = Frame {
                         direction: FrameDirection::Inbound,
@@ -703,11 +708,14 @@ impl HostWire {
                             end_of_frame: true,
                             status_code: None,
                             status_class: 0,
+                            fault: FAULT_NONE,
                             retry_after_secs: None,
+                            declared_len: None,
                             fields: false,
                             text: false,
                             reason: None,
                             failed: false,
+                            end: false,
                         });
                         continue;
                     }

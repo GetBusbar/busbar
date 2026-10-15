@@ -46,6 +46,7 @@ fn door() -> Arc<LengthDoor> {
             ported: false,
             status_rows: vec![(1, 0, 9)],
             duplex: Vec::new(),
+            datagram: false,
         },
         framings: Mutex::new(HashMap::new()),
         next: AtomicU64::new(1),
@@ -111,9 +112,10 @@ impl FramerDoor for LengthDoor {
                             len: len as u64,
                             code: 0,
                             status_class: 0,
-                            _reserved: 0,
+                            fault: 0,
                             flags: PIECE_END_OF_FRAME,
                             retry_after_secs: 0,
+                            declared_len: 0,
                         });
                     }
                     at += len;

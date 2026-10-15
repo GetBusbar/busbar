@@ -4,31 +4,22 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: cross-parity — the 4 ORDERED OpenAI<->Gemini pairs.
+# LEG: cross-parity — the 4 ORDERED OpenAI<->Gemini pairs (oo, og, go, gg).
 #
-# The cross-dialect mapping (qa/evidence/voice-cross-dialect-mapping.*, authored by another agent)
-# declares which behaviours MUST be equivalent across the two dialects. This leg drives all four
-# ORDERED pairs and asserts the mapping holds in each direction:
-#
-#   oo  openai  -> openai   (self-parity: the mapping must be identity within a dialect)
-#   og  openai  -> gemini   (a session captured on openai, re-derived under gemini, must map)
-#   go  gemini  -> openai
-#   gg  gemini  -> gemini
-#
-# Both diagonal pairs (oo, gg) are ordered slices in their own right, not skipped: a mapping that is
-# not identity within a dialect is already broken, and only running the cross pairs would never see
-# it. That is the cross-parity analogue of the sibling batteries' "a control that exercises a
-# different path from the subject proves less than it appears to".
-#
-# STATUS: ready. Each ordered pair is driven as read(A) → shared IR → write(B) → IR against the
-# machine-readable `qa/evidence/voice-cross-dialect-map.json`. For every SHARED concept the map
-# declares, the load-bearing fields must survive the bridge (compared on a correlation-collapsed
-# fingerprint, so a streamed⟷atomic tool-call reframing counts as agreement, and documented
-# non-survivors — text modality, VAD specifics, truncate ms — are excluded per the map). And EVERY
-# row of the asymmetry table is exercised as a documented drop+warn in its origin→other direction, so
-# a one-dialect-only concept is accounted for, never silently lost. Concepts whose source-dialect
-# fixture cannot decode (the one genuine codec gap, or a documented drop) are printed as PENDING
-# sub-items, never faked green.
+# For every shared concept of the machine-readable `qa/evidence/voice-cross-dialect-map.json`:
+#   * CODEC: the plane's own codecs (`busbar_plane_streaming::codec`, the module the door's sessions
+#     run) bridge the concept A → IR → B → IR keeping its load-bearing fields (correlation-collapsed
+#     fingerprint; documented non-survivors excluded per the map);
+#   * DOOR: the bridged B wire is pushed through a live session on the door that speaks B, on the
+#     linked AND the dropped door, and what the door relays must equal the session rules (a caller
+#     frame reaches the far end as sent, the caller's session config replaced by the locked one; a
+#     far-end frame reaches the caller as sent, usage consumed into reported units, a barge-in also
+#     cancelling and truncating upstream). RED arm per concept: a door reporting a token the far end
+#     never sent fails.
+# Every asymmetry row is exercised as a documented drop+warn in its origin→other direction (codec);
+# concepts with no decoding source fixture print a SUBITEM PENDING line, never a pass. The diagonal
+# pairs (oo, gg) are slices in their own right: a mapping that is not identity within a dialect is
+# already broken.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

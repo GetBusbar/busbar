@@ -2,7 +2,7 @@
 //! measures implementation and nothing else; still a direct child module, so `use
 //! super::*` reaches the private items it always did.
 
-use super::{CLAIMS, GRPC_TRANSPORT, HTTP_TRANSPORT, P_ROOT, SCHEME_ALTS};
+use super::{CLAIMS, DOCUMENT_TRANSPORT, FRAMED_TRANSPORT, P_ROOT, SCHEME_ALTS};
 use busbar_contract::grammar::Selector;
 
 /// The mount points are the codec's own, not a second opinion.
@@ -31,7 +31,7 @@ fn the_plane_key_is_the_codecs_own() {
 fn every_claim_names_a_declared_transport() {
     for claim in CLAIMS {
         assert!(
-            claim.transport == HTTP_TRANSPORT || claim.transport == GRPC_TRANSPORT,
+            claim.transport == DOCUMENT_TRANSPORT || claim.transport == FRAMED_TRANSPORT,
             "a claim names the undeclared transport {}",
             claim.transport
         );

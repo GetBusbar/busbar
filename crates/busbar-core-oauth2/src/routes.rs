@@ -171,40 +171,62 @@ async fn authorize(
     let Some(plane) = as_plane(&app) else {
         return not_found();
     };
-    if let Some(undecided) = pushed_request_gate(plane, &request) {
-        return into_axum(undecided);
+    if let Some(gate) = GateInputs::of(&request) {
+        if let Some(undecided) = pushed_request_gate(plane, gate).await {
+            return into_axum(undecided);
+        }
     }
     error_page(plane.handle(request).await)
 }
 
+/// What the pushed-request gate reads off a request, owned, so the request is not borrowed across
+/// the store's awaits.
+struct GateInputs {
+    client_id: String,
+    request_uri: String,
+    session: Option<String>,
+    target: String,
+}
+
+impl GateInputs {
+    fn of(request: &axum::extract::Request) -> Option<Self> {
+        let pairs = form_urlencoded_pairs(request.uri().query()?);
+        let param = |name: &str| {
+            pairs
+                .iter()
+                .find(|(k, _)| k == name)
+                .map(|(_, v)| v.clone())
+        };
+        Some(Self {
+            client_id: param("client_id")?,
+            request_uri: param("request_uri")?,
+            session: super::consent::session_id(request.headers()),
+            target: request.uri().path_and_query()?.as_str().to_string(),
+        })
+    }
+}
+
 /// The consent redirect for a pushed request nobody has answered yet, or `None` to let the request
 /// through. See [`authorize`].
-fn pushed_request_gate(
+async fn pushed_request_gate(
     plane: &super::plane::AsPlane,
-    request: &axum::extract::Request,
+    gate: GateInputs,
 ) -> Option<oauth_as::http::Response> {
-    let pairs = form_urlencoded_pairs(request.uri().query()?);
-    let param = |name: &str| {
-        pairs
-            .iter()
-            .find(|(k, _)| k == name)
-            .map(|(_, v)| v.as_str())
-    };
-    let (client_id, request_uri) = (param("client_id")?, param("request_uri")?);
-    let pushed = plane.pushed(request_uri)?;
-    if pushed.client_id != client_id {
+    let pushed = plane.pushed(&gate.request_uri).await?;
+    if pushed.client_id != gate.client_id {
         return None;
     }
-    let key = super::consent::pushed_key(client_id, request_uri);
-    let decided = super::consent::session_id(request.headers())
-        .is_some_and(|session| plane.sessions().is_staked(&session, &key));
+    let key = super::consent::pushed_key(&gate.client_id, &gate.request_uri);
+    let decided = match &gate.session {
+        Some(session) => plane.is_staked(session, &key).await,
+        None => false,
+    };
     if decided {
         return None;
     }
-    let target = request.uri().path_and_query()?.as_str();
     Some(super::consent::login_redirect(
         &plane.identity().consent_url(),
-        target,
+        &gate.target,
     ))
 }
 
@@ -272,8 +294,8 @@ async fn consent_screen(
     let Some(id) = new_session_id() else {
         return no_entropy();
     };
-    plane.sessions().open(ADMIN_SUBJECT, id.clone());
-    let page = consent_page(target, &pending_request(plane, target));
+    plane.open_session(ADMIN_SUBJECT, id.clone()).await;
+    let page = consent_page(target, &pending_request(plane, target).await);
 
     let mut response = axum::response::Html(page).into_response();
     let headers = response.headers_mut();
@@ -405,7 +427,7 @@ async fn consent_submit(
             Some(handle) => super::consent::pushed_key(&client_id, &handle),
             None => super::consent::request_key(&client_id, target),
         };
-        plane.sessions().stake(&session, key, approve);
+        plane.stake(&session, key, approve).await;
     }
     (
         axum::http::StatusCode::FOUND,
@@ -457,15 +479,20 @@ struct Pending {
     revisit: bool,
 }
 
-fn pending_request(plane: &super::plane::AsPlane, target: &str) -> Pending {
+async fn pending_request(plane: &super::plane::AsPlane, target: &str) -> Pending {
     let (client_id, scope, redirect_host) = client_and_scope_of(target)
         .unwrap_or_else(|| ("(unnamed)".to_string(), String::new(), String::new()));
-    let pushed = query_value(target, "request_uri").and_then(|handle| {
-        plane
+    let mut pushed = None;
+    if let Some(handle) = query_value(target, "request_uri") {
+        if let Some(p) = plane
             .pushed(&handle)
+            .await
             .filter(|p| p.client_id == client_id)
-            .map(|p| (p, plane.mark_pushed_shown(&handle)))
-    });
+        {
+            let revisit = plane.mark_pushed_shown(&handle).await;
+            pushed = Some((p, revisit));
+        }
+    }
     match pushed {
         Some((p, revisit)) => Pending {
             client_id,

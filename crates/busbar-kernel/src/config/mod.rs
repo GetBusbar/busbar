@@ -752,9 +752,8 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
             "{msg}\n  hint: hook tap stage `{old}` was renamed to `{new}` in 1.5.3 — run \
              `busbar --migrate-config <config.yaml>` or update the `at:` value to `{new}`"
         )
-    } else if let Some((old, new)) = RETIRED_OBSERVABILITY_KEYS
-        .iter()
-        .copied()
+    } else if let Some((old, new)) = retired_observability_keys()
+        .into_iter()
         .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
     {
         // 1.5.3 observability→export lift-out. Serde rejects the retired key as an unknown
@@ -765,9 +764,8 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
              built-in EXPORTERS (`{new}`). Run `busbar --migrate-config <config.yaml>` or move the \
              field yourself"
         )
-    } else if let Some((old, new)) = RETIRED_CONFIG_KEYS_1_5_3
-        .iter()
-        .copied()
+    } else if let Some((old, new)) = retired_config_keys_1_5_3()
+        .into_iter()
         .find(|(old, _)| msg.contains(&format!("unknown field `{old}`")))
     {
         // The 1.5.3 GRAMMAR-LOCK retirements. Same shared-table discipline as
@@ -785,28 +783,35 @@ pub fn augment_config_error(err: impl std::fmt::Display) -> String {
 /// The 1.5.3 GRAMMAR-LOCK retired keys (retired key → its new home), shared by
 /// [`augment_config_error`]'s loud-fail hint, `config::migrate::detect_legacy_markers` (the
 /// boot/`--validate` loud-fail) and `migrate_config`'s mechanical rewrite so the three cannot drift —
-/// the same shared-table discipline [`RENAMED_HOOK_STAGES`] and [`RETIRED_OBSERVABILITY_KEYS`] use.
+/// the same shared-table discipline [`RENAMED_HOOK_STAGES`] and [`retired_observability_keys`] use.
 ///
 /// These are the LAST breaking config changes: 1.5.3 is the break-once release, and everything here
-/// is frozen additive-only afterwards.
-pub const RETIRED_CONFIG_KEYS_1_5_3: &[(&str, &str)] = &[
-    // The whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
-    // retired leaves reports the block-level move (the leaves have nowhere left to live).
-    (
-        "observability",
-        "the `export:` NAMED map — a `module: prometheus` / `module: request-log-webhook` / \
-         `module: otlp` instance (all telemetry egress is now the single `export:` surface)",
-    ),
-    // Inverted so the SAFE posture is the default.
-    ("admin_insecure", "admin_require_mtls (INVERTED: `admin_insecure: true` ⇒ `admin_require_mtls: false`)"),
-    // Whose credential reaches the upstream is a routing property, not an inbound-auth one.
-    ("upstream_credentials", "pools.upstream_credentials (the all-pools default) + a per-pool `pools.<p>.upstream_credentials` override"),
-    // The IdP is DEFINED once and REFERENCED by name.
-    ("methods", "the matching `identity-providers:` definition (browser_login + settings are per-provider)"),
-    // The last `observability:` field folded into `export:`.
-    ("otlp_url", "an `export:` instance with `module: otlp` and `settings.url`"),
-    ("otlp_endpoint", "an `export:` instance with `module: otlp` and `settings.url`"),
-];
+/// is frozen additive-only afterwards. The rows that name an export sink (the `observability:`
+/// block's home and the trace URL keys that folded into one) are the root legacy table's frozen
+/// 1.5.5 text ([`legacy`]): the kernel names no export instance.
+pub fn retired_config_keys_1_5_3() -> Vec<(&'static str, String)> {
+    let trace_home = format!(
+        "an `export:` instance with `module: {}` and `settings.url`",
+        legacy::text("export_trace_module")
+    );
+    [
+        // The whole block is DELETED. Listed FIRST so an `observability:` block carrying any of its
+        // retired leaves reports the block-level move (the leaves have nowhere left to live).
+        ("observability", legacy::text("observability_home").to_string()),
+        // Inverted so the SAFE posture is the default.
+        ("admin_insecure", "admin_require_mtls (INVERTED: `admin_insecure: true` ⇒ `admin_require_mtls: false`)".to_string()),
+        // Whose credential reaches the upstream is a routing property, not an inbound-auth one.
+        ("upstream_credentials", "pools.upstream_credentials (the all-pools default) + a per-pool `pools.<p>.upstream_credentials` override".to_string()),
+        // The IdP is DEFINED once and REFERENCED by name.
+        ("methods", "the matching `identity-providers:` definition (browser_login + settings are per-provider)".to_string()),
+        // The last `observability:` field (and its 1.4.x spelling) folded into `export:`.
+        (legacy::text("observability_trace_key"), trace_home.clone()),
+        (legacy::text("observability_trace_key_1_4"), trace_home),
+    ]
+    .into_iter()
+    .filter(|(old, _)| !old.is_empty())
+    .collect()
+}
 
 /// The 1.5.3 tap-stage `at:` renames (old wire string → new), shared by `augment_config_error`'s
 /// loud-fail hint and the `--migrate-config` rewrite so the two cannot drift.
@@ -816,36 +821,34 @@ pub const RENAMED_HOOK_STAGES: &[(&str, &str)] = &[
     ("completion", "response"),
 ];
 
-/// The 1.5.3 observability→export RETIRED keys (retired LEAF key → its new home under the built-in
+/// The 1.5.3 observability→export RETIRED keys (retired LEAF key → its new home under the
 /// exporters), shared by `augment_config_error`'s loud-fail hint, `config::migrate::detect_legacy_markers`
 /// (the boot/`--validate` loud-fail), and `migrate_config`'s mechanical rewrite so the three cannot
 /// drift — the same shared-table discipline the HookStage rename uses ([`RENAMED_HOOK_STAGES`]).
-pub const RETIRED_OBSERVABILITY_KEYS: &[(&str, &str)] = &[
-    (
-        "request_log_webhook_url",
-        "export.request-log-webhook.settings.url",
-    ),
-    (
-        "max_inflight_webhook_deliveries",
-        "export.request-log-webhook.settings.max_inflight_deliveries",
-    ),
-    (
-        "webhook_delivery_timeout_secs",
-        "export.request-log-webhook.settings.delivery_timeout_secs",
-    ),
-    (
+/// The leaves, the request-log type key they fold under and the metrics type key are the root
+/// legacy table's frozen 1.5.5 rows ([`legacy`]); the top-level `metrics:` block is listed last.
+pub fn retired_observability_keys() -> Vec<(&'static str, String)> {
+    let log = legacy::text("observability_log_type_key");
+    let mut out: Vec<(&'static str, String)> = legacy::pairs("observability_log_keys")
+        .into_iter()
+        .map(|(old, leaf)| (old, format!("export.{log}.settings.{leaf}")))
+        .collect();
+    out.push((
         "metrics",
-        "export.prometheus.settings (buffer_seconds / key_gauge_limit)",
-    ),
-];
+        format!(
+            "export.{}.settings (buffer_seconds / key_gauge_limit)",
+            legacy::text("metrics_type_key")
+        ),
+    ));
+    out
+}
 
 // The `providers:` / `models:` config SHAPES — the catalog definition, the operator deployment, the
 // resolved provider the runtime reads, the active-health block and the per-model entry — are plain
 // serde data; the catalog/deployment MERGE that produces a `ProviderCfg` stays here (`resolve`).
 // Moved to `busbar_kernel::config::providers`; re-exported at their historical `config::` path.
 pub use busbar_kernel::config::providers::{
-    default_protocol, neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef,
-    ProviderDeploy, DEFAULT_PROTOCOL,
+    neg1, HealthCfg, HealthMode, ModelCfg, ProviderCfg, ProviderDef, ProviderDeploy,
 };
 
 // ABI-purity CONFIG-ENUMS: the per-provider auth-style selector is a plane-owned runtime config
@@ -884,12 +887,10 @@ pub use busbar_kernel::config::pools::{
     STRATEGY_USAGE,
 };
 
-// The FAILOVER BUDGET numeric defaults/bounds are plain scalars with no config grammar attached, so
-// they live in the neutral `busbar_kernel::failover` (a plane names the per-request failover
-// budget without reaching into `busbar-core`); re-exported here at their historical
-// `crate::config::*` paths so every core call site (`appbuild`, `config_validate`, `test_support`,
-// the pools `default_failover_timeout`/`default_max_hops` serde defaults) resolves unchanged.
-pub use busbar_kernel::failover::{
+// The FAILOVER BUDGET numeric defaults/bounds live beside the `FailoverCfg` shape in `pools`;
+// re-exported here at their historical `crate::config::*` paths so every core call site
+// (`appbuild`, `config_validate`, `test_support`) resolves unchanged.
+pub use busbar_kernel::config::pools::{
     DEFAULT_FAILOVER_CAP, DEFAULT_FAILOVER_DEADLINE_SECS, MAX_FAILOVER_DEADLINE_SECS,
 };
 
@@ -925,7 +926,7 @@ fn check_failover_pool(
     errors: &mut Vec<String>,
     section: &str,
     pool: &str,
-    def: &crate::failover::CandidatePoolCfg,
+    def: &pools::CandidatePoolCfg,
     on_this_plane: impl Fn(&str) -> bool,
     on_other_plane: impl Fn(&str) -> bool,
     this_registry: &str,
@@ -2256,7 +2257,7 @@ pub fn resolve(
             };
             let members = pool.members.iter().map(|m| m.model.clone()).collect();
             let repeatable = pool.repeatable.clone();
-            let candidates = crate::failover::CandidatePoolCfg {
+            let candidates = pools::CandidatePoolCfg {
                 members,
                 repeatable,
             };
@@ -2758,6 +2759,12 @@ mod named_map_merge_tests;
 #[cfg(test)]
 #[path = "tests/config_backcompat_corpus.rs"]
 mod config_backcompat_corpus;
+
+// The 1.5.5 refusals of a provider entry's dialect keys, pinned byte for byte before the reading of
+// those keys leaves the kernel (row 155 B1).
+#[cfg(test)]
+#[path = "tests/provider_refusal_pins.rs"]
+mod provider_refusal_pins;
 
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 

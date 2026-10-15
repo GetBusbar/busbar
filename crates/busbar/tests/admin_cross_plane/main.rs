@@ -22,6 +22,7 @@ mod served_surface;
 mod service;
 
 include!(concat!(env!("OUT_DIR"), "/test_operator_auth.rs"));
+include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
 // The served-surface reconciliation reads the plane-complete document through its sibling's helper.
 #[cfg(feature = "openapi-schema")]
@@ -38,7 +39,7 @@ pub(crate) fn ensure_seam() {
     static SEAM_ONCE: std::sync::Once = std::sync::Once::new();
     SEAM_ONCE.call_once(|| {
         // The operator credential's test registry row, before anything resolves the auth axis, in
-        // the root's own words (`root::auth_bindings::OPERATOR_AUTH_MODULE`; ARCHITECT
+        // the root's own words (`root::auth_bindings::operator_auth_module`; ARCHITECT
         // 2026-09-30, KERNEL-AUTH-ZERO Q2).
         for_each_operator_auth_row!(install_operator_row);
         fn install_operator_row(door: busbar_kernel::test_support::AuthDoor) {
@@ -51,6 +52,8 @@ pub(crate) fn ensure_seam() {
         }
         linked::install();
         busbar_core_admin::install();
+        // The linked hook rows' names, as the composition root hands them in.
+        busbar_core_admin::v1::service::install_hook_plugins(LINKED_HOOK_NAMES);
     });
 }
 

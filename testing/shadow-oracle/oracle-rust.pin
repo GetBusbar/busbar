@@ -285,6 +285,19 @@
 # earlier pin (predev's 4a7a7bba2cef, oracle-strict's edd17921e320, #157's 0ede76aea912, #493's 5b89bdf67326), so
 # no lane's engine moves backwards when this lands.
 #
+# 2026-10-06 (busbar P3 FLIP-STREAMING / DEL-VOICE): moved 4a7a7bba2cef -> 30d072960aa1 (busbar-release
+# `p3-flip-streaming-plan`, PR #168 into dev, cut from 4a7a7bba2cef). One commit, no engine change: the
+# build-test plan's `voice runtime` row leaves with the deleted busbar-voice crate (plan-lint refuses a row
+# naming a package the tree lacks). The judge's code is 4a7a7bba2cef's byte for byte. promote.yml
+# RELEASE_REF moves to the same sha in the same commit. Feature branch head; re-pin to the merge commit
+# when it lands.
+#
+# 2026-10-06 (ARCHITECT RELEASE_REF rule: the pin is always a busbar-release DEV commit that contains
+# every earlier pin): moved 30d072960aa1 -> 1869c0032ecf, the merge of busbar-release #168 into dev
+# (#168 = the voice-runtime row strike above, merged with dev 5b89bdf67326 = #166). It contains
+# 4a7a7bba2cef, 0ede76aea9 (#157) and 5b89bdf67326 (#166). promote.yml RELEASE_REF moves to the same
+# sha in the same commit.
+#
 # 2026-10-07 (ARCHITECT ruling on #536, option b; HEADROOM-REMOVE precedent Q-SO2/Q-SO3): moved 1869c0032ecf ->
 # 4d52f387c4d1 (busbar-release dev, the merge of #177; its tree is #177's head 0ff118af56f5 byte for byte; it descends
 # 1869c0032ecf, 2119a67a6f and 4a7a7bba2c).
@@ -330,11 +343,24 @@
 # (red, never a fallback to another architecture's). The aarch64 asset is the oracle built from
 # release_ref on the aarch64 prover (release profile, LTO off, --locked: as dev-bin.yml builds it).
 #
+# 2026-10-13 (ARCHITECT ruling, busbar status row 155; busbar #833): moved 7ab21912d664 -> db64d9218d8b,
+# busbar-release main after the qa -> main promotion (#351), which carries #348 (277a9ef): the corpus generator
+# adds the literal script cell billing|budget|downgrade (scripts/budget-downgrade.sh), whose cells.json row,
+# owed-baseline row and golden (busbar-release oracle-rerecord run 38471635786, recorded from the published
+# 1.5.5) land with this commit. The digests are dev-bin's busbar-oracle-linux-<arch>-<release_ref>.sha256.
+#
+# 2026-10-14 (busbar rows 561, 562, 90): moved 7ab21912d664 -> 3365ddbc591e, busbar-release main after the
+# dev -> qa -> main promotion (#365, #366), which carries #364 (and #348, db64d9218d8b's, the paragraph above): the mock's `whole` control (a stream-intent request
+# answered the egress dialect's buffered body) and the 42 literal llm whole-answer cells, whose cells.json rows,
+# owed-baseline rows and goldens (busbar-release oracle-rerecord run 38509109820, recorded from the published
+# 1.5.5) land with this commit. The digests are dev-bin's busbar-oracle-linux-<arch>-<release_ref>.sha256, each
+# asset's .sig verified with the release key.
+#
 # To move the pin: set release_ref to the new busbar-release commit and each sha256_linux_<arch> to the
 # sha256 of its dev-bin busbar-oracle-linux-<arch>-<release_ref> asset (the .sha256 beside it).
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=7ab21912d664d11c7df6cc98fe78eed6b0119177
-sha256_linux_x86_64=8d1a34e8711e398b9fbcc72e97e47c98eab9804d0004d119466e9dece11001f1
-sha256_linux_aarch64=aa1ee2277d2bb04df451a90f6d4fb3b8eda377b397e3c8867e21b393a8fe06ef
+release_ref=3365ddbc591ec874d18aaa3ec5df650ba4b9bd3b
+sha256_linux_x86_64=d6be0604b5db12319f71d10cc0892765ed063ca7dd581623ce47950cd6998384
+sha256_linux_aarch64=04bf41bf6e2c027001c9a7b7de68c6e1cb753b7bed6fd866a1f96673b6b35201
 crate=busbar-release-oracle
 bin=busbar-oracle

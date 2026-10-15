@@ -940,14 +940,15 @@ impl Runner {
                     ][..],
                 ),
                 (
+                    // The `streams:` section's grammar, now the streaming plane's own (`config::`
+                    // in busbar-plane-streaming; the legacy busbar-voice crate is deleted).
                     "boot-validate-config",
                     &[
                         "cargo",
                         "test",
                         "-p",
-                        "busbar-voice",
-                        "--features",
-                        "runtime",
+                        "busbar-plane-streaming",
+                        "--lib",
                         "config::",
                     ][..],
                 ),

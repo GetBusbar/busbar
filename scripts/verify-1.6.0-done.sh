@@ -21,7 +21,7 @@
 #                    every filtered step declares its test count so a filter that selects nothing is
 #                    RED rather than vacuously green (see filtered_cargo_test).
 #   config-stability cargo xtask gate config-schema (config-schema.snapshot.json byte-stable).
-#   test             cargo test --workspace  +  cargo test -p busbar-voice --features runtime.
+#   test             cargo test --workspace.
 #   conformance      the conformance rigs' selftests + the voice legs =ready.
 #   teller-steps     the H2 matrix holds on BOTH its columns: every rig cell id still resolves to the
 #                    scenario/script/leg/suite that owns it, and the rigs behind them RUN and pass
@@ -67,9 +67,9 @@
 # could not fire is refused before its verdict is trusted (the house rule).
 #
 # LOCKED EXCLUSION (00-MASTER-PLAN "RECONCILED DECISIONS"): the done-oracle DELIBERATELY does NOT
-# require scripts/plane-noun-gate.sh / scripts/plane-grep-gate.sh == 0. Those meter LLM BILLING VOCAB
+# require scripts/plane-noun-gate.sh == 0. That meters LLM BILLING VOCAB
 # that STAYS in the neutral crates by the LOCKED invariant — an orthogonal axis, not a done condition.
-# Including them would gate the release on a debt the owner ruled out of scope; they are not here.
+# Including it would gate the release on a debt the owner ruled out of scope; it is not here.
 #
 # PROGRESS METER. This is fail-SOFT across groups: it RUNS EVERY sub-gate, collects every RED, prints a
 # grouped readout, and exits non-zero if ANY group is RED. So on an unfinished tree it doubles as a
@@ -105,6 +105,16 @@ print_help() { awk 'NR == 1 { next } /^#/ { sub(/^# ?/, ""); print; next } { exi
 
 FAST=0 SELFTEST=0
 case "${1:-}" in --fast) FAST=1 ;; --selftest) SELFTEST=1 ;; "" ) ;; -h|--help) print_help; exit 0 ;; *) echo "usage: $0 [--fast|--selftest]" >&2; exit 2 ;; esac
+
+# THE BASE THE GATES ARE MEASURED AGAINST, named as CI names it. `ceiling-census` and kind-isolation
+# hold their floors against a base, and a detached checkout derives none, which is RED (a base that
+# cannot be established is never a silent pass). So name it: a caller's own value stands, then the
+# ModernCI target sha the gates check exports, then the merge-base with origin/predev. If none
+# resolves it stays unset and the gates say so.
+if [ -z "${XTASK_CEILING_BASE:-}" ]; then
+  XTASK_CEILING_BASE="${MODERNCI_TO_SHA:-$(git merge-base HEAD origin/predev 2>/dev/null || true)}"
+  [ -n "$XTASK_CEILING_BASE" ] && export XTASK_CEILING_BASE || unset XTASK_CEILING_BASE
+fi
 
 # Results accumulators (parallel arrays — bash 3.2 has no assoc arrays).
 G_NAME=(); G_STATE=(); G_NOTE=()
@@ -459,7 +469,7 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 #   * XTASK_INSN_EMIT_BASELINE / XTASK_PPB_EMIT_BASELINE switch instance-noun-neutrality and
 #     plane-pricing-blindness into their baseline-regeneration mode (the census printed as the
 #     qa/*.toml the gate compares against). The run is then a re-baselining run, not a DONE run.
-#   * GREP_GATE_REPORT_ONLY (plane-grep/noun/config-noun gates) and SECRET_GATE_REPORT_ONLY
+#   * GREP_GATE_REPORT_ONLY (noun/config-noun gates) and SECRET_GATE_REPORT_ONLY
 #     (secret-hygiene gate) turn a gate's RED into exit 0. This file pins GREP_GATE_REPORT_ONLY=0
 #     inline where it runs the config-noun --check; refusing the exported value means a refactor
 #     that drops the inline pin cannot quietly inherit a report-only gate.
@@ -1301,7 +1311,6 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "TEST — full workspace + voice runtime"
 step "cargo test --workspace"                    cargo test --workspace --quiet
-step "cargo test -p busbar-voice --features runtime" cargo test -p busbar-voice --features runtime --quiet
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1325,8 +1334,8 @@ end_group
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
 begin_group "CONFIG-NOUN — four-noun parse residual holds at its locked-legitimate floor"
 step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh --selftest
-# ZERO is deliberately NOT the done condition here — same treatment as the plane-noun/plane-grep
-# billing-vocab meters the oracle excludes. Per the kickoff/LOCKED invariant: `pools`/`providers` STAY
+# ZERO is deliberately NOT the done condition here — same treatment as the plane-noun
+# billing-vocab meter the oracle excludes. Per the kickoff/LOCKED invariant: `pools`/`providers` STAY
 # core-owned (CORE_OWNED_CONCRETE_SECTIONS, never evicted), and the `tools`/`agents`/`streams`
 # DeployCfg fields are Option A's `deny_unknown_fields` floor (Option B is serde-blocked). So the
 # residual is a LEGITIMATE floor, not debt; the DoD is "core's generic named-map MACHINERY names no
@@ -1349,7 +1358,10 @@ step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh 
 # CORE_ROOTS section), so the gate runs again and the true residual is 17, not 16 -- 16 was the wrong
 # number, not the comment that used to claim 19. Lower this number the moment a section is evicted;
 # a fall is reported as a fall and tells you what to lower it to.
-CONFIG_NOUN_FLOOR=17
+# RE-MEASURED 2026-10-13 on predev 163843dd2c: 10 (pools 5 · agents 2 · streams 3). streams fell 7 -> 3,
+# and `tools` is no longer a scanned noun since mcp left PLANE_KEYS (5e52651535): the gate reads its
+# nouns off the PLANE_KEYS planes' PlaneDecls. The floor follows the measure down, never up.
+CONFIG_NOUN_FLOOR=10
 config_noun_residual() {
   local out rc line count
   out="$(GREP_GATE_REPORT_ONLY=0 bash scripts/plane-config-noun-gate.sh --check 2>&1)"; rc=$?
@@ -1561,10 +1573,14 @@ if [ -f qa/audit-ledger.json ]; then
   # The `audit-ledger` GATE was deleted with the old register; what survives, and what
   # judges a restored register, is `cargo xtask ledger`. Its rules' own RED proofs are its unit
   # tests, declared by count so a filter that drifts off them is RED rather than vacuously green.
-  # 29 = the 24 audit/audit_cmd rule tests + the five pinned-scope tests (xtask/src/audit_pinned/
-  # pinned_tests.rs: a moved pin reads stale, a byte-identical pin carries the record, an
-  # unproducible pin is RED naming it, a twin / non-plugin git dep is not mounted, the tree wins).
-  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 29 cargo test -p xtask --lib audit
+  # 27 = the 11 audit rule tests (xtask/src/audit.rs) + the 11 audit_cmd tests (hygiene_tests 4,
+  # move_tests 7) + the five pinned-scope tests (xtask/src/audit_pinned/pinned_tests.rs: a moved pin
+  # reads stale, a byte-identical pin carries the record, an unproducible pin is RED naming it, a
+  # twin / non-plugin git dep is not mounted, the tree wins). THE FILTER NAMES THE THREE MODULES, not
+  # the bare substring `audit`: that substring also selected q128's two `an_audit_of_*` tests and the
+  # construction gate's two `no_response_escapes_audit_tests`, so the run passed 31 against a declared
+  # 29 and this step was RED on tests that are not the ledger's rules (they run in TEST).
+  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 27 cargo test -p xtask --lib -- audit:: audit_cmd:: audit_pinned::
   step "audit-ledger --check"  cargo xtask ledger --check
 else
   absent_step "audit ledger" "qa/audit-ledger.json"

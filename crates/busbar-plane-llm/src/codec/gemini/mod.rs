@@ -78,11 +78,11 @@ fn models_list_envelope(names: &[&str]) -> serde_json::Value {
 /// `/v1{,beta}/models/` wildcard surface (rung 6). Strength values are the ladder POSITION (lower
 /// binds tighter); they are the single ladder shared with the sibling dialects' predicates.
 fn claims(
-    h: &busbar_contract::http::HeaderMap,
+    h: busbar_contract::protocol::HeadFields<'_>,
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::ClaimStrength;
-    if h.contains_key(FIELD_X_GOOG_API_KEY) {
+    use busbar_contract::protocol::{head_field, ClaimStrength};
+    if head_field(h, FIELD_X_GOOG_API_KEY).is_some() {
         return Some(ClaimStrength(3));
     }
     if path.contains(":generateContent")
@@ -176,7 +176,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: busbar_contract::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
@@ -188,7 +188,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "google-genai-sdk/0.8.0 gl-python/3.11",
     has_model_in_url: true,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::BAD_REQUEST,
+        busbar_contract::http::StatusCode::BAD_REQUEST.as_u16(),
         ERR_TYPE_INVALID_REQUEST,
     ),
     ingress_relays_amzn_headers: false,
@@ -1745,6 +1745,12 @@ pub struct GeminiWriter {
     /// (IR audit GEM-16), exactly as the buffered writer converts them. Same `Mutex` /
     /// poison-degrades discipline as `open_tools`; a poisoned lock passes offsets through unconverted.
     stream_text: std::sync::Mutex<GeminiStreamText>,
+    /// THIS STREAM'S TRANSLATION CAP: the byte ceiling one open tool's streamed `args` may reach
+    /// (see the `InputJsonDelta` arm of `write_response_event`). The plane hands it from its own
+    /// settings when it opens the stream
+    /// ([`crate::codec::proto_codec::ProtocolWriter::set_translate_cap`]); until then,
+    /// [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`].
+    translate_cap: std::sync::atomic::AtomicUsize,
 }
 
 /// The streamed answer text [`GeminiWriter::stream_text`] accumulates: the concatenated `text` and
@@ -1777,6 +1783,9 @@ pub const GeminiWriter: GeminiWriter = GeminiWriter {
         text: String::new(),
         block_starts: Vec::new(),
     }),
+    translate_cap: std::sync::atomic::AtomicUsize::new(
+        busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+    ),
 };
 
 impl Clone for GeminiWriter {
@@ -1800,6 +1809,10 @@ impl Clone for GeminiWriter {
                     .lock()
                     .map(|t| t.clone())
                     .unwrap_or_default(),
+            ),
+            translate_cap: std::sync::atomic::AtomicUsize::new(
+                self.translate_cap
+                    .load(std::sync::atomic::Ordering::Relaxed),
             ),
         }
     }

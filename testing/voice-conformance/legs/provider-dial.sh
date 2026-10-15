@@ -4,24 +4,15 @@
 # shellcheck shell=bash
 # shellcheck disable=SC2034  # LEG_KIND/LEG_STATUS/LEG_SLICES are read by voice-conformance.sh on source
 #
-# LEG: provider-dial (the provider-dial leg) — a session actually DIALS the composed provider; the WS legs' upstream dial
-# is no longer uncomposed.
+# LEG: provider-dial — a session's far end is reached through the HOST CONNECTOR, never by the plane
+# (Law 3; ARCHITECT Q128).
 #
-# `topology::dial_provider` has existed since K1: breaker-admitted, net-guarded, counted on the shared
-# upstream-attempt family. But nothing in the mounted routes called it — the telephony and Gemini WS
-# accepts served the client socket only, discarding the uplink into a channel with no receiver, so no
-# conformance leg (and no real deployment) ever drove a live provider socket end to end.
-#
-# This leg proves the wiring, not just the library function: it stands up a tiny loopback WS
-# "provider" (no network, no vendor credential — a stand-in exactly as the shadow-oracle's mock
-# upstream stands in for a real one), dials it through `dial_provider`'s own net-guarded path, feeds
-# the frame it sends through the SAME `SessionCore` type the mounted routes open, and asserts the
-# session's D2 metering lease actually settles the usage that arrived over that live socket — not a
-# fixture, a socket.
-#
-# WAS RED: `topology::dial_provider` existed and passed its own unit tests in isolation, but no leg (and
-# no mounted route) ever called it, so "the dial exists" and "a session dials it" were different, unproven
-# claims.
+# THE DOOR'S HALF (judged, linked AND dropped door): a session's far frames name the dialect's socket
+# under the member's base URL (`GET /v1/realtime`, the Gemini BidiGenerateContent path) on the declared
+# need they ride (door::RIDES_REALTIME_SOCKET / RIDES_LIVE_SOCKET), and the usage the far end sends over
+# that socket is reported as units. The plane opens no socket and holds no guard (its closure is
+# contract + codecs: tests/purity.rs); the net guard, TLS and the upgrade are the connector's. RED arm:
+# a socket frame that names the one-shot pass need fails.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

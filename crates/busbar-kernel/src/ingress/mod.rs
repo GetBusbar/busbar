@@ -262,7 +262,7 @@ pub fn limit_refusal(
             // ServiceQuotaExceededException is 400; every other vendor surfaces
             // over-quota as 429). The writer owns that mapping.
             crate::proto::decl_for(proto)
-                .map(|d| d.quota_exceeded_status)
+                .and_then(|d| StatusCode::from_u16(d.quota_exceeded_status).ok())
                 .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
             crate::proxy::KIND_INSUFFICIENT_QUOTA,
             format!(
@@ -311,7 +311,7 @@ pub fn limit_refusal(
         // admitted; the message names the missing bucket so the operator can fix it.
         LimitBlocked::MissingGroup(group) => (
             crate::proto::decl_for(proto)
-                .map(|d| d.quota_exceeded_status)
+                .and_then(|d| StatusCode::from_u16(d.quota_exceeded_status).ok())
                 .unwrap_or(StatusCode::TOO_MANY_REQUESTS),
             crate::proxy::KIND_INSUFFICIENT_QUOTA,
             format!(

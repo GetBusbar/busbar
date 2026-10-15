@@ -38,6 +38,11 @@ impl Table {
 pub struct Document {
     pub tables: BTreeMap<String, Table>,
     pub array_tables: BTreeMap<String, Vec<Table>>,
+    /// Every non-blank line the reader could not place — neither a table header, nor a
+    /// `key = value`, nor the body of an open array or `"""` string — as `(1-based line, text)`.
+    /// X-1206: these used to vanish, so a document this reader misread was indistinguishable from
+    /// one it read whole. [`parse_text_checked`] refuses a document that has any.
+    pub unread: Vec<(usize, String)>,
 }
 
 impl Document {
@@ -87,6 +92,48 @@ pub fn parse(path: &Path) -> Document {
     parse_text(&raw)
 }
 
+/// [`parse_text`], refusing a document with any line it could not place (X-1206). The refusal
+/// names the first lines, so the cause — a shape this subset does not read, or a stray line — is
+/// visible where the old reader silently dropped it and every rule over the file read less than
+/// the file said.
+pub fn parse_text_checked(raw: &str) -> Result<Document, String> {
+    let doc = parse_text(raw);
+    if doc.unread.is_empty() {
+        return Ok(doc);
+    }
+    let shown: Vec<String> = doc
+        .unread
+        .iter()
+        .take(5)
+        .map(|(n, l)| format!("line {n}: `{l}`"))
+        .collect();
+    Err(format!(
+        "{} line(s) are neither a table header nor `key = value` nor inside an open array or \
+         string, so this reader would drop them: {}",
+        doc.unread.len(),
+        shown.join("; ")
+    ))
+}
+
+/// True when `line` closes an open multi-line array: a `]` OUTSIDE any quoted string. A `]` inside
+/// a regex literal (`'[^<>]*'`) is the string's, not the array's — the bare `contains(']')` this
+/// replaces closed `pattern_families` after its first item and dropped the rest of the array.
+fn closes_array(line: &str) -> bool {
+    let (mut quote, mut escaped) = (None::<char>, false);
+    for c in line.chars() {
+        match quote {
+            Some('"') if escaped => escaped = false,
+            Some('"') if c == '\\' => escaped = true,
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if c == ']' => return true,
+            None => {}
+        }
+    }
+    false
+}
+
 /// The same parse over TEXT SOMEBODY ELSE READ. A gate reads its config through the `Ctx` so a
 /// selftest can plant one with an overlay; [`parse`] reaches around that to `std::fs`, and a
 /// document read from disk is the one document no plant can change.
@@ -119,7 +166,7 @@ pub fn parse_text(raw: &str) -> Document {
     // Inside the body of a `key = """ .. """` block whose closing delimiter has not been seen yet.
     let mut in_multiline_string = false;
 
-    for raw_line in raw.lines() {
+    for (idx, raw_line) in raw.lines().enumerate() {
         if in_multiline_string {
             // Scanned on the RAW line, not the comment-stripped one: `#` inside prose is ordinary
             // text, and stripping from it would hide a closing delimiter that follows on the same
@@ -136,7 +183,7 @@ pub fn parse_text(raw: &str) -> Document {
         if pending_key.is_some() {
             pending_buf.push(' ');
             pending_buf.push_str(trimmed);
-            if trimmed.contains(']') {
+            if closes_array(trimmed) {
                 // `pending_buf` already excludes the opening `[` (sliced off when the array was
                 // first opened), so only the closing `]` needs trimming here.
                 let body = pending_buf
@@ -206,6 +253,8 @@ pub fn parse_text(raw: &str) -> Document {
                 cur_table.entries.push((unquote(&key), value.to_string()));
                 cur_table.values.insert(key, vec![unquote(value)]);
             }
+        } else {
+            doc.unread.push((idx + 1, trimmed.to_string()));
         }
     }
     commit_table(&mut doc, &cur_path, cur_is_array, cur_table);
@@ -381,5 +430,43 @@ patterns = [ 'libc' ]
         );
         let t = doc.table("rules.demo");
         assert_eq!(t.get_list("patterns"), vec!["libc".to_string()]);
+    }
+
+    /// X-1206 RED: a line that is neither a header nor `key = value` is RECORDED and the checked
+    /// reader refuses it, naming the line. Before, `parse_text` had no error path and the line
+    /// simply vanished.
+    #[test]
+    fn a_line_the_reader_cannot_place_is_refused_not_dropped() {
+        let raw = "[rules.demo]\nkinds = [\"a\"]\nthis line is not toml\n";
+        let doc = parse_text(raw);
+        assert_eq!(doc.unread, vec![(3, "this line is not toml".to_string())]);
+        let err = parse_text_checked(raw).expect_err("refused");
+        assert!(err.contains("line 3: `this line is not toml`"), "{err}");
+        assert!(parse_text_checked("[a]\nk = \"v\"\n").is_ok());
+    }
+
+    /// The cause X-1206 hid in `qa/construction.toml`: a multi-line array whose items are regexes
+    /// holding `]` was closed by the FIRST item, and every item after it was dropped unseen. The array
+    /// now closes only on a `]` outside a string, and every item is read.
+    #[test]
+    fn a_bracket_inside_a_quoted_item_does_not_close_the_array() {
+        let raw = "[rules.r]\npattern_families = [\n  '(?<![A-Za-z0-9_])Pass::<[^<>]*>::mint\\(',\n  \"Grant::<[^<>]*>::mint\",\n  'third',\n]\nafter = \"x\"\n";
+        let doc = parse_text_checked(raw).expect("whole document read");
+        let t = doc.table("rules.r");
+        assert_eq!(t.get_list("pattern_families").len(), 3, "{:?}", t.values);
+        assert_eq!(t.get_one("after"), Some("x"));
+    }
+
+    /// The committed configuration this reader serves is read WHOLE: no line of
+    /// `qa/construction.toml` or `qa/denylist-allow.toml` is dropped.
+    #[test]
+    fn the_committed_denylist_inputs_are_read_whole() {
+        let cx = crate::ctx::Ctx::workspace().expect("workspace context");
+        for rel in ["qa/construction.toml", "qa/denylist-allow.toml"] {
+            let text = cx.read(rel).expect(rel);
+            if let Err(e) = parse_text_checked(&text) {
+                panic!("{rel}: {e}");
+            }
+        }
     }
 }

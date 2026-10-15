@@ -110,6 +110,9 @@ pub struct Exchange {
     observe: bool,
     /// What they said, once read: kept across replays, which answer without writing them again.
     observed: Option<Observed>,
+    /// The stream the exchange established, once it has: what a caller that gives the exchange up
+    /// closes on the host ([`Exchange::stream`]).
+    stream: Option<u64>,
 }
 
 fn piece(kind: u32) -> Box<RequestPiece> {
@@ -140,7 +143,15 @@ impl Exchange {
             member: None,
             observe: false,
             observed: None,
+            stream: None,
         }
+    }
+
+    /// The stream this exchange established, once it has: a caller that abandons the exchange
+    /// closes it (`Connector::close`), so the host's connection does not outlive the attempt.
+    #[must_use]
+    pub const fn stream(&self) -> Option<u64> {
+        self.stream
     }
 
     /// Read the stream's facts ([`Connector::facts`]) once its reply has ended — or once the reply
@@ -230,6 +241,19 @@ impl Exchange {
     pub fn send(bytes: Vec<u8>) -> Self {
         Self::over(Sending::Raw(bytes.into_boxed_slice()))
     }
+
+    /// THE FIELDS THIS EXCHANGE FRAMES, read back off the head it sends: `(name, value)`, in
+    /// order, exactly what the far end is handed rather than what the caller meant to hand it.
+    /// Empty for an exchange that sends raw bytes ([`Exchange::send`]).
+    #[must_use]
+    pub fn framed_fields(&self) -> Vec<(&[u8], &[u8])> {
+        match &self.sending {
+            Sending::Framed {
+                head, head_piece, ..
+            } => fields::lines(spanned(head, head_piece.fields)).collect(),
+            Sending::Raw(_) => Vec::new(),
+        }
+    }
 }
 
 /// The bytes `span` names in `buf`, or none past its end.
@@ -305,6 +329,7 @@ fn send_and_read(
     target: Option<&str>,
 ) -> Answer<()> {
     let stream = ready!(c.establish_as(need, target, &state.within, 0, state.member.as_deref()));
+    state.stream = Some(stream);
     ready!(send(c, state, stream));
     loop {
         let this = c.issued();
@@ -319,8 +344,8 @@ fn send_and_read(
             }
             Poll::Pending => return Poll::Pending,
         };
-        // A replayed read answers its stored result; it was applied on the entry that first saw it
-        // (its bytes are no longer in the buffer).
+        // A replayed read answers its stored result (its piece and bytes written again); it was
+        // applied on the entry that first saw it, unless this exchange is that op's fresh re-call.
         let fresh = this >= state.applied;
         if fresh {
             state.applied = this + 1;
@@ -347,7 +372,7 @@ fn send_and_read(
         }
         // The terminal piece ends the reads, on the entry that first saw it and on every replay
         // of that read. A replayed earlier read never does: the piece descriptor is the op's one
-        // parked slot, so a replay finds the LATEST read's piece there, not its own.
+        // parked slot, rewritten by each replayed read: only `ended` marks the terminal one.
         if fresh && matches!(p.kind, REPLY_ACK | REPLY_END) {
             state.ended = Some(this);
         }
@@ -460,6 +485,19 @@ impl<'a> Op<'a> {
         host: Option<&'a Host>,
     ) -> Self {
         Self { on: instance, host }
+    }
+
+    /// The host tables the op runs over (`None`: the instance was handed none): what an op that
+    /// waits on another ticket's work wakes that ticket with ([`Host::wake`]).
+    #[must_use]
+    pub fn host(&self) -> Option<&'a Host> {
+        self.host
+    }
+
+    /// The op's ticket ([`Ticket::NONE`] on the spot).
+    #[must_use]
+    pub fn ticket(&self) -> Ticket {
+        self.on.ticket()
     }
 
     /// [`exchange`] over the declared framed need `need` to `target`: `request` is built only on

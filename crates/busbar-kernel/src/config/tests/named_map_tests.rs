@@ -44,7 +44,7 @@ fn every_section_round_trips_its_three_route_shapes() {
 
 // `sections_holds_the_frozen_named_map_order_under_the_default_feature_set` MOVED to
 // `crates/busbar/tests/named_map_cross_plane.rs`: it pins `sections()`'s fold over the REAL registered roster
-// (`"tools"`/`"agents"` are the real `busbar_mcp`/`busbar_a2a` config sections) — naming that real
+// (`"tools"`/`"agents"` are the real `busbar_mcp` and agent-engine config sections) — naming that real
 // vocabulary here (even via a synthetic `#[cfg(test)]` decl) is exactly what `cargo xtask gate
 // construction`'s `neutral-no-dialect` rule (ceiling 0) forbids. See that file for the relocated
 // test.
@@ -129,4 +129,25 @@ fn referents_finds_every_bare_name_reference_site() {
 fn only_identity_providers_carry_a_trust_ceiling() {
     assert!(NamedMapSection::IdentityProviders.has_trust_ceiling());
     assert!(!NamedMapSection::Export.has_trust_ceiling());
+}
+
+/// RED (ARCHITECT S11b (c) Option A, BUSBAR-1.6.0.md l.3977; Q67 revert to 1.5.5): a definition
+/// for a plane section no registered plane declares is refused in serde's own unknown-field words,
+/// exactly as the config parse refuses the key and as 1.5.5 refused every key it did not know,
+/// never in a bespoke "compiled without the plane" sentence that names a plane the build lacks.
+#[test]
+fn a_section_no_registered_plane_declares_is_an_unknown_field() {
+    let _isolation = crate::plane::registry::TestRegistryIsolation::empty();
+    let section = NamedMapSection::Plane("bays");
+    let err = section
+        .parse_def("dock", &serde_json::json!({}))
+        .err()
+        .expect("a section no plane declares is refused");
+    assert_eq!(err, "unknown field `bays`");
+    let err = section
+        .insert(&mut base_deploy(), "dock", &serde_json::json!({}))
+        .err()
+        .expect("and refused on insert too");
+    assert_eq!(err, "unknown field `bays`");
+    assert!(!err.contains("compiled without"), "{err}");
 }

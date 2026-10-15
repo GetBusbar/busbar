@@ -22,6 +22,10 @@ pub const ROW_THREAD_LOCAL: &str = "contract-stateless:thread-local";
 
 const CONTRACT_SRC: &str = "crates/busbar-contract";
 
+/// Where the door macro's per-thread capture slot lives: the ledger's one `[[sanctioned]]` site
+/// pair (ARCHITECT ruling 2026-10-14; SPEC l.1297-1300).
+const CAPTURE_HOME: &str = "crates/busbar-contract/src/abi/sdk/door.rs";
+
 pub const SPEC: Spec = Spec {
     gate: "contract-stateless",
     ledger: "qa/contract-stateless.toml",
@@ -166,6 +170,46 @@ impl Gate for ContractStatelessGate {
             "a static inside #[cfg(test)] is not state the contract ships",
             &[ROW_STATIC],
             tests_only,
+        ));
+        // THE ONE SANCTIONED PER-THREAD SLOT (the plugin-logging capture, SPEC l.1297-1300)
+        // excuses exactly itself: a SECOND thread_local! beside it, in the very file it lives in,
+        // is NEW and red; and a sanction whose site left the tree is STALE.
+        let second = {
+            let mut ov = Overlay::new();
+            let text = cx.read(CAPTURE_HOME).unwrap_or_default();
+            ov.set(
+                CAPTURE_HOME,
+                format!("{text}\nthread_local! {{ static PLANTED_SECOND: u8 = 0; }}\n"),
+            );
+            ov
+        };
+        report.push(crate::gates::prove_rows_red(
+            cx,
+            self,
+            "a second thread_local! beside the sanctioned capture slot is RED",
+            &[ROW_THREAD_LOCAL],
+            second,
+            &[CAPTURE_HOME, "thread_local!"],
+        ));
+        let gone = {
+            let mut ov = Overlay::new();
+            let ledger = cx.read(SPEC.ledger).unwrap_or_default();
+            ov.set(
+                SPEC.ledger,
+                format!(
+                    "{ledger}\n[[sanctioned]]\nrule = \"{ROW_ONCE}\"\nfile = \"{CAPTURE_HOME}\"\nitem = \"OnceCell\"\ncite = \"planted\"\ndrain = \"planted\"\n"
+                ),
+            );
+            ov
+        };
+        let ledger_row = SPEC.ledger_row();
+        report.push(crate::gates::prove_rows_red(
+            cx,
+            self,
+            "a sanctioned site the tree does not carry is STALE",
+            &[ledger_row.as_str()],
+            gone,
+            &["STALE sanctioned", "OnceCell"],
         ));
         report
     }

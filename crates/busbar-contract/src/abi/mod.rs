@@ -49,7 +49,28 @@ use core::mem::MaybeUninit;
 /// (`tests/transport_slot_coverage.rs`, `tests/conn_slot_coverage.rs`) read these lists and hold them
 /// to the traits. A table's slots answer [`hot::transport::RawWireOutcome`] unless the list states
 /// another outcome byte (`-> Outcome`).
+///
+/// A list led by `extern "C";` lowers to `extern "C"` slots (THE DESIGN §11.11 M3: unwinding across a
+/// foreign cdylib is undefined behaviour, so a slot catches its own panic and answers its fault
+/// byte, and a panic that escapes it aborts). A list without it is still `extern "C-unwind"`, each
+/// one a `one-memory-abi:c-unwind` row until it is lowered.
 macro_rules! slot_table {
+    (
+        extern "C";
+        $(#[$doc:meta])*
+        pub struct $table:ident lowers $trait:ident -> $ret:ty {
+            $(
+                $(#[$sdoc:meta])*
+                $slot:ident: $alias:ident = fn($($arg:ident: $ty:ty),* $(,)?);
+            )*
+        }
+    ) => {
+        $(
+            $(#[$sdoc])*
+            pub type $alias = extern "C" fn($($arg: $ty),*) -> $ret;
+        )*
+        slot_table!(@table $(#[$doc])* $table { $($slot: $alias),* });
+    };
     (
         $(#[$doc:meta])*
         pub struct $table:ident lowers $trait:ident {
@@ -76,6 +97,9 @@ macro_rules! slot_table {
             $(#[$sdoc])*
             pub type $alias = extern "C-unwind" fn($($arg: $ty),*) -> $ret;
         )*
+        slot_table!(@table $(#[$doc])* $table { $($slot: $alias),* });
+    };
+    (@table $(#[$doc:meta])* $table:ident { $($slot:ident: $alias:ident),* }) => {
         $(#[$doc])*
         #[repr(C)]
         #[derive(Debug, Clone, Copy)]
@@ -106,12 +130,35 @@ pub mod hook;
 pub mod mechanism;
 pub mod plane;
 pub mod secret;
+/// The shapes the memory ABI's connection table carries that the condemned HOT lane named first.
+pub mod shared;
 pub mod store;
 pub mod transport;
 
 // The two `#[macro_export]` sized-read macros, named at this module's path too, so a caller writes
 // `busbar_contract::abi::read_sized_field!` exactly where it wrote `busbar_plugin::read_sized_field!`.
 pub use crate::{host_slot, read_sized_field};
+
+// THE KERNEL SEAL'S ONE CROSSING (#65, ARCHITECT ruling 2026-10-14): declared here, DEFINED only
+// by `busbar-kernel` (`crates/busbar-kernel/src/seal.rs`). It lives in `abi` because calling it is
+// `unsafe`, and the contract's unsafe lives in this module alone (the unsafe policy in `lib.rs`;
+// `caps` stays `forbid(unsafe_code)`). See [`crate::caps::KernelSeal::deliver`].
+extern "Rust" {
+    fn __busbar_kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync>;
+}
+
+/// Hand `seal` to the kernel's root symbol; [`crate::caps::KernelSeal::deliver`] is the only
+/// caller. `#[inline]` for the reason `deliver` is: only an image that calls it references the
+/// symbol.
+#[inline]
+pub(crate) fn kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync> {
+    // SAFETY: `__busbar_kernel_root` is defined exactly once, by `busbar-kernel`
+    // (`crates/busbar-kernel/src/seal.rs`), with this exact signature, and both crates are built
+    // together by one compiler in one workspace, so the Rust ABI of the declaration and the
+    // definition agree. The definition takes the seal by value and returns an owned box; it
+    // touches no other state.
+    unsafe { __busbar_kernel_root(seal) }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // 1. The airlock preamble — FROZEN FOR ALL TIME. Shared by both lanes.

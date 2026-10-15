@@ -19,6 +19,7 @@ use busbar_contract::abi::mechanism::check::Filled;
 use busbar_contract::services::DiskDest;
 
 use super::*;
+use crate::dispatch::ticket::InstanceWake;
 
 const TICKET: Ticket = Ticket {
     slot: 3,
@@ -425,9 +426,7 @@ fn double() -> Double {
         .is_ok());
     Double {
         route,
-        ctx: HostCtx {
-            ptr: std::ptr::from_ref(wake).cast_mut().cast(),
-        },
+        ctx: crate::dispatch::handle::mint(wake).expect("the host mints a handle"),
     }
 }
 
@@ -1230,9 +1229,7 @@ fn a_caller_scoped_service_with_no_caller_is_refused() {
     let wake: &'static InstanceWake = Box::leak(Box::default());
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
-    let anon = HostCtx {
-        ptr: std::ptr::from_ref(wake).cast_mut().cast(),
-    };
+    let anon = crate::dispatch::handle::mint(wake).expect("the host mints a handle");
     let i = claim_in(1);
     let mut o = blank();
     let ret = HOST_SLOTS.records_claim.unwrap()(anon, std::ptr::from_ref(&i).cast(), &mut o);
@@ -1639,9 +1636,7 @@ fn records_secret_serves_only_a_declared_kind() {
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
     assert!(wake.credential_kinds.set(vec!["sigv4".to_string()]).is_ok());
-    let reader = HostCtx {
-        ptr: std::ptr::from_ref(wake).cast_mut().cast(),
-    };
+    let reader = crate::dispatch::handle::mint(wake).expect("the host mints a handle");
     let other = secret_in("bearer", "AKID", &mut buf, &mut spans);
     let (ret, o) = call_secret(reader, &other);
     assert_eq!(ret.outcome(), Outcome::Refused, "an undeclared kind");
@@ -1860,9 +1855,7 @@ fn disk_append_writes_only_to_a_granted_bound_destination() {
     let dyn_route: Arc<dyn WakeRoute> = d.route.clone();
     assert!(wake.route.set(Arc::downgrade(&dyn_route)).is_ok());
     assert!(wake.destinations.set(vec!["path".to_string()]).is_ok());
-    let ctx = HostCtx {
-        ptr: std::ptr::from_ref(wake).cast_mut().cast(),
-    };
+    let ctx = crate::dispatch::handle::mint(wake).expect("the host mints a handle");
     // Granted, not yet bound (its settings set no path): refused.
     let (ret, o) = call_disk(ctx, &disk_in("path", b"line\n", 0, &mut w));
     assert_eq!(ret.outcome(), Outcome::Refused);
@@ -2181,4 +2174,55 @@ fn snapshot_read_refuses_an_unknown_scope_or_a_misaligned_buffer() {
         1,
         "only the well-formed call reached the kernel"
     );
+}
+
+/// #74, THE UNTRUSTED-ABI HALF: a context the host did not mint is refused before it names an
+/// instance. The service answers as it answers no context and the wake wakes nothing; the minted
+/// context does both (the control). It used to be an address the host read through, whatever the
+/// plugin handed back. (The counting is `handle_tests`', on a latch of its own.)
+#[test]
+fn a_forged_context_is_refused_before_it_names_an_instance() {
+    let d = double();
+    let mut reading = ClockReading {
+        size: 0,
+        _reserved: 0,
+        wall_ns: 0,
+        mono_ns: 0,
+    };
+    let i = ClockNowIn {
+        head: head(op::CLOCK_NOW, Ticket::NONE, 0, size_of::<ClockNowIn>()),
+        reading: &mut reading,
+    };
+    let woken = Ticket {
+        slot: 3,
+        generation: 1,
+    };
+    let tag_bit = 1u64 << crate::dispatch::handle::HANDLE_ID_BITS;
+    for forged in [
+        HostCtx {
+            handle: d.ctx.handle ^ tag_bit,
+        },
+        HostCtx {
+            handle: d.ctx.handle ^ 1,
+        },
+        // The raw address of the very entry the handle names: the old shape of a context.
+        HostCtx {
+            handle: std::ptr::from_ref(crate::dispatch::handle::resolve(d.ctx).unwrap()) as usize
+                as u64,
+        },
+    ] {
+        let mut o = blank();
+        let ret = HOST_SLOTS.clock_now.unwrap()(forged, std::ptr::from_ref(&i).cast(), &mut o);
+        assert_eq!(ret.outcome(), Outcome::Refused, "{forged:?}");
+        crate::dispatch::ticket::host_wake(forged, woken);
+        assert!(
+            d.route.wakes.lock().unwrap().is_empty(),
+            "a forged context woke a ticket: {forged:?}"
+        );
+    }
+    let mut o = blank();
+    let ret = HOST_SLOTS.clock_now.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+    assert_eq!(ret.outcome(), Outcome::Ready);
+    crate::dispatch::ticket::host_wake(d.ctx, woken);
+    assert_eq!(*d.route.wakes.lock().unwrap(), vec![woken]);
 }

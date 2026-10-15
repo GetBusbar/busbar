@@ -68,19 +68,6 @@ pub fn strip_router_shim_keys(v: &mut Value, egress_protocol: &str) -> bool {
     changed
 }
 
-/// The per-response translation cap, read from the host at each use site.
-///
-/// The cap is COUPLED with the inbound request-body limit so any completion the gateway would accept
-/// inbound can also be buffered for translation, while still bounding the per-response allocation.
-/// ONE knob (`limits.request_body_max_bytes`) drives BOTH the inbound body limit and this egress cap,
-/// so they can never diverge. A function (not a `const`) so the host's live value is read at each use
-/// site, through the translate-cap reader the host installs (#83a SD-3; the plane holds no limit of
-/// its own); a process whose host installed none reads the historical 32 MiB default.
-#[must_use]
-pub fn max_translated_body_bytes() -> usize {
-    busbar_contract::codec::max_translate_body_bytes()
-}
-
 /// Bytes-per-token divisor for the truncated-tail billing FLOOR. Deliberately conservative
 /// (~4 bytes/token is typical for English prose; a JSON response envelope with field names and
 /// escaping runs HIGHER), so the estimate UNDER-counts the true consumption: the retained tail is

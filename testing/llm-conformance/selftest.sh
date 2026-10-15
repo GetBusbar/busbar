@@ -42,6 +42,7 @@
 #   (k) the same gap where the row is clean        -> RED as stale, before the verdict
 #   (l) an entry with no owner and no reason       -> REFUSED at load; nothing is judged
 #   (m) an entry whose cell carries a wildcard     -> REFUSED at load; nothing is judged
+#   (m3) an entry naming a row the production cell universe does not owe -> REFUSED at load
 #   (m2) `gaps` given in the OTHER shape (an object, not the list this loader promises) rather than
 #       simply absent (the shape (f2)'s ceiling-only gapfile legitimately uses) -> REFUSED by name
 #
@@ -360,6 +361,78 @@ if [ "$rc" != 0 ] && grep -q '`gaps` must be a list' "$W/m2.log" \
 else
   say FAIL "(m2) malshaped gaps rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/m2/ledger.tsv")"; tail -8 "$W/m2.log"
 fi
+
+# (m3) a well-formed entry naming a row the PRODUCTION cell universe (testing/shadow-oracle/cells.json)
+# does not owe -> REFUSED by name. No production run can judge such a row, so the entry can never
+# forgive anything and can never go stale: it only sits in the file looking like a gap someone owns.
+# The row used is one of the three gemini-vertex-* entries that sat in named-gaps.json that way.
+g5="$(gapfile orphan '{"gaps":[{"id":"orphan-row","owner":"the selftest","rule":"additionalProperties","detail_contains":"is not declared by the spec","cells":["llm|gemini|gemini|vertex|ok#response"],"why":"a planted entry naming a row no production cell universe owes, to prove the loader refuses it"}]}')"
+rc="$(run_gaps "$W/b-rec" "$W/m3" "$W/b-rec/cells.json" "$g5")"
+if [ "$rc" != 0 ] && grep -q 'is not a row the production cell universe' "$W/m3.log" \
+   && [ "$(awk 'NF{n++} END{print n+0}' "$W/m3/ledger.tsv")" = 0 ]; then
+  say PASS "(m3) a gap naming a row production never owes -> REFUSED by name, nothing judged"
+else
+  say FAIL "(m3) orphan gap rc=$rc rows=$(awk 'NF{n++} END{print n+0}' "$W/m3/ledger.tsv")"; tail -8 "$W/m3.log"
+fi
+
+# ── ANTHROPIC'S DOCUMENTED STREAM EVENTS (ping, error) ──────────────────────────────────────────
+# Anthropic's published MessageStreamEvent union has six members; its streaming guide documents two
+# more, `ping` ("any number of ping events") and `error`. 1.5.5 sends a ping after message_start on
+# every translated stream. The judge models both documents (validate.py ANTHROPIC_DOCUMENTED_EVENTS)
+# rather than forgiving the rows as named gaps, so these cases prove the model is exact:
+#   (v)  the 1.5.5 event sequence, ping included                       -> GREEN, no SKIP, no named gap
+#   (v2) plus a documented `event: error` carrying the ErrorResponse    -> GREEN
+#   (v3) the ping's type renamed to an UNDOCUMENTED one                 -> RED (the union still judges it)
+#   (v4) a ping sent under another event name                           -> RED on sse.event
+#   (v5) a ping carrying a member the documented shape does not have    -> RED on additionalProperties
+FIX3="${here}/fixtures/anthropic-stream-recording"
+ANTH_BODY="raw/llm__anthropic__openai__request__ok_stream/body"
+RUN_ARGS="--gaps $W/no-gaps.json"
+rc="$(run "$FIX3" "$W/v")"
+if [ "$rc" = 0 ] && [ "$(count "$W/v" PASS)" = 3 ] && [ "$(count "$W/v" FAIL)" = 0 ] && [ "$(count "$W/v" SKIP)" = 0 ]; then
+  say PASS "(v) Anthropic stream with the documented ping -> GREEN, judged (no SKIP, no named gap)"
+else
+  say FAIL "(v) anthropic ping rc=$rc pass=$(count "$W/v" PASS) fail=$(count "$W/v" FAIL) skip=$(count "$W/v" SKIP): $(fail_rows "$W/v")"
+fi
+anth_mutate() {  # anth_mutate <case> <python replacing text in body s>
+  cp -R "$FIX3" "$W/$1-rec"
+  python3 - "$W/$1-rec/$ANTH_BODY" "$2" <<'PY'
+import sys
+p, code = sys.argv[1], sys.argv[2]
+s = open(p).read(); n = {"s": s}; exec(code, n)
+assert n["s"] != s, "mutation changed nothing"
+open(p, "w").write(n["s"])
+PY
+}
+anth_mutate v2 's = s.replace("event: message_stop\n", "event: error\ndata: {\"error\":{\"message\":\"Overloaded\",\"type\":\"overloaded_error\"},\"request_id\":null,\"type\":\"error\"}\n\nevent: message_stop\n")'
+rc="$(run "$W/v2-rec" "$W/v2")"
+if [ "$rc" = 0 ] && [ "$(count "$W/v2" FAIL)" = 0 ] && [ "$(count "$W/v2" SKIP)" = 0 ]; then
+  say PASS "(v2) a documented in-stream error event -> GREEN against the spec's own ErrorResponse"
+else
+  say FAIL "(v2) anthropic error event rc=$rc: $(fail_rows "$W/v2")"
+fi
+anth_mutate v3 's = s.replace("event: ping\ndata: {\"type\":\"ping\"}", "event: keepalive\ndata: {\"type\":\"keepalive\"}")'
+rc="$(run "$W/v3-rec" "$W/v3")"
+if [ "$rc" != 0 ] && [ "$(count "$W/v3" FAIL)" = 1 ] && grep -q "'keepalive' is not one of" "$W/v3/ledger.tsv"; then
+  say PASS "(v3) an UNDOCUMENTED event type -> RED, the published union still judges it"
+else
+  say FAIL "(v3) undocumented event rc=$rc: $(fail_rows "$W/v3")"
+fi
+anth_mutate v4 's = s.replace("event: ping\n", "event: message_delta\n")'
+rc="$(run "$W/v4-rec" "$W/v4")"
+if [ "$rc" != 0 ] && [ "$(count "$W/v4" FAIL)" = 1 ] && grep -q 'sse.event' "$W/v4/ledger.tsv"; then
+  say PASS "(v4) a ping under another SSE event name -> RED on sse.event"
+else
+  say FAIL "(v4) misnamed ping rc=$rc: $(fail_rows "$W/v4")"
+fi
+anth_mutate v5 's = s.replace("data: {\"type\":\"ping\"}", "data: {\"seq\":1,\"type\":\"ping\"}")'
+rc="$(run "$W/v5-rec" "$W/v5")"
+if [ "$rc" != 0 ] && [ "$(count "$W/v5" FAIL)" = 1 ] && grep -q "seq" "$W/v5/ledger.tsv"; then
+  say PASS "(v5) a ping with an undocumented member -> RED, the documented shape is closed"
+else
+  say FAIL "(v5) widened ping rc=$rc: $(fail_rows "$W/v5")"
+fi
+RUN_ARGS=""
 
 # ── THE SIDE OF 2xx THE OUTCOME ASKED FOR ───────────────────────────────────────────────────────
 # (p) a cell whose whole point is a REFUSAL — no credential at all — answered HTTP 200 with a

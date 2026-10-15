@@ -246,3 +246,712 @@ fn an_unparseable_body_reads_the_dialects_400() {
         assert_matches(&cell, &r);
     }
 }
+
+// ── rehomed from the legacy engine's refusal tests: literal statuses and bodies ─────────────────
+
+use busbar_contract::abi::plane::{RefusalCode, REFUSAL_ANY_DIALECT};
+use busbar_plane_llm::exchange::arrive::{Decline, Declined};
+use busbar_plane_llm::exchange::refuse::{declined, model_not_found, render};
+
+/// The google.rpc status word 1.5.5's gemini envelope paired with a status.
+fn grpc(status: u16) -> &'static str {
+    match status {
+        403 => "PERMISSION_DENIED",
+        404 => "NOT_FOUND",
+        429 => "RESOURCE_EXHAUSTED",
+        _ => "INVALID_ARGUMENT",
+    }
+}
+
+/// The AWS exception 1.5.5's bedrock envelope named for a kind.
+fn aws(kind: &str) -> &'static str {
+    match kind {
+        "not_found_error" => "ResourceNotFoundException",
+        "permission_error" | "authentication_error" => "AccessDeniedException",
+        "rate_limit_error" => "ThrottlingException",
+        "insufficient_quota" => "ServiceQuotaExceededException",
+        _ => "ValidationException",
+    }
+}
+
+/// 1.5.5's refusal body, spelled out per dialect (the shapes of the recorded `malformed` and
+/// pool-refusal cells); a dialect the plane does not hold reads the agnostic envelope.
+fn native(dialect: &str, status: u16, kind: &str, message: &str) -> Value {
+    match dialect {
+        "openai" | "responses" => serde_json::json!({
+            "error": { "code": null, "message": message, "param": null, "type": kind }
+        }),
+        "cohere" => serde_json::json!({ "message": message }),
+        "gemini" => serde_json::json!({
+            "error": { "code": status, "message": message, "status": grpc(status) }
+        }),
+        "bedrock" => serde_json::json!({ "__type": aws(kind), "message": message }),
+        "anthropic" => serde_json::json!({
+            "error": { "message": message, "type": kind },
+            "request_id": "<ID>",
+            "type": "error"
+        }),
+        _ => serde_json::json!({ "error": { "message": message, "type": kind } }),
+    }
+}
+
+/// The head field names 1.5.5's refusal carried per dialect (content-length is the transport's).
+fn native_names(dialect: &str) -> Vec<&'static str> {
+    match dialect {
+        "bedrock" => vec!["content-type", "x-amzn-errortype", "x-amzn-requestid"],
+        "anthropic" => vec!["content-type", "request-id"],
+        _ => vec!["content-type"],
+    }
+}
+
+fn body_of(r: &Rendered) -> Value {
+    let mut body: Value = serde_json::from_slice(&r.body).expect("the rendered body is JSON");
+    if let Some(id) = body.get_mut("request_id") {
+        *id = Value::String("<ID>".into());
+    }
+    body
+}
+
+fn names_of(r: &Rendered) -> Vec<&str> {
+    let mut have: Vec<&str> = r.fields.iter().map(|(n, _)| n.as_str()).collect();
+    have.sort_unstable();
+    have
+}
+
+fn value_of<'a>(r: &'a Rendered, name: &str) -> Option<&'a str> {
+    r.fields
+        .iter()
+        .find(|(n, _)| n == name)
+        .and_then(|(_, v)| std::str::from_utf8(v).ok())
+}
+
+/// The rendered refusal is 1.5.5's: the status, the body and the head field names, literally.
+fn assert_native(dialect: &str, r: &Rendered, status: u16, kind: &str, message: &str) {
+    assert_eq!(r.status, status, "{dialect}: status");
+    assert_eq!(
+        body_of(r),
+        native(dialect, status, kind, message),
+        "{dialect}: body"
+    );
+    assert_eq!(
+        names_of(r),
+        native_names(dialect),
+        "{dialect}: head field names"
+    );
+    assert_eq!(
+        value_of(r, "content-type"),
+        Some("application/json"),
+        "{dialect}"
+    );
+    if dialect == "bedrock" {
+        assert_eq!(
+            value_of(r, "x-amzn-errortype"),
+            Some(aws(kind)),
+            "{dialect}"
+        );
+    }
+}
+
+/// The message a rendered refusal carries, wherever its dialect puts it.
+fn message_in(dialect: &str, body: &Value) -> Option<String> {
+    let at = match dialect {
+        "cohere" | "bedrock" => body.get("message"),
+        _ => body.pointer("/error/message"),
+    };
+    at.and_then(Value::as_str).map(str::to_string)
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/auth_native_envelope_tests.rs::test_vendor_auth_failure_message_is_plausible_per_proto`.
+/// 1.5.5 behaviour pinned: an authentication refusal reads each vendor's own sentence: anthropic
+/// "invalid x-api-key", openai and responses "Incorrect API key provided.", gemini "API key not
+/// valid. Please pass a valid API key.", cohere "invalid api token", bedrock none (AWS says it in
+/// `__type`), and a dialect the plane does not hold the neutral "authentication failed".
+/// RED if any of the seven sentences differs or busbar's own wording appears.
+#[test]
+fn an_authentication_refusal_reads_each_vendors_own_sentence() {
+    entropy();
+    for (dialect, status, sentence) in [
+        ("anthropic", 401, "invalid x-api-key"),
+        ("openai", 401, "Incorrect API key provided."),
+        ("responses", 401, "Incorrect API key provided."),
+        (
+            "gemini",
+            400,
+            "API key not valid. Please pass a valid API key.",
+        ),
+        ("cohere", 401, "invalid api token"),
+        ("some-future-proto", 401, "authentication failed"),
+    ] {
+        let r = kernel_refusal(
+            dialect,
+            reason::UNAUTHENTICATED,
+            status,
+            "unauthenticated",
+            0,
+        );
+        assert_eq!(r.status, status, "{dialect}");
+        assert_eq!(
+            message_in(dialect, &body_of(&r)).as_deref(),
+            Some(sentence),
+            "{dialect}"
+        );
+    }
+    let r = kernel_refusal(
+        "bedrock",
+        reason::UNAUTHENTICATED,
+        403,
+        "unauthenticated",
+        0,
+    );
+    let body = body_of(&r);
+    assert_eq!(body["__type"], "AccessDeniedException");
+    assert_eq!(
+        body.get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default(),
+        "",
+        "bedrock carries no sentence of its own"
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_ingress_error_bedrock_amzn_headers`.
+/// 1.5.5 behaviour pinned: a bedrock caller's 429 rate-limit refusal carries `x-amzn-requestid` and
+/// `x-amzn-errortype: ThrottlingException` (the body's `__type`); an openai caller's 400 carries
+/// neither. RED if either field is missing on bedrock, the type differs, or openai carries one.
+#[test]
+fn a_bedrock_throttle_carries_both_amzn_fields_and_an_openai_refusal_neither() {
+    entropy();
+    for r in [
+        render("bedrock", 429, "rate_limit_error", "slow down", 0),
+        kernel_refusal(
+            "bedrock",
+            RefusalCode::RateLimited.code(),
+            429,
+            "slow down",
+            0,
+        ),
+    ] {
+        assert!(value_of(&r, "x-amzn-requestid").is_some());
+        assert_eq!(
+            value_of(&r, "x-amzn-errortype"),
+            Some("ThrottlingException")
+        );
+        assert_eq!(body_of(&r)["__type"], "ThrottlingException");
+    }
+    let r = render("openai", 400, "invalid_request_error", "x", 0);
+    assert!(value_of(&r, "x-amzn-requestid").is_none());
+    assert!(value_of(&r, "x-amzn-errortype").is_none());
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_bedrock_ingress_error_has_amzn_headers`.
+/// 1.5.5 behaviour pinned: a bedrock 404 carries a UUID-shaped (8-4-4-4-12, lowercase hex)
+/// `x-amzn-requestid` and `x-amzn-errortype: ResourceNotFoundException`.
+/// RED if the id is not UUID-shaped or the type differs.
+#[test]
+fn a_bedrock_not_found_carries_a_uuid_request_id_and_its_exception() {
+    entropy();
+    let r = render(
+        "bedrock",
+        404,
+        "not_found_error",
+        "The model 'x' does not exist or you do not have access to it.",
+        0,
+    );
+    let id = value_of(&r, "x-amzn-requestid").expect("x-amzn-requestid");
+    let groups: Vec<usize> = id.split('-').map(str::len).collect();
+    assert_eq!(groups, [8, 4, 4, 4, 12], "{id}");
+    assert!(
+        id.chars()
+            .all(|ch| ch == '-' || ch.is_ascii_digit() || ('a'..='f').contains(&ch)),
+        "{id}"
+    );
+    assert_eq!(
+        value_of(&r, "x-amzn-errortype"),
+        Some("ResourceNotFoundException")
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_bedrock_errortype_header_matches_body_and_others_omit`.
+/// 1.5.5 behaviour pinned: for every refusal kind a bedrock caller can read, `x-amzn-errortype`
+/// equals the body's `__type`: invalid request ValidationException, rate limit
+/// ThrottlingException, permission AccessDeniedException, quota ServiceQuotaExceededException;
+/// the same holds on the kernel's refusals of those classes; an openai 404 carries neither amzn
+/// field. RED if a value differs from its body or the table, or openai carries one.
+#[test]
+fn a_bedrock_refusals_errortype_is_its_body_type_for_every_kind() {
+    entropy();
+    for (kind, status, code, expected) in [
+        (
+            "invalid_request_error",
+            400,
+            RefusalCode::NoRate.code(),
+            "ValidationException",
+        ),
+        (
+            "rate_limit_error",
+            429,
+            RefusalCode::RateLimited.code(),
+            "ThrottlingException",
+        ),
+        (
+            "permission_error",
+            403,
+            RefusalCode::PoolNotPermitted.code(),
+            "AccessDeniedException",
+        ),
+        (
+            "insufficient_quota",
+            400,
+            RefusalCode::OverBudget.code(),
+            "ServiceQuotaExceededException",
+        ),
+    ] {
+        for r in [
+            render("bedrock", status, kind, "m", 0),
+            kernel_refusal("bedrock", code, status, "m", 0),
+        ] {
+            assert_eq!(value_of(&r, "x-amzn-errortype"), Some(expected), "{kind}");
+            assert_eq!(body_of(&r)["__type"], expected, "{kind}");
+        }
+    }
+    let r = render("openai", 404, "not_found_error", "m", 0);
+    assert!(value_of(&r, "x-amzn-requestid").is_none());
+    assert!(value_of(&r, "x-amzn-errortype").is_none());
+}
+
+/// The kernel answers a model that names no pool and no configured model with the status this
+/// plane states for every dialect: 404.
+fn no_destination_status() -> u16 {
+    let row = busbar_plane_llm::refusal::REFUSAL_STATUSES
+        .iter()
+        .find(|r| r.dialect == REFUSAL_ANY_DIALECT && r.reason == reason::NO_DESTINATION)
+        .expect("the plane states the no-destination status");
+    assert_eq!(row.status, 404);
+    404
+}
+
+/// The kernel's no-destination refusal for an arrival, in its dialect's words.
+fn unknown_model(target: &str, body: &[u8]) -> (String, Rendered) {
+    let h: Vec<(&[u8], &[u8])> = vec![(b"content-type".as_slice(), b"application/json".as_slice())];
+    let a = busbar_plane_llm::exchange::arrive::arrive("POST", target, &h, body, &())
+        .expect("the arrival is read");
+    let message = model_not_found(
+        &a.model,
+        a.path_model
+            .as_ref()
+            .and_then(|p| p.model_not_found_message.as_deref()),
+    );
+    let r = kernel_refusal(
+        a.dialect,
+        reason::NO_DESTINATION,
+        no_destination_status(),
+        &message,
+        0,
+    );
+    (message, r)
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_gemini_unknown_model_404_native_shape`.
+/// 1.5.5 behaviour pinned: a gemini caller naming a model nothing serves reads a 404 in gemini's
+/// own envelope, `error.status` NOT_FOUND, with gemini's own sentence for the model.
+/// RED if the status, the envelope or the sentence differs.
+#[test]
+fn a_gemini_unknown_model_reads_gemini_not_found() {
+    entropy();
+    let (message, r) = unknown_model(
+        "/v1beta/models/no-such:generateContent",
+        br#"{"contents":[]}"#,
+    );
+    assert_eq!(
+        message,
+        "models/no-such is not found for API version v1beta, or is not supported for the task you are trying to perform."
+    );
+    assert_native("gemini", &r, 404, "not_found_error", &message);
+    assert_eq!(body_of(&r)["error"]["status"], "NOT_FOUND");
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_bedrock_unknown_model_404_native_shape`.
+/// 1.5.5 behaviour pinned: a bedrock caller naming a model nothing serves reads a 404 whose body
+/// `__type` and `x-amzn-errortype` are both ResourceNotFoundException.
+/// RED if the status, the type or the header differs.
+#[test]
+fn a_bedrock_unknown_model_reads_resource_not_found() {
+    entropy();
+    let (message, r) = unknown_model("/model/no-such/converse", br#"{"messages":[]}"#);
+    assert_eq!(
+        message,
+        "The model 'no-such' does not exist or you do not have access to it."
+    );
+    assert_native("bedrock", &r, 404, "not_found_error", &message);
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_cohere_unknown_model_404_native_shape`.
+/// 1.5.5 behaviour pinned: a cohere caller naming a model nothing serves reads a 404 in cohere's
+/// bare `{"message": ...}` envelope. RED if the status or the envelope differs.
+#[test]
+fn a_cohere_unknown_model_reads_coheres_not_found() {
+    entropy();
+    let (message, r) = unknown_model("/v2/chat", br#"{"model":"no-such-model","messages":[]}"#);
+    assert_eq!(
+        message,
+        "The model 'no-such-model' does not exist or you do not have access to it."
+    );
+    assert_native("cohere", &r, 404, "not_found_error", &message);
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_responses_unknown_model_404_native_shape`.
+/// 1.5.5 behaviour pinned: a responses caller naming a model nothing serves reads a 404 whose
+/// `error.type` is `not_found_error`, in the OpenAI-identical envelope.
+/// RED if the status, the type or the envelope differs.
+#[test]
+fn a_responses_unknown_model_reads_not_found_error() {
+    entropy();
+    let (message, r) = unknown_model(
+        "/v1/responses",
+        br#"{"model":"no-such-model","input":"hi"}"#,
+    );
+    assert_native("responses", &r, 404, "not_found_error", &message);
+    assert_eq!(body_of(&r)["error"]["type"], "not_found_error");
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_no_client_error_message_carries_router_prefix`.
+/// 1.5.5 behaviour pinned: no refusal a caller can read on any dialect carries `router:` (a proxy
+/// tell): bad JSON, a missing model, an unknown model on openai, cohere, responses, gemini,
+/// bedrock and the named anthropic surface, a colon-less gemini path, an unsupported gemini
+/// action, and a non-object body on gemini and bedrock. Every legacy case is driven.
+/// RED if any body contains `router:`.
+#[test]
+fn no_refusal_body_carries_the_router_prefix() {
+    entropy();
+    let json = [("content-type", "application/json")];
+    let mut bodies: Vec<(String, Rendered)> = Vec::new();
+    for (target, body) in [
+        ("/v1/chat/completions", &b"not json{"[..]),
+        ("/v1/chat/completions", &br#"{"messages":[]}"#[..]),
+        ("/v1beta/models/gemini-flash", &b"{}"[..]),
+        ("/v1beta/models/foo:countTokens", &br#"{"contents":[]}"#[..]),
+        ("/v1beta/models/foo:generateContent", &b"[1,2]"[..]),
+        ("/model/foo/converse", &b"[1,2]"[..]),
+    ] {
+        bodies.push((
+            target.to_string(),
+            arrival_refusal("POST", target, &json, body),
+        ));
+    }
+    for (target, body) in [
+        (
+            "/v1/chat/completions",
+            &br#"{"model":"no-such","messages":[]}"#[..],
+        ),
+        ("/v2/chat", &br#"{"model":"no-such","messages":[]}"#[..]),
+        ("/v1/responses", &br#"{"model":"no-such","input":"hi"}"#[..]),
+        (
+            "/v1beta/models/no-such:generateContent",
+            &br#"{"contents":[]}"#[..],
+        ),
+        ("/model/no-such/converse", &br#"{"messages":[]}"#[..]),
+        (
+            "/no-such/v1/messages",
+            &br#"{"model":"no-such","messages":[],"max_tokens":16}"#[..],
+        ),
+    ] {
+        bodies.push((target.to_string(), unknown_model(target, body).1));
+    }
+    assert_eq!(bodies.len(), 12, "every legacy case");
+    for (target, r) in bodies {
+        let text = String::from_utf8_lossy(&r.body);
+        assert!(!text.contains("router:"), "{target} ({}): {text}", r.status);
+    }
+}
+
+/// The kernel's pool refusal (the key may not reach the pool it named), as a dialect renders it.
+fn pool_not_permitted(dialect: &str) -> Rendered {
+    kernel_refusal(
+        dialect,
+        RefusalCode::PoolNotPermitted.code(),
+        403,
+        "Your API key does not have permission to access this resource.",
+        0,
+    )
+}
+
+const NOT_PERMITTED: &str = "Your API key does not have permission to access this resource.";
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_governance_pool_acl_403_cohere_native_envelope`.
+/// 1.5.5 behaviour pinned: a cohere caller refused by the pool ACL reads a 403 JSON
+/// `{"message": "Your API key does not have permission to access this resource."}`.
+/// RED if the status, the envelope or the sentence differs.
+#[test]
+fn a_cohere_pool_refusal_reads_coheres_403() {
+    entropy();
+    assert_native(
+        "cohere",
+        &pool_not_permitted("cohere"),
+        403,
+        "permission_error",
+        NOT_PERMITTED,
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_governance_pool_acl_403_responses_native_envelope`.
+/// 1.5.5 behaviour pinned: a responses caller refused by the pool ACL reads a 403 JSON whose
+/// `error.type` is `permission_error`. RED if the status, the type or the envelope differs.
+#[test]
+fn a_responses_pool_refusal_reads_permission_error() {
+    entropy();
+    let r = pool_not_permitted("responses");
+    assert_native("responses", &r, 403, "permission_error", NOT_PERMITTED);
+    assert_eq!(body_of(&r)["error"]["type"], "permission_error");
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_governance_pool_acl_403_openai_native_envelope`.
+/// 1.5.5 behaviour pinned: an openai caller refused by the pool ACL reads a 403 JSON whose
+/// `error.type` is `permission_error`. RED if the status, the type or the envelope differs.
+#[test]
+fn an_openai_pool_refusal_reads_permission_error() {
+    entropy();
+    let r = pool_not_permitted("openai");
+    assert_native("openai", &r, 403, "permission_error", NOT_PERMITTED);
+    assert_eq!(body_of(&r)["error"]["type"], "permission_error");
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_governance_pool_acl_403_gemini_native_envelope`.
+/// 1.5.5 behaviour pinned: a gemini caller refused by the pool ACL reads a 403 JSON with
+/// `error.code` 403 and `error.status` PERMISSION_DENIED. RED if any of the three differs.
+#[test]
+fn a_gemini_pool_refusal_reads_permission_denied() {
+    entropy();
+    let r = pool_not_permitted("gemini");
+    assert_native("gemini", &r, 403, "permission_error", NOT_PERMITTED);
+    assert_eq!(body_of(&r)["error"]["code"], 403);
+    assert_eq!(body_of(&r)["error"]["status"], "PERMISSION_DENIED");
+}
+
+/// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_governance_pool_acl_403_bedrock_native_envelope`.
+/// 1.5.5 behaviour pinned: a bedrock caller refused by the pool ACL reads a 403 JSON whose
+/// `__type` and `x-amzn-errortype` are AccessDeniedException, with an `x-amzn-requestid`.
+/// RED if the status, the type, either header or the envelope differs.
+#[test]
+fn a_bedrock_pool_refusal_reads_access_denied() {
+    entropy();
+    let r = pool_not_permitted("bedrock");
+    assert_native("bedrock", &r, 403, "permission_error", NOT_PERMITTED);
+    assert_eq!(
+        value_of(&r, "x-amzn-errortype"),
+        Some("AccessDeniedException")
+    );
+    assert!(value_of(&r, "x-amzn-requestid").is_some());
+}
+
+/// Every dialect, as the arrival refusals are rendered in.
+const SIX_AND_NONE: [&str; 7] = [
+    "anthropic",
+    "openai",
+    "gemini",
+    "bedrock",
+    "responses",
+    "cohere",
+    "no-such-protocol",
+];
+
+fn refusal_in(
+    envelope: &'static str,
+    why: Decline,
+    status: u16,
+    kind: &'static str,
+    message: &'static str,
+) -> Rendered {
+    declined(&Declined {
+        why,
+        status,
+        envelope,
+        kind,
+        message: message.into(),
+    })
+}
+
+/// Rehomes `crates/busbar-llm/src/unit/tests/arrival.rs::a_non_object_body_refuses_with_the_live_arms_bytes`.
+/// 1.5.5 behaviour pinned: a body that is JSON but not an object (`[]`, `"a string"`, `7`) on a
+/// path-model arrival is refused 400 "Request body must be a JSON object." (not the parse
+/// sentence), and that refusal reads 1.5.5's bytes in every dialect's envelope.
+/// RED if any of the three bodies is accepted or refused otherwise, or a dialect's bytes differ.
+#[test]
+fn a_non_object_body_reads_the_released_400_in_every_dialect() {
+    entropy();
+    let json = [("content-type", "application/json")];
+    for body in [&b"[]"[..], &b"\"a string\""[..], &b"7"[..]] {
+        for (dialect, target) in [
+            ("gemini", "/v1beta/models/m:generateContent"),
+            ("bedrock", "/model/m/converse"),
+        ] {
+            let h: Vec<(&[u8], &[u8])> = json
+                .iter()
+                .map(|(k, v)| (k.as_bytes(), v.as_bytes()))
+                .collect();
+            let d = busbar_plane_llm::exchange::arrive::arrive("POST", target, &h, body, &())
+                .expect_err("refused");
+            assert_eq!(d.why, Decline::NotAnObject, "{dialect}");
+            assert_native(
+                dialect,
+                &arrival_refusal("POST", target, &json, body),
+                400,
+                "invalid_request_error",
+                "Request body must be a JSON object.",
+            );
+        }
+    }
+    for dialect in SIX {
+        assert_native(
+            dialect,
+            &refusal_in(
+                dialect,
+                Decline::NotAnObject,
+                400,
+                "invalid_request_error",
+                "Request body must be a JSON object.",
+            ),
+            400,
+            "invalid_request_error",
+            "Request body must be a JSON object.",
+        );
+    }
+}
+
+/// Rehomes `crates/busbar-llm/src/unit/tests/arrival.rs::the_reserialize_guard_renders_the_live_arms_bytes`.
+/// 1.5.5 behaviour pinned: the re-serialization guard (unreachable on the request path, so pinned
+/// by its rendering) reads 400 "The request body could not be processed." in every dialect's
+/// envelope. RED if a dialect's bytes differ.
+#[test]
+fn the_reserialize_guard_reads_the_released_400_in_every_dialect() {
+    entropy();
+    for dialect in SIX {
+        assert_native(
+            dialect,
+            &refusal_in(
+                dialect,
+                Decline::Reserialize,
+                400,
+                "invalid_request_error",
+                "The request body could not be processed.",
+            ),
+            400,
+            "invalid_request_error",
+            "The request body could not be processed.",
+        );
+    }
+}
+
+/// Rehomes `crates/busbar-llm/src/unit/tests/arrival.rs::every_arrival_refusal_renders_through_audit_to_the_legacy_bytes`.
+/// 1.5.5 behaviour pinned: the whole arrival refusal set (the parse 400, the non-object 400, the
+/// re-serialization 400) reads 1.5.5's bytes in every dialect AND in a dialect the plane does not
+/// hold (the agnostic envelope), and no refusal grows a head field of its own beyond its dialect's.
+/// RED if the set changes size or any cell's status, body or head fields differ.
+#[test]
+fn every_arrival_refusal_reads_the_released_bytes_in_every_dialect_and_none() {
+    entropy();
+    let cases = [
+        (
+            Decline::BodyParse,
+            "We could not parse the JSON body of your request.",
+        ),
+        (Decline::NotAnObject, "Request body must be a JSON object."),
+        (
+            Decline::Reserialize,
+            "The request body could not be processed.",
+        ),
+    ];
+    assert_eq!(cases.len(), 3, "the closed set grew without a case here");
+    for dialect in SIX_AND_NONE {
+        for (why, message) in cases {
+            let r = refusal_in(dialect, why, 400, "invalid_request_error", message);
+            assert_native(dialect, &r, 400, "invalid_request_error", message);
+        }
+    }
+}
+
+/// Rehomes `crates/busbar-llm/src/unit/tests/arrival.rs::a_refusal_renders_even_with_no_dialect_registered`.
+/// 1.5.5 behaviour pinned: a parse refusal (400) for a dialect the plane does not hold still renders
+/// a 400 with a non-empty envelope (the agnostic one), never a panic or an empty body.
+/// RED if the status differs or the body is empty.
+#[test]
+fn a_parse_refusal_renders_for_a_dialect_the_plane_does_not_hold() {
+    let r = refusal_in(
+        "no-such-protocol",
+        Decline::BodyParse,
+        400,
+        "invalid_request_error",
+        "We could not parse the JSON body of your request.",
+    );
+    assert_eq!(r.status, 400);
+    assert!(!r.body.is_empty());
+    assert_eq!(
+        body_of(&r),
+        serde_json::json!({ "error": {
+            "message": "We could not parse the JSON body of your request.",
+            "type": "invalid_request_error"
+        }})
+    );
+}
+
+/// Rehomes `crates/busbar-llm/src/unit/tests/decode.rs::the_missing_model_refusal_carries_the_live_arms_bytes`.
+/// 1.5.5 behaviour pinned: the missing-model refusal reads 400 "Missing required parameter:
+/// 'model'." in each of the six dialects' envelopes, with the dialect's head fields; the four
+/// body-model dialects are driven from a real arrival that names no model.
+/// RED if any dialect's status, body or head fields differ.
+#[test]
+fn the_missing_model_refusal_reads_the_released_bytes_in_every_dialect() {
+    entropy();
+    let json = [("content-type", "application/json")];
+    let message = "Missing required parameter: 'model'.";
+    for dialect in ["anthropic", "openai", "responses", "cohere"] {
+        let r = arrival_refusal("POST", target_of(dialect), &json, br#"{"messages":[]}"#);
+        assert_native(dialect, &r, 400, "invalid_request_error", message);
+    }
+    for dialect in SIX {
+        let r = refusal_in(
+            dialect,
+            Decline::MissingModel,
+            400,
+            "invalid_request_error",
+            message,
+        );
+        assert_native(dialect, &r, 400, "invalid_request_error", message);
+    }
+}
+
+/// Rehomes `crates/busbar-llm/src/unit/tests/decode.rs::every_decode_refusal_renders_through_audit_to_the_legacy_bytes`.
+/// 1.5.5 behaviour pinned: the whole decode refusal set, the protocol miss (404 "This protocol
+/// does not support that operation."), the endpoint miss (404 "This endpoint does not support
+/// that operation.") and the missing model (400), reads 1.5.5's bytes in every dialect and in a
+/// dialect the plane does not hold. RED if the set changes size or any cell differs.
+#[test]
+fn every_decode_refusal_reads_the_released_bytes_in_every_dialect_and_none() {
+    entropy();
+    let cases = [
+        (
+            Decline::UnsupportedOperation,
+            404,
+            "not_found_error",
+            "This protocol does not support that operation.",
+        ),
+        (
+            Decline::UnsupportedOperation,
+            404,
+            "not_found_error",
+            "This endpoint does not support that operation.",
+        ),
+        (
+            Decline::MissingModel,
+            400,
+            "invalid_request_error",
+            "Missing required parameter: 'model'.",
+        ),
+    ];
+    assert_eq!(cases.len(), 3, "the closed set grew without a case here");
+    for dialect in SIX_AND_NONE {
+        for (why, status, kind, message) in cases {
+            let r = refusal_in(dialect, why, status, kind, message);
+            assert_native(dialect, &r, status, kind, message);
+        }
+    }
+}

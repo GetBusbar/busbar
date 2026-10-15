@@ -14,6 +14,11 @@
 #                  2026-10-02): porting it would re-stamp the 1.5.5 golden, which is forbidden
 
 [[script]]
+path = ".ci/tool.sh"
+class = "keep"
+reason = "checks provision their own pinned toolchain; owner ruling 2026-10-14: the tenant owns its CI toolchain and ModernCI runs what the YAML says, so the sourced POSIX sh that fetches rust, nextest, deny and jq (sha256-pinned) is glue Rust cannot replace before cargo exists"
+
+[[script]]
 path = ".github/scripts/bump_cargo.py"
 class = "port"
 reason = "release step in RELEASE.md (version bump, changelog roll): becomes a busbar-release subcommand on the CLI-AUDIT tree"
@@ -244,11 +249,6 @@ class = "port"
 reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
 
 [[script]]
-path = "scripts/plane-grep-gate.sh"
-class = "port"
-reason = "a verify-1.6.0-done.sh group: becomes an xtask gate, proven to give identical verdicts on predev before this file goes"
-
-[[script]]
 path = "scripts/plane-keys.sh"
 class = "port"
 reason = "the plane-key list the plane gates and capability_equality.rs read: becomes data an xtask gate owns, ported with the plane gates"
@@ -337,6 +337,11 @@ reason = "the release binary build (PGO, BOLT, key guard, provenance): becomes t
 path = "scripts/signing-gate.sh"
 class = "port"
 reason = "plugin-ci.yml's signing gate: becomes an xtask fleet subcommand the reusable workflow calls"
+
+[[script]]
+path = "scripts/store-migration-fixture.sh"
+class = "oracle-driver"
+reason = "#33 store migration fixtures (BUSBAR-1.6.0.md l.1096-1103): records rows through the pinned, digest-verified published v1.5.5 binary and 1.5-line store plugin, and plugin-ci.yml runs its `check` half on every persistent store's fixture; porting it would re-record what 1.5.5 wrote"
 
 [[script]]
 path = "scripts/verify-1.6.0-done.sh"
@@ -740,6 +745,11 @@ reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-r
 
 [[script]]
 path = "testing/shadow-oracle/scripts/rate-card-history.sh"
+class = "oracle-driver"
+reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
+
+[[script]]
+path = "testing/shadow-oracle/scripts/budget-downgrade.sh"
 class = "oracle-driver"
 reason = "an oracle cell driver or rig the oracle runs (scripts/ is in harness-rev): moves into busbar-release-oracle with a golden re-stamp HELD (ARCHITECT 2026-10-02): a port that re-stamps the golden blesses it, so this stays until a port can prove identical recordings with no re-stamp"
 

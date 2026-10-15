@@ -650,19 +650,21 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     // connector.
     let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
     let row = LinkedRow::of(pools_door()).expect("the door states itself");
-    let plane = load_linked::<Plane>(
-        &row,
-        Bind {
-            instance: Arc::from(instance),
-            max_inflight_cap: 64,
-            sink: Arc::new(NoSink),
-            dispatcher: dispatcher.adopter(),
-            conns: crate::root::loader::dispatch::ConnTable::Host(
-                Arc::clone(&connector) as Arc<dyn DeclaredConns>
-            ),
-        },
-    )
-    .expect("the linked door binds");
+    let plane = Arc::new(
+        load_linked::<Plane>(
+            &row,
+            Bind {
+                instance: Arc::from(instance),
+                max_inflight_cap: 64,
+                sink: Arc::new(NoSink),
+                dispatcher: dispatcher.adopter(),
+                conns: crate::root::loader::dispatch::ConnTable::Host(
+                    Arc::clone(&connector) as Arc<dyn DeclaredConns>
+                ),
+            },
+        )
+        .expect("the linked door binds"),
+    );
 
     // THE DEPLOYMENT: one provider per member (in the members' dialect), one model per provider,
     // pool `p` over them.
@@ -872,7 +874,8 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
 
     // THE COMPOSITION, as production seals it: the door opened with the deployment's sections,
     // its egress the model-serving walk over the kernel's lane cells, its hooks the kernel's stage.
-    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
+        Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     let auths = Arc::new(OutboundAuths::new(
         Arc::clone(&dispatcher),
         crate::LINKED.auths,
@@ -891,11 +894,12 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     };
     let reach = DoorReach {
         providers: &providers,
-        secrets: &secrets,
+        secrets: Arc::clone(&secrets),
         auths: Arc::clone(&auths),
         conns: Arc::clone(&connector) as Arc<dyn PollConns>,
         stream_ceiling_secs: opts.stream_ceiling_secs.unwrap_or(600),
         models: Some(&models),
+        catalog: None,
         upgrades: Vec::new(),
     };
     let stage = HookStage {
@@ -932,7 +936,8 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         let stream_ceiling_secs = opts.stream_ceiling_secs.unwrap_or(600);
         let (sections, providers) = (sections.clone(), providers.clone());
         Arc::new(move || {
-            let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+            let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
+                Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
             let models = crate::root::model_egress::ModelServing {
                 pools: model_pools.clone(),
                 lanes: (0..lanes).map(|i| (format!("m{i}"), i)).collect(),
@@ -943,11 +948,12 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             };
             let reach = DoorReach {
                 providers: &providers,
-                secrets: &secrets,
+                secrets: Arc::clone(&secrets),
                 auths: Arc::clone(&auths),
                 conns: Arc::clone(&connector) as Arc<dyn PollConns>,
                 stream_ceiling_secs,
                 models: Some(&models),
+                catalog: None,
                 upgrades: Vec::new(),
             };
             appliers.refresh_models(

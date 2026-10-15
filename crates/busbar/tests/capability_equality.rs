@@ -508,11 +508,59 @@ fn path_declarations(root: &Path, file: &str) -> Vec<String> {
         .collect()
 }
 
+/// The root module that includes the door planes' own root cells (`root/serve.rs`'s
+/// `include!(concat!(env!("OUT_DIR"), "/door_cells.rs"))`).
+const DOOR_CELLS_MODULE: &str = "serve";
+
+/// THE DOOR PLANES' OWN ROOT CELLS the composition root compiles: for every
+/// `[package.metadata.busbar.door-cells]` row of its manifest, the repo-relative
+/// `tests/root/mod.rs` of the plane crate its `[dependencies]` row's `path` names. A root leg's
+/// evidence may live there: the cells are written in the plane's own words in the plane's crate
+/// (the composition root names no plane) and compiled into the root's serve module.
+fn door_cells_files(root: &Path) -> Vec<String> {
+    let Ok(manifest) = std::fs::read_to_string(root.join("crates/busbar/Cargo.toml")) else {
+        return Vec::new();
+    };
+    let rows = |table: &str| -> Vec<(String, String)> {
+        let header = format!("[{table}]");
+        let mut inside = false;
+        let mut out = Vec::new();
+        for line in manifest.lines() {
+            let code = line.split('#').next().unwrap_or("").trim();
+            if code.starts_with('[') {
+                inside = code == header;
+                continue;
+            }
+            if let (true, Some((k, v))) = (inside, code.split_once('=')) {
+                out.push((
+                    k.trim().trim_matches('"').to_string(),
+                    v.trim().trim_matches('"').to_string(),
+                ));
+            }
+        }
+        out
+    };
+    let deps = rows("dependencies");
+    rows("package.metadata.busbar.door-cells")
+        .into_iter()
+        .filter_map(|(_, krate)| {
+            let dep = deps.iter().find(|(k, _)| *k == krate)?;
+            let path = dep.1.split_once("path")?.1.split('"').nth(1)?;
+            let dir = path.strip_prefix("../")?;
+            Some(format!("crates/{dir}/tests/root/mod.rs"))
+        })
+        .collect()
+}
+
 /// THE MODULE THAT DECLARES a leg's file, as the composition root's `mod.rs` names it: the file's
 /// own stem when it sits in [`ROOT_DIR`]; the module directory it lives under (`units_admin/…`);
 /// or, for a `#[path]` test file in `root/tests/`, the stem of the root file whose `#[path]`
 /// declares it. `None` when no root file declares it.
 fn declaring_module(root: &Path, file: &str) -> Option<String> {
+    // A door plane's own root cells: the serve module includes them (`door_cells.rs`).
+    if door_cells_files(root).iter().any(|f| f == file) {
+        return Some(DOOR_CELLS_MODULE.to_string());
+    }
     let rel = file.strip_prefix(ROOT_DIR)?;
     let stem = |f: &str| {
         Path::new(f)
@@ -578,10 +626,11 @@ fn verify_root(
         let file = meta["file"]
             .as_str()
             .ok_or_else(|| format!("root leg `{leg}` names no `file`"))?;
-        if !file.starts_with(ROOT_DIR) {
+        if !file.starts_with(ROOT_DIR) && !door_cells_files(root).iter().any(|f| f == file) {
             return Err(format!(
-                "root leg `{leg}` names file {file:?}, which is not under {ROOT_DIR}. A leg's \
-                 evidence lives in the composition root or it is not that leg's evidence."
+                "root leg `{leg}` names file {file:?}, which is not under {ROOT_DIR} and is no \
+                 door plane's own root cells (a `[package.metadata.busbar.door-cells]` row). A \
+                 leg's evidence lives in the composition root or it is not that leg's evidence."
             ));
         }
         if !root.join(file).is_file() {

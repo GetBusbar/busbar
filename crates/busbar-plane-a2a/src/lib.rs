@@ -42,22 +42,55 @@
 /// The wire dialect's own modules, keeping the `a2a::` parent they carried in the codec crate so
 /// their in-crate paths are the ones every caller already spells.
 pub mod a2a {
-    pub mod anomaly;
+    pub mod agent_card;
     pub mod canonical;
+    pub mod card;
+    pub mod config;
+    pub mod creds;
+    pub mod public;
     pub mod task;
 }
 
+/// THE PLANE'S DECLARED METADATA (`declares.json`): its manifest `declares` section, the static
+/// statement the root reads for this linked door as it reads every linked plane door's. It states the
+/// plane's breaker fact (ARCHITECT Q4): one transient failure below the trip threshold never benches
+/// an agent's cell — the cell refuses on a TRIP and nothing less, an upstream `Retry-After` still
+/// honoured (docs/a2a.md, "These cells refuse on a trip and nothing less").
+pub const DECLARES: &str = include_str!("../declares.json");
+pub mod agent_arrival;
+pub mod agent_door;
+pub mod binding;
+pub mod card_trust;
+pub mod cards;
 pub mod claims;
 pub mod diagnostics;
+pub mod door_statement;
+pub mod events;
 pub mod facts;
 pub mod frame;
+pub mod framed;
 pub mod jsonrpc;
+pub mod local;
 pub mod meta;
+pub mod mirror;
 pub mod ops;
-pub mod plane;
+pub mod proto;
+pub mod push;
+pub mod push_door;
+pub mod push_serve;
 pub mod record;
 pub mod records;
+pub mod relay;
+pub mod rest;
+pub mod served_card;
+pub mod skill;
+pub mod sse;
 pub mod surface;
+pub mod task_door;
+pub mod task_hop;
+pub mod task_identity;
+pub mod tasks;
+pub mod wkt;
 
 pub use frame::{rewrite, Direction, Frame, Tap, Transform};
 
@@ -231,14 +264,22 @@ pub const ERROR_INFO_TYPE: &str = "type.googleapis.com/google.rpc.ErrorInfo";
 /// reason tokens above are the specification's vocabulary and the domain says so.
 pub const ERROR_INFO_DOMAIN: &str = "a2a-protocol.org";
 
+/// THE ENTRY A COMPOSITION ROOT THAT LINKED THIS PLANE READS beside its door (the root's
+/// `[package.metadata.busbar.linked-axes]` row for this crate): the plane's diagnostics catalog. The
+/// door itself is `agent_door::door`, the plane-door row's entry.
+pub mod linked {
+    /// The diagnostics axis: the `A2A_*` catalog entries this plane owns.
+    pub use crate::diagnostics::DIAGNOSTICS;
+}
+
 use busbar_contract::ids::LaneId;
 use busbar_contract::plugin::{AbiVersion, Kind, Plugin};
 
 /// One configured agent this plane may name.
 ///
 /// Every string is borrowed for the life of the program, because a plane's declarations are read at
-/// registration and sealed. Configured names reach here through the seam that says so:
-/// [`busbar_contract::ids::Registration`]. The composition root builds one at boot, interns every
+/// registration and sealed. Configured names reach here through the seam that says so: the host's
+/// word interner (its `Registration`). The composition root builds one at boot, interns every
 /// config-derived key through it exactly once, and hands over names that outlive it — so nothing
 /// after registration can vary them, and the memory the names occupy is a fixed term rather than
 /// one that grows with traffic.

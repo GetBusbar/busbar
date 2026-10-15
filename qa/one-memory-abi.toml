@@ -11,11 +11,6 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-contract/src/abi/host/conn/mod.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
 file = "crates/busbar-contract/src/abi/hot/decl.rs"
 item = "extern 'C-unwind'"
 
@@ -121,23 +116,8 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-contract/src/abi/sdk/boundary.rs"
-item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-contract/src/abi/sdk/mod.rs"
-item = "ColdEntry"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
 file = "crates/busbar-contract/src/abi/sdk/mod.rs"
 item = "abi::cold"
-
-[[finding]]
-rule = "one-memory-abi:cold-lane"
-file = "crates/busbar-contract/src/abi/sdk/mod.rs"
-item = "busbar_call"
 
 [[finding]]
 rule = "one-memory-abi:cold-lane"
@@ -148,26 +128,6 @@ item = "abi::cold"
 rule = "one-memory-abi:exported-symbol"
 file = "crates/busbar-contract/src/abi/sdk/mod.rs"
 item = "busbar_abi"
-
-[[finding]]
-rule = "one-memory-abi:exported-symbol"
-file = "crates/busbar-contract/src/abi/sdk/mod.rs"
-item = "busbar_call"
-
-[[finding]]
-rule = "one-memory-abi:exported-symbol"
-file = "crates/busbar-contract/src/abi/sdk/mod.rs"
-item = "busbar_close"
-
-[[finding]]
-rule = "one-memory-abi:exported-symbol"
-file = "crates/busbar-contract/src/abi/sdk/mod.rs"
-item = "busbar_free"
-
-[[finding]]
-rule = "one-memory-abi:exported-symbol"
-file = "crates/busbar-contract/src/abi/sdk/mod.rs"
-item = "busbar_open"
 
 [[finding]]
 rule = "one-memory-abi:exported-symbol"
@@ -183,11 +143,6 @@ item = "busbar_plane_decl"
 rule = "one-memory-abi:exported-symbol"
 file = "crates/busbar-contract/src/abi/sdk/mod.rs"
 item = "busbar_plugin_kind"
-
-[[finding]]
-rule = "one-memory-abi:exported-symbol"
-file = "crates/busbar-contract/src/abi/sdk/mod.rs"
-item = "busbar_set_log_sink"
 
 [[finding]]
 rule = "one-memory-abi:exported-symbol"

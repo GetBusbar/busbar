@@ -186,6 +186,8 @@ signed by the owner (spec: `docs/design/BUSBAR-1.6.0.md`).
 Each of these is an owner-accepted difference from 1.5.5: additive, or strictly better, and a
 1.5.5 client or operator keeps working unchanged.
 
+- **A translated Anthropic stream's error event is the published shape.** A translated Anthropic stream that fails part way ends with an `error` event that carries a `request_id`, as Anthropic's published ErrorResponse requires. 1.5.5's event lacked
+  it.
 - **Every error and warning line carries a diagnostic code.** `[error]`, `[warn]` and `warning:`
   lines on stderr are prefixed `BUSBAR-NNNN:`, and every boot log line carries `diag=BUSBAR-NNNN`.
   The text after the code is byte-identical to 1.5.5; the code is a stable key into
@@ -405,6 +407,11 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
   series by their labels; a histogram's or summary's lines stay together in their usual order
   (buckets ascending, then `_sum`, then `_count`). Every name, label and value is unchanged, and
   the order served is one 1.5.5 could already print.
+- **The streaming plane serves the protected-resource metadata its challenge points at.** A caller
+  refused at a realtime door is pointed at
+  `<public_url>/.well-known/oauth-protected-resource/v1/realtime`, and nothing served that path. It
+  now answers the RFC 9728 document: the plane's audience as `resource` and
+  `bearer_methods_supported: ["header"]`, the same document the MCP route serves.
 - **A wedged hook comes back.** A hook that wedged is no longer lost until restart: it is
   quarantined, backed off from 1 s doubling to 30 s, and then given one trial call on a fresh
   instance, and a successful trial returns it to service. 1.5.5 had no quarantine to exit.
@@ -681,8 +688,8 @@ improvements above. One documented disagreement
 runs the other way: Anthropic's published stream-event union has no `ping` member although the
 docs say `ping` events occur and real Anthropic streams carry them. Busbar keeps emitting
 `event: ping` in cross-protocol Anthropic streams — a client that cannot take it is not an
-Anthropic client — and records the row as a named gap of the spec, re-judged whenever the pin
-moves. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
+Anthropic client — and the gate judges the stream against both of Anthropic's documents: the
+published union plus the `ping` and in-stream `error` events the streaming guide documents. See [Protocols and translation](docs/protocols.md#spec-fidelity) and
 `testing/llm-conformance/README.md`.
 
 Three request fields now cross between dialects that 1.5.5 dropped on every crossing: Gemini's

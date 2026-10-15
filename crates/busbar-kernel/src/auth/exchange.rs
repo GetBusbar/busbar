@@ -14,7 +14,6 @@
 //! caller is (an unauthenticated caller gets a 401 from here, not from the middleware).
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::State;
@@ -22,8 +21,8 @@ use axum::http::{Request, StatusCode};
 use axum::response::{IntoResponse, Response};
 
 use super::self_keys::{
-    issue_key, resolve_exchange, DeterministicEd25519Keys, ExchangeError, HandleProvisioner,
-    IssuedKey,
+    admit_self_mint, issue_key, DeterministicEd25519Keys, ExchangeError, HandleProvisioner,
+    IssuedKey, SelfMint,
 };
 use super::AuthMiddleware;
 use crate::diagnostics::{diag_error, TOKEN_EXCHANGE_MINT_FAILED};
@@ -67,11 +66,20 @@ pub(crate) async fn exchange(
     )
     .await;
 
-    let (principal, team, pools) =
-        match resolve_exchange(&verdict, &app.role_bindings, app.mint_policy.self_mint) {
-            Ok(v) => v,
-            Err(e) => return refusal(e),
-        };
+    let SelfMint {
+        principal,
+        team,
+        pools,
+        ttl,
+    } = match admit_self_mint(
+        &verdict,
+        &app.role_bindings,
+        &app.mint_policy,
+        app.self_key_ttl_secs,
+    ) {
+        Ok(v) => v,
+        Err(e) => return refusal(e),
+    };
     // The identity provider that asserted the subject (the identifying module): the binding records
     // it, and another provider asserting the same subject is refused.
     let super::ChainVerdict::Identified {
@@ -86,7 +94,6 @@ pub(crate) async fn exchange(
             "governance is disabled: cannot mint keys".to_string(),
         ));
     };
-    let ttl = Duration::from_secs(app.self_key_ttl_secs);
     // The provisioner auto-creates the `user:<sub>` leaf under `team` on first exchange (limits from
     // the team's `child_default`) so the minted key is immediately usable, not a 429 MissingGroup.
     let provisioner = Arc::new(HandleProvisioner::new(handle.clone(), principal.id.clone()));
@@ -138,6 +145,10 @@ fn refusal(e: ExchangeError) -> Response {
             "no self-serve grant for this identity",
         ),
         ExchangeError::BadSubject => (StatusCode::FORBIDDEN, "identity is not a valid subject"),
+        ExchangeError::OverCeiling(_) => (
+            StatusCode::FORBIDDEN,
+            "the key this identity would mint is over the mint ceiling (auth.policy)",
+        ),
         ExchangeError::MintFailed(ref detail) => {
             diag_error!(TOKEN_EXCHANGE_MINT_FAILED, error = %detail, "token-exchange mint failed");
             (StatusCode::INTERNAL_SERVER_ERROR, "could not issue a key")

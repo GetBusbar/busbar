@@ -792,32 +792,18 @@ type PlaneContainerHooks =
 /// (`&dyn EngineHost`) or [`busbar_kernel::test_support::BuiltAppSeam`) instead.
 pub type BuiltApp = crate::state::App;
 
-/// The MCP plane's default-test-runtime factory, registered by an EXTERNAL `test-support` consumer
-/// (a crate whose test binary registered the MCP plane, e.g. `busbar-admin`). busbar-core's OWN
-/// `cfg(test)` binary uses the `tests/`-path helper directly and never touches this slot.
-#[cfg(all(not(test), feature = "test-support"))]
-static SECTION_PLANE_TEST_RUNTIME_FACTORY: std::sync::OnceLock<
-    fn() -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
-> = std::sync::OnceLock::new();
-
-/// Register the MCP plane's default-test-runtime factory (first-wins). A `test-support` consumer that
-/// registers the MCP plane in the process registry MUST also call this so every `TestApp` seeds the
-/// plane's always-present runtime slot — the analogue of busbar-core's own `cfg(test)` seeding.
-#[cfg(all(not(test), feature = "test-support"))]
-pub fn install_test_section_plane_runtime_factory(
-    factory: fn() -> std::sync::Arc<dyn std::any::Any + Send + Sync>,
-) {
-    let _ = SECTION_PLANE_TEST_RUNTIME_FACTORY.set(factory);
-}
-
-/// The MCP default runtime for the current build surface, if available.
+/// The MCP default runtime for the current build surface, if available: this crate's own
+/// `cfg(test)` binary seeds it from the `tests/`-path helper. An external `test-support` build seeds
+/// none; a test that registers the MCP plane installs its own runtime. (A registration slot an
+/// external consumer could fill once stood here; nothing ever filled it, and a static fn-pointer
+/// seam is a `door-only` finding.)
 #[cfg(test)]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
     Some(crate::plane::registry::default_section_plane_test_runtime())
 }
 #[cfg(all(not(test), feature = "test-support"))]
 fn seeded_section_plane_runtime() -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
-    SECTION_PLANE_TEST_RUNTIME_FACTORY.get().map(|f| f())
+    None
 }
 
 #[allow(dead_code)]
@@ -914,6 +900,7 @@ pub struct TestApp {
     explicit_no_overlay: bool,
     plugins_dir: Option<std::path::PathBuf>,
     plugins_cfg: Option<crate::config::PluginsCfg>,
+    plugin_trust: Option<crate::preflight::TrustPolicyBuild>,
     hook_env: Option<crate::hooks::HookEnv>,
     disk_paths: Option<(std::path::PathBuf, std::path::PathBuf)>,
     /// When `true`, build an App that booted with NO plugin routes at all — an EMPTY live table AND an
@@ -927,7 +914,7 @@ pub struct TestApp {
     /// per-generation runtime under [`crate::state::runtime_slot_key`]). Filled from OUTSIDE core by
     /// each plane's test-kit through [`TestApp::install_plane_runtime`], so `build()` names no plane
     /// runtime type — the whole point of the B2/B3 relocation: core's fixture is plane-AGNOSTIC and
-    /// the `busbar-mcp` / `busbar-a2a` test-kits own their own construction.
+    /// the `busbar-mcp` and agent-engine test-kits own their own construction.
     installed_plane_runtimes:
         std::collections::BTreeMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// THE NEUTRAL DISPATCH TABLE the built App mounts. A plane's test-kit describes its mounts and
@@ -970,25 +957,12 @@ impl Default for TestApp {
     }
 }
 
-#[allow(dead_code)]
-/// THE ROOT'S EGRESS BINDING, IN A TEST BINARY. In production the composition root (`busbar`'s
-/// `register_seams`) installs the core-backed hostless-egress driver once, before any plane
-/// dispatches. A plane's own test binary has no `main`, and a plane names no core type, so the
-/// fixture that stands in for the composition root does the same install — idempotent (`OnceLock`,
-/// the first driver wins), and gated on the neutral egress-seam capability the driver itself lives
-/// behind, so a build with no plane that drives egress installs nothing.
-pub fn install_root_egress() {
-    #[cfg(feature = "egress-seam")]
-    busbar_kernel::egress::seam::install_hostless_egress(&crate::egress::seam::CoreHostlessEgress);
-}
-
-/// THE ROOT'S `register_seams`, IN A TEST BINARY: the hostless-egress driver
-/// ([`install_root_egress`]) and the parse-time section list (the test fold,
-/// [`crate::plane::config::default_plane_sections`]), each first-wins. A plane's test-kit calls this
-/// where the composition root would have bound them, so a plane test that drives a wire leg without
-/// building a [`TestApp`] runs on the same bindings a shipped binary does.
+/// THE ROOT'S `register_seams`, IN A TEST BINARY: the parse-time section list (the test fold,
+/// [`crate::plane::config::default_plane_sections`]), first-wins. A plane's test-kit calls this where
+/// the composition root would have bound it, so a plane test that drives a wire leg without building
+/// a [`TestApp`] runs on the same binding a shipped binary does. The hostless-egress driver is no
+/// longer a binding: a plane is handed its App's on the build context (`BuildCtx::hostless`).
 pub fn install_root_seams() {
-    install_root_egress();
     crate::plane::config::install_plane_sections(crate::plane::config::default_plane_sections);
 }
 
@@ -1000,9 +974,6 @@ impl TestApp {
     }
 
     pub fn new() -> Self {
-        // THE TEST-SIDE BOOT BINDING: the fixture that stands in for the composition root binds the
-        // hostless-egress driver the root binds at boot (see [`install_root_egress`]).
-        install_root_egress();
         Self {
             plane_durable_store: None,
             upstream_credentials: crate::auth::UpstreamCreds::Own,
@@ -1045,6 +1016,7 @@ impl TestApp {
             explicit_no_overlay: false,
             plugins_dir: None,
             plugins_cfg: None,
+            plugin_trust: None,
             hook_env: None,
             disk_paths: None,
             no_plugin_routes: false,
@@ -1055,23 +1027,6 @@ impl TestApp {
             plane_scratch: std::collections::HashMap::new(),
             plane_finalizers: Vec::new(),
         }
-    }
-
-    /// TEST-KIT SEAM — the fixture's configured `public_url:`, which a plane's finalizer needs to lower
-    /// its runtime (the A2A plane derives its card/discovery origins from it). Named distinctly from
-    /// the `public_url(url)` builder SETTER above.
-    pub fn configured_public_url(&self) -> Option<&str> {
-        self.public_url.as_deref()
-    }
-
-    /// TEST-KIT SEAM — busbar's PUBLIC A2A card-issuer key off the fixture's governance, computed EXACTLY
-    /// as production's `a2a_start` hook / `boot::start_planes` computes it, returned as the neutral
-    /// substrate `CardIssuer`. The A2A test-kit stamps it onto its plane so a fixture that configures
-    /// both an a2a plane and a card-signing governance key serves signed cards without running the boot
-    /// fold. `None` when no governance / no card key — core exposes only the neutral value, never its
-    /// `pub` governance accessor.
-    pub fn card_issuer(&self) -> Option<busbar_kernel::plane::registry::CardIssuer> {
-        self.governance.as_ref().and_then(|g| g.card_issuer())
     }
 
     /// THE PLANE INSTALL SEAM. Install a pre-built, type-erased plane runtime under its plane decl
@@ -1166,6 +1121,12 @@ impl TestApp {
     /// strict disabled default.
     pub fn plugins_cfg(mut self, cfg: crate::config::PluginsCfg) -> Self {
         self.plugins_cfg = Some(cfg);
+        self
+    }
+    /// Judge plugins under `build` — a composition root's own trust builder — instead of the test
+    /// build's [`trust_policy_stand_in`].
+    pub fn plugin_trust(mut self, build: crate::preflight::TrustPolicyBuild) -> Self {
+        self.plugin_trust = Some(build);
         self
     }
 
@@ -1656,9 +1617,7 @@ impl TestApp {
         // neutral source names no MCP token nor a plane symbol.
         // Seed the MCP plane's always-present default runtime for every `TestApp`. In THIS crate's
         // own `cfg(test)` binary the factory comes from the `tests/`-path helper; an EXTERNAL
-        // `test-support` consumer that registered the MCP plane (e.g. `busbar-admin`'s test binary)
-        // supplies the factory through [`install_test_section_plane_runtime_factory`] instead — same slot, same
-        // object, so admin mutations that walk the plane runtimes do not fault under either surface.
+        // `test-support` build seeds none (`seeded_section_plane_runtime`).
         #[cfg(any(test, feature = "test-support"))]
         if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
             busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
@@ -2061,6 +2020,7 @@ impl TestApp {
                 .plugins_dir
                 .unwrap_or_else(|| std::path::PathBuf::from("plugins")),
             plugins_cfg: self.plugins_cfg.unwrap_or_default(),
+            plugin_trust: Some(self.plugin_trust.unwrap_or(trust_policy_stand_in)),
             self_key_ttl_secs: crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
             mint_policy: std::sync::Arc::new(self.mint_policy.unwrap_or_default()),
             request_id_counter: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(
@@ -2411,32 +2371,27 @@ fn fixture_manifest(
 #[path = "tests/eventstream_frame_tests.rs"]
 mod eventstream_frame_tests;
 
-/// A test build's `plugins.fetch` (it has no composition root): each target downloaded through the
-/// kernel's guarded `download` and written into `dir`. No cache and no pin check: the root's fetch
-/// owns those, and its tests prove them.
+/// A test build's `plugins.fetch` (it has no composition root, so no connector): every target is a
+/// miss, refused before any dial (status row 130 E6: the kernel dials nothing; the root's fetch
+/// downloads through the connector, and its tests prove it).
 pub fn fetch_stand_in(
-    dir: &std::path::Path,
+    _dir: &std::path::Path,
     targets: &[crate::config::FetchTarget],
     _fatal_on_miss: bool,
-    download: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+    _blocked: &[String],
 ) -> Result<Vec<crate::preflight::Fetched>, Vec<String>> {
-    let mut errors = Vec::new();
-    let mut done = Vec::new();
-    for t in targets {
-        match download(&t.url)
-            .and_then(|b| std::fs::write(dir.join(&t.filename), b).map_err(|e| e.to_string()))
-        {
-            Ok(()) => done.push(crate::preflight::Fetched::Fetched {
-                filename: t.filename.clone(),
-            }),
-            Err(e) => errors.push(format!("download failed: {e}")),
-        }
+    if targets.is_empty() {
+        return Ok(Vec::new());
     }
-    if errors.is_empty() {
-        Ok(done)
-    } else {
-        Err(errors)
-    }
+    Err(targets
+        .iter()
+        .map(|t| {
+            format!(
+                "{}: a test build has no connector to download through",
+                t.url
+            )
+        })
+        .collect())
 }
 
 /// A test build's release key: the first-party key [`trust_policy`] holds in place of the embedded
@@ -2463,6 +2418,16 @@ pub fn trust_policy(
     })?;
     policy.first_party_key = Some(test_release_key().verifying_key());
     Ok(policy)
+}
+
+/// [`trust_policy`] as a test build's root trust row ([`crate::preflight::TrustPolicyBuild`]): what
+/// a [`TestApp`] judges plugins under unless the test hands it the root's own. `binary_version` is
+/// carried for diagnostics only.
+pub fn trust_policy_stand_in(
+    cfg: &crate::config::PluginsCfg,
+    _binary_version: &str,
+) -> Result<busbar_plugin_loader::sign::TrustPolicy, String> {
+    trust_policy(cfg)
 }
 
 /// A test build's store axis (it has no composition root): the loader's axis over a dispatcher of

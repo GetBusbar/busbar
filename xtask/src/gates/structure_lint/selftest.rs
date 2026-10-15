@@ -277,8 +277,9 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
 
     // A plane whose grammar left its `mod.rs` is a plane nothing can locate — and every rule that
     // names it would then scan zero files, which is the passing answer to a ban. Planted against
-    // a2a: mcp is a DOOR-ONLY plane since P3 DEL-MCP (ARCHITECT 2026-10-05) and declares no grammar.
-    match plane_grammar_file(cx, "a2a") {
+    // the llm plane: mcp, a2a and streaming are DOOR-ONLY planes since P3 DEL-MCP (ARCHITECT
+    // 2026-10-05), FLIP-A2A (#787) and FLIP-STREAMING (#503) and declare no grammar.
+    match plane_grammar_file(cx, "busbar-llm") {
         Some((rel, text)) => {
             let mut ov = Overlay::new();
             ov.set(
@@ -291,11 +292,11 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
                 "a plane whose declaration moved is refused, not silently unscanned",
                 &[roots::ROW_PLANE_ROOTS],
                 ov,
-                &["PLANE-ROOT-MISSING", "a2a"],
+                &["PLANE-ROOT-MISSING", "llm"],
             ));
         }
         None => report.note_infra_failure(
-            "structure-lint selftest: no file declares the a2a plane's grammar, so the plane-root \
+            "structure-lint selftest: no file declares the llm plane's grammar, so the plane-root \
              rule has nothing to plant against",
         ),
     }
@@ -326,13 +327,65 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         ),
     }
 
+    // THE FIFTH PLANE IS ON THE ROSTER TOO (#48). `decisions` is located by its door row alone and
+    // was on neither roster list, so taking the `plane-door` axis off `plane-decisions` dropped the
+    // plane from the roster with no finding. It is kind-only (`planes::PLANE_KEYS_KIND_ONLY`): the
+    // same plant must be PLANE-ROOT-MISSING naming it.
+    match cx.read(&manifest_rel) {
+        Ok(text) if text.contains("plane-decisions = \"plane-door\"") => {
+            let mut ov = Overlay::new();
+            ov.set(
+                &manifest_rel,
+                text.replace("plane-decisions = \"plane-door\"", "plane-decisions = \"\""),
+            );
+            report.push(tree_case(
+                cx,
+                gate,
+                "the decisions plane whose door row left the manifest is refused, not silently off the roster",
+                &[roots::ROW_PLANE_ROOTS],
+                ov,
+                &["PLANE-ROOT-MISSING", "decisions"],
+            ));
+        }
+        _ => report.note_infra_failure(
+            "structure-lint selftest: the manifest carries no `plane-decisions = \"plane-door\"` row, \
+             so the decisions plane-root case has nothing to plant against",
+        ),
+    }
+
+    // The same for STREAMING since FLIP-STREAMING: `voice` left the legacy roster with
+    // `crates/busbar-voice`, and the plane's door row is all that locates it. Without `streaming` on
+    // the kind-only roster, taking that row's `plane-door` axis off would drop the plane from the
+    // roster in silence.
+    match cx.read(&manifest_rel) {
+        Ok(text) if text.contains("plane-streaming = \"plane-door\"") => {
+            let mut ov = Overlay::new();
+            ov.set(
+                &manifest_rel,
+                text.replace("plane-streaming = \"plane-door\"", "plane-streaming = \"\""),
+            );
+            report.push(tree_case(
+                cx,
+                gate,
+                "the streaming plane whose door row left the manifest is refused, not silently unscanned",
+                &[roots::ROW_PLANE_ROOTS],
+                ov,
+                &["PLANE-ROOT-MISSING", "streaming"],
+            ));
+        }
+        _ => report.note_infra_failure(
+            "structure-lint selftest: the manifest carries no `plane-streaming = \"plane-door\"` row, \
+             so the streaming plane's plane-root rule has nothing to plant against",
+        ),
+    }
+
     // A PLANE THE OLD CONSTANT NEVER NAMED (item 224). `PLANES` was `["mcp", "a2a"]`, so a second
     // home for voice could not be reported: the row "every plane resolves to exactly one home" was
     // true of the two planes it had been given. A second declaration of voice, in a directory named
     // for it, is two homes for one plane.
     let mut ov = Overlay::new();
     ov.set(
-        "crates/busbar-planted/src/voice/mod.rs",
+        "crates/busbar-planted/src/llm/mod.rs",
         format!(
             "{} : busbar_kernel::plane::registry::PlaneDecl = PLANTED;\n",
             crate::planes::PLANE_GRAMMAR
@@ -344,7 +397,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         "a plane outside the old two-plane constant with two homes is refused",
         &[roots::ROW_PLANE_ROOTS],
         ov,
-        &["PLANE-ROOT-AMBIGUOUS", "voice"],
+        &["PLANE-ROOT-AMBIGUOUS", "llm"],
     ));
 
     // ── the denominator ──────────────────────────────────────────────────────────────────────────
@@ -648,14 +701,20 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     // * A THIRD COPY OF A LEDGERED NAME — the ledger's rows were argued for mcp and a2a; a copy in
     //   a plane the claim was never signed for is a file nobody read, and matching the row by name
     //   alone absorbed it.
-    let voice = addresses.plane("voice");
+    // The third plane was voice until FLIP-STREAMING deleted `busbar-voice`; llm is the same
+    // "never loaded beside a2a" pair.
+    //
+    // Since FLIP-A2A the a2a plane is door-only: its home is its door crate's `src`
+    // (`busbar-plane-a2a`, read off the composition root's door row), not the deleted engine's.
+    let voice = addresses.plane("llm");
+    let a2a = addresses.plane("a2a");
     let mut ov = Overlay::new();
     ov.set(
         format!("{voice}/planted_shared_concern.rs"),
         "pub fn planted_shared_concern() {}\n",
     );
     ov.set(
-        format!("{}/planted_shared_concern.rs", addresses.a2a),
+        format!("{a2a}/planted_shared_concern.rs"),
         "pub fn planted_shared_concern() {}\npub fn planted_derived_plane_helper() {}\n",
     );
     ov.set(
@@ -669,11 +728,11 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     let signed = t
         .plane_ledger
         .iter()
-        .find(|r| r.planes.iter().all(|p| p != "voice") && !r.name.ends_with(".rs"))
+        .find(|r| r.planes.iter().all(|p| p != "llm") && !r.name.ends_with(".rs"))
         .map(|r| r.name.clone());
     let mut naming: Vec<String> = vec![
         "PLANE-DUPLICATE (symbol): `planted_shared_concern`".to_string(),
-        format!("voice:{voice}/planted_shared_concern.rs"),
+        format!("llm:{voice}/planted_shared_concern.rs"),
         "PLANE-DUPLICATE (symbol): `planted_derived_plane_helper`".to_string(),
         "planted:crates/busbar-planted/src/lib.rs".to_string(),
     ];
@@ -694,10 +753,7 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         naming.push(format!("PLANE-DUPLICATE (symbol): `{name}`"));
         naming.push("signs for".to_string());
     } else if let Some(name) = &signed_module {
-        ov.set(
-            format!("{}/{name}", addresses.a2a),
-            "pub fn a2a_grammar() {}\n",
-        );
+        ov.set(format!("{a2a}/{name}"), "pub fn a2a_grammar() {}\n");
         ov.set(format!("{voice}/{name}"), "pub fn voice_grammar() {}\n");
         naming.push(format!("PLANE-DUPLICATE (module): `{name}`"));
         naming.push("signs for".to_string());

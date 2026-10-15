@@ -150,6 +150,21 @@ pub fn is_door(decl: &PlaneDecl) -> bool {
         .any(|f| std::ptr::eq(&f.decl, decl))
 }
 
+/// THE PROVIDER-KEY DESCRIPTOR a folded door states (`PlaneRegistration::provider_keys`, row 155
+/// B1c): the `providers:` entry keys its plane owns, per form, in their frozen order and the neutral
+/// shape vocabulary; the first folded door that states one, `None` when none does. The kernel names
+/// none of those keys: this is their only source.
+///
+/// DORMANT: an unwired seam, read by nothing yet (wiring owner B1c-2, whose provider-entry parse
+/// reads its keys from here).
+#[must_use]
+pub fn provider_keys() -> Option<&'static busbar_contract::provider_keys::ProviderKeys> {
+    DOORS
+        .iter()
+        .filter_map(OnceLock::get)
+        .find_map(|f| f.reg.provider_keys.as_ref())
+}
+
 /// The folded door at `index`.
 fn door(index: usize) -> Option<&'static Folded> {
     DOORS.get(index).and_then(OnceLock::get)
@@ -280,6 +295,29 @@ impl PlaneCfg for DoorSection {
             self.section,
             settings_of(self.section, &self.value)?,
         )?)
+    }
+
+    /// THE LANES A PRESENT CARD OF THE DOOR'S PLANE IS HELD TO (#42, #77(5)): each registration of
+    /// the section, ledgered under the resource a grant and an audit row name it by (the door's
+    /// first scope kind and its name, `<kind>:<name>`), qualified by the plane's key. The
+    /// registration set is config, so the config validator refuses a present card silent about one
+    /// at boot and on every apply, rather than a unit ledgered on a lane no card prices. A door
+    /// that states no scope kind, or prices no class beside its fee units, bills no registration.
+    fn ledger_lanes(&self) -> Vec<String> {
+        let Some(decl) = crate::plane::registry::plane_decl_for_config_section(self.section)
+            .filter(|d| is_door(d))
+        else {
+            return Vec::new();
+        };
+        let priced = (decl.billable_classes.iter()).any(|c| !decl.fee_units.contains(&c.class));
+        let Some(kind) = decl.scope_kinds.first().filter(|_| priced) else {
+            return Vec::new();
+        };
+        let sep = crate::governance::PLANE_LANE_SEP;
+        self.registrations()
+            .filter(|(name, _)| *name != busbar_contract::section::RESERVED_POOLS_KEY)
+            .map(|(name, _)| format!("{}{sep}{kind}:{name}", decl.key))
+            .collect()
     }
 
     /// Every `<section>.models.<m>.provider` reference the section's reserved model map makes

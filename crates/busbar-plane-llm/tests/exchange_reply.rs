@@ -319,6 +319,7 @@ fn ctx<'a>(
         request: None,
         now_s: 1_752_000_000,
         elapsed_ms: Some(12),
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     }
 }
 
@@ -425,6 +426,7 @@ fn relay_ctx<'a>(ingress: &'a str, egress: &'a str, far_is_stream: bool) -> Rela
         request: None,
         handler: chat_handler(ingress),
         meter: true,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     }
 }
 
@@ -695,6 +697,7 @@ fn a_reply_relays_a_stream_piece_by_piece() {
         lane: &lane,
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let far = native_stream("anthropic");
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
@@ -741,6 +744,7 @@ fn a_reply_takes_a_whole_answer_whole() {
         lane: &lane,
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let (_, far) = native_answers("cohere")
         .into_iter()
@@ -772,6 +776,7 @@ fn a_reply_judges_a_far_end_error() {
         lane: &lane,
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let body = br#"{"type":"error","error":{"type":"invalid_request_error","message":"too long"}}"#;
     for (status, verdict, disposition) in [
@@ -810,6 +815,7 @@ fn a_judged_far_end_error_carries_the_breakers_reading_apart_from_its_verdict() 
         lane: &lane,
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let error = |code: &str| {
         format!(r#"{{"error":{{"message":"m","type":"invalid_request_error","code":"{code}"}}}}"#)
@@ -852,6 +858,7 @@ fn a_reply_that_is_cut_says_so() {
         lane: &lane,
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let far = native_stream("anthropic");
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
@@ -868,6 +875,7 @@ fn a_reply_that_is_cut_says_so() {
         lane: &lane,
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let mut reply = Reply::new(&ctx, 200, JSON_HEAD);
     let _ = reply.feed(&ctx, b"{\"id\":", false, AT);
@@ -964,4 +972,1991 @@ fn a_same_dialect_stream_drops_nothing() {
         .unwrap()
         .replace("\"object\":", "\"obfuscation\":\"x\",\"object\":");
     assert!(stream_drops("openai", "openai", far.as_bytes()).is_empty());
+}
+
+// ── rehomed: the engine's answer tests on the served reply (F25 REHOME, status row 155) ──────────
+
+/// The legacy engine's answer tests (`crates/busbar-llm/src/engine/**`), rehomed onto the served
+/// reply. Each test names the legacy test it replaces, the 1.5.5 behaviour it pins, and its RED.
+mod rehomed_answers {
+    use super::*;
+    use std::borrow::Cow;
+
+    use busbar_contract::abi::transport::{FAULT_HARD, FAULT_TRANSIENT};
+    use busbar_contract::upstream::CanonicalSignal;
+    use busbar_plane_llm::codec::eventstream;
+    use busbar_plane_llm::exchange::arrive::PathModel;
+    use busbar_plane_llm::exchange::attempt::StreamIntent;
+    use busbar_plane_llm::exchange::reply::{failure, wire, Piece};
+    use busbar_plane_llm::plane_door::breaker_fault;
+    use serde_json::json;
+
+    const SSE_HEAD: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
+    const EVENTSTREAM: &str = "application/vnd.amazon.eventstream";
+
+    /// The host's entropy, so a dialect that mints an id (a request id, a message id) mints one.
+    fn entropy() {
+        busbar_contract::codec::install_entropy_source(|out| {
+            out.fill(7);
+            true
+        });
+    }
+
+    /// A chat request in `dialect`'s own shape.
+    fn chat_request(dialect: &str, stream: bool) -> Value {
+        match dialect {
+            "anthropic" => json!({"model": "p", "max_tokens": 64, "stream": stream,
+                "messages": [{"role": "user", "content": "hi"}]}),
+            "responses" => json!({"model": "p", "stream": stream, "input": "hi"}),
+            "gemini" => json!({"model": "p", "stream": stream,
+                "contents": [{"role": "user", "parts": [{"text": "hi"}]}]}),
+            "bedrock" => json!({"model": "p", "stream": stream,
+                "messages": [{"role": "user", "content": [{"text": "hi"}]}]}),
+            _ => json!({"model": "p", "stream": stream,
+                "messages": [{"role": "user", "content": "hi"}]}),
+        }
+    }
+
+    /// The caller's arrival of `request` in `dialect`: a path-model dialect's URL names the model
+    /// and the stream, and `json_array` is a stream asked without the event-stream switch.
+    fn arrived(dialect: &'static str, request: Value, json_array: bool) -> Arrived {
+        let stream = request["stream"].as_bool().unwrap_or(false);
+        Arrived {
+            dialect,
+            operation: OpVerb::CHAT,
+            model: "p".to_string(),
+            content_type: "application/json".to_string(),
+            body: serde_json::to_vec(&request).expect("JSON"),
+            parsed: Some(request),
+            path: String::new(),
+            query: None,
+            path_model: matches!(dialect, "gemini" | "bedrock").then_some(PathModel {
+                stream,
+                json_array,
+                model_not_found_message: None,
+            }),
+        }
+    }
+
+    /// A `caller` asking a far end of `far` for a chat answer, streamed when `stream`.
+    fn ask(caller: &'static str, far: &'static str, stream: bool) -> (Arrived, Lane) {
+        (
+            arrived(caller, chat_request(caller, stream), false),
+            lane(far),
+        )
+    }
+
+    fn reply_ctx<'a>(arrived: &'a Arrived, lane: &'a Lane, passthrough: bool) -> ReplyCtx<'a> {
+        let wants_stream = arrived
+            .parsed
+            .as_ref()
+            .and_then(|request| request["stream"].as_bool())
+            .unwrap_or(false);
+        ReplyCtx {
+            arrived,
+            lane,
+            intent: StreamIntent {
+                wants_stream,
+                client_include_usage: false,
+            },
+            passthrough,
+        }
+    }
+
+    /// A piece the caller read, its bytes its own.
+    fn owned(piece: Piece<'_>) -> Piece<'static> {
+        Piece {
+            head: piece.head,
+            bytes: Cow::Owned(piece.bytes.into_owned()),
+            units: piece.units,
+            verdict: piece.verdict,
+            fault: piece.fault,
+            done: piece.done,
+            dropped: piece.dropped,
+        }
+    }
+
+    /// What the caller read of one answer.
+    struct Read {
+        status: u16,
+        fields: Vec<(String, Vec<u8>)>,
+        body: Vec<u8>,
+        pieces: Vec<Piece<'static>>,
+    }
+
+    impl Read {
+        /// The piece that ended the answer.
+        fn end(&self) -> &Piece<'static> {
+            self.pieces
+                .iter()
+                .find(|piece| piece.done)
+                .or(self.pieces.last())
+                .expect("a piece")
+        }
+
+        fn text(&self) -> String {
+            String::from_utf8_lossy(&self.body).into_owned()
+        }
+
+        fn json(&self) -> Value {
+            serde_json::from_slice(&self.body)
+                .unwrap_or_else(|err| panic!("a JSON body ({err}): {}", self.text()))
+        }
+
+        /// How many head fields are named `name`.
+        fn count(&self, name: &str) -> usize {
+            self.fields
+                .iter()
+                .filter(|(field_name, _)| field_name == name)
+                .count()
+        }
+
+        /// The first head field named `name`, as text.
+        fn value(&self, name: &str) -> Option<String> {
+            field(&self.fields, name).map(|bytes| String::from_utf8_lossy(bytes).into_owned())
+        }
+    }
+
+    /// One answer through the served reply: the far end's `status` and `head`, its body in
+    /// `pieces`, then a transport cut when `cut`.
+    fn answer(
+        ctx: &ReplyCtx<'_>,
+        status: u16,
+        head: &[(&[u8], &[u8])],
+        pieces: &[&[u8]],
+        cut: bool,
+    ) -> Read {
+        let mut reply = Reply::new(ctx, status, head);
+        let mut out: Vec<Piece<'static>> = Vec::new();
+        for (index, bytes) in pieces.iter().enumerate() {
+            let last = index + 1 == pieces.len() && !cut;
+            out.push(owned(reply.feed(ctx, bytes, last, AT)));
+        }
+        if pieces.is_empty() {
+            out.push(owned(reply.feed(ctx, &[], !cut, AT)));
+        }
+        if cut {
+            out.push(reply.cut(ctx, true));
+        }
+        let mut read = Read {
+            status: 0,
+            fields: Vec::new(),
+            body: Vec::new(),
+            pieces: Vec::new(),
+        };
+        for piece in &out {
+            if let (Some(head), 0) = (&piece.head, read.status) {
+                read.status = head.status;
+                read.fields = head.fields.clone();
+            }
+            read.body.extend_from_slice(&piece.bytes);
+        }
+        read.pieces = out;
+        read
+    }
+
+    /// The `(event, data)` frames of an event stream, the `[DONE]` sentinel left out.
+    fn sse_frames(text: &str) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        for frame in text.split("\n\n") {
+            let mut event = String::new();
+            let mut data: Option<String> = None;
+            for line in frame.lines() {
+                if let Some(rest) = line.strip_prefix("event:") {
+                    event = rest.trim().to_string();
+                } else if let Some(rest) = line.strip_prefix("data:") {
+                    data = Some(rest.trim().to_string());
+                }
+            }
+            if let Some(data) = data.filter(|payload| payload != "[DONE]") {
+                out.push((event, data));
+            }
+        }
+        out
+    }
+
+    /// The JSON payload of every `data:` frame of an event stream.
+    fn sse_payloads(text: &str) -> Vec<Value> {
+        sse_frames(text)
+            .into_iter()
+            .filter_map(|(_, data)| serde_json::from_str(&data).ok())
+            .collect()
+    }
+
+    /// `events` framed as a far end's `data:` stream, ended by the `[DONE]` frame.
+    fn data_stream(events: &[&str]) -> Vec<u8> {
+        let mut out: String = events
+            .iter()
+            .map(|event| format!("data: {event}\n\n"))
+            .collect();
+        out += "data: [DONE]\n\n";
+        out.into_bytes()
+    }
+
+    /// The legacy engine's chat stream fixture: a role delta, the text, the stop with its usage.
+    fn chat_stream_events() -> Vec<u8> {
+        data_stream(&[
+            r#"{"choices":[{"delta":{"role":"assistant"}}]}"#,
+            r#"{"choices":[{"delta":{"content":"hi"}}]}"#,
+            r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}"#,
+        ])
+    }
+
+    /// A chat completion of `text`, as a far end of the chat dialect answers it whole.
+    fn chat_completion(text: &str) -> Vec<u8> {
+        serde_json::to_vec(&json!({
+            "id": "chatcmpl-ok", "object": "chat.completion", "created": 1_234_567_890,
+            "model": "glm-4.5",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
+                "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3}
+        }))
+        .expect("JSON")
+    }
+
+    /// A binary event-stream body decoded: its frames' event names and whatever bytes were left.
+    fn eventstream_names(body: &[u8]) -> (Vec<String>, usize) {
+        let mut buf = body.to_vec();
+        let frames = eventstream::drain_frames_checked(&mut buf, None).0;
+        (
+            frames.into_iter().map(|(name, _)| name).collect(),
+            buf.len(),
+        )
+    }
+
+    /// A UUID-v4-shaped id: 8-4-4-4-12 lowercase hex.
+    fn is_uuid(id: &str) -> bool {
+        id.split('-').map(str::len).collect::<Vec<_>>() == [8, 4, 4, 4, 12]
+            && id
+                .chars()
+                .all(|ch| ch == '-' || (ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase()))
+    }
+
+    /// `dialect`'s own error envelope for `status`, `kind` and `message`, written by its codec.
+    fn own_envelope(dialect: &str, status: u16, kind: &str, message: &str) -> Value {
+        busbar_plane_llm::codec::DECLS
+            .iter()
+            .find(|decl| decl.name == dialect)
+            .and_then(|decl| decl.dialect())
+            .expect("the dialect has a codec")
+            .write_error(status, kind, message)
+    }
+
+    /// An envelope with the request id its writer mints taken out.
+    fn without_minted_id(mut envelope: Value) -> Value {
+        if let Some(obj) = envelope.as_object_mut() {
+            obj.remove("request_id");
+        }
+        envelope
+    }
+
+    // ── a same-dialect failed generation, ungoverned (failed_generation.rs) ────────────────────────
+
+    const SPLIT_HEAD: &[u8] = br#"{"id":"c-1","finish_re"#;
+
+    /// The second half of a split same-dialect body whose stop reason is `finish`.
+    fn split_tail(finish: &str) -> Vec<u8> {
+        format!(
+            r#"ason":"{finish}","message":{{"role":"assistant","content":[{{"type":"text","text":"x"}}]}},"usage":{{"tokens":{{"input_tokens":10,"output_tokens":5}}}}}}"#
+        )
+        .into_bytes()
+    }
+
+    /// A same-dialect whole body in two pieces through a relay that meters nothing (the ungoverned
+    /// relay): the caller's bytes and the end.
+    fn ungoverned_relay(first: &[u8], second: &[u8]) -> (Vec<u8>, relay::End) {
+        let mut ctx = relay_ctx("cohere", "cohere", false);
+        ctx.meter = false;
+        let mut relay = Relay::new(ctx);
+        let mut out = Vec::new();
+        for piece in [first, second] {
+            if let (Fed::Bytes(bytes), _) = relay.feed(piece) {
+                out.extend_from_slice(&bytes);
+            }
+        }
+        let end = relay.end();
+        out.extend_from_slice(&end.bytes);
+        (out, end)
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/attempt/tests/failed_generation.rs::ungoverned_same_protocol_cohere_error_split_key_faults_the_breaker`
+    /// (map row 11). 1.5.5 (Q31 follow-up): an ungoverned same-dialect body whose stop-reason key
+    /// arrives split across two pieces (`"finish_re` | `ason":"ERROR"`) still ends as an error and
+    /// faults the far end, and the caller reads the far end's bytes unchanged.
+    /// RED: a stop-reason scan that keeps no state across pieces (or that runs only when metering)
+    /// reads the generation as a success, and the breaker records no fault.
+    #[test]
+    fn ungoverned_same_protocol_cohere_error_split_key_faults_the_breaker() {
+        let tail = split_tail("ERROR");
+        let (out, end) = ungoverned_relay(SPLIT_HEAD, &tail);
+        assert_eq!(
+            out,
+            [SPLIT_HEAD, tail.as_slice()].concat(),
+            "bytes unchanged"
+        );
+        assert!(end.generation_failed && end.failed, "the end is an error");
+        assert_eq!(end.usage, None, "an ungoverned relay reads no usage");
+
+        let (arrived, lane) = ask("cohere", "cohere", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let read = answer(&ctx, 200, JSON_HEAD, &[SPLIT_HEAD, &tail], false);
+        assert_eq!(read.body, [SPLIT_HEAD, tail.as_slice()].concat());
+        assert_eq!(read.end().verdict, Verdict::Hard);
+        assert_eq!(
+            read.end().fault,
+            Some(Fault::Transient("upstream-generation-failed"))
+        );
+        assert_eq!(breaker_fault(read.end().fault.as_ref()), FAULT_TRANSIENT);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/attempt/tests/failed_generation.rs::ungoverned_same_protocol_cohere_complete_split_key_is_no_fault`
+    /// (map row 12). 1.5.5: the same split body ending `COMPLETE` is a clean success, no fault.
+    /// RED: a scan that reads a split key as a failure (or any token as one) faults a healthy far
+    /// end.
+    #[test]
+    fn ungoverned_same_protocol_cohere_complete_split_key_is_no_fault() {
+        let tail = split_tail("COMPLETE");
+        let (out, end) = ungoverned_relay(SPLIT_HEAD, &tail);
+        assert_eq!(out, [SPLIT_HEAD, tail.as_slice()].concat());
+        assert!(!end.generation_failed && !end.failed, "a clean end");
+
+        let (arrived, lane) = ask("cohere", "cohere", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let read = answer(&ctx, 200, JSON_HEAD, &[SPLIT_HEAD, &tail], false);
+        assert_eq!(read.end().verdict, Verdict::Ok);
+        assert_eq!(read.end().fault, None);
+    }
+
+    // ── the answer's head (client_header_forwarding_tests.rs) ──────────────────────────────────
+
+    const FAR_ANSWER_HEAD: &[(&[u8], &[u8])] = &[
+        (b"content-type", b"application/json"),
+        (b"x-ratelimit-remaining-tokens", b"99"),
+        (b"openai-processing-ms", b"12"),
+        (b"openai-organization", b"org-operator"),
+        (b"openai-project", b"proj-operator"),
+    ];
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs::a_same_dialect_answer_relays_the_upstream_head`
+    /// (map row 89). 1.5.5 (DIALECT-FIDELITY F2): a same-dialect 2xx answer carries every far head
+    /// field (`x-ratelimit-remaining-tokens: 99`, `openai-processing-ms: 12`) but the far end's echo
+    /// of the operator's tenant (`openai-organization`, `openai-project`).
+    /// RED: a success relay that drops the far head, or one that leaks the operator's tenant.
+    #[test]
+    fn a_same_dialect_answer_relays_the_upstream_head() {
+        let (arrived, lane) = ask("openai", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let body = chat_completion("hi");
+        let read = answer(&ctx, 200, FAR_ANSWER_HEAD, &[&body], false);
+        assert_eq!(read.status, 200);
+        assert_eq!(read.end().verdict, Verdict::Ok);
+        assert_eq!(
+            read.value("x-ratelimit-remaining-tokens").as_deref(),
+            Some("99")
+        );
+        assert_eq!(read.value("openai-processing-ms").as_deref(), Some("12"));
+        assert_eq!(read.count("openai-organization"), 0, "{:?}", read.fields);
+        assert_eq!(read.count("openai-project"), 0, "{:?}", read.fields);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs::a_same_dialect_error_relays_the_upstream_head`
+    /// (map row 90). 1.5.5: a same-dialect 400 `invalid_request_error` reaches the caller with the
+    /// far head's values (`x-ratelimit-remaining-tokens: 99`, `retry-after: 7`) and without
+    /// `openai-organization`.
+    /// RED: a client-fault relay that keeps only the names, rewrites a value, or leaks the tenant.
+    #[test]
+    fn a_same_dialect_error_relays_the_upstream_head() {
+        let (arrived, lane) = ask("openai", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let mut head = FAR_ANSWER_HEAD.to_vec();
+        head.push((b"retry-after", b"7"));
+        let body = br#"{"error":{"message":"bad","type":"invalid_request_error"}}"#;
+        let read = answer(&ctx, 400, &head, &[body], false);
+        assert_eq!(read.status, 400);
+        assert_eq!(read.end().verdict, Verdict::Hard);
+        assert_eq!(
+            read.value("x-ratelimit-remaining-tokens").as_deref(),
+            Some("99")
+        );
+        assert_eq!(read.value("retry-after").as_deref(), Some("7"));
+        assert_eq!(read.count("openai-organization"), 0, "{:?}", read.fields);
+        assert_eq!(read.body, body, "the far end's bytes");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs::a_translated_answer_relays_no_upstream_head`
+    /// (map row 91). 1.5.5: a translated answer is busbar's own answer in the caller's dialect and
+    /// carries none of the far end's head fields.
+    /// RED: a translated whole answer that relays the far head (`x-ratelimit-*`, `openai-*`).
+    #[test]
+    fn a_translated_answer_relays_no_upstream_head() {
+        let (arrived, lane) = ask("anthropic", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let body = chat_completion("hi");
+        let read = answer(&ctx, 200, FAR_ANSWER_HEAD, &[&body], false);
+        assert_eq!(read.status, 200);
+        for name in [
+            "x-ratelimit-remaining-tokens",
+            "openai-processing-ms",
+            "openai-organization",
+            "openai-project",
+        ] {
+            assert_eq!(read.count(name), 0, "{name}: {:?}", read.fields);
+        }
+    }
+
+    // ── the relayed stream (forward_pool_integration_tests.rs) ─────────────────────────────────
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_sse_events_single_data_prefix`
+    /// (map row 154). 1.5.5: each relayed event carries exactly one `data: ` prefix.
+    /// RED: a relay that re-prefixes a relayed frame (`data: data: event-0`).
+    #[test]
+    fn test_sse_events_single_data_prefix() {
+        let (arrived, lane) = ask("anthropic", "anthropic", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = data_stream(&["event-0", "event-1"]);
+        let read = answer(&ctx, 200, SSE_HEAD, &[&far], false);
+        assert_eq!(read.status, 200);
+        let text = read.text();
+        assert!(!text.contains("data: data:"), "{text}");
+        assert!(
+            text.contains("data: event-0\n\n") && text.contains("data: event-1\n\n"),
+            "{text}"
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_stream_inspection_tap_usage_parsing`
+    /// (map row 164). 1.5.5: a same-dialect stream reaches the caller byte-identical, its `[DONE]`
+    /// frame included, while its usage is read as it goes by.
+    /// RED: a usage tap that rewrites, drops or reorders a frame on the relay.
+    #[test]
+    fn test_stream_inspection_tap_usage_parsing() {
+        let (arrived, lane) = ask("anthropic", "anthropic", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = data_stream(&[
+            r#"{"type":"message_start"}"#,
+            r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#,
+            r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hello"}}"#,
+            r#"{"type":"message_delta","usage":{"input_tokens":10,"output_tokens":5}}"#,
+            r#"{"type":"message_stop"}"#,
+        ]);
+        let pieces: Vec<&[u8]> = far.chunks(17).collect();
+        let read = answer(&ctx, 200, SSE_HEAD, &pieces, false);
+        assert_eq!(read.status, 200);
+        assert_eq!(read.text(), String::from_utf8_lossy(&far), "byte-identical");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_forward_once_cross_protocol_auth_kinds_match_main_path`
+    /// (map row 183). 1.5.5: a far end of another dialect refusing the deployment's own credential
+    /// with a 401 OR a 403 reaches an anthropic caller as its own refusal (status 401, `type:
+    /// "error"`, `error.type: "authentication_error"`), records a hard fault, and never relays the
+    /// far end's body; the last-resort attempt runs the same judge.
+    /// RED: a 403 shaped as `permission_error` or `invalid_request_error`, or the far body relayed.
+    #[test]
+    fn test_forward_once_cross_protocol_auth_kinds_match_main_path() {
+        let (arrived, lane) = ask("anthropic", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let body = br#"{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}"#;
+        for status in [401, 403] {
+            let read = answer(&ctx, status, JSON_HEAD, &[body], false);
+            assert_eq!(read.status, 401, "{status}");
+            let envelope = read.json();
+            assert_eq!(envelope["type"], "error", "{status}: {envelope}");
+            assert_eq!(
+                envelope["error"]["type"], "authentication_error",
+                "{status}: {envelope}"
+            );
+            assert!(
+                !read.text().contains("Incorrect API key"),
+                "{status}: {envelope}"
+            );
+            assert_eq!(read.end().verdict, Verdict::Hard, "{status}");
+            assert_eq!(
+                breaker_fault(read.end().fault.as_ref()),
+                FAULT_HARD,
+                "{status}"
+            );
+        }
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_cross_protocol_stream_openai_lane_to_anthropic_client`
+    /// (map row 201). 1.5.5: a chat-dialect stream reaches an anthropic caller as anthropic events
+    /// (`message_start`, `content_block_delta` with a `text_delta` of "hi", `message_stop`) and no
+    /// `chat.completion.chunk` leaks.
+    /// RED: a translated stream relaying the far end's frames, or missing the event sequence.
+    #[test]
+    fn test_cross_protocol_stream_openai_lane_to_anthropic_client() {
+        let (arrived, lane) = ask("anthropic", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = data_stream(&[
+            r#"{"choices":[{"delta":{"role":"assistant"}}]}"#,
+            r#"{"choices":[{"delta":{"content":"hi"}}]}"#,
+            r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1}}"#,
+        ]);
+        let read = answer(&ctx, 200, SSE_HEAD, &[&far], false);
+        assert_eq!(read.status, 200);
+        let text = read.text();
+        for needle in [
+            "event: message_start",
+            "event: content_block_delta",
+            "text_delta",
+            "\"hi\"",
+            "event: message_stop",
+        ] {
+            assert!(text.contains(needle), "{needle}: {text}");
+        }
+        assert!(!text.contains("chat.completion.chunk"), "{text}");
+    }
+
+    // ── the error shape across dialects (ingress_indistinguishability_tests.rs) ────────────────
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cross_protocol_error_kind_mapping`
+    /// (map row 326). 1.5.5: the kind a far status is reshaped into across dialects: 401
+    /// `authentication_error`, 403 `permission_error`, 429 `rate_limit_error`, 500 and 502
+    /// `api_error`, 503 `overloaded`, 504 `timeout`, 400 and 404 `invalid_request_error`.
+    /// RED: a 401/403 collapsed into `invalid_request_error`, or a 503 into `api_error`.
+    #[test]
+    fn test_cross_protocol_error_kind_mapping() {
+        for (status, kind) in [
+            (401, "authentication_error"),
+            (403, "permission_error"),
+            (429, "rate_limit_error"),
+            (500, "api_error"),
+            (502, "api_error"),
+            (503, "overloaded"),
+            (504, "timeout"),
+            (400, "invalid_request_error"),
+            (404, "invalid_request_error"),
+        ] {
+            assert_eq!(wire::cross_protocol_error_kind(status), kind, "{status}");
+        }
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_shape_cross_protocol_error_auth_kinds`
+    /// (map row 327). 1.5.5: a far 401 / 403 `{"error":{"message":"nope"}}` relayed across
+    /// dialects to an anthropic caller keeps its status, wears `authentication_error` /
+    /// `permission_error`, and carries the far end's message `nope`.
+    /// RED: the kind of a 403 taken from the 401 arm, the message dropped for the generic one, or
+    /// the status changed.
+    #[test]
+    fn test_shape_cross_protocol_error_auth_kinds() {
+        let body = br#"{"error":{"message":"nope"}}"#;
+        for (status, kind) in [(401, "authentication_error"), (403, "permission_error")] {
+            let far = FarError {
+                status,
+                head: JSON_HEAD,
+                body,
+            };
+            let relayed = failure::relay("anthropic", "openai", &far);
+            let judged = judge(
+                "anthropic",
+                "openai",
+                OpVerb::CHAT,
+                &HashMap::new(),
+                true,
+                &far,
+            );
+            for rendered in [relayed, judged.answer] {
+                assert_eq!(rendered.status, status);
+                let envelope: Value = serde_json::from_slice(&rendered.body).expect("JSON");
+                assert_eq!(envelope["error"]["type"], kind, "{status}: {envelope}");
+                assert_eq!(envelope["error"]["message"], "nope", "{status}: {envelope}");
+            }
+        }
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_ingress_stream_content_type_by_protocol`
+    /// (map row 331). 1.5.5: a caller's stream wears its own dialect's content type:
+    /// `text/event-stream` for the five event-stream dialects, `application/vnd.amazon.eventstream`
+    /// for bedrock, none for a dialect the plane does not hold.
+    /// RED: the far end's content type kept on a translated stream, or bedrock served as SSE.
+    #[test]
+    fn test_ingress_stream_content_type_by_protocol() {
+        for dialect in ["openai", "anthropic", "gemini", "cohere", "responses"] {
+            assert_eq!(
+                wire::ingress_stream_content_type(dialect),
+                Some("text/event-stream"),
+                "{dialect}"
+            );
+        }
+        assert_eq!(
+            wire::ingress_stream_content_type("bedrock"),
+            Some(EVENTSTREAM)
+        );
+        assert_eq!(wire::ingress_stream_content_type("nonsense"), None);
+        assert_eq!(
+            relay::content_type("bedrock", "openai", true, false),
+            ContentType::Ingress(EVENTSTREAM)
+        );
+        assert_eq!(
+            relay::content_type("anthropic", "bedrock", true, false),
+            ContentType::Ingress("text/event-stream")
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cross_protocol_response_carries_ingress_ct_and_native_id`
+    /// (map row 332). 1.5.5: a chat-dialect answer with id `chatcmpl-LEAK123` and fingerprint
+    /// `fp_backend` reaches an anthropic caller as 200 `application/json`, `type: "message"`, an id
+    /// minted `msg_`, and neither foreign value anywhere in the body.
+    /// RED: the far end's id or fingerprint carried across, or the far content type kept.
+    #[test]
+    fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
+        entropy();
+        let (arrived, lane) = ask("anthropic", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let body = serde_json::to_vec(&json!({
+            "id": "chatcmpl-LEAK123", "object": "chat.completion", "created": 1_234_567_890,
+            "system_fingerprint": "fp_backend", "model": "glm-4.5",
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "Hi"},
+                "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 7, "completion_tokens": 3}
+        }))
+        .expect("JSON");
+        let read = answer(&ctx, 200, JSON_HEAD, &[&body], false);
+        assert_eq!(read.status, 200);
+        assert_eq!(
+            read.value("content-type").as_deref(),
+            Some("application/json")
+        );
+        let message = read.json();
+        assert_eq!(message["type"], "message", "{message}");
+        let id = message["id"].as_str().unwrap_or_default();
+        assert!(id.starts_with("msg_") && !id.contains("chatcmpl-"), "{id}");
+        let text = read.text();
+        assert!(
+            !text.contains("chatcmpl-LEAK123") && !text.contains("fp_backend"),
+            "{text}"
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_bedrock_ingress_success_carries_amzn_request_id`
+    /// (map row 344). 1.5.5: a bedrock caller's translated 2xx carries `x-amzn-requestid`, a
+    /// 36-character UUID, exactly once.
+    /// RED: a success head with no request id, or the id attached twice.
+    #[test]
+    fn test_bedrock_ingress_success_carries_amzn_request_id() {
+        entropy();
+        let (arrived, lane) = ask("bedrock", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let body = chat_completion("Hi");
+        let read = answer(&ctx, 200, JSON_HEAD, &[&body], false);
+        assert_eq!(read.status, 200);
+        assert_eq!(read.count("x-amzn-requestid"), 1, "{:?}", read.fields);
+        let id = read.value("x-amzn-requestid").unwrap_or_default();
+        assert_eq!(id.len(), 36, "{id}");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_anthropic_ingress_success_carries_request_id_header`
+    /// (map row 345). 1.5.5: an anthropic caller's translated 2xx carries a minted `request-id`
+    /// in the native `req_` shape, exactly once.
+    /// RED: no request id on a translated success, or a duplicate from a double attach.
+    #[test]
+    fn test_anthropic_ingress_success_carries_request_id_header() {
+        entropy();
+        let (arrived, lane) = ask("anthropic", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let body = chat_completion("Hi");
+        let read = answer(&ctx, 200, JSON_HEAD, &[&body], false);
+        assert_eq!(read.status, 200);
+        assert_eq!(read.count("request-id"), 1, "{:?}", read.fields);
+        let id = read.value("request-id").unwrap_or_default();
+        assert!(id.starts_with("req_"), "{id}");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_anthropic_ingress_stream_carries_request_id_header`
+    /// (map row 346). 1.5.5: an anthropic caller's streamed 2xx from a far end that sent no id
+    /// carries a minted `request-id` in the `req_` shape.
+    /// RED: the stream head built without the request id the buffered head carries.
+    #[test]
+    fn test_anthropic_ingress_stream_carries_request_id_header() {
+        entropy();
+        let (arrived, lane) = ask("anthropic", "anthropic", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_x\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
+        let read = answer(&ctx, 200, SSE_HEAD, &[far], false);
+        assert_eq!(read.status, 200);
+        let id = read.value("request-id").unwrap_or_default();
+        assert!(id.starts_with("req_"), "{id}: {:?}", read.fields);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cross_protocol_client_fault_reshapes_error_envelope`
+    /// (map row 347). 1.5.5: a chat-dialect 400 (`param`, `code`) reaches an anthropic caller as a
+    /// 400 `application/json` anthropic envelope (`type: "error"`, `error.type:
+    /// "invalid_request_error"`) carrying the far message, with no `param` or `code` member.
+    /// RED: the far end's own envelope relayed across dialects.
+    #[test]
+    fn test_cross_protocol_client_fault_reshapes_error_envelope() {
+        let (arrived, lane) = ask("anthropic", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let body = br#"{"error":{"message":"Invalid 'max_tokens': must be positive","type":"invalid_request_error","param":"max_tokens","code":"invalid_value"}}"#;
+        let read = answer(&ctx, 400, JSON_HEAD, &[body], false);
+        assert_eq!(read.status, 400);
+        assert_eq!(
+            read.value("content-type").as_deref(),
+            Some("application/json")
+        );
+        let envelope = read.json();
+        assert_eq!(envelope["type"], "error", "{envelope}");
+        assert_eq!(
+            envelope["error"]["type"], "invalid_request_error",
+            "{envelope}"
+        );
+        let text = read.text();
+        assert!(
+            !text.contains("\"param\"") && !text.contains("\"code\""),
+            "{text}"
+        );
+        assert!(
+            envelope["error"]["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("max_tokens"),
+            "{envelope}"
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once`
+    /// (map row 352). 1.5.5: a same-dialect anthropic 400 carrying `request-id:
+    /// upstream-anthropic-rid-0001` reaches the caller as 400 with that `request-id` EXACTLY once.
+    /// RED: a minted id in place of the far one, or a second `request-id` appended beside it.
+    #[test]
+    fn test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once() {
+        let (arrived, lane) = ask("anthropic", "anthropic", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let head: &[(&[u8], &[u8])] = &[
+            (b"content-type", b"application/json"),
+            (b"request-id", b"upstream-anthropic-rid-0001"),
+        ];
+        let body =
+            br#"{"type":"error","error":{"type":"invalid_request_error","message":"bad request"}}"#;
+        let read = answer(&ctx, 400, head, &[body], false);
+        assert_eq!(read.status, 400);
+        assert_eq!(read.count("request-id"), 1, "{:?}", read.fields);
+        assert_eq!(
+            read.value("request-id").as_deref(),
+            Some("upstream-anthropic-rid-0001")
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_once`
+    /// (map row 353). 1.5.5: the caller's own credential refused by a same-dialect far end (a
+    /// passthrough 401 carrying `request-id: upstream-rid-passthrough`) is relayed as 401, the far
+    /// body as it was, unjudged, and that `request-id` exactly once.
+    /// RED: a passthrough 401 judged as the deployment's refusal, or its request id minted or
+    /// doubled.
+    #[test]
+    fn test_anthropic_same_proto_passthrough_401_relays_request_id_verbatim_once() {
+        let (arrived, lane) = ask("anthropic", "anthropic", false);
+        let ctx = reply_ctx(&arrived, &lane, true);
+        let head: &[(&[u8], &[u8])] = &[
+            (b"content-type", b"application/json"),
+            (b"request-id", b"upstream-rid-passthrough"),
+        ];
+        let body = br#"{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}"#;
+        let read = answer(&ctx, 401, head, &[body], false);
+        assert_eq!(read.status, 401);
+        assert_eq!(read.body, body, "the far end's bytes");
+        assert_eq!(read.count("request-id"), 1, "{:?}", read.fields);
+        assert_eq!(
+            read.value("request-id").as_deref(),
+            Some("upstream-rid-passthrough")
+        );
+        assert_eq!(
+            read.end().fault,
+            Some(Fault::Judged {
+                disposition: Disposition::ClientFault,
+                class: None
+            })
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_eventstream`
+    /// (map row 355). 1.5.5: a bedrock caller that asked to stream, answered one chat-dialect body,
+    /// reads `application/vnd.amazon.eventstream` frames (`messageStart` first, then
+    /// `contentBlockDelta`, `messageStop`, `metadata`) under a UUID `x-amzn-requestid`.
+    /// RED: the buffered answer written as JSON for a stream caller, or as SSE text.
+    #[test]
+    fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_eventstream() {
+        entropy();
+        let (arrived, lane) = ask("bedrock", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let body = chat_completion("Hi");
+        let read = answer(&ctx, 200, JSON_HEAD, &[&body], false);
+        assert_eq!(read.status, 200);
+        assert_eq!(read.value("content-type").as_deref(), Some(EVENTSTREAM));
+        assert_eq!(
+            read.value("x-amzn-requestid").unwrap_or_default().len(),
+            36,
+            "{:?}",
+            read.fields
+        );
+        let (names, _) = eventstream_names(&read.body);
+        assert_eq!(
+            names.first().map(String::as_str),
+            Some("messageStart"),
+            "{names:?}"
+        );
+        for name in ["contentBlockDelta", "messageStop", "metadata"] {
+            assert!(names.iter().any(|seen| seen == name), "{name}: {names:?}");
+        }
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_gemini_json_array_buffered_cross_protocol_emits_one_element_array`
+    /// (map row 357). 1.5.5: a gemini caller that asked for a JSON-array stream, answered one
+    /// chat-dialect body, reads 200 under exactly `application/json` a one-element array whose
+    /// element carries `candidates` and no `choices`.
+    /// RED: a bare object, SSE frames, or the far end's `choices` inside the array.
+    #[test]
+    fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array() {
+        let body = chat_completion("Hi");
+        let answered = whole::translate(&ctx("gemini", "openai", true, true), 200, &body);
+        assert_eq!(answered.end, WholeEnd::Delivered);
+        assert_eq!(answered.answer.status, 200);
+        assert_eq!(
+            field(&answered.answer.fields, "content-type"),
+            Some(b"application/json".as_slice())
+        );
+        let array: Value = serde_json::from_slice(&answered.answer.body).expect("JSON");
+        let elements = array.as_array().expect("an array");
+        assert_eq!(elements.len(), 1, "{array}");
+        assert!(elements[0].get("candidates").is_some(), "{array}");
+        assert!(elements[0].get("choices").is_none(), "{array}");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_gemini_json_array_buffered_via_forward_once_matches_primary`
+    /// (map row 358). 1.5.5: the last-resort attempt delivers the same one-element array under
+    /// `application/json` as the primary path; the served reply runs one translate for both.
+    /// RED: the attempt's reply answering anything but the one-element `candidates` array.
+    #[test]
+    fn test_gemini_json_array_buffered_via_forward_once_matches_primary() {
+        let arrived = arrived("gemini", chat_request("gemini", true), true);
+        let lane = lane("openai");
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let body = chat_completion("Hi");
+        let read = answer(&ctx, 200, JSON_HEAD, &[&body], false);
+        assert_eq!(read.status, 200);
+        assert_eq!(
+            read.value("content-type").as_deref(),
+            Some("application/json")
+        );
+        let array = read.json();
+        let elements = array.as_array().expect("an array");
+        assert_eq!(elements.len(), 1, "{array}");
+        assert!(elements[0].get("candidates").is_some(), "{array}");
+        assert!(elements[0].get("choices").is_none(), "{array}");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not_an_array`
+    /// (map row 371). 1.5.5: a chat caller that asked to stream, answered one anthropic body, reads
+    /// its own `text/event-stream` chunks, each `data:` a JSON object, one carrying `choices`, and
+    /// never a JSON array.
+    /// RED: the array wrap applied to a caller that did not ask for one.
+    #[test]
+    fn test_non_gemini_stream_buffered_cross_protocol_stays_a_plain_object_not_an_array() {
+        let (arrived, lane) = ask("openai", "anthropic", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let body = br#"{"id":"msg_buf","type":"message","role":"assistant","content":[{"type":"text","text":"Hi"}],"model":"claude-3","stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":3}}"#;
+        let read = answer(&ctx, 200, JSON_HEAD, &[body], false);
+        assert_eq!(read.status, 200);
+        let content_type = read.value("content-type").unwrap_or_default();
+        assert!(
+            content_type.starts_with("text/event-stream"),
+            "{content_type}"
+        );
+        let text = read.text();
+        assert!(!text.trim_start().starts_with('['), "{text}");
+        let payloads = sse_payloads(&text);
+        assert!(!payloads.is_empty(), "{text}");
+        assert!(payloads.iter().all(Value::is_object), "{text}");
+        assert!(
+            payloads.iter().any(|chunk| chunk.get("choices").is_some()),
+            "{text}"
+        );
+    }
+
+    // ── a bedrock caller (ingress_integration_tests.rs) ────────────────────────────────────────
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_bedrock_converse_routes_and_returns_json`
+    /// (map row 387). 1.5.5: a bedrock caller's non-stream answer from a chat-dialect far end is
+    /// Converse JSON (`output`/`usage`) under `application/json`, with an `x-amzn-requestid` shaped
+    /// 8-4-4-4-12 lowercase hex.
+    /// RED: no request id, or one that is not UUID-shaped.
+    #[test]
+    fn test_bedrock_converse_routes_and_returns_json() {
+        entropy();
+        let (arrived, lane) = ask("bedrock", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let body = chat_completion("hello there");
+        let read = answer(&ctx, 200, JSON_HEAD, &[&body], false);
+        assert_eq!(read.status, 200);
+        assert!(read
+            .value("content-type")
+            .unwrap_or_default()
+            .starts_with("application/json"));
+        let id = read.value("x-amzn-requestid").unwrap_or_default();
+        assert!(is_uuid(&id), "{id}");
+        let converse = read.json();
+        assert!(
+            converse.get("output").is_some() || converse.get("usage").is_some(),
+            "{converse}"
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_bedrock_converse_stream_returns_binary_eventstream`
+    /// (map row 388). 1.5.5: a bedrock caller's stream from a chat-dialect far end is
+    /// `application/vnd.amazon.eventstream`, a whole sequence of frames (`messageStart`,
+    /// `contentBlockDelta`, `messageStop`) with nothing left over, under a UUID-shaped
+    /// `x-amzn-requestid`.
+    /// RED: SSE text in a binary body, a partial trailing frame, or no request id on the stream.
+    #[test]
+    fn test_bedrock_converse_stream_returns_binary_eventstream() {
+        entropy();
+        let (arrived, lane) = ask("bedrock", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = chat_stream_events();
+        let read = answer(&ctx, 200, SSE_HEAD, &[&far], false);
+        assert_eq!(read.status, 200);
+        assert!(read
+            .value("content-type")
+            .unwrap_or_default()
+            .starts_with(EVENTSTREAM));
+        let id = read.value("x-amzn-requestid").unwrap_or_default();
+        assert!(is_uuid(&id), "{id}");
+        let (names, left) = eventstream_names(&read.body);
+        assert_eq!(left, 0, "a whole sequence of frames");
+        for name in ["messageStart", "contentBlockDelta", "messageStop"] {
+            assert!(names.iter().any(|seen| seen == name), "{name}: {names:?}");
+        }
+    }
+
+    /// The far end's native Converse stream frames.
+    fn converse_frames(frames: &[(&str, &[u8])]) -> Vec<u8> {
+        frames
+            .iter()
+            .flat_map(|(name, payload)| eventstream::encode_frame(name, payload))
+            .collect()
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request_id`
+    /// (map row 389). 1.5.5: a same-dialect bedrock stream keeps the far content type, relays the
+    /// far frames in order (`messageStart`, `contentBlockDelta`, `messageStop`, `metadata`), and
+    /// forwards the far `x-amzn-requestid` (`fixed-upstream-amzn-req-id-0001`) once, never minted.
+    /// RED: a minted UUID in place of the far id, or a re-encoded or reordered frame sequence.
+    #[test]
+    fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request_id() {
+        entropy();
+        let (arrived, lane) = ask("bedrock", "bedrock", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let head: &[(&[u8], &[u8])] = &[
+            (b"content-type", EVENTSTREAM.as_bytes()),
+            (b"x-amzn-requestid", b"fixed-upstream-amzn-req-id-0001"),
+        ];
+        let far = converse_frames(&[
+            ("messageStart", br#"{"role":"assistant"}"#),
+            (
+                "contentBlockDelta",
+                br#"{"delta":{"text":"hi"},"contentBlockIndex":0}"#,
+            ),
+            ("messageStop", br#"{"stopReason":"end_turn"}"#),
+            (
+                "metadata",
+                br#"{"usage":{"inputTokens":5,"outputTokens":3,"totalTokens":8}}"#,
+            ),
+        ]);
+        let pieces: Vec<&[u8]> = far.chunks(23).collect();
+        let read = answer(&ctx, 200, head, &pieces, false);
+        assert_eq!(read.status, 200);
+        assert!(read
+            .value("content-type")
+            .unwrap_or_default()
+            .starts_with(EVENTSTREAM));
+        assert_eq!(read.count("x-amzn-requestid"), 1, "{:?}", read.fields);
+        assert_eq!(
+            read.value("x-amzn-requestid").as_deref(),
+            Some("fixed-upstream-amzn-req-id-0001")
+        );
+        let (names, left) = eventstream_names(&read.body);
+        assert_eq!(left, 0);
+        assert_eq!(
+            names,
+            [
+                "messageStart",
+                "contentBlockDelta",
+                "messageStop",
+                "metadata"
+            ]
+        );
+        assert_eq!(read.body, far, "the far end's frames, verbatim");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_bedrock_same_protocol_converse_non_stream_forwards_upstream_request_id`
+    /// (map row 390). 1.5.5: a same-dialect bedrock Converse answer relays under the far
+    /// `application/json`, its bytes unchanged, with the far `x-amzn-requestid`
+    /// (`fixed-upstream-amzn-req-id-nonstream-0001`) once.
+    /// RED: the far request id dropped or replaced by a minted one on the non-stream relay.
+    #[test]
+    fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_request_id() {
+        entropy();
+        let (arrived, lane) = ask("bedrock", "bedrock", false);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let head: &[(&[u8], &[u8])] = &[
+            (b"content-type", b"application/json"),
+            (
+                b"x-amzn-requestid",
+                b"fixed-upstream-amzn-req-id-nonstream-0001",
+            ),
+        ];
+        let body = br#"{"output":{"message":{"role":"assistant","content":[{"text":"hi there"}]}},"stopReason":"end_turn","usage":{"inputTokens":5,"outputTokens":3,"totalTokens":8}}"#;
+        let read = answer(&ctx, 200, head, &[body], false);
+        assert_eq!(read.status, 200);
+        assert!(read
+            .value("content-type")
+            .unwrap_or_default()
+            .starts_with("application/json"));
+        assert_eq!(read.count("x-amzn-requestid"), 1, "{:?}", read.fields);
+        assert_eq!(
+            read.value("x-amzn-requestid").as_deref(),
+            Some("fixed-upstream-amzn-req-id-nonstream-0001")
+        );
+        assert_eq!(read.body, body, "the far end's bytes");
+    }
+
+    /// The checks every bedrock caller's cut stream answers to: pure binary frames, nothing left
+    /// over, and a trailing `InternalServerException` exception frame.
+    fn assert_binary_exception_tail(read: &Read) {
+        let body = &read.body;
+        assert!(
+            !body.windows(7).any(|bytes| bytes == b"event: ")
+                && !body.windows(6).any(|bytes| bytes == b"data: "),
+            "no SSE text in a binary body: {body:?}"
+        );
+        let (names, left) = eventstream_names(body);
+        assert_eq!(left, 0, "a whole sequence of frames");
+        assert!(!names.is_empty());
+        let raw = String::from_utf8_lossy(body);
+        assert!(raw.contains(":exception-type"), "{body:?}");
+        assert!(raw.contains("InternalServerException"), "{body:?}");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_binary_exception`
+    /// (map row 391). 1.5.5: a same-dialect bedrock stream cut after its first frame keeps the
+    /// eventstream content type and ends on a CRC-valid binary `InternalServerException` frame,
+    /// never SSE text.
+    /// RED: an SSE error frame spliced into the binary body, or the cut ending with no frame.
+    #[test]
+    fn test_bedrock_same_protocol_stream_mid_stream_transport_error_appends_binary_exception() {
+        let (arrived, lane) = ask("bedrock", "bedrock", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let head: &[(&[u8], &[u8])] = &[
+            (b"content-type", EVENTSTREAM.as_bytes()),
+            (b"x-amzn-requestid", b"fixed-upstream-amzn-req-id-err1"),
+        ];
+        let far = converse_frames(&[("messageStart", br#"{"role":"assistant"}"#)]);
+        let read = answer(&ctx, 200, head, &[&far], true);
+        assert_eq!(read.status, 200);
+        assert!(read
+            .value("content-type")
+            .unwrap_or_default()
+            .starts_with(EVENTSTREAM));
+        assert_binary_exception_tail(&read);
+        assert_eq!(read.end().fault, Some(Fault::Transient("mid-stream")));
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_bedrock_ingress_mid_stream_transport_error_appends_binary_exception`
+    /// (map row 392). 1.5.5: a bedrock caller's translated stream cut after its first far event
+    /// ends on a binary `InternalServerException` frame, the body pure frames.
+    /// RED: the caller's error written as SSE text over a binary stream.
+    #[test]
+    fn test_bedrock_ingress_mid_stream_transport_error_appends_binary_exception() {
+        let (arrived, lane) = ask("bedrock", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = b"data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n";
+        let read = answer(&ctx, 200, SSE_HEAD, &[far], true);
+        assert_eq!(read.status, 200);
+        assert_binary_exception_tail(&read);
+    }
+
+    /// The last `data:` frame of a stream, as JSON.
+    fn last_payload(text: &str) -> Value {
+        sse_payloads(text)
+            .pop()
+            .unwrap_or_else(|| panic!("a trailing data: frame: {text}"))
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_openai_ingress_mid_stream_transport_error_appends_native_sse`
+    /// (map row 393). 1.5.5: a chat caller's stream cut mid-way ends on a bare `data:` frame (no
+    /// `event:` line) carrying the native `error` envelope.
+    /// RED: a named event on a chat stream, or a trailing frame with no `error` member.
+    #[test]
+    fn test_openai_ingress_mid_stream_transport_error_appends_native_sse() {
+        let (arrived, lane) = ask("openai", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        let read = answer(&ctx, 200, SSE_HEAD, &[far], true);
+        assert_eq!(read.status, 200);
+        let text = read.text();
+        assert!(!text.contains("event:"), "{text}");
+        assert!(last_payload(&text).get("error").is_some(), "{text}");
+    }
+
+    // ── a gemini caller ────────────────────────────────────────────────────────────────────────
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_gemini_stream_generate_content_alt_sse_is_event_stream`
+    /// (map row 396). 1.5.5: a gemini caller streaming with the event-stream switch reads
+    /// `text/event-stream` frames that are native `GenerateContentResponse`s (`candidates`), none
+    /// carrying the far end's `choices`.
+    /// RED: the far chunks relayed under the right content type.
+    #[test]
+    fn test_gemini_stream_generate_content_alt_sse_is_event_stream() {
+        let (arrived, lane) = ask("gemini", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = chat_stream_events();
+        let read = answer(&ctx, 200, SSE_HEAD, &[&far], false);
+        assert_eq!(read.status, 200);
+        assert!(read
+            .value("content-type")
+            .unwrap_or_default()
+            .starts_with("text/event-stream"));
+        let payloads = sse_payloads(&read.text());
+        assert!(!payloads.is_empty());
+        assert!(payloads
+            .iter()
+            .any(|frame| frame.get("candidates").is_some()));
+        assert!(payloads.iter().all(|frame| frame.get("choices").is_none()));
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame`
+    /// (map row 397). 1.5.5: a gemini event-stream caller's cut stream stays `text/event-stream`,
+    /// carries no `event:` line, no `choices` and no `chat.completion.chunk`, and ends on a
+    /// `google.rpc.Status`-shaped frame (`error.status`).
+    /// RED: a named error event, a JSON-array close, or a chat-dialect error envelope.
+    #[test]
+    fn test_gemini_alt_sse_mid_stream_transport_error_appends_native_sse_frame() {
+        let (arrived, lane) = ask("gemini", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        let read = answer(&ctx, 200, SSE_HEAD, &[far], true);
+        assert_eq!(read.status, 200);
+        assert!(read
+            .value("content-type")
+            .unwrap_or_default()
+            .starts_with("text/event-stream"));
+        let text = read.text();
+        assert!(!text.contains("event:"), "{text}");
+        assert!(!text.contains("chat.completion.chunk"), "{text}");
+        let payloads = sse_payloads(&text);
+        assert!(payloads.iter().all(|frame| frame.get("choices").is_none()));
+        let last = last_payload(&text);
+        assert!(last["error"].get("status").is_some(), "{text}");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_gemini_json_array_mid_stream_error_closes_array_no_sse`
+    /// (map row 409). 1.5.5: a gemini JSON-array caller's cut stream is `application/json`, still
+    /// one valid JSON array, with no `event:`/`data:` text, closing on an `error.status` element.
+    /// RED: an unclosed array, or an SSE error frame inside an array body.
+    #[test]
+    fn test_gemini_json_array_mid_stream_error_closes_array_no_sse() {
+        let arrived = arrived("gemini", chat_request("gemini", true), true);
+        let lane = lane("openai");
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        let read = answer(&ctx, 200, SSE_HEAD, &[far], true);
+        assert_eq!(read.status, 200);
+        assert!(read
+            .value("content-type")
+            .unwrap_or_default()
+            .starts_with("application/json"));
+        let text = read.text();
+        assert!(
+            !text.contains("event:") && !text.contains("data:"),
+            "{text}"
+        );
+        let array = read.json();
+        let elements = array.as_array().expect("an array");
+        assert!(
+            elements
+                .iter()
+                .any(|element| element["error"].get("status").is_some()),
+            "{text}"
+        );
+    }
+
+    // ── an anthropic caller ────────────────────────────────────────────────────────────────────
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_anthropic_cross_protocol_message_start_full_skeleton`
+    /// (map row 411). 1.5.5: a translated stream's `message_start` carries the full skeleton: an
+    /// id minted `msg_`, `type: "message"`, `content: []`, `stop_reason: null`, `stop_sequence:
+    /// null`.
+    /// RED: a `message_start` missing a skeleton member an SDK reads.
+    #[test]
+    fn test_anthropic_cross_protocol_message_start_full_skeleton() {
+        entropy();
+        let (arrived, lane) = ask("anthropic", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = chat_stream_events();
+        let read = answer(&ctx, 200, SSE_HEAD, &[&far], false);
+        let text = read.text();
+        let (_, data) = sse_frames(&text)
+            .into_iter()
+            .find(|(event, _)| event == "message_start")
+            .unwrap_or_else(|| panic!("a message_start: {text}"));
+        let event: Value = serde_json::from_str(&data).expect("JSON");
+        let message = &event["message"];
+        assert!(
+            message["id"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("msg_"),
+            "{message}"
+        );
+        assert_eq!(message["type"], "message", "{message}");
+        assert!(message["content"].is_array(), "{message}");
+        assert!(
+            message.get("stop_reason").is_some_and(Value::is_null),
+            "{message}"
+        );
+        assert!(
+            message.get("stop_sequence").is_some_and(Value::is_null),
+            "{message}"
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_passthrough_401_cross_protocol_reshaped_to_ingress`
+    /// (map row 412). 1.5.5: the caller's own credential refused by a far end of another dialect
+    /// keeps its 401 and is reshaped into the caller's envelope (`type: "error"`, `error.type:
+    /// "authentication_error"`), unjudged.
+    /// RED: the far end's foreign envelope relayed verbatim across dialects.
+    #[test]
+    fn test_passthrough_401_cross_protocol_reshaped_to_ingress() {
+        let (arrived, lane) = ask("anthropic", "openai", false);
+        let ctx = reply_ctx(&arrived, &lane, true);
+        let body = br#"{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}"#;
+        let read = answer(&ctx, 401, JSON_HEAD, &[body], false);
+        assert_eq!(read.status, 401);
+        let envelope = read.json();
+        assert_eq!(envelope["type"], "error", "{envelope}");
+        assert_eq!(
+            envelope["error"]["type"], "authentication_error",
+            "{envelope}"
+        );
+        assert_eq!(
+            read.end().fault,
+            Some(Fault::Judged {
+                disposition: Disposition::ClientFault,
+                class: None
+            })
+        );
+    }
+
+    // ── each caller's own stream vocabulary ────────────────────────────────────────────────────
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_openai_ingress_stream_emits_native_openai_frames`
+    /// (map row 445). 1.5.5: a same-dialect chat stream is `text/event-stream`, bare `data:` frames
+    /// (no `event:` line), every JSON chunk's `object` is `chat.completion.chunk`, and it ends on
+    /// `[DONE]`.
+    /// RED: a dropped `[DONE]`, a mangled object tag, or a named event injected.
+    #[test]
+    fn test_openai_ingress_stream_emits_native_openai_frames() {
+        let (arrived, lane) = ask("openai", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = data_stream(&[
+            r#"{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"role":"assistant"},"finish_reason":null}]}"#,
+            r#"{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{"content":"hi"},"finish_reason":null}]}"#,
+            r#"{"id":"chatcmpl-abc","object":"chat.completion.chunk","created":1700000000,"model":"gpt-4o","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3,"total_tokens":8}}"#,
+        ]);
+        let read = answer(&ctx, 200, SSE_HEAD, &[&far], false);
+        assert_eq!(read.status, 200);
+        assert!(read
+            .value("content-type")
+            .unwrap_or_default()
+            .starts_with("text/event-stream"));
+        let text = read.text();
+        assert!(!text.contains("event:"), "{text}");
+        assert!(text.contains("[DONE]"), "{text}");
+        let objects: Vec<Value> = sse_payloads(&text)
+            .into_iter()
+            .filter_map(|chunk| chunk.get("object").cloned())
+            .collect();
+        assert!(!objects.is_empty(), "{text}");
+        assert!(
+            objects.iter().all(|tag| tag == "chat.completion.chunk"),
+            "{objects:?}"
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_cohere_ingress_stream_emits_native_cohere_frames`
+    /// (map row 446). 1.5.5: a cohere caller's translated stream is `text/event-stream` whose
+    /// frames walk `message-start` before `message-end` with a `content-delta`, and no
+    /// `chat.completion.chunk` leaks.
+    /// RED: the far chunks relayed, or the cohere vocabulary out of order.
+    #[test]
+    fn test_cohere_ingress_stream_emits_native_cohere_frames() {
+        let (arrived, lane) = ask("cohere", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = chat_stream_events();
+        let read = answer(&ctx, 200, SSE_HEAD, &[&far], false);
+        assert_eq!(read.status, 200);
+        assert!(read
+            .value("content-type")
+            .unwrap_or_default()
+            .starts_with("text/event-stream"));
+        let text = read.text();
+        assert!(!text.contains("chat.completion.chunk"), "{text}");
+        let types: Vec<String> = sse_payloads(&text)
+            .into_iter()
+            .filter_map(|frame| frame["type"].as_str().map(str::to_string))
+            .collect();
+        assert!(
+            types.iter().any(|kind| kind == "content-delta"),
+            "{types:?}"
+        );
+        let start = types.iter().position(|kind| kind == "message-start");
+        let end = types.iter().rposition(|kind| kind == "message-end");
+        assert!(
+            matches!((start, end), (Some(first), Some(last)) if first < last),
+            "{types:?}"
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_responses_ingress_stream_emits_native_responses_events`
+    /// (map row 447). 1.5.5: a responses caller's translated stream is `text/event-stream` with
+    /// `response.created` before `response.completed` and a `response.output_text.delta`, and no
+    /// `chat.completion.chunk` leaks.
+    /// RED: the far chunks relayed, or the responses events out of order.
+    #[test]
+    fn test_responses_ingress_stream_emits_native_responses_events() {
+        entropy();
+        let (arrived, lane) = ask("responses", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = chat_stream_events();
+        let read = answer(&ctx, 200, SSE_HEAD, &[&far], false);
+        assert_eq!(read.status, 200);
+        assert!(read
+            .value("content-type")
+            .unwrap_or_default()
+            .starts_with("text/event-stream"));
+        let text = read.text();
+        assert!(!text.contains("chat.completion.chunk"), "{text}");
+        let events: Vec<String> = sse_frames(&text)
+            .into_iter()
+            .map(|(event, _)| event)
+            .collect();
+        assert!(
+            events
+                .iter()
+                .any(|event| event == "response.output_text.delta"),
+            "{events:?}"
+        );
+        let created = events.iter().position(|event| event == "response.created");
+        let completed = events
+            .iter()
+            .rposition(|event| event == "response.completed");
+        assert!(
+            matches!((created, completed), (Some(first), Some(last)) if first < last),
+            "{events:?}"
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_cohere_ingress_mid_stream_transport_error_appends_native_sse`
+    /// (map row 449). 1.5.5: a cohere caller's cut stream ends on a bare `data:` `message-end`
+    /// frame whose `delta.finish_reason` is `ERROR`, with no top-level `message`, no `event:` line
+    /// and no `chat.completion.chunk`.
+    /// RED: a chat-dialect `{"error":…}` frame, or a free-text detail on a cohere wire.
+    #[test]
+    fn test_cohere_ingress_mid_stream_transport_error_appends_native_sse() {
+        let (arrived, lane) = ask("cohere", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        let read = answer(&ctx, 200, SSE_HEAD, &[far], true);
+        assert_eq!(read.status, 200);
+        let text = read.text();
+        assert!(!text.contains("event:"), "{text}");
+        assert!(!text.contains("chat.completion.chunk"), "{text}");
+        let last = last_payload(&text);
+        assert_eq!(last["type"], "message-end", "{last}");
+        assert!(
+            last["delta"]["finish_reason"]
+                .as_str()
+                .is_some_and(|reason| reason.starts_with("ERROR")),
+            "{last}"
+        );
+        assert!(last.get("message").is_none(), "{last}");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_responses_ingress_mid_stream_transport_error_appends_response_failed`
+    /// (map row 450). 1.5.5: a responses caller's cut stream ends on `event: response.failed`
+    /// whose data is the stream shape (`response.status: "failed"`, `response.error.message`), with
+    /// no top-level `error`.
+    /// RED: the non-stream `{"error":…}` envelope written into a responses stream.
+    #[test]
+    fn test_responses_ingress_mid_stream_transport_error_appends_response_failed() {
+        let (arrived, lane) = ask("responses", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane, false);
+        let far = b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n";
+        let read = answer(&ctx, 200, SSE_HEAD, &[far], true);
+        assert_eq!(read.status, 200);
+        let text = read.text();
+        assert!(text.contains("event: response.failed"), "{text}");
+        let (_, data) = sse_frames(&text)
+            .into_iter()
+            .find(|(event, _)| event == "response.failed")
+            .unwrap_or_else(|| panic!("a response.failed frame: {text}"));
+        let failed: Value = serde_json::from_str(&data).expect("JSON");
+        assert_eq!(failed["response"]["status"], "failed", "{failed}");
+        assert!(
+            failed["response"]["error"]["message"].is_string(),
+            "{failed}"
+        );
+        assert!(failed.get("error").is_none(), "{failed}");
+    }
+
+    // ── the cut stream's frame (mid_stream_error_tests.rs, wire_tests.rs) ─────────────────────
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/mid_stream_error_tests.rs::test_mid_stream_generic_detail_has_no_leak_markers`
+    /// (map row 498). 1.5.5: every client-facing fallback detail is free of transport and proxy
+    /// vocabulary; the gemini array close and the four detail-carrying stream errors carry the
+    /// generic detail; cohere's `message-end` `ERROR` frame carries no detail at all.
+    /// RED: a fallback string naming `upstream`, `proxy`, a URL or a transport library.
+    #[test]
+    fn test_mid_stream_generic_detail_has_no_leak_markers() {
+        const LEAK_MARKERS: &[&str] = &[
+            "http://",
+            "https://",
+            "reqwest",
+            "hyper",
+            "tcp",
+            "dns",
+            "connect",
+            "amazonaws",
+            "url",
+            "error sending request",
+            "upstream",
+            "proxy",
+            "gateway",
+            "backend",
+            "lane",
+            "translat",
+        ];
+        for detail in [
+            wire::MID_STREAM_GENERIC_DETAIL,
+            wire::GENERIC_REJECTED_DETAIL,
+            wire::GENERIC_RESPONSE_ERROR_DETAIL,
+        ] {
+            for marker in LEAK_MARKERS {
+                assert!(
+                    !detail.to_ascii_lowercase().contains(marker),
+                    "{marker:?} in {detail:?}"
+                );
+            }
+        }
+        let mut framer = busbar_plane_llm::codec::DECLS
+            .iter()
+            .find(|decl| decl.name == "gemini")
+            .and_then(|decl| decl.dialect())
+            .and_then(|codec| codec.make_array_stream_framer())
+            .expect("gemini frames an array stream");
+        let closed = framer.finish_with_server_error(wire::MID_STREAM_GENERIC_DETAIL);
+        let closed = String::from_utf8_lossy(&closed);
+        assert!(closed.contains(wire::MID_STREAM_GENERIC_DETAIL), "{closed}");
+        for marker in ["https://", "reqwest", "hyper", "amazonaws"] {
+            assert!(!closed.contains(marker), "{marker}: {closed}");
+        }
+        for dialect in ["openai", "anthropic", "gemini", "responses"] {
+            let bytes =
+                wire::mid_stream_error_bytes(dialect, false, wire::MID_STREAM_GENERIC_DETAIL, None);
+            let text = String::from_utf8_lossy(&bytes);
+            assert!(
+                text.contains(wire::MID_STREAM_GENERIC_DETAIL),
+                "{dialect}: {text}"
+            );
+        }
+        let bytes =
+            wire::mid_stream_error_bytes("cohere", false, wire::MID_STREAM_GENERIC_DETAIL, None);
+        let text = String::from_utf8_lossy(&bytes);
+        assert!(
+            text.contains("message-end") && text.contains("ERROR"),
+            "{text}"
+        );
+        assert!(!text.contains(wire::MID_STREAM_GENERIC_DETAIL), "{text}");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/mid_stream_error_tests.rs::test_bedrock_ingress_mid_stream_error_is_binary_exception_frame`
+    /// (map row 499). 1.5.5: a bedrock caller's cut-stream error is one CRC-valid binary frame
+    /// (total length, prelude CRC and message CRC all true) whose headers name an `exception`
+    /// `:message-type` of `InternalServerException`, and whose JSON payload `message` is the
+    /// detail.
+    /// RED: SSE text over a binary stream, a bad CRC, or the detail lost from the payload.
+    #[test]
+    fn test_bedrock_ingress_mid_stream_error_is_binary_exception_frame() {
+        let crc = busbar_plane_llm::codec::crc32::hash;
+        let bytes = wire::mid_stream_error_bytes("bedrock", true, "connection reset by peer", None);
+        assert!(!bytes.starts_with(b"event:") && !bytes.starts_with(b"data:"));
+        let word = |at: usize| {
+            u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
+        };
+        let total = word(0) as usize;
+        assert_eq!(total, bytes.len(), "the total length");
+        assert_eq!(word(8), crc(&bytes[..8]), "the prelude CRC");
+        let len = bytes.len();
+        assert_eq!(word(len - 4), crc(&bytes[..len - 4]), "the message CRC");
+        let headers_len = word(4) as usize;
+        let headers = String::from_utf8_lossy(&bytes[12..12 + headers_len]);
+        for needle in [
+            ":message-type",
+            "exception",
+            ":exception-type",
+            "InternalServerException",
+        ] {
+            assert!(headers.contains(needle), "{needle}: {headers}");
+        }
+        let payload: Value =
+            serde_json::from_slice(&bytes[12 + headers_len..len - 4]).expect("a JSON payload");
+        assert_eq!(payload["message"], "connection reset by peer");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/mid_stream_error_tests.rs::test_sse_ingress_mid_stream_error_uses_native_framing`
+    /// (map row 500). 1.5.5: the cut-stream frame is each dialect's own streaming error: a bare
+    /// `data:` frame for openai, cohere and gemini (cohere's a `message-end` `ERROR`); `event:
+    /// error` with `error.message` for anthropic; `event: response.failed` with the stream shape
+    /// (`response.status: "failed"`, `response.error.message`, no top-level `error`) for responses.
+    /// RED: one dialect's framing (an `event:` line, the HTTP envelope) written for another.
+    #[test]
+    fn test_sse_ingress_mid_stream_error_uses_native_framing() {
+        for dialect in ["openai", "cohere", "gemini"] {
+            let text =
+                String::from_utf8(wire::mid_stream_error_bytes(dialect, false, "boom", None))
+                    .expect("text");
+            assert!(text.starts_with("data: "), "{dialect}: {text}");
+            assert!(!text.contains("event:"), "{dialect}: {text}");
+            let data = text
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .expect("a data line");
+            let frame: Value = serde_json::from_str(data).expect("JSON");
+            let cohere_end = frame["type"] == "message-end"
+                && frame["delta"]["finish_reason"]
+                    .as_str()
+                    .is_some_and(|reason| reason.starts_with("ERROR"));
+            assert!(
+                frame.get("error").is_some() || frame.get("message").is_some() || cohere_end,
+                "{dialect}: {frame}"
+            );
+        }
+        let text = String::from_utf8(wire::mid_stream_error_bytes(
+            "anthropic",
+            false,
+            "boom",
+            None,
+        ))
+        .expect("text");
+        assert!(text.starts_with("event: error\n"), "{text}");
+        let data = text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("a data line");
+        let frame: Value = serde_json::from_str(data).expect("JSON");
+        assert!(frame["error"]["message"].is_string(), "{frame}");
+
+        let text = String::from_utf8(wire::mid_stream_error_bytes(
+            "responses",
+            false,
+            "boom",
+            None,
+        ))
+        .expect("text");
+        assert!(text.starts_with("event: response.failed\n"), "{text}");
+        let data = text
+            .lines()
+            .find_map(|line| line.strip_prefix("data: "))
+            .expect("a data line");
+        let frame: Value = serde_json::from_str(data).expect("JSON");
+        assert_eq!(frame["response"]["status"], "failed", "{frame}");
+        assert!(frame["response"]["error"]["message"].is_string(), "{frame}");
+        assert!(frame.get("error").is_none(), "{frame}");
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/mid_stream_error_tests.rs::test_client_fault_kind_mapping`
+    /// (map row 501). 1.5.5: a client fault is reshaped with `context_length_exceeded` for the
+    /// context-length class and `invalid_request_error` for a client error.
+    /// RED: the context-length kind lost to the generic one.
+    #[test]
+    fn test_client_fault_kind_mapping() {
+        assert_eq!(
+            wire::client_fault_kind(StatusClass::ContextLength),
+            "context_length_exceeded"
+        );
+        assert_eq!(
+            wire::client_fault_kind(StatusClass::ClientError),
+            "invalid_request_error"
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/mid_stream_error_tests.rs::test_extract_error_message`
+    /// (map row 502). 1.5.5: the far message is `error.message`, else a top-level `message`, and
+    /// none for a body that is not JSON or names neither.
+    /// RED: a foreign body's text lifted when it names no message.
+    #[test]
+    fn test_extract_error_message() {
+        assert_eq!(
+            wire::extract_error_message(br#"{"error":{"message":"bad param"}}"#).as_deref(),
+            Some("bad param")
+        );
+        assert_eq!(
+            wire::extract_error_message(br#"{"message":"flat"}"#).as_deref(),
+            Some("flat")
+        );
+        assert_eq!(wire::extract_error_message(b"not json"), None);
+        assert_eq!(wire::extract_error_message(br#"{"foo":1}"#), None);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/mid_stream_error_tests.rs::test_is_stream_content_type`
+    /// (map row 503). 1.5.5: `text/event-stream` (with parameters too) and
+    /// `application/vnd.amazon.eventstream` stream; `application/json` and an empty type do not.
+    /// RED: a parameterized SSE type read as a whole body, or JSON read as a stream.
+    #[test]
+    fn test_is_stream_content_type() {
+        assert!(wire::is_stream_content_type("text/event-stream"));
+        assert!(wire::is_stream_content_type(EVENTSTREAM));
+        assert!(wire::is_stream_content_type(
+            "text/event-stream; charset=utf-8"
+        ));
+        assert!(!wire::is_stream_content_type("application/json"));
+        assert!(!wire::is_stream_content_type(""));
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/wire_tests.rs::unknown_ingress_mid_stream_error_is_a_bare_data_frame_from_core`
+    /// (map row 635). 1.5.5: a caller of a dialect the plane does not hold gets a bare `data:`
+    /// frame (no `event:` line) of the agnostic envelope: `error.type: "api_error"`,
+    /// `error.message` the detail.
+    /// RED: some dialect's framing or vocabulary claimed for an unknown caller.
+    #[test]
+    fn unknown_ingress_mid_stream_error_is_a_bare_data_frame_from_core() {
+        let text = String::from_utf8(wire::mid_stream_error_bytes(
+            "no-such-protocol",
+            false,
+            "upstream vanished",
+            None,
+        ))
+        .expect("text");
+        assert!(
+            text.starts_with("data: ") && text.ends_with("\n\n"),
+            "{text}"
+        );
+        assert!(!text.contains("event:"), "{text}");
+        let frame: Value =
+            serde_json::from_str(text.trim_start_matches("data: ").trim_end_matches("\n\n"))
+                .expect("JSON");
+        assert_eq!(frame["error"]["type"], "api_error", "{frame}");
+        assert_eq!(frame["error"]["message"], "upstream vanished", "{frame}");
+        assert_eq!(
+            text,
+            String::from_utf8_lossy(&wire::agnostic_stream_error_frame("upstream vanished"))
+        );
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/wire_tests.rs::status_word_golden_engine_client_fault_kind`
+    /// (map row 636). 1.5.5's golden column: every class but context length is reshaped as
+    /// `invalid_request_error`; context length as `context_length_exceeded`.
+    /// RED: any class's kind word moved (a rate limit shaped `rate_limit_error` on a client fault).
+    #[test]
+    fn status_word_golden_engine_client_fault_kind() {
+        let golden: [(StatusClass, &str); 9] = [
+            (StatusClass::RateLimit, "invalid_request_error"),
+            (StatusClass::Overloaded, "invalid_request_error"),
+            (StatusClass::ServerError, "invalid_request_error"),
+            (StatusClass::Timeout, "invalid_request_error"),
+            (StatusClass::Network, "invalid_request_error"),
+            (StatusClass::Auth, "invalid_request_error"),
+            (StatusClass::Billing, "invalid_request_error"),
+            (StatusClass::ClientError, "invalid_request_error"),
+            (StatusClass::ContextLength, "context_length_exceeded"),
+        ];
+        for (class, word) in golden {
+            assert_eq!(wire::client_fault_kind(class), word, "{class:?}");
+        }
+    }
+
+    // ── the plane's class rule and error relay against 1.5.5's (plane_reply_parity_tests.rs) ─
+
+    /// The breaker's class rule (`busbar-kernel-breaker` `classify::normalize_raw_error`, 1.5.5's),
+    /// transcribed: a mapped code (never `context_length` over a 5xx), the built-in context-length
+    /// code on 400/413 only, a mapped structured type (same guard), then the status.
+    fn breaker_rule(
+        raw: &RawUpstreamError,
+        error_map: &HashMap<String, String>,
+    ) -> CanonicalSignal {
+        let masks = |class: StatusClass| {
+            class == StatusClass::ContextLength && (500..600).contains(&raw.http_status)
+        };
+        let signal = |class, provider_signal| CanonicalSignal {
+            class,
+            provider_signal,
+            retry_after: raw.retry_after_secs,
+        };
+        let provider_signal = match &raw.provider_code {
+            Some(code) => {
+                if let Some(class) = error_map
+                    .get(code)
+                    .and_then(|mapped| StatusClass::parse(mapped))
+                {
+                    if !masks(class) {
+                        return signal(class, Some(code.clone()));
+                    }
+                }
+                if code == "context_length_exceeded"
+                    && (raw.http_status == 400 || raw.http_status == 413)
+                {
+                    return signal(StatusClass::ContextLength, Some(code.clone()));
+                }
+                Some(code.clone())
+            }
+            None => None,
+        };
+        if let Some(ty) = &raw.structured_type {
+            if let Some(class) = error_map
+                .get(ty)
+                .and_then(|mapped| StatusClass::parse(mapped))
+            {
+                if !masks(class) {
+                    return signal(class, provider_signal.or_else(|| Some(ty.clone())));
+                }
+            }
+        }
+        let class = match raw.http_status {
+            401 | 403 => StatusClass::Auth,
+            429 => StatusClass::RateLimit,
+            408 => StatusClass::Timeout,
+            529 => StatusClass::Overloaded,
+            500..=599 => StatusClass::ServerError,
+            0 => StatusClass::Network,
+            // A true 4xx, and a 2xx/3xx reaching the error path: the caller's side.
+            _ => StatusClass::ClientError,
+        };
+        signal(class, provider_signal)
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/plane_reply_parity_tests.rs::the_planes_class_rule_is_the_breakers`
+    /// (map row 559). 1.5.5: over 2 error maps x 8 provider codes x 8 structured types x 15
+    /// statuses x 2 retry-afters = 3840 raw errors, the plane's `failure::normalize` places each
+    /// in the class, provider signal and retry-after the breaker's rule does.
+    /// RED: any cell where the plane's copy of the rule drifts from the breaker's (a mapped
+    /// `context_length` masking a 5xx, the retry-after dropped, a type winning over a code).
+    #[test]
+    fn the_planes_class_rule_is_the_breakers() {
+        let maps: Vec<HashMap<String, String>> = vec![
+            HashMap::new(),
+            map(&[
+                ("1302", "rate_limit"),
+                ("quota", "billing"),
+                ("ctx", "context_length"),
+                ("typo", "rate_limt"),
+                ("overloaded_error", "overloaded"),
+                ("invalid_request_error", "context_length"),
+                ("auth", "auth"),
+                ("slow", "timeout"),
+                ("net", "network"),
+                ("bad", "client_error"),
+                ("boom", "server_error"),
+            ]),
+        ];
+        let codes = [
+            None,
+            Some("1302"),
+            Some("quota"),
+            Some("ctx"),
+            Some("typo"),
+            Some("context_length_exceeded"),
+            Some("auth"),
+            Some("unmapped"),
+        ];
+        let types = [
+            None,
+            Some("overloaded_error"),
+            Some("invalid_request_error"),
+            Some("slow"),
+            Some("net"),
+            Some("bad"),
+            Some("boom"),
+            Some("unmapped"),
+        ];
+        let statuses = [
+            200, 302, 400, 401, 403, 404, 408, 413, 422, 429, 500, 502, 503, 504, 529,
+        ];
+        let mut checked = 0;
+        for error_map in &maps {
+            for code in codes {
+                for ty in types {
+                    for status in statuses {
+                        for retry in [None, Some(7)] {
+                            let mut error = raw(status, code, ty);
+                            error.retry_after_secs = retry;
+                            assert_eq!(
+                                normalize(status, &error, error_map),
+                                breaker_rule(&error, error_map),
+                                "{error:?} under {error_map:?}"
+                            );
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(checked, 2 * 8 * 8 * 15 * 2);
+    }
+
+    /// The far head every legacy parity fixture answered with.
+    const PARITY_HEAD: &[(&[u8], &[u8])] = &[
+        (b"content-type", b"application/json"),
+        (b"request-id", b"req_far0001"),
+        (b"x-amzn-requestid", b"amzn-far-0001"),
+    ];
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/plane_reply_parity_tests.rs::a_far_end_error_reads_the_same_through_the_plane`
+    /// (map row 564). 1.5.5, for every dialect pair and each legacy fixture (400
+    /// `invalid_request_error`, 422 `{"message":"bad field"}`, 401 `authentication_error`):
+    /// within one dialect a client fault is the far status, every far head field and the far bytes
+    /// exactly; across dialects it is the far status in the caller's own envelope (kind
+    /// `invalid_request_error`, the far message), its head no far field; a refused deployment
+    /// credential is the caller dialect's own refusal (its status, kind and sentence), never the
+    /// far message.
+    /// RED: a foreign body relayed across dialects, a far id leaked into a reshaped head, a
+    /// same-dialect fault rewritten, or a far 401 answered with the far message.
+    #[test]
+    fn a_far_end_error_reads_the_same_through_the_plane() {
+        entropy();
+        let fixtures: [(u16, &[u8], Option<&str>); 3] = [
+            (
+                400,
+                br#"{"error":{"message":"max_tokens is too large","type":"invalid_request_error"}}"#,
+                Some("max_tokens is too large"),
+            ),
+            (422, br#"{"message":"bad field"}"#, Some("bad field")),
+            (
+                401,
+                br#"{"error":{"message":"invalid x-api-key","type":"authentication_error"}}"#,
+                None,
+            ),
+        ];
+        let mut checked = 0;
+        for far in SIX {
+            for caller in SIX {
+                let (arrived, lane) = ask(caller, far, false);
+                let ctx = reply_ctx(&arrived, &lane, false);
+                for (status, body, message) in fixtures {
+                    let read = answer(&ctx, status, PARITY_HEAD, &[body], false);
+                    let what = format!("{caller}<-{far} {status}");
+                    assert_eq!(
+                        read.value("content-length").as_deref(),
+                        Some(read.body.len().to_string().as_str()),
+                        "{what}"
+                    );
+                    match message {
+                        Some(_) if caller == far => {
+                            assert_eq!(read.status, status, "{what}");
+                            assert_eq!(read.body, body, "{what}: verbatim");
+                            assert_eq!(
+                                read.value("request-id").as_deref(),
+                                Some("req_far0001"),
+                                "{what}"
+                            );
+                            assert_eq!(
+                                read.value("x-amzn-requestid").as_deref(),
+                                Some("amzn-far-0001"),
+                                "{what}"
+                            );
+                        }
+                        Some(message) => {
+                            assert_eq!(read.status, status, "{what}");
+                            assert_eq!(
+                                without_minted_id(read.json()),
+                                without_minted_id(own_envelope(
+                                    caller,
+                                    status,
+                                    "invalid_request_error",
+                                    message
+                                )),
+                                "{what}"
+                            );
+                            assert!(
+                                read.fields.iter().all(|(_, value)| value != b"req_far0001"
+                                    && value != b"amzn-far-0001"),
+                                "{what}: {:?}",
+                                read.fields
+                            );
+                        }
+                        None => {
+                            let decl = busbar_plane_llm::codec::DECLS
+                                .iter()
+                                .find(|decl| decl.name == caller)
+                                .expect("a dialect");
+                            let (own_status, kind) = decl.auth_failure_status_and_kind;
+                            assert_eq!(read.status, own_status.as_u16(), "{what}");
+                            assert_eq!(
+                                without_minted_id(read.json()),
+                                without_minted_id(own_envelope(
+                                    caller,
+                                    own_status.as_u16(),
+                                    kind,
+                                    decl.auth_failure_message
+                                )),
+                                "{what}"
+                            );
+                            assert!(!read.text().contains("invalid x-api-key"), "{what}");
+                        }
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 3 * 36);
+    }
+
+    /// REHOMES `crates/busbar-llm/src/engine/tests/plane_reply_parity_tests.rs::a_far_end_errors_relay_is_the_engines`
+    /// (map row 565). 1.5.5, for 5 far statuses (429, 500, 503, 504, 529) x 36 dialect pairs (180
+    /// cases): the relay the walk ends on keeps the far status; within one dialect its body is the
+    /// far body byte for byte; across dialects it is the caller's own envelope with the kind 1.5.5
+    /// gave that status (429 `rate_limit_error`, 500 and 529 `api_error`, 503 `overloaded`, 504
+    /// `timeout`) and the far message `slow down`, under `application/json`.
+    /// RED: a foreign body relayed across dialects, a status rewritten, or a kind moved.
+    #[test]
+    fn a_far_end_errors_relay_is_the_engines() {
+        entropy();
+        let body = br#"{"error":{"message":"slow down"}}"#;
+        let mut checked = 0;
+        for (status, kind) in [
+            (429u16, "rate_limit_error"),
+            (500, "api_error"),
+            (503, "overloaded"),
+            (504, "timeout"),
+            (529, "api_error"),
+        ] {
+            for far in SIX {
+                for caller in SIX {
+                    let far_error = FarError {
+                        status,
+                        head: JSON_HEAD,
+                        body,
+                    };
+                    let relayed = failure::relay(caller, far, &far_error);
+                    assert_eq!(relayed.status, status, "{caller}<-{far} {status}");
+                    if caller == far {
+                        assert_eq!(relayed.body, body, "{caller}: verbatim");
+                    } else {
+                        assert_eq!(
+                            field(&relayed.fields, "content-type"),
+                            Some(b"application/json".as_slice()),
+                            "{caller}<-{far} {status}"
+                        );
+                        let envelope: Value = serde_json::from_slice(&relayed.body).expect("JSON");
+                        assert_eq!(
+                            without_minted_id(envelope),
+                            without_minted_id(own_envelope(caller, status, kind, "slow down")),
+                            "{caller}<-{far} {status}"
+                        );
+                    }
+                    checked += 1;
+                }
+            }
+        }
+        assert_eq!(checked, 5 * 36);
+    }
 }

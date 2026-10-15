@@ -235,10 +235,11 @@ fn migrate_one_export_projection(
     ));
 }
 
-/// 1.5.3: DELETE the `observability:` block, folding its last field (`otlp_url`, or the 1.4.x
-/// `otlp_endpoint` if `migrate_observability`'s rename has not run) into an `export:` instance of the
-/// trace exporter 1.5.5 folded it into (the root legacy table's `export_trace_module`, named
-/// `export_trace_instance`). IDEMPOTENT: a config with no `observability:` block has nothing to fold.
+/// 1.5.3: DELETE the `observability:` block, folding its last field (the trace URL, the root legacy
+/// table's `observability_trace_key`, or its 1.4.x spelling `observability_trace_key_1_4` if
+/// `migrate_observability`'s rename has not run) into an `export:` instance of the trace exporter
+/// 1.5.5 folded it into (the table's `export_trace_module`, named `export_trace_instance`).
+/// IDEMPOTENT: a config with no `observability:` block has nothing to fold.
 ///
 /// A MALFORMED block (`observability: null`, a sequence, a scalar — real hand-edited shapes) is still
 /// DELETED: the section does not exist in 1.5.3, so there is nothing to carry it into and leaving it
@@ -258,7 +259,12 @@ pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<
         }
         return;
     };
-    let url = take(&mut obs, "otlp_url").or_else(|| take(&mut obs, "otlp_endpoint"));
+    let key = super::legacy::text("observability_trace_key");
+    let key_1_4 = super::legacy::text("observability_trace_key_1_4");
+    let url = [key, key_1_4]
+        .into_iter()
+        .filter(|k| !k.is_empty())
+        .find_map(|k| take(&mut obs, k));
     // A `null` URL is how the shipped example spelled "tracing off" — folding it into an instance
     // would turn an OFF sink into a boot error (`settings.url` is REQUIRED), so drop it instead.
     let url = url.filter(|v| !v.is_null());
@@ -273,13 +279,12 @@ pub(super) fn migrate_observability_block(root: &mut Mapping, changes: &mut Vec<
         inst.insert("settings".into(), Value::Mapping(settings));
         export.insert(Value::from(name.as_str()), Value::Mapping(inst));
         changes.push(format!(
-            "observability.otlp_url -> export.{name}: {{ module: {module} }} (the `observability:` block \
+            "observability.{key} -> export.{name}: {{ module: {module} }} (the `observability:` block \
              is DELETED in 1.5.3; `export:` is the single telemetry-egress surface)"
         ));
     } else {
-        changes.push(
-            "observability: block removed (DELETED in 1.5.3; it carried no otlp_url to fold)"
-                .into(),
-        );
+        changes.push(format!(
+            "observability: block removed (DELETED in 1.5.3; it carried no {key} to fold)"
+        ));
     }
 }

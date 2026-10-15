@@ -729,3 +729,44 @@ fn an_exited_threads_bank_is_released_and_its_counts_survive() {
         "a later flush must not regress the total once the banks are gone"
     );
 }
+
+/// F25 row 379: rehomed from crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::
+/// test_finish_outcome_mapping_503_is_exhausted. A served unit that ends 503 is counted on
+/// `busbar_requests_total` under `outcome="exhausted"` (a pool ran dry), through the end-of-unit
+/// emit the composition root's serve path calls (`model_request_finished`), exactly once, and
+/// never under `error`; the rest of the status bands keep their words.
+#[test]
+fn test_finish_outcome_mapping_503_is_exhausted() {
+    crate::snapshot::init();
+    model_plane_key();
+    let app = TestApp::new()
+        .lane(LaneSpec::new(
+            "tel-f25-503-model",
+            lane_protocol(),
+            "http://m",
+        ))
+        .pool("tel-f25-503-pool", &[(0, 1)])
+        .build();
+    let ingress = shipped_protocols().1;
+    let exhausted = [("pool", "tel-f25-503-pool"), ("outcome", "exhausted")];
+    let error = [("pool", "tel-f25-503-pool"), ("outcome", "error")];
+    let exhausted0 = metric_sum(crate::snapshot::REQUESTS_TOTAL, &exhausted);
+    let error0 = metric_sum(crate::snapshot::REQUESTS_TOTAL, &error);
+
+    model_request_finished(&app, ingress, "tel-f25-503-pool", 503, 0.001);
+
+    assert_eq!(
+        (metric_sum(crate::snapshot::REQUESTS_TOTAL, &exhausted) - exhausted0).round() as u64,
+        1,
+        "503 maps to outcome=exhausted"
+    );
+    assert_eq!(
+        (metric_sum(crate::snapshot::REQUESTS_TOTAL, &error) - error0).round() as u64,
+        0,
+        "a 503 is never counted as a plain error"
+    );
+    assert_eq!(outcome_of(503), "exhausted");
+    assert_eq!(outcome_of(502), "error");
+    assert_eq!(outcome_of(429), "client_error");
+    assert_eq!(outcome_of(200), "ok");
+}

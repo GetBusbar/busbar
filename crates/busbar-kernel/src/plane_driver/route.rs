@@ -26,9 +26,10 @@ use std::time::Duration;
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome as AbiOutcome, Span};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
-    FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE, EMIT_DONE,
-    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
-    PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, RECORD_AUDIT, VERDICT_RETRY,
+    reason_code, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE,
+    EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
+    FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED,
+    RECORD_AUDIT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -47,7 +48,8 @@ use crate::teller::UnitCtx;
 pub struct FarPiece {
     /// The bytes.
     pub bytes: Vec<u8>,
-    /// On the reply's first piece: the exact status number and its class.
+    /// On the reply's first piece: the exact status number and its class. On a trailers piece
+    /// (`fields`): the status the transport read off the trailers, where it read one.
     pub status: Option<(u32, u32)>,
     /// No piece follows.
     pub last: bool,
@@ -103,6 +105,10 @@ pub enum Pick {
         /// The words.
         text: String,
     },
+    /// The walk refuses the unit for `0` before any member was dialled: the member's credential,
+    /// re-resolved for this attempt, is unavailable (`ReasonCode::CredentialUnavailable`). The
+    /// plane renders the refusal in its own words.
+    Refused(ReasonCode),
 }
 
 /// One attempt's request, as the plane bound it for the far end.
@@ -201,6 +207,28 @@ pub trait FarEnd: Sync {
     fn constrain(&self, token: &Pass<Route>, constraint: super::hooks::Constraint) {
         let _ = (token, constraint);
     }
+    /// THE PLANE'S FAULT READING of the far end's answer it was just handed: `fault` is the
+    /// plane's `OnPieceOut::fault` (`FAULT_NONE` when it states none). The breaker records the
+    /// plane's first stated reading of a relayed non-success answer (healthy: a success), the
+    /// transport's when the answer's last piece was read with none. The default reads nothing.
+    fn judged(&self, token: &Pass<Route>, fault: u8) {
+        let _ = (token, fault);
+    }
+    /// THE WAIT OF ONE MEMBER the plane stated on its answer to the walk's exhausted refused piece
+    /// (`OnPieceOut::wait_member`, the entry name as `OnPieceIn::member` lends it): the whole seconds
+    /// left on `member`'s cell in the pool the unit's walk routes over (at least 1). `None` when
+    /// `member` is no member of that pool, or the far end keeps no walk (the default).
+    fn member_wait(&self, token: &Pass<Route>, member: &str) -> Option<u32> {
+        let _ = (token, member);
+        None
+    }
+
+    /// THE PLANE'S COUNTER LABELS for the attempt its answer to the ATTEMPT piece just made
+    /// (`OnPieceOut::metric_pool` / `metric_lane`): the walk's counters take them for this attempt
+    /// within their bound. The default takes nothing.
+    fn stated(&self, token: &Pass<Route>, labels: busbar_kernel_egress::ports::StatedLabels) {
+        let _ = (token, labels);
+    }
 
     /// THE UNIT'S DEADLINE ONCE ITS ROUTE IS KNOWN (ARCHITECT ruling 2026-10-07, STREAM-CEILING),
     /// on the dispatcher's clock (`now_ns` is its reading as the route step starts): the ceiling
@@ -280,6 +308,9 @@ pub(crate) struct PieceBufs {
     member: Vec<u8>,
     /// The pool the current attempt's member was picked from.
     pool: Vec<u8>,
+    /// The entry a `ROUTE_SCOPE_LOCAL` unit's scope resolved to, lent as the member of its pieces
+    /// with no attempt (empty = none: every other unit).
+    resolved: Vec<u8>,
     /// The provider of the current attempt's member.
     provider: String,
     /// The snapshot claim the unit arrived on, lent on every piece.
@@ -308,6 +339,7 @@ impl PieceBufs {
             input: Vec::new(),
             member: Vec::new(),
             pool: Vec::new(),
+            resolved: Vec::new(),
             provider: String::new(),
             claim: 0,
             dialect: 0,
@@ -368,6 +400,8 @@ struct Piece {
     src: Src,
     /// The piece lends the far end's kept response head fields.
     head: bool,
+    /// With `PIECE_REFUSED`: the refusal's reason code (`OnPieceIn::reason`); `0` otherwise.
+    reason: u32,
 }
 
 impl Piece {
@@ -380,6 +414,7 @@ impl Piece {
             attempt_no: 0,
             src: Src::None,
             head: false,
+            reason: 0,
             ..self
         }
     }
@@ -392,7 +427,7 @@ impl Piece {
 /// plane key (a model plane's lane) is lent as it is.
 ///
 /// [`PLANE_LANE_SEP`]: crate::governance::PLANE_LANE_SEP
-fn operator_name(key: &[u8]) -> &[u8] {
+pub(super) fn operator_name(key: &[u8]) -> &[u8] {
     let sep = crate::governance::PLANE_LANE_SEP as u8;
     key.iter()
         .position(|b| *b == sep)
@@ -408,7 +443,9 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         Src::None => &[][..],
     };
     let (member, pool) = if p.attempt_no == 0 {
-        (&[][..], &[][..])
+        // A unit answered at its scope's one entry (`ROUTE_SCOPE_LOCAL`) names that entry on the
+        // pieces it pushes with no attempt; any other unit names none there.
+        (&bufs.resolved[..], &[][..])
     } else {
         (operator_name(&bufs.member), operator_name(&bufs.pool))
     };
@@ -457,6 +494,7 @@ fn frame(bufs: &mut PieceBufs, p: &Piece, unit: u64) -> (OnPieceIn, OnPieceOut) 
         },
         head_fields_len: if p.head { bufs.head.len() } else { 0 },
         passthrough: u32::from(bufs.passthrough),
+        reason: p.reason,
         ..blank_in()
     };
     (input, blank_out())
@@ -499,6 +537,8 @@ struct Answer {
     units_written: u32,
     records_written: u32,
     verdict: u32,
+    /// The plane's breaker fault reading of a far-end answer (`FAULT_*`).
+    fault: u8,
     verb: Span,
     target: Span,
     need: u32,
@@ -510,6 +550,9 @@ struct Answer {
     final_status: u32,
     final_message: Span,
     final_details: Span,
+    metric_pool: Span,
+    metric_lane: Span,
+    wait_member: Span,
     tap_fault: u8,
 }
 
@@ -524,6 +567,7 @@ impl Answer {
             units_written: o.units_written,
             records_written: o.records_written,
             verdict: o.verdict,
+            fault: o.fault,
             verb: o.verb,
             target: o.target,
             need: o.need,
@@ -535,6 +579,9 @@ impl Answer {
             final_status: o.final_status,
             final_message: o.final_message,
             final_details: o.final_details,
+            metric_pool: o.metric_pool,
+            metric_lane: o.metric_lane,
+            wait_member: o.wait_member,
             tap_fault: o.tap_fault,
         }
     }
@@ -553,6 +600,9 @@ enum Toward<'r> {
     /// A duplex session's caller side: an answer bound for the far end ([`EMIT_TO_FAR_END`]) is
     /// gathered as a turn's request; any other goes to the caller.
     Session(&'r mut OutboundRequest),
+    /// The refused piece's answer (`PIECE_REFUSED`): its record writes are written and nothing it
+    /// emits goes anywhere; the unit's refusal is rendered by `refusal`.
+    Nowhere,
 }
 
 /// Where a unit's host buffers go when its pump ends: every `on_piece` of the unit lends this
@@ -580,6 +630,9 @@ pub(crate) struct Pumping<'u> {
     ended: bool,
     /// The record writes the `cancel` that ended the last op carried (SEAM-L(r)).
     cancel_writes: Vec<busbar_contract::plane_calls::CancelWrite>,
+    /// The member whose wait the plane stated its refusal answers (`OnPieceOut::wait_member`), on
+    /// its answer to the walk's exhausted refused piece.
+    wait_member: Option<String>,
 }
 
 impl<'u> Pumping<'u> {
@@ -606,6 +659,7 @@ impl<'u> Pumping<'u> {
             flight: None,
             ended: false,
             cancel_writes: Vec::new(),
+            wait_member: None,
         }
     }
 
@@ -741,6 +795,12 @@ impl<'u> Pumping<'u> {
         self.bufs.dialect = dialect;
         self.bufs.caller_ref = caller_ref.to_vec();
         self.bufs.stream = stream;
+    }
+
+    /// Lend the entry a `ROUTE_SCOPE_LOCAL` unit's scope resolved to as the member of every piece
+    /// it pushes with no attempt (the unit is walked to no member).
+    pub(crate) fn lend_resolved(&mut self, entry: &[u8]) {
+        self.bufs.resolved = entry.to_vec();
     }
 
     /// Whether the unit moves money: a tick unit (a health probe) is zero-billed and draws no
@@ -879,6 +939,33 @@ impl<S: super::DriverSteps> AttemptSteps for S {
 impl AttemptSteps for () {}
 
 impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
+    /// S3 for a unit its plane answers AT ITS SCOPE'S ONE ENTRY (`ROUTE_SCOPE_LOCAL`): NO route is
+    /// walked: the far end is never asked for a member, so no pool, no breaker and no egress is
+    /// touched. The caller's body is pushed once, with no attempt (its member the resolved entry,
+    /// [`Pumping::lend_resolved`]), and the plane answers it itself; a plane that sends it toward a
+    /// far end instead has nowhere to send it, and the unit fails as unreachable.
+    pub(crate) async fn answered_here(&self, run: &mut Pumping<'_>) -> End {
+        let body = Piece {
+            from: FROM_CALLER,
+            flags: PIECE_LAST,
+            status: (0, 0),
+            attempt_no: 0,
+            src: Src::Body,
+            head: false,
+            reason: 0,
+        };
+        let mut request = OutboundRequest::default();
+        let mut toward = Toward::FarEnd(&mut request);
+        if let Step::End(end) = self.push(run, body, &mut toward).await {
+            return end;
+        }
+        if matches!(toward, Toward::Caller) {
+            End::Done
+        } else {
+            End::Failed(ReasonCode::DestinationUnreachable)
+        }
+    }
+
     /// S3: every attempt of the unit, until its reply is complete, it fails, or the driver cancels.
     /// A session's turn leg ([`session::Turn`]) is the same walk: each attempt picks a member
     /// inside the destination set sealed at the open (a member outside it is passed over, never
@@ -928,8 +1015,27 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     status,
                     retry_after,
                     detail,
-                }) => return End::Exhausted(status, retry_after, detail),
+                }) => {
+                    // The walk's exhaustion terminal is refused as `BreakerOpen` (the route
+                    // step's `End::Exhausted`): the refused piece names that reason, whether or
+                    // not a request went out (R-REJECTED).
+                    if let Err(end) = self.refused_piece(run, ReasonCode::BreakerOpen).await {
+                        return end;
+                    }
+                    return match self.stated_wait(run) {
+                        Ok(wait) => End::Exhausted(status, wait.or(retry_after), detail),
+                        Err(end) => end,
+                    };
+                }
                 Ok(Pick::Vetoed { status, text }) => return End::Vetoed(status, text),
+                Ok(Pick::Refused(reason)) => {
+                    if reason == ReasonCode::CredentialUnavailable {
+                        if let Err(end) = self.refused_piece(run, reason).await {
+                            return end;
+                        }
+                    }
+                    return End::Failed(reason);
+                }
                 Err(end) => return end,
             };
             run.bufs.member.clear();
@@ -957,6 +1063,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 attempt_no,
                 src: Src::None,
                 head: false,
+                reason: 0,
             };
             let body = Piece {
                 from: FROM_CALLER,
@@ -997,7 +1104,16 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             if !far_bound {
                 return match terminal {
                     Some((status, retry_after, detail)) => {
-                        End::Exhausted(status, retry_after, detail)
+                        // THE WALK EXHAUSTED WITH NOTHING SENT (the first attempt found no member):
+                        // the refused piece names `BreakerOpen` here too (R-REJECTED, coordinator
+                        // 2026-10-07, extends gap-2), so a plane that opens a hop's task can end it.
+                        if let Err(end) = self.refused_piece(run, ReasonCode::BreakerOpen).await {
+                            return end;
+                        }
+                        match self.stated_wait(run) {
+                            Ok(wait) => End::Exhausted(status, wait.or(retry_after), detail),
+                            Err(end) => end,
+                        }
                     }
                     None => End::Failed(ReasonCode::DestinationUnreachable),
                 };
@@ -1040,8 +1156,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 }
                 run.bufs.input.clear();
                 run.bufs.input.extend_from_slice(&piece.bytes);
-                let status = piece.status.filter(|_| first);
-                if status.is_some() {
+                // The status crosses on the answer's first piece, and on its trailers where the
+                // transport read one off them (`FarPiece::status`).
+                let head = first && piece.status.is_some();
+                let status = piece.status.filter(|_| first || piece.fields);
+                if head {
                     // THE ANSWER'S HEAD: the kept response fields cross with its first piece.
                     run.bufs.head = FieldList::new(piece.head.clone());
                 }
@@ -1058,7 +1177,8 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     status: status.unwrap_or((0, 0)),
                     attempt_no: 0,
                     src: Src::Input,
-                    head: status.is_some(),
+                    head,
+                    reason: 0,
                 };
                 match self.push(run, far, &mut Toward::Caller).await {
                     Step::End(end) => return end,
@@ -1070,6 +1190,50 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     Step::Answered(_) => {}
                 }
             }
+        }
+    }
+
+    /// THE REFUSED PIECE, for a plane whose tail states `TAIL_REFUSED_PIECE`: before the unit is
+    /// refused for `reason` (its member's credential unavailable before anything was dialled, or
+    /// the walk ending with no member left, whether or not a request went out: R-REJECTED, coordinator
+    /// 2026-10-07, extends gap-2), the plane is handed the
+    /// refusal as a piece first, on the unit's own ticket (`PIECE_REFUSED`, the reason in
+    /// `OnPieceIn::reason`): its record writes are written, so the plane changes what it holds
+    /// through the host's records as any piece does (a ticketless `refusal` reads none), and
+    /// nothing it emits goes anywhere. Then the unit is refused, rendered by `refusal`, as it is
+    /// for every other plane; a plane without the bit is sent nothing. `Err` = the unit ended on
+    /// the crossing.
+    async fn refused_piece(&self, run: &mut Pumping<'_>, reason: ReasonCode) -> Result<(), End> {
+        run.wait_member = None;
+        if self.driver.refused_piece {
+            let piece = Piece {
+                from: FROM_KERNEL,
+                flags: PIECE_REFUSED | PIECE_LAST,
+                status: (0, 0),
+                attempt_no: 0,
+                src: Src::None,
+                head: false,
+                reason: reason_code(reason),
+            };
+            if let Step::End(end) = self.push(run, piece, &mut Toward::Nowhere).await {
+                return Err(end);
+            }
+        }
+        Ok(())
+    }
+
+    /// THE WAIT A PLANE STATED its walk's exhausted refusal answers (`OnPieceOut::wait_member`, on
+    /// the refused piece): that member's own cooldown in the unit's pool, in place of the walk's
+    /// soonest across the pool. `Ok(None)` when it stated none (the walk's figure stands); a member
+    /// that is no member of the unit's pool is refused, the unit ending as the plane's fault, never
+    /// read as none.
+    fn stated_wait(&self, run: &mut Pumping<'_>) -> Result<Option<u32>, End> {
+        let Some(member) = run.wait_member.take() else {
+            return Ok(None);
+        };
+        match self.far.member_wait(run.token, &member) {
+            Some(wait) => Ok(Some(wait)),
+            None => Err(End::Failed(ReasonCode::PlanePanic)),
         }
     }
 
@@ -1099,6 +1263,44 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                 // still holds the unit's buffers. A retry after FAULT would have to lend fresh ones.
                 _ => return Step::End(End::Failed(ReasonCode::PlanePanic)),
             };
+            // THE PLANE'S FAULT READING of a far-end answer it was handed: recorded against the
+            // destination where it states one, the transport's reading otherwise (ARCHITECT
+            // 2026-10-05, plane first, then transport). Before the verdict acts, so a retry
+            // records the reading of the answer it leaves.
+            if piece.from == FROM_FAR_END {
+                self.far.judged(run.token, out.fault);
+            }
+            // THE MEMBER WHOSE WAIT THE REFUSAL ANSWERS, stated on the answer to the walk's exhausted
+            // refused piece and nowhere else (`OnPieceOut::wait_member`): kept for the refusal;
+            // stated anywhere else, or not UTF-8, it is the plane's fault, never ignored.
+            let wait = run.bufs.arena(out.wait_member);
+            if !wait.is_empty() {
+                let exhausted = piece.from == FROM_KERNEL
+                    && piece.flags & PIECE_REFUSED != 0
+                    && piece.reason == reason_code(ReasonCode::BreakerOpen);
+                match std::str::from_utf8(wait) {
+                    Ok(member) if exhausted => run.wait_member = Some(member.to_string()),
+                    _ => return Step::End(End::Failed(ReasonCode::PlanePanic)),
+                }
+            }
+            // THE ATTEMPT'S COUNTER LABELS, where the plane's answer to its ATTEMPT piece states
+            // them: words for the walk's counters to bound, never to trust (a word that is not
+            // UTF-8 is no word, and is stated as none).
+            if piece.from == FROM_KERNEL {
+                let word = |s: Span| {
+                    std::str::from_utf8(run.bufs.arena(s))
+                        .ok()
+                        .filter(|w| !w.is_empty())
+                        .map(str::to_string)
+                };
+                let labels = busbar_kernel_egress::ports::StatedLabels {
+                    pool: word(out.metric_pool),
+                    lane: word(out.metric_lane),
+                };
+                if labels.pool.is_some() || labels.lane.is_some() {
+                    self.far.stated(run.token, labels);
+                }
+            }
             let bufs = &run.bufs;
             let units = &bufs.units[..(out.units_written as usize).min(bufs.units.len())];
             let checkpoint = if units.is_empty() || !run.billed() {
@@ -1157,9 +1359,12 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             let far = match toward {
                 Toward::FarEnd(_) => true,
                 Toward::Session(_) => out.flags & EMIT_TO_FAR_END != 0,
-                Toward::Caller => false,
+                Toward::Caller | Toward::Nowhere => false,
             };
             match toward {
+                // The refused piece's answer: its record writes are written (above); its output
+                // goes nowhere and it bills nothing.
+                Toward::Nowhere => return Step::Answered(out.flags & EMIT_DONE != 0),
                 Toward::FarEnd(request) | Toward::Session(request) if far => {
                     if out.flags & EMIT_TO_FAR_END != 0 {
                         if out.verb.len != 0 {
@@ -1203,17 +1408,13 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                         // hook chose the serving member, after the plane's own fields, as 1.5.5
                         // stamped them; nothing on the default path or when no hook chose.
                         let chosen = self.lock().route_policy;
-                        if let Some(name) = chosen.filter(|_| {
-                            !bufs.member.is_empty() && crate::proxy::route_policy_headers_enabled()
-                        }) {
-                            fields.push((
-                                crate::proxy::HDR_ROUTE_POLICY.as_bytes().to_vec(),
-                                name.as_bytes().to_vec(),
-                            ));
-                            fields.push((
-                                crate::proxy::HDR_ROUTE_TARGET.as_bytes().to_vec(),
-                                bufs.member.clone(),
-                            ));
+                        if chosen.is_some() {
+                            route_policy_fields(
+                                &mut fields,
+                                crate::proxy::route_policy_headers_enabled(),
+                                chosen,
+                                &bufs.member,
+                            );
                         }
                         self.caller.head(out.reply_status, fields);
                         // The answer's head is the `response` stage (1.5.5 fires it at head time,
@@ -1259,6 +1460,29 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             }
             return Step::Answered(out.flags & EMIT_DONE != 0);
         }
+    }
+}
+
+/// THE ROUTE-POLICY TRANSPARENCY FIELDS (opt-in, `advanced.response_headers.route_policy`), as
+/// 1.5.5's `maybe_attach_route_policy_gated` gated them: the pair goes after the plane's own fields
+/// only when the operator opted in (`enabled`, the outer gate) AND a non-default policy chose the
+/// serving member (`policy`, the inner gate), naming the policy and the member; a local answer
+/// (no member) and every other combination add nothing.
+fn route_policy_fields(
+    fields: &mut HeadFields,
+    enabled: bool,
+    policy: Option<&str>,
+    member: &[u8],
+) {
+    if let Some(name) = policy.filter(|_| enabled && !member.is_empty()) {
+        fields.push((
+            crate::proxy::HDR_ROUTE_POLICY.as_bytes().to_vec(),
+            name.as_bytes().to_vec(),
+        ));
+        fields.push((
+            crate::proxy::HDR_ROUTE_TARGET.as_bytes().to_vec(),
+            member.to_vec(),
+        ));
     }
 }
 

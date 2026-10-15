@@ -19,7 +19,8 @@
 //! With the token, the same call is ordinary — which is the point, and what keeps the fixture above
 //! honest about WHY it fails:
 //!
-//! ```
+#![cfg_attr(feature = "test-seal", doc = "```")]
+#![cfg_attr(not(feature = "test-seal"), doc = "```ignore")]
 //! use busbar_contract::caps::{Admit, Admittance, Consumption, Grant, Hold, KernelSeal, Posted, PrincipalId, Usage, WriteMoney};
 //! let seal = KernelSeal::acquire_for_kernel();          // the kernel, and only the kernel
 //! let admit: Grant<Admittance> = Grant::<Admittance>::mint(&seal);

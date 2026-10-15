@@ -214,22 +214,23 @@ pub const ADMIN_PRINCIPAL_ID: &str = "admin";
 
 /// THE ROOT LEGACY TABLE: the operator credential's provider, as configuration spells it (the
 /// `auth.admin_auth:` default, the one `module:` whose definition may carry `token:`, and a reserved
-/// hook name). Frozen operator-visible config text naming an auth module no crate in this tree
-/// declares (GetBusbar/busbar-auth-admin-tokens); the root hands it to the kernel with its linked
-/// auth rows, so the kernel spells it nowhere (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2;
-/// BUSBAR-1.6.0.md:173, "sit in the root legacy table"). Moved from busbar-kernel's
-/// `data/operator_credential.toml`, value unchanged. A module name a build compiles in is declared
-/// as a `*_MODULE` constant, which is how the kind-isolation instance axis learns it.
-/// v1.5.5:crates/busbar/src/config/mod.rs:795 (ADMIN_TOKENS_MODULE); :1874,1891 (the hook-name
-/// reservation).
-pub const OPERATOR_AUTH_MODULE: &str = "admin-tokens";
+/// hook name). Frozen operator-visible config text the root hands to the kernel with its linked auth
+/// rows, so the kernel spells it nowhere (ARCHITECT 2026-09-30, KERNEL-AUTH-ZERO Q2;
+/// BUSBAR-1.6.0.md:173, "sit in the root legacy table"). The word is the manifest's: the registry key
+/// of the row its `[package.metadata.busbar.operator-auth]` table names, stated in packaging whether
+/// or not this build links that row, so no source here names the module. Its value is v1.5.5's
+/// (v1.5.5:crates/busbar/src/config/mod.rs:795; :1874,1891, the hook-name reservation).
+#[must_use]
+pub fn operator_auth_module() -> &'static str {
+    crate::LINKED.operator_auth
+}
 
-/// THE OPERATOR CREDENTIAL'S WORDS, off the root legacy table: [`OPERATOR_AUTH_MODULE`] and
-/// [`ADMIN_PRINCIPAL_ID`] (v1.5.5:crates/auth-admin-tokens/src/lib.rs:19, ADMIN_TOKENS_PRINCIPAL_ID).
+/// THE OPERATOR CREDENTIAL'S WORDS, off the root legacy table: [`operator_auth_module`] and
+/// [`ADMIN_PRINCIPAL_ID`] (v1.5.5's operator principal id).
 #[must_use]
 pub fn operator_words() -> busbar_kernel_identity::operator::OperatorWords {
     busbar_kernel_identity::operator::OperatorWords {
-        provider: OPERATOR_AUTH_MODULE,
+        provider: operator_auth_module(),
         principal_id: ADMIN_PRINCIPAL_ID,
     }
 }

@@ -72,8 +72,9 @@
 //!   carry, at least 1, over a sink of [`TIGHT_WIRE`] wire bytes, [`TIGHT_FRAME`] frame bytes and
 //!   ONE piece (so every frame's pieces are counted alone).
 //!
-//! THE SCRIPT IS CHOSEN BY THE DECLARED ROLE ([`script_for`]): a FRAMER runs the framer script above;
-//! a CARRIER runs the carrier script (`super::carrier`: listen/accept, dial, read, write, flush,
+//! THE SCRIPT IS CHOSEN BY THE DECLARED ROLE ([`script_for`]): a stream FRAMER runs the framer script
+//! above; a framer whose tail states `FRAMING_DATAGRAM` runs the datagram script
+//! (`super::datagram`: its every call carries the host's lane); a CARRIER runs the carrier script (`super::carrier`: listen/accept, dial, read, write, flush,
 //! shut and arrival over the suite's host I/O). An unknown role fails the suite.
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Field, OutHead, Outcome};
@@ -94,20 +95,24 @@ use busbar_contract::abi::transport::ROLE_CARRIER;
 /// The script a transport's declared role runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Script {
-    /// The framer script (this module).
+    /// The stream framer script (this module).
     Framer,
+    /// The datagram framer script (`super::datagram`): a framer whose tail states
+    /// `FRAMING_DATAGRAM`, every call of which carries the host's datagram lane.
+    Datagram,
     /// The carrier script (`super::carrier`).
     Carrier,
 }
 
-/// Which script a transport's declared `role` runs. Any other role is not a transport this suite
-/// knows, and fails.
+/// Which script a transport's declared `role` runs, and for a framer, which framing its tail
+/// states (`datagram`). Any other role is not a transport this suite knows, and fails.
 ///
 /// # Errors
 ///
 /// The role is no known role.
-pub(super) fn script_for(role: u32) -> Result<Script, String> {
+pub(super) fn script_for(role: u32, datagram: bool) -> Result<Script, String> {
     match role {
+        ROLE_FRAMER if datagram => Ok(Script::Datagram),
         ROLE_FRAMER => Ok(Script::Framer),
         ROLE_CARRIER => Ok(Script::Carrier),
         other => Err(format!(
@@ -131,7 +136,7 @@ const MAX_REDRIVE: usize = 4096;
 
 /// One byte-string input: a JSON string's UTF-8 bytes, or `{ "hex": "<bytes>" }` for bytes a JSON
 /// string cannot hold (a binary frame's header, say).
-fn text(v: &serde_json::Value, what: &str) -> Vec<u8> {
+pub(super) fn text(v: &serde_json::Value, what: &str) -> Vec<u8> {
     match v {
         serde_json::Value::String(s) => s.as_bytes().to_vec(),
         serde_json::Value::Null => panic!("conformance.json: transport.{what} is missing"),
@@ -207,9 +212,10 @@ impl Sink {
             len: 0,
             code: 0,
             status_class: 0,
-            _reserved: 0,
+            fault: 0,
             flags: 0,
             retry_after_secs: 0,
+            declared_len: 0,
         };
         Self {
             wire: vec![0; wire],
@@ -445,7 +451,7 @@ const CARRIER_OPS: [&str; 8] = [
     "listen", "accept", "dial", "read", "write", "flush", "shut", "arrival",
 ];
 
-fn carrier_ops(p: &Plugin<Transport>) -> [Outcome; 8] {
+pub(super) fn carrier_ops(p: &Plugin<Transport>) -> [Outcome; 8] {
     [
         go::<_, ListenOut>(p, slot::LISTEN, input::<ListenIn>())
             .0
@@ -466,7 +472,7 @@ fn carrier_ops(p: &Plugin<Transport>) -> [Outcome; 8] {
     ]
 }
 
-fn carrier_line(outcomes: &[Outcome; 8]) -> String {
+pub(super) fn carrier_line(outcomes: &[Outcome; 8]) -> String {
     CARRIER_OPS
         .iter()
         .zip(outcomes)
@@ -477,7 +483,7 @@ fn carrier_line(outcomes: &[Outcome; 8]) -> String {
 
 /// One `locate` of `target` with an authority buffer of `cap` bytes: its line, and its SHORT
 /// answer's re-call token with the size it named.
-fn locate(
+pub(super) fn locate(
     p: &Plugin<Transport>,
     target: &[u8],
     cap: usize,
@@ -553,7 +559,7 @@ fn ready_locate(authority: &[u8], secure: bool, has_name: bool) -> String {
 }
 
 /// What the contract requires of one step's answer.
-enum Want {
+pub(super) enum Want {
     /// Exactly this line.
     Is(String),
     /// A line that starts so.
@@ -581,8 +587,12 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         .context::<TransportFacts>()
         .cloned()
         .expect("a transport states its tail");
-    match script_for(facts.role) {
+    match script_for(facts.role, facts.datagram) {
         Ok(Script::Framer) => {}
+        Ok(Script::Datagram) => {
+            drop(p);
+            return super::datagram::fold(s, leg);
+        }
         Ok(Script::Carrier) => {
             drop(p);
             return super::carrier::fold(s, leg);
@@ -1082,7 +1092,7 @@ fn begin_dial_want(dial: &serde_json::Value, flags: u32) -> Want {
     Want::Is(yielded_line(&opening, &[], &[], flags, true))
 }
 
-fn contract(fold: &Fold, want: &[(String, Want)]) {
+pub(super) fn contract(fold: &Fold, want: &[(String, Want)]) {
     for (label, w) in want {
         let got = fold
             .iter()

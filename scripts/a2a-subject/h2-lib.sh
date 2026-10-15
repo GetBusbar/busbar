@@ -144,11 +144,9 @@ YAML
 }
 
 # THE OPERATOR'S APPROVAL CEREMONY — connect (re-contact + re-pin) then approve the fingerprint it
-# reports. Factored out of `h2_boot` because it is needed TWICE by any leg that applies live config:
-# `PUT /api/v1/admin/config/settings` rebuilds the App, and a rebuilt App's agent registry starts at
-# `Pending` again (measured: the next call answers 503 "fronted agent `probe` is not serving
-# (Pending)"). Re-running the ceremony is what an operator does after a config change, so a leg that
-# re-approves is driving the real path rather than working around it.
+# reports; `approve` approves the agent's trust key on the kernel's trust book (ARCHITECT FLIP-A2A),
+# a decision the book keeps across a config apply. Factored out of `h2_boot` because a leg that
+# applies live config runs it again; the second run finds the key already approved.
 h2_approve_agent() {
   local preview fingerprint approved state
   preview="$(curl -s --max-time 30 -X POST "http://127.0.0.1:${H2_ADMIN_PORT}/api/v1/admin/agents/probe/connect" \

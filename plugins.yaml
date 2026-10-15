@@ -138,6 +138,10 @@ legacy:
   gov14_change: "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
   # v1.5.5:crates/busbar/src/config_validate/mod.rs:1656 (the empty `store.module` refusal)
   module_examples: "sqlite | postgres | valkey"
+  # The browser-login button brands, in 1.5.5's match order: `<match tokens> : <label> : <icon ref>`, the
+  # tokens matched (any) against the lower-cased method name and OIDC issuer host; a method none matches
+  # is its title-cased name under the generic icon. v1.5.5:crates/busbar/src/auth/token.rs:1073-1112
+  login_brands: "microsoft entra azure msft aad login.microsoftonline : Microsoft : squares | github : GitHub : octocat | google accounts.google : Google : g-mark"
   # v1.5.5:crates/busbar/src/export/projection.rs:134 (`module_streams`: the streams each built-in exporter carried, `module:stream`)
   export_module_streams: "prometheus:metrics | request-log-webhook:logs | request-log-file:logs | otlp:traces"
   # v1.5.5:crates/busbar/src/config/mod.rs:3359 (`EXPORT_MODULES`: the order the unknown-exporter refusal lists the built-in exporters in)
@@ -148,6 +152,25 @@ legacy:
   export_trace_module: "otlp"
   # v1.5.5:crates/busbar/src/config/migrate_export.rs:31 (`EXPORT_TYPE_KEY_TO_INSTANCE_NAME`: type key, instance name, module)
   export_type_keys: "prometheus:metrics:prometheus | request-log-webhook:req-log:request-log-webhook | request-log-file:req-log-file:request-log-file | generic-webhook:req-log-audit:request-log-webhook"
+  # The 1.x hook registry's URL transport key, and the `module:` it migrates to.
+  # v1.5.5:crates/busbar/src/config/migrate.rs:1368, :1369, :1383 (and the words of :142, :1380, :1443)
+  hook_1x_url_transport: webhook
+  # The export type key the top-level `metrics:` block folds under.
+  # v1.5.5:crates/busbar/src/config/migrate.rs:1878 (and the words of :168, :1879, :1886; config/mod.rs:1043)
+  metrics_type_key: prometheus
+  # v1.5.5:crates/busbar/src/config/mod.rs:1002 (RETIRED_CONFIG_KEYS_1_5_3: the deleted `observability:` block's home)
+  observability_home: "the `export:` NAMED map — a `module: prometheus` / `module: request-log-webhook` / `module: otlp` instance (all telemetry egress is now the single `export:` surface)"
+  # v1.5.5:crates/busbar/src/config/migrate.rs:1856 (the request-log lift-out's change line)
+  observability_log_change: "observability.request_log_webhook_url (+ webhook limits) -> export.request-log-webhook.settings (built-in exporter)"
+  # The retired request-log `observability.*` keys and the settings key each folds into (`retired:settings`).
+  # v1.5.5:crates/busbar/src/config/migrate.rs:1836, :1839, :1842 (config/mod.rs:1030, :1034, :1038)
+  observability_log_keys: "request_log_webhook_url:url | max_inflight_webhook_deliveries:max_inflight_deliveries | webhook_delivery_timeout_secs:delivery_timeout_secs"
+  # The export type key the request-log keys fold under. v1.5.5:crates/busbar/src/config/migrate.rs:1854
+  observability_log_type_key: request-log-webhook
+  # The `observability:` trace-URL key. v1.5.5:crates/busbar/src/config/migrate.rs:1806; config/migrate_export.rs:239
+  observability_trace_key: otlp_url
+  # Its 1.4.x spelling. v1.5.5:crates/busbar/src/config/migrate.rs:1805
+  observability_trace_key_1_4: otlp_endpoint
   # THE 1.5.5 MANIFEST NAMES (`name_1_5_5.<repo>`): the signed manifest `name` each plugin repo's
   # release beside busbar v1.5.5 carried, read off that release's published tarball (manifest.json
   # `name`; every asset is digest-pinned in testing/shadow-oracle/plugin-digests.tsv). An entry whose
@@ -643,7 +666,10 @@ plugins:
     pending_crate: true
   - repo: busbar-secret-c
     kind: secret
-    alias: c
+    # Its alias is the repo's own name, not the bare language letter: a one-character alias is a word
+    # every one-letter string literal spells, so no instance census could tell the plugin from text.
+    # It has no 1.5.5 spelling to keep (registered 2026-10-02, decision #84).
+    alias: secret-c
     crate: busbar-secret-c
     version_line: "1.0"
     service: none

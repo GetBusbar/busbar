@@ -176,13 +176,12 @@ impl ProtocolWriter for AnthropicWriter {
         // `output_config.format`. A schema-LESS JSON mode (`json_object`) has no Anthropic form, so
         // it IS listed — the seam records the drop rather than it vanishing.
         let mut dropped = Vec::new();
-        // Only a NATIVE-structured-output lane drops a schema-less JSON mode; the forced-tool form
-        // (the default) carries it with a permissive object schema.
-        if caps.native_structured_output
-            && req
-                .response_format
-                .as_ref()
-                .is_some_and(|rf| rf.json && rf.schema.is_none())
+        // A NATIVE-structured-output lane drops only a schema-less JSON mode; every other lane
+        // drops the directive, as 1.5.5 did.
+        if req
+            .response_format
+            .as_ref()
+            .is_some_and(|rf| rf.json && (!caps.native_structured_output || rf.schema.is_none()))
         {
             dropped.push(keys::RESPONSE_FORMAT);
         }
@@ -336,7 +335,7 @@ impl ProtocolWriter for AnthropicWriter {
         // (`LaneCaps::native_structured_output`, declared per provider / model in the catalog), not
         // something this writer can see from the request: the native form 400s on models that
         // predate it (Claude 3.x, Sonnet 4 / Opus 4.0), and the forced-tool form 400s on models that
-        // reject forced tool use (Opus 4.7+/5.x, Sonnet 5, Fable 5.1). The default is the forced tool
+        // reject forced tool use (Opus 4.7+/5.x, Sonnet 5, Fable 5.1). The default is 1.5.5's drop
         // — what this writer sent before the capability existed — so nothing that worked stops.
         if caps.native_structured_output {
             if let Some(rf) = req.response_format.as_ref().filter(|rf| rf.json) {
@@ -367,61 +366,21 @@ impl ProtocolWriter for AnthropicWriter {
                     }
                 }
             }
-        } else {
-            // response_format → Anthropic TOOL-FORCING. Anthropic's Messages API has NO native
-            // `response_format` field, so a structured-output / JSON-schema directive that crossed a
-            // protocol boundary (e.g. an OpenAI/Responses caller routed to a Claude backend) is
-            // translated to the idiomatic Anthropic mechanism: synthesize ONE tool whose `input_schema`
-            // IS the requested JSON schema and pin `tool_choice` to it, so the model MUST answer as that
-            // tool's input. The response reader recognizes `RESPONSE_FORMAT_TOOL_NAME` and maps the
-            // forced `tool_use` back to a plain assistant text block, so the caller sees structured
-            // content and never the synthetic tool. Placed BEFORE the thinking decision below so the
-            // forced `tool_choice` is subject to the same thinking-incompatibility downgrade as any other
-            // forced choice (Anthropic 400s on a forced/targeted tool_choice alongside extended thinking).
-            //
-            // DELIBERATE DIVERGENCE from the 1.5.5 golden: 1.5.5 DROPPED `response_format` here (the model
-            // got no schema and returned free-form prose — the owner-reported bug). Emitting the tool +
-            // tool_choice changes the upstream request bytes ON PURPOSE. Only reachable cross-protocol:
-            // same-protocol Anthropic relays the raw upstream body and never enters this writer.
-            if let Some(rf) = &req.response_format {
-                if rf.json {
-                    let mut tool = serde_json::Map::new();
-                    tool.insert(
-                        keys::NAME.to_string(),
-                        serde_json::json!(RESPONSE_FORMAT_TOOL_NAME),
-                    );
-                    tool.insert(
-                        keys::DESCRIPTION.to_string(),
-                        serde_json::json!(rf.description.clone().unwrap_or_else(|| {
-                            "Respond by calling this tool with a JSON object that conforms to the \
-                             required schema."
-                                .to_string()
-                        })),
-                    );
-                    // Anthropic requires `input_schema` to be a JSON-Schema OBJECT. Use the caller's
-                    // schema when present; a schema-less `json_object` request (free-form JSON) falls
-                    // back to a permissive object schema so the tool definition stays valid.
-                    let schema = rf
-                        .schema
-                        .clone()
-                        .unwrap_or_else(|| serde_json::json!({(keys::TYPE): keys::OBJECT}));
-                    tool.insert(keys::INPUT_SCHEMA.to_string(), schema);
-                    // Append to any tools the request already carried (create the array otherwise).
-                    match out.get_mut(keys::TOOLS).and_then(|v| v.as_array_mut()) {
-                        Some(arr) => arr.push(serde_json::Value::Object(tool)),
-                        None => {
-                            out.insert(
-                                keys::TOOLS.to_string(),
-                                serde_json::Value::Array(vec![serde_json::Value::Object(tool)]),
-                            );
-                        }
-                    }
-                    out.insert(
-                        keys::TOOL_CHOICE.to_string(),
-                        serde_json::json!({(keys::TYPE): keys::TOOL, (keys::NAME): RESPONSE_FORMAT_TOOL_NAME}),
-                    );
-                }
-            }
+        } else if req.response_format.as_ref().is_some_and(|rf| rf.json) {
+            // A lane that does not declare native structured outputs has no Anthropic form for the
+            // directive: it is DROPPED with a warn, exactly as 1.5.5 dropped it (v1.5.5
+            // `crates/busbar/src/proto/anthropic/writer.rs:343-347`) and as the lane-capability key's
+            // contract states ("an omitted key sends what 1.5.5 sent", CHANGELOG 1.6.0). A synthetic
+            // forced tool is not the directive's mapping: it overwrote the caller's own `tool_choice`
+            // and `disable_parallel_tool_use`, and a streamed answer reached the client as a call to
+            // that tool instead of JSON content.
+            crate::codec::drops::writer_drop!(
+                crate::codec::drops::RESPONSE_FORMAT,
+                &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+                [parameter = keys::RESPONSE_FORMAT,],
+                "dropping response_format on Anthropic egress: this lane does not declare native \
+                 structured outputs (lossy-by-target)"
+            );
         }
         if let Some(max_tokens) = req.max_tokens {
             out.insert(keys::MAX_TOKENS.to_string(), serde_json::json!(max_tokens));
@@ -983,6 +942,15 @@ impl ProtocolWriter for AnthropicWriter {
                 data_obj.insert(
                     keys::ERROR_WORD.to_string(),
                     serde_json::Value::Object(error_obj),
+                );
+                // The event's body is Anthropic's ErrorResponse, whose published schema REQUIRES a
+                // top-level `request_id` (nullable); Anthropic's error bodies carry one, and this
+                // writer's buffered error envelope already mints it (`error_envelope`). The
+                // in-stream event now carries one too (v1.5.5 omitted it: OWNER rule 22, the llm
+                // spec-conformance rig judges this event against ErrorResponse).
+                data_obj.insert(
+                    super::REQUEST_ID.to_string(),
+                    serde_json::json!(synth_request_id()),
                 );
                 Some((
                     keys::ERROR_WORD.to_string(),

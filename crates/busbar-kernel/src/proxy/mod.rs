@@ -51,7 +51,7 @@ pub use proxy_vocab::{
 // (`EgressConnector`) have no remaining in-core reader after the move, and an externally-visible
 // re-export cannot rot into an unused-import warning while the path contract stands.
 pub use busbar_kernel::egress::engine::{
-    egress_request, install_proxy_tunnel_if_configured, EngineClient as EgressClient,
+    egress_request, install_proxy, EngineClient as EgressClient,
     EngineConnector as EgressConnector, EngineError as EgressError, EngineSpec as EgressClientSpec,
 };
 
@@ -168,7 +168,10 @@ pub fn agnostic_error_envelope(kind: &str, msg: &str) -> serde_json::Value {
 /// protocol registry, so it survives every LLM dialect being dropped from the build.
 pub fn auth_failure_status_and_kind(proto: &str) -> (http::StatusCode, &'static str) {
     crate::proto::decl_for(proto)
-        .map(|d| d.auth_failure_status_and_kind)
+        .and_then(|d| {
+            let (status, kind) = d.auth_failure_status_and_kind;
+            Some((http::StatusCode::from_u16(status).ok()?, kind))
+        })
         .unwrap_or((http::StatusCode::UNAUTHORIZED, KIND_AUTHENTICATION))
 }
 
@@ -230,7 +233,14 @@ pub fn ingress_error(
         .body(axum::body::Body::from(body))
         .unwrap_or_else(|_| status.into_response());
     if let Some(di) = &dialect {
-        di.attach_error_response_headers(resp.headers_mut(), kind, &envelope);
+        for (name, value) in di.error_response_fields(kind, &envelope) {
+            if let (Ok(n), Ok(v)) = (
+                axum::http::HeaderName::from_bytes(name.as_bytes()),
+                axum::http::HeaderValue::from_bytes(&value),
+            ) {
+                resp.headers_mut().insert(n, v);
+            }
+        }
     }
     resp
 }

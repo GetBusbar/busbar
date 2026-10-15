@@ -14,7 +14,7 @@
 //!
 //! What STAYED in busbar-core: `admin::v1::contract` (the frozen `AdminError`/`PATH_*` surface),
 //! `admin::v1::json` (the `err_json`/`ok_json`/`err_json_cond` envelope primitives),
-//! and `admin::planeverbs` (`CorePlaneAdminEnvelope`). The config version history (`versions`) lives here, on `App` behind the seam's slot.
+//! and `admin::planeverbs` (the plane trust verbs' audit record and refusal envelope). The config version history (`versions`) lives here, on `App` behind the seam's slot.
 
 pub mod admin_state;
 pub mod keys;
@@ -84,12 +84,10 @@ mod table_matches_openapi;
 pub use v1::service::mark_start;
 
 /// Register this crate's implementation of the admin-service mount seam
-/// (`busbar_kernel::admin::seam::AdminMountSeam`: the mount and the boot record) and
-/// bind this crate's [`planeverbs::CorePlaneAdminEnvelope`] as the self-enveloping plane-verb
-/// backing a plane's `admin-envelope` axis drives. Called by the composition root (`crates/busbar`'s
-/// `main`), unconditionally — the admin API carries no feature flag at the composition root; it is
-/// always mounted. Both registrations are first-wins, so a test binary that installs it more than
-/// once is unaffected.
+/// (`busbar_kernel::admin::seam::AdminMountSeam`: the mount and the boot record). Called by the
+/// composition root (`crates/busbar`'s `main`), unconditionally — the admin API carries no feature
+/// flag at the composition root; it is always mounted. The registration is first-wins, so a test
+/// binary that installs it more than once is unaffected.
 pub fn install() {
     busbar_kernel::admin::seam::install_admin_mount_seam(
         busbar_kernel::admin::seam::AdminMountSeam {
@@ -97,9 +95,6 @@ pub fn install() {
             record_boot: seam_record_boot,
         },
     );
-    // The plane trust-verb envelope (moved here from the kernel, P2 D4): bound with the mount it is
-    // served under, so every path that mounts the admin surface has it. Idempotent (first bind wins).
-    busbar_kernel::admin_verbs::install_plane_admin_envelope(&planeverbs::CorePlaneAdminEnvelope);
 }
 
 /// The boot-floor record the seam calls: this app's snapshot as version 0, so the history always has a
@@ -144,7 +139,7 @@ mod test_seams {
             // The operator credential's test registry row, before anything resolves the auth axis.
             // This binary links the operator plugin the composition root links and pins the root's
             // bytes, so it hands in the root's words as the root does (crates/busbar's legacy
-            // table, `root::auth_bindings::OPERATOR_AUTH_MODULE`; ARCHITECT 2026-09-30,
+            // table, `root::auth_bindings::operator_auth_module`; ARCHITECT 2026-09-30,
             // KERNEL-AUTH-ZERO Q2).
             for_each_operator_auth_row!(install_operator_row);
             fn install_operator_row(door: busbar_kernel::test_support::AuthDoor) {
@@ -162,11 +157,19 @@ mod test_seams {
                 (seam.install)();
             }
             super::install();
+            // The linked hook rows' names, as a composition root hands them in: this crate's tests
+            // link no hook plugin, so a stand-in row's name stands for one.
+            crate::v1::service::install_hook_plugins(TEST_LINKED_HOOKS);
         });
     }
+
+    /// The hook rows this test binary reports as linked (what a root's `LINKED_HOOK_NAMES` is).
+    pub(crate) const TEST_LINKED_HOOKS: &[&str] = &["stand-in-row"];
 }
 #[cfg(test)]
 use test_seams::ensure_seam;
+#[cfg(test)]
+pub(crate) use test_seams::TEST_LINKED_HOOKS;
 
 /// Build a `TestApp` after ensuring the process-wide test seams (planes, protocols, runtimes, mount
 /// seam) are installed — moved admin tests use this in place of `TestApp::new()` so the seams are in

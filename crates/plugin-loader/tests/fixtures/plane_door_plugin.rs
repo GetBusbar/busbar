@@ -123,6 +123,8 @@ const TAIL: &PlaneTail = &PlaneTail {
         fmt: busbar_contract::abi::mechanism::call::BLOB_ABSENT,
         flags: 0,
     },
+    metric_lanes: std::ptr::null(),
+    metric_lanes_len: 0,
     stream_ceiling_secs: 0,
 };
 

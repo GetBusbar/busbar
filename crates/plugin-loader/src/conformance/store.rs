@@ -57,7 +57,7 @@ use busbar_contract::records::{
 };
 use busbar_contract::store_calls::{StoreCalls, StoreFailure};
 
-use super::{crossings, dispatcher, load, ready_step, Fold, Leg, Recorder, Subject};
+use super::{crossings_of, dispatcher, load, ready_step, Fold, Leg, Recorder, Subject};
 use crate::dispatch::kinds::hook::Hook;
 use crate::dispatch::kinds::store::{Store, StoreFacts};
 use crate::dispatch::LoadError;
@@ -258,7 +258,7 @@ fn audit(seq: u64, action: &str) -> AuditRecord {
 /// schemas hold, 1.5.5's, `abi::cold`'s `PutCredential` "today only" kind; a store whose schema
 /// constrains the kind refuses any other). The kind is the plugin's `conformance.json`
 /// `store.credential_kind`, never a word this crate spells (`c1-literals`: the loader names no auth
-/// style).
+/// style). Its secret is in the contract's at-rest form (`CredentialSecret::secret`, `v1:plain`).
 pub(super) fn secret(kind: &str, id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
     CredentialSecret {
         meta: CredentialMeta {
@@ -275,7 +275,7 @@ pub(super) fn secret(kind: &str, id: &str, key_id: &str, public_id: &str) -> Cre
             revoke_reason: None,
             revision: 0,
         },
-        secret: format!("s3cret-{id}"),
+        secret: format!("v1:plain:s3cret-{id}"),
     }
 }
 
@@ -406,9 +406,10 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
 
     let d = dispatcher();
     let p = load::<Store>(s, leg, s.bind(&d, ROOT)).expect("the store door loads");
-    // The instance's crossing gate, held across `open` (which takes the plugin by value).
-    let held = p.clone();
-    let mut r = Recorder::new(crossings(&held));
+    // The instance's crossing gate, held across `open` (which takes the plugin by value; a
+    // `Plugin` is `!Clone`, so the gate is held through its instance).
+    let held = Arc::clone(&p.inner);
+    let mut r = Recorder::new(crossings_of(&held));
     r.line("facts", 0, || {
         format!(
             "{:?} {} max_inflight={} {:?}",

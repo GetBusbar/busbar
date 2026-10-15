@@ -16,16 +16,14 @@
 //! a reload voids no token, client, session or replay-ledger entry. Only what the config says is
 //! rebuilt.
 //!
-//! ## What is deliberately NOT durable, said here rather than discovered
+//! ## Where it is kept
 //!
-//! The store is `oauth_as::store::MemoryStorage`. Authorization codes, tokens, refresh tokens and
-//! registered clients therefore live in this process and are lost on restart. That is a REAL
-//! limitation and not a placeholder pretending otherwise: a restarted deployment invalidates every
-//! outstanding token and every dynamically registered client, and an agent connected to it has to
-//! log in again. Closing it means implementing `oauth_as::store::Storage` over busbar's store
-//! plugins, whose `take_*` methods have to be atomic remove-and-return or refresh tokens
-//! double-spend across nodes — which is exactly what that crate's `test-util` storage conformance
-//! harness exists to check, and is a unit of work in its own right.
+//! With the deployment's store reachable (a store is configured), everything the server holds —
+//! clients, codes, tokens, refresh tokens, consents, pushed requests, the replay ledger, the consent
+//! screen's sessions and answers, and an unconfigured signing key — is kept in that store under the
+//! kernel's own record kinds ([`super::shared`]), so every node on one store serves one server and a
+//! restart voids nothing. Without a store, the records live in this process
+//! (`oauth_as::store::MemoryStorage`) and a restart voids them.
 
 use std::sync::Arc;
 
@@ -82,6 +80,27 @@ pub(crate) struct Carried {
     /// `signing_key` and signed with by every later one that runs without it: a reload does not
     /// void the tokens it signed.
     ephemeral_key: std::sync::OnceLock<Vec<u8>>,
+}
+
+impl Carried {
+    /// What the FIRST generation holds: the deployment store's records when `store` is reachable,
+    /// this process's otherwise.
+    pub(crate) fn over(store: Option<Arc<dyn busbar_contract::store_calls::StoreCalls>>) -> Self {
+        match store {
+            Some(calls) => Self {
+                records: Arc::new(super::cimd::Records::shared(Arc::new(
+                    super::shared::Shared::new(calls),
+                ))),
+                ..Self::default()
+            },
+            None => Self::default(),
+        }
+    }
+
+    /// The deployment's store, when the records are kept there.
+    pub(crate) fn store(&self) -> Option<&Arc<super::shared::Shared>> {
+        self.records.store()
+    }
 }
 
 /// Why the plane could not be built. Distinct from [`super::config::AsCfgError`] because these are
@@ -162,8 +181,18 @@ impl AsPlane {
                 let der = match carried.ephemeral_key.get() {
                     Some(der) => der,
                     None => {
-                        let fresh =
-                            RingEs256Key::generate_pkcs8().map_err(AsBuildError::SigningKey)?;
+                        // ONE KEY PER DEPLOYMENT: kept in the store and read back by every node and
+                        // every generation; only the build that wins the store's minting claim
+                        // mints it. Without a store, one per process.
+                        let fresh = match carried.store() {
+                            Some(store) => super::shared::wait_for(store.signing_key(|| {
+                                RingEs256Key::generate_pkcs8().map_err(|e| e.to_string())
+                            }))
+                            .map_err(AsBuildError::SigningKeyMaterial)?,
+                            None => {
+                                RingEs256Key::generate_pkcs8().map_err(AsBuildError::SigningKey)?
+                            }
+                        };
                         carried.ephemeral_key.get_or_init(|| fresh)
                     }
                 };
@@ -344,6 +373,7 @@ impl AsPlane {
                 return response;
             }
         }
+        self.prepare(Seen::of(&request)).await;
         // Box::pin: the whole `oauth-as` dispatch future (~56 KB monomorphized), boxed at its one
         // call site, as `routes::forward` did before this method existed.
         Box::pin(self.service.handle(request)).await
@@ -351,14 +381,77 @@ impl AsPlane {
 
     /// The display summary of a pushed request that has not been redeemed yet. See
     /// [`super::cimd::Pushed`].
-    pub(crate) fn pushed(&self, request_uri: &str) -> Option<super::cimd::Pushed> {
-        self.server.store().pushed(request_uri)
+    pub(crate) async fn pushed(&self, request_uri: &str) -> Option<super::cimd::Pushed> {
+        self.server.store().pushed(request_uri).await
     }
 
     /// Record that the consent screen showed this pushed request, answering whether it had been
     /// shown before.
-    pub(crate) fn mark_pushed_shown(&self, request_uri: &str) -> bool {
-        self.server.store().mark_pushed_shown(request_uri)
+    pub(crate) async fn mark_pushed_shown(&self, request_uri: &str) -> bool {
+        self.server.store().mark_pushed_shown(request_uri).await
+    }
+
+    /// Open a consent session for `subject` under `id`: in this process, and in the deployment's
+    /// store when the records are kept there, so the browser's next request may land on any node.
+    pub(crate) async fn open_session(&self, subject: &str, id: String) -> String {
+        if let Some(store) = self.carried.store() {
+            if let Err(e) = store
+                .open_session(&id, subject, super::consent::SESSION_TTL)
+                .await
+            {
+                tracing::warn!(error = %e, "oauth_as: the consent session could not be kept");
+            }
+        }
+        self.sessions.open(subject, id)
+    }
+
+    /// Stake ONE answer for `key` against session `id`. With the store, the answer is kept there
+    /// alone: it is spent by exactly one `/authorize`, on whichever node ([`Self::handle`]).
+    pub(crate) async fn stake(&self, id: &str, key: String, approve: bool) {
+        match self.carried.store() {
+            Some(store) => {
+                if let Err(e) = store
+                    .stake(id, &key, approve, super::consent::SESSION_TTL)
+                    .await
+                {
+                    tracing::warn!(error = %e, "oauth_as: the consent answer could not be kept");
+                }
+            }
+            None => self.sessions.stake(id, key, approve),
+        }
+    }
+
+    /// Whether an answer is staked for `key` on session `id`, without spending it.
+    pub(crate) async fn is_staked(&self, id: &str, key: &str) -> bool {
+        match self.carried.store() {
+            Some(store) => store.is_staked(id, key).await.unwrap_or(false),
+            None => self.sessions.is_staked(id, key),
+        }
+    }
+
+    /// With the store: hand the two synchronous consent callbacks what this request needs from it,
+    /// before `oauth-as` asks. The session the cookie names is read into this process's table, and on
+    /// the authorization endpoint the answer staked for this exact request is SPENT in the store (one
+    /// node wins it) and planted here for the approval callback to spend.
+    async fn prepare(&self, seen: Seen) {
+        let Some(store) = self.carried.store() else {
+            return;
+        };
+        let Some(id) = seen.session else {
+            return;
+        };
+        let Ok(Some(subject)) = store.session_subject(&id).await else {
+            return;
+        };
+        self.sessions.hydrate(&id, &subject);
+        let Some(key) = seen.staked_key else {
+            return;
+        };
+        match store.spend(&id, &key).await {
+            Ok(Some(approve)) => self.sessions.plant(&id, key, approve),
+            Ok(None) => {}
+            Err(e) => tracing::debug!(error = %e, "oauth_as: the consent answer could not be read"),
+        }
     }
 
     pub(crate) fn identity(&self) -> &AsIdentity {
@@ -369,8 +462,55 @@ impl AsPlane {
         &self.server
     }
 
+    #[cfg(test)]
     pub(crate) fn sessions(&self) -> &Arc<super::consent::Sessions> {
         &self.sessions
+    }
+}
+
+/// What [`AsPlane::prepare`] reads off a request, owned, so nothing borrowed from the request is
+/// held across the store's awaits: the session the cookie names, and, on the authorization
+/// endpoint, the key an answer to this exact request is staked under
+/// ([`super::consent::request_key`] / [`super::consent::pushed_key`], as the approval callback
+/// computes it).
+struct Seen {
+    session: Option<String>,
+    staked_key: Option<String>,
+}
+
+impl Seen {
+    fn of<B>(request: &http::Request<B>) -> Self {
+        let session = super::consent::session_id(request.headers());
+        let staked_key = request
+            .uri()
+            .path()
+            .ends_with("/authorize")
+            .then(|| {
+                let pairs = request
+                    .uri()
+                    .query()
+                    .map(super::routes::form_urlencoded_pairs)
+                    .unwrap_or_default();
+                let param = |name: &str| {
+                    pairs
+                        .iter()
+                        .find(|(k, _)| k == name)
+                        .map(|(_, v)| v.clone())
+                };
+                let client_id = param("client_id")?;
+                Some(match param("request_uri") {
+                    Some(handle) => super::consent::pushed_key(&client_id, &handle),
+                    None => super::consent::request_key(
+                        &client_id,
+                        request.uri().path_and_query().map_or("", |p| p.as_str()),
+                    ),
+                })
+            })
+            .flatten();
+        Self {
+            session,
+            staked_key,
+        }
     }
 }
 
@@ -502,16 +642,31 @@ pub(crate) fn seam_build<C: crate::Connections>(
     secrets: Vec<(String, String)>,
     protected_resources: Vec<String>,
     prior: Option<&Arc<dyn std::any::Any + Send + Sync>>,
+    store: Option<Arc<dyn busbar_contract::store_calls::StoreCalls>>,
 ) -> Result<Arc<dyn std::any::Any + Send + Sync>, String> {
     let identity = crate::config::identity_of(block)?;
+    // The first generation decides where the records are kept; every later one carries them on.
     let carried = prior
         .and_then(|p| Arc::clone(p).downcast::<AsPlane>().ok())
-        .map_or_else(Arc::default, |p| Arc::clone(&p.carried));
+        .map_or_else(
+            || Arc::new(Carried::over(store)),
+            |p| Arc::clone(&p.carried),
+        );
     // The resolved signing-key material, handed back by the kernel under the path `check` reported
     // the reference at. None configured means an ephemeral key, and that is said at `warn`.
     let key_material = match identity.signing_key() {
         // Said once, when the key is generated: a later generation signs with the same one.
         None if carried.ephemeral_key.get().is_some() => None,
+        // The deployment's store keeps the key: every node and every restart signs with the one
+        // minted there, so nothing is said at `warn`.
+        None if carried.store().is_some() => {
+            diag_debug!(
+                OAUTH_AS_EPHEMERAL_SIGNING_KEY,
+                "oauth_as: no signing_key configured; signing with the key minted once into the \
+                 deployment's store"
+            );
+            None
+        }
         None => {
             diag_warn!(
                 OAUTH_AS_EPHEMERAL_SIGNING_KEY,
@@ -575,6 +730,12 @@ impl Sweeper {
 }
 
 impl AsPlane {
+    /// The unconfigured signing key this server signs with (PKCS#8 DER), when it has one.
+    #[cfg(test)]
+    pub(crate) fn unconfigured_key(&self) -> Option<Vec<u8>> {
+        self.carried.ephemeral_key.get().cloned()
+    }
+
     /// This server's sweeper, when it was built with one.
     #[cfg(test)]
     pub(crate) fn sweeper(&self) -> Option<&Sweeper> {

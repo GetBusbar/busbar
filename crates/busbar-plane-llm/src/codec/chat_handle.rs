@@ -438,8 +438,11 @@ pub struct ChatReqHandle(
     pub IrRequest,
     pub busbar_contract::ir::egress_prep::LaneCaps,
 );
-/// The chat RESPONSE handle.
-pub struct ChatRespHandle(pub IrResponse);
+/// The chat RESPONSE handle: the response, and the TRANSLATION CAP its plane enforces
+/// ([`IrHandle::apply_translate_cap`]; [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`]
+/// until the plane hands one), which bounds what a writer accumulates when the response is
+/// re-emitted as a stream.
+pub struct ChatRespHandle(pub IrResponse, pub usize);
 
 impl Sealed for ChatReqHandle {}
 impl Sealed for ChatRespHandle {}
@@ -505,6 +508,9 @@ impl IrHandle for ChatRespHandle {
     fn apply_request_echo(&mut self, ingress_request_body: &Value) {
         self.0.request_echo = Some(ingress_request_body.clone());
     }
+    fn apply_translate_cap(&mut self, cap: usize) {
+        self.1 = cap;
+    }
     fn wrap_buffered_as_stream(
         &self,
         ingress_protocol: &str,
@@ -520,6 +526,7 @@ impl IrHandle for ChatRespHandle {
                 super::proto_stream::StreamTranslate::synthesize_from_response(
                     ingress_protocol,
                     &self.0,
+                    self.1,
                 )
             })
     }
@@ -640,7 +647,12 @@ impl OperationHandler for ChatOperation {
             .ok_or_else(|| CodecError::Malformed(format!("unknown protocol {}", self.0)))?;
         p.reader()
             .read_response(v)
-            .map(|r| Box::new(ChatRespHandle(r)) as Box<dyn IrHandle>)
+            .map(|r| {
+                Box::new(ChatRespHandle(
+                    r,
+                    busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+                )) as Box<dyn IrHandle>
+            })
             .map_err(|e| CodecError::Malformed(format!("{e:?}")))
     }
     fn read_request(
@@ -666,7 +678,12 @@ impl OperationHandler for ChatOperation {
             .ok_or_else(|| CodecError::Malformed(format!("unknown protocol {}", self.0)))?;
         p.reader()
             .read_response(&v)
-            .map(|r| Box::new(ChatRespHandle(r)) as Box<dyn IrHandle>)
+            .map(|r| {
+                Box::new(ChatRespHandle(
+                    r,
+                    busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+                )) as Box<dyn IrHandle>
+            })
             .map_err(|e| CodecError::Malformed(format!("{e:?}")))
     }
 }

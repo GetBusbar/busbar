@@ -19,8 +19,6 @@
 //! the dialect-specific helpers are not shapes and stay there.
 
 use crate::operation::OpVerb;
-// TRANSITIONAL: drains at codec-seam (a)/(c).
-use http::{HeaderMap, HeaderName, HeaderValue};
 
 // ── THE CANONICAL error-`type` VOCABULARY. The forward layer's error-KIND bank below, the admin
 //    API's not-found/invalid-request types and every dialect writer alias these, so each shared
@@ -257,30 +255,32 @@ pub trait StreamTranslator: Send {
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct ClaimStrength(pub u16);
 
-/// The ROUTER detection predicate a protocol supplies: `(headers, path) -> Option<ClaimStrength>`,
+/// The ROUTER detection predicate a protocol supplies: `(fields, path) -> Option<ClaimStrength>`,
 /// `Some` at the tightest rung this protocol claims for that request, `None` when it does not claim
 /// it at all. The kernel's generic fold folds every registered protocol's predicate in
 /// registration order and keeps the tightest claim. A shape: a dialect names it through this crate
-/// alone.
-pub type ClaimsFn = fn(&http::HeaderMap, &str) -> Option<ClaimStrength>;
+/// alone, and reads a field through [`head_field`].
+pub type ClaimsFn = fn(HeadFields<'_>, &str) -> Option<ClaimStrength>;
 
 /// A request head as a plane receives it: its fields in order, each name and value as bytes (the
 /// plane ABI's head fields, borrowed). A plane is transport-blind, so it reads a head as this and
 /// never as a transport's header type.
-/// TRANSITIONAL: drains at codec-seam (a)/(c).
+/// TRANSITIONAL: drains at codec-seam (c).
 pub type HeadFields<'a> = &'a [(&'a [u8], &'a [u8])];
 
-/// `fields` as the header map a [`ClaimsFn`] or a dialect's error-header writer reads; a field whose
-/// name or value is not a legal header is skipped, as no such header reaches a dialect today.
-/// TRANSITIONAL: drains at codec-seam (a)/(c).
-fn header_map(fields: HeadFields<'_>) -> HeaderMap {
-    let mut h = HeaderMap::with_capacity(fields.len());
-    for (name, value) in fields {
-        if let (Ok(n), Ok(v)) = (HeaderName::from_bytes(name), HeaderValue::from_bytes(value)) {
-            h.append(n, v);
-        }
-    }
-    h
+/// The value of the FIRST field in `fields` named `name` (in any case) whose value is a legal header
+/// value (every byte `>= 0x20` but DEL, or a tab), or `None` when no such field is present. A field
+/// whose value is not legal is passed over, never read, so a predicate sees exactly the first value
+/// a header map built from the same fields would hold.
+#[must_use]
+pub fn head_field<'a>(fields: HeadFields<'a>, name: &str) -> Option<&'a [u8]> {
+    fields
+        .iter()
+        .find(|(n, v)| {
+            n.eq_ignore_ascii_case(name.as_bytes())
+                && v.iter().all(|b| (*b >= 0x20 && *b != 0x7f) || *b == b'\t')
+        })
+        .map(|(_, v)| *v)
 }
 
 /// The RESIDUAL detection predicate a protocol supplies: `path -> Option<ClaimStrength>`, from the
@@ -357,26 +357,14 @@ pub trait DialectCodec: Send + Sync {
     ) -> Option<(String, serde_json::Value)>;
     fn wants_array_stream(&self, body: &serde_json::Value) -> bool;
     fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>);
-    fn attach_error_response_headers(
-        &self,
-        headers: &mut http::HeaderMap,
-        kind: &str,
-        envelope: &serde_json::Value,
-    );
-    /// The head fields this dialect's error response carries, as a plane writes them: what
-    /// [`DialectCodec::attach_error_response_headers`] attaches, in order, names lowercase.
-    /// TRANSITIONAL: drains at codec-seam (a)/(c).
+    /// The head fields this dialect's error response carries beside its body, given the built
+    /// error `envelope` and the canonical `kind`: one pair per field, in order, names lowercase,
+    /// each name once. Empty for a dialect whose error rides the body alone.
     fn error_response_fields(
         &self,
         kind: &str,
         envelope: &serde_json::Value,
-    ) -> Vec<(String, Vec<u8>)> {
-        let mut h = header_map(&[]);
-        self.attach_error_response_headers(&mut h, kind, envelope);
-        h.iter()
-            .map(|(n, v)| (n.as_str().to_string(), v.as_bytes().to_vec()))
-            .collect()
-    }
+    ) -> Vec<(String, Vec<u8>)>;
     /// This protocol's upstream-error vocabulary (the reader's `extract_error`), reached by name so
     /// `handlers::protocol_error` names no concrete reader. `status` is the raw HTTP code.
     fn extract_error(&self, status: u16, body: &[u8]) -> crate::upstream::RawUpstreamError;
@@ -436,11 +424,9 @@ pub enum IngressAuth {
 }
 
 /// A protocol's declared egress credential-header builder: the resolved per-request credential
-/// plus the signing context in, the header pairs to attach out. See
-/// [`ProtocolDecl::egress_auth_headers`].
-///
-pub type EgressAuthHeaders =
-    fn(&str, &SigningContext) -> Vec<(http::HeaderName, http::HeaderValue)>;
+/// plus the signing context in, the head fields to attach out — `(name, value)` pairs, names
+/// lowercase, in order. See [`ProtocolDecl::egress_auth_headers`].
+pub type EgressAuthHeaders = fn(&str, &SigningContext) -> Vec<(String, Vec<u8>)>;
 
 /// HOW ONE CREDENTIAL IS PRESENTED on an egress request — which header carries it and in what
 /// form. Declared data: the kernel's egress-auth unit reads it and writes the header itself, so the
@@ -540,8 +526,8 @@ impl EgressScheme {
 /// A SHAPE (DECISIONS #83): the declaration a protocol FILLS and the kernel reads, so both sides must
 /// agree on it field for field. Relocated from `busbar-substrate-values::proto` (#83a SD-2b), which
 /// re-exports it under its historical path; the registry that holds the installed declarations is
-/// not a shape and stays kernel-side. Every field type is a contract, `http` or `std` type, so the
-/// declaration names no kernel type.
+/// not a shape and stays kernel-side. Every field type is a contract or `std` type, so the
+/// declaration names no kernel type and no transport's.
 pub struct ProtocolDecl {
     /// The registry key, and the metrics label. **OPERATOR-VISIBLE:** a protocol name appears in
     /// dashboards and in `providers.*.protocol` config, so renaming one re-bases a metric series
@@ -650,7 +636,7 @@ pub struct ProtocolDecl {
 
     /// Replaces `ProtocolWriter::quota_exceeded_status()`. The native HTTP status a quota/budget
     /// exhaustion maps to (429 for most; a service-quota exception may be 400).
-    pub quota_exceeded_status: http::StatusCode,
+    pub quota_exceeded_status: u16,
 
     /// Replaces `ProtocolWriter::ingress_is_eventstream()`. True when this protocol's ingress client
     /// decodes a binary event-stream body (a native SDK that reads framed events).
@@ -676,7 +662,7 @@ pub struct ProtocolDecl {
 
     /// Replaces `ProtocolWriter::auth_failure_status_and_kind()`. The HTTP status and error `kind` a
     /// bad/missing credential yields, matched to what the genuine vendor returns.
-    pub auth_failure_status_and_kind: (http::StatusCode, &'static str),
+    pub auth_failure_status_and_kind: (u16, &'static str),
 
     /// Replaces `ProtocolWriter::ingress_relays_amzn_headers()`. True when this protocol's ingress
     /// client expects `x-amzn-RequestId` (and `x-amzn-errortype` on errors) on every response.
@@ -761,13 +747,11 @@ pub struct ProtocolDecl {
 }
 
 impl ProtocolDecl {
-    /// This dialect's router claim on `(path, fields)`: [`ProtocolDecl::claims`] over a plane's
+    /// This dialect's router claim on `(path, fields)`: [`ProtocolDecl::claims`] over a request's
     /// head fields, `None` when the dialect claims no request at all.
-    /// TRANSITIONAL: drains at codec-seam (a)/(c).
     #[must_use]
     pub fn claim_over(&self, path: &str, fields: HeadFields<'_>) -> Option<ClaimStrength> {
-        let claims = self.claims?;
-        claims(&header_map(fields), path)
+        (self.claims?)(fields, path)
     }
 
     /// A NAME-ONLY DECLARATION: this key, and the neutral zero for every other field.
@@ -808,13 +792,13 @@ impl ProtocolDecl {
             frame_after_message_start: None,
             reshapes_body_at_path_base: false,
             max_cache_control_breakpoints: None,
-            quota_exceeded_status: http::StatusCode::TOO_MANY_REQUESTS,
+            quota_exceeded_status: 429,
             ingress_is_eventstream: false,
             emits_sse_done_terminator: false,
             max_citations_per_delta: None,
             egress_user_agent: EGRESS_UA_DEFAULT,
             has_model_in_url: false,
-            auth_failure_status_and_kind: (http::StatusCode::UNAUTHORIZED, ERR_TYPE_AUTHENTICATION),
+            auth_failure_status_and_kind: (401, ERR_TYPE_AUTHENTICATION),
             ingress_relays_amzn_headers: false,
             ingress_relayed_response_header_names: &[],
             auth_failure_message: "authentication failed",

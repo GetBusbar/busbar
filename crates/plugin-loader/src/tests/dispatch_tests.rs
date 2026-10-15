@@ -162,6 +162,27 @@ fn stated_with(f: ManifestFacts) -> Vec<u8> {
     b
 }
 
+/// RED (THE DESIGN C.1, `BUSBAR-1.6.0.md` l.3868: "`Plugin<K>` is `!Clone`"): a loaded plugin's
+/// handle cannot be copied; a holder that shares the instance shares an `Arc<Plugin<K>>`. The
+/// probe below is AMBIGUOUS, and so does not compile, exactly when `Plugin<K>` implements `Clone`
+/// (both impls of `NotClone` apply); with no `Clone` impl only the first applies.
+#[test]
+fn a_plugin_handle_is_not_clone() {
+    trait NotClone<A> {
+        fn verdict() -> &'static str {
+            "a Plugin is not Clone"
+        }
+    }
+    impl<T: ?Sized> NotClone<()> for T {}
+    #[allow(dead_code)]
+    struct WhenClone;
+    impl<T: Clone> NotClone<WhenClone> for T {}
+    assert_eq!(
+        <Plugin<TestKind> as NotClone<_>>::verdict(),
+        "a Plugin is not Clone"
+    );
+}
+
 fn row() -> LinkedRow {
     LinkedRow::of(plug::busbar_plugin_door).expect("the linked row states its Statement")
 }
@@ -290,6 +311,7 @@ fn config() -> DispatchConfig {
             ..Budgets::default()
         },
         watchdog_period: Duration::from_millis(20),
+        ..DispatchConfig::default()
     }
 }
 
@@ -714,7 +736,7 @@ mod open_faults_on_its_resume {
     /// Crossings that were handed the freed box.
     static STALE: AtomicU32 = AtomicU32::new(0);
     /// The pended `open`'s wake, its context and its ticket.
-    static WAKE: Mutex<Option<(WakeFn, usize, Ticket)>> = Mutex::new(None);
+    static WAKE: Mutex<Option<(WakeFn, HostCtx, Ticket)>> = Mutex::new(None);
 
     fn real() -> OpsHead {
         REAL.lock().unwrap().expect("the door was restated")
@@ -749,7 +771,7 @@ mod open_faults_on_its_resume {
                 let ticket = (*input.cast::<InHead>()).ticket;
                 let tables = &*(*input.cast::<OpenIn>()).host;
                 let wake = tables.wake.expect("the host hands a wake");
-                *WAKE.lock().unwrap() = Some((wake, tables.ctx.ptr as usize, ticket));
+                *WAKE.lock().unwrap() = Some((wake, tables.ctx, ticket));
                 (*out.cast::<busbar_contract::abi::mechanism::call::OutHead>()).outcome =
                     RawOutcome::of(Outcome::Pending);
             }
@@ -824,12 +846,7 @@ mod open_faults_on_its_resume {
             .outcome;
 
         let (wake, ctx, ticket) = WAKE.lock().unwrap().take().expect("the open pended");
-        wake(
-            HostCtx {
-                ptr: ctx as *mut c_void,
-            },
-            ticket,
-        );
+        wake(ctx, ticket);
         let opened = reply.wait(WAIT).expect("the open answers");
         assert_eq!(opened.outcome, Outcome::Fault);
         assert_ne!(FREED.load(Ordering::SeqCst), 0, "the resume freed the box");
@@ -1866,17 +1883,76 @@ fn red_a_hung_ticketless_call_faults_its_instance() {
     let d = Dispatcher::new(config());
     let (p, _sink) = opened(&d);
     let (p2, _s2) = opened(&d);
-    let hung = p.clone();
+    // One instance, shared with the hung caller (a `Plugin` is `!Clone`).
+    let p = Arc::new(p);
+    let hung = Arc::clone(&p);
     let caller =
         std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:ticketless")).outcome);
     until("the watchdog faults the instance", || p.is_faulted());
     assert!(!p2.is_faulted(), "only the hung instance");
+    assert_eq!(
+        d.stats().quarantined,
+        1,
+        "bb_plugin_quarantined_total counts the quarantine (the default N is the first breach)"
+    );
     assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Fault);
     assert_eq!(
         p2.call(TICK, &mut frame(b"unhang:ticketless")).outcome,
         Outcome::Ready
     );
     caller.join().unwrap();
+}
+
+/// THE DESIGN A.8: "on a breach of the threshold, N times, the instance is quarantined". With
+/// N = 2 the first breach is counted ONCE (however many scans see the call hung), the instance
+/// keeps serving, and nothing is quarantined; the second breach quarantines it, counts
+/// `bb_plugin_quarantined_total`, and every new call is FAULT without a crossing.
+#[test]
+fn red_an_instance_is_quarantined_on_its_nth_breach_and_not_before() {
+    let d = Dispatcher::new(DispatchConfig {
+        quarantine_after: 2,
+        ..config()
+    });
+    let (p, _sink) = opened(&d);
+    let p = Arc::new(p);
+    let (p2, _s2) = opened(&d);
+    let breaches = || p.inner.breaches.load(std::sync::atomic::Ordering::SeqCst);
+
+    let hung = Arc::clone(&p);
+    let first =
+        std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:quarantine-n-1")).outcome);
+    until("the watchdog counts the first breach", || breaches() == 1);
+    // Several scans pass while the call stays hung; it is still one breach.
+    std::thread::sleep(Duration::from_millis(120));
+    assert_eq!(breaches(), 1, "a hung call is one breach, not one per scan");
+    assert!(!p.is_faulted(), "one breach of two quarantines nothing");
+    assert_eq!(d.stats().quarantined, 0);
+    assert_eq!(
+        p2.call(TICK, &mut frame(b"unhang:quarantine-n-1")).outcome,
+        Outcome::Ready
+    );
+    first.join().unwrap();
+    assert_eq!(
+        p.call(TICK, &mut frame(answer(1))).outcome,
+        Outcome::Ready,
+        "below N the instance keeps serving"
+    );
+
+    let hung = Arc::clone(&p);
+    let second =
+        std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:quarantine-n-2")).outcome);
+    until("the second breach quarantines the instance", || {
+        p.is_faulted()
+    });
+    assert_eq!(breaches(), 2);
+    assert_eq!(d.stats().quarantined, 1, "bb_plugin_quarantined_total");
+    assert_eq!(p.call(TICK, &mut frame(answer(1))).outcome, Outcome::Fault);
+    assert!(!p2.is_faulted(), "only the breaching instance");
+    assert_eq!(
+        p2.call(TICK, &mut frame(b"unhang:quarantine-n-2")).outcome,
+        Outcome::Ready
+    );
+    second.join().unwrap();
 }
 
 #[test]
@@ -2108,7 +2184,8 @@ fn red_a_hung_ticketless_open_is_watched_from_bind() {
         },
     )
     .unwrap();
-    let hung = p.clone();
+    let p = Arc::new(p);
+    let hung = Arc::clone(&p);
     let caller = std::thread::spawn(move || {
         let mut f = open_frame();
         let settings = b"hang:open";
@@ -2503,4 +2580,254 @@ fn a_dispatcher_built_and_first_submitted_inside_a_runtime_runs_in_no_runtime_un
         "a second install is ignored"
     );
     assert!(d.installed_runtime().is_some());
+}
+
+/// #74, ONE GUESS: an instance that hands the host's `wake` a context the host did not mint, from
+/// inside its own crossing, is quarantined (N = 1). The crossing is a `tick`, a lifecycle op, so
+/// this is the FFI-worker path: the mark travels with the crossing onto the plugin thread. The
+/// forging op ITSELF answers FAULT (its answer is not judged and its envelope not read), the
+/// instance is faulted and its every later op is FAULT without a crossing, and its own handle is
+/// REVOKED. The control: an instance that only hands back its own context is never faulted.
+#[test]
+fn a_forged_context_quarantines_the_instance_that_forged_it() {
+    let d = Dispatcher::new(config());
+    let honest = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &honest, 0), Outcome::Ready);
+    assert_eq!(
+        honest.call(TICK, &mut frame(plug::COUNT)).outcome,
+        Outcome::Ready
+    );
+    assert!(!honest.is_faulted(), "an honest instance was faulted");
+
+    let forger = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &forger, 0), Outcome::Ready);
+    assert_eq!(
+        forger.call(TICK, &mut frame(plug::FORGE)).outcome,
+        Outcome::Fault,
+        "the forging op answered other than FAULT"
+    );
+    assert!(
+        forger.is_faulted(),
+        "the forging instance was not quarantined"
+    );
+    assert_eq!(
+        forger.call(TICK, &mut frame(plug::COUNT)).outcome,
+        Outcome::Fault,
+        "a quarantined instance was called again"
+    );
+    let latch = crate::dispatch::handle::Latch::new();
+    assert!(
+        crate::dispatch::handle::resolve_in(forger.inner.ctx(), &latch, None).is_none(),
+        "the quarantined instance's own handle still names it"
+    );
+    assert_eq!(
+        latch.forged(),
+        0,
+        "a revoked handle was counted as a forgery"
+    );
+    assert!(
+        !honest.is_faulted(),
+        "the quarantine reached another instance"
+    );
+    assert!(crate::dispatch::handle::resolve_in(honest.inner.ctx(), &latch, None).is_some());
+}
+
+/// #74, IN A REAL CROSSING: another instance's handle is a forgery, revoked or not, and quarantines
+/// the instance crossing; the latch does not move (the forgery had someone to blame). Driven under
+/// `with_crossing` with a real instance, as a crossing states it.
+#[test]
+fn inside_a_crossing_another_instances_handle_quarantines_the_crossing() {
+    let d = Dispatcher::new(config());
+    let crossing = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &crossing, 0), Outcome::Ready);
+    let other = linked(Arc::new(Recorder::default()));
+    let (own_ctx, other_ctx) = (crossing.inner.ctx(), other.inner.ctx());
+    // The other instance revoked first: a revoked handle of ANOTHER instance is still a forgery.
+    other.inner.revoke();
+    let latch = crate::dispatch::handle::Latch::new();
+    let (own, theirs) = crate::dispatch::plugin::with_crossing(Some(&*crossing.inner), || {
+        let own = crate::dispatch::handle::resolve_in(
+            own_ctx,
+            &latch,
+            crate::dispatch::plugin::crossing_wake(),
+        )
+        .is_some();
+        let theirs = crate::dispatch::handle::resolve_in(
+            other_ctx,
+            &latch,
+            crate::dispatch::plugin::crossing_wake(),
+        )
+        .is_some();
+        (own, theirs)
+    });
+    assert!(own, "the crossing's own handle was refused");
+    assert!(
+        !theirs,
+        "another instance's handle resolved inside a crossing"
+    );
+    assert_eq!(latch.forged(), 1, "the forgery was not counted");
+    assert_eq!(
+        latch.unattributed(),
+        0,
+        "an attributed forgery moved the latch"
+    );
+    assert!(
+        crossing.is_faulted(),
+        "the crossing instance was not quarantined"
+    );
+}
+
+/// #74, THE INLINE HOT-LANE SLOT: a call into plugin code that is no mechanism crossing, nested in
+/// one, runs with the mark nulled. A forgery made inside it blames no one (the outer instance stays
+/// unquarantined, the latch counts it) and the outer crossing's mark is restored after it.
+#[test]
+fn a_forgery_inside_an_inline_slot_leaves_the_outer_crossing_alone() {
+    let d = Dispatcher::new(config());
+    let outer = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &outer, 0), Outcome::Ready);
+    let forged = busbar_contract::abi::mechanism::ticket::HostCtx {
+        handle: outer.inner.ctx().handle ^ (1 << crate::dispatch::handle::HANDLE_ID_BITS),
+    };
+    let latch = crate::dispatch::handle::Latch::new();
+    let restored = crate::dispatch::plugin::with_crossing(Some(&*outer.inner), || {
+        crate::dispatch::plugin::without_crossing(|| {
+            assert!(crate::dispatch::plugin::crossing_wake().is_none());
+            assert!(crate::dispatch::handle::resolve_in(
+                forged,
+                &latch,
+                crate::dispatch::plugin::crossing_wake(),
+            )
+            .is_none());
+        });
+        crate::dispatch::plugin::crossing_wake().is_some_and(|w| std::ptr::eq(w, outer.inner.wake))
+    });
+    assert!(restored, "the outer crossing's mark was not restored");
+    assert!(
+        !outer.is_faulted(),
+        "the outer instance was quarantined for an inline forgery"
+    );
+    assert_eq!(
+        latch.unattributed(),
+        1,
+        "the unattributed forgery was not counted"
+    );
+}
+
+/// #74, REVOCATION: a closed instance's handle, a dropped one's and a watchdog-faulted one's name
+/// nothing, and none of the three is counted as a forgery (their tags are the host's own).
+#[test]
+fn a_closed_a_dropped_and_a_watchdog_faulted_instance_name_nothing() {
+    let d = Dispatcher::new(config());
+    let latch = crate::dispatch::handle::Latch::new();
+    let resolves = |ctx| crate::dispatch::handle::resolve_in(ctx, &latch, None).is_some();
+
+    let closed = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &closed, 0), Outcome::Ready);
+    let ctx = closed.inner.ctx();
+    assert!(resolves(ctx));
+    let t = d.mint(0).expect("a ticket");
+    let _ = d
+        .submit(
+            &closed,
+            t,
+            slot::CLOSE,
+            Frame::new(in_head(), out_head()),
+            DeadlineClass::Call,
+            0,
+        )
+        .wait(WAIT);
+    d.recycle(t);
+    assert!(!resolves(ctx), "a closed instance's handle still names it");
+
+    let dropped = linked(Arc::new(Recorder::default()));
+    let ctx = dropped.inner.ctx();
+    assert!(resolves(ctx));
+    drop(dropped);
+    assert!(!resolves(ctx), "a dropped instance's handle still names it");
+
+    let hung = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &hung, 1), Outcome::Ready);
+    let ctx = hung.inner.ctx();
+    let t = d.mint(1).expect("a ticket");
+    let reply = d.submit(
+        &hung,
+        t,
+        TICK,
+        frame(b"hang:revoked"),
+        DeadlineClass::Call,
+        0,
+    );
+    until("the watchdog faults the hung instance", || {
+        hung.is_faulted()
+    });
+    assert!(
+        !resolves(ctx),
+        "a watchdog-faulted instance's handle still names it"
+    );
+    let releaser = linked(Arc::new(Recorder::default()));
+    assert_eq!(open(&d, &releaser, 0), Outcome::Ready);
+    let _ = releaser.call(TICK, &mut frame(b"unhang:revoked"));
+    let _ = reply.wait(WAIT);
+
+    assert_eq!(
+        latch.forged(),
+        0,
+        "a revoked handle was counted as a forgery"
+    );
+}
+
+/// #74, REVOCATION ON THE WATCHDOG'S TICKET-LESS PATH: an instance adopted by the dispatcher whose
+/// ticket-less call hangs past its budget is faulted by the watchdog (`ticketless`), and its handle
+/// names nothing from then on, with no forgery counted.
+#[test]
+fn a_ticketless_hang_faulted_by_the_watchdog_revokes_the_handle() {
+    let d = Dispatcher::new(config());
+    let bind_adopted = || Bind {
+        dispatcher: d.adopter(),
+        ..bind(Arc::new(Recorder::default()))
+    };
+    let hung = load_linked::<TestKind>(&row(), bind_adopted()).expect("the linked door loads");
+    assert_eq!(open(&d, &hung, 0), Outcome::Ready);
+    let ctx = hung.inner.ctx();
+    let latch = crate::dispatch::handle::Latch::new();
+    assert!(crate::dispatch::handle::resolve_in(ctx, &latch, None).is_some());
+    std::thread::scope(|scope| {
+        let caller = scope.spawn(|| hung.call(TICK, &mut frame(b"hang:ticketless")).outcome);
+        until("the watchdog faults the ticket-less hang", || {
+            hung.is_faulted()
+        });
+        assert!(
+            crate::dispatch::handle::resolve_in(ctx, &latch, None).is_none(),
+            "a watchdog-faulted instance's handle still names it"
+        );
+        let releaser =
+            load_linked::<TestKind>(&row(), bind_adopted()).expect("the linked door loads");
+        assert_eq!(open(&d, &releaser, 0), Outcome::Ready);
+        let _ = releaser.call(TICK, &mut frame(b"unhang:ticketless"));
+        let _ = caller.join();
+    });
+    assert_eq!(
+        latch.forged(),
+        0,
+        "a revoked handle was counted as a forgery"
+    );
+}
+
+/// #74, THE KEY AT BOOT: a loader boot whose OS random source cannot answer is refused
+/// (`LoadError::Entropy`), the dispatcher never built; there is no fallback key. Driven through the
+/// test seam, which makes this thread's draw a fresh one against a failing source.
+#[test]
+fn a_boot_whose_entropy_fails_is_refused() {
+    crate::dispatch::handle::ENTROPY_FAILS.with(|f| f.set(true));
+    let refused = Dispatcher::try_new(config());
+    let bound = load_linked::<TestKind>(&row(), bind(Arc::new(Recorder::default())));
+    crate::dispatch::handle::ENTROPY_FAILS.with(|f| f.set(false));
+    assert!(
+        matches!(refused, Err(LoadError::Entropy(_))),
+        "a failing entropy source did not refuse the boot"
+    );
+    assert!(
+        matches!(bound, Err(LoadError::Entropy(_))),
+        "a failing entropy source did not refuse the bind"
+    );
 }

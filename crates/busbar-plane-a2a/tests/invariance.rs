@@ -173,3 +173,56 @@ fn the_comments_cite_the_design_in_words() {
         "the source cites the design by number rather than in words: {offenders:?}"
     );
 }
+
+/// Ported from busbar-a2a a2a/tests/sign_tests.rs::there_is_exactly_one_canonicalizer_and_one_signing_payload_on_this_plane.
+///
+/// The source-level half, with a floor. Two canonicalizers disagree the first time either one is
+/// fixed, and the disagreement is invisible until a real vendor's card contains a number, a
+/// supplementary-plane character in an extension key, or a member busbar does not model. So the
+/// ratchet is on the COUNT of definitions, not on a comment saying they are shared: one
+/// canonicalizer, one signing payload, and the signing path calls both.
+#[test]
+fn there_is_exactly_one_canonicalizer_and_one_signing_payload_on_this_plane() {
+    let mut files = 0usize;
+    let mut canonicalizers = Vec::new();
+    let mut payloads = Vec::new();
+    let mut sign_uses_them = false;
+    walk(&src_dir(), &mut |path, text| {
+        files += 1;
+        let code: String = text
+            .lines()
+            .filter(|l| !l.trim_start().starts_with("//"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if code.contains("fn canonicalize(") {
+            canonicalizers.push(path.display().to_string());
+        }
+        if code.contains("fn signing_payload(") {
+            payloads.push(path.display().to_string());
+        }
+        if path.file_name().is_some_and(|n| n == "served_card.rs") {
+            sign_uses_them =
+                code.contains("signing_payload(card)") && code.contains("canonicalize(");
+        }
+    });
+    assert!(
+        files >= 20,
+        "the scan found {files} source file(s), which cannot be right: a scan that discovers \
+         nothing passes vacuously"
+    );
+    assert_eq!(
+        canonicalizers.len(),
+        1,
+        "exactly one canonicalizer may exist on this plane; found {canonicalizers:?}"
+    );
+    assert_eq!(
+        payloads.len(),
+        1,
+        "exactly one signing-payload definition may exist on this plane; found {payloads:?}"
+    );
+    assert!(
+        sign_uses_them,
+        "the SIGNING half must call the same `signing_payload` and the same `canonicalize` the \
+         VERIFYING half calls, rather than serializing a document of its own"
+    );
+}

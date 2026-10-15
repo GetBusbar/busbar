@@ -265,9 +265,7 @@ fn host() -> Host {
     Host::of(&HostTables {
         size: std::mem::size_of::<HostTables>() as u32,
         _reserved: 0,
-        ctx: HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
+        ctx: HostCtx::NONE,
         wake: None,
         conns: &SLOTS,
         services: std::ptr::null(),
@@ -595,4 +593,29 @@ fn an_exchange_names_its_registration_on_its_establish() {
     );
     plain.answered.expect("the exchange completes");
     assert_eq!(plain.members, vec![None], "no registration named");
+}
+
+/// `framed_fields` reads the fields back off the head the exchange will send, in order, and a raw
+/// send frames none: what the far end is handed, never a copy of the caller's request.
+#[test]
+fn the_framed_fields_are_the_head_the_exchange_sends() {
+    let request = Request {
+        method: b"POST".to_vec(),
+        target: b"/notify".to_vec(),
+        fields: vec![
+            (b"content-type".to_vec(), b"application/json".to_vec()),
+            (b"authorization".to_vec(), b"Bearer abc".to_vec()),
+        ],
+        body: b"{}".to_vec(),
+        timeout_ms: 0,
+    };
+    let ex = Exchange::request(request).expect("the request frames");
+    assert_eq!(
+        ex.framed_fields(),
+        vec![
+            (&b"content-type"[..], &b"application/json"[..]),
+            (&b"authorization"[..], &b"Bearer abc"[..]),
+        ]
+    );
+    assert!(Exchange::send(b"raw".to_vec()).framed_fields().is_empty());
 }

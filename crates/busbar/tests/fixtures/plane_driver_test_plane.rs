@@ -301,6 +301,8 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     admin_routes: std::ptr::null(),
     admin_routes_len: 0,
     admin_openapi: NO_BLOB,
+    metric_lanes: std::ptr::null(),
+    metric_lanes_len: 0,
     stream_ceiling_secs: 0,
 });
 
@@ -516,18 +518,13 @@ impl Inst {
         self.stats[s as usize].fetch_add(1, Ordering::SeqCst);
     }
     fn wake_later(&'static self, t: Ticket, ms: u64) {
-        let (wake, ctx) = (self.wake as usize, self.ctx.ptr as usize);
+        let (wake, ctx) = (self.wake as usize, self.ctx);
         self.count(Stat::HostCalls);
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(ms));
             // SAFETY: the host's wake, with the context it handed `open`.
             let wake: WakeFn = unsafe { std::mem::transmute::<usize, WakeFn>(wake) };
-            wake(
-                HostCtx {
-                    ptr: ctx as *mut c_void,
-                },
-                t,
-            );
+            wake(ctx, t);
         });
     }
 }
@@ -797,6 +794,17 @@ extern "C" fn arrive(instance: *mut c_void, input: *const c_void, out: *mut c_vo
                 };
                 me.count(Stat::HostCalls);
                 (me.wake)(me.ctx, ticket);
+                vec![estimate(0, 0)]
+            }
+            b"/forge-context" => {
+                // #74: hand the host's `wake` this instance's own context one tag bit off, a
+                // context the host never minted, from inside a non-lifecycle op. The host
+                // quarantines the instance, and this arrive itself answers FAULT.
+                me.count(Stat::HostCalls);
+                let forged = HostCtx {
+                    handle: me.ctx.handle ^ (1 << 24),
+                };
+                (me.wake)(forged, Ticket::NONE);
                 vec![estimate(0, 0)]
             }
             b"/clock" => {

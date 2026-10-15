@@ -219,10 +219,10 @@ fn per_call_chain_boot_verifies_from_frozen_bytes() {
     assert_eq!(tail.hash, CALL_TAIL_HASH);
 }
 
-// The A2A per-task provenance chain's frozen byte-layout golden RELOCATED to `busbar-a2a` with the
+// The A2A per-task provenance chain's frozen byte-layout golden RELOCATED to the retired agent engine with the
 // task subsystem (1.7.0 plane extraction): the plane owns its `TaskRow`/`TaskEventRow` and computes the
 // chain plane-side now, so the digest-drift tripwire lives beside the code that produces it — see
-// `busbar_a2a::taskstore`'s golden test. Core keeps the neutral admin-audit golden below (its generic
+// its task store's golden test. Core keeps the neutral admin-audit golden below (its generic
 // hash-chain mechanism stays in core) and the MCP call golden above.
 
 /// Admin audit chain (PipeSeparated, NO scope in the digest): the frozen opaque records restore
