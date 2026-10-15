@@ -5,10 +5,13 @@
 //! codec lane's #846; ARCHITECT 2026-10-13), `$`: 1.5.5 kept only the body's first `cap` bytes, its
 //! reading found no usage, and the request billed no tokens (v1.5.5 proxy/response_body.rs:230-262,
 //! "this request's tokens are undercounted"). The relay billed a FLOOR estimate over the bytes it
-//! kept instead. Its own test binary: the cap is a process-wide reader, installed here at 64 bytes.
+//! kept instead. The cap is the relay's own `translate_cap`, set here at 64 bytes.
 
 use busbar_contract::operation::OpVerb;
 use busbar_plane_llm::exchange::reply::relay::{Relay, RelayCtx};
+
+/// The usage tap's cap these relays carry.
+const CAP: usize = 64;
 
 fn embeddings_handler() -> &'static dyn busbar_contract::codec::OperationHandler {
     busbar_plane_llm::codec::DECLS
@@ -29,6 +32,7 @@ fn relay() -> Relay {
         request: None,
         handler: embeddings_handler(),
         meter: true,
+        translate_cap: CAP,
     })
 }
 
@@ -44,9 +48,8 @@ fn body(pad: usize) -> Vec<u8> {
 /// RED: the relay billed the floor over the bytes past the cap instead of none.
 #[test]
 fn a_body_past_the_usage_taps_cap_bills_no_tokens_and_one_under_it_bills_its_usage() {
-    busbar_contract::codec::install_translate_cap_reader(|| 64);
     let over = body(200);
-    assert!(over.len() > 64);
+    assert!(over.len() > CAP);
     let mut r = relay();
     for piece in over.chunks(16) {
         let _ = r.feed(piece);
@@ -65,7 +68,7 @@ fn a_body_past_the_usage_taps_cap_bills_no_tokens_and_one_under_it_bills_its_usa
 
     // THE CONTROL, under the cap: the body's own usage bills.
     let under: &[u8] = br#"{"data":[],"usage":{"prompt_tokens":5,"total_tokens":5}}"#;
-    assert!(under.len() <= 64);
+    assert!(under.len() <= CAP);
     let mut r = relay();
     let _ = r.feed(under);
     let end = r.end();
