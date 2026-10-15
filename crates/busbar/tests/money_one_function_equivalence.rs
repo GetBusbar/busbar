@@ -1276,7 +1276,6 @@ fn accrued_on_the_book(
     card_yaml: Option<&str>,
     units: &[(&str, u64)],
 ) -> (Result<i64, String>, BTreeMap<String, u64>) {
-    use busbar_kernel::governance::RecordStore as _;
     let gov = busbar_kernel::governance::GovState::new(
         std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new()),
         None,
