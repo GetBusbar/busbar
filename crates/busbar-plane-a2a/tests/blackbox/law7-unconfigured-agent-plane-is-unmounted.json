@@ -1,0 +1,120 @@
+{
+  "schema": "blackbox/1",
+  "requires": {
+    "sections": [
+      "agents"
+    ],
+    "features": [
+      "auth-admin-tokens"
+    ]
+  },
+  "credentials": {
+    "signing_key": true
+  },
+  "vars": {
+    "MOCK_KEY": "x",
+    "BUSBAR_ADMIN_TOKEN": "{admin_token}"
+  },
+  "case": "law7: a 1.5.5 config leaves the agent plane unmounted",
+  "_comment": "Law 7 (core loads a plugin iff its configuration section is present): with no `agents:` section, every agent admin path answers as an unmounted path does, the overlay list names no agent section, and the agent door falls to the catch-all rather than answering as a plane door.",
+  "files": {
+    "config.yaml": "listen: \"127.0.0.1:{data_port}\"\nadmin_listen: \"127.0.0.1:{admin_port}\"\nadvanced:\n  allow_destinations: [\"127.0.0.1\"]\nstore: {module: memory}\npublic_url: \"http://127.0.0.1:{data_port}\"\nidentity-providers:\n  admin-tokens:\n    module: admin-tokens\n    token: { env: BUSBAR_ADMIN_TOKEN }\nauth:\n  chain: [keys]\n  signing_key: { file: \"{signing_key_file}\" }\n  admin_auth: [admin-tokens]\nproviders:\n  mock:\n    api_key: { env: MOCK_KEY }\nmodels:\n  test-model:\n    provider: mock\n",
+    "providers.yaml": "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n"
+  },
+  "steps": [
+    {
+      "boot": {
+        "listening": [
+          "data",
+          "admin"
+        ],
+        "within_secs": 120
+      }
+    },
+    {
+      "call": {
+        "port": "admin",
+        "method": "GET",
+        "path": "/api/v1/admin/no-such-path",
+        "bearer": "{admin_token}",
+        "status": 404
+      }
+    },
+    {
+      "call": {
+        "port": "admin",
+        "method": "GET",
+        "path": "/api/v1/admin/agents",
+        "bearer": "{admin_token}",
+        "status": 404
+      }
+    },
+    {
+      "call": {
+        "port": "admin",
+        "method": "GET",
+        "path": "/api/v1/admin/agents/x",
+        "bearer": "{admin_token}",
+        "status": 404
+      }
+    },
+    {
+      "call": {
+        "port": "admin",
+        "method": "PATCH",
+        "path": "/api/v1/admin/agents/x/settings",
+        "bearer": "{admin_token}",
+        "status": 404
+      }
+    },
+    {
+      "call": {
+        "port": "admin",
+        "method": "POST",
+        "path": "/api/v1/admin/agents/x/connect",
+        "bearer": "{admin_token}",
+        "status": 404
+      }
+    },
+    {
+      "call": {
+        "port": "admin",
+        "method": "POST",
+        "path": "/api/v1/admin/agents/x/approve",
+        "bearer": "{admin_token}",
+        "status": 404
+      }
+    },
+    {
+      "call": {
+        "port": "admin",
+        "method": "DELETE",
+        "path": "/api/v1/admin/overlay/limits",
+        "bearer": "{admin_token}",
+        "status": 400,
+        "body_lacks": [
+          "`agents`"
+        ]
+      }
+    },
+    {
+      "call": {
+        "port": "admin",
+        "method": "DELETE",
+        "path": "/api/v1/admin/overlay/agents",
+        "bearer": "{admin_token}",
+        "status": 400
+      }
+    },
+    {
+      "call": {
+        "port": "data",
+        "method": "POST",
+        "path": "/a2a",
+        "body_lacks": [
+          "error_description"
+        ]
+      }
+    }
+  ]
+}

@@ -24,9 +24,12 @@
 #![allow(dead_code)]
 
 pub mod boot;
+pub mod credentials;
+pub mod lines;
 pub mod otlp;
 pub mod pinned_planes;
 pub mod plugins;
+pub mod upstream;
 
 use std::path::{Path, PathBuf};
 

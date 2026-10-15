@@ -45,11 +45,9 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::time::Duration;
 
 /// The stdio serve mode's operator surface, as DATA (`tests/fixtures/stdio_serve.txt`).
 fn surface(key: &str) -> &'static str {
@@ -89,127 +87,21 @@ fn fixture_dir(tag: &str) -> PathBuf {
     d
 }
 
-/// THE LOCAL ISSUER, one per test process (the loader's `test_issuer`: an ES256 key, its JWKS and
-/// genuinely signed tokens), its JWKS served over a certificate-verified loopback TLS endpoint
-/// ([`serve_jwks`]) the module trusts through `ca_cert_pem`. The child `busbar` process's OWN
-/// connector fetches the JWKS over the dropped-in module's declared need, and the module does the
-/// whole verification.
-fn issuer() -> &'static busbar_plugin_loader::test_issuer::Issuer {
-    static ONE: std::sync::OnceLock<busbar_plugin_loader::test_issuer::Issuer> =
-        std::sync::OnceLock::new();
-    ONE.get_or_init(|| {
-        let issuer = busbar_plugin_loader::test_issuer::Issuer::start(
-            "https://issuer.e2e.invalid",
-            "e2e-issuer",
-        );
-        let (url, cert_pem) = serve_jwks(issuer.jwks().to_string());
-        issuer.served_at(&url, &cert_pem)
-    })
-}
-
-/// Serve `jwks` over TLS on a fresh loopback port for the life of the process, under a self-signed
-/// certificate for `127.0.0.1`: the JWKS URL and the certificate's PEM. One background thread
-/// answers every request with the document.
-fn serve_jwks(jwks: String) -> (String, String) {
-    use std::io::{Read as _, Write as _};
-    let cert = rcgen::generate_simple_self_signed(vec!["127.0.0.1".to_string()])
-        .expect("mint a self-signed certificate");
-    let cert_pem = cert.cert.pem();
-    let private = rustls_pki_types::PrivateKeyDer::Pkcs8(
-        rustls_pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()),
-    );
-    let config = std::sync::Arc::new(
-        rustls::ServerConfig::builder_with_provider(std::sync::Arc::new(
-            rustls::crypto::ring::default_provider(),
-        ))
-        .with_safe_default_protocol_versions()
-        .expect("protocol versions")
-        .with_no_client_auth()
-        .with_single_cert(vec![cert.cert.der().clone()], private)
-        .expect("server certificate"),
-    );
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind a loopback port");
-    let url = format!(
-        "https://{}/jwks",
-        listener.local_addr().expect("local addr")
-    );
-    std::thread::spawn(move || {
-        for socket in listener.incoming() {
-            let (Ok(socket), Ok(session)) = (socket, rustls::ServerConnection::new(config.clone()))
-            else {
-                continue;
-            };
-            let mut stream = rustls::StreamOwned::new(session, socket);
-            let _ = stream.read(&mut [0u8; 4096]);
-            let _ = write!(
-                stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
-                 Connection: close\r\n\r\n{jwks}",
-                jwks.len()
-            );
-            let _ = stream.flush();
-            stream.conn.send_close_notify();
-            let _ = stream.flush();
-        }
-    });
-    (url, cert_pem)
-}
-
-/// A JWT for principal `e2e` with role `tester`, bound to `aud` and signed by the local issuer —
-/// what the audience pre-filter reads and the auth module verifies.
+/// A JWT for principal `e2e` with role `tester`, bound to `aud` and signed by the local issuer
+/// (`common::credentials`) — what the audience pre-filter reads and the auth module verifies.
 fn token_for(aud: &str) -> String {
-    issuer().mint("e2e", &["tester"], aud)
+    common::credentials::token_for("e2e", &["tester"], aud)
 }
 
-/// The variable a `test-harness` child reads its first-party key from: the binary's
-/// `root::boot::HARNESS_FIRST_PARTY_KEY_ENV`, whose unit tests pin this spelling.
-const HARNESS_FIRST_PARTY_KEY_ENV: &str = "BUSBAR_TEST_HARNESS_FIRST_PARTY_KEY";
-
-/// The first-party key this battery signs the dropped-in module with and hands the child through
-/// the harness seam ([`HARNESS_FIRST_PARTY_KEY_ENV`]).
-fn harness_release_key() -> busbar_plugin_loader::sign::SigningKey {
-    common::plugins::key(0x5a)
-}
-
-/// Package the REAL `busbar-auth-oidc-plugin` cdylib (GetBusbar/busbar-auth-oidc, a pinned git
-/// dev-dependency of this crate, so the build leaves it under `deps/` with a metadata hash) into a
-/// `kind: auth` tarball SIGNED FIRST-PARTY under [`harness_release_key`] in the fixture's plugins
-/// dir, its manifest stating the door's Statement as the pack tool renders it: its needs are in the
-/// `operator-infrastructure` egress class, which the host grants to a first-party plugin only. A
-/// cdylib that is not built fails the test in every run: `libtest` has no "skipped" outcome, and an
-/// early return would report these end-to-end coverages green without running them.
+/// The REAL token-verifying `kind: auth` plugin, signed first-party into the fixture's plugins dir
+/// (`common::credentials::install_auth_plugin`).
 fn install_auth_plugin(dir: &Path) {
-    let lib = common::plugins::token_verifier_cdylib_path()
-        .and_then(|p| std::fs::read(p).ok())
-        .unwrap_or_else(|| {
-            common::plugins::missing(
-                "pinned token-verifying `kind: auth` plugin's",
-                common::plugins::BUILD_PINNED,
-            )
-        });
-    let mut m = common::plugins::manifest(
-        "auth",
+    common::credentials::install_auth_plugin(
+        &dir.join("plugins"),
         "e2e-idp-module",
-        busbar_plugin_loader::sign::FIRST_PARTY_PUBLISHER,
+        "e2e-idp",
+        true,
     );
-    m.alias = "e2e-idp".into();
-    // One staging file PER CALL: the scenarios run as threads of one process, and rewriting a
-    // library another thread still has mapped (dlopened for its Statement) truncates it under
-    // that mapping — SIGBUS on Linux.
-    static STAGED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let path = std::env::temp_dir().join(format!(
-        "busbar-stdio-idp-{}-{}{}",
-        std::process::id(),
-        STAGED.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-        std::env::consts::DLL_SUFFIX
-    ));
-    std::fs::write(&path, &lib).expect("stage the library");
-    m.statement = busbar_plugin_loader::dispatch::rendering_of_library(&path)
-        .expect("the OIDC cdylib states its door")
-        .map(hex::encode);
-    let _ = std::fs::remove_file(&path);
-    let bytes = common::plugins::signed(&harness_release_key(), m, &lib);
-    std::fs::write(dir.join("plugins").join("e2e-idp-module.tar.gz"), bytes).unwrap();
 }
 
 /// The config skeleton every scenario shares: the MCP resource, `extra` verbatim, and the minimal
@@ -255,11 +147,7 @@ store: {{module: memory}}
 /// issuer signed for the canonical audience and admits principal `e2e` with role `tester`;
 /// `bindings` decides what that role earns.
 fn governed_config(dir: &Path, bindings_and_more: &str) -> String {
-    let settings: String = issuer()
-        .settings(canonical())
-        .into_iter()
-        .map(|(k, v)| format!("      {k}: {v}\n"))
-        .collect();
+    let settings = common::credentials::issuer_settings_yaml(canonical(), 6);
     format!(
         r#"plugins:
   enabled: true
@@ -278,13 +166,8 @@ identity-providers:
     )
 }
 
-/// The child, its pipes, and a line-reader thread per output stream.
-struct StdioChild {
-    child: Child,
-    stdin: Option<std::process::ChildStdin>,
-    stdout: mpsc::Receiver<String>,
-    stderr: mpsc::Receiver<String>,
-}
+/// The line-served child (`common::lines`).
+type StdioChild = common::lines::LineChild;
 
 fn spawn(dir: &Path, credential: Option<&str>) -> StdioChild {
     let mut cmd = Command::new(common::boot::exe());
@@ -297,94 +180,18 @@ fn spawn(dir: &Path, credential: Option<&str>) -> StdioChild {
         .env("BUSBAR_CONFIG", dir.join("config.yaml"))
         .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
         .env(
-            HARNESS_FIRST_PARTY_KEY_ENV,
-            hex::encode(harness_release_key().verifying_key().as_bytes()),
+            common::credentials::HARNESS_FIRST_PARTY_KEY_ENV,
+            common::credentials::harness_release_key_hex(),
         )
-        .env_remove(surface("credential_env"))
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+        .env_remove(surface("credential_env"));
     if let Some(c) = credential {
         cmd.env(surface("credential_env"), c);
     }
-    let mut child = cmd.spawn().expect("spawn busbar in its stdio serve mode");
-    let stdin = child.stdin.take();
-    let (out_tx, out_rx) = mpsc::channel();
-    let stdout = child.stdout.take().unwrap();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines().map_while(Result::ok) {
-            let _ = out_tx.send(line);
-        }
-    });
-    let (err_tx, err_rx) = mpsc::channel();
-    let stderr = child.stderr.take().unwrap();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stderr).lines().map_while(Result::ok) {
-            let _ = err_tx.send(line);
-        }
-    });
-    StdioChild {
-        child,
-        stdin,
-        stdout: out_rx,
-        stderr: err_rx,
-    }
+    common::lines::spawn(cmd)
 }
 
-impl StdioChild {
-    fn send(&mut self, value: &serde_json::Value) {
-        let stdin = self.stdin.as_mut().expect("stdin still open");
-        let mut bytes = serde_json::to_vec(value).unwrap();
-        bytes.push(b'\n');
-        stdin.write_all(&bytes).unwrap();
-        stdin.flush().unwrap();
-    }
-
-    /// The next stdout line, which MUST be one JSON-RPC message (`STDIO.STDOUT-ONLY-MCP` asserted
-    /// on every read this battery makes).
-    fn recv(&self) -> serde_json::Value {
-        let line = self
-            .stdout
-            // A hang detector, not a latency assertion: a debug child on a saturated host has
-            // taken most of thirty seconds just to answer, so the bound is well past that.
-            .recv_timeout(Duration::from_secs(120))
-            .expect("the child must answer within the bound");
-        serde_json::from_str(&line).unwrap_or_else(|e| {
-            panic!("every stdout line must be one JSON-RPC message ({e}): {line:?}")
-        })
-    }
-
-    /// EOF on stdin, then the exit code — bounded, so a child that ignores EOF fails the test
-    /// rather than hanging it.
-    fn eof_and_wait(mut self) -> i32 {
-        drop(self.stdin.take());
-        wait_bounded(&mut self.child, Duration::from_secs(60))
-    }
-
-    /// Everything stderr has said so far. Drained with a short grace per line, because the reader
-    /// thread can still be flushing the child's final sentences when the exit code lands.
-    fn stderr_so_far(&self) -> String {
-        let mut all = String::new();
-        while let Ok(line) = self.stderr.recv_timeout(Duration::from_millis(300)) {
-            all.push_str(&line);
-            all.push('\n');
-        }
-        all
-    }
-}
-
-fn wait_bounded(child: &mut Child, bound: Duration) -> i32 {
-    let deadline = Instant::now() + bound;
-    loop {
-        if let Some(status) = child.try_wait().expect("wait on the child") {
-            return status.code().unwrap_or(-1);
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            panic!("the child did not exit within {bound:?}");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+fn wait_bounded(child: &mut std::process::Child, bound: Duration) -> i32 {
+    common::lines::wait_bounded(child, bound)
 }
 
 fn meta() -> serde_json::Value {
@@ -583,7 +390,7 @@ fn a_budgeted_stdio_session_serves_within_budget_and_refuses_over_it() {
         "the refusal names the budget: {refusal}"
     );
 
-    let code = child.eof_and_wait();
+    let code = child.eof_and_wait(Duration::from_secs(60));
     assert_eq!(code, 0, "EOF on stdin is a clean shutdown");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -685,7 +492,7 @@ fn a_bound_session_serves_and_eof_with_a_live_subscription_exits_promptly() {
         "a bound session is governed, and does not say otherwise: {stderr}"
     );
 
-    let code = child.eof_and_wait();
+    let code = child.eof_and_wait(Duration::from_secs(60));
     assert_eq!(code, 0, "EOF with a live subscription still exits promptly");
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -737,7 +544,7 @@ tools:
     let list = child.recv();
     assert_eq!(list["id"], "list", "{list}");
     assert!(list.get("result").is_some(), "{list}");
-    let code = child.eof_and_wait();
+    let code = child.eof_and_wait(Duration::from_secs(60));
     assert_eq!(code, 0, "EOF on stdin is a clean shutdown");
     let _ = std::fs::remove_dir_all(&dir);
 }

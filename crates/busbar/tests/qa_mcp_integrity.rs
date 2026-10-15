@@ -39,15 +39,12 @@
 
 mod common;
 
-use std::io::{Read as _, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use base64::Engine as _;
-use ed25519_dalek::Signer as _;
 use serde_json::{json, Value};
 
 /// The protocol revision the plane speaks and the h2 rigs pin (`scripts/mcp-subject/h2-lib.sh`).
@@ -163,54 +160,7 @@ impl Upstream {
     }
 }
 
-/// Read one HTTP/1.1 request off `conn`: the request line, the headers, and a `content-length`
-/// body. `None` on a connection that closed or sent something that is not a request.
-fn read_request(conn: &mut TcpStream) -> Option<(String, Vec<u8>)> {
-    conn.set_read_timeout(Some(Duration::from_secs(20))).ok()?;
-    let mut buf = Vec::new();
-    let mut chunk = [0u8; 4096];
-    let head_end = loop {
-        if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
-            break i + 4;
-        }
-        let n = conn.read(&mut chunk).ok()?;
-        if n == 0 {
-            return None;
-        }
-        buf.extend_from_slice(&chunk[..n]);
-    };
-    let head = String::from_utf8_lossy(&buf[..head_end]).to_string();
-    let len = head
-        .lines()
-        .find_map(|l| {
-            let (k, v) = l.split_once(':')?;
-            k.trim()
-                .eq_ignore_ascii_case("content-length")
-                .then(|| v.trim().parse::<usize>().ok())
-                .flatten()
-        })
-        .unwrap_or(0);
-    let mut body = buf[head_end..].to_vec();
-    while body.len() < len {
-        let n = conn.read(&mut chunk).ok()?;
-        if n == 0 {
-            break;
-        }
-        body.extend_from_slice(&chunk[..n]);
-    }
-    Some((head, body))
-}
-
-fn respond(conn: &mut TcpStream, status: u16, body: &Value) {
-    let raw = body.to_string();
-    let _ = write!(
-        conn,
-        "HTTP/1.1 {status} OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-         connection: close\r\n\r\n{raw}",
-        raw.len()
-    );
-    let _ = conn.flush();
-}
+use common::upstream::{read_request, respond};
 
 fn serve_one(mut conn: TcpStream, state: &Mutex<Served>) {
     let Some((head, body)) = read_request(&mut conn) else {
@@ -471,24 +421,7 @@ async fn mint_bound_key(node: &Node) -> String {
 }
 
 fn bind(secret: &[u8; 32], plain: &str, audience: &str) -> String {
-    let b64 = base64::engine::general_purpose::URL_SAFE_NO_PAD;
-    let body = plain
-        .strip_prefix("bbk_")
-        .unwrap_or_else(|| panic!("not a busbar key: {plain}"));
-    let payload = body.split('.').next().unwrap();
-    let claims: Value = serde_json::from_slice(&b64.decode(payload).unwrap()).unwrap();
-    let mut bound = json!({
-        "sub": claims["sub"],
-        "exp": claims["exp"],
-        "kid": claims["kid"],
-        "a": audience,
-    });
-    if let Some(g) = claims.get("g") {
-        bound["g"] = g.clone();
-    }
-    let raw = serde_json::to_vec(&bound).unwrap();
-    let sig = ed25519_dalek::SigningKey::from_bytes(secret).sign(&raw);
-    format!("bbk_{}.{}", b64.encode(&raw), b64.encode(sig.to_bytes()))
+    common::credentials::bind_key(secret, plain, audience)
 }
 
 /// One `tools/call` of `probe_ping` through the node's MCP front door: `(status, body)`.
