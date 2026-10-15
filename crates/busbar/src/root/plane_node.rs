@@ -741,6 +741,7 @@ impl Node {
             reached_end: false,
         };
         let ctx = UnitCtx {
+            call: busbar_contract::caps::CallId::UNBOUND,
             key,
             origin,
             session: None,
@@ -834,6 +835,7 @@ impl Node {
             reached_end: false,
         };
         let ctx = UnitCtx {
+            call: busbar_contract::caps::CallId::UNBOUND,
             key,
             origin: OriginKind::Client,
             session: None,
@@ -966,6 +968,7 @@ impl Node {
                     reached_end: false,
                 };
                 let ctx = UnitCtx {
+                    call: busbar_contract::caps::CallId::UNBOUND,
                     key,
                     origin: OriginKind::Client,
                     session: None,

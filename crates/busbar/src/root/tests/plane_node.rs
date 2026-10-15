@@ -1137,6 +1137,7 @@ async fn a_driven_planes_abandoned_end_posts_once_onto_the_nodes_book() {
     };
     let site = NodeEndPost::new(Arc::clone(&node));
     let ctx = |key: u64| UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: UnitKey::new(key),
         origin: OriginKind::Client,
         session: None,
@@ -1217,6 +1218,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     };
     let site = NodeEndPost::new(Arc::clone(&node));
     let ctx = |key: u64| UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: UnitKey::new(key),
         origin: OriginKind::Client,
         session: None,
@@ -1375,6 +1377,7 @@ async fn a_provider_origin_unit_posts_no_flat_fee() {
 
     let fee = |origin| {
         let ctx = UnitCtx {
+            call: busbar_contract::caps::CallId::UNBOUND,
             key: UnitKey::new(1),
             origin,
             session: None,
@@ -1508,6 +1511,7 @@ async fn drive_screened_by(
         })
         .expect("the uncapped table takes the unit");
     let ctx = UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key,
         origin: OriginKind::Client,
         session: None,
@@ -4309,6 +4313,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         })
         .expect("the uncapped table takes the unit");
     let ctx = UnitCtx {
+        call: busbar_contract::caps::CallId::UNBOUND,
         key: key_n,
         origin: OriginKind::Client,
         session: None,
