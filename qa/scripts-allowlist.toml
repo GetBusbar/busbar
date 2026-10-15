@@ -14,6 +14,11 @@
 #                  2026-10-02): porting it would re-stamp the 1.5.5 golden, which is forbidden
 
 [[script]]
+path = ".ci/tool.sh"
+class = "keep"
+reason = "checks provision their own pinned toolchain; owner ruling 2026-10-14: the tenant owns its CI toolchain and ModernCI runs what the YAML says, so the sourced POSIX sh that fetches rust, nextest, deny and jq (sha256-pinned) is glue Rust cannot replace before cargo exists"
+
+[[script]]
 path = ".github/scripts/bump_cargo.py"
 class = "port"
 reason = "release step in RELEASE.md (version bump, changelog roll): becomes a busbar-release subcommand on the CLI-AUDIT tree"
