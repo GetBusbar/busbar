@@ -202,7 +202,18 @@ pub(super) fn instance_axes() -> Vec<&'static str> {
 /// draining do not brick every other push. The ship twin (`ship: true`) ignores this
 /// list entirely and enforces EVERY neutral crate unconditionally, because the ship SHA
 /// owes zero everywhere regardless of what the everyday gate has caught up to.
-const LAW0_ENFORCED_NEUTRAL_CRATES: &[&str] = &[];
+///
+/// ARMED 2026-10-14 (TODO l.2747 item 1, Instrument #2's hard clause): the three core-neutral
+/// crates with no `[[law0]]` row in qa/kind-isolation.toml, i.e. measured 0 on every axis. The list
+/// cannot drift from the measurement in either direction ([`law0_arming`]): a name that is no
+/// neutral crate of the tree is refused (a typo would pin nothing), and a core-neutral crate that
+/// measures 0 everywhere but is not listed is refused (a drained crate is armed in the commit
+/// that drained it).
+const LAW0_ENFORCED_NEUTRAL_CRATES: &[&str] = &[
+    "busbar-kernel-audit",
+    "busbar-kernel-identity",
+    "busbar-kernel-wal",
+];
 
 // ------------------------------------------------------------------------------------------------
 // the vocabulary, derived
@@ -2515,6 +2526,39 @@ fn law0_offenders(matrix: &Matrix, crates: &[CrateInfo], enforced: Option<&[&str
     offenders
 }
 
+/// THE ARMED LIST AGAINST THE MEASUREMENT. `armed` names crates; `measured` is the Law 0 class
+/// per `(neutral crate, axis)`, holding only cells above 0. Two offenders, one per direction:
+/// - `law0-armed-unknown`: a listed name that is no `Family::Neutral` crate of the tree. It pins
+///   nothing, and the list reads as if it did.
+/// - `law0-unarmed`: a core-neutral crate absent from `measured` (0 on every axis) that the list
+///   does not name. Its zero is held only by its absence from a ledger; arming it is what keeps it.
+fn law0_arming(armed: &[&str], crates: &[CrateInfo], measured: &Law0Counts) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in armed {
+        if !crates
+            .iter()
+            .any(|c| c.name == *name && c.family == Family::Neutral)
+        {
+            out.push(format!(
+                "law0-armed-unknown\t{name}\tLAW0_ENFORCED_NEUTRAL_CRATES names a crate that is no \
+                 neutral crate of this tree: the entry pins nothing. Strike it or correct it."
+            ));
+        }
+    }
+    for c in crates.iter().filter(|c| is_core_neutral(c)) {
+        let zero = !measured.keys().any(|(krate, _)| krate == &c.name);
+        if zero && !armed.contains(&c.name.as_str()) {
+            out.push(format!(
+                "law0-unarmed\t{}\tthe crate measures 0 on every Law 0 axis and is not on \
+                 LAW0_ENFORCED_NEUTRAL_CRATES (xtask/src/gates/kind_isolation/matrix.rs). Add it in \
+                 the commit that drained it, so the zero is pinned.",
+                c.name
+            ));
+        }
+    }
+    out
+}
+
 /// THE LAW 0 ROW (ARCHITECT 2026-10-07, Q128 route). The DoD's hard clause (BUSBAR-1.6.0.md
 /// :1994-1999): every `Family::Neutral` crate (the kernel and its workflow crates, the contract,
 /// the loader, the three cleanliness crates and the composition root) names ZERO plugin-instance
@@ -3435,6 +3479,9 @@ fn measured_row(
     offenders.extend(minted_rows(cx));
     offenders.extend(instances::offenders(&inst, &ivocab, reg));
     offenders.extend(instances::law0(&inst, Some(LAW0_ENFORCED_NEUTRAL_CRATES)));
+    if let Some(measured) = law0.as_ref() {
+        offenders.extend(law0_arming(LAW0_ENFORCED_NEUTRAL_CRATES, crates, measured));
+    }
     // Law 1 is armed at 0 on the everyday gate too: no ledger row exists that could raise it.
     offenders.extend(vendor.iter().cloned());
     let kind_of: BTreeMap<&str, &'static str> = crates
@@ -5110,6 +5157,59 @@ mod tests {
             ambiguous: Vec::new(),
             pinned: None,
         }
+    }
+
+    /// TODO l.2747: the armed list was `&[]`, so the everyday gate blocked no neutral crate. An
+    /// armed crate that names a plugin instance is an offender; the same crate unarmed is not.
+    #[test]
+    fn an_armed_neutral_crate_naming_an_instance_is_an_offender() {
+        let crates = vec![neutral_kernel("busbar-kernel-wal")];
+        let mut matrix = Matrix::new();
+        matrix.insert(
+            ("busbar-kernel-wal".to_string(), "plane"),
+            Cell {
+                count: 1,
+                ..Cell::default()
+            },
+        );
+        let armed = law0_offenders(&matrix, &crates, Some(LAW0_ENFORCED_NEUTRAL_CRATES));
+        assert!(
+            armed
+                .iter()
+                .any(|o| o.starts_with("law0-neutral-instance\tbusbar-kernel-wal")),
+            "{armed:?}"
+        );
+        assert!(law0_offenders(&matrix, &crates, Some(&[])).is_empty());
+    }
+
+    /// The list against the measurement, both directions, and the control that today's list
+    /// raises neither.
+    #[test]
+    fn the_armed_list_follows_the_measurement() {
+        let crates = vec![
+            neutral_kernel("busbar-kernel"),
+            neutral_kernel("busbar-kernel-wal"),
+        ];
+        let measured = law0_counts_of(&[("busbar-kernel", "plane", 3)]);
+        assert!(law0_arming(&["busbar-kernel-wal"], &crates, &measured).is_empty());
+
+        let typo = law0_arming(
+            &["busbar-kernel-wal", "busbar-kernal-wal"],
+            &crates,
+            &measured,
+        );
+        assert!(
+            typo.iter()
+                .any(|o| o.starts_with("law0-armed-unknown\tbusbar-kernal-wal")),
+            "{typo:?}"
+        );
+
+        let unarmed = law0_arming(&[], &crates, &measured);
+        assert_eq!(unarmed.len(), 1, "{unarmed:?}");
+        assert!(
+            unarmed[0].starts_with("law0-unarmed\tbusbar-kernel-wal"),
+            "{unarmed:?}"
+        );
     }
 
     fn law0_reg(rows: &[(&str, &str, usize)]) -> super::super::KindRegistry {
