@@ -376,3 +376,82 @@ fn a_fee_refund_returns_the_fee_of_the_era_its_request_was_charged_in() {
     gov.refund_charge(a.charge()); // A failed upstream
     assert_eq!(spend(&gov), 10, "A's fee came back; B's 10 is owed");
 }
+
+/// THE PLANE FEE'S CARD EPOCH (#47, #79; /status row 122, the rigs' `h2-card-epoch`): a plane's own
+/// fee (`<section>.fees.per_request`), not the flat one, edited between two admissions. The key's
+/// read (`GET /keys/<id>/usage`, `usage_for`) prices each request at the plane fee in force when it
+/// was admitted: 1 + 7 = 8. Never 2 (every request at the opening card, forever) and never 14
+/// (every request repriced off the newest card).
+#[test]
+fn a_plane_fee_edit_prices_each_admission_at_the_plane_fee_in_force() {
+    use busbar_kernel_ledger::cost::{PlaneFees, PLANE_LANE_SEP};
+    let fees = |per_request| {
+        busbar_kernel::config::PlaneFeesMap::from([(
+            "tp".to_string(),
+            PlaneFees {
+                per_request,
+                per_session: 0,
+            },
+        )])
+    };
+    let card = |per_request| {
+        let fees = fees(per_request);
+        fee_card(0).with_plane_fees(fees.iter().map(|(p, f)| (p.as_str(), *f)))
+    };
+    let (holder, _serial) = holder_opening(card(1));
+
+    let store: Arc<dyn RecordStore> = Arc::new(MemoryStore::new());
+    let key = VirtualKey {
+        id: "vk_plane_fee_epoch".to_string(),
+        generation_hash: "hash-plane-fee-epoch".to_string(),
+        name: "plane-fee-epoch".to_string(),
+        enabled: true,
+        group: Some("team".to_string()),
+        ..Default::default()
+    };
+    store.put_key(&key).unwrap();
+    let gov = GovState::new(store.clone(), None).unwrap();
+    let now = busbar_kernel::store::now();
+    let pool = format!("tp{PLANE_LANE_SEP}probe");
+
+    let before = fee_cost(0).with_plane_fees(&fees(1));
+    gov.try_admit(&before, &key, &pool, now)
+        .expect("A admits at the plane fee 1");
+    let spend = |gov: &GovState, cost: &CostModel| {
+        (gov.usage_for(cost, &key.id, now))
+            .expect("priced")
+            .expect("the key exists")
+            .spend_cents
+    };
+    assert_eq!(spend(&gov, &before), 1, "A at the opening card's plane fee");
+
+    // THE EDIT: the plane's own fee is 7 from this instant.
+    let edit_ms = busbar_kernel::store::now_ms();
+    {
+        let mut history = holder.0.lock().unwrap();
+        let mut next = History::clone(&history);
+        next.append(CardEntryDraft {
+            effective_from: edit_ms,
+            effective_until: None,
+            card: card(7),
+            appended_at: edit_ms,
+            author: Author::Config { policy_epoch: 1 },
+        });
+        *history = Arc::new(next);
+    }
+    let after = fee_cost(0).with_plane_fees(&fees(7));
+    assert_eq!(
+        spend(&gov, &after),
+        1,
+        "publishing a card never reprices the request admitted before it"
+    );
+    std::thread::sleep(std::time::Duration::from_millis(2));
+    gov.try_admit(&after, &key, &pool, now)
+        .expect("B admits at the plane fee 7");
+    assert_eq!(
+        spend(&gov, &after),
+        8,
+        "each request at the plane fee in force when it was admitted (2 = opening forever, 14 = \
+         newest card)"
+    );
+}
