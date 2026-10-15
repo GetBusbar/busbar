@@ -28,9 +28,8 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     reason_code, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE,
     EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
-    FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
-    PIECE_REFUSED,
-    RECORD_AUDIT, VERDICT_RETRY,
+    FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST,
+    PIECE_OUT_TEXT, PIECE_REFUSED, RECORD_AUDIT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
