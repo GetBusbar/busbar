@@ -9,6 +9,16 @@
 //! secret kind's JSON lane) went with that lane (THE DESIGN §11.1, the P2 switch-over): a secret
 //! plugin reaches the network through its door's needs, on the connector its host hands the
 //! instance at open.
+//!
+//! THE SECRET KIND'S LEG of "a secret-kind plugin that dials through the connector" (BUSBAR-1.6.0.md
+//! l.664) is proven by a REAL secret plugin, never an in-tree test plugin (OWNER Q7 2026-10-03, no
+//! test plugins; coordinator ruling 2026-10-14): GetBusbar/busbar-secret-vault's
+//! `secret-vault-plugin/tests/conformance.rs` runs busbar's published suite (pinned by its
+//! `.busbar-ref`) LINKED and DROPPED IN with busbar's own `Connector` as the host
+//! (`tests/support/conformance_host.rs`, rendered by the fleet template): its `http` need is
+//! dialled through the connector to a real TLS far end, every `dialing_steps` step of its
+//! `conformance.json` must resume on its ticket (`busbar_plugin_loader::conformance::resumed`),
+//! and the suite's RED arms are kept. plugin-ci runs it on every change to that repo.
 
 use std::sync::OnceLock;
 
