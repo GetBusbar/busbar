@@ -1191,7 +1191,11 @@ pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
 /// no export module of its own, so every module is a row here; a linked row and a different
 /// dropped-in plugin spelling one module refuse the boot (ARCHITECT Q-P4-12).
 pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
-    crate::root::loader::observe::install_host_series(host_series);
+    // The host's own series, named on the process's one dispatcher (built first, in `main`), whose
+    // observability every first-party export open is granted against.
+    let _ = crate::root::dispatch::dispatcher()
+        .observing()
+        .install_host_series(host_series);
     if let Some(registry) = dropped {
         let _ = DROPPED.set(registry);
     }

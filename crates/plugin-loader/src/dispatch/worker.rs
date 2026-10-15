@@ -174,6 +174,9 @@ pub(crate) struct Env {
     pub(crate) io: std::sync::OnceLock<Arc<dyn busbar_contract::io_host::IoHost>>,
     /// The tickets of ops driven inline on the calling thread (a carrier's connection sides).
     pub(crate) inline: Arc<super::inline::InlineTickets>,
+    /// THE HOST'S OBSERVABILITY of every door this dispatcher binds: the observer and the series
+    /// predicate the host installs on it ([`Dispatcher::observing`]), never a process-global seam.
+    pub(crate) observing: Arc<crate::observe::Observing>,
 }
 
 /// One op's completion.
@@ -1360,6 +1363,14 @@ impl Adopter {
         Self { pool: Weak::new() }
     }
 
+    /// The host's observability of the dispatcher this adopter belongs to; `None` when it adopts
+    /// for no dispatcher (or that one is gone), and the door's back-channel is then dropped.
+    pub(crate) fn observing(&self) -> Option<Arc<crate::observe::Observing>> {
+        self.pool
+            .upgrade()
+            .map(|pool| Arc::clone(&pool.env.observing))
+    }
+
     /// Route `inst`'s wakes to the dispatcher and put it under its watchdog; `false` when the
     /// instance already belongs to another dispatcher (or this one is gone).
     pub(crate) fn adopt(&self, inst: &Arc<Instance>) -> bool {
@@ -1426,6 +1437,15 @@ impl Dispatcher {
         })
     }
 
+    /// THE HOST'S OBSERVABILITY of the doors this dispatcher binds: the composition root installs
+    /// its plugin observer ([`crate::observe::Observing::install_observer`]) and its own series
+    /// predicate ([`crate::observe::Observing::install_host_series`]) here, before the first door
+    /// binds, and every door's envelope folds through it.
+    #[must_use]
+    pub fn observing(&self) -> &crate::observe::Observing {
+        &self.pool.env.observing
+    }
+
     /// INSTALL THE PROCESS'S RUNTIME every worker runs its crossings inside (see `Env::runtime`):
     /// the one the host drives on a thread of its own. The first install holds; a later one is
     /// ignored and answers `false`. Never taken from a submitter.
@@ -1473,6 +1493,7 @@ impl Dispatcher {
             runtime: std::sync::OnceLock::new(),
             io: std::sync::OnceLock::new(),
             inline: Arc::default(),
+            observing: Arc::default(),
         });
         let mut started = Vec::new();
         let slots = (0..n)

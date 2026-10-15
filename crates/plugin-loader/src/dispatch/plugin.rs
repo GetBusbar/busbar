@@ -1398,9 +1398,11 @@ fn kind_word(kind: KindCode) -> &'static str {
 /// THE #85 ENVELOPE, OBSERVED FOR EVERY KIND (ARCHITECT ruling ENVELOPE-ALL 2026-10-03): the
 /// binder's sink, with the host's observability standing before it
 /// ([`crate::observe::EnvelopeObserver`]): every metric of a family the Statement declares and every
-/// declared diagnostic reach the installed observer, under the plugin's name and kind, whoever bound
-/// the door, and the binder's sink is still handed every entry.
+/// declared diagnostic reach the observer installed on the dispatcher that adopts the door
+/// ([`super::Adopter::observing`]), under the plugin's name and kind, whoever bound the door, and the
+/// binder's sink is still handed every entry.
 fn observed(
+    observing: Arc<crate::observe::Observing>,
     then: &Arc<dyn EnvelopeSink>,
     st: &busbar_contract::abi::mechanism::door::Statement,
     kind: KindCode,
@@ -1414,6 +1416,7 @@ fn observed(
         .map(|r| r.families)
         .unwrap_or_default();
     Arc::new(crate::observe::EnvelopeObserver::before(
+        observing,
         then.clone(),
         &String::from_utf8_lossy(name),
         kind_word(kind),
@@ -1566,7 +1569,13 @@ impl<K: Kind> Plugin<K> {
                 unit_of: K::unit_of,
                 cancel_frame: K::cancel_frame,
                 context,
-                sink: observed(&bind.sink, &st, v.kind, name),
+                sink: observed(
+                    bind.dispatcher.observing().unwrap_or_default(),
+                    &bind.sink,
+                    &st,
+                    v.kind,
+                    name,
+                ),
                 wake,
                 tables,
                 open_reason: Mutex::new(Vec::new()),
