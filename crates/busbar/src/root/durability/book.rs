@@ -192,7 +192,7 @@ impl SharedBook {
         // the settlement and released, which is what lets a second arm settle behind this one.
         let mut durability = self.durability.lock().unwrap_or_else(|p| p.into_inner());
         let offered_at = durability.journal.next_seq();
-        let settled = line(&mut *durability);
+        let settled = line(&mut durability);
         let landed = settled.is_ok().then(|| {
             let broke = durability
                 .journal
