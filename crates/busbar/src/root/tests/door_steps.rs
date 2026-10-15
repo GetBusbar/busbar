@@ -884,6 +884,32 @@ fn a_member_is_bound_under_its_dialects_default_style_on_the_need_that_style_nam
     );
 }
 
+/// ROW 74 (F25): a provider whose `base_url` spells `user:pass@` is reached at the host after it,
+/// as 1.5.5 reached it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`). The provider's route is
+/// the one entry every member's route, sealed reach, binding and dial reads its base from, so the
+/// userinfo is stripped HERE and nothing downstream (the connector refuses a dial target spelling
+/// one, fail-closed) ever sees it. RED before the fix: the route carried the base as written, and
+/// the member's dial was refused.
+#[test]
+fn a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority() {
+    let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(
+        "{protocol: d, base_url: 'https://svcuser:hunter2-P4ss@api.example.com:8443/v1', \
+         api_key: none, error_map: {}}",
+    )
+    .expect("a provider entry");
+    let routes = super::provider_routes(
+        &std::collections::HashMap::from([("p".to_string(), provider)]),
+        &busbar_kernel::config_validate::MetadataPosture::default(),
+    );
+    let route = &routes["p"];
+    assert_eq!(route.base_url, "https://api.example.com:8443/v1");
+    let shown = format!("{route:?}");
+    assert!(
+        !shown.contains("hunter2") && !shown.contains("svcuser"),
+        "the route kept the planted spelling: {shown}"
+    );
+}
+
 #[test]
 fn a_member_that_cannot_be_reached_refuses_the_load_naming_it() {
     let unknown = resolve("models: {m: {provider: q}}", &[("p", provider("d", None))]);

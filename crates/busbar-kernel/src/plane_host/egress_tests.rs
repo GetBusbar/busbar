@@ -616,27 +616,39 @@ fn a_connect_failure_surfaces_class_connect_with_cause_and_url_kept_separate() {
 #[test]
 fn a_guard_refusal_surfaces_class_refused_with_the_guards_own_reason() {
     use busbar_contract::abi::hot::EgressFailClass;
-    // A private/loopback target with a scope that permits neither is refused by the guard.
-    let url = b"http://127.0.0.1:9/".to_vec();
-    let mut desc = http_desc(&url);
-    desc.allowlist_scope = 0; // permits neither private nor plaintext.
+    // A private/loopback target with a scope that permits neither is refused by the guard. And
+    // (row 74, F25, the planted scan at this chokepoint) a target spelling `user:pass@` is refused
+    // here as every dial target is, the fault it leaves — the cause AND the target a plane composes
+    // its message from — repeating neither half of it.
+    let planted = b"https://svcuser:hunter2-P4ss@api.example.com/v1".to_vec();
+    for url in [b"http://127.0.0.1:9/".to_vec(), planted] {
+        let mut desc = http_desc(&url);
+        desc.allowlist_scope = 0; // permits neither private nor plaintext.
 
-    let app = crate::test_support::TestApp::new().build();
-    with_dispatch_scope(&app, |host, vt| {
-        let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
-        let class = host_authored_open(host, &desc, &mut out);
-        assert_eq!(class, StatusClass::Refused, "the guard refuses the hop");
-        let (fault, cause, _url) = read_fault(vt, host).expect("a refusal fault was stashed");
-        assert_eq!(
-            fault.fail_class,
-            EgressFailClass::Refused,
-            "a guard refusal is the Refused class"
-        );
-        assert!(
-            !cause.is_empty(),
-            "the guard's own reason is surfaced as the cause"
-        );
-    });
+        let app = crate::test_support::TestApp::new().build();
+        with_dispatch_scope(&app, |host, vt| {
+            let mut out = std::mem::MaybeUninit::<EgressOpen>::uninit();
+            let class = host_authored_open(host, &desc, &mut out);
+            assert_eq!(class, StatusClass::Refused, "the guard refuses the hop");
+            let (fault, cause, got_url) =
+                read_fault(vt, host).expect("a refusal fault was stashed");
+            assert_eq!(
+                fault.fail_class,
+                EgressFailClass::Refused,
+                "a guard refusal is the Refused class"
+            );
+            assert!(
+                !cause.is_empty(),
+                "the guard's own reason is surfaced as the cause"
+            );
+            for text in [&cause, &got_url] {
+                assert!(
+                    !text.contains("hunter2") && !text.contains("svcuser"),
+                    "the fault repeated the planted spelling: {text}"
+                );
+            }
+        });
+    }
 }
 
 /// STEP-6 REUSE, proven on the wire: two sequential opens to ONE warm destination ride ONE

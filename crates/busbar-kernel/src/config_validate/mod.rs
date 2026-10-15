@@ -2251,7 +2251,12 @@ fn validate_providers_with(
             || scheme_is(base_url, "https")
             || (host_is_local && scheme_is(base_url, "http"));
         if !scheme_ok {
-            errors.push(if scheme_is(base_url, "http") {
+            // What an error may repeat of the base URL: a `user:pass@` the operator wrote is
+            // ACCEPTED (and stripped where the base URL enters the served flow, as 1.5.5 did — row
+            // 74, F25), so it never surfaces in a message. The host stays: it is the diagnosis.
+            let plaintext = scheme_is(base_url, "http");
+            let base_url = crate::net_guard::redact_userinfo(base_url);
+            errors.push(if plaintext {
                 // An http:// scheme that failed the check ⇒ the host is public (or unparseable):
                 // plaintext to a public host would leak the key.
                 format!(
@@ -2275,7 +2280,8 @@ fn validate_providers_with(
             // CGNAT, public) is allowed — so local models just work. The three escape hatches (this
             // provider's `allow_metadata_hosts`, the global `security.allow_metadata_hosts`, and the
             // nuclear `security.allow_all_metadata`) carve exceptions (then `ssrf_blocked_host`
-            // returns None).
+            // returns None). The base URL is repeated with its userinfo redacted (row 74, F25).
+            let base_url = crate::net_guard::redact_userinfo(base_url);
             errors.push(format!(
                 "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)"
             ));
@@ -2307,6 +2313,7 @@ fn validate_providers_with(
                     cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
                 ) {
+                    let composed = crate::net_guard::redact_userinfo(&composed);
                     errors.push(format!(
                         "provider '{provider_name}' base_url+path '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
                     ));
@@ -2329,6 +2336,7 @@ fn validate_providers_with(
                     cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
                 ) {
+                    let composed = crate::net_guard::redact_userinfo(&composed);
                     errors.push(format!(
                         "provider '{provider_name}' base_url+path_base '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
                     ));

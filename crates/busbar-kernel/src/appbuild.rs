@@ -815,7 +815,7 @@ pub fn build_app_from_config(
             "  model {} via {} ({}) max {}{}",
             model,
             mc.provider,
-            provider_cfg.base_url.trim_end_matches('/'),
+            crate::net_guard::strip_userinfo(provider_cfg.base_url.trim_end_matches('/')),
             // Show the operator-facing form: an omitted cap reads "unbounded", not 2^60.
             match mc.max_concurrent {
                 Some(n) => n.to_string(),
@@ -872,8 +872,12 @@ pub fn build_app_from_config(
             .cloned()
             .unwrap_or_default();
         // The base URL, trailing-slash-trimmed once here (the plane consumes it verbatim into the
-        // egress-target build + SigV4 signed-host derivation).
-        let base_url = provider_cfg.base_url.trim_end_matches('/').to_string();
+        // egress-target build + SigV4 signed-host derivation), its userinfo stripped as 1.5.5 did
+        // (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`; row 74, F25): every lane table, dial, signed
+        // host and rendering downstream reads the `host[:port]` it dials, never the `user:pass@`.
+        let base_url =
+            crate::net_guard::strip_userinfo(provider_cfg.base_url.trim_end_matches('/'))
+                .into_owned();
         lane_inputs.push(LaneInput {
             model: ld.model.clone(),
             provider: ld.provider.clone(),
