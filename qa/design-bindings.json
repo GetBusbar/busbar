@@ -1369,28 +1369,28 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "decision_gate_that_cannot_complete_has_its_own_503_body",
+     "ref": "crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::decision_gate_that_cannot_complete_has_its_own_503_body",
      "proves": "\"A required gate could not complete…\" is the decision-gate error body",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "decision_gate_restriction_leaving_no_lane_has_its_own_503_body",
+     "ref": "crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::decision_gate_restriction_leaving_no_lane_has_its_own_503_body",
      "proves": "\"No upstream satisfies a required gate's restriction…\" is the decision-gate empty-restrict body",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "base_policy_that_cannot_select_has_its_own_503_body",
+     "ref": "crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::base_policy_that_cannot_select_has_its_own_503_body",
      "proves": "\"The routing policy could not select an upstream…\" is the base-policy error body",
      "source": "hand",
      "status": "mapped"
     },
     {
      "kind": "test",
-     "ref": "base_policy_restriction_leaving_no_lane_has_its_own_503_body",
+     "ref": "crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::base_policy_restriction_leaving_no_lane_has_its_own_503_body",
      "proves": "\"No upstream satisfies the routing policy's restriction…\" is the base-policy empty-restrict body",
      "source": "hand",
      "status": "mapped"
@@ -1404,7 +1404,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:decision_gate_that_cannot_complete_has_its_own_503_body, test:decision_gate_restriction_leaving_no_lane_has_its_own_503_body, test:base_policy_that_cannot_select_has_its_own_503_body, test:base_policy_restriction_leaving_no_lane_has_its_own_503_body, test:the_four_503_literals_are_distinct"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::decision_gate_that_cannot_complete_has_its_own_503_body, test:crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::decision_gate_restriction_leaving_no_lane_has_its_own_503_body, test:crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::base_policy_that_cannot_select_has_its_own_503_body, test:crates/busbar-llm/src/engine/tests/gate_policy_503_literals_tests.rs::base_policy_restriction_leaving_no_lane_has_its_own_503_body, test:the_four_503_literals_are_distinct"
   },
   {
    "id": "PB-30",

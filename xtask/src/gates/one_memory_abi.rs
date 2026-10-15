@@ -39,6 +39,7 @@ pub const KERNEL_ROOT_SYMBOL: &str = "__busbar_kernel_root";
 /// The one file that may define [`KERNEL_ROOT_SYMBOL`].
 pub const KERNEL_ROOT_HOME: &str = "crates/busbar-kernel/src/seal.rs";
 /// The cold lane's own home; references inside it are the lane itself, deleted whole in M6.
+// qa-names: crates/busbar-contract/src/abi/cold/ -- xtask/src/gates/one_memory_abi.rs -- the cold lane is deleted (row 84, #961); its home stays the one place the cold needles are excused, so a lane that grows back elsewhere is a finding, and this declaration reds the day the path exists again
 const COLD_HOME: &str = "crates/busbar-contract/src/abi/cold/";
 /// The cold lane's names.
 const COLD_NEEDLES: &[&str] = &["abi::cold", "busbar_call", "ColdEntry"];

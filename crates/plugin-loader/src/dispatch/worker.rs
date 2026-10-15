@@ -822,12 +822,13 @@ impl Worker {
         key: super::handle::TicketKey,
     ) -> (Arc<Self>, Receiver<Msg>) {
         let (tx, rx) = channel();
-        let free = counts
+        // Lowest index last, so `pop` hands the lowest free slot out first.
+        let mut free: Vec<u32> = counts
             .iter()
             .zip(0u32..)
             .filter_map(|(c, idx)| c.map(|_| idx))
-            .rev()
             .collect();
+        free.reverse();
         let state = WorkerState {
             entries: counts
                 .into_iter()
