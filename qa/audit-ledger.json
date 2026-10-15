@@ -297,16 +297,37 @@
    "paths": [
     "crates/busbar-auth-header/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "5404c65467d9bbf2059c5d36a0e80d81c4c74c1caee901562696a5fe8fcd3c88",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 1,
+    "LOW": 3,
+    "NIT": 2
+   },
+   "report": "The header auth plugin builds bearer, api-key, x-goog-api-key and query-key fields once at open, serves the operator's or the caller's credential per request, never pends and opens no connection; credential values are now wiped on drop and written by reference. It breaks the auth kind's rules twice: raw-pointer code lives in the crate under a lint allowance, and two per-thread statics hold reply storage. Each request still allocates. The query-key style is never selected by any production path. Read fully.",
+   "auditor": "opus-ledger-pinned-auth-header",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-auth-header/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-auth-header",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "5404c65467d9bbf2059c5d36a0e80d81c4c74c1caee901562696a5fe8fcd3c88",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 1,
+      "LOW": 3,
+      "NIT": 2
+     },
+     "report": "The header auth plugin builds bearer, api-key, x-goog-api-key and query-key fields once at open, serves the operator's or the caller's credential per request, never pends and opens no connection; credential values are now wiped on drop and written by reference. It breaks the auth kind's rules twice: raw-pointer code lives in the crate under a lint allowance, and two per-thread statics hold reply storage. Each request still allocates. The query-key style is never selected by any production path. Read fully."
+    }
    ]
   },
   {
@@ -315,16 +336,37 @@
    "paths": [
     "crates/busbar-auth-oauth/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "b63f138addc05783d256c6f3a18af6919158a20774cc9dcb3fd66a6d23402309",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 3,
+    "LOW": 5,
+    "NIT": 0
+   },
+   "report": "The OAuth auth plugin binds its three styles, mints over its own need at the endpoint the host now supplies, and refreshes ahead of expiry on tick. Before the first mint a request still waits or is refused instead of being answered at once with no header. The crate keeps its own unsafe pointer boundary, leaves the private key, the signed assertion and the client secrets in unwiped library buffers, reads key files with blocking I/O, can miss a wake, and reports ready for an expired token. Read fully.",
+   "auditor": "opus-ledger-pinned-auth-oauth",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-auth-oauth/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-auth-oauth",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "b63f138addc05783d256c6f3a18af6919158a20774cc9dcb3fd66a6d23402309",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 3,
+      "LOW": 5,
+      "NIT": 0
+     },
+     "report": "The OAuth auth plugin binds its three styles, mints over its own need at the endpoint the host now supplies, and refreshes ahead of expiry on tick. Before the first mint a request still waits or is refused instead of being answered at once with no header. The crate keeps its own unsafe pointer boundary, leaves the private key, the signed assertion and the client secrets in unwiped library buffers, reads key files with blocking I/O, can miss a wake, and reports ready for an expired token. Read fully."
+    }
    ]
   },
   {
@@ -333,16 +375,37 @@
    "paths": [
     "crates/busbar-auth-sigv4/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "bb8e2baf71fc90023a98629b8755f072776eb9f70d9c8a56794dd17050ad16b9",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 2,
+    "LOW": 4,
+    "NIT": 0
+   },
+   "report": "The SigV4 plugin now signs the real method, query and sent content type, re-encodes the path, keeps its day-key schedule alive and verifies inbound signatures in constant time with the dummy-secret rule. It still carries its own raw-pointer boundary under `deny(unsafe_code)` where an auth plugin must forbid unsafe code, though the safe SDK wrapper now exists. The query is sorted but never re-encoded to the canonical form, and the HMAC key state derived from the secret is freed unwiped. Clock, allocation and prose nits remain. Read fully.",
+   "auditor": "opus-ledger-pinned-auth-sigv4",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-auth-sigv4/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-auth-sigv4",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "bb8e2baf71fc90023a98629b8755f072776eb9f70d9c8a56794dd17050ad16b9",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 2,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "The SigV4 plugin now signs the real method, query and sent content type, re-encodes the path, keeps its day-key schedule alive and verifies inbound signatures in constant time with the dummy-secret rule. It still carries its own raw-pointer boundary under `deny(unsafe_code)` where an auth plugin must forbid unsafe code, though the safe SDK wrapper now exists. The query is sorted but never re-encoded to the canonical form, and the HMAC key state derived from the secret is freed unwiped. Clock, allocation and prose nits remain. Read fully."
+    }
    ]
   },
   {
@@ -672,16 +735,37 @@
    "paths": [
     "crates/busbar-export-prometheus/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "8489b80b3838dd51d3d79c26cd5d522cf53d81433968311e9c49f11fc49a59c7",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 3,
+    "NIT": 1
+   },
+   "report": "The sink serves both well-known expositions through the host snapshot service with 1.5.5's content types, settings refusals and second-instance refusal word for word, and its stable family order (counters, gauges, distributions, each by name) is one 1.5.5's renderer could already print. Its only busbar dependency is the contract; it opens no socket, holds no global state and writes no log. The defects are minor: the scrape op and its unsafe readers have no caller in the shipped host, and two comments are false. Read fully.",
+   "auditor": "opus-ledger-pinned-export-prometheus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-export-prometheus/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-export-prometheus",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "8489b80b3838dd51d3d79c26cd5d522cf53d81433968311e9c49f11fc49a59c7",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 3,
+      "NIT": 1
+     },
+     "report": "The sink serves both well-known expositions through the host snapshot service with 1.5.5's content types, settings refusals and second-instance refusal word for word, and its stable family order (counters, gauges, distributions, each by name) is one 1.5.5's renderer could already print. Its only busbar dependency is the contract; it opens no socket, holds no global state and writes no log. The defects are minor: the scrape op and its unsafe readers have no caller in the shipped host, and two comments are false. Read fully."
+    }
    ]
   },
   {
@@ -1450,16 +1534,37 @@
    "paths": [
     "crates/busbar-store-memory/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "a512b8bd415c25f698b5946250db748e3a5570925ca1bc1a6c8cef5f5157b067",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 5,
+    "LOW": 6,
+    "NIT": 0
+   },
+   "report": "The memory store's money slots hold their rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped, and dedupe records only applied ops. Five defects stand. Memory grows with traffic: the dedupe log keeps a day of every write's text, and the record leg keeps every journal record until restart, which every scan walks. Spent slices, window counters and journals are never freed. Each token redemption sweeps the whole spent map, and a losing redemption rewrites the stored expiry. Read fully.",
+   "auditor": "opus-ledger-pinned-store-memory",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-store-memory/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-store-memory",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "a512b8bd415c25f698b5946250db748e3a5570925ca1bc1a6c8cef5f5157b067",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 5,
+      "LOW": 6,
+      "NIT": 0
+     },
+     "report": "The memory store's money slots hold their rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped, and dedupe records only applied ops. Five defects stand. Memory grows with traffic: the dedupe log keeps a day of every write's text, and the record leg keeps every journal record until restart, which every scan walks. Spent slices, window counters and journals are never freed. Each token redemption sweeps the whole spent map, and a losing redemption rewrites the stored expiry. Read fully."
+    }
    ]
   },
   {
@@ -1468,16 +1573,37 @@
    "paths": [
     "crates/busbar-transport-grpc/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "e17986e6c2b2aea02f0cd0cedbc35e215c7fc625471c81348875a289d3aabe95",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 5,
+    "LOW": 4,
+    "NIT": 1
+   },
+   "report": "The gRPC framer keeps a clean shape: hyper's HTTP/2 both ways over the contract's sans-IO drive, no global state, no socket, te checked at the door, head, trailers and terminal piece as specified. It does not bound what it queues: emitted messages wait without limit behind a shut peer window, and the stream-full signal is never raised. A client cancel after half-close goes unreported, a stray emit opens a phantom dialled call, the per-stream accept side is refused, and refusal and oversize statuses differ from predev's bytes. Read fully.",
+   "auditor": "opus-ledger-pinned-transport-grpc",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-grpc/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-transport-grpc",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "e17986e6c2b2aea02f0cd0cedbc35e215c7fc625471c81348875a289d3aabe95",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 5,
+      "LOW": 4,
+      "NIT": 1
+     },
+     "report": "The gRPC framer keeps a clean shape: hyper's HTTP/2 both ways over the contract's sans-IO drive, no global state, no socket, te checked at the door, head, trailers and terminal piece as specified. It does not bound what it queues: emitted messages wait without limit behind a shut peer window, and the stream-full signal is never raised. A client cancel after half-close goes unreported, a stray emit opens a phantom dialled call, the per-stream accept side is refused, and refusal and oversize statuses differ from predev's bytes. Read fully."
+    }
    ]
   },
   {
@@ -1486,16 +1612,37 @@
    "paths": [
     "crates/busbar-transport-http/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "6a2def30af5ac6708214cbb3eeeaa9ada1a09d849aa772d1d859337e870333fc",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 4,
+    "LOW": 3,
+    "NIT": 0
+   },
+   "report": "The http framer now runs hyper's client connection API over the host's bytes and nothing else. The socket-owning transport and the named lower layer are gone. But a request for the root path, sent on a pooled connection, goes out with the path and query of the first exchange that connection carried. A process-global slot remains. The door adds no default accept field. The egress cap counts header bytes. A field name holding a colon becomes a different header. There is no accept side. Read fully.",
+   "auditor": "opus-ledger-pinned-transport-http",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-http/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-transport-http",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "6a2def30af5ac6708214cbb3eeeaa9ada1a09d849aa772d1d859337e870333fc",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 4,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The http framer now runs hyper's client connection API over the host's bytes and nothing else. The socket-owning transport and the named lower layer are gone. But a request for the root path, sent on a pooled connection, goes out with the path and query of the first exchange that connection carried. A process-global slot remains. The door adds no default accept field. The egress cap counts header bytes. A field name holding a colon becomes a different header. There is no accept side. Read fully."
+    }
    ]
   },
   {
@@ -1557,16 +1704,37 @@
    "paths": [
     "crates/busbar-transport-tcp/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "fbc4609d2b07b9578311eee7a765cfa0c25b22a16308da28d03ce95ea7bbab88",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 4,
+    "NIT": 0
+   },
+   "report": "The tcp transport is now a carrier: it binds, accepts, dials, reads, writes and closes only through the host's I/O handles, refuses every framer op and any program destination, and dials only the literal address the host already pinned. Its dependency closure is the contract alone, it holds no global state and forbids unsafe code. Its multi-address dial fallback and localhost rewrite never run, every call takes one instance-wide lock, its manifest still calls it a framer, and its manifest data carries a retired version number. Read fully.",
+   "auditor": "opus-ledger-pinned-transport-tcp",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tcp/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-transport-tcp",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "fbc4609d2b07b9578311eee7a765cfa0c25b22a16308da28d03ce95ea7bbab88",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "The tcp transport is now a carrier: it binds, accepts, dials, reads, writes and closes only through the host's I/O handles, refuses every framer op and any program destination, and dials only the literal address the host already pinned. Its dependency closure is the contract alone, it holds no global state and forbids unsafe code. Its multi-address dial fallback and localhost rewrite never run, every call takes one instance-wide lock, its manifest still calls it a framer, and its manifest data carries a retired version number. Read fully."
+    }
    ]
   },
   {
@@ -1575,16 +1743,37 @@
    "paths": [
     "crates/busbar-transport-webrtc/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "80d15bf46efbb7a8ca27bbd580fab97a81b5e6e5290d05e769c5cb5fcd70c2e2",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 4,
+    "LOW": 5,
+    "NIT": 1
+   },
+   "report": "The webrtc framer passes its handshake shim to the media stack through a per-thread slot with a destructor, a second per-thread slot next to the door's one approved slot. The SRTP keying material it hands the media stack is copied into buffers freed without zeroing. No host path gives it a datagram lane or a certificate, so every begin is refused. Under buffer pressure a data channel can reorder messages and fails the whole association. Oversized rendezvous terms spin on YIELD_MORE. Read fully.",
+   "auditor": "opus-ledger-transport-webrtc",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-webrtc/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-transport-webrtc",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "80d15bf46efbb7a8ca27bbd580fab97a81b5e6e5290d05e769c5cb5fcd70c2e2",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 4,
+      "LOW": 5,
+      "NIT": 1
+     },
+     "report": "The webrtc framer passes its handshake shim to the media stack through a per-thread slot with a destructor, a second per-thread slot next to the door's one approved slot. The SRTP keying material it hands the media stack is copied into buffers freed without zeroing. No host path gives it a datagram lane or a certificate, so every begin is refused. Under buffer pressure a data channel can reorder messages and fails the whole association. Oversized rendezvous terms spin on YIELD_MORE. Read fully."
+    }
    ]
   },
   {
@@ -1716,16 +1905,37 @@
    "paths": [
     "xtask/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "54f61bd74f953b33e167a5a606ee9b39d9105ff1d4e10d6d8a40fa2e70b5cda8",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 49,
+    "MEDIUM": 79,
+    "LOW": 118,
+    "NIT": 11
+   },
+   "report": "Many gates can report green on a tree that breaks the rule they enforce. The shared comment scanner loses multi-line strings and hides kernel code from several gates; the tree walker skips dot paths, so a cargo config redirect is never read; an excused standing red holds only its row id; drain ledgers accept new rows; the money-float, money-record, secret-accessor and plugin-blocking gates are lexical or hand-listed and miss live code; conformance admission and the audit ledger's own check can pass without their evidence. Read in eleven parts; self-test bodies sampled.",
+   "auditor": "opus-ledger-xtask-parts",
    "fixed_at": null,
    "exclude": [
     "xtask/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-xtask-parts",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "54f61bd74f953b33e167a5a606ee9b39d9105ff1d4e10d6d8a40fa2e70b5cda8",
+     "counts": {
+      "HIGH": 49,
+      "MEDIUM": 79,
+      "LOW": 118,
+      "NIT": 11
+     },
+     "report": "Many gates can report green on a tree that breaks the rule they enforce. The shared comment scanner loses multi-line strings and hides kernel code from several gates; the tree walker skips dot paths, so a cargo config redirect is never read; an excused standing red holds only its row id; drain ledgers accept new rows; the money-float, money-record, secret-accessor and plugin-blocking gates are lexical or hand-listed and miss live code; conformance admission and the audit ledger's own check can pass without their evidence. Read in eleven parts; self-test bodies sampled."
+    }
    ]
   },
   {
