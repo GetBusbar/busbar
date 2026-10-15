@@ -83,7 +83,8 @@ fn truncated_recovery_yields_no_usage_for_a_stringified_count() {
 
 #[test]
 fn buffered_response_refuses_an_unreadable_cache_count() {
-    for details in [serde_json::json!({"cached_tokens": "40"})] {
+    {
+        let details = serde_json::json!({"cached_tokens": "40"});
         ResponsesReader
             .read_response(&response(serde_json::json!({
                 "input_tokens": 100, "output_tokens": 9, "input_tokens_details": details
@@ -116,7 +117,8 @@ fn buffered_response_cache_counts_absent_null_and_readable_still_read() {
 
 #[test]
 fn streaming_terminal_refuses_an_unreadable_cache_count() {
-    for details in [serde_json::json!({"cached_tokens": "40"})] {
+    {
+        let details = serde_json::json!({"cached_tokens": "40"});
         let mut state = crate::codec::ir::StreamDecodeState::default();
         let completed = serde_json::json!({
             "response": {"status": STATUS_COMPLETED, "usage": {

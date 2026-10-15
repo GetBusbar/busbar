@@ -54,17 +54,6 @@ pub(crate) const fn at(slot: usize, n: i64) -> Ledgered {
     out
 }
 
-/// The sum of two readings.
-pub(crate) const fn plus(a: Ledgered, b: Ledgered) -> Ledgered {
-    let mut out = a;
-    let mut i = 0;
-    while i < CLASSES {
-        out[i] += b[i];
-        i += 1;
-    }
-    out
-}
-
 /// The count members the pinned wire lock of `dialect`
 /// (`testing/llm-conformance/wire/<dialect>.wire.json`) declares under `prefix` in `section`: every
 /// integer- or number-typed member below it (a dotted path, no list member).
