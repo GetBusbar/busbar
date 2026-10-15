@@ -189,11 +189,6 @@ item = "EPOCH"
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/test_support/mod.rs"
-item = "SECTION_PLANE_TEST_RUNTIME_FACTORY"
-
-[[finding]]
-rule = "door-only:static-seam"
 file = "crates/busbar-llm/src/unit/node.rs"
 item = "NATIVE_SEATS"
 
