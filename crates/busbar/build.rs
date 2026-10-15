@@ -195,6 +195,16 @@ fn main() {
     if every_plane {
         println!("cargo::rustc-cfg=linked_every_plane");
     }
+    // `linked_every_plane_door`: EVERY linked row on the plane-door axis is enabled — the default
+    // distribution's doors, whose stated rows a byte pin of the whole distribution reads.
+    println!("cargo::rustc-check-cfg=cfg(linked_every_plane_door)");
+    let every_plane_door = metadata_map(&manifest, "package.metadata.busbar.linked-axes")
+        .iter()
+        .filter(|(_, axes)| axes.split_whitespace().any(|a| a == "plane-door"))
+        .all(|(feature, _)| enabled(feature));
+    if every_plane_door {
+        println!("cargo::rustc-cfg=linked_every_plane_door");
+    }
     // `linked_every_auth`: EVERY linked row on the auth axis (`AUTH_AXIS`) is enabled — the shape a
     // suite binding every dialect's declared scheme on the plugin serving its style needs (each
     // style is then served), read off the same table.
