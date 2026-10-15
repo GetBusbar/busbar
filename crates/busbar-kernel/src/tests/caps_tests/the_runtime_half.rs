@@ -13,16 +13,29 @@ use busbar_contract::caps::*;
 /// seal on its own.
 struct Kernel {
     seal: KernelSeal,
+    call_gen: std::sync::atomic::AtomicU64,
 }
 
 impl Kernel {
     fn new() -> Self {
         Kernel {
             seal: KernelSeal::acquire_for_kernel(),
+            call_gen: std::sync::atomic::AtomicU64::new(0),
         }
+    }
+    /// A fresh per-request generation, as the teller's `Kernel::next_call` opens one (#74).
+    fn next_call(&self) -> CallId {
+        let gen = self
+            .call_gen
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        CallId::seal(&self.seal, gen)
     }
     fn admit_token(&self) -> Grant<Admittance> {
         Grant::<Admittance>::mint(&self.seal)
+    }
+    /// The admittance grant bound to one call, as the teller's `Kernel::admit_token_for` (#74).
+    fn admit_token_for(&self, call: CallId) -> Grant<Admittance> {
+        Grant::<Admittance>::mint_bound(&self.seal, call)
     }
     fn exit_token(&self) -> Grant<Exit> {
         Grant::<Exit>::mint(&self.seal)
