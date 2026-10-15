@@ -8902,11 +8902,18 @@ async fn the_pools_door_bills_no_tokens_for_an_answer_it_cannot_translate() {
     let (status, _, body) = rig.chat().await;
     assert_eq!(status, 500, "{}", String::from_utf8_lossy(&body));
     let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON error body");
-    assert!(answer.get("error").is_some(), "the caller's own error: {answer}");
+    assert!(
+        answer.get("error").is_some(),
+        "the caller's own error: {answer}"
+    );
     assert!(
         answer.get("choices").is_none(),
         "no completion reaches the caller: {answer}"
     );
     assert_eq!(far.served(), 1, "the far end answered once");
-    assert_eq!(rig.tokens_after().await, 0, "an untranslated answer bills no tokens");
+    assert_eq!(
+        rig.tokens_after().await,
+        0,
+        "an untranslated answer bills no tokens"
+    );
 }
