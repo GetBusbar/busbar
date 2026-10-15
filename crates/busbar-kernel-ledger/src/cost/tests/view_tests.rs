@@ -447,7 +447,7 @@ fn per_plane_card_with_fee(flat: bool, plane: bool, fee: i64) -> RateCard {
         LANE.to_string(),
         (
             TierRates {
-                input: 3.0,
+                input: Some(3_000),
                 ..TierRates::default()
             },
             None,

@@ -834,10 +834,10 @@ fn history_of(entries: &[(u64, f64)]) -> crate::root::kernel::PinnedHistory {
             [(
                 "lane",
                 busbar_contract::billing::RawTierRates {
-                    input: 0.0,
-                    output: *output,
-                    cache_read: 0.0,
-                    cache_write: 0.0,
+                    input: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+                    output: busbar_kernel_ledger::cost::representable_nano_rate(*output),
+                    cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+                    cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
                 },
             )],
             0,
@@ -920,10 +920,10 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
             [(
                 "lane",
                 busbar_contract::billing::RawTierRates {
-                    input: 0.0,
-                    output: 1.0,
-                    cache_read: 0.0,
-                    cache_write: 0.0,
+                    input: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+                    output: busbar_kernel_ledger::cost::representable_nano_rate(1.0),
+                    cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+                    cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
                 },
             )],
             0,
@@ -941,10 +941,10 @@ fn a_snapshot_pinned_at_admission_cannot_see_an_entry_appended_behind_it() {
             [(
                 "lane",
                 busbar_contract::billing::RawTierRates {
-                    input: 0.0,
-                    output: 100.0,
-                    cache_read: 0.0,
-                    cache_write: 0.0,
+                    input: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+                    output: busbar_kernel_ledger::cost::representable_nano_rate(100.0),
+                    cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+                    cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
                 },
             )],
             0,
@@ -3262,10 +3262,10 @@ fn fee_history_of(
             [(
                 "lane",
                 busbar_contract::billing::RawTierRates {
-                    input: *input,
-                    output: *output,
-                    cache_read: 0.0,
-                    cache_write: 0.0,
+                    input: busbar_kernel_ledger::cost::representable_nano_rate(*input),
+                    output: busbar_kernel_ledger::cost::representable_nano_rate(*output),
+                    cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+                    cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
                 },
             )],
             *fee,
@@ -4474,10 +4474,10 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
         let lanes = [(
             "gpt".to_string(),
             busbar_contract::billing::RawTierRates {
-                input,
-                output: 0.0,
-                cache_read: 0.0,
-                cache_write: 0.0,
+                input: busbar_kernel_ledger::cost::representable_nano_rate(input),
+                output: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+                cache_read: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
+                cache_write: busbar_kernel_ledger::cost::representable_nano_rate(0.0),
             },
         )];
         let _ = holder.apply_rates(
