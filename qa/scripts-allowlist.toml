@@ -339,6 +339,11 @@ class = "port"
 reason = "plugin-ci.yml's signing gate: becomes an xtask fleet subcommand the reusable workflow calls"
 
 [[script]]
+path = "scripts/store-migration-fixture.sh"
+class = "oracle-driver"
+reason = "#33 store migration fixtures (BUSBAR-1.6.0.md l.1096-1103): records rows through the pinned, digest-verified published v1.5.5 binary and 1.5-line store plugin, and plugin-ci.yml runs its `check` half on every persistent store's fixture; porting it would re-record what 1.5.5 wrote"
+
+[[script]]
 path = "scripts/verify-1.6.0-done.sh"
 class = "port"
 reason = "the 1.6.0 done verifier (busbar-release status reads its groups): becomes `cargo xtask verify-done`, group for group"

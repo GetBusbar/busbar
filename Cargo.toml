@@ -120,7 +120,7 @@ busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev 
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::plane_door::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "0ac65e1727d9a09be2d58b038de2da6a7f4b0686" }
+busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "8b214c02ccaa1b6cba11565fc3ace33846917a98" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"

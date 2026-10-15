@@ -141,9 +141,7 @@ pub fn ledger() -> Vec<LedgerRow> {
         s("CredentialPlacement", &["a2a", "streaming"], "Unrelated: a2a's places a leased credential in an HTTP header (Authorization Bearer or a named header); streaming's places a provider key on a WebSocket dial per dialect (a query parameter or a prefixed header)."),
         s("Dialect", &["a2a", "streaming"], "Unrelated: a2a's Dialect is the push-config verb spelling (V03 or V10); streaming's is its voice dialect roster (OpenAI Realtime, Gemini Live, Twilio Media Streams, one-shot transcribe and tts)."),
         s("Held", &["mcp", "streaming"], "Unrelated: mcp's Held is one generation's catalogue, tools section and pools; streaming's is a one-request door unit's state (its RequestUnit, what it owes, a short answer)."),
-        s("Outbound", &["a2a", "streaming"], "Unrelated: a2a's Outbound is the caller's request in three forms for the outbound hop; streaming's is a session frame plan (upstream and downlink wire events, close, a refused reply)."),
         s("Reply", &["mcp", "streaming"], "Unrelated: mcp's Reply is a caller's answer to one of busbar's own asks (answered or failed); streaming's is the caller's HTTP answer (status, fields, body, the rtc call id)."),
-        s("Route", &["mcp", "streaming"], "Each plane's own row type for its door's ROUTES table: mcp's carries verb, target, carrier and open; streaming's adds upgrade, auth, dialect and refusal dialect. The row is shaped by what the plane routes on."),
         s("Session", &["mcp", "streaming"], "Unrelated: mcp's Session is the carrier session's state (streams, buffered events, revision, owner); streaming's is the Realtime or Gemini enum over a codec's SessionUnit."),
         s("Unit", &["decisions", "streaming"], "Unrelated: decisions' Unit is one unit's attempt, reading and owed bytes in its plane door; streaming's is the Realtime or Gemini codec enum its session door dispatches over."),
         s("arrive", &["mcp", "decisions", "streaming"], "Each plane's body for the arrive slot: mcp reads a carrier line, decisions classifies verb and target through its ops table, streaming maps a claim index to a door. The slot is the ABI's; what an arrival means is the plane's."),
@@ -393,22 +391,29 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
 
 /// THE UNLEDGERED ROW'S ARMED COUNT (Law 9: armed at the measure and never above it; ARCHITECT
 /// ruling on #787, its accounting corrected 2026-10-14). FLIP-A2A moved the a2a plane's home from
-/// the engine `busbar-a2a` to its door crate `busbar-plane-a2a`, where this scan reads it. The 42
-/// findings are, name by name:
+/// the engine `busbar-a2a` to its door crate `busbar-plane-a2a`, and FLIP-STREAMING moved the
+/// streaming plane's from `busbar-voice` to `busbar-plane-streaming`, where this scan reads each.
+/// #787 armed 42 on its own tree; the integration that lands it with #503 and the pinned decisions
+/// and mcp planes (lane-integration-w1b, measured at 564506190a) measures 46, name by name:
 ///
-/// * 15 CARRIED from predev (2bce54dc57 measured 26; 11 left: the engine's `meter.rs`, `plane.rs`,
-///   `route.rs`, `verify.rs`, `admit`, `approve`, `deliver`, `task_verb` and `Verified` with the
-///   deleted crate, and decisions' `Relayed` and `Routed` renamed): `config.rs`, `absolute`,
-///   `Admitted`, `arrive`, `attempt`, `build_runtime`, `drive`, `fingerprint`, `Hop`, `meter`,
-///   `op_class`, `owe`, `refused`, `relayed`, `serve`;
-/// * 27 SCOPE-MOVED: declarations in files `busbar-plane-a2a` already held on predev, seen once the
-///   plane's home moved there: modules `claims.rs`, `diagnostics.rs`, `facts.rs`, `jsonrpc.rs`,
-///   `meta.rs`, `ops.rs`, `record.rs`, `records.rs`; symbols `Envelope`, `IdShape`, `MethodRow`,
-///   `Tap`, `Task`, `correlation_for`, `correlation_value`, `decode`, `encode`, `error`, `id_shape`,
-///   `id_value`, `is_canonical_number`, `is_number`, `open`, `operations_for`, `read`, `row_for`,
-///   `success`.
+/// * 36 of #787's 42 (2bce54dc57's carried and scope-moved findings, less the six the integrated
+///   drains removed: `arrive`, `build_runtime`, `fingerprint`, `meter`, `serve`, `decode`):
+///   modules `claims.rs`, `config.rs`, `diagnostics.rs`, `facts.rs`, `jsonrpc.rs`, `meta.rs`,
+///   `ops.rs`, `record.rs`, `records.rs`; symbols `absolute`, `Admitted`, `attempt`, `drive`,
+///   `Envelope`, `encode`, `error`, `Hop`, `IdShape`, `MethodRow`, `Tap`, `Task`,
+///   `correlation_for`, `correlation_value`, `id_shape`, `id_value`, `is_canonical_number`,
+///   `is_number`, `op_class`, `open`, `operations_for`, `owe`, `read`, `refused`, `relayed`,
+///   `row_for`, `success`;
+/// * 10 SCOPE-MOVED by the union: declarations each plane already held, seen side by side only once
+///   both homes moved in one tree (#503 measured with a2a still in its engine, #787 with streaming
+///   still in `busbar-voice`): `Attempt`, `From`, `Owed`, `Piece`, `dealt_section` (a2a and
+///   streaming), `SessionUnit`, `claim` (mcp and streaming), `dialect_auth`, `refusal_render`,
+///   `settle` (streaming and decisions).
 ///
-/// The door code this branch added (52 names, and the 2 #703 met through predev's `door_sessions.rs`)
+/// The ledger rows `Outbound` and `Route` (signed for mcp and streaming) are struck: neither name is
+/// declared in two planes any more.
+///
+/// The door code #787 added (52 names, and the 2 #703 met through predev's `door_sessions.rs`)
 /// is DRAINED, not armed: what was the same concept as the mcp door's copy is shared once in the
 /// SDK (`busbar_contract::abi::sdk`: `publish::ServedRoute`, `publish::admin_route`,
 /// `publish::class_index`, `Lent::stated`, `digest::lower_hex`, `trust::Sighting`,
@@ -418,7 +423,7 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
 /// door scaffolding moves to the SDK (planes never depend on each other, Law 0), the duplicates
 /// that encode a security or money property first (DoD item 5); lower this count in the commit
 /// that drains each one.
-pub const UNLEDGERED_ARMED: usize = 42;
+pub const UNLEDGERED_ARMED: usize = 46;
 
 /// [`ROW_UNLEDGERED`], judged against [`UNLEDGERED_ARMED`]. A tree with none is clean.
 fn unledgered_row(unledgered: &[String]) -> Row {

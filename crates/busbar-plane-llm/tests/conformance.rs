@@ -660,3 +660,48 @@ fn red_a_door_that_stops_counting_the_far_ends_units_answers_differently() {
     assert_ne!(Some(red_line), far_end(&honest));
     assert_ne!(red, honest);
 }
+
+/// THE PROVIDER KEYS THROUGH THE ONE LOADER (row 155 B1c, ARCHITECT ruling "Option A"): the
+/// descriptor the door states (`meta::PROVIDER_KEYS`) is what its Statement rendering carries under
+/// the contract's one extensions key, and what the loader hands on in the plane's registration.
+/// Held here because this is the one file of the crate that may name the loader; the descriptor's
+/// own shape is `tests/provider_keys.rs`'s.
+mod provider_keys_through_the_loader {
+    use busbar_contract::abi::mechanism::{extensions, rendering};
+    use busbar_contract::provider_keys::{decode, EXT_PROVIDER_KEYS};
+    use busbar_plane_llm::meta::PROVIDER_KEYS;
+    use busbar_plane_llm::plane_door;
+    use busbar_plugin_loader::dispatch::kinds::plane::{linked_probe, registration};
+    use busbar_plugin_loader::dispatch::rendering_of;
+
+    /// The door's signed Statement rendering carries the descriptor under the one extensions key, as
+    /// octets, byte for byte the declared text.
+    #[test]
+    fn the_door_states_its_provider_keys_in_its_statement_extensions() {
+        let stated = rendering_of(plane_door::door).expect("the door renders its Statement");
+        let read = rendering::read(&stated).expect("the rendering reads back");
+        assert_eq!(
+            read.extensions.fmt,
+            busbar_contract::abi::mechanism::call::BLOB_OCTETS
+        );
+        assert_eq!(
+            extensions::get(&read.extensions.bytes, EXT_PROVIDER_KEYS),
+            Some(PROVIDER_KEYS.as_bytes())
+        );
+    }
+
+    /// The one loader reads the descriptor off the bound door into the plane's registration, decoded
+    /// and equal to the declared one.
+    #[test]
+    fn the_loader_hands_the_provider_keys_on_in_the_registration() {
+        let reg = registration(linked_probe(plane_door::door, "provider-keys-probe"))
+            .expect("the linked door binds");
+        assert_eq!(
+            reg.provider_keys,
+            Some(
+                decode(PROVIDER_KEYS.as_bytes())
+                    .expect("the plane's provider keys are a neutral descriptor")
+            )
+        );
+    }
+}
