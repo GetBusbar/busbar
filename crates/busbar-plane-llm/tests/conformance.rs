@@ -585,7 +585,17 @@ fn translated(p: &Plugin<Plane>, unit: u64) -> String {
 /// the over-cap 500's own bytes. Linked and dropped in alike: no host reader is consulted.
 #[test]
 fn the_translate_cap_the_settings_carry_is_the_one_the_door_enforces() {
-    let refused = busbar_plane_llm::exchange::reply::whole::over_cap("openai").answer;
+    // The openai over-cap refusal mints nothing, so the host it is rendered with gives nothing.
+    struct NoHost;
+    impl busbar_contract::codec::CodecHost for NoHost {
+        fn fill_entropy(&self, _out: &mut [u8]) -> bool {
+            false
+        }
+        fn wall_clock_now(&self) -> Option<u64> {
+            None
+        }
+    }
+    let refused = busbar_plane_llm::exchange::reply::whole::over_cap(&NoHost, "openai").answer;
     let d = Dispatcher::new(DispatchConfig::default());
     for p in [linked(&d), dropped(&d)] {
         let mut i: PlaneOpenIn = z();

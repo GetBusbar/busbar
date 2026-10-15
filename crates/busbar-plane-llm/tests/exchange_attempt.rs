@@ -11,6 +11,27 @@ use busbar_plane_llm::exchange::attempt::*;
 use busbar_plane_llm::exchange::shaping::Shaping;
 use serde_json::Value;
 
+/// The codec host these tests hand the plane: the OS CSPRNG and the system clock in whole seconds,
+/// read the way the kernel's host reads them.
+struct TestHost;
+
+impl busbar_contract::codec::CodecHost for TestHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        getrandom::fill(out).is_ok()
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+    }
+}
+
+/// The handle every codec call here is handed.
+const HOST: &dyn busbar_contract::codec::CodecHost = &TestHost;
+
 fn shaping() -> Shaping {
     Shaping::from_settings(&json!({
         "providers": {
@@ -59,7 +80,7 @@ fn a_same_dialect_body_the_far_end_would_not_change_goes_out_as_the_callers_byte
     let h = head(&[("content-type", "application/json")]);
     let body = r#"{"model":"gpt","messages":[{"role":"user","content":"hi"}]}"#;
     let a = arrived("/v1/chat/completions", &h, body);
-    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gpt").expect("built");
     assert!(r.pristine);
     assert_eq!(
         r.body,
@@ -78,7 +99,7 @@ fn the_wire_model_is_written_when_it_differs() {
         &h,
         r#"{"model":"gpt-alias","messages":[]}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "gpt-alias").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gpt-alias").expect("built");
     assert!(!r.pristine);
     let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
     assert_eq!(v["model"], "gpt-4o");
@@ -88,7 +109,7 @@ fn the_wire_model_is_written_when_it_differs() {
         &h,
         r#"{"z":1.50, "model":"gpt-alias","messages":[],"a":{"y":1,"x":2}}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "gpt-alias").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gpt-alias").expect("built");
     assert_eq!(
         r.body,
         br#"{"z":1.50, "model":"gpt-4o","messages":[],"a":{"y":1,"x":2}}"#
@@ -103,7 +124,7 @@ fn a_cross_dialect_request_is_written_in_the_far_ends_dialect() {
         &h,
         r#"{"model":"claude","messages":[{"role":"user","content":"hi"}]}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "claude").expect("built");
     assert!(!r.pristine);
     assert_eq!(r.target, "/v1/messages");
     let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
@@ -131,7 +152,7 @@ fn a_same_dialect_caller_s_fields_all_go_out_but_the_governed_ones() {
         &h,
         r#"{"model":"claude","max_tokens":5,"messages":[]}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "claude").expect("built");
     let names: Vec<&str> = r.fields.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
@@ -171,7 +192,7 @@ fn the_caller_s_value_replaces_busbar_s_native_default() {
         &h,
         r#"{"model":"claude","max_tokens":5,"messages":[]}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "claude").expect("built");
     assert_eq!(field(&r, "user-agent"), [b"my-sdk/1.0".as_slice()]);
 }
 
@@ -187,7 +208,7 @@ fn the_caller_s_tenant_selectors_never_go_out() {
         &h,
         r#"{"model":"gpt","messages":[]}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gpt").expect("built");
     assert_eq!(field(&r, "openai-organization").len(), 0);
     assert_eq!(field(&r, "openai-project").len(), 0);
 }
@@ -205,7 +226,7 @@ fn a_translated_route_forwards_no_caller_field() {
         &h,
         r#"{"model":"claude","max_tokens":5,"messages":[]}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gpt").expect("built");
     let names: Vec<&str> = r.fields.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(names, ["content-type", "user-agent", "accept"]);
     assert_eq!(
@@ -223,7 +244,7 @@ fn a_same_dialect_unknown_body_member_goes_out() {
         &h,
         r#"{"model":"gpt-alias","messages":[],"x_vendor_flag":true}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "gpt-alias").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gpt-alias").expect("built");
     let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
     assert_eq!(v["model"], "gpt-4o", "the mapped model");
     assert_eq!(v["x_vendor_flag"], true, "the unknown member, unchanged");
@@ -246,7 +267,7 @@ fn a_body_model_callers_smuggled_router_key_never_reaches_the_far_end() {
         !a.path_model.as_ref().is_some_and(|p| p.json_array),
         "a body key never makes a JSON-array caller"
     );
-    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gpt").expect("built");
     assert!(!r.pristine, "the router key is a governed member");
     let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
     assert!(v.get("__busbar_gemini_json_array").is_none(), "{v}");
@@ -264,7 +285,7 @@ fn a_translated_route_drops_a_member_the_far_dialect_cannot_carry() {
         &h,
         r#"{"model":"claude","messages":[{"role":"user","content":"hi"}],"x_vendor_flag":true}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "claude").expect("built");
     let v: Value = busbar_plane_llm::codec::json::parse(&r.body).expect("json");
     assert!(v.get("x_vendor_flag").is_none());
 }
@@ -277,7 +298,7 @@ fn a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked() {
         &h,
         r#"{"model":"gpt","stream":true,"messages":[]}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gpt").expect("built");
     assert_eq!(
         r.body,
         br#"{"stream_options":{"include_usage":true},"model":"gpt","stream":true,"messages":[]}"#
@@ -288,7 +309,7 @@ fn a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked() {
         &h,
         r#"{"model":"gpt","stream":true,"stream_options":7,"messages":[]}"#,
     );
-    let refused = build(&a, &h, &shaping(), "p", "gpt").expect_err("refused");
+    let refused = build(HOST, &a, &h, &shaping(), "p", "gpt").expect_err("refused");
     assert_eq!(refused.status, 400);
     assert_eq!(refused.message, DETAIL_STREAM_OPTIONS_NOT_OBJECT);
 }
@@ -301,7 +322,7 @@ fn the_far_ends_path_is_its_dialects_own_or_the_providers_fixed_one() {
         &h,
         r#"{"model":"gem","stream":true,"messages":[{"role":"user","content":"x"}]}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "gem").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gem").expect("built");
     assert!(
         r.target.contains("gemini-pro") && r.target.contains("streamGenerateContent"),
         "{}",
@@ -312,7 +333,7 @@ fn the_far_ends_path_is_its_dialects_own_or_the_providers_fixed_one() {
         &h,
         r#"{"model":"fixed","messages":[]}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "fixed").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "fixed").expect("built");
     assert_eq!(r.target, "/custom/chat");
 }
 
@@ -342,7 +363,7 @@ fn a_member_the_generation_does_not_hold_is_the_callers_500() {
         &h,
         r#"{"model":"gpt","messages":[]}"#,
     );
-    let refused = build(&a, &h, &shaping(), "p", "nobody").expect_err("refused");
+    let refused = build(HOST, &a, &h, &shaping(), "p", "nobody").expect_err("refused");
     assert_eq!((refused.status, refused.envelope), (500, "openai"));
     assert_eq!(refused.message, DETAIL_INTERNAL_ERROR);
 }
@@ -392,9 +413,9 @@ fn the_callers_query_goes_out_on_a_same_dialect_attempt() {
         &(),
     )
     .expect("arrives");
-    let same = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    let same = build(HOST, &a, &h, &shaping(), "p", "claude").expect("built");
     assert_eq!(same.target, "/v1/messages?beta=true");
-    let crossed = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let crossed = build(HOST, &a, &h, &shaping(), "p", "gpt").expect("built");
     assert_eq!(crossed.target, "/v1/chat/completions");
 }
 
@@ -423,7 +444,7 @@ fn a_path_model_same_dialect_request_reaches_the_far_end_as_the_caller_wrote_it(
         &(),
     )
     .expect("arrives");
-    let r = build(&a, &h, &shaping(), "p", "gem").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gem").expect("built");
     assert_eq!(String::from_utf8_lossy(&r.body), body);
 }
 
@@ -434,7 +455,7 @@ fn a_history_with_a_custom_tool_call_relays_byte_identical() {
     let h = head(&[("content-type", "application/json")]);
     let body = r#"{"model":"gpt","messages":[{"role":"user","content":"go"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_c","type":"custom","custom":{"name":"grammar","input":"x = 1"}}]},{"role":"tool","tool_call_id":"call_c","content":"ok"}],"tools":[{"type":"custom","custom":{"name":"grammar"}}]}"#;
     let a = arrived("/v1/chat/completions", &h, body);
-    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gpt").expect("built");
     assert_eq!(String::from_utf8_lossy(&r.body), body);
 }
 
@@ -464,7 +485,7 @@ fn the_providers_tenant_goes_out_and_the_callers_does_not() {
         &h,
         r#"{"model":"gpt","messages":[]}"#,
     );
-    let r = build(&a, &h, &shaping, "p", "gpt").expect("built");
+    let r = build(HOST, &a, &h, &shaping, "p", "gpt").expect("built");
     assert_eq!(field(&r, "openai-organization"), [b"org-cfg".as_slice()]);
     assert_eq!(field(&r, "openai-project"), [b"proj-cfg".as_slice()]);
 }
@@ -480,7 +501,7 @@ fn no_client_header_leaves_egress_unchanged() {
     let none = head(&[]);
     let body = r#"{"model":"claude","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}"#;
     let a = arrived("/v1/messages", &none, body);
-    let r = build(&a, &none, &shaping(), "p", "claude").expect("built");
+    let r = build(HOST, &a, &none, &shaping(), "p", "claude").expect("built");
     assert_eq!(field(&r, "anthropic-version"), [b"2023-06-01".as_slice()]);
     assert_eq!(
         field(&r, "user-agent"),
@@ -494,7 +515,7 @@ fn no_client_header_leaves_egress_unchanged() {
 
     let openai = r#"{"model":"claude","messages":[{"role":"user","content":"hi"}]}"#;
     let a = arrived("/v1/chat/completions", &none, openai);
-    let r = build(&a, &none, &shaping(), "p", "claude").expect("built");
+    let r = build(HOST, &a, &none, &shaping(), "p", "claude").expect("built");
     assert_eq!(
         field(&r, "anthropic-version"),
         [b"2023-06-01".as_slice()],
@@ -502,7 +523,7 @@ fn no_client_header_leaves_egress_unchanged() {
     );
 
     let a = arrived("/v1/messages", &none, &body.replace("claude", "claude-key"));
-    let r = build(&a, &none, &shaping(), "p", "claude-key").expect("built");
+    let r = build(HOST, &a, &none, &shaping(), "p", "claude-key").expect("built");
     assert!(
         field(&r, "anthropic-version").is_empty(),
         "an api-key override declares no static field"
@@ -512,12 +533,12 @@ fn no_client_header_leaves_egress_unchanged() {
         &none,
         &body.replace("claude", "claude-bearer"),
     );
-    let r = build(&a, &none, &shaping(), "p", "claude-bearer").expect("built");
+    let r = build(HOST, &a, &none, &shaping(), "p", "claude-bearer").expect("built");
     assert_eq!(field(&r, "anthropic-version"), [b"2023-06-01".as_slice()]);
 
     let own = head(&[("anthropic-version", "2024-01-01")]);
     let a = arrived("/v1/messages", &own, body);
-    let r = build(&a, &own, &shaping(), "p", "claude").expect("built");
+    let r = build(HOST, &a, &own, &shaping(), "p", "claude").expect("built");
     assert_eq!(
         field(&r, "anthropic-version"),
         [b"2024-01-01".as_slice()],
@@ -529,7 +550,7 @@ fn no_client_header_leaves_egress_unchanged() {
         &none,
         &openai.replace("claude", "gpt"),
     );
-    let r = build(&a, &none, &shaping(), "p", "gpt").expect("built");
+    let r = build(HOST, &a, &none, &shaping(), "p", "gpt").expect("built");
     assert!(
         field(&r, "anthropic-version").is_empty(),
         "openai declares none"
@@ -553,7 +574,7 @@ fn a_same_dialect_callers_fields_keep_busbars_positions() {
     ]);
     let body = r#"{"model":"claude","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}"#;
     let a = arrived("/v1/messages", &h, body);
-    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "claude").expect("built");
     let names: Vec<&str> = r.fields.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
         names,
@@ -578,12 +599,12 @@ fn a_same_dialect_callers_accept_never_replaces_busbars_own() {
     let h = head(&[("accept", "*/*"), ("x-trace", "a")]);
     let body = r#"{"model":"gpt","messages":[{"role":"user","content":"hi"}]}"#;
     let a = arrived("/v1/chat/completions", &h, body);
-    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gpt").expect("built");
     assert_eq!(field(&r, "accept"), [b"application/json".as_slice()]);
     assert_eq!(field(&r, "x-trace"), [b"a".as_slice()]);
     let streamed = r#"{"model":"gpt","stream":true,"messages":[{"role":"user","content":"hi"}]}"#;
     let a = arrived("/v1/chat/completions", &h, streamed);
-    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gpt").expect("built");
     assert_eq!(field(&r, "accept"), [b"text/event-stream".as_slice()]);
 }
 
@@ -659,7 +680,7 @@ fn a_same_dialect_anthropic_callers_own_version_beta_and_trace_go_out() {
         &h,
         r#"{"model":"claude","messages":[{"role":"user","content":"hi"}],"max_tokens":100}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "claude").expect("built");
     assert_eq!(
         field(&r, "anthropic-version"),
         [b"2020-01-01-clienttest".as_slice()],
@@ -690,7 +711,7 @@ fn a_same_dialect_openai_callers_fields_and_unknown_member_go_out() {
         &h,
         r#"{"model":"gpt","messages":[{"role":"user","content":"hi"}],"x_vendor_flag":true}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "gpt").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "gpt").expect("built");
     assert_eq!(field(&r, "openai-beta"), [b"assistants=v2".as_slice()]);
     assert_eq!(field(&r, "x-client-trace"), [b"abc".as_slice()]);
     assert_eq!(
@@ -718,7 +739,7 @@ fn a_callers_two_values_replace_busbars_default_then_append() {
         &h,
         r#"{"model":"claude","max_tokens":5,"messages":[]}"#,
     );
-    let r = build(&a, &h, &shaping(), "p", "claude").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "claude").expect("built");
     assert_eq!(
         field(&r, "user-agent"),
         [b"first".as_slice(), b"second".as_slice()]
@@ -771,21 +792,21 @@ fn the_tenant_comes_from_config_on_every_route_and_never_from_the_caller() {
 
     let s = one_lane("openai", "test-model", None, &tenant);
     let a = arrived("/v1/chat/completions", &h, openai_body);
-    let r = build(&a, &h, &s, "p", "test-model").expect("built");
+    let r = build(HOST, &a, &h, &s, "p", "test-model").expect("built");
     assert_eq!(seen(&r), configured, "openai caller, openai lane");
 
     let a = arrived("/v1/messages", &h, anthropic_body);
-    let r = build(&a, &h, &s, "p", "test-model").expect("built");
+    let r = build(HOST, &a, &h, &s, "p", "test-model").expect("built");
     assert_eq!(seen(&r), configured, "anthropic caller, openai lane");
 
     let s = one_lane("openai", "test-model", None, &[]);
     let a = arrived("/v1/chat/completions", &h, openai_body);
-    let r = build(&a, &h, &s, "p", "test-model").expect("built");
+    let r = build(HOST, &a, &h, &s, "p", "test-model").expect("built");
     assert_eq!(seen(&r), (None, None), "openai lane, no tenant configured");
 
     let s = one_lane("anthropic", "test-model", None, &tenant);
     let a = arrived("/v1/messages", &h, anthropic_body);
-    let r = build(&a, &h, &s, "p", "test-model").expect("built");
+    let r = build(HOST, &a, &h, &s, "p", "test-model").expect("built");
     assert_eq!(
         seen(&r),
         (None, None),
@@ -852,7 +873,7 @@ fn every_dialects_chat_target_is_its_released_path_both_stream_intents() {
             r#"{{"model":"m-1","stream":{stream},"messages":[{{"role":"user","content":"hi"}}]}}"#
         );
         let a = arrived("/v1/chat/completions", &h, &body);
-        let r = build(&a, &h, &s, "p", "m-1").unwrap_or_else(|e| panic!("{dialect}: {e:?}"));
+        let r = build(HOST, &a, &h, &s, "p", "m-1").unwrap_or_else(|e| panic!("{dialect}: {e:?}"));
         assert_eq!(r.target, wire, "{dialect} stream {stream}");
         let lane = s.lane("m-1").expect("the lane");
         let path = upstream_path(lane, OpVerb::CHAT, stream).expect("a path");
@@ -877,7 +898,7 @@ fn a_provider_path_with_a_query_is_the_target_verbatim() {
     for stream in [false, true] {
         let body = format!(r#"{{"model":"gpt-4o","stream":{stream},"messages":[]}}"#);
         let a = arrived("/v1/chat/completions", &h, &body);
-        let r = build(&a, &h, &s, "p", "gpt-4o").expect("built");
+        let r = build(HOST, &a, &h, &s, "p", "gpt-4o").expect("built");
         assert_eq!(r.target, fixed, "stream {stream}");
     }
     let lane = s.lane("gpt-4o").expect("the lane");
@@ -908,7 +929,7 @@ fn every_far_end_reads_its_native_sdks_accept() {
                 r#"{{"model":"m-1","stream":{stream},"messages":[{{"role":"user","content":"hi"}}]}}"#
             );
             let a = arrived("/v1/chat/completions", &h, &body);
-            let r = build(&a, &h, &s, "p", "m-1").expect("built");
+            let r = build(HOST, &a, &h, &s, "p", "m-1").expect("built");
             let want: &[u8] = match (dialect, stream) {
                 ("bedrock", true) => b"application/vnd.amazon.eventstream",
                 (_, true) => b"text/event-stream",
@@ -938,7 +959,7 @@ fn an_openai_callers_source_only_keys_never_reach_an_anthropic_far_end() {
         &h,
         r#"{"model":"leastbad","messages":[{"role":"user","content":"hi"}],"max_tokens":16,"logprobs":true,"top_logprobs":5,"n":1}"#,
     );
-    let r = build(&a, &h, &s, "p", "claude-3").expect("the attempt goes out");
+    let r = build(HOST, &a, &h, &s, "p", "claude-3").expect("the attempt goes out");
     let v = far_json(&r);
     let obj = v.as_object().expect("an object");
     for key in ["logprobs", "top_logprobs", "n"] {
@@ -1010,7 +1031,7 @@ fn a_cohere_caller_reaches_an_openai_far_end_and_back() {
         r#"{"model":"co","messages":[{"role":"user","content":"hello"}]}"#,
     );
     assert_eq!(a.dialect, "cohere");
-    let r = build(&a, &h, &s, "co", "glm-4.5").expect("built");
+    let r = build(HOST, &a, &h, &s, "co", "glm-4.5").expect("built");
     assert_eq!(r.target, "/v1/chat/completions");
     let v = far_json(&r);
     assert!(v.get("messages").is_some_and(Value::is_array), "{v}");
@@ -1019,7 +1040,12 @@ fn a_cohere_caller_reaches_an_openai_far_end_and_back() {
         field(&r, "authorization").is_empty(),
         "the caller's credential never goes out"
     );
-    let w = whole::translate(&whole_ctx(&a, "openai", "glm-4.5"), 200, &openai_ok_body());
+    let w = whole::translate(
+        HOST,
+        &whole_ctx(&a, "openai", "glm-4.5"),
+        200,
+        &openai_ok_body(),
+    );
     assert_eq!(w.end, WholeEnd::Delivered, "{:?}", w.refused);
     assert_eq!(w.answer.status, 200);
 }
@@ -1038,11 +1064,12 @@ fn a_responses_caller_reaches_an_anthropic_far_end_and_back() {
         r#"{"model":"re","input":"hello","max_tokens":16}"#,
     );
     assert_eq!(a.dialect, "responses");
-    let r = build(&a, &h, &s, "re", "claude-x").expect("built");
+    let r = build(HOST, &a, &h, &s, "re", "claude-x").expect("built");
     assert_eq!(r.target, "/v1/messages");
     let v = far_json(&r);
     assert!(v.get("messages").is_some_and(Value::is_array), "{v}");
     let w = whole::translate(
+        HOST,
         &whole_ctx(&a, "anthropic", "claude-x"),
         200,
         &anthropic_ok_body(),
@@ -1061,7 +1088,7 @@ fn a_bedrock_same_dialect_relay_carries_no_routing_members() {
     let s = one_lane("bedrock", "foo", None, &[("path", "/v1/messages")]);
     let body = r#"{"messages":[{"role":"user","content":[{"text":"hello"}]}]}"#;
     let a = arrived("/model/foo/converse", &h, body);
-    let r = build(&a, &h, &s, "foo", "foo").expect("built");
+    let r = build(HOST, &a, &h, &s, "foo", "foo").expect("built");
     assert_eq!(r.target, "/v1/messages");
     let v = far_json(&r);
     assert!(v.get("model").is_none(), "{v}");
@@ -1085,7 +1112,7 @@ fn a_gemini_json_array_callers_router_key_never_reaches_a_body_model_far_end() {
         r#"{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}"#,
     );
     assert!(a.path_model.as_ref().is_some_and(|p| p.json_array));
-    let r = build(&a, &h, &s, "foo", "foo").expect("built");
+    let r = build(HOST, &a, &h, &s, "foo", "foo").expect("built");
     let v = far_json(&r);
     assert!(v.get("__busbar_gemini_json_array").is_none(), "{v}");
     assert_eq!(v.get("stream").and_then(Value::as_bool), Some(true), "{v}");
@@ -1106,7 +1133,7 @@ fn an_unsupported_sub_operation_is_a_404_naming_the_operation_and_the_model() {
     );
     assert_eq!(refused.status, 404);
     assert_eq!(refused.kind, "not_found_error");
-    let r = busbar_plane_llm::exchange::refuse::answered(&refused);
+    let r = busbar_plane_llm::exchange::refuse::answered(HOST, &refused);
     assert_eq!(r.status, 404);
     let v: Value = serde_json::from_slice(&r.body).expect("JSON");
     let detail = v["error"]["message"].as_str().unwrap_or_default();
@@ -1128,7 +1155,7 @@ fn an_unsupported_sub_operation_is_a_404_naming_the_operation_and_the_model() {
 fn a_bad_request_reject_is_the_generic_400() {
     let refused = ingress_reject("openai", &IngressReject::BadRequest("x".into()));
     assert_eq!(refused.status, 400);
-    let r = busbar_plane_llm::exchange::refuse::answered(&refused);
+    let r = busbar_plane_llm::exchange::refuse::answered(HOST, &refused);
     assert_eq!(r.status, 400);
     let v: Value = serde_json::from_slice(&r.body).expect("JSON");
     assert_eq!(
@@ -1222,7 +1249,7 @@ fn an_openai_n_over_one_to_anthropic_is_forwarded_without_n() {
         &h,
         r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"max_tokens":16,"n":3}"#,
     );
-    let r = build(&a, &h, &s, "p", "claude-3-5-sonnet").expect("forwarded, not refused");
+    let r = build(HOST, &a, &h, &s, "p", "claude-3-5-sonnet").expect("forwarded, not refused");
     let v = far_json(&r);
     assert!(v.get("n").is_none(), "{v}");
     assert!(v.get("messages").is_some(), "{v}");
@@ -1240,7 +1267,7 @@ fn a_gemini_candidate_count_over_one_to_openai_is_forwarded() {
         &h,
         r#"{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"generationConfig":{"candidateCount":2}}"#,
     );
-    let r = build(&a, &h, &s, "p", "gpt-4o").expect("forwarded, not refused");
+    let r = build(HOST, &a, &h, &s, "p", "gpt-4o").expect("forwarded, not refused");
     assert!(far_json(&r).get("messages").is_some());
 }
 
@@ -1253,7 +1280,7 @@ fn a_same_dialect_openai_n_over_one_is_relayed_unchanged() {
     let s = one_lane("openai", "gpt-4o", None, &[]);
     let body = r#"{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}],"n":3}"#;
     let a = arrived("/v1/chat/completions", &h, body);
-    let r = build(&a, &h, &s, "p", "gpt-4o").expect("not refused");
+    let r = build(HOST, &a, &h, &s, "p", "gpt-4o").expect("not refused");
     assert_eq!(far_json(&r).get("n"), Some(&json!(3)));
     assert_eq!(String::from_utf8_lossy(&r.body), body);
 }
@@ -1272,7 +1299,7 @@ fn multi_input_embeddings_to_gemini_embed_the_first() {
         r#"{"model":"text-embedding-3-small","input":["alpha","beta","gamma"]}"#,
     );
     assert_eq!(a.operation, OpVerb::EMBEDDINGS);
-    let r = build(&a, &h, &s, "p", "text-embedding-004").expect("forwarded, not refused");
+    let r = build(HOST, &a, &h, &s, "p", "text-embedding-004").expect("forwarded, not refused");
     assert_eq!(
         far_json(&r).pointer("/content/parts/0/text"),
         Some(&json!("alpha"))
@@ -1291,7 +1318,7 @@ fn single_input_embeddings_to_gemini_are_written() {
         &h,
         r#"{"model":"text-embedding-3-small","input":["alpha"]}"#,
     );
-    assert!(build(&a, &h, &s, "p", "text-embedding-004").is_ok());
+    assert!(build(HOST, &a, &h, &s, "p", "text-embedding-004").is_ok());
 }
 
 /// The seven family operations the legacy parity test walked, each with a label for the table.
@@ -1513,7 +1540,7 @@ fn a_pristine_same_dialect_body_is_byte_identical_for_four_body_model_dialects()
         let s = one_lane(dialect, model, None, &[]);
         let a = arrived(target, &h, body);
         assert_eq!(a.dialect, dialect);
-        let r = build(&a, &h, &s, "p", model).expect("built");
+        let r = build(HOST, &a, &h, &s, "p", model).expect("built");
         assert!(r.pristine, "{dialect}");
         assert_eq!(String::from_utf8_lossy(&r.body), body, "{dialect}");
     }
@@ -1538,7 +1565,7 @@ fn claude_on_vertex_drops_the_model_and_names_the_vertex_version() {
         &h,
         r#"{"model":"claude-3-5-sonnet","max_tokens":7,"messages":[{"role":"user","content":"hi"}]}"#,
     );
-    let r = build(&a, &h, &s, "p", "claude-3-5-sonnet").expect("built");
+    let r = build(HOST, &a, &h, &s, "p", "claude-3-5-sonnet").expect("built");
     let v = far_json(&r);
     assert!(v.get("model").is_none(), "{v}");
     assert_eq!(
@@ -1563,7 +1590,7 @@ fn a_stream_member_never_reaches_a_path_model_far_end() {
     let s = one_lane("gemini", "url-model-x", None, &[]);
     let body = r#"{"contents":[{"role":"user","parts":[{"text":"hi"}]}],"stream":true}"#;
     let a = arrived("/v1beta/models/url-model-x:generateContent", &h, body);
-    let r = build(&a, &h, &s, "p", "url-model-x").expect("built");
+    let r = build(HOST, &a, &h, &s, "p", "url-model-x").expect("built");
     assert!(!r.pristine);
     assert_ne!(String::from_utf8_lossy(&r.body), body);
     assert!(
@@ -1594,7 +1621,7 @@ fn a_body_model_member_never_reaches_a_same_dialect_path_model_far_end() {
     ] {
         let s = one_lane(dialect, "url-model-x", None, &[]);
         let a = arrived(target, &h, body);
-        let r = build(&a, &h, &s, "p", "url-model-x").expect("built");
+        let r = build(HOST, &a, &h, &s, "p", "url-model-x").expect("built");
         assert!(!r.pristine, "{dialect}");
         assert_ne!(String::from_utf8_lossy(&r.body), body, "{dialect}");
         assert!(far_json(&r).get("model").is_none(), "{dialect}");
@@ -1612,7 +1639,7 @@ fn a_same_dialect_gemini_thought_signature_relays_verbatim() {
     let s = one_lane("gemini", "url-model-x", None, &[]);
     let body = r#"{"contents":[{"role":"model","parts":[{"functionCall":{"name":"get_weather","args":{"city":"SF"}},"thoughtSignature":"a-real-opaque-signature-token"}]}]}"#;
     let a = arrived("/v1beta/models/url-model-x:generateContent", &h, body);
-    let r = build(&a, &h, &s, "p", "url-model-x").expect("built");
+    let r = build(HOST, &a, &h, &s, "p", "url-model-x").expect("built");
     let text = String::from_utf8_lossy(&r.body);
     assert_eq!(text, body);
     assert!(text.contains("a-real-opaque-signature-token"));
@@ -1629,7 +1656,7 @@ fn a_same_dialect_cohere_over_cap_stop_list_goes_out_whole() {
     let s = one_lane("cohere", "command-r-plus", None, &[]);
     let body = r#"{"model":"command-r-plus","messages":[{"role":"user","content":"hi"}],"stop_sequences":["a","b","c","d","e","f"]}"#;
     let a = arrived("/v2/chat", &h, body);
-    let r = build(&a, &h, &s, "p", "command-r-plus").expect("not refused");
+    let r = build(HOST, &a, &h, &s, "p", "command-r-plus").expect("not refused");
     assert_eq!(
         far_json(&r).get("stop_sequences"),
         Some(&json!(["a", "b", "c", "d", "e", "f"]))
@@ -1656,7 +1683,7 @@ fn a_huge_body_is_written_like_a_small_one() {
         let a = arrived("/v1/chat/completions", &h, &body);
         for dialect in ["openai", "anthropic"] {
             let s = one_lane(dialect, "gpt-4o", None, &[]);
-            let r = build(&a, &h, &s, "p", "gpt-4o")
+            let r = build(HOST, &a, &h, &s, "p", "gpt-4o")
                 .unwrap_or_else(|e| panic!("{dialect} {}: {e:?}", content.len()));
             let v = far_json(&r);
             let carried = v

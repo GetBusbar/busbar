@@ -19,21 +19,26 @@ fn body(usage: serde_json::Value) -> serde_json::Value {
 #[test]
 fn buffered_response_refuses_a_stringified_count() {
     GeminiReader
-        .read_response(&body(
-            serde_json::json!({"promptTokenCount": "1500", "candidatesTokenCount": 9}),
-        ))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &body(serde_json::json!({"promptTokenCount": "1500", "candidatesTokenCount": 9})),
+        )
         .expect_err("a present, unreadable promptTokenCount is a refusal, never a zero");
     GeminiReader
-        .read_response(&body(
-            serde_json::json!({"promptTokenCount": 10, "thoughtsTokenCount": "400"}),
-        ))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &body(serde_json::json!({"promptTokenCount": 10, "thoughtsTokenCount": "400"})),
+        )
         .expect_err("thinking tokens are billed output; unreadable, they refuse too");
 }
 
 #[test]
 fn buffered_response_with_an_absent_count_still_reads_as_zero() {
     let ir = GeminiReader
-        .read_response(&body(serde_json::json!({"candidatesTokenCount": 9})))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &body(serde_json::json!({"candidatesTokenCount": 9})),
+        )
         .expect("an absent count is zero");
     assert_eq!(ir.usage.input_tokens, 0);
     assert_eq!(ir.usage.output_tokens, 9);
@@ -43,6 +48,7 @@ fn buffered_response_with_an_absent_count_still_reads_as_zero() {
 fn streaming_terminal_refuses_a_stringified_count() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let ev = GeminiReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &body(serde_json::json!({"promptTokenCount": 18, "candidatesTokenCount": "89"})),
         &mut state,

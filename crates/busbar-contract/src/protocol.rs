@@ -18,6 +18,7 @@
 //! with its inbound-auth field and its DECLARED egress scheme ([`EgressScheme`]); the registry and
 //! the dialect-specific helpers are not shapes and stay there.
 
+use crate::codec::CodecHost;
 use crate::operation::OpVerb;
 
 // ── THE CANONICAL error-`type` VOCABULARY. The forward layer's error-KIND bank below, the admin
@@ -198,10 +199,11 @@ pub fn sse_line_spans(bytes: &[u8]) -> Vec<(usize, usize)> {
 /// A shape: the plane implements it and the kernel drives it, naming only this crate.
 pub trait StreamTranslator: Send {
     /// Feed a chunk of EGRESS bytes; return the translated INGRESS bytes for whatever COMPLETE frames
-    /// are now available (empty if only a partial frame is buffered).
-    fn feed(&mut self, chunk: &[u8]) -> Vec<u8>;
+    /// are now available (empty if only a partial frame is buffered). `host` is the caller's
+    /// [`CodecHost`]: an ingress writer that mints an id or stamps a time reads it there.
+    fn feed(&mut self, host: &dyn CodecHost, chunk: &[u8]) -> Vec<u8>;
     /// Call once at end-of-stream; returns the INGRESS terminator plus any deferred terminal frames.
-    fn finish(&mut self) -> Vec<u8>;
+    fn finish(&mut self, host: &dyn CodecHost) -> Vec<u8>;
     /// The terminal token usage accumulated for this stream, projected to the neutral billing total,
     /// or `None` if no usage-bearing terminal event was seen. The streaming billing arm reads this
     /// for the per-request token fee.
@@ -233,7 +235,11 @@ pub trait StreamTranslator: Send {
     /// event arrives with `sequence_number: 0` and an unrelated response id — a stream a strict SDK
     /// cannot reconcile with the `response.created` it opened on. `None` when this translator has no
     /// in-band error frame to offer, in which case the caller falls back to the dialect seam.
-    fn terminal_error_frame(&mut self, _err: &IrError) -> Option<(String, serde_json::Value)> {
+    fn terminal_error_frame(
+        &mut self,
+        _host: &dyn CodecHost,
+        _err: &IrError,
+    ) -> Option<(String, serde_json::Value)> {
         None
     }
     /// The far-end wire paths this stream dropped on its way to the caller (a TRANSLATE attempt's
@@ -333,7 +339,7 @@ pub trait ArrayStreamFramer: Send {
 /// have no home on `TranslateCodec`. Reached via `decl_for(name).dialect()`. Its implementor lives in
 /// the plane that owns the dialects and forwards to that plane's writer/reader.
 pub trait DialectCodec: Send + Sync {
-    fn probe_body(&self, model: &str) -> Vec<u8>;
+    fn probe_body(&self, host: &dyn CodecHost, model: &str) -> Vec<u8>;
     fn apply_rewrite_to_ingress_body(
         &self,
         obj: &mut serde_json::Map<String, serde_json::Value>,
@@ -343,16 +349,25 @@ pub trait DialectCodec: Send + Sync {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<crate::billing::TokenUsage>;
     fn ingress_response_request_id(
         &self,
+        host: &dyn CodecHost,
         upstream_request_id: Option<&str>,
     ) -> Option<(&'static str, String)>;
-    fn write_error(&self, status: u16, kind: &str, message: &str) -> serde_json::Value;
+    fn write_error(
+        &self,
+        host: &dyn CodecHost,
+        status: u16,
+        kind: &str,
+        message: &str,
+    ) -> serde_json::Value;
     fn requested_candidate_count(&self, body: &serde_json::Value) -> Option<u64>;
     fn write_response_exception(
         &self,
+        host: &dyn CodecHost,
         err: &crate::upstream::CanonicalSignal,
     ) -> Option<(String, String)>;
     fn write_error_frame(
         &self,
+        host: &dyn CodecHost,
         err: &crate::upstream::CanonicalSignal,
     ) -> Option<(String, serde_json::Value)>;
     fn wants_array_stream(&self, body: &serde_json::Value) -> bool;
@@ -362,6 +377,7 @@ pub trait DialectCodec: Send + Sync {
     /// each name once. Empty for a dialect whose error rides the body alone.
     fn error_response_fields(
         &self,
+        host: &dyn CodecHost,
         kind: &str,
         envelope: &serde_json::Value,
     ) -> Vec<(String, Vec<u8>)>;

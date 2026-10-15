@@ -858,7 +858,7 @@ const RESPONSE_ID_REJECT_THRESHOLD: u8 = crate::codec::dialect::BASE62_REJECT_TH
 /// RESPONSE_ID_REJECT_THRESHOLD` (the largest multiple of 62 that fits in a `u8`, i.e. `4*62 = 248`)
 /// and resample, so every surviving byte maps uniformly across the 62 symbols. Rejected bytes are
 /// simply skipped and more random bytes are drawn as needed.
-fn synth_response_id() -> String {
+fn synth_response_id(host: &dyn busbar_contract::codec::CodecHost) -> String {
     let mut token = [b'0'; RESPONSE_ID_TOKEN_LEN];
     let mut filled = 0usize;
     // Bound the number of refill rounds so a stuck/zero entropy source can never spin forever on the
@@ -871,7 +871,7 @@ fn synth_response_id() -> String {
         // Draw a generous batch so a single entropy draw typically fills the whole token even after
         // rejections (RESPONSE_ID_TOKEN_LEN*2 bytes leave ample headroom for the ~1.6% reject rate).
         let mut batch = [0u8; RESPONSE_ID_TOKEN_LEN * 2];
-        if !super::synth_rng::fill_entropy(&mut batch) {
+        if !super::synth_rng::fill_entropy(host, &mut batch) {
             break;
         }
         for &byte in batch.iter() {

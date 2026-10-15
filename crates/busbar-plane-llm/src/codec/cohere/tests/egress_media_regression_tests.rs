@@ -41,7 +41,7 @@ fn anthropic_to_cohere_document_media_warns_not_silent() {
     let subscriber = cap.clone();
     let out = tracing::subscriber::with_default(subscriber, || {
         let w = CohereWriter;
-        w.write_request(&ir)
+        w.write_request(crate::codec::test_host::HOST, &ir)
     });
 
     // The document block is NOT projected onto the wire (Cohere has no content slot for it)...

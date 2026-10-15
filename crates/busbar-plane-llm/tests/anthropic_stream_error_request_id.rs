@@ -13,6 +13,20 @@ use busbar_contract::upstream::{CanonicalSignal, StatusClass};
 use busbar_plane_llm::codec::anthropic;
 use busbar_plane_llm::codec::ir::IrStreamEvent;
 
+/// The host the writer is handed: a fixed entropy fill to mint the request id from, and no clock.
+struct SevensHost;
+
+impl busbar_contract::codec::CodecHost for SevensHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        out.fill(7);
+        true
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        None
+    }
+}
+
 #[test]
 fn an_anthropic_in_stream_error_event_carries_every_member_error_response_requires() {
     let writer = anthropic::protocol();
@@ -28,7 +42,7 @@ fn an_anthropic_in_stream_error_event_carries_every_member_error_response_requir
         };
         let (event, data) = writer
             .writer()
-            .write_response_event(&IrStreamEvent::Error(err))
+            .write_response_event(&SevensHost, &IrStreamEvent::Error(err))
             .expect("an error event is written");
         assert_eq!(event, "error");
         let obj = data.as_object().expect("the event body is an object");

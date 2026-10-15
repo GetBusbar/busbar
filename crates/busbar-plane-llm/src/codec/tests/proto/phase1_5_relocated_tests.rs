@@ -48,8 +48,10 @@ fn test_synth_amzn_request_id_is_uuid_v4() {
     // not a private copy — assert the canonical fn's shape so the bedrock auth-failure header
     // contract stays covered. Two consecutive ids must differ (entropy-sourced, not a predictable
     // timestamp||counter).
-    let a = bedrock::synth_amzn_request_id().expect("entropy must be available under test");
-    let b = bedrock::synth_amzn_request_id().expect("entropy must be available under test");
+    let a = bedrock::synth_amzn_request_id(crate::codec::test_host::HOST)
+        .expect("entropy must be available under test");
+    let b = bedrock::synth_amzn_request_id(crate::codec::test_host::HOST)
+        .expect("entropy must be available under test");
     assert_uuid_v4_shaped(&a);
     assert_uuid_v4_shaped(&b);
     assert_ne!(a, b, "consecutive synthetic request ids must differ");
@@ -193,11 +195,9 @@ fn every_bedrock_error_kind_is_a_converse_declared_exception() {
 /// so it lives beside them in the plugin (RELOCATED from core).
 #[test]
 fn every_known_protocol_has_a_declared_reasoning_wire_shape() {
-    // Seed the registry, then pin the sweep's WIDTH. `known_protocols()` folds the process-global
-    // registry, which is EMPTY until something registers: run alone this "exhaustiveness guard"
-    // reported green over ZERO iterations, so a reader that invented a turn for an empty
-    // conversation — or a name in the list with no registered codec — was invisible.
-    crate::codec::ensure_test_protocols_registered();
+    // Pin the sweep's WIDTH. Run alone, this "exhaustiveness guard" once reported green over ZERO
+    // iterations, so a reader that invented a turn for an empty conversation — or a name in the
+    // list with no registered codec — was invisible.
     let protos = known_protocols();
     assert_eq!(
         protos.len(),

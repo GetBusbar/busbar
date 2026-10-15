@@ -3,10 +3,11 @@
 //! Every protocol writer that must invent a shape-correct id when the upstream omitted one
 //! (`anthropic` `req_…`, `bedrock`/`gemini` request ids, `cohere` v4 uuids, `responses` `resp_…`)
 //! asks here for a fistful of random bytes. THE BYTES ARE THE HOST'S (#83a O10; the entropy arrives
-//! through the host, never drawn by the plane itself): each draw goes straight to
-//! `busbar_contract::codec::fill_entropy`, the host-installed source (the OS CSPRNG, armed by the host
-//! where it installs the protocols). A process whose host installed no source serves nothing: the
-//! draw reports failure and each caller takes its own entropy-unavailable branch.
+//! through the host, never drawn by the plane itself): each draw goes straight to the
+//! [`CodecHost`](busbar_contract::codec::CodecHost) the caller handed down the codec call graph (the
+//! kernel's OS CSPRNG for the linked engine, the door's `random.fill` service for a door). A host
+//! with no source serves nothing: the draw reports failure and each caller takes its own
+//! entropy-unavailable branch.
 //!
 //! NO STATE OF ITS OWN. This module used to amortise the host call through a 4 KiB per-thread
 //! buffer. A plugin holds no process-global state — what it keeps is per-instance, and the one
@@ -18,12 +19,8 @@
 /// source is unavailable (in which case `out`'s contents are unspecified and callers must honour
 /// their entropy-failure branch).
 #[inline]
-pub fn fill_entropy(out: &mut [u8]) -> bool {
-    // A test process's host is the kernel test seam, which arms the same source the composition
-    // root arms in a shipped binary.
-    #[cfg(test)]
-    crate::codec::ensure_test_protocols_registered();
-    busbar_contract::codec::fill_entropy(out)
+pub fn fill_entropy(host: &dyn busbar_contract::codec::CodecHost, out: &mut [u8]) -> bool {
+    host.fill_entropy(out)
 }
 
 #[cfg(test)]

@@ -60,7 +60,9 @@ fn buffered_read_response_reads_float_encoded_counts() {
             "totalTokenCount": 222.0
         }
     });
-    let ir = GeminiReader.read_response(&body).expect("read_response");
+    let ir = GeminiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         ir.usage.input_tokens, 45,
         "18.0 - 5.0(cached) + 32.0(tool-use), every additive term float-spelled"
@@ -104,7 +106,7 @@ fn streaming_terminal_reads_float_encoded_counts() {
             "totalTokenCount": 222.0
         }
     });
-    let events = reader.read_response_events("", &chunk, &mut state);
+    let events = reader.read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut state);
     let usage = events
         .into_iter()
         .find_map(|e| match e {

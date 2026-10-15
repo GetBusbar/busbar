@@ -14,10 +14,12 @@ fn xresp(egress: &str, ingress: &'static str, body: &Value) -> Value {
     let ingress_p = crate::codec::proto_codec::protocol_for(ingress).expect("ingress dialect");
     let mut ir = egress_p
         .reader()
-        .read_response(body)
+        .read_response(crate::codec::test_host::HOST, body)
         .expect("egress reader accepts the body");
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir, ingress, 1_752_000_000);
-    ingress_p.writer().write_response(&ir)
+    ingress_p
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &ir)
 }
 
 /// Every `url_citation` annotation anywhere in a written body, whichever OpenAI shape it has.
@@ -146,7 +148,7 @@ fn seam_matched_stop_sequence_survives_the_buffered_seam() {
     let out = crate::codec::proto_codec::protocol_for("anthropic")
         .expect("anthropic")
         .writer()
-        .write_response(&ir);
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["stop_reason"], "stop_sequence", "{out}");
     assert_eq!(
         out["stop_sequence"], "###",
@@ -251,7 +253,7 @@ fn bed06_bedrock_thinking_is_written_only_for_a_claude_lane_model() {
         .expect("read");
     let write = |model: &str| {
         let mut h = crate::codec::chat_handle::ChatReqHandle(ir.clone(), Default::default());
-        match h.write_egress_request("bedrock", model) {
+        match h.write_egress_request(crate::codec::test_host::HOST, "bedrock", model) {
             busbar_contract::codec::EgressWire::Json(v) => v,
             _ => panic!("chat writes JSON"),
         }

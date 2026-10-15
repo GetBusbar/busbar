@@ -293,11 +293,15 @@ impl Relay {
 
     /// FEED one far-end piece. The second value is `true` on the one piece that first pushed the
     /// retained copy of a same-dialect whole body over the cap (its head is dropped from then on).
-    pub fn feed<'a>(&mut self, chunk: &'a [u8]) -> (Fed<'a>, bool) {
+    pub fn feed<'a>(
+        &mut self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        chunk: &'a [u8],
+    ) -> (Fed<'a>, bool) {
         self.first_byte = true;
         self.upstream_bytes = self.upstream_bytes.saturating_add(chunk.len());
         if let Some(t) = self.translate.as_mut() {
-            let out = t.feed(chunk);
+            let out = t.feed(host, chunk);
             if let Some(framer) = self.json_array.as_mut() {
                 let framed = framer.feed(&out);
                 return (bytes_or_nothing(framed), false);
@@ -328,7 +332,7 @@ impl Relay {
     }
 
     /// END the relay cleanly: the far end's body is complete.
-    pub fn end(&mut self) -> End {
+    pub fn end(&mut self, host: &dyn busbar_contract::codec::CodecHost) -> End {
         let translate_aborted = self.translate.as_ref().is_some_and(|t| t.aborted());
         let stream_terminal_error = self
             .translate
@@ -348,7 +352,7 @@ impl Relay {
         let tail = self
             .translate
             .as_mut()
-            .map(|t| t.finish())
+            .map(|t| t.finish(host))
             .unwrap_or_default();
         let bytes = if let Some(framer) = self.json_array.as_mut() {
             let mut wrapped = if translate_aborted {
@@ -391,10 +395,10 @@ impl Relay {
             if self.nonstream_buf_truncated {
                 Some(wire::unrecovered_usage(self.ingress, &buf))
             } else {
-                let tapped = self.handler.extract_usage(self.ingress, &buf);
+                let tapped = self.handler.extract_usage(host, self.ingress, &buf);
                 tap_fault = tapped.as_ref().err().copied();
                 tapped.ok().flatten().or_else(|| {
-                    match self.handler.read_response(&buf) {
+                    match self.handler.read_response(host, &buf) {
                         Ok(read) => {
                             open_billing = read.billing();
                             None
@@ -439,13 +443,14 @@ impl Relay {
 
     /// CUT the relay: the far end's transport failed (`transport`), or the stream's ceiling
     /// expired.
-    pub fn cut(&mut self, transport: bool) -> Cut {
+    pub fn cut(&mut self, host: &dyn busbar_contract::codec::CodecHost, transport: bool) -> Cut {
         let had_first = self.first_byte;
         if had_first && self.far_is_stream {
             let usage = self.translate.as_ref().and_then(|t| t.usage());
             let bytes = match self.json_array.as_mut() {
                 Some(framer) => framer.finish_with_server_error(wire::MID_STREAM_GENERIC_DETAIL),
                 None => wire::mid_stream_error_bytes(
+                    host,
                     self.ingress,
                     self.ingress_eventstream,
                     wire::MID_STREAM_GENERIC_DETAIL,

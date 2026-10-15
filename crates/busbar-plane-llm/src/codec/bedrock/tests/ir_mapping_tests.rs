@@ -30,7 +30,9 @@ fn xreq(ingress: &'static str, egress: &str, body: &Value) -> Value {
             lane_caps: Default::default(),
         },
     );
-    let mut out = egress_p.writer().write_request(&req);
+    let mut out = egress_p
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &req);
     crate::codec::wire_shim::strip_router_shim_keys(&mut out, egress);
     out
 }
@@ -39,9 +41,13 @@ fn xreq(ingress: &'static str, egress: &str, body: &Value) -> Value {
 fn xresp(upstream: &str, client: &'static str, body: &Value) -> Value {
     let up = crate::codec::proto_codec::protocol_for(upstream).expect("upstream");
     let cl = crate::codec::proto_codec::protocol_for(client).expect("client");
-    let mut resp = up.reader().read_response(body).expect("read_response");
+    let mut resp = up
+        .reader()
+        .read_response(crate::codec::test_host::HOST, body)
+        .expect("read_response");
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut resp, client, 1_752_000_000);
-    cl.writer().write_response(&resp)
+    cl.writer()
+        .write_response(crate::codec::test_host::HOST, &resp)
 }
 
 /// A Bedrock ConverseStream upstream translated for `client` through the production stream seam.
@@ -55,8 +61,8 @@ fn xstream_from_bedrock(client: &str, frames: &[(&str, Value)]) -> String {
     }
     let mut st =
         crate::codec::proto_stream::StreamTranslate::new(client, "bedrock").expect("translator");
-    let mut out = st.feed(&bytes);
-    out.extend(st.finish());
+    let mut out = st.feed(crate::codec::test_host::HOST, &bytes);
+    out.extend(st.finish(crate::codec::test_host::HOST));
     String::from_utf8_lossy(&out).into_owned()
 }
 
@@ -190,7 +196,7 @@ fn bed02_guard_content_text_reaches_a_foreign_backend_and_round_trips_once() {
     assert!(a.contains("guarded user text"), "{a}");
 
     let ir = BedrockReader.read_request(&body).expect("read");
-    let back = writer().write_request(&ir);
+    let back = writer().write_request(crate::codec::test_host::HOST, &ir);
     let wire = back.to_string();
     assert_eq!(
         wire.matches("guarded user text").count(),
@@ -362,9 +368,9 @@ fn bed09_refusal_writes_content_filtered() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = writer().write_response(&resp);
+    let out = writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(out["stopReason"], "content_filtered", "{out}");
-    let es = bedrock_response_to_eventstream(&resp, Some(1));
+    let es = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &resp, Some(1));
     let wire = String::from_utf8_lossy(&es);
     assert!(wire.contains("content_filtered"), "{wire}");
 }
@@ -382,7 +388,9 @@ fn bed10_context_window_and_malformed_stop_reasons_map() {
     assert_eq!(a["stop_reason"], "model_context_window_exceeded", "{a}");
     for token in ["malformed_model_output", "malformed_tool_use"] {
         body["stopReason"] = json!(token);
-        let ir = BedrockReader.read_response(&body).expect("read");
+        let ir = BedrockReader
+            .read_response(crate::codec::test_host::HOST, &body)
+            .expect("read");
         assert_eq!(
             ir.stop_reason,
             Some(crate::codec::ir::IrStopReason::Error),
@@ -400,7 +408,9 @@ fn bed11_buffered_stop_sequence_is_read() {
     let mut body = cited_response();
     body["stopReason"] = json!("stop_sequence");
     body["additionalModelResponseFields"] = json!({"stop_sequence": "X"});
-    let ir = BedrockReader.read_response(&body).expect("read");
+    let ir = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
     assert_eq!(ir.stop_sequence.as_deref(), Some("X"));
 }
 
@@ -409,9 +419,9 @@ fn bed11_buffered_stop_sequence_is_read() {
 #[test]
 fn bed12_synthesized_stream_carries_citations() {
     let ir = BedrockReader
-        .read_response(&cited_response())
+        .read_response(crate::codec::test_host::HOST, &cited_response())
         .expect("read");
-    let es = bedrock_response_to_eventstream(&ir, Some(1));
+    let es = bedrock_response_to_eventstream(crate::codec::test_host::HOST, &ir, Some(1));
     let mut buf = es.clone();
     let frames = crate::codec::eventstream::drain_frames(&mut buf);
     let citation: Vec<Value> = frames
@@ -480,7 +490,9 @@ fn bed14_web_citation_url_rides_the_web_location() {
         "stopReason": "end_turn",
         "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2}
     });
-    let ir = BedrockReader.read_response(&body).expect("read");
+    let ir = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
     let crate::codec::ir::IrBlock::Text { citations, .. } = &ir.content[0] else {
         panic!("text expected: {ir:?}");
     };

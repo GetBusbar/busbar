@@ -40,8 +40,8 @@ fn builds_a_full_vtable_with_frozen_preamble() {
     assert!(vt.egress_open.is_some());
     assert!(vt.auth_resolve.is_some());
     assert!(vt.gate_scan.is_some());
-    // The minor-30 HOST SERVICES are granted: a dropped-in plane gets the contract services a
-    // linked one does (ARCHITECT SD-3 queue (6)).
+    // The minor-30 HOST SERVICES are granted, served by the kernel itself (the contract holds no
+    // entropy source and no clock): a dropped-in plane gets the host's services a linked one does.
     assert!(vt.entropy_fill.is_some());
     assert!(vt.wall_clock.is_some());
     // RETIRED (row 155): the usage-tap fault is data on the plane's answer, counted by the kernel,

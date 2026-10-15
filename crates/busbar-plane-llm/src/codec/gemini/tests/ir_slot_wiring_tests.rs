@@ -94,7 +94,7 @@ fn gem10_gemini_hosted_tools_read_into_the_typed_slot() {
 
     // Through the seam the three typed tools survive (the raw one is dropped) and a Gemini backend
     // gets them back in its own spelling beside the function.
-    let out = gw().write_request(&read_then_seam(&body));
+    let out = gw().write_request(crate::codec::test_host::HOST, &read_then_seam(&body));
     assert_eq!(
         out["tools"],
         json!([
@@ -122,7 +122,7 @@ fn ir11_foreign_hosted_tools_write_as_gemini_tools() {
         }),
         IrHostedTool::CodeExecution,
     ];
-    let out = gw().write_request(&ir);
+    let out = gw().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["tools"],
         json!([{"googleSearch": {}}, {"urlContext": {}}, {"codeExecution": {}}]),
@@ -152,7 +152,7 @@ fn gem19_foreign_signature_is_not_sent_as_thought_signature() {
             thinking("unknown-sig", None),
         ],
     });
-    let out = gw().write_request(&ir);
+    let out = gw().write_request(crate::codec::test_host::HOST, &ir);
     let parts = &out["contents"][1]["parts"];
     assert_eq!(parts[0].get("thoughtSignature"), None, "{out}");
     assert_eq!(parts[1].get("thoughtSignature"), None, "{out}");
@@ -178,6 +178,7 @@ fn ir17_ir18_gemini_thought_parts_are_summary_with_gemini_origin() {
     };
     let resp = GeminiReader
         .read_response(
+            crate::codec::test_host::HOST,
             &json!({"candidates": [{"content": {"role": "model", "parts": [
             {"text": "t", "thought": true, "thoughtSignature": "s"}, {"text": "a"}]},
             "finishReason": "STOP"}]}),
@@ -217,7 +218,9 @@ fn gem16_stream_citation_byte_offsets_read_as_characters() {
     ];
     let events: Vec<IrStreamEvent> = chunks
         .iter()
-        .flat_map(|c| GeminiReader.read_response_events("", c, &mut state))
+        .flat_map(|c| {
+            GeminiReader.read_response_events(crate::codec::test_host::HOST, "", c, &mut state)
+        })
         .collect();
     let cites: Vec<_> = events
         .iter()
@@ -255,7 +258,7 @@ fn ir03_labels_carry_as_metadata() {
         ]
     );
     assert_eq!(
-        gw().write_request(&ir)["labels"],
+        gw().write_request(crate::codec::test_host::HOST, &ir)["labels"],
         json!({"team": "search", "env": "prod"})
     );
 
@@ -266,7 +269,7 @@ fn ir03_labels_carry_as_metadata() {
         ("note".to_string(), "has space".to_string()),
     ]);
     assert_eq!(
-        gw().write_request(&ir)["labels"],
+        gw().write_request(crate::codec::test_host::HOST, &ir)["labels"],
         json!({"user_id": "u-42"})
     );
 }
@@ -289,7 +292,7 @@ fn ir10_allowed_function_names_carry_as_the_tool_subset() {
         ir.allowed_tools,
         Some(vec!["a".to_string(), "b".to_string()])
     );
-    let out = gw().write_request(&ir);
+    let out = gw().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["toolConfig"]["functionCallingConfig"],
         json!({"mode": "ANY", "allowedFunctionNames": ["a", "b"]}),
@@ -307,7 +310,7 @@ fn ir10_allowed_function_names_carry_as_the_tool_subset() {
     ir.tools = vec![function_tool("a"), function_tool("b"), function_tool("c")];
     ir.tool_choice = Some(IrToolChoice::Auto);
     ir.allowed_tools = Some(vec!["b".to_string()]);
-    let out = gw().write_request(&ir);
+    let out = gw().write_request(crate::codec::test_host::HOST, &ir);
     let names: Vec<&str> = out["tools"][0]["functionDeclarations"]
         .as_array()
         .expect("decls")
@@ -334,7 +337,8 @@ fn ir19_response_modalities_carry() {
     let mut ir = bare_ir();
     ir.output_modalities = Some(vec![IrModality::Text, IrModality::Audio]);
     assert_eq!(
-        gw().write_request(&ir)["generationConfig"]["responseModalities"],
+        gw().write_request(crate::codec::test_host::HOST, &ir)["generationConfig"]
+            ["responseModalities"],
         json!(["TEXT", "AUDIO"])
     );
 }
@@ -353,16 +357,20 @@ fn ir09_thinking_budget_zero_is_off() {
         "models/gemini-2.5-flash-lite-preview-06-17",
     ] {
         assert_eq!(
-            gw().write_request_for_model(&ir, model)["generationConfig"]["thinkingConfig"],
+            gw().write_request_for_model(crate::codec::test_host::HOST, &ir, model)
+                ["generationConfig"]["thinkingConfig"],
             json!({"thinkingBudget": 0}),
             "{model}"
         );
     }
     for model in ["gemini-2.5-pro", "gemini-3-pro-preview", "gemini-2.0-flash"] {
-        let out = gw().write_request_for_model(&ir, model);
+        let out = gw().write_request_for_model(crate::codec::test_host::HOST, &ir, model);
         assert!(out.get("generationConfig").is_none(), "{model}: {out}");
     }
-    assert!(gw().write_request(&ir).get("generationConfig").is_none());
+    assert!(gw()
+        .write_request(crate::codec::test_host::HOST, &ir)
+        .get("generationConfig")
+        .is_none());
 }
 
 /// IR-09 across the seam: an Anthropic `thinking:{type:"disabled"}` (read as Off) reaches a Gemini
@@ -374,13 +382,14 @@ fn ir09_anthropic_thinking_disabled_reaches_gemini_as_off() {
         "messages": [{"role": "user", "content": "hi"}]});
     let ir = read_then_seam_from("anthropic", &body);
     assert_eq!(ir.reasoning, Some(IrReasoningAsk::Off));
-    let flash = gw().write_request_for_model(&ir, "gemini-2.5-flash");
+    let flash =
+        gw().write_request_for_model(crate::codec::test_host::HOST, &ir, "gemini-2.5-flash");
     assert_eq!(
         flash["generationConfig"]["thinkingConfig"],
         json!({"thinkingBudget": 0}),
         "{flash}"
     );
-    let pro = gw().write_request_for_model(&ir, "gemini-2.5-pro");
+    let pro = gw().write_request_for_model(crate::codec::test_host::HOST, &ir, "gemini-2.5-pro");
     assert!(
         pro["generationConfig"].get("thinkingConfig").is_none(),
         "{pro}"
@@ -398,7 +407,7 @@ fn ir11_anthropic_hosted_tools_reach_gemini() {
         {"type": "code_execution_20250825", "name": "code_execution"}
     ]});
     let ir = read_then_seam_from("anthropic", &body);
-    let out = gw().write_request_for_model(&ir, "gemini-2.5-flash");
+    let out = gw().write_request_for_model(crate::codec::test_host::HOST, &ir, "gemini-2.5-flash");
     assert_eq!(
         out["tools"],
         json!([{"googleSearch": {}}, {"codeExecution": {}}]),
@@ -421,7 +430,7 @@ fn ir04_to_07_unsupported_slots_are_dropped_and_reported() {
         gw().dropped_egress_controls(&ir),
         vec!["safety_identifier", "prompt_cache_key", "verbosity"]
     );
-    let out = gw().write_request(&ir);
+    let out = gw().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out.get("serviceTier"), Some(&json!("priority")), "{out}");
     assert_eq!(out.get("store"), Some(&json!(true)), "{out}");
     // `store` is carried (asserted just above), and its wire key is spelled the same as the IR

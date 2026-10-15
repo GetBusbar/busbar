@@ -21,13 +21,22 @@ fn recorded(cell: &str) -> Value {
     serde_json::from_str(&text).expect("a recording is JSON")
 }
 
-/// The host's entropy, so a dialect that mints a request id mints one.
-fn entropy() {
-    busbar_contract::codec::install_entropy_source(|out| {
+/// The host's entropy, so a dialect that mints a request id mints one: a fixed fill, and no clock.
+struct SevensHost;
+
+impl busbar_contract::codec::CodecHost for SevensHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
         out.fill(7);
         true
-    });
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        None
+    }
 }
+
+/// The handle every codec call here is handed.
+const HOST: &dyn busbar_contract::codec::CodecHost = &SevensHost;
 
 /// The recorded answer's status, body and head-field names (content-length is the transport's).
 fn assert_matches(cell: &str, r: &Rendered) {
@@ -89,7 +98,6 @@ fn target_of(dialect: &str) -> &'static str {
 
 #[test]
 fn an_unauthenticated_caller_reads_its_paths_dialect_in_vendor_terms() {
-    entropy();
     for d in SIX {
         let cell = format!("llm__{d}__{d}__request__unauthenticated");
         let status = recorded(&cell)["status"].as_u64().expect("status") as u16;
@@ -97,6 +105,7 @@ fn an_unauthenticated_caller_reads_its_paths_dialect_in_vendor_terms() {
         let envelope = envelope_for(target_of(d));
         assert_eq!(envelope, d, "the path rule names {d}");
         let r = kernel_refusal(
+            HOST,
             envelope,
             reason::UNAUTHENTICATED,
             status,
@@ -109,7 +118,6 @@ fn an_unauthenticated_caller_reads_its_paths_dialect_in_vendor_terms() {
 
 #[test]
 fn a_blocked_limit_reads_the_kernels_text_with_its_retry_advice() {
-    entropy();
     for d in SIX {
         for (cond, code) in [
             ("over_budget", 6),
@@ -123,7 +131,7 @@ fn a_blocked_limit_reads_the_kernels_text_with_its_retry_advice() {
             } else {
                 "You have exceeded your current quota (group 'broke-quota' budget per day exhausted). Please check your plan and billing details."
             };
-            let r = kernel_refusal(d, code, status, text, 30);
+            let r = kernel_refusal(HOST, d, code, status, text, 30);
             assert_matches(&cell, &r);
         }
     }
@@ -131,10 +139,10 @@ fn a_blocked_limit_reads_the_kernels_text_with_its_retry_advice() {
 
 #[test]
 fn every_member_down_reads_the_overloaded_answer() {
-    entropy();
     for d in SIX {
         let cell = format!("llm__{d}__{d}__request__upstream_down");
         let r = kernel_refusal(
+            HOST,
             d,
             reason::DESTINATION_UNREACHABLE,
             503,
@@ -147,9 +155,9 @@ fn every_member_down_reads_the_overloaded_answer() {
 
 #[test]
 fn a_model_no_rate_prices_reads_the_kernels_no_rate_text() {
-    entropy();
     let cell = "http.crosscut__unknown-path__openai-suffix";
     let r = kernel_refusal(
+        HOST,
         "openai",
         reason::NO_RATE,
         400,
@@ -165,13 +173,12 @@ fn a_model_no_rate_prices_reads_the_kernels_no_rate_text() {
 /// cell) is the shape, with the model's sentence in it.
 #[test]
 fn a_model_that_resolves_to_no_destination_reads_the_not_found_answer() {
-    entropy();
     let message = busbar_plane_llm::exchange::refuse::model_not_found("nope", None);
     assert_eq!(
         message,
         "The model 'nope' does not exist or you do not have access to it."
     );
-    let r = kernel_refusal("openai", reason::NO_DESTINATION, 404, &message, 0);
+    let r = kernel_refusal(HOST, "openai", reason::NO_DESTINATION, 404, &message, 0);
     let mut want = recorded("http.crosscut__unknown-path__bare");
     want["body"]["json"]["error"]["message"] = Value::String(message.clone());
     assert_eq!(r.status, 404);
@@ -196,12 +203,11 @@ fn arrival_refusal(
         .collect();
     let d = busbar_plane_llm::exchange::arrive::arrive(method, target, &h, body, &())
         .expect_err("the arrival is refused");
-    busbar_plane_llm::exchange::refuse::declined(&d)
+    busbar_plane_llm::exchange::refuse::declined(HOST, &d)
 }
 
 #[test]
 fn a_path_no_dialect_serves_reads_the_routers_not_found_in_the_paths_envelope() {
-    entropy();
     for (cell, path, headers) in [
         (
             "http.crosscut__unknown-path__bare",
@@ -225,7 +231,6 @@ fn a_path_no_dialect_serves_reads_the_routers_not_found_in_the_paths_envelope() 
 
 #[test]
 fn a_dialect_path_hit_with_another_method_reads_the_405() {
-    entropy();
     assert_matches(
         "http.crosscut__wrong-method__GET-messages",
         &arrival_refusal("GET", "/v1/messages", &[], b""),
@@ -234,7 +239,6 @@ fn a_dialect_path_hit_with_another_method_reads_the_405() {
 
 #[test]
 fn an_unparseable_body_reads_the_dialects_400() {
-    entropy();
     for d in SIX {
         let cell = format!("llm__{d}__{d}__request__malformed");
         let r = arrival_refusal(
@@ -383,6 +387,7 @@ fn an_authentication_refusal_reads_each_vendors_own_sentence() {
         ("some-future-proto", 401, "authentication failed"),
     ] {
         let r = kernel_refusal(
+            HOST,
             dialect,
             reason::UNAUTHENTICATED,
             status,
@@ -397,6 +402,7 @@ fn an_authentication_refusal_reads_each_vendors_own_sentence() {
         );
     }
     let r = kernel_refusal(
+        HOST,
         "bedrock",
         reason::UNAUTHENTICATED,
         403,
@@ -422,8 +428,9 @@ fn an_authentication_refusal_reads_each_vendors_own_sentence() {
 fn a_bedrock_throttle_carries_both_amzn_fields_and_an_openai_refusal_neither() {
     entropy();
     for r in [
-        render("bedrock", 429, "rate_limit_error", "slow down", 0),
+        render(HOST, "bedrock", 429, "rate_limit_error", "slow down", 0),
         kernel_refusal(
+            HOST,
             "bedrock",
             RefusalCode::RateLimited.code(),
             429,
@@ -438,7 +445,7 @@ fn a_bedrock_throttle_carries_both_amzn_fields_and_an_openai_refusal_neither() {
         );
         assert_eq!(body_of(&r)["__type"], "ThrottlingException");
     }
-    let r = render("openai", 400, "invalid_request_error", "x", 0);
+    let r = render(HOST, "openai", 400, "invalid_request_error", "x", 0);
     assert!(value_of(&r, "x-amzn-requestid").is_none());
     assert!(value_of(&r, "x-amzn-errortype").is_none());
 }
@@ -451,6 +458,7 @@ fn a_bedrock_throttle_carries_both_amzn_fields_and_an_openai_refusal_neither() {
 fn a_bedrock_not_found_carries_a_uuid_request_id_and_its_exception() {
     entropy();
     let r = render(
+        HOST,
         "bedrock",
         404,
         "not_found_error",
@@ -507,14 +515,14 @@ fn a_bedrock_refusals_errortype_is_its_body_type_for_every_kind() {
         ),
     ] {
         for r in [
-            render("bedrock", status, kind, "m", 0),
-            kernel_refusal("bedrock", code, status, "m", 0),
+            render(HOST, "bedrock", status, kind, "m", 0),
+            kernel_refusal(HOST, "bedrock", code, status, "m", 0),
         ] {
             assert_eq!(value_of(&r, "x-amzn-errortype"), Some(expected), "{kind}");
             assert_eq!(body_of(&r)["__type"], expected, "{kind}");
         }
     }
-    let r = render("openai", 404, "not_found_error", "m", 0);
+    let r = render(HOST, "openai", 404, "not_found_error", "m", 0);
     assert!(value_of(&r, "x-amzn-requestid").is_none());
     assert!(value_of(&r, "x-amzn-errortype").is_none());
 }
@@ -542,6 +550,7 @@ fn unknown_model(target: &str, body: &[u8]) -> (String, Rendered) {
             .and_then(|p| p.model_not_found_message.as_deref()),
     );
     let r = kernel_refusal(
+        HOST,
         a.dialect,
         reason::NO_DESTINATION,
         no_destination_status(),
@@ -667,6 +676,7 @@ fn no_refusal_body_carries_the_router_prefix() {
 /// The kernel's pool refusal (the key may not reach the pool it named), as a dialect renders it.
 fn pool_not_permitted(dialect: &str) -> Rendered {
     kernel_refusal(
+        HOST,
         dialect,
         RefusalCode::PoolNotPermitted.code(),
         403,
@@ -761,13 +771,16 @@ fn refusal_in(
     kind: &'static str,
     message: &'static str,
 ) -> Rendered {
-    declined(&Declined {
-        why,
-        status,
-        envelope,
-        kind,
-        message: message.into(),
-    })
+    declined(
+        HOST,
+        &Declined {
+            why,
+            status,
+            envelope,
+            kind,
+            message: message.into(),
+        },
+    )
 }
 
 /// Rehomes `crates/busbar-llm/src/unit/tests/arrival.rs::a_non_object_body_refuses_with_the_live_arms_bytes`.

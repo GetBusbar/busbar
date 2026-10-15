@@ -637,7 +637,7 @@ const BASE62: &[u8; 62] = crate::codec::dialect::BASE62_ALPHABET;
 /// which yields an exactly-uniform draw over 0..62. Discards are rare (8/256 ≈ 3.1%), so we refill the
 /// entropy buffer on demand rather than over-allocating up front; on an entropy failure the loop
 /// stops and the remaining slots keep their '0' fill, preserving the panic-free contract.
-fn synth_completion_id() -> String {
+fn synth_completion_id(host: &dyn busbar_contract::codec::CodecHost) -> String {
     // Largest multiple of 62 that fits in a u8; bytes >= this are rejected to keep the draw uniform.
     const BASE62_REJECT_FLOOR: u8 = crate::codec::dialect::BASE62_REJECT_THRESHOLD; // 4 * 62
     let mut token = [b'0'; COMPLETION_ID_TOKEN_LEN];
@@ -646,7 +646,7 @@ fn synth_completion_id() -> String {
     // bytes we draw another; on an entropy failure we stop and leave '0' fill.
     'outer: while filled < COMPLETION_ID_TOKEN_LEN {
         let mut batch = [0u8; COMPLETION_ID_TOKEN_LEN];
-        if !super::synth_rng::fill_entropy(&mut batch) {
+        if !super::synth_rng::fill_entropy(host, &mut batch) {
             // Near-impossible entropy failure: keep the remaining '0' fill rather than panic.
             break 'outer;
         }

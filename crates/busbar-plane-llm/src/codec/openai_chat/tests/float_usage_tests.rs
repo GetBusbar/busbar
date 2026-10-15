@@ -57,7 +57,7 @@ fn streaming_trailing_usage_chunk_reads_float_encoded_counts() {
             }
         }
     });
-    let events = reader.read_response_events("", &chunk, &mut state);
+    let events = reader.read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut state);
     let usage = events
         .into_iter()
         .find_map(|e| match e {
@@ -107,7 +107,9 @@ fn buffered_read_response_reads_float_encoded_counts() {
             }
         }
     });
-    let ir = OpenAiReader.read_response(&body).expect("read_response");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         ir.usage.input_tokens, 800,
         "prompt_tokens(1000.0) - cached_tokens(200.0), buffered, both float-spelled"

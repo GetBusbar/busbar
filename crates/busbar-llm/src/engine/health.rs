@@ -313,7 +313,7 @@ pub(crate) async fn probe_lane(host: &dyn EngineHost, i: usize, timeout: Duratio
     // Probe body via the neutral dialect seam (the concrete writer relocated to the plugin at A4b).
     let body = busbar_kernel::proto::decl_for(lane.protocol)
         .and_then(|d| d.dialect())
-        .map(|dc| dc.probe_body(lane.wire_model()))
+        .map(|dc| dc.probe_body(crate::engine::CODEC_HOST, lane.wire_model()))
         .unwrap_or_default();
     let url_path = lane.path.clone().unwrap_or_else(|| {
         busbar_kernel::proto::decl_for(lane.protocol)

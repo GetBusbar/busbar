@@ -12,6 +12,27 @@ use busbar_contract::plane::Plane;
 use busbar_contract::unit::{Refusal, RefusalReason, Step};
 use busbar_plane_llm::LlmPlane;
 
+/// The codec host these tests hand the plane: the OS CSPRNG and the system clock in whole seconds,
+/// read the way the kernel's host reads them.
+struct TestHost;
+
+impl busbar_contract::codec::CodecHost for TestHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        getrandom::fill(out).is_ok()
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+    }
+}
+
+/// The handle every codec call here is handed.
+const HOST: &dyn busbar_contract::codec::CodecHost = &TestHost;
+
 /// The six dialects, and the request target that names each.
 const DIALECTS: &[&str] = &[
     "anthropic",
@@ -190,6 +211,7 @@ fn every_refusal_is_the_dialects_own_envelope() {
                 _ => "Request rejected.",
             };
             let expected = sonic_rs::to_vec(&protocol.writer().write_error(
+                HOST,
                 *status,
                 kind,
                 expected_message,
@@ -268,14 +290,23 @@ fn dialect_codec(name: &str) -> &'static dyn busbar_contract::protocol::DialectC
         .unwrap_or_else(|| panic!("{name} declares a dialect codec"))
 }
 
-/// The host's entropy, so a dialect that mints a request id mints one (constant bytes, so every
-/// test in this binary still reads the same document twice).
-fn entropy() {
-    busbar_contract::codec::install_entropy_source(|out| {
+/// The host's entropy, so a dialect that mints a request id mints one (constant bytes, so a test
+/// that renders a refusal twice reads the same document twice), and no clock.
+struct SevensHost;
+
+impl busbar_contract::codec::CodecHost for SevensHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
         out.fill(7);
         true
-    });
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        None
+    }
 }
+
+/// The constant-entropy handle the rendered-refusal tests hand the exchange and the codecs.
+const SEVENS: &dyn busbar_contract::codec::CodecHost = &SevensHost;
 
 /// The value of the head field `name` (compared without case), if the refusal carries one.
 fn head_value<'a>(fields: &'a [(String, Vec<u8>)], name: &str) -> Option<&'a [u8]> {
@@ -296,8 +327,14 @@ fn head_value<'a>(fields: &'a [(String, Vec<u8>)], name: &str) -> Option<&'a [u8
 fn test_anthropic_ingress_error_request_id_header_matches_body() {
     use busbar_contract::protocol::KIND_INVALID_REQUEST;
     use busbar_plane_llm::exchange::refuse::render;
-    entropy();
-    let rendered = render("anthropic", 400, KIND_INVALID_REQUEST, "bad json", 0);
+    let rendered = render(
+        SEVENS,
+        "anthropic",
+        400,
+        KIND_INVALID_REQUEST,
+        "bad json",
+        0,
+    );
     let header_rid = std::str::from_utf8(
         head_value(&rendered.fields, "request-id")
             .expect("anthropic error must carry a request-id header"),
@@ -316,7 +353,7 @@ fn test_anthropic_ingress_error_request_id_header_matches_body() {
         "the request-id header MUST equal the body request_id so they agree"
     );
     for dialect in DIALECTS.iter().filter(|d| **d != "anthropic") {
-        let other = render(dialect, 400, KIND_INVALID_REQUEST, "bad json", 0);
+        let other = render(SEVENS, dialect, 400, KIND_INVALID_REQUEST, "bad json", 0);
         assert_eq!(
             head_value(&other.fields, "request-id"),
             None,
@@ -344,7 +381,6 @@ fn every_refusal_class_renders_byte_identically_on_both_paths() {
         KIND_PERMISSION, KIND_RATE_LIMIT, KIND_REQUEST_TOO_LARGE, PROVIDER_CODE_CONTEXT_LENGTH,
     };
     use busbar_plane_llm::exchange::refuse::render;
-    entropy();
     // (class, status, kind, message, retry-after seconds)
     let classes: [(&str, u16, &str, &str, u32); 8] = [
         (
@@ -411,7 +447,7 @@ fn every_refusal_class_renders_byte_identically_on_both_paths() {
     for (name, status, kind, message, retry) in classes {
         for dialect in DIALECTS {
             let codec = dialect_codec(dialect);
-            let rendered = render(dialect, status, kind, message, retry);
+            let rendered = render(SEVENS, dialect, status, kind, message, retry);
             assert_eq!(
                 rendered.status, status,
                 "{name}/{dialect} wears its own status"
@@ -421,7 +457,7 @@ fn every_refusal_class_renders_byte_identically_on_both_paths() {
                 "{name}/{dialect} renders an envelope, not an empty body"
             );
             // The body is the dialect writer's own envelope for the class's (status, kind, message).
-            let own = sonic_rs::to_vec(&codec.write_error(status, kind, message))
+            let own = sonic_rs::to_vec(&codec.write_error(SEVENS, status, kind, message))
                 .expect("the envelope serializes");
             assert_eq!(
                 without_minted_id(&rendered.body),
@@ -433,7 +469,7 @@ fn every_refusal_class_renders_byte_identically_on_both_paths() {
             let sent: serde_json::Value =
                 sonic_rs::from_slice(&rendered.body).expect("a refusal is a document");
             let mut head = vec![("content-type".to_string(), b"application/json".to_vec())];
-            head.extend(codec.error_response_fields(kind, &sent));
+            head.extend(codec.error_response_fields(SEVENS, kind, &sent));
             if retry != 0 {
                 head.push(("retry-after".to_string(), b"30".to_vec()));
             }
@@ -450,13 +486,20 @@ fn every_refusal_class_renders_byte_identically_on_both_paths() {
     }
     // The openai wire, read as its SDK reads it: the over-budget class is the native quota type and
     // code, and the breaker's context-length token is projected into the writer's own vocabulary.
-    let over = render("openai", 429, KIND_INSUFFICIENT_QUOTA, "quota", 0);
+    let over = render(SEVENS, "openai", 429, KIND_INSUFFICIENT_QUOTA, "quota", 0);
     let over: serde_json::Value = sonic_rs::from_slice(&over.body).expect("a document");
     assert_eq!(over["error"]["type"], "insufficient_quota");
     assert_eq!(over["error"]["code"], "insufficient_quota");
-    let ctx = render("openai", 400, PROVIDER_CODE_CONTEXT_LENGTH, "too long", 0);
+    let ctx = render(
+        SEVENS,
+        "openai",
+        400,
+        PROVIDER_CODE_CONTEXT_LENGTH,
+        "too long",
+        0,
+    );
     let ctx: serde_json::Value = sonic_rs::from_slice(&ctx.body).expect("a document");
     assert_eq!(ctx["error"]["type"], "invalid_request_error");
-    let no_pool = render("openai", 404, KIND_NOT_FOUND, "no pool", 0);
+    let no_pool = render(SEVENS, "openai", 404, KIND_NOT_FOUND, "no pool", 0);
     assert_eq!(no_pool.status, 404);
 }

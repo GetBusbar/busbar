@@ -90,7 +90,7 @@ fn responses_part_logprobs_stay_a_bare_array_after_the_refusal_member_lands() {
     // Bind the interior-mutable const to a local before borrowing
     // (clippy::borrow_interior_mutable_const).
     let writer = openai_responses::ResponsesWriter;
-    let wire = writer.write_response(&ir);
+    let wire = writer.write_response(crate::codec::test_host::HOST, &ir);
     let part = wire
         .pointer("/output/0/content/0")
         .expect("an output_text content part");
@@ -113,7 +113,7 @@ fn responses_part_logprobs_stay_a_bare_array_after_the_refusal_member_lands() {
 #[test]
 fn buffered_openai_choice_finish_reason_is_never_null() {
     let ir = resp(None, Vec::new(), "oracle-marker");
-    let wire = openai_chat::openai_writer().write_response(&ir);
+    let wire = openai_chat::openai_writer().write_response(crate::codec::test_host::HOST, &ir);
     let fr = wire
         .pointer("/choices/0/finish_reason")
         .expect("finish_reason is a required member of a buffered choice");
@@ -131,10 +131,13 @@ fn buffered_openai_choice_finish_reason_is_never_null() {
 fn streamed_openai_chunk_finish_reason_stays_nullable() {
     let writer = openai_chat::OpenAiWriter;
     let ev = writer
-        .write_response_event(&crate::codec::ir::IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
+            },
+        )
         .expect("a text delta produces a chunk");
     assert_eq!(
         ev.1.pointer("/choices/0/finish_reason"),
@@ -159,11 +162,14 @@ fn anthropic_image_block_start_emits_no_frame() {
     let writer = AnthropicWriter;
     assert!(
         writer
-            .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStart {
-                index: 0,
-                block: crate::codec::ir::IrBlockMeta::Image,
-                refusal: false,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &crate::codec::ir::IrStreamEvent::BlockStart {
+                    index: 0,
+                    block: crate::codec::ir::IrBlockMeta::Image,
+                    refusal: false,
+                }
+            )
             .is_none(),
         "image is not a member of the content_block discriminator; emit no frame"
     );
@@ -177,17 +183,23 @@ fn anthropic_image_block_stop_is_suppressed_with_its_start() {
     let writer = AnthropicWriter;
     assert!(
         writer
-            .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStart {
-                index: 0,
-                block: crate::codec::ir::IrBlockMeta::Image,
-                refusal: false,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &crate::codec::ir::IrStreamEvent::BlockStart {
+                    index: 0,
+                    block: crate::codec::ir::IrBlockMeta::Image,
+                    refusal: false,
+                }
+            )
             .is_none(),
         "image BlockStart stays suppressed"
     );
     assert!(
         writer
-            .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStop { index: 0 })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &crate::codec::ir::IrStreamEvent::BlockStop { index: 0 }
+            )
             .is_none(),
         "a BlockStop whose BlockStart emitted nothing must not emit an orphan content_block_stop"
     );
@@ -199,11 +211,14 @@ fn anthropic_image_block_stop_is_suppressed_with_its_start() {
 fn anthropic_text_block_start_stop_pair_survives_the_guard() {
     let writer = AnthropicWriter;
     let start = writer
-        .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::Text,
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::Text,
+                refusal: false,
+            },
+        )
         .expect("a text block starts");
     assert_eq!(
         start
@@ -214,7 +229,10 @@ fn anthropic_text_block_start_stop_pair_survives_the_guard() {
     );
     assert!(
         writer
-            .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStop { index: 0 })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &crate::codec::ir::IrStreamEvent::BlockStop { index: 0 }
+            )
             .is_some(),
         "the text block's content_block_stop must still be emitted"
     );
@@ -230,26 +248,35 @@ fn anthropic_redacted_thinking_block_stop_follows_the_written_start() {
     let writer = AnthropicWriter;
     assert!(
         writer
-            .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStart {
-                index: 0,
-                block: crate::codec::ir::IrBlockMeta::RedactedThinking,
-                refusal: false,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &crate::codec::ir::IrStreamEvent::BlockStart {
+                    index: 0,
+                    block: crate::codec::ir::IrBlockMeta::RedactedThinking,
+                    refusal: false,
+                }
+            )
             .is_none(),
         "the redacted start is deferred to its delta"
     );
     assert!(
         writer
-            .write_response_event(&crate::codec::ir::IrStreamEvent::BlockDelta {
-                index: 0,
-                delta: crate::codec::ir::IrDelta::RedactedReasoningDelta("opaque".to_string()),
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &crate::codec::ir::IrStreamEvent::BlockDelta {
+                    index: 0,
+                    delta: crate::codec::ir::IrDelta::RedactedReasoningDelta("opaque".to_string()),
+                }
+            )
             .is_some(),
         "the delta writes the block's content_block_start"
     );
     assert!(
         writer
-            .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStop { index: 0 })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &crate::codec::ir::IrStreamEvent::BlockStop { index: 0 }
+            )
             .is_some(),
         "the written start owes its content_block_stop"
     );
@@ -259,17 +286,23 @@ fn anthropic_redacted_thinking_block_stop_follows_the_written_start() {
     let truncated = AnthropicWriter;
     assert!(
         truncated
-            .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStart {
-                index: 0,
-                block: crate::codec::ir::IrBlockMeta::RedactedThinking,
-                refusal: false,
-            })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &crate::codec::ir::IrStreamEvent::BlockStart {
+                    index: 0,
+                    block: crate::codec::ir::IrBlockMeta::RedactedThinking,
+                    refusal: false,
+                }
+            )
             .is_none(),
         "the redacted start is deferred to its delta"
     );
     assert!(
         truncated
-            .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStop { index: 0 })
+            .write_response_event(
+                crate::codec::test_host::HOST,
+                &crate::codec::ir::IrStreamEvent::BlockStop { index: 0 }
+            )
             .is_none(),
         "no content_block_start was written, so its close must not orphan one"
     );
@@ -287,19 +320,34 @@ fn anthropic_redacted_thinking_block_stop_follows_the_written_start() {
 #[test]
 fn anthropic_error_type_stays_inside_the_published_union() {
     let writer = AnthropicWriter;
-    let quota = writer.write_error(429, "insufficient_quota", "budget exhausted");
+    let quota = writer.write_error(
+        crate::codec::test_host::HOST,
+        429,
+        "insufficient_quota",
+        "budget exhausted",
+    );
     assert_eq!(
         quota.pointer("/error/type").and_then(|v| v.as_str()),
         Some("billing_error"),
         "billing exhaustion maps to the union's billing token: {quota}"
     );
-    let ctx = writer.write_error(400, "context_length_exceeded", "too many tokens");
+    let ctx = writer.write_error(
+        crate::codec::test_host::HOST,
+        400,
+        "context_length_exceeded",
+        "too many tokens",
+    );
     assert_eq!(
         ctx.pointer("/error/type").and_then(|v| v.as_str()),
         Some("invalid_request_error"),
         "a context overflow is a request the model cannot accept: {ctx}"
     );
-    let ok = writer.write_error(429, "rate_limit", "slow down");
+    let ok = writer.write_error(
+        crate::codec::test_host::HOST,
+        429,
+        "rate_limit",
+        "slow down",
+    );
     assert_eq!(
         ok.pointer("/error/type").and_then(|v| v.as_str()),
         Some("rate_limit_error"),
@@ -315,14 +363,17 @@ fn anthropic_error_type_stays_inside_the_published_union() {
 #[test]
 fn responses_output_item_added_seeds_the_required_arguments_member() {
     let writer = openai_responses::ResponsesWriter;
-    let evs = writer.write_response_events(&crate::codec::ir::IrStreamEvent::BlockStart {
-        index: 0,
-        block: crate::codec::ir::IrBlockMeta::ToolUse {
-            id: "call_abc".to_string(),
-            name: "get_weather".to_string(),
+    let evs = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::codec::ir::IrBlockMeta::ToolUse {
+                id: "call_abc".to_string(),
+                name: "get_weather".to_string(),
+            },
+            refusal: false,
         },
-        refusal: false,
-    });
+    );
     let added = evs
         .iter()
         .find(|(name, _)| name == "response.output_item.added")

@@ -33,7 +33,9 @@ fn xreq(ingress: &'static str, egress: &str, body: &serde_json::Value) -> serde_
             lane_caps: Default::default(),
         },
     );
-    let mut out = egress_p.writer().write_request(&req);
+    let mut out = egress_p
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &req);
     crate::codec::wire_shim::strip_router_shim_keys(&mut out, egress);
     out
 }
@@ -44,18 +46,20 @@ fn xresp(egress: &str, ingress: &'static str, body: &serde_json::Value) -> serde
     let ingress_p = crate::codec::proto_codec::protocol_for(ingress).expect("ingress protocol");
     let mut resp = egress_p
         .reader()
-        .read_response(body)
+        .read_response(crate::codec::test_host::HOST, body)
         .expect("read_response should succeed");
     crate::codec::chat_handle::chat_prepare_for_ingress(&mut resp, ingress, 1_752_000_000);
-    ingress_p.writer().write_response(&resp)
+    ingress_p
+        .writer()
+        .write_response(crate::codec::test_host::HOST, &resp)
 }
 
 /// A cross-protocol STREAM: the `egress` upstream's SSE bytes translated for an `ingress` client.
 fn xstream(egress: &str, ingress: &str, raw: &str) -> (String, Option<String>) {
     let mut st =
         crate::codec::proto_stream::StreamTranslate::new(ingress, egress).expect("translator");
-    let mut out = st.feed(raw.as_bytes());
-    out.extend(st.finish());
+    let mut out = st.feed(crate::codec::test_host::HOST, raw.as_bytes());
+    out.extend(st.finish(crate::codec::test_host::HOST));
     let terminal_error = st.terminal_error().map(String::from);
     (String::from_utf8_lossy(&out).into_owned(), terminal_error)
 }
@@ -477,25 +481,31 @@ fn rsp11_stream_failed_generation_is_response_failed_only() {
 #[test]
 fn rsp11_error_stop_reason_message_delta_writes_response_failed() {
     let w = ResponsesWriter;
-    w.write_response_events(&IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: None,
-        created: None,
-        model: None,
-    });
-    let frames = w.write_response_events(&IrStreamEvent::MessageDelta {
-        stop_reason: Some(crate::codec::ir::IrStopReason::Error),
-        stop_sequence: None,
-        usage: crate::codec::ir::IrUsage {
-            input_tokens: 1,
-            output_tokens: 1,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
-            detail: crate::codec::ir::IrUsageDetail::default(),
+    w.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: None,
+            created: None,
+            model: None,
         },
-        stop_detail: None,
-    });
+    );
+    let frames = w.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::codec::ir::IrStopReason::Error),
+            stop_sequence: None,
+            usage: crate::codec::ir::IrUsage {
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+                detail: crate::codec::ir::IrUsageDetail::default(),
+            },
+            stop_detail: None,
+        },
+    );
     assert_eq!(frames.len(), 1);
     let (name, data) = &frames[0];
     assert_eq!(name, "response.failed");
@@ -589,6 +599,7 @@ fn rsp16_stream_blank_call_id_is_synthesized_like_buffered() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let streamed_id = ResponsesReader
         .read_response_events(
+            crate::codec::test_host::HOST,
             "response.output_item.added",
             &serde_json::json!({"type":"response.output_item.added","output_index":0,"item":item}),
             &mut state,
@@ -604,7 +615,7 @@ fn rsp16_stream_blank_call_id_is_synthesized_like_buffered() {
         .expect("a ToolUse BlockStart");
 
     let buffered = ResponsesReader
-        .read_response(&serde_json::json!({
+        .read_response(crate::codec::test_host::HOST, &serde_json::json!({
             "id": "resp_1", "object": "response", "created_at": 1, "status": "completed",
             "output": [{"type":"function_call","id":"fc_1","call_id":"","name":"lookup","arguments":"{}"}],
             "usage": {"input_tokens": 1, "output_tokens": 1}
@@ -638,12 +649,14 @@ fn rsp17_service_tier_crosses_both_directions() {
         "usage": {"input_tokens": 3, "output_tokens": 1, "total_tokens": 4}});
     let a = xresp("responses", "anthropic", &responses);
     assert_eq!(a["usage"]["service_tier"], "standard", "tier dropped: {a}");
-    let ir = ResponsesReader.read_response(&responses).expect("read");
+    let ir = ResponsesReader
+        .read_response(crate::codec::test_host::HOST, &responses)
+        .expect("read");
     assert_eq!(ir.usage.detail.service_tier.as_deref(), Some("standard"));
 
     // Responses stream → the IR terminal usage carries the tier.
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let evs = ResponsesReader.read_response_events(
+    let evs = ResponsesReader.read_response_events(crate::codec::test_host::HOST,
         "response.completed",
         &serde_json::json!({"type":"response.completed","response":{"id":"resp_1","status":"completed","service_tier":"priority","output":[],"usage":{"input_tokens":1,"output_tokens":1}}}),
         &mut state,
@@ -656,20 +669,23 @@ fn rsp17_service_tier_crosses_both_directions() {
 
     // … and a Responses stream client receives it on the terminal event.
     let w = ResponsesWriter;
-    let frames = w.write_response_events(&IrStreamEvent::MessageDelta {
-        stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-        stop_sequence: None,
-        usage: crate::codec::ir::IrUsage {
-            input_tokens: 1,
-            output_tokens: 1,
-            cache_creation_input_tokens: None,
-            cache_read_input_tokens: None,
-            detail: crate::codec::ir::IrUsageDetail {
-                service_tier: Some("priority".to_string()),
-                ..Default::default()
+    let frames = w.write_response_events(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::MessageDelta {
+            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+            stop_sequence: None,
+            usage: crate::codec::ir::IrUsage {
+                input_tokens: 1,
+                output_tokens: 1,
+                cache_creation_input_tokens: None,
+                cache_read_input_tokens: None,
+                detail: crate::codec::ir::IrUsageDetail {
+                    service_tier: Some("priority".to_string()),
+                    ..Default::default()
+                },
             },
+            stop_detail: None,
         },
-        stop_detail: None,
-    });
+    );
     assert_eq!(frames[0].1["response"]["service_tier"], "priority");
 }

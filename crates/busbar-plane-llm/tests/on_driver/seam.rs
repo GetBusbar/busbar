@@ -1087,7 +1087,18 @@ enum Seat {
 /// The chat-completions caller's own spelling of busbar's overloaded 503 kind, read off the plane's
 /// own refusal renderer, so the test pins "the same kind as every other busbar 503" and no literal.
 fn overloaded_kind_on_chat_completions() -> String {
+    // The chat-completions envelope mints nothing, so the host it is rendered with gives nothing.
+    struct NoHost;
+    impl busbar_contract::codec::CodecHost for NoHost {
+        fn fill_entropy(&self, _out: &mut [u8]) -> bool {
+            false
+        }
+        fn wall_clock_now(&self) -> Option<u64> {
+            None
+        }
+    }
     let rendered = busbar_plane_llm::exchange::refuse::render(
+        &NoHost,
         "openai",
         503,
         busbar_contract::protocol::KIND_OVERLOADED,

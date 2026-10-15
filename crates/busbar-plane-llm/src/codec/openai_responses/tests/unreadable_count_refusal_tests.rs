@@ -28,16 +28,20 @@ fn response(usage: serde_json::Value) -> serde_json::Value {
 #[test]
 fn buffered_response_refuses_a_stringified_count() {
     ResponsesReader
-        .read_response(&response(
-            serde_json::json!({"input_tokens": "1500", "output_tokens": 9}),
-        ))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &response(serde_json::json!({"input_tokens": "1500", "output_tokens": 9})),
+        )
         .expect_err("a present, unreadable input_tokens is a refusal, never a zero");
 }
 
 #[test]
 fn buffered_response_with_an_absent_count_still_reads_as_zero() {
     let ir = ResponsesReader
-        .read_response(&response(serde_json::json!({"output_tokens": 9})))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &response(serde_json::json!({"output_tokens": 9})),
+        )
         .expect("an absent count is zero");
     assert_eq!(ir.usage.input_tokens, 0);
     assert_eq!(ir.usage.output_tokens, 9);
@@ -49,7 +53,12 @@ fn streaming_terminal_refuses_a_stringified_count() {
     let completed = serde_json::json!({
         "response": {"status": STATUS_COMPLETED, "usage": {"input_tokens": 10, "output_tokens": "9"}}
     });
-    let ev = ResponsesReader.read_response_events(EVT_RESPONSE_COMPLETED, &completed, &mut state);
+    let ev = ResponsesReader.read_response_events(
+        crate::codec::test_host::HOST,
+        EVT_RESPONSE_COMPLETED,
+        &completed,
+        &mut state,
+    );
     assert!(
         matches!(ev.last(), Some(IrStreamEvent::Error(_))),
         "response.completed with an unreadable count must end the stream in an error; got {ev:?}"
@@ -85,9 +94,12 @@ fn buffered_response_refuses_an_unreadable_cache_count() {
         serde_json::json!({"cache_write_tokens": "40"}),
     ] {
         ResponsesReader
-            .read_response(&response(serde_json::json!({
-                "input_tokens": 100, "output_tokens": 9, "input_tokens_details": details
-            })))
+            .read_response(
+                crate::codec::test_host::HOST,
+                &response(serde_json::json!({
+                    "input_tokens": 100, "output_tokens": 9, "input_tokens_details": details
+                })),
+            )
             .expect_err("a present, unreadable cache count is a refusal, never `no cache`");
     }
 }
@@ -95,18 +107,24 @@ fn buffered_response_refuses_an_unreadable_cache_count() {
 #[test]
 fn buffered_response_cache_counts_absent_null_and_readable_still_read() {
     let ir = ResponsesReader
-        .read_response(&response(serde_json::json!({
-            "input_tokens": 100, "output_tokens": 9,
-            "input_tokens_details": {"cached_tokens": null}
-        })))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &response(serde_json::json!({
+                "input_tokens": 100, "output_tokens": 9,
+                "input_tokens_details": {"cached_tokens": null}
+            })),
+        )
         .expect("a null cache count is absence");
     assert_eq!(ir.usage.cache_read_input_tokens, None);
     assert_eq!(ir.usage.cache_creation_input_tokens, None);
     let ir = ResponsesReader
-        .read_response(&response(serde_json::json!({
-            "input_tokens": 100, "output_tokens": 9,
-            "input_tokens_details": {"cached_tokens": 30, "cache_write_tokens": 20}
-        })))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &response(serde_json::json!({
+                "input_tokens": 100, "output_tokens": 9,
+                "input_tokens_details": {"cached_tokens": 30, "cache_write_tokens": 20}
+            })),
+        )
         .expect("readable cache counts read");
     assert_eq!(ir.usage.cache_read_input_tokens, Some(30));
     assert_eq!(ir.usage.cache_creation_input_tokens, Some(20));
@@ -125,8 +143,12 @@ fn streaming_terminal_refuses_an_unreadable_cache_count() {
                 "input_tokens": 100, "output_tokens": 9, "input_tokens_details": details
             }}
         });
-        let ev =
-            ResponsesReader.read_response_events(EVT_RESPONSE_COMPLETED, &completed, &mut state);
+        let ev = ResponsesReader.read_response_events(
+            crate::codec::test_host::HOST,
+            EVT_RESPONSE_COMPLETED,
+            &completed,
+            &mut state,
+        );
         assert!(
             matches!(ev.last(), Some(IrStreamEvent::Error(_))),
             "response.completed with an unreadable cache count must end in an error; got {ev:?}"

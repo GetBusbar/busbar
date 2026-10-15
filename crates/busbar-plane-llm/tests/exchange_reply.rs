@@ -14,6 +14,27 @@ use busbar_plane_llm::exchange::reply::failure::{
 use busbar_plane_llm::exchange::reply::wire::head_field;
 use serde_json::Value;
 
+/// The codec host these tests hand the plane: the OS CSPRNG and the system clock in whole seconds,
+/// read the way the kernel's host reads them.
+struct TestHost;
+
+impl busbar_contract::codec::CodecHost for TestHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        getrandom::fill(out).is_ok()
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+    }
+}
+
+/// The handle every codec call here is handed.
+const HOST: &dyn busbar_contract::codec::CodecHost = &TestHost;
+
 const SIX: [&str; 6] = [
     "anthropic",
     "openai",
@@ -128,6 +149,7 @@ fn a_far_end_error_is_judged_for_every_pair() {
         for egress in SIX {
             let far = |status| FarError { status, head, body };
             let j = judge(
+                HOST,
                 ingress,
                 egress,
                 OpVerb::CHAT,
@@ -140,6 +162,7 @@ fn a_far_end_error_is_judged_for_every_pair() {
             assert_eq!(j.answer.status, 401);
 
             let j = judge(
+                HOST,
                 ingress,
                 egress,
                 OpVerb::CHAT,
@@ -167,6 +190,7 @@ fn a_far_end_error_is_judged_for_every_pair() {
             }
 
             let j = judge(
+                HOST,
                 ingress,
                 egress,
                 OpVerb::CHAT,
@@ -175,9 +199,10 @@ fn a_far_end_error_is_judged_for_every_pair() {
                 &far(401),
             );
             assert_eq!(j.disposition, Disposition::HardDown);
-            assert_eq!(j.answer, auth_failure(ingress), "{ingress}<-{egress}");
+            assert_eq!(j.answer, auth_failure(HOST, ingress), "{ingress}<-{egress}");
 
             let j = judge(
+                HOST,
                 ingress,
                 egress,
                 OpVerb::CHAT,
@@ -336,7 +361,7 @@ fn a_whole_answer_is_delivered_in_the_callers_dialect() {
         );
         for (name, body) in &answers {
             for ingress in SIX.iter().copied().filter(|i| *i != egress) {
-                let w = whole::translate(&ctx(ingress, egress, false, false), 200, body);
+                let w = whole::translate(HOST, &ctx(ingress, egress, false, false), 200, body);
                 assert_eq!(
                     w.end,
                     WholeEnd::Delivered,
@@ -362,7 +387,7 @@ fn a_whole_answer_is_delivered_in_the_callers_dialect() {
 #[test]
 fn a_failed_generation_is_a_502_that_keeps_its_usage() {
     let body = br#"{"id":"c-1","finish_reason":"ERROR","message":{"role":"assistant","content":[{"type":"text","text":"x"}]},"usage":{"tokens":{"input_tokens":10,"output_tokens":5}}}"#;
-    let w = whole::translate(&ctx("openai", "cohere", false, false), 200, body);
+    let w = whole::translate(HOST, &ctx("openai", "cohere", false, false), 200, body);
     assert_eq!(w.end, WholeEnd::FailedGeneration);
     assert_eq!(w.answer.status, 502);
     assert!(w.usage.is_some());
@@ -374,6 +399,7 @@ fn a_failed_generation_is_a_502_that_keeps_its_usage() {
 fn an_untranslatable_answer_is_the_callers_500() {
     for ingress in SIX {
         let w = whole::translate(
+            HOST,
             &ctx(ingress, "anthropic", false, false),
             200,
             b"not json at all",
@@ -381,10 +407,10 @@ fn an_untranslatable_answer_is_the_callers_500() {
         assert_eq!(w.end, WholeEnd::NotTranslatable, "{ingress}");
         assert_eq!(w.answer.status, 500);
         assert!(w.usage.is_none());
-        assert_eq!(whole::over_cap(ingress).answer.status, 500);
-        assert_eq!(whole::over_cap(ingress).end, WholeEnd::OverCap);
-        assert_eq!(whole::cut(ingress).answer.status, 502);
-        assert_eq!(whole::cut(ingress).end, WholeEnd::Cut);
+        assert_eq!(whole::over_cap(HOST, ingress).answer.status, 500);
+        assert_eq!(whole::over_cap(HOST, ingress).end, WholeEnd::OverCap);
+        assert_eq!(whole::cut(HOST, ingress).answer.status, 502);
+        assert_eq!(whole::cut(HOST, ingress).end, WholeEnd::Cut);
     }
 }
 
@@ -396,7 +422,7 @@ fn a_json_array_caller_reads_a_one_element_array() {
         .into_iter()
         .next()
         .expect("an openai answer");
-    let w = whole::translate(&ctx("gemini", "openai", true, true), 200, &body);
+    let w = whole::translate(HOST, &ctx("gemini", "openai", true, true), 200, &body);
     assert_eq!(w.end, WholeEnd::Delivered);
     let v: Value = serde_json::from_slice(&w.answer.body).expect("JSON");
     assert_eq!(v.as_array().map(Vec::len), Some(1), "{v}");
@@ -450,11 +476,11 @@ fn openai_stream() -> Vec<u8> {
 fn relay_all(r: &mut Relay, far: &[u8], step: usize) -> Vec<u8> {
     let mut out = Vec::new();
     for piece in far.chunks(step) {
-        if let (Fed::Bytes(b), _) = r.feed(piece) {
+        if let (Fed::Bytes(b), _) = r.feed(HOST, piece) {
             out.extend_from_slice(&b);
         }
     }
-    out.extend(r.end().bytes);
+    out.extend(r.end(HOST).bytes);
     out
 }
 
@@ -479,12 +505,12 @@ fn a_same_dialect_whole_body_relays_untouched_and_meters() {
         let mut r = Relay::new(relay_ctx(dialect, dialect, false));
         let mut out = Vec::new();
         for piece in body.chunks(9) {
-            match r.feed(piece) {
+            match r.feed(HOST, piece) {
                 (Fed::Bytes(std::borrow::Cow::Borrowed(b)), _) => out.extend_from_slice(b),
                 other => panic!("{dialect}: {other:?}"),
             }
         }
-        let end = r.end();
+        let end = r.end(HOST);
         assert_eq!(out, body, "{dialect}");
         assert!(end.bytes.is_empty() && !end.failed, "{dialect}");
         assert!(end.usage.is_some(), "{dialect}: usage");
@@ -546,9 +572,12 @@ fn a_same_dialect_answer_carrying_an_unknown_member_reaches_the_caller_byte_iden
         ctx.client_include_usage = true;
         let mut r = Relay::new(ctx);
         for piece in far.chunks(7) {
-            let _ = r.feed(piece);
+            let _ = r.feed(HOST, piece);
         }
-        assert!(r.end().usage.is_some(), "{dialect}: the stream is metered");
+        assert!(
+            r.end(HOST).usage.is_some(),
+            "{dialect}: the stream is metered"
+        );
     }
 }
 
@@ -589,9 +618,9 @@ fn a_stream_relays_for_every_pair_whatever_the_piece_boundaries() {
             }
             let mut r = Relay::new(relay_ctx(ingress, egress, true));
             for piece in far.chunks(5) {
-                let _ = r.feed(piece);
+                let _ = r.feed(HOST, piece);
             }
-            let end = r.end();
+            let end = r.end(HOST);
             assert!(!end.failed, "{ingress}<-{egress}");
             assert!(end.usage.is_some(), "{ingress}<-{egress}: usage");
             checked += 1;
@@ -607,14 +636,14 @@ fn a_cut_stream_ends_on_the_callers_error_frame() {
     for ingress in SIX {
         let far = native_stream("openai");
         let mut r = Relay::new(relay_ctx(ingress, "openai", true));
-        let _ = r.feed(&far[..far.len() / 2]);
-        let cut = r.cut(true);
+        let _ = r.feed(HOST, &far[..far.len() / 2]);
+        let cut = r.cut(HOST, true);
         assert_eq!(cut.reason, "mid-stream");
         assert!(cut.partial);
         assert!(cut.bytes.is_some_and(|b| !b.is_empty()), "{ingress}");
 
         let mut r = Relay::new(relay_ctx(ingress, "openai", true));
-        let cut = r.cut(true);
+        let cut = r.cut(HOST, true);
         assert_eq!(cut.reason, "pre-first-byte-transport");
         assert!(!cut.partial && cut.bytes.is_none() && cut.usage.is_none());
     }
@@ -701,12 +730,12 @@ fn a_reply_relays_a_stream_piece_by_piece() {
     };
     let far = native_stream("anthropic");
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
-    let mut reply = Reply::new(&ctx, 200, head);
+    let mut reply = Reply::new(HOST, &ctx, 200, head);
     let pieces: Vec<&[u8]> = far.chunks(40).collect();
     let mut body = Vec::new();
     for (i, p) in pieces.iter().enumerate() {
         let last = i + 1 == pieces.len();
-        let piece = reply.feed(&ctx, p, last, AT);
+        let piece = reply.feed(HOST, &ctx, p, last, AT);
         if i == 0 {
             let h = piece.head.clone().expect("the head rides the first piece");
             assert_eq!(h.status, 200);
@@ -751,12 +780,12 @@ fn a_reply_takes_a_whole_answer_whole() {
         .next()
         .expect("an answer");
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
-    let mut reply = Reply::new(&ctx, 200, head);
+    let mut reply = Reply::new(HOST, &ctx, 200, head);
     let (a, b) = far.split_at(far.len() / 2);
-    let first = reply.feed(&ctx, a, false, AT);
+    let first = reply.feed(HOST, &ctx, a, false, AT);
     assert!(first.head.is_none() && first.bytes.is_empty() && !first.done);
     assert_eq!(first.verdict, Verdict::None);
-    let last = reply.feed(&ctx, b, true, AT);
+    let last = reply.feed(HOST, &ctx, b, true, AT);
     assert_eq!(last.head.map(|h| h.status), Some(200));
     assert!(last.done);
     assert_eq!(last.verdict, Verdict::Ok);
@@ -784,10 +813,10 @@ fn a_reply_judges_a_far_end_error() {
         (529, Verdict::Retry, Disposition::TransientUpstream),
         (401, Verdict::Hard, Disposition::HardDown),
     ] {
-        let mut reply = Reply::new(&ctx, status, JSON_HEAD);
+        let mut reply = Reply::new(HOST, &ctx, status, JSON_HEAD);
         let (a, b) = body.split_at(10);
-        assert!(!reply.feed(&ctx, a, false, AT).done);
-        let piece = reply.feed(&ctx, b, true, AT);
+        assert!(!reply.feed(HOST, &ctx, a, false, AT).done);
+        let piece = reply.feed(HOST, &ctx, b, true, AT);
         assert!(piece.done);
         assert_eq!(piece.verdict, verdict, "{status}");
         assert!(matches!(
@@ -827,9 +856,9 @@ fn a_judged_far_end_error_carries_the_breakers_reading_apart_from_its_verdict() 
         (401, "invalid_api_key", Verdict::Hard, FAULT_HARD),
         (503, "busy", Verdict::Retry, FAULT_TRANSIENT),
     ] {
-        let mut reply = Reply::new(&ctx, status, JSON_HEAD);
+        let mut reply = Reply::new(HOST, &ctx, status, JSON_HEAD);
         let body = error(code);
-        let piece = reply.feed(&ctx, body.as_bytes(), true, AT);
+        let piece = reply.feed(HOST, &ctx, body.as_bytes(), true, AT);
         assert!(piece.done, "{status} {code}");
         assert_eq!(piece.verdict, verdict, "{status} {code}");
         assert_eq!(
@@ -862,9 +891,9 @@ fn a_reply_that_is_cut_says_so() {
     };
     let far = native_stream("anthropic");
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
-    let mut reply = Reply::new(&ctx, 200, head);
-    let _ = reply.feed(&ctx, &far[..far.len() / 2], false, AT);
-    let cut = reply.cut(&ctx, true);
+    let mut reply = Reply::new(HOST, &ctx, 200, head);
+    let _ = reply.feed(HOST, &ctx, &far[..far.len() / 2], false, AT);
+    let cut = reply.cut(HOST, &ctx, true);
     assert!(cut.done && !cut.bytes.is_empty());
     assert_eq!(cut.verdict, Verdict::Hard);
     assert_eq!(cut.fault, Some(Fault::Transient("mid-stream")));
@@ -877,9 +906,9 @@ fn a_reply_that_is_cut_says_so() {
         passthrough: false,
         translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
-    let mut reply = Reply::new(&ctx, 200, JSON_HEAD);
-    let _ = reply.feed(&ctx, b"{\"id\":", false, AT);
-    let cut = reply.cut(&ctx, true);
+    let mut reply = Reply::new(HOST, &ctx, 200, JSON_HEAD);
+    let _ = reply.feed(HOST, &ctx, b"{\"id\":", false, AT);
+    let cut = reply.cut(HOST, &ctx, true);
     assert_eq!(cut.head.map(|h| h.status), Some(502));
     assert_eq!(cut.fault, Some(Fault::Transient("transport")));
 }
@@ -892,9 +921,9 @@ fn stream_drops(caller: &str, far: &str, bytes: &[u8]) -> Vec<String> {
     ctx.client_include_usage = true;
     let mut r = Relay::new(ctx);
     for piece in bytes.chunks(7) {
-        let _ = r.feed(piece);
+        let _ = r.feed(HOST, piece);
     }
-    r.end().dropped
+    r.end(HOST).dropped
 }
 
 /// The far end's spec-shaped stream of `dialect` (the OpenAI stream itself, or as busbar writes it
@@ -994,13 +1023,24 @@ mod rehomed_answers {
     const SSE_HEAD: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
     const EVENTSTREAM: &str = "application/vnd.amazon.eventstream";
 
-    /// The host's entropy, so a dialect that mints an id (a request id, a message id) mints one.
-    fn entropy() {
-        busbar_contract::codec::install_entropy_source(|out| {
+    /// The host's entropy, so a dialect that mints an id (a request id, a message id) mints one:
+    /// a fixed fill (so an answer rendered twice reads the same twice), and no clock.
+    struct SevensHost;
+
+    impl busbar_contract::codec::CodecHost for SevensHost {
+        fn fill_entropy(&self, out: &mut [u8]) -> bool {
             out.fill(7);
             true
-        });
+        }
+
+        fn wall_clock_now(&self) -> Option<u64> {
+            None
+        }
     }
+
+    /// The handle every exchange and codec call in this module is handed (it shadows the file's
+    /// OS-random host: these answers are compared byte for byte).
+    const HOST: &dyn busbar_contract::codec::CodecHost = &SevensHost;
 
     /// A chat request in `dialect`'s own shape.
     fn chat_request(dialect: &str, stream: bool) -> Value {
@@ -1128,17 +1168,17 @@ mod rehomed_answers {
         pieces: &[&[u8]],
         cut: bool,
     ) -> Read {
-        let mut reply = Reply::new(ctx, status, head);
+        let mut reply = Reply::new(HOST, ctx, status, head);
         let mut out: Vec<Piece<'static>> = Vec::new();
         for (index, bytes) in pieces.iter().enumerate() {
             let last = index + 1 == pieces.len() && !cut;
-            out.push(owned(reply.feed(ctx, bytes, last, AT)));
+            out.push(owned(reply.feed(HOST, ctx, bytes, last, AT)));
         }
         if pieces.is_empty() {
-            out.push(owned(reply.feed(ctx, &[], !cut, AT)));
+            out.push(owned(reply.feed(HOST, ctx, &[], !cut, AT)));
         }
         if cut {
-            out.push(reply.cut(ctx, true));
+            out.push(reply.cut(HOST, ctx, true));
         }
         let mut read = Read {
             status: 0,
@@ -1241,7 +1281,7 @@ mod rehomed_answers {
             .find(|decl| decl.name == dialect)
             .and_then(|decl| decl.dialect())
             .expect("the dialect has a codec")
-            .write_error(status, kind, message)
+            .write_error(HOST, status, kind, message)
     }
 
     /// An envelope with the request id its writer mints taken out.
@@ -1272,11 +1312,11 @@ mod rehomed_answers {
         let mut relay = Relay::new(ctx);
         let mut out = Vec::new();
         for piece in [first, second] {
-            if let (Fed::Bytes(bytes), _) = relay.feed(piece) {
+            if let (Fed::Bytes(bytes), _) = relay.feed(HOST, piece) {
                 out.extend_from_slice(&bytes);
             }
         }
-        let end = relay.end();
+        let end = relay.end(HOST);
         out.extend_from_slice(&end.bytes);
         (out, end)
     }
@@ -1548,8 +1588,9 @@ mod rehomed_answers {
                 head: JSON_HEAD,
                 body,
             };
-            let relayed = failure::relay("anthropic", "openai", &far);
+            let relayed = failure::relay(HOST, "anthropic", "openai", &far);
             let judged = judge(
+                HOST,
                 "anthropic",
                 "openai",
                 OpVerb::CHAT,
@@ -1602,7 +1643,6 @@ mod rehomed_answers {
     /// RED: the far end's id or fingerprint carried across, or the far content type kept.
     #[test]
     fn test_cross_protocol_response_carries_ingress_ct_and_native_id() {
-        entropy();
         let (arrived, lane) = ask("anthropic", "openai", false);
         let ctx = reply_ctx(&arrived, &lane, false);
         let body = serde_json::to_vec(&json!({
@@ -1636,7 +1676,6 @@ mod rehomed_answers {
     /// RED: a success head with no request id, or the id attached twice.
     #[test]
     fn test_bedrock_ingress_success_carries_amzn_request_id() {
-        entropy();
         let (arrived, lane) = ask("bedrock", "openai", false);
         let ctx = reply_ctx(&arrived, &lane, false);
         let body = chat_completion("Hi");
@@ -1653,7 +1692,6 @@ mod rehomed_answers {
     /// RED: no request id on a translated success, or a duplicate from a double attach.
     #[test]
     fn test_anthropic_ingress_success_carries_request_id_header() {
-        entropy();
         let (arrived, lane) = ask("anthropic", "openai", false);
         let ctx = reply_ctx(&arrived, &lane, false);
         let body = chat_completion("Hi");
@@ -1670,7 +1708,6 @@ mod rehomed_answers {
     /// RED: the stream head built without the request id the buffered head carries.
     #[test]
     fn test_anthropic_ingress_stream_carries_request_id_header() {
-        entropy();
         let (arrived, lane) = ask("anthropic", "anthropic", true);
         let ctx = reply_ctx(&arrived, &lane, false);
         let far = b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_x\",\"role\":\"assistant\",\"content\":[],\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n";
@@ -1778,7 +1815,6 @@ mod rehomed_answers {
     /// RED: the buffered answer written as JSON for a stream caller, or as SSE text.
     #[test]
     fn test_bedrock_converse_stream_buffered_cross_protocol_emits_binary_eventstream() {
-        entropy();
         let (arrived, lane) = ask("bedrock", "openai", true);
         let ctx = reply_ctx(&arrived, &lane, false);
         let body = chat_completion("Hi");
@@ -1810,7 +1846,7 @@ mod rehomed_answers {
     #[test]
     fn test_gemini_json_array_buffered_cross_protocol_emits_one_element_array() {
         let body = chat_completion("Hi");
-        let answered = whole::translate(&ctx("gemini", "openai", true, true), 200, &body);
+        let answered = whole::translate(HOST, &ctx("gemini", "openai", true, true), 200, &body);
         assert_eq!(answered.end, WholeEnd::Delivered);
         assert_eq!(answered.answer.status, 200);
         assert_eq!(
@@ -1884,7 +1920,6 @@ mod rehomed_answers {
     /// RED: no request id, or one that is not UUID-shaped.
     #[test]
     fn test_bedrock_converse_routes_and_returns_json() {
-        entropy();
         let (arrived, lane) = ask("bedrock", "openai", false);
         let ctx = reply_ctx(&arrived, &lane, false);
         let body = chat_completion("hello there");
@@ -1911,7 +1946,6 @@ mod rehomed_answers {
     /// RED: SSE text in a binary body, a partial trailing frame, or no request id on the stream.
     #[test]
     fn test_bedrock_converse_stream_returns_binary_eventstream() {
-        entropy();
         let (arrived, lane) = ask("bedrock", "openai", true);
         let ctx = reply_ctx(&arrived, &lane, false);
         let far = chat_stream_events();
@@ -1945,7 +1979,6 @@ mod rehomed_answers {
     /// RED: a minted UUID in place of the far id, or a re-encoded or reordered frame sequence.
     #[test]
     fn test_bedrock_same_protocol_stream_passthrough_forwards_upstream_request_id() {
-        entropy();
         let (arrived, lane) = ask("bedrock", "bedrock", true);
         let ctx = reply_ctx(&arrived, &lane, false);
         let head: &[(&[u8], &[u8])] = &[
@@ -1997,7 +2030,6 @@ mod rehomed_answers {
     /// RED: the far request id dropped or replaced by a minted one on the non-stream relay.
     #[test]
     fn test_bedrock_same_protocol_converse_non_stream_forwards_upstream_request_id() {
-        entropy();
         let (arrived, lane) = ask("bedrock", "bedrock", false);
         let ctx = reply_ctx(&arrived, &lane, false);
         let head: &[(&[u8], &[u8])] = &[
@@ -2191,7 +2223,6 @@ mod rehomed_answers {
     /// RED: a `message_start` missing a skeleton member an SDK reads.
     #[test]
     fn test_anthropic_cross_protocol_message_start_full_skeleton() {
-        entropy();
         let (arrived, lane) = ask("anthropic", "openai", true);
         let ctx = reply_ctx(&arrived, &lane, false);
         let far = chat_stream_events();
@@ -2326,7 +2357,6 @@ mod rehomed_answers {
     /// RED: the far chunks relayed, or the responses events out of order.
     #[test]
     fn test_responses_ingress_stream_emits_native_responses_events() {
-        entropy();
         let (arrived, lane) = ask("responses", "openai", true);
         let ctx = reply_ctx(&arrived, &lane, false);
         let far = chat_stream_events();
@@ -2463,16 +2493,26 @@ mod rehomed_answers {
             assert!(!closed.contains(marker), "{marker}: {closed}");
         }
         for dialect in ["openai", "anthropic", "gemini", "responses"] {
-            let bytes =
-                wire::mid_stream_error_bytes(dialect, false, wire::MID_STREAM_GENERIC_DETAIL, None);
+            let bytes = wire::mid_stream_error_bytes(
+                HOST,
+                dialect,
+                false,
+                wire::MID_STREAM_GENERIC_DETAIL,
+                None,
+            );
             let text = String::from_utf8_lossy(&bytes);
             assert!(
                 text.contains(wire::MID_STREAM_GENERIC_DETAIL),
                 "{dialect}: {text}"
             );
         }
-        let bytes =
-            wire::mid_stream_error_bytes("cohere", false, wire::MID_STREAM_GENERIC_DETAIL, None);
+        let bytes = wire::mid_stream_error_bytes(
+            HOST,
+            "cohere",
+            false,
+            wire::MID_STREAM_GENERIC_DETAIL,
+            None,
+        );
         let text = String::from_utf8_lossy(&bytes);
         assert!(
             text.contains("message-end") && text.contains("ERROR"),
@@ -2490,7 +2530,8 @@ mod rehomed_answers {
     #[test]
     fn test_bedrock_ingress_mid_stream_error_is_binary_exception_frame() {
         let crc = busbar_plane_llm::codec::crc32::hash;
-        let bytes = wire::mid_stream_error_bytes("bedrock", true, "connection reset by peer", None);
+        let bytes =
+            wire::mid_stream_error_bytes(HOST, "bedrock", true, "connection reset by peer", None);
         assert!(!bytes.starts_with(b"event:") && !bytes.starts_with(b"data:"));
         let word = |at: usize| {
             u32::from_be_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]])
@@ -2524,9 +2565,10 @@ mod rehomed_answers {
     #[test]
     fn test_sse_ingress_mid_stream_error_uses_native_framing() {
         for dialect in ["openai", "cohere", "gemini"] {
-            let text =
-                String::from_utf8(wire::mid_stream_error_bytes(dialect, false, "boom", None))
-                    .expect("text");
+            let text = String::from_utf8(wire::mid_stream_error_bytes(
+                HOST, dialect, false, "boom", None,
+            ))
+            .expect("text");
             assert!(text.starts_with("data: "), "{dialect}: {text}");
             assert!(!text.contains("event:"), "{dialect}: {text}");
             let data = text
@@ -2544,6 +2586,7 @@ mod rehomed_answers {
             );
         }
         let text = String::from_utf8(wire::mid_stream_error_bytes(
+            HOST,
             "anthropic",
             false,
             "boom",
@@ -2559,6 +2602,7 @@ mod rehomed_answers {
         assert!(frame["error"]["message"].is_string(), "{frame}");
 
         let text = String::from_utf8(wire::mid_stream_error_bytes(
+            HOST,
             "responses",
             false,
             "boom",
@@ -2633,6 +2677,7 @@ mod rehomed_answers {
     #[test]
     fn unknown_ingress_mid_stream_error_is_a_bare_data_frame_from_core() {
         let text = String::from_utf8(wire::mid_stream_error_bytes(
+            HOST,
             "no-such-protocol",
             false,
             "upstream vanished",
@@ -2824,7 +2869,6 @@ mod rehomed_answers {
     /// same-dialect fault rewritten, or a far 401 answered with the far message.
     #[test]
     fn a_far_end_error_reads_the_same_through_the_plane() {
-        entropy();
         let fixtures: [(u16, &[u8], Option<&str>); 3] = [
             (
                 400,
@@ -2928,7 +2972,6 @@ mod rehomed_answers {
     /// RED: a foreign body relayed across dialects, a status rewritten, or a kind moved.
     #[test]
     fn a_far_end_errors_relay_is_the_engines() {
-        entropy();
         let body = br#"{"error":{"message":"slow down"}}"#;
         let mut checked = 0;
         for (status, kind) in [
@@ -2945,7 +2988,7 @@ mod rehomed_answers {
                         head: JSON_HEAD,
                         body,
                     };
-                    let relayed = failure::relay(caller, far, &far_error);
+                    let relayed = failure::relay(HOST, caller, far, &far_error);
                     assert_eq!(relayed.status, status, "{caller}<-{far} {status}");
                     if caller == far {
                         assert_eq!(relayed.body, body, "{caller}: verbatim");

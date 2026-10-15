@@ -15,6 +15,7 @@ impl OperationHandler for NoopModeration {
     }
     fn read_response(
         &self,
+        _host: &dyn busbar_contract::codec::CodecHost,
         _w: &[u8],
     ) -> Result<Box<dyn busbar_contract::ir::handle::IrHandle>, CodecError> {
         Err(CodecError::Malformed("noop".into()))

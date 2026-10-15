@@ -26,7 +26,7 @@ fn message_start_float_token_counts_survive_as_integers() {
         }
     });
     let ev = AnthropicReader
-        .read_response_event("message_start", &data)
+        .read_response_event(crate::codec::test_host::HOST, "message_start", &data)
         .expect("message_start parses");
     let IrStreamEvent::MessageStart { usage, .. } = ev else {
         panic!("expected MessageStart");
@@ -70,7 +70,7 @@ fn message_start_float_cache_tier_split_survives_as_integers() {
         }
     });
     let ev = AnthropicReader
-        .read_response_event("message_start", &data)
+        .read_response_event(crate::codec::test_host::HOST, "message_start", &data)
         .expect("message_start parses");
     let IrStreamEvent::MessageStart { usage, .. } = ev else {
         panic!("expected MessageStart");
@@ -101,7 +101,7 @@ fn message_delta_float_token_counts_survive_as_integers() {
         }
     });
     let ev = AnthropicReader
-        .read_response_event("message_delta", &data)
+        .read_response_event(crate::codec::test_host::HOST, "message_delta", &data)
         .expect("message_delta parses");
     let IrStreamEvent::MessageDelta { usage, .. } = ev else {
         panic!("expected MessageDelta");
@@ -145,7 +145,9 @@ fn buffered_response_float_usage_counts_survive_as_integers() {
             "output_tokens_details": {"thinking_tokens": 6.0}
         }
     });
-    let ir = AnthropicReader.read_response(&body).expect("parses");
+    let ir = AnthropicReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("parses");
     assert_eq!(
         ir.usage.input_tokens, 10,
         "float-encoded input_tokens must survive as the exact integer, not 0"

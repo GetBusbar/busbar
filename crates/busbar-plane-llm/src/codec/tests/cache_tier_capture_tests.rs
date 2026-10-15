@@ -158,7 +158,9 @@ fn bedrock_recorded_no_cache_turn_invents_no_ttl_split() {
          carrying cacheDetails, use it directly instead of the varied copy: {body}"
     );
 
-    let ir = BedrockReader.read_response(&body).expect("bedrock parses");
+    let ir = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("bedrock parses");
     assert_eq!(
         ir.usage.detail.cache_creation_5m_input_tokens, None,
         "a turn that reported no cache creation must report no 5m tier (None, never Some(0))"
@@ -189,7 +191,9 @@ fn bedrock_cache_details_ttl_split_reaches_the_ir_and_the_wire() {
         ]),
     );
 
-    let ir = BedrockReader.read_response(&body).expect("bedrock parses");
+    let ir = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("bedrock parses");
     assert_eq!(
         ir.usage.cache_creation_input_tokens,
         Some(30),
@@ -207,7 +211,7 @@ fn bedrock_cache_details_ttl_split_reaches_the_ir_and_the_wire() {
     );
 
     let w = BedrockWriter;
-    let out = w.write_response(&ir);
+    let out = w.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/usage/cacheDetails"),
         Some(&json!([
@@ -227,6 +231,7 @@ fn bedrock_cache_details_ttl_split_reaches_the_ir_and_the_wire() {
 fn bedrock_cache_details_ride_the_stream_metadata_frame() {
     let mut state = StreamDecodeState::default();
     let events = BedrockReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &json!({
             "type": "metadata",
@@ -268,7 +273,9 @@ fn cohere_recorded_raw_body_reads_without_inventing_a_cache_read() {
         "the recorded cohere body must carry the separately-metered `billed_units` bucket: {body}"
     );
 
-    let ir = CohereReader.read_response(&body).expect("cohere parses");
+    let ir = CohereReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("cohere parses");
     assert_eq!(
         ir.usage.cache_read_input_tokens, None,
         "a turn that reported no cache hit must report no cache read (None, never Some(0))"
@@ -294,7 +301,9 @@ fn cohere_cached_tokens_price_at_the_cache_read_tier() {
     // The same recorded turn, with a prompt-cache hit on it.
     let body = with_member(&recorded, "/usage/cached_tokens", json!(4));
 
-    let ir = CohereReader.read_response(&body).expect("cohere parses");
+    let ir = CohereReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("cohere parses");
     assert_eq!(
         ir.usage.cache_read_input_tokens,
         Some(4),
@@ -318,6 +327,7 @@ fn cohere_cached_tokens_price_at_the_cache_read_tier() {
 fn cohere_cached_tokens_ride_the_stream_terminal() {
     let mut state = StreamDecodeState::default();
     let events = CohereReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &json!({
             "type": "message-end",
@@ -377,7 +387,7 @@ fn cohere_truncated_recovery_bills_the_same_bucket_as_the_buffered_path() {
 
     // The buffered path.
     let buffered = CohereReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("cohere parses")
         .usage
         .to_token_usage();
@@ -424,7 +434,7 @@ fn responses_recorded_body_carries_the_cache_write_member() {
     );
 
     let ir = ResponsesReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("responses parses");
     assert_eq!(
         ir.usage.cache_creation_input_tokens,
@@ -458,7 +468,7 @@ fn responses_cache_write_tokens_price_at_the_cache_write_tier() {
     );
 
     let ir = ResponsesReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("responses parses");
     assert_eq!(
         ir.usage.cache_creation_input_tokens,
@@ -488,6 +498,7 @@ fn responses_cache_write_tokens_price_at_the_cache_write_tier() {
 fn responses_cache_write_tokens_ride_the_stream_terminal() {
     let mut state = StreamDecodeState::default();
     let events = ResponsesReader.read_response_events(
+        crate::codec::test_host::HOST,
         "response.completed",
         &json!({
             "type": "response.completed",
@@ -533,7 +544,9 @@ fn openai_chat_recorded_body_invents_no_cache_write() {
          directly instead of the varied copy: {body}"
     );
 
-    let ir = OpenAiReader.read_response(&body).expect("chat parses");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("chat parses");
     assert_eq!(
         ir.usage.cache_creation_input_tokens, None,
         "a turn that reported no cache detail must report no cache write (None, never Some(0))"
@@ -564,7 +577,9 @@ fn openai_chat_cache_write_tokens_price_at_the_cache_write_tier() {
         json!(2),
     );
 
-    let ir = OpenAiReader.read_response(&body).expect("chat parses");
+    let ir = OpenAiReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("chat parses");
     assert_eq!(
         ir.usage.cache_creation_input_tokens,
         Some(6),
@@ -592,6 +607,7 @@ fn openai_chat_cache_write_tokens_price_at_the_cache_write_tier() {
 fn openai_chat_cache_write_tokens_ride_the_usage_chunk() {
     let mut state = StreamDecodeState::default();
     let events = OpenAiReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &json!({
             "id": "chatcmpl-oracle", "object": "chat.completion.chunk", "created": 0,
@@ -643,7 +659,9 @@ fn cohere_billed_input_and_cache_read_never_exceed_the_reported_total() {
     // already — it is the bucket that wins — so this is the exact coexistence the hazard needs.
     let body = with_member(&recorded, "/usage/cached_tokens", json!(4));
 
-    let ir = CohereReader.read_response(&body).expect("cohere parses");
+    let ir = CohereReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("cohere parses");
     assert!(
         ir.usage.detail.billed_input_tokens.is_some(),
         "the recording must carry billed_units for this test to exercise the billed-wins path: {ir:?}"
@@ -682,7 +700,7 @@ fn the_billed_netting_does_not_touch_a_dialect_without_billed_units() {
         json!(2),
     );
     let ir = ResponsesReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("responses parses");
     assert_eq!(
         ir.usage.detail.billed_input_tokens, None,
