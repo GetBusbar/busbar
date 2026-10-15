@@ -747,6 +747,46 @@ struct Census {
     leaks: Vec<Leak>,
     scanned: std::collections::BTreeSet<String>,
     pragmas: Vec<exempt::Pragma>,
+    /// How many crate roots the scan floor held the walk to.
+    roots: usize,
+}
+
+/// THE SCAN FLOOR'S DENOMINATOR (X-1209): every crate's root module on the tree,
+/// `crates/<dir>/src/lib.rs` or `crates/<dir>/src/main.rs`. The row named for a floor used to
+/// carry `min_files(1)`: a walk that returned one file of 1,611 cleared it, and a crate the walk
+/// skipped was a crate scanned for zero leaks. Derived from the tree, never a typed count, so a
+/// deleted crate lowers it and a new one raises it with no edit here.
+fn crate_roots(cx: &Ctx) -> std::collections::BTreeSet<String> {
+    let mut roots = std::collections::BTreeSet::new();
+    if let Ok(rd) = std::fs::read_dir(cx.abs("crates")) {
+        for e in rd.flatten() {
+            let Some(dir) = e.file_name().to_str().map(str::to_string) else {
+                continue;
+            };
+            if dir.starts_with('.') {
+                continue;
+            }
+            for root in ["lib.rs", "main.rs"] {
+                let rel = format!("crates/{dir}/src/{root}");
+                if cx.exists(&rel) {
+                    roots.insert(rel);
+                }
+            }
+        }
+    }
+    roots
+}
+
+/// The crate roots the walk did not return. Any one is a refusal: the scan cleared no floor.
+fn floor_gaps(
+    roots: &std::collections::BTreeSet<String>,
+    scanned: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    roots
+        .iter()
+        .filter(|r| !scanned.contains(*r))
+        .cloned()
+        .collect()
 }
 
 /// The nouns a file in `krate` at `rel` may not name.
@@ -759,10 +799,25 @@ fn counted_nouns<'n>(krate: &str, rel: &str) -> Vec<&'n Noun> {
 }
 
 fn census(cx: &Ctx) -> Result<Census, String> {
+    let roots = crate_roots(cx);
     let files = cx
-        .walk(&WalkSpec::new(["crates"]).ext("rs").min_files(1))
+        .walk(
+            &WalkSpec::new(["crates"])
+                .ext("rs")
+                .min_files(roots.len().max(1)),
+        )
         .map_err(|e| e.to_string())?;
     let scanned: std::collections::BTreeSet<String> = files.iter().map(|f| f.rel_str()).collect();
+    let gaps = floor_gaps(&roots, &scanned);
+    if !gaps.is_empty() {
+        return Err(format!(
+            "scan floor: {} of {} crate root(s) on the tree are not in the scan ({}); a crate the \
+             walk skips is a crate scanned for zero leaks",
+            gaps.len(),
+            roots.len(),
+            gaps.join(", ")
+        ));
+    }
     let mut leaks: Vec<Leak> = Vec::new();
     let mut pragmas: Vec<exempt::Pragma> = Vec::new();
     // Each file is judged on its own bytes alone, so the files are judged in parallel and the
@@ -776,6 +831,7 @@ fn census(cx: &Ctx) -> Result<Census, String> {
         leaks,
         scanned,
         pragmas,
+        roots: roots.len(),
     })
 }
 
@@ -1160,6 +1216,7 @@ impl Gate for InstanceNounNeutralityGate {
             leaks,
             scanned,
             pragmas,
+            roots,
         } = census;
         let ceiling = exempt::ceiling(cx.read(BASELINE).ok().as_deref());
 
@@ -1178,7 +1235,10 @@ impl Gate for InstanceNounNeutralityGate {
         rows.push(Row::pass(
             ROW_SCAN_FLOOR,
             "the crates tree was scanned",
-            CLEAN,
+            format!(
+                "{} file(s) scanned, every one of the {roots} crate root(s) on the tree among them",
+                scanned.len()
+            ),
         ));
 
         // Per-noun census rows.
@@ -1558,6 +1618,31 @@ fn dead_path_transition(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// X-1209 RED: a walk that returned one file cleared `min_files(1)`. The floor is now every
+    /// crate root on the tree, so a scan missing one root names it.
+    #[test]
+    fn a_scan_missing_a_crate_root_is_below_the_floor() {
+        let roots: std::collections::BTreeSet<String> =
+            ["crates/a/src/lib.rs", "crates/b/src/main.rs"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+        let one: std::collections::BTreeSet<String> =
+            ["crates/a/src/lib.rs".to_string()].into_iter().collect();
+        assert_eq!(floor_gaps(&roots, &one), vec!["crates/b/src/main.rs"]);
+        assert!(floor_gaps(&roots, &roots).is_empty());
+    }
+
+    /// The committed tree clears the derived floor: every crate root on it is in the scan.
+    #[test]
+    fn the_committed_tree_scans_every_crate_root() {
+        let cx = Ctx::workspace().expect("workspace context");
+        let roots = crate_roots(&cx);
+        assert!(!roots.is_empty(), "no crate root was derived from the tree");
+        let census = census(&cx).expect("the committed tree clears the scan floor");
+        assert_eq!(census.roots, roots.len());
+    }
 
     fn leak(file: &str, count: usize) -> Leak {
         Leak {

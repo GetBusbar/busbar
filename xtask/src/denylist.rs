@@ -1049,8 +1049,12 @@ pub(crate) fn stale_edge_exemptions(exemptions: &[EdgeExemption], hits: &[Hit]) 
 /// real disk; that is why the resolve-graph half keeps its fixture workspaces.
 pub fn run(cx: &Ctx) -> Report {
     let root = cx.root();
-    let config = match cx.read(CONFIG_REL) {
-        Ok(text) => toml_lite::parse_text(&text),
+    // X-1206: READ CHECKED. The subset reader dropped any line it could not place, so a config it
+    // misread scanned less than the file said and reported clean over it.
+    let config = match cx.read(CONFIG_REL).and_then(|text| {
+        toml_lite::parse_text_checked(&text).map_err(|e| format!("it does not read whole: {e}"))
+    }) {
+        Ok(doc) => doc,
         Err(e) => {
             return Report {
                 hits: Vec::new(),
