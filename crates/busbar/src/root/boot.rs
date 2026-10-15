@@ -126,7 +126,8 @@ pub fn harness_first_party_key(
 
 /// THE ROOT'S PLUGINS FETCH (the kernel preflight's `PluginsFetch`): every `plugins.fetch` target
 /// through the loader's fetch (cache-by-pin, verify-before-write, atomic write) into `dir`, and only
-/// ever through the kernel's SSRF-guarded `download`.
+/// ever through the SSRF-guarded download over the one connector
+/// ([`super::plugin_fetch::downloader`], the operator's metadata denylist `blocked` extending it).
 ///
 /// # Errors
 ///
@@ -135,8 +136,9 @@ pub fn plugins_fetch(
     dir: &std::path::Path,
     targets: &[FetchTarget],
     fatal_on_miss: bool,
-    download: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+    blocked: &[String],
 ) -> Result<Vec<Fetched>, Vec<String>> {
+    let download = super::plugin_fetch::downloader(blocked);
     let specs: Vec<super::loader::FetchSpec> = targets
         .iter()
         .map(|t| super::loader::FetchSpec {
@@ -145,7 +147,7 @@ pub fn plugins_fetch(
             filename: t.filename.clone(),
         })
         .collect();
-    let outcomes = super::loader::fetch_plugins(dir, &specs, fatal_on_miss, download)?;
+    let outcomes = super::loader::fetch_plugins(dir, &specs, fatal_on_miss, &download)?;
     Ok(outcomes
         .into_iter()
         .map(|o| match o {

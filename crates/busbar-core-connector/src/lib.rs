@@ -37,7 +37,10 @@
 //!   [`registry`] is the view of which entry serves which scheme; [`wire`] presents an entry over
 //!   carried connections to the kernel's transport seam.
 //! * [`process`] builds the process's one connector for the root: the deployment's one destination
-//!   guard behind the one dial judge, and the default outbound trust.
+//!   guard behind the one dial judge, the default outbound trust, and the proxy environment.
+//! * [`fetch`] is the `plugins.fetch` download over the connection table, the root's own need.
+//! * [`proxy`] is the proxy environment every framed dial honours (`HTTPS_PROXY`, `HTTP_PROXY`,
+//!   `ALL_PROXY`, `NO_PROXY`), the CONNECT tunnel 1.5.5's clients ran.
 //!
 //! No `unsafe` is written here outside the tests' framer entry, which writes a host sink through its
 //! raw pointers as a plugin does.
@@ -53,6 +56,7 @@ pub mod compose;
 pub mod datagram;
 pub mod dtls;
 pub mod endpoint;
+pub mod fetch;
 pub mod framed_stream;
 pub mod framer;
 pub mod guard;
@@ -63,6 +67,7 @@ pub mod listen;
 pub mod pool;
 pub mod process;
 mod program;
+pub mod proxy;
 pub mod registry;
 pub mod socket;
 /// The TLS test kit (far ends, the recording TLS fixture server, a private test CA) for this crate's
@@ -341,6 +346,25 @@ struct Judging {
     /// Writes the caller made before the dial, in order.
     early: Vec<(Vec<u8>, bool, bool)>,
     answer: Answer,
+    /// A dial through a proxy ([`proxy`]): the proxy, and whether the target's own judgement has
+    /// answered (the pended answer is then the proxy's).
+    proxied: Option<Proxied>,
+}
+
+/// A dial through a proxy, judged in two steps: the target (its name arm, and its own resolution
+/// when it resolves here; a name that does not resolve here goes to the proxy, which resolves it),
+/// then the proxy's own address (a private proxy admitted, cloud metadata never).
+struct Proxied {
+    spec: Arc<proxy::ProxyHop>,
+    judged_class: u32,
+    target_judged: bool,
+}
+
+/// Whether a target judgement's refusal is only that the name does not resolve HERE: behind a
+/// proxy, the proxy resolves it (the engine's tunnelled arm; reach behind the proxy is the proxy's
+/// boundary).
+fn unresolved_here(verdict: Verdict) -> bool {
+    verdict == DEST_UNRESOLVABLE || verdict == DEST_NO_ADDRESSES
 }
 
 /// What an exchange lent a pooled line keeps to redial it ONCE on a fresh connection when that line
@@ -521,6 +545,8 @@ pub struct Connector {
     authority_held: Mutex<HashSet<InstanceId>>,
     /// THE HOST'S I/O every carrier is served from ([`hostio`]): the one holder of OS handles.
     io: Arc<HostIo>,
+    /// THE PROXY ENVIRONMENT every framed dial honours ([`proxy`]); `None` = every dial direct.
+    proxy: Option<Arc<proxy::ProxyChoice>>,
 }
 
 impl std::fmt::Debug for Connector {
@@ -547,6 +573,7 @@ impl Default for Connector {
             auths: Mutex::new(HashMap::new()),
             authority_held: Mutex::new(HashSet::new()),
             io: hostio::process(),
+            proxy: None,
         }
     }
 }
@@ -670,6 +697,58 @@ impl Connector {
             return compose::carried_at(claim, target).ok();
         }
         framer::locate(door.as_ref(), target).ok()
+    }
+
+    /// The same connector dialling every framed connection through the proxy `config` selects for
+    /// it ([`proxy`]: the process's `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` / `NO_PROXY`, as
+    /// 1.5.5's clients honoured them); `None` = every dial direct.
+    #[must_use]
+    pub fn proxying(mut self, config: Option<Arc<proxy::ProxyChoice>>) -> Self {
+        self.proxy = config;
+        self
+    }
+
+    /// The proxy choice this connector's dials honour (the process's environment, read once), for
+    /// the composition root to hand the kernel's remaining egress engine.
+    #[must_use]
+    pub fn proxy(&self) -> Option<Arc<proxy::ProxyChoice>> {
+        self.proxy.clone()
+    }
+
+    /// The proxy a dial of `planned` goes through: a framed dial (never a carrier carried as
+    /// itself) not pinned `within` an address set, to a host the scheme's slot has a proxy for and
+    /// `NO_PROXY` does not exclude.
+    fn tunnel_for(&self, planned: &Planned, within: &[IpAddr]) -> Option<Arc<proxy::ProxyHop>> {
+        if !planned.framed() || !within.is_empty() {
+            return None;
+        }
+        self.proxy
+            .as_ref()?
+            .select(planned.secure(), proxy::host_of(planned.authority()))
+    }
+
+    /// Judge `dest` under `class` (with the need's private reach when `reach`), the pended answer
+    /// written to `answer` and its waker woken.
+    fn judge_into(
+        &self,
+        dest: &str,
+        class: u32,
+        reach: bool,
+        answer: &Answer,
+    ) -> Option<Result<SocketAddr, Verdict>> {
+        let answering = Arc::clone(answer);
+        let done: Judged = Box::new(move |v| {
+            let mut a = answering.lock().expect("judgement");
+            a.0 = Some(v);
+            if let Some(w) = a.1.take() {
+                w.wake();
+            }
+        });
+        if reach {
+            self.judge.judge_dial_reaching(dest, class, done)
+        } else {
+            self.judge.judge_dial(dest, class, done)
+        }
     }
 
     /// The same connector keeping dialled connections under `posture` (the deployment's
@@ -1136,10 +1215,57 @@ impl Connector {
                 Some(got) => got,
             }
         };
-        let addr = got.map_err(pended_verdict)?;
         let secure = j.planned.as_ref().is_some_and(Planned::secure);
-        let authority = j.planned.as_ref().map_or("", Planned::authority);
-        if !class_admits(j.egress_class, secure, &j.within, authority, addr) {
+        let target = j
+            .planned
+            .as_ref()
+            .map_or_else(String::new, |p| p.authority().to_owned());
+        if let Some(p) = j.proxied.as_mut() {
+            let proxy_addr = if p.target_judged {
+                got.map_err(pended_verdict)?
+            } else {
+                match got {
+                    Err(v) if !unresolved_here(v) => return Err(pended_verdict(v)),
+                    Ok(at) if !class_admits(j.egress_class, secure, &[], &target, at) => {
+                        j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
+                        return Err(ConnError::Refused);
+                    }
+                    _ => {}
+                }
+                p.target_judged = true;
+                {
+                    let mut a = j.answer.lock().expect("judgement");
+                    a.0 = None;
+                    if let Some(w) = waker {
+                        a.1 = Some(w.clone());
+                    }
+                }
+                match self.judge_into(&p.spec.endpoint(), p.judged_class, true, &j.answer) {
+                    None => return Ok(false),
+                    Some(Err(v)) => {
+                        j.answer.lock().expect("judgement").0 = Some(Err(v));
+                        return Err(pended_verdict(v));
+                    }
+                    Some(Ok(at)) => at,
+                }
+            };
+            let spec = Arc::clone(&p.spec);
+            let planned = j.planned.take().ok_or(ConnError::Refused)?;
+            let early = std::mem::take(&mut j.early);
+            *judging = None;
+            let connect = proxy::connect_request(planned.authority(), &spec);
+            let conn = planned
+                .dial_through(proxy_addr, connect)
+                .map_err(|f| map(&f))?;
+            let line = self.ride(held, conn);
+            for (bytes, end, text) in early {
+                line.emit(EXCHANGE_STREAM, &bytes, end, text)
+                    .map_err(|f| map(&f))?;
+            }
+            return Ok(true);
+        }
+        let addr = got.map_err(pended_verdict)?;
+        if !class_admits(j.egress_class, secure, &j.within, &target, addr) {
             // The refusal stays the connection's answer.
             j.answer.lock().expect("judgement").0 = Some(Err(DEST_PLAINTEXT));
             return Err(ConnError::Refused);
@@ -1184,23 +1310,67 @@ impl Connector {
         reach: bool,
     ) -> Result<(Option<Connection>, Option<Judging>), ConnError> {
         let answer: Answer = Arc::new(Mutex::new((None, None)));
-        let answering = Arc::clone(&answer);
-        let done: Judged = Box::new(move |v| {
-            let mut a = answering.lock().expect("judgement");
-            a.0 = Some(v);
-            if let Some(w) = a.1.take() {
-                w.wake();
-            }
-        });
         // A destination the need holds a private reach to is judged with it (the one guard, as an
         // allowlist entry naming it; the class unchanged).
-        let judged = if reach {
-            self.judge
-                .judge_dial_reaching(planned.authority(), judged_class, done)
-        } else {
-            self.judge
-                .judge_dial(planned.authority(), judged_class, done)
-        };
+        let judged = self.judge_into(planned.authority(), judged_class, reach, &answer);
+        // THROUGH A PROXY ([`proxy`]): the target judged first, then the proxy's own address.
+        if let Some(spec) = self.tunnel_for(&planned, within) {
+            let mut proxied = Proxied {
+                spec,
+                judged_class,
+                target_judged: false,
+            };
+            match judged {
+                None => {
+                    return Ok((
+                        None,
+                        Some(Judging {
+                            planned: Some(planned),
+                            egress_class,
+                            within: Vec::new(),
+                            early: Vec::new(),
+                            answer,
+                            proxied: Some(proxied),
+                        }),
+                    ))
+                }
+                Some(Err(v)) if !unresolved_here(v) => return Err(ConnError::Refused),
+                Some(Ok(at))
+                    if !class_admits(
+                        egress_class,
+                        planned.secure(),
+                        &[],
+                        planned.authority(),
+                        at,
+                    ) =>
+                {
+                    return Err(ConnError::Refused)
+                }
+                Some(_) => {}
+            }
+            proxied.target_judged = true;
+            let answer: Answer = Arc::new(Mutex::new((None, None)));
+            let proxy_authority = proxied.spec.endpoint();
+            return match self.judge_into(&proxy_authority, judged_class, true, &answer) {
+                None => Ok((
+                    None,
+                    Some(Judging {
+                        planned: Some(planned),
+                        egress_class,
+                        within: Vec::new(),
+                        early: Vec::new(),
+                        answer,
+                        proxied: Some(proxied),
+                    }),
+                )),
+                Some(Err(_)) => Err(ConnError::Refused),
+                Some(Ok(at)) => {
+                    let connect = proxy::connect_request(planned.authority(), &proxied.spec);
+                    let conn = planned.dial_through(at, connect).map_err(|f| map(&f))?;
+                    Ok((Some(conn), None))
+                }
+            };
+        }
         Ok(match judged {
             // Decided at once: a refusal answers the open, as 1.5.5 answered it.
             Some(Err(_)) => return Err(ConnError::Refused),
@@ -1224,6 +1394,7 @@ impl Connector {
                     within: within.to_vec(),
                     early: Vec::new(),
                     answer,
+                    proxied: None,
                 }),
             ),
         })

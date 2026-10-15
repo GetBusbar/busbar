@@ -99,6 +99,7 @@ pub mod plugin;
 pub mod plugin_rows;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod protocol;
+pub mod proxy_route;
 pub mod redacted;
 // The money-path durable record SHAPES (DECISIONS #83: contract = shapes, ledger = semantics;
 // DECISIONS #84: nothing on the plugin path may link a crate holding semantics). The module is a
