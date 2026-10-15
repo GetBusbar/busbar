@@ -663,7 +663,9 @@ pub(super) mod session_door {
     /// door among the linked plane doors without spelling the plane.
     const AUDIO_CLASS: &str = "audio_seconds_in";
 
-    /// A POST of `body` (JSON) to `path` on `router`, with `token` as its bearer or with none.
+    /// A POST of `body` (JSON) to `path` on `router`, with `token` as its bearer or with none,
+    /// answered within [`ANSWER_BOUND`]: a door that held a call at its provider fails the cell
+    /// instead of holding the job.
     async fn send_body(
         router: &axum::Router,
         path: &str,
@@ -679,11 +681,24 @@ pub(super) mod session_door {
             req = req.header("authorization", format!("Bearer {token}"));
         }
         let req = req.body(axum::body::Body::from(body)).expect("a request");
-        router
-            .clone()
-            .oneshot(req)
+        tokio::time::timeout(ANSWER_BOUND, router.clone().oneshot(req))
             .await
+            .unwrap_or_else(|_| panic!("the door answers {path} within {ANSWER_BOUND:?}"))
             .expect("the router answers")
+    }
+
+    /// How long a cell waits on a door's answer, or on the bytes of its body, before it fails.
+    const ANSWER_BOUND: std::time::Duration = std::time::Duration::from_secs(15);
+
+    /// `response`'s body, read to its end within [`ANSWER_BOUND`].
+    async fn body_of(response: axum::response::Response) -> axum::body::Bytes {
+        tokio::time::timeout(
+            ANSWER_BOUND,
+            axum::body::to_bytes(response.into_body(), 1 << 16),
+        )
+        .await
+        .expect("the body ends within the bound")
+        .expect("the body")
     }
 
     /// How the far end answers one connection.
@@ -1248,7 +1263,7 @@ pub(super) mod session_door {
         async fn mint_once(&mut self) -> (StatusCode, bool) {
             let response = self.mint().await;
             let status = response.status();
-            let _ = axum::body::to_bytes(response.into_body(), 1 << 16).await;
+            let _ = body_of(response).await;
             // A dial the provider heard arrives before its answer was written back.
             (status, self.heard.try_recv().is_ok())
         }
@@ -1333,9 +1348,7 @@ pub(super) mod session_door {
 
         let response = send_body(&s.router, MINT, Some(&s.plain), "{}").await;
         assert_eq!(response.status(), StatusCode::OK, "served through the door");
-        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
-            .await
-            .expect("the body");
+        let body = body_of(response).await;
         let body: serde_json::Value = serde_json::from_slice(&body).expect("the door's JSON");
         assert_eq!(
             body,
@@ -1343,7 +1356,10 @@ pub(super) mod session_door {
             "the minted secret and its expiry"
         );
 
-        let head = s.heard.recv().await.expect("the provider was dialled");
+        let head = tokio::time::timeout(ANSWER_BOUND, s.heard.recv())
+            .await
+            .expect("the provider's dial is heard within the bound")
+            .expect("the provider was dialled");
         assert!(head.starts_with(&format!("POST {MINT} ")), "{head}");
         assert!(
             head.lines()
