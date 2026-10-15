@@ -115,7 +115,9 @@ mod auth;
 mod carrier;
 mod export;
 
-pub use auth::{red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte};
+pub use auth::{
+    outbound_plant, red_outbound_double_fetch, red_outbound_writes_nothing, red_outbound_wrong_byte,
+};
 mod hook;
 pub mod host_io;
 mod plane;
@@ -1869,15 +1871,20 @@ pub fn declares_file(manifest_dir: &str) -> Option<PathBuf> {
 /// **THE DECLARED NEEDS ARE THE STATEMENT'S**, on the subject: its declares file's `needs` names
 /// exactly the transport schemes its door's Statement does ([`declared_needs_are`]).
 ///
+/// A plugin with no declares file FAILS here (status row 114: no proof passes by skipping its
+/// subject): every plugin repo holds one (plugin-ci's declares step refuses a repo without it), and
+/// a crate in busbar's own tree holds its own beside its `Cargo.toml` ([`declares_file`]).
+///
 /// # Panics
-/// Its `needs` is not the Statement's.
+/// No declares file is found, or its `needs` is not the Statement's.
 pub fn needs_declared(s: &Subject, manifest_dir: &str) {
-    let Some(file) = declares_file(manifest_dir) else {
-        eprintln!(
-            "no declares.json beside {manifest_dir}: plugin-ci's declares step owns its presence"
-        );
-        return;
-    };
+    let file = declares_file(manifest_dir).unwrap_or_else(|| {
+        panic!(
+            "no declares.json for the plugin at {manifest_dir} (its repo's root or one directory \
+             below it; in busbar's tree, the crate's own directory): the declared needs are proven \
+             against it, never passed unread"
+        )
+    });
     let text = std::fs::read_to_string(&file)
         .unwrap_or_else(|e| panic!("{} does not read: {e}", file.display()));
     if let Err(e) = declared_needs_are(&text, &need_schemes(&s.needs())) {
@@ -1972,24 +1979,33 @@ macro_rules! conformance_suite {
         }
 
         /// RED: an outbound auth door writing one wrong field byte fails the outbound script
-        /// (nothing to plant for a door with no outbound family).
+        /// (over a door with no outbound family, the door and its inputs agree there is none).
         #[test]
         fn red_an_outbound_field_byte_off_is_refused() {
-            $crate::conformance::red_outbound_wrong_byte(&__busbar_conformance_subject());
+            $crate::conformance::outbound_plant(
+                &__busbar_conformance_subject(),
+                $crate::conformance::red_outbound_wrong_byte,
+            );
         }
 
         /// RED: an outbound auth door whose `fields` writes nothing fails the outbound script
-        /// (nothing to plant for a door with no outbound family).
+        /// (over a door with no outbound family, the door and its inputs agree there is none).
         #[test]
         fn red_an_outbound_door_writing_no_field_is_refused() {
-            $crate::conformance::red_outbound_writes_nothing(&__busbar_conformance_subject());
+            $crate::conformance::outbound_plant(
+                &__busbar_conformance_subject(),
+                $crate::conformance::red_outbound_writes_nothing,
+            );
         }
 
         /// RED: an outbound auth door fetching its token twice fails the outbound script
-        /// (nothing to plant for a door whose styles mint no token).
+        /// (over a door with no outbound family, the door and its inputs agree there is none).
         #[test]
         fn red_a_second_token_fetch_is_refused() {
-            $crate::conformance::red_outbound_double_fetch(&__busbar_conformance_subject());
+            $crate::conformance::outbound_plant(
+                &__busbar_conformance_subject(),
+                $crate::conformance::red_outbound_double_fetch,
+            );
         }
 
         /// RED: a networked door bound to serve with no connection table is refused by name.
