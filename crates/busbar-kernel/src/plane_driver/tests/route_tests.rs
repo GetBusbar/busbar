@@ -275,3 +275,46 @@ fn only_the_refused_piece_lends_its_reason() {
     assert_eq!((i.flags, i.reason), (PIECE_REFUSED | PIECE_LAST, code));
     assert_eq!(refused.continuation().reason, 0, "its re-call carries none");
 }
+
+/// THE FINAL MARK AND THE FAILOVER DECISION READ ONE PREDICATE: for every (streamed, relayed) the
+/// first far-end piece is marked `PIECE_FINAL` exactly when a retry verdict would NOT fail the
+/// answer over. And every flag set the pump builds for a far-end piece is one the contract admits
+/// (`check_piece_in`): the cut mark only on a last piece, the final mark only on the status piece.
+/// RED: a final mark computed apart from `fails_over`, or a cut marked on a piece that is not last.
+#[test]
+fn the_final_mark_agrees_with_the_failover_decision_and_every_far_flag_set_is_admitted() {
+    use busbar_contract::abi::plane::check::check_piece_in;
+    for streamed in [false, true] {
+        for relayed in [false, true] {
+            for last in [false, true] {
+                for cut in [false, true] {
+                    for fields in [false, true] {
+                        for has_status in [false, true] {
+                            let piece = FarPiece {
+                                last,
+                                cut,
+                                fields,
+                                relayed,
+                                ..FarPiece::default()
+                            };
+                            let flags = far_flags(&piece, has_status, streamed);
+                            assert_eq!(
+                                check_piece_in(FROM_FAR_END, flags),
+                                Ok(()),
+                                "{piece:?} status {has_status} streamed {streamed}"
+                            );
+                            assert_eq!(
+                                flags & PIECE_FINAL != 0,
+                                has_status && !fails_over(streamed, relayed),
+                                "{piece:?} status {has_status} streamed {streamed}"
+                            );
+                            assert_eq!(flags & PIECE_CUT != 0, last && cut, "{piece:?}");
+                        }
+                    }
+                }
+            }
+        }
+    }
+    assert!(fails_over(false, false));
+    assert!(!fails_over(true, false) && !fails_over(false, true));
+}

@@ -2730,7 +2730,7 @@
     },
     "type SpawnSecretFn": {
       "kind": "alias",
-      "target": "fn(&busbar_contract::secret_ref::SecretRef) -> Result<String, String>"
+      "target": "fn(&SecretRef, &ConfigScope) -> Result<String, String>"
     },
     "type Verdict": {
       "kind": "alias",

@@ -1181,6 +1181,7 @@ fn open_with(
         head_target: &h.target,
         within,
         member,
+        unit: 0,
     };
     table
         .open(id, need, &desc)

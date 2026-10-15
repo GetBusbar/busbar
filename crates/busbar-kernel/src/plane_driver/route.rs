@@ -28,8 +28,8 @@ use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::plane::{
     reason_code, FieldList, OnPieceIn, OnPieceOut, OutField, RecordWrite, UnitCount, CLAIM_PROBE,
     EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END,
-    FROM_KERNEL, PIECE_FIELDS, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT, PIECE_REFUSED,
-    RECORD_AUDIT, VERDICT_RETRY,
+    FROM_KERNEL, PIECE_CUT, PIECE_FIELDS, PIECE_FINAL, PIECE_HAS_STATUS, PIECE_LAST,
+    PIECE_OUT_TEXT, PIECE_REFUSED, RECORD_AUDIT, VERDICT_RETRY,
 };
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{Pass, ReasonCode, Route};
@@ -67,6 +67,41 @@ pub struct FarPiece {
     /// dispatch: a spill, the least-bad bypass, a queued slot), so it is never failed over: a
     /// retry verdict renders it, as 1.5.5 relayed a degraded dispatch's answer.
     pub relayed: bool,
+    /// On the reply's last piece: the answer ended without completing (its connection failed, or
+    /// the send's deadline passed, after its head). Pushed with `PIECE_CUT`.
+    pub cut: bool,
+}
+
+/// WHETHER A RETRY VERDICT FAILS THE ANSWER OVER: only while nothing has streamed to the caller,
+/// and never for a relayed answer (a terminal's dispatch). The ONE predicate both the failover
+/// decision and the `PIECE_FINAL` mark read, so the plane is told an answer is final exactly when a
+/// retry verdict would not fail it over.
+#[must_use]
+pub(crate) fn fails_over(streamed: bool, relayed: bool) -> bool {
+    !streamed && !relayed
+}
+
+/// The flags of a far-end piece as the pump pushes it: its last, cut, trailer and status marks,
+/// and, on its first piece, whether a retry verdict would fail it over (`PIECE_FINAL`).
+#[must_use]
+pub(crate) fn far_flags(piece: &FarPiece, has_status: bool, streamed: bool) -> u32 {
+    let mut flags = 0;
+    if piece.last {
+        flags |= PIECE_LAST;
+        if piece.cut {
+            flags |= PIECE_CUT;
+        }
+    }
+    if piece.fields {
+        flags |= PIECE_FIELDS;
+    }
+    if has_status {
+        flags |= PIECE_HAS_STATUS;
+        if !fails_over(streamed, piece.relayed) {
+            flags |= PIECE_FINAL;
+        }
+    }
+    flags
 }
 
 /// What the walk answers for an attempt: the member to try, or the pool's exhaustion terminal.
@@ -1165,15 +1200,10 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     run.bufs.head = FieldList::new(piece.head.clone());
                 }
                 first = false;
+                let streamed = run.lock().facts.streamed;
                 let far = Piece {
                     from: FROM_FAR_END,
-                    flags: if piece.last { PIECE_LAST } else { 0 }
-                        | if piece.fields { PIECE_FIELDS } else { 0 }
-                        | if status.is_some() {
-                            PIECE_HAS_STATUS
-                        } else {
-                            0
-                        },
+                    flags: far_flags(&piece, status.is_some(), streamed),
                     status: status.unwrap_or((0, 0)),
                     attempt_no: 0,
                     src: Src::Input,
@@ -1389,7 +1419,7 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     };
                     // A retry verdict fails over only before the first byte; after it, it is hard.
                     // A relayed answer (a terminal's dispatch) is never failed over.
-                    if out.verdict == VERDICT_RETRY && !streamed && !relayed {
+                    if out.verdict == VERDICT_RETRY && fails_over(streamed, relayed) {
                         return Step::Retry;
                     }
                     let headed = run.lock().facts.headed;

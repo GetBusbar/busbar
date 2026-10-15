@@ -14,11 +14,12 @@
 //! are compiled into the root's test binary rather than this crate's: this directory has no
 //! `main.rs`, and `cargo test -p busbar-plane-llm` does not build it.
 //!
-//! Development-only, like the switch it proves: compiled only under the plane's fold switch
-//! (`llm-on-driver`).
+//! Compiled whenever the root links this plane's door (its `plane-llm-door` row, carried by the
+//! default build's `plane-llm`), so the hook gate on the driver runs with every default test run.
 
 pub(crate) mod held;
 pub(crate) mod policies;
 pub(crate) mod projection;
+pub(crate) mod refusals;
 pub(crate) mod seam;
 pub(crate) mod wire;

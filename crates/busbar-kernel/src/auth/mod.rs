@@ -665,9 +665,12 @@ impl AdminAuthChain {
                 "test-scope-module" | "test-groups-module" => {}
                 other => {
                     let name = entry.name.as_str();
-                    let resolved =
-                        crate::config::secret::resolve_settings(&entry.settings, secret_resolver)
-                            .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
+                    let resolved = crate::config::secret::resolve_settings(
+                        &entry.settings,
+                        secret_resolver,
+                        &busbar_contract::config_time::ConfigScope::config_time(),
+                    )
+                    .map_err(|e| format!("identity-providers.{name} settings: {e}"))?;
                     let refused = |e: String| {
                         format!(
                             "auth.admin_auth provider '{name}' (module '{other}') could not be \
@@ -783,9 +786,12 @@ impl AuthMiddleware {
                     // store BEFORE the settings cross the ABI (ADR-0010). FAIL-CLOSED: an
                     // unresolvable ref aborts the chain build rather than handing the plugin a
                     // dangling reference.
-                    let resolved =
-                        crate::config::secret::resolve_settings(&entry.settings, secret_resolver)
-                            .map_err(|e| format!("auth.chain module '{other}' settings: {e}"))?;
+                    let resolved = crate::config::secret::resolve_settings(
+                        &entry.settings,
+                        secret_resolver,
+                        &busbar_contract::config_time::ConfigScope::config_time(),
+                    )
+                    .map_err(|e| format!("auth.chain module '{other}' settings: {e}"))?;
                     let refused = |e: String| {
                         format!(
                             "auth.chain module '{other}' could not be loaded as a `kind: auth` \

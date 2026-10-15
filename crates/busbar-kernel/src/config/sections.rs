@@ -260,9 +260,12 @@ impl super::RootCfg {
             .into_iter()
             .filter(|(_, p)| !p.allow_metadata_hosts.is_empty())
             .flat_map(|(_, p)| {
+                // Each URL as the served flow dials it: its userinfo stripped (row 74, F25), so the
+                // carve-out matches the host the dial names rather than reading nothing.
                 std::iter::once(&p.base_url)
                     .chain(&p.token_url)
-                    .map(|url| (url.clone(), p.allow_metadata_hosts.clone()))
+                    .map(|url| crate::net_guard::strip_userinfo(url).into_owned())
+                    .map(|url| (url, p.allow_metadata_hosts.clone()))
             })
             .collect();
         Destinations {

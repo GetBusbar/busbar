@@ -22,6 +22,7 @@ members = [
     "crates/busbar-transport-webrtc",
     "testing/ws-conformance/subject",
     "testing/voice-conformance/harness",
+    "testing/webrtc-conformance/subject",
     "xtask",
 ]
 

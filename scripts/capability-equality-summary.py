@@ -44,7 +44,7 @@ ROOT_STATES = {"proven", "none", "not-applicable"}
 # served through) and the decisions leg (its door, served end to end) the feature that links the
 # plane, and for the llm leg the feature that links the plane riding the `node` axis, which compiles
 # the root's node (`root/plane_node.rs`).
-ROOT_FEATURES = "root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,proto-llm"
+ROOT_FEATURES = "root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,plane-llm"
 
 
 def load(path):

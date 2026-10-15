@@ -495,6 +495,17 @@ const OFF_TREE_MANIFESTS: &[(&str, &str)] = &[
          outside the plane crate so the plane's one user of the loader is its own both-ways witness. \
          It is an input to the conformance leg, never a crate a rule here is written about.",
     ),
+    (
+        "testing/webrtc-conformance/subject/Cargo.toml",
+        "the browser cell's SUBJECT: a testkit binary that composes the webrtc door (admitted \
+         through the root's own doors module, mounted by path) over the connector's datagram \
+         driver and host port, so headless browsers have busbar's real terminating path to call. \
+         It is a workspace member so `testing/webrtc-conformance/scripts/run.sh` can build it with \
+         `-p webrtc-conformance-subject`, and it is not a crate of the product tree: it ships in no \
+         artifact, `cargo build --bin busbar` never builds it, and it carries no kind and no plane \
+         or transport instance of its own. It is an input to the conformance leg, never a crate a \
+         rule here is written about.",
+    ),
 ];
 
 /// `qa/construction.toml`'s `[gate.plugin_kinds]` keys, each mapped onto the kind it names here.

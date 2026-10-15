@@ -315,7 +315,8 @@ fn the_linked_store_and_ranking_hooks_are_rows_of_the_linked_tables() {
 #[test]
 fn the_secret_axis_resolves_the_linked_sources_over_the_one_dispatcher() {
     use busbar_contract::secret::SecretAxis;
-    let axis = super::link_secrets(crate::LINKED.secrets).expect("the linked secret doors state");
+    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
+        .expect("the linked secret doors state");
     assert!(axis.linked("env") && axis.linked("file") && !axis.answers("vault"));
     let env = axis.shared("env").expect("env opens");
     assert!(
@@ -401,7 +402,8 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
 /// plane takes over that row's engine (the fallback flag, the runtime it builds and the view the
 /// core's own readers walk) and keeps every other word of its own. RED: the fold dropped the legacy
 /// row whole, so with the node's plane linked as a door the node had no fallback runtime and
-/// `/metrics` lost its lane gauges (`metrics_scrape_boot_window` under the node plane's fold switch).
+/// `/metrics` lost its lane gauges (`metrics_scrape_boot_window`, a door linked beside the fallback
+/// plane's legacy row).
 #[test]
 fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
     let base = &native("seam-l-engine")[0];

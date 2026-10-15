@@ -2637,7 +2637,7 @@ the `FROM_KERNEL` piece source; the ATTEMPT fields on `OnPieceIn` (member, attem
 answer's verdict on `OnPieceOut`; the `project` op; the plane's `drive` in/out with a host buffer for
 the ready sessions; a public flag on a snapshot route; the probe claim and the probe tail flag; a
 per-record-kind chain framing declaration in the tail (verify framing for plane record chains only). Each
-lands with its validator beside it and a RED test per rule.
+lands with its validator beside it and a RED test per rule. Two `OnPieceIn` flags join it (status row 155, ARCHITECT 2026-10-13): `PIECE_CUT`, on the far end's last piece only, says the far end's answer ended without completing; `PIECE_FINAL`, on the far end's first piece only, says the kernel will not fail this answer over.
 
 **The driver's contract, as landed and ruled (K1, K2, K5, K6, K7, H3, FOLD-LLM2; ARCHITECT rulings
 2026-09-28/30).**
@@ -4850,7 +4850,7 @@ Other rulings:
 - K6 approved: duplex sessions, two plane tickets, R-B single driver ticket, SessionCaller trait (shared with INBOUND-LISTEN + MCP stdio), turn legs = K2 walk under ONE admission within the destination set sealed at open (option A), one cleanup exactly once, K6-4 $ after MONEY-CHAIN C5.
 - DECISIONS D8: PlaneCfg::listed_models (default empty), all configured decisions models listed (scope-filtered). D8b lifts the 'exactly one model' mount: route by request model; one model + none = default (byte-identical); >1 + none = 400; unknown = 404.
 - H3 approved: HostServices unit_nest/work.*; UnitFrames by (label,ticket); NestRoute root seam; WorkOpenIn.into = 128-bit ref; child accrual 0 at admit, reported units at exit ($ on MONEY-CHAIN TD13); reserved work:{max_live,retain_s} lifted like pools; in-memory work book (legacy parity).
-- FOLD-LLM2 approved: Wave B (B1-B8) now on k1; 34a = PlaneTail sparse refusal_statuses override list (validator + REDs); dev cargo feature llm-on-driver as the switch (deleted in D3); both-paths oracle. Owners: K3=MONEY-CHAIN, A8=K2, B6 verify = busbar-auth-webhook-signature (+ standard-webhooks variant, TWILIO-DOOR), K7 staffed.
+- FOLD-LLM2 approved: Wave B (B1-B8) now on k1; 34a = PlaneTail sparse refusal_statuses override list (validator + REDs); a development-only cargo feature as the switch (deleted with the default flip, status row 155); both-paths oracle. Owners: K3=MONEY-CHAIN, A8=K2, B6 verify = busbar-auth-webhook-signature (+ standard-webhooks variant, TWILIO-DOOR), K7 staffed.
 - K5 approved: ProjectIn.rewrite/ProjectOut.rewritten (plane applies + re-projects); plane-flattened PromptView messages; hook stages at the head of route_leg after admit; HookVeto carries the hook's clamped status/text; FarEnd candidates()/constrain(); neutral hook engine relocated (GRANT 2, net-flat), shared by the driver and legacy llm.
 - DECISIONS D8b: REQUEST_PTRS += /model (metadata); upstream_model rewrites ONLY the top-level model value by span splice when set and different; otherwise byte passthrough.
 - AUTOBAHN blocked: Latchkey CONTEXT quota exhausted until 2026-10-01 00:00 UTC, no local docker; re-run after reset (harness armed).

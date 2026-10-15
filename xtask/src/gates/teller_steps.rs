@@ -877,7 +877,7 @@ pub fn default_features(text: &str) -> Result<BTreeSet<String>, String> {
 /// kernel-loop rider those planes are served through, gated by the feature that links the plane (`plane-mcp`,
 /// `plane-a2a`, `plane-streaming`), the decision leg is the plane's door served by the root's serve path
 /// (`plane-decisions`), and the llm leg is the root's node, compiled with the plane that rides
-/// the `node` axis (`proto-llm`) — and otherwise the leg's own name (`root-admin`).
+/// the `node` axis (`plane-llm`) — and otherwise the leg's own name (`root-admin`).
 pub fn shipped_legs(m: &Matrix, default: &BTreeSet<String>) -> BTreeSet<String> {
     let legs = m.root_legs();
     legs.as_object()
@@ -1083,7 +1083,7 @@ pub fn root_line(m: &Matrix) -> String {
 /// leg the feature that links the plane riding the `node` axis, which compiles the root's node
 /// (`root/plane_node.rs`).
 const ROOT_FEATURES: &str =
-    "root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,proto-llm";
+    "root-admin,plane-mcp,plane-a2a,plane-streaming,plane-decisions,plane-llm";
 
 const ARM_USAGE: &str = "\
 usage:

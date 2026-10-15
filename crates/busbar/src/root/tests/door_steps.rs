@@ -697,6 +697,7 @@ fn styled() -> crate::root::loader::dispatch::kinds::plane::ServedFacts {
 fn provider(protocol: &str, style: Option<&str>) -> super::ProviderRoute {
     super::ProviderRoute {
         base_url: "http://127.0.0.1:9".to_string(),
+        userinfo: None,
         protocol: protocol.to_string(),
         error_map: Default::default(),
         credential: busbar_contract::secret_ref::SecretRef::none(),
@@ -884,6 +885,36 @@ fn a_member_is_bound_under_its_dialects_default_style_on_the_need_that_style_nam
     );
 }
 
+/// ROW 74 (F25): a provider whose `base_url` spells `user:pass@` is reached at the host after it,
+/// as 1.5.5 reached it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`). The provider's route is
+/// the one entry every member's route, sealed reach, binding and dial reads its base from, so the
+/// userinfo is stripped HERE and nothing downstream (the connector refuses a dial target spelling
+/// one, fail-closed) ever sees it. RED before the fix: the route carried the base as written, and
+/// the member's dial was refused.
+#[test]
+fn a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority() {
+    let provider: busbar_kernel::config::ProviderCfg = serde_yaml::from_str(
+        "{protocol: d, base_url: 'https://svcuser:hunter2-P4ss@api.example.com:8443/v1', \
+         api_key: none, error_map: {}}",
+    )
+    .expect("a provider entry");
+    let routes = super::provider_routes(
+        &std::collections::HashMap::from([("p".to_string(), provider)]),
+        &busbar_kernel::config_validate::MetadataPosture::default(),
+    );
+    let route = &routes["p"];
+    assert_eq!(route.base_url, "https://api.example.com:8443/v1");
+    assert!(
+        route.userinfo.is_some(),
+        "the userinfo is held, opaque, for the member's attempts to present as 1.5.5 did"
+    );
+    let shown = format!("{route:?}");
+    assert!(
+        !shown.contains("hunter2") && !shown.contains("svcuser"),
+        "the route kept the planted spelling: {shown}"
+    );
+}
+
 #[test]
 fn a_member_that_cannot_be_reached_refuses_the_load_naming_it() {
     let unknown = resolve("models: {m: {provider: q}}", &[("p", provider("d", None))]);
@@ -982,6 +1013,8 @@ pub(crate) struct TokenEndpoint {
     slab: busbar_contract::conn::ConnSlab<()>,
     declared: std::sync::Mutex<Vec<(u32, u32, Option<String>)>>,
     opened: std::sync::Mutex<Vec<Opened>>,
+    /// Each open's head fields, as the table received them.
+    fields: std::sync::Mutex<Vec<Vec<(String, Vec<u8>)>>>,
     replies: std::sync::Mutex<Replies>,
     /// The reply body to a request body, when the endpoint answers by what it was asked (an RFC
     /// 8693 exchange's token names its scope); `None` = the minted replies above.
@@ -1061,6 +1094,12 @@ impl busbar_contract::conn::Conns for TokenEndpoint {
     ) -> Result<busbar_contract::conn::ConnId, busbar_contract::conn::ConnError> {
         use busbar_contract::conn::PieceKind;
         self.slab.check_need(caller, need)?;
+        self.fields.lock().unwrap().push(
+            desc.fields
+                .iter()
+                .map(|(n, v)| ((*n).to_string(), v.to_vec()))
+                .collect(),
+        );
         let mut opened = self.opened.lock().unwrap();
         opened.push((
             need.0,
@@ -1184,100 +1223,140 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
     };
     use busbar_contract::auth_calls::FieldsRequest;
     const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
-    let key_file =
-        std::env::temp_dir().join(format!("busbar-door-steps-oauth-{}", std::process::id()));
-    std::fs::write(&key_file, "oracle-client-0001:oracle:secret:with:colons").expect("key");
-    let providers: std::collections::BTreeMap<String, super::ProviderRoute> = [(
-        "p".to_string(),
-        super::ProviderRoute {
-            base_url: "http://127.0.0.1:9".to_string(),
-            protocol: "d".to_string(),
-            error_map: Default::default(),
-            credential: busbar_contract::secret_ref::SecretRef::file(
-                key_file.display().to_string(),
-            ),
-            style: Some("oauth-client-credentials".to_string()),
-            params: super::StyleParams {
-                token_url: Some(TOKEN_URL.to_string()),
-                scope: Some("https://cognitiveservices.azure.com/.default".to_string()),
-                ..super::StyleParams::default()
+    let basic = {
+        use base64::Engine as _;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+        )
+    };
+    // The endpoint as written, plain and spelling a userinfo (row 74, F25).
+    for written in [
+        TOKEN_URL.to_string(),
+        TOKEN_URL.replacen("://", "://svcuser:hunter2-P4ss@", 1),
+    ] {
+        let key_file =
+            std::env::temp_dir().join(format!("busbar-door-steps-oauth-{}", std::process::id()));
+        std::fs::write(&key_file, "oracle-client-0001:oracle:secret:with:colons").expect("key");
+        let providers: std::collections::BTreeMap<String, super::ProviderRoute> = [(
+            "p".to_string(),
+            super::ProviderRoute {
+                base_url: "http://127.0.0.1:9".to_string(),
+                userinfo: None,
+                protocol: "d".to_string(),
+                error_map: Default::default(),
+                credential: busbar_contract::secret_ref::SecretRef::file(
+                    key_file.display().to_string(),
+                ),
+                style: Some("oauth-client-credentials".to_string()),
+                params: super::StyleParams {
+                    token_url: Some(written.clone()),
+                    scope: Some("https://cognitiveservices.azure.com/.default".to_string()),
+                    ..super::StyleParams::default()
+                },
+                metadata: busbar_kernel::config_validate::MetadataPosture::default(),
             },
-            metadata: busbar_kernel::config_validate::MetadataPosture::default(),
-        },
-    )]
-    .into();
-    let table = std::sync::Arc::new(TokenEndpoint::default());
-    let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
-        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
-    let reach = super::DoorReach {
-        providers: &providers,
-        secrets: std::sync::Arc::clone(&secrets),
-        auths: std::sync::Arc::new(linked_mint_plugin(&table)),
-        conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
-        stream_ceiling_secs: 1,
-        catalog: None,
-        models: None,
-        upgrades: Vec::new(),
-    };
-    let section: serde_yaml::Value =
-        serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
-    let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
-        need_auths: vec![(DIRECTION_OUTBOUND, "oauth-client-credentials")],
-        dialects: vec!["d"],
-        ..Default::default()
-    };
-    let routes = super::member_routes(&section, &DoorPools::of(&section), &facts, &reach)
-        .expect("the member resolves");
-    let _ = std::fs::remove_file(&key_file);
-    let binding = routes["m"].auth.clone().expect("its credential is bound");
-    assert!(
-        table.declared.lock().unwrap().contains(&(
-            0,
-            EGRESS_OPERATOR_INFRASTRUCTURE,
-            Some(TOKEN_URL.to_string())
-        )),
-        "the plugin's operator-infrastructure need (ARCHITECT D1 2026-10-05, MINT CLASS (B)), \
-         pinned to the provider's token_url: {:?}",
-        table.declared.lock().unwrap()
-    );
+        )]
+        .into();
+        let table = std::sync::Arc::new(TokenEndpoint::default());
+        let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
+            std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
+        let reach = super::DoorReach {
+            providers: &providers,
+            secrets: std::sync::Arc::clone(&secrets),
+            auths: std::sync::Arc::new(linked_mint_plugin(&table)),
+            conns: std::sync::Arc::new(busbar_core_connector::Connector::new()),
+            stream_ceiling_secs: 1,
+            catalog: None,
+            models: None,
+            upgrades: Vec::new(),
+        };
+        let section: serde_yaml::Value =
+            serde_yaml::from_str("models: {m: {provider: p}}").expect("yaml");
+        let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+            need_auths: vec![(DIRECTION_OUTBOUND, "oauth-client-credentials")],
+            dialects: vec!["d"],
+            ..Default::default()
+        };
+        let routes = super::member_routes(&section, &DoorPools::of(&section), &facts, &reach)
+            .expect("the member resolves");
+        let _ = std::fs::remove_file(&key_file);
+        let binding = routes["m"].auth.clone().expect("its credential is bound");
+        assert!(
+            table.declared.lock().unwrap().contains(&(
+                0,
+                EGRESS_OPERATOR_INFRASTRUCTURE,
+                Some(TOKEN_URL.to_string())
+            )),
+            "the plugin's operator-infrastructure need (ARCHITECT D1 2026-10-05, MINT CLASS (B)), \
+             pinned to the provider's token_url: {:?}",
+            table.declared.lock().unwrap()
+        );
 
-    // The first request waits for the first mint (no empty credential), then carries it.
-    let first = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        binding
-            .auth
-            .fields(binding.handle, FieldsRequest::default(), 0),
-    )
-    .await
-    .expect("the first mint lands");
-    assert_eq!(
-        presented(Some(&first)).as_deref(),
-        Some("Bearer oracle-minted-1")
-    );
-    // The refresh lands ahead of the first token's expiry; the next request carries it.
-    let refreshed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-        loop {
-            let now = binding
+        // The first request waits for the first mint (no empty credential), then carries it.
+        let first = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            binding
                 .auth
-                .fields_now(binding.handle, &FieldsRequest::default());
-            if presented(now.as_ref()).as_deref() == Some("Bearer oracle-minted-2") {
-                return;
+                .fields(binding.handle, FieldsRequest::default(), 0),
+        )
+        .await
+        .expect("the first mint lands");
+        assert_eq!(
+            presented(Some(&first)).as_deref(),
+            Some("Bearer oracle-minted-1")
+        );
+        // The refresh lands ahead of the first token's expiry; the next request carries it.
+        let refreshed = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            loop {
+                let now = binding
+                    .auth
+                    .fields_now(binding.handle, &FieldsRequest::default());
+                if presented(now.as_ref()).as_deref() == Some("Bearer oracle-minted-2") {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        })
+        .await;
+        assert!(refreshed.is_ok(), "the refreshed bearer is presented");
+        let opened = table.opened.lock().unwrap();
+        assert_eq!(opened.len(), 2, "the mint and the refresh: {opened:?}");
+        assert!(opened.iter().all(|(need, target, words, _)| *need == 0
+            && target == TOKEN_URL
+            && words == b"/tenant/oauth2/v2.0/token"));
+        assert_eq!(
+            opened[1].3,
+            "grant_type=client_credentials&client_id=oracle-client-0001&client_secret=\
+             oracle%3Asecret%3Awith%3Acolons&scope=https%3A%2F%2Fcognitiveservices.azure.com%2F.default"
+        );
+        drop(opened);
+        // ROW 74 (F25): the endpoint as the plugin was handed it is the stripped one (its need is
+        // pinned there and its mint dialled there, above), and a `user:pass@` the operator wrote rides
+        // each mint FIRST as `authorization: Basic`, as 1.5.5's reqwest POST sent it (v1.5.5
+        // `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`); a plain endpoint's mint
+        // carries none.
+        let fields = table.fields.lock().unwrap();
+        assert_eq!(fields.len(), 2);
+        for head in fields.iter() {
+            let lead = head.first().map(|(n, v)| (n.as_str(), v.as_slice()));
+            if written == TOKEN_URL {
+                assert!(
+                    !head
+                        .iter()
+                        .any(|(n, _)| n.eq_ignore_ascii_case("authorization")),
+                    "a plain endpoint's mint presents no authorization: {head:?}"
+                );
+            } else {
+                assert_eq!(lead, Some(("authorization", basic.as_bytes())), "{head:?}");
+            }
+            assert!(
+                head.iter()
+                    .all(|(_, v)| !String::from_utf8_lossy(v).contains("hunter2")),
+                "the userinfo rides only as its Basic value: {head:?}"
+            );
         }
-    })
-    .await;
-    assert!(refreshed.is_ok(), "the refreshed bearer is presented");
-    let opened = table.opened.lock().unwrap();
-    assert_eq!(opened.len(), 2, "the mint and the refresh: {opened:?}");
-    assert!(opened.iter().all(|(need, target, words, _)| *need == 0
-        && target == TOKEN_URL
-        && words == b"/tenant/oauth2/v2.0/token"));
-    assert_eq!(
-        opened[1].3,
-        "grant_type=client_credentials&client_id=oracle-client-0001&client_secret=\
-         oracle%3Asecret%3Awith%3Acolons&scope=https%3A%2F%2Fcognitiveservices.azure.com%2F.default"
-    );
+    }
 }
 
 /// A test-only 2048-bit PKCS#8 RSA private key (generated for the kernel's `jwt_bearer` tests and
@@ -1335,6 +1414,7 @@ fn jwt_bearer_routes(
         "p".to_string(),
         super::ProviderRoute {
             base_url: "http://127.0.0.1:9".to_string(),
+            userinfo: None,
             protocol: "d".to_string(),
             error_map: Default::default(),
             credential: busbar_contract::secret_ref::SecretRef::file(
@@ -1425,6 +1505,132 @@ async fn a_member_under_jwt_bearer_mints_at_its_service_accounts_token_uri() {
             "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer&assertion="
         ),
         "1.5.5's RFC 7523 form: {body}"
+    );
+}
+
+/// ROW 74 (F25), `jwt-bearer`: 1.5.5 POSTed the signed assertion with reqwest to the service
+/// account's `token_uri` as written (v1.5.5 `crates/busbar/src/egress_auth/jwt_bearer.rs:175-181`),
+/// whose builder took a `user:pass@` out of the URL and sent it FIRST as `authorization: Basic` (the
+/// form names no `authorization`). A service account whose `token_uri` spells one is sealed with its
+/// mint need pinned to the stripped endpoint, its mint dials the stripped endpoint, and each mint
+/// leads with the Basic value; no field carries the userinfo in the clear.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it() {
+    use base64::Engine as _;
+    use busbar_contract::auth_calls::FieldsRequest;
+    const TOKEN_URI: &str = "https://oauth2.example.com/token";
+    let written = TOKEN_URI.replacen("://", "://svcuser:hunter2-P4ss@", 1);
+    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let routes = jwt_bearer_routes(
+        &written,
+        busbar_kernel::config_validate::MetadataPosture::default(),
+        &table,
+    )
+    .expect("a token_uri spelling a userinfo seals, as 1.5.5 accepted it");
+    let binding = routes["m"].auth.clone().expect("its credential is bound");
+    assert!(
+        table
+            .declared
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(_, _, target)| target.as_deref() == Some(TOKEN_URI)),
+        "the mint need is pinned to the stripped endpoint: {:?}",
+        table.declared.lock().unwrap()
+    );
+    let minted = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        loop {
+            let now = binding
+                .auth
+                .fields_now(binding.handle, &FieldsRequest::default());
+            if presented(now.as_ref()).is_some_and(|a| a.starts_with("Bearer oracle-minted-")) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    })
+    .await;
+    assert!(minted.is_ok(), "a bearer minted at the stripped endpoint");
+    assert_eq!(table.opened.lock().unwrap()[0].1, TOKEN_URI);
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+    );
+    let fields = table.fields.lock().unwrap();
+    let head = &fields[0];
+    assert_eq!(
+        head.first().map(|(n, v)| (n.as_str(), v.as_slice())),
+        Some(("authorization", basic.as_bytes())),
+        "{head:?}"
+    );
+    assert!(
+        head.iter()
+            .all(|(_, v)| !String::from_utf8_lossy(v).contains("hunter2")),
+        "{head:?}"
+    );
+}
+
+/// ROW 74 (F25), THE IN-PROCESS LANE'S SHAPE: the host stripped a `token_url`'s userinfo before a
+/// plane built its binding (`appbuild`), so the settings the axis is handed name the stripped
+/// endpoint and the Basic value arrives beside them ([`super::OutboundAuths::serving_with`]). The
+/// mint need is pinned to the stripped endpoint and every mint leads with the Basic value, as
+/// 1.5.5's reqwest POST sent it (v1.5.5 `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_mint() {
+    use base64::Engine as _;
+    use busbar_contract::auth_calls::FieldsRequest;
+    const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
+    let held = busbar_kernel::egress::engine::UrlUserinfo::of(&TOKEN_URL.replacen(
+        "://",
+        "://svcuser:hunter2-P4ss@",
+        1,
+    ))
+    .expect("the userinfo, held by the host");
+    let table = std::sync::Arc::new(TokenEndpoint::default());
+    let auths = linked_mint_plugin(&table);
+    let style = super::style_word(busbar_kernel::config::ProviderAuth::OAuthClientCredentials);
+    // What the plane built its binding from: the stripped endpoint.
+    let settings = serde_json::json!({
+        "token_url": TOKEN_URL,
+        "scope": "https://x.example.com/.default",
+    });
+    let (auth, _) = auths
+        .serving_with(style, &settings, Some(held))
+        .expect("the plugin opens")
+        .expect("a linked plugin serves the style");
+    let handle = auth
+        .open_outbound(
+            style,
+            b"oracle-client-0001:oracle:secret:with:colons",
+            &settings,
+        )
+        .expect("the binding opens");
+    let first = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        auth.fields(handle, FieldsRequest::default(), 0),
+    )
+    .await
+    .expect("the first mint lands");
+    assert_eq!(
+        presented(Some(&first)).as_deref(),
+        Some("Bearer oracle-minted-1")
+    );
+    assert!(table
+        .declared
+        .lock()
+        .unwrap()
+        .iter()
+        .any(|(_, _, target)| target.as_deref() == Some(TOKEN_URL)));
+    let basic = format!(
+        "Basic {}",
+        base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+    );
+    let fields = table.fields.lock().unwrap();
+    assert_eq!(
+        fields[0].first().map(|(n, v)| (n.as_str(), v.as_slice())),
+        Some(("authorization", basic.as_bytes())),
+        "the far end hears the Basic value on the token POST: {:?}",
+        fields[0]
     );
 }
 

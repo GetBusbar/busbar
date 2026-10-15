@@ -793,7 +793,7 @@ pub(crate) fn resolve_admin_token(
     use busbar_kernel_identity::operator::{blank_token, unresolved_token};
     let op = config::operator_provider();
     let token = resolver
-        .resolve_string(r)
+        .resolve_string_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
         .map_err(|e| unresolved_token(op, &e))?;
     if token.trim().is_empty() {
         return Err(blank_token(op));
@@ -851,15 +851,20 @@ pub(crate) fn resolve_signing_key(
         // one that never issues signed tokens simply has no signer.
         return Ok(None);
     };
-    let bytes = resolver.resolve(sk).map_err(|e| {
-        format!(
+    let bytes = resolver
+        .resolve_at_config(
+            sk,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map_err(|e| {
+            format!(
             "auth.signing_key did not resolve: {e}. auth.signing_key is a reference to an EXISTING \
              secret (env/file/plugin) - it does NOT generate a key. Provide the key first (a \
              32-byte raw or 64-hex-char ed25519 secret: `busbar --generate-signing-key`, or \
              `openssl rand -hex 32`), or OMIT auth.signing_key entirely if this deployment never \
              issues busbar-signed keys."
         )
-    })?;
+        })?;
     let secret = parse_signing_secret(&bytes)?;
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
@@ -908,7 +913,7 @@ pub fn resolve_operator_public_key(
     let Some(op) = auth.and_then(|a| a.operator_pub.as_ref()) else {
         return Ok(None);
     };
-    let bytes = resolver.resolve(op).map_err(|e| {
+    let bytes = resolver.resolve_at_config(op, &busbar_contract::config_time::ConfigScope::config_time()).map_err(|e| {
         format!(
             "auth.operator_pub did not resolve: {e}. auth.operator_pub is a reference to an EXISTING \
              secret (env/file/plugin) holding the fleet's sealed operator public key (32 raw bytes \
@@ -1124,7 +1129,9 @@ pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), Str
             // be loadable here, and pre-flight covers it.
             continue;
         }
-        if let Err(e) = builtins.resolve(r) {
+        if let Err(e) =
+            builtins.resolve_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
+        {
             return Err(format!("{what}: {e}"));
         }
     }
@@ -1185,8 +1192,12 @@ pub(crate) fn build_secret_resolver(
                  One of the two blocks would be silently dropped; keep exactly one."
             ));
         }
-        config::secret::resolve_settings(&mcfg.settings, &builtins)
-            .map_err(|e| format!("secrets.{module} settings: {e}"))?;
+        config::secret::resolve_settings(
+            &mcfg.settings,
+            &builtins,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map_err(|e| format!("secrets.{module} settings: {e}"))?;
         claimed_by.insert(canonical.clone(), module.clone());
         raw_config.insert(canonical, serde_json::Value::Object(mcfg.settings.clone()));
     }
@@ -1194,26 +1205,36 @@ pub(crate) fn build_secret_resolver(
     // resolver, over its settings as written: the keys its Statement names as secret references are
     // resolved through the linked plugins and lent to `open`, never substituted into the settings.
     let opened = OpenedSecrets::default();
-    Ok(config::secret::SecretResolver::with_plugin(Box::new(
-        move |module: &str, settings: &str| -> Result<Vec<u8>, String> {
-            if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
-                // Keyed by the plugin's CANONICAL name, so an alias and its canonical spelling
-                // open the plugin once.
-                let canonical = registry.resolve(module).map(|p| p.key().to_string());
-                let key = canonical.as_deref().unwrap_or(module);
-                return opened.resolve(key, settings, || {
-                    let raw = canonical.as_ref().and_then(|name| raw_config.get(name));
-                    let linked = config::secret::SecretResolver::builtins_only();
-                    axis.open(module, raw.unwrap_or(&serde_json::Value::Null), &|r| {
-                        linked.resolve(r)
-                    })
-                });
-            }
-            // No door answers it: no such secret plugin, or a 1.5.5 JSON-contract one, which this
-            // host does not load (THE DESIGN §11.8). Refused in the registry's own words.
-            Err(registry.secret_refusal(module))
-        },
-    )))
+    Ok(config::secret::SecretResolver::with_scoped_plugin(
+        Box::new(
+            move |module: &str,
+                  settings: &str,
+                  scope: Option<&busbar_contract::config_time::ConfigScope>|
+                  -> Result<Vec<u8>, String> {
+                if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
+                    // Keyed by the plugin's CANONICAL name, so an alias and its canonical spelling
+                    // open the plugin once.
+                    let canonical = registry.resolve(module).map(|p| p.key().to_string());
+                    let key = canonical.as_deref().unwrap_or(module);
+                    return opened.resolve(key, settings, scope, || {
+                        let raw = canonical.as_ref().and_then(|name| raw_config.get(name));
+                        let linked = config::secret::SecretResolver::builtins_only();
+                        axis.open(
+                            module,
+                            raw.unwrap_or(&serde_json::Value::Null),
+                            &|r| match scope {
+                                Some(scope) => linked.resolve_at_config(r, scope),
+                                None => linked.resolve(r),
+                            },
+                        )
+                    });
+                }
+                // No door answers it: no such secret plugin, or a 1.5.5 JSON-contract one, which this
+                // host does not load (THE DESIGN §11.8). Refused in the registry's own words.
+                Err(registry.secret_refusal(module))
+            },
+        ),
+    ))
 }
 
 /// THE SECRET PLUGINS A RESOLVER OPENED, one handle per plugin (audit kernel-K1 #6).
@@ -1246,18 +1267,22 @@ impl OpenedSecrets {
     }
 
     /// Resolve `settings` through the plugin opened under `key`, with no lock held while the plugin
-    /// answers.
+    /// answers — at config time when the caller holds the proof `scope` (THE DESIGN §11.11 R4: a
+    /// source that reads the disk answers only so).
     pub(crate) fn resolve(
         &self,
         key: &str,
         settings: &str,
+        scope: Option<&busbar_contract::config_time::ConfigScope>,
         open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
     ) -> Result<Vec<u8>, String> {
         let calls = self.calls(key, open)?;
-        calls
-            .resolve(settings.as_bytes())
-            .map(|m| m.expose_secret().clone())
-            .map_err(|r| r.text)
+        match scope {
+            Some(scope) => calls.resolve_at_config(settings.as_bytes(), scope),
+            None => calls.resolve(settings.as_bytes()),
+        }
+        .map(|m| m.expose_secret().clone())
+        .map_err(|r| r.text)
     }
 }
 

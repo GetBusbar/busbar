@@ -57,6 +57,7 @@ pub mod civil;
 #[allow(missing_docs, missing_debug_implementations)]
 pub mod codec;
 pub mod config;
+pub mod config_time;
 pub mod conn;
 pub mod count;
 pub mod dest;

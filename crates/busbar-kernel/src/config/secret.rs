@@ -50,13 +50,25 @@ pub struct SecretResolver {
     /// Resolve one non-built-in reference through a loaded `kind: secret` plugin: given the module
     /// name + its settings JSON, return the secret bytes (or a fail-closed error). `None` when no
     /// plugin registry is available (built-ins only).
-    plugin: Option<PluginResolveFn>,
+    plugin: Option<ScopedPluginResolveFn>,
 }
 
 /// The boxed closure a [`SecretResolver`] delegates a non-built-in module to: `(module, settings
 /// JSON) -> secret bytes` (fail-closed on error). Boxed so `config` stays free of a `plugin-loader`
 /// dependency (the engine wires the registry in at `build_app`).
 pub(crate) type PluginResolveFn = Box<dyn Fn(&str, &str) -> Result<Vec<u8>, String> + Send + Sync>;
+
+/// [`PluginResolveFn`] handed the config-time proof when the caller holds one (THE DESIGN §11.11
+/// R4): a dropped-in source that reads the disk resolves only with it.
+pub(crate) type ScopedPluginResolveFn = Box<
+    dyn Fn(
+            &str,
+            &str,
+            Option<&busbar_contract::config_time::ConfigScope>,
+        ) -> Result<Vec<u8>, String>
+        + Send
+        + Sync,
+>;
 
 impl SecretResolver {
     /// A resolver over the linked secret plugins alone (no cold lane): what the build links (`env`
@@ -69,6 +81,19 @@ impl SecretResolver {
     /// loader). Built-ins still short-circuit to the inline `env` / `file` path.
     pub fn with_plugin(plugin: PluginResolveFn) -> Self {
         Self {
+            plugin: Some(Box::new(
+                move |module: &str,
+                      settings: &str,
+                      _: Option<&busbar_contract::config_time::ConfigScope>| {
+                    plugin(module, settings)
+                },
+            )),
+        }
+    }
+
+    /// [`Self::with_plugin`], the plugin handed the caller's config-time proof when it holds one.
+    pub(crate) fn with_scoped_plugin(plugin: ScopedPluginResolveFn) -> Self {
+        Self {
             plugin: Some(plugin),
         }
     }
@@ -77,6 +102,34 @@ impl SecretResolver {
     /// build) resolves through the root's secret axis, on its one shared instance; any other module
     /// delegates to the plugin resolver (fail-closed if none is wired or it fails).
     pub(crate) fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String> {
+        self.resolve_with(secret, None)
+    }
+
+    /// [`Self::resolve`] at CONFIG TIME, with its proof: the one way a reference to a secret source
+    /// that reads the disk resolves (THE DESIGN §11.11 R4, OWNER 2026-10-13).
+    pub(crate) fn resolve_at_config(
+        &self,
+        secret: &SecretRef,
+        scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Result<Vec<u8>, String> {
+        self.resolve_with(secret, Some(scope))
+    }
+
+    /// [`Self::resolve_string`] at CONFIG TIME, with its proof.
+    pub(crate) fn resolve_string_at_config(
+        &self,
+        secret: &SecretRef,
+        scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Result<String, String> {
+        Self::text_of(secret, self.resolve_at_config(secret, scope)?)
+    }
+
+    /// The one resolution, with or without a config-time proof.
+    fn resolve_with(
+        &self,
+        secret: &SecretRef,
+        scope: Option<&busbar_contract::config_time::ConfigScope>,
+    ) -> Result<Vec<u8>, String> {
         let module = secret.module.as_str();
         // `none` declares the ABSENCE of a credential, so it is never looked up as a module: asking
         // for its bytes is a category error, refused rather than resolved to empty.
@@ -85,7 +138,11 @@ impl SecretResolver {
         }
         let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
         if let Some(axis) = axis().filter(|a| a.linked(module)) {
-            let material = axis.shared(module)?.resolve(settings.as_bytes());
+            let shared = axis.shared(module)?;
+            let material = match scope {
+                Some(scope) => shared.resolve_at_config(settings.as_bytes(), scope),
+                None => shared.resolve(settings.as_bytes()),
+            };
             return material
                 .map(|m| m.expose_secret().clone())
                 .map_err(|r| r.text);
@@ -98,7 +155,7 @@ impl SecretResolver {
                 secret.describe()
             ));
         };
-        let bytes = f(module, &settings).map_err(|e| {
+        let bytes = f(module, &settings, scope).map_err(|e| {
             format!(
                 "secret module '{module}' (a kind: secret plugin) failed to resolve {}: {e}",
                 secret.describe()
@@ -117,7 +174,12 @@ impl SecretResolver {
     /// Resolve to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or empty).
     /// The string-secret convenience twin of [`Self::resolve`], mirroring [`resolve_linked_string`].
     pub(crate) fn resolve_string(&self, secret: &SecretRef) -> Result<String, String> {
-        let bytes = self.resolve(secret)?;
+        Self::text_of(secret, self.resolve(secret)?)
+    }
+
+    /// Resolved bytes as the UTF-8 string a text secret is (trailing newline trimmed; fail-closed
+    /// on non-UTF-8 or empty).
+    fn text_of(secret: &SecretRef, bytes: Vec<u8>) -> Result<String, String> {
         let s = String::from_utf8(bytes).map_err(|_| {
             format!(
                 "secret {} resolved to non-UTF-8 bytes where a text secret is required",
@@ -201,6 +263,7 @@ pub(crate) fn classify_setting(value: &serde_json::Value) -> SettingShape<'_> {
 pub(crate) fn resolve_settings(
     settings: &serde_json::Map<String, serde_json::Value>,
     resolver: &dyn busbar_contract::secret::SecretResolve,
+    scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<serde_json::Map<String, serde_json::Value>, String> {
     let mut out = serde_json::Map::with_capacity(settings.len());
     for (field, value) in settings {
@@ -225,11 +288,13 @@ pub(crate) fn resolve_settings(
                     "plugin setting resolved as a SECRET REFERENCE; if this object was meant as \
                      literal plugin config, wrap it as `{{ literal: … }}` to pass it through verbatim"
                 );
-                let resolved = resolver.resolve_string(&secret).map_err(|e| {
-                    format!(
+                let resolved = resolver
+                    .resolve_string_at_config(&secret, scope)
+                    .map_err(|e| {
+                        format!(
                         "plugin setting '{field}' is a secret reference that did not resolve: {e}"
                     )
-                })?;
+                    })?;
                 out.insert(field.clone(), serde_json::Value::String(resolved));
             }
         }
@@ -264,6 +329,22 @@ impl busbar_contract::secret::SecretResolve for SecretResolver {
     fn resolve_string(&self, secret: &SecretRef) -> Result<String, String> {
         SecretResolver::resolve_string(self, secret)
     }
+
+    fn resolve_at_config(
+        &self,
+        secret: &SecretRef,
+        scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Result<Vec<u8>, String> {
+        SecretResolver::resolve_at_config(self, secret, scope)
+    }
+
+    fn resolve_string_at_config(
+        &self,
+        secret: &SecretRef,
+        scope: &busbar_contract::config_time::ConfigScope,
+    ) -> Result<String, String> {
+        SecretResolver::resolve_string_at_config(self, secret, scope)
+    }
 }
 
 /// The refusal a `none` reference answers when asked for its bytes (1.5.5's words).
@@ -290,6 +371,14 @@ pub(crate) fn is_linked_secret(module: &str) -> bool {
 /// plane-secret-blindness gate lists them.
 pub fn resolve_linked_string(secret: &SecretRef) -> Result<String, String> {
     SecretResolver::builtins_only().resolve_string(secret)
+}
+
+/// [`resolve_linked_string`] at CONFIG TIME, with its proof (`--validate`, the config checks).
+pub fn resolve_linked_string_at_config(
+    secret: &SecretRef,
+    scope: &busbar_contract::config_time::ConfigScope,
+) -> Result<String, String> {
+    SecretResolver::builtins_only().resolve_string_at_config(secret, scope)
 }
 
 #[cfg(test)]

@@ -384,6 +384,8 @@ pub struct Hooks {
     pub policy: Option<ResolvedPolicy>,
     pub taps: StageTaps,
     pub callers: Callers,
+    /// The signals the deployment's hooks declare (`signals:`); none by default.
+    pub requested: RequestedSignals,
 }
 
 /// The process's one request-id counter, as the binder is handed it.
@@ -407,7 +409,7 @@ impl Hooks {
                 .into_iter()
                 .collect(),
             taps: self.taps,
-            requested: RequestedSignals::default(),
+            requested: self.requested,
             next_request_id: counter(),
             caller: Arc::new(self.callers),
             dialects,
@@ -450,7 +452,7 @@ pub(crate) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
             .section
                 == busbar_contract::section::RESERVED_POOLS_KEY
         })
-        .expect("the fold switch links the door serving the `pools` map")
+        .expect("the driver-proofs row links the door serving the `pools` map")
 }
 
 /// The plane under proof's dialects, in its tail's order, as its door states them.

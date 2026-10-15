@@ -45,6 +45,8 @@ enum Script {
     Answer(u32, Option<u64>, Vec<&'static [u8]>),
     /// An answer whose body is followed by the far end's trailers.
     Trailed(u32, Vec<&'static [u8]>, &'static [u8]),
+    /// An answer whose connection fails after its body's pieces, before it completes.
+    Broken(u32, Vec<&'static [u8]>),
     /// A far end that states its answer's status at the END (`STATUS_AT_TERMINAL`): a head with
     /// no status, its messages, then its trailers carrying the status (its number, its class and
     /// the transport's fault reading of it); a success then completes, any other status then FAILS
@@ -77,6 +79,8 @@ struct Table {
     texts: Mutex<Vec<bool>>,
     /// Every write: the connection, the bytes, and whether they completed the caller's message.
     written: Mutex<Vec<(u64, Vec<u8>, bool)>>,
+    /// The connections whose read fails once their scripted pieces are spent.
+    broken: Mutex<std::collections::HashSet<u64>>,
     /// The connections whose stream FAILS once their scripted pieces are read.
     failing: Mutex<Vec<u64>>,
 }
@@ -180,6 +184,17 @@ impl Conns for Table {
                 }
                 (pieces, bytes)
             }
+            Script::Broken(status, chunks) => {
+                self.broken.lock().unwrap().insert(id);
+                let mut pieces = VecDeque::new();
+                let mut bytes = VecDeque::new();
+                for (k, chunk) in chunks.iter().enumerate() {
+                    let s = (k == 0).then_some((status, None));
+                    pieces.push_back(piece(PieceKind::Body, chunk.len(), s));
+                    bytes.push_back(chunk.to_vec());
+                }
+                (pieces, bytes)
+            }
             Script::Answer(status, retry, chunks) => {
                 let mut pieces = VecDeque::new();
                 let mut bytes = VecDeque::new();
@@ -245,7 +260,11 @@ impl PollConns for Table {
                 failing.remove(at);
                 return Poll::Ready(Err(ConnError::Fault));
             }
-            // A silent far end never answers (and never wakes).
+            // A broken connection fails its next read; a silent far end never answers (and never
+            // wakes).
+            if self.broken.lock().unwrap().contains(&conn.0) {
+                return Poll::Ready(Err(ConnError::Refused));
+            }
             return Poll::Pending;
         };
         let b = self
@@ -412,6 +431,9 @@ struct Bearer {
     stall: std::sync::atomic::AtomicBool,
     /// Refuses to field the attempt.
     refuse: std::sync::atomic::AtomicBool,
+    /// Presents the credential under `x-api-key` (a dialect whose credential is not
+    /// `authorization`) instead of as `authorization: Bearer`.
+    api_key: std::sync::atomic::AtomicBool,
     facts: Mutex<Vec<Facts>>,
     /// The point each call was made at and the body it lent.
     points: Mutex<Vec<(AuthPoint, Option<Vec<u8>>)>>,
@@ -466,9 +488,14 @@ impl OutboundAuth for Bearer {
             .push((r.method.clone(), r.authority.clone(), r.path.clone()));
         self.points.lock().unwrap().push((r.point, r.body.clone()));
         self.extensions.lock().unwrap().push(r.extensions.clone());
+        let (name, value): (&[u8], &[u8]) = if self.api_key.load(Ordering::SeqCst) {
+            (b"x-api-key", b"sk-test")
+        } else {
+            (b"authorization", b"Bearer sk-test")
+        };
         Some(Fields::Ready(vec![AuthField {
-            name: b"authorization".to_vec(),
-            value: b"Bearer sk-test".to_vec().into(),
+            name: name.to_vec(),
+            value: value.to_vec().into(),
             sensitive: true,
         }]))
     }
@@ -527,6 +554,7 @@ fn rig(
                 MemberRoute {
                     need: NeedId(0),
                     base_url: format!("https://{host}/v1/"),
+                    userinfo: None,
                     provider: format!("p{k}"),
                     keep: super::ResponseKeep::default(),
                     rides: Vec::new(),
@@ -1329,6 +1357,65 @@ async fn a_target_that_is_not_a_path_is_refused_before_the_dial() {
     assert!(r.table.opened.lock().unwrap().is_empty());
     assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
     assert!(r.book.observed.lock().unwrap().is_empty());
+}
+
+/// ROW 74 (F25): a member whose base URL spelled `user:pass@` carries the Basic value that userinfo
+/// spells as its attempt's FIRST field when the auth binding presents its credential under another
+/// field, and not at all when the binding presents `authorization` — 1.5.5's request builder put
+/// it first and its credential replaced it only by that name. A plane field named `authorization`
+/// never doubles it; nothing of the userinfo reaches the target or the auth call's authority.
+#[tokio::test]
+async fn a_base_url_userinfo_rides_first_unless_the_binding_presents_authorization() {
+    let userinfo =
+        crate::egress::engine::UrlUserinfo::of("https://svcuser:hunter2-P4ss@a.test/v1/")
+            .expect("the base spells a userinfo");
+    let basic = userinfo.value().as_bytes().to_vec();
+    for (api_key, expected) in [
+        (
+            true,
+            vec![
+                ("authorization", basic.clone()),
+                ("x-api-key", b"sk-test".to_vec()),
+                ("content-type", b"application/json".to_vec()),
+            ],
+        ),
+        (
+            false,
+            vec![
+                ("authorization", b"Bearer sk-test".to_vec()),
+                ("content-type", b"application/json".to_vec()),
+            ],
+        ),
+    ] {
+        let mut r = rig(
+            &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+            OnExhausted::Status503,
+            None,
+        );
+        r.auth.api_key.store(api_key, Ordering::SeqCst);
+        r.egress
+            .routes
+            .get_mut(&DestinationId::new(1))
+            .expect("m0's route")
+            .userinfo = Some(userinfo.clone());
+        let t = token();
+        let far = r.egress.unit(route());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        let mut req = request();
+        req.fields
+            .push((b"Authorization".to_vec(), b"Bearer caller".to_vec()));
+        assert!(far.send(&t, req).await);
+        let _ = drain(&far, &t).await;
+        let opened = r.table.opened.lock().unwrap().clone();
+        let head: Vec<(&str, Vec<u8>)> = opened[0]
+            .1
+            .iter()
+            .map(|(n, v)| (n.as_str(), v.clone()))
+            .collect();
+        assert_eq!(head, expected, "x-api-key binding: {api_key}");
+        assert_eq!(opened[0].0, "https://a.test/v1/chat");
+        assert_eq!(r.auth.facts.lock().unwrap()[0].1, "a.test");
+    }
 }
 
 /// A plane field whose name is not an RFC 9110 token never leaves: `authorization:x` = `v` would be
@@ -2718,4 +2805,50 @@ async fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_th
             "the host's field never reaches the wire: {head:?}"
         );
     }
+}
+
+/// A CUT IS TOLD TO THE PLANE (`PIECE_CUT`): an answer whose connection fails after its head ends
+/// with a last piece marked cut, the member recorded a compensating transient failure as before;
+/// an answer that completes ends with a last piece that is not. RED: a cut ending in the same
+/// unmarked last piece a completion does, so the plane frames a truncated answer as complete.
+#[tokio::test]
+async fn an_answer_cut_after_its_head_ends_on_a_cut_piece_and_a_complete_one_does_not() {
+    let r = rig(
+        &[("a.test", Script::Broken(200, vec![b"data: one\n\n"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    let Pick::Member { .. } = far.member(&t, 1).await else {
+        panic!("a member")
+    };
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    let last = pieces.last().expect("a last piece");
+    assert!(last.last && last.cut, "{pieces:?}");
+    assert!(
+        pieces[..pieces.len() - 1].iter().all(|p| !p.cut),
+        "only the last piece is cut: {pieces:?}"
+    );
+    assert!(r.book.observed.lock().unwrap().contains(&(
+        DestinationId::new(1),
+        Outcome::Transient { retry_after: None }
+    )));
+
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"whole"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let far = r.egress.unit(route());
+    let Pick::Member { .. } = far.member(&t, 1).await else {
+        panic!("a member")
+    };
+    assert!(far.send(&t, request()).await);
+    let pieces = drain(&far, &t).await;
+    assert!(
+        pieces.iter().all(|p| !p.cut),
+        "a complete answer is not cut: {pieces:?}"
+    );
 }

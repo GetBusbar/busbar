@@ -167,6 +167,16 @@
     },
     {
       "claim": null,
+      "plan": "headless Chromium and Firefox against busbar's terminating datagram path; control: the browser against itself; negative control: a broken line echo",
+      "public": true,
+      "reason": "no verdict artifact for this commit",
+      "standard": "WebRTC (browser interop: ICE, DTLS-SRTP, SCTP data channels)",
+      "status": "not-run",
+      "suite": "webrtc-browser",
+      "tier": "spec-conformant"
+    },
+    {
+      "claim": null,
       "plan": "Autobahn|Testsuite against busbar-transport-ws",
       "public": true,
       "reason": "no verdict artifact for this commit",

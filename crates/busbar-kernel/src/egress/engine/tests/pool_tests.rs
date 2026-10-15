@@ -853,6 +853,66 @@ async fn h1_wire_request_line_and_host_match_legacy() {
     assert!(heads[2].starts_with("GET / HTTP/1.1\r\n"));
 }
 
+/// ROW 74 (F25), ON THE WIRE: a base URL's userinfo, handed to the owned client as its opaque
+/// extension, reaches the far end as `authorization: Basic …`, the FIRST field, when the request's
+/// credential rides another field, and not at all when the credential is `authorization` — the two
+/// shapes 1.5.5's reqwest build sent. The far end's `host` is the bare authority either way.
+#[tokio::test]
+async fn h1_wire_carries_a_base_url_userinfo_as_1_5_5_did() {
+    let fixture = spawn_http(CannedResponse::ok("wire"), 100);
+    let port = fixture.addr.port();
+    let owned = EngineClient::assemble(
+        plain_connector(
+            EgressResolver::Pinned {
+                host: Arc::from("wire.test"),
+                addr: fixture.addr.ip(),
+            },
+            4,
+            Duration::from_secs(10),
+        ),
+        cfg(4),
+    );
+    let userinfo = UrlUserinfo::of(&format!("http://svcuser:hunter2-P4ss@wire.test:{port}"))
+        .expect("the base spells a userinfo");
+    for credential in [("x-api-key", "k"), ("authorization", "Bearer k")] {
+        let mut headers = http::HeaderMap::new();
+        headers.insert(credential.0, http::HeaderValue::from_static(credential.1));
+        let mut req = egress_request(
+            format!("http://wire.test:{port}/v1/messages")
+                .parse()
+                .expect("uri"),
+            headers,
+            Bytes::from_static(b"{}"),
+        );
+        req.extensions_mut().insert(userinfo.clone());
+        let resp = owned.request(req).await.expect("owned sends");
+        let _ = resp.into_body().collect().await;
+    }
+    let heads = fixture.request_heads();
+    assert_eq!(heads.len(), 2);
+    let basic = userinfo.value().to_str().expect("ascii").to_string();
+    assert!(
+        heads[0].starts_with(&format!(
+            "POST /v1/messages HTTP/1.1\r\nauthorization: {basic}\r\nx-api-key: k\r\n"
+        )),
+        "the Basic field rides first, before the dialect's own credential: {:?}",
+        heads[0]
+    );
+    assert!(heads[0].contains(&format!("host: wire.test:{port}\r\n")));
+    assert!(
+        heads[1].starts_with("POST /v1/messages HTTP/1.1\r\nauthorization: Bearer k\r\n"),
+        "an `authorization` credential displaces it: {:?}",
+        heads[1]
+    );
+    assert!(!heads[1].contains("Basic"), "{:?}", heads[1]);
+    for head in &heads {
+        assert!(
+            !head.contains("svcuser") && !head.contains("hunter2"),
+            "the userinfo never rides in the clear: {head:?}"
+        );
+    }
+}
+
 /// Host formatting drops the scheme-default port exactly as legacy's `get_non_default_port`
 /// (443-on-https / 80-on-http off the header; everything else on it). Unit-pinned because no
 /// loopback fixture can listen on the default ports.

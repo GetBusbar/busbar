@@ -14,7 +14,7 @@
 //! binary), each held byte for byte on every build that serves its sink; this source names no sink.
 
 #![cfg(unix)]
-#![cfg(linked_axis_body_ingress)]
+#![cfg(linked_section_pools)]
 
 mod common;
 

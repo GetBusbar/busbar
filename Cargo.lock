@@ -490,6 +490,7 @@ dependencies = [
 name = "busbar-core-connector"
 version = "1.6.0"
 dependencies = [
+ "arc-swap",
  "axum",
  "base64 0.22.1",
  "busbar-contract",
@@ -4204,6 +4205,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "52f5ee44c96cf55f1b349600768e3ece3a8f26010c05265ab73f945bb1a2eb9d"
 dependencies = [
  "rustls-pki-types",
+]
+
+[[package]]
+name = "webrtc-conformance-subject"
+version = "0.0.0"
+dependencies = [
+ "busbar-contract",
+ "busbar-core-connector",
+ "busbar-plugin-loader",
+ "busbar-transport-webrtc",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

@@ -278,6 +278,7 @@ fn listening_plane(target_from: &str) -> Candidate {
             file: "p1.tar.gz".into(),
             bytes: Arc::new(Vec::new()),
         },
+        disk: false,
     }
 }
 

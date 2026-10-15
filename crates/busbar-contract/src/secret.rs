@@ -158,6 +158,26 @@ pub trait SecretResolve: Send + Sync {
     /// Resolve a reference to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or
     /// empty). Some consumers — a credential-minting path, for instance — need the string form.
     fn resolve_string(&self, secret: &SecretRef) -> Result<String, String>;
+
+    /// [`Self::resolve`] at CONFIG TIME, with its proof: the one way a reference to a source that
+    /// reads the disk resolves (THE DESIGN §11.11 R4, OWNER 2026-10-13). Every other source answers
+    /// exactly as [`Self::resolve`] does.
+    fn resolve_at_config(
+        &self,
+        secret: &SecretRef,
+        _scope: &crate::config_time::ConfigScope,
+    ) -> Result<Vec<u8>, String> {
+        self.resolve(secret)
+    }
+
+    /// [`Self::resolve_string`] at CONFIG TIME, with its proof (see [`Self::resolve_at_config`]).
+    fn resolve_string_at_config(
+        &self,
+        secret: &SecretRef,
+        _scope: &crate::config_time::ConfigScope,
+    ) -> Result<String, String> {
+        self.resolve_string(secret)
+    }
 }
 
 /// How a secret plugin refused a `resolve`: the `abi::secret::ERROR_KIND_*` code its answer carried
@@ -184,6 +204,20 @@ pub trait SecretCalls: Send + Sync {
     /// The plugin's refusal, its code and its text.
     fn resolve(&self, settings: &[u8])
         -> Result<crate::redacted::Redacted<Vec<u8>>, SecretRefused>;
+
+    /// `resolve` at CONFIG TIME, with its proof ([`ConfigScope`](crate::config_time::ConfigScope)):
+    /// the one way a source that reads the disk resolves (THE DESIGN §11.11 R4, OWNER 2026-10-13).
+    /// Every other source answers exactly as [`Self::resolve`] does.
+    ///
+    /// # Errors
+    /// The plugin's refusal, its code and its text.
+    fn resolve_at_config(
+        &self,
+        settings: &[u8],
+        _scope: &crate::config_time::ConfigScope,
+    ) -> Result<crate::redacted::Redacted<Vec<u8>>, SecretRefused> {
+        self.resolve(settings)
+    }
 }
 
 /// THE SECRET AXIS, as the composition root hands it to the kernel (ARCHITECT ruling Q8: the kernel

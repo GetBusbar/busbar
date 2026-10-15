@@ -123,11 +123,12 @@ pub(super) fn missing(case: &str) -> String {
         .to_string()
 }
 
-/// A member program's `env` secret reference resolves through the linked secret plugins at its
-/// SPAWN, as the root's boot installs them (the first install holds; this is the same one).
+/// A member program's `env` secret reference resolves through the linked secret plugins at
+/// CONFIG TIME (its need's declaration, the connector's refresher) and is held for its spawns, as
+/// the root's boot installs them (the first install holds; this is the same one).
 fn member_secrets_installed() {
     let _ = busbar_core_connector::compose::install_spawn_secrets(
-        busbar_kernel::config::secret::resolve_linked_string,
+        busbar_kernel::config::secret::resolve_linked_string_at_config,
     );
 }
 
@@ -231,7 +232,7 @@ fn driven() -> Vec<String> {
     names.extend(super::door_tests::session_door::name());
     // The door planes whose own root cells drive the scan (each plane crate's `tests/root/`).
     names.extend(super::door_cells_secret_driven());
-    #[cfg(linked_fold_on_driver)]
+    #[cfg(linked_driver_proofs)]
     names.push(statement_name(super::hook_seat_tests::pools_door()));
     names
 }
@@ -273,7 +274,7 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
         let _published = Published(instance);
         refused_naming_its_source(&secret);
         let rig = try_rig_tools(instance, 0, program_section(&secret)).unwrap_or_else(|e| {
-            panic!("{instance}: a member's env is not resolved at compose: {e}")
+            panic!("{instance}: a member's env that did not resolve refuses its spawns, never the compose: {e}")
         });
         let (status, headers, body) = call(&rig).await;
         assert_clean(instance, status, &headers, &body, &secret);
@@ -285,9 +286,9 @@ async fn tool_door_a_program_members_unresolved_env_reaches_the_caller_without_i
 }
 
 /// THE TOOL DOOR, ACROSS AN APPLY: a member program served while its `env` reference resolved, the variable
-/// then gone and the configuration applied: the reference resolved at the program's SPAWN, so the
-/// program it spawned keeps serving the unchanged member, and the caller's render carries nothing
-/// of its source.
+/// then gone and the configuration applied: the apply resolves the reference again and holds the
+/// refusal for the member's NEXT spawn, but the program already spawned keeps serving the unchanged
+/// member, and the caller's render carries nothing of its source.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tool_door_a_program_members_env_gone_by_an_apply_reaches_the_caller_without_its_source() {
     let _one = PUBLISHING.lock().await;
@@ -518,7 +519,7 @@ mod session_door_cells {
 
 /// THE POOLS DOOR, COMPOSE TIME: a provider whose `api_key` does not resolve refuses the boot with the
 /// operator's text, which names the source; nothing is served to a caller.
-#[cfg(linked_fold_on_driver)]
+#[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pools_door_an_unresolved_provider_key_refuses_the_boot_naming_its_source() {
     use super::hook_seat_tests::{far_end_answering, try_rig, RigOpts, ANSWER};
@@ -557,7 +558,7 @@ async fn pools_door_an_unresolved_provider_key_refuses_the_boot_naming_its_sourc
 /// THE POOLS DOOR, ACROSS AN APPLY: a provider served while its `api_key` file was there, the file then
 /// gone and the configuration applied: the door keeps the generation it serves, and the caller is
 /// served by it, its render clean of the source.
-#[cfg(linked_fold_on_driver)]
+#[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pools_door_a_provider_key_gone_by_an_apply_reaches_the_caller_without_its_source() {
     use super::hook_seat_tests::{far_end_answering, rig, RigOpts, ANSWER};

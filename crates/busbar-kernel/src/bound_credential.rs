@@ -226,8 +226,29 @@ pub fn bind(
     binding: &StyleBinding,
     credential: &[u8],
 ) -> Result<Arc<dyn CredentialProvider>, String> {
+    bind_presenting(axis, binding, credential, None)
+}
+
+/// [`bind`] for a binding whose token endpoint the operator spelled with a `user:pass@` (row 74,
+/// F25): `binding.params` names the stripped endpoint, and `endpoint` is the Basic value that
+/// userinfo spelled, held opaque, handed to the axis that presents it on the mint as 1.5.5 sent it
+/// ([`AuthAxis::serving_presenting`]). The plane that built the binding never reads it.
+///
+/// # Errors
+///
+/// As [`bind`].
+pub fn bind_presenting(
+    axis: &dyn AuthAxis,
+    binding: &StyleBinding,
+    credential: &[u8],
+    endpoint: Option<&crate::egress::engine::UrlUserinfo>,
+) -> Result<Arc<dyn CredentialProvider>, String> {
     let serving = axis
-        .serving(&binding.style, &binding.params)?
+        .serving_presenting(
+            &binding.style,
+            &binding.params,
+            endpoint.map(|basic| basic.value().as_bytes()),
+        )?
         .ok_or_else(|| {
             format!(
                 "no linked or dropped-in auth plugin serves the style '{}'",
@@ -283,3 +304,7 @@ pub fn prebuild_auth(
         credential.headers_for(api_key, &ctx),
     ))
 }
+
+#[cfg(test)]
+#[path = "tests/bound_credential_tests.rs"]
+mod tests;
