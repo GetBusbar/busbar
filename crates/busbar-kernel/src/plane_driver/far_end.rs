@@ -590,7 +590,23 @@ fn class_code(class: Option<WireStatusClass>) -> u32 {
 
 /// `base_url` + the plane's target: the base's trailing `/` trimmed, then the target as the plane
 /// answered it.
+///
+/// A web base URL's `\` is read as `/` first, as the dialler's WHATWG reader reads it and as v1.5.5
+/// folded it before signing (`crates/busbar/src/proxy/egress.rs:18`, `host_from_base`), so the
+/// authority the auth call signs, the head's path and the host dialled come off ONE spelling: a
+/// backslash-blind split of `https://evil.example\@victim.example/` signed one host while the
+/// stack dialled another.
 fn join(base: &str, target: &[u8]) -> String {
+    let base: std::borrow::Cow<'_, str> = match base.split_once("://") {
+        Some((scheme, _))
+            if base.contains('\\')
+                && busbar_contract::net::UrlFamily::of(&scheme.to_ascii_lowercase())
+                    == busbar_contract::net::UrlFamily::Web =>
+        {
+            std::borrow::Cow::Owned(base.replace('\\', "/"))
+        }
+        _ => std::borrow::Cow::Borrowed(base),
+    };
     format!(
         "{}{}",
         base.trim_end_matches('/'),
