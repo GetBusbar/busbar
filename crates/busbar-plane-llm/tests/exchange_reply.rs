@@ -3844,7 +3844,7 @@ mod rehomed_metering {
     /// input (`message_start`) and 50 output (`message_delta`), bills exactly those 150 tokens.
     /// RED: a cut stream refunded to 0 tokens, or billed more than streamed.
     #[test]
-    fn test_mid_stream_transport_error_does_not_bill_partial_usage() {
+    fn rehomed_mid_stream_transport_error_does_not_bill_partial_usage() {
         let (arrived, lane) = ask("openai", "anthropic", true);
         let ctx = reply_ctx(&arrived, &lane);
         let far = [
@@ -3918,7 +3918,7 @@ mod rehomed_metering {
     /// RED: an over-cap answer translated and delivered (its 999999 tokens billed), or the far end
     /// faulted for our limit.
     #[test]
-    fn test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
+    fn rehomed_cross_protocol_nonstream_over_cap_body_returns_500_uncharged() {
         const CAP: usize = 4096;
         let (arrived, lane) = ask("anthropic", "openai", false);
         let ctx = reply_ctx_capped(&arrived, &lane, CAP);
@@ -3968,7 +3968,7 @@ mod rehomed_metering {
     /// 600 / 400 had been captured before the abort.
     /// RED: an abort that records no fault, or one that bills what it captured.
     #[test]
-    fn test_streaming_translate_abort_trips_breaker_and_skips_billing() {
+    fn rehomed_streaming_translate_abort_trips_breaker_and_skips_billing() {
         let (arrived, lane) = ask("anthropic", "openai", true);
         let ctx = reply_ctx(&arrived, &lane);
         let overflow = overflow();
@@ -3996,7 +3996,7 @@ mod rehomed_metering {
     /// answer is a usable partial.
     /// RED: a cancel that bills 0 because the stream never reached its end.
     #[test]
-    fn test_cancel_drop_bills_partial_tokens() {
+    fn rehomed_cancel_drop_bills_partial_tokens() {
         let (arrived, lane) = ask("anthropic", "openai", true);
         let ctx = reply_ctx(&arrived, &lane);
         let mut reply = Reply::new(HOST, &ctx, 200, SSE_HEAD);
