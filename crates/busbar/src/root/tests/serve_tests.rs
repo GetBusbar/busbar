@@ -980,7 +980,7 @@ pub(super) mod session_door {
             serde_yaml::from_str("session: {model: m-cap}").expect("a section"),
         );
         let mut served = match compose_planes(
-            &[(instance.to_string(), plane)],
+            &[(instance.to_string(), Arc::new(plane))],
             &dispatcher,
             &composed_services(),
             &sections,

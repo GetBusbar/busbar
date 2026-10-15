@@ -350,8 +350,8 @@ fn test_linked_source(manifest: &str) -> String {
     out.push_str(
         "];\nstatic TEST_LINKED_DOORS: &[(&str, ::busbar_contract::abi::mechanism::door::DoorFn)] = &[\n",
     );
-    // A door row's module is the one its plane-door row names in `linked-entry` (`agent_door` for
-    // the a2a plane, `plane_door` for mcp), so the roster never spells a module the crate moved.
+    // A door row's module is the one its plane-door row names in `linked-entry`, so the roster
+    // never spells a module the crate has moved.
     let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
     for id in &doors {
         let module = entries

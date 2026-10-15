@@ -928,11 +928,12 @@ fn served_core(
         auths: Arc::new(auths),
         conns: Arc::clone(&connector) as Arc<dyn busbar_contract::conn::PollConns>,
         stream_ceiling_secs: 600,
+        catalog: None,
         upgrades: Vec::new(),
         models: None,
     };
     let mut composed = compose_planes(
-        &[(instance.to_string(), plane)],
+        &[(instance.to_string(), Arc::new(plane))],
         &dispatcher,
         &services,
         &sections,

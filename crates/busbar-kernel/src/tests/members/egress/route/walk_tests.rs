@@ -755,32 +755,18 @@ impl Breaker for RealBreaker {
     }
 
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
-        use busbar_kernel_breaker::port::UpstreamCode;
-        // The adapter's own narrowing: the number with its numbering, and the coarse class folded
-        // to a representative HTTP number only when no number was reported.
-        let code = match status.code {
-            None => match status.class {
-                Some(WireStatusClass::CallerFault) => Some(UpstreamCode::Http(400)),
-                Some(WireStatusClass::FarEndFault) => Some(UpstreamCode::Http(500)),
-                Some(WireStatusClass::Success | WireStatusClass::Other) | None => None,
-            },
-            Some(code) => code
-                .http()
-                .and_then(|n| u16::try_from(n).ok())
-                .map(UpstreamCode::Http)
-                .or_else(|| {
-                    code.grpc()
-                        .and_then(|n| u8::try_from(n).ok())
-                        .map(UpstreamCode::Grpc)
-                }),
+        // The root adapter's own reading (`root::adapters`): no number crosses, the transport's
+        // fault reading of the frame does; no class and no reading at all is no answer.
+        let reading = if status.class.is_none() && status.fault.is_none() {
+            busbar_kernel_breaker::classify::Reading::NoAnswer
+        } else {
+            busbar_kernel_breaker::classify::Reading::Answered(status.fault)
         };
         let classified = busbar_kernel_breaker::port::classify_upstream(
-            &std::collections::HashMap::new(),
             busbar_kernel_breaker::port::UpstreamStatus {
-                code,
+                reading,
                 retry_after: status.retry_after,
             },
-            &busbar_kernel_breaker::classify::NoopDiagnostics,
         );
         Classified {
             disposition: classified.disposition,
@@ -853,10 +839,17 @@ pub(super) fn answer(status: u32) -> Vec<Reply> {
         400..=499 => WireStatusClass::CallerFault,
         _ => WireStatusClass::FarEndFault,
     };
+    // The fault reading a framer whose table follows its class states (`harness::frame`'s).
+    let fault = match class {
+        WireStatusClass::FarEndFault => Some(WireFault::Transient),
+        WireStatusClass::CallerFault => Some(WireFault::Caller),
+        _ => None,
+    };
     vec![
         frame_with_upstream(
             Some(class),
             Some(WireStatus::new(status_ns::HTTP, status)),
+            fault,
             None,
             "head",
         ),
@@ -892,6 +885,14 @@ pub(super) async fn route_async(node: &Node, egress: &Egress, pool: &str) -> Rou
             Pick::Vetoed { status, .. } => {
                 return Routed::Refused(Refusal {
                     status,
+                    retry_after: None,
+                })
+            }
+            // A member credential refusal; none occurs in these walk proofs (the harness's own
+            // route answers it the same way).
+            Pick::Refused(_) => {
+                return Routed::Refused(Refusal {
+                    status: 502,
                     retry_after: None,
                 })
             }
@@ -1240,6 +1241,7 @@ fn test_permit_lifetime_during_stream() {
         Some(WireStatusClass::Success),
         Some(WireStatus::new(status_ns::HTTP, 200)),
         None,
+        None,
         "data-0",
     )];
     replies.extend((1..5).map(|_| frame(Some(WireStatusClass::Success), "data-n")));
@@ -1308,6 +1310,7 @@ fn test_repeated_pre_first_byte_failures_trip_breaker() {
             Some(WireStatusClass::Success),
             Some(WireStatus::new(status_ns::HTTP, 200)),
             None,
+            None,
             "",
         )),
     );
@@ -1366,6 +1369,7 @@ fn refunded_after_a_post_first_byte_cut(stream: bool) -> bool {
         Script::Truncated(frame_with_upstream(
             Some(WireStatusClass::Success),
             Some(WireStatus::new(status_ns::HTTP, 200)),
+            None,
             None,
             "{\"id\":\"x\",",
         )),

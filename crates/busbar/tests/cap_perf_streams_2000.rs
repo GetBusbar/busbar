@@ -361,11 +361,11 @@ fn fixture_dir() -> PathBuf {
 }
 
 fn write_configs(dir: &Path, data_port: u16, admin_port: u16, upstream_port: u16) {
-    // The provider catalog row is test data (`fixtures/streaming_mock_provider.yaml`, the
-    // streaming upstream's dialect), not a literal here.
+    // The provider catalog row is test data (`fixtures/perf_mock_provider.yaml`, the upstream's
+    // dialect), not a literal here.
     std::fs::write(
         dir.join("providers.yaml"),
-        include_str!("fixtures/streaming_mock_provider.yaml")
+        include_str!("fixtures/perf_mock_provider.yaml")
             .replace("{upstream_port}", &upstream_port.to_string()),
     )
     .unwrap();
