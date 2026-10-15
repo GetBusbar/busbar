@@ -168,18 +168,18 @@
    "paths": [
     "crates/busbar/src"
    ],
-   "tree_hash": "1b3b104e56096cf9659daf44136a3ac6df8dc74f9480da05281920fcb1e24f6a",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 1,
+   "tree_hash": "9ac1e0276baa670fac012351b170a47464c0b92b25519fec8a233f858c61dcc7",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
    "result": "findings",
    "counts": {
     "HIGH": 1,
-    "MEDIUM": 2,
-    "LOW": 2,
+    "MEDIUM": 3,
+    "LOW": 3,
     "NIT": 1
    },
-   "report": "The binary's entry point hard-codes a plane's command-line flag and switches serving mode on it. It wires two planes' pool tables by position into a kernel list that names those planes. In stdio serve mode it exits without draining the plane-record write-behind that the listener path drains. The table generator keeps an axis no row uses. Comments claim a CI provenance gate that no workflow runs. Read fully.",
-   "auditor": "opus-ledger-busbar-src",
+   "report": "In stdio serve mode the binary exits on stdin EOF without draining the money journal's write-behind lane or the plane-record write-behind, so acknowledged records can be lost on a store-only node. In that mode a shutdown signal is caught and ignored, and asking for stdio serving with no plane claiming it silently opens the network listeners. Two planes' pool tables are passed by name. Any plane flag counts as the stdio flag, the generator keeps an unused axis, and several comments are false. Read fully.",
+   "auditor": "opus-reaudit-busbar-src",
    "fixed_at": null,
    "exclude": [
     "crates/busbar/src/root",
@@ -199,6 +199,20 @@
       "NIT": 1
      },
      "report": "The binary's entry point hard-codes a plane's command-line flag and switches serving mode on it. It wires two planes' pool tables by position into a kernel list that names those planes. In stdio serve mode it exits without draining the plane-record write-behind that the listener path drains. The table generator keeps an axis no row uses. Comments claim a CI provenance gate that no workflow runs. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-reaudit-busbar-src",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "9ac1e0276baa670fac012351b170a47464c0b92b25519fec8a233f858c61dcc7",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 3,
+      "LOW": 3,
+      "NIT": 1
+     },
+     "report": "In stdio serve mode the binary exits on stdin EOF without draining the money journal's write-behind lane or the plane-record write-behind, so acknowledged records can be lost on a store-only node. In that mode a shutdown signal is caught and ignored, and asking for stdio serving with no plane claiming it silently opens the network listeners. Two planes' pool tables are passed by name. Any plane flag counts as the stdio flag, the generator keeps an unused axis, and several comments are false. Read fully."
     }
    ]
   },
@@ -244,16 +258,37 @@
    "paths": [
     "crates/busbar-auth-admin-tokens/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "05e0b5b05935fc56a28755c516ecb69cf43e3d9671a5600f8dee6c9e3e36cc30",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 2,
+    "NIT": 0
+   },
+   "report": "The operator admin-token plugin compares both carriers (Bearer and X-Admin-Token) by SHA-256 then a constant-time compare, folding the two results without branching, holds only the digest, names both lines for stripping and caches nothing. It departs from 1.5.5 without a registered difference: a wrong token shaped like a JWT now passes to the next admin module instead of being rejected, and a blank or non-text X-Admin-Token now counts as a wrong credential instead of an absent one. Its packaging twin carries the exported door symbol into the linked binary. Read fully except tests, sampled.",
+   "auditor": "opus-ledger-pinned-auth-admin-tokens",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-auth-admin-tokens/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-auth-admin-tokens",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "05e0b5b05935fc56a28755c516ecb69cf43e3d9671a5600f8dee6c9e3e36cc30",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 2,
+      "NIT": 0
+     },
+     "report": "The operator admin-token plugin compares both carriers (Bearer and X-Admin-Token) by SHA-256 then a constant-time compare, folding the two results without branching, holds only the digest, names both lines for stripping and caches nothing. It departs from 1.5.5 without a registered difference: a wrong token shaped like a JWT now passes to the next admin module instead of being rejected, and a blank or non-text X-Admin-Token now counts as a wrong credential instead of an absent one. Its packaging twin carries the exported door symbol into the linked binary. Read fully except tests, sampled."
+    }
    ]
   },
   {
@@ -262,16 +297,115 @@
    "paths": [
     "crates/busbar-auth-header/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "5404c65467d9bbf2059c5d36a0e80d81c4c74c1caee901562696a5fe8fcd3c88",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 1,
+    "LOW": 3,
+    "NIT": 2
+   },
+   "report": "The header auth plugin builds bearer, api-key, x-goog-api-key and query-key fields once at open, serves the operator's or the caller's credential per request, never pends and opens no connection; credential values are now wiped on drop and written by reference. It breaks the auth kind's rules twice: raw-pointer code lives in the crate under a lint allowance, and two per-thread statics hold reply storage. Each request still allocates. The query-key style is never selected by any production path. Read fully.",
+   "auditor": "opus-ledger-pinned-auth-header",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-auth-header/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-auth-header",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "5404c65467d9bbf2059c5d36a0e80d81c4c74c1caee901562696a5fe8fcd3c88",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 1,
+      "LOW": 3,
+      "NIT": 2
+     },
+     "report": "The header auth plugin builds bearer, api-key, x-goog-api-key and query-key fields once at open, serves the operator's or the caller's credential per request, never pends and opens no connection; credential values are now wiped on drop and written by reference. It breaks the auth kind's rules twice: raw-pointer code lives in the crate under a lint allowance, and two per-thread statics hold reply storage. Each request still allocates. The query-key style is never selected by any production path. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-oauth/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-oauth/src"
+   ],
+   "tree_hash": "b63f138addc05783d256c6f3a18af6919158a20774cc9dcb3fd66a6d23402309",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 3,
+    "LOW": 5,
+    "NIT": 0
+   },
+   "report": "The OAuth auth plugin binds its three styles, mints over its own need at the endpoint the host now supplies, and refreshes ahead of expiry on tick. Before the first mint a request still waits or is refused instead of being answered at once with no header. The crate keeps its own unsafe pointer boundary, leaves the private key, the signed assertion and the client secrets in unwiped library buffers, reads key files with blocking I/O, can miss a wake, and reports ready for an expired token. Read fully.",
+   "auditor": "opus-ledger-pinned-auth-oauth",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-oauth/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-auth-oauth",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "b63f138addc05783d256c6f3a18af6919158a20774cc9dcb3fd66a6d23402309",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 3,
+      "LOW": 5,
+      "NIT": 0
+     },
+     "report": "The OAuth auth plugin binds its three styles, mints over its own need at the endpoint the host now supplies, and refreshes ahead of expiry on tick. Before the first mint a request still waits or is refused instead of being answered at once with no header. The crate keeps its own unsafe pointer boundary, leaves the private key, the signed assertion and the client secrets in unwiped library buffers, reads key files with blocking I/O, can miss a wake, and reports ready for an expired token. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-sigv4/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-sigv4/src"
+   ],
+   "tree_hash": "bb8e2baf71fc90023a98629b8755f072776eb9f70d9c8a56794dd17050ad16b9",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 2,
+    "LOW": 4,
+    "NIT": 0
+   },
+   "report": "The SigV4 plugin now signs the real method, query and sent content type, re-encodes the path, keeps its day-key schedule alive and verifies inbound signatures in constant time with the dummy-secret rule. It still carries its own raw-pointer boundary under `deny(unsafe_code)` where an auth plugin must forbid unsafe code, though the safe SDK wrapper now exists. The query is sorted but never re-encoded to the canonical form, and the HMAC key state derived from the secret is freed unwiped. Clock, allocation and prose nits remain. Read fully.",
+   "auditor": "opus-ledger-pinned-auth-sigv4",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-sigv4/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-auth-sigv4",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "bb8e2baf71fc90023a98629b8755f072776eb9f70d9c8a56794dd17050ad16b9",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 2,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "The SigV4 plugin now signs the real method, query and sent content type, re-encodes the path, keeps its day-key schedule alive and verifies inbound signatures in constant time with the dummy-secret rule. It still carries its own raw-pointer boundary under `deny(unsafe_code)` where an auth plugin must forbid unsafe code, though the safe SDK wrapper now exists. The query is sorted but never re-encoded to the canonical form, and the HMAC key state derived from the secret is freed unwiped. Clock, allocation and prose nits remain. Read fully."
+    }
    ]
   },
   {
@@ -523,16 +657,37 @@
    "paths": [
     "crates/busbar-export-file/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "b151e25227b1a5605cee12ed2b5a68817d7ad884eace6b29aef9ba7d03904d47",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 3,
+    "NIT": 0
+   },
+   "report": "The request-log file sink obeys its kind's rules: it never opens a path, hands each batch unchanged to the host's bounded disk lane under its declared destination key, parks and re-issues the same append while the host works, never fails the request, holds no global state, and depends on the contract alone. Three small defects remain: two rotation counters its manifest declares can never be reported, it restates the host's archive-retention count in its own constant, and a failure report names the path read at settle time rather than the path appended to. Read fully.",
+   "auditor": "opus-ledger-pinned-export-file",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-export-file/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-export-file",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "b151e25227b1a5605cee12ed2b5a68817d7ad884eace6b29aef9ba7d03904d47",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The request-log file sink obeys its kind's rules: it never opens a path, hands each batch unchanged to the host's bounded disk lane under its declared destination key, parks and re-issues the same append while the host works, never fails the request, holds no global state, and depends on the contract alone. Three small defects remain: two rotation counters its manifest declares can never be reported, it restates the host's archive-retention count in its own constant, and a failure report names the path read at settle time rather than the path appended to. Read fully."
+    }
    ]
   },
   {
@@ -541,16 +696,37 @@
    "paths": [
     "crates/busbar-export-otlp/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "52dc9a1cb3a7598643e120b5143ca8f1d0e29a39350ca2b643ee707d09f87bcd",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 1,
+    "NIT": 0
+   },
+   "report": "The trace sink opens no socket: it encodes each traces batch as one OTLP protobuf request, sends it through the host's framed exchange on a loopback-allowed need, parks and resumes across pending turns, never retries, never fails the request, carries no money field, refuses a second instance in 1.5.5's words, and moves URL credentials into a Basic header, masking them in every line. Its need declares no configured target, so the host never pins it to the operator's collector and the sink names its own dial target on every export. Its credential-bearing url is not declared secret. Read fully.",
+   "auditor": "opus-ledger-pinned-export-otlp",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-export-otlp/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-export-otlp",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "52dc9a1cb3a7598643e120b5143ca8f1d0e29a39350ca2b643ee707d09f87bcd",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The trace sink opens no socket: it encodes each traces batch as one OTLP protobuf request, sends it through the host's framed exchange on a loopback-allowed need, parks and resumes across pending turns, never retries, never fails the request, carries no money field, refuses a second instance in 1.5.5's words, and moves URL credentials into a Basic header, masking them in every line. Its need declares no configured target, so the host never pins it to the operator's collector and the sink names its own dial target on every export. Its credential-bearing url is not declared secret. Read fully."
+    }
    ]
   },
   {
@@ -559,16 +735,37 @@
    "paths": [
     "crates/busbar-export-prometheus/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "8489b80b3838dd51d3d79c26cd5d522cf53d81433968311e9c49f11fc49a59c7",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 3,
+    "NIT": 1
+   },
+   "report": "The sink serves both well-known expositions through the host snapshot service with 1.5.5's content types, settings refusals and second-instance refusal word for word, and its stable family order (counters, gauges, distributions, each by name) is one 1.5.5's renderer could already print. Its only busbar dependency is the contract; it opens no socket, holds no global state and writes no log. The defects are minor: the scrape op and its unsafe readers have no caller in the shipped host, and two comments are false. Read fully.",
+   "auditor": "opus-ledger-pinned-export-prometheus",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-export-prometheus/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-export-prometheus",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "8489b80b3838dd51d3d79c26cd5d522cf53d81433968311e9c49f11fc49a59c7",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 3,
+      "NIT": 1
+     },
+     "report": "The sink serves both well-known expositions through the host snapshot service with 1.5.5's content types, settings refusals and second-instance refusal word for word, and its stable family order (counters, gauges, distributions, each by name) is one 1.5.5's renderer could already print. Its only busbar dependency is the contract; it opens no socket, holds no global state and writes no log. The defects are minor: the scrape op and its unsafe readers have no caller in the shipped host, and two comments are false. Read fully."
+    }
    ]
   },
   {
@@ -577,16 +774,37 @@
    "paths": [
     "crates/busbar-export-webhook/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "b2be49cad3346f78c9f730323dc8494c0e7d74708dcd3b9d069b4779b81d1e97",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 1,
+    "LOW": 3,
+    "NIT": 0
+   },
+   "report": "The request-log webhook sink opens no socket: it declares one outbound need on the open-web class (public https only) targeted at its url setting, POSTs each line through the host's framed exchange, parks and resumes across pending turns, never retries, never fails the request, and masks URL credentials in every line it writes. A 1.5.5 webhook URL carrying user:password credentials, which 1.5.5 sent as Basic auth, now has its need refused and the sink disabled. Delivery failures dropped from warning to debug with no counter, so lost lines are invisible by default. The auth-header value is not declared secret, invalid header bytes now drop every line, and one catalogue entry is stale. Read fully.",
+   "auditor": "opus-ledger-pinned-export-webhook",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-export-webhook/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-export-webhook",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "b2be49cad3346f78c9f730323dc8494c0e7d74708dcd3b9d069b4779b81d1e97",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The request-log webhook sink opens no socket: it declares one outbound need on the open-web class (public https only) targeted at its url setting, POSTs each line through the host's framed exchange, parks and resumes across pending turns, never retries, never fails the request, and masks URL credentials in every line it writes. A 1.5.5 webhook URL carrying user:password credentials, which 1.5.5 sent as Basic auth, now has its need refused and the sink disabled. Delivery failures dropped from warning to debug with no counter, so lost lines are invisible by default. The auth-header value is not declared secret, invalid header bytes now drop every line, and one catalogue entry is stale. Read fully."
+    }
    ]
   },
   {
@@ -595,16 +813,37 @@
    "paths": [
     "crates/busbar-hook-ranking/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "abb80e0dbed81f61b4afd855315273e362a2b847d3c5e919a2f56dee896711ee",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 1,
+    "NIT": 1
+   },
+   "report": "The ranking hook is a CPU-only order gate on the hook ABI: it forbids unsafe code, depends on the contract alone, claims its four strategy words as hook marks, reads neither prompt nor caller, declares no need, and answers decide inline with exactly one verb (prefer or abstain). It acts on routing signals only, never on content. Its one change from 1.5.5 is unregistered: a non-finite signal is now treated as absent, which reorders candidates and can turn a 1.5.5 preference into an abstain. Each decide allocates, which the SDK's verdict shape forces, and one strategy arm is unreachable. Read fully.",
+   "auditor": "opus-ledger-pinned-hook-ranking",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-hook-ranking/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-hook-ranking",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "abb80e0dbed81f61b4afd855315273e362a2b847d3c5e919a2f56dee896711ee",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 1,
+      "NIT": 1
+     },
+     "report": "The ranking hook is a CPU-only order gate on the hook ABI: it forbids unsafe code, depends on the contract alone, claims its four strategy words as hook marks, reads neither prompt nor caller, declares no need, and answers decide inline with exactly one verb (prefer or abstain). It acts on routing signals only, never on content. Its one change from 1.5.5 is unregistered: a non-finite signal is now treated as absent, which reorders candidates and can turn a 1.5.5 preference into an abstain. Each decide allocates, which the SDK's verdict shape forces, and one strategy arm is unreachable. Read fully."
+    }
    ]
   },
   {
@@ -643,53 +882,6 @@
       "NIT": 5
      },
      "report": "The kernel still knows planes, protocols and transports. It types and validates plane config sections and names plugin instances; its ingress reads JSON-RPC and WebSocket and mounts a model-plane route; it dials, pools and tunnels HTTP itself beside a second destination guard that lets IP-literal and proxied targets through; it keeps its own outbound auth, a verified-credential cache and inbound request signing; a plugin's replay claim is dropped; static seams beyond the two allowed ones remain; host locks are held across plugin calls; health reports unhealthy without model-plane lanes. Read in five parts, mostly fully; the files another lane is relocating were not read."
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-kernel/build.rs",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-kernel/build.rs"
-   ],
-   "tree_hash": "2f39fc56e50b5059d9a087a0a0839ac5d27dde9b6527f67bd26dd53f35ee4bf4",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 2,
-   "result": "findings",
-   "counts": {
-    "HIGH": 2,
-    "MEDIUM": 0,
-    "LOW": 2,
-    "NIT": 0
-   },
-   "report": "The kernel's build script still generates a table that installs real plane plugins, two of them now, into ten of the kernel's own integration test targets, keyed by plugin names held in the kernel manifest, and requires each listed plane to ship a test-kit module. The kernel manifest names further plugins beyond the composition root: plane-named default features the shipped binary turns on, a schema feature forwarding into two planes, and stand-in store, hook, secret, export and auth plugins. A door-row branch is never used. Read fully.",
-   "auditor": "opus-ledger-kernel-build",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "d5e94abe951d549a14509f05154aec470659f1819c2498aef60cc256370d8789",
-     "counts": {
-      "HIGH": 1
-     },
-     "report": "Generates a table that installs three plane crates into the kernel's integration tests, names held in manifest metadata; the kernel still tests plugins instead of kind-neutral doubles. The production library never includes the file. Read fully."
-    },
-    {
-     "round": 2,
-     "result": "findings",
-     "auditor": "opus-ledger-kernel-build",
-     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-     "tree_hash": "2f39fc56e50b5059d9a087a0a0839ac5d27dde9b6527f67bd26dd53f35ee4bf4",
-     "counts": {
-      "HIGH": 2,
-      "MEDIUM": 0,
-      "LOW": 2,
-      "NIT": 0
-     },
-     "report": "The kernel's build script still generates a table that installs real plane plugins, two of them now, into ten of the kernel's own integration test targets, keyed by plugin names held in the kernel manifest, and requires each listed plane to ship a test-kit module. The kernel manifest names further plugins beyond the composition root: plane-named default features the shipped binary turns on, a schema feature forwarding into two planes, and stand-in store, hook, secret, export and auth plugins. A door-row branch is never used. Read fully."
     }
    ]
   },
@@ -840,18 +1032,18 @@
    "paths": [
     "crates/busbar-kernel-identity/src"
    ],
-   "tree_hash": "1528828c7b7d22b4d7e88ea22a806008ef554061a8b60b4eace4fd5aa8c7db05",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 1,
+   "tree_hash": "cd066495cb9d4210168edc05b33778d6c7b086524c30657671caa3fc776ff54d",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "MEDIUM": 4,
-    "LOW": 4,
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 3,
     "NIT": 0
    },
-   "report": "The identity crate still carries and runs protocol-specific auth inside the kernel: inbound SigV4 verification and outbound bearer, api-key and SigV4 presentation, while the header-style auth plugin is linked by default, so two implementations of those styles ship together. Its own inbound chain, unit, challenge, admin grants and browser exchange never run in production; the kernel runs a second chain. It ships a verified-credential cache the design removed from the kernel (never constructed), signs SigV4 over a fixed POST with no query, and leaves derived signing keys unzeroised. Read fully.",
-   "auditor": "opus-ledger-kernel-identity",
+   "report": "The crate is now the operator credential's words and judgement, the caller reference, and a chain walk with its module and principal types. The protocol-specific auth, the credential cache and the unshipped units are gone. The chain walk still never runs in production: the kernel runs its own chain with its own verdict, entry and keys-arm types, so the crate's walk, reserved-prefix rule and key-verifier binding are proven only by tests. The manifest and several docs describe a cache and a crate that no longer exist. Read fully.",
+   "auditor": "opus-reaudit-kernel-identity",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-identity/src/tests"
@@ -870,6 +1062,20 @@
       "NIT": 0
      },
      "report": "The identity crate still carries and runs protocol-specific auth inside the kernel: inbound SigV4 verification and outbound bearer, api-key and SigV4 presentation, while the header-style auth plugin is linked by default, so two implementations of those styles ship together. Its own inbound chain, unit, challenge, admin grants and browser exchange never run in production; the kernel runs a second chain. It ships a verified-credential cache the design removed from the kernel (never constructed), signs SigV4 over a fixed POST with no query, and leaves derived signing keys unzeroised. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-reaudit-kernel-identity",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "cd066495cb9d4210168edc05b33778d6c7b086524c30657671caa3fc776ff54d",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The crate is now the operator credential's words and judgement, the caller reference, and a chain walk with its module and principal types. The protocol-specific auth, the credential cache and the unshipped units are gone. The chain walk still never runs in production: the kernel runs its own chain with its own verdict, entry and keys-arm types, so the crate's walk, reserved-prefix rule and key-verifier binding are proven only by tests. The manifest and several docs describe a cache and a crate that no longer exist. Read fully."
     }
    ]
   },
@@ -980,18 +1186,18 @@
    "paths": [
     "crates/busbar-kernel-wal/src"
    ],
-   "tree_hash": "126d0651fc58f6e283b8edac52de7112891ec463db08a56a576e73e71ace33ab",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 2,
+   "tree_hash": "6b47c7499f01c8025ca794d744eeec7f4c4d1ecb38b53944f2cfa14dcbfbe64a",
+   "audited_at": "62fdbdf3bced89535818c761a2d5a56c23aa3f99",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
-    "MEDIUM": 4,
-    "LOW": 4,
-    "NIT": 1
+    "HIGH": 0,
+    "MEDIUM": 2,
+    "LOW": 3,
+    "NIT": 0
    },
-   "report": "Frames are fixed-size with header and body checks; a group commit is one write and one sync; a failed sync poisons the segment; corrupt remainders are quarantined before the cut; new segments now fsync their directory. Gaps: a tail record whose version byte is rewritten to the never-released layout is cut silently as torn; directory fsyncs swallow errors; poison is forgotten on restart; a failed roll drops already-chained records; ordinary crash tears can read as corruption; the memory-mode store-durability claim is not what ships. No unsafe code. Read fully.",
-   "auditor": "opus-ledger-kernel-wal",
+   "report": "Frames carry an end mark and a commit flag: torn writes and altered whole frames are told apart and only the unacknowledged last commit is cut; one layout version is read; a failed sync cuts the batch and opens the next segment at once; directory fsync failures are errors. Gaps: identities from a frame whose header failed its check move the numbering, up to a saturation where every following record is silently passed over; the on-disk store catch-up queue drops records unannounced; some prose and accessors are stale. Read fully.",
+   "auditor": "opus-reaudit-kernel-wal",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-wal/src/tests"
@@ -1021,6 +1227,20 @@
       "NIT": 1
      },
      "report": "Frames are fixed-size with header and body checks; a group commit is one write and one sync; a failed sync poisons the segment; corrupt remainders are quarantined before the cut; new segments now fsync their directory. Gaps: a tail record whose version byte is rewritten to the never-released layout is cut silently as torn; directory fsyncs swallow errors; poison is forgotten on restart; a failed roll drops already-chained records; ordinary crash tears can read as corruption; the memory-mode store-durability claim is not what ships. No unsafe code. Read fully."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-reaudit-kernel-wal",
+     "audited_at": "62fdbdf3bced89535818c761a2d5a56c23aa3f99",
+     "tree_hash": "6b47c7499f01c8025ca794d744eeec7f4c4d1ecb38b53944f2cfa14dcbfbe64a",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 2,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "Frames carry an end mark and a commit flag: torn writes and altered whole frames are told apart and only the unacknowledged last commit is cut; one layout version is read; a failed sync cuts the batch and opens the next segment at once; directory fsync failures are errors. Gaps: identities from a frame whose header failed its check move the numbering, up to a saturation where every following record is silently passed over; the on-disk store catch-up queue drops records unannounced; some prose and accessors are stale. Read fully."
     }
    ]
   },
@@ -1126,16 +1346,37 @@
    "paths": [
     "crates/busbar-plane-llm/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "347b47495b11b2629d2815efbc1c92dc1d71bf4f64f1d14ecf8ff9036dc43e72",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 20,
+    "MEDIUM": 27,
+    "LOW": 19,
+    "NIT": 4
+   },
+   "report": "The llm plane's door is linked only under a development switch; the default build uses its codecs and reply relay through the legacy engine. Several token and billing behaviours differ from 1.5.5 with no registered difference: cache-write tokens billed as their own class, image tokens billed, failed streams billed, cached tokens moved, thinking switched on, hosted tools forwarded. The codec keeps per-thread state. On the door path failover, cuts and a model's protocol override are wrong. Read in three parts; large codec core files sampled.",
+   "auditor": "opus-ledger-plane-llm-parts",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-llm/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-plane-llm-parts",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "347b47495b11b2629d2815efbc1c92dc1d71bf4f64f1d14ecf8ff9036dc43e72",
+     "counts": {
+      "HIGH": 20,
+      "MEDIUM": 27,
+      "LOW": 19,
+      "NIT": 4
+     },
+     "report": "The llm plane's door is linked only under a development switch; the default build uses its codecs and reply relay through the legacy engine. Several token and billing behaviours differ from 1.5.5 with no registered difference: cache-write tokens billed as their own class, image tokens billed, failed streams billed, cached tokens moved, thinking switched on, hosted tools forwarded. The codec keeps per-thread state. On the door path failover, cuts and a model's protocol override are wrong. Read in three parts; large codec core files sampled."
+    }
    ]
   },
   {
@@ -1144,18 +1385,18 @@
    "paths": [
     "crates/busbar-plane-mcp/src"
    ],
-   "tree_hash": "4ee885476c0406c837b55c88a5299e876b46dc467e5534ef0218cd5cdf23b751",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 1,
+   "tree_hash": "c757cd7b9043572454ed65bf10ca44d5672eed55074d5a842d87fc651f1b61f4",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 6,
-    "MEDIUM": 11,
-    "LOW": 8,
+    "HIGH": 3,
+    "MEDIUM": 8,
+    "LOW": 7,
     "NIT": 2
    },
-   "report": "The served MCP plane speaks only the stateless 2026 revision: session revisions and the legacy event stream are refused in both directions, and the session table built for them is never constructed. It rewrites tool results with a built-in tag stripper, withholds results whose structured output fails a schema check, and judges argument hosts itself instead of asking the host. A stdio server's ask can reach the wrong caller, live task state lives only in process memory, and several buffers and maps grow without a bound. Read fully except five vocabulary files and one never-constructed file, sampled.",
-   "auditor": "opus-ledger-plane-mcp",
+   "report": "The plane now serves the session revisions and the legacy event stream inbound, relays tool results unchanged and judges argument hosts through the host. As a client it still cannot reach a legacy-only server, and it keeps one upstream session per server shared by every caller with repeated request ids. A deployment without a signing key folds all callers into one session owner. Large task results are not stored, resource subscriptions on the stateless stream never deliver, and units cancelled early leak. Read fully except test-only client test files.",
+   "auditor": "opus-reaudit-plane-mcp",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
@@ -1174,6 +1415,20 @@
       "NIT": 2
      },
      "report": "The served MCP plane speaks only the stateless 2026 revision: session revisions and the legacy event stream are refused in both directions, and the session table built for them is never constructed. It rewrites tool results with a built-in tag stripper, withholds results whose structured output fails a schema check, and judges argument hosts itself instead of asking the host. A stdio server's ask can reach the wrong caller, live task state lives only in process memory, and several buffers and maps grow without a bound. Read fully except five vocabulary files and one never-constructed file, sampled."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-reaudit-plane-mcp",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "c757cd7b9043572454ed65bf10ca44d5672eed55074d5a842d87fc651f1b61f4",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 8,
+      "LOW": 7,
+      "NIT": 2
+     },
+     "report": "The plane now serves the session revisions and the legacy event stream inbound, relays tool results unchanged and judges argument hosts through the host. As a client it still cannot reach a legacy-only server, and it keeps one upstream session per server shared by every caller with repeated request ids. A deployment without a signing key folds all callers into one session owner. Large task results are not stored, resource subscriptions on the stateless stream never deliver, and units cancelled early leak. Read fully except test-only client test files."
     }
    ]
   },
@@ -1222,16 +1477,37 @@
    "paths": [
     "crates/busbar-secret-env/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "3206563a238314972ac30f0ea860bc6fee3e1a27573351528486413f14e1c7a2",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 1,
+    "NIT": 1
+   },
+   "report": "The environment secret source is an ordinary secret plugin: it forbids unsafe code, depends on the contract alone, declares its module alias and its reference sugar as Statement rewrites, holds no state, never pends, hands the value back under a lease the SDK zeroes on release, and never puts the value in a refusal or a log. Its manifest's declared contract range names the secret kind's 1.5.5 version, so packing the dropped-in build is refused; its prose also claims every refusal is 1.5.5's when two are new. Read fully.",
+   "auditor": "opus-ledger-pinned-secret-env",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-secret-env/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-secret-env",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "3206563a238314972ac30f0ea860bc6fee3e1a27573351528486413f14e1c7a2",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 1,
+      "NIT": 1
+     },
+     "report": "The environment secret source is an ordinary secret plugin: it forbids unsafe code, depends on the contract alone, declares its module alias and its reference sugar as Statement rewrites, holds no state, never pends, hands the value back under a lease the SDK zeroes on release, and never puts the value in a refusal or a log. Its manifest's declared contract range names the secret kind's 1.5.5 version, so packing the dropped-in build is refused; its prose also claims every refusal is 1.5.5's when two are new. Read fully."
+    }
    ]
   },
   {
@@ -1240,16 +1516,76 @@
    "paths": [
     "crates/busbar-secret-file/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "9d3b5716ef0fc632467af94f8074776dd64d3a356f678cea41a11fe31c5197b8",
+   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 1,
+    "LOW": 2,
+    "NIT": 0
+   },
+   "report": "The file secret source forbids unsafe code, depends on the contract alone, follows symlinks so projected secrets resolve, refuses non-regular, empty and blank files fail-closed, bounds the read, and never puts file content in a refusal or a log; it does not check file permissions, as 1.5.5 did not. It reads the file with blocking calls inside its resolve call and answers Ready, claiming the disk exception the design reserves for two other plugins. It also refuses files over 1 MiB, an unregistered change from 1.5.5, checks the file type before opening rather than on the opened handle, and overstates its refusal parity. Read fully.",
+   "auditor": "opus-ledger-pinned-secret-file",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-secret-file/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-secret-file",
+     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
+     "tree_hash": "9d3b5716ef0fc632467af94f8074776dd64d3a356f678cea41a11fe31c5197b8",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 1,
+      "LOW": 2,
+      "NIT": 0
+     },
+     "report": "The file secret source forbids unsafe code, depends on the contract alone, follows symlinks so projected secrets resolve, refuses non-regular, empty and blank files fail-closed, bounds the read, and never puts file content in a refusal or a log; it does not check file permissions, as 1.5.5 did not. It reads the file with blocking calls inside its resolve call and answers Ready, claiming the disk exception the design reserves for two other plugins. It also refuses files over 1 MiB, an unregistered change from 1.5.5, checks the file type before opening rather than on the opened handle, and overstates its refusal parity. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-store-memory/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-store-memory/src"
+   ],
+   "tree_hash": "a512b8bd415c25f698b5946250db748e3a5570925ca1bc1a6c8cef5f5157b067",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 5,
+    "LOW": 6,
+    "NIT": 0
+   },
+   "report": "The memory store's money slots hold their rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped, and dedupe records only applied ops. Five defects stand. Memory grows with traffic: the dedupe log keeps a day of every write's text, and the record leg keeps every journal record until restart, which every scan walks. Spent slices, window counters and journals are never freed. Each token redemption sweeps the whole spent map, and a losing redemption rewrites the stored expiry. Read fully.",
+   "auditor": "opus-ledger-pinned-store-memory",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-store-memory/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-store-memory",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "a512b8bd415c25f698b5946250db748e3a5570925ca1bc1a6c8cef5f5157b067",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 5,
+      "LOW": 6,
+      "NIT": 0
+     },
+     "report": "The memory store's money slots hold their rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped, and dedupe records only applied ops. Five defects stand. Memory grows with traffic: the dedupe log keeps a day of every write's text, and the record leg keeps every journal record until restart, which every scan walks. Spent slices, window counters and journals are never freed. Each token redemption sweeps the whole spent map, and a losing redemption rewrites the stored expiry. Read fully."
+    }
    ]
   },
   {
@@ -1258,16 +1594,37 @@
    "paths": [
     "crates/busbar-transport-grpc/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "e17986e6c2b2aea02f0cd0cedbc35e215c7fc625471c81348875a289d3aabe95",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
+   "result": "findings",
+   "counts": {
+    "HIGH": 1,
+    "MEDIUM": 5,
+    "LOW": 4,
+    "NIT": 1
+   },
+   "report": "The gRPC framer keeps a clean shape: hyper's HTTP/2 both ways over the contract's sans-IO drive, no global state, no socket, te checked at the door, head, trailers and terminal piece as specified. It does not bound what it queues: emitted messages wait without limit behind a shut peer window, and the stream-full signal is never raised. A client cancel after half-close goes unreported, a stray emit opens a phantom dialled call, the per-stream accept side is refused, and refusal and oversize statuses differ from predev's bytes. Read fully.",
+   "auditor": "opus-ledger-pinned-transport-grpc",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-grpc/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-transport-grpc",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "e17986e6c2b2aea02f0cd0cedbc35e215c7fc625471c81348875a289d3aabe95",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 5,
+      "LOW": 4,
+      "NIT": 1
+     },
+     "report": "The gRPC framer keeps a clean shape: hyper's HTTP/2 both ways over the contract's sans-IO drive, no global state, no socket, te checked at the door, head, trailers and terminal piece as specified. It does not bound what it queues: emitted messages wait without limit behind a shut peer window, and the stream-full signal is never raised. A client cancel after half-close goes unreported, a stray emit opens a phantom dialled call, the per-stream accept side is refused, and refusal and oversize statuses differ from predev's bytes. Read fully."
+    }
    ]
   },
   {
@@ -1276,16 +1633,37 @@
    "paths": [
     "crates/busbar-transport-http/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "6a2def30af5ac6708214cbb3eeeaa9ada1a09d849aa772d1d859337e870333fc",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
+   "result": "findings",
+   "counts": {
+    "HIGH": 3,
+    "MEDIUM": 4,
+    "LOW": 3,
+    "NIT": 0
+   },
+   "report": "The http framer now runs hyper's client connection API over the host's bytes and nothing else. The socket-owning transport and the named lower layer are gone. But a request for the root path, sent on a pooled connection, goes out with the path and query of the first exchange that connection carried. A process-global slot remains. The door adds no default accept field. The egress cap counts header bytes. A field name holding a colon becomes a different header. There is no accept side. Read fully.",
+   "auditor": "opus-ledger-pinned-transport-http",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-http/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-transport-http",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "6a2def30af5ac6708214cbb3eeeaa9ada1a09d849aa772d1d859337e870333fc",
+     "counts": {
+      "HIGH": 3,
+      "MEDIUM": 4,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "The http framer now runs hyper's client connection API over the host's bytes and nothing else. The socket-owning transport and the named lower layer are gone. But a request for the root path, sent on a pooled connection, goes out with the path and query of the first exchange that connection carried. A process-global slot remains. The door adds no default accept field. The egress cap counts header bytes. A field name holding a colon becomes a different header. There is no accept side. Read fully."
+    }
    ]
   },
   {
@@ -1294,18 +1672,18 @@
    "paths": [
     "crates/busbar-transport-stdio/src"
    ],
-   "tree_hash": "6699e15269902b6d0e9ebccb658906ae98d31c568d2066fda023edabf7d75f76",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 1,
+   "tree_hash": "a8337c0abb140519ab7214701b6e6d0bf8f3ec0824cfc8d529e36bfaf551cf7a",
+   "audited_at": "62fdbdf3bced89535818c761a2d5a56c23aa3f99",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 2,
+    "HIGH": 1,
     "MEDIUM": 3,
-    "LOW": 3,
-    "NIT": 0
+    "LOW": 1,
+    "NIT": 1
    },
-   "report": "In the shipped build, the stdio transport is a line framer, not a carrier. Its door refuses dial, accept, read and write, and spawning, environment handling and kill-on-close live in core. The linked and dropped-in doors differ. The linked row is the memory-ABI framer. The dropped-in image exports a separate carrier that spawns children itself and runs its own runtime thread. Lines over 64 KiB fail the framing. No Peer auth point is offered. Framing allocates on every line. Read fully.",
-   "auditor": "opus-ledger-transport-stdio",
+   "report": "The stdio transport is now one carrier door, the same symbol linked and dropped in, with busbar-contract as its only dependency. It spawns through the host's I/O, cuts one frame per line on the way in, and writes one line per frame with back-pressure. The program's restart and crash-loop policy is still not the transport's: it lives in core. Lines over 64 KiB fail the read. No Peer auth point can be offered. Framing allocates per line, and one linked constant is unused. Read fully.",
+   "auditor": "opus-reaudit-transport-stdio",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-stdio/src/tests"
@@ -1324,6 +1702,20 @@
       "NIT": 0
      },
      "report": "In the shipped build, the stdio transport is a line framer, not a carrier. Its door refuses dial, accept, read and write, and spawning, environment handling and kill-on-close live in core. The linked and dropped-in doors differ. The linked row is the memory-ABI framer. The dropped-in image exports a separate carrier that spawns children itself and runs its own runtime thread. Lines over 64 KiB fail the framing. No Peer auth point is offered. Framing allocates on every line. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-reaudit-transport-stdio",
+     "audited_at": "62fdbdf3bced89535818c761a2d5a56c23aa3f99",
+     "tree_hash": "a8337c0abb140519ab7214701b6e6d0bf8f3ec0824cfc8d529e36bfaf551cf7a",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 3,
+      "LOW": 1,
+      "NIT": 1
+     },
+     "report": "The stdio transport is now one carrier door, the same symbol linked and dropped in, with busbar-contract as its only dependency. It spawns through the host's I/O, cuts one frame per line on the way in, and writes one line per frame with back-pressure. The program's restart and crash-loop policy is still not the transport's: it lives in core. Lines over 64 KiB fail the read. No Peer auth point can be offered. Framing allocates per line, and one linked constant is unused. Read fully."
     }
    ]
   },
@@ -1333,16 +1725,76 @@
    "paths": [
     "crates/busbar-transport-tcp/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "fbc4609d2b07b9578311eee7a765cfa0c25b22a16308da28d03ce95ea7bbab88",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 4,
+    "NIT": 0
+   },
+   "report": "The tcp transport is now a carrier: it binds, accepts, dials, reads, writes and closes only through the host's I/O handles, refuses every framer op and any program destination, and dials only the literal address the host already pinned. Its dependency closure is the contract alone, it holds no global state and forbids unsafe code. Its multi-address dial fallback and localhost rewrite never run, every call takes one instance-wide lock, its manifest still calls it a framer, and its manifest data carries a retired version number. Read fully.",
+   "auditor": "opus-ledger-pinned-transport-tcp",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-tcp/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-transport-tcp",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "fbc4609d2b07b9578311eee7a765cfa0c25b22a16308da28d03ce95ea7bbab88",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "The tcp transport is now a carrier: it binds, accepts, dials, reads, writes and closes only through the host's I/O handles, refuses every framer op and any program destination, and dials only the literal address the host already pinned. Its dependency closure is the contract alone, it holds no global state and forbids unsafe code. Its multi-address dial fallback and localhost rewrite never run, every call takes one instance-wide lock, its manifest still calls it a framer, and its manifest data carries a retired version number. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-transport-webrtc/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-webrtc/src"
+   ],
+   "tree_hash": "80d15bf46efbb7a8ca27bbd580fab97a81b5e6e5290d05e769c5cb5fcd70c2e2",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 2,
+    "MEDIUM": 4,
+    "LOW": 5,
+    "NIT": 1
+   },
+   "report": "The webrtc framer passes its handshake shim to the media stack through a per-thread slot with a destructor, a second per-thread slot next to the door's one approved slot. The SRTP keying material it hands the media stack is copied into buffers freed without zeroing. No host path gives it a datagram lane or a certificate, so every begin is refused. Under buffer pressure a data channel can reorder messages and fails the whole association. Oversized rendezvous terms spin on YIELD_MORE. Read fully.",
+   "auditor": "opus-ledger-transport-webrtc",
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-transport-webrtc/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-transport-webrtc",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "80d15bf46efbb7a8ca27bbd580fab97a81b5e6e5290d05e769c5cb5fcd70c2e2",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 4,
+      "LOW": 5,
+      "NIT": 1
+     },
+     "report": "The webrtc framer passes its handshake shim to the media stack through a per-thread slot with a destructor, a second per-thread slot next to the door's one approved slot. The SRTP keying material it hands the media stack is copied into buffers freed without zeroing. No host path gives it a datagram lane or a certificate, so every begin is refused. Under buffer pressure a data channel can reorder messages and fails the whole association. Oversized rendezvous terms spin on YIELD_MORE. Read fully."
+    }
    ]
   },
   {
@@ -1351,16 +1803,37 @@
    "paths": [
     "crates/busbar-transport-ws/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "5ddb8018f2d064714d89d6374b0d97d60d665d5f2cf3ca8f02b9c42730c16266",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 2,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 6,
+    "LOW": 4,
+    "NIT": 0
+   },
+   "report": "The ws plugin is now one sans-IO framer behind its memory-ABI door. It runs tungstenite over an in-memory pipe, with no runtime, no global state and no lower layer named. It puts the dial's head fields on the upgrade request and the failure's close code on the wire. Its admitted claim row still contradicts its own declarations, and it claims ws without wss. An IPv6-literal target cannot be dialled. An abrupt disconnect is reported as a framing failure. Every connection shares two instance-wide locks, and each message is copied several times. Read fully.",
+   "auditor": "opus-ledger-pinned-transport-ws",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-ws/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-ledger-pinned-transport-ws",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "5ddb8018f2d064714d89d6374b0d97d60d665d5f2cf3ca8f02b9c42730c16266",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 6,
+      "LOW": 4,
+      "NIT": 0
+     },
+     "report": "The ws plugin is now one sans-IO framer behind its memory-ABI door. It runs tungstenite over an in-memory pipe, with no runtime, no global state and no lower layer named. It puts the dial's head fields on the upgrade request and the failure's close code on the wire. Its admitted claim row still contradicts its own declarations, and it claims ws without wss. An IPv6-literal target cannot be dialled. An abrupt disconnect is reported as a framing failure. Every connection shares two instance-wide locks, and each message is copied several times. Read fully."
+    }
    ]
   },
   {
@@ -1469,74 +1942,42 @@
    ]
   },
   {
-   "id": "crates/store-memory/src",
-   "kind": "production",
-   "paths": [
-    "crates/store-memory/src"
-   ],
-   "tree_hash": "2972d7c32e7ae6d03a96a571e30a0fd078b37352cd4bc14cc44544d19696138e",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 2,
-   "result": "findings",
-   "counts": {
-    "HIGH": 0,
-    "MEDIUM": 3,
-    "LOW": 6,
-    "NIT": 0
-   },
-   "report": "The memory store's money slots follow the store rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped, and dedupe records only applied ops for a day. Records are never evicted by age, and a forked append is refused. Three defects remain. The dedupe log holds the full text of every write for a day, and every production write mints an op id, so memory grows with traffic. Fully spent slices, window counters and journal rows are never freed. The plane-record purge keeps live rows only for one hard-coded record kind. Read fully.",
-   "auditor": "opus-ledger-store-memory",
-   "fixed_at": null,
-   "exclude": [
-    "crates/store-memory/src/tests"
-   ],
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-ledger-store-memory",
-     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-     "tree_hash": "2972d7c32e7ae6d03a96a571e30a0fd078b37352cd4bc14cc44544d19696138e",
-     "counts": {
-      "HIGH": 0,
-      "MEDIUM": 3,
-      "LOW": 4,
-      "NIT": 0
-     },
-     "report": "draft"
-    },
-    {
-     "round": 2,
-     "result": "findings",
-     "auditor": "opus-ledger-store-memory",
-     "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-     "tree_hash": "2972d7c32e7ae6d03a96a571e30a0fd078b37352cd4bc14cc44544d19696138e",
-     "counts": {
-      "HIGH": 0,
-      "MEDIUM": 3,
-      "LOW": 6,
-      "NIT": 0
-     },
-     "report": "The memory store's money slots follow the store rules: reserve is all-or-nothing, cap pushes are atomic, releases are clamped, and dedupe records only applied ops for a day. Records are never evicted by age, and a forked append is refused. Three defects remain. The dedupe log holds the full text of every write for a day, and every production write mints an op id, so memory grows with traffic. Fully spent slices, window counters and journal rows are never freed. The plane-record purge keeps live rows only for one hard-coded record kind. Read fully."
-    }
-   ]
-  },
-  {
    "id": "xtask/src",
    "kind": "production",
    "paths": [
     "xtask/src"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
+   "tree_hash": "54f61bd74f953b33e167a5a606ee9b39d9105ff1d4e10d6d8a40fa2e70b5cda8",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 49,
+    "MEDIUM": 79,
+    "LOW": 118,
+    "NIT": 11
+   },
+   "report": "Many gates can report green on a tree that breaks the rule they enforce. The shared comment scanner loses multi-line strings and hides kernel code from several gates; the tree walker skips dot paths, so a cargo config redirect is never read; an excused standing red holds only its row id; drain ledgers accept new rows; the money-float, money-record, secret-accessor and plugin-blocking gates are lexical or hand-listed and miss live code; conformance admission and the audit ledger's own check can pass without their evidence. Read in eleven parts; self-test bodies sampled.",
+   "auditor": "opus-ledger-xtask-parts",
    "fixed_at": null,
    "exclude": [
     "xtask/src/tests"
+   ],
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-xtask-parts",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "54f61bd74f953b33e167a5a606ee9b39d9105ff1d4e10d6d8a40fa2e70b5cda8",
+     "counts": {
+      "HIGH": 49,
+      "MEDIUM": 79,
+      "LOW": 118,
+      "NIT": 11
+     },
+     "report": "Many gates can report green on a tree that breaks the rule they enforce. The shared comment scanner loses multi-line strings and hides kernel code from several gates; the tree walker skips dot paths, so a cargo config redirect is never read; an excused standing red holds only its row id; drain ledgers accept new rows; the money-float, money-record, secret-accessor and plugin-blocking gates are lexical or hand-listed and miss live code; conformance admission and the audit ledger's own check can pass without their evidence. Read in eleven parts; self-test bodies sampled."
+    }
    ]
   },
   {
@@ -1545,14 +1986,35 @@
    "paths": [
     "crates/busbar-auth-admin-tokens/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "cf34c895d801827ef3406701800eb73b0ca89d1eb82dafe54b36538b655be988",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The auth plugin's declares document states only the superseded contract range, and it names the auth kind's one version, which the loader no longer reads at admission. Nothing else is declared and nothing is missing. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "cf34c895d801827ef3406701800eb73b0ca89d1eb82dafe54b36538b655be988",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The auth plugin's declares document states only the superseded contract range, and it names the auth kind's one version, which the loader no longer reads at admission. Nothing else is declared and nothing is missing. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-auth-header/declares.json",
@@ -1560,14 +2022,107 @@
    "paths": [
     "crates/busbar-auth-header/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "2fc4719f587292e2adcfe291908f133361bc2bafd567bbf1040cccddbc22a7fc",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The auth plugin's declares document states only the superseded contract range, and it names the auth kind's one version, which the loader no longer reads at admission. Nothing else is declared and nothing is missing. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "2fc4719f587292e2adcfe291908f133361bc2bafd567bbf1040cccddbc22a7fc",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The auth plugin's declares document states only the superseded contract range, and it names the auth kind's one version, which the loader no longer reads at admission. Nothing else is declared and nothing is missing. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-oauth/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-oauth/declares.json"
+   ],
+   "tree_hash": "e675db949ce97946cfac369c3411f2b06a121519dec4c6c1c265ffd91064f73e",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "e675db949ce97946cfac369c3411f2b06a121519dec4c6c1c265ffd91064f73e",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-sigv4/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-sigv4/declares.json"
+   ],
+   "tree_hash": "bfb4ed50a8cafa1cac857135b1a710c7f87313bb61825eb5ddd2f8853d03b681",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "bfb4ed50a8cafa1cac857135b1a710c7f87313bb61825eb5ddd2f8853d03b681",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-contract/include",
@@ -1611,14 +2166,35 @@
    "paths": [
     "crates/busbar-export-file/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "6877df9a64e137486caf8017ebde3f945635dc078554de6859587de3256609e0",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1,
+    "NIT": 0
+   },
+   "report": "The file sink's declares document names the export kind's one version, its path destination, five diagnostics and three counters. Two of the counters, the rotation total and the rotation-failure total, can never move: rotation is the host disk lane's work and the sink has no report that names them, so an operator watching them sees zero forever. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "6877df9a64e137486caf8017ebde3f945635dc078554de6859587de3256609e0",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The file sink's declares document names the export kind's one version, its path destination, five diagnostics and three counters. Two of the counters, the rotation total and the rotation-failure total, can never move: rotation is the host disk lane's work and the sink has no report that names them, so an operator watching them sees zero forever. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-export-otlp/declares.json",
@@ -1626,14 +2202,35 @@
    "paths": [
     "crates/busbar-export-otlp/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "6aa7e3c655c17935fbc5bdb66a13afd1e1ecee8aa68f1a95f5713f481a6b3571",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The trace sink's declares document names the export kind's one version and asks for the collector egress policy, which the host grants only to a first-party sink and whose rules stay the host's. It declares no metric or diagnostic it does not raise. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "6aa7e3c655c17935fbc5bdb66a13afd1e1ecee8aa68f1a95f5713f481a6b3571",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The trace sink's declares document names the export kind's one version and asks for the collector egress policy, which the host grants only to a first-party sink and whose rules stay the host's. It declares no metric or diagnostic it does not raise. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-export-prometheus/declares.json",
@@ -1641,14 +2238,35 @@
    "paths": [
     "crates/busbar-export-prometheus/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "69793ca9ca5a4434071049b4954a78570d615fdd0c715ce04c1ecde3e5511c1e",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The scrape exporter's declares document states only the superseded contract range, naming the export kind's one version, which the loader no longer reads at admission. It declares no metric, diagnostic or destination, which matches a sink that serves a scrape and opens nothing. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "69793ca9ca5a4434071049b4954a78570d615fdd0c715ce04c1ecde3e5511c1e",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The scrape exporter's declares document states only the superseded contract range, naming the export kind's one version, which the loader no longer reads at admission. It declares no metric, diagnostic or destination, which matches a sink that serves a scrape and opens nothing. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-export-webhook/declares.json",
@@ -1656,14 +2274,35 @@
    "paths": [
     "crates/busbar-export-webhook/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "89829d47e0e6972625ed6cca8a7df946085706d2fe2fa7fb7c6cf62190ae5433",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1,
+    "NIT": 0
+   },
+   "report": "The webhook sink's declares document names the export kind's one version, one shed counter and three diagnostics. The two delivery-failure diagnostics tell the operator that the dropped-lines counter tracks the volume, but that counter is the shed counter and moves only when the in-flight bound sheds a line; a refused or failed delivery moves nothing. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "89829d47e0e6972625ed6cca8a7df946085706d2fe2fa7fb7c6cf62190ae5433",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The webhook sink's declares document names the export kind's one version, one shed counter and three diagnostics. The two delivery-failure diagnostics tell the operator that the dropped-lines counter tracks the volume, but that counter is the shed counter and moves only when the in-flight bound sheds a line; a refused or failed delivery moves nothing. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-hook-ranking/declares.json",
@@ -1671,14 +2310,35 @@
    "paths": [
     "crates/busbar-hook-ranking/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "182eadd4957e175e8021b4c0294b64e84b98ccfb1f610dc153ca074c16f38de1",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The ranking hook's declares document states only the superseded contract range, naming the hook kind's one version, which the loader no longer reads at admission. A CPU-only order gate needs nothing else declared. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "182eadd4957e175e8021b4c0294b64e84b98ccfb1f610dc153ca074c16f38de1",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The ranking hook's declares document states only the superseded contract range, naming the hook kind's one version, which the loader no longer reads at admission. A CPU-only order gate needs nothing else declared. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-plane-llm/dialects",
@@ -1716,14 +2376,35 @@
    "paths": [
     "crates/busbar-secret-env/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "593cdcdff79b92f5b04bb2e49ee5310154f0106d83b3c44f8c346fd39a6e7dc2",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 1,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The environment secret source's declares document states a contract range of one, the retired secret version, while the secret kind is at two and its sibling file source declares two. The pack tool at the plugin's own pinned host still checks this range against the kind's version, so the signed dropped-in artifact cannot be packed; the linked build does not read it. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "593cdcdff79b92f5b04bb2e49ee5310154f0106d83b3c44f8c346fd39a6e7dc2",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 1,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The environment secret source's declares document states a contract range of one, the retired secret version, while the secret kind is at two and its sibling file source declares two. The pack tool at the plugin's own pinned host still checks this range against the kind's version, so the signed dropped-in artifact cannot be packed; the linked build does not read it. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-secret-file/declares.json",
@@ -1731,14 +2412,71 @@
    "paths": [
     "crates/busbar-secret-file/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "6c2f6846c5cb6369f32b372342e23df4bf599f61fc1ae33613ee4064118f0dd0",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The file secret source's declares document states only the superseded contract range, and it names the secret kind's one version, two, at the shipping host and at the plugin's own pinned host alike. The loader no longer reads the range at admission, and the pinned host's pack check admits it. The source's Statement names no transport need and the plugin raises no metric or diagnostic, so nothing is missing. Read fully.",
+   "auditor": "opus-lane-q128-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-lane-q128-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "6c2f6846c5cb6369f32b372342e23df4bf599f61fc1ae33613ee4064118f0dd0",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The file secret source's declares document states only the superseded contract range, and it names the secret kind's one version, two, at the shipping host and at the plugin's own pinned host alike. The loader no longer reads the range at admission, and the pinned host's pack check admits it. The source's Statement names no transport need and the plugin raises no metric or diagnostic, so nothing is missing. Read fully."
+    }
+   ]
+  },
+  {
+   "id": "crates/busbar-store-memory/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-store-memory/declares.json"
+   ],
+   "tree_hash": "77e550fa47d32153a0343cc1fddf6288c5be233d92f4823ad0b47af46d42dc96",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "zero",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 0,
+    "NIT": 0
+   },
+   "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "zero",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "77e550fa47d32153a0343cc1fddf6288c5be233d92f4823ad0b47af46d42dc96",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 0,
+      "NIT": 0
+     },
+     "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-grpc/declares.json",
@@ -1746,14 +2484,35 @@
    "paths": [
     "crates/busbar-transport-grpc/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "61015cfb77f05fa77357ba4e1edbb1543c928dd7d92acab04e4c355399241e35",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1,
+    "NIT": 0
+   },
+   "report": "The transport's declares document states only the superseded contract range, and the version it names is the transport kind's version at the plugin's own pinned host, not the shipping host's, whose transport kind is at one. The loader no longer reads the range at admission, so nothing is refused, but the document misstates the kind version it is built for. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "61015cfb77f05fa77357ba4e1edbb1543c928dd7d92acab04e4c355399241e35",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The transport's declares document states only the superseded contract range, and the version it names is the transport kind's version at the plugin's own pinned host, not the shipping host's, whose transport kind is at one. The loader no longer reads the range at admission, so nothing is refused, but the document misstates the kind version it is built for. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-tcp/declares.json",
@@ -1761,14 +2520,35 @@
    "paths": [
     "crates/busbar-transport-tcp/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "0fdc714b4af5d0079bb6ffa545d8ebca14b5ff191fc9b46159df04d5e58f1ad8",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1,
+    "NIT": 0
+   },
+   "report": "The transport's declares document states only the superseded contract range, and the version it names is the transport kind's version at the plugin's own pinned host, not the shipping host's, whose transport kind is at one. The loader no longer reads the range at admission, so nothing is refused, but the document misstates the kind version it is built for. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "0fdc714b4af5d0079bb6ffa545d8ebca14b5ff191fc9b46159df04d5e58f1ad8",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The transport's declares document states only the superseded contract range, and the version it names is the transport kind's version at the plugin's own pinned host, not the shipping host's, whose transport kind is at one. The loader no longer reads the range at admission, so nothing is refused, but the document misstates the kind version it is built for. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar-transport-ws/declares.json",
@@ -1776,14 +2556,35 @@
    "paths": [
     "crates/busbar-transport-ws/declares.json"
    ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
+   "tree_hash": "6a0f88d9346afb9989cdb61924c59ac8ecfcd36d6c4c6a59792506391ba057ec",
+   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+   "round": 1,
+   "result": "findings",
+   "counts": {
+    "HIGH": 0,
+    "MEDIUM": 0,
+    "LOW": 1,
+    "NIT": 0
+   },
+   "report": "The transport's declares document states only the superseded contract range, and the version it names is the transport kind's version at the plugin's own pinned host, not the shipping host's, whose transport kind is at one. The loader no longer reads the range at admission, so nothing is refused, but the document misstates the kind version it is built for. Read fully.",
+   "auditor": "opus-ledger-declares",
+   "fixed_at": null,
+   "rounds": [
+    {
+     "round": 1,
+     "result": "findings",
+     "auditor": "opus-ledger-declares",
+     "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
+     "tree_hash": "6a0f88d9346afb9989cdb61924c59ac8ecfcd36d6c4c6a59792506391ba057ec",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The transport's declares document states only the superseded contract range, and the version it names is the transport kind's version at the plugin's own pinned host, not the shipping host's, whose transport kind is at one. The loader no longer reads the range at admission, so nothing is refused, but the document misstates the kind version it is built for. Read fully."
+    }
+   ]
   },
   {
    "id": "crates/busbar/src/tests",
@@ -1880,6 +2681,36 @@
    "kind": "test",
    "paths": [
     "crates/busbar-auth-header/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-oauth/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-oauth/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-sigv4/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-sigv4/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -2661,6 +3492,36 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-store-memory/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-store-memory/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-store-memory/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-store-memory/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-transport-grpc/src/tests",
    "kind": "test",
    "paths": [
@@ -2736,21 +3597,6 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-transport-stdio/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-transport-stdio/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
    "id": "crates/busbar-transport-stdio/tests",
    "kind": "test",
    "paths": [
@@ -2770,6 +3616,36 @@
    "kind": "test",
    "paths": [
     "crates/busbar-transport-tcp/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-webrtc/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-webrtc/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-webrtc/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-transport-webrtc/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -2886,82 +3762,19 @@
    "fixed_at": null
   },
   {
-   "id": "crates/store-memory/src/tests",
+   "id": "xtask/src/tests",
    "kind": "test",
    "paths": [
-    "crates/store-memory/src/tests"
+    "xtask/src/tests"
    ],
-   "tree_hash": "f0dc343ede9c84bf5cf8c2df634311087a3bd0489ad35c785617df4b1c928409",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 2,
-   "result": "findings",
-   "counts": {
-    "HIGH": 0,
-    "MEDIUM": 0,
-    "LOW": 3,
-    "NIT": 0
-   },
-   "report": "The memory store's unit tests now hold the record leg to the never-evict rule. A task record written forty days ago survives repeated writes, and a control in the same test proves the age sweep really ran on usage windows. The production store matches this: the record map has no age sweep and no delete verb. Three low items remain. The tests run the shared epoch and slice cases from the contract's test kit. Test prose names sibling store backends and a plane. One test comment misdescribes which clock stamps a revocation. Read fully.",
-   "auditor": "opus-ledger-store-memory-tests",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "9a7a4f99234583680f164304391f1729f3474af17393e8a4d58a2c066dfe3506",
-     "counts": {
-      "HIGH": 1,
-      "LOW": 2
-     },
-     "report": "Breaks the rule that an active work handle is never evicted: the memory store's tests assert that a task record written through the record leg is deleted after 31 days on write age alone with no settled check, contradicting the crate's own conformance suite. The tests also use a contract test kit, and their prose names sibling stores and a plane. Read fully."
-    },
-    {
-     "round": 2,
-     "result": "findings",
-     "auditor": "opus-ledger-store-memory-tests",
-     "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-     "tree_hash": "f0dc343ede9c84bf5cf8c2df634311087a3bd0489ad35c785617df4b1c928409",
-     "counts": {
-      "HIGH": 0,
-      "MEDIUM": 0,
-      "LOW": 3,
-      "NIT": 0
-     },
-     "report": "The memory store's unit tests now hold the record leg to the never-evict rule. A task record written forty days ago survives repeated writes, and a control in the same test proves the age sweep really ran on usage windows. The production store matches this: the record map has no age sweep and no delete verb. Three low items remain. The tests run the shared epoch and slice cases from the contract's test kit. Test prose names sibling store backends and a plane. One test comment misdescribes which clock stamps a revocation. Read fully."
-    }
-   ]
-  },
-  {
-   "id": "crates/store-memory/tests",
-   "kind": "test",
-   "paths": [
-    "crates/store-memory/tests"
-   ],
-   "tree_hash": "a697c86e91de21dd589af336b5fe93d373ef76a2614d1a45dbbaf830f3802848",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "LOW": 4
-   },
-   "report": "Thorough conformance and round-trip tests reaching no kernel internals, but the only door-level test drives the retired cold JSON door and nothing drives the shipped store door; the suite pins plane-instance row shapes, names sibling stores, describes the ask ledger as making a tool execute once, and carries stale prose. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "a697c86e91de21dd589af336b5fe93d373ef76a2614d1a45dbbaf830f3802848",
-     "counts": {
-      "LOW": 4
-     },
-     "report": "Thorough conformance and round-trip tests reaching no kernel internals, but the only door-level test drives the retired cold JSON door and nothing drives the shipped store door; the suite pins plane-instance row shapes, names sibling stores, describes the ask ledger as making a tool execute once, and carries stale prose. Read fully."
-    }
-   ]
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "xtask/tests",
@@ -3588,6 +4401,36 @@
      "report": "The root testing README describes a deleted workflow and only the A2A batteries, and justifies a non-failing A2A subject leg with the claim that busbar does not serve A2A, a premise no longer true and checked by nothing. Read fully."
     }
    ]
+  },
+  {
+   "id": ".ci",
+   "kind": "instrument",
+   "paths": [
+    ".ci"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": ".latchkeyignore",
+   "kind": "instrument",
+   "paths": [
+    ".latchkeyignore"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": ".mailmap",
