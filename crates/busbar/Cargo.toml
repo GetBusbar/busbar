@@ -509,11 +509,10 @@ row = "auth-admin-tokens"
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
 # a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
 # the order their boot steps run in: seals, then the configuration step, then the book step.
-# THE SERVED-LEG WITNESSES the root's rider tests run: cargo feature -> the plane crate whose
-# `testkit::SERVED` table they drive through the kernel-loop runner `gauntlet_install::install()`
-# registers for that plane's key. Test builds only (`build.rs` emits `$OUT_DIR/served_witness.rs`, which
-# `root/tests/gauntlet_kernel.rs` includes); each crate is linked with `test-support` by the dev-deps.
-[package.metadata.busbar.served-witness]
+# THE SERVED-LEG WITNESSES (`[package.metadata.busbar.served-witness]`: cargo feature -> the plane
+# crate whose `testkit::SERVED` table the root's rider tests drive) have no row left: FLIP-A2A (#787)
+# and FLIP-STREAMING (#503) each struck the last legacy crate's row, so the table leaves and
+# `build.rs` emits an empty witness list, as it reads no linked-swaps table once the last switch went.
 
 # THE DOOR PLANES' OWN ROOT CELLS: cargo feature -> the plane crate whose `tests/root/mod.rs` holds
 # the cases that drive its door through this composition's door path, written in the plane's own words.

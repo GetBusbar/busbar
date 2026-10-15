@@ -532,7 +532,13 @@ fn served_witness_source(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> Stri
          pub(crate) type ServedWitness =\n    fn() -> ::std::pin::Pin<Box<dyn ::std::future::Future<Output = u64>>>;\n\
          pub(crate) static SERVED_WITNESSES: &[(&str, &[(&str, ServedWitness)])] = &[\n",
     );
-    for (feature, krate) in metadata_map(manifest, "package.metadata.busbar.served-witness") {
+    // A build with no served-leg witness left has no table: nothing is witnessed.
+    let rows = if manifest.contains("[package.metadata.busbar.served-witness]") {
+        metadata_map(manifest, "package.metadata.busbar.served-witness")
+    } else {
+        Vec::new()
+    };
+    for (feature, krate) in rows {
         if enabled(&feature) {
             out.push_str(&format!("    {}::testkit::SERVED,\n", ident(&krate)));
         }
