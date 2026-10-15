@@ -806,7 +806,7 @@ mod door_units {
         o.open.head = out_head();
         let (opened, _) = p.open(&mut Frame::new(i, o));
         assert_eq!(opened.outcome, Outcome::Ready, "the door opens");
-        for s in [life::HYDRATE, life::START] {
+        for s in [slot::HYDRATE, slot::START] {
             let mut g = Frame::new(
                 busbar_contract::abi::mechanism::lifecycle::GenIn {
                     head: in_head(),

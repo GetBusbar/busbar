@@ -361,7 +361,7 @@ fn head_through_the_table(declared: Option<u64>) -> Piece {
             },
         ])
         .unwrap();
-        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_: Ticket| {}));
+        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_, _: Ticket| {}));
         c.declare_over(OWNER, NeedId(0), "bytes")
             .expect("a served scheme declares");
         let desc = OpenDesc {

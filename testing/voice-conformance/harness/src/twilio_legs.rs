@@ -365,7 +365,13 @@ fn fixture_steps(fx: &Fixtures, name: &str, v: &Value) -> Result<Vec<Step>, Stri
     let opening = || twilio("start", &start, nothing);
     let delta_b64 = payload_of(&fx.get("to-twilio.media.json")?);
     let heard = format!("caller-media:{sid}:{delta_b64}");
-    let delta = || far("far audio", &far_delta(&delta_b64), &[heard.clone()]);
+    let delta = || {
+        far(
+            "far audio",
+            &far_delta(&delta_b64),
+            std::slice::from_ref(&heard),
+        )
+    };
     Ok(match name {
         "from-twilio.connected.json" | "from-twilio.start.json" => {
             vec![twilio(name, v, nothing)]

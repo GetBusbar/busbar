@@ -16,7 +16,7 @@ use busbar_contract::dest::{
     AuthDecoration, DestinationFacts, EgressBody, RoutePlan, VerifiedDestination,
 };
 use busbar_contract::ids::{
-    AdminVerbId, LaneId, MeterClassDecl, OpClassId, RecordSchemaId, SchemeKey, StreamId,
+    AdminVerbId, LaneId, MeterClassDecl, OpClassId, RecordSchemaId, SchemeKey,
 };
 use busbar_contract::kinds::{
     Ack, Challenge, ChallengeState, ContentFacts, CredentialLocator, Head, PlaneFacts, SecretRef,

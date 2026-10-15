@@ -1126,7 +1126,7 @@ fn book() -> crate::Connector {
         view,
         crate::tests::loopback_literals(),
         None,
-        Arc::new(|_| {}),
+        Arc::new(|_, _| {}),
     );
     c.declare_over(
         busbar_contract::conn::InstanceId(1),
@@ -1238,7 +1238,9 @@ fn head(status: busbar_contract::transport::wire::WireStatusClass) -> busbar_con
         status_code: None,
         status_namespace: None,
         retry_after_secs: None,
+        fault: None,
         reason: None,
+        declared_len: None,
     }
 }
 

@@ -305,7 +305,7 @@ fn proxying(config: Option<Arc<ProxyChoice>>) -> Connector {
                 .ok_or(busbar_contract::abi::host::service::DEST_UNRESOLVABLE),
         )
     };
-    Connector::serving(view, Arc::new(judge), None, Arc::new(|_: Ticket| {})).proxying(config)
+    Connector::serving(view, Arc::new(judge), None, Arc::new(|_, _: Ticket| {})).proxying(config)
 }
 
 /// A scripted proxy on loopback: it records the CONNECT head, answers `answer`, and (on a 2xx)
