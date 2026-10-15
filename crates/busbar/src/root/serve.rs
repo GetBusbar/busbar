@@ -1990,7 +1990,7 @@ impl std::fmt::Debug for DataRoutes {
 /// A claim the data listener cannot mount, or two claims at an equal precedence.
 pub fn data_routes(
     served: Served,
-    data_chain: &[String],
+    data_chain: &[ChainAuth],
     core: &[(
         String,
         busbar_contract::abi::mechanism::route::RouteMethod,
@@ -2025,7 +2025,7 @@ pub type DataMounts = (
 /// As [`data_routes`].
 pub fn data_mounts(
     served: Served,
-    data_chain: &[String],
+    data_chain: &[ChainAuth],
     core: &[(
         String,
         busbar_contract::abi::mechanism::route::RouteMethod,
@@ -2074,12 +2074,50 @@ pub struct DoorRequest {
 /// operator's data chain (`auth.chain`) is the auth of every data-listener line; only where it gives
 /// the line none does the claim's own declared default inbound style apply. `CLAIM_OPEN` declares
 /// none; any other claim takes a credential, verified by the deployment's (empty) chain.
-fn line_auth(flags: u32, data_chain: &[String]) -> busbar_kernel::guest::LineAuth {
-    use busbar_kernel::guest::LineAuth;
+fn line_auth(flags: u32, data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
     if data_chain.is_empty() && flags & CLAIM_OPEN != 0 {
-        LineAuth::None
+        busbar_kernel::guest::LineAuth::None
     } else {
-        LineAuth::Chain(data_chain.to_vec())
+        chain_auth(data_chain)
+    }
+}
+
+/// ONE DATA-CHAIN AUTH as a guest-list line holds it: its provider name and the points its
+/// instance declares it is called at (THE DESIGN §6, "Auth points and guest lists").
+pub type ChainAuth = (String, busbar_contract::abi::auth::AuthPoints);
+
+/// The chain `data_chain` as a line's auth: its names in order, and the line's point set, the union
+/// of its auths' sets.
+fn chain_auth(data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
+    let points = data_chain.iter().fold(0, |set, (_, p)| set | p.bits());
+    busbar_kernel::guest::LineAuth::Chain(
+        data_chain.iter().map(|(name, _)| name.clone()).collect(),
+        busbar_contract::abi::auth::AuthPoints(points),
+    )
+}
+
+/// A guest list's refusal, worded for the operator: the listener and the lines it names.
+fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) -> String {
+    use busbar_kernel::guest::{GuestRefusal, Line};
+    let named = |lines: &[Line]| {
+        lines
+            .iter()
+            .map(|l| format!("{:?} {}", l.claimant, l.route.path))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    match refusal {
+        GuestRefusal::EqualPrecedence(pair) => format!(
+            "{listener}: the claims {:?} {} and {:?} {} meet at an equal precedence",
+            pair.0.claimant, pair.0.route.path, pair.1.claimant, pair.1.route.path
+        ),
+        GuestRefusal::PeerMix(mix) => format!(
+            "{listener}: the lines {} need the Peer auth point and the lines {} need a \
+             per-request point without it; on one listener, every line that needs a point needs \
+             Peer or none does",
+            named(mix.0.as_slice()),
+            named(mix.1.as_slice())
+        ),
     }
 }
 
@@ -2116,7 +2154,7 @@ fn claim_line(
     instance: &str,
     rung: u32,
     claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim,
-    data_chain: &[String],
+    data_chain: &[ChainAuth],
     upgrades: &[&str],
 ) -> Result<(busbar_kernel::guest::Line, RouteMethod), String> {
     use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
@@ -2177,7 +2215,7 @@ type DoorClaim = (usize, u32);
 pub fn door_routes(
     served: Served,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
-    data_chain: &[String],
+    data_chain: &[ChainAuth],
     core: &[(String, RouteMethod, RouteAuth)],
 ) -> Result<Vec<PlaneRouteSpec>, String> {
     door_mounts(served, pin, data_chain, core, &[]).map(|m| m.routes)
@@ -2213,12 +2251,12 @@ impl std::fmt::Debug for DoorMounts {
 pub fn door_mounts(
     served: Served,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
-    data_chain: &[String],
+    data_chain: &[ChainAuth],
     core: &[(String, RouteMethod, RouteAuth)],
     upgrades: &[&str],
 ) -> Result<DoorMounts, String> {
     use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
-    use busbar_kernel::guest::{Claimant, GuestList, GuestRefusal, LineAuth, Matched};
+    use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
     use std::collections::HashMap;
     // THE PUBLIC ROUTES the served planes state (SEAM-4o): each at its own target on the data
     // listener, open to a caller that presents no busbar credential, served by the plane's `serve`.
@@ -2269,17 +2307,13 @@ pub fn door_mounts(
             dialect: 0,
             auth: match auth {
                 RouteAuth::None => LineAuth::None,
-                _ => LineAuth::Chain(data_chain.to_vec()),
+                _ => chain_auth(data_chain),
             },
             upgrade: None,
         });
     }
-    let guests = GuestList::seal(lines).map_err(|refusal| match refusal {
-        GuestRefusal::EqualPrecedence(pair) => format!(
-            "the data listener's claims {:?} {} and {:?} {} meet at an equal precedence",
-            pair.0.claimant, pair.0.route.path, pair.1.claimant, pair.1.route.path
-        ),
-    })?;
+    let guests =
+        GuestList::seal(lines).map_err(|refusal| guest_refusal("the data listener", refusal))?;
     let post = served.post.clone().unwrap_or_else(|| {
         Arc::new(crate::root::plane_node::NodeEndPost::new(
             crate::root::plane_node::node(),
@@ -2293,7 +2327,7 @@ pub fn door_mounts(
     for (line, method, door) in doors {
         let auth = match line.auth {
             LineAuth::None => RouteAuth::None,
-            LineAuth::Chain(_) => RouteAuth::Key,
+            LineAuth::Chain(..) => RouteAuth::Key,
         };
         let tail = format!("/{{*{SUBTREE}}}");
         let paths = if line.route.path_form == PATH_EXACT || !line.route.path.ends_with(&tail) {
@@ -2499,7 +2533,7 @@ pub(crate) fn line_routes(
     served: Served,
     pin: fn() -> Option<crate::root::kernel::PinnedHistory>,
 ) -> Result<Arc<DataRoutes>, String> {
-    use busbar_kernel::guest::{GuestList, GuestRefusal};
+    use busbar_kernel::guest::GuestList;
     let mut lines_of = Vec::new();
     let mut of_line = std::collections::HashMap::new();
     for (p, plane) in served.planes.iter().enumerate() {
@@ -2514,12 +2548,8 @@ pub(crate) fn line_routes(
             lines_of.push(line);
         }
     }
-    let guests = GuestList::seal(lines_of).map_err(|refusal| match refusal {
-        GuestRefusal::EqualPrecedence(pair) => format!(
-            "the claims {:?} {} and {:?} {} meet at an equal precedence",
-            pair.0.claimant, pair.0.route.path, pair.1.claimant, pair.1.route.path
-        ),
-    })?;
+    let guests =
+        GuestList::seal(lines_of).map_err(|refusal| guest_refusal("the line carrier", refusal))?;
     let post = served.post.clone().unwrap_or_else(|| {
         Arc::new(crate::root::plane_node::NodeEndPost::new(
             crate::root::plane_node::node(),

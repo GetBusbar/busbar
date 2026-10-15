@@ -888,6 +888,25 @@ impl AuthMiddleware {
         self.chain.iter().map(|e| e.name.clone()).collect()
     }
 
+    /// THE POINT SET OF THE DATA CHAIN'S POSITION `provider` (THE DESIGN §6, "Auth points and
+    /// guest lists"): the points its opened instance's `verify` is called at. A provider that is no
+    /// boxed position (`keys`) is its host-held credentials' verifiers' union, `{Head}` with none.
+    pub fn position_points(&self, provider: &str) -> busbar_contract::abi::auth::AuthPoints {
+        use busbar_contract::abi::auth::AuthPoints;
+        if let Some(entry) = self.chain.iter().find(|e| e.provider == provider) {
+            return entry.calls.inbound_points();
+        }
+        let readers = self
+            .readers
+            .iter()
+            .fold(0, |set, r| set | r.calls.inbound_points().bits());
+        if readers == 0 {
+            AuthPoints::HEAD
+        } else {
+            AuthPoints(readers)
+        }
+    }
+
     /// Whether the front door is OPEN — no boxed module AND no keys arm, so every request is
     /// admitted unconditionally (the old `none`/`passthrough`). Governance, when enabled,
     /// supersedes this.
