@@ -379,7 +379,7 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
     let legacy = &native("seam-l-shared")[0];
     let other = &native("seam-l-other")[0];
     let door = &native("seam-l-shared")[0];
-    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]).expect("the fold");
+    let rows = doors_own_their_plane_keys(vec![legacy, other, door], &[door]);
     assert_eq!(rows.len(), 2, "the legacy row yields the shared key");
     assert!(
         std::ptr::eq(rows[0], other),
@@ -397,13 +397,16 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
     );
 }
 
-/// SEAM-L(s), THE ENGINE RIDES THE KEY: a door taking the key of the legacy row that is the fallback
-/// plane takes over that row's engine (the fallback flag, the runtime it builds and the view the
-/// core's own readers walk) and keeps every other word of its own. RED: the fold dropped the legacy
-/// row whole, so with the node's plane linked as a door the node had no fallback runtime and
-/// `/metrics` lost its lane gauges (`metrics_scrape_boot_window` under the node plane's fold switch).
+/// THE ENGINE DOES NOT RIDE THE KEY (status row 83, PR 4a; BUSBAR-1.6.0.md l.639, l.2577, #7): a
+/// door taking the key of the legacy row that is the fallback plane serves its key with its OWN
+/// row. The legacy row's engine (its fallback flag, the runtime it builds, the view, the provider
+/// merge, `on_swap`) yields with the plane axis: the fallback flag is the door's own tail's
+/// (`TAIL_FALLBACK`), and the core's readers walk the kernel's own tables
+/// (`busbar_kernel::plane_host::ConfigTables`, pinned equal to the engine's view on the same config
+/// by busbar-llm's `view_parity_tests`). RED while the door's row carried the legacy engine: its
+/// `build_runtime` and `viewer` were the legacy row's, so the core read the engine's tables.
 #[test]
-fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
+fn a_door_taking_the_fallback_planes_key_serves_it_with_its_own_row() {
     let base = &native("seam-l-engine")[0];
     let legacy: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
         declaration: PlaneDeclaration {
@@ -416,26 +419,25 @@ fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
     }));
     let door: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
         declaration: PlaneDeclaration {
+            fallback: true,
             config_section: "seam-l-door-section",
             ..base.declaration
         },
         ..*base
     }));
-    let rows = doors_own_their_plane_keys(vec![legacy, door], &[door]).expect("the fold");
+    let rows = doors_own_their_plane_keys(vec![legacy, door], &[door]);
     assert_eq!(rows.len(), 1, "one row serves the key");
-    let row = rows[0];
-    assert!(!std::ptr::eq(row, legacy), "the door serves the plane");
-    assert_eq!(
-        row.config_section, "seam-l-door-section",
-        "the door's own words stay"
+    assert!(
+        std::ptr::eq(rows[0], door),
+        "the door's own row serves the plane"
     );
     assert!(
-        row.fallback,
-        "the fallback plane is still the fallback plane"
+        rows[0].build_runtime.is_none() && rows[0].viewer.is_none(),
+        "no legacy engine rides the door's row"
     );
     assert!(
-        row.build_runtime.is_some() && row.viewer.is_some(),
-        "the engine's runtime and view ride the key"
+        rows[0].fallback,
+        "the door's own tail states the fallback plane"
     );
     let folded = merged_boot_plane_decls(&rows, &[]);
     let kept = folded
@@ -443,51 +445,8 @@ fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
         .find(|d| d.key == "seam-l-engine")
         .expect("the key is registered");
     assert!(
-        kept.fallback && kept.viewer.is_some(),
-        "the boot fold keeps it"
-    );
-    // A legacy row with no engine leaves the door's row untouched (the shared-key case above).
-    let plain = &native("seam-l-plain")[0];
-    let plain_door = &native("seam-l-plain")[0];
-    let rows =
-        doors_own_their_plane_keys(vec![plain, plain_door], &[plain_door]).expect("the fold");
-    assert!(std::ptr::eq(rows[0], plain_door), "nothing to carry");
-}
-
-/// SEAM-L(s), A FULL CARRY TABLE REFUSES BY NAME: a door taking an engine when every slot already
-/// carries another key's row is a boot refusal naming the door, never a row served without the
-/// engine. Driven on a one-slot table of its own, so the process's table is untouched. RED: the carry
-/// answered "nothing to carry" and the door served its key with no fallback runtime.
-#[test]
-fn a_door_carried_past_the_last_slot_refuses_by_name() {
-    static ONE: [std::sync::OnceLock<PlaneDecl>; 1] = [const { std::sync::OnceLock::new() }; 1];
-    let engine = |key: &'static str| -> (&'static PlaneDecl, &'static PlaneDecl) {
-        let base = &native(key)[0];
-        let legacy: &'static PlaneDecl = Box::leak(Box::new(PlaneDecl {
-            declaration: PlaneDeclaration {
-                fallback: true,
-                ..base.declaration
-            },
-            viewer: Some(|_| &busbar_kernel::plane_host::EMPTY_VIEW),
-            ..*base
-        }));
-        (legacy, &native(key)[0])
-    };
-    let (legacy, door) = engine("seam-l-full-a");
-    let first = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
-        .expect("the one slot carries the first door");
-    assert!(first[0].fallback, "the first door carries its engine");
-    let again = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
-        .expect("the same key answers its row again");
-    assert!(std::ptr::eq(first[0], again[0]), "one row per key");
-    let (legacy, door) = engine("seam-l-full-b");
-    let Err(refusal) = super::doors_own_their_plane_keys_into(&ONE, vec![legacy, door], &[door])
-    else {
-        panic!("no slot is left for a second key, and the fold answered rows");
-    };
-    assert!(
-        refusal.contains("seam-l-full-b") && refusal.contains("1 door planes"),
-        "{refusal}"
+        std::ptr::eq(*kept, door) && kept.viewer.is_none(),
+        "the boot fold keeps the door's row, with no engine view"
     );
 }
 

@@ -12,9 +12,10 @@
 //! mutation (non-PEM bytes resolved from the environment) and counts the prefix.
 //!
 //! The fixture is a node-plane config (`providers:`/`models:`/`pools:`), so it needs that plane in
-//! the build: without the body-ingress axis no plane owns those sections and boot refuses them before
-//! the listener is ever reached — the same gate every such boot test in `cli_validate.rs` carries.
-#![cfg(all(unix, linked_axis_body_ingress))]
+//! the build: without the door that declares the `pools` section no plane owns those sections and
+//! boot refuses them before the listener is ever reached — the same gate every such boot test in
+//! `cli_validate.rs` carries.
+#![cfg(all(unix, linked_section_pools))]
 
 mod common;
 

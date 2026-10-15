@@ -8,12 +8,13 @@
 //! `busbar_contract::export_door!`), so the two cannot answer differently. `tests/conformance.rs`
 //! loads both through the one loader and requires one transcript (Part 2 #2).
 //!
-//! The composition root links [`door`] on its `plane-door` axis under the llm fold's
-//! development-only switch `llm-on-driver` (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch") and
-//! binds it through the loader's one load beside the dropped-in plane doors. The default build links
-//! no llm door. With the switch on, the serve path composes this door with the kernel-owned sections
-//! it reads and mounts its claims as the data routes, ahead of the root's existing llm row, so every
-//! arrival this door claims is served through the plane driver and the row answers none of them.
+//! The composition root links [`door`] on its `plane-door` axis (its `plane-llm-door` row, carried by
+//! the plane's one switch `plane-llm`, in the default build) and binds it through the loader's one
+//! load beside the dropped-in plane doors. The serve path composes this door with the kernel-owned
+//! sections it reads and mounts its claims as the data routes, ahead of the root's legacy llm row, so
+//! every arrival this door claims is served through the plane driver and the row answers none of
+//! them (`BUSBAR-1.6.0.md` Part 3, section 12; the fold's development-only switch is deleted, status
+//! row 155).
 //!
 //! One unit, as the plane driver serves it:
 //!

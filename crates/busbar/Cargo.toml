@@ -52,14 +52,15 @@ getrandom = { workspace = true }
 # detached signature with the inherent STRICT verify. Composition-root knowledge, used only by the
 # admin verb's effect half.
 ed25519-dalek = { workspace = true }
-# THE PROTOCOL CRATES — the composition root's knowledge, per the manifest header above. ONE CRATE
-# PER PROTOCOL: `busbar-llm` carries the LLM protocol's six dialects together (an operator picks LLM
-# coverage or none, never a subset). It is optional behind a feature so the deletion gate can build
-# the binary WITHOUT the protocol and watch it refuse that protocol's config rather than serve it
-# (scripts/proto-deletion-gate.sh). Default-on: the shipped binary speaks it.
+# THE LLM PLANE'S LEGACY ENGINE, carried by `plane-llm` beside the plane's door until it is retired
+# and the crate deleted (status row 83). It no longer rides the door's row: the route tables, their
+# view and the health probes are the kernel's (`root::linked::doors_own_their_plane_keys`;
+# BUSBAR-1.6.0.md l.639, l.2577, #7). Optional behind the plane's one switch, so the
+# deletion gate can build the binary WITHOUT the plane and watch it refuse that plane's config
+# rather than serve it (scripts/proto-deletion-gate.sh).
 busbar-llm = { path = "../busbar-llm", optional = true }
-# THE LLM PLANE, through its memory-ABI door: the edge the development-only `llm-on-driver` switch
-# carries (see that feature). Off by default: the `proto-llm` row serves llm until the flip.
+# THE LLM PLANE, through its memory-ABI door: the edge `plane-llm` carries through its door row
+# (`plane-llm-door`, see that feature). Every llm arrival is served through the plane driver.
 busbar-plane-llm = { path = "../busbar-plane-llm", optional = true }
 # THE MCP PLANE, through its memory-ABI door: the edge `plane-mcp` carries through its door row
 # (`plane-mcp-door`, see that feature).
@@ -223,18 +224,17 @@ tikv-jemallocator = { workspace = true, features = ["disable_initial_exec_tls"] 
 # are one-line re-exports of the core feature with the same name. Every protocol entry below is the
 # SAME default set the monolithic crate had; `root-admin` is the addition, and it is a path rather
 # than a surface — the operations, their bytes and their features are unchanged.
-default = ["auth-admin-tokens", "auth-header", "auth-sigv4", "auth-oauth", "hooks-ranking", "proto-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp"]
-# A protocol crate: the dependency edge plus its registration line in main.rs. Dropping the
-# feature is the deletion test's level-1 build. There is no per-DIALECT feature and there must not
-# be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini` knob would be
-# a second, finer answer to a question the owner ruling already settled.
-# ONE switch for the plane (the node its units run through, `src/root/plane_node.rs`, compiles in every
-# build and its `root-units` row is keyed to the node itself, ARCHITECT Q1): the plane's `linked-axes`
-# row carries the `node` axis, so linking it hands the plane's arrivals the node. The
-# plane's arrivals hand every unit to the node and there is no other path an arrival can take
-# (ARCHITECT R7(b): the build that served them through the shell instead is dropped). There is no
-# second, per-node switch (spec #17: one feature per plane, no `root-*`; ARCHITECT K2i residue).
-proto-llm = ["dep:busbar-llm"]
+default = ["auth-admin-tokens", "auth-header", "auth-sigv4", "auth-oauth", "hooks-ranking", "plane-llm", "plane-mcp", "plane-a2a", "plane-streaming", "plane-decisions", "export-file", "export-webhook", "export-prometheus", "export-otlp", "root-admin", "transport-tcp"]
+# THE LLM PLANE, ONE switch (spec #17: one feature per plane). Default-on: the shipped binary speaks
+# LLM. Dropping the feature is the deletion test's level-1 build. There is no per-DIALECT feature and
+# there must not be one — "LLM coverage or not" is the choice this seam offers, and a `proto-gemini`
+# knob would be a second, finer answer to a question the owner ruling already settled. The plane is
+# served through its memory-ABI door (`plane-llm-door`): the door's claims are mounted as the data
+# routes, so every llm arrival is served through the plane driver (BUSBAR-1.6.0.md Part 3 section 12;
+# the fold's development-only switch is deleted, status row 155). The switch also links the legacy
+# engine crate's row until it is retired and the crate deleted (status row 83); the route tables
+# and their view are the kernel's. The sigv4 and oauth rows sign the plane's members.
+plane-llm = ["plane-llm-door", "dep:busbar-llm", "auth-sigv4", "auth-oauth"]
 # THE MCP PLANE, ONE switch (spec #17: one feature per plane). Default-on: the shipped binary speaks
 # MCP. The plane is served through its memory-ABI door alone (`plane-mcp-door`): every word the root
 # reads about it is the door's own (its Statement, its tail's `cli_help`, its `declares.json`).
@@ -274,13 +274,11 @@ transport-tcp = []
 # plane's registry row (the `decisions:` section judged by the door's own `validate`), and the serve
 # path hands it its arrivals through the plane driver.
 plane-decisions = ["dep:busbar-plane-decisions"]
-# THE LLM PLANE THROUGH ITS DOOR, the llm fold's development-only switch (BUSBAR-1.6.0.md Part 3
-# section 12, "The switch"; deleted when the llm fold completes). Never in `default`. On, the plane's
-# memory-ABI door (`busbar_plane_llm::plane_door::door`) is a `plane-door` row, bound through the
-# loader's one load beside every dropped-in plane door, the same table as its dropped-in cdylib
-# (#2, #30; THE DESIGN section 11.4). It carries `proto-llm`, whose row stays linked and answers
-# every arrival the serve path does not hand the door.
-llm-on-driver = ["proto-llm", "dep:busbar-plane-llm", "auth-sigv4", "auth-oauth"]
+# THE LLM PLANE'S DOOR ROW, carried by `plane-llm` and never set on its own. The plane's memory-ABI
+# door (`busbar_plane_llm::plane_door::door`) is a `plane-door` row, bound through the loader's one
+# load beside every dropped-in plane door, the same table as its dropped-in cdylib (#2, #30; THE
+# DESIGN section 11.4).
+plane-llm-door = ["dep:busbar-plane-llm"]
 # THE MCP PLANE'S DOOR ROW, carried by `plane-mcp` and never set on its own (the mcp fold's switch
 # is gone: the plane is flipped onto the driver, BUSBAR-1.6.0.md Part 3 section 12). The plane's
 # memory-ABI door (`busbar_plane_mcp::plane_door::door`) is a `plane-door` row, bound through the
@@ -361,7 +359,7 @@ loom-model = ["busbar-kernel/loom-model"]
 # them. `crates/busbar/tests/composition_root_names_no_linked_plugin.rs` refuses a `main.rs` that
 # names any crate or root module listed here.
 [package.metadata.busbar.linked]
-proto-llm = "busbar-llm"
+plane-llm = "busbar-llm"
 export-file = "busbar-export-file"
 export-webhook = "busbar-export-webhook"
 export-prometheus = "busbar-export-prometheus"
@@ -392,7 +390,7 @@ transport-webrtc = "busbar-transport-webrtc"
 # THE PLANE DOOR AXIS (#2, THE DESIGN section 11.4): a plane's memory-ABI `door`, bound through the
 # loader's one load beside the dropped-in plane doors.
 plane-decisions = "busbar-plane-decisions"
-llm-on-driver = "busbar-plane-llm"
+plane-llm-door = "busbar-plane-llm"
 plane-mcp-door = "busbar-plane-mcp"
 plane-streaming = "busbar-plane-streaming"
 plane-a2a-door = "busbar-plane-a2a"
@@ -413,7 +411,7 @@ plane-a2a-door = "busbar-plane-a2a"
 # `secret-doors`: a `kind: secret` plugin's memory-ABI `door`.
 # `export-doors`: a memory-ABI `kind: export` sink's `NAME`, `ALIAS`, `DECLARES` and `door`.
 [package.metadata.busbar.linked-axes]
-proto-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics on-host cli-help node gauntlet-one-shot"
+plane-llm = "plane claims protocols path-ingress body-ingress protocol-seams diagnostics cli-help node gauntlet-one-shot"
 export-file = "export-doors"
 export-webhook = "export-doors"
 export-prometheus = "export-doors"
@@ -437,7 +435,7 @@ transport-grpc = "transport transport-door"
 transport-stdio = "transport transport-door"
 transport-webrtc = "transport transport-door"
 plane-decisions = "plane-door"
-llm-on-driver = "plane-door"
+plane-llm-door = "plane-door"
 plane-mcp-door = "plane-door"
 plane-streaming = "plane-door"
 plane-a2a-door = "plane-door"
@@ -454,7 +452,7 @@ busbar-auth-sigv4 = "busbar_auth_sigv4::compiled_in"
 busbar-auth-oauth = "busbar_auth_oauth::compiled_in"
 # A plane door row's entry is the module that exports its `door`.
 plane-decisions = "busbar_plane_decisions::plane_door"
-llm-on-driver = "busbar_plane_llm::plane_door"
+plane-llm-door = "busbar_plane_llm::plane_door"
 plane-mcp-door = "busbar_plane_mcp::plane_door"
 plane-a2a-door = "busbar_plane_a2a::agent_door"
 # A memory-ABI export sink's door is its logic crate's `door` module's (`plugin_door!`).
@@ -476,6 +474,7 @@ plane-a2a-door = "busbar_plane_a2a::DECLARES"
 # that declares this section is linked" gates on the section rather than on a feature that spells one
 # plugin. Held to each door's own Statement by `root::linked`'s tests.
 [package.metadata.busbar.linked-section]
+plane-llm-door = "pools"
 plane-mcp-door = "tools"
 plane-a2a-door = "agents"
 plane-decisions = "decisions"
@@ -523,15 +522,15 @@ row = "auth-admin-tokens"
 # `root/serve.rs` includes), so the composition root's sources name no plane and the list is the
 # linked table's; a door whose crate states none fails the root's tests, naming it.
 
-# THE DRIVER PROOFS of a development-only fold switch (a `<plane>-on-driver` feature, BUSBAR-1.6.0.md
-# Part 3 section 12 "The switch"): cargo feature -> the plane crate whose `tests/on_driver/` holds the
+# THE DRIVER PROOFS of a plane served through its door (BUSBAR-1.6.0.md Part 3 section 12, the hook
+# gate on the driver): cargo feature -> the plane crate whose `tests/on_driver/` holds the
 # plane-origin hook cases (`mod.rs`) and the words the root's door cells read as data (`words.txt`).
 # Test builds only: `build.rs` emits `$OUT_DIR/driver_proofs.rs` (the `#[path]` that
 # `tests/hook_parity_driver` compiles beside its rig) and `$OUT_DIR/driver_words.rs`
 # (`DRIVER_WORDS`), so the composition root's sources name neither the plane nor its dialects: the
 # cases are written in the plane's own words and live in the plane's crate (ARCHITECT ruling, #464).
 [package.metadata.busbar.driver-proofs]
-llm-on-driver = "busbar-plane-llm"
+plane-llm-door = "busbar-plane-llm"
 
 [package.metadata.busbar.root-units]
 # The node's own row, keyed to the node (not a feature): it compiles in every build, so its card

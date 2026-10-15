@@ -996,15 +996,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // first config swap, retiring these boot probers (their `Weak` fails to upgrade) exactly as the old
     // `Weak<App>` did when the boot snapshot drained.
     // Built only when some linked entry re-anchors work on it: a build with none holds no host.
-    // While a plane's fold switch is on, the plane serving the `pools` map runs its health probes
-    // through its door as the K7 probe unit (`root::serve`'s probe target over the plane's sealed
-    // egress), so the legacy row's probers are not spawned beside them: one prober per lane, as
-    // 1.5.5 ran.
-    let on_host = if cfg!(linked_fold_on_driver) {
-        &[][..]
-    } else {
-        LINKED.on_host
-    };
+    // The plane serving the `pools` map runs its health probes through its door as the K7 probe
+    // unit (`root::serve`'s probe target over the plane's sealed egress), so no linked row carries
+    // the `on-host` axis for it: one prober per lane, as 1.5.5 ran.
+    let on_host = LINKED.on_host;
     let boot_host = (!on_host.is_empty()).then(|| busbar_kernel::plane_host::engine_host(&app));
     if let Some(host) = &boot_host {
         for spawn in on_host {
