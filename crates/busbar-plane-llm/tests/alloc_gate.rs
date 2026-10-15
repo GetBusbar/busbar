@@ -180,6 +180,7 @@ fn one_forward(shaping: &busbar_plane_llm::exchange::shaping::Shaping, body: &[u
             .map(|h| stream_intent(h, arrived.parsed.as_ref()))
             .unwrap_or_default(),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
     let mut reply = Reply::new(&ctx, 200, head);

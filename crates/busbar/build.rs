@@ -315,7 +315,9 @@ const TEST_LINKED_DOOR_ROW: &str = "door:";
 
 /// `$OUT_DIR/test_linked.rs` from `[package.metadata.busbar.test-linked] planes`: `extern crate` per
 /// listed crate; `static TEST_LINKED`, each non-door row's `testkit::TEST_SEAM`; `static
-/// TEST_LINKED_DOORS`, each `door:<crate>` row's `(<crate>, <crate>::plane_door::door)`; and `static
+/// TEST_LINKED_DOORS`, each `door:<crate>` row's `(<crate>, <module>::door)`, `<module>` the
+/// `[package.metadata.busbar.linked-entry]` module in that crate (the plane door row's own entry),
+/// else `<crate>::plane_door`; and `static
 /// TEST_LINKED_ORDER`, the list's install order (`false` the next `TEST_LINKED` entry, `true` the
 /// next door). An absent or empty list is a build failure, never an empty roster.
 fn test_linked_source(manifest: &str) -> String {
@@ -339,8 +341,17 @@ fn test_linked_source(manifest: &str) -> String {
     out.push_str(
         "];\nstatic TEST_LINKED_DOORS: &[(&str, ::busbar_contract::abi::mechanism::door::DoorFn)] = &[\n",
     );
+    // A door row's module is the one its plane-door row names in `linked-entry` (`agent_door` for
+    // the a2a plane, `plane_door` for mcp), so the roster never spells a module the crate moved.
+    let entries = metadata_map(manifest, "package.metadata.busbar.linked-entry");
     for id in &doors {
-        out.push_str(&format!("    ({id:?}, {id}::plane_door::door),\n"));
+        let module = entries
+            .iter()
+            .map(|(_, module)| module)
+            .find(|module| module.starts_with(&format!("{id}::")))
+            .cloned()
+            .unwrap_or_else(|| format!("{id}::plane_door"));
+        out.push_str(&format!("    ({id:?}, {module}::door),\n"));
     }
     out.push_str("];\nstatic TEST_LINKED_ORDER: &[bool] = &[");
     for r in &rows {

@@ -60,6 +60,7 @@ fn piece(kind: PieceKind, len: usize) -> Piece {
         retry_after_secs: None,
         fault: None,
         reason: None,
+        declared_len: None,
     }
 }
 

@@ -1060,6 +1060,7 @@ mod rehomed_answers {
                 client_include_usage: false,
             },
             passthrough,
+            translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
         }
     }
 
@@ -1071,6 +1072,7 @@ mod rehomed_answers {
             units: piece.units,
             verdict: piece.verdict,
             fault: piece.fault,
+            tap_fault: piece.tap_fault,
             done: piece.done,
             dropped: piece.dropped,
         }
@@ -2889,12 +2891,12 @@ mod rehomed_answers {
                                 .find(|decl| decl.name == caller)
                                 .expect("a dialect");
                             let (own_status, kind) = decl.auth_failure_status_and_kind;
-                            assert_eq!(read.status, own_status.as_u16(), "{what}");
+                            assert_eq!(read.status, own_status, "{what}");
                             assert_eq!(
                                 without_minted_id(read.json()),
                                 without_minted_id(own_envelope(
                                     caller,
-                                    own_status.as_u16(),
+                                    own_status,
                                     kind,
                                     decl.auth_failure_message
                                 )),

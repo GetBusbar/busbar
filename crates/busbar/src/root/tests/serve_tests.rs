@@ -951,7 +951,8 @@ pub(super) mod session_door {
         );
         let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =
             serde_yaml::from_str("{m-cap: {provider: p}}").expect("the models catalog");
-        let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+        let secrets: Arc<dyn busbar_contract::secret::SecretResolve> =
+            Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
         let auths = OutboundAuths::new(
             Arc::clone(&dispatcher),
             crate::LINKED.auths,
@@ -962,7 +963,7 @@ pub(super) mod session_door {
         );
         let reach = DoorReach {
             providers: &providers,
-            secrets: &secrets,
+            secrets: Arc::clone(&secrets),
             auths: Arc::new(auths),
             conns: Arc::clone(&connector) as Arc<dyn PollConns>,
             stream_ceiling_secs: 600,

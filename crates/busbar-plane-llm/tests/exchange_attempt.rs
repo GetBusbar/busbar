@@ -986,6 +986,7 @@ fn whole_ctx<'a>(a: &'a Arrived, egress: &'a str, model: &'a str) -> WholeCtx<'a
         request: a.parsed.as_ref(),
         now_s: 1_752_000_000,
         elapsed_ms: Some(12),
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     }
 }
 

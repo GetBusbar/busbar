@@ -276,6 +276,7 @@ fn gemini_from_openai<'a>(a: &'a Arrived, model: &'a str, json_array: bool) -> W
         request: a.parsed.as_ref(),
         now_s: 1_752_000_000,
         elapsed_ms: Some(12),
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     }
 }
 
