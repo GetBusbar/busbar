@@ -626,7 +626,7 @@ pub(super) mod session_door {
     };
     use crate::root::plane_node::{Node, NodeEndPost};
     use crate::root::serve::planes_tests::{composed_services, Published, PUBLISHING};
-    use crate::root::serve::{compose_planes, door_routes, DoorEgress};
+    use crate::root::serve::{compose_planes, DoorEgress};
 
     /// The deployment's dated card history the served unit is pinned to at its door: one entry, no
     /// price (billing off: the counts are the unit's fact and price at nothing).
@@ -649,6 +649,9 @@ pub(super) mod session_door {
 
     /// The session door's mint claim.
     const MINT: &str = "/v1/realtime/client_secrets";
+
+    /// The session door's sideband claim: an upgrade line a live session opens on.
+    const SIDEBAND: &str = "/v1/realtime/sideband/{call_id}";
 
     /// The provider's answer to the mint: an ephemeral secret and its expiry.
     const MINTED: &str = r#"{"value":"ek_door_0001","expires_at":1767225600}"#;
@@ -834,6 +837,9 @@ pub(super) mod session_door {
         /// Hooks the deployment defines, each `global` (run on every plane's units), with the hook
         /// stage composed over the generation; empty = no hook stage.
         hooks: Vec<(&'static str, busbar_kernel::config::HookCfg)>,
+        /// A provider the cell started itself (its port, and what it reports hearing), in place of
+        /// the scripted one.
+        far_end: Option<(u16, tokio::sync::mpsc::UnboundedReceiver<String>)>,
     }
 
     /// The linked plane door that meters audio (the session door), bound under `instance`; `None` in
@@ -963,9 +969,10 @@ pub(super) mod session_door {
         busbar_kernel::snapshot::init();
         let budget = opts.budget;
         let published = Published(instance);
-        let (port, heard) = match opts.far {
-            Some(script) => far_end_scripted(script).await,
-            None => far_end_answering(MINTED).await,
+        let (port, heard) = match (opts.far_end, opts.far) {
+            (Some(far_end), _) => far_end,
+            (None, Some(script)) => far_end_scripted(script).await,
+            (None, None) => far_end_answering(MINTED).await,
         };
         let connector = connector();
         let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
@@ -1090,7 +1097,9 @@ pub(super) mod session_door {
             stream_ceiling_secs: 600,
             catalog: Some(&catalog),
             models: None,
-            upgrades: Vec::new(),
+            // The linked claims that open at an upgrade, as production composes them: a session
+            // door's provider is dialled in its line's own scheme.
+            upgrades: crate::root::serve::upgrade_carriers(crate::LINKED.transports),
         };
         let mut sections = BTreeMap::new();
         sections.insert(
@@ -1151,9 +1160,20 @@ pub(super) mod session_door {
         };
         let app = app.governance(Arc::clone(&gov)).cost(cost).build();
         let _ = live_app.set(Arc::clone(&app));
-        let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
-        let (router, _admin, _handle) =
-            busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
+        // The door's claims as production mounts them: its request routes, and its session routes
+        // (an upgrade line's claim, mounted as a GET session route).
+        let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports);
+        let mounts = crate::root::serve::door_mounts(served, || CARD.pin(), &[], &[], &upgrades)
+            .expect("its claims mount");
+        let (router, _admin, _handle) = busbar_kernel::build_split_routers_serving_doors(
+            Arc::clone(&app),
+            mounts.routes,
+            mounts.sessions,
+            mounts.refusals,
+            1 << 20,
+            0,
+            false,
+        );
         Some(Ok(SessionDoor {
             _published: published,
             router,
@@ -1616,6 +1636,279 @@ pub(super) mod session_door {
         assert_eq!(s.money.open_units(), 0);
         assert_eq!(s.post.open_units(), 0);
         assert_eq!(s.lines(), 0, "no line on the node's book");
+    }
+
+    // ── a live session through the door's session route, on a real listener ──────────────────────
+
+    /// SHA-1 of `data` (RFC 3174), for the one place RFC 6455 asks for it: the far end's
+    /// `Sec-WebSocket-Accept`.
+    fn sha1(data: &[u8]) -> [u8; 20] {
+        let mut h: [u32; 5] = [
+            0x6745_2301,
+            0xEFCD_AB89,
+            0x98BA_DCFE,
+            0x1032_5476,
+            0xC3D2_E1F0,
+        ];
+        let mut msg = data.to_vec();
+        let bits = (data.len() as u64).wrapping_mul(8);
+        msg.push(0x80);
+        while msg.len() % 64 != 56 {
+            msg.push(0);
+        }
+        msg.extend_from_slice(&bits.to_be_bytes());
+        for block in msg.chunks(64) {
+            let mut w: Vec<u32> = block
+                .chunks(4)
+                .map(|word| u32::from_be_bytes([word[0], word[1], word[2], word[3]]))
+                .collect();
+            while w.len() < 80 {
+                let n = w.len();
+                w.push((w[n - 3] ^ w[n - 8] ^ w[n - 14] ^ w[n - 16]).rotate_left(1));
+            }
+            let [mut a, mut b, mut c, mut d, mut e] = h;
+            for (i, wi) in w.iter().enumerate() {
+                let (f, k) = match i {
+                    0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                    20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                    40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                    _ => (b ^ c ^ d, 0xCA62_C1D6),
+                };
+                let t = a
+                    .rotate_left(5)
+                    .wrapping_add(f)
+                    .wrapping_add(e)
+                    .wrapping_add(k)
+                    .wrapping_add(*wi);
+                e = d;
+                d = c;
+                c = b.rotate_left(30);
+                b = a;
+                a = t;
+            }
+            for (slot, v) in h.iter_mut().zip([a, b, c, d, e]) {
+                *slot = slot.wrapping_add(v);
+            }
+        }
+        let mut out = [0u8; 20];
+        for (i, v) in h.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&v.to_be_bytes());
+        }
+        out
+    }
+
+    /// The `Sec-WebSocket-Accept` answering `key` (RFC 6455 section 4.2.2).
+    fn ws_accept(key: &str) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(sha1(
+            format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes(),
+        ))
+    }
+
+    /// Read an HTTP head (through its blank line) off `socket`; `None` at end of stream.
+    async fn read_head(socket: &mut tokio::net::TcpStream) -> Option<String> {
+        let mut got = Vec::new();
+        let mut byte = [0u8; 1];
+        while !got.ends_with(b"\r\n\r\n") {
+            match socket.read(&mut byte).await {
+                Ok(1) => got.push(byte[0]),
+                _ => return None,
+            }
+        }
+        Some(String::from_utf8_lossy(&got).into_owned())
+    }
+
+    /// Read one WebSocket frame off `socket`, unmasking it: its opcode and payload; `None` at end of
+    /// stream.
+    async fn read_frame(socket: &mut tokio::net::TcpStream) -> Option<(u8, Vec<u8>)> {
+        let mut head = [0u8; 2];
+        socket.read_exact(&mut head).await.ok()?;
+        let opcode = head[0] & 0x0F;
+        let masked = head[1] & 0x80 != 0;
+        let len = match head[1] & 0x7F {
+            126 => {
+                let mut n = [0u8; 2];
+                socket.read_exact(&mut n).await.ok()?;
+                u64::from(u16::from_be_bytes(n))
+            }
+            127 => {
+                let mut n = [0u8; 8];
+                socket.read_exact(&mut n).await.ok()?;
+                u64::from_be_bytes(n)
+            }
+            n => u64::from(n),
+        };
+        let mut mask = [0u8; 4];
+        if masked {
+            socket.read_exact(&mut mask).await.ok()?;
+        }
+        let mut payload = vec![0u8; usize::try_from(len).ok()?];
+        socket.read_exact(&mut payload).await.ok()?;
+        if masked {
+            for (i, b) in payload.iter_mut().enumerate() {
+                *b ^= mask[i % 4];
+            }
+        }
+        Some((opcode, payload))
+    }
+
+    /// One text frame as a client sends it (masked, RFC 6455 section 5.3).
+    fn client_text(text: &str) -> Vec<u8> {
+        let bytes = text.as_bytes();
+        let mask = [0x37u8, 0xFA, 0x21, 0x3D];
+        let mut frame = vec![0x81u8];
+        match bytes.len() {
+            n if n < 126 => frame.push(0x80 | u8::try_from(n).expect("short")),
+            n => {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(&u16::try_from(n).expect("a short frame").to_be_bytes());
+            }
+        }
+        frame.extend_from_slice(&mask);
+        frame.extend(bytes.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+        frame
+    }
+
+    /// A provider on loopback speaking WebSocket: it accepts each dial's upgrade and reports
+    /// every TEXT frame it is sent on the channel, in order.
+    async fn far_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let port = listener.local_addr().expect("its address").port();
+        let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let sent = sent.clone();
+                tokio::spawn(async move {
+                    let Some(head) = read_head(&mut socket).await else {
+                        return;
+                    };
+                    let Some(key) = head.lines().find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        name.eq_ignore_ascii_case("sec-websocket-key")
+                            .then(|| value.trim().to_string())
+                    }) else {
+                        return;
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\n\
+                         connection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n",
+                        ws_accept(&key)
+                    );
+                    if socket.write_all(reply.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    while let Some((opcode, payload)) = read_frame(&mut socket).await {
+                        match opcode {
+                            0x1 => {
+                                let _ = sent.send(String::from_utf8_lossy(&payload).into_owned());
+                            }
+                            0x8 => return,
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        });
+        (port, heard)
+    }
+
+    /// The next text the provider heard that is not the session's own configuration, within a few
+    /// seconds; `None` when nothing more arrives.
+    async fn next_heard(
+        heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) -> Option<String> {
+        loop {
+            let text = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+                .await
+                .ok()??;
+            if !text.contains("session.update") {
+                return Some(text);
+            }
+        }
+    }
+
+    /// DECODE, at the session door (its root leg): a live session opened through the door's session
+    /// route, on a real listener, carries each client event the plane reads to the provider, and a
+    /// frame the plane cannot read reaches the provider on no wire — the session stays open, and the
+    /// next readable event is carried after it, in order. RED ARM: the readable events either side
+    /// of the unreadable frame must arrive, so a door that dropped every frame, or one that closed
+    /// the session on a bad one, fails here; a door that relayed the unreadable frame fails on it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_door_carries_what_the_plane_reads_and_no_frame_it_cannot() {
+        let _one = PUBLISHING.lock().await;
+        let far_end = far_socket().await;
+        let mut s = session_with(
+            "serve-door-session-decode",
+            Opts {
+                far_end: Some(far_end),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let (router, plain) = (s.router.clone(), s.plain.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let addr = listener.local_addr().expect("its address");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router.into_make_service()).await;
+        });
+
+        // The session door's upgrade line (its sideband claim's target, the call named), as a keyed
+        // caller opens it.
+        let route = SIDEBAND.replace("{call_id}", "call-decode");
+        let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
+        let open = format!(
+            "GET {route} HTTP/1.1\r\nhost: {addr}\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\
+             sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\
+             authorization: Bearer {plain}\r\n\r\n"
+        );
+        caller.write_all(open.as_bytes()).await.expect("the open");
+        let head = tokio::time::timeout(std::time::Duration::from_secs(10), read_head(&mut caller))
+            .await
+            .expect("the door answers the open")
+            .expect("a head");
+        assert!(
+            head.starts_with("HTTP/1.1 101"),
+            "the session opens: {head}"
+        );
+
+        let read = r#"{"type":"input_audio_buffer.append","audio":"AAAA"}"#;
+        caller
+            .write_all(&client_text(read))
+            .await
+            .expect("a readable event");
+        let carried = next_heard(&mut s.heard)
+            .await
+            .expect("a client event the plane reads is carried to the provider");
+        assert!(
+            carried.contains("input_audio_buffer.append"),
+            "the readable event, carried: {carried}"
+        );
+
+        caller
+            .write_all(&client_text("not a frame {"))
+            .await
+            .expect("an unreadable frame");
+        let after = r#"{"type":"input_audio_buffer.commit"}"#;
+        caller
+            .write_all(&client_text(after))
+            .await
+            .expect("a second readable event");
+        let next = next_heard(&mut s.heard)
+            .await
+            .expect("the session stays open and carries the next readable event");
+        assert!(
+            !next.contains("not a frame"),
+            "a frame the plane cannot read reaches the provider on no wire: {next}"
+        );
+        assert!(
+            next.contains("input_audio_buffer.commit"),
+            "the next event carried is the readable one after it: {next}"
+        );
     }
 }
 

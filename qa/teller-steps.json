@@ -469,9 +469,10 @@
         "status": "mapped",
         "note": "testing/voice-conformance/legs/spec-per-dialect.sh; the per-dialect spec battery includes decode-shape checks",
         "root": {
-          "state": "none",
+          "state": "proven",
           "leg": "root-streaming",
-          "note": "the streaming door's mint takes no caller body (the locked session is the plane's own), so no root cell on this leg can feed it a body that fails to decode"
+          "test": "crates/busbar/src/root/tests/serve_tests.rs::a_session_door_carries_what_the_plane_reads_and_no_frame_it_cannot",
+          "note": "on the streaming door's served leg, its session route on a real listener: a live session carries each client event the plane decodes to the provider, and a frame the plane cannot decode reaches the provider on no wire, the session staying open for the next readable event"
         }
       },
       "authenticate": {
