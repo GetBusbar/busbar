@@ -182,7 +182,7 @@ checks:
     requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      cargo clippy --workspace --all-targets --all-features --locked --keep-going -- -D warnings
     baseline: target
     needs: [gates]
   compile:
@@ -190,7 +190,7 @@ checks:
     requires: [cc]
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      cargo check --workspace --all-targets --locked
+      cargo check --workspace --all-targets --locked --keep-going
       cargo check --workspace --exclude xtask --all-targets --no-default-features --locked
       cargo check --release -p busbar --bin busbar --locked
     baseline: target
