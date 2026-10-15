@@ -169,7 +169,7 @@ core_files() {
 }
 
 # ── THE ROOT GUARD and THE ZERO-FILE GUARD ────────────────────────────────────────────────────────
-# Copied, deliberately, from scripts/plane-grep-gate.sh. `find "$r" … 2>/dev/null` swallows the
+# Copied, deliberately, from the retired substring-dialect meter. `find "$r" … 2>/dev/null` swallows the
 # diagnostic for a root that was renamed, split or drained, and the pipe loses find's status: the
 # code stream comes back empty, every noun counts 0, and the report prints "four-noun config-parse
 # debt: 0" about a crate this gate never opened. Renaming crates/busbar-core printed that PASS. The
