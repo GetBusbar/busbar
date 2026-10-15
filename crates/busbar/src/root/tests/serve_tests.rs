@@ -4779,3 +4779,46 @@ fn the_decisions_doors_facing_lists_its_configured_models() {
         none.listed
     );
 }
+
+/// AN UNKNOWN MODEL THROUGH THE SERVED DOOR (F25 rows 194, 423 and 725; legacy
+/// `forward_pool_integration_tests::test_openai_ingress_unknown_model`,
+/// `ingress_integration_tests::test_unknown_model_404_uses_canonical_openai_type` and
+/// `unit/tests/route.rs::route_step_refuses_an_unresolved_destination_without_a_terminal`): a chat
+/// naming a model no `models:` entry or pool defines is 1.5.5's 404 in the caller's dialect, its
+/// error type `not_found_error` and its message 1.5.5's sentence naming the model
+/// (`v1.5.5 crates/busbar/src/ingress/mod.rs:1011`). No far end is dialled. RED: the plane's
+/// no-destination refusal reaching the caller as the kernel's 503, or the sentence not naming the
+/// model.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_answers_an_unknown_model_with_1_5_5s_404_naming_it() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-unknown-model";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig
+        .send(
+            "POST",
+            "/v1/chat/completions",
+            Some(serde_json::json!({"model": "nope",
+                "messages": [{"role": "user", "content": "hi"}]})),
+        )
+        .await;
+    assert_eq!(status, 404, "{}", String::from_utf8_lossy(&body));
+    let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON error body");
+    assert_eq!(answer["error"]["type"], "not_found_error", "{answer}");
+    assert_eq!(
+        answer["error"]["message"],
+        "The model 'nope' does not exist or you do not have access to it.",
+        "{answer}"
+    );
+    assert_eq!(far.served(), 0, "no far end is dialled");
+}
