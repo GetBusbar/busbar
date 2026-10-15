@@ -161,11 +161,6 @@ item = "prometheus"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/observability.rs"
-item = "webhook"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/plane/registry.rs"
 item = "openapi"
 
