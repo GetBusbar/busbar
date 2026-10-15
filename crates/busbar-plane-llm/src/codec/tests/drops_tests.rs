@@ -99,6 +99,98 @@ fn a_scope_ends_with_its_attempt_even_on_unwind() {
     assert!(cap.messages().is_empty(), "no attempt is left open");
 }
 
+// ── the scope's discipline (ARCHITECT ruling, row-159 L1#4) ───────────────────────────────────
+
+fn drop_one(path: &'static str) {
+    note(Dropped::new(
+        path,
+        &crate::codec::diagnostics::IR_DROP_UNMODELED_KEYS,
+        "dropped",
+    ));
+}
+
+/// (a) Two interleaved translate calls on one thread — one nested inside the other — keep separate
+/// logs: the inner attempt's drops never reach the outer one's audit, and the outer one resumes
+/// with its own log when the inner one closes.
+#[test]
+fn nested_scopes_on_one_thread_keep_separate_logs() {
+    let inner_seam = Seam {
+        direction: Direction::Response,
+        ingress: "gemini",
+        egress: "cohere",
+    };
+    let (inner, outer) = scope(SEAM, || {
+        drop_one("logit_bias");
+        let ((), inner) = scope(inner_seam, || {
+            drop_one("store");
+            drop_one("logit_bias");
+        });
+        drop_one("seed");
+        inner
+    });
+    assert_eq!(inner, ["store", "logit_bias"]);
+    assert_eq!(outer, ["logit_bias", "seed"]);
+    assert!(!is_open());
+}
+
+/// (b) A panic inside a scope — nested or not — leaves no attempt open afterwards: the guard puts
+/// the enclosing state back on unwind.
+#[test]
+fn a_panic_inside_a_nested_scope_leaves_the_slot_closed() {
+    let unwound = std::panic::catch_unwind(|| {
+        let _ = scope(SEAM, || {
+            drop_one("logit_bias");
+            let _ = scope(SEAM, || panic!("the inner attempt fails"));
+        });
+    });
+    assert!(unwound.is_err());
+    assert!(!is_open(), "no attempt is left open after the unwind");
+    OPEN.with(|o| assert!(o.borrow().is_none()));
+}
+
+/// (c) After a scope closes, the thread holds no drop entries: the next attempt on the same thread
+/// starts with an empty log (it warns and audits the same path again), and a drop outside any
+/// attempt records nothing at all.
+#[test]
+fn a_closed_scope_leaks_no_drop_entries_into_the_next_call() {
+    let ((), first) = scope(SEAM, || drop_one("logit_bias"));
+    assert_eq!(first, ["logit_bias"]);
+    OPEN.with(|o| assert!(o.borrow().is_none(), "the slot is empty between calls"));
+    drop_one("store");
+    OPEN.with(|o| {
+        assert!(
+            o.borrow().is_none(),
+            "a drop outside an attempt writes nothing"
+        )
+    });
+    let cap = WarnCapture::default();
+    let ((), second) =
+        tracing::subscriber::with_default(cap.clone(), || scope(SEAM, || drop_one("logit_bias")));
+    assert_eq!(
+        second,
+        ["logit_bias"],
+        "the second attempt's log starts empty"
+    );
+    assert_eq!(cap.count("path=logit_bias"), 1, "{:?}", cap.messages());
+}
+
+/// A scope never spans an await, a ticket boundary or a return to the driver, so its guard is
+/// closed on the thread that opened it; a debug build panics on a guard dropped elsewhere rather
+/// than writing another thread's slot. RED before the guard checked its thread.
+#[cfg(debug_assertions)]
+#[test]
+fn a_guard_dropped_on_another_thread_panics_in_debug() {
+    let guard = ScopeGuard::open(SEAM, Vec::new());
+    let joined = std::thread::spawn(move || drop(guard)).join();
+    assert!(
+        joined.is_err(),
+        "dropping the guard on another thread panics"
+    );
+    // The opening thread's attempt was never closed by the panicking drop: clear it so this test
+    // thread ends clean.
+    OPEN.with(|o| o.replace(None));
+}
+
 #[test]
 fn the_block_walker_names_what_the_grammar_does_not_model() {
     const TAGGED: Blocks = Blocks {

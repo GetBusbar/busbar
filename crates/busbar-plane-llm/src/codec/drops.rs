@@ -337,43 +337,84 @@ struct Open {
 }
 
 thread_local! {
+    /// THE OPEN TRANSLATE ATTEMPT, a dynamic scope for one SYNCHRONOUS call (ARCHITECT ruling,
+    /// row-159 L1#4: a plane may hold a `thread_local` that never carries state between units).
+    /// It is set only by a [`ScopeGuard`] and holds a value only while that guard lives: a guard
+    /// never spans an `await` or a yield, a ticket boundary or a return to the driver — every
+    /// [`scope`] / [`scope_more`] runs its closure to completion on the calling thread and closes
+    /// before it returns — so nothing written here outlives the call that wrote it, and no unit
+    /// reads another unit's drops.
     static OPEN: RefCell<Option<Open>> = const { RefCell::new(None) };
 }
 
-/// Puts the enclosing attempt back when a scope ends, by return or by unwind.
-struct Restore {
+/// One open TRANSLATE attempt. Opening it installs the attempt on this thread and keeps the
+/// enclosing one (scopes nest); closing it — [`ScopeGuard::close`], or `Drop` on any early return
+/// or unwind — puts the enclosing attempt back, so a scope can never be left open and its drop log
+/// never leaks into the next call.
+///
+/// It must be closed on the thread that opened it (the scope is synchronous). A guard dropped on
+/// another thread is a defect, and a debug build panics on it rather than restoring that other
+/// thread's slot.
+pub(crate) struct ScopeGuard {
     outer: Option<Option<Open>>,
+    thread: std::thread::ThreadId,
 }
 
-impl Restore {
-    fn close(mut self) -> Option<Open> {
+impl ScopeGuard {
+    /// Open an attempt for `seam`, with the paths it has already dropped (a stream's earlier
+    /// frames; empty for a fresh attempt).
+    pub(crate) fn open(seam: Seam<'_>, paths: Vec<String>) -> ScopeGuard {
+        let open = Open {
+            direction: seam.direction,
+            ingress: seam.ingress.to_string(),
+            egress: seam.egress.to_string(),
+            paths,
+        };
+        ScopeGuard {
+            outer: Some(OPEN.with(|o| o.replace(Some(open)))),
+            thread: std::thread::current().id(),
+        }
+    }
+
+    /// Close the attempt, putting the enclosing one back, and hand back the paths it dropped.
+    pub(crate) fn close(mut self) -> Vec<String> {
+        self.check_thread();
         let outer = self.outer.take().unwrap_or(None);
         OPEN.with(|o| o.replace(outer))
+            .map(|o| o.paths)
+            .unwrap_or_default()
+    }
+
+    /// A guard is closed on the thread that opened it; a debug build panics otherwise (not while
+    /// already unwinding, where a second panic would abort).
+    fn check_thread(&self) {
+        if cfg!(debug_assertions) && !std::thread::panicking() {
+            assert_eq!(
+                std::thread::current().id(),
+                self.thread,
+                "a drop scope was closed on a thread other than the one that opened it: a scope \
+                 never spans an await, a ticket boundary or a return to the driver"
+            );
+        }
     }
 }
 
-impl std::ops::Drop for Restore {
+impl std::ops::Drop for ScopeGuard {
     fn drop(&mut self) {
         if let Some(outer) = self.outer.take() {
+            self.check_thread();
             OPEN.with(|o| o.replace(outer));
         }
     }
 }
 
 /// Run `f` as one TRANSLATE attempt: every [`note`] inside it warns once per path, and the paths
-/// come back in the order they were first dropped, for the seam's audit.
+/// come back in the order they were first dropped, for the seam's audit. `f` runs to completion on
+/// this thread; the attempt closes when it returns or unwinds.
 pub fn scope<T>(seam: Seam<'_>, f: impl FnOnce() -> T) -> (T, Vec<String>) {
-    let open = Open {
-        direction: seam.direction,
-        ingress: seam.ingress.to_string(),
-        egress: seam.egress.to_string(),
-        paths: Vec::new(),
-    };
-    let restore = Restore {
-        outer: Some(OPEN.with(|o| o.replace(Some(open)))),
-    };
+    let guard = ScopeGuard::open(seam, Vec::new());
     let out = f();
-    let paths = restore.close().map(|o| o.paths).unwrap_or_default();
+    let paths = guard.close();
     (out, paths)
 }
 
@@ -614,17 +655,9 @@ pub fn note_unmodelled_blocks(grammar: &[Blocks], body: &Value, message: &'stati
 /// again; a path `f` drops for the first time is warned and appended to `seen`, for the audit at
 /// the attempt's end.
 pub fn scope_more<T>(seam: Seam<'_>, seen: &mut Vec<String>, f: impl FnOnce() -> T) -> T {
-    let open = Open {
-        direction: seam.direction,
-        ingress: seam.ingress.to_string(),
-        egress: seam.egress.to_string(),
-        paths: std::mem::take(seen),
-    };
-    let restore = Restore {
-        outer: Some(OPEN.with(|o| o.replace(Some(open)))),
-    };
+    let guard = ScopeGuard::open(seam, std::mem::take(seen));
     let out = f();
-    *seen = restore.close().map(|o| o.paths).unwrap_or_default();
+    *seen = guard.close();
     out
 }
 
