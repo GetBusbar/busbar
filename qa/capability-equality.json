@@ -940,7 +940,7 @@
       "capability": "catalogue",
       "plane": "decisions",
       "state": "not-applicable",
-      "reason": "the decisions plane publishes no listing a caller could SEE: it claims one operation (POST /v1/systemone) and nothing else, and GET /v1/models keeps the bytes the llm plane's catalogue serves, so there is no per-item visibility of its own to answer",
+      "reason": "the decisions plane publishes no listing a caller could SEE: it claims one operation (POST /v1/systemone) and nothing else, and GET /v1/models keeps the bytes the model catalogue's own plane serves, so there is no per-item visibility of its own to answer",
       "root": {
         "state": "not-applicable",
         "leg": "root-decisions"
@@ -1007,7 +1007,7 @@
       "capability": "breaker-trip",
       "plane": "streaming-server",
       "state": "not-applicable",
-      "reason": "the voice front door is an inbound role; opening a session records no upstream target availability, so there is no core breaker cell to trip here -- the outbound provider dial a session triggers is the streaming-client cell's subject, the same shape mcp-server/a2a-server breaker-trip are N/A under.",
+      "reason": "the voice front door is an inbound role; opening a session records no upstream target availability, so there is no core breaker cell to trip here -- the outbound provider dial a session triggers is the streaming-client cell's subject, the same shape every other inbound server column's breaker-trip is N/A under.",
       "root": {
         "state": "not-applicable",
         "leg": "root-voice"
@@ -1048,7 +1048,7 @@
       "capability": "failover-reroute",
       "plane": "streaming-server",
       "state": "not-applicable",
-      "reason": "the front door is an inbound role with no candidate set to walk; failover selection over interchangeable provider members is the outbound streaming-client leg's decision, exactly as a2a-server reroute is not-applicable on the receiving side.",
+      "reason": "the front door is an inbound role with no candidate set to walk; failover selection over interchangeable provider members is the outbound streaming-client leg's decision, exactly as an inbound server column's reroute is not-applicable on the receiving side.",
       "root": {
         "state": "not-applicable",
         "leg": "root-voice"
@@ -1156,7 +1156,7 @@
       "capability": "disposition",
       "plane": "streaming-server",
       "state": "not-applicable",
-      "reason": "disposition classifies an upstream's ANSWER; the inbound session-open has no upstream answer to normalize, so Stage-1/Stage-2 classification has no subject here -- the same argument mcp-server and a2a-server disposition are not-applicable under.",
+      "reason": "disposition classifies an upstream's ANSWER; the inbound session-open has no upstream answer to normalize, so Stage-1/Stage-2 classification has no subject here -- the same argument the other inbound server columns' disposition is not-applicable under.",
       "root": {
         "state": "not-applicable",
         "leg": "root-voice"
@@ -1188,7 +1188,7 @@
       "capability": "trust-pinning",
       "plane": "streaming-client",
       "state": "not-applicable",
-      "reason": "voice providers (OpenAI Realtime, Gemini Live) are operator-declared config endpoints, not peer-published artifacts; there is no upstream-authored schema digest or card to pin -- exactly the argument the llm dial cell is not-applicable under.",
+      "reason": "voice providers (OpenAI Realtime, Gemini Live) are operator-declared config endpoints, not peer-published artifacts; there is no upstream-authored schema digest or card to pin -- exactly the argument an operator-declared provider dial cell is not-applicable under.",
       "root": {
         "state": "not-applicable",
         "leg": "root-voice"
@@ -1198,7 +1198,7 @@
       "capability": "trust-pinning",
       "plane": "streaming-server",
       "state": "not-applicable",
-      "reason": "the browser-sideband and telephony callers that reach the front door publish no artifact (no schema digest, agent card, or SPKI) for the trust lifecycle to pin; there is no peer-authored object whose drift could be detected, unlike the a2a-server card-fingerprint cell.",
+      "reason": "the browser-sideband and telephony callers that reach the front door publish no artifact (no schema digest, agent card, or SPKI) for the trust lifecycle to pin; there is no peer-authored object whose drift could be detected, unlike a server column whose peers publish a card for it to fingerprint.",
       "root": {
         "state": "not-applicable",
         "leg": "root-voice"
@@ -1208,7 +1208,7 @@
       "capability": "net-guard",
       "plane": "streaming-client",
       "state": "not-applicable",
-      "reason": "the provider WSS is an operator-configured endpoint and no request-authored URL reaches the dial, so there is no SSRF surface on the outbound leg (the net_guard resolve->pin->guard at topology::dial_provider is defense-in-depth, not a request-URL guard); revisit if a T3 request-authored callback URL is ever dialed, like a2a-server push delivery.",
+      "reason": "the provider WSS is an operator-configured endpoint and no request-authored URL reaches the dial, so there is no SSRF surface on the outbound leg (the net_guard resolve->pin->guard at topology::dial_provider is defense-in-depth, not a request-URL guard); revisit if a T3 request-authored callback URL is ever dialed, like a server column's push delivery.",
       "root": {
         "state": "not-applicable",
         "leg": "root-voice"
@@ -1239,7 +1239,7 @@
       "capability": "egress-auth",
       "plane": "streaming-server",
       "state": "not-applicable",
-      "reason": "the front door's only outbound is the provider dial, whose credential injection is the streaming-client egress-auth cell; the inbound caller's own bearer is authenticated by the Auth plugin, which is not egress credential planning -- the same split mcp-server egress-auth is not-applicable under.",
+      "reason": "the front door's only outbound is the provider dial, whose credential injection is the streaming-client egress-auth cell; the inbound caller's own bearer is authenticated by the Auth plugin, which is not egress credential planning -- the same split another inbound server column's egress-auth is not-applicable under.",
       "root": {
         "state": "not-applicable",
         "leg": "root-voice"
