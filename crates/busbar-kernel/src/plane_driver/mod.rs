@@ -78,8 +78,8 @@ use busbar_contract::abi::plane::{
 use busbar_contract::abi::sdk::door::{blank_in, blank_out};
 use busbar_contract::caps::{
     Admit, Admittance, Approve, Arrival as ArrivalStep, Audit, Authenticate, Consumption, Decode,
-    Dial, Encode, Grant, HoldAccrual, KernelSeal, Meter, OpClassId, Outcome, Pass, PrincipalId,
-    ReasonCode, Refusal, Route, RoutePlan, SeatVerdict as StepAnswer, VerifiedDestination, Verify,
+    Dial, Encode, Grant, HoldAccrual, Meter, OpClassId, Outcome, Pass, PrincipalId, ReasonCode,
+    Refusal, Route, RoutePlan, SeatVerdict as StepAnswer, VerifiedDestination, Verify,
 };
 use busbar_contract::plane_calls::PlaneCalls;
 use busbar_contract::services::Caller;
@@ -1335,7 +1335,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         let Some(t) = stated else {
             return granted;
         };
-        let facts = match granted.into_result(&KernelSeal::acquire_for_kernel()) {
+        let facts = match granted.into_result(&crate::seal::acquire()) {
             Ok(facts) => facts,
             Err(refusal) => return StepAnswer::refuse(token, refusal),
         };

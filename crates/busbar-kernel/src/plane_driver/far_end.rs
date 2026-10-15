@@ -62,7 +62,7 @@ use busbar_contract::abi::transport::{
     FAULT_NONE, STATUS_CALLER_FAULT, STATUS_FAR_END_FAULT, STATUS_OTHER, STATUS_SUCCESS,
 };
 use busbar_contract::auth_calls::{AuthField, Fields, FieldsRequest, OutboundAuth};
-use busbar_contract::caps::{KernelSeal, Pass, ReasonCode, Route};
+use busbar_contract::caps::{Pass, ReasonCode, Route};
 use busbar_contract::conn::{
     ConnError, ConnId, InstanceId, NeedId, OpenDesc, PieceKind, PollConns,
 };
@@ -826,7 +826,7 @@ impl EgressFarEnd<'_> {
         let token = match plane {
             Some((token, _)) => token,
             None => {
-                own = Pass::<Route>::mint(&KernelSeal::acquire_for_kernel());
+                own = Pass::<Route>::mint(&crate::seal::acquire());
                 &own
             }
         };

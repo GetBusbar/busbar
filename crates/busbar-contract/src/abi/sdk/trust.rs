@@ -10,20 +10,15 @@
 /// The last contact with an upstream, over what a successful one observed (`O`). `Never` is not a
 /// failure: an upstream nobody has looked at, or one approved declaratively, has legitimately never
 /// been contacted.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum Sighting<O> {
     /// Never contacted.
+    #[default]
     Never,
     /// The contact, or its verification, failed, with the operator-visible reason.
     Failed(String),
     /// Contacted (and verified, where the plane verifies), and this is what it presented.
     Seen(O),
-}
-
-impl<O> Default for Sighting<O> {
-    fn default() -> Self {
-        Self::Never
-    }
 }
 
 impl<O> Sighting<O> {

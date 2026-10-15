@@ -142,9 +142,9 @@ pub fn decode(bytes: &[u8]) -> Result<ProviderKeys, String> {
         &["catalog", "deployment", "entry"],
     )?;
     Ok(ProviderKeys {
-        catalog: table_of(&doc[0], "catalog")?,
-        deployment: table_of(&doc[1], "deployment")?,
-        entry: table_of(&doc[2], "entry")?,
+        catalog: table_of(doc[0], "catalog")?,
+        deployment: table_of(doc[1], "deployment")?,
+        entry: table_of(doc[2], "entry")?,
     })
 }
 
