@@ -2484,3 +2484,9 @@ config.migrate|LAW0-MIG-OPERATOR-14X|boot	PASS	exit 0; models: {}
 config.migrate|LAW0-MIG-OPERATOR-INLINE|boot	PASS	exit 0; models: {}	
 egress.fetch|plugins|chunked-over-cap	PASS	capture	
 egress.fetch|plugins|declared-over-cap	PASS	capture	
+llm|anthropic|anthropic|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|bedrock|bedrock|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|cohere|cohere|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|gemini|gemini|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
+llm|openai|openai|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
+llm|responses|responses|request|stream_upstream_cut	PASS	HTTP 200; usage Δ {"requests":1}	
