@@ -92,13 +92,13 @@ fn exported_symbols(example: &str) -> Vec<String> {
 fn the_macros_export_exactly_one_symbol_the_door() {
     let door = std::str::from_utf8(&DOOR_SYMBOL[..DOOR_SYMBOL.len() - 1]).unwrap();
     let plugin = exported_symbols("sdk_door_plugin");
-    // M6-COLD-DELETE: the baseline is not empty while `busbar-contract` itself defines the cold
-    // lane's `#[no_mangle]` symbols (`abi::sdk::__door`); after the cold lane is deleted it is, and
-    // the plugin's whole export list is the door alone.
+    // The contract defines no `#[no_mangle]` symbol of its own: the HOT and COLD lanes' frozen
+    // handshake (`busbar_abi`, `busbar_plugin_kind`, `busbar_plane_decl`, ...) is deleted (row 84),
+    // so an image that links the contract and exports no door exports no busbar symbol at all.
     let baseline = exported_symbols("sdk_door_baseline");
     assert!(
-        !baseline.iter().any(|s| s == door),
-        "the contract alone exports the door: {baseline:?}"
+        !baseline.iter().any(|s| s.starts_with("busbar_")),
+        "RED: the contract alone exports a busbar symbol: {baseline:?}"
     );
     let missing: Vec<&String> = baseline.iter().filter(|s| !plugin.contains(s)).collect();
     assert!(

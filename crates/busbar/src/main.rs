@@ -271,9 +271,9 @@ fn register_protocols() {
 
 /// REGISTER THE PLANES — the composition root's one write into the plane axis
 /// (`busbar_kernel::plane::registry::install_planes`), over the plane tables of [`LINKED`] (each
-/// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`, and each
-/// linked HOT-lane plane) and the HOT-lane planes dropped into the configured `plugins.dir` — the
-/// linked and the dropped-in ones adapted by one function (`root::linked::hot_plane_row`).
+/// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`) and the
+/// plane doors, linked and dropped into the configured `plugins.dir`, discovered first
+/// (`root::boot::discover_planes`) and folded by one fold.
 /// `merged_boot_plane_decls` normalises the installed set to canonical layering order, so each row
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
 /// every root unit's seal.
@@ -292,7 +292,8 @@ fn register_planes() {
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::boot::dropped_from_config(&LINKED);
-    root::linked::register_planes(&LINKED, root::boot::dropped_planes_of(&LINKED, dropped));
+    root::boot::discover_planes(&LINKED, dropped);
+    root::linked::register_planes(&LINKED);
     root::linked::register_exports(dropped);
     // A plugin that declares an inbound need is refused until an accepted connection has a
     // consumer, after the axes it selects against are registered.

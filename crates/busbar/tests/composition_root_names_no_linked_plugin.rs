@@ -201,7 +201,7 @@ four = "busbar-fourth"
 one = "plane protocols"
 two = "plane egress"
 three = "plane diagnostics egress"
-four = "hot-plane"
+four = "plane-door"
 
 [package.metadata.busbar.linked-entry]
 busbar-third = "crate::root::third_half"
@@ -228,8 +228,12 @@ unit-b = "beta"
     assert!(out.contains("    protocols: &[busbar_first::linked::PROTOCOLS, ],\n"));
     assert!(out.contains("    diagnostics: &[crate::root::third_half::DIAGNOSTICS, ],\n"));
     assert!(
-        out.contains("    hot_planes: &[&busbar_fourth::linked::PLANE_DECL, ],\n"),
-        "the plane axis's HOT lane references the entry's C-ABI decl: {out}"
+        out.contains("    plane_doors: &[busbar_fourth::linked::door, ],\n"),
+        "the plane door axis references the entry's door: {out}"
+    );
+    assert!(
+        !out.contains("hot_planes"),
+        "the HOT plane lane is deleted: no LINKED table carries it: {out}"
     );
     assert!(
         out.contains("    compose: &[],\n"),
@@ -250,6 +254,8 @@ unit-b = "beta"
         manifest.replace("three = []\n", ""),
         manifest.replace("three = \"plane diagnostics egress\"\n", ""),
         manifest.replace("plane diagnostics egress", "plane diagnostics teleport"),
+        // RED: the deleted HOT plane lane's axis is an unknown axis, refused.
+        manifest.replace("four = \"plane-door\"", "four = \"hot-plane\""),
     ] {
         let refused = std::panic::catch_unwind(|| linked_source(&broken, &enabled));
         assert!(refused.is_err(), "must be refused:\n{broken}");

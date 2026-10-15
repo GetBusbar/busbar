@@ -518,13 +518,11 @@ pub fn registry(
 // ── THE PLANES ───────────────────────────────────────────────────────────────────────────────────
 
 /// The plane axis, discovered ([`crate::PluginRegistry::open_planes`]): the planes that state
-/// themselves through a door, not yet bound, and the HOT-lane planes (M6-HOT-PLANE) already opened.
+/// themselves through a door, not yet bound.
 #[derive(Default)]
 pub struct PlaneSet {
     /// Each plane with a door: linked rows first, then the dropped-in ones in scan order.
     pub doors: Vec<Candidate>,
-    /// Each HOT-lane plane (no Statement), opened.
-    pub hot: Vec<crate::DynPlane>,
 }
 
 /// THE PLANES' ONE LOAD: every door plane of a [`PlaneSet`] selected under its own name and bound

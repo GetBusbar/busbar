@@ -255,7 +255,7 @@ fn audit(seq: u64, action: &str) -> AuditRecord {
 }
 
 /// A credential of `kind` (Q-P4-7: the script writes, and looks up, the ONE kind the shipped store
-/// schemas hold, 1.5.5's, `abi::cold`'s `PutCredential` "today only" kind; a store whose schema
+/// schemas hold, 1.5.5's `PutCredential` "today only" kind; a store whose schema
 /// constrains the kind refuses any other). The kind is the plugin's `conformance.json`
 /// `store.credential_kind`, never a word this crate spells (`c1-literals`: the loader names no auth
 /// style). Its secret is in the contract's at-rest form (`CredentialSecret::secret`, `v1:plain`).

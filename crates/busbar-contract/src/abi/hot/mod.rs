@@ -4,8 +4,8 @@
 //! The busbar **protocol-plane HOT-tier ABI** — a `#[repr(C)]`, POD-by-pointer, zero-alloc seam
 //! between the neutral engine and a protocol plane (compiled in or `dlopen`ed).
 //!
-//! This is the HOT lane of [`busbar_plugin`](crate); the [`cold`](crate::abi::cold) lane is its
-//! deliberately-opposite sibling (JSON over six C symbols, off the request hot path). Both obey the
+//! This is the HOT lane of [`busbar_plugin`](crate); the COLD lane (`abi::cold`, deleted) was its
+//! deliberately-opposite sibling (JSON over six C symbols, off the request hot path). Both obeyed the
 //! shared airlock preamble and sized-struct discipline hoisted to the [crate root](crate).
 //!
 //! Every type and signature here is real. The host side of the table is built by busbar-kernel's
@@ -41,8 +41,8 @@ pub mod workitem;
 
 /// The cdylib ENTRYPOINT convention a dropped-in plane exports so the loader can recover its
 /// [`PlaneDecl`]. This is the HOT-lane analogue of the cold lane's six `busbar_*` symbols
-/// ([`crate::abi::cold::symbol`]): a plane `cdylib` still exports `busbar_abi()` (the SHARED
-/// [`TRANSPORT_VERSION`](crate::abi::cold::TRANSPORT_VERSION) handshake) and `busbar_plugin_kind()` (==
+/// (`abi::cold::symbol`, deleted): a plane `cdylib` exported `busbar_abi()` (the SHARED
+/// `TRANSPORT_VERSION` handshake) and `busbar_plugin_kind()` (==
 /// `"plane"`, [`crate::abi::mechanism::kind::PLANE`]) so it rides the EXACT same tarball / signed-manifest /
 /// trust discovery pipeline; the ONE extra symbol below is how it hands core the `#[repr(C)]` decl
 /// pointer instead of the JSON `call` wire.
@@ -75,7 +75,7 @@ pub mod symbol {
 pub type PlaneArmFn = unsafe extern "C-unwind" fn(host: *const PlaneHostVtable) -> RawStatus;
 
 /// `busbar_plane_decl` — the plane cdylib entrypoint's fn-pointer type the loader resolves via
-/// `libloading`. `unsafe extern "C-unwind"` for parity with the cold [`AbiFn`](crate::abi::cold::AbiFn):
+/// `libloading`. `unsafe extern "C-unwind"` for parity with the cold lane's `AbiFn` (deleted):
 /// a panic in a plane's decl accessor unwinds as a DEFINED forced unwind the loader's guard catches,
 /// rather than aborting at the plugin frame.
 ///
