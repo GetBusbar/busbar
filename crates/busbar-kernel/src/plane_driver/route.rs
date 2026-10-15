@@ -249,6 +249,14 @@ pub trait FarEnd: Sync {
     fn judged(&self, token: &Pass<Route>, fault: u8) {
         let _ = (token, fault);
     }
+    /// THE PLANE TOOK THE ANSWER AS FINAL before its last piece: it answered the caller itself from
+    /// what had arrived (a whole answer past the plane's translation cap is the caller's 500), so
+    /// the far end did its work and the attempt's budget unit stays spent, as 1.5.5 kept it for a
+    /// body past its cap (its `test_truncated_body_does_not_refund_budget`). A caller that LEAVES
+    /// mid-read is not this: no plane answer ends it, and its buffered answer refunds.
+    fn taken(&self, token: &Pass<Route>) {
+        let _ = token;
+    }
     /// [`Self::judged`] with THE REASON THE PLANE'S READING STATES (`OnPieceOut::fault_reason`):
     /// the plane's own neutral words for why it reads the answer so, carried verbatim to the
     /// breaker's record of that reading; `None` = none stated. The kernel never makes its own
@@ -1323,6 +1331,9 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     .ok()
                     .filter(|r| !r.is_empty());
                 self.far.judged_stating(run.token, out.fault, reason);
+                if out.flags & EMIT_DONE != 0 && piece.flags & PIECE_LAST == 0 {
+                    self.far.taken(run.token);
+                }
             }
             // THE MEMBER WHOSE WAIT THE REFUSAL ANSWERS, stated on the answer to the walk's exhausted
             // refused piece and nowhere else (`OnPieceOut::wait_member`): kept for the refusal;
@@ -1448,7 +1459,11 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     }
                     let headed = run.lock().facts.headed;
                     if !headed && !streamed && (out.reply_status != 0 || !emitted.is_empty()) {
-                        run.lock().facts.headed = true;
+                        {
+                            let mut st = run.lock();
+                            st.facts.headed = true;
+                            st.facts.status = out.reply_status;
+                        }
                         // THE ANSWER COMMITS: no failover after the first byte, so the member that
                         // answered is the unit's serving member, the one 1.5.5 ledgered and metered
                         // the response under (v1.5.5 `crates/busbar/src/proxy/usage.rs`

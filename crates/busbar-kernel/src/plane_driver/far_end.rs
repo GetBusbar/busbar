@@ -431,6 +431,9 @@ struct Live {
     /// The reason the plane's reading of the held answer states ([`FarEnd::judged_stating`]),
     /// carried verbatim to the breaker's record of that reading; never one of the kernel's own.
     fault_reason: Option<String>,
+    /// The plane took the answer as final before its last piece ([`FarEnd::taken`]): the attempt's
+    /// budget unit stays spent when it settles mid-read.
+    taken: bool,
 }
 
 /// The transport's reading of a relayed answer, held for the plane's.
@@ -760,7 +763,9 @@ impl EgressFarEnd<'_> {
         // A unit dropped mid-answer refunds unless a byte of a streamed answer was delivered (spec
         // Part 2 #62, #77(2); v1.5.5 `crates/busbar/src/proxy/response_body.rs:279-306`). A buffered
         // answer dropped mid-read refunds, as 1.5.5's `budget_guard` did (`engine/mod.rs:229-256`).
-        if live.spent && !live.ended && !live.delivered {
+        // An answer the plane took as final before its last piece (a body past its cap) is not
+        // dropped: the far end did the work, and 1.5.5 kept the unit (FarEnd::taken).
+        if live.spent && !live.ended && !live.delivered && !live.taken {
             e.breaker.refund_budget(live.member.destination);
         }
         if !live.answered && self.probe_of.is_none() {
@@ -945,6 +950,7 @@ impl EgressFarEnd<'_> {
             failing: None,
             stated: None,
             fault_reason: None,
+            taken: false,
         });
         Pick::Member {
             name,
@@ -1864,6 +1870,12 @@ impl FarEnd for EgressFarEnd<'_> {
 
     fn judged(&self, token: &Pass<Route>, fault: u8) {
         self.judged_stating(token, fault, None);
+    }
+
+    fn taken(&self, _token: &Pass<Route>) {
+        if let Some(live) = self.lock().live.as_mut() {
+            live.taken = true;
+        }
     }
 
     /// The plane's reading with the reason it states: kept beside the held answer and carried,

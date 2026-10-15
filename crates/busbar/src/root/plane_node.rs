@@ -1390,9 +1390,16 @@ impl LateAccrual {
         } = self;
         let book = crate::root::durability::SharedBook::over(Arc::clone(&held));
         let card = card_in_force(Some(&history), arrived.ms());
-        let Some(report) = late().map(Report::of) else {
-            // Nothing arrived after all: the one line is the exit's posting as it stood, written
-            // where the exit would have written it.
+        // A unit that did not complete and whose reading counts nothing at all (no class, no
+        // billable request: a unit a gate hook refused before its dial) leaves no line of counts on
+        // the book: the exit's posting closes its hold, as when no reading arrived.
+        let completed = outcome.is_some_and(Outcome::is_completed);
+        let Some(report) = late()
+            .map(Report::of)
+            .filter(|report| completed || !counts_of(report).is_empty())
+        else {
+            // Nothing arrived after all, or nothing that counts: the exit's posting as it stood,
+            // written where the exit would have written it.
             if let Some(exit) = exit {
                 // No counts arrived, and the posting is a figure, not counts: no line.
                 let lines = Vec::new();

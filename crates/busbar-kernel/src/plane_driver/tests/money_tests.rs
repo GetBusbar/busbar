@@ -915,6 +915,7 @@ fn a_floor_count_bills_like_a_reported_one() {
 fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
     let facts = crate::plane_driver::cancel::Facts {
         headed: false,
+        status: 0,
         far_end_answered: true,
         streamed: true,
         cut: false,

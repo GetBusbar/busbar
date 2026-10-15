@@ -7292,16 +7292,15 @@ mod pools_door_money {
         }
     }
 
-    /// The token figures a sealed record reports: each token line's class and quantity.
+    /// The token figures a sealed record reports: each token line's class and quantity. The token
+    /// classes are the contract's four reserved units (`records::RESERVED_UNITS`: input, output,
+    /// cache read, cache write), the names a record line carries them under.
     fn token_lines(record: &busbar_kernel_audit::AuditRecord) -> Vec<(String, u64)> {
         record
             .usage
             .lines
             .iter()
-            .filter(|line| {
-                let class = line.class.as_str();
-                class.starts_with("tokens_") || class.starts_with("cache_")
-            })
+            .filter(|line| busbar_contract::records::RESERVED_UNITS.contains(&line.class.as_str()))
             .map(|line| (line.class.as_str().to_string(), line.quantity))
             .collect()
     }
@@ -8042,7 +8041,10 @@ mod pools_door_money {
         lines.sort();
         assert_eq!(
             lines,
-            vec![("tokens_in".to_string(), 11), ("tokens_out".to_string(), 7)],
+            vec![
+                (busbar_contract::records::UNIT_INPUT.to_string(), 11),
+                (busbar_contract::records::UNIT_OUTPUT.to_string(), 7)
+            ],
             "one line per streamed tier"
         );
     }

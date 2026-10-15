@@ -3043,16 +3043,59 @@ const CUT_1_5_5: &[(&str, bool, &[u8])] = &[
 /// 1.5.5's Bedrock caller: one `InternalServerException` exception frame (binary eventstream).
 const CUT_1_5_5_BEDROCK: &str = "000000a7000000659afd09380f3a657863657074696f6e2d74797065070017496e7465726e616c536572766572457863657074696f6e0d3a636f6e74656e742d747970650700106170706c69636174696f6e2f6a736f6e0d3a6d6573736167652d74797065070009657863657074696f6e7b226d657373616765223a2254686520726573706f6e73652073747265616d2077617320696e7465727275707465642e227d4b3fd5c9";
 
-/// A Responses frame with its run-specific id and timestamp removed.
+/// The members of a Response object signed register entry S-6 adds to 1.5.5's (the spec's required
+/// members, emitted with their defaults or carried values).
+const S6_RESPONSE_MEMBERS: &[&str] = &[
+    "incomplete_details",
+    "instructions",
+    "tools",
+    "tool_choice",
+    "parallel_tool_calls",
+    "metadata",
+    "temperature",
+    "top_p",
+];
+
+/// A Responses `response.failed` frame as 1.5.5's recording is compared to it: its event name and
+/// its data with the run's own values taken out — the response `id` and `created_at` (the run's),
+/// the `model` (1.5.5 wrote a fresh writer's fallback; the stream's own carried model is the one
+/// identity a stream keeps, S-15), the top-level `sequence_number` (contiguous with the frames the
+/// stream already carried, signed entry S-2; 1.5.5 restarted it at 0) — and the S-6 members. Each of
+/// those is checked present on the candidate first.
 fn without_run_ids(frame: &[u8]) -> (Vec<u8>, Value) {
     let text = std::str::from_utf8(frame).expect("text");
     let (event, data) = text.split_once("\ndata: ").expect("an event and its data");
     let mut v: Value = serde_json::from_str(data.trim_end()).expect("JSON");
+    if let Some(top) = v.as_object_mut() {
+        top.remove("sequence_number");
+    }
     if let Some(r) = v.get_mut("response").and_then(Value::as_object_mut) {
         r.remove("id");
         r.remove("created_at");
+        r.remove("model");
+        for member in S6_RESPONSE_MEMBERS {
+            r.remove(*member);
+        }
     }
     (event.as_bytes().to_vec(), v)
+}
+
+/// The run's own values on a candidate `response.failed` frame are there and well formed.
+fn assert_run_ids(frame: &[u8]) {
+    let text = std::str::from_utf8(frame).expect("text");
+    let (_, data) = text.split_once("\ndata: ").expect("an event and its data");
+    let v: Value = serde_json::from_str(data.trim_end()).expect("JSON");
+    assert!(v["sequence_number"].is_u64(), "S-2 numbers the frame: {v}");
+    let r = &v["response"];
+    assert!(
+        r["id"].as_str().is_some_and(|id| id.starts_with("resp_")),
+        "{v}"
+    );
+    assert!(r["created_at"].is_u64(), "{v}");
+    assert!(r["model"].as_str().is_some_and(|m| !m.is_empty()), "{v}");
+    for member in S6_RESPONSE_MEMBERS {
+        assert!(r.get(*member).is_some(), "S-6 member {member}: {v}");
+    }
 }
 
 /// A STREAM CUT AFTER ITS FIRST BYTE ENDS IN 1.5.5'S BYTES, for every caller dialect (row-159 audit
@@ -3094,6 +3137,7 @@ fn a_stream_cut_after_its_first_byte_ends_in_1_5_5s_bytes_for_every_caller_diale
             got = format!("{}{}", &text[..at], &text[end..]).into_bytes();
         }
         if ingress == "responses" {
+            assert_run_ids(&got);
             assert_eq!(without_run_ids(&got), without_run_ids(want), "{ingress}");
         } else {
             assert_eq!(

@@ -682,10 +682,11 @@ pub trait DriverSteps: Units {
     /// carries it (`handlers::usage_tap_fault`).
     fn usage_tap_fault(&self, _ctx: &UnitCtx, _dialect: u32, _reason: &'static str) {}
     /// How the unit's answer went, as the driver saw it, handed just before its audit seat: a byte
-    /// of the reply reached the caller (`streamed`), and the far end CUT the answer after its head
-    /// (`cut`). The steps class the unit's finish by them (ARCHITECT ruling 2026-10-15: a unit cut
-    /// by the far end, or dropped after its first byte, is `Partial`; a cut is not a refusal,
-    /// #77(7)/#62).
+    /// of a SUCCESS answer reached the caller (`streamed`: its head stated a 2xx, or no status, and
+    /// a byte followed; an error envelope the caller was answered with instead is not one), and the
+    /// far end CUT the answer after its head (`cut`). The steps class the unit's finish by them
+    /// (ARCHITECT ruling 2026-10-15: a unit cut by the far end, or dropped, after the first byte of
+    /// its answer is `Partial`; a cut is not a refusal, #77(7)/#62).
     fn answered(&self, _ctx: &UnitCtx, _streamed: bool, _cut: bool) {}
     /// THE STEPS' OWN WORDS for a refusal they decided with `reason`, handed to the plane's
     /// `refusal` as [`busbar_contract::abi::plane::RefusalIn::text`] (as a limit names the bucket
@@ -1264,6 +1265,7 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> PlaneUnits<'_, S, F, C> {
         let rendered = self.render(ReasonCode::OverBudget);
         let streamed = std::mem::replace(&mut self.lock().facts.streamed, true);
         if !streamed {
+            self.lock().facts.status = rendered.status;
             self.caller.head(rendered.status, rendered.fields);
         }
         let _written = self.caller.write(&rendered.body).await;
@@ -1299,7 +1301,8 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
     fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> StepAnswer<Audit> {
         let (streamed, cut) = {
             let st = self.lock();
-            (st.facts.streamed, st.facts.cut)
+            let success = st.facts.status == 0 || (200..300).contains(&st.facts.status);
+            (st.facts.streamed && success, st.facts.cut)
         };
         self.steps.answered(ctx, streamed, cut);
         self.steps.audit(token, ctx, outcome)

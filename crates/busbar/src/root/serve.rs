@@ -3751,6 +3751,13 @@ impl FarEnd for DoorFar<'_, '_> {
         }
     }
 
+    /// The plane took the answer as final before its last piece, handed on.
+    fn taken(&self, token: &Pass<Route>) {
+        if let Some(far) = self.far() {
+            far.taken(token);
+        }
+    }
+
     async fn write(&self, token: &Pass<Route>, request: OutboundRequest) -> bool {
         match self.far() {
             Some(far) => far.write(token, request).await,

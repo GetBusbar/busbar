@@ -868,8 +868,10 @@ impl Drop for DoorSteps<'_> {
 /// 2026-10-15: `Complete` for a whole answer; `Partial` for a unit the far end CUT after its head
 /// (ruling (a) completes it, its transient cleared) or one the node ended after a byte of its reply
 /// reached the caller (the caller dropped it, a `cut-stream` budget cut): a cut is not a refusal
-/// (#77(7), #62), what arrived arrived; `Error` for a refused or failed unit, and for one ended
-/// before its first byte. `streamed` and `cut` are the driver's facts ([`DriverSteps::answered`]).
+/// (#77(7), #62), what arrived arrived; `Error` for a refused or failed unit, for one ended before
+/// the first byte of a success answer, and for a cut answered with an error (a buffered answer
+/// cut mid-body is the caller's 502). `streamed` and `cut` are the driver's facts
+/// ([`DriverSteps::answered`]).
 fn facts(
     op: OpClassId,
     outcome: &Outcome,
@@ -878,7 +880,10 @@ fn facts(
 ) -> busbar_contract::AuditFacts {
     use busbar_contract::FinishClass;
     let finish = match outcome {
-        Outcome::Completed if cut => FinishClass::Partial,
+        // A cut after the first byte of a success answer: what arrived, arrived.
+        Outcome::Completed if cut && streamed => FinishClass::Partial,
+        // A cut the caller was answered with an error for (a buffered answer's 502).
+        Outcome::Completed if cut => FinishClass::Error,
         Outcome::Completed => FinishClass::Complete,
         Outcome::Aborted(_) if streamed => FinishClass::Partial,
         _ => FinishClass::Error,
