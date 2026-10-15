@@ -193,6 +193,10 @@ enum State {
 /// ONE ATTEMPT'S ANSWER.
 pub struct Reply {
     state: State,
+    /// The relayed answer ended a usable success the caller was reading (its first byte reached
+    /// the caller and its stream ended clean): a caller that leaves while its last window is still
+    /// being written bills the units it stated, as one that left mid-relay does (L1#5).
+    ended_partial: bool,
 }
 
 impl std::fmt::Debug for Reply {
@@ -261,6 +265,7 @@ impl Reply {
     pub fn new(ctx: &ReplyCtx<'_>, status: u16, head: HeadFields<'_>) -> Self {
         if !(200..300).contains(&status) {
             return Reply {
+                ended_partial: false,
                 state: State::Error {
                     status,
                     head: head.iter().map(|(n, v)| (n.to_vec(), v.to_vec())).collect(),
@@ -276,6 +281,7 @@ impl Reply {
         let egress = ctx.lane.dialect;
         let Some(op) = handler(ctx) else {
             return Reply {
+                ended_partial: false,
                 state: State::Whole {
                     status,
                     body: Vec::new(),
@@ -287,6 +293,7 @@ impl Reply {
         // same-dialect answer takes the relay path below, which carries the far head.
         if relay::takes_whole(ingress, egress, far_is_stream) {
             return Reply {
+                ended_partial: false,
                 state: State::Whole {
                     status,
                     body: Vec::new(),
@@ -327,6 +334,7 @@ impl Reply {
             translate_cap: ctx.translate_cap,
         });
         Reply {
+            ended_partial: false,
             state: State::Relay {
                 relay: Box::new(relay),
                 head: Some(Head { status, fields }),
@@ -402,6 +410,7 @@ impl Reply {
                         tap_fault: None,
                     };
                 }
+                let partial = relay.partial();
                 let end = relay.end();
                 if !end.bytes.is_empty() {
                     out.to_mut().extend_from_slice(&end.bytes);
@@ -410,10 +419,19 @@ impl Reply {
                     .generation_failed
                     .then_some(Fault::Transient("upstream-generation-failed")));
                 // The end's report replaces a floor stated while relaying, even when it is zero.
-                let units = Units {
-                    stated: units.floor,
-                    ..Units::of(end.usage.as_ref(), end.open_units)
+                // A stream the far end itself ended as FAILED (its terminal error, or a translation
+                // that aborted) delivered no completed generation and bills no tokens, as 1.5.5
+                // billed none (v1.5.5 proxy/response_body.rs:550-575, `if !billing_failed`): its
+                // buffered twin (a `failed` status) reports none either (row-159 L3#4).
+                let units = if end.stream_fault.is_some() {
+                    Units::default()
+                } else {
+                    Units {
+                        stated: units.floor,
+                        ..Units::of(end.usage.as_ref(), end.open_units)
+                    }
                 };
+                self.ended_partial = partial && fault.is_none();
                 self.state = State::Done;
                 Piece {
                     head,
@@ -437,7 +455,11 @@ impl Reply {
     /// its cancel bills the units the answer stated so far.
     #[must_use]
     pub fn partial(&self) -> bool {
-        matches!(&self.state, State::Relay { relay, .. } if relay.partial())
+        match &self.state {
+            State::Relay { relay, .. } => relay.partial(),
+            State::Done => self.ended_partial,
+            _ => false,
+        }
     }
 
     /// CUT the answer: the far end's transfer failed (`transport`) or the kernel's ceiling for it
@@ -462,6 +484,7 @@ impl Reply {
                 mut relay, head, ..
             } => {
                 let cut = relay.cut(transport);
+                self.ended_partial = cut.partial;
                 Piece {
                     head,
                     bytes: Cow::Owned(cut.bytes.unwrap_or_default()),
