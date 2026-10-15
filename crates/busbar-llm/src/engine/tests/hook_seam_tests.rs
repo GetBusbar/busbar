@@ -8,8 +8,8 @@ use crate::test_support::{chat, LaneSpec, TestApp};
 use busbar_contract::hooks::{
     Candidate, PolicyResult, RoutingContext, RoutingDecision, RoutingPolicy, RoutingRequest,
 };
-use busbar_kernel::config::PolicyOnError;
 use busbar_kernel::hooks::{ResolvedPolicy, REQUIRED_HOOK_UNAVAILABLE_STATUS};
+use busbar_kernel::{config::PolicyOnError, seal::lend};
 use std::sync::Mutex as StdMutex;
 
 /// The prompt as the policy saw it: (flattened system, [(role, text)]).
@@ -1742,7 +1742,7 @@ async fn send_user_projects_governance_key_identity() {
         busbar_contract::operation::OpVerb::CHAT,
         false,
         Some(&crate::engine::CallerCredential::for_test(
-            secret.expose(&busbar_kernel::seal::lend()),
+            secret.expose(&lend()),
         )),
         None,
     )
@@ -1753,14 +1753,8 @@ async fn send_user_projects_governance_key_identity() {
     assert_eq!(key_name.as_deref(), Some("sales-team"));
     assert_eq!(user.as_deref(), Some("alice"));
     // The secret NEVER rides the projection, under any configuration.
-    assert_ne!(
-        key_id.as_deref(),
-        Some(secret.expose(&busbar_kernel::seal::lend()).as_str())
-    );
-    assert_ne!(
-        key_name.as_deref(),
-        Some(secret.expose(&busbar_kernel::seal::lend()).as_str())
-    );
+    assert_ne!(key_id.as_deref(), Some(secret.expose(&lend()).as_str()));
+    assert_ne!(key_name.as_deref(), Some(secret.expose(&lend()).as_str()));
 }
 
 /// A GROUP/SSO principal's token is not a virtual-key secret, so the

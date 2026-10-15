@@ -11,9 +11,12 @@ use crate::testkit::shell::operation_ingress_inner;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::Response;
-use busbar_kernel::ingress::{
-    admit_check, finish, finish_admitted, finish_rejected, governance_guard, ingress_error,
-    not_found_message, percent_decode, pool_authorized, pool_label,
+use busbar_kernel::{
+    ingress::{
+        admit_check, finish, finish_admitted, finish_rejected, governance_guard, ingress_error,
+        not_found_message, percent_decode, pool_authorized, pool_label,
+    },
+    seal::lend,
 };
 use serde_json::Value;
 use std::sync::Arc;
@@ -5238,11 +5241,7 @@ async fn governed_pool_acl_router(
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
-    (
-        addr,
-        handle,
-        secret.expose(&busbar_kernel::seal::lend()).clone(),
-    )
+    (addr, handle, secret.expose(&lend()).clone())
 }
 
 /// Cohere `/v2/chat` governance pool-ACL 403 must carry the Cohere-native error envelope
@@ -5534,7 +5533,7 @@ async fn test_fallback_pool_acl_denies_key_not_allowed_on_fallback_target() {
     // is configured and the key is not allowed on B, so the request must be rejected upfront.
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/A/v1/messages"))
-        .credential(secret.expose(&busbar_kernel::seal::lend()))
+        .credential(secret.expose(&lend()))
         .body(json!({"model": "A", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -5623,7 +5622,7 @@ async fn test_fallback_pool_acl_allows_key_permitted_on_both_pools() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/A/v1/messages"))
-        .credential(secret.expose(&busbar_kernel::seal::lend()))
+        .credential(secret.expose(&lend()))
         .body(json!({"model": "A", "messages": [{"role": "user", "content": "hi"}]}).to_string())
         .send()
         .await
@@ -5795,7 +5794,7 @@ async fn test_adhoc_governance_pool_acl_403_via_router() {
 
     let resp = reqwest::Client::new()
         .post(format!("http://{addr}/anthropic/claude-x/v1/messages"))
-        .credential(secret.expose(&busbar_kernel::seal::lend()))
+        .credential(secret.expose(&lend()))
         .body(json!({"model": "claude-x", "messages": [], "max_tokens": 16}).to_string())
         .send()
         .await
@@ -6140,11 +6139,7 @@ async fn governed_limit_router(
         .build();
     let (_host, _rt) = crate::engine::test_host_rt(&app);
     let (addr, handle) = serve(app).await;
-    (
-        addr,
-        handle,
-        secret.expose(&busbar_kernel::seal::lend()).clone(),
-    )
+    (addr, handle, secret.expose(&lend()).clone())
 }
 
 /// Each first-class ingress route: an over-RPM virtual key is rejected with a PROTOCOL-NATIVE

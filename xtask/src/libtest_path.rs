@@ -344,8 +344,12 @@ const PLANE_DOOR_AXIS: &str = "plane-door";
 /// `[package.metadata.busbar.linked]` row of its manifest (cargo feature -> plane crate) whose
 /// `[package.metadata.busbar.linked-axes]` value names the `plane-door` axis (the rows its build
 /// script mounts cells for), the module its build script names for the feature and the
-/// repo-relative `tests/root/mod.rs` of the crate its `[dependencies]` row's `path` names. A row
-/// whose crate names no path is skipped here: its cells are not in this tree.
+/// repo-relative `tests/root/mod.rs` of the crate its `[dependencies]` row names: at the row's
+/// `path` for a path dependency, and at the crate's census mount (`crates/<crate>`, a sibling of the
+/// root's own directory, where the base layer lays the pinned checkout) for a PINNED one. The root's
+/// build script compiles both alike (`DEP_BUSBAR_DOOR_CELLS_<CRATE>_CELLS`) and cites a door's cells
+/// by that same mount (`DOOR_CELLS_FILES`), so a plane door that left for its own repo keeps its root
+/// cells: they are read from the pin, never skipped.
 pub fn door_cells(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Vec<(String, String)> {
     let crate_dir = parent(&parent(root_file));
     let Some(manifest) = read(&join(&crate_dir, "Cargo.toml")) else {
@@ -361,11 +365,15 @@ pub fn door_cells(read: &dyn Fn(&str) -> Option<String>, root_file: &str) -> Vec
         })
         .filter_map(|(feature, krate)| {
             let dep = deps.iter().find(|(k, _)| *k == krate)?;
-            let path = dep.1.split_once("path")?.1.split('"').nth(1)?;
-            Some((
-                feature.replace('-', "_"),
-                join(&join(&crate_dir, path), "tests/root/mod.rs"),
-            ))
+            let dir = match dep
+                .1
+                .split_once("path")
+                .and_then(|(_, at)| at.split('"').nth(1))
+            {
+                Some(path) => join(&crate_dir, path),
+                None => join(&parent(&crate_dir), &krate),
+            };
+            Some((feature.replace('-', "_"), join(&dir, "tests/root/mod.rs")))
         })
         .collect()
 }

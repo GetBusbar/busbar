@@ -420,7 +420,11 @@ fn journal_roots(file: &str, src: &str) -> Vec<Root> {
     let mut current_impl: Option<String> = None;
     for (k, (no, text)) in lines.iter().enumerate() {
         let t = text.trim();
-        if !text.starts_with(char::is_whitespace) {
+        // Only a line at column 0 opens or closes an item. A BLANK line is neither: it sits between
+        // two methods of one `impl`, and reading it as the impl's end lost every `fn body(&self)`
+        // written after the first method (`impl CardApplied { fn draft .. <blank> fn body .. }`), so
+        // the Policy writers yielded one record type where the tree writes two.
+        if !t.is_empty() && !text.starts_with(char::is_whitespace) {
             current_impl = t
                 .strip_prefix("impl ")
                 .and_then(|r| {

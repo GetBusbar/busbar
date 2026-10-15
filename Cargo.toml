@@ -159,6 +159,8 @@ crc32fast = "1"
 # DTLS for the connector's dtls engine (WebRTC), on ring through the connector's own provider:
 # no default features, so neither aws-lc-rs nor the RustCrypto suite enters.
 dimpl = { version = "=0.7.4", default-features = false }
+# str0m and aes (the webrtc framer's media stack and its SRTP key derivation) left with the framer
+# (#964): busbar-transport-webrtc pins them in its own repo, and no member here inherits them.
 # THE MICROBENCHMARK HARNESS. Dev-only, and deliberately stripped: `default-features = false` drops
 # criterion's plotting stack (plotters, its font/image chain) and its rayon thread pool, keeping
 # `cargo_bench_support` — the part `cargo bench` actually needs to run a `harness = false` target.

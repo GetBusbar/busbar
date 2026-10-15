@@ -9,7 +9,7 @@
 //! binary. The pure-auth (401/verification) tests that never reach dispatch stay in core.
 
 use busbar_contract::records::ScopeRef;
-use busbar_kernel::auth::AuthMiddleware;
+use busbar_kernel::{auth::AuthMiddleware, seal::lend};
 
 /// HOW A TEST CALLER PRESENTS ITS CREDENTIAL — the one place this crate's engine tests spell the
 /// `Authorization` scheme. Every other engine test module presents a credential through
@@ -115,13 +115,7 @@ fn dp_gov_with_key() -> (
             1_000_000_000,
         )
         .unwrap();
-    (
-        gov,
-        secret
-            .expose(&busbar_kernel::seal::lend())
-            .as_str()
-            .to_string(),
-    )
+    (gov, secret.expose(&lend()).as_str().to_string())
 }
 
 fn dp_ok_state() -> std::sync::Arc<crate::test_support::MockServerState> {
@@ -369,10 +363,8 @@ async fn test_disabled_virtual_key_is_rejected_401() {
         .unwrap();
     // Freeze the first key via the PATCH-shaped update (mint always starts `enabled: true`).
     gov.update_key(&dis_key.id, Some(false), None).unwrap();
-    let disabled_secret = disabled_secret
-        .expose(&busbar_kernel::seal::lend())
-        .as_str();
-    let enabled_secret = enabled_secret.expose(&busbar_kernel::seal::lend()).as_str();
+    let disabled_secret = disabled_secret.expose(&lend()).as_str();
+    let enabled_secret = enabled_secret.expose(&lend()).as_str();
 
     let app = TestApp::new()
         .lane(
@@ -504,7 +496,7 @@ async fn test_governance_accepts_vendor_carriers_and_native_401() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.expose(&busbar_kernel::seal::lend()).as_str();
+    let secret = token.expose(&lend()).as_str();
 
     let app = TestApp::new()
         .lane(
@@ -627,7 +619,7 @@ async fn test_governance_revoked_signed_token_key_rejected() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.expose(&busbar_kernel::seal::lend()).as_str();
+    let secret = token.expose(&lend()).as_str();
 
     let app = TestApp::new()
         .lane(
@@ -921,7 +913,7 @@ async fn test_governance_active_with_admin_token_enforces_minted_key() {
             1_000_000_000,
         )
         .unwrap();
-    let secret = token.expose(&busbar_kernel::seal::lend()).as_str();
+    let secret = token.expose(&lend()).as_str();
 
     let app = TestApp::new()
         .lane(
@@ -1172,9 +1164,7 @@ async fn test_active_governance_persisted_key_is_enforced() {
             1_000_000_000,
         )
         .unwrap();
-    let persisted_secret = persisted_secret
-        .expose(&busbar_kernel::seal::lend())
-        .as_str();
+    let persisted_secret = persisted_secret.expose(&lend()).as_str();
 
     let app = TestApp::new()
         .lane(

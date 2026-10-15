@@ -17,7 +17,10 @@
 //!   `busbar-<key>` engines each name their key in their directory. And every plane declares its
 //!   own key in its `PlaneMeta` impl (`const KEY: &'static str = "…";`), which is read too, so a
 //!   plane whose crate is spelled some other way still names itself.
-//! * **TRANSPORTS** — every `crates/busbar-transport-<key>` crate, on disk or laid by the pinned base.
+//! * **TRANSPORTS** — every `crates/busbar-transport-<key>` crate: on disk, in the overlay, or laid
+//!   by the base layer from the root's pin (`kind_isolation::plane_base`, the ARCHITECT
+//!   P5 ruling: the base lays every pinned transport crate). The last in-tree transport left for its
+//!   own repo (#964); a vocabulary read off the disk alone then had no transport word at all.
 //! * **DIALECTS** — every `busbar-plane-<plane>-<dialect>` crate (the kind scheme's four-segment
 //!   dialect name), plus the dialects a plane crate DECLARES in production source: a `name: "…"`
 //!   field of a `Dialect { … }` table row, and a `=> "…"` arm of an `impl Dialect` block.
@@ -292,10 +295,10 @@ fn declared_in(text: &str, planes: &mut BTreeSet<String>, dialects: &mut BTreeSe
     }
 }
 
-/// Every directory directly under `crates/` that holds a `Cargo.toml`, base and overlay included —
-/// a pinned crate the BASE layer lays where it lived (a transport extracted to its own repo) is
-/// still an instance of the tree, a plant that adds a crate adds it here, and a plant that deletes
-/// its manifest removes it.
+/// Every directory directly under `crates/` that holds a `Cargo.toml`, overlay and base layer
+/// included — a plant that adds a crate adds it here, a plant that deletes its manifest removes it,
+/// and a pinned crate the base layer lays at `crates/<package>` is a crate of the tree exactly as it
+/// was when it lived here.
 fn crate_dirs_on_tree(cx: &Ctx) -> BTreeSet<String> {
     let mut dirs: BTreeSet<String> = BTreeSet::new();
     if let Ok(rd) = std::fs::read_dir(cx.abs("crates")) {

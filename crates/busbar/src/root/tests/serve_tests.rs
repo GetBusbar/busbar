@@ -4716,6 +4716,17 @@ async fn the_pools_doors_hooks_see_each_candidates_standing() {
     );
 }
 
+/// A far end's clean event stream: each of `events` one frame, the stream ending with no abort. The
+/// served pools door's rehomed cells (the walk's and the money's) share this one spelling of the
+/// mock's stream answer rather than each naming the wire's variant.
+#[cfg(linked_driver_proofs)]
+fn event_stream(events: Vec<String>) -> busbar_kernel::test_support::MockResponse {
+    busbar_kernel::test_support::MockResponse::Sse {
+        events,
+        abort_at_index: None,
+    }
+}
+
 // ── F25 REHOME: THE WALK AND THE BREAKER ON THE SERVED POOLS DOOR ───────────────────────────────
 //
 // The previous release's engine tests of the walk (failover, exhaustion, the first-byte boundary)
@@ -4806,14 +4817,11 @@ mod pools_door_walk_and_breaker {
         let _one = ONE_PUBLISHER.lock().await;
         let instance = "rehome-walk-null-stream-options";
         let _published = Withdrawn(instance);
-        let (state, server) = mock(vec![MockResponse::Sse {
-            events: vec![
-                r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}"#.to_string(),
-                r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#.to_string(),
-                r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":17,"total_tokens":24}}"#.to_string(),
-            ],
-            abort_at_index: None,
-        }])
+        let (state, server) = mock(vec![event_stream(vec![
+            r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":"Hi"},"finish_reason":null}]}"#.to_string(),
+            r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#.to_string(),
+            r#"{"id":"chatcmpl-x","object":"chat.completion.chunk","choices":[],"usage":{"prompt_tokens":7,"completion_tokens":17,"total_tokens":24}}"#.to_string(),
+        ])])
         .await;
         let rig = rig(
             instance,
@@ -7556,14 +7564,11 @@ mod pools_door_money {
         let _published = Withdrawn(instance);
         inside_one_minute().await;
         let streamed = || {
-            MockResponse::Sse {
-            events: vec![
+            event_stream(vec![
                 r#"{"choices":[{"delta":{"role":"assistant"}}]}"#.to_string(),
                 r#"{"choices":[{"delta":{"content":"Hello there friend"}}]}"#.to_string(),
                 r#"{"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":60}}"#.to_string(),
-            ],
-            abort_at_index: None,
-        }
+            ])
         };
         let (rig, _server) = thirty_tokens_a_minute(instance, vec![streamed(), streamed()]).await;
         let (status, _, body) = rig
@@ -7787,13 +7792,10 @@ mod pools_door_money {
         ];
         for (instance, path, request) in dialects {
             let _published = Withdrawn(instance);
-            let (_state, server) = mock(vec![MockResponse::Sse {
-                events: vec![
-                    r#"{"id":"chatcmpl-nousage","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}"#.to_string(),
-                    r#"{"id":"chatcmpl-nousage","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#.to_string(),
-                ],
-                abort_at_index: None,
-            }])
+            let (_state, server) = mock(vec![event_stream(vec![
+                r#"{"id":"chatcmpl-nousage","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{"role":"assistant","content":"hello"},"finish_reason":null}]}"#.to_string(),
+                r#"{"id":"chatcmpl-nousage","object":"chat.completion.chunk","created":0,"model":"m0","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#.to_string(),
+            ])])
             .await;
             let rig = rig(
                 instance,

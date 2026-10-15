@@ -1497,7 +1497,7 @@ confined_to_paths = ["crates/busbar-kernel/src/recovery.rs"]
 because = "it materialises a hold from a journal record with no admission behind it"
 
 [rules.seal-sites.symbols.hold-cell-take]
-symbol = "take(&Grant::<Exit>::mint("
+symbol = "take(&Grant::<Exit>::mint"
 confined_to = "kernel/src"
 # The scope resolved against this tree, matched as path prefixes.
 confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel/src/tick.rs"]
@@ -1506,6 +1506,9 @@ confined_to_paths = ["crates/busbar-kernel/src/teller.rs", "crates/busbar-kernel
 # literal cannot see, so confinement guarded two of the three and "no fourth" was guarded by
 # nothing: a fourth take written inside teller.rs sat inside the home and the row stayed PASS.
 # The sweep now spells the literal, and `sites` holds the home to exactly three.
+# The literal stops at `mint`, before the paren (#1027, call-binding): the teller's two takes mint
+# their exit grant BOUND to the unit's call (`mint_bound(seal, ctx.call)`), the sweep's is unbound
+# (`mint(`), and the one literal reads all three spellings, so the count still holds at three.
 sites = 3
 because = "there are three take sites -- the exit path and a child unit's end in teller.rs, and the sweep in tick.rs -- and no fourth"
 

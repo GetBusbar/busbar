@@ -14,13 +14,10 @@ fn debug_and_display_never_reveal_the_secret() {
     assert_eq!(format!("{r}"), "[REDACTED]");
     assert!(!format!("{r:?}").contains(secret));
     assert!(!format!("{r}").contains(secret));
-    // And it is reachable only through the explicit audit point, under a kernel seal.
-    assert_eq!(r.expose(&seal()), secret);
-}
-
-/// A kernel-minted grant: the seal `expose` takes (this crate's own tests may mint one).
-fn seal() -> crate::caps::Grant<crate::caps::Sign> {
-    crate::caps::Grant::mint(&crate::caps::KernelSeal::acquire_for_kernel())
+    // And it is reachable only through the explicit audit point, under a kernel seal: the test
+    // harness presents the dev-only test seal (#65), and mints no token of its own — a mint is the
+    // kernel's alone (`token-sealed:kernel-seal`).
+    assert_eq!(r.expose(&crate::plugin::TestKernelSeal), secret);
 }
 
 /// RED (Part 2 #54, coordinator ruling 2026-10-14): `Debug`, `Display` and `to_string` render the
