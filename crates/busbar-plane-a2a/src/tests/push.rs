@@ -645,12 +645,12 @@ fn the_callback_mac_is_compared_in_constant_time() {
     );
 }
 
-/// RED (BUSBAR-1.6.0.md THE DESIGN §6: logs, audit records, metrics and error text never carry a
-/// credential's value): the caller's webhook credential is caller payload the plane holds as a
-/// [`PushCredential`], and its bytes reach the `Authorization` field and nothing else. The
+/// RED (BUSBAR-1.6.0.md Locked Decision #54: logs, audit records, metrics and error text never
+/// carry a credential's value): the caller's webhook credential is caller payload the plane holds
+/// as a [`PushCredential`], and its bytes reach the `Authorization` field and nothing else. The
 /// credential's own `Debug`, a registered config's `Debug`, and the refusal of a credential busbar
-/// cannot present (the registration's error path) all leave the bytes out. A `PushCredential`
-/// whose `Debug` derived its field, or a refusal that quoted the value back, fails here.
+/// cannot present (the registration's error path) all leave the bytes out. A `PushCredential` whose
+/// `Debug` derived its field, or a refusal that quoted the value back, fails here.
 #[test]
 fn the_push_credential_reaches_the_authorization_field_and_no_debug_or_error_text() {
     let secret = "s3cret-webhook-tok";

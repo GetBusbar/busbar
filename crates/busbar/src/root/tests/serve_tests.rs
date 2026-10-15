@@ -629,7 +629,7 @@ pub(super) mod session_door {
     };
     use crate::root::plane_node::{Node, NodeEndPost};
     use crate::root::serve::planes_tests::{composed_services, Published, PUBLISHING};
-    use crate::root::serve::{compose_planes, door_routes, DoorEgress};
+    use crate::root::serve::{compose_planes, DoorEgress};
 
     /// The deployment's dated card history the served unit is pinned to at its door: one entry, no
     /// price (billing off: the counts are the unit's fact and price at nothing).
@@ -653,6 +653,9 @@ pub(super) mod session_door {
     /// The session door's mint claim.
     const MINT: &str = "/v1/realtime/client_secrets";
 
+    /// The session door's sideband claim: an upgrade line a live session opens on.
+    const SIDEBAND: &str = "/v1/realtime/sideband/{call_id}";
+
     /// The provider's answer to the mint: an ephemeral secret and its expiry.
     const MINTED: &str = r#"{"value":"ek_door_0001","expires_at":1767225600}"#;
 
@@ -663,7 +666,9 @@ pub(super) mod session_door {
     /// door among the linked plane doors without spelling the plane.
     const AUDIO_CLASS: &str = "audio_seconds_in";
 
-    /// A POST of `body` (JSON) to `path` on `router`, with `token` as its bearer or with none.
+    /// A POST of `body` (JSON) to `path` on `router`, with `token` as its bearer or with none,
+    /// answered within [`ANSWER_BOUND`]: a door that held a call at its provider fails the cell
+    /// instead of holding the job.
     async fn send_body(
         router: &axum::Router,
         path: &str,
@@ -679,17 +684,50 @@ pub(super) mod session_door {
             req = req.header("authorization", format!("Bearer {token}"));
         }
         let req = req.body(axum::body::Body::from(body)).expect("a request");
-        router
-            .clone()
-            .oneshot(req)
+        tokio::time::timeout(ANSWER_BOUND, router.clone().oneshot(req))
             .await
+            .unwrap_or_else(|_| panic!("the door answers {path} within {ANSWER_BOUND:?}"))
             .expect("the router answers")
     }
+
+    /// How long a cell waits on a door's answer, or on the bytes of its body, before it fails.
+    const ANSWER_BOUND: std::time::Duration = std::time::Duration::from_secs(15);
+
+    /// `response`'s body, read to its end within [`ANSWER_BOUND`].
+    async fn body_of(response: axum::response::Response) -> axum::body::Bytes {
+        tokio::time::timeout(
+            ANSWER_BOUND,
+            axum::body::to_bytes(response.into_body(), 1 << 16),
+        )
+        .await
+        .expect("the body ends within the bound")
+        .expect("the body")
+    }
+
+    /// How the far end answers one connection.
+    #[derive(Debug, Clone, Copy)]
+    enum Far {
+        /// A status line and a JSON body.
+        Says(&'static str, &'static str),
+        /// Nothing: the request is read and the connection held open, unanswered.
+        Holds,
+    }
+
+    /// How the far end answers its `n`th connection (from zero).
+    type FarScript = Arc<dyn Fn(usize) -> Far + Send + Sync>;
 
     /// A far end on loopback answering every request 200 with `answer` (JSON); what it was sent comes
     /// back on the channel, one request (head and body) per connection.
     async fn far_end_answering(
         answer: &'static str,
+    ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        far_end_scripted(Arc::new(move |_| Far::Says("200 OK", answer))).await
+    }
+
+    /// A far end on loopback answering its `n`th connection as `script` says; what it was sent comes
+    /// back on the channel, one request (head and body) per connection, before it answers.
+    async fn far_end_scripted(
+        script: FarScript,
     ) -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -697,7 +735,10 @@ pub(super) mod session_door {
         let port = listener.local_addr().expect("its address").port();
         let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
         tokio::spawn(async move {
+            let mut accepted = 0usize;
             while let Ok((mut socket, _)) = listener.accept().await {
+                let answer = script(accepted);
+                accepted += 1;
                 let sent = sent.clone();
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 16 * 1024];
@@ -728,10 +769,18 @@ pub(super) mod session_door {
                             }
                         }
                     }
+                    let (line, body) = match answer {
+                        Far::Says(line, body) => (line, body),
+                        Far::Holds => {
+                            // Held past any bound a test waits for; the socket closes with the task.
+                            tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                            return;
+                        }
+                    };
                     let reply = format!(
-                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
-                         connection: close\r\n\r\n{answer}",
-                        answer.len()
+                        "HTTP/1.1 {line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\n\
+                         connection: close\r\n\r\n{body}",
+                        body.len()
                     );
                     let _ = socket.write_all(reply.as_bytes()).await;
                     let _ = socket.shutdown().await;
@@ -739,6 +788,39 @@ pub(super) mod session_door {
             }
         });
         (port, heard)
+    }
+
+    /// The env whose `test-hook` is the kernel's in-process hook double (`prompt: rw`, `user: ro`):
+    /// its `settings:` choose its answer.
+    fn hook_env() -> busbar_kernel::hooks::HookEnv {
+        busbar_kernel::test_support::test_hook_env(
+            &["test-hook"],
+            busbar_plugin_loader::sign::HookNeeds {
+                prompt: busbar_plugin_loader::sign::NeedLevel::Rw,
+                user: busbar_plugin_loader::sign::NeedLevel::Ro,
+            },
+        )
+    }
+
+    /// A deployment-wide `kind: gate` on the in-process hook double, answering `reply` to every
+    /// decision it is asked for.
+    fn global_gate(reply: serde_json::Value) -> busbar_kernel::config::HookCfg {
+        serde_json::from_value(serde_json::json!({
+            "kind": "gate",
+            "module": "test-hook",
+            "timeout_ms": 10_000,
+            "on_error": "weighted",
+            "prompt": "ro",
+            "user": "ro",
+            "priority": 0,
+            "settings": { "raw_decide_reply": reply },
+            "global": true,
+            "default": false,
+            "signals": [],
+            "groups": [],
+            "phase": [],
+        }))
+        .expect("a hook document")
     }
 
     /// The session door, served as production composes it, and what each root-leg cell reads.
@@ -756,6 +838,26 @@ pub(super) mod session_door {
         money: Arc<PlaneMoney>,
         post: Arc<NodeEndPost>,
         book: crate::root::durability::NodeBook,
+    }
+
+    /// How a cell composes the session door beyond the defaults ([`session_with`]).
+    #[derive(Default)]
+    struct Opts {
+        /// The caller's group's all-time budget, with the door's per-request fee one; `None` = no
+        /// budget and no fee.
+        budget: Option<u64>,
+        /// Further limits on the caller's group (a group is made for them when there is none).
+        limits: Vec<busbar_kernel::config::groups::LimitCfg>,
+        /// The pools the caller's key is minted with; `None` = every pool.
+        allowed_pools: Option<Vec<String>>,
+        /// How the provider answers; `None` = every mint answered 200 with [`MINTED`].
+        far: Option<FarScript>,
+        /// Hooks the deployment defines, each `global` (run on every plane's units), with the hook
+        /// stage composed over the generation; empty = no hook stage.
+        hooks: Vec<(&'static str, busbar_kernel::config::HookCfg)>,
+        /// A provider the cell started itself (its port, and what it reports hearing), in place of
+        /// the scripted one.
+        far_end: Option<(u16, tokio::sync::mpsc::UnboundedReceiver<String>)>,
     }
 
     /// The linked plane door that meters audio (the session door), bound under `instance`; `None` in
@@ -823,17 +925,47 @@ pub(super) mod session_door {
 
     /// [`session_keyed`] over a provider credential its file holds; the composition must succeed.
     async fn session_served(instance: &'static str, budget: Option<u64>) -> Option<SessionDoor> {
+        session_with(
+            instance,
+            Opts {
+                budget,
+                ..Opts::default()
+            },
+        )
+        .await
+    }
+
+    /// [`session_composed`] under `opts`, over a provider credential its file holds; the composition
+    /// must succeed.
+    async fn session_with(instance: &'static str, opts: Opts) -> Option<SessionDoor> {
         let key_file = std::env::temp_dir().join(format!(
             "busbar-serve-door-{instance}-{}",
             std::process::id()
         ));
         std::fs::write(&key_file, CREDENTIAL).expect("the credential file");
         let api_key = format!("{{file: '{}'}}", key_file.display());
-        let served = session_keyed(instance, budget, &api_key).await;
+        let served = session_composed(instance, opts, &api_key).await;
         let _ = std::fs::remove_file(&key_file);
         served.map(|s| {
             s.unwrap_or_else(|e| panic!("the session door composes, its egress sealed: {e}"))
         })
+    }
+
+    /// [`session_composed`] with the defaults but `budget`.
+    pub(in crate::root::serve) async fn session_keyed(
+        instance: &'static str,
+        budget: Option<u64>,
+        api_key: &str,
+    ) -> Option<Result<SessionDoor, String>> {
+        session_composed(
+            instance,
+            Opts {
+                budget,
+                ..Opts::default()
+            },
+            api_key,
+        )
+        .await
     }
 
     /// [`SessionDoor`]: the linked session door (the plane door that meters audio) bound through
@@ -846,13 +978,20 @@ pub(super) mod session_door {
     /// composition itself, and its claims mounted on the data router. `None` in a build that links
     /// no session door; the composition's refusal is answered rather than panicked on: what the
     /// root's boot dies on.
-    pub(in crate::root::serve) async fn session_keyed(
+    async fn session_composed(
         instance: &'static str,
-        budget: Option<u64>,
+        opts: Opts,
         api_key: &str,
     ) -> Option<Result<SessionDoor, String>> {
+        // The scrape's `/metrics` is mounted on a test app built with the recorder installed.
+        busbar_kernel::snapshot::init();
+        let budget = opts.budget;
         let published = Published(instance);
-        let (port, heard) = far_end_answering(MINTED).await;
+        let (port, heard) = match (opts.far_end, opts.far) {
+            (Some(far_end), _) => far_end,
+            (None, Some(script)) => far_end_scripted(script).await,
+            (None, None) => far_end_answering(MINTED).await,
+        };
         let connector = connector();
         let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
         let plane = session_door(
@@ -880,30 +1019,33 @@ pub(super) mod session_door {
                 .expect("the session door states a bearer-style dialect")
         };
 
-        let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = budget
-            .map(|amount| {
-                let limit = busbar_kernel::config::groups::LimitCfg {
-                    metric: busbar_kernel::config::groups::LimitMetric::Budget,
-                    amount,
-                    per: Some(busbar_kernel::config::groups::LimitWindow::Total),
-                    scope: None,
-                    on_exhaust: None,
-                    downgrade_to: None,
-                    admission: None,
-                    on_exhaustion: None,
-                };
-                let cfg = busbar_kernel::config::GroupCfg {
-                    parent: None,
-                    enabled: true,
-                    limits: vec![limit],
-                    ..Default::default()
-                };
-                (format!("{instance}-group"), cfg)
-            })
-            .into_iter()
-            .collect();
+        let mut limits = opts.limits;
+        if let Some(amount) = budget {
+            limits.push(busbar_kernel::config::groups::LimitCfg {
+                metric: busbar_kernel::config::groups::LimitMetric::Budget,
+                amount,
+                per: Some(busbar_kernel::config::groups::LimitWindow::Total),
+                scope: None,
+                on_exhaust: None,
+                downgrade_to: None,
+                admission: None,
+                on_exhaustion: None,
+            });
+        }
+        let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = if limits.is_empty() {
+            BTreeMap::new()
+        } else {
+            let cfg = busbar_kernel::config::GroupCfg {
+                parent: None,
+                enabled: true,
+                limits,
+                ..Default::default()
+            };
+            BTreeMap::from([(format!("{instance}-group"), cfg)])
+        };
         let cost = match budget {
-            None => CostModel::flat(1),
+            None if groups.is_empty() => CostModel::flat(1),
+            None => CostModel::resolve_parts(None, 1, &groups),
             Some(_) => {
                 let fees: busbar_kernel::config::PlaneFeesMap = [(
                     plane_name.clone(),
@@ -927,6 +1069,7 @@ pub(super) mod session_door {
                 NewKeySpec {
                     name: "browser".to_string(),
                     group: groups.keys().next().cloned(),
+                    allowed_pools: opts.allowed_pools,
                     ..Default::default()
                 },
                 4_000_000_000,
@@ -975,13 +1118,32 @@ pub(super) mod session_door {
             stream_ceiling_secs: 600,
             catalog: Some(&catalog),
             models: None,
-            upgrades: Vec::new(),
+            // The linked claims that open at an upgrade, as production composes them: a session
+            // door's provider is dialled in its line's own scheme.
+            upgrades: crate::root::serve::upgrade_carriers(crate::LINKED.transports),
         };
         let mut sections = BTreeMap::new();
         sections.insert(
             section_key,
             serde_yaml::from_str("session: {model: m-cap}").expect("a section"),
         );
+        // THE KERNEL'S HOOK STAGE over this cell's generation (the App built below), when the cell
+        // defines hooks: the door's tail states its hook order, and the stage binds the deployment's
+        // hooks to each unit.
+        let live_app: Arc<std::sync::OnceLock<Arc<busbar_kernel::state::App>>> = Arc::default();
+        let stage = (!opts.hooks.is_empty()).then(|| crate::root::serve::HookStage {
+            host: {
+                let live_app = Arc::clone(&live_app);
+                Arc::new(move || {
+                    busbar_kernel::plane_host::engine_host(
+                        live_app
+                            .get()
+                            .expect("the cell's App is built before any unit"),
+                    )
+                })
+            },
+            gov: Arc::clone(&gov),
+        });
         let mut served = match compose_planes(
             &[(instance.to_string(), Arc::new(plane))],
             &dispatcher,
@@ -993,7 +1155,7 @@ pub(super) mod session_door {
                 reach: &reach,
                 journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
             }),
-            None,
+            stage.as_ref(),
         ) {
             Ok(served) => served,
             Err(refusal) => return Some(Err(refusal)),
@@ -1008,10 +1170,31 @@ pub(super) mod session_door {
         let app = groups
             .iter()
             .fold(app, |app, (name, cfg)| app.group(name, cfg.clone()));
+        let app = if opts.hooks.is_empty() {
+            app
+        } else {
+            opts.hooks
+                .iter()
+                .fold(app.hook_env(hook_env()), |app, (name, cfg)| {
+                    app.hook(name, cfg.clone())
+                })
+        };
         let app = app.governance(Arc::clone(&gov)).cost(cost).build();
-        let doors = door_routes(served, || CARD.pin(), &[], &[]).expect("its claims mount");
-        let (router, _admin, _handle) =
-            busbar_kernel::build_split_routers_serving(Arc::clone(&app), doors, 1 << 20, 0, false);
+        let _ = live_app.set(Arc::clone(&app));
+        // The door's claims as production mounts them: its request routes, and its session routes
+        // (an upgrade line's claim, mounted as a GET session route).
+        let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports);
+        let mounts = crate::root::serve::door_mounts(served, || CARD.pin(), &[], &[], &upgrades)
+            .expect("its claims mount");
+        let (router, _admin, _handle) = busbar_kernel::build_split_routers_serving_doors(
+            Arc::clone(&app),
+            mounts.routes,
+            mounts.sessions,
+            mounts.refusals,
+            1 << 20,
+            0,
+            false,
+        );
         Some(Ok(SessionDoor {
             _published: published,
             router,
@@ -1049,6 +1232,98 @@ pub(super) mod session_door {
                 .filter(|p| p.counts.as_ref().is_some_and(|c| c.lane.ends_with("m-cap")))
                 .count()
         }
+
+        /// The real `/metrics` scrape on the data router, as the keyed caller.
+        async fn scrape(&self) -> String {
+            use tower::ServiceExt as _;
+            let req = axum::http::Request::builder()
+                .method("GET")
+                .uri("/metrics")
+                .header("authorization", format!("Bearer {}", self.plain))
+                .body(axum::body::Body::empty())
+                .expect("a request");
+            let response = self
+                .router
+                .clone()
+                .oneshot(req)
+                .await
+                .expect("the router answers");
+            assert_eq!(response.status(), StatusCode::OK, "the scrape is served");
+            let body = axum::body::to_bytes(response.into_body(), 1 << 22)
+                .await
+                .expect("the exposition");
+            String::from_utf8(body.to_vec()).expect("the exposition is UTF-8")
+        }
+
+        /// The audit records sealed on the node's book, oldest first.
+        fn audit_records(&self) -> Vec<busbar_kernel_audit::AuditRecord> {
+            self.book
+                .durability
+                .lock()
+                .expect("unpoisoned")
+                .audit_records
+                .clone()
+        }
+
+        /// A keyed mint read to its end: its status, and whether the provider heard it.
+        async fn mint_once(&mut self) -> (StatusCode, bool) {
+            let response = self.mint().await;
+            let status = response.status();
+            let _ = body_of(response).await;
+            // A dial the provider heard arrives before its answer was written back.
+            (status, self.heard.try_recv().is_ok())
+        }
+    }
+
+    /// The sum of `family`'s series on `exposition` whose `lane` label is the catalog route's (the
+    /// lane the door's DIRECT route names, ending in its catalog model).
+    fn counted(exposition: &str, family: &str) -> f64 {
+        exposition
+            .lines()
+            .filter(|l| l.starts_with(&format!("{family}{{")))
+            .filter(|l| {
+                l.split("lane=\"")
+                    .nth(1)
+                    .and_then(|rest| rest.split('"').next())
+                    .is_some_and(|lane| lane.ends_with("m-cap"))
+            })
+            .filter_map(|l| l.rsplit_once(' ')?.1.parse::<f64>().ok())
+            .sum()
+    }
+
+    /// The provider's transient failure, as its far end words it.
+    const UNAVAILABLE: &str = r#"{"error":{"message":"overloaded","type":"server_error"}}"#;
+
+    /// How many failing mints the route's breaker cell is given to open before the run calls it
+    /// stuck.
+    const MAX_FAILURES: usize = 8;
+
+    /// Mint until the route's breaker cell refuses a mint before its dial, the provider failing every
+    /// dial it hears: the dials it heard first, each one refused to the caller. `None` if the cell
+    /// never opened.
+    async fn trip(s: &mut SessionDoor) -> Option<usize> {
+        for n in 0..=MAX_FAILURES {
+            let (status, heard) = s.mint_once().await;
+            assert_ne!(status, StatusCode::OK, "mint {n} is not served");
+            if !heard {
+                return Some(n);
+            }
+        }
+        None
+    }
+
+    /// One request an hour, for the caller's group.
+    fn one_an_hour() -> busbar_kernel::config::groups::LimitCfg {
+        busbar_kernel::config::groups::LimitCfg {
+            metric: busbar_kernel::config::groups::LimitMetric::Requests,
+            amount: 1,
+            per: Some(busbar_kernel::config::groups::LimitWindow::Hour),
+            scope: None,
+            on_exhaust: None,
+            downgrade_to: None,
+            admission: None,
+            on_exhaustion: None,
+        }
     }
 
     /// THE SESSION DOOR'S MINT, SERVED (its root leg, ARCHITECT 2026-10-05 Q1): a keyed caller's
@@ -1079,9 +1354,7 @@ pub(super) mod session_door {
 
         let response = send_body(&s.router, MINT, Some(&s.plain), "{}").await;
         assert_eq!(response.status(), StatusCode::OK, "served through the door");
-        let body = axum::body::to_bytes(response.into_body(), 1 << 16)
-            .await
-            .expect("the body");
+        let body = body_of(response).await;
         let body: serde_json::Value = serde_json::from_slice(&body).expect("the door's JSON");
         assert_eq!(
             body,
@@ -1089,7 +1362,10 @@ pub(super) mod session_door {
             "the minted secret and its expiry"
         );
 
-        let head = s.heard.recv().await.expect("the provider was dialled");
+        let head = tokio::time::timeout(ANSWER_BOUND, s.heard.recv())
+            .await
+            .expect("the provider's dial is heard within the bound")
+            .expect("the provider was dialled");
         assert!(head.starts_with(&format!("POST {MINT} ")), "{head}");
         assert!(
             head.lines()
@@ -1139,6 +1415,522 @@ pub(super) mod session_door {
         assert_eq!(s.money.open_units(), 0);
         assert_eq!(s.post.open_units(), 0);
         assert_eq!(s.lines(), 0, "no line on the node's book");
+    }
+
+    /// BREAKER-TRIP, at the session door: a provider failing every mint records each failure into
+    /// the ONE breaker cell of the door's route, and the cell OPENS: the next mint is refused before
+    /// it is dialled, and the provider's failures are counted under the route's lane on the scrape.
+    /// RED: a breaker port that records no failure leaves the cell closed, and every mint is dialled.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failing_provider_opens_the_breaker_cell_of_the_doors_route() {
+        let _one = PUBLISHING.lock().await;
+        let mut s = session_with(
+            "serve-door-session-trip",
+            Opts {
+                far: Some(Arc::new(|_| {
+                    Far::Says("503 Service Unavailable", UNAVAILABLE)
+                })),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let failures = counted(
+            &s.scrape().await,
+            busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
+        );
+
+        let dialled = trip(&mut s)
+            .await
+            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing mints never opened the cell"));
+        assert!(dialled >= 1, "the cell opened on a failure it recorded");
+        assert!(
+            counted(
+                &s.scrape().await,
+                busbar_kernel::telemetry::UPSTREAM_FAILURES_TOTAL,
+            ) >= failures + 1.0,
+            "the provider's failures are counted under the route's lane"
+        );
+        assert_eq!(s.money.open_units(), 0, "every unit's money facts closed");
+        assert_eq!(s.post.open_units(), 0, "every unit's node facts closed");
+    }
+
+    /// BREAKER-FASTFAIL, at the session door: once the route's breaker cell has opened, the next
+    /// mint is refused BEFORE its dial and at once: the provider, which now holds every connection
+    /// open unanswered, is never dialled, and the refusal comes back in well under a second. RED: a
+    /// breaker port that admits an open cell dials the provider, which holds the mint past the bound.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_tripped_provider_is_refused_at_the_session_door_before_the_dial_at_once() {
+        let _one = PUBLISHING.lock().await;
+        let holding = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let held = Arc::clone(&holding);
+        let mut s = session_with(
+            "serve-door-session-fastfail",
+            Opts {
+                far: Some(Arc::new(move |_| {
+                    if held.load(std::sync::atomic::Ordering::SeqCst) {
+                        Far::Holds
+                    } else {
+                        Far::Says("503 Service Unavailable", UNAVAILABLE)
+                    }
+                })),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        trip(&mut s)
+            .await
+            .unwrap_or_else(|| panic!("{MAX_FAILURES} failing mints never opened the cell"));
+
+        // From here a dialled provider never answers: only the breaker can answer the next mint.
+        holding.store(true, std::sync::atomic::Ordering::SeqCst);
+        let started = std::time::Instant::now();
+        let response = tokio::time::timeout(std::time::Duration::from_secs(5), s.mint())
+            .await
+            .expect("the tripped route's mint is answered, not held at its provider");
+        let took = started.elapsed();
+        assert_ne!(response.status(), StatusCode::OK, "the mint is refused");
+        assert!(
+            s.heard.try_recv().is_err(),
+            "the refused mint never reached the provider"
+        );
+        assert!(
+            took < std::time::Duration::from_secs(1),
+            "refused before the dial, in milliseconds: {took:?}"
+        );
+    }
+
+    /// HOOKS-GATE, at the session door: a deployment-wide decision gate that rejects is asked about
+    /// the mint after admission and before the route's dial, and its veto is the caller's answer —
+    /// the hook's own status — with the provider never dialled and the unit closed. RED: a door
+    /// whose units the hook stage never reaches dials the provider and serves the mint (the
+    /// ungated mint cell above is the control).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_gate_hook_refuses_the_mint_before_the_provider_is_dialled() {
+        let _one = PUBLISHING.lock().await;
+        let mut s = session_with(
+            "serve-door-session-gated",
+            Opts {
+                hooks: vec![(
+                    "closed",
+                    global_gate(serde_json::json!({
+                        "reject": {"status": 409, "message": "no new sessions"}
+                    })),
+                )],
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let (status, heard) = s.mint_once().await;
+        assert_eq!(status.as_u16(), 409, "the hook's own status");
+        assert!(!heard, "the gated mint never reached the provider");
+        assert_eq!(
+            s.money.open_units(),
+            0,
+            "the refused unit's money facts closed"
+        );
+        assert_eq!(
+            s.post.open_units(),
+            0,
+            "the refused unit's node facts closed"
+        );
+        assert_eq!(s.lines(), 0, "no line on the node's book");
+    }
+
+    /// AUDIT-CHAIN, at the session door: every mint, served or refused, seals ONE record on the
+    /// node's tamper-evident audit chain under the door's one operation class, the second linked to
+    /// the first, and the chain walks clean; a record altered after its seal breaks the walk. The
+    /// refusal is the kernel's own, inside the loop: the caller's group allows one request an hour.
+    /// RED: a loop whose audit pass is never handed back to the node seals nothing.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_session_door_mint_served_or_refused_seals_one_record_on_one_chain() {
+        let _one = PUBLISHING.lock().await;
+        let mut s = session_with(
+            "serve-door-session-audit",
+            Opts {
+                limits: vec![one_an_hour()],
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let (status, heard) = s.mint_once().await;
+        assert_eq!(status, StatusCode::OK, "the first mint is served");
+        assert!(heard, "and dialled");
+        let (status, heard) = s.mint_once().await;
+        assert_ne!(status, StatusCode::OK, "the second is refused by the limit");
+        assert!(!heard, "before its dial");
+
+        let records = s.audit_records();
+        assert_eq!(records.len(), 2, "one record per unit: {records:?}");
+        let (served, refused) = (&records[0], &records[1]);
+        assert_eq!(
+            served.what.op_class.as_str(),
+            refused.what.op_class.as_str(),
+            "both sealed under the door's one operation class"
+        );
+        assert_eq!(
+            served.outcome.unit_end,
+            busbar_contract::caps::Outcome::Completed
+        );
+        assert!(
+            matches!(
+                refused.outcome.unit_end,
+                busbar_contract::caps::Outcome::Refused(_, ReasonCode::RateLimited)
+            ),
+            "the refusal is chained as one: {:?}",
+            refused.outcome
+        );
+        assert_eq!(refused.seq, served.seq + 1, "contiguous");
+        assert_eq!(
+            refused.prev_hash, served.hash,
+            "linked to the record before"
+        );
+        assert!(busbar_kernel_audit::AuditChain::verify_window(&records).is_ok());
+        assert!(
+            s.book
+                .durability
+                .lock()
+                .expect("unpoisoned")
+                .retained_audit_findings()
+                .is_empty(),
+            "the node's own verify finds nothing"
+        );
+        let mut forged = records.clone();
+        forged[0].outcome.unit_end = refused.outcome.unit_end;
+        assert!(
+            busbar_kernel_audit::AuditChain::verify_window(&forged).is_err(),
+            "a record altered after its seal breaks the chain"
+        );
+    }
+
+    /// METRICS, at the session door: a served mint's dial to the provider appears on the real
+    /// `/metrics` scrape, once, under the door's route lane. RED: an egress whose telemetry counts no
+    /// attempt leaves the scrape where it was.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_served_mint_counts_its_upstream_attempt_under_the_doors_route() {
+        let _one = PUBLISHING.lock().await;
+        let mut s = session_served("serve-door-session-metrics", None)
+            .await
+            .expect("the build links the session door");
+        let before = counted(
+            &s.scrape().await,
+            busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL,
+        );
+        let (status, heard) = s.mint_once().await;
+        assert_eq!(status, StatusCode::OK, "served");
+        assert!(heard, "dialled");
+        let exposition = s.scrape().await;
+        assert_eq!(
+            counted(
+                &exposition,
+                busbar_kernel::telemetry::UPSTREAM_ATTEMPTS_TOTAL
+            ),
+            before + 1.0,
+            "one attempt, counted under the route's lane:\n{exposition}"
+        );
+    }
+
+    /// APPROVE, at the session door: a key whose grant does not reach the door's pool is refused at
+    /// approval — before the provider is dialled, charged nothing, no line written — while a key with
+    /// the grant is served (the mint cell above). RED: a door that skipped approval would dial.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_key_short_of_the_doors_grant_is_refused_before_any_dial() {
+        let _one = PUBLISHING.lock().await;
+        let mut s = session_with(
+            "serve-door-session-ungranted",
+            Opts {
+                allowed_pools: Some(Vec::new()),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let (status, heard) = s.mint_once().await;
+        assert!(
+            status.is_client_error(),
+            "a key outside the door's grant is refused: {status}"
+        );
+        assert!(!heard, "the provider was never dialled");
+        assert_eq!(s.requests(), 0, "the refusal charged nothing");
+        assert_eq!(s.money.open_units(), 0);
+        assert_eq!(s.post.open_units(), 0);
+        assert_eq!(s.lines(), 0, "no line on the node's book");
+    }
+
+    // ── a live session through the door's session route, on a real listener ──────────────────────
+
+    /// SHA-1 of `data` (RFC 3174), for the one place RFC 6455 asks for it: the far end's
+    /// `Sec-WebSocket-Accept`.
+    fn sha1(data: &[u8]) -> [u8; 20] {
+        let mut h: [u32; 5] = [
+            0x6745_2301,
+            0xEFCD_AB89,
+            0x98BA_DCFE,
+            0x1032_5476,
+            0xC3D2_E1F0,
+        ];
+        let mut msg = data.to_vec();
+        let bits = (data.len() as u64).wrapping_mul(8);
+        msg.push(0x80);
+        while msg.len() % 64 != 56 {
+            msg.push(0);
+        }
+        msg.extend_from_slice(&bits.to_be_bytes());
+        for block in msg.chunks(64) {
+            let mut w: Vec<u32> = block
+                .chunks(4)
+                .map(|word| u32::from_be_bytes([word[0], word[1], word[2], word[3]]))
+                .collect();
+            while w.len() < 80 {
+                let n = w.len();
+                w.push((w[n - 3] ^ w[n - 8] ^ w[n - 14] ^ w[n - 16]).rotate_left(1));
+            }
+            let [mut a, mut b, mut c, mut d, mut e] = h;
+            for (i, wi) in w.iter().enumerate() {
+                let (f, k) = match i {
+                    0..=19 => ((b & c) | (!b & d), 0x5A82_7999),
+                    20..=39 => (b ^ c ^ d, 0x6ED9_EBA1),
+                    40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1B_BCDC),
+                    _ => (b ^ c ^ d, 0xCA62_C1D6),
+                };
+                let t = a
+                    .rotate_left(5)
+                    .wrapping_add(f)
+                    .wrapping_add(e)
+                    .wrapping_add(k)
+                    .wrapping_add(*wi);
+                e = d;
+                d = c;
+                c = b.rotate_left(30);
+                b = a;
+                a = t;
+            }
+            for (slot, v) in h.iter_mut().zip([a, b, c, d, e]) {
+                *slot = slot.wrapping_add(v);
+            }
+        }
+        let mut out = [0u8; 20];
+        for (i, v) in h.iter().enumerate() {
+            out[i * 4..i * 4 + 4].copy_from_slice(&v.to_be_bytes());
+        }
+        out
+    }
+
+    /// The `Sec-WebSocket-Accept` answering `key` (RFC 6455 section 4.2.2).
+    fn ws_accept(key: &str) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD.encode(sha1(
+            format!("{key}258EAFA5-E914-47DA-95CA-C5AB0DC85B11").as_bytes(),
+        ))
+    }
+
+    /// Read an HTTP head (through its blank line) off `socket`; `None` at end of stream.
+    async fn read_head(socket: &mut tokio::net::TcpStream) -> Option<String> {
+        let mut got = Vec::new();
+        let mut byte = [0u8; 1];
+        while !got.ends_with(b"\r\n\r\n") {
+            match socket.read(&mut byte).await {
+                Ok(1) => got.push(byte[0]),
+                _ => return None,
+            }
+        }
+        Some(String::from_utf8_lossy(&got).into_owned())
+    }
+
+    /// Read one WebSocket frame off `socket`, unmasking it: its opcode and payload; `None` at end of
+    /// stream.
+    async fn read_frame(socket: &mut tokio::net::TcpStream) -> Option<(u8, Vec<u8>)> {
+        let mut head = [0u8; 2];
+        socket.read_exact(&mut head).await.ok()?;
+        let opcode = head[0] & 0x0F;
+        let masked = head[1] & 0x80 != 0;
+        let len = match head[1] & 0x7F {
+            126 => {
+                let mut n = [0u8; 2];
+                socket.read_exact(&mut n).await.ok()?;
+                u64::from(u16::from_be_bytes(n))
+            }
+            127 => {
+                let mut n = [0u8; 8];
+                socket.read_exact(&mut n).await.ok()?;
+                u64::from_be_bytes(n)
+            }
+            n => u64::from(n),
+        };
+        let mut mask = [0u8; 4];
+        if masked {
+            socket.read_exact(&mut mask).await.ok()?;
+        }
+        let mut payload = vec![0u8; usize::try_from(len).ok()?];
+        socket.read_exact(&mut payload).await.ok()?;
+        if masked {
+            for (i, b) in payload.iter_mut().enumerate() {
+                *b ^= mask[i % 4];
+            }
+        }
+        Some((opcode, payload))
+    }
+
+    /// One text frame as a client sends it (masked, RFC 6455 section 5.3).
+    fn client_text(text: &str) -> Vec<u8> {
+        let bytes = text.as_bytes();
+        let mask = [0x37u8, 0xFA, 0x21, 0x3D];
+        let mut frame = vec![0x81u8];
+        match bytes.len() {
+            n if n < 126 => frame.push(0x80 | u8::try_from(n).expect("short")),
+            n => {
+                frame.push(0x80 | 126);
+                frame.extend_from_slice(&u16::try_from(n).expect("a short frame").to_be_bytes());
+            }
+        }
+        frame.extend_from_slice(&mask);
+        frame.extend(bytes.iter().enumerate().map(|(i, b)| b ^ mask[i % 4]));
+        frame
+    }
+
+    /// A provider on loopback speaking WebSocket: it accepts each dial's upgrade and reports
+    /// every TEXT frame it is sent on the channel, in order.
+    async fn far_socket() -> (u16, tokio::sync::mpsc::UnboundedReceiver<String>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let port = listener.local_addr().expect("its address").port();
+        let (sent, heard) = tokio::sync::mpsc::unbounded_channel();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let sent = sent.clone();
+                tokio::spawn(async move {
+                    let Some(head) = read_head(&mut socket).await else {
+                        return;
+                    };
+                    let Some(key) = head.lines().find_map(|l| {
+                        let (name, value) = l.split_once(':')?;
+                        name.eq_ignore_ascii_case("sec-websocket-key")
+                            .then(|| value.trim().to_string())
+                    }) else {
+                        return;
+                    };
+                    let reply = format!(
+                        "HTTP/1.1 101 Switching Protocols\r\nupgrade: websocket\r\n\
+                         connection: Upgrade\r\nsec-websocket-accept: {}\r\n\r\n",
+                        ws_accept(&key)
+                    );
+                    if socket.write_all(reply.as_bytes()).await.is_err() {
+                        return;
+                    }
+                    while let Some((opcode, payload)) = read_frame(&mut socket).await {
+                        match opcode {
+                            0x1 => {
+                                let _ = sent.send(String::from_utf8_lossy(&payload).into_owned());
+                            }
+                            0x8 => return,
+                            _ => {}
+                        }
+                    }
+                });
+            }
+        });
+        (port, heard)
+    }
+
+    /// The next text the provider heard that is not the session's own configuration, within a few
+    /// seconds; `None` when nothing more arrives.
+    async fn next_heard(
+        heard: &mut tokio::sync::mpsc::UnboundedReceiver<String>,
+    ) -> Option<String> {
+        loop {
+            let text = tokio::time::timeout(std::time::Duration::from_secs(5), heard.recv())
+                .await
+                .ok()??;
+            if !text.contains("session.update") {
+                return Some(text);
+            }
+        }
+    }
+
+    /// DECODE, at the session door (its root leg): a live session opened through the door's session
+    /// route, on a real listener, carries each client event the plane reads to the provider, and a
+    /// frame the plane cannot read reaches the provider on no wire — the session stays open, and the
+    /// next readable event is carried after it, in order. RED ARM: the readable events either side
+    /// of the unreadable frame must arrive, so a door that dropped every frame, or one that closed
+    /// the session on a bad one, fails here; a door that relayed the unreadable frame fails on it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_session_door_carries_what_the_plane_reads_and_no_frame_it_cannot() {
+        let _one = PUBLISHING.lock().await;
+        let far_end = far_socket().await;
+        let mut s = session_with(
+            "serve-door-session-decode",
+            Opts {
+                far_end: Some(far_end),
+                ..Opts::default()
+            },
+        )
+        .await
+        .expect("the build links the session door");
+        let (router, plain) = (s.router.clone(), s.plain.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("a loopback port");
+        let addr = listener.local_addr().expect("its address");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router.into_make_service()).await;
+        });
+
+        // The session door's upgrade line (its sideband claim's target, the call named), as a keyed
+        // caller opens it.
+        let route = SIDEBAND.replace("{call_id}", "call-decode");
+        let mut caller = tokio::net::TcpStream::connect(addr).await.expect("a dial");
+        let open = format!(
+            "GET {route} HTTP/1.1\r\nhost: {addr}\r\nupgrade: websocket\r\nconnection: Upgrade\r\n\
+             sec-websocket-key: dGhlIHNhbXBsZSBub25jZQ==\r\nsec-websocket-version: 13\r\n\
+             authorization: Bearer {plain}\r\n\r\n"
+        );
+        caller.write_all(open.as_bytes()).await.expect("the open");
+        let head = tokio::time::timeout(std::time::Duration::from_secs(10), read_head(&mut caller))
+            .await
+            .expect("the door answers the open")
+            .expect("a head");
+        assert!(
+            head.starts_with("HTTP/1.1 101"),
+            "the session opens: {head}"
+        );
+
+        let read = r#"{"type":"input_audio_buffer.append","audio":"AAAA"}"#;
+        caller
+            .write_all(&client_text(read))
+            .await
+            .expect("a readable event");
+        let carried = next_heard(&mut s.heard)
+            .await
+            .expect("a client event the plane reads is carried to the provider");
+        assert!(
+            carried.contains("input_audio_buffer.append"),
+            "the readable event, carried: {carried}"
+        );
+
+        caller
+            .write_all(&client_text("not a frame {"))
+            .await
+            .expect("an unreadable frame");
+        let after = r#"{"type":"input_audio_buffer.commit"}"#;
+        caller
+            .write_all(&client_text(after))
+            .await
+            .expect("a second readable event");
+        let next = next_heard(&mut s.heard)
+            .await
+            .expect("the session stays open and carries the next readable event");
+        assert!(
+            !next.contains("not a frame"),
+            "a frame the plane cannot read reaches the provider on no wire: {next}"
+        );
+        assert!(
+            next.contains("input_audio_buffer.commit"),
+            "the next event carried is the readable one after it: {next}"
+        );
     }
 }
 

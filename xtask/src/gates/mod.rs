@@ -438,11 +438,11 @@ pub const STRUCTURE_LINT_STANDING_REDS: &[&str] = &[
 /// A measurement above its figure is a NEW red; lower it in the commit that drains a site.
 pub const CONSTRUCTION_STANDING_FIGURES: &[(&str, u64)] = &[("one-pick-site", 3)];
 
-/// THE FIGURE EACH STRUCTURE-LINT STANDING RED IS EXCUSED AT, read the same way
-/// ("22 finding(s): PLANE-DUPLICATE ..." on predev at 00555bd98a and 40a4080937). One more
-/// plane-local reimplementation is a NEW red, not one more line inside an excused row.
-pub const STRUCTURE_LINT_STANDING_FIGURES: &[(&str, u64)] =
-    &[("structure-lint:plane-dup:unledgered", 22)];
+/// THE FIGURE EACH STRUCTURE-LINT STANDING RED IS EXCUSED AT, read the same way. Empty: its one
+/// figure (`structure-lint:plane-dup:unledgered`, 22) was superseded when #787 armed that row at its
+/// measured count (`plane_dups::UNLEDGERED_ARMED`, Law 9) and struck it from
+/// [`STRUCTURE_LINT_STANDING_REDS`]; a figure for a row no list excuses excuses nothing.
+pub const STRUCTURE_LINT_STANDING_FIGURES: &[(&str, u64)] = &[];
 
 /// One entry of [`REPORT_ONLY`].
 pub struct Posture {

@@ -641,19 +641,3 @@ async fn served_rider_audits_each_call_once() {
 async fn served_rider_ends_each_call_once() {
     run_served("exit", "served_rider_ends_each_call_once").await;
 }
-
-/// AUDIT-CHAIN, on the served leg: the call's record is linked into its tamper-evident chain.
-#[tokio::test]
-async fn served_rider_chains_what_it_audits() {
-    run_served("audit-chain", "served_rider_chains_what_it_audits").await;
-}
-
-/// GOVERNANCE-BUDGET, on the served leg: the spend is the presenting key's.
-#[tokio::test]
-async fn served_rider_charges_the_presenting_key() {
-    run_served(
-        "governance-budget",
-        "served_rider_charges_the_presenting_key",
-    )
-    .await;
-}

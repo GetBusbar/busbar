@@ -504,12 +504,12 @@ impl Conns for Panics {
     }
 }
 
-/// RED (THE DESIGN §11.11 M3, `BUSBAR-1.6.0.md` l.1515): every slot of the host's table is
-/// `extern "C"`, never `extern "C-unwind"` — the bindings below are typed `extern "C"`, and a
-/// `C-unwind` slot does not coerce to them, so this does not compile against one — and a host that
-/// panics in every operation answers [`ConnOutcome::Fault`] from each of the six slots. Nothing
-/// unwinds across the table: a panic escaping an `extern "C"` slot aborts the process, so this test
-/// reaching its end is the proof that each slot caught its own.
+/// RED (THE DESIGN, the signed kind-ABI design's finding M3, `BUSBAR-1.6.0.md` l.1515): every slot
+/// of the host's table is `extern "C"`, never `extern "C-unwind"` — the bindings below are typed
+/// `extern "C"`, and a `C-unwind` slot does not coerce to them, so this does not compile against
+/// one — and a host that panics in every operation answers [`ConnOutcome::Fault`] from each of the
+/// six slots. Nothing unwinds across the table: a panic escaping an `extern "C"` slot aborts the
+/// process, so this test reaching its end is the proof that each slot caught its own.
 #[test]
 fn a_panicking_slot_answers_fault_without_unwinding() {
     let slots = host_slots();

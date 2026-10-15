@@ -56,12 +56,8 @@ fn a_minted_answer_reads_the_ek_secret_and_its_expiry() {
             expires_at_unix: 1_700_000_600
         }
     );
-    assert_eq!(
-        read_minted(br#"{"value":"ek_x"}"#)
-            .expect("reads")
-            .expires_at_unix,
-        0
-    );
+    // An answer stating no expiry no longer reads as `expires_at_unix: 0`: it is refused (X-2204,
+    // `a_minted_answer_with_no_stated_expiry_is_refused`).
 }
 
 #[test]
