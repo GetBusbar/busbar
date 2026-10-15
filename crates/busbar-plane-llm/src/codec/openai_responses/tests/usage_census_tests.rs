@@ -32,9 +32,12 @@ const RESPONSES_COUNT_CLASSES: &[(&str, Class)] = &[
         "input_tokens_details.cached_tokens",
         Class::Ledgered(-1, 1, 0, 0),
     ),
+    // A slice of `input_tokens` billed at the input tier, as 1.5.5 billed it (it never split a
+    // cache write out of an OpenAI input total: v1.5.5 `crates/busbar/src/proto/openai_responses/reader.rs:1022, :1341`,
+    // `cache_creation_input_tokens: None`).
     (
         "input_tokens_details.cache_write_tokens",
-        Class::Ledgered(-1, 0, 1, 0),
+        Class::SliceOf("input_tokens"),
     ),
     ("output_tokens", Class::Ledgered(0, 0, 0, 1)),
     (

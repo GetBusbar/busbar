@@ -246,10 +246,11 @@ fn coh10_anthropic_cache_tiers_sum_into_the_cohere_prompt() {
     assert!(out["usage"].get("cached_tokens").is_none(), "{out}");
 }
 
-/// COH-10 round trip: what the Cohere writer emits, the Cohere reader reads back to the same
-/// uncached + cache-read split (the writer is the reader's inverse).
+/// COH-10 round trip: what the Cohere writer emits (the whole 10-token prompt, 4 of it cached), the
+/// Cohere reader bills as 1.5.5 did: the whole prompt at the input tier, no cache-read split (v1.5.5
+/// `crates/busbar/src/proto/cohere/reader.rs:964-979`).
 #[test]
-fn coh10_cohere_usage_is_the_inverse_of_the_cohere_reader() {
+fn coh10_cohere_reader_bills_the_written_prompt_whole() {
     let body = json!({
         "id": "chatcmpl-1", "object": "chat.completion", "created": 1, "model": "gpt",
         "choices": [{"index": 0, "message": {"role": "assistant", "content": "hello"},
@@ -263,8 +264,9 @@ fn coh10_cohere_usage_is_the_inverse_of_the_cohere_reader() {
         .reader()
         .read_response(&out)
         .expect("read back");
-    assert_eq!(back.usage.input_tokens, 6, "{back:?}");
-    assert_eq!(back.usage.cache_read_input_tokens, Some(4), "{back:?}");
+    assert_eq!(out["usage"]["cached_tokens"], json!(4), "{out}");
+    assert_eq!(back.usage.input_tokens, 10, "{back:?}");
+    assert_eq!(back.usage.cache_read_input_tokens, None, "{back:?}");
 }
 
 /// COH-10, streamed, Anthropic backend: the prompt counts ride `message_start`; the Cohere

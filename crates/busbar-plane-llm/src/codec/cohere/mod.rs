@@ -356,7 +356,8 @@ const RESPONSE_BLOCKS: &[crate::codec::drops::Blocks] = &[crate::codec::drops::B
 const PARKED: &[crate::codec::drops::Parked] = &[];
 
 /// What this dialect's answers carry beyond its map file's rows (the drop walk, design F3 "Drops").
-// The prompt-cache hit count is read into the usage; the serving model is read beside the id.
+// The prompt-cache hit count is a slice of the input count the usage carries (never dropped); the
+// serving model is read beside the id.
 const RESPONSE_CODE: &[&str] = &["usage.cached_tokens", "model"];
 const STREAM_CODE: &[&str] = &[];
 
@@ -837,8 +838,8 @@ fn write_cohere_stop_reason(reason: crate::codec::ir::IrStopReason) -> &'static 
 /// The two sides count the prompt differently. The IR's `input_tokens` is the UNCACHED share only,
 /// with the cache read and the cache write carried ADDITIVELY beside it (`IrUsage`'s documented
 /// convention). Cohere's `tokens.input_tokens` is the whole prompt, the cached share included, and
-/// it reports the cache hit separately as `usage.cached_tokens` — which is exactly why this
-/// dialect's reader SUBTRACTS `cached_tokens` out of `tokens.input_tokens` on the way in.
+/// it reports the cache hit separately as `usage.cached_tokens` (a slice this dialect's reader
+/// leaves inside the input count, as 1.5.5 did).
 ///
 /// The writer used to copy the IR's uncached count straight into `tokens.input_tokens`, so a
 /// Cohere-dialect client of a foreign backend was told a prompt SMALLER than the one it sent: an
