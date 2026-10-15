@@ -104,6 +104,42 @@ fn door() -> DoorFn {
     linked_door().expect("a linked plane door owns the agents section")
 }
 
+/// THIS PLANE'S CAPABILITY-EQUALITY COLUMNS (`qa/capability-equality.json`): the cells its root leg
+/// answers for.
+pub(crate) const COLUMNS: &[&str] = &["a2a-client", "a2a-server"];
+
+/// `(capability, column, reason)`: the root-leg cells this plane is NOT owed, each the ledger's own
+/// not-applicable cell with its reason, word for word. The composition root holds the two equal: a
+/// plane opts out of nothing the ledger says it has, and the ledger excuses nothing the plane does
+/// not state.
+pub(crate) const NOT_APPLICABLE: &[(&str, &str, &str)] = &[
+    (
+        "breaker-trip",
+        "a2a-server",
+        "the front door is inbound; there is no upstream target whose availability could be recorded on this role. The agent a hop dials is the a2a-client cell's evidence.",
+    ),
+    (
+        "breaker-fastfail",
+        "a2a-server",
+        "inbound role; there is no dispatch admission against an upstream to make fast. Refusing inbound work is the governance and trust cells' subject, not the breaker's.",
+    ),
+    (
+        "failover-reroute",
+        "a2a-server",
+        "inbound role; there is no candidate set to walk on the receiving side. The relay's candidate walk is the a2a-client cell.",
+    ),
+    (
+        "hooks-gate",
+        "a2a-client",
+        "busbar-originated A2A traffic is not a second gate point: originate (mirror_push_config, refresh_listed_tasks) is called only from receive.rs::admitted, downstream of the proven inbound hooks gate, and push delivery targets the caller's own webhook, which the agent-submission gate has no semantic target for. Same rationale the mcp-client cell is proven under.",
+    ),
+    (
+        "disposition",
+        "a2a-server",
+        "disposition classifies an upstream's ANSWER; the inbound role has no upstream answer to classify. Rendering a refusal to a caller is the response path, not disposition.",
+    ),
+];
+
 /// THE SECRET-SOURCE SCAN'S DRIVEN DOOR (the composition root's `secret_source.rs`, which holds
 /// every linked door plane to a driver): this door's Statement name, driven by
 /// [`upstream_credential::a_credential_that_stops_resolving_reaches_the_caller_without_its_source`].
