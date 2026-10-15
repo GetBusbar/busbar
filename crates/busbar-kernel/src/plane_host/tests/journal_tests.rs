@@ -4,6 +4,7 @@
 //! Tests for `crates/busbar-core/src/plane_host/journal.rs`.
 
 use super::*;
+use crate::audit::frame_prelude;
 use crate::plane_host::{recover, with_dispatch_scope, HostState};
 use busbar_contract::abi::hot::host::PlaneHostVtable;
 use busbar_contract::abi::hot::POD_VERSION;
@@ -214,7 +215,7 @@ extern "C-unwind" fn neutral_reframe(
     let nb: NeutralBody = match serde_json::from_slice(body) {
         Ok(nb) => nb,
         Err(_) => {
-            // An undecodable body: fail-closed like the production reframe (reframe_bridge), never
+            // An undecodable body: fail-closed like the production decode (`decode_native`), never
             // panic. Still initialize `out` (the length-report discipline) so the caller can read it.
             let o = ReframeOut {
                 size: core::mem::size_of::<ReframeOut>() as u32,
@@ -400,8 +401,7 @@ fn durable_app_over(store: Arc<GenericPlaneStore>) -> Arc<crate::state::App> {
 fn engine_restore(host: HostCtx, kind_id: u32) -> crate::audit::journal::Restored {
     let h = stream_handle(kind_id).expect("the stream is registered");
     let store = h.journal.sink().expect("the stream is durable");
-    let reframe =
-        |sc: &str, body: &[u8]| super::call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+    let reframe = super::decode_over(host, kind_id, &h);
     h.journal
         .restore_scoped(&h.kind, store.as_ref(), &reframe)
         .expect("the store reads")
@@ -412,19 +412,17 @@ fn engine_restore(host: HostCtx, kind_id: u32) -> crate::audit::journal::Restore
 fn engine_verify(host: HostCtx, kind_id: u32, scope: &str) -> Option<crate::audit::ChainBreak> {
     let h = stream_handle(kind_id).expect("the stream is registered");
     let store = h.journal.sink().expect("the stream is durable");
-    let reframe =
-        |sc: &str, body: &[u8]| super::call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+    let reframe = super::decode_over(host, kind_id, &h);
     h.journal
         .verify_scoped(&h.kind, scope, store.as_ref(), &reframe)
         .expect("the store reads")
 }
 
 /// READ one scope of the registered stream `kind_id` back through its own engine, oldest first.
-fn engine_read(host: HostCtx, kind_id: u32, scope: &str) -> Vec<PlaneJournalRecord> {
+fn engine_read(host: HostCtx, kind_id: u32, scope: &str) -> Vec<StreamRecord> {
     let h = stream_handle(kind_id).expect("the stream is registered");
     let store = h.journal.sink().expect("the stream is durable");
-    let reframe =
-        |sc: &str, body: &[u8]| super::call_reframe(host, kind_id, h.reframe, h.framing, sc, body);
+    let reframe = super::decode_over(host, kind_id, &h);
     h.journal
         .read_scoped(&h.kind, scope, store.as_ref(), &reframe)
         .expect("the store reads")

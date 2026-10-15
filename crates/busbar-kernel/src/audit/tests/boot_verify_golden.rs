@@ -176,17 +176,17 @@ impl PlaneStore for FrozenStore {
 #[test]
 fn per_call_chain_boot_verifies_from_frozen_bytes() {
     use crate::audit::journal::{Journal, NeutralBody};
+    use crate::audit::stream_registry::StreamRecord;
     use crate::audit::Framing;
-    use crate::plane_host::journal::PlaneJournalRecord;
 
     let mut store = FrozenStore::new();
     store.put(KIND_CALL, Some("vk_alice"), CALL_1);
     store.put(KIND_CALL, Some("vk_alice"), CALL_2);
 
-    let journal: Journal<PlaneJournalRecord> = Journal::new(16);
-    let reframe = |scope: &str, body: &[u8]| -> RecordStoreResult<PlaneJournalRecord> {
+    let journal: Journal<StreamRecord> = Journal::new(16);
+    let reframe = |scope: &str, body: &[u8]| -> RecordStoreResult<StreamRecord> {
         let b: NeutralBody = decode(body)?;
-        Ok(PlaneJournalRecord::from_parts(
+        Ok(StreamRecord::from_parts(
             scope.to_string(),
             b.seq,
             b.prev_hash,

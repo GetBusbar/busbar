@@ -49,9 +49,9 @@ const LP_SCOPED: ChainFraming = ChainFraming {
 const EV: RecordSchemaId = RecordSchemaId::new("ev");
 
 /// Two records sealed by the chain mechanism, as the flush seals them.
-fn sealed() -> (PlaneJournalRecord, PlaneJournalRecord) {
-    let mut chain = Chain::<PlaneJournalRecord>::new();
-    let input = |b: Vec<u8>| PlaneJournalInput::new(b, Framing::LengthPrefixed, true);
+fn sealed() -> (StreamRecord, StreamRecord) {
+    let mut chain = Chain::<StreamRecord>::new();
+    let input = |b: Vec<u8>| StreamInput::new(b, Framing::LengthPrefixed, true);
     let e1 = chain.append(SCOPE, input(own_1()));
     let e2 = chain.append(SCOPE, input(own_2()));
     (e1, e2)
@@ -126,7 +126,7 @@ fn one_undecodable_record_does_not_drop_the_others() {
 fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
     let mut rows = stored();
     let (_, e2) = sealed();
-    let edited = PlaneJournalRecord::from_parts(
+    let edited = StreamRecord::from_parts(
         SCOPE.into(),
         2,
         e2.prev_hash().into(),
@@ -161,7 +161,7 @@ fn the_verifier_detects_a_tampered_link_in_the_persisted_chain() {
 fn a_relinked_record_is_a_link_break() {
     let mut rows = stored();
     let (_, e2) = sealed();
-    let relinked = PlaneJournalRecord::from_parts(
+    let relinked = StreamRecord::from_parts(
         SCOPE.into(),
         2,
         e2.hash().into(),

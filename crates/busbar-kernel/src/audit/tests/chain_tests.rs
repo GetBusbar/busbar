@@ -391,7 +391,7 @@ fn the_default_chain_is_the_new_chain_because_a_derived_default_starts_at_zero()
 
 /// The MCP per-call digest is byte-for-byte what `mcp/calllog.rs` computed before the unification:
 /// length-prefixed, in this field order. Minted through the NEUTRAL journal seam — a genesis
-/// `PlaneJournalRecord` over the plane's pre-framed `call_suffix` content, which is the exact shape
+/// `StreamRecord` over the plane's pre-framed `call_suffix` content, which is the exact shape
 /// production persists — and required to agree with the legacy single-buffer formula, recomputed
 /// here the OLD way. (The typed `Chain<McpCallRecord>` is gone; the seam is what production hashes.)
 #[test]
@@ -421,7 +421,7 @@ fn the_length_prefixed_call_digest_is_unchanged_by_the_unification() {
     lp(&mut content, reason.as_bytes());
     lp(&mut content, tool_digest.as_bytes());
     lp(&mut content, &pin_generation.to_be_bytes());
-    let rec = crate::plane_host::journal::PlaneJournalRecord::from_parts(
+    let rec = crate::audit::stream_registry::StreamRecord::from_parts(
         principal.to_string(),
         seq,
         prev_hash.clone(),
@@ -467,7 +467,7 @@ fn the_pipe_separated_task_event_digest_is_unchanged_by_the_unification() {
     // The plane's PipeSeparated content suffix (leading `|`), as `taskstore::task_event_suffix` builds
     // it: `|ts|kind|context_id|principal|agent_id|state`.
     let content = format!("|{ts}|{kind}|{context_id}|{principal}|{agent_id}|{state}").into_bytes();
-    let rec = crate::plane_host::journal::PlaneJournalRecord::from_parts(
+    let rec = crate::audit::stream_registry::StreamRecord::from_parts(
         task_id.to_string(),
         seq,
         prev_hash.clone(),
