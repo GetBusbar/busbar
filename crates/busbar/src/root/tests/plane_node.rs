@@ -19,6 +19,8 @@ use axum::body::Bytes;
 use axum::http::HeaderMap;
 use busbar_kernel::teller::{Ended, Kernel};
 use busbar_kernel::test_support::{LaneSpec, MockResponse, MockServer, MockServerState, TestApp};
+// The mock far end's event-stream answer, by what it is.
+use busbar_kernel::test_support::MockResponse::Sse as EventStream;
 
 /// The one dialect these fixtures speak. Same-protocol openai→openai, so a divergence is about
 /// the PATH rather than about a translation.
@@ -73,8 +75,8 @@ impl Fixture {
 
     fn upstream(self) -> MockResponse {
         match self {
-            Fixture::StreamedOk => MockResponse::Sse {
-                events: sse_events(),
+            Fixture::StreamedOk => EventStream {
+                events: event_stream_events(),
                 abort_at_index: None,
             },
             _ => MockResponse::Ok {
@@ -107,7 +109,7 @@ impl Fixture {
     }
 }
 
-fn sse_events() -> Vec<String> {
+fn event_stream_events() -> Vec<String> {
     vec![
         serde_json::json!({"id": "chatcmpl-root", "object": "chat.completion.chunk",
                            "created": 0, "model": LANE,
@@ -1270,7 +1272,7 @@ async fn a_driven_planes_abandoned_end_seals_one_audit_record() {
     rig.server.shutdown().await;
 }
 
-/// AUDIT-CHAIN, THE LLM PLANE: every unit the node answers, served (a dispatched completion) or
+/// AUDIT-CHAIN, THE NODE'S PLANE: every unit the node answers, served (a dispatched completion) or
 /// refused (a body the arrival step cannot read), seals ONE record on the node's audit chain, the
 /// second linked to the first; the chain walks clean, and a record altered after its seal (the
 /// served unit re-told as refused) breaks the walk. RED: a loop whose audit door's pass is never
@@ -1691,7 +1693,7 @@ async fn a_caller_that_hangs_up_mid_dispatch_keeps_its_flat_fee_charged() {
 /// (which drives the BILLED rig): with no card the node is a pure failover/routing proxy — the SAME
 /// delivered request is served identically (status 200) and writes the SAME metering row a billed
 /// plane writes, because the plane always ledgers what it did (#43, owner ruling 2026-09-22; the
-/// LLM twin of item 36, 0ee95aafd). Billing off is the money VIEW: that row reads 0 (#42). And the
+/// node's twin of item 36, 0ee95aafd). Billing off is the money VIEW: that row reads 0 (#42). And the
 /// plane is NOT unlimited: admission/governance still runs — a pool-ACL guard refuses exactly as it
 /// does on a billed plane — which is the "breaker + concurrency still enforced" half of #42 (both live
 /// on the admission/egress path, independent of the card).
@@ -2743,7 +2745,7 @@ async fn a_seated_gate_stops_the_unit_before_the_door_and_an_empty_seat_list_cha
     if !passing.0.load(Ordering::SeqCst) {
         failures.push(
             "the loop never consulted the seated gate, so the pass-through above is an \
-             unwired field rather than a decision"
+             unwired field rather than a verdict"
                 .to_string(),
         );
     }
@@ -3364,7 +3366,7 @@ fn books_agree(
 /// **TWO BOOKS, ONE EVENT — THE INVOICE IS THE GOVERNANCE LEDGER, AND THE SECOND BOOK MUST AGREE WITH
 /// IT CELL BY CELL.**
 ///
-/// A delivered LLM unit leaves two records. The walk's completion tap accrues its counts onto the
+/// A delivered node unit leaves two records. The walk's completion tap accrues its counts onto the
 /// GOVERNANCE LEDGER (the metering series + usage ledger) — raw counts, no price, which is what
 /// `/usage` serves and what 1.5.5 billed. Then [`LateAccrual`] PRICES the same reading and posts
 /// the priced amount onto the kernel-loop Durability book. By the money model (BUSBAR-1.6.0.md
@@ -3758,7 +3760,7 @@ fn a_unit_whose_task_went_away_is_marked_and_the_sweep_posts_its_hold() {
 const SEARCH_UNITS: &str = "search_units";
 
 /// The classes the units these tests drive report are DECLARED — what the boot's registration
-/// (`register_classes`: the reserved four, the llm plane's declared `search_units`) makes true in a
+/// (`register_classes`: the reserved four, the node plane's declared `search_units`) makes true in a
 /// real process. The vocabulary is the process's, so registering them again is idempotent.
 fn declare_test_classes() {
     let mut registration = crate::root::kernel::new_registration();
@@ -4455,7 +4457,7 @@ async fn a_served_rerank_puts_identical_search_units_on_both_books() {
         .expect("both books hold the same search units and the same figure");
 }
 
-/// **THE LLM PLANE'S BOOK BINDING JOURNALS THE APPLIED CARDS** (#79): a build with this plane and no
+/// **THE NODE PLANE'S BOOK BINDING JOURNALS THE APPLIED CARDS** (#79): a build with this plane and no
 /// admin surface binds the dated rate-card history to the book here or nowhere, so a card applied
 /// after the boot must land on the chain through this binding alone. Before, only the admin
 /// assembly bound it: this plane's node settled onto the book while every live apply stayed in
@@ -4510,7 +4512,7 @@ fn binding_the_node_to_the_book_journals_every_card_applied_after_it() {
         .expect("the journal opens"),
     ));
 
-    // THE LLM PLANE'S BINDING, and nothing else — no admin assembly.
+    // THE NODE PLANE'S BINDING, and nothing else — no admin assembly.
     super::bind_node_book(&Node::new(), holder, Arc::clone(&book));
     apply(holder, 5.0, 20_000);
 

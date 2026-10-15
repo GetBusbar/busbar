@@ -2952,7 +2952,7 @@ fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
             kernel_verb_only: true,
         };
         let token: Pass<Approve> = busbar_kernel::test_support::tokens::pass();
-        let decision = approve(
+        let verdict = approve(
             &binding,
             Some(granted),
             &token,
@@ -2961,7 +2961,7 @@ fn a_read_only_credential_reaches_every_view_and_still_no_mutation() {
             &[],
         );
         binding.units.close(key);
-        decision.into_result(&seal).is_ok()
+        verdict.into_result(&seal).is_ok()
     };
 
     for path in LEDGER_PATHS {
@@ -5197,7 +5197,7 @@ fn a_ledger_figure_past_the_served_range_fails_the_read_and_is_never_served_pinn
 #[cfg(feature = "root-admin")]
 const FEE_DAY: u64 = 1_767_225_600;
 
-/// Settle one late unit onto `durability` the way the LLM late arm does: `amount` nano-units, with
+/// Settle one late unit onto `durability` the way the node's late arm does: `amount` nano-units, with
 /// its counts — `fee_count` billable requests among them.
 #[cfg(feature = "root-admin")]
 fn settle_late_unit_with_fees(
