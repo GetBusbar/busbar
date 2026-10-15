@@ -19,6 +19,26 @@ fn the_statement_names_the_crate_version() {
     assert_eq!(VERSION, env!("CARGO_PKG_VERSION"));
 }
 
+/// THE DOOR STATES THE PLANE'S `busbar --help` ROWS: its tail's `cli_help`, read in the contract's
+/// grammar, is the tagline row then the `ENDPOINTS` row, each byte for byte the plane's own text.
+/// A tail that stated no help (or a flag block in their place) prints a help with no tagline and no
+/// llm endpoints, and fails here.
+#[test]
+fn the_tail_states_the_planes_help_rows() {
+    // SAFETY: a non-NULL tail string is `len` bytes of `'static` plugin data.
+    let help = unsafe { std::slice::from_raw_parts(TAIL.cli_help.ptr, TAIL.cli_help.len) };
+    let help = std::str::from_utf8(help).expect("the help is text");
+    let rows: Vec<(&str, &str)> = busbar_contract::abi::plane::cli_help::rows(help).collect();
+    assert_eq!(rows, busbar_plane_llm::meta::CLI_HELP);
+    assert_eq!(
+        rows,
+        [
+            ("tagline", busbar_plane_llm::meta::HELP_TAGLINE),
+            ("endpoint", busbar_plane_llm::meta::HELP_ENDPOINTS),
+        ]
+    );
+}
+
 #[test]
 fn the_tail_is_one_the_contract_accepts() {
     assert_eq!(check_tail(TAIL), Ok(()));
