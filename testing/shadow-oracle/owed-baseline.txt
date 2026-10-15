@@ -250,6 +250,7 @@ auth.lifecycle|key-revoke
 auth.lifecycle|key-rotate
 billing|admin-usage|after-2
 billing|admin-usage|past-day
+billing|budget|downgrade
 billing|group-usage|after-2
 billing|group-usage|broke-after-prime
 billing|key-usage|after-1

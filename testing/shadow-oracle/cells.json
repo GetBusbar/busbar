@@ -55,10 +55,10 @@
     }
   ],
   "counts": {
-    "total": 2518,
+    "total": 2519,
     "by_plane": {
       "a2a": 468,
-      "core": 989,
+      "core": 990,
       "llm": 149,
       "mcp": 912
     },
@@ -67,7 +67,7 @@
       "admin.ops": 329,
       "admin.plugins": 7,
       "auth.lifecycle": 3,
-      "billing": 15,
+      "billing": 16,
       "boot.deprecated-env": 5,
       "boot.refusal": 209,
       "boot.warning": 31,
@@ -12073,6 +12073,17 @@
         ]
       },
       "why": "a past UTC day bucket: empty and byte-stable"
+    },
+    {
+      "id": "billing|budget|downgrade",
+      "plane": "core",
+      "family": "billing",
+      "driver": "script",
+      "script": {
+        "name": "budget-downgrade.sh"
+      },
+      "outcome": "ok",
+      "why": "a group budget scoped to pool `frontier` (25 a day at a 10 per-request fee, no rate card) declares `on_exhaust: downgrade, downgrade_to: value`: the first two chats naming `frontier` are served there and spend 20; the third would spend 30, so it is re-admitted through `value` and dispatched to `value`'s member instead of refused (1.5.5 ingress::admit_check + ingress::dispatch). Recorded: each chat's status, the downgraded answer, how many requests each pool's upstream received (one mock per pool), the key and group usage views, and the busbar_requests_total / busbar_upstream_attempts_total counters by pool. Recorded from the published 1.5.5 binary."
     },
     {
       "id": "billing|group-usage|after-2",
