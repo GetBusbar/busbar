@@ -139,6 +139,27 @@ pub mod transport;
 // `busbar_contract::abi::read_sized_field!` exactly where it wrote `busbar_plugin::read_sized_field!`.
 pub use crate::{host_slot, read_sized_field};
 
+// THE KERNEL SEAL'S ONE CROSSING (#65, ARCHITECT ruling 2026-10-14): declared here, DEFINED only
+// by `busbar-kernel` (`crates/busbar-kernel/src/seal.rs`). It lives in `abi` because calling it is
+// `unsafe`, and the contract's unsafe lives in this module alone (the unsafe policy in `lib.rs`;
+// `caps` stays `forbid(unsafe_code)`). See [`crate::caps::KernelSeal::deliver`].
+extern "Rust" {
+    fn __busbar_kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync>;
+}
+
+/// Hand `seal` to the kernel's root symbol; [`crate::caps::KernelSeal::deliver`] is the only
+/// caller. `#[inline]` for the reason `deliver` is: only an image that calls it references the
+/// symbol.
+#[inline]
+pub(crate) fn kernel_root(seal: crate::caps::KernelSeal) -> Box<dyn std::any::Any + Send + Sync> {
+    // SAFETY: `__busbar_kernel_root` is defined exactly once, by `busbar-kernel`
+    // (`crates/busbar-kernel/src/seal.rs`), with this exact signature, and both crates are built
+    // together by one compiler in one workspace, so the Rust ABI of the declaration and the
+    // definition agree. The definition takes the seal by value and returns an owned box; it
+    // touches no other state.
+    unsafe { __busbar_kernel_root(seal) }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // 1. The airlock preamble — FROZEN FOR ALL TIME. Shared by both lanes.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
