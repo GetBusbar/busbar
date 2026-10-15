@@ -277,11 +277,11 @@ impl busbar_contract::export_calls::ExportCalls for ScrapeDouble {
 
 /// The axis every test in this binary resolves `export:` against — installed once, as the
 /// composition root does. Besides a neutral row (`k9-axis-sink`, alias `k9-tail`) it holds a row
-/// spelling each FIRST-PARTY sink's frozen module name (`request-log-file`, K9b;
-/// `request-log-webhook`, K9c; `otlp`, K9e-2): a linked build resolves that module on its axis, so a
-/// test configuration naming it resolves here too. The rows' bytes are not a library, so each sink
-/// validates nothing and opens nothing — enough for the configuration layer, which is all a kernel
-/// test drives. The scrape module word ([`scrape_module`]) is answered by the [`ScrapeDouble`],
+/// for each FIRST-PARTY sink's frozen 1.5.5 module word but the scrape one, read off the root
+/// legacy table's `export_modules` row (K9b, K9c, K9e-2): a linked build resolves that module on
+/// its axis, so a test configuration naming it resolves here too. The host spells none of them.
+/// The rows' bytes are not a library, so each sink validates nothing and opens nothing — enough
+/// for the configuration layer, which is all a kernel test drives. The scrape module word ([`scrape_module`]) is answered by the [`ScrapeDouble`],
 /// linked ahead of the rows.
 pub fn install_export_axis() {
     install_export_axis_with(Vec::new());
@@ -291,15 +291,15 @@ pub fn install_export_axis() {
 /// door — for a test binary that links a sink of its own. The first install holds.
 pub fn install_export_axis_with(linked: Vec<busbar_plugin_loader::LinkedPlugin>) {
     let built = BUILT.get_or_init(|| {
-        let rows = [
-            ("k9-axis-sink", "k9-tail"),
-            ("k9b-log-file", "request-log-file"),
-            ("k9c-webhook", "request-log-webhook"),
-            (
-                "k9e-otlp",
-                crate::config::legacy::text("export_trace_module"),
-            ),
-        ];
+        let modules: Vec<&'static str> = crate::config::legacy::text("export_modules")
+            .split(" | ")
+            .filter(|module| !module.is_empty() && *module != scrape_module())
+            .collect();
+        let names: Vec<String> = (0..modules.len())
+            .map(|n| format!("k9-first-party-sink-{n}"))
+            .collect();
+        let mut rows: Vec<(&str, &str)> = vec![("k9-axis-sink", "k9-tail")];
+        rows.extend(names.iter().map(String::as_str).zip(modules));
         let scanned = registry_of("installed", &rows);
         scanned
             .link(linked)

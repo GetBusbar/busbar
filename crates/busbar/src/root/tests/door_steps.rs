@@ -915,6 +915,85 @@ fn a_provider_base_url_with_userinfo_is_reached_at_its_stripped_authority() {
     );
 }
 
+/// ROW 74 (F25), THE DOOR PATH HOLDS NO USERINFO BYTES IN A KERNEL TYPE: a member whose provider's
+/// base URL spells `user:pass@` is sealed with the stripped base on its route (the kernel's
+/// `MemberRoute` has no field for the userinfo), and the Basic value reaches its attempts only
+/// through the binding's handle, which the root wrapped ([`crate::root::userinfo::lead_with`]):
+/// first when the style's credential rides another field, displaced when it is `authorization`,
+/// as 1.5.5's reqwest build sent it. The bearer and api-key styles are the linked header plugin's.
+#[cfg(feature = "auth-header")]
+#[test]
+fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
+    use busbar_contract::auth_calls::{Fields, FieldsRequest};
+    const WRITTEN: &str = "https://svcuser:hunter2-P4ss@api.example.com/v1";
+    let key_file =
+        std::env::temp_dir().join(format!("busbar-door-steps-row74-{}", std::process::id()));
+    std::fs::write(&key_file, "sk-row74").expect("the key");
+    let expected = {
+        use base64::Engine as _;
+        format!(
+            "Basic {}",
+            base64::engine::general_purpose::STANDARD.encode("svcuser:hunter2-P4ss")
+        )
+    };
+    for (style, led) in [("api-key", true), ("bearer", false)] {
+        let provider = super::ProviderRoute {
+            base_url: busbar_kernel_egress::trust::net::strip_userinfo(WRITTEN).into_owned(),
+            userinfo: crate::root::userinfo::UserinfoBasic::of(WRITTEN),
+            protocol: "d".to_string(),
+            error_map: Default::default(),
+            credential: busbar_contract::secret_ref::SecretRef::file(
+                key_file.display().to_string(),
+            ),
+            style: Some(style.to_string()),
+            params: super::StyleParams::default(),
+            metadata: busbar_kernel::config_validate::MetadataPosture::default(),
+        };
+        let facts = crate::root::loader::dispatch::kinds::plane::ServedFacts {
+            need_auths: vec![(DIRECTION_OUTBOUND, style)],
+            dialects: vec!["d"],
+            ..Default::default()
+        };
+        let routes = resolve_for(&facts, "models: {m: {provider: p}}", &[("p", provider)])
+            .expect("the member resolves");
+        let route = &routes["m"];
+        assert_eq!(route.base_url, "https://api.example.com/v1");
+        let binding = route.auth.as_ref().expect("its credential is bound");
+        let Some(Fields::Ready(fields)) = binding
+            .auth
+            .fields_now(binding.handle, &FieldsRequest::default())
+        else {
+            panic!("the {style} binding answers on the spot");
+        };
+        let fields: Vec<(String, String)> = fields
+            .iter()
+            .map(|f| {
+                (
+                    String::from_utf8_lossy(&f.name).to_ascii_lowercase(),
+                    String::from_utf8_lossy(f.value.expose_secret()).into_owned(),
+                )
+            })
+            .collect();
+        if led {
+            assert_eq!(
+                fields[0],
+                ("authorization".to_string(), expected.clone()),
+                "a credential under another field leaves the Basic value first: {fields:?}"
+            );
+            assert!(fields[1..].iter().all(|(n, _)| n != "authorization"));
+        } else {
+            assert!(
+                fields
+                    .iter()
+                    .all(|(n, v)| n != "authorization" || !v.starts_with("Basic ")),
+                "an authorization credential displaces the Basic value: {fields:?}"
+            );
+        }
+    }
+    let _ = std::fs::remove_file(&key_file);
+}
+
 #[test]
 fn a_member_that_cannot_be_reached_refuses_the_load_naming_it() {
     let unknown = resolve("models: {m: {provider: q}}", &[("p", provider("d", None))]);
@@ -1334,7 +1413,7 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
         // ROW 74 (F25): the endpoint as the plugin was handed it is the stripped one (its need is
         // pinned there and its mint dialled there, above), and a `user:pass@` the operator wrote rides
         // each mint FIRST as `authorization: Basic`, as 1.5.5's reqwest POST sent it (v1.5.5
-        // `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`); a plain endpoint's mint
+        // `oauth_client_credentials.rs:119-126` in its egress-auth tree); a plain endpoint's mint
         // carries none.
         let fields = table.fields.lock().unwrap();
         assert_eq!(fields.len(), 2);
@@ -1511,9 +1590,10 @@ async fn a_member_under_jwt_bearer_mints_at_its_service_accounts_token_uri() {
 /// ROW 74 (F25), `jwt-bearer`: 1.5.5 POSTed the signed assertion with reqwest to the service
 /// account's `token_uri` as written (v1.5.5 `crates/busbar/src/egress_auth/jwt_bearer.rs:175-181`),
 /// whose builder took a `user:pass@` out of the URL and sent it FIRST as `authorization: Basic` (the
-/// form names no `authorization`). A service account whose `token_uri` spells one is sealed with its
-/// mint need pinned to the stripped endpoint, its mint dials the stripped endpoint, and each mint
-/// leads with the Basic value; no field carries the userinfo in the clear.
+/// form names no `authorization`). A service account whose `token_uri` spells one, served on the
+/// DOOR path: the plane's side of the seal (the member's route, the declared need) carries no
+/// userinfo; the assertion's `aud` is the raw `token_uri`, as 1.5.5 signed it; and the mint POSTs
+/// to the stripped endpoint, led by the Basic value, with no field carrying the userinfo in clear.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it() {
     use base64::Engine as _;
@@ -1568,19 +1648,63 @@ async fn a_service_account_token_uri_userinfo_rides_the_mint_as_1_5_5_sent_it() 
             .all(|(_, v)| !String::from_utf8_lossy(v).contains("hunter2")),
         "{head:?}"
     );
+    drop(fields);
+    // (1) Nothing the plane's side of the seal holds carries the userinfo: the member's sealed
+    // route (its base and every base a framer spells it in) and the need the minting plugin
+    // declared over its settings. The service account itself goes to the auth plugin alone.
+    let route = &routes["m"];
+    assert!(
+        !route.base_url.contains("svcuser")
+            && route
+                .spelled
+                .iter()
+                .all(|(_, url)| !url.contains("svcuser")),
+        "the member's route carries no userinfo"
+    );
+    assert!(
+        table
+            .declared
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|(_, _, target)| !matches!(target, Some(t) if t.contains("svcuser"))),
+        "no declared need carries the userinfo: {:?}",
+        table.declared.lock().unwrap()
+    );
+    // (2) The assertion's `aud` is the service account's `token_uri` AS WRITTEN, userinfo and all:
+    // 1.5.5 signed it over the raw endpoint (v1.5.5 `crates/busbar/src/egress_auth/jwt_bearer.rs:
+    // 152-159`, `jwt_claims_json(.., &self.token_uri, ..)`), and only the POST's URL lost it.
+    let body = table.opened.lock().unwrap()[0].3.clone();
+    let assertion = body
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("assertion="))
+        .expect("the RFC 7523 form carries the assertion");
+    let claims = assertion.split('.').nth(1).expect("a compact JWT");
+    let claims: serde_json::Value = serde_json::from_slice(
+        &base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(claims)
+            .expect("base64url claims"),
+    )
+    .expect("JSON claims");
+    assert_eq!(
+        claims["aud"],
+        written.as_str(),
+        "the aud is the raw token_uri, as 1.5.5 signed it"
+    );
 }
 
 /// ROW 74 (F25), THE IN-PROCESS LANE'S SHAPE: the host stripped a `token_url`'s userinfo before a
 /// plane built its binding (`appbuild`), so the settings the axis is handed name the stripped
 /// endpoint and the Basic value arrives beside them ([`super::OutboundAuths::serving_with`]). The
 /// mint need is pinned to the stripped endpoint and every mint leads with the Basic value, as
-/// 1.5.5's reqwest POST sent it (v1.5.5 `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`).
+/// 1.5.5's reqwest POST sent it (v1.5.5 `oauth_client_credentials.rs:119-126` in its egress-auth
+/// tree).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_mint() {
     use base64::Engine as _;
     use busbar_contract::auth_calls::FieldsRequest;
     const TOKEN_URL: &str = "https://login.example.com/tenant/oauth2/v2.0/token";
-    let held = busbar_kernel::egress::engine::UrlUserinfo::of(&TOKEN_URL.replacen(
+    let held = crate::root::userinfo::UserinfoBasic::of(&TOKEN_URL.replacen(
         "://",
         "://svcuser:hunter2-P4ss@",
         1,
@@ -1588,7 +1712,11 @@ async fn a_token_url_stripped_before_the_plane_still_presents_its_basic_on_the_m
     .expect("the userinfo, held by the host");
     let table = std::sync::Arc::new(TokenEndpoint::default());
     let auths = linked_mint_plugin(&table);
-    let style = super::style_word(busbar_kernel::config::ProviderAuth::OAuthClientCredentials);
+    // The style as the operator's config spells it (a fixture), read by the config's own parser.
+    let style = super::style_word(
+        serde_yaml::from_str(include_str!("fixtures/client_credentials_style.yaml"))
+            .expect("a provider style"),
+    );
     // What the plane built its binding from: the stripped endpoint.
     let settings = serde_json::json!({
         "token_url": TOKEN_URL,

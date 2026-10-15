@@ -3,78 +3,21 @@
 
 //! CONFORMANCE for `kind: plane` that names no fixture plane.
 //!
-//! The HOT-lane both-ways proofs that held `busbar-plugin-example-plane` compiled in and dropped in
-//! are gone with that fixture crate (P5, "delete plane-example"; Q128 audit: a fixture plane kept in
-//! the repo, riding the HOT lane). What stays proves the loader's own plane-side gates over hostile or
-//! mis-kinded input (the vocabulary cap, the kind gate, the ABI range) and the plane DOOR both ways
-//! ([`door`]), over the SDK-built plane door test plugin (`tests/fixtures/plane_door_plugin.rs`).
+//! The HOT-lane plane load is deleted (row 84), and with it the HOT decl's own gates (the vocabulary
+//! cap, the HOT kind gate). What stays proves the loader's plane-side gates (the plane kind's one ABI
+//! version, the refusal of a plane with no door) and the plane DOOR both ways ([`door`]), over the
+//! SDK-built plane door test plugin (`tests/fixtures/plane_door_plugin.rs`).
 
 use crate::sign::{sign, Manifest, SigningKey, TrustPolicy};
-
-/// A plane that declares a vocabulary length far larger than its real buffer must be REFUSED at load,
-/// never sliced: `read_vocab` reads each `*_len` verbatim from the (third-party) decl, so an
-/// unbounded `from_raw_parts` would over-read past the real allocation — an OOB read in the HOST's
-/// address space. Exercises `read_vocab` directly with the hostile short-buffer/huge-length shape.
-#[test]
-fn oversize_plane_vocab_length_is_refused_not_over_read() {
-    use busbar_contract::abi::hot::PlaneDecl;
-    use busbar_contract::abi::AbiPreamble;
-
-    // A one-byte real buffer paired with a length past the cap — the hostile shape a lying decl uses.
-    let small = b"x";
-    let decl = PlaneDecl {
-        abi: AbiPreamble::CURRENT,
-        size: core::mem::size_of::<PlaneDecl>() as u32,
-        version: busbar_contract::abi::ABI_MINOR,
-        name_ptr: small.as_ptr(),
-        name_len: super::MAX_PLANE_VOCAB_LEN + 1,
-        section_key_ptr: core::ptr::null(),
-        section_key_len: 0,
-        scope_ptr: core::ptr::null(),
-        scope_len: 0,
-        label_ptr: core::ptr::null(),
-        label_len: 0,
-        provided_carriers: 0,
-        _reserved: 0,
-        config_validate: None,
-        build: None,
-        hydrate: None,
-        start: None,
-        admin_routes: None,
-        openapi: None,
-        dispatch: None,
-        ..PlaneDecl::STUB
-    };
-    let honoured =
-        busbar_contract::abi::honoured_size(decl.size, core::mem::size_of::<PlaneDecl>());
-    let decl_ptr: *const PlaneDecl = &decl;
-    let err = super::read_vocab(decl_ptr, honoured, super::Vocab::Name, "hostile")
-        .expect_err("an oversize vocabulary length must be refused, never sliced");
-    assert!(
-        err.contains("exceeding") && err.contains(&super::MAX_PLANE_VOCAB_LEN.to_string()),
-        "expected a cap-refusal naming the limit, got: {err}"
-    );
-
-    // A within-cap vocabulary still reads back correctly — the fix is a cap, not a blanket refusal.
-    let ok = PlaneDecl {
-        name_len: small.len(),
-        ..decl
-    };
-    let ok_ptr: *const PlaneDecl = &ok;
-    let name = super::read_vocab(ok_ptr, honoured, super::Vocab::Name, "ok")
-        .expect("a within-cap vocabulary reads back");
-    assert_eq!(name, "x");
-}
 
 // ── THE REGISTRY'S PLANE GATES (DECISIONS #26 S4) ────────────────────────────────────────────────
 //
 // A plane rides the same discovery/trust/conflict pipeline as every kind (`scan_and_validate` →
-// `PluginRegistry::open_plane`); these prove its plane-side gates, which need no real plane.
+// `PluginRegistry::open_planes`); these prove its plane-side gates, which need no real plane.
 
 /// A `kind: plane` manifest, at the plane kind's one version
-/// (`supported_abi("plane")`, `abi::plane::ABI_VERSION`); the HOT decl's airlock is checked at load,
-/// apart. `sha256`/`signature` are filled by the caller (via `sign`, or by hand for the unsigned
-/// case).
+/// (`supported_abi("plane")`, `abi::plane::ABI_VERSION`), stating no Statement. `sha256`/`signature`
+/// are filled by the caller (via `sign`, or by hand for the unsigned case).
 fn plane_manifest(name: &str, alias: &str, publisher: &str) -> Manifest {
     Manifest {
         name: name.into(),
@@ -127,25 +70,29 @@ fn write_plane_tarball(dir: &std::path::Path, file: &str, m: &Manifest, lib: &[u
     std::fs::write(dir.join(file), bytes).unwrap();
 }
 
-/// Kind gating over the pipeline: a signed NON-plane artifact resolves but cannot serve as a plane —
-/// `open_plane` rejects on the KIND gate before ever attempting the HOT-ABI load. Mirrors
-/// `open_store_refuses_non_store_kind`.
+/// RED: a signed, trusted `kind: plane` plugin whose manifest states no Statement (what a HOT-lane
+/// `PlaneDecl` cdylib was) is refused at discovery, naming it and the door it lacks. Before the HOT
+/// plane load was deleted (row 84) the same plugin was opened over the HOT-tier ABI.
 #[test]
-fn open_plane_refuses_non_plane_kind() {
+fn a_plane_with_no_door_is_refused() {
     let release = SigningKey::from_bytes(&[1u8; 32]);
-    let dir = plane_tmpdir("kind-gate");
-    let mut m = plane_manifest("busbar-store-gamma-plugin", "gamma", "busbar");
-    m.kind = "store".into();
-    m.abi_version = busbar_contract::abi::store::ABI_VERSION; // store-admissible so the KIND gate is what fires
-    let m = sign(&release, m, b"store lib");
-    write_plane_tarball(&dir, "store.tar.gz", &m, b"store lib");
+    let dir = plane_tmpdir("no-door");
+    let m = sign(
+        &release,
+        plane_manifest("busbar-plane-gamma-plugin", "gamma", "busbar"),
+        b"plane lib",
+    );
+    write_plane_tarball(&dir, "plane.tar.gz", &m, b"plane lib");
 
     let reg =
         crate::registry::scan_and_validate(&dir, &first_party_only_policy(&release)).expect("scan");
-    let err = reg.open_plane("gamma").map(|_| ()).unwrap_err();
+    let err = reg
+        .open_planes(&[])
+        .map(|_| ())
+        .expect_err("a plane with no door is refused");
     assert!(
-        err.contains("kind 'store'") && err.contains("not 'plane'"),
-        "the kind gate must fire before any load: {err}"
+        err.contains("busbar-plane-gamma-plugin") && err.contains("busbar_plugin_door"),
+        "the refusal names the plane and the door it lacks: {err}"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

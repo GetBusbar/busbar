@@ -205,7 +205,6 @@ impl Node {
                             spelled: Vec::new(),
                             need: NeedId(0),
                             base_url: format!("https://{lane}.test/"),
-                            userinfo: None,
                             auth: None,
                             provider: (*lane).to_string(),
                             keep: ResponseKeep::default(),

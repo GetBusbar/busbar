@@ -4601,6 +4601,31 @@ fn resolve_head(bound: &BTreeMap<String, String>, head: &str) -> String {
     }
 }
 
+/// The `[[face]]` row the ratchet proofs plant once the ledger carries none: `(crate, face, the
+/// crate's directory, the face's path)` — a transport implementing the plane's face, the shape the
+/// other `:faces` fixtures plant.
+const PLANTED_FACE: (&str, &str, &str, &str) = (
+    "busbar-transport-stdio",
+    "Plane",
+    "crates/busbar-transport-stdio",
+    "busbar_contract::plane::Plane",
+);
+
+/// [`PLANTED_FACE`] as a `[[face]]` row at count 1, appended to the ledger.
+fn planted_face_row(cx: &Ctx) -> Result<Overlay, String> {
+    let text = cx.read(REGISTRY_FILE)?;
+    let (krate, face, _, _) = PLANTED_FACE;
+    let mut ov = Overlay::new();
+    ov.set(
+        REGISTRY_FILE,
+        format!(
+            "{text}\n[[face]]\ncrate = \"{krate}\"\nface = \"{face}\"\ncount = \"1\"\n\
+             cite = \"planted\"\nwhy = \"planted\"\ndrain = \"planted\"\n"
+        ),
+    );
+    Ok(ov)
+}
+
 /// The ledger's first `[[face]]` row, as `(crate, face, the crate's directory)`.
 fn first_face_row(cx: &Ctx) -> Result<(String, String, String), String> {
     let text = cx.read(REGISTRY_FILE)?;
@@ -4738,14 +4763,9 @@ const FACE_PATHS: &[(&str, &str, &[&str])] = &[
         "Plane",
         &["busbar_contract::plane::Plane", "busbar_contract::Plane"],
     ),
-    (
-        "transport",
-        "Transport",
-        &[
-            "busbar_contract::transport::Transport",
-            "busbar_contract::Transport",
-        ],
-    ),
+    // The transport kind's entry is its memory-ABI framer door; the contract defines no transport
+    // trait (step 36), so the face is matched by its label, as a name.
+    ("transport", "Transport", &[]),
     // The store kind's face is the RECORD store a store plugin implements (store-memory:
     // `records::RecordStore as Store`), not `verb_store::Store`, the admin verbs' DR seam that the
     // loader's store adapter answers on the host side (Part 2 #33).
@@ -9429,58 +9449,94 @@ impl Gate for KindIsolationGate {
         // THE RATCHET, BOTH WAYS. The faces that exist today are held at their exact count: a
         // SECOND one in the same crate is a landing that grew the coupling. The subject is the
         // ledger's first `[[face]]` row, read off the ledger rather than named here, so the case
-        // follows the debt as it drains instead of naming a row that has gone.
+        // follows the debt as it drains instead of naming a row that has gone. Once the debt has
+        // drained and the ledger carries no row, the proofs plant one of their own
+        // ([`planted_face_row`]): a row and two implementations it does not cover, and a row that
+        // covers none — so the ratchet stays proven with nothing left to hold.
         if !self.ship {
             let row = first_face_row(cx);
-            let names = row
-                .as_ref()
-                .map(|(k, f, _)| (k.clone(), f.clone()))
-                .unwrap_or_default();
-            let grown = row.as_ref().map(|(_, face, dir)| {
-                let path = FACE_PATHS
-                    .iter()
-                    .find(|(_, label, _)| label == face)
-                    .and_then(|(_, label, paths)| paths.first().copied().or(Some(*label)))
-                    .unwrap_or(face.as_str())
-                    .to_string();
-                let mut ov = Overlay::new();
-                ov.set(
-                    format!("{dir}/src/planted_second_face.rs"),
-                    format!("pub struct Second;\nimpl {path} for Second {{}}\n"),
-                );
-                ov
-            });
-            match grown {
-                Ok(ov) => report.push(prove_rows_red(
-                    cx,
-                    subject,
-                    "a second implementation of a reviewed foreign face is a landing that grew it",
-                    &[ROW_FACES],
-                    ov,
-                    &["face-ratchet", &names.0, &names.1],
-                )),
-                Err(why) => report.push(unplantable(
-                    "a second implementation of a reviewed foreign face is a landing that grew it",
-                    &[ROW_FACES],
-                    &["face-ratchet"],
-                    why.clone(),
-                )),
+            match &row {
+                Ok((krate, face, dir)) => {
+                    let path = FACE_PATHS
+                        .iter()
+                        .find(|(_, label, _)| label == face)
+                        .and_then(|(_, label, paths)| paths.first().copied().or(Some(*label)))
+                        .unwrap_or(face.as_str())
+                        .to_string();
+                    let mut ov = Overlay::new();
+                    ov.set(
+                        format!("{dir}/src/planted_second_face.rs"),
+                        format!("pub struct Second;\nimpl {path} for Second {{}}\n"),
+                    );
+                    report.push(prove_rows_red(
+                        cx,
+                        subject,
+                        "a second implementation of a reviewed foreign face is a landing that grew it",
+                        &[ROW_FACES],
+                        ov,
+                        &["face-ratchet", krate, face],
+                    ));
+                }
+                Err(_) => match planted_face_row(cx) {
+                    Ok(mut ov) => {
+                        let (krate, face, dir, path) = PLANTED_FACE;
+                        for n in ["one", "two"] {
+                            ov.set(
+                                format!("{dir}/src/planted_face_{n}.rs"),
+                                format!("pub struct Face{n};\nimpl {path} for Face{n} {{}}\n"),
+                            );
+                        }
+                        report.push(prove_rows_red(
+                            cx,
+                            subject,
+                            "a second implementation of a reviewed foreign face is a landing that grew it",
+                            &[ROW_FACES],
+                            ov,
+                            &["face-ratchet", krate, face],
+                        ));
+                    }
+                    Err(why) => report.push(unplantable(
+                        "a second implementation of a reviewed foreign face is a landing that grew it",
+                        &[ROW_FACES],
+                        &["face-ratchet"],
+                        why,
+                    )),
+                },
             }
 
             // AND A ROW WHOSE IMPLEMENTATION IS GONE IS A DEAD ALLOWANCE.
-            report.push(plant_registry(
-                cx,
-                subject,
-                "a reviewed face row that covers no implementation any more is struck",
-                &[ROW_FACES],
-                row.map(|(krate, face, _)| {
-                    (
+            match row {
+                Ok((krate, face, _)) => report.push(plant_registry(
+                    cx,
+                    subject,
+                    "a reviewed face row that covers no implementation any more is struck",
+                    &[ROW_FACES],
+                    Ok((
                         format!("crate = \"{krate}\"\nface = \"{face}\""),
                         format!("crate = \"{krate}-planted\"\nface = \"{face}\""),
-                    )
-                }),
-                &["dead-face", "-planted", "Strike the row"],
-            ));
+                    )),
+                    &["dead-face", "-planted", "Strike the row"],
+                )),
+                Err(_) => {
+                    let (krate, _, _, _) = PLANTED_FACE;
+                    match planted_face_row(cx) {
+                        Ok(ov) => report.push(prove_rows_red(
+                            cx,
+                            subject,
+                            "a reviewed face row that covers no implementation any more is struck",
+                            &[ROW_FACES],
+                            ov,
+                            &["dead-face", krate, "Strike the row"],
+                        )),
+                        Err(why) => report.push(unplantable(
+                            "a reviewed face row that covers no implementation any more is struck",
+                            &[ROW_FACES],
+                            &["dead-face"],
+                            why,
+                        )),
+                    }
+                }
+            }
         }
 
         // ── THE WAYS IN THAT ARE NOT A DEPENDENCY ────────────────────────────────────────────────

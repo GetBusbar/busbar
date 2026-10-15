@@ -3,7 +3,7 @@
 
 //! THE 1.5.5 HOOK PARITY SUITE, ON THE DRIVER (`BUSBAR-1.6.0.md` Part 3, section 12, "The switch":
 //! the flip's gate is every hook test green on the driver; Appendix A: the hook parity suite is the
-//! 184 v1.5.5 hook tests).
+//! 181 v1.5.5 hook tests).
 //!
 //! The plane-origin tests of `v1.5.5`, each under its 1.5.5 name, with the values 1.5.5 asserted,
 //! run with the plane under proof served on the plane driver: its REAL door, linked and loaded

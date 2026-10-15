@@ -22,7 +22,11 @@ fn make_root_cfg(
         admin_listen: crate::config::DEFAULT_ADMIN_LISTEN_ADDR.to_string(),
         admin_tls: None,
         auth: None,
-        providers,
+        // Each whole-entry fixture as the resolved provider `resolve` would produce from it.
+        providers: providers
+            .into_iter()
+            .map(|(name, p)| (name, p.into()))
+            .collect(),
         models,
         pools,
         upstream_credentials: crate::auth::UpstreamCreds::Own,
@@ -3273,7 +3277,11 @@ fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
         let mut p = make_provider(proto_b(), "https://api.example.com", "API_KEY");
         p.token_url = Some(token_url);
         p.scope = Some("api://x/.default".into());
-        p.auth = Some(config::ProviderAuth::OAuthClientCredentials);
+        // The style as the operator's config spells it (a fixture), read by the config's own parser.
+        p.auth = Some(
+            serde_yaml::from_str(include_str!("fixtures/client_credentials_style.yaml"))
+                .expect("a provider style"),
+        );
         providers.insert("myprovider".to_string(), p);
         let mut models = HashMap::new();
         models.insert("m".to_string(), make_model("myprovider", 10));

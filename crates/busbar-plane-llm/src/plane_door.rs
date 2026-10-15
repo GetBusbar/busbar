@@ -91,6 +91,7 @@ use crate::exchange::arrive::{self, envelope_for, Arrived, Declined};
 use crate::exchange::attempt::{self, stream_intent, FarRequest};
 use crate::exchange::reply::{At, Fault, Piece, Reply, ReplyCtx, Units, Verdict};
 use crate::exchange::shaping::{sections, Shaping};
+use crate::exchange::webhook::{self, Webhooks};
 use crate::exchange::{handler_of, probe, project, refuse};
 use crate::meta::PROVIDER_KEYS;
 use crate::LlmPlane;
@@ -125,12 +126,14 @@ const fn section(name: &'static str, flags: u32) -> Section {
     }
 }
 
-/// `pools:` declared; `providers:`, `models:` and `limits:` read beside it.
+/// `pools:` declared; `providers:`, `models:` and `limits:` read beside it; `webhooks:` its own,
+/// opened with as written (the receivers it switches on, [`webhook`]).
 const SECTIONS: &[Section] = &[
     section(sections::POOLS, SECTION_DECLARING),
     section(sections::PROVIDERS, SECTION_CONSUMED),
     section(sections::MODELS, SECTION_CONSUMED),
     section(sections::LIMITS, SECTION_CONSUMED),
+    section(webhook::SECTION, 0),
 ];
 
 const OPS: &[OpClassId] = <LlmPlane as PlaneMeta>::OP_CLASSES;
@@ -524,6 +527,10 @@ struct UnitState {
     /// The kernel stated the current attempt's answer will not be failed over (`PIECE_FINAL`): a
     /// retry verdict on it ends the unit like any other done answer.
     final_answer: bool,
+    /// A unit the plane answers itself (a webhook delivery, `ROUTE_LOCAL`): no far end, no fee.
+    local: bool,
+    /// The local unit's acknowledgement, answered on the caller's last piece.
+    ack: Option<Vec<u8>>,
 }
 
 impl UnitState {
@@ -542,6 +549,8 @@ impl UnitState {
             reported: Vec::new(),
             fee: false,
             final_answer: false,
+            local: false,
+            ack: None,
         }
     }
 
@@ -561,6 +570,8 @@ pub struct LlmDoor {
     units: Mutex<HashMap<u64, UnitState>>,
     tickets: Mutex<HashMap<Ticket, u64>>,
     services: Option<Services>,
+    /// The receivers the `webhooks:` section switched on at open.
+    webhooks: Webhooks,
 }
 
 /// A lock, through a poisoning: the maps it guards hold no invariant a panicking holder breaks.
@@ -633,10 +644,32 @@ pub fn claims() -> Vec<ClaimSpec> {
         .collect()
 }
 
-/// The generation's snapshot: the plane's claims.
-fn snapshot() -> SnapshotSpec {
+/// THE RECEIVERS' CLAIMS: each webhook receiver its `webhooks:` section switches on, an exact path
+/// that ranks above the fallback's prefix claim. None when the section names none, so a document
+/// without it claims exactly what the previous release answered.
+#[must_use]
+pub fn webhook_claims(webhooks: Webhooks) -> Vec<ClaimSpec> {
+    webhooks
+        .openai_responses
+        .then(|| {
+            let mut claim = ClaimSpec::new("POST", webhook::PATH, TRANSPORT, CLAIM_EXACT);
+            claim.refusal_dialect = u16::try_from(dialect_index(RESPONSES)).unwrap_or(0);
+            claim
+        })
+        .into_iter()
+        .collect()
+}
+
+/// The dialect a Responses webhook unit and its refusals wear.
+const RESPONSES: &str = "responses";
+
+/// The generation's snapshot: the plane's claims, and its receivers' claims.
+fn snapshot(webhooks: Webhooks) -> SnapshotSpec {
     SnapshotSpec {
-        claims: claims(),
+        claims: claims()
+            .into_iter()
+            .chain(webhook_claims(webhooks))
+            .collect(),
         ..SnapshotSpec::default()
     }
 }
@@ -765,8 +798,11 @@ fn fee_unit(unit: &mut UnitState, answer: &mut Answer) {
     if !answer.units.is_empty() {
         unit.reported.clone_from(&answer.units);
     }
-    let incurred =
-        !unit.fee && !unit.probe && !answer.to_far_end && (200..=299).contains(&answer.status);
+    let incurred = !unit.fee
+        && !unit.probe
+        && !unit.local
+        && !answer.to_far_end
+        && (200..=299).contains(&answer.status);
     unit.fee |= incurred;
     if unit.fee && (incurred || !answer.units.is_empty()) {
         answer.units.clone_from(&unit.reported);
@@ -972,6 +1008,22 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
 fn answer(unit: &mut UnitState, from: u32, piece: &PieceIn<'_>) -> Answer {
     match from {
         FROM_KERNEL => attempt(unit, piece),
+        // A unit the plane answers itself: its acknowledgement, once the caller's body is in.
+        FROM_CALLER if unit.local => {
+            let ack = piece.last.then(|| unit.ack.take()).flatten();
+            ack.map_or_else(Answer::default, |ack| Answer {
+                status: 200,
+                fields: vec![(
+                    b"content-type".to_vec(),
+                    busbar_contract::protocol::APPLICATION_JSON
+                        .as_bytes()
+                        .to_vec(),
+                )],
+                bytes: ack,
+                done: true,
+                ..Answer::default()
+            })
+        }
         // The kernel re-pushes the caller's body on every attempt; what goes to the far end is the
         // body the attempt wrote for this member.
         FROM_CALLER => Answer {
@@ -1126,14 +1178,20 @@ slot!(
             Ok(shaping) => shaping,
             Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
         };
+        let webhooks = match webhook::from_owned(input.field(|i| &i.owned).bytes()) {
+            Ok(webhooks) => webhooks,
+            Err(words) => return open_failed(open, &mut out, |o| &o.open.err_len, &words),
+        };
         let door = LlmDoor {
             generations: Generations::new(),
             shapings: Mutex::new(BTreeMap::from([(open.generation, Arc::new(shaping))])),
             units: Mutex::new(HashMap::new()),
             tickets: Mutex::new(HashMap::new()),
             services: open.host().and_then(|h| Services::of(&h)),
+            webhooks,
         };
-        out.publish(|o| &o.snapshot, &door.generations, open.generation, &snapshot());
+        let snapshot = snapshot(door.webhooks);
+        out.publish(|o| &o.snapshot, &door.generations, open.generation, &snapshot);
         instance.open(door);
         Outcome::Ready
     }
@@ -1150,7 +1208,8 @@ slot!(
             Err(words) => return out.fail(Refusal::refused(words)),
         };
         guard(&door.shapings).insert(input.generation, Arc::new(shaping));
-        out.publish(|o| &o.snapshot, &door.generations, input.generation, &snapshot());
+        let snapshot = snapshot(door.webhooks);
+        out.publish(|o| &o.snapshot, &door.generations, input.generation, &snapshot);
         Outcome::Ready
     }
 );
@@ -1244,6 +1303,37 @@ slot!(
         let method = String::from_utf8_lossy(input.field(|i| &i.method).bytes()).into_owned();
         let target = String::from_utf8_lossy(input.field(|i| &i.target).bytes()).into_owned();
         let body = input.field(|i| &i.body).bytes();
+        // A WEBHOOK DELIVERY the `webhooks:` section switched on: the plane answers it itself, after
+        // the kernel verified its sender (the line's auth); a body that does not read is refused.
+        let path = target.split_once('?').map_or(target.as_str(), |(p, _)| p);
+        if door.webhooks.openai_responses && webhook::is_receiver(&method, path) {
+            let read = webhook::read_event(body);
+            return match read {
+                Ok(event) => {
+                    out.set(|o| &o.dialect, dialect_index(RESPONSES));
+                    out.set(|o| &o.principal_need, PRINCIPAL_REQUIRED);
+                    out.local();
+                    unit.local = true;
+                    unit.ack = Some(webhook::ack(&event));
+                    guard(&door.units).insert(given.unit, unit);
+                    Outcome::Ready
+                }
+                Err(message) => {
+                    let declined = Declined {
+                        why: arrive::Decline::WebhookBody,
+                        status: 400,
+                        envelope: RESPONSES,
+                        kind: busbar_contract::protocol::KIND_INVALID_REQUEST,
+                        message: message.into(),
+                    };
+                    out.set(|o| &o.refusal, declined.why.code());
+                    out.set(|o| &o.refusal_status, u32::from(declined.status));
+                    unit.declined = Some(declined);
+                    guard(&door.units).insert(given.unit, unit);
+                    out.fail(Refusal::bare())
+                }
+            };
+        }
         let caller = unit.caller_fields();
         let arrival = arrive::arrive(&method, &target, &caller, body, &*unit.shaping);
         drop(caller);

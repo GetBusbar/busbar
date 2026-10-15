@@ -329,15 +329,6 @@ pub fn merged_boot_plane_decls(
             .position(|k| *k == d.key)
             .unwrap_or(canonical.len())
     });
-    // REGISTER EACH PLANE'S SCOPE KINDS with the neutral `busbar_contract` scope-kind wire registry, so a
-    // `VirtualKey` grant of a plane's kind (`mcp_server`, …) serializes to its `allowed_{kind}s` wire
-    // field instead of failing the write. The kind strings are DATA off each `PlaneDecl.scope_kinds`
-    // — core names no plane vocabulary here. Idempotent, so re-folding under the test surface is safe.
-    for d in &decls {
-        for kind in d.scope_kinds {
-            busbar_contract::records::register_scope_kind(kind);
-        }
-    }
     // PLANE-OWNED-CONFIG DUP-CLAIM GUARD (1.6.0 config-seam, stage 1). Refuse the boot if two planes
     // claim the same top-level config section, or if a plane claims a section core STILL owns
     // concretely (`CORE_OWNED_CONCRETE_SECTIONS`) — the invariant that makes the later section moves
@@ -653,7 +644,7 @@ pub struct BuildCtx<'a> {
     /// handed the dialect facts of the providers its section references, as its served instance
     /// is; `None` = none (a test build that states none).
     pub providers:
-        Option<&'a std::collections::HashMap<String, crate::config::providers::ProviderCfg>>,
+        Option<&'a std::collections::HashMap<String, crate::config::providers::ResolvedProvider>>,
     /// THE HOSTLESS-EGRESS DRIVER of the App this generation builds, handed to a plane's `build` on
     /// this context rather than read off a process-wide static: a plane that runs a governed hop
     /// holds the driver of the App that built it, so two Apps in one process each drive their own.
@@ -1119,7 +1110,7 @@ plane_behaviour! {
     /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])
     /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,
     /// [`crate::config::providers::ProviderDeploy`]) INTO THE RESOLVED
-    /// [`crate::config::providers::ProviderCfg`] a lane is built from — the providers/models/pools
+    /// [`crate::config::providers::ResolvedProvider`] a lane is built from — the providers/models/pools
     /// LOGIC seam (1.6.0 pools stage-B). `busbar_kernel::config::resolve` calls this at the EXACT point
     /// the per-deployment merge always ran (right after the catalog lookup, itself unconditional core
     /// orchestration — "provider referenced but not found in providers.yaml" stays a core error), so
@@ -1140,7 +1131,7 @@ plane_behaviour! {
         fn(
             &crate::config::providers::ProviderDef,
             &crate::config::providers::ProviderDeploy,
-        ) -> crate::config::providers::ProviderCfg,
+        ) -> crate::config::providers::ResolvedProvider,
     >,
 }
 

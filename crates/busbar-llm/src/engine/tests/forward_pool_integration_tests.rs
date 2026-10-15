@@ -1430,8 +1430,8 @@ async fn test_budget_over_quota_gemini_envelope() {
 }
 
 /// Bedrock ingress (`/model/x/converse`): an over-budget rejection must carry the native AWS
-/// JSON-1.1 error envelope (`__type == "ServiceQuotaExceededException"`) at a 400-class status
-/// (the native AWS shape for ServiceQuotaExceededException — NOT 429) AND the
+/// JSON-1.1 error envelope (`__type == "ThrottlingException"`, an error Converse declares;
+/// 1.5.5's 400 `ServiceQuotaExceededException` is one it does not) at 429 AND the
 /// `x-amzn-errortype` / `x-amzn-RequestId` headers a native Bedrock runtime response carries.
 #[tokio::test]
 async fn test_budget_over_quota_bedrock_envelope() {
@@ -1446,7 +1446,7 @@ async fn test_budget_over_quota_bedrock_envelope() {
         .send()
         .await
         .unwrap();
-    assert_eq!(r.status().as_u16(), 400, "bedrock over-budget → 400");
+    assert_eq!(r.status().as_u16(), 429, "bedrock over-budget → 429");
     // Headers: a native Bedrock error always carries x-amzn-RequestId and x-amzn-errortype.
     let errortype_hdr = r
         .headers()
@@ -1455,7 +1455,7 @@ async fn test_budget_over_quota_bedrock_envelope() {
         .map(|s| s.to_string());
     assert_eq!(
         errortype_hdr.as_deref(),
-        Some("ServiceQuotaExceededException"),
+        Some("ThrottlingException"),
         "bedrock over-budget carries x-amzn-errortype header matching __type"
     );
     assert!(
@@ -1465,8 +1465,8 @@ async fn test_budget_over_quota_bedrock_envelope() {
     let body: serde_json::Value = r.json().await.unwrap();
     assert_eq!(
         body.get("__type").and_then(|t| t.as_str()),
-        Some("ServiceQuotaExceededException"),
-        "bedrock over-budget envelope carries __type == ServiceQuotaExceededException; got {body}"
+        Some("ThrottlingException"),
+        "bedrock over-budget envelope carries __type == ThrottlingException; got {body}"
     );
     handle.abort();
 }
@@ -3513,7 +3513,8 @@ mod disposition_matrix_tests {
                     anthropic_adaptive_thinking: None,
                     native_structured_output: None,
                     model_capabilities: Vec::new(),
-                },
+                }
+                .into(),
             );
             let mut models = HashMap::new();
             models.insert("m".to_string(), model.clone());

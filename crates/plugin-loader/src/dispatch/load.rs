@@ -131,19 +131,6 @@ pub fn rendering_of(door_fn: DoorFn) -> Result<Vec<u8>, LoadError> {
     unsafe { render(&st) }.map_err(|e| LoadError::Rendering(format!("{} is too long", e.0)))
 }
 
-/// THE KIND A DOOR STATES, from its head alone: the door's head checks ([`read_door`]: not NULL, the
-/// magic, the mechanism version, a size that reaches `ops`, a kind the host has at this host's ABI
-/// version for it) and nothing past them. The loader-mechanism paths that ask a mapped library
-/// which kind it is (the upload vet, the plugins inventory, the kind gates) read a memory-ABI
-/// image's kind here: its `busbar_plugin_kind` answers for no door it registered.
-///
-/// # Errors
-///
-/// The refusal the door's head earns.
-pub(crate) fn kind_of_door(door_fn: DoorFn) -> Result<KindCode, LoadError> {
-    read_door(enter_door(door_fn), None).map(|(_, kind)| kind)
-}
-
 /// THE ENTRY: `door_fn` called on a permanent FFI worker ([`crate::ffi_thread`]), for every kind and
 /// both origins. The door function is plugin code like any slot, so it runs where every other
 /// per-load crossing runs; a call already on a worker stays there. A door function that panicked

@@ -76,24 +76,19 @@ that PyYAML ≥ 6.0 is needed on **every** run, not only the first.
 To move a pin: `vendor.sh --repin <spec>` prints the row for the current upstream document;
 paste it in and read what changed in the report before trusting it.
 
-## What is a named gap (SKIP)
+## What is a named gap (SKIP): none is admitted
 
-A SKIP is never a pass. It is printed with `::warning ... DID NOT VERIFY`, listed in
-`owed-gaps.txt`, and removed from the owed set so the verdict can still judge the rows that exist.
+A SKIP is never a pass. It is printed with `::warning ... DID NOT VERIFY` and listed in
+`owed-gaps.txt`. **Owner rule 22 (2026-10-14): named conformance gaps are zero.** A gap is a defect
+to fix in code, never a re-baseline (busbar #619, which raised the ceiling 16 -> 21, was closed for
+that reason). So:
+- `named-gaps.json` holds `"gaps": []`, `"expected": 0` and `"accepted": []`, and nothing else.
+- `validate.py` refuses any `gaps` entry at load, and nothing is judged.
+- `run.sh`'s reconciliation row (`gate|llm-conformance|named-gaps`, added to the owed set so the one
+  verdict decides it) is RED on any `accepted` entry, on any `expected` other than 0, and on every
+  SKIP row the run produced, naming each row and the reason it carries.
 
-That removal is also exactly how a gap could hide: an id that stops being checked stops being
-counted, and a run that verified one thing fewer read the same green as a run that verified one
-more. So the gaps a run may have are **declared in `named-gaps.json`** — one entry per gap, `cells`
-a regex over the ledger id, plus an `owner` and a `rationale`, and an `expected` ceiling on how many
-SKIP rows there may be. `run.sh` reconciles the observed gaps against that file and writes its
-answer as a ledger row (`gate|llm-conformance|named-gaps`) added to the owed set, so the single
-verdict decides it like every other check and the reconciliation failing to run is DID NOT RUN. A
-gap no entry names is red; a gap whose own row carries no reason is red; more gaps than were
-declared is red — including one that falls inside an entry the file already names, which the naming
-alone cannot see. **Fewer** gaps than declared is never red: a gap that closed is what the file
-exists to drive towards, and the run prints the instruction to lower `expected` behind it.
-
-The kinds of gap that arise:
+The kinds of SKIP the validator can still produce, each of them RED:
 
 * **Gemini error bodies.** The discovery document does not describe error responses. They are
   checked against `schemas/google-rpc-status.json`, a hand transcription of `google.rpc.Status`
@@ -115,6 +110,23 @@ The judge models both documents (`validate.py` `ANTHROPIC_DOCUMENTED_EVENTS`): a
 exactly `{"type":"ping"}`, an `error` must match the spec's own `ErrorResponse`, each must be sent
 under its own SSE event name, and every other `type` still faces the published union. These rows
 are judged, not forgiven: there is no named gap for them (`selftest.sh` cases (v)-(v5)).
+
+**Streams that fail or end early.** `stream_upstream_error` (the upstream fails part way, with an
+in-band error) and `stream_upstream_cut` (the upstream drops the connection after the first event)
+ask for a stream and open 2xx, so both are judged as streams, and neither is held to a side of 2xx.
+An in-band error is judged against the shape the vendor defines for it:
+- Anthropic's `error` event: the spec's ErrorResponse.
+- Responses' `error` event and Bedrock's exception frames: members of the published stream union.
+  Bedrock's `:exception-type` is the union's member name.
+- Cohere: `message-end` with `finish_reason: ERROR`.
+- OpenAI chat and Gemini: the error is defined only by the official SDK, so `validate.py`
+  `STREAM_ERROR_ENVELOPE` cites it. openai-python `_streaming.py` raises on any `data:` object with
+  a truthy `error`, whose shape is the spec's ErrorResponse. python-genai `_api_client.py` raises on
+  a chunk that starts `{"error":`, whose shape is google.rpc.Status, as transcribed in
+  `schemas/google-rpc-status.json`.
+
+That event must be the stream's last, and a stream that ends on it owes no `[DONE]`.
+(`selftest.sh` cases (x)-(x5).)
 
 ## Running it
 

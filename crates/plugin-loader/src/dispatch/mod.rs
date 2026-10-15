@@ -94,8 +94,8 @@ pub use plugin::{
 pub use services::{HostServices, Later, Ran, Reading, Stored};
 pub use validate::Violation;
 pub use worker::{
-    Adopter, Budgets, DispatchConfig, DispatchStats, Dispatcher, Done, Lent, Reply,
-    DEFAULT_QUARANTINE_AFTER, QUARANTINED_TOTAL,
+    Adopter, Budgets, CounterFamily, DispatchConfig, DispatchStats, Dispatcher, Done, Lent, Reply,
+    DEADLINE_WITHOUT_WAKE_TOTAL, DEFAULT_QUARANTINE_AFTER, QUARANTINED_TOTAL,
 };
 
 /// A kind, as the dispatcher sees it: its code, its table and its timeout outcome. Implemented once

@@ -363,9 +363,31 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
         served_op_classes: &[],
         caller_credential_refusal: None,
     };
-    let hooks = PlaneHooks {
+    let hooks = busbar_kernel::plane::registry::PlaneHooks {
         wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
-        ..HOT_PLANE_HOOKS
+        claims: |_| Vec::new(),
+        admission: |_| None,
+        build: |_| None,
+        routes: None,
+        admin_routes: None,
+        openapi: None,
+        hydrate: None,
+        start: None,
+        config_validate: None,
+        named_def_list: None,
+        named_def_get: None,
+        registry_contains: None,
+        reresolve_gates: None,
+        openapi_schemas: None,
+        on_swap: None,
+        parse_section: None,
+        parse_endpoint: None,
+        lower_endpoint: None,
+        build_runtime: None,
+        viewer: None,
+        retain_verify_gates: None,
+        default_section: None,
+        resolve_provider: None,
     };
     Box::leak(Box::new([PlaneDecl::assemble(declaration, hooks)]))
 }

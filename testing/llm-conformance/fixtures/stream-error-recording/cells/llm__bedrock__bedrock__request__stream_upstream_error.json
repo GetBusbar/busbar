@@ -1,0 +1,9 @@
+{
+ "body": {
+  "base64": "AAAAdgAAAFKW1freCzpldmVudC10eXBlBwAMbWVzc2FnZVN0YXJ0DTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29uDTptZXNzYWdlLXR5cGUHAAVldmVudHsicm9sZSI6ImFzc2lzdGFudCJ9b6jFmQAAAJ8AAABXw3ur/ws6ZXZlbnQtdHlwZQcAEWNvbnRlbnRCbG9ja0RlbHRhDTpjb250ZW50LXR5cGUHABBhcHBsaWNhdGlvbi9qc29uDTptZXNzYWdlLXR5cGUHAAVldmVudHsiY29udGVudEJsb2NrSW5kZXgiOjAsImRlbHRhIjp7InRleHQiOiJvcmFjbGUtbWFya2VyIn196qck9gAAAKUAAABl4D1aWA86ZXhjZXB0aW9uLXR5cGUHABdpbnRlcm5hbFNlcnZlckV4Y2VwdGlvbg06Y29udGVudC10eXBlBwAQYXBwbGljYXRpb24vanNvbg06bWVzc2FnZS10eXBlBwAJZXhjZXB0aW9ueyJtZXNzYWdlIjoib3JhY2xlOiB1cHN0cmVhbSBmYWlsZWQgbWlkLXN0cmVhbSJ9zQQ0tg=="
+ },
+ "headers": {
+  "content-type": "application/vnd.amazon.eventstream"
+ },
+ "status": 200
+}

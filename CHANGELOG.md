@@ -418,19 +418,20 @@ Each of these is an owner-accepted difference from 1.5.5: additive, or strictly 
 
 ### Breaking
 
-The accepted-differences register for this release has exactly eight entries of kind `breaking`
+The accepted-differences register for this release has exactly nine entries of kind `breaking`
 presented here: two confined to the fallback/least-bad/queue hop (the primary hop's behaviour is
 unchanged in both), one confined to Cohere backends that report `usage.billed_units`, one field
 removed from the hook view, one Gemini turn's server-side-tool tokens now billed, one key-rotate
 endpoint that now refuses an overlong id like its siblings, one where rate cards become a dated
-history so a card's own effective date bounds what it reprices, and one provider credential that no
-longer degrades to an empty key.
+history so a card's own effective date bounds what it reprices, one provider credential that no
+longer degrades to an empty key, and one Bedrock budget refusal that now answers an error Converse
+declares.
 (Two more register entries are also of kind `breaking` but are presented above under Improvements
 instead, because each waives only a caller-additive or documentation-only surface rather than a
 money or status class: F-003 — the CLI `--help`/`--version` text is a parseable contract surface —
 and F-011c — `openapi.json`'s overlay-delete endpoint prose, registered breaking only because the
 oracle tool cannot leaf-correct a string under a `paths` key, not because the endpoint's behaviour
-changed. A reader counting `kind: breaking` rows in the register will find ten, not eight. One
+changed. A reader counting `kind: breaking` rows in the register will find eleven, not nine. One
 further entry, AUTH-ROW's, is also registered `breaking` and presented under Improvements: the
 differ accepts a `status` class on no other kind, and what it waives is a misconfigured admin-auth
 provider that answered 401 now authenticating.)
@@ -439,6 +440,13 @@ as an improvement or does not exist: a config written for 1.5.5 boots, validates
 identically (once it carries the `store:` block that `--migrate-config` inserts), and every 1.5.5 key and
 minted secret carries over.
 
+- 1.6.0 Changed: a Bedrock caller whose budget is spent is refused 429 `ThrottlingException`, an
+  error Converse declares; 1.5.5 answered 400 `ServiceQuotaExceededException`, which only
+  InvokeModel declares. The message, the `Retry-After` header and the charge (none) are unchanged,
+  and the five other dialects already answered an exhausted budget with 429. **Migration:** a
+  Bedrock client that matched `ServiceQuotaExceededException` on Converse must match
+  `ThrottlingException`; the AWS SDKs retry it under their standard retry mode, as they retry the
+  other dialects' 429.
 - 1.6.0 Improvements: a fallback hop refused upstream is answered in the ingress-native
   auth-failure envelope and recorded on the breaker. Previously, an auth or billing hard-down on a
   fallback, least-bad or queue hop relayed the upstream's 401/403 body verbatim and left the
@@ -728,6 +736,11 @@ each dialect translates, field by field, is listed in the generated
 
 ### Added
 
+- **`/metrics` carries two plugin-health counters.** `bb_deadline_without_wake_total` counts plugin
+  operations settled by their deadline without ever being woken, and `bb_plugin_quarantined_total`
+  counts plugin instances the crossing watchdog quarantined. Each is one counter family with its
+  `# HELP` and `# TYPE` lines, summed over every plugin, and is 0 on a healthy node. Nothing that
+  1.5.5 exposed changed. See [the observability guide](docs/observability.md).
 - **A plugin's inbound listener binds what its settings block states, capped at 1024 connections.**
   A need a plugin declares inbound names a settings block `{listen, tls: {cert, key, client_ca?},
   max_conns?}` (1.5.5's `listen` / `tls` shape; `cert` and `key` are secret references). The listener
@@ -789,6 +802,16 @@ each dialect translates, field by field, is listed in the generated
   the node sealed the record. It does not prove the chain was never rewritten by someone holding
   the key; that takes a head recorded off the node. **Migration:** none; every 1.5.5 audit field is
   unchanged.
+- 1.6.0 Added: the LLM plane receives OpenAI Responses background-turn webhooks at `POST /v1/llm/webhooks/openai` when `webhooks: { openai_responses: true }` is set.
+  The receiver is off by default, and a config without the `webhooks:` block answers on that path
+  exactly as 1.5.5 did. The delivery's Standard Webhooks signature is verified by an
+  `identity-providers:` entry using `module: busbar-auth-webhook-signature` (`variant:
+  standard-webhooks`, the `whsec_` secret as its `signing-secret`) on `auth.chain`. An unsigned or
+  forged delivery is a 401, and a replayed `webhook-id` is refused. A verified delivery is
+  acknowledged `200 {"received":true,"response_id":"resp_…","type":"response.completed"}` and
+  bills nothing; a body that is not a Responses event is a 400. The block is read at boot.
+  **Migration:** none. The build-time `webhook-receiver` feature and its `BUSBAR_LLM_WEBHOOK_SECRET`
+  variable are gone.
 - 1.6.0 Added: `GET /api/v1/admin/ledger/checkpoints` lists sealed checkpoints, sealed every 10,000 journal records or every 60 seconds with a change, whichever comes first.
   The read serves the latest 1,024 seals, oldest first; the journal keeps every seal. A node that
   has not reached either threshold serves an empty list. **Migration:** none.

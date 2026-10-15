@@ -985,8 +985,11 @@ transport_file = "crates/busbar-contract/src/transport/mod.rs"
 # `Store` stood here until the `kinds::Store` journal trait was struck from busbar-contract
 # (STORE-NOALLOC, ARCHITECT R7 2026-10-01): it had no implementor and no caller; the store kind is
 # its v3 table and `abi::sdk::store::StoreSlots`. Struck in the same commit, as above.
+# `Transport` stood here until the legacy `busbar_contract::Transport` trait was struck (TODO step
+# 36): a transport reaches the connector only as its memory-ABI framer door, and the trait had no
+# implementor left. Struck in the same commit, as above.
 traits = [
-  "Plane", "SessionPlane", "Transport",
+  "Plane", "SessionPlane",
 ]
 max_defaulted = 0
 
@@ -1313,10 +1316,6 @@ known_sites = [
   # `diagnostics/emit.rs::site` (the interned field set).
   #   The plane axis's installed row list: one slice of row references, made once at boot.
   "crates/busbar/src/root/linked.rs::register_planes",
-  #   The HOT-lane planes and the rows read off them, kept once at boot for the process's life.
-  "crates/busbar/src/root/linked.rs::plane_rows",
-  #   A HOT-lane plane's declaration words and tables, copied once per plane as its row is built.
-  "crates/busbar/src/root/linked.rs::hot_plane_row",
   #   The declared-diagnostics catalogue, installed once at boot.
   "crates/busbar/src/root/linked.rs::register_diagnostics",
   #   A door plane's registration words, folded once per key (bounded by MAX_DOOR_PLANES).

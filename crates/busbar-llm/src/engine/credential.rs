@@ -295,6 +295,7 @@ pub(crate) fn credential_for(
             let Some(reach) = &input.auths else {
                 return Arc::new(NoCredential);
             };
+            // TRANSITIONAL: deleted with busbar-llm (row 155 C).
             // The token endpoint's userinfo (row 74, F25): stripped from `lane.token_url` before
             // this plane saw it, and handed back opaque for the host to present on the mint.
             let endpoint = match lane.auth_style {

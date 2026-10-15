@@ -117,8 +117,13 @@ pub struct DispatchConfig {
 /// count existed.
 pub const DEFAULT_QUARANTINE_AFTER: u32 = 1;
 
-/// The quarantine counter's exposition name (THE DESIGN A.8), labelled by plugin.
+/// The quarantine counter's exposition name (THE DESIGN A.8): [`DispatchStats::quarantined`], the
+/// process's sum over every plugin.
 pub const QUARANTINED_TOTAL: &str = "bb_plugin_quarantined_total";
+
+/// The lost-wake counter's exposition name (THE DESIGN A.4.3):
+/// [`DispatchStats::deadline_without_wake`].
+pub const DEADLINE_WITHOUT_WAKE_TOTAL: &str = "bb_deadline_without_wake_total";
 
 impl Default for DispatchConfig {
     fn default() -> Self {
@@ -158,6 +163,32 @@ pub struct DispatchStats {
     pub forged_handles: u64,
     /// The off-crossing latch tripped (#74): nothing resolves outside a crossing any more.
     pub handles_latched: bool,
+}
+
+/// One `bb_*` counter family the dispatcher exposes: its name, its HELP text and its value.
+pub type CounterFamily = (&'static str, &'static str, u64);
+
+impl DispatchStats {
+    /// EVERY `bb_*` COUNTER these stats hold, one exposition family each (coordinator ruling
+    /// 2026-10-14: the dispatcher's `bb_*` counters are exported through the process's metrics
+    /// path, HELP and TYPE included). The one list the composition root hands the kernel's scrape.
+    #[must_use]
+    pub const fn families(&self) -> [CounterFamily; 2] {
+        [
+            (
+                DEADLINE_WITHOUT_WAKE_TOTAL,
+                "Plugin operations that waited and were settled by their deadline without ever \
+                 being woken; 0 while every plugin wakes what it parks",
+                self.deadline_without_wake,
+            ),
+            (
+                QUARANTINED_TOTAL,
+                "Plugin instances the crossing watchdog quarantined for overrunning their call \
+                 budget, summed over every plugin",
+                self.quarantined,
+            ),
+        ]
+    }
 }
 
 #[derive(Debug, Default)]

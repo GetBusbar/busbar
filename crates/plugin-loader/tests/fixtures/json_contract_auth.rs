@@ -16,7 +16,7 @@
 
 use std::ffi::c_void;
 
-/// The 1.5.5 transport version (`busbar_contract::abi::cold::TRANSPORT_VERSION`, frozen at 1).
+/// The 1.5.5 transport version (frozen at 1).
 const TRANSPORT_VERSION: u32 = 1;
 /// The 1.5.5 error status.
 const STATUS_ERR: i32 = 1;

@@ -15,7 +15,6 @@
 use core::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Which way bytes are moving.
@@ -427,62 +426,6 @@ pub struct Handoff {
     pub to: &'static str,
     /// The transport fact key both legs must agree on.
     pub binding_fact: &'static str,
-}
-
-/// A listening socket a transport opened.
-///
-/// The kernel holds it; a plane never sees one. The handle is opaque because what is behind it is
-/// the transport's business and nothing else's.
-///
-/// The identity is the contract's, minted here at construction and never by a transport, because a
-/// node always holds at least two listeners — data and admin — and the only thing that told them
-/// apart was a bound address string a configuration is free to duplicate. A transport keying its
-/// own per-listener state on that string was keying it on something two listeners could share.
-#[derive(Clone)]
-pub struct Listener {
-    id: u64,
-    handle: Arc<dyn ListenerHandle>,
-}
-
-/// The next listener identity. Node-local and monotonic; nothing outside the node ever sees one.
-static NEXT_LISTENER_ID: AtomicU64 = AtomicU64::new(1);
-
-impl Listener {
-    /// Wrap a transport's own listener, giving it an identity nothing else holds.
-    #[must_use]
-    pub fn new(handle: Arc<dyn ListenerHandle>) -> Self {
-        Self {
-            id: NEXT_LISTENER_ID.fetch_add(1, Ordering::Relaxed),
-            handle,
-        }
-    }
-
-    /// The listener's node-local identity.
-    #[must_use]
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-
-    /// The local address the listener is bound to.
-    #[must_use]
-    pub fn local_addr(&self) -> String {
-        self.handle.local_addr()
-    }
-}
-
-impl fmt::Debug for Listener {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Listener")
-            .field("id", &self.id)
-            .field("local_addr", &self.handle.local_addr())
-            .finish()
-    }
-}
-
-/// What a transport puts behind a [`Listener`].
-pub trait ListenerHandle: Send + Sync {
-    /// The local address the listener is bound to.
-    fn local_addr(&self) -> String;
 }
 
 /// A connection a transport accepted or dialled.

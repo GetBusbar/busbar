@@ -292,16 +292,12 @@ pub fn rewrite_card(
         "securityRequirements".to_string(),
         inbound_security_requirement(),
     );
-    match out.get_mut("capabilities") {
-        Some(Value::Object(caps)) => {
-            caps.insert("extendedAgentCard".to_string(), Value::Bool(true));
-        }
-        _ => {
-            out.insert(
-                "capabilities".to_string(),
-                json!({ "extendedAgentCard": true }),
-            );
-        }
+    // THE AGENT'S OWN CAPABILITIES, as it states them: busbar relays a fronted agent's extended
+    // card read to the agent itself, so the served card may promise one only where the agent's
+    // card does. A card stating none is served with an empty `capabilities` (the member the card
+    // shape requires), claiming nothing on the agent's behalf.
+    if !matches!(out.get("capabilities"), Some(Value::Object(_))) {
+        out.insert("capabilities".to_string(), json!({}));
     }
     let mut served = Value::Object(out);
     if let Some(host) = backend_host.as_deref() {

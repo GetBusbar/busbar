@@ -3,7 +3,7 @@
 
 //! **A DROPPED-IN TRANSPORT REGISTERS THROUGH THE SAME REGISTRATION AS A LINKED ONE, AND SERVES** —
 //! end to end, over the REAL binary (#2 rule (1): same contract, same loading path; #3
-//! OWNER-LOCKED: a transport is swappable, compiled in OR dropped in; #30: it rides the HOT lane).
+//! OWNER-LOCKED: a transport is swappable, compiled in OR dropped in), through its door.
 //!
 //! The in-tree transport `cdylib` is found by its KIND (the one library beside the binary the loader
 //! admits as `kind: transport`) and packed into `plugins.dir` as a tarball. The root names no wire:

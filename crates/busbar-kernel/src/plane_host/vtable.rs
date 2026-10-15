@@ -71,10 +71,10 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         pipe_read: Some(super::pipe::pipe_read),
         pipe_write: Some(super::pipe::pipe_write),
         // ── The DURABLE journal seam (minor-9): the slots the kernel's own streams still reach,
-        //    wired over the store-backed `audit::journal::Journal<PlaneJournalRecord>` in
-        //    `super::journal`. A plane's record chains are framed and verified on the kernel's
-        //    record path (`crate::host_chains`, BUSBAR-1.6.0.md Part 3 §5), so the read, restore,
-        //    forget and verify slots no plane reached any more are gone (unwired). ──────────────
+        //    wired over the store-backed `audit::journal::Journal<StreamRecord>` of
+        //    `audit::stream_registry`. A plane's record chains are framed and verified on the
+        //    kernel's record path (`crate::host_chains`, BUSBAR-1.6.0.md Part 3 §5), so the read,
+        //    restore, forget and verify slots no plane reached any more are gone (unwired). ───────
         journal_register: Some(super::journal::journal_register),
         journal_append_scoped: Some(super::journal::journal_append_scoped),
         journal_read_scoped: None,

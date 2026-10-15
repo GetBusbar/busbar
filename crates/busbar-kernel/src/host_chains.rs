@@ -13,7 +13,7 @@
 //!   pool, one flush at a time, so the chain's order is the queue's. The position (the next
 //!   sequence and the tail's digest) is the ONE chain mechanism's ([`crate::audit::Chain`]) and the
 //!   digest its ([`crate::audit::frame_prelude`] in the declared framing, then the plane's bytes
-//!   raw: [`PlaneJournalRecord`]). The position advances only once the store took the record (the
+//!   raw: [`StreamRecord`]). The position advances only once the store took the record (the
 //!   journal's write-ordering rule), so a refused write burns no sequence.
 //! * A SCOPE THE CACHE DOES NOT HOLD (the first append after a start, or one evicted past
 //!   [`POSITIONS_CAP`]) is RESUMED from the store: its records are read back and VERIFIED; a chain
@@ -39,9 +39,9 @@ use busbar_contract::kinds::RecordBytes;
 use busbar_contract::services::{chain_key, chain_key_parts};
 
 use crate::audit::journal::NeutralRecord;
+use crate::audit::stream_registry::{StreamInput, StreamRecord};
 use crate::audit::{verify_chain, Chain, ChainBreak, ChainedRecord, Framing};
 use crate::host_records::{record_key, RecordRows, WRITE_FAILED};
-use crate::plane_host::journal::{PlaneJournalInput, PlaneJournalRecord};
 
 /// The refusal of a chained write whose key is no scope: empty, not UTF-8, or ending in what a
 /// listed record key ends in.
@@ -100,7 +100,7 @@ pub fn scope_of(key: &[u8]) -> Option<&str> {
 }
 
 /// The stored body of `r`; `None` when a digest is longer than a length byte holds.
-pub(crate) fn encode(r: &PlaneJournalRecord) -> Option<Vec<u8>> {
+pub(crate) fn encode(r: &StreamRecord) -> Option<Vec<u8>> {
     let (prev, hash) = (r.prev_hash().as_bytes(), r.hash().as_bytes());
     let mut body = Vec::with_capacity(CHAIN_OVERHEAD + r.content().len());
     body.push(BODY_VERSION);
@@ -115,7 +115,7 @@ pub(crate) fn encode(r: &PlaneJournalRecord) -> Option<Vec<u8>> {
 
 /// The record a stored `body` of the chain `scope` holds, under the declaration `f`; `None` for a
 /// body this build did not write.
-pub(crate) fn decode(scope: &str, body: &[u8], f: ChainFraming) -> Option<PlaneJournalRecord> {
+pub(crate) fn decode(scope: &str, body: &[u8], f: ChainFraming) -> Option<StreamRecord> {
     let (&version, rest) = body.split_first()?;
     if version != BODY_VERSION || rest.len() < 8 {
         return None;
@@ -124,7 +124,7 @@ pub(crate) fn decode(scope: &str, body: &[u8], f: ChainFraming) -> Option<PlaneJ
     let seq = u64::from_be_bytes(seq.try_into().ok()?);
     let (prev, rest) = digest_text(rest)?;
     let (hash, rest) = digest_text(rest)?;
-    Some(PlaneJournalRecord::from_parts(
+    Some(StreamRecord::from_parts(
         scope.to_string(),
         seq,
         prev,
@@ -153,7 +153,7 @@ type Position = (Arc<str>, String, String);
 type Row = (Vec<u8>, Vec<u8>);
 
 /// Every chain's position, the least recently written first.
-type Positions = IndexMap<Position, Chain<PlaneJournalRecord>>;
+type Positions = IndexMap<Position, Chain<StreamRecord>>;
 
 /// THE CHAIN POSITIONS of every instance's chained kinds, the flush's to keep.
 #[derive(Default)]
@@ -175,7 +175,7 @@ impl ChainBook {
     }
 
     /// Keep `chain` as the position at `at`, the most recently written.
-    fn commit(&self, at: Position, chain: Chain<PlaneJournalRecord>) {
+    fn commit(&self, at: Position, chain: Chain<StreamRecord>) {
         let mut positions = self.lock();
         positions.shift_remove(&at);
         positions.insert(at, chain);
@@ -213,7 +213,7 @@ impl ChainBook {
         };
         let record = chain.append(
             scope,
-            PlaneJournalInput::new(content.to_vec(), f.framing, f.digests_scope),
+            StreamInput::new(content.to_vec(), f.framing, f.digests_scope),
         );
         let body = encode(&record).ok_or(CHAIN_RECORD_TOO_LARGE)?;
         let body = RecordBytes::new(body).map_err(|_| CHAIN_RECORD_TOO_LARGE)?;
@@ -294,7 +294,7 @@ fn resume(
     schema: RecordSchemaId,
     scope: &str,
     f: ChainFraming,
-) -> Result<Chain<PlaneJournalRecord>, &'static str> {
+) -> Result<Chain<StreamRecord>, &'static str> {
     let unscoped = record_key(instance, &[]).len();
     let mut stored: Vec<Row> = held(rows, instance, schema, scope)?
         .into_iter()
@@ -302,7 +302,7 @@ fn resume(
         .filter(|(k, _)| chain_key_parts(k).is_some_and(|(s, _)| s == scope.as_bytes()))
         .collect();
     stored.sort();
-    let records: Vec<PlaneJournalRecord> = decoded(instance, schema, scope, &stored, f)
+    let records: Vec<StreamRecord> = decoded(instance, schema, scope, &stored, f)
         .into_iter()
         .map(|(_, r)| r)
         .collect();
@@ -331,7 +331,7 @@ fn decoded<'k>(
     scope: &str,
     stored: &'k [Row],
     f: ChainFraming,
-) -> Vec<(&'k [u8], PlaneJournalRecord)> {
+) -> Vec<(&'k [u8], StreamRecord)> {
     stored
         .iter()
         .filter(|(_, body)| !body.is_empty())
@@ -383,7 +383,7 @@ pub fn verified(
     for (scope, mut rows) in chains {
         rows.sort();
         let records = decoded(instance, schema, &scope, &rows, f);
-        let chain: Vec<PlaneJournalRecord> = records.iter().map(|(_, r)| r.clone()).collect();
+        let chain: Vec<StreamRecord> = records.iter().map(|(_, r)| r.clone()).collect();
         if let Err(brk) = verify_chain(&chain) {
             out.push((scope.as_bytes().to_vec(), break_words(&brk)));
         }

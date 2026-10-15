@@ -1,77 +1,17 @@
 {
   "_doc": [
-    "NAMED CONFORMANCE GAPS. A place where busbar's bytes and a vendor's PUBLISHED schema disagree,",
-    "the disagreement has been read, and the owner has ruled that the bytes are right and the schema",
-    "is the thing that is incomplete. Every entry here turns ONE named violation on ONE named row",
-    "from FAIL into the rig's named-gap status (SKIP): still printed, still counted, still excluded",
-    "from the owed set, never a PASS. The validator is not touched — it still finds the violation, and",
-    "any violation on the same row that this file does not name still fails the row.",
+    "NAMED CONFORMANCE GAPS: NONE, AND NONE MAY BE ADDED. Owner rule 22 (2026-10-14): named conformance",
+    "gaps must be zero; a non-zero count means a larger issue, and a gap is a defect to fix in code,",
+    "never a re-baseline (busbar #619, which raised `expected` 16 -> 21, was closed for that reason).",
     "",
-    "An entry is refused at load time unless it names an owner, a reason, the exact rule, a substring",
-    "of the violation's own detail, and the explicit list of ledger rows it covers. There are no",
-    "wildcards: a gap that could match a rule across a whole dialect is a bypass, not a gap.",
-    "",
-    "An entry that names a row the run JUDGED and did not produce its violation on is STALE, and a",
-    "stale entry is RED (run.sh refuses before the verdict). A gap that has been fixed cannot sit here",
-    "quietly forgiving nothing.",
-    "",
-    "This file carries TWO sections, read by two loaders. `gaps` (below) is the FAIL -> named-gap",
-    "list described above. `expected`/`accepted` (further down, documented under `_comment`) is the",
-    "separate SKIP ceiling: the most rows a run may leave undecided, and who signed for each. A row",
-    "the validator judged and failed is the first section's business; a row it could not judge at",
-    "all is the second's. Neither loader reads the other's keys."
+    "Two loaders read this file and both refuse anything but the empty form below:",
+    "- validate.py refuses any `gaps` entry at load, so nothing is judged.",
+    "- run.sh's reconciliation row (`gate|llm-conformance|named-gaps`) is RED on any `accepted` entry,",
+    "  on any `expected` other than 0, and on every SKIP row the run produced.",
+    "A row the rig cannot judge (a cell the recorder did not make, an undecodable stream) is a SKIP, and",
+    "a SKIP is RED. The keys stay so a reader that expects them finds them, empty."
   ],
-  "gaps": [
-    {
-      "id": "bedrock-service-quota-exceeded",
-      "owner": "llm plane owner",
-      "rule": "error.declared",
-      "detail_contains": "ServiceQuotaExceededException is not an error Converse/ConverseStream declare",
-      "cells": [
-        "llm|bedrock|bedrock|request|over_budget_total#response"
-      ],
-      "why": "`ServiceQuotaExceededException` is a real, documented Bedrock Runtime error type that the Converse and ConverseStream operation shapes leave out of their own error unions. It is the one that says what happened here: the caller's budget is spent, and no amount of waiting changes that. Every error Converse does declare would say something false — `ThrottlingException` tells an SDK to back off and retry a request that can never succeed, and `ValidationException` blames the request. The refusal keeps the accurate type and the gap is named instead, because a router that lies about WHY it refused costs the caller a retry storm."
-    }
-  ],
-  "_comment": [
-    "EVERY GAP THIS GATE IS ALLOWED TO HAVE, NAMED. A gap is a row validate.py could not decide:",
-    "it is recorded SKIP with a reason, printed as DID NOT VERIFY, and removed from the owed set so",
-    "the verdict can still judge the rows that exist. That removal is exactly how a gap hides — an",
-    "id that stops being checked stops being counted, and a run with one fewer thing verified reads",
-    "the same green as a run with one more. So the gaps are declared HERE, and run.sh refuses any",
-    "run whose gaps are not the ones this file names, in no greater number than it names.",
-    "",
-    "`expected` is the most SKIP rows a run may produce. `accepted` names them: one entry per gap,",
-    "`cells` a regex over the ledger id (`<cell-id>#request` / `#response`, same convention as",
-    "testing/shadow-oracle/accepted-gaps.json), plus an `owner` and a `rationale`. An entry missing",
-    "any of the three is refused — a gap with no owner is a gap nobody is fixing. A SKIP row whose",
-    "own reason is empty is refused too: named means named, on the row.",
-    "",
-    "FEWER gaps than declared is never red — a gap that closed is what this file exists to drive",
-    "towards — but it is printed with the instruction to lower `expected`, so the floor only ever",
-    "moves down. MORE, or one this file does not name, is red.",
-    "",
-    "Every entry today is a cell testing/shadow-oracle/record.sh could not record at all (its own",
-    "ledger says UNSUPPORTED), so there is no wire for this gate to judge. They are the recorder's",
-    "to close, not this rig's; when a fixture lands, the cell records, the rows go PASS or FAIL on",
-    "their merits, and the entry and the count come off."
-  ],
-  "expected": 16,
-  "accepted": [
-    {
-      "cells": "^llm\\|[a-z]+\\|[a-z]+\\|request\\|stream_upstream_error#(request|response)$",
-      "owner": "shadow-oracle recorder (testing/shadow-oracle/record.sh)",
-      "rationale": "The mock upstream cannot yet fail PART WAY THROUGH a stream — N good events, then an in-band error event — so the recorder reports UNSUPPORTED for this outcome in all six ingress dialects and there is no recorded wire to judge. 12 rows: 6 dialects x {request, response}."
-    },
-    {
-      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|ok_cachepoint_document#(request|response)$",
-      "owner": "shadow-oracle recorder (testing/shadow-oracle/record.sh)",
-      "rationale": "A request that puts a `cachePoint` before a native `document` block — a wire slot that yields no IR block, ahead of one that does — has no fixture in the tree, so the recorder reports UNSUPPORTED and records nothing."
-    },
-    {
-      "cells": "^llm\\|responses\\|responses\\|request\\|ok_citation#(request|response)$",
-      "owner": "shadow-oracle recorder (testing/shadow-oracle/record.sh)",
-      "rationale": "An answer carrying a URL citation — the Responses annotation the published UrlCitationBody flattens onto the annotation object — has no fixture in the tree, so the recorder reports UNSUPPORTED and records nothing."
-    }
-  ]
+  "gaps": [],
+  "expected": 0,
+  "accepted": []
 }

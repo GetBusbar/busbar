@@ -201,7 +201,7 @@ four = "busbar-fourth"
 one = "plane protocols"
 two = "plane egress"
 three = "plane diagnostics egress"
-four = "hot-plane"
+four = "plane-door"
 
 [package.metadata.busbar.linked-entry]
 busbar-third = "crate::root::third_half"
@@ -228,8 +228,12 @@ unit-b = "beta"
     assert!(out.contains("    protocols: &[busbar_first::linked::PROTOCOLS, ],\n"));
     assert!(out.contains("    diagnostics: &[crate::root::third_half::DIAGNOSTICS, ],\n"));
     assert!(
-        out.contains("    hot_planes: &[&busbar_fourth::linked::PLANE_DECL, ],\n"),
-        "the plane axis's HOT lane references the entry's C-ABI decl: {out}"
+        out.contains("    plane_doors: &[busbar_fourth::linked::door, ],\n"),
+        "the plane door axis references the entry's door: {out}"
+    );
+    assert!(
+        !out.contains("hot_planes"),
+        "the HOT plane lane is deleted: no LINKED table carries it: {out}"
     );
     assert!(
         out.contains("    compose: &[],\n"),
@@ -250,6 +254,8 @@ unit-b = "beta"
         manifest.replace("three = []\n", ""),
         manifest.replace("three = \"plane diagnostics egress\"\n", ""),
         manifest.replace("plane diagnostics egress", "plane diagnostics teleport"),
+        // RED: the deleted HOT plane lane's axis is an unknown axis, refused.
+        manifest.replace("four = \"plane-door\"", "four = \"hot-plane\""),
     ] {
         let refused = std::panic::catch_unwind(|| linked_source(&broken, &enabled));
         assert!(refused.is_err(), "must be refused:\n{broken}");
@@ -259,8 +265,10 @@ unit-b = "beta"
 /// THE TRANSPORT AND CLAIMS AXES, and the rows no feature can drop. A row whose crate is a required
 /// dependency is linked in every build and its key only names the row; two rows may share a crate,
 /// each naming its own entry; a `transport` row fills `transports` with the entry's `KEY`,
-/// `COMPOSES_OVER`, `build`, its claims and its upgrade claims; a `claims` row fills `claims` with its `PLANE` and `CLAIMS`. A row
-/// on an OPTIONAL crate still needs its feature, and `claims` off the plane axis is refused.
+/// `COMPOSES_OVER`, and the build, claims and upgrade claims its `door` answers; a `claims` row fills
+/// `claims` with its `PLANE` and `CLAIMS`. A row on an OPTIONAL crate still needs its feature,
+/// `claims` off the plane axis is refused, and so is a `transport` row off the door axis: a
+/// transport is linked only as its memory-ABI door (step 36).
 #[test]
 fn the_generator_folds_the_transport_and_claims_axes() {
     let manifest = r#"
@@ -278,8 +286,8 @@ wire-high = "busbar-wire"
 
 [package.metadata.busbar.linked-axes]
 host = "plane claims"
-wire-low = "transport"
-wire-high = "transport"
+wire-low = "transport transport-door"
+wire-high = "transport transport-door"
 
 [package.metadata.busbar.linked-entry]
 wire-high = "busbar_wire::linked::high"
@@ -293,12 +301,13 @@ host = "unit"
         1,
         "two rows on one crate link it once: {out}"
     );
-    // A row off the door axis claims its own key and opens no upgrade and no line (a door row reads
-    // all three off its door's Statement: `crate::root::doors::{claims_of, upgrades_of, lines_of}`).
-    assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: busbar_wire::linked::build, claims: __row_claims_0, upgrades: __row_upgrades_0, lines: __row_upgrades_0 }"), "{out}");
+    // A door row is built from its door and reads its claims, upgrades, lines and offered points off
+    // the door's Statement (`crate::root::doors::{build, claims_of, upgrades_of, lines_of,
+    // offered_of}`).
+    assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: __door_build_0, claims: __door_claims_0, upgrades: __door_upgrades_0, lines: __door_lines_0, offered: __door_offered_0 }"), "{out}");
     assert!(
         out.contains(
-            "fn __row_claims_0() -> Vec<&'static str> {\n    vec![busbar_wire::linked::KEY]\n}"
+            "fn __door_claims_0() -> Vec<&'static str> {\n    crate::root::doors::claims_of(busbar_wire::linked::door)\n}"
         ),
         "{out}"
     );
@@ -321,6 +330,10 @@ host = "unit"
             "wire-low = \"busbar-plane-host\"",
         ),
         manifest.replace("host = \"plane claims\"", "host = \"claims\""),
+        manifest.replace(
+            "wire-low = \"transport transport-door\"",
+            "wire-low = \"transport\"",
+        ),
     ] {
         let refused = std::panic::catch_unwind(|| linked_source(&broken, &|f: &str| f == "host"));
         assert!(refused.is_err(), "must be refused:\n{broken}");

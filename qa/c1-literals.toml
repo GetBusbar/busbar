@@ -67,31 +67,6 @@ item = "ranking"
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "admin-tokens"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "ldap"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "oidc"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "sigv4"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
 item = "streaming"
 
 [[finding]]
@@ -103,11 +78,6 @@ item = "sigv4"
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/ingress/protocol.rs"
 item = "jsonrpc"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/snapshot/mod.rs"
-item = "prometheus"
 
 [[finding]]
 rule = "c1-literals:literal"
@@ -123,18 +93,3 @@ item = "jsonrpc"
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/plane_host/egress_tests.rs"
 item = "streaming"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/test_support/export_axis.rs"
-item = "otlp"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/test_support/export_axis.rs"
-item = "webhook"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/plugin-loader/src/plane.rs"
-item = "openapi"

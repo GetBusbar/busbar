@@ -208,3 +208,24 @@ fn a_models_protocol_overrides_its_providers_and_an_unknown_one_is_refused() {
         "{refused}"
     );
 }
+
+/// AN EMPTY `model_capabilities` READS AS AN ABSENT ONE (row 155 B1b; coordinator ruling): the
+/// kernel's resolved provider table now hands the plane `model_capabilities: []` where a catalog
+/// entry states none, where it used to leave the key out. The plane reads the two the same way, so
+/// every lane shapes its request exactly as before. RED: an empty rule list read differently from an
+/// absent one (any lane field differing).
+#[test]
+fn an_empty_model_capabilities_reads_as_an_absent_one() {
+    let absent = settings();
+    let mut empty = settings();
+    empty["providers"]["ant"]["model_capabilities"] = json!([]);
+    let (absent, empty) = (
+        Shaping::from_settings(&absent).expect("reads"),
+        Shaping::from_settings(&empty).expect("reads"),
+    );
+    assert_eq!(
+        absent.lane("claude"),
+        empty.lane("claude"),
+        "the same lane either way"
+    );
+}

@@ -158,8 +158,8 @@ pub fn stateful_plane_ephemeral_store_warn(
 /// THE TOKEN ENDPOINT AS A PLANE MAY SEE IT (row 74, F25): `token_url` with its userinfo stripped,
 /// and the `Authorization: Basic` value that userinfo spelled, held opaque for the host to present
 /// on the mint as 1.5.5's reqwest POST did (v1.5.5
-/// `crates/busbar/src/egress_auth/oauth_client_credentials.rs:119-126`). A plane never receives a
-/// URL carrying `user:pass@`.
+/// `oauth_client_credentials.rs:119-126` in its egress-auth tree). A plane never receives a
+/// URL carrying `user:pass@`. TRANSITIONAL: deleted with the legacy lane plane (row 155 C) (the stripping stays: no plane sees a userinfo URL).
 pub(crate) fn lane_token_endpoint(
     written: Option<&str>,
 ) -> (Option<String>, Option<crate::egress::engine::UrlUserinfo>) {
@@ -167,7 +167,7 @@ pub(crate) fn lane_token_endpoint(
         return (None, None);
     };
     (
-        Some(crate::net_guard::strip_userinfo(written).into_owned()),
+        Some(busbar_kernel_egress::trust::net::strip_userinfo(written).into_owned()),
         crate::egress::engine::UrlUserinfo::of(written),
     )
 }
@@ -694,7 +694,7 @@ pub fn build_app_from_config(
     // first loop already resolves `cfg.providers.get(&mc.provider)` (failing loud via `die` on a
     // missing provider), so the lane-build loop reuses that handle instead of re-looking it up —
     // there is no second lookup and no `expect` on the startup path.
-    let mut lane_provider_cfgs: Vec<&config::ProviderCfg> = Vec::new();
+    let mut lane_provider_cfgs: Vec<&config::ResolvedProvider> = Vec::new();
     let mut by_model = HashMap::new();
     // Per-model configured default_max_tokens (injected at the translation seam for protocols that
     // require max_tokens). Captured here because `cfg.models` is consumed by this loop.
@@ -832,7 +832,9 @@ pub fn build_app_from_config(
             "  model {} via {} ({}) max {}{}",
             model,
             mc.provider,
-            crate::net_guard::strip_userinfo(provider_cfg.base_url.trim_end_matches('/')),
+            busbar_kernel_egress::trust::net::strip_userinfo(
+                provider_cfg.base_url.trim_end_matches('/')
+            ),
             // Show the operator-facing form: an omitted cap reads "unbounded", not 2^60.
             match mc.max_concurrent {
                 Some(n) => n.to_string(),
@@ -868,7 +870,11 @@ pub fn build_app_from_config(
         // Reuse the provider handle resolved (and validated via `die`) in the lanes_data loop above,
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
         let provider_cfg = lane_provider_cfgs[idx];
-        let Some(protocol) = crate::proto::lane_protocol_name(&provider_cfg.protocol) else {
+        let legacy = crate::plane_host::LegacyLaneKeys::of(provider_cfg);
+        // The provider entry's lane-capability keys, carried unread in its table and resolved
+        // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
+        let lane_caps = legacy.lane_caps(ld.upstream_model.as_deref().unwrap_or(&ld.model));
+        let Some(protocol) = crate::proto::lane_protocol_name(provider_cfg.dialect()) else {
             // The "supported:" roster is DERIVED from the registry (`known_protocols()`), not a
             // hand-maintained literal: the codec dialects are whatever the linked plane crates
             // registered, so a build with the fallback plane compiled out names only what it actually
@@ -877,7 +883,7 @@ pub fn build_app_from_config(
             return Err(format!(
                 "provider '{}' uses unknown protocol '{}' (supported: {})",
                 ld.provider,
-                provider_cfg.protocol,
+                provider_cfg.dialect(),
                 crate::proto::known_protocols().join(", ")
             ));
         };
@@ -892,11 +898,12 @@ pub fn build_app_from_config(
         // egress-target build + SigV4 signed-host derivation), its userinfo stripped as 1.5.5 did
         // (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`; row 74, F25): every lane table, dial, signed
         // host and rendering downstream reads the `host[:port]` it dials, never the `user:pass@`.
-        let base_url =
-            crate::net_guard::strip_userinfo(provider_cfg.base_url.trim_end_matches('/'))
-                .into_owned();
+        let base_url = busbar_kernel_egress::trust::net::strip_userinfo(
+            provider_cfg.base_url.trim_end_matches('/'),
+        )
+        .into_owned();
         // ...and the Basic that userinfo spelled, held opaque for the kernel's hop to present as
-        // 1.5.5 did (see `UrlUserinfo`): the plane never reads it.
+        // 1.5.5 did (see `UrlUserinfo`): the plane never reads it. TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
         let url_userinfo = crate::egress::engine::UrlUserinfo::of(&provider_cfg.base_url);
         let (token_url, token_userinfo) = lane_token_endpoint(provider_cfg.token_url.as_deref());
         lane_inputs.push(LaneInput {
@@ -907,8 +914,8 @@ pub fn build_app_from_config(
             url_userinfo,
             path: provider_cfg.path.clone(),
             path_base: provider_cfg.path_base.clone(),
-            organization: provider_cfg.organization.clone(),
-            project: provider_cfg.project.clone(),
+            organization: legacy.organization,
+            project: legacy.project,
             upstream_model: ld.upstream_model.clone(),
             api_key: busbar_contract::redacted::Redacted::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),
@@ -916,7 +923,10 @@ pub fn build_app_from_config(
             token_url,
             token_userinfo,
             subject: provider_cfg.subject.clone(),
-            error_map: provider_cfg.error_map.clone(),
+            error_map: provider_cfg
+                .error_map()
+                .map(|(code, class)| (code.to_string(), class.to_string()))
+                .collect(),
             health: provider_cfg.health.as_ref().map(health_input_of),
             allow_metadata_hosts: provider_cfg.allow_metadata_hosts.clone(),
             context_max: model_context_max.get(&ld.model).copied().flatten(),
@@ -924,17 +934,7 @@ pub fn build_app_from_config(
             attempt_timeout_ms: ld.attempt_timeout_ms,
             reasoning: ld.reasoning,
             prompt_caching: ld.prompt_caching,
-            // The provider entry's lane-capability keys, carried unread and resolved against the
-            // lane's wire model by `ir::lane_caps`, which owns them (architect ruling LANECAPS-MOVE).
-            lane_caps: crate::ir::lane_caps::resolve_lane_caps(
-                crate::ir::lane_caps::ProviderLaneCaps {
-                    max_output_key: provider_cfg.max_output_key,
-                    anthropic_adaptive_thinking: provider_cfg.anthropic_adaptive_thinking,
-                    native_structured_output: provider_cfg.native_structured_output,
-                },
-                &provider_cfg.model_capabilities,
-                ld.upstream_model.as_deref().unwrap_or(&ld.model),
-            ),
+            lane_caps,
             max_concurrent: ld.max,
             limited: ld.limited,
             budget: ld.budget,

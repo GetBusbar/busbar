@@ -271,9 +271,9 @@ fn register_protocols() {
 
 /// REGISTER THE PLANES — the composition root's one write into the plane axis
 /// (`busbar_kernel::plane::registry::install_planes`), over the plane tables of [`LINKED`] (each
-/// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`, and each
-/// linked HOT-lane plane) and the HOT-lane planes dropped into the configured `plugins.dir` — the
-/// linked and the dropped-in ones adapted by one function (`root::linked::hot_plane_row`).
+/// entry's contract declaration joined kernel-side to its behaviour, `PlaneDecl::assemble`) and the
+/// plane doors, linked and dropped into the configured `plugins.dir`, discovered first
+/// (`root::boot::discover_planes`) and folded by one fold.
 /// `merged_boot_plane_decls` normalises the installed set to canonical layering order, so each row
 /// lands in its own slot regardless of the table's order. Then the two unconditional seams, then
 /// every root unit's seal.
@@ -292,7 +292,8 @@ fn register_planes() {
     // The configured `plugins.dir`, scanned once: its planes join the plane axis here and its export
     // modules the export axis just below — the same entries a linked plugin registers through.
     let dropped = root::boot::dropped_from_config(&LINKED);
-    root::linked::register_planes(&LINKED, root::boot::dropped_planes_of(&LINKED, dropped));
+    root::boot::discover_planes(&LINKED, dropped);
+    root::linked::register_planes(&LINKED);
     root::linked::register_exports(dropped);
     // A plugin that declares an inbound need is refused until an accepted connection has a
     // consumer, after the axes it selects against are registered.
@@ -729,6 +730,10 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // planes it links; a composition that does not seal exits 2 here, and success writes nothing.
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
+    // The transports dropped into `plugins.dir`, as the seal just loaded them: their offered auth
+    // points join the linked rows' when the guest lists seal (compiled-in = dropped-in).
+    let dropped_doors =
+        root::boot::dropped_transports(&root::policy::client_settings(&cfg.limits)).doors;
     // THE PROCESS'S ONE CONNECTOR, right after the transport registry sealed: every linked
     // transport door as a framer entry opened with the same settings the seal built the transports
     // from, every dial judged by the one destination guard. Inbound listening and outbound egress
@@ -1053,6 +1058,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
         &root::serve::upgrade_carriers(LINKED.transports),
+        &root::serve::transport_offers(LINKED.transports, dropped_doors),
     )
     .unwrap_or_else(|e| die(e));
     let (data_router, admin_router, app_handle) = build_split_routers_serving_doors(

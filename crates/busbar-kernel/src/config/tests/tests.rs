@@ -1461,17 +1461,18 @@ fn test_resolve_provider_from_def() {
         .providers
         .get("z.ai")
         .expect("z.ai should be in resolved providers");
-    assert_eq!(provider_cfg.protocol, CATALOG_PROTOCOL);
+    assert_eq!(provider_cfg.dialect(), CATALOG_PROTOCOL);
     assert_eq!(provider_cfg.base_url, "https://api.z.ai/api/model-1");
     assert_eq!(provider_cfg.api_key.env_var(), Some("ZAI_KEY"));
-    assert_eq!(
-        provider_cfg.error_map.get("1113"),
-        Some(&"billing".to_string())
-    );
-    assert_eq!(
-        provider_cfg.error_map.get("1302"),
-        Some(&"rate_limit".to_string())
-    );
+    assert_eq!(error_class(provider_cfg, "1113"), Some("billing"));
+    assert_eq!(error_class(provider_cfg, "1302"), Some("rate_limit"));
+}
+
+/// The class a resolved provider's error map gives `code`.
+fn error_class<'a>(p: &'a ResolvedProvider, code: &str) -> Option<&'a str> {
+    p.error_map()
+        .find(|(c, _)| *c == code)
+        .map(|(_, class)| class)
 }
 
 // THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B) MOVED to
@@ -1557,7 +1558,8 @@ fn test_resolve_override_wins() {
         .get("custom")
         .expect("custom should be in resolved providers");
     assert_eq!(
-        provider_cfg.protocol, "acme",
+        provider_cfg.dialect(),
+        "acme",
         "protocol override should win"
     );
     assert_eq!(
@@ -1565,10 +1567,7 @@ fn test_resolve_override_wins() {
         "base_url override should win"
     );
     assert_eq!(provider_cfg.api_key.env_var(), Some("CUSTOM_KEY"));
-    assert_eq!(
-        provider_cfg.error_map.get("9999"),
-        Some(&"client_error".to_string())
-    );
+    assert_eq!(error_class(provider_cfg, "9999"), Some("client_error"));
 }
 
 #[test]
@@ -1589,7 +1588,7 @@ fn test_resolve_empty_error_map_allowed_in_def() {
         .providers
         .get("minimal")
         .expect("minimal should exist");
-    assert!(provider_cfg.error_map.is_empty());
+    assert_eq!(provider_cfg.error_map().count(), 0);
 }
 
 // ── on_exhausted (keyword bare, reference structured) ────────────────────────────────────────────
@@ -4508,4 +4507,46 @@ fn the_provider_tenant_merges_deployment_over_catalog() {
     let merged = merge_provider_fallback(&def, &deploy);
     assert_eq!(merged.organization.as_deref(), Some("org-deploy"));
     assert_eq!(merged.project.as_deref(), Some("proj-catalog"));
+}
+
+/// A NEUTRAL plane that declares its own section and OWNS a second one beside it, the shape of a
+/// door plane whose Statement states a section that is neither declaring nor consumed (the llm
+/// plane's `webhooks:`, ARCHITECT 2026-10-14 option A).
+static OWNS_BESIDE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+    declaration: crate::plane::registry::PlaneDeclaration {
+        key: "neutral-test-owns-beside",
+        fallback: false,
+        config_section: "beside_declaring",
+        scope_kinds: &[],
+        owned_config_sections: &["beside_owned"],
+        ..crate::test_support::NEUTRAL_FALLBACK.declaration
+    },
+    ..crate::test_support::NEUTRAL_FALLBACK
+};
+
+/// RED (ARCHITECT 2026-10-14, the plane-owned `webhooks:` section, option A): a section a
+/// registered plane owns BESIDE its declaring one, and that is no endpoint door, is lifted RAW and
+/// handed to that plane as written (`door_sections`, its `PlaneOpenIn::owned`). The kernel learns
+/// the key only from the plane's declared row and spells none. Before the fix it was left unlifted,
+/// so the document was refused at the key as an unknown field. A document that writes the plane's
+/// own section and not this one lifts nothing extra.
+#[test]
+fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
+    let _registry = busbar_kernel::plane::registry::TestRegistryIsolation::seeded(&[
+        crate::test_support::neutral_fallback_plane(),
+        &OWNS_BESIDE_PLANE,
+    ]);
+    let deploy: DeployCfg = crate::config::deploy_from_yaml_str(
+        "beside_declaring:\n  a: 1\nbeside_owned:\n  receiver: true\n\
+         providers: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("a section a registered plane owns must parse");
+    let written: serde_yaml::Value = serde_yaml::from_str("receiver: true").unwrap();
+    assert_eq!(deploy.plane_raw.get("beside_owned"), Some(&written));
+    assert_eq!(deploy.door_sections().get("beside_owned"), Some(&written));
+    let bare: DeployCfg = crate::config::deploy_from_yaml_str(
+        "beside_declaring:\n  a: 1\nproviders: {}\nmodels: {}\npools: {}\n",
+    )
+    .expect("the plane's own section alone parses");
+    assert!(!bare.plane_raw.contains_key("beside_owned"));
 }

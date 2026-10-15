@@ -182,6 +182,7 @@ async fn send_request(
     // A provider base URL's userinfo, handed back by its plane as an opaque extension, rides here
     // and nowhere earlier: the Basic field 1.5.5 sent, first, when the request names no
     // `authorization` of its own (row 74, F25; see `super::UrlUserinfo`).
+    // TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
     super::present_url_userinfo(&mut req);
 
     // Preparation, part 2 — absolute-form required: scheme+authority IS the pool key. The CONNECT

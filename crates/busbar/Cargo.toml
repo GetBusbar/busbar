@@ -752,6 +752,7 @@ required-features = ["auth-admin-tokens"]
 "observability_trace_key_1_4" = "otlp_endpoint"
 "renamed_display" = "Valkey"
 "retired_url_scheme" = "redis"
+"snapshot_recorder_failed" = "prometheus recorder install failed; /metrics will be empty"
 "former.mysql" = "busbar-store-mysql-plugin"
 "former.postgres" = "busbar-store-postgres-plugin"
 "former.sqlite" = "busbar-store-sqlite-plugin"

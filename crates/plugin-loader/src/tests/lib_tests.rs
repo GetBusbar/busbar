@@ -149,31 +149,6 @@ fn the_library_extension_match_uses_this_filesystems_case_rule() {
     );
 }
 
-/// NO LEGACY LOADING at the loader-mechanism paths (THE DESIGN §11.8, ruling C21/ABI-o1): a library
-/// with no `busbar_plugin_door` that states a JSON-contract kind by its `busbar_plugin_kind` symbol
-/// alone is a 1.5.5-era plugin. The symbol only CLASSIFIES it: the kind read refuses it, naming the
-/// missing door, the kind it states and the rebuild. (No JSON-lane kind gate is left to admit it: a
-/// library loads only through its door.)
-///
-/// RED against a loader that takes a kind symbol on its word: the read answers the kind it states.
-#[test]
-fn a_door_less_json_contract_library_is_refused_naming_the_rebuild() {
-    let path = super::both_ways::example_cdylib("json_contract_auth");
-    let lib = dlopen_on_worker(path.as_os_str()).expect("the fixture maps");
-    let why = read_plugin_kind(&lib, &path.display().to_string())
-        .expect_err("a door-less library's kind symbol is refused");
-    dlclose_on_worker(lib);
-    assert!(
-        why.contains("busbar_plugin_door"),
-        "names the missing door: {why}"
-    );
-    assert!(why.contains("'auth'"), "names the kind it states: {why}");
-    assert!(
-        why.contains(crate::dispatch::load::REBUILD),
-        "names the rebuild: {why}"
-    );
-}
-
 #[test]
 fn plugin_library_filename_matches_this_platforms_naming_convention() {
     let name = plugin_library_filename("busbar_foo_plugin");

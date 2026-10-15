@@ -101,12 +101,13 @@ pub(crate) fn read(scope: u32) -> Snapshot {
     answer
 }
 
-/// The WHOLE snapshot: with the recorder installed and a live `app`, its scrape-time gauges are
-/// refreshed and every export sink's `status` folded first; NOT READY before the recorder is.
+/// The WHOLE snapshot: with the recorder installed and a live `app`, its scrape-time gauges and the
+/// host's own counters are refreshed and every export sink's `status` folded first; NOT READY before the recorder is.
 fn whole(app: Option<&App>) -> Snapshot {
     let installed = crate::snapshot::recorder_installed();
     if let Some(app) = app.filter(|_| installed) {
         crate::snapshot::refresh_scrape_gauges(app);
+        crate::snapshot::refresh_host_counters();
         super::plugin::status();
     }
     crate::snapshot::snapshot().map_or(Snapshot::NotReady, Snapshot::Families)

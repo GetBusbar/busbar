@@ -3044,6 +3044,42 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "C-22 bedrock budget refusal is a declared Converse error",
+      "kind": "breaking",
+      "changelog": "1.6.0 Changed: a Bedrock caller whose budget is spent is refused 429 `ThrottlingException`, an error Converse declares; 1.5.5 answered 400 `ServiceQuotaExceededException`, which only InvokeModel declares.",
+      "by": "owner (Matthew Jackson), rule 22 (2026-10-14): named conformance gaps must be zero; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS C)",
+      "cells": "^llm\\|bedrock\\|bedrock\\|request\\|over_budget_total$",
+      "expected_cells": 1,
+      "classes": [
+        "status",
+        "body",
+        "headers"
+      ],
+      "rationale": "1.5.5 answered a Bedrock caller whose group budget is spent with HTTP 400 `__type`/`x-amzn-errortype` `ServiceQuotaExceededException` (golden/1.5.5/cells/llm__bedrock__bedrock__request__over_budget_total.json; v1.5.5 proto bedrock writer quota_exceeded_status() = 400). That exception is not in the `errors` of Converse or ConverseStream in the pinned botocore bedrock-runtime model (testing/llm-conformance/spec-digests.tsv, e5c8122617a2: AccessDenied, InternalServer, ModelError, ModelNotReady, ModelTimeout, ResourceNotFound, ServiceUnavailable, Throttling, Validation); only InvokeModel declares it. So the llm spec-conformance rig failed `error.declared` on this row, and the row sat in testing/llm-conformance/named-gaps.json as a named gap. Owner rule 22 (2026-10-14) makes every named conformance gap a defect to fix in code. 1.6.0 answers 429 `ThrottlingException`, the declared Converse error whose AWS description is 'Your request was denied due to exceeding the account quotas for Amazon Bedrock' (httpStatusCode 429), matching the other five dialects' 429 for the same refusal. Moved classes: status 400 -> 429, body `__type` (the message is unchanged), headers `x-amzn-errortype` and the content-length that follows the body. Not money: the refusal charges nothing on either side and effects.usage is untouched (the metrics outcome label is client_error for both statuses). Code: crates/busbar-plane-llm/src/codec/bedrock/mod.rs error_kind_to_bedrock_type and quota_exceeded_status, crates/busbar-plane-llm/src/refusal.rs (the bedrock OVER_BUDGET row removed, so the class default 429 answers). SCOPE: exactly one cell.",
+      "premise": {
+        "all": [
+          {
+            "cell": "llm|bedrock|bedrock|request|over_budget_total",
+            "status": 429
+          },
+          {
+            "cell": "llm|bedrock|bedrock|request|over_budget_total",
+            "pointer": "/__type",
+            "equals": "ThrottlingException"
+          }
+        ]
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-14",
+        "ruling": "OWNER rule 22 (2026-10-14): named conformance gaps must be 0, a gap is a defect to fix; applied by ARCHITECT ruling 2026-10-14 (CONFORMANCE-GAPS C: ThrottlingException/429)"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }

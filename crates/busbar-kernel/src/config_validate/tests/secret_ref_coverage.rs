@@ -329,7 +329,12 @@ fn the_inventory_matches_what_secret_refs_actually_does() {
     let mut walked = 0;
     let mut excluded = 0;
     for (ty, bearing) in SECRET_BEARING_TYPES {
-        let destructured = body.contains(&format!("{ty} {{"));
+        // The type's OWN name, not a longer one ending in it (`IdentityProviderCfg {` is not a
+        // destructure of `ProviderCfg`).
+        let pattern = format!("{ty} {{");
+        let destructured = body
+            .match_indices(&pattern)
+            .any(|(at, _)| !body[..at].ends_with(|c: char| c.is_alphanumeric() || c == '_'));
         match bearing {
             SecretBearing::Walked => {
                 assert!(

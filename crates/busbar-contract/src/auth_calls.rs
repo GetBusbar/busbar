@@ -418,7 +418,8 @@ pub trait AuthAxis: Send + Sync {
     /// `user:pass@`: the host stripped it from `settings` before any plugin could read it, and
     /// `endpoint_basic` is the `authorization: Basic` value it spelled, which the host presents on
     /// the plugin's mint as 1.5.5 sent it. A plugin never receives it. Default: the value is not
-    /// presented.
+    /// presented. TRANSITIONAL: deleted with the legacy lane plane (row 155 C): the door path's endpoint userinfo is read by the root at
+    /// configuration time and never crosses this axis.
     ///
     /// # Errors
     /// The serving plugin would not open for its outbound styles.

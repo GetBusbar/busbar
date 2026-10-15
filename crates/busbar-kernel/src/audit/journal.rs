@@ -434,7 +434,7 @@ impl<R: ChainedRecord> Journal<R> {
     /// collide with a sequence the store may still hold, the one thing the append contract forbids.
     ///
     /// RETAINED but no longer reached: the shipped chain streams route retention through the neutral
-    /// [`Journal::compact_scoped`] now (their record shape is `PlaneJournalRecord`, which is a
+    /// [`Journal::compact_scoped`] now (their record shape is `StreamRecord`, which is a
     /// `NeutralRecord`, not a `JournalRecord`), so this typed twin has no caller until a typed stream
     /// wants it. Kept as the typed mirror of `compact_scoped`, alongside the other typed-path methods.
     #[allow(dead_code)]

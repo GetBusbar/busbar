@@ -655,37 +655,12 @@ impl PluginRegistry {
         self.kind_refusal(kind::SECRET, "resolve config secrets", name_or_alias)
     }
 
-    /// Open a PLANE resolved by name or alias: verifies the resolved plugin's `kind` is `plane`, then
-    /// loads the VERIFIED bytes over the HOT-tier ABI (`busbar_contract::abi::hot`) and reads its
-    /// [`PlaneDecl`](busbar_contract::abi::hot::PlaneDecl), returning a [`crate::DynPlane`] — the boundary-safe
-    /// handle the composition root drives exactly as it drives a compiled-in plane. Same trust and
-    /// load pipeline as store/secret/auth/hook/export; only the kind (and the driving seam) differs.
-    /// FAIL-CLOSED on any resolution/kind/load failure. The 1.6.0 S4 both-ways entrypoint for planes.
-    pub fn open_plane(&self, name_or_alias: &str) -> Result<crate::DynPlane, String> {
-        let p = self.resolve_kind(name_or_alias, "plane", "serve as a protocol plane")?;
-        crate::plane::load_plane_from_bytes(&p.lib_bytes, &p.manifest.name, &p.manifest.kind)
-    }
-
-    /// Open a TRANSPORT resolved by name or alias: verifies the resolved plugin's `kind` is
-    /// `transport`, then loads the VERIFIED bytes over the HOT-tier ABI and admits its
-    /// [`TransportDecl`](busbar_contract::abi::hot::TransportDecl) through the SAME admission a linked
-    /// transport takes ([`crate::link_transport`]), returning the [`crate::DynTransport`] row the
-    /// composition root folds. FAIL-CLOSED on any resolution/kind/load failure.
-    pub fn open_transport(&self, name_or_alias: &str) -> Result<crate::DynTransport, String> {
-        let p = self.resolve_kind(name_or_alias, "transport", "carry bytes as a transport")?;
-        crate::transport::load_transport_from_bytes(
-            &p.lib_bytes,
-            &p.manifest.name,
-            &p.manifest.kind,
-        )
-    }
-
-    /// Open EVERY loadable transport, in scan order, each through the lane its image speaks: a
-    /// library with the memory-ABI door ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]) is
-    /// admitted through the one dispatcher's door validation and bound with `bind`, labelled with
-    /// its own plugin name (each opened door is its own instance to the host services); any other
-    /// through the HOT decl ([`Self::open_transport`]'s lane). Each image is staged and opened once.
-    /// The first that will not load fails the whole set, naming it.
+    /// Open EVERY loadable transport, in scan order, through its memory-ABI door
+    /// ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]): admitted through the one dispatcher's door
+    /// validation and bound with `bind`, labelled with its own plugin name (each opened door is its
+    /// own instance to the host services). A library with no door is refused: the HOT transport lane
+    /// is deleted (row 84), and no other lane reads it. Each image is staged and opened once. The
+    /// first that will not load fails the whole set, naming it.
     ///
     /// # Errors
     ///
@@ -716,13 +691,11 @@ impl PluginRegistry {
             .map_err(|e| format!("transport plugin '{name}' refused at its door: {e}"))?
             {
                 Staging::Door(plugin) => entries.doors.push(plugin),
-                Staging::NotADoor(lib, staged) => {
-                    entries.hot.push(crate::transport::wire_up_transport(
-                        lib,
-                        name.clone(),
-                        &p.manifest.kind,
-                        Some(staged),
-                    )?)
+                Staging::NotADoor(..) => {
+                    return Err(format!(
+                        "transport plugin '{name}' exports no memory-ABI door \
+                         (`busbar_plugin_door`): a transport loads only through its door"
+                    ))
                 }
             }
         }
@@ -732,13 +705,9 @@ impl PluginRegistry {
     /// THE PLANES, discovered for the one load: every compiled-in plane door in `linked`, then every
     /// loadable dropped-in plane whose signed manifest states a Statement, as a
     /// [`crate::boot::Candidate`] ([`crate::boot::load_planes`] binds them through
-    /// `load_linked`/`load_dropped` on the process's dispatcher). A dropped-in plane with no
-    /// Statement (a HOT-lane `PlaneDecl` cdylib) is opened here over the HOT-tier ABI
-    /// ([`Self::open_plane`]).
-    ///
-    /// M6-HOT-PLANE: the HOT-lane branch is transitional. Each linked HOT-lane plane leaves it in its
-    /// own fold's series (one per plane, `1.6.0-TODO.md`), which ship the plane's door export and its
-    /// linked door row; the last fold deletes this branch and the HOT declaration read.
+    /// `load_linked`/`load_dropped` on the process's dispatcher). A dropped-in plane whose manifest
+    /// states no Statement is refused, naming it: the HOT-lane plane load is deleted (row 84), and a
+    /// plane loads only through its door.
     ///
     /// # Errors
     ///
@@ -767,7 +736,13 @@ impl PluginRegistry {
                     )
                     .map_err(named)?,
                 ),
-                None => set.hot.push(self.open_plane(&p.manifest.name)?),
+                None => {
+                    return Err(named(
+                        "states no Statement: a plane loads only through its memory-ABI door \
+                         (`busbar_plugin_door`)"
+                            .into(),
+                    ))
+                }
             }
         }
         Ok(set)
@@ -881,12 +856,9 @@ pub fn stated_version(manifest: &Manifest) -> Result<String, String> {
     }
 }
 
-/// The transports a plugins directory contributes, by the lane each image speaks
-/// ([`PluginRegistry::open_transport_entries`]).
+/// The transports a plugins directory contributes ([`PluginRegistry::open_transport_entries`]).
 #[derive(Default)]
 pub struct TransportEntries {
-    /// HOT-decl wires.
-    pub hot: Vec<crate::DynTransport>,
     /// Memory-ABI transport doors, bound.
     pub doors: Vec<crate::dispatch::Plugin<crate::dispatch::kinds::transport::Transport>>,
 }
