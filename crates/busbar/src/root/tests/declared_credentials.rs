@@ -797,10 +797,10 @@ fn the_api_key_override_presents_the_shared_builders_bytes() {
 }
 
 /// `dialect`'s recorded binding, its lines naming `protocol` (the name 1.5.5's twin carried): every
-/// static style's (`bearer`, `api-key`, `x-goog-api-key`), the signing style naming none.
+/// static style's (each records a `protocol`), the signing style (which records none) naming none.
 fn named_binding(dialect: &str, protocol: &str) -> StyleBinding {
     let mut binding = binding_of(dialect, SIGNING_HOST, &[]);
-    if binding.style != "sigv4" {
+    if binding.params.get("protocol").is_some() {
         binding.params["protocol"] = serde_json::Value::String(protocol.to_string());
     }
     binding

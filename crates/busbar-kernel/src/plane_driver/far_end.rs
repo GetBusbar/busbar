@@ -1801,30 +1801,30 @@ impl EgressFarEnd<'_> {
             }
         }
         let mut w = self.lock();
-        let Some(live) = w.live.as_mut() else {
-            return fail_over();
-        };
-        let Some(classified) = live.failing.take() else {
-            return fail_over();
-        };
-        let pool = Self::metric_pool(&live.pool, &live.member).to_string();
-        let destination = live.member.destination;
-        self.record(live, token, classified, e.clock.now_secs());
-        e.telemetry.upstream_failure_stated(
-            &pool,
-            destination,
-            classified.label,
-            live.stated.as_ref(),
-        );
-        e.telemetry.failover(&pool, classified.label);
-        if matches!(classified.disposition, Disposition::ContextLength) {
-            // Every ADMISSIBLE member whose window is at or below the one that refused would refuse
-            // too: the walk's own exclusion.
-            let (pool, failed) = (live.pool.clone(), live.member.clone());
-            w.walk.refused_for_size(&e.ports(), &pool, &failed);
+        // The reading is taken and settled on one straight path: no exit between the take and the
+        // settle (hold-discipline). An attempt already settled has nothing left to record.
+        if let Some(live) = w.live.as_mut() {
+            if let Some(classified) = live.failing.take() {
+                let pool = Self::metric_pool(&live.pool, &live.member).to_string();
+                let destination = live.member.destination;
+                self.record(live, token, classified, e.clock.now_secs());
+                e.telemetry.upstream_failure_stated(
+                    &pool,
+                    destination,
+                    classified.label,
+                    live.stated.as_ref(),
+                );
+                e.telemetry.failover(&pool, classified.label);
+                if matches!(classified.disposition, Disposition::ContextLength) {
+                    // Every ADMISSIBLE member whose window is at or below the one that refused
+                    // would refuse too: the walk's own exclusion.
+                    let (pool, failed) = (live.pool.clone(), live.member.clone());
+                    w.walk.refused_for_size(&e.ports(), &pool, &failed);
+                }
+                w.failed = Some(classified.label);
+                self.settle(&mut w);
+            }
         }
-        w.failed = Some(classified.label);
-        self.settle(&mut w);
         fail_over()
     }
 }
