@@ -155,14 +155,14 @@
     },
     {
      "kind": "test",
-     "ref": "strengthened_lane_availability_invariant",
+     "ref": "crates/busbar-llm/src/engine/tests/lane_availability_proptest_tests.rs::strengthened_lane_availability_invariant",
      "proves": "property test: the availability invariant holds under every policy",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:ordered_walk_skips_tripped_preferred_to_next, test:ordered_walk_skips_excluded_preferred, test:at_capacity_plus_tripped_member_rejects_503, test:least_bad_never_reaches_an_excluded_member, test:strengthened_lane_availability_invariant"
+   "verdict_detail": "test:ordered_walk_skips_tripped_preferred_to_next, test:ordered_walk_skips_excluded_preferred, test:at_capacity_plus_tripped_member_rejects_503, test:least_bad_never_reaches_an_excluded_member, test:crates/busbar-llm/src/engine/tests/lane_availability_proptest_tests.rs::strengthened_lane_availability_invariant"
   },
   {
    "id": "PB-4",
@@ -222,7 +222,7 @@
     },
     {
      "kind": "test",
-     "ref": "least_bad_still_serves_the_only_member_after_it_was_tried",
+     "ref": "crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::least_bad_still_serves_the_only_member_after_it_was_tried",
      "proves": "least_bad: one breaker-bypassing attempt",
      "source": "curated",
      "status": "mapped"
@@ -278,7 +278,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:crosscut.traps|exhausted-retry-after-floor, oracle-cell:route.failover|fo|all-down, oracle-cell:route.failover|lb|member-down, test:at_capacity_default_no_on_exhausted_sheds_503, test:retry_after_reflects_cooldown_when_a_member_is_tripped, test:retry_after_has_saturation_floor_when_purely_at_capacity, test:retry_after_empty_candidate_set_uses_floor_not_one, test:least_bad_still_serves_the_only_member_after_it_was_tried, test:a_fallback_pool_applies_its_own_exclusions, test:at_capacity_fallback_chain_spills_through_to_third_pool, test:at_capacity_self_referential_fallback_stays_503, test:queue_skips_wait_and_rejects_when_no_candidate_at_capacity, test:queue_won_permit_but_breaker_now_open_never_dispatches, test:queue_two_waiters_one_freed_permit_wakes_exactly_one, test:test_scrape_gauges_pool_queued_reads_live_depth"
+   "verdict_detail": "oracle-cell:crosscut.traps|exhausted-retry-after-floor, oracle-cell:route.failover|fo|all-down, oracle-cell:route.failover|lb|member-down, test:at_capacity_default_no_on_exhausted_sheds_503, test:retry_after_reflects_cooldown_when_a_member_is_tripped, test:retry_after_has_saturation_floor_when_purely_at_capacity, test:retry_after_empty_candidate_set_uses_floor_not_one, test:crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::least_bad_still_serves_the_only_member_after_it_was_tried, test:a_fallback_pool_applies_its_own_exclusions, test:at_capacity_fallback_chain_spills_through_to_third_pool, test:at_capacity_self_referential_fallback_stays_503, test:queue_skips_wait_and_rejects_when_no_candidate_at_capacity, test:queue_won_permit_but_breaker_now_open_never_dispatches, test:queue_two_waiters_one_freed_permit_wakes_exactly_one, test:test_scrape_gauges_pool_queued_reads_live_depth"
   },
   {
    "id": "PB-5",
@@ -345,14 +345,14 @@
     },
     {
      "kind": "test",
-     "ref": "ordered_walk_empty_order_is_swrr",
+     "ref": "crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::ordered_walk_empty_order_is_swrr",
      "proves": "no ordering gate means the SWRR floor",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::sticky_affinity_never_selects_zero_weight_drained_member, test:sticky_fall_through_records_reason, test:test_sticky_yields_when_tripped, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::order_last_in_chain_wins, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::stale_order_filtered_against_post_restrict_set, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate, test:ordered_walk_falls_through_to_swrr_when_no_preferred_ready, test:ordered_walk_empty_order_is_swrr"
+   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::sticky_affinity_never_selects_zero_weight_drained_member, test:sticky_fall_through_records_reason, test:test_sticky_yields_when_tripped, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::order_last_in_chain_wins, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::stale_order_filtered_against_post_restrict_set, test:crates/busbar-llm/src/engine/tests/hook_seam_tests.rs::last_order_gate_filtered_to_empty_abstains_to_base_not_to_a_lower_gate, test:ordered_walk_falls_through_to_swrr_when_no_preferred_ready, test:crates/busbar-llm/src/engine/tests/ordered_walk_tests.rs::ordered_walk_empty_order_is_swrr"
   },
   {
    "id": "PB-6",
@@ -468,7 +468,7 @@
     },
     {
      "kind": "test",
-     "ref": "test_attempt_cap_budget_floor",
+     "ref": "crates/busbar-llm/src/engine/tests/attempt_timeout_precedence_tests.rs::test_attempt_cap_budget_floor",
      "proves": "the attempt cap floor",
      "source": "curated",
      "status": "mapped"
@@ -489,7 +489,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fo|primary-down, test:test_saturated_lane_respects_deadline_no_infinite_spin, test:test_context_length_failover_no_penalty, test:test_prefers_larger_context_max, test:a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it, test:test_member_override_wins_over_model_default, test:test_attempt_cap_budget_floor, test:route_deadline_503_carries_detail_request_timeout, test:pick_among_none_lands_on_on_exhausted_with_overloaded_and_retry_after"
+   "verdict_detail": "oracle-cell:route.failover|fo|primary-down, test:test_saturated_lane_respects_deadline_no_infinite_spin, test:test_context_length_failover_no_penalty, test:test_prefers_larger_context_max, test:a_changed_upstream_timeout_rebuilds_the_client_an_unrelated_apply_reuses_it, test:test_member_override_wins_over_model_default, test:crates/busbar-llm/src/engine/tests/attempt_timeout_precedence_tests.rs::test_attempt_cap_budget_floor, test:route_deadline_503_carries_detail_request_timeout, test:pick_among_none_lands_on_on_exhausted_with_overloaded_and_retry_after"
   },
   {
    "id": "PB-9",
@@ -1305,7 +1305,7 @@
     },
     {
      "kind": "test",
-     "ref": "test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit",
+     "ref": "crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit",
      "proves": "the post-first-byte cut refunds the lane unit on a NON-SSE body and does not on an SSE body",
      "source": "curated",
      "status": "mapped"
@@ -1340,7 +1340,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, oracle-cell:route.failover|fo|primary-cut-stream, test:test_mid_stream_transport_error_does_not_bill_partial_usage, test:test_streaming_translate_abort_trips_breaker_and_skips_billing, test:test_untranslatable_2xx_does_not_charge_tokens, test:test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged, test:test_streaming_pre_first_byte_transport_error_refunds_budget, test:test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit, test:test_streaming_nonsse_mid_body_transport_error_records_transient, test:test_cancel_drop_bills_partial_tokens, test:test_cancel_drop_mid_stream_refunds_budget, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx"
+   "verdict_detail": "oracle-cell:billing|key-usage|upstream-down-refunded, oracle-cell:route.failover|fo|primary-cut-stream, test:test_mid_stream_transport_error_does_not_bill_partial_usage, test:test_streaming_translate_abort_trips_breaker_and_skips_billing, test:test_untranslatable_2xx_does_not_charge_tokens, test:test_cross_protocol_nonstream_over_cap_body_returns_500_uncharged, test:test_streaming_pre_first_byte_transport_error_refunds_budget, test:crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_streaming_nonsse_post_first_byte_cut_refunds_the_lane_unit, test:test_streaming_nonsse_mid_body_transport_error_records_transient, test:test_cancel_drop_bills_partial_tokens, test:test_cancel_drop_mid_stream_refunds_budget, test:test_finish_refunds_flat_fee_on_non_2xx_keeps_on_2xx"
   },
   {
    "id": "PB-28",
@@ -2580,7 +2580,7 @@
     },
     {
      "kind": "test",
-     "ref": "test_health_probe_failure_records_transient",
+     "ref": "crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_health_probe_failure_records_transient",
      "proves": "mode active: a failing probe records transient",
      "source": "curated",
      "status": "mapped"
@@ -2608,7 +2608,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_health_probe_recovers_tripped_lane, test:test_health_probe_failure_records_transient, test:test_probe_auth_failure_is_hard_down_not_transient, test:test_probe_client_fault_does_not_penalize_lane, test:a_swap_does_not_push_the_probe_deadline_out"
+   "verdict_detail": "test:test_health_probe_recovers_tripped_lane, test:crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_health_probe_failure_records_transient, test:test_probe_auth_failure_is_hard_down_not_transient, test:test_probe_client_fault_does_not_penalize_lane, test:a_swap_does_not_push_the_probe_deadline_out"
   },
   {
    "id": "PB-56",
@@ -2665,14 +2665,14 @@
     },
     {
      "kind": "test",
-     "ref": "a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves",
+     "ref": "crates/busbar-llm/src/engine/tests/reroute_pool_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves",
      "proves": "only an at-capacity lane reaches try_admit after selection",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:crates/busbar-kernel/src/store/tests/tests.rs::test_zero_weight_member_is_never_selected, test:test_swrr_no_open_selection, test:test_swrr_all_down_returns_none, test:a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves"
+   "verdict_detail": "oracle-cell:route.failover|fo|all-up, test:crates/busbar-kernel/src/store/tests/tests.rs::test_zero_weight_member_is_never_selected, test:test_swrr_no_open_selection, test:test_swrr_all_down_returns_none, test:crates/busbar-llm/src/engine/tests/reroute_pool_tests.rs::a_saturated_primary_is_passed_over_inside_the_one_loop_and_the_twin_serves"
   },
   {
    "id": "PB-58",
@@ -3407,7 +3407,7 @@
     },
     {
      "kind": "test",
-     "ref": "route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled",
+     "ref": "crates/busbar-llm/src/engine/tests/wire_tests.rs::route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled",
      "proves": "no route headers for the SWRR floor even when enabled",
      "source": "curated",
      "status": "mapped"
@@ -3435,7 +3435,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:server_timing_header_absent_by_default_present_when_enabled, test:route_policy_headers_absent_by_default_on_the_live_stack, test:route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled, test:route_policy_headers_present_only_when_both_gates_open, test:test_emit_server_timing_moved_to_advanced_response_headers, lint:xtask/src/gates/response_header.rs"
+   "verdict_detail": "test:server_timing_header_absent_by_default_present_when_enabled, test:route_policy_headers_absent_by_default_on_the_live_stack, test:crates/busbar-llm/src/engine/tests/wire_tests.rs::route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled, test:route_policy_headers_present_only_when_both_gates_open, test:test_emit_server_timing_moved_to_advanced_response_headers, lint:xtask/src/gates/response_header.rs"
   },
   {
    "id": "PB-74",
