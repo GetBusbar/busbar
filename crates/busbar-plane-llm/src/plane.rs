@@ -909,10 +909,10 @@ impl Plane for LlmPlane {
         // counts are already separate is left alone. So the four lines below partition the input
         // once, whichever dialect answered — and the plane does no arithmetic to make that true.
         let usage = &usage;
-        // THE CLASS IS THE DECLARED SYMBOL, NEVER A RE-SPELLING OF IT — see `meta::CLASS_TOKENS_IN`
-        // for why. The four calls below now name the four consts `meta` declares in
-        // `METER_CLASSES`, so the class a count is EMITTED under and the class the plane DECLARED
-        // are one value the compiler checks rather than two strings that agree today.
+        // THE CLASS IS THE DECLARED SYMBOL, NEVER A RE-SPELLING OF IT — see `meta::CLASS_INPUT` for
+        // why. The four calls below name the four consts `meta` declares in `METER_CLASSES`, each
+        // READ from the door's billable classes (`plane_door::TOKEN_CLASSES`), so the class a count
+        // is EMITTED under, the class the plane DECLARED and the class the door STATES are one value.
         let mut line = |class: MeterClassId, ptr: Option<&'static str>, quantity: Option<u64>| {
             if let Some(quantity) = quantity {
                 let _ = locators.lines.push(UsageLocator {
@@ -925,12 +925,12 @@ impl Plane for LlmPlane {
             }
         };
         line(
-            meta::CLASS_TOKENS_IN,
+            meta::CLASS_INPUT,
             Some(source.tokens_in_pointer),
             Some(usage.input_tokens),
         );
         line(
-            meta::CLASS_TOKENS_OUT,
+            meta::CLASS_OUTPUT,
             Some(source.tokens_out_pointer),
             Some(usage.output_tokens),
         );
