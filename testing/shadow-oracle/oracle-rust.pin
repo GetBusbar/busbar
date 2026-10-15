@@ -349,6 +349,13 @@
 # owed-baseline row and golden (busbar-release oracle-rerecord run 38471635786, recorded from the published
 # 1.5.5) land with this commit. The digests are dev-bin's busbar-oracle-linux-<arch>-<release_ref>.sha256.
 #
+# 2026-10-13 (ARCHITECT ruling, busbar status row 155; #62): moved db64d9218d8b -> 7e606a7aa904, busbar-release
+# main after the dev -> qa -> main promotion (#353, #354), which carries #352 (733d619): the corpus generator adds
+# the six literal cells llm|<d>|<d>|request|stream_upstream_cut, whose cells.json rows, owed-baseline rows and
+# goldens (busbar-release oracle-rerecord run 38488778377, recorded from the published 1.5.5) land with this
+# commit's PR; it also carries #349 (busbar-release slimmed to busbar's tools; no corpus change). The digests are
+# dev-bin's busbar-oracle-linux-<arch>-<release_ref>.sha256.
+#
 # 2026-10-14 (busbar rows 561, 562, 90): moved 7ab21912d664 -> 3365ddbc591e, busbar-release main after the
 # dev -> qa -> main promotion (#365, #366), which carries #364 (and #348, db64d9218d8b's, the paragraph above): the mock's `whole` control (a stream-intent request
 # answered the egress dialect's buffered body) and the 42 literal llm whole-answer cells, whose cells.json rows,
