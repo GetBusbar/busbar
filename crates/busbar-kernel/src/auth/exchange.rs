@@ -118,7 +118,7 @@ pub(crate) async fn exchange(
 fn exchange_ok_body(issued: &IssuedKey, base_url: &str) -> serde_json::Value {
     serde_json::json!({
         // `.expose(&crate::seal::lend())`: the once-shown mint response is the intended, documented plaintext
-        // egress of the issued token (Redacted has no Serialize, so json! cannot embed it directly).
+        // egress of the issued token (Secret has no Serialize, so json! cannot embed it directly).
         "api_key": issued.secret.expose(&crate::seal::lend()),
         "key_id": issued.key_id,
         "group": issued.group,

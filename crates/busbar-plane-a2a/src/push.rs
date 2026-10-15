@@ -128,11 +128,11 @@ pub struct DeliveryAuth {
 
 /// THE CALLER'S WEBHOOK CREDENTIAL AS THE PLANE HOLDS IT: caller payload the A2A body carried, not
 /// secret material the kernel resolved, so it is the plane's own type and never the contract's
-/// `Redacted` (whose accessor no plane reaches, DECISIONS #40). Logs, audit records, metrics and
-/// error text never carry its value (BUSBAR-1.6.0.md Locked Decision #54, the secret's reference
-/// and never its value): no `Display`, no `Serialize`, and its `Debug` prints `[redacted]`. Its
-/// readers are [`DeliveryAuth::header_value`], the `Authorization` field [`request`] writes, and
-/// the push_config record's serde form.
+/// `Secret` (whose sealed accessor no plane reaches, DECISIONS #40). Logs, audit records, metrics
+/// and error text never carry its value (BUSBAR-1.6.0.md Locked Decision #54, the secret's
+/// reference and never its value): no `Display`, no `Serialize`, and its `Debug` prints
+/// `[redacted]`. Its readers are [`DeliveryAuth::header_value`], the `Authorization` field
+/// [`request`] writes, and the push_config record's serde form.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PushCredential(String);
 

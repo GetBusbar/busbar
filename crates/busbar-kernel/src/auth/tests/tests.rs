@@ -2797,7 +2797,10 @@ fn door_mint(gov: &crate::governance::GovState, name: &str, pools: &[&str]) -> (
             1_000_000_000,
         )
         .unwrap();
-    (key.id, secret.expose_secret().as_str().to_string())
+    (
+        key.id,
+        secret.expose(&crate::seal::lend()).as_str().to_string(),
+    )
 }
 
 /// A deployment with pool `pa` (one lane, never dialled: the door answers before any dispatch).

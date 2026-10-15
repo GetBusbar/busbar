@@ -634,6 +634,9 @@ impl IoHost for HostIo {
         let (host_reads, child_writes) = std::io::pipe().map_err(|e| failed(&e))?;
         // The command (and the child's ends of the pipes it holds) is dropped with this statement,
         // so the child sees the end of its input when the host closes its end.
+        // The held values are revealed into the child's environment under the kernel's seal (Part
+        // 2 #54): the one place a program's secret leaves the host's records.
+        let seal = busbar_kernel::seal::lend();
         let child = tokio::process::Command::new(spawn.program)
             .args(spawn.args)
             .env_clear()
@@ -641,7 +644,7 @@ impl IoHost for HostIo {
             .envs(
                 resolved
                     .iter()
-                    .map(|(k, v)| (k.as_str(), v.expose_secret().as_str())),
+                    .map(|(k, v)| (k.as_str(), v.expose(&seal).as_str())),
             )
             .stdin(child_reads)
             .stdout(child_writes)

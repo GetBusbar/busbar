@@ -5,26 +5,28 @@
 //! THE FORBIDDEN NAMES ([`FORBIDDEN`]) are the accessors the contract defines TODAY:
 //!
 //! ```text
-//! KernelSeal::acquire_for_kernel() -> KernelSeal   (crates/busbar-contract/src/caps/token.rs)
-//! Redacted::expose_secret(&self) -> &T             (crates/busbar-contract/src/redacted.rs)
+//! KernelSeal::acquire_for_kernel() -> KernelSeal        (crates/busbar-contract/src/caps/token.rs)
+//! Secret::expose(&self, seal: &impl KernelSeal) -> &T   (crates/busbar-contract/src/redacted.rs)
 //! ```
 //!
 //! The first is the only way to hold the kernel seal; the second is the only way to read the
-//! plaintext of a resolved secret. THE DESIGN's trust boundary: a plane never sees secret bytes.
+//! plaintext of a resolved secret (Part 2 #54: `Secret<T>`, its one raw accessor sealed by a
+//! `KernelSeal`). A plugin holds no seal, so a plugin that names `expose` at all is reaching for
+//! bytes it may not have. THE DESIGN's trust boundary: a plane never sees secret bytes.
 //! There is NO dependency wall around either: the manifest allow-list lets every plugin-kind crate
 //! name `busbar-contract`, and a manifest reads dependency NAMES, not module paths. So nothing in
 //! the type system or the manifests stops a plugin; THIS SCAN is the wall. The list named
 //! `SecretValue::expose` and `KeyMaterial::bytes` for as long as those types were gone from the
-//! tree, and the wall passed while plane code read credential bytes through `expose_secret`; so
-//! every forbidden name must now be DEFINED in `busbar-contract` (`:seal-home`), and a rename reds
-//! instead of emptying the list.
+//! tree, and the wall passed while plane code read credential bytes through the unsealed accessor
+//! of the day; so every forbidden name must now be DEFINED in `busbar-contract` (`:seal-home`), and
+//! a rename reds instead of emptying the list.
 //!
 //! THE PLUGIN BOUNDARY is derived, never listed: every crate whose `[lib]` declares
 //! `crate-type = ["cdylib"]` (the artefact the loader dlopens; an `[[example]]` cdylib test double
 //! does not make its crate a plugin), and every crate the kind census resolves to the `plane` kind
 //! ([`crate::gates::kind_isolation::plane_kind_crates`]). The `legacy` kind (`busbar-llm`,
 //! `busbar-a2a`, `busbar-voice`) shares the plane family and is not in this population: it reads
-//! `expose_secret` at production sites today, those crates are being deleted (row 155), and
+//! `Secret::expose` at production sites today, those crates are being deleted (row 155), and
 //! `plane-secret-blindness` holds every one of those sites on its counted drain-only ledger.
 //! Kernel-side crates legitimately hold caps and mint tokens and are out of the population by
 //! construction.
@@ -40,8 +42,8 @@
 //! * `secret-accessor-seal:no-reach` — no scanned file holds a forbidden reach (and something was
 //!   scanned, so an empty scan is not green).
 //! * `secret-accessor-seal:seal-home` — (item 467) `busbar-contract` is a declared crate and every
-//!   [`FORBIDDEN`] name is defined (`fn <name>(`) in it and nowhere else: the wall this gate
-//!   documents stands where it says, and names accessors that exist.
+//!   [`FORBIDDEN`] name is defined (`fn <name>(` or, generic, `fn <name><`) in it and nowhere else:
+//!   the wall this gate documents stands where it says, and names accessors that exist.
 
 use std::collections::BTreeMap;
 
@@ -57,9 +59,15 @@ pub const ROW_HOME: &str = "secret-accessor-seal:seal-home";
 /// The crate the seal and the secret accessor live in.
 const SEAL_HOME_CRATE: &str = "busbar-contract";
 
-/// The raw secret accessors and the kernel seal, as whole words. Each must be defined in
+/// The raw secret accessor and the kernel seal, as whole words. Each must be defined in
 /// [`SEAL_HOME_CRATE`] (`:seal-home`).
-pub const FORBIDDEN: &[&str] = &["acquire_for_kernel", "expose_secret"];
+pub const FORBIDDEN: &[&str] = &["acquire_for_kernel", "expose"];
+
+/// Whether `text` defines `fn name`: `fn name(`, or `fn name<` for a generic one (`Secret::expose`
+/// is generic over its seal).
+fn defines(text: &str, name: &str) -> bool {
+    text.contains(&format!("fn {name}(")) || text.contains(&format!("fn {name}<"))
+}
 
 /// Strip `//` and `/* */` comments and `"..."` string bodies from one line. `inblk` carries an
 /// open block comment across lines (reset per file by the caller); string state is per line.
@@ -221,7 +229,7 @@ fn seal_home_problems(cx: &Ctx) -> Result<Vec<String>, String> {
         }
         if let Ok(text) = cx.read(&rel) {
             for (name, at) in homes.iter_mut() {
-                if text.contains(&format!("fn {name}(")) {
+                if defines(&text, name) {
                     at.push(s.clone());
                 }
             }
@@ -230,14 +238,14 @@ fn seal_home_problems(cx: &Ctx) -> Result<Vec<String>, String> {
     for (name, at) in &homes {
         if at.is_empty() {
             bad.push(format!(
-                "fn {name}( is defined nowhere under crates/*/src -- the accessor moved or was renamed, and the forbidden list names nothing"
+                "fn {name} is defined nowhere under crates/*/src -- the accessor moved or was renamed, and the forbidden list names nothing"
             ));
         }
         for h in at {
             let dir = h.split("/src/").next().unwrap_or("").to_string();
             if !mans.get(&dir).is_some_and(|t| declares(t)) {
                 bad.push(format!(
-                    "fn {name}( is defined in {h}, not in crate {SEAL_HOME_CRATE}"
+                    "fn {name} is defined in {h}, not in crate {SEAL_HOME_CRATE}"
                 ));
             }
         }
@@ -355,7 +363,7 @@ impl Gate for SecretAccessorSealGate {
         } else if hits.is_empty() {
             Row::pass(
                 ROW_REACH,
-                "no plugin crate references acquire_for_kernel / expose_secret",
+                "no plugin crate references acquire_for_kernel / expose",
                 format!("{} file(s) in {} crate(s)", files.len(), crates.len()),
             )
         } else {
@@ -372,7 +380,7 @@ impl Gate for SecretAccessorSealGate {
                 ROW_HOME,
                 "the seal and the secret accessor are defined in busbar-contract",
                 format!(
-                    "fn <name>( for each of {} lives only in a crate named busbar-contract",
+                    "fn <name> for each of {} lives only in a crate named busbar-contract",
                     FORBIDDEN.join(", ")
                 ),
             ),
@@ -410,11 +418,11 @@ impl Gate for SecretAccessorSealGate {
         // RED: a plugin that tries every forbidden reach. (These plants named `SecretValue::expose`
         // and `KeyMaterial::bytes` while neither type existed in the tree; they name the live
         // accessors now.)
-        let bad = "fn sneak(v: &Redacted<String>) {\n    let _ = KernelSeal::acquire_for_kernel();\n    let _ = v.expose_secret();\n    let _ = Redacted::expose_secret(v);\n    let _ = Some(v).map(Redacted::expose_secret);\n}\n";
+        let bad = "fn sneak(v: &Secret<String>, s: &TestKernelSeal) {\n    let _ = KernelSeal::acquire_for_kernel();\n    let _ = v.expose(s);\n    let _ = Secret::expose(v, s);\n    let _ = Some(v).map(Secret::expose);\n}\n";
         report.push(prove_red(
             cx,
             self,
-            "a plugin using acquire_for_kernel, .expose_secret(, Redacted::expose_secret and a method reference to it is RED",
+            "a plugin using acquire_for_kernel, .expose(, Secret::expose and a method reference to it is RED",
             &[ROW_REACH],
             plant(&[("lib.rs", bad)]),
             &[
@@ -440,11 +448,11 @@ impl Gate for SecretAccessorSealGate {
         report.push(prove_red(
             cx,
             self,
-            "an .expose_secret() on the line after its receiver is RED",
+            "an .expose(seal) on the line after its receiver is RED",
             &[ROW_REACH],
             plant(&[(
                 "lib.rs",
-                "fn sneak2(k: &Redacted<String>) -> usize {\n    k\n        .expose_secret()\n        .len()\n}\n",
+                "fn sneak2(k: &Secret<String>, s: &TestKernelSeal) -> usize {\n    k\n        .expose(s)\n        .len()\n}\n",
             )]),
             &["crates/zz-plant/src/lib.rs:3"],
         ));
@@ -456,15 +464,15 @@ impl Gate for SecretAccessorSealGate {
         let mut ov = Overlay::new();
         ov.set(
             plane_file,
-            "pub fn sneak(k: &busbar_contract::redacted::Redacted<String>) -> usize {\n    k.expose_secret().len()\n}\n",
+            "pub fn sneak(\n    k: &busbar_contract::redacted::Secret<String>,\n    s: &busbar_contract::plugin::TestKernelSeal,\n) -> usize {\n    k.expose(s).len()\n}\n",
         );
         report.push(prove_red(
             cx,
             self,
-            "a plane-kind crate calling Redacted::expose_secret is RED, though its [lib] is no cdylib",
+            "a plane-kind crate calling Secret::expose is RED, though its [lib] is no cdylib",
             &[ROW_REACH],
             ov,
-            &["crates/busbar-plane-llm/src/zz_planted_reach.rs:2"],
+            &["crates/busbar-plane-llm/src/zz_planted_reach.rs:5"],
         ));
 
         // GREEN: zero-argument calls, and the names only in a comment / string / block comment.
@@ -480,7 +488,7 @@ impl Gate for SecretAccessorSealGate {
         report.push(prove_green(
             &at(plant(&[(
                 "lib.rs",
-                "// A plugin may not call v.expose_secret() or KernelSeal::acquire_for_kernel.\nfn note() { let _doc = \"Redacted::expose_secret is sealed\"; }\n/* k.expose_secret()\n   still comment acquire_for_kernel() */\nfn ok() {}\n",
+                "// A plugin may not call v.expose(seal) or KernelSeal::acquire_for_kernel.\nfn note() { let _doc = \"Secret::expose is sealed\"; }\n/* k.expose(seal)\n   still comment acquire_for_kernel() */\nfn ok() {}\n",
             )])),
             self,
             "the same names in a comment, a string literal and a block comment are not a reach",
@@ -569,17 +577,14 @@ impl Gate for SecretAccessorSealGate {
         let redacted = "crates/busbar-contract/src/redacted.rs";
         if let Ok(text) = cx.read(redacted) {
             let mut ov = Overlay::new();
-            ov.set(
-                redacted,
-                text.replace("fn expose_secret(", "fn expose_secret_renamed("),
-            );
+            ov.set(redacted, text.replace("fn expose<", "fn expose_renamed<"));
             report.push(prove_red(
                 cx,
                 self,
                 "a forbidden accessor defined nowhere under crates/*/src is RED, naming it",
                 &[ROW_HOME],
                 ov,
-                &["fn expose_secret( is defined nowhere"],
+                &["fn expose is defined nowhere"],
             ));
         }
         let mut ov = Overlay::new();
@@ -619,11 +624,13 @@ mod tests {
 
     #[test]
     fn word_rule() {
-        assert!(reaches("k.expose_secret()"));
-        assert!(reaches("Redacted::expose_secret(k)"));
-        assert!(reaches(".map(Redacted::expose_secret)"));
+        assert!(reaches("k.expose(seal)"));
+        assert!(reaches("k.expose(&busbar_kernel::seal::lend())"));
+        assert!(reaches("Secret::expose(k, seal)"));
+        assert!(reaches(".map(Secret::expose)"));
         assert!(reaches("K::acquire_for_kernel()"));
-        assert!(!reaches("k.expose_secret_len()"));
+        assert!(!reaches("k.expose_len()"));
+        assert!(!reaches("k.exposed()"));
         assert!(!reaches("s.bytes()"));
         assert!(!reaches("km.bytes(seal)"));
     }

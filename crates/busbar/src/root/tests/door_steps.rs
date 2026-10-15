@@ -976,7 +976,8 @@ fn a_members_base_url_userinfo_reaches_its_attempts_only_through_its_binding() {
             .map(|f| {
                 (
                     String::from_utf8_lossy(&f.name).to_ascii_lowercase(),
-                    String::from_utf8_lossy(f.value.expose_secret()).into_owned(),
+                    String::from_utf8_lossy(f.value.expose(&busbar_kernel::seal::lend()))
+                        .into_owned(),
                 )
             })
             .collect();
@@ -6706,7 +6707,8 @@ fn presents(
             .map(|f| {
                 (
                     String::from_utf8_lossy(&f.name).to_ascii_lowercase(),
-                    String::from_utf8_lossy(f.value.expose_secret()).into_owned(),
+                    String::from_utf8_lossy(f.value.expose(&busbar_kernel::seal::lend()))
+                        .into_owned(),
                 )
             })
             .collect(),

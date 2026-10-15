@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 
 /// The field a URL's userinfo rides under, and the one name that displaces it.
 const AUTHORIZATION: &str = "authorization";
@@ -34,7 +34,7 @@ const AUTHORIZATION: &str = "authorization";
 /// THE BASIC VALUE AN OPERATOR'S URL SPELLED (`Basic base64(user:pass)`), root-owned. `Debug` prints
 /// a marker; the bytes are zeroised when the last copy drops.
 #[derive(Clone)]
-pub struct UserinfoBasic(Arc<Redacted<Vec<u8>>>);
+pub struct UserinfoBasic(Arc<Secret<Vec<u8>>>);
 
 impl UserinfoBasic {
     /// The Basic value `url`'s authority spells, or `None` when it spells no user and no password.
@@ -51,19 +51,21 @@ impl UserinfoBasic {
             Some((user, pass)) => (user, Some(pass).filter(|p| !p.is_empty())),
             None => (spelled, None),
         };
-        let user = Redacted::new(percent_decoded(user)?);
-        let pass = pass.and_then(percent_decoded).map(Redacted::new);
-        if user.expose_secret().is_empty() && pass.is_none() {
+        let user = Secret::new(percent_decoded(user)?);
+        let pass = pass.and_then(percent_decoded).map(Secret::new);
+        // Read under the kernel's seal (Part 2 #54): the root spells the Basic value once, here.
+        let seal = busbar_kernel::seal::lend();
+        if user.expose(&seal).is_empty() && pass.is_none() {
             return None;
         }
-        let mut plain = user.expose_secret().as_bytes().to_vec();
+        let mut plain = user.expose(&seal).as_bytes().to_vec();
         plain.push(b':');
         if let Some(pass) = &pass {
-            plain.extend_from_slice(pass.expose_secret().as_bytes());
+            plain.extend_from_slice(pass.expose(&seal).as_bytes());
         }
-        let plain = Redacted::new(plain);
-        Some(Self(Arc::new(Redacted::new(basic_value(
-            plain.expose_secret(),
+        let plain = Secret::new(plain);
+        Some(Self(Arc::new(Secret::new(basic_value(
+            plain.expose(&seal),
         )))))
     }
 
@@ -71,12 +73,13 @@ impl UserinfoBasic {
     /// the root holds it. TRANSITIONAL: deleted with the legacy lane plane (row 155 C).
     #[must_use]
     pub fn from_value(bytes: &[u8]) -> Option<Self> {
-        (!bytes.is_empty()).then(|| Self(Arc::new(Redacted::new(bytes.to_vec()))))
+        (!bytes.is_empty()).then(|| Self(Arc::new(Secret::new(bytes.to_vec()))))
     }
 
-    /// The value's bytes, for the root's own field writers.
+    /// The value's bytes, for the root's own field writers, read under the kernel's seal (Part 2
+    /// #54).
     fn bytes(&self) -> &[u8] {
-        self.0.expose_secret()
+        self.0.expose(&busbar_kernel::seal::lend())
     }
 
     /// A connection open's head `fields` with this value LEADING them under `authorization`, or
@@ -114,7 +117,7 @@ impl UserinfoBasic {
                     0,
                     AuthField {
                         name: AUTHORIZATION.as_bytes().to_vec(),
-                        value: Redacted::new(self.bytes().to_vec()),
+                        value: Secret::new(self.bytes().to_vec()),
                         sensitive: true,
                     },
                 );

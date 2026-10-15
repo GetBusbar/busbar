@@ -1218,7 +1218,7 @@ pub(super) mod session_door {
             gov,
             app,
             key,
-            plain: plain.expose_secret().clone(),
+            plain: plain.expose(&busbar_kernel::seal::lend()).clone(),
             live,
             money,
             post,

@@ -90,7 +90,7 @@ fn a_plugin_is_opened_once_under_its_key() {
 struct DiskSource;
 
 impl SecretCalls for DiskSource {
-    fn resolve(&self, _settings: &[u8]) -> Result<Redacted<Vec<u8>>, SecretRefused> {
+    fn resolve(&self, _settings: &[u8]) -> Result<Secret<Vec<u8>>, SecretRefused> {
         Err(SecretRefused {
             error_kind: busbar_contract::abi::secret::ERROR_KIND_DENIED,
             text: busbar_contract::config_time::RESOLVE_OFF_CONFIG_TIME.to_string(),
@@ -101,8 +101,8 @@ impl SecretCalls for DiskSource {
         &self,
         settings: &[u8],
         _scope: &busbar_contract::config_time::ConfigScope,
-    ) -> Result<Redacted<Vec<u8>>, SecretRefused> {
-        Ok(Redacted::new(settings.to_vec()))
+    ) -> Result<Secret<Vec<u8>>, SecretRefused> {
+        Ok(Secret::new(settings.to_vec()))
     }
 }
 
