@@ -339,15 +339,19 @@ fn ir19_response_modalities_carry() {
     );
 }
 
-/// IR-09: `thinkingBudget: 0` is reasoning switched OFF (not "never said"). Off is written back as
-/// budget 0 only for a model that accepts it (the gemini-2.5-flash family); for any other model, or
-/// with no model known, it is omitted so the request never 400s.
+/// `thinkingBudget: 0` carries no ask across the seam, as 1.5.5 read it (v1.5.5
+/// `crates/busbar/src/proto/gemini/reader.rs:554-558`): a foreign reasoning-by-default lane is not
+/// switched off, so the request bills the thinking tokens 1.5.5 billed. RED while it read as `Off`.
+/// The Gemini WRITER's own Off form (budget 0 on a flash model, omitted elsewhere) still serves an
+/// Off that another dialect states.
 #[test]
-fn ir09_thinking_budget_zero_is_off() {
+fn ir09_thinking_budget_zero_carries_no_ask() {
     let body = json!({"contents": [{"role": "user", "parts": [{"text": "hi"}]}],
         "generationConfig": {"thinkingConfig": {"thinkingBudget": 0}}});
     let ir = read_then_seam(&body);
-    assert_eq!(ir.reasoning, Some(IrReasoningAsk::Off));
+    assert_eq!(ir.reasoning, None);
+    let mut ir = ir;
+    ir.reasoning = Some(IrReasoningAsk::Off);
     for model in [
         "gemini-2.5-flash",
         "models/gemini-2.5-flash-lite-preview-06-17",
