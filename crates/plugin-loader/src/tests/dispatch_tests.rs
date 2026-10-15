@@ -2539,9 +2539,10 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
     ];
     // SAFETY: an all-zero Claim is a valid row (no strings, no lists).
     let row: &'static Claim = Box::leak(Box::new(unsafe { std::mem::zeroed::<Claim>() }));
-    // SAFETY: an all-zero TransportTail is a valid value; its size and rows are set below.
+    // SAFETY: an all-zero TransportTail is a valid value; its size, piece and rows are set below.
     let mut t: TransportTail = unsafe { std::mem::zeroed() };
     t.head.size = std::mem::size_of::<TransportTail>() as u32;
+    t.frame_piece_size = std::mem::size_of::<busbar_contract::abi::transport::FramePiece>() as u32;
     t.claim_rows = row;
     t.claim_rows_len = 1;
     let tail = (Box::leak(Box::new(t)) as *const TransportTail).cast::<KindTailHead>();
@@ -2567,6 +2568,93 @@ fn a_transport_tail_with_a_row_per_claimed_name_is_admitted_and_no_other() {
         crate::dispatch::load::kind_tail(&untailed),
         Err(LoadError::KindTail(_))
     ));
+}
+
+/// THE PIECE STRIDE AT LOAD (busbar #1032): a framer writes `FramerSink::pieces` at its own
+/// `FramePiece` size, and the host reads them at its own. RED: a transport whose tail states a
+/// piece size other than the host's (the 40-byte piece before #1032), or none (a tail that
+/// predates the word), is refused at load, naming the plugin, both sizes and the rebuild. GREEN:
+/// the host's size loads.
+#[test]
+fn a_transport_built_against_another_frame_piece_is_refused_at_load() {
+    use busbar_contract::abi::mechanism::call::AbiStr;
+    use busbar_contract::abi::transport::{Claim, FramePiece, TransportTail, FRAME_PIECE_SIZE};
+    const NAMES: &[AbiStr] = &[busbar_contract::abi::sdk::door::abi_str("tele")];
+    let host = std::mem::size_of::<FramePiece>() as u32;
+    assert_eq!(
+        host, FRAME_PIECE_SIZE,
+        "the contract states the host's piece"
+    );
+    // SAFETY: an all-zero Claim is a valid row (no strings, no lists).
+    let row: &'static Claim = Box::leak(Box::new(unsafe { std::mem::zeroed::<Claim>() }));
+    let tail = |size: usize, piece: u32| {
+        // SAFETY: an all-zero TransportTail is a valid value; its size, piece and rows are set.
+        let mut t: TransportTail = unsafe { std::mem::zeroed() };
+        t.head.size = size as u32;
+        t.frame_piece_size = piece;
+        t.claim_rows = row;
+        t.claim_rows_len = 1;
+        (Box::leak(Box::new(t)) as *const TransportTail).cast::<KindTailHead>()
+    };
+    // Through the load path's own Statement read (`validate`, the pack tool's rendering and
+    // `statement_of` all go through it), on a transport door.
+    let load = |kind_tail: *const KindTailHead| {
+        let st: &'static Statement = Box::leak(Box::new(Statement {
+            size: std::mem::size_of::<Statement>() as u32,
+            kind: KindCode::Transport as u32,
+            kind_abi: KindCode::Transport.abi_version(),
+            kind_tail,
+            claims: NAMES.as_ptr(),
+            claims_len: NAMES.len(),
+            ..busbar_contract::abi::sdk::door::statement("sockets", "1.0.0", 1)
+        }));
+        let door = Door {
+            magic: DOOR_MAGIC,
+            mechanism_version: MECHANISM_VERSION,
+            size: std::mem::size_of::<Door>() as u32,
+            kind: KindCode::Transport as u32,
+            kind_abi: KindCode::Transport.abi_version(),
+            statement: st,
+            ops: std::ptr::null(),
+            ready: None,
+        };
+        crate::dispatch::load::statement(&door).map(|_| ())
+    };
+    let whole = std::mem::size_of::<TransportTail>();
+
+    // GREEN: the host's piece loads.
+    assert_eq!(load(tail(whole, host)), Ok(()), "the host's piece loads");
+
+    // RED: the piece before #1032, read at the wrong stride, is refused.
+    let refused = load(tail(whole, 40)).expect_err("a 40-byte piece is refused");
+    assert_eq!(
+        refused,
+        LoadError::FramePieceSize {
+            plugin: "sockets".into(),
+            stated: 40,
+            host,
+        }
+    );
+    let said = refused.to_string();
+    assert!(
+        said.contains("'sockets'")
+            && said.contains("40-byte")
+            && said.contains(&format!("{host}-byte"))
+            && said.contains("rebuild against this busbar-contract"),
+        "{said}"
+    );
+
+    // RED: a tail that stops short of the word (built before it) states no piece: refused the same.
+    let before = std::mem::offset_of!(TransportTail, frame_piece_size);
+    assert_eq!(
+        load(tail(before, host)),
+        Err(LoadError::FramePieceSize {
+            plugin: "sockets".into(),
+            stated: 0,
+            host,
+        }),
+        "a tail that predates the piece size is refused, never read past its end"
+    );
 }
 
 // ── THE WORKERS' RUNTIME ─────────────────────────────────────────────────────────────────────────

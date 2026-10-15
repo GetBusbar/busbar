@@ -473,6 +473,11 @@ pub const PIECE_WRITABLE: u16 = 256;
 /// message's head declared on the wire. Never on any other piece.
 pub const PIECE_HAS_DECLARED_LEN: u16 = 512;
 
+/// The size of one [`FramePiece`], in bytes: the stride of [`FramerSink::pieces`].
+/// [`TransportTail::frame_piece_size`] states it, so a framer built against another piece layout
+/// is refused at load, never read wrong.
+pub const FRAME_PIECE_SIZE: u32 = 48;
+
 /// [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are
 /// one or the other (ws sends them under its TEXT opcode); read on the call that completes the
 /// frame. Absent means binary. The outbound twin of [`PIECE_TEXT`].
@@ -627,6 +632,12 @@ pub struct TransportTail {
     pub fault_rows: *const FaultRow,
     /// How many.
     pub fault_rows_len: usize,
+    /// [`FRAME_PIECE_SIZE`] as the plugin was built: the stride it writes [`FramerSink::pieces`]
+    /// at. The loader refuses a transport whose number is not the host's (a tail that predates the
+    /// word states `0`), naming the rebuild.
+    pub frame_piece_size: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
 }
 
 // ── shared shapes ────────────────────────────────────────────────────────────────────────────────
@@ -721,8 +732,9 @@ pub struct FrameSpan {
 }
 
 // The piece's size and its flags' place are fixed: a framer built against another layout is refused
-// at compile time, never read wrong at run time.
-const _: () = assert!(core::mem::size_of::<FramePiece>() == 48);
+// at compile time, never read wrong at run time; one built against another contract states another
+// `frame_piece_size` and is refused at load.
+const _: () = assert!(core::mem::size_of::<FramePiece>() == FRAME_PIECE_SIZE as usize);
 const _: () = assert!(core::mem::offset_of!(FramePiece, fault) == 29);
 const _: () = assert!(core::mem::offset_of!(FramePiece, flags) == 30);
 

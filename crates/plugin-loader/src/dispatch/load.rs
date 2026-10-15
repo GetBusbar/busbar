@@ -26,7 +26,7 @@ use busbar_contract::abi::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 use busbar_contract::abi::mechanism::rendering::{render, RENDERING_MAGIC};
 use busbar_contract::abi::mechanism::{KindCode, DOOR_MAGIC, DOOR_SYMBOL, MECHANISM_VERSION};
 use busbar_contract::abi::transport::check::check_claim_rows;
-use busbar_contract::abi::transport::TransportTail;
+use busbar_contract::abi::transport::{FramePiece, TransportTail};
 use libloading::Library;
 
 use super::plugin::{Bind, Plugin};
@@ -292,6 +292,17 @@ pub enum LoadError {
     BadStatement(String),
     /// The Statement's `kind_tail` is malformed.
     KindTail(String),
+    /// A transport's frame pieces are not the host's: its tail states another
+    /// `size_of::<FramePiece>()` than this host's (`0`: a tail that predates the word), so every
+    /// piece it writes would be read at the wrong stride.
+    FramePieceSize {
+        /// The plugin the Statement names.
+        plugin: String,
+        /// The tail's.
+        stated: u32,
+        /// The host's.
+        host: u32,
+    },
     /// A Statement rendering (a manifest's or a row's) is malformed.
     Rendering(String),
     /// The door's Statement is not the one the manifest (or the compiled-in row) states.
@@ -379,6 +390,15 @@ impl fmt::Display for LoadError {
             }
             Self::BadStatement(e) => write!(f, "the Statement is malformed: {e}"),
             Self::KindTail(e) => write!(f, "the Statement's kind tail is malformed: {e}"),
+            Self::FramePieceSize {
+                plugin,
+                stated,
+                host,
+            } => write!(
+                f,
+                "transport plugin '{plugin}' writes {stated}-byte frame pieces; this host reads \
+                 {host}-byte pieces — rebuild against this busbar-contract"
+            ),
             Self::Rendering(e) => write!(f, "the stated Statement rendering is malformed: {e}"),
             Self::StatementMismatch => f.write_str(
                 "the plugin's Statement is not the one its manifest states — repack the plugin",
@@ -821,8 +841,8 @@ pub(crate) fn statement(door: &Door) -> Result<Statement, LoadError> {
 }
 
 /// A Statement's kind tail, at admit: its head states at least itself, and a transport's tail is a
-/// whole [`TransportTail`] with exactly one claim row per scheme the Statement names (the names
-/// are the Statement's alone).
+/// whole [`TransportTail`] whose frame piece is the host's [`FramePiece`], with exactly one claim
+/// row per scheme the Statement names (the names are the Statement's alone).
 pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
     if st.kind_tail.is_null() {
         // A transport that names claims has a row per name, so it has a tail.
@@ -843,6 +863,29 @@ pub(crate) fn kind_tail(st: &Statement) -> Result<(), LoadError> {
     }
     if st.kind != KindCode::Transport as u32 {
         return Ok(());
+    }
+    // THE PIECE STRIDE FIRST: a framer writes `FramerSink::pieces` at its own `FramePiece` size, so
+    // a transport built against another piece layout is refused here, never loaded and misread. A
+    // tail too short to state the word predates it and states none (`0`).
+    let word = std::mem::offset_of!(TransportTail, frame_piece_size);
+    let stated = if tail.size as usize >= word + size_of::<u32>() {
+        // SAFETY: the tail states it covers the word; a kind tail is `'static` plugin data.
+        unsafe {
+            addr_of!((*st.kind_tail.cast::<TransportTail>()).frame_piece_size).read_unaligned()
+        }
+    } else {
+        0
+    };
+    let host = size_of::<FramePiece>() as u32;
+    if stated != host {
+        let plugin = super::plugin::str_bytes(st.name)
+            .map(|b| String::from_utf8_lossy(b).into_owned())
+            .unwrap_or_default();
+        return Err(LoadError::FramePieceSize {
+            plugin,
+            stated,
+            host,
+        });
     }
     if (tail.size as usize) < size_of::<TransportTail>() {
         return Err(LoadError::KindTail(format!(
