@@ -758,7 +758,9 @@ busbar-plane-mcp = ["base64", "indexmap"]
 # is still there. Delete it (BUSBAR-1.6.0.md THE DESIGN, §2) — noted here, not done here, because a rule
 # change is not this commit's business.
 [rules.manifest-allowlist.known_red_deps]
-busbar-plane-llm = ["busbar-llm"]
+# busbar-plane-llm HAS NO ROW: its manifest names no engine crate (the codec fold moved the codecs
+# INTO it, and `busbar-llm` depends on the plane, never the reverse), so its `["busbar-llm"]` row
+# tracked an edge that does not exist. Deleted with the busbar-llm retirement (status row 83).
 # busbar-plane-a2a HAS NO ROW, for the same reason busbar-plane-mcp lost its one: the codec fold
 # left its manifest at `busbar-contract` plus two third-party crates, and it names no engine crate
 # in either spelling. The edge that exists now runs the other way.
