@@ -326,6 +326,32 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
         ),
     }
 
+    // THE FIFTH PLANE IS ON THE ROSTER TOO (#48). `decisions` is located by its door row alone and
+    // was on neither roster list, so taking the `plane-door` axis off `plane-decisions` dropped the
+    // plane from the roster with no finding. It is kind-only (`planes::PLANE_KEYS_KIND_ONLY`): the
+    // same plant must be PLANE-ROOT-MISSING naming it.
+    match cx.read(&manifest_rel) {
+        Ok(text) if text.contains("plane-decisions = \"plane-door\"") => {
+            let mut ov = Overlay::new();
+            ov.set(
+                &manifest_rel,
+                text.replace("plane-decisions = \"plane-door\"", "plane-decisions = \"\""),
+            );
+            report.push(tree_case(
+                cx,
+                gate,
+                "the decisions plane whose door row left the manifest is refused, not silently off the roster",
+                &[roots::ROW_PLANE_ROOTS],
+                ov,
+                &["PLANE-ROOT-MISSING", "decisions"],
+            ));
+        }
+        _ => report.note_infra_failure(
+            "structure-lint selftest: the manifest carries no `plane-decisions = \"plane-door\"` row, \
+             so the decisions plane-root case has nothing to plant against",
+        ),
+    }
+
     // A PLANE THE OLD CONSTANT NEVER NAMED (item 224). `PLANES` was `["mcp", "a2a"]`, so a second
     // home for voice could not be reported: the row "every plane resolves to exactly one home" was
     // true of the two planes it had been given. A second declaration of voice, in a directory named

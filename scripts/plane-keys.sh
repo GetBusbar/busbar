@@ -58,7 +58,11 @@ PLANE_KEYS="llm a2a voice"
 # its plane-kind crate `crates/busbar-plane-<key>` (P3 DEL-MCP, ARCHITECT 2026-10-05: `mcp`). Never a
 # `crates/busbar-<key>` root; STILL a plane noun, so a needle gate that bans the other planes' keys
 # keeps banning it (`plane_noun_keys_other`). Leaving PLANE_KEYS must not let the word in.
-PLANE_KEYS_KIND_ONLY="mcp"
+# `decisions` (#48) never had a legacy-engine crate: one plane-kind crate, located by its door row
+# alone, so it is kind-only from birth and on this list so a vanished door row is PLANE-ROOT-MISSING
+# (xtask/src/planes.rs, the twin, pinned equal by xtask/tests/infra.rs). As a needle it reaches only
+# the report-only meters that source this list (plane-grep-gate.sh, plane-noun-gate.sh).
+PLANE_KEYS_KIND_ONLY="mcp decisions"
 
 # The protocol subset: every plane key except `llm`. Derived from PLANE_KEYS so adding a plane in
 # one place flows here automatically.
