@@ -829,6 +829,25 @@ fn transcription_transcribe_round_trips_as_transcribe() {
     );
 }
 
+// An upstream cannot choose the duration meter: a `usageMetadata.audioDurationSeconds` member (not
+// Gemini's wire) is not read, and the answer bills its token fields exactly as 1.5.5 read them
+// (v1.5.5 `crates/busbar/src/handlers/gemini.rs:229-241`: `promptTokenCount`/`candidatesTokenCount`
+// only, here both absent, so Tokens{0,0}). RED while the reader billed 12.5 seconds of `audio_ms`.
+#[test]
+fn transcription_response_reads_no_audio_duration_member() {
+    let wire = json!({
+        "candidates": [{"content": {"parts": [{"text": "hello"}], "role": "model"}}],
+        "usageMetadata": {"audioDurationSeconds": 12.5},
+    });
+    let back = read_transcription_response(&serde_json::to_vec(&wire).unwrap()).expect("read");
+    assert_eq!(
+        back.usage,
+        Some(busbar_contract::billing::Billing::Tokens(
+            busbar_contract::billing::TokenUsage::default()
+        ))
+    );
+}
+
 // A real Gemini token usageMetadata still reads back as Tokens.
 #[test]
 fn transcription_response_reads_token_usage() {

@@ -654,8 +654,6 @@ const FIELD_ALLOWED_FUNCTION_NAMES: &str = "allowedFunctionNames";
 const FIELD_ARGS: &str = "args";
 /// The wire word `aspectRatio`.
 const FIELD_ASPECT_RATIO: &str = "aspectRatio";
-/// The wire word `audioDurationSeconds`.
-const FIELD_AUDIO_DURATION_SECONDS: &str = "audioDurationSeconds";
 /// The wire word `bytesBase64Encoded`.
 const FIELD_BYTES_BASE64_ENCODED: &str = "bytesBase64Encoded";
 /// The wire word `candidates`.
