@@ -68,14 +68,14 @@ pub fn path(model: &str, stream: bool) -> String {
     format!("/model/{model}/{op}")
 }
 
+/// One head field: its name and its value bytes.
+pub type HeadField = (String, Vec<u8>);
+
 /// The far request's head fields over the envelope: the Messages API version is not sent (the body
 /// states the envelope's), the caller's beta flags are taken out to ride in the body, and a streamed
 /// answer is asked for in the event-stream framing. Returns the fields and the beta flags.
 #[must_use]
-pub fn fields(
-    fields: Vec<(String, Vec<u8>)>,
-    stream: bool,
-) -> (Vec<(String, Vec<u8>)>, Vec<Vec<u8>>) {
+pub fn fields(fields: Vec<HeadField>, stream: bool) -> (Vec<HeadField>, Vec<Vec<u8>>) {
     let (beta, rest): (Vec<_>, Vec<_>) = fields
         .into_iter()
         .filter(|(name, _)| !name.eq_ignore_ascii_case(VERSION_FIELD))
