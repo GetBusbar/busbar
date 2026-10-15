@@ -340,9 +340,11 @@ pub(crate) fn with_crossing<R>(inst: Option<&Instance>, f: impl FnOnce() -> R) -
     f()
 }
 
-/// `f`, a call into plugin code that is no mechanism crossing (the inline HOT-lane plane and
-/// transport slots), run with the mark nulled, so nothing it hands the host is taken for the
-/// crossing it happens to be nested in.
+/// `f` run with the mark nulled, so nothing it hands the host is taken for the crossing it happens
+/// to be nested in. With the HOT plane and transport load paths deleted (row 84), every call into
+/// plugin code is a mechanism crossing ([`Instance::cross`] binds it with [`with_crossing`]); this
+/// stays the explicit "no crossing" the #74 RED test nests inside one.
+#[cfg(test)]
 pub(crate) fn without_crossing<R>(f: impl FnOnce() -> R) -> R {
     with_crossing(None, f)
 }
