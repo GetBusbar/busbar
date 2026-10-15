@@ -1124,6 +1124,8 @@ pub struct Across {
 pub struct Bridge {
     caller: Vec<(u64, String)>,
     upstream: Vec<(u64, String)>,
+    /// The caller's channels' labels, in the order it opened them.
+    channels: Vec<String>,
     stopped: bool,
 }
 
@@ -1179,6 +1181,12 @@ impl Bridge {
         Ok(())
     }
 
+    /// The caller's channels' labels, in the order it opened them: what the upstream dial names.
+    #[must_use]
+    pub fn caller_channels(&self) -> Vec<&str> {
+        self.channels.iter().map(String::as_str).collect()
+    }
+
     /// Stop the bridge: no frame crosses again, in either direction.
     pub fn stop(&mut self) {
         self.stopped = true;
@@ -1218,12 +1226,18 @@ impl Bridge {
         for g in pieces {
             let known = self.lines(leg).iter().any(|(s, _)| *s == g.stream);
             if g.fields && !known {
-                if let Some(StreamHead::Line { kind }) = stream_head(&g.bytes) {
-                    match leg {
-                        Leg::Caller => self.caller.push((g.stream, kind)),
-                        Leg::Upstream => self.upstream.push((g.stream, kind)),
+                match stream_head(&g.bytes) {
+                    Some(StreamHead::Line { kind }) => {
+                        match leg {
+                            Leg::Caller => self.caller.push((g.stream, kind)),
+                            Leg::Upstream => self.upstream.push((g.stream, kind)),
+                        }
+                        continue;
                     }
-                    continue;
+                    Some(StreamHead::Channel { label }) if leg == Leg::Caller => {
+                        self.channels.push(label);
+                    }
+                    _ => {}
                 }
             }
             if known {
@@ -1241,6 +1255,142 @@ impl Bridge {
             session.push(g);
         }
         (session, across)
+    }
+}
+
+/// A LEG'S DOOR for what crosses into it: the owner of the leg's association (the claim door's
+/// port for the caller's, the connection table for the upstream's) emits there and closes it. Never
+/// called with the caller's own lock held: a pairing hands a frame across only after the leg it
+/// came from let its own association go.
+pub trait LegSink: Send + Sync {
+    /// Emit one line frame on this leg now.
+    fn line(&self, across: Across, now: Instant);
+    /// Close this leg's association. Called once, by the pairing's close.
+    fn close(&self);
+}
+
+/// ONE HELD SESSION'S PAIRING (ARCHITECT rulings, row 132): its caller leg, registered under the
+/// session's unit key before the session runs ([`crate::Connector::pair`]); its upstream leg, the
+/// dial the session's walk opens for that unit; and the [`Bridge`] between their lines. Closing it
+/// stops the bridge and closes both legs, exactly once.
+pub struct Pairing {
+    state: std::sync::Mutex<PairState>,
+    /// The caller leg's port address: the upstream leg binds a port of its own on the same host
+    /// address.
+    local: SocketAddr,
+}
+
+struct PairState {
+    bridge: Bridge,
+    caller: Option<Arc<dyn LegSink>>,
+    upstream: Option<Arc<dyn LegSink>>,
+    closed: bool,
+}
+
+impl std::fmt::Debug for Pairing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pairing")
+            .field("local", &self.local)
+            .field("closed", &self.closed())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Pairing {
+    /// A pairing for a session whose caller leg is `caller`, on the port at `local`.
+    #[must_use]
+    pub fn new(caller: Arc<dyn LegSink>, local: SocketAddr) -> Arc<Self> {
+        Arc::new(Pairing {
+            state: std::sync::Mutex::new(PairState {
+                bridge: Bridge::new(),
+                caller: Some(caller),
+                upstream: None,
+                closed: false,
+            }),
+            local,
+        })
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, PairState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The caller leg's port address.
+    #[must_use]
+    pub fn local(&self) -> SocketAddr {
+        self.local
+    }
+
+    /// Whether the pairing is closed.
+    #[must_use]
+    pub fn closed(&self) -> bool {
+        self.lock().closed
+    }
+
+    /// The upstream dial's opening: the caller's lines mirrored, then its channels.
+    #[must_use]
+    pub fn opening(&self) -> Vec<(String, Vec<u8>)> {
+        let st = self.lock();
+        st.bridge.opening(&st.bridge.caller_channels())
+    }
+
+    /// What `leg` yielded: its line heads recorded, its line frames handed to the other leg (once
+    /// that leg is attached and the lines mirror; dropped otherwise), and the session's pieces back.
+    pub fn sort(
+        &self,
+        leg: Leg,
+        pieces: Vec<crate::framer::Got>,
+        now: Instant,
+    ) -> Vec<crate::framer::Got> {
+        let (session, across, to) = {
+            let mut st = self.lock();
+            let (session, across) = st.bridge.sort(leg, pieces);
+            let to = match leg {
+                Leg::Caller => st.upstream.clone(),
+                Leg::Upstream => st.caller.clone(),
+            };
+            (session, across, to)
+        };
+        if let Some(to) = to {
+            for a in across {
+                to.line(a, now);
+            }
+        }
+        session
+    }
+
+    /// Attach the upstream leg once its lines are known (sorted from its answer): refused, and
+    /// nothing attached, unless they mirror the caller's or the pairing is closed.
+    ///
+    /// # Errors
+    ///
+    /// The mismatch, or the close: the upstream dial fails and nothing half-bridges.
+    pub fn attach(&self, upstream: Arc<dyn LegSink>) -> Result<(), String> {
+        let mut st = self.lock();
+        if st.closed {
+            return Err("the session closed before its upstream leg answered".into());
+        }
+        st.bridge.mirrored()?;
+        st.upstream = Some(upstream);
+        Ok(())
+    }
+
+    /// CLOSE, exactly once: the bridge stops, then both legs close. A second close does nothing.
+    pub fn close(&self) {
+        let legs = {
+            let mut st = self.lock();
+            if st.closed {
+                return;
+            }
+            st.closed = true;
+            st.bridge.stop();
+            [st.caller.take(), st.upstream.take()]
+        };
+        for leg in legs.into_iter().flatten() {
+            leg.close();
+        }
     }
 }
 

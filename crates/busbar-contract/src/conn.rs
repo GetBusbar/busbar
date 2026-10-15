@@ -68,6 +68,11 @@ pub struct OpenDesc<'a> {
     /// `EstablishIn::member`); empty = none. What the host sealed for that registration alone (its
     /// private reach, [`PollConns::seal_reach`]) applies to this open and to no other.
     pub member: &'a str,
+    /// The UNIT this open serves, by its kernel-minted unit key, where the opener runs one (a
+    /// unit's walk, `UnitRoute::unit`); `0` = none. What the host registered for that unit alone
+    /// applies to this open and to no other; an open whose transport needs no such registration
+    /// ignores it.
+    pub unit: u64,
 }
 
 /// What a piece a connection delivered carries.

@@ -1280,6 +1280,9 @@ impl EgressFarEnd<'_> {
                 // The registration the member route reaches: what the host sealed for it alone
                 // (its private reach) applies to this dial.
                 member: &route.provider,
+                // The unit the walk serves: what the host registered for it alone (a held
+                // session's caller leg) applies to this open.
+                unit: self.route.unit.get(),
             },
         );
         let now_ms = e.clock.now_millis();
