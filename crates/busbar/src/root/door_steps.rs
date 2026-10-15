@@ -1613,6 +1613,12 @@ pub fn kernel_sections(
             "prompt_caching",
             model.prompt_caching.map(|v| json!(v)),
         );
+        // The model's dialect override (#51), for the plane to resolve and judge.
+        opt(
+            &mut m,
+            MODEL_PROTOCOL_KEYS[0],
+            model.protocol.as_ref().map(|v| json!(v)),
+        );
         models.insert(name.clone(), Value::Object(m));
     }
     let mut pools = Map::new();
