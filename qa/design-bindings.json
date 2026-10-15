@@ -3111,7 +3111,7 @@
     },
     {
      "kind": "test",
-     "ref": "test_ingress_stream_content_type_by_protocol",
+     "ref": "crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_ingress_stream_content_type_by_protocol",
      "proves": "streaming_content_type per ingress writer",
      "source": "curated",
      "status": "mapped"
@@ -3153,7 +3153,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:same_dialect_anthropic_forwards_every_client_header, test:test_egress_accept_matches_native_sdk, test:test_egress_ua_versions_are_pinned_and_present, test:test_ingress_stream_content_type_by_protocol, test:test_bedrock_ingress_success_carries_amzn_request_id, test:test_forward_once_bedrock_error_relays_amzn_headers, test:test_anthropic_ingress_success_carries_request_id_header, test:test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once, test:test_synth_anthropic_request_id_is_well_formed"
+   "verdict_detail": "test:same_dialect_anthropic_forwards_every_client_header, test:test_egress_accept_matches_native_sdk, test:test_egress_ua_versions_are_pinned_and_present, test:crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_ingress_stream_content_type_by_protocol, test:test_bedrock_ingress_success_carries_amzn_request_id, test:test_forward_once_bedrock_error_relays_amzn_headers, test:test_anthropic_ingress_success_carries_request_id_header, test:test_anthropic_same_proto_error_relays_upstream_request_id_verbatim_once, test:test_synth_anthropic_request_id_is_well_formed"
   },
   {
    "id": "PB-67",
@@ -3164,7 +3164,7 @@
    "checks": [
     {
      "kind": "test",
-     "ref": "test_cross_protocol_error_kind_mapping",
+     "ref": "crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cross_protocol_error_kind_mapping",
      "proves": "the status to kind table as wire literals",
      "source": "curated",
      "status": "mapped"
@@ -3220,7 +3220,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:test_cross_protocol_error_kind_mapping, test:test_shape_cross_protocol_error_auth_kinds, test:test_ingress_error_bedrock_amzn_headers, test:test_vendor_auth_failure_message_is_plausible_per_proto, test:test_bedrock_ingress_wrong_token_is_403_native_envelope, test:error_kind_to_bedrock_type_covers_ingress_emitted_kinds, test:test_openai_classify, test:write_error_kind_vocabulary_mapping"
+   "verdict_detail": "test:crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cross_protocol_error_kind_mapping, test:test_shape_cross_protocol_error_auth_kinds, test:test_ingress_error_bedrock_amzn_headers, test:test_vendor_auth_failure_message_is_plausible_per_proto, test:test_bedrock_ingress_wrong_token_is_403_native_envelope, test:error_kind_to_bedrock_type_covers_ingress_emitted_kinds, test:test_openai_classify, test:write_error_kind_vocabulary_mapping"
   },
   {
    "id": "PB-68",
