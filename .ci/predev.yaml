@@ -170,8 +170,10 @@ checks:
       export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
       cargo xtask gate --all --format=tsv
     # The base-relative rules read history: only a backend with the repo's history runs this check.
-    requires: [git-history]
+    requires: [cc, git-history]
   oracle:
+    # cargo links with the system C linker: only a backend with a C compiler may run this check.
+    requires: [cc]
     # busbar's own judge, obtained by bin/oracle itself (OWNER 2026-10-13: no hand-installed tools;
     # #911): on Linux it fetches busbar-release's published busbar-oracle for the BASE pin's
     # release_ref ($MODERNCI_TO_SHA's testing/shadow-oracle/oracle-rust.pin, or this tree's when dev
@@ -239,7 +241,7 @@ checks:
     needs: [oracle]
     # The self-hosted OIDF suite runs in the backend's docker; ModernCI places this check only on a
     # backend probed to have all of these, and says which one is missing otherwise.
-    requires: [docker, docker-compose, python3-venv, curl, git]
+    requires: [cc, docker, docker-compose, python3-venv, curl, git]
   verify-done:
     # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer). Its PARITY group
     # obtains the judge through bin/oracle as the oracle check does (BUSBAR_RELEASE_TOKEN).
@@ -261,7 +263,7 @@ checks:
       cargo xtask q128 audit
     needs: [gates]
     # The audit is judged against this commit's history: full history and tags.
-    requires: [git-history]
+    requires: [cc, git-history]
   test-gated:
     # The feature-gated suites the `test` check never builds (row 164): `test` runs default features
     # only. A, the busbar/kernel/core-admin gates at once (test-harness, llm-on-driver,
@@ -300,5 +302,5 @@ checks:
       timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
     # Absolute at this rung, as every check of this move (no `baseline`: dev holds no suites to be
     # measured against).
-    requires: [git-history]
+    requires: [cc, git-history]
     needs: [gates]
