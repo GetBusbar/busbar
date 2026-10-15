@@ -1582,6 +1582,110 @@ fn figures_era_hold(p: &Posting, reserved: u64) -> Vec<u8> {
     body.finish()
 }
 
+/// A HOLD THIS BUILD WRITES CARRIES COUNTS, NEVER A FIGURE (money-shape hardening, #71/#77): the
+/// book's one hold writer journals the counts-era body, and the only way to hold a figure at all is
+/// to decode a figures-era record — `FiguresEra` has no constructor outside the durability module.
+#[test]
+fn a_hold_the_book_writes_carries_counts_never_a_figure() {
+    let scratch = ScratchDir::new("hold-counts-only");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_a");
+    let mut durability = boot(&cfg, 5).expect("the directory is writable");
+    let token = token();
+    let at = settling(&key, &token);
+    durability
+        .open_hold(
+            &at,
+            &busbar_contract::caps::PrincipalId::new(key.bucket.as_str()),
+            &inputs(7),
+            ARRIVED_MS,
+        )
+        .expect("the journal takes the hold");
+    let records = durability
+        .journal
+        .replay()
+        .expect("reads")
+        .expect("verifies");
+    let holds: Vec<HoldOpened> = records.iter().filter_map(HoldOpened::from_record).collect();
+    assert_eq!(holds.len(), 1);
+    assert!(
+        matches!(holds[0].held, Held::Counts { .. }),
+        "the book wrote a hold that is not counts: {:?}",
+        holds[0].held
+    );
+    let body = holds[0].body();
+    let mut tag = BodyReader::new(&body);
+    assert_eq!(tag.text(), Some("hold.open.v2"));
+}
+
+/// A FIGURES-ERA HOLD DECODES READ-ONLY AND THE BOOK EQUALS ITS CHAIN: the old record's figure is
+/// read exactly, re-spelled to the very bytes it was read from, and the book rebuilt from the chain
+/// draws exactly that figure.
+#[test]
+fn a_figures_era_hold_decodes_read_only_and_the_book_equals_the_chain() {
+    let scratch = ScratchDir::new("figures-era-hold-read-only");
+    let cfg = DurabilityConfig {
+        data_dir: Some(scratch.path.clone()),
+    };
+    let key = totals_key("vk_a");
+    let old = posting();
+    {
+        let mut durability = boot(&cfg, 5).expect("the directory is writable");
+        let entries = [
+            Entry::new(RecordClass::Transaction, figures_era_hold(&old, 5_000))
+                .at(old.wall, old.mono),
+            Entry::new(RecordClass::Transaction, figures_era_body(&old)).at(old.wall, old.mono),
+        ];
+        durability
+            .journal
+            .append(&token(), StepName::Meter, &entries)
+            .expect("the journal takes the figures-era records");
+    }
+    let restarted = boot(&cfg, 5).expect("the journal reopens");
+    let records = restarted
+        .journal
+        .replay()
+        .expect("reads")
+        .expect("verifies");
+    let hold = records
+        .iter()
+        .find_map(HoldOpened::from_record)
+        .expect("the figures-era hold reads back");
+    let Held::FiguresEra(era) = hold.held else {
+        panic!("a figures-era record decoded as {:?}", hold.held);
+    };
+    assert_eq!(era.nanos(), 5_000, "the old figure reads exactly");
+    assert_eq!(hold.reserved(None), 5_000);
+    assert_eq!(
+        hold.body(),
+        figures_era_hold(&old, 5_000),
+        "a decoded figures-era hold re-spells exactly the bytes it was read from"
+    );
+    // The book equals its chain: what the chain's holds reserved is what the book drew, and what
+    // its postings settled is what the book settled.
+    let book = restarted.ledger.book().get(&key, 86_400);
+    let chain_reserved: u64 = records
+        .iter()
+        .filter_map(HoldOpened::from_record)
+        .filter(|h| h.key == key)
+        .map(|h| h.reserved(None))
+        .sum();
+    let chain_settled: i128 = records
+        .iter()
+        .filter_map(Posting::from_record)
+        .filter(|p| p.key == key)
+        .map(|p| p.settled)
+        .sum();
+    assert_eq!(book.drawn, i128::from(chain_reserved));
+    assert_eq!(book.settled, chain_settled);
+    assert_eq!(
+        book.open_holds, 0,
+        "the figures-era posting closed its hold"
+    );
+}
+
 /// MIGRATE ON READ: a chain written while postings carried money figures still loads, and rebuilds
 /// the book those records describe — no finding, no recovered hold, no counts invented.
 ///
