@@ -163,7 +163,7 @@ fn production_text(text: &str) -> &str {
 fn unbound_mints(tokens: &[(String, usize)]) -> Vec<usize> {
     let t = |i: usize| tokens.get(i).map_or("", |(s, _)| s.as_str());
     let mut lines = Vec::new();
-    for i in 3..tokens.len() {
+    for (i, (_, line)) in tokens.iter().enumerate().skip(3) {
         if t(i) != "mint" || t(i + 1) != "(" || t(i - 1) != ":" || t(i - 2) != ":" {
             continue;
         }
@@ -192,7 +192,7 @@ fn unbound_mints(tokens: &[(String, usize)]) -> Vec<usize> {
             head -= 3;
         }
         if matches!(t(head), "Pass" | "Grant") {
-            lines.push(tokens[i].1);
+            lines.push(*line);
         }
     }
     lines

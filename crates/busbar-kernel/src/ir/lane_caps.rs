@@ -19,13 +19,13 @@
 //! This file is config grammar: the config-schema gate tracks it, so the two `Deserialize` shapes
 //! below are frozen additive-only exactly as they were while the kernel declared them.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use busbar_contract::ir::egress_prep::{LaneCaps, MaxOutputKey};
 
 /// The spelling of a cross-protocol output-token cap a provider expects (see
 /// `ProviderDef::max_output_key`).
-#[derive(Debug, Deserialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum MaxOutputKeyCfg {
     /// `max_tokens` — the default.
@@ -36,7 +36,7 @@ pub enum MaxOutputKeyCfg {
 
 /// One per-model capability rule (see `ProviderDef::model_capabilities`). Every key but `models` is
 /// optional; an absent key leaves the value the provider level (or the default) set.
-#[derive(Debug, Deserialize, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct ModelCapabilities {
     /// Wire-model globs (`*` matches any run of characters), e.g. `claude-opus-4-7*`.
