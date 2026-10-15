@@ -1333,9 +1333,9 @@ pub struct TrustKey {
 /// them; a slot it does not know is not printed.
 pub mod cli_help {
     /// Opens a row (ASCII record separator).
-    pub const MARK: char = '\u{1e}';
+    pub const MARK: &str = "\u{1e}";
     /// Ends a row's slot name (ASCII unit separator).
-    pub const NAME_END: char = '\u{1f}';
+    pub const NAME_END: &str = "\u{1f}";
     /// The one-line description the help opens with (the first one stated is printed).
     pub const TAGLINE: &str = "tagline";
     /// A block of the help's `Flags:` rows; its first word is the flag the host accepts.
