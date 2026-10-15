@@ -1185,7 +1185,8 @@ max_sites = 0
 # The reviewed sites. An entry is `path::function` (one function), a file path (one file), or a
 # path ending in `/` (a directory). Every one of these was read before it was written down.
 #
-#   busbar-contract ids.rs `Registration::key` is THE reviewed leak-once intern: lane names,
+#   busbar-kernel vocabulary.rs `Registration::key` (moved out of busbar-contract ids.rs, #994) is
+#   THE reviewed leak-once intern: lane names,
 #   op-class names and a loaded plugin's key are leaked once at boot, the allocation is fixed and
 #   countable, and interning is idempotent — so "leaked once" is a property of the interner rather
 #   than a hope. It is named by function, so the rest of the file is still held to the rule.
@@ -1234,7 +1235,7 @@ max_sites = 0
 #   plane_host/scope.rs:355 (inside `reclaim_all`, line 343), plane/registry.rs:489,
 #   plane/handle_engine.rs:858 (inside `sweep`, line 820), router.rs:680. 60 + 5 = the 65.
 #
-#   The two remaining leaks are boot-time interners of the same shape as ids.rs.
+#   The two remaining leaks are boot-time interners of the same shape as vocabulary.rs.
 #
 #   scope.rs `reclaim_all` is the arena's per-entry reclaim boundary, named by function so the rest
 #   of the file is still held to the rule. Reclaiming runs code the arena does not own — a closer
@@ -1255,7 +1256,7 @@ max_sites = 0
 #   callback invocation, the slot guard is held outside it, and both a `None` verdict and a
 #   panicking one mean the same thing — this handle was not abandoned.
 known_sites = [
-  "crates/busbar-contract/src/ids.rs::key",
+  "crates/busbar-kernel/src/vocabulary.rs::key",
   # boot/reload-time route-literal interning, deduplicated, never a money hold
   "crates/busbar-contract/src/abi/transport/route.rs::intern",
   # was crates/busbar-core/src/plane_host/ (a whole directory) — the eight files of it that carry a
@@ -1288,7 +1289,7 @@ known_sites = [
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's diagnostic written as the host's own
   # line needs a tracing callsite and field names that are 'static by tracing's type; `site` makes
   # ONE per (code, level, field-name list) and interns it, so the allocation is bounded by the
-  # catalogue and made once — the leak-once intern shape of ids.rs `key` above.
+  # catalogue and made once — the leak-once intern shape of vocabulary.rs `key` above.
   "crates/busbar-kernel/src/diagnostics/emit.rs::site",
   # REVIEWED 2026-09-25 (item 141): a first-party plugin's DECLARED diagnostic joins the process
   # catalogue, whose entries are `&'static Diagnostic` with `&'static str` text by the catalogue's
@@ -1300,7 +1301,7 @@ known_sites = [
   # REVIEWED 2026-10-05 (disk.append, ARCHITECT ruling Q-C1-FILE): a host service's error text is
   # `'static` by the service's type (`DiskReport::error`), so the disk lane interns each distinct
   # operating-system failure text ONCE and answers `OS_REFUSED` past `MAX_WORDS` of them — the
-  # leak-once intern shape of ids.rs `key` above, its allocation bounded by the cap.
+  # leak-once intern shape of vocabulary.rs `key` above, its allocation bounded by the cap.
   "crates/busbar-kernel/src/host_disk.rs::os_words",
   # REVIEWED 2026-10-07 (`Vec::leak`/`String::leak`/`.leak()` joined the symbol list; every site
   # below was read then). Each is a boot- or load-time, fixed-size allocation of non-hold data
@@ -1322,7 +1323,7 @@ known_sites = [
   "crates/busbar-kernel/src/plane/door.rs::fold",
   "crates/busbar-kernel/src/plane/door.rs::declaration_of",
   #   A path pattern's segments, interned once per distinct pattern (the interner answers a pattern
-  #   it already holds), the leak-once intern shape of ids.rs `key` above.
+  #   it already holds), the leak-once intern shape of vocabulary.rs `key` above.
   "crates/busbar-contract/src/abi/transport/route.rs::intern_pattern",
 ]
 
