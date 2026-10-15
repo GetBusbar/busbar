@@ -168,10 +168,7 @@ pub fn client_fault(
 pub fn auth_failure(ingress: &str) -> Rendered {
     let d = decl(ingress);
     let (status, kind) = d.map_or((401, KIND_AUTHENTICATION), |d| {
-        (
-            d.auth_failure_status_and_kind.0.as_u16(),
-            d.auth_failure_status_and_kind.1,
-        )
+        d.auth_failure_status_and_kind
     });
     let message = d.map_or("authentication failed", |d| d.auth_failure_message);
     render(ingress, status, kind, message, 0)

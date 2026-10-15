@@ -967,6 +967,7 @@ mod lent_ops {
                 ..Budgets::default()
             },
             watchdog_period: Duration::from_millis(20),
+            ..DispatchConfig::default()
         });
         let row = LinkedRow::of(plug::busbar_plugin_door).expect("the test door states itself");
         let p = load_linked::<TestKind>(&row, bind(&d, "abandoned")).expect("it loads");

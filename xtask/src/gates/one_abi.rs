@@ -15,6 +15,16 @@
 //!   strikes; a row it adds is a raise and is reviewed as one.
 //!
 //! Rows are keyed `(rule, file, item)` — never a line number, which rots on every edit above it.
+//!
+//! ## A SANCTIONED site is not a row
+//!
+//! A ruling can mandate the one site a rule would otherwise refuse (the plugin-logging capture's
+//! per-thread slot, SPEC l.1297-1300, against `contract-stateless`). It is written in the ledger as
+//! a `[[sanctioned]]` table — `rule`, `file`, `item`, `cite` (the ruling, by doc line) and `drain`
+//! (what would drain it; for a mandated site, `none — mandated by …`) — and it is not a
+//! `[[finding]]`: it is no work-list row, so a gate whose last row drains has nothing left owed.
+//! It excuses exactly ONE finding of its key: a second site of the same key is NEW and red, and a
+//! sanctioned site the tree no longer carries is STALE like any row.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -90,7 +100,16 @@ struct Ledger {
     /// line). It only goes down: more findings than N are NEW, fewer is a count to lower in the
     /// same commit. A row without one holds any number, as before.
     counts: BTreeMap<Key, usize>,
+    /// SANCTIONED SITES: one finding each, mandated by the ruling `cite` names (module doc).
+    sanctioned: BTreeMap<Key, Sanction>,
     errors: Vec<String>,
+}
+
+/// A `[[sanctioned]]` table's ruling and its drain statement, kept for `--write`.
+#[derive(Debug, Clone)]
+struct Sanction {
+    cite: String,
+    drain: String,
 }
 
 fn load_ledger(cx: &Ctx, spec: &Spec) -> Ledger {
@@ -100,6 +119,7 @@ fn load_ledger(cx: &Ctx, spec: &Spec) -> Ledger {
             return Ledger {
                 rows: BTreeSet::new(),
                 counts: BTreeMap::new(),
+                sanctioned: BTreeMap::new(),
                 errors: vec![format!(
                     "{} is unreadable ({e}); every finding is therefore NEW",
                     spec.ledger
@@ -112,8 +132,42 @@ fn load_ledger(cx: &Ctx, spec: &Spec) -> Ledger {
     let mut led = Ledger {
         rows: BTreeSet::new(),
         counts: BTreeMap::new(),
+        sanctioned: BTreeMap::new(),
         errors: Vec::new(),
     };
+    for (n, t) in doc.array_table("sanctioned").iter().enumerate() {
+        let get = |k: &str| t.get_one(k).unwrap_or("").trim().to_string();
+        let (rule, file, item, cite, drain) = (
+            get("rule"),
+            get("file"),
+            get("item"),
+            get("cite"),
+            get("drain"),
+        );
+        if file.is_empty()
+            || item.is_empty()
+            || cite.is_empty()
+            || drain.is_empty()
+            || !known.contains(rule.as_str())
+        {
+            led.errors.push(format!(
+                "[[sanctioned]] #{}: needs a rule this gate owes, a file, an item, the ruling it \
+                 cites and its drain (got rule `{rule}`, file `{file}`, item `{item}`)",
+                n + 1
+            ));
+            continue;
+        }
+        if led
+            .sanctioned
+            .insert((rule, file, item), Sanction { cite, drain })
+            .is_some()
+        {
+            led.errors.push(format!(
+                "[[sanctioned]] #{}: a duplicate — one sanctioned site per (rule, file, item)",
+                n + 1
+            ));
+        }
+    }
     for (n, t) in doc.array_table("finding").iter().enumerate() {
         let rule = t.get_one("rule").unwrap_or("").to_string();
         let file = t.get_one("file").unwrap_or("").to_string();
@@ -147,12 +201,24 @@ fn load_ledger(cx: &Ctx, spec: &Spec) -> Ledger {
     led
 }
 
-/// The ledger text `--write` commits.
-fn render_ledger(spec: &Spec, findings: &[Finding]) -> String {
+/// The ledger text `--write` commits: the sanctioned sites as the ledger states them, then one
+/// row per remaining finding.
+fn render_ledger(
+    spec: &Spec,
+    sanctioned: &BTreeMap<Key, Sanction>,
+    findings: &[Finding],
+) -> String {
     let keys: BTreeSet<Key> = findings.iter().map(Finding::key).collect();
     let mut s = String::from(spec.header);
     if !s.ends_with('\n') {
         s.push('\n');
+    }
+    for ((rule, file, item), why) in sanctioned {
+        s.push_str(&format!(
+            "\n[[sanctioned]]\nrule = \"{rule}\"\nfile = \"{file}\"\nitem = \"{item}\"\ncite = \"{}\"\ndrain = \"{}\"\n",
+            sanitize(&why.cite),
+            sanitize(&why.drain)
+        ));
     }
     for (rule, file, item) in keys {
         s.push_str(&format!(
@@ -162,11 +228,31 @@ fn render_ledger(spec: &Spec, findings: &[Finding]) -> String {
     s
 }
 
+/// `findings` less the one finding each sanctioned site excuses, and the sanctioned sites the
+/// tree no longer carries.
+fn excuse(
+    sanctioned: &BTreeMap<Key, Sanction>,
+    findings: Vec<Finding>,
+) -> (Vec<Finding>, Vec<String>) {
+    let mut open: BTreeSet<&Key> = sanctioned.keys().collect();
+    let kept = findings
+        .into_iter()
+        .filter(|f| !open.remove(&f.key()))
+        .collect();
+    let stale = open
+        .into_iter()
+        .map(|(r, f, i)| format!("{r} {f} {i}"))
+        .collect();
+    (kept, stale)
+}
+
 /// THE VERDICT: every finding against the drain-only ledger.
 pub fn verdict(cx: &Ctx, spec: &Spec, mut findings: Vec<Finding>, errors: Vec<String>) -> Verdict {
     findings.sort();
+    let sanctioned = load_ledger(cx, spec).sanctioned;
+    let (findings, stale_sanctioned) = excuse(&sanctioned, findings);
     if cx.env().write && errors.is_empty() {
-        if let Err(e) = cx.write_file(spec.ledger, render_ledger(spec, &findings)) {
+        if let Err(e) = cx.write_file(spec.ledger, render_ledger(spec, &sanctioned, &findings)) {
             return Verdict::of(vec![Row::fail(
                 spec.ledger_row(),
                 "the ledger could not be written",
@@ -229,6 +315,14 @@ pub fn verdict(cx: &Ctx, spec: &Spec, mut findings: Vec<Finding>, errors: Vec<St
         .collect();
     let mut problems = led.errors;
     problems.extend(errors);
+    if !stale_sanctioned.is_empty() {
+        problems.push(format!(
+            "{} STALE sanctioned site(s) — gone from the tree and still sanctioned in {}: {}",
+            stale_sanctioned.len(),
+            spec.ledger,
+            stale_sanctioned.join(" | ")
+        ));
+    }
     let high: Vec<String> = led
         .counts
         .iter()

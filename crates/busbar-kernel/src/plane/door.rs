@@ -150,6 +150,21 @@ pub fn is_door(decl: &PlaneDecl) -> bool {
         .any(|f| std::ptr::eq(&f.decl, decl))
 }
 
+/// THE PROVIDER-KEY DESCRIPTOR a folded door states (`PlaneRegistration::provider_keys`, row 155
+/// B1c): the `providers:` entry keys its plane owns, per form, in their frozen order and the neutral
+/// shape vocabulary; the first folded door that states one, `None` when none does. The kernel names
+/// none of those keys: this is their only source.
+///
+/// DORMANT: an unwired seam, read by nothing yet (wiring owner B1c-2, whose provider-entry parse
+/// reads its keys from here).
+#[must_use]
+pub fn provider_keys() -> Option<&'static busbar_contract::provider_keys::ProviderKeys> {
+    DOORS
+        .iter()
+        .filter_map(OnceLock::get)
+        .find_map(|f| f.reg.provider_keys.as_ref())
+}
+
 /// The folded door at `index`.
 fn door(index: usize) -> Option<&'static Folded> {
     DOORS.get(index).and_then(OnceLock::get)

@@ -1,0 +1,6 @@
+UPSTREAM ISSUE DRAFTS for defects in the pinned CONTROL peers (not busbar). Each is recorded where
+its control baseline reads it (testing/mcp-conformance/control/control-baseline.json `expectedFailures`,
+testing/a2a-harness/baselines/known-deviations-a2a-*.json). Filing on the third-party repositories is
+held for the owner's OK (2026-10-14). When an issue is filed, its URL replaces the `upstream` /
+`upstreamReference` text in the record and the draft below is removed.
+

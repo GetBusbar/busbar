@@ -49,11 +49,12 @@ use busbar_contract::abi::host::conn::connector::{
 };
 use busbar_contract::abi::host::service::ClockReading;
 use busbar_contract::abi::mechanism::call::{
-    AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT,
+    AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT, BLOB_OCTETS,
 };
 use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
+use busbar_contract::abi::mechanism::extensions;
 use busbar_contract::abi::mechanism::lifecycle::{
     GenIn, RefreshIn, ReleaseIn, TickIn, TickOut, ValidateIn,
 };
@@ -79,6 +80,7 @@ use busbar_contract::abi::sdk::{
 use busbar_contract::abi::transport::{FAULT_CALLER, FAULT_HARD, FAULT_NONE, FAULT_TRANSIENT};
 use busbar_contract::ids::{MeterClassDecl, OpClassId};
 use busbar_contract::plane::PlaneMeta;
+use busbar_contract::provider_keys::EXT_PROVIDER_KEYS;
 use busbar_contract::upstream::Disposition;
 use serde_json::Value;
 
@@ -88,6 +90,7 @@ use crate::exchange::attempt::{self, stream_intent, FarRequest};
 use crate::exchange::reply::{At, Fault, Piece, Reply, ReplyCtx, Units, Verdict};
 use crate::exchange::shaping::{sections, Shaping};
 use crate::exchange::{handler_of, probe, project, refuse};
+use crate::meta::PROVIDER_KEYS;
 use crate::LlmPlane;
 
 // ── the Statement ────────────────────────────────────────────────────────────────────────────────
@@ -394,9 +397,21 @@ pub const TAIL: &PlaneTail = &PlaneTail {
     stream_ceiling_secs: 0,
 };
 
-/// THE STATEMENT: the plane's key and version, its sections, its needs and its tail.
+/// The Statement's extensions: the plane's provider keys ([`crate::meta::PROVIDER_KEYS`]) under the
+/// contract's one key for them, built at compile time.
+const EXTENSIONS: &[u8] = &extensions::entry::<
+    { extensions::entry_len(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes()) },
+>(EXT_PROVIDER_KEYS, PROVIDER_KEYS.as_bytes());
+
+/// THE STATEMENT: the plane's key and version, its sections, its needs, its tail and its extensions.
 pub const STATEMENT: Statement = Statement {
     kind_tail: ptr::from_ref(TAIL).cast::<KindTailHead>(),
+    extensions: Blob {
+        ptr: EXTENSIONS.as_ptr(),
+        len: EXTENSIONS.len(),
+        fmt: BLOB_OCTETS,
+        flags: 0,
+    },
     sections: SECTIONS.as_ptr(),
     sections_len: SECTIONS.len(),
     needs: NEEDS.as_ptr(),

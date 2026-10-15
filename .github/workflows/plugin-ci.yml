@@ -323,6 +323,9 @@ jobs:
       - name: mysql strict sql_mode (a dynamic variable; only root may set it)
         if: inputs.service == 'mysql'
         run: mysql -h 127.0.0.1 -uroot -pbusbar -e "SET GLOBAL sql_mode='STRICT_ALL_TABLES,NO_ENGINE_SUBSTITUTION';"
+      - name: "#33 store migration: the 1.5.5 fixture its migrate test reads, written by the pinned published v1.5.5 and the 1.5-line plugin, is present and intact (BUSBAR-1.6.0.md l.1096-1103, M5: a missing fixture is red)"
+        if: inputs.plugin_kind == 'store' && inputs.plugin_alias != 'memory' && steps.crates.outputs.present == 'true'
+        run: bash busbar/scripts/store-migration-fixture.sh check "plugin/store-${{ inputs.plugin_alias }}/tests/fixtures/1.5.5"
       - name: test (the plugin's whole suite, live backend included)
         if: steps.crates.outputs.present == 'true'
         working-directory: plugin

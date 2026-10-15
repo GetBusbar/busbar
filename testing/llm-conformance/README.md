@@ -107,13 +107,14 @@ The kinds of gap that arise:
   lossily; when `raw/<cell>/body` is absent the row SKIPs rather than judge mangled bytes.
 * **The `#request` row of `malformed` cells** is not owed: that request is non-JSON by design.
 
-Known spec-vs-docs discrepancy, reported as FAIL on purpose: Anthropic's published
-`MessageStreamEvent` union has no `ping` member although the docs say `ping` events may occur.
-1.5.5 emits `event: ping` in cross-protocol streams and the row fails the published union.
-Decided 2026-09-04: `ping` stays — it is a documented event that real Anthropic streams carry, and
-a client that cannot take it is not an Anthropic client. The row is a NAMED GAP of the published
-spec (recorded here, not special-cased in the validator); it is re-judged whenever the pinned
-spec is re-pinned, and disappears the day the union gains the member.
+**Anthropic's stream is two documents.** The published `MessageStreamEvent` union has six members;
+Anthropic's streaming guide (https://docs.anthropic.com/en/docs/build-with-claude/streaming, "Event
+types") documents two more: any number of `ping` events, and an in-stream `error` event carrying the
+ErrorResponse body. 1.5.5 emits `event: ping` after `message_start` on every cross-protocol stream.
+The judge models both documents (`validate.py` `ANTHROPIC_DOCUMENTED_EVENTS`): a `ping` must be
+exactly `{"type":"ping"}`, an `error` must match the spec's own `ErrorResponse`, each must be sent
+under its own SSE event name, and every other `type` still faces the published union. These rows
+are judged, not forgiven: there is no named gap for them (`selftest.sh` cases (v)-(v5)).
 
 ## Running it
 

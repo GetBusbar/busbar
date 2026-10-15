@@ -479,6 +479,7 @@ fn with_listing_door(
         trust_keys: Vec::new(),
         caller_credential_refusal: None,
         fallback: false,
+        provider_keys: None,
         validate: Arc::new(|_: &[u8]| Ok(())),
         facing: Arc::new(
             move |_: &[u8],
@@ -612,6 +613,7 @@ fn opening_door() -> &'static busbar_kernel::plane::registry::PlaneDecl {
         trust_keys: Vec::new(),
         caller_credential_refusal: None,
         fallback: false,
+        provider_keys: None,
         validate: Arc::new(|_: &[u8]| Ok(())),
         facing: Arc::new(
             |_: &[u8],

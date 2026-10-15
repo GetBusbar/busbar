@@ -67,6 +67,11 @@
 #                            column — and EXCLUDED from what this run owes, so a known, dated,
 #                            suite-or-waiver limitation cannot turn the gate red, and a real regression
 #                            cannot hide behind one either. A SKIP row is NEVER counted as a PASS.
+#                            A SKIPPED requirement the waiver file lists under `not_applicable` (the
+#                            spec does not bind busbar there: owner rule 22, ARCHITECT 2026-10-14) is
+#                            recorded as N/A, never SKIP, with the entry's spec citation quoted in the
+#                            detail column; an entry without a citation is refused (fold_a2a_tck).
+#                            N/A is unowed like SKIP and, like SKIP, is NEVER counted as a PASS.
 #   voice.rig|<leg>          one row per voice leg (not per slice): PASS only if every slice of that
 #                            leg reported PASS; a NO RESULT slice, or any non-PASS verdict, is FAIL.
 #
@@ -144,6 +149,87 @@ for row_id, was in sorted(baseline.items()):
     reason = "did not run this time" if now is None else f"now {now}"
     print(f"{row_id}\tFAIL\tPASS at the last sign-off, {reason}\tsee rigs-baseline.json; if this is a "
           f"deliberate, understood change, rerun with --rebaseline")
+PY
+}
+
+# ── A2A TCK fold ─────────────────────────────────────────────────────────────────────────────────
+# fold_a2a_tck <tck-report> <subject-waivers>  -> META / ROW lines on stdout; exits non-zero (and
+# the caller records `a2a.tck|_fold_failed`, owed, RED) on a ledger it refuses. Defined HERE, above
+# --selftest, so the self-test drives this exact fold rather than a copy of it.
+#
+# NOT APPLICABLE IS ITS OWN STATUS, NEVER A SKIP (owner rule 22, 2026-10-14: named conformance gaps
+# are zero; ARCHITECT ruling 2026-10-14). testing/a2a-tck/subject-waivers.json's `not_applicable`
+# list names a MUST the suite exercises only against an agent-card state busbar never serves (a
+# capability the spec makes optional switched OFF, or an optional extension declared required).
+# scripts/a2a-subject/boot.sh's assert_tck_number evaluates each entry's premise on every run; this
+# fold records such a requirement as `N/A`, quoting the entry's citation, so the ledger and the
+# baseline say "the spec does not bind busbar here" rather than "busbar was not verified here". The
+# same rule boot.sh enforces is enforced here, independently: an entry with no `citation` (missing,
+# not a string, or blank) is REFUSED, and so is an id named in more than one list -- a ledger that
+# cannot cite the spec does not get to turn a SKIP into anything. Only a requirement the suite
+# reported SKIPPED is N/A: one that FAILS, PASSES or was NOT TESTED keeps its ordinary row, so an
+# entry can never launder a FAIL.
+fold_a2a_tck() {
+  python3 - "$1" "$2" <<'PY'
+import json, sys
+
+report_path, waivers_path = sys.argv[1], sys.argv[2]
+report = json.load(open(report_path, encoding="utf-8"))
+per = report.get("per_requirement") or {}
+must = {k: v for k, v in per.items() if isinstance(v, dict) and v.get("level") == "MUST"}
+pin = json.load(open(waivers_path, encoding="utf-8")) or {}
+
+
+def ids(key):
+    # Each list is of {id, why, premise[, citation]} entries (the premises are evaluated by the
+    # leg's own assert_tck_number); a bare id string is accepted for `waived` and `skipped`.
+    out = {}
+    for e in pin.get(key) or []:
+        rid = e.get("id") if isinstance(e, dict) else e
+        if not isinstance(rid, str) or not rid:
+            sys.exit(f"{waivers_path}: a `{key}` entry names no id: {e!r}")
+        out[rid] = e if isinstance(e, dict) else {}
+    return out
+
+
+waived = ids("waived")
+justified = ids("skipped")
+not_applicable = ids("not_applicable")
+for rid, e in sorted(not_applicable.items()):
+    cite = e.get("citation")
+    if not isinstance(cite, str) or not cite.strip():
+        sys.exit(f"{waivers_path}: `not_applicable` entry {rid} names no spec `citation`; a "
+                 "requirement is not applicable only where the spec says the feature is optional, "
+                 "and an uncited entry is refused rather than recorded")
+both = sorted((set(waived) & set(justified)) | (set(waived) & set(not_applicable))
+              | (set(justified) & set(not_applicable)))
+if both:
+    sys.exit(f"{waivers_path}: {', '.join(both)} named in more than one list")
+
+print(f"META\t{len(must)}\t{len(waived)}\t{len(not_applicable)}")
+for k in sorted(must):
+    status_raw = must[k].get("status")
+    if status_raw == "PASS":
+        status, detail = "PASS", "PASS"
+    elif status_raw == "SKIPPED" and k in not_applicable:
+        status = "N/A"
+        detail = (f"NOT APPLICABLE per {waivers_path} `not_applicable` (premise evaluated by "
+                  f"scripts/a2a-subject/boot.sh): {not_applicable[k]['citation'].strip()}")
+    elif status_raw in ("NOT TESTED", "SKIPPED"):
+        status = "SKIP"
+        detail = f"{status_raw}: a suite limitation (confirmed identical against the pinned a2a-go " \
+                 "control in testing/a2a-tck/baselines/), not evidence about busbar"
+    elif status_raw == "FAIL":
+        if k in waived:
+            status = "SKIP"
+            detail = f"FAIL, but WAIVED in {waivers_path} (see WAIVERS.md) -- never counted as PASS"
+        else:
+            status = "FAIL"
+            detail = "FAIL, outside the pinned waiver set"
+    else:
+        status = "FAIL"
+        detail = f"unrecognised requirement status: {status_raw!r}"
+    print(f"ROW\t{k}\t{status}\t{detail}")
 PY
 }
 
@@ -344,6 +430,59 @@ if [ "$SELFTEST" = 1 ]; then
       say "  ok: --rebaseline on a GREEN run still writes the baseline"
     else
       say "  MISS: --rebaseline on a green run did not write the baseline"
+      failures=$((failures+1))
+    fi
+
+    # NOT APPLICABLE (owner rule 22; ARCHITECT 2026-10-14). Drives the REAL fold_a2a_tck above on a
+    # fake TCK report: one MUST the suite SKIPPED, one it FAILED, both listed `not_applicable`.
+    local tck_report="$tmp/tck-report.json" tck_pin="$tmp/tck-pin.json" tck_rows tck_rc
+    printf '%s\n' '{"per_requirement": {"CAP-SKIP-001": {"level": "MUST", "status": "SKIPPED"},' \
+      '"CAP-FAIL-001": {"level": "MUST", "status": "FAIL"}, "OTHER-001": {"level": "MUST", "status": "SKIPPED"}}}' \
+      >"$tck_report"
+    # GREEN 5: a SKIPPED MUST with a cited `not_applicable` entry is an N/A row carrying the citation,
+    # never a SKIP row; a SKIPPED MUST the list does not name is still a SKIP.
+    printf '%s\n' '{"waived": [], "skipped": [], "not_applicable": [' \
+      '{"id": "CAP-SKIP-001", "why": "w", "citation": "A2A v1.0.1 3.3.4", "premise": []},' \
+      '{"id": "CAP-FAIL-001", "why": "w", "citation": "A2A v1.0.1 3.3.4", "premise": []}]}' >"$tck_pin"
+    tck_rows="$(fold_a2a_tck "$tck_report" "$tck_pin" 2>/dev/null)"; tck_rc=$?
+    if [ "$tck_rc" -eq 0 ] \
+        && printf '%s\n' "$tck_rows" | awk -F'\t' '$1=="ROW" && $2=="CAP-SKIP-001" && $3=="N/A" && $4 ~ /A2A v1\.0\.1 3\.3\.4/ {f=1} END{exit !f}' \
+        && ! printf '%s\n' "$tck_rows" | awk -F'\t' '$2=="CAP-SKIP-001" && $3=="SKIP"{f=1} END{exit !f}' \
+        && printf '%s\n' "$tck_rows" | awk -F'\t' '$1=="ROW" && $2=="OTHER-001" && $3=="SKIP"{f=1} END{exit !f}'; then
+      say "  ok: a cited not-applicable MUST is an N/A row quoting its citation, never a SKIP"
+    else
+      say "  MISS: a cited not-applicable MUST was not recorded N/A with its citation (rc ${tck_rc})"
+      failures=$((failures+1))
+    fi
+    # RED 5: an entry cannot launder a FAIL: a not-applicable MUST the suite FAILED stays FAIL.
+    if printf '%s\n' "$tck_rows" | awk -F'\t' '$1=="ROW" && $2=="CAP-FAIL-001" && $3=="FAIL"{f=1} END{exit !f}'; then
+      say "  ok: a not-applicable MUST that FAILED is still a FAIL row"
+    else
+      say "  MISS: a not-applicable entry turned a FAIL into something else"
+      failures=$((failures+1))
+    fi
+    # RED 6-8: an entry with no citation, a non-string citation, or a blank one is REFUSED (the fold
+    # exits non-zero and writes no row, so the caller records an owed `_fold_failed` FAIL).
+    local bad_cite
+    for bad_cite in '' ', "citation": 7' ', "citation": "   "'; do
+      printf '{"waived": [], "skipped": [], "not_applicable": [{"id": "CAP-SKIP-001", "why": "w"%s, "premise": []}]}\n' \
+        "$bad_cite" >"$tck_pin"
+      tck_rows="$(fold_a2a_tck "$tck_report" "$tck_pin" 2>"$tmp/tck.err")"; tck_rc=$?
+      if [ "$tck_rc" -ne 0 ] && [ -z "$tck_rows" ] && grep -q 'names no spec `citation`' "$tmp/tck.err"; then
+        say "  ok: a not-applicable entry with citation [${bad_cite:-absent}] is refused"
+      else
+        say "  MISS: a not-applicable entry with citation [${bad_cite:-absent}] was accepted (rc ${tck_rc})"
+        failures=$((failures+1))
+      fi
+    done
+    # RED 9: an id in two lists is refused (same rule as scripts/a2a-subject/boot.sh).
+    printf '%s\n' '{"waived": [], "skipped": [{"id": "CAP-SKIP-001", "why": "w", "premise": []}],' \
+      '"not_applicable": [{"id": "CAP-SKIP-001", "why": "w", "citation": "c", "premise": []}]}' >"$tck_pin"
+    tck_rows="$(fold_a2a_tck "$tck_report" "$tck_pin" 2>"$tmp/tck.err")"; tck_rc=$?
+    if [ "$tck_rc" -ne 0 ] && [ -z "$tck_rows" ] && grep -q 'more than one list' "$tmp/tck.err"; then
+      say "  ok: an id named both skipped and not-applicable is refused"
+    else
+      say "  MISS: an id in two lists was accepted (rc ${tck_rc})"
       failures=$((failures+1))
     fi
 
@@ -593,46 +732,7 @@ run_a2a_tck() {
     return
   fi
   local rows fold_rc
-  rows="$(python3 - "$report" "$waivers" 2>"${WORK}/a2a-tck-fold.err" <<'PY'
-import json, sys
-
-report_path, waivers_path = sys.argv[1], sys.argv[2]
-report = json.load(open(report_path, encoding="utf-8"))
-per = report.get("per_requirement") or {}
-must = {k: v for k, v in per.items() if isinstance(v, dict) and v.get("level") == "MUST"}
-# `waived` is a list of {id, why, premise} entries (the premises are evaluated by the leg's own
-# assert_tck_number); only the ids matter here. A bare id string is accepted too.
-waived = {(w.get("id") if isinstance(w, dict) else w)
-          for w in ((json.load(open(waivers_path, encoding="utf-8")) or {}).get("waived") or [])}
-
-n_pass = n_fail = n_skip = 0
-print(f"META\t{len(must)}\t{len(waived)}")
-for k in sorted(must):
-    status_raw = must[k].get("status")
-    if status_raw == "PASS":
-        status, detail = "PASS", "PASS"
-        n_pass += 1
-    elif status_raw in ("NOT TESTED", "SKIPPED"):
-        status = "SKIP"
-        detail = f"{status_raw}: a suite limitation (confirmed identical against the pinned a2a-go " \
-                 "control in testing/a2a-tck/baselines/), not evidence about busbar"
-        n_skip += 1
-    elif status_raw == "FAIL":
-        if k in waived:
-            status = "SKIP"
-            detail = f"FAIL, but WAIVED in {waivers_path} (see WAIVERS.md) -- never counted as PASS"
-            n_skip += 1
-        else:
-            status = "FAIL"
-            detail = "FAIL, outside the pinned waiver set"
-            n_fail += 1
-    else:
-        status = "FAIL"
-        detail = f"unrecognised requirement status: {status_raw!r}"
-        n_fail += 1
-    print(f"ROW\t{k}\t{status}\t{detail}")
-PY
-)"; fold_rc=$?
+  rows="$(fold_a2a_tck "$report" "$waivers" 2>"${WORK}/a2a-tck-fold.err")"; fold_rc=$?
   # A FOLDER THAT THREW IS NOT AN EMPTY LEG. Without this check the exception is invisible: `rows`
   # is empty, the while-loop below reads nothing, and no row and no owed id is produced for the
   # A2A TCK leg -- so the verdict cannot see the missing leg at all and the rig reads
@@ -645,10 +745,13 @@ PY
   fi
   while IFS=$'\t' read -r kind a b c; do
     case "$kind" in
-      META) say "   MUST requirements: $a   pinned waivers: $b" ;;
+      META) say "   MUST requirements: $a   pinned waivers: $b   not applicable (cited): $c" ;;
       ROW)
         record "a2a.tck|$a" "$b" "A2A TCK MUST requirement: $a" "$c" >/dev/null
-        [ "$b" = SKIP ] || owed_ids="${owed_ids} a2a.tck|$a"
+        # SKIP and N/A are both unowed (neither is a verdict about busbar, and verdict.sh reads any
+        # status it does not know as FAIL), but they are different rows: an N/A carries the spec
+        # citation that makes the requirement not bind busbar, a SKIP is a requirement unverified.
+        case "$b" in SKIP|N/A) ;; *) owed_ids="${owed_ids} a2a.tck|$a" ;; esac
         ;;
     esac
   done <<<"$rows"

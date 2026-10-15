@@ -28,6 +28,24 @@ fn the_mint_body_anchors_the_lifetime_and_carries_the_locked_session() {
     assert_eq!(body["session"]["instructions"], "be brief");
 }
 
+/// X-2204: a mint answer that states no expiry for its `ek_` secret is refused, never carried to
+/// the browser as `expires_at_unix: 0`.
+#[test]
+fn a_minted_answer_with_no_stated_expiry_is_refused() {
+    for body in [
+        &br#"{"value":"ek_live"}"#[..],
+        &br#"{"value":"ek_live","expires_at":null}"#[..],
+        &br#"{"value":"ek_live","expires_at":0}"#[..],
+    ] {
+        let refused = read_minted(body).expect_err("no stated expiry");
+        assert!(refused.contains("no expiry"), "{refused}");
+        assert!(
+            !refused.contains("ek_live"),
+            "the secret is not echoed: {refused}"
+        );
+    }
+}
+
 #[test]
 fn a_minted_answer_reads_the_ek_secret_and_its_expiry() {
     let m = read_minted(br#"{"value":"ek_live","expires_at":1700000600}"#).expect("reads");

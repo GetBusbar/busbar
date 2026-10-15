@@ -43,7 +43,7 @@ fn the_provider_dial_carries_the_planned_credential_and_never_a_caller_token() {
     let (name, value) = &headers[0];
     assert_eq!(name.as_str(), "authorization");
     assert_eq!(
-        value.to_str().unwrap(),
+        std::str::from_utf8(value).unwrap(),
         format!("Bearer {PROVIDER_CREDENTIAL}"),
         "the dial carries the PLANNED provider credential"
     );
@@ -53,7 +53,7 @@ fn the_provider_dial_carries_the_planned_credential_and_never_a_caller_token() {
     // else, so a caller token could reach the wire only by being the leased credential, which the
     // egress gate is what forbids).
     assert!(
-        !value.to_str().unwrap().contains(CALLER_TOKEN),
+        !std::str::from_utf8(value).unwrap().contains(CALLER_TOKEN),
         "the caller's inbound governance token is never the value planned onto the provider dial"
     );
 

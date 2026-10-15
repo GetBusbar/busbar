@@ -91,6 +91,15 @@ Until then this is a property of the suite, not of busbar, and is recorded rathe
 
 ## The 5 SKIPPED MUSTs — recorded 2026-08-15, not waivers, self-excluding by busbar's own served capabilities
 
+**NOT APPLICABLE (2026-10-14, ARCHITECT ruling under owner rule 22: named conformance gaps are zero).**
+The five now sit in `subject-waivers.json`'s `not_applicable` list, not `skipped`. Each entry carries
+the spec and pinned-TCK `citation` showing the test binds only an agent-card state busbar never
+serves. busbar always serves push, streaming and the extended card
+(`crates/busbar-plane-a2a/src/served_card.rs:204-207` on the a2a plane, `crates/busbar-a2a/src/a2a/serve.rs:721-723`
+on predev), it always configures its extended card, and it implements no A2A extension. The premise
+of each entry is still evaluated on every run. The day busbar serves the state a test needs, that
+entry turns RED and must be retired.
+
 **These 5 are not a busbar waiver either, and they are a different shape of impossibility than the 21
 above.** The 21 above have no test at all. These 5 have a real, executing test — each one appears in
 the suite's own `SKIPPED` column, never in `FAILED` — but the test's own precondition is a fact about

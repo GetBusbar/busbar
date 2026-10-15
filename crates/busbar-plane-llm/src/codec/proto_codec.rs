@@ -1190,15 +1190,19 @@ impl DialectCodec for DialectRef {
     fn inject_response_metrics(&self, value: &mut serde_json::Value, elapsed_ms: Option<u64>) {
         with_writer(self.0, |w| w.inject_response_metrics(value, elapsed_ms));
     }
-    fn attach_error_response_headers(
+    fn error_response_fields(
         &self,
-        headers: &mut busbar_contract::http::HeaderMap,
         kind: &str,
         envelope: &serde_json::Value,
-    ) {
+    ) -> Vec<(String, Vec<u8>)> {
+        let mut headers = busbar_contract::http::HeaderMap::new();
         with_writer(self.0, |w| {
-            w.attach_error_response_headers(headers, kind, envelope)
+            w.attach_error_response_headers(&mut headers, kind, envelope)
         });
+        headers
+            .iter()
+            .map(|(n, v)| (n.as_str().to_string(), v.as_bytes().to_vec()))
+            .collect()
     }
     fn extract_error(
         &self,

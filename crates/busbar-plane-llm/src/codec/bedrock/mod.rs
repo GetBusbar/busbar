@@ -143,13 +143,12 @@ pub fn protocol() -> Protocol {
 /// unambiguous regardless of path), then the `/converse` path (rung 12) and the `/model/{id}/invoke`
 /// path (rung 13). Lower strength binds tighter — the shared ladder positions.
 fn claims(
-    h: &busbar_contract::http::HeaderMap,
+    h: busbar_contract::protocol::HeadFields<'_>,
     path: &str,
 ) -> Option<busbar_contract::protocol::ClaimStrength> {
-    use busbar_contract::protocol::ClaimStrength;
-    if h.get("authorization")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|a| a.starts_with("AWS4-HMAC-SHA256"))
+    use busbar_contract::protocol::{head_field, ClaimStrength};
+    if head_field(h, "authorization")
+        .is_some_and(|a| a.is_ascii() && a.starts_with(b"AWS4-HMAC-SHA256"))
     {
         return Some(ClaimStrength(1));
     }
@@ -231,7 +230,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: busbar_contract::http::StatusCode::BAD_REQUEST,
+    quota_exceeded_status: busbar_contract::http::StatusCode::BAD_REQUEST.as_u16(),
     ingress_is_eventstream: true,
     emits_sse_done_terminator: false,
     max_citations_per_delta: Some(1),
@@ -243,7 +242,7 @@ pub const DECL: ProtocolDecl = ProtocolDecl {
     egress_user_agent: "Boto3/1.35.0 md/Botocore#1.35.0",
     has_model_in_url: true,
     auth_failure_status_and_kind: (
-        busbar_contract::http::StatusCode::FORBIDDEN,
+        busbar_contract::http::StatusCode::FORBIDDEN.as_u16(),
         keys::AUTH_WORD,
     ),
     ingress_relays_amzn_headers: true,

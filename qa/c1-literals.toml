@@ -56,48 +56,13 @@ item = "github"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate.rs"
-item = "otlp"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate.rs"
-item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate.rs"
-item = "webhook"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/migrate_export.rs"
-item = "otlp"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/mod.rs"
 item = "github"
 
 [[finding]]
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config/mod.rs"
-item = "otlp"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/mod.rs"
-item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/mod.rs"
 item = "ranking"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/mod.rs"
-item = "webhook"
 
 [[finding]]
 rule = "c1-literals:literal"
@@ -153,11 +118,6 @@ item = "jsonrpc"
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/snapshot/mod.rs"
 item = "prometheus"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/observability.rs"
-item = "webhook"
 
 [[finding]]
 rule = "c1-literals:literal"

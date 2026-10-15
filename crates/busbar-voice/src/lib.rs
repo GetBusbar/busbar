@@ -270,8 +270,11 @@ pub(crate) fn voice_provider_bearer(
 fn voice_egress_auth_headers(
     key: &str,
     _ctx: &busbar_kernel::proto::SigningContext,
-) -> Vec<(axum::http::HeaderName, axum::http::HeaderValue)> {
+) -> Vec<(String, Vec<u8>)> {
     voice_provider_bearer(key)
+        .into_iter()
+        .map(|(n, v)| (n.as_str().to_string(), v.as_bytes().to_vec()))
+        .collect()
 }
 
 use busbar_contract::{
@@ -464,14 +467,14 @@ pub static DECLS: busbar_kernel::proto::ProtocolDecl = busbar_kernel::proto::Pro
     frame_after_message_start: None,
     reshapes_body_at_path_base: false,
     max_cache_control_breakpoints: None,
-    quota_exceeded_status: axum::http::StatusCode::TOO_MANY_REQUESTS,
+    quota_exceeded_status: axum::http::StatusCode::TOO_MANY_REQUESTS.as_u16(),
     ingress_is_eventstream: false,
     emits_sse_done_terminator: false,
     max_citations_per_delta: None,
     egress_user_agent: busbar_kernel::proxy::EGRESS_UA_DEFAULT,
     has_model_in_url: false,
     auth_failure_status_and_kind: (
-        axum::http::StatusCode::UNAUTHORIZED,
+        axum::http::StatusCode::UNAUTHORIZED.as_u16(),
         busbar_kernel::proto::ERR_TYPE_AUTHENTICATION,
     ),
     ingress_relays_amzn_headers: false,

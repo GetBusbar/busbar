@@ -302,6 +302,13 @@ pub trait AuthCalls: Send + Sync {
         Vec::new()
     }
 
+    /// The auth points `verify` is called at, as the tail states them
+    /// ([`AuthTail::inbound_points`](crate::abi::auth::AuthTail::inbound_points); THE DESIGN, "Auth
+    /// points and guest lists"). `{Head}` by default: where 1.5.5's chain verified.
+    fn inbound_points(&self) -> crate::abi::auth::AuthPoints {
+        crate::abi::auth::AuthPoints::HEAD
+    }
+
     /// The inbound carriers `verify` reads (field line names, lower-case), as the Statement's
     /// carrier word marks name them: where the plugin's credential sits. The host names no
     /// credential line itself (THE DESIGN, "Auth points and guest lists").

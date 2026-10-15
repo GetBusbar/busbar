@@ -59,6 +59,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
         ],
         caller_credential_refusal: Some("forwarding a caller credential is refused here"),
         fallback: false,
+        provider_keys: None,
         validate: Arc::new(move |bytes: &[u8]| {
             if bytes.is_empty() {
                 return Ok(());
@@ -136,6 +137,41 @@ fn a_door_registration_folds_into_a_row_every_word_of_which_is_the_doors() {
     // Folding the same key again answers the first row.
     let again = fold(registration("door-fold-row", "door_fold_row")).expect("folds");
     assert!(std::ptr::eq(decl, again));
+}
+
+/// THE PROVIDER-KEY DESCRIPTOR A DOOR STATES is kept by the fold and read back whole through the
+/// kernel's accessor (row 155 B1c, dormant): every key, shape and flag is the door's, and a door that
+/// states none adds none.
+#[test]
+fn the_provider_keys_a_door_states_are_kept_by_the_fold() {
+    use busbar_contract::provider_keys::{Key, ProviderKeys, Shape, Table};
+    let _ = fold(registration("door-keyless-row", "door_keyless_row")).expect("folds");
+    let keys = ProviderKeys {
+        catalog: Table {
+            deny_unknown: false,
+            keys: vec![Key {
+                name: "shade".into(),
+                shape: Shape::OneOf(vec!["light".into(), "dark".into()]),
+                required: true,
+            }],
+        },
+        deployment: Table {
+            deny_unknown: true,
+            keys: vec![Key {
+                name: "weights".into(),
+                shape: Shape::StrMap,
+                required: false,
+            }],
+        },
+        entry: Table::default(),
+    };
+    let decl = fold(PlaneRegistration {
+        provider_keys: Some(keys.clone()),
+        ..registration("door-keyed-row", "door_keyed_row")
+    })
+    .expect("folds");
+    assert!(is_door(decl));
+    assert_eq!(provider_keys(), Some(&keys));
 }
 
 #[test]

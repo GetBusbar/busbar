@@ -3578,8 +3578,8 @@ pub static REGISTRY: &[Registration] = &[
         batch: 1,
         tier: Tier::Fast,
         build: || Box::new(hot_path_alloc::HotPathAllocGate),
-        summary: "the alloc instrument asserts 0 global allocations across the isolated POD \
-                  host-call batch",
+        summary: "the alloc instruments assert 0 global allocations across the isolated POD \
+                  host-call batch and 0 host allocations per READY request-path door op",
     },
     Registration {
         name: "teller-steps",

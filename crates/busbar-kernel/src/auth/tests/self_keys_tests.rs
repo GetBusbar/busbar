@@ -12,8 +12,8 @@ use std::time::Duration;
 use async_trait::async_trait;
 
 use super::super::self_keys::{
-    issue_key, resolve_exchange, DeterministicEd25519Keys, ExchangeError, IssuedKey,
-    SelfGroupProvisioner, SelfServeKeys,
+    admit_self_mint, issue_key, resolve_exchange, DeterministicEd25519Keys, ExchangeError,
+    IssuedKey, SelfGroupProvisioner, SelfServeKeys,
 };
 use super::super::{ChainVerdict, Principal};
 use crate::config::groups::{provision_child, GroupCfg};
@@ -373,6 +373,91 @@ fn concurrent_issue_self_yields_one_binding() {
         1,
         "concurrent self-logins for one sub must leave exactly one binding"
     );
+}
+
+// ── admit_self_mint: the mint ceiling binds the self-serve mint (X-1001) ─────────────────────────
+
+/// The self-serve default lifetime the tests mint at: 90 days, as `auth.self_key_ttl` defaults.
+const SELF_TTL: u64 = crate::governance::mint_policy::DEFAULT_KEY_TTL_SECS;
+
+/// **THE BLOCK `max_ttl` BINDS `POST /auth/token`** (X-1001; the mint ceiling is a kernel valve,
+/// `BUSBAR-1.6.0.md:157`). Before, only the admin `POST /keys` mint was held to the ceiling: an
+/// identity that could not be issued a key past an hour by an admin minted itself one for ninety
+/// days. The self-serve lifetime is a DEFAULT, not an explicit ask, so the ceiling clamps it.
+#[test]
+fn the_block_ttl_ceiling_clamps_the_self_serve_key() {
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
+    let policy = crate::governance::mint_policy::MintPolicy {
+        block_max_ttl_secs: Some(3_600),
+        ..Default::default()
+    };
+    let mint = admit_self_mint(&v, &rb, &policy, SELF_TTL).expect("admitted, clamped");
+    assert_eq!(mint.ttl, Duration::from_secs(3_600));
+    assert_eq!(mint.principal.id, "sam");
+    assert_eq!(mint.team, "team");
+}
+
+/// A role's `mint_ceilings` TTL narrows below the block cap, as it does on the admin mint.
+#[test]
+fn a_role_ttl_ceiling_clamps_the_self_serve_key() {
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
+    let mut policy = crate::governance::mint_policy::MintPolicy {
+        block_max_ttl_secs: Some(86_400),
+        ..Default::default()
+    };
+    policy.ceilings.insert(
+        "eng".to_string(),
+        crate::governance::mint_policy::RoleCeiling {
+            max_ttl_secs: Some(600),
+            ..Default::default()
+        },
+    );
+    let mint = admit_self_mint(&v, &rb, &policy, SELF_TTL).expect("admitted, clamped");
+    assert_eq!(mint.ttl, Duration::from_secs(600));
+}
+
+/// A role ceiling that admits only some pools refuses a self-serve key whose bindings grant ALL of
+/// them, exactly as it refuses an admin mint of all pools: the key would carry more than the
+/// ceiling lets that role hand out.
+#[test]
+fn a_role_pool_ceiling_refuses_a_self_serve_key_over_it() {
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
+    let mut policy = crate::governance::mint_policy::MintPolicy::default();
+    policy.ceilings.insert(
+        "eng".to_string(),
+        crate::governance::mint_policy::RoleCeiling {
+            allowed_pools: Some(vec!["pool-a".to_string()]),
+            ..Default::default()
+        },
+    );
+    assert!(matches!(
+        admit_self_mint(&v, &rb, &policy, SELF_TTL),
+        Err(ExchangeError::OverCeiling(_))
+    ));
+}
+
+/// THE CONTROL: with no `auth.policy` the self-serve key keeps its configured lifetime and pools —
+/// the 1.5.5 shape, byte for byte — and `self_mint: false` still refuses before any ceiling.
+#[test]
+fn no_policy_mints_at_the_self_serve_default_and_self_mint_off_still_refuses() {
+    let rb = bindings("test-idp-double", "eng", Some("team"));
+    let v = identified("test-idp-double", principal("sam", &["eng"]));
+    let open = crate::governance::mint_policy::MintPolicy::default();
+    let mint = admit_self_mint(&v, &rb, &open, SELF_TTL).expect("no ceiling");
+    assert_eq!(mint.ttl, Duration::from_secs(SELF_TTL));
+    assert_eq!(mint.pools, None);
+    let off = crate::governance::mint_policy::MintPolicy {
+        self_mint: Some(false),
+        block_max_ttl_secs: Some(3_600),
+        ..Default::default()
+    };
+    assert!(matches!(
+        admit_self_mint(&v, &rb, &off, SELF_TTL),
+        Err(ExchangeError::SelfMintDisabled)
+    ));
 }
 
 // ── resolve_exchange: identity source + refusal matrix ────────────────────────────────────────────
