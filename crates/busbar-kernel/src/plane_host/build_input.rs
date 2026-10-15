@@ -89,8 +89,12 @@ pub struct LaneInput {
     /// The lane's protocol NAME (the registry's interned dialect key), carried as an owned `String`;
     /// the plane re-interns it against the protocol registry.
     pub protocol: String,
-    /// The provider's upstream base URL, already trailing-slash-trimmed.
+    /// The provider's upstream base URL, already trailing-slash-trimmed, its userinfo stripped.
     pub base_url: String,
+    /// The `Authorization: Basic` the operator's base URL spelled as `user:pass@` (row 74, F25),
+    /// opaque: the plane hands it back to the kernel's hop on each request it sends to this lane,
+    /// and the hop presents it as 1.5.5 did. `None` when the base URL spelled no userinfo.
+    pub url_userinfo: Option<crate::egress::engine::UrlUserinfo>,
     /// Optional upstream request-path override.
     pub path: Option<String>,
     /// Optional path-BASE override (URL-model protocols).
@@ -114,8 +118,13 @@ pub struct LaneInput {
     pub auth_style: AuthStyleInput,
     /// OAuth scope (`auth: oauth-client-credentials` / an override for `jwt-bearer`).
     pub scope: Option<String>,
-    /// OAuth token endpoint (`auth: oauth-client-credentials`).
+    /// OAuth token endpoint (`auth: oauth-client-credentials`), its userinfo stripped: a plane never
+    /// receives a URL carrying `user:pass@` (row 74, F25).
     pub token_url: Option<String>,
+    /// The `Authorization: Basic` the operator's `token_url` spelled as `user:pass@`, opaque: the
+    /// plane hands it back to the kernel's bind, and the host presents it on the mint as 1.5.5 did.
+    /// `None` when the endpoint spelled no userinfo.
+    pub token_userinfo: Option<crate::egress::engine::UrlUserinfo>,
     /// JWT-bearer `sub` claim (`auth: jwt-bearer`).
     pub subject: Option<String>,
     /// The provider's response error-map (upstream code → canonical), cloned verbatim.

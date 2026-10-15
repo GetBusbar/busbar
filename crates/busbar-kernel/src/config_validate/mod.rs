@@ -2249,7 +2249,12 @@ fn validate_providers_with(
             || scheme_is(base_url, "https")
             || (host_is_local && scheme_is(base_url, "http"));
         if !scheme_ok {
-            errors.push(if scheme_is(base_url, "http") {
+            // What an error may repeat of the base URL: a `user:pass@` the operator wrote is
+            // ACCEPTED (and stripped where the base URL enters the served flow, as 1.5.5 did — row
+            // 74, F25), so it never surfaces in a message. The host stays: it is the diagnosis.
+            let plaintext = scheme_is(base_url, "http");
+            let base_url = busbar_kernel_egress::trust::net::redact_userinfo(base_url);
+            errors.push(if plaintext {
                 // An http:// scheme that failed the check ⇒ the host is public (or unparseable):
                 // plaintext to a public host would leak the key.
                 format!(
@@ -2273,7 +2278,8 @@ fn validate_providers_with(
             // CGNAT, public) is allowed — so local models just work. The three escape hatches (this
             // provider's `allow_metadata_hosts`, the global `security.allow_metadata_hosts`, and the
             // nuclear `security.allow_all_metadata`) carve exceptions (then `ssrf_blocked_host`
-            // returns None).
+            // returns None). The base URL is repeated with its userinfo redacted (row 74, F25).
+            let base_url = busbar_kernel_egress::trust::net::redact_userinfo(base_url);
             errors.push(format!(
                 "provider '{provider_name}' base_url '{base_url}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts to unblock it for all providers, or set security.allow_all_metadata: true to disable the guard entirely — and security.blocked_metadata_hosts extends the denylist)"
             ));
@@ -2305,6 +2311,7 @@ fn validate_providers_with(
                     cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
                 ) {
+                    let composed = busbar_kernel_egress::trust::net::redact_userinfo(&composed);
                     errors.push(format!(
                         "provider '{provider_name}' base_url+path '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
                     ));
@@ -2327,6 +2334,7 @@ fn validate_providers_with(
                     cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
                 ) {
+                    let composed = busbar_kernel_egress::trust::net::redact_userinfo(&composed);
                     errors.push(format!(
                         "provider '{provider_name}' base_url+path_base '{composed}' targets a blocked cloud-metadata host '{host}' (cloud-metadata/IMDS endpoints are denied; to override add the host to this provider's allow_metadata_hosts, or security.allow_metadata_hosts, or set security.allow_all_metadata: true)"
                     ));
@@ -2375,7 +2383,11 @@ fn validate_providers_with(
                     || scheme_is(tu, "https")
                     || (host_private && scheme_is(tu, "http"));
                 if !tu_scheme_ok {
-                    errors.push(if scheme_is(tu, "http") {
+                    // Repeated with its userinfo redacted: a `user:pass@` in token_url is accepted
+                    // and rides the mint as 1.5.5's did (row 74, F25), never a message.
+                    let plaintext = scheme_is(tu, "http");
+                    let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
+                    errors.push(if plaintext {
                         format!(
                             "provider '{provider_name}' token_url must use https for a public host (got '{tu}'); it carries the client secret, so plaintext http is permitted only for a private/loopback token endpoint"
                         )
@@ -2390,6 +2402,7 @@ fn validate_providers_with(
                     cfg.allow_all_metadata,
                     &cfg.blocked_metadata_hosts,
                 ) {
+                    let tu = busbar_kernel_egress::trust::net::redact_userinfo(tu);
                     errors.push(format!(
                         "provider '{provider_name}' token_url '{tu}' targets a blocked cloud-metadata host '{host}' (the client secret is POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
                     ));
@@ -2415,8 +2428,10 @@ fn validate_providers_with(
             if !cred.trim().is_empty() {
                 // The credential's shape is the serving auth plugin's to judge, in its own words,
                 // through the same `open_outbound` the build binds it with (never dialing).
+                // The endpoint as the plugin is handed it at the build: its userinfo stripped.
+                let token_url = provider_cfg.token_url.as_deref().unwrap_or_default();
                 let params = serde_json::json!({
-                    "token_url": provider_cfg.token_url.clone().unwrap_or_default(),
+                    "token_url": busbar_kernel_egress::trust::net::strip_userinfo(token_url),
                     "scope": provider_cfg.scope.clone().unwrap_or_default(),
                 });
                 for e in outbound_credential_refusals("oauth-client-credentials", &cred, &params) {
@@ -2594,6 +2609,9 @@ pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), S
         .map(host_is_private_or_loopback)
         .unwrap_or(false);
     if !(scheme_is(token_uri, "https") || (host_private && scheme_is(token_uri, "http"))) {
+        // Repeated with its userinfo redacted: a `user:pass@` in token_uri rides the mint as
+        // 1.5.5's did (row 74, F25), never a message.
+        let token_uri = busbar_kernel_egress::trust::net::redact_userinfo(token_uri);
         return Err(format!(
             "service-account token_uri must use https for a public host (got '{token_uri}'); it receives the signed JWT assertion, so plaintext http is permitted only for a private/loopback endpoint"
         ));
@@ -2604,6 +2622,7 @@ pub fn vet_token_uri(token_uri: &str, posture: &MetadataPosture) -> Result<(), S
         posture.allow_all,
         &posture.blocked_hosts,
     ) {
+        let token_uri = busbar_kernel_egress::trust::net::redact_userinfo(token_uri);
         return Err(format!(
             "service-account token_uri '{token_uri}' targets a blocked cloud-metadata host '{host}' (the signed assertion would be POSTed there; cloud-metadata/IMDS endpoints are denied — override via this provider's allow_metadata_hosts, security.allow_metadata_hosts, or security.allow_all_metadata)"
         ));

@@ -3207,6 +3207,120 @@ fn test_validate_accepts_uppercase_url_scheme() {
     assert!(!scheme_is("httpsx://h", "https"));
 }
 
+/// ROW 74 (F25): a provider `base_url` carrying `user:pass@` is ACCEPTED, as 1.5.5 accepted it
+/// (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`), and a PLANTED SCAN over every base-URL refusal
+/// this validator writes — the scheme arm, the plaintext-to-a-public-host arm, the metadata arm and
+/// the two composed (`path`, `path_base`) arms — finds neither half of the planted spelling in any
+/// error it returns, while each still names the host it is about. RED before the fix: every arm
+/// echoed the base URL as written.
+#[test]
+fn a_base_url_userinfo_is_accepted_and_no_validation_error_repeats_it() {
+    const PLANTED: &str = "svcuser:hunter2-P4ss@";
+    let with_base = |base_url: String, path: Option<&str>, path_base: Option<&str>| {
+        let (mut providers, models, _) = valid_maps();
+        let p = providers.get_mut("myprovider").expect("the provider");
+        p.base_url = base_url;
+        p.path = path.map(str::to_string);
+        p.path_base = path_base.map(str::to_string);
+        validate(&make_root_cfg(providers, models, HashMap::new()))
+    };
+
+    let accepted = with_base(format!("https://{PLANTED}api.example.com"), None, None);
+    assert!(
+        accepted.is_ok(),
+        "a base_url spelling user:pass@ validates, as in 1.5.5: {accepted:?}"
+    );
+
+    let secure = format!("https://{PLANTED}api.example.com");
+    // The same URL in the plaintext scheme (a public host, so refused).
+    let plaintext = secure.replacen("s://", "://", 1);
+    let planted = [
+        (
+            format!("ftp://{PLANTED}api.example.com"),
+            None,
+            None,
+            "api.example.com",
+        ),
+        (plaintext, None, None, "api.example.com"),
+        (
+            format!("https://{PLANTED}169.254.169.254"),
+            Some("/v1"),
+            Some("/v1beta"),
+            "169.254.169.254",
+        ),
+    ];
+    for (base_url, path, path_base, host) in planted {
+        let errors = with_base(base_url, path, path_base).expect_err("the planted base is refused");
+        let about: Vec<&String> = errors.iter().filter(|e| e.contains("base_url")).collect();
+        assert!(
+            !about.is_empty(),
+            "a base_url refusal was written: {errors:?}"
+        );
+        for e in &errors {
+            assert!(
+                !e.contains("hunter2") && !e.contains("svcuser"),
+                "a validation error repeated the planted spelling: {e}"
+            );
+        }
+        assert!(
+            about.iter().all(|e| e.contains(host)),
+            "each refusal still names the host it is about: {about:?}"
+        );
+    }
+    // The token endpoint (row 74, F25): accepted as 1.5.5 accepted it, and repeated redacted.
+    let with_token_url = |token_url: String| {
+        let mut providers = HashMap::new();
+        let mut p = make_provider(proto_b(), "https://api.example.com", "API_KEY");
+        p.token_url = Some(token_url);
+        p.scope = Some("api://x/.default".into());
+        // The style as the operator's config spells it (a fixture), read by the config's own parser.
+        p.auth = Some(
+            serde_yaml::from_str(include_str!("fixtures/client_credentials_style.yaml"))
+                .expect("a provider style"),
+        );
+        providers.insert("myprovider".to_string(), p);
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("myprovider", 10));
+        let mut pools = HashMap::new();
+        pools.insert("p".to_string(), make_pool(vec![make_member("m")]));
+        validate(&make_root_cfg(providers, models, pools))
+    };
+    let accepted = with_token_url(format!("https://{PLANTED}login.example.com/token"));
+    assert!(
+        accepted.is_ok(),
+        "a token_url spelling user:pass@ validates, as in 1.5.5: {accepted:?}"
+    );
+    let plaintext = format!("https://{PLANTED}login.example.com/token").replacen("s://", "://", 1);
+    for (token_url, host) in [
+        (
+            format!("ftp://{PLANTED}login.example.com/token"),
+            "login.example.com",
+        ),
+        (plaintext, "login.example.com"),
+        (
+            format!("https://{PLANTED}169.254.169.254/token"),
+            "169.254.169.254",
+        ),
+    ] {
+        let errors = with_token_url(token_url).expect_err("the planted endpoint is refused");
+        let about: Vec<&String> = errors.iter().filter(|e| e.contains("token_url")).collect();
+        assert!(
+            !about.is_empty(),
+            "a token_url refusal was written: {errors:?}"
+        );
+        for e in &errors {
+            assert!(
+                !e.contains("hunter2") && !e.contains("svcuser"),
+                "a validation error repeated the planted spelling: {e}"
+            );
+        }
+        assert!(
+            about.iter().all(|e| e.contains(host)),
+            "each refusal still names the host it is about: {about:?}"
+        );
+    }
+}
+
 /// An EMPTY `affinity.header_name` must be REJECTED at boot. It passes
 /// the ASCII + length checks but silently disables session affinity at runtime
 /// (`headers.get("")` is always None) — the exact silent-disable the validator's comment promises
