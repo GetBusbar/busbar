@@ -356,11 +356,23 @@
 # 1.5.5) land with this commit. The digests are dev-bin's busbar-oracle-linux-<arch>-<release_ref>.sha256, each
 # asset's .sig verified with the release key.
 #
+# 2026-10-14 (busbar owner rule 22, named conformance gaps = 0; coordinator ruling 2026-10-14, conformance-gaps D,
+# option (a)): moved 3365ddbc591e -> 4c47cad0385d, busbar-release main after the dev -> qa -> main promotion
+# (#373, #374), which carries #369 and #372. #369: the nine llm cells the pinned mock already answered and the
+# recorder hardcoded `needs_fixture` (stream_upstream_error x6 -> `fresh`, ok_citation, ok_cachepoint_document,
+# ok_tool_use_tokens with mock_control tool-use-tokens), plus the vendor-true stream-error bodies. #372: the 1.5.5
+# golden holds the nine bare ids as SKIP rows (recorded facts, whose input never changes), so the generator emits
+# the recordable cells as NEW ids `<old id>@fixture`; golden/1.5.5 retires the bare ids whole through cited
+# retired.tsv rows. Their cells.json rows, owed-baseline rows and add-only 1.5.5 goldens (oracle-rerecord,
+# recorded from the published 1.5.5) land with this commit. The digests are dev-bin's
+# busbar-oracle-linux-<arch>-<release_ref>.sha256; each asset's .sig verifies (Ed25519, over
+# `<asset name>\n<sha256>\n`) against .github/release-key.pub.pem.
+#
 # To move the pin: set release_ref to the new busbar-release commit and each sha256_linux_<arch> to the
 # sha256 of its dev-bin busbar-oracle-linux-<arch>-<release_ref> asset (the .sha256 beside it).
 release_repo=https://github.com/GetBusbar/busbar-release.git
-release_ref=3365ddbc591ec874d18aaa3ec5df650ba4b9bd3b
-sha256_linux_x86_64=d6be0604b5db12319f71d10cc0892765ed063ca7dd581623ce47950cd6998384
-sha256_linux_aarch64=04bf41bf6e2c027001c9a7b7de68c6e1cb753b7bed6fd866a1f96673b6b35201
+release_ref=4c47cad0385dc9727b15fea8486cba3afd1308a1
+sha256_linux_x86_64=ef06fc0cb87b732ef620dbf2156baf417336d29e1ca3ba9baa7915914aa21121
+sha256_linux_aarch64=4507255e6e619d00544c59a1ec6cd481b60eab4ca3cf8ffe7d1feaa49a7ca521
 crate=busbar-release-oracle
 bin=busbar-oracle
