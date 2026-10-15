@@ -49,7 +49,7 @@
 //! | A child's accrual belongs to its parent | the cell checks state and principal | runtime |
 //! | A hold accidentally dropped is caught | `#[must_use]`, denied as a lint in the kernel | compile-time (lint) |
 //! | A hold DELIBERATELY forgotten, leaked or `ManuallyDrop`ped is caught | the construction gate's `hold-escapes` rule, over the list in `fixtures/lint_rules.txt` | CI |
-//! | Only the kernel mints tokens | one audited symbol, [`KernelSeal::acquire_for_kernel`] | CI |
+//! | Only the kernel mints tokens | the seal reaches only the kernel, through a symbol only the kernel defines ([`KernelSeal::deliver`]); a second definer is a link error | link |
 //! | The recovery token stays in the recovery module | source scan over the seal-site list, same file | CI |
 //! | A hold is taken only in the kernel, at exactly three sites | the construction gate confines the literal `take(&Grant::<Exit>::mint(` to the kernel — confinement, not a count, and the sweep's take through a named grant does not spell that literal; the count is held by the take-site census in `caps::hold`'s tests, which reads the kernel's own source | CI |
 //! | Every unit that was admitted actually settled | the two-sided [`canary::Canary`] | runtime + CI |

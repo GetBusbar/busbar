@@ -19,7 +19,8 @@
 //!
 //! The exit path, holding its token, seals the same end without ceremony:
 //!
-//! ```
+#![cfg_attr(feature = "test-seal", doc = "```")]
+#![cfg_attr(not(feature = "test-seal"), doc = "```ignore")]
 //! use busbar_contract::caps::{Admittance, Consumption, Exit, Grant, Hold, KernelSeal, Outcome,
 //!                   Posted, PrincipalId, UnitEnd, Usage, WriteMoney};
 //! let seal = KernelSeal::acquire_for_kernel();
