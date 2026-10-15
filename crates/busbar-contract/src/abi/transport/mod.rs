@@ -1062,6 +1062,15 @@ pub struct EmitIn {
     pub deadline_ns: u64,
     /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
     pub lane: *const DatagramLane,
+    /// THE ANSWER'S STATUS (INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.4913): on an ACCEPTED stream's FIRST
+    /// emit, the one carrying the answer's head (its bytes `encode` rendered), the status the answer
+    /// carries, in the numbering of the claim the stream arrived on; a status that asks the far end
+    /// to switch protocols hands the connection to the claimed upgrade framer ([`slot::DETACH`]).
+    /// `0` on every other emit, where a stated status is refused
+    /// ([`check::check_emit_status`]). Never a `:status` field. A tail addition (pre-tag v1).
+    pub status: u32,
+    /// Alignment padding.
+    pub _status_reserved: u32,
 }
 
 /// `encode`'s `in`. The rendered bytes go into `sink.wire`.

@@ -1613,7 +1613,9 @@ fn compute_layout() -> String {
             flags,
             sink,
             deadline_ns,
-            lane
+            lane,
+            status,
+            _status_reserved
         ]
     );
     record!(
