@@ -2481,7 +2481,8 @@ mod dated_rate_card_history {
             Some([(
                 LANE,
                 TierRates {
-                    input: micro_per_token,
+                    // The fixture's rates are whole micro-units, so the intake's nano-units are exact.
+                    input: Some((micro_per_token * 1000.0).round() as u64),
                     ..Default::default()
                 },
             )]),
@@ -3328,7 +3329,8 @@ mod one_recorded_usage_every_surface {
             Some([(
                 LANE,
                 TierRates {
-                    input: micro_per_token,
+                    // The fixture's rates are whole micro-units, so the intake's nano-units are exact.
+                    input: Some((micro_per_token * 1000.0).round() as u64),
                     ..Default::default()
                 },
             )]),

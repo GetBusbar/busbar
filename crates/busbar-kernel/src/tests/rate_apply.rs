@@ -57,16 +57,16 @@ fn the_seam_is_silent_until_a_holder_installs_and_then_delivers_the_view_verbati
     // Four DISTINCT tier rates per lane, so a seam that carried the right lane names with the wrong
     // (or a defaulted) card is red rather than green.
     let fast = RawTierRates {
-        input: 1.0,
-        output: 2.0,
-        cache_read: 3.0,
-        cache_write: 4.0,
+        input: Some(1_000),
+        output: Some(2_000),
+        cache_read: Some(3_000),
+        cache_write: Some(4_000),
     };
     let slow = RawTierRates {
-        input: 5.0,
-        output: 6.0,
-        cache_read: 7.0,
-        cache_write: 8.0,
+        input: Some(5_000),
+        output: Some(6_000),
+        cache_read: Some(7_000),
+        cache_write: Some(8_000),
     };
     let lanes = [("fast".to_string(), fast), ("slow".to_string(), slow)];
     // An open-class rate (item 123) travels beside the four, verbatim.
