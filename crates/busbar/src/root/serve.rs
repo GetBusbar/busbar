@@ -4146,8 +4146,8 @@ fn closed_whole(h: Head, block: HeaderMap) -> Response {
     response
 }
 
-/// Whether a reply head is a WHOLE answer's: it states its length and is no event stream (SSE, or
-/// the AWS event-stream framing, which the previous release relayed piece by piece).
+/// Whether a reply head is a WHOLE answer's: it states its length and is no event stream (a text
+/// one, or the AWS event-stream framing, which the previous release relayed piece by piece).
 fn whole_answer(fields: &HeadFields) -> bool {
     let named = |field: &[u8]| {
         fields
