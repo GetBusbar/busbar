@@ -863,14 +863,23 @@ impl EgressFarEnd<'_> {
     }
 
     /// The live attempt's cap, ms: the member's attempt timeout, never beyond what the walk has
-    /// left, never zero; the walk's remaining budget for a member with no cap.
+    /// left, never zero; for a member with no cap, the stream ceiling for a streamed answer and the
+    /// walk's remaining budget for any other.
+    ///
+    /// A streamed request without a member cap runs its whole send, head included, under the
+    /// stream ceiling, never the walk's budget: 1.5.5 bounded only a buffered request by the
+    /// failover deadline (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1684-1698`), and a member's
+    /// own cap bounded the head of either (`:1712-1717`).
     fn attempt_cap(&self) -> u64 {
         let w = self.lock();
         let remaining = w.walk.ctx().remaining_ms(self.egress.clock.now_millis());
-        w.live
-            .as_ref()
-            .and_then(|l| l.member.attempt_timeout_ms)
-            .map_or(remaining.max(1), |ms| attempt_cap_ms(ms, remaining))
+        match w.live.as_ref().and_then(|l| l.member.attempt_timeout_ms) {
+            Some(ms) => attempt_cap_ms(ms, remaining),
+            None if self.route.wants_stream => {
+                self.egress.send_ceiling_secs().max(1).saturating_mul(1000)
+            }
+            None => remaining.max(1),
+        }
     }
 
     /// Whether the live attempt's member relays the caller's own credential.
@@ -1170,22 +1179,25 @@ impl EgressFarEnd<'_> {
             let conn = live.conn?;
             let now = e.clock.now_millis();
             let remaining = w.walk.ctx().remaining_ms(now);
-            let wait = if live.answered {
-                // The whole send: the stream ceiling from the anchor, or what is left of the walk's
-                // budget, which is already measured from the unit's start (subtracting the time
-                // since the anchor again cut a buffered answer at half its budget).
-                if self.route.wants_stream {
-                    let ceiling = e.send_ceiling_secs().max(1).saturating_mul(1000);
-                    let spent =
-                        u64::try_from(now.saturating_sub(live.anchor_ms)).unwrap_or(u64::MAX);
-                    ceiling.saturating_sub(spent)
-                } else {
-                    remaining.max(1)
-                }
-            } else {
-                live.member
-                    .attempt_timeout_ms
-                    .map_or(remaining.max(1), |ms| attempt_cap_ms(ms, remaining))
+            // A streamed answer's whole send: the stream ceiling from the anchor (the send's start).
+            let stream_left = || {
+                let ceiling = e.send_ceiling_secs().max(1).saturating_mul(1000);
+                let spent = u64::try_from(now.saturating_sub(live.anchor_ms)).unwrap_or(u64::MAX);
+                ceiling.saturating_sub(spent)
+            };
+            let wait = match (live.answered, live.member.attempt_timeout_ms) {
+                // The whole send: the stream ceiling, or what is left of the walk's budget, which
+                // is already measured from the unit's start (subtracting the time since the anchor
+                // again cut a buffered answer at half its budget).
+                (true, _) if self.route.wants_stream => stream_left(),
+                (true, _) => remaining.max(1),
+                // The first answer: the member's own cap, never beyond what the walk has left.
+                (false, Some(ms)) => attempt_cap_ms(ms, remaining),
+                // A streamed request with no member cap waits for its head under the stream
+                // ceiling, never the walk's budget: 1.5.5 bounded only a buffered request by the
+                // failover deadline (v1.5.5 `crates/busbar/src/proxy/engine/mod.rs:1684-1698`).
+                (false, None) if self.route.wants_stream => stream_left(),
+                (false, None) => remaining.max(1),
             };
             (conn, live.answered, wait)
         };
