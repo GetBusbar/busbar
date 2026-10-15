@@ -793,7 +793,7 @@ pub(crate) fn resolve_admin_token(
     use busbar_kernel_identity::operator::{blank_token, unresolved_token};
     let op = config::operator_provider();
     let token = resolver
-        .resolve_string(r)
+        .resolve_string_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
         .map_err(|e| unresolved_token(op, &e))?;
     if token.trim().is_empty() {
         return Err(blank_token(op));
@@ -851,15 +851,20 @@ pub(crate) fn resolve_signing_key(
         // one that never issues signed tokens simply has no signer.
         return Ok(None);
     };
-    let bytes = resolver.resolve(sk).map_err(|e| {
-        format!(
+    let bytes = resolver
+        .resolve_at_config(
+            sk,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map_err(|e| {
+            format!(
             "auth.signing_key did not resolve: {e}. auth.signing_key is a reference to an EXISTING \
              secret (env/file/plugin) - it does NOT generate a key. Provide the key first (a \
              32-byte raw or 64-hex-char ed25519 secret: `busbar --generate-signing-key`, or \
              `openssl rand -hex 32`), or OMIT auth.signing_key entirely if this deployment never \
              issues busbar-signed keys."
         )
-    })?;
+        })?;
     let secret = parse_signing_secret(&bytes)?;
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
@@ -908,7 +913,7 @@ pub fn resolve_operator_public_key(
     let Some(op) = auth.and_then(|a| a.operator_pub.as_ref()) else {
         return Ok(None);
     };
-    let bytes = resolver.resolve(op).map_err(|e| {
+    let bytes = resolver.resolve_at_config(op, &busbar_contract::config_time::ConfigScope::config_time()).map_err(|e| {
         format!(
             "auth.operator_pub did not resolve: {e}. auth.operator_pub is a reference to an EXISTING \
              secret (env/file/plugin) holding the fleet's sealed operator public key (32 raw bytes \
@@ -1124,7 +1129,9 @@ pub fn validate_builtin_secrets_resolve(cfg: &config::RootCfg) -> Result<(), Str
             // be loadable here, and pre-flight covers it.
             continue;
         }
-        if let Err(e) = builtins.resolve(r) {
+        if let Err(e) =
+            builtins.resolve_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
+        {
             return Err(format!("{what}: {e}"));
         }
     }
@@ -1185,8 +1192,12 @@ pub(crate) fn build_secret_resolver(
                  One of the two blocks would be silently dropped; keep exactly one."
             ));
         }
-        config::secret::resolve_settings(&mcfg.settings, &builtins)
-            .map_err(|e| format!("secrets.{module} settings: {e}"))?;
+        config::secret::resolve_settings(
+            &mcfg.settings,
+            &builtins,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map_err(|e| format!("secrets.{module} settings: {e}"))?;
         claimed_by.insert(canonical.clone(), module.clone());
         raw_config.insert(canonical, serde_json::Value::Object(mcfg.settings.clone()));
     }

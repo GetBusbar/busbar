@@ -2298,9 +2298,15 @@ fn token_exchange_binding(
             serde_yaml::from_value(v)
                 .map_err(|e| format!("member '{entry}': its subject token reference: {e}"))
         })?;
-    let credential = reach.secrets.resolve(&subject).map_err(|e| {
-        format!("member '{entry}': busbar's own subject token for it cannot resolve: {e}")
-    })?;
+    let credential = reach
+        .secrets
+        .resolve_at_config(
+            &subject,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map_err(|e| {
+            format!("member '{entry}': busbar's own subject token for it cannot resolve: {e}")
+        })?;
     let mut settings = serde_json::Map::new();
     for (key, value) in [
         ("token_url", entry_text(block, TOKEN_URL_KEY)),
@@ -3041,7 +3047,10 @@ pub fn member_routes(
         } else {
             reach
                 .secrets
-                .resolve(&r.provider.credential)
+                .resolve_at_config(
+                    &r.provider.credential,
+                    &busbar_contract::config_time::ConfigScope::config_time(),
+                )
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
         };
         let settings = sealed_params(&r.name, &r.style, r.provider, &credential)?.to_json();
