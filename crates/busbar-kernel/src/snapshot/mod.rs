@@ -17,7 +17,7 @@
 //! * **`busbar_key_spend_cents`** — per-virtual-key accumulated spend in the current budget window
 //!   (cents). Only populated when governance is enabled.
 //! * **`busbar_key_budget_remaining_cents`** — max_budget_cents minus spend for keys that carry a
-//!   budget cap. Enables Prometheus burn-rate alerts on a bounded, operator-configured label space.
+//!   budget cap. Enables burn-rate alerts on a bounded, operator-configured label space.
 //! * **`busbar_key_tokens_total`** — accumulated tokens consumed by each virtual key in the current
 //!   budget window. Useful for token-cost dashboards.
 //! * **`busbar_lane_state`** — per-(pool, lane) breaker gauge read from THAT pool's own breaker
@@ -87,7 +87,7 @@ pub use source::Source;
 // once the recorder is installed (`HANDLE == Some(Some(_))`). Before that — `init()` not yet run, or
 // install failed — these helpers fall through to the plain macro (itself a no-op against the default
 // recorder), caching nothing. So a pre-`init()` emission is never cached, and every cached handle is
-// bound to the real Prometheus recorder. In production `init()` runs at startup before any request
+// bound to the real recorder. In production `init()` runs at startup before any request
 // reaches `finish_inner`, so the steady state is always the cached fast path.
 use std::collections::HashMap;
 use std::sync::RwLock;
@@ -430,7 +430,7 @@ mod tests;
 // ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 /// Routing-policy selections: incremented once per request whose pool resolved a non-default routing
 /// policy that produced a ranked order (Prefer / on_error: first). `policy` is the native/transport
-/// NAME (a fixed enumeration: cheapest/fastest/least_busy/usage/webhook/script) and `pool` is the
+/// NAME (a fixed enumeration of the native policies and the hook-backed ones) and `pool` is the
 /// configured pool name (bounded at startup) — both safe, bounded labels (no request-derived data).
 pub const ROUTE_POLICY_SELECTIONS_TOTAL: &str = "busbar_route_policy_selections_total"; // labels: policy, pool
 
@@ -479,7 +479,7 @@ use std::time::Duration;
 
 use crate::diag_error;
 use crate::diagnostics::{
-    METRICS_MAINTENANCE_THREAD_SPAWN_FAILED, PROMETHEUS_RECORDER_INSTALL_FAILED,
+    METRICS_MAINTENANCE_THREAD_SPAWN_FAILED, METRICS_RECORDER_INSTALL_FAILED,
 };
 
 /// The installed source: `None` = the install was attempted and failed; `Some` = installed. The
@@ -586,10 +586,10 @@ pub fn retaining_from(handle_installed: Option<bool>, opted_in: impl FnOnce() ->
 ///
 /// Emission sites MUST NOT pass the raw, client-supplied model string as `pool`. A virtual key with
 /// a restricted `allowed_pools` list could otherwise submit unbounded distinct model strings, each
-/// rejected yet each minting a brand-new time series, growing the Prometheus registry without bound
+/// rejected yet each minting a brand-new time series, growing the exposition without bound
 /// — a low-effort memory-exhaustion DoS that also bloats every `/metrics` scrape. The label space
-/// is bounded BY CONSTRUCTION: |configured pools| + 1. The same rule applies to any request-log /
-/// webhook field that mirrors `pool`. The `lane`, `reason`, `disposition`, `outcome`,
+/// is bounded BY CONSTRUCTION: |configured pools| + 1. The same rule applies to any request-log
+/// field that mirrors `pool`. The `lane`, `reason`, `disposition`, `outcome`,
 /// `ingress_protocol`, `from`, and `to` labels are likewise drawn from fixed enumerations, never
 /// from free-form client input.
 pub const REQUESTS_TOTAL: &str = "busbar_requests_total"; // labels: ingress_protocol, pool (bounded), outcome
@@ -602,33 +602,30 @@ pub const FAILOVERS_TOTAL: &str = "busbar_failovers_total"; // labels: pool (bou
 pub const REQUEST_DURATION_SECONDS: &str = "busbar_request_duration_seconds"; // histogram; labels: ingress_protocol, pool (bounded)
 pub const TRANSLATIONS_TOTAL: &str = "busbar_translations_total"; // labels: from, to
 
-// Per-plane request families for the MOUNTED (non-model) planes — MCP and A2A. Kept SEPARATE from
-// the two families above precisely so the model-plane series `busbar_requests_total` /
+// Per-plane request families for the MOUNTED (non-model) planes. Kept SEPARATE from the two
+// families above precisely so the model-plane series `busbar_requests_total` /
 // `busbar_request_duration_seconds` stay byte-for-byte label-identical to v1.5.4 (which had no
-// `plane` label and knew only the model plane). A pure-LLM deployment never emits these, so its
-// `/metrics` exposition is unchanged; a deployment that mounts MCP/A2A gets per-plane counts here
-// via `sum by (plane)` without ever touching the pre-existing model series' label set.
+// `plane` label and knew only the model plane). A model-only deployment never emits these, so its
+// `/metrics` exposition is unchanged; a deployment that mounts another plane gets per-plane counts
+// here via `sum by (plane)` without ever touching the pre-existing model series' label set.
 pub const PLANE_REQUESTS_TOTAL: &str = "busbar_plane_requests_total"; // labels: plane, ingress_protocol, pool (bounded), outcome
 pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_seconds"; // histogram; labels: plane, ingress_protocol, pool (bounded)
 
 // The ROUTE_POLICY_{SELECTIONS,REJECTIONS}_TOTAL metric NAMES moved DOWN to the neutral substrate
-// (`busbar_kernel::snapshot`) so the LLM plane's `pipeline.rs` emission sites name them via the ABI;
+// (`busbar_kernel::snapshot`) so the model plane's `pipeline.rs` emission sites name them via the ABI;
 // re-exported here so the `describe_counter!` registrations below and every `crate::snapshot::ROUTE_*`
 // call site resolve unchanged. Pure `&str` — no registry moved, scrape byte-identical.
 // ROUTE_POLICY_* are defined at the top of this module.
 
-// The request-log WEBHOOK sink's `busbar_webhook_logs_dropped_total` is the `busbar-export-webhook`
-// sink's own, declared first-party (its shed counter) in its manifest (K9c).
-
-// The request-log FILE sink's three series (`busbar_file_logs_{dropped,rotated,rotate_failed}_total`)
-// are the `busbar-export-file` sink's own, declared first-party in its manifest (K9b).
+// The request-log sinks' own series (their drop, rotate and shed counters) are each sink's own,
+// declared first-party in its manifest (K9b, K9c); the host names none of them.
 
 // App-retype WEDGE 3: the `busbar_tap_notifications_dropped_total` metric NAME moved to the substrate
 // tap fan-out (`busbar_kernel::proxy::proxy_vocab::spawn_bounded_tap`) with core's `spawn_bounded_tap`
 // retirement — the ONE shared 1024-permit tap gate now lives there and emits this counter byte-identically,
 // so core no longer names the const (the string is pinned equal substrate-side).
 
-// The HOOK_CONTENT_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::snapshot` so the LLM
+// The HOOK_CONTENT_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::snapshot` so the model
 // plane's `hooks.rs` emission site names it via the ABI; re-exported here so `crate::snapshot::…` call
 // sites resolve unchanged. Unlabeled counter: a hook content projection whose serialized size
 // exceeded `limits.hook_content_max_bytes`, so the content was OMITTED WHOLE (never truncated
@@ -647,17 +644,16 @@ pub const PLANE_REQUEST_DURATION_SECONDS: &str = "busbar_plane_request_duration_
 pub const BILLING_TAP_DECODE_FAIL_TOTAL: &str = "busbar_billing_tap_decode_fail_total";
 
 // A request/task denied entry by a `limits::admission::AdmissionGate` because its permit cap was
-// saturated. Labeled `gate` = the gate's fixed name (`"inbound"`/`"webhook"`/`"tap"`/
-// `"request-log-file"` today — one
+// saturated. Labeled `gate` = the gate's fixed name (`"inbound"`/`"tap"` and each sink's own — one
 // per `AdmissionGate::new` call site in the binary, so the label space is bounded at compile time,
 // never client-influenced). This is the GATE-level mechanic counter shared by every admission site;
-// it does NOT replace a site's own policy-specific drop counter (e.g. `WEBHOOK_LOGS_DROPPED_TOTAL`,
+// it does NOT replace a site's own policy-specific drop counter (e.g. a sink's dropped counter,
 // `TAP_NOTIFICATIONS_DROPPED_TOTAL`) where one already exists — those stay, so existing dashboards
 // and alerts keep working unchanged. This counter exists so every gate (including ones with no
 // bespoke counter of their own, like the inbound cap) is uniformly observable.
 pub const ADMISSION_DENIED_TOTAL: &str = "busbar_admission_denied_total"; // labels: gate
 
-// The BILLING_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::snapshot` so the LLM plane's
+// The BILLING_TRUNCATED_TOTAL metric NAME moved DOWN to `busbar_kernel::snapshot` so the model plane's
 // `response_body.rs` emission site names it via the ABI; re-exported here so the `init_with` pre-touch
 // (below), the `describe_counter!` registration, and every `crate::snapshot::…` call site resolve
 // unchanged. Unlabeled counter: same-protocol non-stream responses whose billing-side buffer hit the
@@ -835,7 +831,7 @@ fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static
             // Pre-register the unlabeled counter so `/metrics` is non-empty from the first
             // scrape. The source reports only touched metrics; without this, a freshly
             // booted gateway that has served no traffic exposes an EMPTY body, and an
-            // operator wiring up Prometheus before sending traffic reasonably concludes
+            // operator wiring up a scraper before sending traffic reasonably concludes
             // the endpoint is broken (found by the acceptance harness, 2026-07-09).
             // Only the unlabeled family is pre-touched: labeled families would require
             // inventing label values, which the cardinality contract above forbids. The
@@ -850,9 +846,12 @@ fn install(source: &'static source::Source, bucket: Duration) -> Option<&'static
             Some(source)
         }
         Err(e) => {
+            // The log line is 1.5.5's, frozen in the root legacy table (`snapshot_recorder_failed`):
+            // 1.5.5's recorder carried its exporter's name, which the host does not spell.
             diag_error!(
-                PROMETHEUS_RECORDER_INSTALL_FAILED,
-                "prometheus recorder install failed; /metrics will be empty: {e}"
+                METRICS_RECORDER_INSTALL_FAILED,
+                "{}: {e}",
+                crate::config::legacy::text("snapshot_recorder_failed")
             );
             None
         }
@@ -906,7 +905,7 @@ pub fn init() {
 // requests served (measured: ~23 B/request; 18.1 M requests → +389 MiB, with no plateau and no
 // release when the load stopped), instead of tracking the live working set. That is a leak by any
 // ordinary definition — `/metrics` is an OPTIONAL endpoint, and memory must not depend on whether
-// an operator wired Prometheus up (or on whether their scrape job is currently healthy).
+// an operator wired a scraper up (or on whether their scrape job is currently healthy).
 //
 // The fix is one choke point: a maintenance tick that performs EXACTLY the same two drains a scrape
 // performs, on a timer, so the buffered depth is bounded by one interval's traffic instead of by the
