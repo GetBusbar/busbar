@@ -17,11 +17,14 @@
 //! hands it back opaque; only kernel code can open it. A caller outside the kernel that calls
 //! `deliver` gets a box it cannot open, and a second crate that defines the symbol to catch the
 //! seal fails to link (the kernel's definition is always linked: the kernel's own minter lives
-//! beside it). A release build has no other way to a seal:
+//! beside it). A release build has no other way to a seal. The fixture below is data,
+//! `fixtures/no_release_seal.md` (like `lint_rules.txt` beside it): the seal scans count every
+//! spelling of the minter in Rust source outside the kernel as a mint, and this one is the proof
+//! that it does NOT compile:
 //!
 #![cfg_attr(
     not(feature = "test-seal"),
-    doc = "```compile_fail,E0599\nuse busbar_contract::caps::KernelSeal;\nlet _forged = KernelSeal::acquire_for_kernel();\n```"
+    doc = include_str!("fixtures/no_release_seal.md")
 )]
 //!
 //! `acquire_for_kernel` survives ONLY for tests (`cfg(test)` or the dev-only `test-seal` feature,
