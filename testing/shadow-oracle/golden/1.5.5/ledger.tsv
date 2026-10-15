@@ -2466,3 +2466,19 @@ llm|gemini|gemini|request|stream_upstream_error@fixture	PASS	HTTP 200; usage Δ 
 llm|openai|openai|request|stream_upstream_error@fixture	PASS	HTTP 200; usage Δ {"requests":1}	
 llm|responses|responses|request|ok_citation@fixture	PASS	HTTP 200; usage Δ {"requests":1,"spend_cents":250,"tokens":18}	
 llm|responses|responses|request|stream_upstream_error@fixture	PASS	HTTP 200; usage Δ {"requests":1}	
+boot.refusal|LAW0-EXP-SET-FILE-TYPE|validate	PASS	exit 1; 	
+boot.refusal|LAW0-EXP-SET-OTLP-UNKNOWN|validate	PASS	exit 1; 	
+boot.refusal|LAW0-EXP-SET-PROM-MISSING|validate	PASS	exit 1; 	
+boot.refusal|LAW0-EXP-SET-PROM-UNKNOWN|validate	PASS	exit 1; 	
+boot.refusal|LAW0-EXP-UNKNOWN|validate	PASS	exit 1; 	
+boot.refusal|LAW0-HOOKWORD-admin-tokens|validate	PASS	exit 1; 	
+boot.refusal|LAW0-HOOKWORD-cheapest|validate	PASS	exit 1; 	
+boot.refusal|LAW0-HOOKWORD-fastest|validate	PASS	exit 1; 	
+boot.refusal|LAW0-HOOKWORD-first|validate	PASS	exit 1; 	
+boot.refusal|LAW0-HOOKWORD-least_busy|validate	PASS	exit 1; 	
+boot.refusal|LAW0-HOOKWORD-nothing|validate	PASS	exit 1; 	
+boot.refusal|LAW0-HOOKWORD-reject|validate	PASS	exit 1; 	
+boot.refusal|LAW0-HOOKWORD-tokens|validate	PASS	exit 1; 	
+boot.refusal|LAW0-HOOKWORD-usage|validate	PASS	exit 1; 	
+config.migrate|LAW0-MIG-OPERATOR-14X|boot	PASS	exit 0; models: {}	
+config.migrate|LAW0-MIG-OPERATOR-INLINE|boot	PASS	exit 0; models: {}	

@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config errors:\n  - export.x.module: unknown exporter 'nosuch'; the built-in export modules are prometheus | request-log-webhook | request-log-file | otlp\n"},"headers":{},"status":1}
