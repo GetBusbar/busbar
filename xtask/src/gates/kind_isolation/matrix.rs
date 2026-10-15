@@ -978,6 +978,11 @@ fn mask_chain(m: MaskInputs<'_>) -> String {
     let masked = external::mask_kernel_facade(rel, &masked);
     // English words that are also instance names are not counted as English prose.
     let masked = mask_english_prose(rel, &masked);
+    // An export entry's frozen 1.5.x `streams: [` key is the export projection, not the plane.
+    let masked = match mask_export_streams_key(&masked) {
+        Some(owned) => std::borrow::Cow::Owned(owned),
+        None => masked,
+    };
     // Instance ids that are also a crate's or an abbreviation's name count only as references.
     let masked = mask_colliding_words(rel, &masked);
     // `unix` as the operating system (a cfg, `std::os::unix`, the clock) is not the carrier.
@@ -1344,6 +1349,51 @@ fn mask_english_prose<'a>(rel: &str, text: &'a str) -> std::borrow::Cow<'a, str>
         out.push_str(&mask_prose_words(prose));
     }
     std::borrow::Cow::Owned(out)
+}
+
+/// THE FROZEN 1.5.x EXPORT KEY (ARCHITECT ruling, Law 0 root lane: a gate exemption only for frozen
+/// 1.5.x bytes, modelled on [`BARE_WORD_COLLISIONS`]). `streams` is the streaming plane's section-key
+/// alias, and it is also the key of an `export:` entry's projection list — `streams: [logs,
+/// identity, decisions, …]` (v1.5.5 crates/busbar/src/config/migrate_export.rs:17, :178), frozen
+/// operator config text every export entry carries. The two are told apart by the value the key
+/// takes: an export entry's `streams:` is a flow LIST, and a plane's section is a mapping. So a
+/// `streams` standing on its own (not joined to a neighbouring name by `-`, `_`, `.` or a letter),
+/// followed by `:` (not `::`) and then, past spaces, by `[`, is masked before the scanners read the
+/// line; in every other position — a section key over a mapping, an identifier, a literal of its
+/// own — it still counts.
+const EXPORT_STREAMS_KEY: &str = "streams";
+
+/// `text` with every export entry's `streams: [` key masked (same-length filler, so lines and
+/// columns hold), or `None` when it holds none; see [`EXPORT_STREAMS_KEY`].
+fn mask_export_streams_key(text: &str) -> Option<String> {
+    if !text.contains(EXPORT_STREAMS_KEY) {
+        return None;
+    }
+    let b = text.as_bytes();
+    let joins = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.');
+    let mut out = b.to_vec();
+    let mut changed = false;
+    let mut from = 0;
+    while let Some(off) = text[from..].find(EXPORT_STREAMS_KEY) {
+        let i = from + off;
+        let j = i + EXPORT_STREAMS_KEY.len();
+        from = j;
+        if i > 0 && joins(b[i - 1]) {
+            continue;
+        }
+        if b.get(j) != Some(&b':') || b.get(j + 1) == Some(&b':') {
+            continue;
+        }
+        let mut k = j + 1;
+        while matches!(b.get(k), Some(b' ' | b'\t')) {
+            k += 1;
+        }
+        if b.get(k) == Some(&b'[') {
+            out[i..j].fill(b'x');
+            changed = true;
+        }
+    }
+    changed.then(|| String::from_utf8(out).expect("ascii-for-ascii"))
 }
 
 /// The byte offset of a `//` comment on `line` that is not inside a `"…"` string literal.
@@ -4450,6 +4500,40 @@ pub fn selftest<'a>(
         "`decision` as a code identifier naming the plane still counts",
         &[ROW_MATRIX],
         english_fixture(Some(("route.rs", "pub fn route_to_decision() {}\n"))),
+        &["unlisted-cell", &fixture_subject("plane")],
+    ));
+
+    // AN EXPORT ENTRY'S FROZEN 1.5.x `streams: [` KEY IS THE EXPORT PROJECTION, NOT THE PLANE
+    // ([`EXPORT_STREAMS_KEY`]). The fixture holds only export entries, in a YAML document and in a
+    // Rust string, and no row: the plane cell stays at zero (GREEN). The same word keying a mapping
+    // — the plane's section — beside them is a hit, and the cell becomes an edge nobody listed (RED).
+    let export_fixture = |extra: Option<(&'static str, &'static str)>| {
+        let mut files = vec![
+            (
+                "export.yaml",
+                "export:\n  sink: { module: tail, streams: [logs, costs] }\n  other:\n    streams:  [metrics]\n",
+            ),
+            (
+                "export.rs",
+                "pub const E: &str = \"  tp: { module: x, streams: [metrics] }\";\n",
+            ),
+        ];
+        files.extend(extra);
+        fixture_files(&files)
+    };
+    report.push(prove_rows_green(
+        cx,
+        gate,
+        "an export entry's frozen 1.5.x `streams: [` key is not the plane",
+        &[ROW_MATRIX],
+        export_fixture(None),
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "`streams:` keying a mapping beside the export entries still counts",
+        &[ROW_MATRIX],
+        export_fixture(Some(("section.yaml", "streams:\n  gw: {}\n"))),
         &["unlisted-cell", &fixture_subject("plane")],
     ));
 

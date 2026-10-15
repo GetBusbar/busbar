@@ -32,7 +32,7 @@
 ///
 /// **THAT IS WHY THE ANSWER IS THE WORK AND NOT THE BYTES.** A status, headers and a byte vector
 /// would be the honest answer for a plane whose operations are documents. It is the WRONG answer for
-/// a plane whose operations are streams: taking the bytes here means draining the body here, and on
+/// a plane whose operations are open-ended bodies: taking the bytes here means draining the body here, and on
 /// the billing planes the instant a body finishes draining is the instant the money is read. A seam
 /// that buffered would be deciding when a stream ended, which is a decision that moves money. So the
 /// leg is passed through and the bytes never come near this file.

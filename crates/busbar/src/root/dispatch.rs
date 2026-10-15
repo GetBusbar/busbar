@@ -134,10 +134,10 @@ fn conns() -> Arc<dyn busbar_contract::conn::DeclaredConns> {
 #[path = "tests/dispatch.rs"]
 mod tests;
 
-// The suite binds each dialect's declared scheme on the LINKED auth plugins serving its style: the
-// static schemes on `busbar-auth-header`, the signing scheme on `busbar-auth-sigv4` (the default
-// distribution links both). A build without either links no plugin serving that style, so the bind
-// is refused there, exactly as `door_steps`' positive binding proof is gated on `auth-header`.
-#[cfg(all(test, feature = "auth-header", feature = "auth-sigv4"))]
+// The suite binds each dialect's declared scheme on the LINKED auth plugins serving its style (the
+// static schemes and the signing scheme; the default distribution links a plugin serving each). A
+// build missing an auth row may link no plugin serving one of the styles, so the bind is refused
+// there: the suite rides every linked auth row (`linked_every_auth`, build.rs).
+#[cfg(all(test, linked_every_auth))]
 #[path = "tests/declared_credentials.rs"]
 mod declared_credentials_tests;

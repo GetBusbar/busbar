@@ -293,9 +293,9 @@ host = "unit"
         1,
         "two rows on one crate link it once: {out}"
     );
-    // A row off the door axis claims its own key and opens no upgrade (a door row reads both off
-    // its door's Statement: `crate::root::doors::{claims_of, upgrades_of}`).
-    assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: busbar_wire::linked::build, claims: __row_claims_0, upgrades: __row_upgrades_0 }"), "{out}");
+    // A row off the door axis claims its own key and opens no upgrade and no line (a door row reads
+    // all three off its door's Statement: `crate::root::doors::{claims_of, upgrades_of, lines_of}`).
+    assert!(out.contains("key: busbar_wire::linked::KEY, composes_over: busbar_wire::linked::COMPOSES_OVER, build: busbar_wire::linked::build, claims: __row_claims_0, upgrades: __row_upgrades_0, lines: __row_upgrades_0 }"), "{out}");
     assert!(
         out.contains(
             "fn __row_claims_0() -> Vec<&'static str> {\n    vec![busbar_wire::linked::KEY]\n}"

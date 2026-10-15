@@ -490,6 +490,14 @@ auth-oauth = "busbar-auth-oauth"
 [package.metadata.busbar.linked-canonical]
 auth-admin-tokens = "busbar-auth-admin-tokens"
 
+# THE OPERATOR CREDENTIAL'S ROW: the `auths` row whose registry key (its `linked-name`) is the
+# operator credential's provider word — the `auth.admin_auth:` default, the one `module:` whose
+# definition may carry `token:`, a reserved hook name, and the word in 1.5.5's refusals when the row
+# is not linked. Frozen 1.5.5 configuration text, stated here in packaging so the root's source names
+# no auth module (`root::auth_bindings::operator_words`; BUSBAR-1.6.0.md l.108-113).
+[package.metadata.busbar.operator-auth]
+row = "auth-admin-tokens"
+
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
 # a `ROOT_UNIT` (`root::linked::RootUnit`). Order is

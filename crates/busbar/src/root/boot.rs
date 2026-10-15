@@ -935,7 +935,7 @@ pub fn book(
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
     let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
     // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
-    // boot log's INFO+ line set is part of what "LLM-only ≡ 1.5.5" means — it is pinned
+    // boot log's INFO+ line set is part of what "one plane alone ≡ 1.5.5" means — it is pinned
     // by `tests/boot_lines_neutrality.rs` and recorded by the oracle's
     // `hazard|no-data-dir|logs` cell — so a new line here is a user-visible byte change
     // on a surface that must not move. The seal is an internal fact an operator can ask
