@@ -1119,8 +1119,9 @@ pub(super) mod session_door {
             catalog: Some(&catalog),
             models: None,
             // The linked claims that open at an upgrade, as production composes them: a session
-            // door's provider is dialled in its line's own scheme.
-            upgrades: crate::root::serve::upgrade_carriers(crate::LINKED.transports),
+            // door's provider is dialled in its line's own scheme. This harness drops no transport
+            // into a plugins directory, so the dropped-in rows are none.
+            upgrades: crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]),
         };
         let mut sections = BTreeMap::new();
         sections.insert(
@@ -1183,9 +1184,13 @@ pub(super) mod session_door {
         let _ = live_app.set(Arc::clone(&app));
         // The door's claims as production mounts them: its request routes, and its session routes
         // (an upgrade line's claim, mounted as a GET session route).
-        let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports);
-        let mounts = crate::root::serve::door_mounts(served, || CARD.pin(), &[], &[], &upgrades)
-            .expect("its claims mount");
+        // No transport is dropped into a plugins directory here: the linked rows alone carry the
+        // upgrade lines and the offered auth points, as production composes both.
+        let upgrades = crate::root::serve::upgrade_carriers(crate::LINKED.transports, &[]);
+        let offers = crate::root::serve::transport_offers(crate::LINKED.transports, &[]);
+        let mounts =
+            crate::root::serve::door_mounts(served, || CARD.pin(), &[], &[], &upgrades, &offers)
+                .expect("its claims mount");
         let (router, _admin, _handle) = busbar_kernel::build_split_routers_serving_doors(
             Arc::clone(&app),
             mounts.routes,
