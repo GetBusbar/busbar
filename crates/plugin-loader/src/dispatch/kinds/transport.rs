@@ -28,7 +28,8 @@ use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
     check_accept, check_arrival, check_cancel, check_claims, check_composes_over,
     check_fault_cover, check_fault_rows, check_framer, check_framer_fields, check_head_slots,
-    check_io, check_listen, check_locate, check_settings, check_status_rows, check_tail,
+    check_io, check_listen, check_locate, check_offered_points, check_settings, check_status_rows,
+    check_tail,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
@@ -82,6 +83,9 @@ pub struct TransportFacts {
     /// Its tail states `FRAMING_DATAGRAM`: a framer over the host's datagram port, whose calls
     /// carry the datagram lane, never a stream's framer.
     pub datagram: bool,
+    /// The auth points it offers, its Statement's `extensions` record
+    /// (`abi::transport::EXT_OFFERED_POINTS`): `{Head, HeadBody}` when it states none.
+    pub offered: busbar_contract::abi::transport::AuthPoints,
 }
 
 /// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement without binding it (no
@@ -147,6 +151,13 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         unsafe { std::slice::from_raw_parts(tail.settings, tail.settings_len) }
     };
     check_settings(settings).map_err(broke)?;
+    let extensions: &[u8] = if st.extensions.ptr.is_null() {
+        &[]
+    } else {
+        // SAFETY: a non-NULL Statement blob is `'static` plugin data of its stated length.
+        unsafe { std::slice::from_raw_parts(st.extensions.ptr, st.extensions.len) }
+    };
+    let offered = check_offered_points(extensions).map_err(broke)?;
     let claims: Vec<&'static str> = names
         .iter()
         .map(|c| owned(*c, "claim"))
@@ -190,6 +201,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     Ok(TransportFacts {
         datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
         status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
+        offered,
         role: tail.role,
         claims,
         upgrades,

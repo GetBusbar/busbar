@@ -2227,8 +2227,9 @@ pub struct DoorReach<'a> {
     /// The model-serving pools the plane serving the `pools` map walks
     /// ([`crate::root::model_egress`]); `None` where none is composed.
     pub models: Option<&'a crate::root::model_egress::ModelServing>,
-    /// The linked claims that open at an upgrade (`crate::root::serve::upgrade_carriers`):
-    /// a need over one dials its member's base URL in its own scheme ([`spelled_for`]).
+    /// The claims, linked or dropped in, that open at an upgrade
+    /// (`crate::root::serve::upgrade_carriers`): a need over one dials its member's base URL in its
+    /// own scheme ([`spelled_for`]).
     pub upgrades: Vec<&'static str>,
 }
 

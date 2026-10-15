@@ -729,6 +729,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // planes it links; a composition that does not seal exits 2 here, and success writes nothing.
     // The rows are the linked wires and the ones dropped into `plugins.dir`, folded in one pass.
     let _sealed = root::registry::seal_or_exit(&LINKED, root::policy::client_settings(&cfg.limits));
+    // The transports dropped into `plugins.dir`, as the seal just loaded them: their offered auth
+    // points and upgrade lines join the linked rows' when the guest lists seal (compiled-in =
+    // dropped-in).
+    let dropped_doors =
+        root::boot::dropped_transports(&root::policy::client_settings(&cfg.limits)).doors;
     // THE PROCESS'S ONE CONNECTOR, right after the transport registry sealed: every linked
     // transport door as a framer entry opened with the same settings the seal built the transports
     // from, every dial judged by the one destination guard. Inbound listening and outbound egress
@@ -921,7 +926,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         ),
         catalog: Some(&deploy.models),
         models: Some(&door_models),
-        upgrades: root::serve::upgrade_carriers(LINKED.transports),
+        upgrades: root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
     };
     let served = root::serve::compose_served(
         app.governance.clone(),
@@ -1057,7 +1062,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
-        &root::serve::upgrade_carriers(LINKED.transports),
+        &root::serve::upgrade_carriers(LINKED.transports, dropped_doors),
+        &root::serve::transport_offers(LINKED.transports, dropped_doors),
     )
     .unwrap_or_else(|e| die(e));
     let (data_router, admin_router, app_handle) = build_split_routers_serving_doors(
@@ -1085,7 +1091,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             std::sync::Arc::clone(&door_auths),
             std::sync::Arc::clone(&door_live_handle),
         );
-        let upgrades = root::serve::upgrade_carriers(LINKED.transports);
+        let upgrades = root::serve::upgrade_carriers(LINKED.transports, dropped_doors);
         app_handle.on_apply(Box::new(move |next| {
             let Some(cfg) = next
                 .config_projection

@@ -744,6 +744,8 @@ pub fn dropped_transports(
                         let key = facts.claims.first().copied().unwrap_or_default();
                         let claims = facts.claims;
                         let composes_over = facts.composes_over;
+                        let offered = facts.offered;
+                        let upgrades = facts.upgrades;
                         let (door, wire) = crate::root::doors::served(
                             plugin,
                             settings,
@@ -753,6 +755,8 @@ pub fn dropped_transports(
                             key,
                             claims,
                             composes_over,
+                            offered,
+                            upgrades,
                             wire,
                             door,
                         })

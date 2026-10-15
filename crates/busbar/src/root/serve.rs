@@ -2126,6 +2126,7 @@ pub fn data_mounts(
         busbar_contract::abi::mechanism::route::RouteAuth,
     )],
     upgrades: &[&str],
+    offers: &[TransportOffer],
 ) -> Result<DataMounts, String> {
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
         return Ok((Vec::new(), Vec::new(), Vec::new()));
@@ -2136,6 +2137,7 @@ pub fn data_mounts(
         data_chain,
         core,
         upgrades,
+        offers,
     )
     .and_then(|m| {
         // THE ROUTES AND THEIR REFUSALS PAIR, or the boot is refused (ARCHITECT 2026-10-06).
@@ -2214,19 +2216,101 @@ fn guest_refusal(listener: &str, refusal: busbar_kernel::guest::GuestRefusal) ->
             named(mix.0.as_slice()),
             named(mix.1.as_slice())
         ),
+        GuestRefusal::PointNotOffered(line) => format!(
+            "{listener}: the line {} needs the auth points {:#x} and its transport offers {:#x}",
+            named(std::slice::from_ref(&*line)),
+            line.auth.points().bits(),
+            line.offered.bits()
+        ),
     }
 }
 
 /// The claimant the kernel's own data routes are lines of.
 const CORE_CLAIMANT: &str = "core";
 
-/// THE UPGRADE CARRIERS: every linked claim whose unit 0 opens at an UPGRADE, read off the door
-/// Statements (ARCHITECT ruling Q128 U7; never a layer list: no transport names another). Their
-/// lines are handed over after the head and served as sessions; the handoff target on an upgrade
-/// is the claim that owns the requested scheme.
+/// THE UPGRADE CARRIERS: every claim, linked or dropped in, whose unit 0 opens at an UPGRADE, read
+/// off the door Statements (ARCHITECT ruling Q128 U7; never a layer list: no transport names
+/// another). Their lines are handed over after the head and served as sessions; the handoff target
+/// on an upgrade is the claim that owns the requested scheme.
 #[must_use]
-pub fn upgrade_carriers(transports: &[crate::root::linked::LinkedTransport]) -> Vec<&'static str> {
-    transports.iter().flat_map(|t| (t.upgrades)()).collect()
+pub fn upgrade_carriers(
+    transports: &[crate::root::linked::LinkedTransport],
+    dropped: &[crate::root::registry::DroppedDoor],
+) -> Vec<&'static str> {
+    transport_rows(transports, dropped)
+        .into_iter()
+        .flat_map(|r| r.upgrades)
+        .collect()
+}
+
+/// ONE TRANSPORT CLAIM AND THE AUTH POINTS ITS LINES' TRANSPORT OFFERS (THE DESIGN §6 step 3).
+pub type TransportOffer = (&'static str, busbar_contract::abi::auth::AuthPoints);
+
+/// One transport row as the guest lists read it, linked or dropped in (compiled-in = dropped-in,
+/// one path): what its door's Statement states, read by the one reader at link or at load.
+struct TransportRow {
+    /// Every claim, its own first.
+    claims: Vec<&'static str>,
+    /// The claims that open at an upgrade.
+    upgrades: Vec<&'static str>,
+    /// The layer it composes over first, where it composes over one.
+    under: Option<&'static str>,
+    /// The auth points it offers.
+    offered: busbar_contract::abi::auth::AuthPoints,
+}
+
+/// Every transport row, the linked ones first, then the ones dropped into `plugins.dir`.
+fn transport_rows(
+    transports: &[crate::root::linked::LinkedTransport],
+    dropped: &[crate::root::registry::DroppedDoor],
+) -> Vec<TransportRow> {
+    let linked = transports.iter().map(|t| TransportRow {
+        claims: (t.claims)(),
+        upgrades: (t.upgrades)(),
+        under: t.composes_over.first().copied(),
+        offered: (t.offered)(),
+    });
+    let dropped = dropped.iter().map(|d| TransportRow {
+        claims: d.claims.clone(),
+        upgrades: d.upgrades.clone(),
+        under: d.composes_over.first().copied(),
+        offered: d.offered,
+    });
+    linked.chain(dropped).collect()
+}
+
+/// THE OFFERED POINTS OF EVERY TRANSPORT CLAIM, linked or dropped in, read off each door's
+/// Statement by the one reader (compiled-in = dropped-in): a claim's own transport's set; an upgrade
+/// claim's, the set of the claim it composes over, whose transport runs the line's auth on the
+/// upgrade request.
+#[must_use]
+pub fn transport_offers(
+    transports: &[crate::root::linked::LinkedTransport],
+    dropped: &[crate::root::registry::DroppedDoor],
+) -> Vec<TransportOffer> {
+    let rows = transport_rows(transports, dropped);
+    let own: Vec<TransportOffer> = rows
+        .iter()
+        .flat_map(|r| r.claims.iter().map(move |c| (*c, r.offered)))
+        .collect();
+    rows.iter()
+        .flat_map(|r| {
+            let under = r.under.map(|l| offered_by(&own, l));
+            r.claims.iter().map(move |c| match under {
+                Some(under) if r.upgrades.contains(c) => (*c, under),
+                _ => (*c, r.offered),
+            })
+        })
+        .collect()
+}
+
+/// The points `offers` gives `claim`; a claim no linked row states offers what an unstated
+/// record does.
+fn offered_by(offers: &[TransportOffer], claim: &str) -> busbar_contract::abi::auth::AuthPoints {
+    offers
+        .iter()
+        .find(|(c, _)| *c == claim)
+        .map_or_else(crate::root::doors::offers_unstated, |(_, o)| *o)
 }
 
 /// How many messages a session route's pipe queues each way before the sender waits.
@@ -2252,6 +2336,7 @@ fn claim_line(
     claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim,
     data_chain: &[ChainAuth],
     upgrades: &[&str],
+    offers: &[TransportOffer],
 ) -> Result<(busbar_kernel::guest::Line, RouteMethod), String> {
     use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
     let method = METHODS
@@ -2289,6 +2374,7 @@ fn claim_line(
         upgrade: upgrades
             .contains(&claim.carrier.as_str())
             .then(|| claim.carrier.clone()),
+        offered: offered_by(offers, &claim.carrier),
     };
     Ok((line, method))
 }
@@ -2314,7 +2400,7 @@ pub fn door_routes(
     data_chain: &[ChainAuth],
     core: &[(String, RouteMethod, RouteAuth)],
 ) -> Result<Vec<PlaneRouteSpec>, String> {
-    door_mounts(served, pin, data_chain, core, &[]).map(|m| m.routes)
+    door_mounts(served, pin, data_chain, core, &[], &[]).map(|m| m.routes)
 }
 
 /// WHAT THE DATA ROUTER MOUNTS FOR THE DOOR PLANES at its construction: their request routes, and
@@ -2350,6 +2436,7 @@ pub fn door_mounts(
     data_chain: &[ChainAuth],
     core: &[(String, RouteMethod, RouteAuth)],
     upgrades: &[&str],
+    offers: &[TransportOffer],
 ) -> Result<DoorMounts, String> {
     use busbar_contract::abi::transport::route::{method_bit, PATH_EXACT, PATH_PATTERN};
     use busbar_kernel::guest::{Claimant, GuestList, LineAuth, Matched};
@@ -2376,7 +2463,8 @@ pub fn door_mounts(
             }
             let rung =
                 u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
-            let (line, method) = claim_line(&plane.instance, rung, claim, data_chain, upgrades)?;
+            let (line, method) =
+                claim_line(&plane.instance, rung, claim, data_chain, upgrades, offers)?;
             if line.upgrade.is_some() {
                 upgraded.insert((p, rung));
             }
@@ -2406,6 +2494,8 @@ pub fn door_mounts(
                 _ => chain_auth(data_chain),
             },
             upgrade: None,
+            // The kernel's own routes run their auth on the data listener's own framer.
+            offered: crate::root::doors::offers_unstated(),
         });
     }
     let guests =
@@ -2639,7 +2729,7 @@ pub(crate) fn line_routes(
             }
             let rung =
                 u32::try_from(i).map_err(|_| format!("{}: too many claims", plane.instance))?;
-            let (line, _) = claim_line(&plane.instance, rung, claim, &[], &[])?;
+            let (line, _) = claim_line(&plane.instance, rung, claim, &[], &[], &[])?;
             of_line.insert((plane.instance.clone(), rung), (p, rung));
             lines_of.push(line);
         }

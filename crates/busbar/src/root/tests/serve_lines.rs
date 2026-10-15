@@ -17,6 +17,7 @@ fn row(
         claims,
         upgrades: Vec::new,
         lines,
+        offered: crate::root::doors::offers_unstated,
     }
 }
 

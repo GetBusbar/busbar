@@ -5,9 +5,10 @@
 //! path, a claimant's rung among its own lines; two claimants meeting at an equal precedence refused;
 //! a path hit on another method is a method miss, not no-route; a listener mixing lines that need
 //! `Peer` with lines that need a per-request point refused, a `none` line neutral to that rule and
-//! gated by the listener's `Peer` verdict.
+//! gated by the listener's `Peer` verdict; a line needing a point its transport does not offer
+//! refused.
 
-use busbar_contract::abi::auth::AuthPoints;
+use busbar_contract::abi::auth::{AuthPoints, POINT_HEAD, POINT_HEAD_BODY, POINT_PEER};
 use busbar_contract::abi::transport::route::{
     FIELD_PRESENT, FIELD_VALUE_PREFIX, METHOD_GET, METHOD_POST, PATH_EXACT, PATH_PATTERN,
     PATH_PREFIX,
@@ -32,6 +33,7 @@ fn line(claimant: &str, route: Route) -> Line {
         dialect: 0,
         auth: LineAuth::None,
         upgrade: None,
+        offered: AuthPoints(POINT_PEER | POINT_HEAD | POINT_HEAD_BODY),
     }
 }
 
@@ -263,6 +265,39 @@ fn a_listener_mixing_peer_and_non_peer_lines_is_refused() {
     );
 }
 
+/// RED (THE DESIGN §6 step 3, boot refusals): a line whose auth needs a point its transport does
+/// not offer is refused, naming the line; one whose points its transport offers seals.
+#[test]
+fn an_auth_needing_a_point_its_transport_does_not_offer_is_refused() {
+    let head_only = AuthPoints::HEAD;
+    let on = |points: AuthPoints, offered: AuthPoints| Line {
+        offered,
+        ..authed("a", "/a", points)
+    };
+    let Err(GuestRefusal::PointNotOffered(refused)) =
+        GuestList::seal(vec![on(AuthPoints::HEAD_BODY, head_only)])
+    else {
+        panic!("a point the transport does not offer is refused");
+    };
+    assert_eq!(refused.route.path, "/a");
+    assert!(
+        matches!(
+            GuestList::seal(vec![on(AuthPoints::PEER, head_only)]),
+            Err(GuestRefusal::PointNotOffered(_))
+        ),
+        "Peer on a transport offering only Head"
+    );
+    assert!(
+        GuestList::seal(vec![on(AuthPoints::HEAD, head_only)]).is_ok(),
+        "a point the transport offers seals"
+    );
+    let offered = AuthPoints(POINT_PEER | POINT_HEAD);
+    assert!(
+        GuestList::seal(vec![on(AuthPoints(POINT_PEER | POINT_HEAD), offered)]).is_ok(),
+        "every needed point offered"
+    );
+}
+
 /// RED (THE DESIGN §6 step 3, l.926-927; step 7, l.969-970): a `none` line needs no point, so it is
 /// neutral to the `Peer` mix rule: a `Peer` chain and a `none` line on one listener seal, and the
 /// sealed list is connection-gated, so the `none` line sits behind the connection's `Peer` verdict.
@@ -301,4 +336,46 @@ fn a_none_line_is_neutral_to_the_peer_mix_and_sits_behind_the_peer_verdict() {
     ])
     .expect("no line needs Peer");
     assert!(!open.connection_gated(), "no Peer line, no connection gate");
+}
+
+/// RED (ARCHITECT ruling (a) on #953; THE DESIGN §6 step 3, §11 extensions-blob defaults): the
+/// offered set is what the transport's Statement `extensions` record states. A transport stating
+/// `{Peer}` only refuses a line that needs `Head`; a transport stating no record offers `{Head,
+/// HeadBody}`, so a `Head` line seals on it and a `Peer` line is refused: a transport offering
+/// `Peer` states the record.
+#[test]
+fn the_offered_points_record_decides_what_a_line_may_need() {
+    use busbar_contract::abi::mechanism::extensions::encode;
+    use busbar_contract::abi::transport::check::check_offered_points;
+    use busbar_contract::abi::transport::EXT_OFFERED_POINTS;
+    let peer_only =
+        check_offered_points(&encode(&[(EXT_OFFERED_POINTS, &POINT_PEER.to_le_bytes())]))
+            .expect("a {Peer} record reads");
+    let unstated = check_offered_points(&[]).expect("no record reads");
+    let on = |points: AuthPoints, offered: AuthPoints| Line {
+        offered,
+        ..authed("a", "/a", points)
+    };
+    let Err(GuestRefusal::PointNotOffered(refused)) =
+        GuestList::seal(vec![on(AuthPoints::HEAD, peer_only)])
+    else {
+        panic!("a Head line on a transport stating {{Peer}} only is refused");
+    };
+    assert_eq!(refused.route.path, "/a");
+    assert!(
+        GuestList::seal(vec![on(AuthPoints::PEER, peer_only)]).is_ok(),
+        "a Peer line on a transport stating {{Peer}} seals"
+    );
+    assert_eq!(unstated, AuthPoints(POINT_HEAD | POINT_HEAD_BODY));
+    assert!(
+        GuestList::seal(vec![on(AuthPoints::HEAD, unstated)]).is_ok(),
+        "no record offers Head"
+    );
+    assert!(
+        matches!(
+            GuestList::seal(vec![on(AuthPoints::PEER, unstated)]),
+            Err(GuestRefusal::PointNotOffered(_))
+        ),
+        "no record offers no Peer"
+    );
 }
