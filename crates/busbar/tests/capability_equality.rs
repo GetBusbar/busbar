@@ -43,7 +43,7 @@
 //! ## The ROOT LEG column — the same matrix, judged a second time over the loop
 //!
 //! Every plane now also runs through the composition root — `root-llm` (the node, behind
-//! `proto-llm`) / `root-admin` behind their features, `root-mcp` through the MCP plane's memory-ABI
+//! `plane-llm`) / `root-admin` behind their features, `root-mcp` through the MCP plane's memory-ABI
 //! door on the kernel's plane driver (`root/serve.rs`, its cells in the `#[path]` test file
 //! `root/tests/serve_tests.rs`, gated by `plane-mcp`), `root-a2a` / `root-voice` on the kernel-loop
 //! rider those planes are served through (`root/gauntlet_kernel.rs`, the voice leg on its session
@@ -64,7 +64,7 @@
 //!   cell.
 //! * The evidence for a leg lives in the binary crate's own `#[cfg(test)] mod tests` inside
 //!   `src/root/` leg file, compiled only when that leg's feature is on. Cargo features reach an
-//!   integration test target too, so a `#[cfg(all(feature = "proto-llm", …))]` test here runs in
+//!   integration test target too, so a `#[cfg(all(feature = "plane-llm", …))]` test here runs in
 //!   EXACTLY the build where the legs exist — and is absent, rather than lying, in a build where
 //!   they do not.
 //!

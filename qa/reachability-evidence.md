@@ -69,7 +69,7 @@ sites, neither of them a constructor's own body:
 | llm | :83 | `flip_one_shot_to_kernel(busbar_llm::PLANE_DECLARATION.key)` | :313 |
 | streaming | :85 | `flip_session_to_kernel(busbar_voice::PLANE_KEY)` | :415 |
 
-Each flip sits behind its plane's shipping feature (`plane-mcp`, `plane-a2a`, `proto-llm`,
+Each flip sits behind its plane's shipping feature (`plane-mcp`, `plane-a2a`, `plane-llm`,
 `plane-voice`), all in `default`. The rider opens a zero hold and settles nothing: each plane's money
 is metered inside its own `drive` / the kernel session account (#28 ruling (1), OWNER Q21b). So
 `unit-path:{llm,mcp,a2a,streaming}` and `root-reach:{…}` PASS.

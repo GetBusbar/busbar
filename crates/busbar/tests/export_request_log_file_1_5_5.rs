@@ -17,9 +17,9 @@
 //! BUSBAR-7074 and the file was never created.
 
 #![cfg(unix)]
-// The config serves `providers:`/`models:`, so the build must link the plane that takes body
-// ingress: the linked table's answer, never a feature name.
-#![cfg(linked_axis_body_ingress)]
+// The config serves `providers:`/`models:`, so the build must link the plane door that declares
+// `pools:` (`linked_section_pools`): the linked table's answer, never a feature name.
+#![cfg(linked_section_pools)]
 
 mod common;
 

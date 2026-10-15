@@ -401,7 +401,8 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
 /// plane takes over that row's engine (the fallback flag, the runtime it builds and the view the
 /// core's own readers walk) and keeps every other word of its own. RED: the fold dropped the legacy
 /// row whole, so with the node's plane linked as a door the node had no fallback runtime and
-/// `/metrics` lost its lane gauges (`metrics_scrape_boot_window` under the node plane's fold switch).
+/// `/metrics` lost its lane gauges (`metrics_scrape_boot_window`, a door linked beside the fallback
+/// plane's legacy row).
 #[test]
 fn a_door_taking_the_fallback_planes_key_keeps_its_engine() {
     let base = &native("seam-l-engine")[0];

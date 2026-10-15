@@ -93,7 +93,7 @@ pub(super) fn pools_door() -> busbar_contract::abi::mechanism::door::DoorFn {
             .section
                 == busbar_contract::section::RESERVED_POOLS_KEY
         })
-        .expect("the fold switch links the door serving the `pools` map")
+        .expect("the driver-proofs row links the door serving the `pools` map")
 }
 
 /// The card history the served unit is pinned to at its door: one entry, no price.
