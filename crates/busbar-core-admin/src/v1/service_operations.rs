@@ -16,22 +16,19 @@
 //! where the block now lives.
 
 use super::*;
-use busbar_kernel::plugin_admission::sign::{TrustInput, TrustPolicy};
+use busbar_kernel::plugin_admission::sign::TrustPolicy;
 
-/// `plugins.trust` resolved as boot resolves it (the loader's `TrustPolicy::from_config`), after
-/// warning about any malformed anti-downgrade floor — every admin moment the policy resolves
-/// (catalog, reload, upload, rollback) warns exactly as boot does. `binary_version` is carried for
+/// `plugins.trust` resolved by THE ROOT'S ONE BUILDER — the one boot admits plugins under, carried
+/// on the snapshot (`App::plugin_trust`) — after warning about any malformed anti-downgrade floor,
+/// so every admin moment the policy resolves (catalog, install, inspect, rollback) reaches boot's
+/// verdict and warns exactly as boot does. No builder lives here. `binary_version` is carried for
 /// diagnostics only.
-pub(crate) fn trust_policy(cfg: &PluginsCfg, binary_version: &str) -> Result<TrustPolicy, String> {
-    cfg.warn_invalid_floors();
-    TrustPolicy::from_config(TrustInput {
-        publishers: &cfg.publisher_keys(),
-        allow_unsigned: cfg.trust.allow_unsigned,
-        allow_third_party: cfg.trust.allow_third_party,
-        min_versions: &cfg.min_versions,
-        first_party_floors: &cfg.first_party_floors,
-        binary_version,
-    })
+pub(crate) fn trust_policy(app: &App, binary_version: &str) -> Result<TrustPolicy, String> {
+    app.plugins_cfg.warn_invalid_floors();
+    let build = app.plugin_trust.ok_or_else(|| {
+        "no plugin trust policy is installed (the composition root's)".to_string()
+    })?;
+    build(&app.plugins_cfg, binary_version)
 }
 
 impl AdminService {
@@ -610,7 +607,7 @@ impl AdminService {
         // `store.module` config concern (read via `GET /config`), not summarized per-row here,
         // the same posture the compiled-in hook rows take (`active: None`).
         let mut out = linked_store_rows();
-        let Ok(policy) = trust_policy(&self.app.plugins_cfg, env!("CARGO_PKG_VERSION")) else {
+        let Ok(policy) = trust_policy(&self.app, env!("CARGO_PKG_VERSION")) else {
             return out;
         };
 
@@ -881,8 +878,8 @@ impl AdminService {
         // ── 1. filename sanity: a bare tarball filename ──
         let file = validate_plugin_filename(file)?;
 
-        let policy = trust_policy(&self.app.plugins_cfg, env!("CARGO_PKG_VERSION"))
-            .map_err(AdminError::Validation)?;
+        let policy =
+            trust_policy(&self.app, env!("CARGO_PKG_VERSION")).map_err(AdminError::Validation)?;
 
         // ── 2. STRUCTURAL: in-memory unpack + manifest completeness + integrity + abi ──
         let unpacked = busbar_kernel::plugin_admission::tarball::unpack(tarball)
@@ -1057,8 +1054,8 @@ impl AdminService {
             )));
         }
 
-        let policy = trust_policy(&self.app.plugins_cfg, env!("CARGO_PKG_VERSION"))
-            .map_err(AdminError::Validation)?;
+        let policy =
+            trust_policy(&self.app, env!("CARGO_PKG_VERSION")).map_err(AdminError::Validation)?;
 
         let unpacked = busbar_kernel::plugin_admission::tarball::unpack(tarball)
             .map_err(|e| AdminError::Validation(format!("invalid plugin tarball: {e}")))?;
@@ -1205,8 +1202,8 @@ impl AdminService {
         // third-party plugin can also roll back. Anything the target does NOT satisfy (a broken
         // signature, an un-opted-in third party) still fails: a rollback authenticates the OPERATOR,
         // never the ARTIFACT.
-        let mut policy = trust_policy(&self.app.plugins_cfg, &manifest.version)
-            .map_err(AdminError::Validation)?;
+        let mut policy =
+            trust_policy(&self.app, &manifest.version).map_err(AdminError::Validation)?;
         policy
             .min_versions
             .insert(manifest.name.clone(), manifest.version.clone());
