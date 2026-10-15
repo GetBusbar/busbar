@@ -1295,7 +1295,8 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
             .map(|f| {
                 (
                     String::from_utf8_lossy(&f.name).to_ascii_lowercase(),
-                    String::from_utf8_lossy(f.value.expose(&busbar_kernel::seal::lend())).into_owned(),
+                    String::from_utf8_lossy(f.value.expose(&busbar_kernel::seal::lend()))
+                        .into_owned(),
                 )
             })
             .collect();
