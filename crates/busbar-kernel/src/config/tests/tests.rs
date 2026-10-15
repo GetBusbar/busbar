@@ -1653,6 +1653,32 @@ fn test_on_exhausted_rejects_unknown_and_legacy_string_form() {
     assert!(serde_yaml::from_str::<OnExhaustedCfg>("fallback_pols: x").is_err());
 }
 
+/// F25 row 518: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::
+/// test_config_parsing_queue_unknown_inner_key_fails. `deny_unknown_fields` on the queue's inner
+/// body: a typo'd `max_millis` fails parsing instead of being ignored, while the same body spelled
+/// `max_ms` parses to the 250 ms queue.
+#[test]
+fn test_config_parsing_queue_unknown_inner_key_fails() {
+    let result: Result<OnExhaustedCfg, _> = serde_yaml::from_str("{ queue: { max_millis: 250 } }");
+    assert!(
+        result.is_err(),
+        "an unknown queue inner key must fail parsing"
+    );
+
+    let ok: OnExhaustedCfg =
+        serde_yaml::from_str("{ queue: { max_ms: 250 } }").expect("the spelled key parses");
+    assert_eq!(ok, OnExhaustedCfg::Queue { max_ms: 250 });
+    assert_eq!(ok.to_runtime(), OnExhausted::Queue { max_ms: 250 });
+}
+
+/// F25 row 36: rehomed from crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::
+/// the_total_deadline_the_stream_rides_defaults_to_five_minutes. The total deadline a proxied
+/// stream rides defaults to the value the binding names: 300 seconds.
+#[test]
+fn the_total_deadline_the_stream_rides_defaults_to_five_minutes() {
+    assert_eq!(DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS, 300);
+}
+
 #[test]
 fn breaker_cfg_default_matches_serde_default_fns() {
     // `BreakerCfg::default()` (used when a pool omits the whole `breaker:` block) and the

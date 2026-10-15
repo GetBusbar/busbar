@@ -120,6 +120,18 @@ fn every_piece_says_whether_the_attempts_member_relays_the_callers_credential() 
     }
 }
 
+/// F25 row 628: rehomed from crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::
+/// test_stable_hash_is_deterministic. The walk's affinity hash is stable across calls AND processes
+/// (unlike `DefaultHasher`) so session affinity survives restarts: FNV-1a pinned to a precomputed
+/// golden, so an algorithm or offset/prime swap is caught directly.
+#[test]
+fn test_stable_hash_is_deterministic() {
+    use crate::plane_driver::sticky_hash;
+    assert_eq!(sticky_hash(b"session-abc"), 0xe909_c864_ab05_9bea);
+    assert_eq!(sticky_hash(b"session-abc"), sticky_hash(b"session-abc"));
+    assert_ne!(sticky_hash(b"session-abc"), sticky_hash(b"session-xyz"));
+}
+
 #[test]
 fn a_node_without_signing_material_lends_no_caller_reference() {
     let mut b = bufs(0);

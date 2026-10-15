@@ -702,10 +702,12 @@ fn test_unauthorized_body_carries_no_busbar_vocabulary() {
         "/v1beta/models/x:generateContent",
         "/pa/v1/messages",
         "/v1/chat/completions",
+        "/v1/responses", // F25 row 65: the legacy sweep's dialect this list had dropped
         "/v2/chat",
         "/model/vendor.model/converse",
-        "/api/v1/admin/keys",    // admin path → inferred-proto fallback
-        "/totally/unknown/path", // unknown → fallback
+        "/model/anthropic.claude/converse", // F25 row 65: the legacy sweep's converse path
+        "/api/v1/admin/keys",               // admin path → inferred-proto fallback
+        "/totally/unknown/path",            // unknown → fallback
     ];
     for path in paths {
         let body = decode_body(unauthorized_response(&residual_app(), path, None));
@@ -2654,4 +2656,708 @@ async fn an_admin_identity_replayed_is_denied_and_its_named_lines_ride_out() {
         dry_run_admin_scope(&app, &headers) != busbar_contract::authz::Grants::default(),
         "a dry run claims nothing"
     );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE AUTH x DISPATCH ROWS, DRIVEN THROUGH THE SERVED DOOR (F25 rehome of busbar-llm's
+// `engine/tests/auth_dispatch_tests.rs`). The served data plane installs each plane claim as a
+// door route at the data-plane bar (`RouteAuth::Key`, `build_split_routers_serving_doors`), so the
+// kernel's `auth_middleware` decides admission before the plane is asked anything. These tests
+// mount that exact shape: a door route at the pool path whose handler answers 200 with what the
+// gate handed it (the governance context, the resolved key, the principal). A 200 is the gate's
+// admission and a 401 its refusal; the echoed facts pin WHO the gate made the caller.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+/// The request body every row below posts (the door reads none of it).
+const DOOR_BODY: &str =
+    r#"{"model":"pa","messages":[{"role":"user","content":"hi"}],"max_tokens":16}"#;
+
+/// A door route at `path` on the data-plane bar whose handler answers 200 with what the auth gate
+/// attached: `gov=attached|absent key=<resolved key id or -> principal=<principal id or ->`.
+fn admitting_door(path: &str) -> busbar_kernel::plane_routes::PlaneRouteSpec {
+    busbar_kernel::plane_routes::PlaneRouteSpec {
+        path: path.to_string(),
+        method: busbar_contract::abi::mechanism::route::RouteMethod::Post,
+        auth: busbar_contract::abi::mechanism::route::RouteAuth::Key,
+        handler: std::sync::Arc::new(|ctx: busbar_kernel::plane_routes::PlaneReqCtx| {
+            Box::pin(async move {
+                let gov = if ctx.gov.is_some() {
+                    "attached"
+                } else {
+                    "absent"
+                };
+                let key = ctx
+                    .gov
+                    .as_ref()
+                    .and_then(|g| g.key())
+                    .map_or_else(|| "-".to_string(), |k| k.id.clone());
+                let principal = ctx
+                    .principal
+                    .as_ref()
+                    .and_then(|p| p.0.as_ref())
+                    .map_or_else(|| "-".to_string(), |p| p.id.clone());
+                axum::response::Response::new(axum::body::Body::from(format!(
+                    "gov={gov} key={key} principal={principal}"
+                )))
+            })
+        }),
+    }
+}
+
+/// Serve `app`'s data plane as production builds it, with an admitting door at each of `paths`.
+async fn door_serve(
+    app: std::sync::Arc<crate::state::App>,
+    paths: &[&str],
+) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+    crate::snapshot::init();
+    let doors = paths.iter().map(|p| admitting_door(p)).collect();
+    let (router, _admin, _handle) = crate::build_split_routers_serving(
+        app,
+        doors,
+        busbar_kernel::proxy::max_translate_body_bytes(),
+        crate::config::DEFAULT_MAX_INBOUND_CONCURRENT,
+        crate::config::DEFAULT_RESPONSE_HEADERS_SERVER_TIMING,
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (addr, handle)
+}
+
+/// One POST to the door at `path`, presenting `credential` on the header `carrier` (`None` = no
+/// credential at all). Returns (status, content-type, body).
+async fn door_post(
+    addr: std::net::SocketAddr,
+    path: &str,
+    credential: Option<(&str, &str)>,
+) -> (u16, Option<String>, String) {
+    let mut req = reqwest::Client::new()
+        .post(format!("http://{addr}{path}"))
+        .body(DOOR_BODY);
+    if let Some((carrier, value)) = credential {
+        req = req.header(carrier, value);
+    }
+    let r = req.send().await.unwrap();
+    let status = r.status().as_u16();
+    let ct = r
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let body = r.text().await.unwrap();
+    (status, ct, body)
+}
+
+/// The `Authorization: Bearer` carrier, spelled as the SDKs send it.
+fn bearer(secret: &str) -> String {
+    format!("Bearer {secret}")
+}
+
+/// [`door_post`] presenting `secret` on `Authorization: Bearer`.
+async fn door_bearer(
+    addr: std::net::SocketAddr,
+    path: &str,
+    secret: &str,
+) -> (u16, Option<String>, String) {
+    let auth = bearer(secret);
+    door_post(addr, path, Some(("authorization", auth.as_str()))).await
+}
+
+/// A governance engine with a signing key, `admin_token` deciding whether it is active.
+fn door_gov(admin_token: Option<&str>) -> std::sync::Arc<crate::governance::GovState> {
+    let store = std::sync::Arc::new(crate::governance::MemoryStore::new());
+    let signer = crate::governance::signing::TokenSigner::from_secret_bytes(
+        &[7u8; 32],
+        crate::governance::signing::DEFAULT_KID,
+    );
+    std::sync::Arc::new(
+        crate::governance::GovState::new_with_signer(
+            store,
+            admin_token.map(str::to_string),
+            Some(signer),
+        )
+        .unwrap(),
+    )
+}
+
+/// Mint one signed key named `name`, allowed on `pools`. Returns (key id, secret).
+fn door_mint(gov: &crate::governance::GovState, name: &str, pools: &[&str]) -> (String, String) {
+    let (key, secret) = gov
+        .mint_signed(
+            crate::governance::NewKeySpec {
+                name: name.to_string(),
+                allowed_pools: Some(pools.iter().map(|p| p.to_string()).collect()),
+                group: None,
+                labels: Default::default(),
+                ..Default::default()
+            },
+            2_000_000_000,
+            1_000_000_000,
+        )
+        .unwrap();
+    (key.id, secret.expose_secret().as_str().to_string())
+}
+
+/// A deployment with pool `pa` (one lane, never dialled: the door answers before any dispatch).
+fn door_app() -> crate::test_support::TestApp {
+    crate::test_support::TestApp::new()
+        .lane(
+            crate::test_support::LaneSpec::new(
+                "test-model",
+                crate::proto::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1",
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("pa", &[(0, 1)])
+}
+
+/// The 200 body the door answers for an admitted caller.
+fn admitted(gov: &str, key: &str, principal: &str) -> String {
+    format!("gov={gov} key={key} principal={principal}")
+}
+
+/// F25 row 49: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_chain_accepts_all_carriers_and_native_401.
+/// Pins: a chain-identified, role-bound token is admitted 200 on each of the three carriers
+/// (Authorization, x-api-key, x-goog-api-key); a wrong token, an identified-but-unbound
+/// principal and no credential are each 401 with an `application/json` envelope carrying `error`.
+#[tokio::test]
+async fn test_chain_accepts_all_carriers_and_native_401() {
+    let token = "grp:carrier";
+    let app = door_app()
+        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
+            &chain_cfg(&["test-groups-module"]),
+        )))
+        .role_bindings(bindings_for(
+            "test-groups-module",
+            &[("carrier", binding(None, None, None))],
+        ))
+        .build();
+    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+    let url = "/pa/v1/messages";
+
+    let auth = bearer(token);
+    for (carrier, value) in [
+        ("authorization", auth.as_str()),
+        ("x-api-key", token),
+        ("x-goog-api-key", token),
+    ] {
+        let (status, _, body) = door_post(addr, url, Some((carrier, value))).await;
+        assert_eq!(status, 200, "a valid token via {carrier} must pass: {body}");
+        assert!(
+            body.starts_with("gov=attached key=") && body.ends_with(" principal=test:carrier"),
+            "the chain identified the token via {carrier} and the bound role keyed it: {body}"
+        );
+        assert!(
+            !body.contains("key=- "),
+            "a bound role is admitted under a governance key: {body}"
+        );
+    }
+
+    // Wrong token via x-api-key → 401, native JSON envelope with an `error` object.
+    let (status, ct, body) = door_post(addr, url, Some(("x-api-key", "not-the-token"))).await;
+    assert_eq!(status, 401, "wrong token must be 401: {body}");
+    assert_eq!(
+        ct.as_deref(),
+        Some("application/json"),
+        "401 must carry application/json native envelope, not text/plain"
+    );
+    let env: serde_json::Value = serde_json::from_str(&body).expect("401 body is JSON");
+    assert!(
+        env.get("error").is_some_and(serde_json::Value::is_object),
+        "native error envelope must contain an `error` object: {env}"
+    );
+
+    // Identified, but the role is unbound: no governance key → 401, same envelope.
+    let (status, ct, body) = door_post(addr, url, Some(("x-api-key", "grp:unbound"))).await;
+    assert_eq!(
+        status, 401,
+        "an identified principal with no governance key must be refused: {body}"
+    );
+    assert_eq!(ct.as_deref(), Some("application/json"));
+
+    // No credential at all → 401, still JSON.
+    let (status, ct, body) = door_post(addr, url, None).await;
+    assert_eq!(status, 401, "missing token must be 401: {body}");
+    assert_eq!(ct.as_deref(), Some("application/json"));
+
+    handle.abort();
+}
+
+/// F25 row 50: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_disabled_virtual_key_is_rejected_401.
+/// Pins, in one rig (`chain: [keys]` + active governance): a disabled signed key 401, an unknown
+/// key `sk-vk-nope` 401, and an enabled key of the same shape 200 under its own key id.
+#[tokio::test]
+async fn test_disabled_virtual_key_is_rejected_401() {
+    let gov = door_gov(Some("admintok"));
+    let (dis_id, disabled_secret) = door_mint(&gov, "kdis", &["pa"]);
+    let (ena_id, enabled_secret) = door_mint(&gov, "kena", &["pa"]);
+    // Freeze the first key via the PATCH-shaped update (mint always starts `enabled: true`).
+    gov.update_key(&dis_id, Some(false), None).unwrap();
+    let app = door_app().keys_chain().governance(gov).build();
+    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+    let url = "/pa/v1/messages";
+
+    let (status, _, body) = door_bearer(addr, url, &disabled_secret).await;
+    assert_eq!(
+        status, 401,
+        "a disabled virtual key must be rejected: {body}"
+    );
+
+    let (status, _, body) = door_bearer(addr, url, "sk-vk-nope").await;
+    assert_eq!(status, 401, "unknown key must be rejected: {body}");
+
+    let (status, _, body) = door_bearer(addr, url, &enabled_secret).await;
+    assert_eq!(status, 200, "an enabled virtual key must pass auth: {body}");
+    assert_eq!(body, admitted("attached", &ena_id, &ena_id));
+
+    handle.abort();
+}
+
+/// F25 row 51: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_governance_accepts_vendor_carriers_and_native_401.
+/// Pins: under `chain: [keys]` + active governance, a minted signed key (allowed on `pa`) is
+/// admitted 200 via `x-goog-api-key` and via `x-api-key`; an unknown key via `x-goog-api-key` is 401
+/// with `application/json`.
+#[tokio::test]
+async fn test_governance_accepts_vendor_carriers_and_native_401() {
+    let gov = door_gov(Some("admintok"));
+    let (key_id, secret) = door_mint(&gov, "kc", &["pa"]);
+    let app = door_app().keys_chain().governance(gov).build();
+    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+    let url = "/pa/v1/messages";
+
+    for carrier in ["x-goog-api-key", "x-api-key"] {
+        let (status, _, body) = door_post(addr, url, Some((carrier, secret.as_str()))).await;
+        assert_eq!(
+            status, 200,
+            "valid virtual key via {carrier} must pass governance: {body}"
+        );
+        assert_eq!(body, admitted("attached", &key_id, &key_id));
+    }
+
+    let (status, ct, body) = door_post(addr, url, Some(("x-goog-api-key", "sk-vk-nope"))).await;
+    assert_eq!(
+        status, 401,
+        "an unknown virtual key via x-goog-api-key must be 401: {body}"
+    );
+    assert_eq!(
+        ct.as_deref(),
+        Some("application/json"),
+        "401 must carry the native application/json envelope, not text/plain"
+    );
+
+    handle.abort();
+}
+
+/// F25 row 52: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_governance_revoked_signed_token_key_rejected.
+/// Pins: a live signed key is admitted 200; after `revoke` (which leaves `enabled` true)
+/// `is_revoked` holds and the SAME token is refused 401.
+#[tokio::test]
+async fn test_governance_revoked_signed_token_key_rejected() {
+    let gov = door_gov(Some("admintok"));
+    let (key_id, secret) = door_mint(&gov, "revocable", &["pa"]);
+    let app = door_app().keys_chain().governance(gov.clone()).build();
+    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+    let url = "/pa/v1/messages";
+
+    let (status, _, body) = door_bearer(addr, url, &secret).await;
+    assert_eq!(
+        status, 200,
+        "a live signed-token key must authenticate: {body}"
+    );
+    assert_eq!(body, admitted("attached", &key_id, &key_id));
+
+    gov.revoke(&key_id, "audit regression").unwrap();
+    assert!(gov.is_revoked(&key_id), "revoke must denylist the subject");
+
+    let (status, _, body) = door_bearer(addr, url, &secret).await;
+    assert_eq!(
+        status, 401,
+        "a REVOKED signed-token key's presented token must be rejected: {body}"
+    );
+
+    handle.abort();
+}
+
+/// F25 row 53: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_governance_inert_without_admin_token_static_token_admitted.
+/// Pins: an INERT engine (no admin token) does not supersede the static chain — the chain's
+/// bound token `grp:static` is admitted 200 and `not-the-token` is still 401.
+#[tokio::test]
+async fn test_governance_inert_without_admin_token_static_token_admitted() {
+    let gov = std::sync::Arc::new(
+        crate::governance::GovState::new(
+            std::sync::Arc::new(crate::governance::MemoryStore::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    assert!(
+        gov.admin_token_hash().is_none(),
+        "precondition: engine must be inert (no admin token)"
+    );
+    let app = door_app()
+        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
+            &chain_cfg(&["test-groups-module"]),
+        )))
+        .governance(gov)
+        .role_bindings(bindings_for(
+            "test-groups-module",
+            &[("static", binding(None, None, None))],
+        ))
+        .build();
+    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+    let url = "/pa/v1/messages";
+
+    let (status, _, body) = door_bearer(addr, url, "grp:static").await;
+    assert_eq!(
+        status, 200,
+        "an inert governance engine must NOT supersede the static chain: {body}"
+    );
+    assert!(
+        body.ends_with(" principal=test:static"),
+        "the static chain identified the caller: {body}"
+    );
+
+    let (status, _, body) = door_bearer(addr, url, "not-the-token").await;
+    assert_eq!(
+        status, 401,
+        "the static chain must still reject a token it does not identify: {body}"
+    );
+
+    handle.abort();
+}
+
+/// F25 row 54: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_governance_inert_without_admin_token_open_relay_admits.
+/// Pins: an INERT engine (no admin token), no auth chain, `upstream_credentials: own` — a request
+/// with no credential is admitted 200 anonymous (the open relay is not superseded).
+#[tokio::test]
+async fn test_governance_inert_without_admin_token_open_relay_admits() {
+    let gov = std::sync::Arc::new(
+        crate::governance::GovState::new(
+            std::sync::Arc::new(crate::governance::MemoryStore::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let app = door_app()
+        .upstream_creds(crate::auth::UpstreamCreds::Own)
+        .governance(gov)
+        .build();
+    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+
+    let (status, _, body) = door_post(addr, "/pa/v1/messages", None).await;
+    assert_eq!(
+        status, 200,
+        "an inert governance engine must NOT supersede the open relay: {body}"
+    );
+    assert_eq!(body, admitted("attached", "-", "-"));
+
+    handle.abort();
+}
+
+/// F25 row 55: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_governance_active_with_admin_token_enforces_minted_key.
+/// Pins, in one rig (`chain: [keys]` + ACTIVE governance): the minted signed key 200, an unknown
+/// token `sk-vk-unknown` 401.
+#[tokio::test]
+async fn test_governance_active_with_admin_token_enforces_minted_key() {
+    let gov = door_gov(Some("admintok"));
+    assert!(
+        gov.admin_token_hash().is_some(),
+        "precondition: engine active"
+    );
+    let (key_id, secret) = door_mint(&gov, "k", &["pa"]);
+    let app = door_app().keys_chain().governance(gov).build();
+    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+    let url = "/pa/v1/messages";
+
+    let (status, _, body) = door_bearer(addr, url, &secret).await;
+    assert_eq!(
+        status, 200,
+        "an enabled virtual key must pass under active governance: {body}"
+    );
+    assert_eq!(body, admitted("attached", &key_id, &key_id));
+
+    let (status, _, body) = door_bearer(addr, url, "sk-vk-unknown").await;
+    assert_eq!(
+        status, 401,
+        "active governance must reject an unknown token: {body}"
+    );
+
+    handle.abort();
+}
+
+/// F25 row 56: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_inert_governance_persisted_key_is_not_enforced_static_chain_wins.
+/// Pins: a store that still holds a key (scoped to pool `restricted` only) under an INERT engine
+/// confers nothing — the persisted secret is 401 from the static chain, and the chain's own token
+/// is admitted 200 under the chain's key, never the persisted one.
+#[tokio::test]
+async fn test_inert_governance_persisted_key_is_not_enforced_static_chain_wins() {
+    use crate::governance::RecordStore as _;
+    let persisted_secret = "sk-vk-persisted-from-prior-run";
+    let store = std::sync::Arc::new(crate::governance::MemoryStore::new());
+    store
+        .put_key(&crate::governance::VirtualKey {
+            id: "kold".to_string(),
+            generation_hash: busbar_contract::redacted::sha256_hex(persisted_secret.as_bytes()),
+            name: "kold".to_string(),
+            allowed_scopes: Some(vec![ScopeRef::pool("restricted")]),
+            enabled: true,
+            created_at: 0,
+            group: None,
+            labels: Default::default(),
+            expires_at: None,
+            deleted_at: None,
+            revision: 1,
+            ..Default::default()
+        })
+        .unwrap();
+    let gov = std::sync::Arc::new(crate::governance::GovState::new(store, None).unwrap());
+    assert!(
+        gov.admin_token_hash().is_none(),
+        "precondition: engine must be inert (no admin token)"
+    );
+    let app = door_app()
+        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
+            &chain_cfg(&["test-groups-module"]),
+        )))
+        .governance(gov)
+        .role_bindings(bindings_for(
+            "test-groups-module",
+            &[("static-chain", binding(None, None, None))],
+        ))
+        .build();
+    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+    let url = "/pa/v1/messages";
+
+    let (status, _, body) = door_bearer(addr, url, persisted_secret).await;
+    assert_eq!(
+        status, 401,
+        "an inert engine's persisted key must confer nothing — the static chain rejects it: {body}"
+    );
+
+    let (status, _, body) = door_bearer(addr, url, "grp:static-chain").await;
+    assert_eq!(
+        status, 200,
+        "the static chain governs an inert engine: {body}"
+    );
+    assert!(
+        body.ends_with(" principal=test:static-chain"),
+        "the static chain identified the caller: {body}"
+    );
+    assert!(
+        !body.contains("key=kold "),
+        "the persisted key's controls are not consulted: {body}"
+    );
+
+    handle.abort();
+}
+
+/// F25 row 58: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_open_chain_admin_token_no_credential_admits_anon.
+/// Pins: `chain: []` + governance with an admin token and a minted key + no credential → 200
+/// ANONYMOUS (no key, no principal).
+#[tokio::test]
+async fn test_1_5_2_open_chain_admin_token_no_credential_admits_anon() {
+    let gov = door_gov(Some("admintok"));
+    let _ = door_mint(&gov, "vk", &["pa"]);
+    let app = door_app().governance(gov).build();
+    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+
+    let (status, _, body) = door_post(addr, "/pa/v1/messages", None).await;
+    assert_eq!(
+        status, 200,
+        "chain:[] + admin token + no credential must admit ANONYMOUS: {body}"
+    );
+    assert_eq!(body, admitted("attached", "-", "-"));
+
+    handle.abort();
+}
+
+/// F25 row 59: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_open_chain_inserts_default_govctx_no_500.
+/// Pins: an open-chain request carries a DEFAULT governance context to the handler (never a 500
+/// `MissingExtension`): not 500, exactly 200, and the handler saw the context attached.
+#[tokio::test]
+async fn test_1_5_2_open_chain_inserts_default_govctx_no_500() {
+    let gov = door_gov(Some("admintok"));
+    let _ = door_mint(&gov, "vk", &["pa"]);
+    let app = door_app().governance(gov).build();
+    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+
+    let (status, _, body) = door_post(addr, "/pa/v1/messages", None).await;
+    assert_ne!(
+        status, 500,
+        "open chain must insert a default GovCtx (no MissingExtension 500): {body}"
+    );
+    assert_eq!(status, 200, "{body}");
+    assert!(
+        body.starts_with("gov=attached "),
+        "the open arm inserts the default context: {body}"
+    );
+
+    handle.abort();
+}
+
+/// F25 row 60: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_open_chain_valid_vkey_ignored_not_metered.
+/// Pins: `chain: []` + admin token + a VALID key voluntarily presented → 200 PURE ANONYMOUS: the
+/// gate resolves no key (so nothing downstream can meter one) and the key's ledger records no spend.
+#[tokio::test]
+async fn test_1_5_2_open_chain_valid_vkey_ignored_not_metered() {
+    let gov = door_gov(Some("admintok"));
+    let (key_id, secret) = door_mint(&gov, "vk", &["pa"]);
+    let app = door_app().governance(gov.clone()).build();
+    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+
+    let (status, _, body) = door_bearer(addr, "/pa/v1/messages", &secret).await;
+    assert_eq!(
+        status, 200,
+        "open chain admits regardless of the presented vkey: {body}"
+    );
+    assert_eq!(
+        body,
+        admitted("attached", "-", "-"),
+        "an empty chain must NOT resolve a presented vkey (pure anonymous)"
+    );
+    let spend = gov
+        .usage_for(
+            &crate::cost::CostModel::flat(1),
+            &key_id,
+            busbar_kernel::store::now(),
+        )
+        .unwrap()
+        .map(|u| u.spend_cents)
+        .unwrap_or(0);
+    assert_eq!(
+        spend, 0,
+        "an empty chain must NOT meter a presented vkey (pure anonymous)"
+    );
+
+    handle.abort();
+}
+
+/// F25 row 61: rehomed from crates/busbar-llm/src/engine/tests/auth_dispatch_tests.rs::test_1_5_2_keys_chain_valid_vkey_admits.
+/// Pins: `chain: [keys]` + a valid enabled signed key → 200, admitted under that key.
+#[tokio::test]
+async fn test_1_5_2_keys_chain_valid_vkey_admits() {
+    let gov = door_gov(Some("admintok"));
+    let (key_id, secret) = door_mint(&gov, "vk", &["pa"]);
+    let app = door_app().keys_chain().governance(gov).build();
+    let (addr, handle) = door_serve(app, &["/pa/v1/messages"]).await;
+
+    let (status, _, body) = door_bearer(addr, "/pa/v1/messages", &secret).await;
+    assert_eq!(
+        status, 200,
+        "chain:[keys] + valid enabled vkey must admit: {body}"
+    );
+    assert_eq!(body, admitted("attached", &key_id, &key_id));
+
+    handle.abort();
+}
+
+/// F25 row 65: rehomed from crates/busbar-llm/src/engine/tests/auth_native_envelope_tests.rs::test_unauthorized_body_carries_no_busbar_vocabulary.
+/// Pins: over the live stack (token mode, a wrong credential, no plane mounted), the auth-failure
+/// body for EVERY data-plane path shape the legacy swept — including `/v1/responses` and
+/// `/model/anthropic.claude/converse` — is JSON and names none of busbar's auth vocabulary.
+#[tokio::test]
+async fn test_unauthorized_body_carries_no_busbar_vocabulary_on_the_live_stack() {
+    const FORBIDDEN: &[&str] = &[
+        "virtual key",
+        "client token",
+        "client_token",
+        "allowlist",
+        "disabled",
+        "passthrough",
+        "busbar",
+        "unauthorized",
+        "admin",
+    ];
+    crate::snapshot::init();
+    let app = door_app()
+        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
+            &chain_cfg(&["test-groups-module"]),
+        )))
+        .build();
+    let (addr, handle) = dp_serve(app).await;
+    let paths = [
+        "/v1beta/models/x:generateContent",
+        "/pa/v1/messages",
+        "/v1/chat/completions",
+        "/v1/responses",
+        "/v2/chat",
+        "/model/anthropic.claude/converse",
+        "/totally/unknown/path",
+    ];
+    for path in paths {
+        let (status, ct, raw) = door_post(addr, path, Some(("x-api-key", "wrong-token"))).await;
+        assert!(
+            status == 401 || status == 403,
+            "'{path}' must be refused by the auth gate (got {status}): {raw}"
+        );
+        assert_eq!(ct.as_deref(), Some("application/json"), "'{path}': {raw}");
+        let body: serde_json::Value = serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("auth-failure body for '{path}' must be JSON ({e}): {raw}"));
+        let mut strings = Vec::new();
+        collect_strings(&body, &mut strings);
+        assert!(
+            !strings.is_empty(),
+            "'{path}' body carries a message: {body}"
+        );
+        for s in &strings {
+            let lc = s.to_ascii_lowercase();
+            for bad in FORBIDDEN {
+                assert!(
+                    !lc.contains(bad),
+                    "auth-failure body for '{path}' leaked busbar vocabulary '{bad}': {body}"
+                );
+            }
+        }
+    }
+    handle.abort();
+}
+
+/// F25 row 71: rehomed from crates/busbar-llm/src/engine/tests/auth_native_envelope_tests.rs::test_admin_prefix_is_boundary_safe.
+/// Pins: `/apix/v1/messages` (a path that merely starts with the bytes `/api`) with a wrong token is
+/// refused by the NORMAL data-plane branch — a 401 in the residual dialect's native
+/// `application/json` envelope with `error.type == "authentication_error"` — never the admin
+/// branch's frozen `{error:{code}}` envelope and never a 500.
+#[tokio::test]
+async fn test_admin_prefix_is_boundary_safe() {
+    crate::snapshot::init();
+    let app = crate::test_support::TestApp::new()
+        .lane(
+            crate::test_support::LaneSpec::new(
+                "test-model",
+                crate::proto::PROTO_ANTHROPIC,
+                "http://127.0.0.1:1",
+            )
+            .api_key("busbar-upstream-key"),
+        )
+        .pool("apix", &[(0, 1)])
+        .auth(std::sync::Arc::new(AuthMiddleware::new_builtin(
+            &chain_cfg(&["test-groups-module"]),
+        )))
+        .build();
+    let (addr, handle) = dp_serve(app).await;
+
+    let (status, ct, raw) = door_post(
+        addr,
+        "/apix/v1/messages",
+        Some(("x-api-key", "wrong-token")),
+    )
+    .await;
+    assert_eq!(
+        status, 401,
+        "an /apix path with a wrong token must be a normal 401, not 500/admin: {raw}"
+    );
+    assert_eq!(ct.as_deref(), Some("application/json"));
+    let env: serde_json::Value = serde_json::from_str(&raw).expect("401 body is JSON");
+    assert_eq!(
+        env["error"]["type"],
+        crate::proxy::KIND_AUTHENTICATION,
+        "expected the data plane's native authentication_error: {env}"
+    );
+    assert!(
+        env["error"].get("code").is_none(),
+        "the admin branch's frozen {{error:{{code}}}} envelope must not answer a non-admin path: {env}"
+    );
+
+    handle.abort();
 }

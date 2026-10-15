@@ -1053,6 +1053,45 @@ fn split_url_ends_the_authority_where_the_dialler_does() {
     ));
 }
 
+/// F25 row 75: rehomed from crates/busbar-llm/src/engine/tests/auth_style_tests.rs::
+/// test_host_from_base_backslash_authority_matches_wire_host (its dialled-host half; the signed
+/// host is pinned equal to it by the plane driver's far-end tests). A WHATWG reader ends the
+/// authority at the first `\` exactly as at `/`, so the host the stack dials is the one BEFORE the
+/// backslash, never the post-`@` host a backslash-blind split would read; the port survives and the
+/// backslash path is read as a path. The legacy fourth case (`user:pass@host\p`) is the row-74
+/// userinfo ruling: a userinfo is refused here, wherever a `\` moves the boundary.
+#[test]
+fn test_host_from_base_backslash_authority_matches_wire_host() {
+    for (url, host, port, path) in [
+        (
+            "https://evil.example.com\\@victim.example/path",
+            "evil.example.com",
+            443,
+            "/@victim.example/path",
+        ),
+        (
+            "https://host.example.com\\some\\path",
+            "host.example.com",
+            443,
+            "/some/path",
+        ),
+        (
+            "https://host.example.com:8443\\v1\\foo",
+            "host.example.com",
+            8443,
+            "/v1/foo",
+        ),
+    ] {
+        let (https, h, p, pa) = split_url(url).unwrap_or_else(|e| panic!("{url}: {e}"));
+        assert!(https, "{url}");
+        assert_eq!((h.as_str(), p, pa.as_str()), (host, port, path), "{url}");
+    }
+    assert!(matches!(
+        split_url("https://user:pass@host.example.com\\p"),
+        Err(AddressRefusal::NoHost(_))
+    ));
+}
+
 /// The structural half of the check — what `dest.judge` answers without resolving — refuses every
 /// loopback and private spelling for a class without `allow_private`. RED on the `/`-only reader,
 /// which read each of these as an unresolved NAME and allowed it.
