@@ -161,11 +161,6 @@ item = "PLANE_ADMIN_ENVELOPE"
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/egress/seam.rs"
-item = "HOSTLESS"
-
-[[finding]]
-rule = "door-only:static-seam"
 file = "crates/busbar-kernel/src/plane/config.rs"
 item = "PLANE_SECTIONS"
 
@@ -189,11 +184,6 @@ item = "EPOCH"
 
 [[finding]]
 rule = "door-only:static-seam"
-file = "crates/busbar-kernel/src/test_support/mod.rs"
-item = "SECTION_PLANE_TEST_RUNTIME_FACTORY"
-
-[[finding]]
-rule = "door-only:static-seam"
 file = "crates/busbar-llm/src/unit/node.rs"
 item = "NATIVE_SEATS"
 
@@ -202,12 +192,3 @@ rule = "door-only:static-seam"
 file = "crates/busbar-voice/src/mount.rs"
 item = "COMPOSED_GOVERNED_CALLS"
 
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/plugin-loader/src/observe.rs"
-item = "HOST_SERIES"
-
-[[finding]]
-rule = "door-only:static-seam"
-file = "crates/plugin-loader/src/observe.rs"
-item = "OBSERVER"

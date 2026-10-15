@@ -4,7 +4,7 @@
 //! MONEY REFUSES AT THE DOOR, AND ENDS NOTHING THAT IS ALREADY RUNNING.
 //!
 //! The design binding this file exists for says that on a 1.5.5-shaped deployment an ADMITTED
-//! `http`/`sse` unit is never ended for money: there is no `Aborted(Kernel { OverBudget })` and no
+//! request/response or event-stream unit is never ended for money: there is no `Aborted(Kernel { OverBudget })` and no
 //! `Aborted(Kernel { OverdraftCeiling })`, the overdraft ceiling is unbounded, and
 //! `OverdraftCeiling` and `StaleSlice` are never refusal reasons. Value has already been delivered
 //! by the time a mid-unit shortfall is visible, so the unit runs to its end and the excess is
@@ -334,19 +334,19 @@ fn no_abort_the_shipped_kernel_can_raise_carries_a_money_reason() {
 /// own checks, zero production callers — taking their three `RefusalStep::Approve` sites
 /// (`SelfApproval`, `PayloadMismatch`, `InsufficientApprovers`) with them. None is a money reason and
 /// none was served. The population was ninety-eight since. K2c (DEAD-UNITS) then deleted
-/// `root/units_mcp.rs` — the pre-unification mcp unit bindings no chain from `fn main()` reaches; the
+/// the first plane's pre-unification unit bindings file — the bindings no chain from `fn main()` reaches; the
 /// plane is served through the kernel-loop rider and meters inside its own `drive` — taking its four
 /// sites with it: two `HandoffMismatch` (arrival), one `DecodeFailed` and the one carried `*reason`
 /// (decode; pinned below until then). None is a money reason and none was served. The population was
-/// ninety-four. K2c then deleted `root/units_a2a.rs` — the pre-unification a2a unit bindings, built
+/// ninety-four. K2c then deleted the second plane's pre-unification unit bindings file, built
 /// only at their own constructor and in their tests; the plane is served through the same rider and
 /// ledgers its payload bytes inside its own `drive` — taking its seventeen sites with it: six
 /// `NoDestination`, three `DecodeFailed`, three `ScopeDenied`, one each of `OverBudget`,
 /// `DurabilityUnavailable`, `Revoked` and `MeterDisputed`, and the one carried
 /// `refusal.kind.reason()` (pinned below until then). The `OverBudget` was a door refusal on a unit
 /// no request reached; the served admission refuses over-budget itself. The population was
-/// seventy-seven since. K2f then deleted `root/units_voice.rs` — the pre-unification voice unit
-/// bindings (`VoiceUnit`), built only at their own constructor and in their tests; the streaming
+/// seventy-seven since. K2f then deleted the session plane's pre-unification unit bindings file,
+/// built only at their own constructor and in their tests; the session
 /// plane is served through the kernel-loop session rider and meters each turn on the kernel's
 /// session account (Q21b) — taking its ten sites with it: two `NoDestination`, two `OverBudget`, two
 /// `ScopeDenied`, one `DeadlineExceeded`, one `ScratchExhausted`, and the two carried `reason` /

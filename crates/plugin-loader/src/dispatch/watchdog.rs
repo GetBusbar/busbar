@@ -58,6 +58,8 @@ fn breach(pool: &Pool, inst: &Instance) -> bool {
             "plugin quarantined: every new call answers FAULT without a crossing"
         );
     }
+    // A quarantine is a FAULT AND REVOKE (#74): its handle names nothing any more.
+    inst.revoke();
     true
 }
 

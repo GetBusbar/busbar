@@ -566,6 +566,7 @@ impl Framing {
                     flags: PIECE_END_OF_FRAME,
                     _reserved: 0,
                     retry_after_secs: 0,
+                    declared_len: 0,
                 });
             }
             at += len;
@@ -603,6 +604,7 @@ impl Framing {
                     flags,
                     _reserved: 0,
                     retry_after_secs: 0,
+                    declared_len: 0,
                 });
             }
             y.frame_len = n as u64;

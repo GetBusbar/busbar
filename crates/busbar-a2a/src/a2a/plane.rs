@@ -39,7 +39,7 @@ use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
-use busbar_kernel::{plane::DemotionRecord, trust::VerifyGate};
+use busbar_kernel::{plane::registry::EgressDriver, plane::DemotionRecord, trust::VerifyGate};
 
 use super::config::{AgentPinCfg, AgentsCfg, DEFAULT_RECOVERY_BACKOFF_MS};
 use super::fetch::FetchPolicy;
@@ -118,6 +118,11 @@ pub struct A2aPlane {
     /// later apply is verified on the boot-time transport. Concrete type (no erasure) because this
     /// object lives inside the a2a module, which is compiled only under `plane-a2a`.
     cards: Arc<OnceLock<Arc<super::transport::LiveCardFetch>>>,
+    /// THE HOSTLESS-EGRESS DRIVER this plane's hops run on: the one the App handed this
+    /// generation's build (`BuildCtx::hostless`), held HERE on the plane rather than read off a
+    /// process-wide static, so the relay transport, the boot-built card transports and an operator
+    /// verb's probe all drive the App that built this plane.
+    egress: super::transport::Driver,
     /// THE OPERATOR'S APPROVALS, KEPT: the kernel's trust-decision record over the configured
     /// store, its sink attached by the `hydrate` hook. `approve` writes the approval it locks here
     /// before applying it, and every registry this plane lowers reloads what is kept, so an
@@ -228,6 +233,8 @@ impl A2aPlane {
             Arc::new(VerifyGate::new()),
             Arc::new(OnceLock::new()),
             Arc::default(),
+            // The driver the App build hands every plane (`BuildCtx::hostless`).
+            EgressDriver::core().get(),
         )
     }
 
@@ -243,6 +250,7 @@ impl A2aPlane {
         verify: Arc<VerifyGate>,
         cards: Arc<OnceLock<Arc<super::transport::LiveCardFetch>>>,
         kept: Arc<DemotionRecord>,
+        egress: super::transport::Driver,
     ) -> Option<Arc<Self>> {
         if cfg.agents.is_empty() {
             return None;
@@ -276,6 +284,7 @@ impl A2aPlane {
         let plane = Arc::new(Self {
             relay: RwLock::new(Arc::new(super::transport::LiveCardFetch::new(
                 fetch_policy.clone(),
+                egress,
             ))),
             public_url: public_url.map(str::to_string),
             fetch_policy,
@@ -286,6 +295,7 @@ impl A2aPlane {
             verify,
             cards,
             kept,
+            egress,
             defs: Arc::new(cfg.clone()),
         });
         plane.reload_kept();
@@ -295,6 +305,11 @@ impl A2aPlane {
     /// THE KEPT-APPROVAL RECORD, as the `hydrate` hook attaches its store and `approve` writes it.
     pub(crate) fn kept(&self) -> &DemotionRecord {
         &self.kept
+    }
+
+    /// The hostless-egress driver this plane's hops run on (see the field).
+    pub(crate) fn egress(&self) -> super::transport::Driver {
+        self.egress
     }
 
     /// The OWNED-`Arc` twin of [`Self::kept`], carried across a config apply.

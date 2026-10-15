@@ -3,19 +3,19 @@
 
 //! THE HOST SERVICES ACROSS THE HOT SEAM (minor 30; ARCHITECT SD-3 queue (6), DEC-SERVE G2).
 //!
-//! The contract ports a codec reaches — [`fill_entropy`](crate::codec::fill_entropy),
-//! [`wall_clock_now`](crate::codec::wall_clock_now) and
-//! [`max_translate_body_bytes`](crate::codec::max_translate_body_bytes) — are process-wide
-//! `OnceLock`s the host arms in ITS image. A plane LINKED into the host shares that image, so it
-//! reads the host's services. A plane DROPPED IN as a `cdylib` carries its own copy of this crate,
-//! whose ports nothing armed: it read the failure path of every one (a synthesized id with no
-//! entropy, an unstamped time, the default cap instead of the operator's). A usage-tap fault is no
-//! port: the plane returns it as data on its answer (`abi::plane::OnPieceOut::tap_fault`), and the
-//! `tap_fault_latch` slot is served and armed by no one.
+//! The contract ports a codec reaches — [`fill_entropy`](crate::codec::fill_entropy) and
+//! [`wall_clock_now`](crate::codec::wall_clock_now) — are process-wide `OnceLock`s the host arms in
+//! ITS image. A plane LINKED into the host shares that image, so it reads the host's services. A
+//! plane DROPPED IN as a `cdylib` carries its own copy of this crate, whose ports nothing armed: it
+//! read the failure path of every one (a synthesized id with no entropy, an unstamped time). A
+//! usage-tap fault is no port: the plane returns it as data on its answer
+//! (`abi::plane::OnPieceOut::tap_fault`). Nor is the translate cap: the kernel hands it in the
+//! settings the plane is opened and refreshed with. The `tap_fault_latch` and `translate_cap`
+//! slots are served and armed by no one.
 //!
 //! Two halves, one file, because they are one contract:
 //!
-//! * **HOST side** — `entropy_fill`, `wall_clock`, `translate_cap`: the three service slots of
+//! * **HOST side** — `entropy_fill`, `wall_clock`: the two service slots of
 //!   [`PlaneHostVtable::SERVICES`], each answering from THIS image's own ports, which the host
 //!   armed. A host that builds its table over `SERVICES` adds no code of its own.
 //! * **PLANE side** — [`arm`]: run in a dropped-in plane's image (the door's `busbar_plane_arm`
@@ -27,7 +27,7 @@ use super::pod::StatusClass;
 use std::panic::catch_unwind;
 use std::sync::atomic::{AtomicPtr, AtomicU32, Ordering};
 
-// ── HOST SIDE: the three slots, served from this image's armed contract ports ───────────────────────
+// ── HOST SIDE: the two slots, served from this image's armed contract ports ───────────────────────
 
 /// `entropy_fill` — fill `out_len` bytes at `out` through [`crate::codec::fill_entropy`].
 pub(crate) extern "C-unwind" fn entropy_fill(
@@ -58,12 +58,6 @@ pub(crate) extern "C-unwind" fn entropy_fill(
 /// `wall_clock` — [`crate::codec::wall_clock_now`], `0` when the host armed no clock.
 pub(crate) extern "C-unwind" fn wall_clock(_host: HostCtx) -> u64 {
     catch_unwind(|| crate::codec::wall_clock_now().unwrap_or(0)).unwrap_or(0)
-}
-
-/// `translate_cap` — [`crate::codec::max_translate_body_bytes`].
-pub(crate) extern "C-unwind" fn translate_cap(_host: HostCtx) -> u64 {
-    catch_unwind(|| crate::codec::max_translate_body_bytes() as u64)
-        .unwrap_or(crate::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT as u64)
 }
 
 // ── PLANE SIDE: arm this image's ports over the host's slots ────────────────────────────────────────
@@ -103,15 +97,12 @@ pub unsafe fn arm(host: *const PlaneHostVtable) -> StatusClass {
     }
     ARMED_SIZE.store(size, Ordering::Release);
     ARMED.store(host.cast_mut(), Ordering::Release);
-    // SAFETY (all three): `host`/`size` are what `check` just validated.
+    // SAFETY (both): `host`/`size` are what `check` just validated.
     if crate::host_slot!(host, size, entropy_fill).is_some() {
         crate::codec::install_entropy_source(armed_entropy);
     }
     if crate::host_slot!(host, size, wall_clock).is_some() {
         crate::codec::install_wall_clock(armed_wall_clock);
-    }
-    if crate::host_slot!(host, size, translate_cap).is_some() {
-        crate::codec::install_translate_cap_reader(armed_translate_cap);
     }
     StatusClass::Ok
 }
@@ -140,16 +131,6 @@ fn armed_wall_clock() -> u64 {
     armed()
         .and_then(|(host, size)| crate::host_slot!(host, size, wall_clock))
         .map_or(0, |now| now(HostCtx::NULL))
-}
-
-/// The translate-cap port, forwarded through the host's `translate_cap`.
-fn armed_translate_cap() -> usize {
-    // SAFETY: as `armed_entropy`.
-    armed()
-        .and_then(|(host, size)| crate::host_slot!(host, size, translate_cap))
-        .map_or(crate::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT, |cap| {
-            usize::try_from(cap(HostCtx::NULL)).unwrap_or(usize::MAX)
-        })
 }
 
 #[cfg(test)]

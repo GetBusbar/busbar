@@ -459,7 +459,7 @@ fn a_linked_plugin_reads_its_former_names_by_its_alias() {
         busbar_kernel::config::legacy::former_names("webrequest"),
         ["busbar-webrequest"]
     );
-    assert!(busbar_kernel::config::legacy::former_names("env").is_empty());
+    assert!(busbar_kernel::config::legacy::former_names("planted-never-renamed").is_empty());
 }
 
 /// Every frozen `legacy:` row of plugins.yaml cites the v1.5.5 source it is verbatim from (a

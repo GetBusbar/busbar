@@ -105,6 +105,10 @@ pub struct WholeCtx<'a> {
     pub now_s: u64,
     /// Milliseconds from the attempt's start, for a dialect whose answer reports its latency.
     pub elapsed_ms: Option<u64>,
+    /// The TRANSLATION CAP the plane enforces, the one its settings carry
+    /// ([`crate::exchange::shaping::Shaping::translate_cap`]): a writer re-emitting the answer as a
+    /// stream bounds what it accumulates there.
+    pub translate_cap: usize,
 }
 
 /// The caller's error for an answer that could not be relayed.
@@ -212,6 +216,7 @@ fn opaque(
             false,
             None,
             ctx.request,
+            ctx.translate_cap,
         )
         .map_err(|e| format!("{e:?}"))?;
     let TranslatedResponse::Typed(wire) = answered else {
@@ -248,6 +253,7 @@ fn json(
             ctx.wants_stream && !ctx.json_array,
             ctx.elapsed_ms,
             ctx.request,
+            ctx.translate_cap,
         );
         if answered.is_ok() {
             crate::codec::chat_handle::drop_untranslatable_response(ctx.egress, rv);

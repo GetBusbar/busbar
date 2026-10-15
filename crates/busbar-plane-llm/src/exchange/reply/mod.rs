@@ -49,6 +49,11 @@ pub struct ReplyCtx<'a> {
     /// The far end was reached with the caller's own credential (the kernel's fact): its 401 and
     /// 403 are the caller's own, relayed unjudged.
     pub passthrough: bool,
+    /// The TRANSLATION CAP the plane enforces, the one its settings carry
+    /// ([`super::shaping::Shaping::translate_cap`]): a whole answer past it is refused, a
+    /// same-dialect copy kept for usage keeps its tail within it, and a writer bounds what it
+    /// accumulates there.
+    pub translate_cap: usize,
 }
 
 /// The time-like inputs of a piece.
@@ -319,6 +324,7 @@ impl Reply {
             request: ctx.arrived.parsed.as_ref(),
             handler: op,
             meter: true,
+            translate_cap: ctx.translate_cap,
         });
         Reply {
             state: State::Relay {
@@ -349,7 +355,7 @@ impl Reply {
             }
             State::Whole { status, body, head } => {
                 body.extend_from_slice(bytes);
-                if body.len() > crate::codec::wire_shim::max_translated_body_bytes() {
+                if body.len() > ctx.translate_cap {
                     self.state = State::Done;
                     let w = whole::over_cap(ctx.arrived.dialect);
                     return answered(w.answer, Units::default(), Verdict::Hard, None);
@@ -533,6 +539,7 @@ fn whole_piece<'a>(
             request: ctx.arrived.parsed.as_ref(),
             now_s: at.now_s,
             elapsed_ms: at.elapsed_ms,
+            translate_cap: ctx.translate_cap,
         },
         status,
         body,

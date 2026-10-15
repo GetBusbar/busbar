@@ -897,7 +897,8 @@ fn compute_layout() -> String {
             _reserved,
             ns,
             retry_after_secs,
-            reason
+            reason,
+            declared_len
         ]
     );
 
@@ -1013,7 +1014,7 @@ fn compute_layout() -> String {
     record!(s, MechKindTailHead, [size, _reserved]);
     record!(s, MechTicket, [slot, generation]);
     record!(s, MechCompletionHandle, [ticket, seq, _reserved]);
-    record!(s, MechHostCtx, [ptr]);
+    record!(s, MechHostCtx, [handle]);
     record!(
         s,
         MechHostTables,
@@ -1475,7 +1476,8 @@ fn compute_layout() -> String {
             status_class,
             _reserved,
             flags,
-            retry_after_secs
+            retry_after_secs,
+            declared_len
         ]
     );
     record!(
@@ -1545,7 +1547,9 @@ fn compute_layout() -> String {
             name_buf,
             name_cap,
             alpn_buf,
-            alpn_cap
+            alpn_cap,
+            accept,
+            _accept_reserved
         ]
     );
     record!(
@@ -1616,7 +1620,9 @@ fn compute_layout() -> String {
             flags,
             sink,
             deadline_ns,
-            lane
+            lane,
+            status,
+            _status_reserved
         ]
     );
     record!(

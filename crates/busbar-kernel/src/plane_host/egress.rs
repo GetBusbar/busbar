@@ -819,7 +819,7 @@ fn open_http(
             scope,
             EgressFailClass::Fault,
             0,
-            "governed egress could not start its streaming task".to_string(),
+            "governed egress could not start its stream task".to_string(),
             &fault_url,
         );
         return StatusClass::Fault;

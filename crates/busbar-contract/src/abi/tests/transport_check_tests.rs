@@ -407,6 +407,24 @@ fn text_rides_a_message_piece_only() {
     }
 }
 
+/// A declared body length is a head's statement: on a field block it passes; on a payload piece it
+/// is FAULT.
+#[test]
+fn a_declared_length_rides_a_field_block_only() {
+    let mut o: FramerOut = z();
+    o.yielded.frame_len = 4;
+    o.yielded.pieces_len = 1;
+    let mut head = piece(0, 4);
+    head.flags = PIECE_FIELDS | PIECE_HAS_DECLARED_LEN | PIECE_END_OF_FRAME;
+    head.declared_len = 9;
+    assert_eq!(check_framer(Ready, &o, &[head], 8, 8, 8), Ok(()));
+    head.flags = PIECE_HAS_DECLARED_LEN | PIECE_END_OF_FRAME;
+    assert_eq!(
+        check_framer(Ready, &o, &[head], 8, 8, 8),
+        f(Rule::Contradiction, "framer.piece.declared_len_not_fields")
+    );
+}
+
 /// A stream's head slots: within the capacity, one per stream, every slot inside the frame bytes
 /// written; a method and a target together (an accepted head) or both absent (a dialled answer's
 /// reason alone).
@@ -915,5 +933,31 @@ fn a_streams_final_status_is_judged_against_its_claims_numbering() {
     assert_eq!(
         check_final_status(&i, &rows, 1),
         f(Rule::NullWithCount, "finish.final_bytes")
+    );
+}
+
+/// THE ANSWER'S STATUS ON AN EMIT (INBOUND-LISTEN, l.4913): stated on the emit that carries an
+/// accepted stream's answer head, and on no other emit.
+#[test]
+fn an_emit_states_a_status_only_on_an_accepted_streams_answer_head() {
+    let mut i: EmitIn = z();
+    assert_eq!(check_emit_status(&i, false), Ok(()));
+    i.status = 200;
+    assert_eq!(check_emit_status(&i, true), Ok(()));
+    i.status = 101;
+    assert_eq!(check_emit_status(&i, true), Ok(()));
+    // RED: a status on an emit that carries no answer head.
+    assert_eq!(
+        check_emit_status(&i, false),
+        f(Rule::Contradiction, "emit.status")
+    );
+    // RED: an accepted stream's answer head with no status.
+    i.status = 0;
+    assert_eq!(check_emit_status(&i, true), f(Rule::Missing, "emit.status"));
+    // RED: the padding is not a channel.
+    i._status_reserved = 1;
+    assert_eq!(
+        check_emit_status(&i, false),
+        f(Rule::UnknownCode, "emit._status_reserved")
     );
 }

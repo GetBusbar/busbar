@@ -51,7 +51,7 @@ impl VerifiedDestination {
     ///
     /// The lane is named, not spelled: a configured lane's name is a runtime string and
     /// [`LaneId`] is a borrowed static one, so the name comes from the composition root's
-    /// registration interner ([`crate::Registration::lane`]) rather than from a literal
+    /// registration interner (the kernel's `Registration::lane`) rather than from a literal
     /// at the sealing site. That is what lets a deployment's own lanes be sealed at all, and it is
     /// why this signature does not take a `String`: a lane id minted per unit would be a leak per
     /// request, which is the one thing the interning rule exists to forbid.

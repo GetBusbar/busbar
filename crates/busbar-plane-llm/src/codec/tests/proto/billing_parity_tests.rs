@@ -240,7 +240,12 @@ fn buffered_billing_and_stream_tap_agree_on_cohere_billed_units() {
     );
 
     // The BUFFERED billing arm over the same IR.
-    let buffered = match chat_handle::ChatRespHandle(ir).billing() {
+    let buffered = match chat_handle::ChatRespHandle(
+        ir,
+        busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
+    )
+    .billing()
+    {
         Some(Billing::Tokens(t)) => t,
         other => panic!("buffered chat billing must be token-shaped, got {other:?}"),
     };

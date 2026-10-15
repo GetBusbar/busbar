@@ -187,7 +187,7 @@ pub struct WirePiece {
     pub end: u8,
     /// The status class (`code::status_class`; `0` = none).
     pub status_class: u8,
-    /// [`PIECE_HAS_CODE`] | [`PIECE_HAS_RETRY_AFTER`].
+    /// [`PIECE_HAS_CODE`] | [`PIECE_HAS_RETRY_AFTER`] | [`PIECE_HAS_DECLARED_LEN`].
     pub flags: u8,
     /// The stream.
     pub stream: u64,
@@ -203,12 +203,16 @@ pub struct WirePiece {
     pub retry_after_secs: u64,
     /// [`Piece::reason`]: a range of the caller's buffer (`len == 0` = none).
     pub reason: crate::abi::transport::FrameSpan,
+    /// [`Piece::declared_len`], with [`PIECE_HAS_DECLARED_LEN`]. A tail addition (pre-tag v1).
+    pub declared_len: u64,
 }
 
 /// [`WirePiece::flags`]: the status number is present.
 pub const PIECE_HAS_CODE: u8 = 1;
 /// [`WirePiece::flags`]: the retry-after is present.
 pub const PIECE_HAS_RETRY_AFTER: u8 = 2;
+/// [`WirePiece::flags`]: the declared body length is present.
+pub const PIECE_HAS_DECLARED_LEN: u8 = 4;
 
 /// The `write` slot's `end` byte: the bytes are a text message ([`Conns::write`]'s `text`).
 pub const WRITE_TEXT: u8 = 2;
@@ -502,6 +506,9 @@ extern "C" fn host_read(
         if piece.retry_after_secs.is_some() {
             flags |= PIECE_HAS_RETRY_AFTER;
         }
+        if piece.declared_len.is_some() {
+            flags |= PIECE_HAS_DECLARED_LEN;
+        }
         // SAFETY: the plugin's out-slot, checked non-null above.
         unsafe {
             set(
@@ -524,6 +531,7 @@ extern "C" fn host_read(
                             len: (r.end - r.start) as u64,
                         }
                     }),
+                    declared_len: piece.declared_len.unwrap_or(0),
                 },
             )
         }
@@ -732,6 +740,7 @@ impl HostConns {
             status_code: (p.flags & PIECE_HAS_CODE != 0).then_some(p.code),
             status_namespace: ns,
             retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0).then_some(p.retry_after_secs),
+            declared_len: (p.flags & PIECE_HAS_DECLARED_LEN != 0).then_some(p.declared_len),
             reason: match p.reason.len {
                 0 => None,
                 n => {

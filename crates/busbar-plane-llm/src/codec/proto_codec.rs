@@ -676,6 +676,14 @@ pub trait ProtocolWriter: Send + Sync {
     /// held ingress writer). Default no-op: every writer without such a requirement ignores it.
     fn set_request_echo(&self, _ingress_request_body: &serde_json::Value) {}
 
+    /// Hand this writer the TRANSLATION CAP its plane enforces (the one the kernel handed the plane
+    /// in its settings, `limits.request_body_max_bytes`): the byte ceiling any one of its per-item
+    /// accumulators may reach over the life of a stream. `&self`, latched by interior mutability as
+    /// [`Self::set_request_echo`] is. A writer holds
+    /// [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`] until it is handed one. Default
+    /// no-op: a writer that accumulates nothing bounds nothing.
+    fn set_translate_cap(&self, _cap: usize) {}
+
     /// Clone this writer as a trait object.
     fn clone_box(&self) -> Box<dyn ProtocolWriter>;
 }

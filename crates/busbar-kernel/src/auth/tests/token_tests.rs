@@ -183,7 +183,7 @@ fn chooser_renders_0_1_n_buttons() {
     // N buttons — plus a GUI-OFF method (has_button=false) that is ABSENT from the chooser.
     let appn = test_app_with_methods(vec![
         ("microsoft", true),
-        ("github", true),
+        ("second-sso", true),
         ("headless-only", false),
     ]);
     let bodyn = body_of(chooser(&appn));
@@ -199,6 +199,59 @@ fn chooser_renders_0_1_n_buttons() {
     // base_url is injected verbatim (no /v1).
     assert!(bodyn.contains("https://busbar.example.com"));
     assert!(!bodyn.contains("https://busbar.example.com/v1"));
+}
+
+/// THE BUTTON BRANDS ARE THE ROOT LEGACY TABLE'S `login_brands` ROW (frozen 1.5.5 login-page data;
+/// the kernel test stand-in carries the root's table row for row). With the row, a method named by
+/// each brand's first match token renders that brand's label and icon on its button, in the row's
+/// order, and the issuer host matches as the name does; with no row, every method renders the
+/// generic arm — its title-cased name under the key icon — exactly as an unmatched method does.
+#[test]
+fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic() {
+    let row = crate::config::legacy::text("login_brands");
+    let brands: Vec<(&str, &str, &str)> = row
+        .split(" | ")
+        .map(|b| {
+            let f: Vec<&str> = b.split(" : ").collect();
+            assert_eq!(f.len(), 3, "`<tokens> : <label> : <icon ref>`: {b}");
+            (f[0].split(' ').next().expect("a match token"), f[1], f[2])
+        })
+        .collect();
+    assert_eq!(brands.len(), 3, "1.5.5 branded three providers: {row}");
+    for (token, label, icon_ref) in &brands {
+        let icon = BRAND_ICONS
+            .iter()
+            .find(|(r, _)| r == icon_ref)
+            .map(|(_, svg)| *svg)
+            .unwrap_or_else(|| panic!("no icon asset for `{icon_ref}`"));
+        assert_eq!(button_brand(token, None), ((*label).to_string(), icon));
+        assert_eq!(
+            button_brand("corp-sso", Some(&format!("https://{token}.example"))),
+            ((*label).to_string(), icon),
+            "the issuer host matches as the name does"
+        );
+        let app = test_app_with_methods(vec![(*token, true)]);
+        let body = body_of(chooser(&app));
+        assert!(
+            body.contains(&format!(
+                "aria-label=\"Continue with {label}\">{icon}<span class=\"plabel\">Continue with {label}</span>"
+            )),
+            "{token}: {body}"
+        );
+    }
+    // No brand matches: the generic arm.
+    assert_eq!(
+        button_brand("corp-sso", None),
+        ("Corp Sso".to_string(), GENERIC_ICON)
+    );
+    // With no row, the brands' own tokens are generic too.
+    for (token, _, _) in &brands {
+        assert_eq!(
+            brand_from("", token, None),
+            (titlecase(token), GENERIC_ICON),
+            "{token} without the row"
+        );
+    }
 }
 
 /// A gui-off (no browser_login) method still works HEADLESS via POST /auth/token — the chooser

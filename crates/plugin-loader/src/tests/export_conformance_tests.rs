@@ -505,6 +505,7 @@ impl Conns for Far {
             status_namespace: None,
             retry_after_secs: None,
             reason: None,
+            declared_len: None,
         })
     }
     fn wait(&self, _: InstanceId, _: &[ConnId], _: u64) -> Result<usize, ConnError> {
@@ -1113,7 +1114,10 @@ const S1_HOST_SERIES: &str = "busbar_s1_host_owned_total";
 #[test]
 fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     use busbar_contract::abi::mechanism::observe::SeriesDecl;
-    crate::observe::install_host_series(|name| name == S1_HOST_SERIES);
+    // The host's series are named on the dispatcher every open below binds on.
+    let d = dispatcher();
+    d.observing()
+        .install_host_series(|name| name == S1_HOST_SERIES);
     let declared = file_declaration();
     let series: Vec<(String, String)> = declared
         .metrics
@@ -1134,7 +1138,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("scratch dir");
         let tape = Arc::new(Tape::default());
-        let sink = ExportRows::new(&registry, dispatcher())
+        let sink = ExportRows::new(&registry, Arc::clone(&d))
             .with_envelope(tape.clone())
             .open(name, "export.tail", &file_settings(&path))
             .expect("a first-party declaration opens");
@@ -1164,7 +1168,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
     let mut third = stating(manifest("s1-third-party", declared.clone()), FILE_DOOR);
     third.publisher = "acme".into();
     let registry = both_ways::dropped_third_party(FILE_CDYLIB, third, &lib);
-    let sink = ExportRows::new(&registry, dispatcher())
+    let sink = ExportRows::new(&registry, Arc::clone(&d))
         .open("s1-third-party", "export.tail", &file_settings(&path))
         .expect("a third party opens; its declaration is simply not granted");
     drop(sink);
@@ -1181,7 +1185,7 @@ fn a_first_party_series_is_granted_through_either_door_and_to_nobody_else() {
             FILE_DOOR,
         )])
         .expect("the linked door admits the sink");
-    let Err(refused) = ExportRows::new(&registry, dispatcher()).open(
+    let Err(refused) = ExportRows::new(&registry, Arc::clone(&d)).open(
         "s1-collides",
         "export.tail",
         &file_settings(&path),
@@ -1765,12 +1769,14 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
     let stated = rendering_of(FILE_DOOR).expect("renders");
     // A sink named by the FILE sink's own Statement.
     let sink = crate::observe::EnvelopeObserver::of(
+        crate::observe::testing::observing(),
         "busbar-export-file",
         busbar_contract::abi::mechanism::kind::EXPORT,
         &stated,
     );
     // A metric of a family the Statement declares, named by the family: a counter with one label.
     let counted = crate::observe::EnvelopeObserver::with_families(
+        crate::observe::testing::observing(),
         "busbar-export-file",
         busbar_contract::abi::mechanism::kind::EXPORT,
         vec![busbar_contract::abi::mechanism::rendering::ReadFamily {
@@ -1854,6 +1860,7 @@ fn an_opened_sinks_envelope_reaches_the_host_observability() {
         .expect("a log sink"),
     );
     let behind = crate::observe::EnvelopeObserver::before(
+        crate::observe::testing::observing(),
         log_sink.clone(),
         "busbar-export-file",
         busbar_contract::abi::mechanism::kind::EXPORT,

@@ -729,9 +729,7 @@ fn red_a_hook_waiting_on_its_exchange_pends_and_resumes_on_the_wake() {
     let tables = HostTables {
         size: std::mem::size_of::<HostTables>() as u32,
         _reserved: 0,
-        ctx: HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
+        ctx: HostCtx::NONE,
         wake: None,
         conns: &PENDING_SLOTS,
         services: std::ptr::null(),

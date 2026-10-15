@@ -854,10 +854,10 @@ fn usage_row_micros(holder: &RootHistory, priced_from_ms: u64, input: u64) -> i6
 
 /// **A RESTART NEVER REPRICES WHAT ALREADY HAPPENED** (#79, OWNER RULING Q14).
 ///
-/// Card A prices [`FLAT_LANE`] at 3 micro-units an input token (the `mcp` plane's lane at 6); a
-/// million tokens are earned on each. Card B is applied live — 5 (plane 10) — and another million is
-/// earned on each. The node restarts. Every posting on the chain is replayed at the card in force
-/// when it ARRIVED: flat 3,000,000,000 + 5,000,000,000 = 8,000,000,000 nano-units, plane
+/// Card A prices [`FLAT_LANE`] at 3 micro-units an input token (a plane's lane, [`PLANE_LANE`],
+/// at 6); a million tokens are earned on each. Card B is applied live — 5 (plane 10) — and another
+/// million is earned on each. The node restarts. Every posting on the chain is replayed at the card
+/// in force when it ARRIVED: flat 3,000,000,000 + 5,000,000,000 = 8,000,000,000 nano-units, plane
 /// 6,000,000,000 + 10,000,000,000 = 16,000,000,000 — the figures the node served before the
 /// restart. Before the applied cards were journalled, the rebuilt history was the boot card B from
 /// instant zero and the same chain replayed as 10,000,000,000 and 20,000,000,000.
@@ -2141,13 +2141,13 @@ fn applying_rates_registers_the_classes_a_unit_may_report() {
     );
     for class in busbar_contract::records::RESERVED_UNITS {
         assert!(
-            busbar_contract::Registration::resolve(class).is_some(),
+            busbar_kernel::Registration::resolve(class).is_some(),
             "{class}"
         );
     }
-    assert!(busbar_contract::Registration::resolve("configured_open_units").is_some());
+    assert!(busbar_kernel::Registration::resolve("configured_open_units").is_some());
     assert_eq!(
-        busbar_contract::Registration::resolve("a_class_nobody_declared_or_configured"),
+        busbar_kernel::Registration::resolve("a_class_nobody_declared_or_configured"),
         None
     );
 }

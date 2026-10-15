@@ -5,14 +5,14 @@
 //!
 //! [`run_gauntlet_via_kernel`] drives the SAME [`GauntletPlane`] the substrate gauntlet drives, but
 //! through `busbar_kernel::teller::run_unit_async` (the ONE unified loop) instead of the substrate
-//! Teller loop. It is the loop-unification rider (DECISIONS #28): MCP is the first WITNESS — its
-//! existing [`GauntletPlane`] (`busbar_mcp`'s `ToolCallPlane`) rides UNCHANGED, so its governance,
-//! per-round metering, breaker, reroute and JSON-RPC envelope stay byte-identical inside `drive`.
+//! Teller loop. It is the loop-unification rider (DECISIONS #28): the first plane to ride it was its
+//! WITNESS — its existing [`GauntletPlane`] rides UNCHANGED, so its governance, per-round metering,
+//! breaker, reroute and envelope stay byte-identical inside `drive`.
 //!
 //! NEUTRAL BY CONSTRUCTION: this file names NO plane. It reaches every plane through the neutral
 //! [`GauntletPlane`] seam and returns the neutral [`PlaneAnswer`] out of the neutral
-//! [`PlaneInFlight`] table, keyed by the bare `ctx.key`. a2a/voice/llm ride this IDENTICAL rider
-//! with zero new code — only a re-point of their gauntlet call.
+//! [`PlaneInFlight`] table, keyed by the bare `ctx.key`. Every other plane rides this IDENTICAL
+//! rider with zero new code — only a re-point of its gauntlet call.
 //!
 //! MONEY-NEUTRAL, AND THE SHIPPED PATH: the rider opens an EMPTY admit hold
 //! ([`Admission::ZeroHold`]) and reports ZERO [`Evidence`] at the kernel exit, so the kernel loop
@@ -37,10 +37,11 @@ use busbar_kernel::plane_host::{
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{AccrualMeter, Evidence, RouteAwait, RouteLeg, UnitCtx, Units};
 
-/// The transport stack every gauntlet request arrives over — one HTTP layer, named rather than
-/// empty (mirrors the LLM plane's arrival record). The value only reaches the audit/record surface,
-/// which this rider posts nothing onto.
-const TRANSPORT_CHAIN: [&str; 1] = ["http"];
+/// The transport stack every gauntlet request arrives over — the one request/response wire the
+/// data listener speaks ([`crate::root::listener::REQUEST_WIRE`], read off a declared claim), named
+/// rather than empty (mirrors a served plane's arrival record). The value only reaches the
+/// audit/record surface, which this rider posts nothing onto.
+const TRANSPORT_CHAIN: [&str; 1] = [crate::root::listener::REQUEST_WIRE];
 
 /// The neutral per-request counter for the rider's `ctx.key`. Each call takes the next value;
 /// nothing outside this file reads it, so a process-global monotonic is enough.

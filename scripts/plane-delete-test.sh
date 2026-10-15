@@ -171,7 +171,7 @@ report_coverage() {
 # NEUTRAL_PKGS — the neutral crates a plane's removal must leave compiling, i.e. the cargo package
 # NAMES this file's own `strong_form`/self-test legs pass to `cargo check -p`. This is NOT the same
 # list as scripts/plane-keys.sh's `neutral_src_roots` (a `crates/<x>/src` SOURCE-ROOT list consumed by
-# plane-noun-gate.sh/plane-grep-gate.sh) — this one is PACKAGE names for cargo's package selector, a
+# plane-noun-gate.sh) — this one is PACKAGE names for cargo's package selector, a
 # distinct namespace this script alone owns, so it is declared here rather than borrowed. Was
 # `busbar-core busbar-substrate busbar-api`; both busbar-core and busbar-substrate were deleted (see
 # the header above) — busbar-kernel is their direct successor for this purpose (it carries the

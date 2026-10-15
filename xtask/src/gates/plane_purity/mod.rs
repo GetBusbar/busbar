@@ -18,6 +18,7 @@
 //! | [`ROW_DIALECT`] | one of the six dialect names as a bare token |
 //! | [`ROW_BACKWARDS`] | a plane crate reaching BACK into `busbar_core::` implementation |
 //! | [`ROW_FREEZE`] | core still naming a concrete LLM-family IR type (the G6 freeze witness) |
+//! | [`ROW_SEGMENT_DEBT`] | a dialect written as an identifier segment (`PROTO_GEMINI`) that `qa/segment-debt.toml` does not list, or a listed row that matches no live hit |
 //!
 //! and two rows in front of all of them, because **the gate cannot pass by scanning nothing**:
 //! [`ROW_ROOTS`] (a listed root that is not on disk is scanned as zero files, and zero is the
@@ -39,6 +40,7 @@
 pub mod claims;
 pub mod freeze;
 pub mod scanner;
+pub mod segment_debt;
 pub mod strict;
 pub mod vocab;
 #[cfg(test)]
@@ -67,6 +69,7 @@ pub const ROW_DIALECT: &str = "plane-purity:dialect";
 pub const ROW_BACKWARDS: &str = "plane-purity:backwards";
 pub const ROW_FREEZE: &str = "plane-purity:core-llm-family-freeze";
 pub const ROW_FROZEN_WIRE_CLAIM: &str = "plane-purity:frozen-wire-claim";
+pub const ROW_SEGMENT_DEBT: &str = "plane-purity:segment-debt";
 
 /// The row id for one strict category, e.g. `plane-purity-strict:category:SYMBOL`.
 pub fn strict_category_row(category: &str) -> String {
@@ -109,6 +112,10 @@ pub struct Measurement {
     pub pragmas: Vec<claims::Pragma>,
     /// The instance vocabulary the forward scan used, DERIVED from this tree (see [`vocab`]).
     pub vocab: Vocab,
+    /// The segment-debt rows (`qa/segment-debt.toml`) and, per row, whether a live hit of THIS
+    /// scan matched it. The listed segment-only hits are already gone from the forward lists above.
+    pub segment_debt: Vec<segment_debt::Debt>,
+    pub segment_debt_matched: Vec<bool>,
 }
 
 impl Measurement {
@@ -200,6 +207,16 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
     let vocab = vocab::derive(cx, &plane_roots, &plane);
     let (prod_forward, test_forward) = scanner::scan(&neutral, Mode::Forward, &vocab);
     let (prod_reverse, test_reverse) = scanner::scan(&plane, Mode::Reverse, &vocab);
+    // LISTED SEGMENT DEBT IS NOT COUNTED; UNLISTED SEGMENT HITS ARE. Every count downstream (the
+    // DIALECT row, the strict ceilings, the construction gate's hit artefact) reads these lists, so
+    // the debt is drained out of them once, here, and a segment hit nobody listed stays in as the
+    // DIALECT hit it is.
+    let segment_debt = segment_debt::load(cx)?;
+    let mut segment_debt_matched = vec![false; segment_debt.len()];
+    let prod_forward =
+        segment_debt::drain_listed(&segment_debt, &mut segment_debt_matched, prod_forward);
+    let test_forward =
+        segment_debt::drain_listed(&segment_debt, &mut segment_debt_matched, test_forward);
     Ok(Measurement {
         neutral_files: neutral.len(),
         plane_files: plane.len(),
@@ -211,6 +228,8 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
         plane_roots,
         pragmas: claims::collect(&neutral),
         vocab,
+        segment_debt,
+        segment_debt_matched,
     })
 }
 
@@ -318,6 +337,61 @@ fn denominator_row(neutral_files: usize, plane_files: usize, vocab: Option<&Voca
     }
 }
 
+/// `plane-purity:segment-debt`: RED for (i) a segment-only dialect hit in the production neutral
+/// scope that no row of `qa/segment-debt.toml` lists, and (ii) a listed row that matches no live
+/// hit of the neutral scan (stale: the debt was paid, strike the row).
+fn segment_debt_row(m: &Measurement) -> Row {
+    let unlisted: Vec<String> = m
+        .prod_forward
+        .iter()
+        .filter(|h| h.category == "DIALECT" && h.segment)
+        .map(|h| format!("{} `{}`", h.site(), h.code))
+        .collect();
+    // Only a row whose file sits under a root THIS scan walks can be judged stale here; the rest
+    // belong to the other population (kind-isolation's vendor scan) and are judged there.
+    let stale: Vec<String> = m
+        .segment_debt
+        .iter()
+        .zip(&m.segment_debt_matched)
+        .filter(|(d, matched)| {
+            !**matched
+                && m.neutral_roots
+                    .iter()
+                    .any(|r| d.file.starts_with(&format!("{r}/")))
+        })
+        .map(|(d, _)| format!("{} `{}`", d.site(), d.text))
+        .collect();
+    let title = "no neutral crate names a dialect as an identifier segment beyond the listed debt";
+    if unlisted.is_empty() && stale.is_empty() {
+        return Row::pass(
+            ROW_SEGMENT_DEBT,
+            title,
+            format!(
+                "{} listed row(s), each matching a live hit",
+                m.segment_debt.len()
+            ),
+        );
+    }
+    let mut detail = Vec::new();
+    if !unlisted.is_empty() {
+        detail.push(format!(
+            "{} unlisted segment-only hit(s) (the list is drain-only; name the dialect in its \
+             plane, never in a neutral crate): {}",
+            unlisted.len(),
+            unlisted.join("; ")
+        ));
+    }
+    if !stale.is_empty() {
+        detail.push(format!(
+            "{} stale row(s) in {} matching no live hit — strike it: {}",
+            stale.len(),
+            segment_debt::SEGMENT_DEBT_TOML,
+            stale.join("; ")
+        ));
+    }
+    Row::fail(ROW_SEGMENT_DEBT, title, detail.join(" | "))
+}
+
 fn freeze_row(f: &freeze::Freeze) -> Row {
     let detail = format!("count={} defs={} uprefs={}", f.count, f.defs, f.uprefs);
     if f.count == 0 {
@@ -356,6 +430,7 @@ impl Gate for PlanePurityGate {
             ROW_BACKWARDS,
             ROW_FREEZE,
             ROW_FROZEN_WIRE_CLAIM,
+            ROW_SEGMENT_DEBT,
         ]
         .iter()
         .map(|s| (*s).to_string())
@@ -407,9 +482,18 @@ impl Gate for PlanePurityGate {
                     m.neutral_files
                 ),
             ));
+            rows.push(Row::fail(
+                ROW_SEGMENT_DEBT,
+                "the rule was not applied to anything",
+                format!(
+                    "neutral_files={} — zero segment hits over zero files is not a clean tree",
+                    m.neutral_files
+                ),
+            ));
         } else {
             rows.extend(category_rows(&hits));
             rows.push(claims::row(cx, ROW_FROZEN_WIRE_CLAIM, &m.pragmas));
+            rows.push(segment_debt_row(&m));
         }
 
         // The hit artefact, for the one delegated consumer that reads hit COUNTS out of it. Written
@@ -780,6 +864,95 @@ impl Gate for PlanePurityGate {
             &[ROW_DIALECT, "planted_plane_purity.rs:1"],
         ));
 
+        // ── THE SEGMENT-DEBT LIST (`qa/segment-debt.toml`) ───────────────────────────────────
+        //
+        // A dialect written as an identifier SEGMENT (`PROTO_ANTHROPIC`) is invisible to the
+        // whole-word rule. Each of the three cases below moves the row for its own reason: a new
+        // segment hit nobody listed, a listed row whose line is gone, and the listed hit itself.
+        let seg_line = "fn d() { let k = \"PROTO_ANTHROPIC\"; }";
+        report.push(create(
+            cx,
+            self,
+            "a dialect named as an identifier segment, listed nowhere, is refused",
+            &[ROW_SEGMENT_DEBT, ROW_DIALECT],
+            &plant_at,
+            &format!("{seg_line}\n"),
+            &[
+                ROW_SEGMENT_DEBT,
+                "planted_plane_purity.rs:1",
+                "PROTO_ANTHROPIC",
+            ],
+        ));
+
+        let debt_now = segment_debt::load(cx).unwrap_or_default();
+        let stale_row = segment_debt::Debt {
+            file: format!("{}/planted_stale_row.rs", neutral[0]),
+            line: 1,
+            text: "fn paid_off() { let k = \"PROTO_ANTHROPIC\"; }".to_string(),
+            dialect: "anthropic".to_string(),
+            owner: "kernel-neutrality lane".to_string(),
+        };
+        let mut ov = layered(cx);
+        let mut rows = debt_now.clone();
+        rows.push(stale_row);
+        ov.set(segment_debt::SEGMENT_DEBT_TOML, segment_debt::render(&rows));
+        report.push(prove_red(
+            cx,
+            self,
+            "a listed segment-debt row that matches no live hit is stale and refused",
+            &[ROW_SEGMENT_DEBT],
+            ov,
+            &[ROW_SEGMENT_DEBT, "planted_stale_row.rs:1", "strike it"],
+        ));
+
+        // ROW BY ROW: two identical segment lines against ONE row leave the second unlisted.
+        let mut ov = layered(cx);
+        let mut rows = debt_now.clone();
+        rows.push(segment_debt::Debt {
+            file: plant_at.clone(),
+            line: 1,
+            text: seg_line.to_string(),
+            dialect: "anthropic".to_string(),
+            owner: "kernel-neutrality lane".to_string(),
+        });
+        ov.set(segment_debt::SEGMENT_DEBT_TOML, segment_debt::render(&rows));
+        if Edit::Create(format!("{seg_line}\n{seg_line}\n"))
+            .apply(cx, &plant_at, &mut ov)
+            .is_ok()
+        {
+            report.push(prove_red(
+                cx,
+                self,
+                "a second identical segment line beyond the listed row count is refused",
+                &[ROW_SEGMENT_DEBT],
+                ov,
+                &[ROW_SEGMENT_DEBT, "planted_plane_purity.rs:2"],
+            ));
+        }
+
+        let mut ov = layered(cx);
+        let mut rows = debt_now;
+        rows.push(segment_debt::Debt {
+            file: plant_at.clone(),
+            line: 1,
+            text: seg_line.to_string(),
+            dialect: "anthropic".to_string(),
+            owner: "kernel-neutrality lane".to_string(),
+        });
+        ov.set(segment_debt::SEGMENT_DEBT_TOML, segment_debt::render(&rows));
+        if Edit::Create(format!("{seg_line}\n"))
+            .apply(cx, &plant_at, &mut ov)
+            .is_ok()
+        {
+            report.push(prove_rows_green(
+                cx,
+                self,
+                "a listed segment-only hit is debt, not a DIALECT hit: both rows stay green",
+                &[ROW_SEGMENT_DEBT, ROW_DIALECT],
+                ov,
+            ));
+        }
+
         // AN EMPTY DERIVATION IS REFUSED. With every dialect declaration gone the scanner has no
         // dialect to scan for, and the dialect row would read "clean" about a tree it could not
         // judge — the same false zero as a scan of no files, and refused on the same row.
@@ -883,6 +1056,7 @@ fn legacy_check_rows(runs: &[LegacyRun]) -> Result<Vec<Row>, String> {
             file: file.to_string(),
             line: line_no.parse().unwrap_or(0),
             code: cols[2].to_string(),
+            segment: false,
         });
     }
 
@@ -1371,8 +1545,21 @@ fn layered(cx: &Ctx) -> Overlay {
 fn standing_red_set_aside(cx: &Ctx) -> Overlay {
     let mut ov = Overlay::new();
     if let Ok(m) = measure(cx) {
+        let mut blanked: Vec<&str> = Vec::new();
         for h in m.check_hits() {
             ov.set(&h.file, "");
+            blanked.push(&h.file);
+        }
+        // A debt row whose file is blanked would read stale, and the baseline is meant to be green:
+        // the rows of the set-aside files are set aside with them.
+        if !blanked.is_empty() && !m.segment_debt.is_empty() {
+            let kept: Vec<segment_debt::Debt> = m
+                .segment_debt
+                .iter()
+                .filter(|d| !blanked.contains(&d.file.as_str()))
+                .cloned()
+                .collect();
+            ov.set(segment_debt::SEGMENT_DEBT_TOML, segment_debt::render(&kept));
         }
     }
     ov

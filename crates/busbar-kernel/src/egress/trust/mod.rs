@@ -14,7 +14,6 @@
 //! installs once at boot ([`install_egress_trust_host`]); a plane reads it back through
 //! [`egress_trust_host`] and calls typed methods instead of the free functions directly, so the trust
 //! machinery is swappable behind a stable boundary without any call site changing. It mirrors the
-//! egress fetch seam's `install_hostless_egress` / `hostless` (see `crate::egress::seam`) and the
 //! `plane_host` capability-slice pattern ([`EngineHost`](crate::plane_host::EngineHost) and its supertraits).
 //!
 //! ## Additive and DORMANT

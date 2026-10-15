@@ -14,9 +14,6 @@ extern "C-unwind" fn host_entropy(_host: HostCtx, out: *mut u8, len: usize) -> S
 extern "C-unwind" fn host_clock(_host: HostCtx) -> u64 {
     1_700_000_000
 }
-extern "C-unwind" fn host_cap(_host: HostCtx) -> u64 {
-    4_096
-}
 
 /// A dropped-in image armed over a host table reads the HOST's services through every port; before
 /// the arm it read each port's failure path. A table serving from this very image (a linked plane)
@@ -48,7 +45,6 @@ fn an_armed_image_reads_the_hosts_services_through_every_port() {
     static HOST: PlaneHostVtable = PlaneHostVtable {
         entropy_fill: Some(host_entropy),
         wall_clock: Some(host_clock),
-        translate_cap: Some(host_cap),
         ..PlaneHostVtable::EMPTY
     };
     assert_eq!(unsafe { arm(&HOST) }, StatusClass::Ok);
@@ -56,7 +52,6 @@ fn an_armed_image_reads_the_hosts_services_through_every_port() {
     assert!(crate::codec::fill_entropy(&mut drawn));
     assert_eq!(drawn, [0xA5; 4], "the draw is the host's");
     assert_eq!(crate::codec::wall_clock_now(), Some(1_700_000_000));
-    assert_eq!(crate::codec::max_translate_body_bytes(), 4_096);
 
     // The HOST side of the same seam: `SERVICES` answers from this image's (now armed) ports.
     let mut served = [0u8; 3];
@@ -74,10 +69,8 @@ fn an_armed_image_reads_the_hosts_services_through_every_port() {
         (PlaneHostVtable::SERVICES.wall_clock.unwrap())(HostCtx::NULL),
         1_700_000_000
     );
-    assert_eq!(
-        (PlaneHostVtable::SERVICES.translate_cap.unwrap())(HostCtx::NULL),
-        4_096
-    );
-    // The usage-tap latch slot is RETIRED (row 155): `SERVICES` serves it no longer.
+    // The usage-tap latch and translate-cap slots are RETIRED (row 155): `SERVICES` serves them no
+    // longer.
     assert!(PlaneHostVtable::SERVICES.tap_fault_latch.is_none());
+    assert!(PlaneHostVtable::SERVICES.translate_cap.is_none());
 }

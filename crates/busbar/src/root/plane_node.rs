@@ -49,12 +49,13 @@ use busbar_contract::caps::{
     Grant, Meter, OpClassId, OriginKind, Outcome, Pass, PrincipalId, Refusal, Route, SeatVerdict,
     VerifiedDestination, Verify,
 };
-use busbar_contract::{LaneId, Registration, UnitKey};
+use busbar_contract::{LaneId, UnitKey};
 use busbar_kernel::plane_host::PlaneAnswer;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{
     AccrualMeter, Ended, Evidence, RouteAwait, RouteLeg, Screen, UnitCtx, Units,
 };
+use busbar_kernel::Registration;
 use busbar_kernel_audit::{
     AuditInputs, Controls, FinishClass as RecordFinish, OpClassId as RecordOpClass, OutcomeFacts,
     Subject, Usage as RecordUsage, UsageLine as RecordLine, What,
@@ -1521,7 +1522,7 @@ fn post_late(
     if let Some(class) = counts
         .classes
         .keys()
-        .find(|class| busbar_contract::Registration::resolve(class).is_none())
+        .find(|class| busbar_kernel::Registration::resolve(class).is_none())
     {
         busbar_kernel::diagnostics::diag_error!(
             busbar_kernel::diagnostics::METER_CLASS_UNDECLARED,

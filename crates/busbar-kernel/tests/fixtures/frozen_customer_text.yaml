@@ -31,6 +31,7 @@ legacy_rows:
   observability_log_type_key: request-log-webhook
   observability_trace_key: otlp_url
   observability_trace_key_1_4: otlp_endpoint
+  login_brands: "microsoft entra azure msft aad login.microsoftonline : Microsoft : squares | github : GitHub : octocat | google accounts.google : Google : g-mark"
   renamed_display: Valkey
   retired_url_scheme: redis
   gov14_module: sqlite

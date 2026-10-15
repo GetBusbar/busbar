@@ -65,7 +65,8 @@ identity-providers:
     token: {{ env: BUSBAR_ADMIN_TOKEN }}
 auth:
   chain: []
-  admin_auth: [admin-tokens]
+  admin_auth:
+    - admin-tokens
 providers:
   mock:
     api_key: {{ env: MOCK_KEY }}

@@ -119,6 +119,7 @@ pub(crate) async fn translate_response_cross_protocol(
         request: ingress_request_body.as_ref(),
         now_s: now(),
         elapsed_ms: u64::try_from(upstream_started.elapsed().as_millis()).ok(),
+        translate_cap: max_translated_body_bytes(),
     };
     let w = whole::translate(&ctx, status.as_u16(), &bytes);
     let Whole {

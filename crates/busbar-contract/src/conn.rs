@@ -112,6 +112,11 @@ pub struct Piece {
     /// buffer its reason phrase is, exactly as sent, right after the field block's bytes. `None`
     /// where the wire has none (HTTP/2) or the caller's buffer could not also hold it.
     pub reason: Option<core::ops::Range<usize>>,
+    /// On a head ([`PieceKind::Fields`]): the body length the message's head declared on the wire,
+    /// as the framer stated it (`abi::transport::PIECE_HAS_DECLARED_LEN`); `None` where it stated
+    /// none. The host hands it on as the framer stated it, never reading or checking it: a
+    /// statement, not a count of the body pieces to come.
+    pub declared_len: Option<u64>,
 }
 
 /// Why a connection operation did not answer with what was asked. The refusals carry the text an

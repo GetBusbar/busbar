@@ -24,8 +24,8 @@ use busbar_contract::abi::sdk::door::Entry;
 use busbar_contract::abi::sdk::{Instance, Lent, Out, Safe, SafeSlot};
 use busbar_contract::abi::transport::{
     slot, FramePiece, FramerOut, FramingIn, HeadSlots, PIECE_CONTINUED, PIECE_END_OF_FRAME,
-    PIECE_FIELDS, PIECE_HAS_CODE, PIECE_STREAM_FAILED, PIECE_WRITABLE, YIELD_ENDED,
-    YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
+    PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN, PIECE_STREAM_FAILED, PIECE_WRITABLE,
+    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
 };
 use hyper_io::{
     field_cut, fill, mark_stream_full, HeadWords, HostIo, Owed, Piece, WRITE_HIGH_WATER,
@@ -374,4 +374,34 @@ fn fill_drops_the_head_words_for_a_host_that_takes_no_slots() {
     assert!(heads.is_empty());
     assert!(frame.is_empty());
     assert_eq!(pieces[0].flags, PIECE_FIELDS | PIECE_END_OF_FRAME);
+}
+
+/// A head's declared body length rides its field block's piece as `PIECE_HAS_DECLARED_LEN` and
+/// `declared_len`; a head that declares none sets neither.
+#[test]
+fn fill_states_a_heads_declared_length_where_it_declared_one() {
+    let mut o = Owes {
+        io: HostIo::new(0),
+        pieces: VecDeque::from([
+            Piece {
+                declared_len: Some(1 << 33),
+                ..Piece::fields(1, Bytes::from_static(b"k: v\r\n"))
+            },
+            Piece::fields(3, Bytes::from_static(b"k: v\r\n")),
+        ]),
+        ended: false,
+    };
+    let (_, _, _, pieces, _) = run_fill(&mut o, (1, 64, 4));
+    assert_eq!(pieces.len(), 2);
+    assert_eq!(
+        (pieces[0].flags, pieces[0].declared_len),
+        (
+            PIECE_FIELDS | PIECE_END_OF_FRAME | PIECE_HAS_DECLARED_LEN,
+            1 << 33
+        )
+    );
+    assert_eq!(
+        (pieces[1].flags, pieces[1].declared_len),
+        (PIECE_FIELDS | PIECE_END_OF_FRAME, 0)
+    );
 }

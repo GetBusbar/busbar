@@ -743,6 +743,7 @@ fn body_piece(reply: &Reply) -> (Piece, Vec<u8>) {
             status_namespace: reply.code.map(|c| c.namespace.to_string()),
             retry_after_secs: reply.retry_after,
             reason: None,
+            declared_len: None,
         },
         reply.body.as_bytes().to_vec(),
     )
@@ -760,6 +761,7 @@ fn completion() -> (Piece, Vec<u8>) {
             status_namespace: None,
             retry_after_secs: None,
             reason: None,
+            declared_len: None,
         },
         Vec::new(),
     )

@@ -944,6 +944,7 @@ fn reply_piece(kind: busbar_contract::conn::PieceKind, len: usize) -> busbar_con
         status_namespace: None,
         retry_after_secs: None,
         reason: None,
+        declared_len: None,
     }
 }
 
@@ -2617,17 +2618,19 @@ pub(crate) mod tool_door {
         conns: crate::root::loader::dispatch::ConnTable,
     ) -> crate::root::boot::DoorPlane {
         let row = LinkedRow::of(line_door()).expect("the door states its Statement");
-        load_linked::<Plane>(
-            &row,
-            Bind {
-                instance: Arc::from(instance),
-                max_inflight_cap: 64,
-                sink: Arc::new(NoSink),
-                dispatcher: dispatcher.adopter(),
-                conns,
-            },
+        Arc::new(
+            load_linked::<Plane>(
+                &row,
+                Bind {
+                    instance: Arc::from(instance),
+                    max_inflight_cap: 64,
+                    sink: Arc::new(NoSink),
+                    dispatcher: dispatcher.adopter(),
+                    conns,
+                },
+            )
+            .expect("the linked door binds"),
         )
-        .expect("the linked door binds")
     }
 
     /// THE EXIT TEST (steps arrival, route, meter, exit): a keyed caller's `tools/call` arrives as one
@@ -3754,6 +3757,7 @@ pub(crate) mod door_boundary {
             public_url: Some(PUBLIC_URL),
             prior: None,
             providers: None,
+            hostless: Default::default(),
         })
         .expect("the door builds from its section")
     }
@@ -6132,4 +6136,25 @@ done
             "the child was refused on its input, by the operator's grant: {body}"
         );
     }
+}
+
+/// THE TRANSLATE CAP RIDES THE SETTINGS (row 155): the `limits` section a door plane is opened and
+/// refreshed with carries the operator's `request_body_max_bytes`, the kernel's resolved value (its
+/// 32 MiB default when the deployment names none), so the plane enforces the kernel's cap from its
+/// own settings.
+#[test]
+fn the_limits_a_door_plane_is_handed_carry_the_operators_translate_cap() {
+    let handed = |yaml: &str| {
+        let deploy = busbar_kernel::config::deploy_from_yaml_str(yaml).expect("a deployment");
+        let cfg = busbar_kernel::config::resolve(&deploy, &Default::default()).expect("resolves");
+        super::kernel_sections(&cfg)["limits"]["request_body_max_bytes"].as_u64()
+    };
+    assert_eq!(
+        handed("providers: {}\nmodels: {}\nlimits:\n  request_body_max_bytes: 131072\n"),
+        Some(131_072)
+    );
+    assert_eq!(
+        handed("providers: {}\nmodels: {}\n"),
+        Some(busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT as u64)
+    );
 }

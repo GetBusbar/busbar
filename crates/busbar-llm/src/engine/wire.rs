@@ -289,8 +289,6 @@ pub(crate) fn translate_request_cross_protocol(
     }
 }
 
-pub(crate) use busbar_kernel::proxy::max_upstream_buffered_bytes;
-
 /// Upper bound on a buffered cross-protocol non-stream SUCCESS (2xx) body that must be parsed and
 /// translated egress→IR→ingress. A real completion (large `max_tokens` output, big tool-call
 /// arguments, embedded content) can far exceed the tight error-body cap; truncating it would make
@@ -301,8 +299,29 @@ pub(crate) use busbar_kernel::proxy::max_upstream_buffered_bytes;
 /// (`limits.request_body_max_bytes`) drives BOTH the inbound `DefaultBodyLimit` and this egress cap
 /// (core's `limits::translate_body_max_bytes` returns the same value), so they can never diverge.
 /// A function (not a `const`) so the installed value is read at each use site; falls back to the
-/// historical 32 MiB default when the limits aren't installed (e.g. unit tests).
-pub(crate) use busbar_plane_llm::codec::wire_shim::max_translated_body_bytes;
+/// historical 32 MiB default when the limits aren't installed (e.g. unit tests). It is the kernel's
+/// own value: this engine hands it to the plane's relay, translator and whole-answer translation as
+/// their `translate_cap` (row 155; the plane holds no reader of its own).
+pub(crate) use busbar_kernel::proxy::{
+    max_translate_body_bytes as max_translated_body_bytes, max_upstream_buffered_bytes,
+};
+
+/// THE ENGINE'S STREAM-TRANSLATOR FACTORY, the one this crate installs on the kernel's neutral
+/// construction seam: the plane's translator, bounded at the kernel's translate cap
+/// ([`max_translated_body_bytes`]), read when the translator is built.
+pub(crate) fn stream_translator(
+    ingress: &str,
+    egress: &str,
+    is_sse: bool,
+) -> Option<Box<dyn busbar_contract::protocol::StreamTranslator>> {
+    crate::proto_stream::new_stream_translator_on(
+        ingress,
+        egress,
+        is_sse,
+        std::time::Instant::now,
+        max_translated_body_bytes(),
+    )
+}
 
 // THE CAPPED READ and its `ReadEnd` outcome moved DOWN into the neutral `busbar-substrate` crate in
 // Phase-B B0-b (both core's proxy engine and the egress/auth paths read upstream bodies this way,

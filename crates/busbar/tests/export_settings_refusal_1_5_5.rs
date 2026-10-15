@@ -1,16 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! **AN EXPORT SINK'S SETTINGS REFUSAL READS AS 1.5.5 PRINTED IT** (WIRE-EXPORT, operator text
-//! parity). A sink on the export kind's memory ABI is handed its `settings:` section alone, so it
-//! cannot name its instance: it answers `settings: <words>`, and the HOST renders the line under
-//! the instance (`abi::mechanism::lifecycle::refusal_lines`) — `export.<instance>.settings: …`,
-//! byte for byte what 1.5.5 printed. A whole sentence (prometheus's zero-retention refusal) is the
-//! sink's own and is printed unprefixed, as 1.5.5 printed it.
+//! **AN EXPORT SINK'S SETTINGS REFUSAL IS RENDERED UNDER ITS INSTANCE, AS 1.5.5 PRINTED IT**
+//! (WIRE-EXPORT, operator text parity). A sink on the export kind's memory ABI is handed its
+//! `settings:` section alone, so it cannot name its instance: it answers `settings: <words>`, and
+//! the HOST renders the line under the instance (`abi::mechanism::lifecycle::refusal_lines`) —
+//! `export.<instance>.settings: …`, the shape 1.5.5 printed.
 //!
-//! Driven through the shipped binary's `--validate`, one sink of each kind this build links, each
-//! with a bad `settings` key. RED before the host's rendering: the door sinks' lines read
-//! `settings: …`, with no instance.
+//! Driven through the shipped binary's `--validate`, over every sink this build serves (the modules
+//! its unknown-exporter refusal offers), each handed a settings key no sink declares. RED before the
+//! host's rendering: the door sinks' lines read `settings: …`, with no instance. 1.5.5's own lines,
+//! sink by sink, are DATA (`fixtures/export_settings_refusals_1_5_5.json`, verbatim from the 1.5.5
+//! binary), each held byte for byte on every build that serves its sink; this source names no sink.
 
 #![cfg(unix)]
 #![cfg(linked_axis_body_ingress)]
@@ -20,34 +21,12 @@ mod common;
 use std::path::Path;
 use std::process::Command;
 
-/// `(module, instance line, the 1.5.5 line)`: one bad settings key per sink kind.
-const CASES: &[(&str, &str, &str)] = &[
-    (
-        "prometheus",
-        "  metrics: { module: prometheus, settings: { buffer_seconds: 60, bogus: 1 } }\n",
-        "export.metrics.settings: unknown field `bogus`, expected `buffer_seconds` or \
-         `key_gauge_limit`",
-    ),
-    (
-        "prometheus",
-        "  metrics: { module: prometheus, settings: { key_gauge_limit: 7 } }\n",
-        "export.metrics.settings: missing field `buffer_seconds`",
-    ),
-    (
-        "otlp",
-        "  trace: { module: otlp, settings: { url: \"http://127.0.0.1:4318/v1/traces\", bogus: 1 } }\n",
-        "export.trace.settings: unknown field `bogus`, expected `url`",
-    ),
-    (
-        "request-log-file",
-        "  file: { module: request-log-file, settings: { path: 7 } }\n",
-        "export.file.settings: invalid type: integer `7`, expected a string",
-    ),
-];
+/// A settings key no sink declares.
+const PLANTED_KEY: &str = "planted_key_no_sink_declares";
 
-/// 1.5.5's zero-retention refusal: a whole sentence, unprefixed.
-const ZERO_RETENTION: &str = "the `module: prometheus` export instance sets \
-     settings.buffer_seconds: 0, which retains no observations";
+/// The unknown-exporter refusal's head; the modules this build serves follow, ` | `-separated.
+const REFUSAL_HEAD: &str =
+    "export.x.module: unknown exporter 'nosuch'; the built-in export modules are ";
 
 fn write_configs(dir: &Path, export: &str) {
     std::fs::write(
@@ -86,64 +65,98 @@ fn validate(dir: &Path, export: &str) -> (bool, String) {
     (out.status.success(), text)
 }
 
+/// The modules this build serves, as its unknown-exporter refusal offers them.
+fn served(dir: &Path) -> Vec<String> {
+    let (_, text) = validate(dir, "  x: { module: nosuch }\n");
+    let line = text
+        .lines()
+        .map(|l| l.trim_start().trim_start_matches("- "))
+        .find(|l| l.starts_with(REFUSAL_HEAD))
+        .unwrap_or_else(|| panic!("no unknown-exporter refusal for 'nosuch':\n{text}"));
+    let tail = &line[REFUSAL_HEAD.len()..];
+    if tail.is_empty() {
+        return Vec::new();
+    }
+    tail.split(" | ").map(str::to_string).collect()
+}
+
 #[test]
 fn a_sinks_settings_refusal_is_rendered_under_its_instance_as_1_5_5_printed_it() {
     let dir = common::plugins::scratch("export-settings-1-5-5");
-    for (module, line, want) in CASES {
-        let (ok, text) = validate(&dir, line);
-        if text.contains(&format!("unknown exporter '{module}'")) {
-            // A build that does not link this sink has no refusal of it to render.
+    let mut refused = 0usize;
+    for module in served(&dir) {
+        let (ok, text) = validate(
+            &dir,
+            &format!("  x: {{ module: {module}, settings: {{ {PLANTED_KEY}: 1 }} }}\n"),
+        );
+        let lines: Vec<&str> = text
+            .lines()
+            .map(|l| l.trim_start_matches("  - "))
+            .filter(|l| l.contains(PLANTED_KEY))
+            .collect();
+        if lines.is_empty() {
             continue;
         }
-        assert!(!ok, "{module}: a bad settings key validated clean:\n{text}");
         assert!(
-            text.lines().any(|l| l.trim_start_matches("  - ") == *want),
-            "{module}: the refusal is not 1.5.5's line `{want}`:\n{text}"
+            !ok,
+            "{module}: a refused settings key validated clean:\n{text}"
         );
+        refused += 1;
+        for line in lines {
+            assert!(
+                line.starts_with("export.x.settings: "),
+                "{module}: the sink's refusal is not rendered under its instance: `{line}`\n{text}"
+            );
+        }
     }
-    let (ok, text) = validate(
-        &dir,
-        "  metrics: { module: prometheus, settings: { buffer_seconds: 0 } }\n",
+    assert!(
+        refused > 0,
+        "no sink this build serves refused a key it does not declare, so the rendering went unproven"
     );
-    if !text.contains("unknown exporter 'prometheus'") {
-        assert!(!ok, "{text}");
-        assert!(
-            text.lines()
-                .any(|l| l.trim_start_matches("  - ").starts_with(ZERO_RETENTION)),
-            "the zero-retention sentence is printed unprefixed:\n{text}"
-        );
-    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// 1.5.5's refusal of a second scrape-sink instance: the sink states the `one_instance` mark, so the
-/// host asks its limits check while the configuration is resolved and prints its line verbatim —
-/// once per extra instance, naming the first. (The kernel's own proof that a `one_instance` module's
-/// words are rendered verbatim runs on its scrape double, busbar-kernel
-/// `config/tests/tests.rs::export_named_map_allows_two_instances_of_one_module`; the 1.5.5 words are
-/// the linked sink's, pinned here.)
-const SECOND_SCRAPE_INSTANCE: &str = "export.two: a second `module: prometheus` instance (already \
-     defined as 'one'). Prometheus serves the ONE well-known /metrics route, so a second instance \
-     could only be silently ignored — keep a single instance.";
+/// 1.5.5's settings refusals, sink by sink, as DATA (verbatim from the 1.5.5 binary).
+const REFUSALS_1_5_5: &str = include_str!("fixtures/export_settings_refusals_1_5_5.json");
 
+/// EVERY 1.5.5 SETTINGS REFUSAL READS AS 1.5.5 PRINTED IT on a build that serves its sink: the line
+/// itself, or the sentence it opens (a whole sentence 1.5.5 printed unprefixed), and a refusal
+/// 1.5.5 printed once is printed once.
 #[test]
-fn a_second_scrape_sink_instance_is_refused_as_1_5_5_printed_it() {
-    let dir = common::plugins::scratch("export-second-scrape-1-5-5");
-    let (ok, text) = validate(
-        &dir,
-        "  one: { module: prometheus, settings: { buffer_seconds: 60 } }\n  two: { module: \
-         prometheus, settings: { buffer_seconds: 60 } }\n",
-    );
-    if !text.contains("unknown exporter 'prometheus'") {
-        assert!(
-            !ok,
-            "a second scrape-sink instance validated clean:\n{text}"
-        );
+fn every_1_5_5_settings_refusal_reads_as_1_5_5_printed_it() {
+    let doc: serde_json::Value = serde_json::from_str(REFUSALS_1_5_5).expect("the fixture is JSON");
+    let dir = common::plugins::scratch("export-settings-1-5-5-lines");
+    for case in doc["cases"].as_array().expect("cases") {
+        let module = case["module"].as_str().expect("module");
+        let export = case["export"].as_str().expect("export");
+        let want = case["line"].as_str().expect("line");
+        let prefix = case["match"].as_str() == Some("prefix");
+        let once = case["once"].as_bool().unwrap_or(false);
+        let (ok, text) = validate(&dir, export);
+        if text.contains(&format!("unknown exporter '{module}'")) {
+            // A build that does not serve this sink has no refusal of it to render.
+            continue;
+        }
+        assert!(!ok, "{module}: the case validated clean:\n{text}");
         let printed = text
             .lines()
-            .filter(|l| l.trim_start_matches("  - ") == SECOND_SCRAPE_INSTANCE)
+            .map(|l| l.trim_start_matches("  - "))
+            .filter(|l| {
+                if prefix {
+                    l.starts_with(want)
+                } else {
+                    *l == want
+                }
+            })
             .count();
-        assert_eq!(printed, 1, "the refusal is not 1.5.5's line, once:\n{text}");
+        if once {
+            assert_eq!(printed, 1, "{module}: 1.5.5's line `{want}`, once:\n{text}");
+        } else {
+            assert!(
+                printed > 0,
+                "{module}: the refusal is not 1.5.5's line `{want}`:\n{text}"
+            );
+        }
     }
     let _ = std::fs::remove_dir_all(&dir);
 }

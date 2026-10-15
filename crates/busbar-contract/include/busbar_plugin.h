@@ -527,6 +527,7 @@ extern "C" {
 #define BB_TRANSPORT_PIECE_FIELDS UINT16_C(16) /* [`FramePiece::flags`]: the piece's bytes are a FIELD BLOCK (the far end's head or its trailers), */
 #define BB_TRANSPORT_PIECE_CONTINUED UINT16_C(32) /* [`FramePiece::flags`], with [`PIECE_FIELDS`]: the piece's first byte CONTINUES a line an earlier */
 #define BB_TRANSPORT_PIECE_TEXT UINT16_C(64) /* [`FramePiece::flags`]: the piece's bytes belong to a TEXT message, not a binary one, on a wire */
+#define BB_TRANSPORT_PIECE_HAS_DECLARED_LEN UINT16_C(128) /* [`FramePiece::flags`], with [`PIECE_FIELDS`]: `declared_len` is present, the body length the */
 #define BB_TRANSPORT_PIECE_WRITABLE UINT16_C(256) /* [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with */
 #define BB_TRANSPORT_EMIT_TEXT UINT32_C(1) /* [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are */
 #define BB_TRANSPORT_WRITE_END_OF_FRAME UINT32_C(1) /* [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that */
@@ -1153,9 +1154,9 @@ struct bb_mech_Blob {
     uint32_t flags;
 };
 
-/* The host's context for one plugin instance: opaque to the plugin, handed back on `wake`. */
+/* The host's context for one plugin instance: an opaque handle the host verifies on every call. */
 struct bb_mech_HostCtx {
-    void *ptr;
+    uint64_t handle;
 };
 
 /* A ticket: `(slot, generation)`. UNIQUE PER INSTANCE across all workers, so a plugin may key its */
@@ -3122,6 +3123,7 @@ struct bb_transport_FramePiece {
     uint8_t _reserved;
     uint16_t flags;
     uint64_t retry_after_secs;
+    uint64_t declared_len;
 };
 
 /* The HOST buffers every framer op writes into, and the host's clock at the call. */
@@ -3267,6 +3269,8 @@ struct bb_transport_LocateIn {
     size_t name_cap;
     uint8_t *alpn_buf;
     size_t alpn_cap;
+    uint32_t accept;
+    uint32_t _accept_reserved;
 };
 
 /* `locate`'s `out`. */
@@ -3327,6 +3331,8 @@ struct bb_transport_EmitIn {
     bb_transport_FramerSink sink;
     uint64_t deadline_ns;
     const bb_transport_DatagramLane *lane;
+    uint32_t status;
+    uint32_t _status_reserved;
 };
 
 /* `encode`'s `in`. The rendered bytes go into `sink.wire`. */
@@ -4194,7 +4200,7 @@ BB_ASSERT(offsetof(bb_mech_CompletionHandle, seq) == 8, "bb_mech_CompletionHandl
 BB_ASSERT(offsetof(bb_mech_CompletionHandle, _reserved) == 12, "bb_mech_CompletionHandle._reserved: offset");
 BB_ASSERT(sizeof(bb_mech_HostCtx) == 8, "bb_mech_HostCtx: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_HostCtx) == 8, "bb_mech_HostCtx: alignment");
-BB_ASSERT(offsetof(bb_mech_HostCtx, ptr) == 0, "bb_mech_HostCtx.ptr: offset");
+BB_ASSERT(offsetof(bb_mech_HostCtx, handle) == 0, "bb_mech_HostCtx.handle: offset");
 BB_ASSERT(sizeof(bb_mech_HostTables) == 48, "bb_mech_HostTables: size");
 BB_ASSERT(BB_ALIGNOF(bb_mech_HostTables) == 8, "bb_mech_HostTables: alignment");
 BB_ASSERT(offsetof(bb_mech_HostTables, size) == 0, "bb_mech_HostTables.size: offset");
@@ -5551,7 +5557,7 @@ BB_ASSERT(offsetof(bb_transport_ConnFacts, peer_issuer) == 56, "bb_transport_Con
 BB_ASSERT(offsetof(bb_transport_ConnFacts, peer_fingerprint) == 72, "bb_transport_ConnFacts.peer_fingerprint: offset");
 BB_ASSERT(offsetof(bb_transport_ConnFacts, claim) == 88, "bb_transport_ConnFacts.claim: offset");
 BB_ASSERT(offsetof(bb_transport_ConnFacts, local_certificate) == 104, "bb_transport_ConnFacts.local_certificate: offset");
-BB_ASSERT(sizeof(bb_transport_FramePiece) == 40, "bb_transport_FramePiece: size");
+BB_ASSERT(sizeof(bb_transport_FramePiece) == 48, "bb_transport_FramePiece: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FramePiece) == 8, "bb_transport_FramePiece: alignment");
 BB_ASSERT(offsetof(bb_transport_FramePiece, stream) == 0, "bb_transport_FramePiece.stream: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, offset) == 8, "bb_transport_FramePiece.offset: offset");
@@ -5561,6 +5567,7 @@ BB_ASSERT(offsetof(bb_transport_FramePiece, status_class) == 28, "bb_transport_F
 BB_ASSERT(offsetof(bb_transport_FramePiece, _reserved) == 29, "bb_transport_FramePiece._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, flags) == 30, "bb_transport_FramePiece.flags: offset");
 BB_ASSERT(offsetof(bb_transport_FramePiece, retry_after_secs) == 32, "bb_transport_FramePiece.retry_after_secs: offset");
+BB_ASSERT(offsetof(bb_transport_FramePiece, declared_len) == 40, "bb_transport_FramePiece.declared_len: offset");
 BB_ASSERT(sizeof(bb_transport_FrameSpan) == 16, "bb_transport_FrameSpan: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_FrameSpan) == 8, "bb_transport_FrameSpan: alignment");
 BB_ASSERT(offsetof(bb_transport_FrameSpan, offset) == 0, "bb_transport_FrameSpan.offset: offset");
@@ -5666,7 +5673,7 @@ BB_ASSERT(offsetof(bb_transport_ArrivalOut, peer_written) == 96, "bb_transport_A
 BB_ASSERT(offsetof(bb_transport_ArrivalOut, peer_needed) == 104, "bb_transport_ArrivalOut.peer_needed: offset");
 BB_ASSERT(offsetof(bb_transport_ArrivalOut, local_port) == 112, "bb_transport_ArrivalOut.local_port: offset");
 BB_ASSERT(offsetof(bb_transport_ArrivalOut, _reserved) == 116, "bb_transport_ArrivalOut._reserved: offset");
-BB_ASSERT(sizeof(bb_transport_LocateIn) == 152, "bb_transport_LocateIn: size");
+BB_ASSERT(sizeof(bb_transport_LocateIn) == 160, "bb_transport_LocateIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_LocateIn) == 8, "bb_transport_LocateIn: alignment");
 BB_ASSERT(offsetof(bb_transport_LocateIn, head) == 0, "bb_transport_LocateIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_LocateIn, target) == 88, "bb_transport_LocateIn.target: offset");
@@ -5676,6 +5683,8 @@ BB_ASSERT(offsetof(bb_transport_LocateIn, name_buf) == 120, "bb_transport_Locate
 BB_ASSERT(offsetof(bb_transport_LocateIn, name_cap) == 128, "bb_transport_LocateIn.name_cap: offset");
 BB_ASSERT(offsetof(bb_transport_LocateIn, alpn_buf) == 136, "bb_transport_LocateIn.alpn_buf: offset");
 BB_ASSERT(offsetof(bb_transport_LocateIn, alpn_cap) == 144, "bb_transport_LocateIn.alpn_cap: offset");
+BB_ASSERT(offsetof(bb_transport_LocateIn, accept) == 152, "bb_transport_LocateIn.accept: offset");
+BB_ASSERT(offsetof(bb_transport_LocateIn, _accept_reserved) == 156, "bb_transport_LocateIn._accept_reserved: offset");
 BB_ASSERT(sizeof(bb_transport_LocateOut) == 152, "bb_transport_LocateOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_LocateOut) == 8, "bb_transport_LocateOut: alignment");
 BB_ASSERT(offsetof(bb_transport_LocateOut, head) == 0, "bb_transport_LocateOut.head: offset");
@@ -5714,7 +5723,7 @@ BB_ASSERT(offsetof(bb_transport_IngestIn, end) == 112, "bb_transport_IngestIn.en
 BB_ASSERT(offsetof(bb_transport_IngestIn, _reserved) == 116, "bb_transport_IngestIn._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_IngestIn, sink) == 120, "bb_transport_IngestIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_IngestIn, lane) == 200, "bb_transport_IngestIn.lane: offset");
-BB_ASSERT(sizeof(bb_transport_EmitIn) == 224, "bb_transport_EmitIn: size");
+BB_ASSERT(sizeof(bb_transport_EmitIn) == 232, "bb_transport_EmitIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_EmitIn) == 8, "bb_transport_EmitIn: alignment");
 BB_ASSERT(offsetof(bb_transport_EmitIn, head) == 0, "bb_transport_EmitIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, framing) == 88, "bb_transport_EmitIn.framing: offset");
@@ -5726,6 +5735,8 @@ BB_ASSERT(offsetof(bb_transport_EmitIn, flags) == 124, "bb_transport_EmitIn.flag
 BB_ASSERT(offsetof(bb_transport_EmitIn, sink) == 128, "bb_transport_EmitIn.sink: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, deadline_ns) == 208, "bb_transport_EmitIn.deadline_ns: offset");
 BB_ASSERT(offsetof(bb_transport_EmitIn, lane) == 216, "bb_transport_EmitIn.lane: offset");
+BB_ASSERT(offsetof(bb_transport_EmitIn, status) == 224, "bb_transport_EmitIn.status: offset");
+BB_ASSERT(offsetof(bb_transport_EmitIn, _status_reserved) == 228, "bb_transport_EmitIn._status_reserved: offset");
 BB_ASSERT(sizeof(bb_transport_EncodeIn) == 232, "bb_transport_EncodeIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_EncodeIn) == 8, "bb_transport_EncodeIn: alignment");
 BB_ASSERT(offsetof(bb_transport_EncodeIn, head) == 0, "bb_transport_EncodeIn.head: offset");

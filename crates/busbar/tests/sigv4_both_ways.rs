@@ -670,7 +670,8 @@ identity-providers:
 auth:
   chain: [keys]
   signing_key: {{ file: "{signing}" }}
-  admin_auth: [admin-tokens]
+  admin_auth:
+    - admin-tokens
 providers:
   bedrock-lane:
     api_key: {{ env: {UPSTREAM_CREDS_ENV} }}

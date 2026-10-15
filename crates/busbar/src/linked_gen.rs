@@ -449,7 +449,7 @@ pub(crate) fn linked_source(
         .filter(|(_, a)| a.iter().any(|x| x == TRANSPORT_AXIS))
         .enumerate()
     {
-        let (build, claims, upgrades) = if axes.iter().any(|x| x == DOOR_AXIS) {
+        let (build, claims, upgrades, lines) = if axes.iter().any(|x| x == DOOR_AXIS) {
             door_builds.push_str(&format!(
                 "fn __door_build_{n}(\n    lower: Option<std::sync::Arc<dyn busbar_contract::Transport>>,\n    \
                  settings: &busbar_contract::transport::TransportSettings,\n\
@@ -458,12 +458,15 @@ pub(crate) fn linked_source(
                  fn __door_claims_{n}() -> Vec<&'static str> {{\n    \
                  crate::root::doors::claims_of({e}::door)\n}}\n\
                  fn __door_upgrades_{n}() -> Vec<&'static str> {{\n    \
-                 crate::root::doors::upgrades_of({e}::door)\n}}\n"
+                 crate::root::doors::upgrades_of({e}::door)\n}}\n\
+                 fn __door_lines_{n}() -> Vec<&'static str> {{\n    \
+                 crate::root::doors::lines_of({e}::door)\n}}\n"
             ));
             (
                 format!("__door_build_{n}"),
                 format!("__door_claims_{n}"),
                 format!("__door_upgrades_{n}"),
+                format!("__door_lines_{n}"),
             )
         } else {
             door_builds.push_str(&format!(
@@ -474,11 +477,14 @@ pub(crate) fn linked_source(
                 format!("{e}::build"),
                 format!("__row_claims_{n}"),
                 format!("__row_upgrades_{n}"),
+                // A row with no door states no claim rows: it carries no lines, as no upgrades.
+                format!("__row_upgrades_{n}"),
             )
         };
         out.push_str(&format!(
             "crate::root::linked::LinkedTransport {{ key: {e}::KEY, composes_over: \
-             {e}::COMPOSES_OVER, build: {build}, claims: {claims}, upgrades: {upgrades} }}, "
+             {e}::COMPOSES_OVER, build: {build}, claims: {claims}, upgrades: {upgrades}, \
+             lines: {lines} }}, "
         ));
     }
     out.push_str("],\n");
@@ -499,6 +505,12 @@ pub(crate) fn linked_source(
         }
     }
     out.push_str("],\n");
+    // The operator credential's provider word: the `linked-name` of the row the manifest's
+    // `operator-auth` table names, whether or not this build links it (its 1.5.5 refusals spell it).
+    let operator = metadata_value(manifest, "package.metadata.busbar.operator-auth", "row")
+        .and_then(|row| metadata_value(manifest, "package.metadata.busbar.linked-name", &row))
+        .unwrap_or_default();
+    out.push_str(&format!("    operator_auth: {operator:?},\n"));
     out.push_str("    export_doors: &[");
     for ((entry, list), (_, krate)) in linked.iter().zip(&on) {
         if list.iter().any(|a| a == EXPORT_DOOR_AXIS) {

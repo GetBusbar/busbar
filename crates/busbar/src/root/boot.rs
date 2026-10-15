@@ -64,7 +64,9 @@ pub fn registry(
 /// THE `plugins:` BLOCK'S TRUST, resolved: the embedded first-party key, the configured
 /// publishers and opt-ins and the per-name floors (`min_versions`, the rollback pins), through the
 /// loader's `TrustPolicy::from_config`. `binary_version` is carried for diagnostics only. The
-/// automatic first-party floor is the registry build's to arm.
+/// automatic first-party floor is the registry build's to arm. THE ONE BUILDER: the root hands this
+/// same function to the kernel (`RootInstall::trust_policy`, `root::linked::register_stores`), and
+/// every snapshot carries it to the admin surface, which judges a plugin under nothing else.
 ///
 /// # Errors
 ///
@@ -613,9 +615,11 @@ pub(crate) static DOOR_CANDIDATES: std::sync::OnceLock<Vec<crate::root::loader::
 /// The door planes [`load_door_planes`] bound, held for the process.
 static DOOR_PLANES: std::sync::OnceLock<Vec<(String, DoorPlane)>> = std::sync::OnceLock::new();
 
-/// A plane bound through its door.
-pub type DoorPlane =
-    crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>;
+/// A plane bound through its door, shared (a `Plugin` is `!Clone`, THE DESIGN C.1): the boot's
+/// list, each generation's plane instance and its config-apply holder share the one instance.
+pub type DoorPlane = std::sync::Arc<
+    crate::root::loader::dispatch::Plugin<crate::root::loader::dispatch::kinds::plane::Plane>,
+>;
 
 /// THE DOOR PLANES' ONE LOAD, run once the process's dispatcher is built
 /// ([`crate::root::dispatch::boot`]): every plane [`dropped_planes_of`] discovered, linked and
@@ -638,7 +642,10 @@ pub fn load_door_planes() {
     .unwrap_or_else(|refusal| {
         eprintln!("busbar: {refusal}");
         std::process::exit(2);
-    });
+    })
+    .into_iter()
+    .map(|(instance, plane)| (instance, std::sync::Arc::new(plane)))
+    .collect::<Vec<(String, DoorPlane)>>();
     // Stage 3g: every bound door validates the section dealt to it before anything opens.
     let path =
         crate::root::cli::resolve_config_path(crate::root::cli::config_path_flag().as_deref());
@@ -928,7 +935,7 @@ pub fn book(
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
     let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
     // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
-    // boot log's INFO+ line set is part of what "LLM-only ≡ 1.5.5" means — it is pinned
+    // boot log's INFO+ line set is part of what "one plane alone ≡ 1.5.5" means — it is pinned
     // by `tests/boot_lines_neutrality.rs` and recorded by the oracle's
     // `hazard|no-data-dir|logs` cell — so a new line here is a user-visible byte change
     // on a surface that must not move. The seal is an internal fact an operator can ask

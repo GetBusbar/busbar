@@ -319,6 +319,7 @@ fn ctx<'a>(
         request: None,
         now_s: 1_752_000_000,
         elapsed_ms: Some(12),
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     }
 }
 
@@ -425,6 +426,7 @@ fn relay_ctx<'a>(ingress: &'a str, egress: &'a str, far_is_stream: bool) -> Rela
         request: None,
         handler: chat_handler(ingress),
         meter: true,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     }
 }
 
@@ -695,6 +697,7 @@ fn a_reply_relays_a_stream_piece_by_piece() {
         lane: &lane,
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let far = native_stream("anthropic");
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
@@ -741,6 +744,7 @@ fn a_reply_takes_a_whole_answer_whole() {
         lane: &lane,
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let (_, far) = native_answers("cohere")
         .into_iter()
@@ -772,6 +776,7 @@ fn a_reply_judges_a_far_end_error() {
         lane: &lane,
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let body = br#"{"type":"error","error":{"type":"invalid_request_error","message":"too long"}}"#;
     for (status, verdict, disposition) in [
@@ -810,6 +815,7 @@ fn a_judged_far_end_error_carries_the_breakers_reading_apart_from_its_verdict() 
         lane: &lane,
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let error = |code: &str| {
         format!(r#"{{"error":{{"message":"m","type":"invalid_request_error","code":"{code}"}}}}"#)
@@ -852,6 +858,7 @@ fn a_reply_that_is_cut_says_so() {
         lane: &lane,
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let far = native_stream("anthropic");
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"text/event-stream")];
@@ -868,6 +875,7 @@ fn a_reply_that_is_cut_says_so() {
         lane: &lane,
         intent: stream_intent(chat_handler("openai"), arrived.parsed.as_ref()),
         passthrough: false,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let mut reply = Reply::new(&ctx, 200, JSON_HEAD);
     let _ = reply.feed(&ctx, b"{\"id\":", false, AT);

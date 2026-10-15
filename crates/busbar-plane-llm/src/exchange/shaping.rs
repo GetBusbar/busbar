@@ -13,6 +13,7 @@
 //! | `upstream_model`, `default_max_tokens`, `reasoning`, `prompt_caching` | the model |
 //! | `context_max` (one value per model across every pool), a member's own `reasoning` | the pools |
 //! | the global `default_max_tokens` and the effort → thinking-budget table | `limits` |
+//! | the translation cap, `request_body_max_bytes` (the operator's one knob) | `limits` |
 //!
 //! Each derivation is the previous release's (its boot build of the same tables), so a request is
 //! written the same way whichever build holds the tables. The grammar was already judged by the
@@ -143,6 +144,9 @@ pub struct Shaping {
     pub default_max_tokens: u32,
     /// The effort → thinking-budget table.
     pub reasoning_budgets: [u32; 4],
+    /// The translation cap the kernel handed in `limits.request_body_max_bytes`, if it handed one
+    /// ([`Self::translate_cap`]).
+    pub request_body_max_bytes: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -234,6 +238,8 @@ struct LimitsCfg {
     default_max_tokens: Option<u32>,
     #[serde(default)]
     reasoning_effort_budgets: Option<Budgets>,
+    #[serde(default)]
+    request_body_max_bytes: Option<usize>,
 }
 
 /// A `*` glob over a model name: the only wildcard `model_capabilities` takes.
@@ -477,7 +483,20 @@ impl Shaping {
                 budgets.and_then(|b| b.medium).unwrap_or(medium),
                 budgets.and_then(|b| b.high).unwrap_or(high),
             ],
+            request_body_max_bytes: limits.as_ref().and_then(|l| l.request_body_max_bytes),
         })
+    }
+
+    /// THE TRANSLATION CAP this generation enforces, in bytes: the one the kernel handed in the
+    /// settings the plane was opened or refreshed with (`limits.request_body_max_bytes`, the
+    /// operator's one knob for the inbound body limit and this egress cap), else
+    /// [`busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT`], the kernel's own default. It
+    /// bounds a whole answer taken for translation (past it, the caller's 500), the same-dialect copy
+    /// kept for usage, and what a translating writer accumulates per item.
+    #[must_use]
+    pub fn translate_cap(&self) -> usize {
+        self.request_body_max_bytes
+            .unwrap_or(busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT)
     }
 
     /// The far end a pool member names.

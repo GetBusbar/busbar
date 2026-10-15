@@ -440,6 +440,10 @@ pub const PIECE_CONTINUED: u16 = 32;
 /// it into `FrameMeta::text`, the bit's one home above the ABI.
 pub const PIECE_TEXT: u16 = 64;
 
+/// [`FramePiece::flags`], with [`PIECE_FIELDS`]: `declared_len` is present, the body length the
+/// message's head declared on the wire. Never on any other piece.
+pub const PIECE_HAS_DECLARED_LEN: u16 = 128;
+
 /// [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with
 /// [`YIELD_STREAM_FULL`] drained below the framer's low-water mark, and the host may emit on the
 /// stream again. Always an EMPTY piece, with no other flag: it ends no frame and no stream.
@@ -649,6 +653,10 @@ pub struct FramePiece {
     pub flags: u16,
     /// How long the far side asked to be left alone, in seconds.
     pub retry_after_secs: u64,
+    /// With [`PIECE_HAS_DECLARED_LEN`], on a head's field block: the body length the message's
+    /// head declared on the wire, as the framer read it. A statement, never a count of the body
+    /// bytes the pieces carry; the field block itself never holds it. A tail addition (pre-tag v1).
+    pub declared_len: u64,
 }
 
 /// A byte range of a host buffer a piece's bytes were written into; `len == 0` = absent. A
@@ -664,7 +672,7 @@ pub struct FrameSpan {
 
 // The piece's size and its flags' place are fixed: a framer built against another layout is refused
 // at compile time, never read wrong at run time.
-const _: () = assert!(core::mem::size_of::<FramePiece>() == 40);
+const _: () = assert!(core::mem::size_of::<FramePiece>() == 48);
 const _: () = assert!(core::mem::offset_of!(FramePiece, flags) == 30);
 
 /// The HOST buffers every framer op writes into, and the host's clock at the call.
@@ -938,6 +946,14 @@ pub struct LocateIn {
     pub alpn_buf: *mut u8,
     /// Its capacity.
     pub alpn_cap: usize,
+    /// `1` = answer the protocol offer an ACCEPTING listener makes in the handshake, for a listener
+    /// framed by this entry (`target` may be empty: a listener names no far end); `0` = the
+    /// offer a dial to `target` makes, as before. THE ALPN OFFER IS THE FRAMER'S on both sides
+    /// (`BUSBAR-1.6.0.md` l.477-478), and the two may differ (v1.5.5's client offered `h2,
+    /// http/1.1`, its listener `http/1.1` alone). A tail addition (pre-tag v1).
+    pub accept: u32,
+    /// Alignment padding.
+    pub _accept_reserved: u32,
 }
 
 /// `locate`'s `out`.
@@ -1062,6 +1078,15 @@ pub struct EmitIn {
     pub deadline_ns: u64,
     /// The datagram lane ([`datagram`]): NULL for a stream framer. A tail addition (pre-tag v1).
     pub lane: *const DatagramLane,
+    /// THE ANSWER'S STATUS (INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.4913): on an ACCEPTED stream's FIRST
+    /// emit, the one carrying the answer's head (its bytes `encode` rendered), the status the answer
+    /// carries, in the numbering of the claim the stream arrived on; a status that asks the far end
+    /// to switch protocols hands the connection to the claimed upgrade framer ([`slot::DETACH`]).
+    /// `0` on every other emit, where a stated status is refused
+    /// ([`check::check_emit_status`]). Never a `:status` field. A tail addition (pre-tag v1).
+    pub status: u32,
+    /// Alignment padding.
+    pub _status_reserved: u32,
 }
 
 /// `encode`'s `in`. The rendered bytes go into `sink.wire`.

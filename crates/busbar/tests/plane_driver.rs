@@ -91,12 +91,12 @@ pub(crate) fn ways() -> Vec<Way> {
 }
 
 /// Load and open the test plane through `way`, adopted by `dispatcher`.
-fn load(way: Way, dispatcher: &Dispatcher) -> Plugin<Plane> {
+fn load(way: Way, dispatcher: &Dispatcher) -> Arc<Plugin<Plane>> {
     load_with(way, dispatcher, Arc::new(NoSink))
 }
 
 /// [`load`], with the #85 envelope going to `sink`.
-fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> Plugin<Plane> {
+fn load_with(way: Way, dispatcher: &Dispatcher, sink: Arc<dyn EnvelopeSink>) -> Arc<Plugin<Plane>> {
     // These rows never dial: the plane's need is not declared, bound as a probe.
     load_open(way, dispatcher, sink, ConnTable::Probe).0
 }
@@ -107,18 +107,19 @@ fn load_over(
     dispatcher: &Dispatcher,
     sink: Arc<dyn EnvelopeSink>,
     conns: Option<Arc<dyn DeclaredConns>>,
-) -> Plugin<Plane> {
+) -> Arc<Plugin<Plane>> {
     let conns = conns.map_or(ConnTable::Probe, ConnTable::Host);
     load_open(way, dispatcher, sink, conns).0
 }
 
-/// [`load_over`], and the first generation's snapshot as the host copied it.
+/// [`load_over`], and the first generation's snapshot as the host copied it. The plugin is shared
+/// (a `Plugin` is `!Clone`): the rig, its plane instance and the case's reads hold the same `Arc`.
 fn load_open(
     way: Way,
     dispatcher: &Dispatcher,
     sink: Arc<dyn EnvelopeSink>,
     conns: ConnTable,
-) -> (Plugin<Plane>, OwnedSnapshot) {
+) -> (Arc<Plugin<Plane>>, OwnedSnapshot) {
     let bind = Bind {
         instance: Arc::from("the-instance"),
         max_inflight_cap: 64,
@@ -168,7 +169,7 @@ fn load_open(
     );
     let (called, snapshot) = plugin.open(&mut open);
     assert_eq!(called.outcome, AbiOutcome::Ready);
-    (plugin, snapshot.expect("the snapshot is copied"))
+    (Arc::new(plugin), snapshot.expect("the snapshot is copied"))
 }
 
 /// The plane's own counters, read through `arrive` on `/stats`.
@@ -250,7 +251,7 @@ fn stats(plugin: &Plugin<Plane>) -> [u64; cases::stat::COUNT] {
 // ── the rig the cases run on ─────────────────────────────────────────────────────────────────────
 
 pub(crate) struct Rig {
-    plugin: Plugin<Plane>,
+    plugin: Arc<Plugin<Plane>>,
     pub(crate) driver: PlaneDriver,
     pub(crate) book: Arc<cases::Book>,
 }
@@ -276,7 +277,7 @@ pub(crate) fn rig(way: Way, caps: BufferCaps, book: cases::Book) -> Rig {
     }));
     let plugin = load(way, &dispatcher);
     let book = Arc::new(book);
-    let calls = Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 1));
+    let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher, 1));
     let refusal_statuses = calls.refusal_statuses();
     assert_eq!(
         refusal_statuses,
@@ -328,7 +329,7 @@ fn a_plane_driven_through_its_driver_ticket_answers_under_its_own_frame() {
         let dispatcher = Dispatcher::new(DispatchConfig::default());
         let gauges = Arc::new(Gauges::default());
         let plugin = load_with(way, &dispatcher, gauges.clone());
-        let t = dispatcher.driver(&plugin, 0).expect("a driver ticket");
+        let t = dispatcher.driver(&*plugin, 0).expect("a driver ticket");
         wake(&plugin, t);
         let until = Instant::now() + Duration::from_secs(5);
         while gauges.0.lock().unwrap().is_empty() && Instant::now() < until {
@@ -435,8 +436,8 @@ fn ticked(plugin: &Plugin<Plane>) -> [u64; plane::TICKED] {
 }
 
 /// The kernel's driver of `plugin`'s instance, on the dispatcher's one worker (worker 0).
-fn driver_of(plugin: &Plugin<Plane>, dispatcher: Arc<Dispatcher>) -> PlaneDriver {
-    let calls = Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 0));
+fn driver_of(plugin: &Arc<Plugin<Plane>>, dispatcher: Arc<Dispatcher>) -> PlaneDriver {
+    let calls = Arc::new(PlaneInstance::new(Arc::clone(plugin), dispatcher, 0));
     let refusal_statuses = calls.refusal_statuses();
     PlaneDriver::new(
         calls,
@@ -590,6 +591,7 @@ impl Conns for Far {
             status_namespace: None,
             retry_after_secs: None,
             reason: None,
+            declared_len: None,
         })
     }
     fn wait(&self, _: InstanceId, _: &[ConnId], _: u64) -> Result<usize, ConnError> {
@@ -805,7 +807,7 @@ fn serve_table(
     way: Way,
     instance: &str,
 ) -> (
-    Plugin<Plane>,
+    Arc<Plugin<Plane>>,
     busbar_kernel::plane_driver::serve::ServeTable,
 ) {
     use busbar_kernel::plane_driver::serve::{ServeRoute, ServeTable};
@@ -827,7 +829,7 @@ fn serve_table(
     let table = ServeTable {
         instance: instance.to_string(),
         audit_kind: "testkind".to_string(),
-        calls: Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 1)),
+        calls: Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher, 1)),
         caps: BufferCaps::default(),
         routes,
         records: None,
@@ -1414,7 +1416,7 @@ async fn a_session_is_refused_while_its_money_is_unstated() {
             ..DispatchConfig::default()
         }));
         let plugin = load(way, &dispatcher);
-        let calls = Arc::new(PlaneInstance::new(plugin.clone(), dispatcher, 1));
+        let calls = Arc::new(PlaneInstance::new(Arc::clone(&plugin), dispatcher, 1));
         let refusal_statuses = calls.refusal_statuses();
         let driver = PlaneDriver::new(
             calls,

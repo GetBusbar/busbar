@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! NEUTRALITY: a 1.5.5-shaped config (no `mcp:`/`agents:`/`streams:` section) must boot with the SAME
+//! NEUTRALITY: a 1.5.5-shaped config (no section a later plane owns) must boot with the SAME
 //! log lines at INFO and above as the published 1.5.5 binary — no new boot line at INFO just because a
 //! later plane is compiled in, and no plane line at all unless that plane is configured (see
 //! `qa/parity-bindings.md`, and the shadow-oracle `neutrality|boot-lines` cell this
 //! test pins as a fast, always-on regression guard beside it).
 //!
-//! Boots the REAL binary, captures stdout (busbar's default log destination outside `--mcp-stdio`),
+//! Boots the REAL binary, captures stdout (busbar's default log destination outside a line-serve flag),
 //! SIGTERMs it, and asserts the exact ORDERED set of INFO/WARN/ERROR lines after blanking the three
 //! fields that are expected to vary run-to-run: the timestamp, the version literal, and a
 //! `diag=BUSBAR-nnnn` suffix. The one line-group whose RELATIVE order is itself nondeterministic on
@@ -49,7 +49,7 @@ fn free_port() -> u16 {
     common::boot::free_port()
 }
 
-/// A 1.5.5-SHAPED config: no `mcp:`/`agents:`/`streams:` section, governance ON (a keyed `auth.chain`,
+/// A 1.5.5-SHAPED config: no section a later plane owns, governance ON (a keyed `auth.chain`,
 /// so the store/reliability lines fire the same way the oracle's baseline does), a plugin dir that is
 /// present but disabled (the "plugins: disabled" INFO line), one pool with `on_exhausted: least_bad`
 /// (the restored "pool exhaustion policy" line — a single pool, so no ordering ambiguity to sort), and
@@ -88,7 +88,8 @@ auth:
   chain:
     - keys
   signing_key: {{ file: "{key}" }}
-  admin_auth: [admin-tokens]
+  admin_auth:
+    - admin-tokens
 groups:
   g:
     limits:
@@ -240,7 +241,7 @@ fn boot_lines_match_1_5_5_shape() {
     // CPU) a fixed sleep is not long enough for a slow-scheduled worker thread to finish standing up
     // its listener and log its own "busbar listening" line before the signal lands, so the captured
     // log is missing a line the un-loaded run always has — a false failure, not a real drift. Polling
-    // the actual readiness signal (a live TCP accept + HTTP response on each port) is load-robust
+    // the actual readiness signal (a live accept + response on each port) is load-robust
     // without weakening what gets compared: the ordered-set assertion below is unchanged.
     let data_ready = wait_for(Duration::from_secs(30), || healthz_ok(data_port));
     assert!(
@@ -354,7 +355,7 @@ fn sort_consecutive_runs(lines: &mut Vec<String>, pred: impl Fn(&str) -> bool) {
     *lines = out;
 }
 
-/// A single best-effort `GET /healthz` against `127.0.0.1:port`, over a raw blocking TCP socket
+/// A single best-effort `GET /healthz` against `127.0.0.1:port`, over a raw blocking socket
 /// rather than an async client, so this plain `#[test]` does not need a tokio runtime just to probe
 /// readiness. `/healthz` is unauthenticated and side-effect-free (see `endpoints::healthz`'s own
 /// doc), so this cannot perturb the boot-line sequence under test. Any I/O failure (connection

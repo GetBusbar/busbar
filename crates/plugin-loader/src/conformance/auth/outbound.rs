@@ -465,6 +465,7 @@ fn piece(kind: PieceKind, len: usize, status: Option<u32>) -> Piece {
         status_namespace: None,
         retry_after_secs: None,
         reason: None,
+        declared_len: None,
     }
 }
 

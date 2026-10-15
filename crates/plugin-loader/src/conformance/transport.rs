@@ -215,6 +215,7 @@ impl Sink {
             _reserved: 0,
             flags: 0,
             retry_after_secs: 0,
+            declared_len: 0,
         };
         Self {
             wire: vec![0; wire],

@@ -180,6 +180,26 @@ fn main() {
     if every_plane {
         println!("cargo::rustc-cfg=linked_every_plane");
     }
+    // `linked_every_auth`: EVERY linked row on the auth axis (`AUTH_AXIS`) is enabled — the shape a
+    // suite binding every dialect's declared scheme on the plugin serving its style needs (each
+    // style is then served), read off the same table.
+    println!("cargo::rustc-check-cfg=cfg(linked_every_auth)");
+    let every_auth = metadata_map(&manifest, "package.metadata.busbar.linked-axes")
+        .iter()
+        .filter(|(_, axes)| axes.split_whitespace().any(|a| a == AUTH_AXIS))
+        .all(|(feature, _)| enabled(feature));
+    if every_auth {
+        println!("cargo::rustc-cfg=linked_every_auth");
+    }
+    // `linked_operator_auth`: the row `[package.metadata.busbar.operator-auth]` names (the operator
+    // credential's auth plugin) is enabled — what a test that needs the operator credential to
+    // answer gates on, without spelling the row's feature.
+    println!("cargo::rustc-check-cfg=cfg(linked_operator_auth)");
+    if metadata_value(&manifest, "package.metadata.busbar.operator-auth", "row")
+        .is_some_and(|row| enabled(&row))
+    {
+        println!("cargo::rustc-cfg=linked_operator_auth");
+    }
 
     // THE LINKED PLANE ROWS FOR THE INTEGRATION TESTS (tests only include it): each enabled linked
     // plane crate's registry row, assembled from its `linked` entry exactly as the root assembles it,
@@ -477,6 +497,8 @@ fn linked_axis_cfgs(manifest: &str, enabled: &dyn Fn(&str) -> bool) -> (Vec<Stri
         cfg_of(PLANE_DOOR_AXIS),
     ];
     declared.extend(AXES.iter().map(|(axis, _, _)| cfg_of(axis)));
+    // The auth axis (`auths`): a `kind: auth` plugin's linked door.
+    declared.push(cfg_of(AUTH_AXIS));
     // The memory-ABI export axis: what a test that documents the linked sinks' declarations needs.
     declared.push(cfg_of(EXPORT_DOOR_AXIS));
     let mut set: Vec<String> = Vec::new();

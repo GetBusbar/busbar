@@ -281,6 +281,10 @@ fn list_models_dialect(
 }
 
 pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
+    if let Some(halted) = plugin_dispatch_halted(busbar_plugin_loader::dispatch::handle::latched())
+    {
+        return halted;
+    }
     let t = now();
     // Side-effect-FREE readiness check: `/healthz` is unauthenticated and high-frequency (k8s
     // liveness, load balancers), so it must NOT transition expired-Open lanes to HalfOpen or steal
@@ -306,6 +310,20 @@ pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) ->
     }
 }
 
+/// THE PLUGIN HANDLE LATCH (#74): once plugins handed the host enough contexts it did not mint from
+/// outside any crossing, every host call made outside a crossing is refused for the rest of the
+/// process (a plugin's background wakes included), so the node is not ready. The reason line is
+/// neutral (this route is unauthenticated); the detail is the ERROR line the latch logged.
+fn plugin_dispatch_halted(latched: bool) -> Option<Response> {
+    latched.then(|| {
+        (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "plugin dispatch halted; restart required",
+        )
+            .into_response()
+    })
+}
+
 /// Whether any configured non-model plane's generation opened: its runtime slot was built for this
 /// generation and, for a door plane, its open answered ([`crate::plane::door::opened`]).
 fn a_plane_opened(app: &crate::state::App) -> bool {
@@ -326,3 +344,7 @@ fn a_plane_opened(app: &crate::state::App) -> bool {
 #[cfg(test)]
 #[path = "tests/endpoints_doc_tests.rs"]
 mod endpoints_doc_tests;
+
+#[cfg(test)]
+#[path = "tests/plugin_dispatch_halted_tests.rs"]
+mod plugin_dispatch_halted_tests;

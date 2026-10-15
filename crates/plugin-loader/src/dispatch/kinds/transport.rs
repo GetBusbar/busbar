@@ -62,6 +62,10 @@ pub struct TransportFacts {
     /// The claims whose row carries a session (`session = 1`): a duplex line, never one request
     /// and its response.
     pub sessions: Vec<&'static str>,
+    /// The claims whose unit 0 opens on the FIRST LINE (their row's `unit0_trigger` is
+    /// `UNIT0_FIRST_LINE`): a carrier of whole lines, read off the claim rows, as the upgrade
+    /// lines are.
+    pub lines: Vec<&'static str>,
     /// The claims it composes over; empty = directly over the host's socket (a framer) or the
     /// bottom of its stack (a carrier).
     pub composes_over: Vec<&'static str>,
@@ -134,6 +138,12 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         .map(|c| owned(*c, "claim"))
         .collect::<Result<_, _>>()?;
     // Row `i` describes `claims[i]` (`check_claim_rows` held the counts equal).
+    let lines = claims
+        .iter()
+        .zip(rows)
+        .filter(|(_, row)| row.unit0_trigger == busbar_contract::abi::transport::UNIT0_FIRST_LINE)
+        .map(|(name, _)| *name)
+        .collect();
     let upgrades = claims
         .iter()
         .zip(rows)
@@ -159,6 +169,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         claims,
         upgrades,
         sessions,
+        lines,
         composes_over: under
             .iter()
             .map(|s| owned(*s, "composes_over"))

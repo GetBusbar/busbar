@@ -483,7 +483,7 @@ impl std::fmt::Debug for AuthSink {
 
 /// What a verify's in-flight state shares with the instance.
 struct Shared {
-    plugin: Plugin<Auth>,
+    plugin: Arc<Plugin<Auth>>,
     dispatcher: Arc<Dispatcher>,
     minted: AtomicU64,
 }
@@ -505,7 +505,7 @@ impl Shared {
         let frame = Frame::new(held.input(presented), identify_out());
         let lent: crate::dispatch::Lent = held.clone();
         self.dispatcher.submit_lent(
-            &self.plugin,
+            &*self.plugin,
             ticket,
             slot::VERIFY,
             frame,
@@ -644,8 +644,11 @@ impl AuthInstance {
         // declared needs), awaited on a ticket; a door that states none is not called. A refusal
         // refuses the open in the plugin's words.
         plugin.ready(&dispatcher, crate::dispatch::ready::READY_DEADLINE)?;
-        // ITS TICK SCHEDULE, on the runtime the composition runs on, as an outbound instance's.
-        let schedule = crate::dispatch::auth_ticks::spawn(plugin.clone(), dispatcher.clone(), 0);
+        // ITS TICK SCHEDULE, on the runtime the composition runs on, as an outbound instance's: it
+        // shares the instance (a `Plugin` is `!Clone`).
+        let plugin = Arc::new(plugin);
+        let schedule =
+            crate::dispatch::auth_ticks::spawn(Arc::clone(&plugin), dispatcher.clone(), 0);
         Ok(Self {
             shared: Arc::new(Shared {
                 plugin,

@@ -20,7 +20,8 @@ use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::transport::{
     FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, DEST_PROGRAM, EMIT_TEXT,
-    PIECE_END_OF_FRAME, PIECE_TEXT, READ_END_OF_FRAME, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_DECLARED_LEN, PIECE_TEXT, READ_END_OF_FRAME,
+    YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 use busbar_contract::io_host::{IoHost, IoRefusal, Spawn};
 use futures::task::AtomicWaker;
@@ -44,9 +45,17 @@ pub struct Knobs {
     pub text: bool,
     /// `locate` answers this protocol offer (ProtocolNameList bytes).
     pub offer: Option<&'static [u8]>,
+    /// `locate` asked for the ACCEPTING side (`LocateIn::accept`) answers this offer instead.
+    pub accept_offer: Option<&'static [u8]>,
     /// Every frame piece the framing yields holds at most this many bytes, so one frame arrives
     /// in several pieces (the last ends it), as a line framer cuts a line its sink cannot hold.
     pub piece: Option<usize>,
+    /// Every frame the framing yields is a field block (`PIECE_FIELDS`), as a framer hands the far
+    /// end's head.
+    pub fields: bool,
+    /// Every field block the framing yields states this declared body length
+    /// (`PIECE_HAS_DECLARED_LEN`).
+    pub declared_len: Option<u64>,
 }
 
 #[derive(Default)]
@@ -58,6 +67,8 @@ struct State {
     deadline_ns: u64,
     text: bool,
     piece: Option<usize>,
+    fields: bool,
+    declared_len: Option<u64>,
 }
 
 /// One `begin` crossing's opening head fields, name and value.
@@ -95,12 +106,14 @@ impl TestDoor {
         composes_over: &[&'static str],
         knobs: Knobs,
     ) -> Self {
-        // A knob only a framer answers (a secure target, a protocol offer, a head, text frames, a
-        // silence deadline, another authority) states the entry a FRAMER: a carrier frames nothing.
+        // A knob only a framer answers (a secure target, a protocol offer, a head, text or
+        // field-block frames, a silence deadline, another authority) states the entry a FRAMER: a
+        // carrier frames nothing.
         let frames = knobs.secure_name.is_some()
             || knobs.offer.is_some()
             || knobs.head
             || knobs.text
+            || knobs.fields
             || knobs.silence.is_some()
             || knobs.authority.is_some();
         Self {
@@ -201,7 +214,13 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
             PIECE_END_OF_FRAME
         } else {
             0
-        } | if st.text && n > 0 { PIECE_TEXT } else { 0 };
+        } | if st.text && n > 0 { PIECE_TEXT } else { 0 }
+            | if st.fields { PIECE_FIELDS } else { 0 }
+            | if st.declared_len.is_some() {
+                PIECE_HAS_DECLARED_LEN
+            } else {
+                0
+            };
         // SAFETY: a host buffer of at least one piece.
         unsafe {
             sink.pieces.write(FramePiece {
@@ -213,6 +232,7 @@ fn answer(st: &mut State, sink: &FramerSink, o: &mut FramerOut, silence: Option<
                 flags,
                 _reserved: 0,
                 retry_after_secs: 0,
+                declared_len: st.declared_len.unwrap_or(0),
             });
         }
         y.frame_len = n as u64;
@@ -295,7 +315,12 @@ impl FramerDoor for TestDoor {
                     }
                     o.name_written = name.len() as u64;
                 }
-                if let Some(offer) = self.knobs.offer {
+                let offer = if i.accept == 1 {
+                    self.knobs.accept_offer
+                } else {
+                    self.knobs.offer
+                };
+                if let Some(offer) = offer {
                     // SAFETY: host buffer of `alpn_cap` bytes; the test's offers fit.
                     unsafe {
                         std::ptr::copy_nonoverlapping(
@@ -334,6 +359,8 @@ impl FramerDoor for TestDoor {
                 let mut st = State {
                     text: self.knobs.text,
                     piece: self.knobs.piece,
+                    fields: self.knobs.fields,
+                    declared_len: self.knobs.declared_len,
                     ..State::default()
                 };
                 answer(&mut st, &i.sink, o, silence);

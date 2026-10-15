@@ -138,6 +138,10 @@ legacy:
   gov14_change: "governance.db_path -> store: { module: sqlite, settings: { db_path } } (1.4.x's only durable backend was SQLite)"
   # v1.5.5:crates/busbar/src/config_validate/mod.rs:1656 (the empty `store.module` refusal)
   module_examples: "sqlite | postgres | valkey"
+  # The browser-login button brands, in 1.5.5's match order: `<match tokens> : <label> : <icon ref>`, the
+  # tokens matched (any) against the lower-cased method name and OIDC issuer host; a method none matches
+  # is its title-cased name under the generic icon. v1.5.5:crates/busbar/src/auth/token.rs:1073-1112
+  login_brands: "microsoft entra azure msft aad login.microsoftonline : Microsoft : squares | github : GitHub : octocat | google accounts.google : Google : g-mark"
   # v1.5.5:crates/busbar/src/export/projection.rs:134 (`module_streams`: the streams each built-in exporter carried, `module:stream`)
   export_module_streams: "prometheus:metrics | request-log-webhook:logs | request-log-file:logs | otlp:traces"
   # v1.5.5:crates/busbar/src/config/mod.rs:3359 (`EXPORT_MODULES`: the order the unknown-exporter refusal lists the built-in exporters in)

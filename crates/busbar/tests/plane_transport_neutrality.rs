@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE VOICE-TRANSPORT/MEDIA NEUTRALITY WITNESS (the `cargo test` twin of
+//! THE SESSION-TRANSPORT/MEDIA NEUTRALITY WITNESS (the `cargo test` twin of
 //! `cargo xtask gate plane-transport-neutrality`, `xtask/src/gates/plane_transport_neutrality.rs`).
 //!
 //! Owner's ruling: the neutral crates (`busbar-core` / `busbar-substrate` / `busbar-api`) must never
-//! learn a protocol's TRANSPORT vocabulary. plane-purity-lint bans the plane KEYS (mcp/a2a/llm/voice)
-//! and the LLM dialects; the Plane-4 (busbar-voice) duplex/live-voice plane drags in a SECOND
+//! learn a protocol's TRANSPORT vocabulary. plane-purity-lint bans the plane KEYS and the planes'
+//! dialects; the duplex session plane (Plane-4) drags in a SECOND
 //! vocabulary that plane-purity does not name — the transport/media nouns
 //! of `tests/fixtures/session_transport_nouns.txt` (`rtc / sdp / dtmf / rtp / audio / mulaw / …`).
 //! A leak of any of them into a neutral crate is the forward-edge regression the plane ABI exists to

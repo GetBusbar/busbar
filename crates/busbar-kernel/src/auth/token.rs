@@ -388,17 +388,12 @@ pub(crate) async fn browser(State(handle): State<Arc<AppHandle>>, req: Request<B
 /// The chooser: one button per method that has a `browser_login` block, in config order.
 fn chooser(app: &App) -> Response {
     let base_url = app.public_url.as_deref().unwrap_or("");
-    let buttons: Vec<(String, ProviderBrand)> = app
+    let buttons: Vec<(String, (String, &'static str))> = app
         .login_methods
         .methods
         .iter()
         .filter(|(_, m)| m.has_button)
-        .map(|(name, m)| {
-            (
-                name.clone(),
-                ProviderBrand::infer(name, m.issuer.as_deref()),
-            )
-        })
+        .map(|(name, m)| (name.clone(), button_brand(name, m.issuer.as_deref())))
         .collect();
     html_no_store(render_chooser(&buttons, base_url))
 }
@@ -947,63 +942,52 @@ const HEAD: &str = include_str!("busbar-login.html");
 /// The busbar glyph SVG (brand lockup), verbatim from the mockup.
 const GLYPH: &str = r##"<svg viewBox="0 0 128 128" xmlns="http://www.w3.org/2000/svg" style="color:#A3E635" aria-hidden="true"><g transform="translate(64 64) scale(1.46) translate(-62 -64)"><g transform="translate(3 0)"><rect x="46" y="39" width="9" height="50" rx="4.5" fill="currentColor"/><g stroke="currentColor" fill="none" stroke-linecap="round" stroke-linejoin="round"><line x1="36" y1="64" x2="41" y2="64" stroke-width="5"/><path d="M60 45 L79 45 Q87 45 87 55" stroke-width="5"/><line x1="60" y1="64" x2="72" y2="64" stroke-width="5"/><path d="M60 83 L79 83 Q87 83 87 73" stroke-width="5"/></g><g fill="currentColor"><circle cx="31" cy="64" r="4.6"/><circle cx="87" cy="55" r="4.6"/><circle cx="76" cy="64" r="4.6"/><circle cx="87" cy="73" r="4.6"/></g></g></g></svg>"##;
 
-/// A known provider brand, inferred from the method/module name (and OIDC issuer host) — NOT from any
-/// operator-set display string. Drives the button icon + "Continue with X" label.
-enum ProviderBrand {
-    Microsoft,
-    GitHub,
-    Google,
-    Generic(String),
+/// A sign-in button's brand — its label and icon — inferred from the method name and OIDC issuer
+/// host, NOT from any operator-set display string. The brands are the root legacy table's
+/// `login_brands` row (frozen 1.5.5 login-page data, `<match tokens> : <label> : <icon ref>` per
+/// brand, in 1.5.5's match order): the first brand any of whose tokens the lower-cased method name
+/// and issuer contain names the button; a method no brand matches is its title-cased name under the
+/// generic icon. The kernel names no brand.
+fn button_brand(name: &str, issuer: Option<&str>) -> (String, &'static str) {
+    brand_from(crate::config::legacy::text("login_brands"), name, issuer)
 }
 
-impl ProviderBrand {
-    fn infer(name: &str, issuer: Option<&str>) -> Self {
-        let hay = format!("{} {}", name, issuer.unwrap_or("")).to_ascii_lowercase();
-        if [
-            "microsoft",
-            "entra",
-            "azure",
-            "msft",
-            "aad",
-            "login.microsoftonline",
-        ]
-        .iter()
-        .any(|k| hay.contains(k))
-        {
-            ProviderBrand::Microsoft
-        } else if hay.contains("github") {
-            ProviderBrand::GitHub
-        } else if hay.contains("google") || hay.contains("accounts.google") {
-            ProviderBrand::Google
-        } else {
-            ProviderBrand::Generic(titlecase(name))
-        }
-    }
-    fn label(&self) -> String {
-        match self {
-            ProviderBrand::Microsoft => "Microsoft".to_string(),
-            ProviderBrand::GitHub => "GitHub".to_string(),
-            ProviderBrand::Google => "Google".to_string(),
-            ProviderBrand::Generic(n) => n.clone(),
-        }
-    }
-    fn icon(&self) -> &'static str {
-        match self {
-            ProviderBrand::Microsoft => {
-                r##"<svg class="picon" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>"##
-            }
-            ProviderBrand::GitHub => {
-                r##"<svg class="picon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>"##
-            }
-            ProviderBrand::Google => {
-                r##"<svg class="picon" viewBox="0 0 18 18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 01-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 009 18z"/><path fill="#FBBC05" d="M3.97 10.72a5.4 5.4 0 010-3.44V4.95H.96a9 9 0 000 8.1l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.47.9 11.43 0 9 0A9 9 0 00.96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg>"##
-            }
-            ProviderBrand::Generic(_) => {
-                r##"<svg class="picon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="6" cy="6" r="3.2" stroke="currentColor" stroke-width="1.4"/><path d="M8.3 8.3l4.2 4.2M10.5 12.5l1.2-1.2M12 11l1.2-1.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>"##
+/// [`button_brand`] over a given `login_brands` row (`""`: no row, every method generic).
+fn brand_from(row: &str, name: &str, issuer: Option<&str>) -> (String, &'static str) {
+    let hay = format!("{} {}", name, issuer.unwrap_or("")).to_ascii_lowercase();
+    for brand in row.split(" | ").filter(|b| !b.is_empty()) {
+        let mut fields = brand.split(" : ");
+        let (Some(tokens), Some(label), Some(icon)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if tokens.split(' ').any(|t| !t.is_empty() && hay.contains(t)) {
+            if let Some((_, svg)) = BRAND_ICONS.iter().find(|(r, _)| *r == icon) {
+                return (label.to_string(), svg);
             }
         }
     }
+    (titlecase(name), GENERIC_ICON)
 }
+
+/// The button icons a brand row names by its icon ref: plain assets, 1.5.5's own marks.
+const BRAND_ICONS: &[(&str, &str)] = &[
+    (
+        "squares",
+        r##"<svg class="picon" viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>"##,
+    ),
+    (
+        "octocat",
+        r##"<svg class="picon" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>"##,
+    ),
+    (
+        "g-mark",
+        r##"<svg class="picon" viewBox="0 0 18 18" aria-hidden="true"><path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 01-1.8 2.72v2.26h2.92c1.7-1.57 2.68-3.88 2.68-6.62z"/><path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.92-2.26c-.8.54-1.84.86-3.04.86-2.34 0-4.32-1.58-5.03-3.7H.96v2.33A9 9 0 009 18z"/><path fill="#FBBC05" d="M3.97 10.72a5.4 5.4 0 010-3.44V4.95H.96a9 9 0 000 8.1l3.01-2.33z"/><path fill="#EA4335" d="M9 3.58c1.32 0 2.5.45 3.44 1.35l2.58-2.58C13.47.9 11.43 0 9 0A9 9 0 00.96 4.95l3.01 2.33C4.68 5.16 6.66 3.58 9 3.58z"/></svg>"##,
+    ),
+];
+
+/// The generic sign-in icon (a key), for a method no brand matches.
+const GENERIC_ICON: &str = r##"<svg class="picon" viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="6" cy="6" r="3.2" stroke="currentColor" stroke-width="1.4"/><path d="M8.3 8.3l4.2 4.2M10.5 12.5l1.2-1.2M12 11l1.2-1.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>"##;
 
 const CHEVRON: &str = r##"<svg class="chev" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 4l4 4-4 4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>"##;
 
@@ -1069,7 +1053,7 @@ fn signed_out() -> Response {
 
 /// Render the CHOOSER page (sign-in). One anchor per `(method-name, brand)`; `base_url` shown in the
 /// footer (verbatim, no `/v1`). Zero buttons → a "no browser login configured" message.
-fn render_chooser(buttons: &[(String, ProviderBrand)], base_url: &str) -> String {
+fn render_chooser(buttons: &[(String, (String, &'static str))], base_url: &str) -> String {
     let mut body = String::new();
     if buttons.is_empty() {
         body.push_str(
@@ -1078,13 +1062,13 @@ fn render_chooser(buttons: &[(String, ProviderBrand)], base_url: &str) -> String
         );
     } else {
         body.push_str("<div class=\"providers\">");
-        for (name, brand) in buttons {
-            let label = esc(&brand.label());
+        for (name, (label, icon)) in buttons {
+            let label = esc(label);
             body.push_str(&format!(
                 "<a class=\"provider\" href=\"/auth/token?method={href}\" aria-label=\"Continue with {label}\">{icon}<span class=\"plabel\">Continue with {label}</span>{chev}</a>",
                 href = esc(name),
                 label = label,
-                icon = brand.icon(),
+                icon = icon,
                 chev = CHEVRON,
             ));
         }
@@ -1119,7 +1103,7 @@ fn render_login_form(
     base_url: &str,
     refresh: bool,
 ) -> String {
-    let brand = ProviderBrand::infer(method, None);
+    let (provider, _) = button_brand(method, None);
     let title = if refresh {
         "Refresh your API key"
     } else {
@@ -1160,7 +1144,7 @@ fn render_login_form(
          <button class=\"provider\" type=\"submit\"><span class=\"plabel\">{title}</span></button>\
          </form>{footer}",
         title = esc(title),
-        provider = esc(&brand.label()),
+        provider = esc(&provider),
         state_field = FORM_STATE_FIELD,
         state = esc(state),
         fields = fields,

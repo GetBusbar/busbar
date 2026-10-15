@@ -364,10 +364,6 @@ kind = "cleanliness"
 
 [[cell]]
 crate = "busbar"
-kind = "hooks"
-
-[[cell]]
-crate = "busbar"
 kind = "kernel"
 
 [[cell]]
@@ -1538,38 +1534,38 @@ drain   = "none: BUSBAR-1.6.0.md grants this class. What this row holds is the N
 [[law0]]
 crate = "busbar"
 axis  = "auth"
-count = "49"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. +4 for status row 120 (owner task): root/tests/connector.rs `the_pinned_mint_needs_are_operator_infrastructure` reads the pinned plugin's NEEDS by its crate path and its doc names the divergent pins, 2 hits each (package name + kind-qualified id); test-only, over the granted root -> auth dev edge; RE-ARMED 46 -> 51 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 49 there; the 46 was f830faa691's, nine hours older than the arming, so the row armed red. 51 is predev 9c0a394771's measure, at or under the arming value (arming measure 49, plus status row 120 (#704, owner task) at its measured +2 of the +4 its cite approved). LOWERED 51 -> 49: the root-crate no-silent-skip lane (#712) drained two with the skips it removed from crates/busbar/tests, measured 49 on its head (law0-slack)"
+count = "29"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. +4 for status row 120 (owner task): root/tests/connector.rs `the_pinned_mint_needs_are_operator_infrastructure` reads the pinned plugin's NEEDS by its crate path and its doc names the divergent pins, 2 hits each (package name + kind-qualified id); test-only, over the granted root -> auth dev edge; RE-ARMED 46 -> 51 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 49 there; the 46 was f830faa691's, nine hours older than the arming, so the row armed red. 51 is predev 9c0a394771's measure, at or under the arming value (arming measure 49, plus status row 120 (#704, owner task) at its measured +2 of the +4 its cite approved). LOWERED 51 -> 49: the root-crate no-silent-skip lane (#712) drained two with the skips it removed from crates/busbar/tests, measured 49 on its head (law0-slack); LOWERED 49 -> 43: the Law 0 root lane (lane-law0-root PR1) drains the root's prod naming: the operator credential's provider word is read off the manifest's operator row (root::auth_bindings::operator_auth_module), test cfgs ride the linked auth axis, and a config-style enum is imported under a neutral name (law0-slack); LOWERED 43 -> 40: the Law 0 root lane (lane-law0-root PR2, root unit tests): the root's unit tests read the operator word, the request wire and the line carrier off declared rows, golden pins of the default distribution (the --help goldens) become invariants over the linked rows, and plane-naming prose and identifiers in root tests are reworded (law0-slack); LOWERED 40 -> 29: the Law 0 root lane (lane-law0-root PR3a, integration tests): goldens of the default distribution (the method-coverage axes, the shipped session table, the unknown-exporter and settings-refusal pins) become invariants over the inventory and the binary's own answers, and plane-naming prose, identifiers and colliding config spellings in the root's integration tests are reworded (law0-slack)"
 
 [[law0]]
 crate = "busbar"
 axis  = "export"
-count = "15"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "13"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 15 -> 14: the Law 0 root lane (lane-law0-root PR1): the metrics opt-in comment names the scrape exporter by its role (law0-slack); LOWERED 14 -> 13: the Law 0 root lane (lane-law0-root PR3a, integration tests): goldens of the default distribution (the method-coverage axes, the shipped session table, the unknown-exporter and settings-refusal pins) become invariants over the inventory and the binary's own answers, and plane-naming prose, identifiers and colliding config spellings in the root's integration tests are reworded (law0-slack)"
 
 [[law0]]
 crate = "busbar"
 axis  = "hooks"
-count = "1"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1 -> 0: the Law 0 root lane (lane-law0-root PR2, root unit tests): the root's unit tests read the operator word, the request wire and the line carrier off declared rows, golden pins of the default distribution (the --help goldens) become invariants over the linked rows, and plane-naming prose and identifiers in root tests are reworded (law0-slack)"
 
 [[law0]]
 crate = "busbar"
 axis  = "instance:auth"
-count = "24"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 22 -> 24 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 24 there; the 22 was f830faa691's, nine hours older than the arming, so the row armed red. 24 is predev 9c0a394771's measure, at or under the arming value"
+count = "13"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 22 -> 24 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 24 there; the 22 was f830faa691's, nine hours older than the arming, so the row armed red. 24 is predev 9c0a394771's measure, at or under the arming value; LOWERED 24 -> 22: the Law 0 root lane (lane-law0-root PR1): the operator credential's provider word is read off the manifest's operator row, no literal in root source (law0-slack); LOWERED 22 -> 13: the Law 0 root lane (lane-law0-root PR2, root unit tests): the root's unit tests read the operator word, the request wire and the line carrier off declared rows, golden pins of the default distribution (the --help goldens) become invariants over the linked rows, and plane-naming prose and identifiers in root tests are reworded (law0-slack)"
 
 [[law0]]
 crate = "busbar"
 axis  = "instance:export"
-count = "33"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "30"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 33 -> 32: the Law 0 root lane (lane-law0-root PR1): the `--list-plugins` column header, v1.5.5's bytes (v1.5.5 crates/busbar/src/main.rs:419-422), is printed as the one line it is (root::cli::LIST_PLUGINS_HEADER), no `file` literal (law0-slack); LOWERED 32 -> 30: the Law 0 root lane (lane-law0-root PR3a, integration tests): goldens of the default distribution (the method-coverage axes, the shipped session table, the unknown-exporter and settings-refusal pins) become invariants over the inventory and the binary's own answers, and plane-naming prose, identifiers and colliding config spellings in the root's integration tests are reworded (law0-slack)"
 
 [[law0]]
 crate = "busbar"
 axis  = "instance:secret"
-count = "19"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 34 -> 35, the measure at the arming SHA dc83ff1553 (#597; Law 9). Predev 9c0a394771 measures 36: #560 (7b5f5d8be4) grew it after the row was live, invisible to a figure that counted findings. That excess is a Law 0 rise, so it stays RED until drained; this row does not raise to cover it; LOWERED 35 -> 19: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured)"
+count = "16"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 34 -> 35, the measure at the arming SHA dc83ff1553 (#597; Law 9). Predev 9c0a394771 measures 36: #560 (7b5f5d8be4) grew it after the row was live, invisible to a figure that counted findings. That excess is a Law 0 rise, so it stays RED until drained; this row does not raise to cover it; LOWERED 35 -> 19: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured); LOWERED 19 -> 18: the Law 0 root lane (lane-law0-root PR1): the `--list-plugins` column header, v1.5.5's bytes (v1.5.5 crates/busbar/src/main.rs:419-422), is printed as the one line it is (root::cli::LIST_PLUGINS_HEADER), no `file` literal (law0-slack); LOWERED 18 -> 16: the Law 0 root lane (lane-law0-root PR2, root unit tests): the root's unit tests read the operator word, the request wire and the line carrier off declared rows, golden pins of the default distribution (the --help goldens) become invariants over the linked rows, and plane-naming prose and identifiers in root tests are reworded (law0-slack)"
 
 [[law0]]
 crate = "busbar"
@@ -1580,8 +1576,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "plane"
-count = "826"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 798 -> 822 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 826 there; the 798 was f830faa691's, nine hours older than the arming, so the row armed red. 822 is predev 9c0a394771's measure, at or under the arming value; REBALANCED 822 -> 826 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the 4 hits busbar-kernel × plane gave up (1172 -> 1168), carried verbatim by the cross-plane cells that moved from crates/busbar-kernel/tests/ into crates/busbar/tests/ (the `LLM`/`llm-plane` prose in auth_cross_plane.rs, alarm_silence_cross_plane.rs, key_expires_at_cross_plane.rs and residual_envelope_cross_plane.rs); the law0 total does not rise"
+count = "655"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 798 -> 822 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 826 there; the 798 was f830faa691's, nine hours older than the arming, so the row armed red. 822 is predev 9c0a394771's measure, at or under the arming value; REBALANCED 822 -> 826 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the 4 hits busbar-kernel × plane gave up (1172 -> 1168), carried verbatim by the cross-plane cells that moved from crates/busbar-kernel/tests/ into crates/busbar/tests/ (the `LLM`/`llm-plane` prose in auth_cross_plane.rs, alarm_silence_cross_plane.rs, key_expires_at_cross_plane.rs and residual_envelope_cross_plane.rs); the law0 total does not rise; LOWERED 826 -> 774: the Law 0 root lane (lane-law0-root PR1) drains the root's prod plane naming: plane-naming prose reworded, the line carrier read off the transports' declared rows (law0-slack); LOWERED 774 -> 714: the Law 0 root lane (lane-law0-root PR2, root unit tests): the root's unit tests read the operator word, the request wire and the line carrier off declared rows, golden pins of the default distribution (the --help goldens) become invariants over the linked rows, and plane-naming prose and identifiers in root tests are reworded (law0-slack); LOWERED 714 -> 655: the Law 0 root lane (lane-law0-root PR3a, integration tests): goldens of the default distribution (the method-coverage axes, the shipped session table, the unknown-exporter and settings-refusal pins) become invariants over the inventory and the binary's own answers, and plane-naming prose, identifiers and colliding config spellings in the root's integration tests are reworded (law0-slack)"
 
 [[law0]]
 crate = "busbar"
@@ -1592,8 +1588,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "transport"
-count = "224"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 215 -> 208, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); REBALANCED 207 -> 224 (+17), the verbatim listener serve loop moved out of busbar-kernel into the root (#710), paired with busbar-kernel x transport 285 -> 268 (-17) so the law0 total does not rise (ARCHITECT RULING 2026-10-10, https://github.com/GetBusbar/busbar/pull/710#issuecomment-6096420101; BUSBAR-1.6.0.md l.475-483 INBOUND-LISTEN: the root's stream hand-up)"
+count = "143"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 215 -> 208, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); REBALANCED 207 -> 224 (+17), the verbatim listener serve loop moved out of busbar-kernel into the root (#710), paired with busbar-kernel x transport 285 -> 268 (-17) so the law0 total does not rise (ARCHITECT RULING 2026-10-10, https://github.com/GetBusbar/busbar/pull/710#issuecomment-6096420101; BUSBAR-1.6.0.md l.475-483 INBOUND-LISTEN: the root's stream hand-up); LOWERED 224 -> 192: the Law 0 root lane (lane-law0-root PR1): the line carrier is the linked claim whose row opens on its first line (root::serve::lines::line_carrier), the request wire is the admin plane's declared claim transport (root::listener::REQUEST_WIRE) (law0-slack); LOWERED 192 -> 173: the Law 0 root lane (lane-law0-root PR2, root unit tests): the root's unit tests read the operator word, the request wire and the line carrier off declared rows, golden pins of the default distribution (the --help goldens) become invariants over the linked rows, and plane-naming prose and identifiers in root tests are reworded (law0-slack); LOWERED 173 -> 143: the Law 0 root lane (lane-law0-root PR3a, integration tests): goldens of the default distribution (the method-coverage axes, the shipped session table, the unknown-exporter and settings-refusal pins) become invariants over the inventory and the binary's own answers, and plane-naming prose, identifiers and colliding config spellings in the root's integration tests are reworded (law0-slack)"
 
 [[law0]]
 crate = "busbar"
@@ -1754,8 +1750,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "instance:auth"
-count = "8"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 11 -> 8, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down)"
+count = "5"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 11 -> 8, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 8 -> 5: the browser-login button brands are the root legacy table's login_brands row (frozen 1.5.5 login-page data, handed in like LEGACY_ROWS); the kernel matches the handed rows and names no brand, and its chooser test names no brand (c1-literals; law0-slack)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1778,8 +1774,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "1120"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; REBALANCED 1172 -> 1168 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the cross-plane cells moved verbatim into the composition root's crates/busbar/tests/, which takes the same 4 hits (busbar × plane 822 -> 826); LOWERED 1168 -> 1141 by row 157: the hits drained with the deleted HOT trust and guard slots (plane_host/trust.rs, plane_host/guard.rs); LOWERED 1141 -> 1132 by row 156: the hits drained with the deleted kernel call log (calllog.rs, plane/calllog.rs); LOWERED 1132 -> 1128 by this PR: the deletion of the kernel's dead ask-state seal (audit K2-H3) removes four hits, its two `crate::mcp::roots` doc links and its two `\\x6dcp` seal domains; LOWERED 1128 -> 1122 by status row 130 E2: net_guard.rs and its two suites deleted (six plane hits, the gate's measure on the E2 candidate); LOWERED 1122 -> 1121 by status row 155 B1a: DEFAULT_PROTOCOL and its frozen-wire pragma leave the kernel's config/providers.rs (one plane hit, the gate's measure on #937); LOWERED 1121 -> 1120: the kernel's dead copy of the request-log webhook SSRF guard is deleted (the export-webhook plugin carries its own; KN-2) (measured)"
+count = "1098"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; REBALANCED 1172 -> 1168 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the cross-plane cells moved verbatim into the composition root's crates/busbar/tests/, which takes the same 4 hits (busbar × plane 822 -> 826); LOWERED 1168 -> 1141 by row 157: the hits drained with the deleted HOT trust and guard slots (plane_host/trust.rs, plane_host/guard.rs); LOWERED 1141 -> 1132 by row 156: the hits drained with the deleted kernel call log (calllog.rs, plane/calllog.rs); LOWERED 1132 -> 1128 by this PR: the deletion of the kernel's dead ask-state seal (audit K2-H3) removes four hits, its two `crate::mcp::roots` doc links and its two `\\x6dcp` seal domains; LOWERED 1128 -> 1122 by status row 130 E2: net_guard.rs and its two suites deleted (six plane hits, the gate's measure on the E2 candidate); LOWERED 1122 -> 1121 by status row 155 B1a: DEFAULT_PROTOCOL and its frozen-wire pragma leave the kernel's config/providers.rs (one plane hit, the gate's measure on #937); LOWERED 1121 -> 1120: the kernel's dead copy of the request-log webhook SSRF guard is deleted (the export-webhook plugin carries its own; KN-2) (measured); LOWERED 1120 -> 1098: the gate's EXPORT_STREAMS_KEY exemption (xtask matrix.rs; ARCHITECT ruling, Law 0 root lane): an export entry's frozen 1.5.x `streams: [` key (v1.5.5 crates/busbar/src/config/migrate_export.rs:17) is the export projection, not the plane; 22 in the kernel's export projection and migration (law0-slack)"
 
 [[law0]]
 crate = "busbar-kernel"

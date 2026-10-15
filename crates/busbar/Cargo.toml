@@ -311,13 +311,14 @@ export-prometheus = ["dep:busbar-export-prometheus"]
 # crate on the export axis. Off, the module resolves only when a signed tarball of the sink is dropped
 # into `plugins/`.
 export-otlp = ["dep:busbar-export-otlp"]
-# THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
-# off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
-# request travel through the kernel's loop instead of reaching its handler directly; the 234 owed
-# `admin.ops` cells and the whole 890-cell owed golden read the same either way, which is the
-# measurement the default was waiting for. The leg stays switchable — turning it off drops one
-# unbuilt module and nothing else, because `main.rs` names the mount inside a `cfg` and the router it
-# wraps is untouched.
+# THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON. The switch is
+# what makes an admin request travel through the kernel's loop instead of reaching its handler
+# directly. The byte-neutrality this default was turned on for is NOT established: the 2x2 over
+# `root-admin` x `root-llm` found it moves the two `ledger|amend` cells 404 -> 403 (TODO l.2147-2163,
+# item 155), and nothing repeats the comparison: a comment here that claims otherwise names the
+# registered gate that reproduces it (TODO l.2165). The leg stays switchable — turning it off drops
+# one unbuilt module and nothing else, because `main.rs` names the mount inside a `cfg` and the
+# router it wraps is untouched.
 #
 # `tower` is the feature's own edge: wrapping a mounted router means calling it as the service it
 # already is, which is the one thing that guarantees the inner surface answers exactly as it did.
@@ -492,6 +493,14 @@ hooks-ranking = "ranking"
 # either; the key stays what every surface prints (ARCHITECT C').
 [package.metadata.busbar.linked-canonical]
 auth-admin-tokens = "busbar-auth-admin-tokens"
+
+# THE OPERATOR CREDENTIAL'S ROW: the `auths` row whose registry key (its `linked-name`) is the
+# operator credential's provider word — the `auth.admin_auth:` default, the one `module:` whose
+# definition may carry `token:`, a reserved hook name, and the word in 1.5.5's refusals when the row
+# is not linked. Frozen 1.5.5 configuration text, stated here in packaging so the root's source names
+# no auth module (`root::auth_bindings::operator_words`; BUSBAR-1.6.0.md l.108-113).
+[package.metadata.busbar.operator-auth]
+row = "auth-admin-tokens"
 
 # The root's own unit modules (the kernel-loop halves of planes that still live in the root), each
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
@@ -717,6 +726,7 @@ required-features = ["auth-admin-tokens"]
 "gov14_db_path" = "busbar-governance.db"
 "gov14_module" = "sqlite"
 "hook_1x_url_transport" = "webhook"
+"login_brands" = "microsoft entra azure msft aad login.microsoftonline : Microsoft : squares | github : GitHub : octocat | google accounts.google : Google : g-mark"
 "metrics_type_key" = "prometheus"
 "module_examples" = "sqlite | postgres | valkey"
 "name_1_5_5.busbar-auth-github" = "busbar-auth-github-plugin"

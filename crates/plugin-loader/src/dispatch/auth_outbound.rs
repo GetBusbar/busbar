@@ -34,10 +34,11 @@ use super::kinds::auth::{Auth, AuthFacts, OutboundStyle};
 use super::{in_head, out_head, Dispatcher, Frame, Plugin};
 
 /// One open auth instance, the dispatcher that adopted it, and the worker a waiting `fields` is
-/// submitted on.
+/// submitted on. The instance is shared, never copied: a [`Plugin`] is `!Clone`, so the tick
+/// schedule this instance runs shares the same `Arc`.
 #[derive(Debug, Clone)]
 pub struct OutboundInstance {
-    plugin: Plugin<Auth>,
+    plugin: Arc<Plugin<Auth>>,
     dispatcher: Arc<Dispatcher>,
     worker: u32,
 }
@@ -54,10 +55,15 @@ pub fn outbound_styles(plugin: &Plugin<Auth>) -> Vec<OutboundStyle> {
 }
 
 impl OutboundInstance {
-    /// `plugin`, adopted by `dispatcher`, a waiting `fields` submitted on `worker`.
-    pub fn new(plugin: Plugin<Auth>, dispatcher: Arc<Dispatcher>, worker: u32) -> Self {
+    /// `plugin` (owned, or shared through its `Arc`), adopted by `dispatcher`, a waiting `fields`
+    /// submitted on `worker`.
+    pub fn new(
+        plugin: impl Into<Arc<Plugin<Auth>>>,
+        dispatcher: Arc<Dispatcher>,
+        worker: u32,
+    ) -> Self {
         OutboundInstance {
-            plugin,
+            plugin: plugin.into(),
             dispatcher,
             worker,
         }
@@ -436,7 +442,7 @@ impl OutboundAuth for OutboundInstance {
                 let input = lend.input(handle);
                 let lent: Arc<Lend> = Arc::from(lend);
                 let reply = this.dispatcher.submit_lent(
-                    &this.plugin,
+                    &*this.plugin,
                     ticket,
                     slot::FIELDS,
                     Frame::new(input, fields_out()),

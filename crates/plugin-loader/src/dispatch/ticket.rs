@@ -66,7 +66,7 @@ pub(crate) trait WakeRoute: Send + Sync {
     }
 }
 
-/// What an instance's `HostCtx` points to: the dispatcher its tickets live in, and who the instance
+/// What an instance's `HostCtx` names (through [`super::handle`], never by address): the dispatcher its tickets live in, and who the instance
 /// is to the host services. Leaked per instance, so a late wake never dangles; a wake before any
 /// dispatcher is bound is dropped.
 #[derive(Default)]
@@ -89,6 +89,9 @@ pub(crate) struct InstanceWake {
     /// Each granted key bound to the file the instance's settings give it, re-bound by every
     /// `open` and `refresh` (`disk.append` maps a key through it).
     pub(crate) bound: std::sync::RwLock<Vec<busbar_contract::services::DiskDest>>,
+    /// The instance's handle names nothing any more (#74): set when it is quarantined, faulted by
+    /// the watchdog, closed or dropped. Checked by `handle::resolve` after the tag verifies.
+    pub(crate) revoked: std::sync::atomic::AtomicBool,
 }
 
 impl std::fmt::Debug for InstanceWake {
@@ -109,11 +112,11 @@ impl std::fmt::Debug for InstanceWake {
 pub(crate) extern "C" fn host_wake(ctx: HostCtx, ticket: Ticket) {
     // A generation-0 ticket (NONE) is a stale wake like any other: routed, and dropped and
     // counted by the worker, never silently lost here.
-    if ctx.ptr.is_null() {
+    // THE HANDLE IS VERIFIED BEFORE IT NAMES ANYTHING (#74): a context the host did not mint wakes
+    // nothing and is counted.
+    let Some(target) = super::handle::resolve(ctx) else {
         return;
-    }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
-    let target = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    };
     if let Some(route) = target.route.get().and_then(Weak::upgrade) {
         route.wake(ticket);
     }

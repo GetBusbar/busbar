@@ -12,10 +12,11 @@
 //! composition's, and a single-plane build links a different protocol set.
 
 use busbar_contract::codec::RequestHandler;
-use busbar_contract::http::{HeaderMap, HeaderName, HeaderValue};
 use busbar_contract::operation::OpVerb;
 use busbar_contract::protocol::ProtocolDecl;
+use busbar_kernel::proto::streaming_content_types as event_content_types;
 use busbar_kernel::proto::{detect_protocol, residual_dialect_for_path, Registry};
+use http::{HeaderMap, HeaderName, HeaderValue};
 use serde_json::Value;
 use std::sync::LazyLock;
 
@@ -110,9 +111,9 @@ fn the_derived_protocol_list_is_not_empty() {
 fn the_absorbed_sweeps_produce_the_sets_they_produced_before() {
     registered();
     assert_eq!(
-        busbar_kernel::proto::streaming_content_types(),
-        strs(&FIXTURE["streaming_content_types"]).as_slice(),
-        "absorbed proto::streaming_content_types()"
+        event_content_types(),
+        strs(&FIXTURE["event_content_types"]).as_slice(),
+        "the absorbed event-stream content types"
     );
     assert_eq!(
         busbar_kernel::proto::array_stream_shim_keys(),

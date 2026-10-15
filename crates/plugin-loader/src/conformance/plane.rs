@@ -1280,6 +1280,7 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
         ))
     });
     let p = load::<Plane>(s, leg, s.bind(&d, "plane")).expect("the plane door loads");
+    let billable = p.served().billable_classes;
     let mut r = Recorder::new(crossings(&p));
     r.line("facts", 0, || {
         format!(
@@ -1521,7 +1522,67 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     let fold = r.fold();
     contract(&fold, s.kind_inputs("plane"));
+    let unreported = unreported_classes(&fold, &billable);
+    assert!(
+        unreported.is_empty(),
+        "the plane declares billable class(es) {unreported:?} that no conformance case reports \
+         (TODO L-R22): every class a plane's tail declares is reported by at least one case of its \
+         conformance.json; a class the plane can never emit is a declaration to remove, not a gap \
+         to waive. Declared: {billable:?}"
+    );
     fold
+}
+
+/// THE DECLARED CLASSES ARE THE EMITTED ONES (TODO L-R22, l.4172). The other direction, a count
+/// under a class the tail does not declare, is the dispatcher's own check on every answer
+/// (`check_on_piece`: a class index past the tail's billable classes is FAULT). This is the half no
+/// check held: a class the plane declares, an operator prices, and the plane never reports. The
+/// billable classes of `billable` that no step of `fold` reports a unit count under, in tail order.
+pub(super) fn unreported_classes<'c>(fold: &Fold, billable: &[&'c str]) -> Vec<&'c str> {
+    let reported: std::collections::BTreeSet<usize> = fold
+        .iter()
+        .flat_map(|st| reported_indices(&st.answer))
+        .collect();
+    billable
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !reported.contains(i))
+        .map(|(_, c)| *c)
+        .collect()
+}
+
+/// The class indices a piece's line reports units under: its `units=["<class>:<amount>:<reported>",
+/// ...]` list ([`Piece::line`]). An `arrive` line states a count of estimates, not a list, and
+/// reports none.
+fn reported_indices(line: &str) -> Vec<usize> {
+    let Some(at) = line.find("units=[") else {
+        return Vec::new();
+    };
+    let list = &line[at + "units=[".len()..];
+    let list = &list[..list.find(']').unwrap_or(list.len())];
+    list.split(',')
+        .filter_map(|e| e.trim().trim_matches('"').split(':').next()?.parse().ok())
+        .collect()
+}
+
+/// RED, THE DECLARED-BUT-NEVER-EMITTED CLASS: the plane's honest fold, judged against its declared
+/// billable classes with one more class appended (a plane that declares a class it never reports),
+/// names that class; the honest declaration names none.
+pub(super) fn red_unreported_class(s: &Subject) {
+    let f = fold(s, Leg::Linked);
+    let d = dispatcher();
+    let p = load::<Plane>(s, Leg::Linked, s.bind(&d, "plane")).expect("the plane door loads");
+    let mut declared = p.served().billable_classes;
+    assert!(
+        unreported_classes(&f, &declared).is_empty(),
+        "the honest fold fails before the RED arm runs"
+    );
+    declared.push("conformance-declared-never-reported");
+    assert_eq!(
+        unreported_classes(&f, &declared),
+        vec!["conformance-declared-never-reported"],
+        "a declared class no case reports passed the comparator"
+    );
 }
 
 /// The memory a `serve` lends the plane: its reply, fields and arena buffers.

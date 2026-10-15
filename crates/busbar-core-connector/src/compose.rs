@@ -1619,6 +1619,7 @@ impl Connection {
                     status_code: None,
                     status_class: 0,
                     retry_after_secs: None,
+                    declared_len: None,
                     fields: false,
                     text: false,
                     reason: None,

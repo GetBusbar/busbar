@@ -221,6 +221,7 @@ where
             is_sse,
             op.op_handler,
             usage_sink.is_some(),
+            max_translated_body_bytes(),
             translate,
             json_array,
         );

@@ -63,9 +63,9 @@ use busbar_kernel_ledger::{
     cost::{Money, MoneyError},
 };
 
-/// The transport an admin claim is declared over, and therefore the one a sealed destination for an
-/// admin verb carries.
-const ADMIN_TRANSPORT: &str = "http";
+/// The transport an admin claim is declared over — read off the admin plane's own claim, never named
+/// here — and therefore the one a sealed destination for an admin verb carries.
+const ADMIN_TRANSPORT: &str = busbar_core_admin::admin_codec::claims::CLAIMS[0].transport;
 
 /// One admin request, exactly as it arrived.
 ///
@@ -1232,13 +1232,12 @@ impl busbar_core_admin::Governance for CoreGovernance {
                 return bound::trust_list_effect(&self.trust).map(|a| a.pack());
             }
             KernelVerb::TrustApprove | KernelVerb::TrustRevoke => {
-                let decision = if verb == KernelVerb::TrustApprove {
+                let ruling = if verb == KernelVerb::TrustApprove {
                     busbar_kernel::trust::book::Ruling::Approve
                 } else {
                     busbar_kernel::trust::book::Ruling::Revoke
                 };
-                return bound::trust_decide_effect(request, decision, &self.trust)
-                    .map(|a| a.pack());
+                return bound::trust_decide_effect(request, ruling, &self.trust).map(|a| a.pack());
             }
             // The two writes replay under contract D-3: a retry carrying the same `Idempotency-Key`
             // with the same body answers the first answer, byte for byte, and runs nothing again.

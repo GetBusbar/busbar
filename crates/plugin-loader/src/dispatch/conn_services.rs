@@ -71,8 +71,6 @@ use busbar_contract::conn::{
 };
 use std::future::Future as _;
 
-use super::ticket::InstanceWake;
-
 /// The table an instance with a declared need is handed.
 pub static CONN_SLOTS: ConnectorSlots = ConnectorSlots {
     size: size_of::<ConnectorSlots>() as u32,
@@ -200,12 +198,7 @@ fn interned(text: &str) -> &'static str {
 
 /// The instance a context names, and its connection table.
 pub(crate) fn armed(ctx: HostCtx) -> Option<&'static (InstanceId, Arc<dyn DeclaredConns>)> {
-    if ctx.ptr.is_null() {
-        return None;
-    }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
-    let wake: &'static InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
-    wake.conn.get()
+    super::handle::resolve(ctx)?.conn.get()
 }
 
 /// ONE SLOT'S FRAME: the `in` and `out` are there and the head is this service's and covers its
@@ -548,20 +541,18 @@ extern "C" fn upgrade_secure(
 /// The first unverified handshake an instance's connection ran (the operator's opt-in, ARCHITECT
 /// ruling 2026-10-03 on Q-L16-4) is logged at WARN, naming the instance: once per instance.
 fn warn_unverified(ctx: HostCtx) {
-    static WARNED: OnceLock<Mutex<std::collections::HashSet<usize>>> = OnceLock::new();
-    if ctx.ptr.is_null() {
+    static WARNED: OnceLock<Mutex<std::collections::HashSet<u64>>> = OnceLock::new();
+    let Some(wake) = super::handle::resolve(ctx) else {
         return;
-    }
+    };
     let first = WARNED
         .get_or_init(Mutex::default)
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .insert(ctx.ptr as usize);
+        .insert(ctx.handle);
     if !first {
         return;
     }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
-    let wake: &InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
     let instance = wake
         .caller
         .get()
@@ -1238,11 +1229,10 @@ fn ticket_waker(ctx: HostCtx, ticket: Ticket) -> Option<std::task::Waker> {
             }
         }
     }
-    if ctx.ptr.is_null() || ticket.is_none() {
+    if ticket.is_none() {
         return None;
     }
-    // SAFETY: every `HostCtx` the host hands out points to a leaked `InstanceWake`.
-    let wake: &'static InstanceWake = unsafe { &*ctx.ptr.cast_const().cast::<InstanceWake>() };
+    let wake = super::handle::resolve(ctx)?;
     let route = wake.route.get()?.clone();
     Some(std::task::Waker::from(Arc::new(TicketWaker {
         route,

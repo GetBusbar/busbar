@@ -111,6 +111,9 @@ pub struct Linked {
     pub hook_doors: &'static [busbar_contract::abi::mechanism::door::DoorFn],
     /// The auth axis: each linked `kind: auth` plugin's `(registry key, SDK boundary)`.
     pub auths: &'static [LinkedAuth],
+    /// The operator credential's provider word: the key the manifest's operator row states
+    /// (`[package.metadata.busbar.operator-auth]`), linked in this build or not.
+    pub operator_auth: &'static str,
     /// The kernel-loop axes (#28): the declaration key of each plane `gauntlet_install::install()`
     /// flips onto the unified loop's ONE-SHOT runner, and of each it flips onto the SESSION runner.
     pub gauntlet_one_shot: &'static [&'static str],
@@ -185,6 +188,9 @@ pub struct LinkedTransport {
     /// The claims whose unit 0 opens at an UPGRADE, read off the door's Statement: the data door's
     /// upgrade lines (`crate::root::serve::upgrade_carriers`; ARCHITECT ruling Q128 U7).
     pub upgrades: ClaimsOf,
+    /// The claims whose unit 0 opens on the FIRST LINE, read off the door's Statement: the line
+    /// carrier the process's own stdin/stdout serves (`crate::root::serve::lines::line_carrier`).
+    pub lines: ClaimsOf,
 }
 
 /// A row's claims, read when the seal runs.
@@ -355,6 +361,7 @@ pub fn register_stores(linked: &Linked) {
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
             export_axis: Some(&crate::root::exports::EXPORTS),
+            trust_policy: Some(crate::root::boot::trust_policy),
         }),
         Err(refusal) => {
             eprintln!("busbar: {refusal}");
@@ -611,7 +618,7 @@ pub(crate) fn door_probe_dispatcher() -> Arc<crate::root::loader::dispatch::Disp
     crate::root::dispatch::dispatcher()
 }
 
-/// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03, Q-DEL-A2A-DECL; spec #49
+/// THE DOOR PLANES' REGISTRY ROWS (DECL-FOLD; ARCHITECT RULING 2026-10-03 on the door's declaration; spec #49
 /// and R2-C): every plane [`dropped_planes_of`] discovered through a door, linked or dropped, bound
 /// once through the loader's one load on the process's one dispatcher (booted as main's first act,
 /// before any plane registers and before the config prepass), and its Statement
@@ -997,13 +1004,13 @@ impl crate::root::loader::ReplyStream for Held {
 /// ANSWER ONE REQUEST INLINE ON THE REQUEST'S WORKER (#30 HOT lane; ARCHITECT HOTDOOR-B queue 2): a
 /// plane whose dispatch does not block is called in place — no thread hop. A body it streamed is
 /// held until the dispatch returns and then served as a stream (its length unstated), exactly as
-/// the blocking door serves it; a plane that faults after streaming answers its class status.
+/// the blocking door serves it; a plane that faults after a streamed body answers its class status.
 fn hot_answer_inline(ctx: &PlaneReqCtx) -> PlaneResponse {
     let mut held = Held {
         head: None,
         chunks: Vec::new(),
         held: 0,
-        cap: busbar_contract::codec::max_translate_body_bytes(),
+        cap: busbar_kernel::proxy::max_translate_body_bytes(),
     };
     let reply = hot_dispatch(ctx, &mut held);
     let (Some((status, headers)), StatusClass::Ok) = (held.head, reply.class) else {
@@ -1184,7 +1191,11 @@ pub const HOT_PLANE_HOOKS: PlaneHooks = PlaneHooks {
 /// no export module of its own, so every module is a row here; a linked row and a different
 /// dropped-in plugin spelling one module refuse the boot (ARCHITECT Q-P4-12).
 pub fn register_exports(dropped: Option<&'static crate::root::loader::PluginRegistry>) {
-    crate::root::loader::observe::install_host_series(host_series);
+    // The host's own series, named on the process's one dispatcher (built first, in `main`), whose
+    // observability every first-party export open is granted against.
+    let _ = crate::root::dispatch::dispatcher()
+        .observing()
+        .install_host_series(host_series);
     if let Some(registry) = dropped {
         let _ = DROPPED.set(registry);
     }
@@ -1447,19 +1458,13 @@ pub fn register_ws_arrivals(linked: &Linked) {
 }
 
 /// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
-/// (the manifest's `egress` / `plane-sections` / `admin-envelope` axes, emitted by the build script as
-/// `linked_*` cfgs): the hostless-egress driver and the egress-trust host and the parse-time section
-/// list a cross-plane hook refusal reads. The envelope a self-enveloping admin verb replies through
-/// is the admin crate's, bound by its `install()`. Each backing is a ZST unit struct, so it promotes
-/// to `'static`. The egress-trust host is installed by `run` once the configuration loads, over the
-/// destination guard.
+/// (the manifest's `plane-sections` / `admin-envelope` axes, emitted by the build script as
+/// `linked_*` cfgs): the parse-time section list a cross-plane hook refusal reads. The envelope a
+/// self-enveloping admin verb replies through is the admin crate's, bound by its `install()`. The
+/// `egress` axis binds nothing here: the hostless-egress driver is the App's, handed to each plane on
+/// its build context (`BuildCtx::hostless`). The egress-trust host is installed by `run` once the
+/// configuration loads, over the destination guard.
 pub fn register_seams() {
-    #[cfg(linked_egress)]
-    {
-        busbar_kernel::egress::seam::install_hostless_egress(
-            &busbar_kernel::egress::seam::CoreHostlessEgress,
-        );
-    }
     #[cfg(linked_plane_sections)]
     busbar_kernel::plane::config::install_plane_sections(
         busbar_kernel::plane::config::config_sections,
@@ -1487,7 +1492,7 @@ mod tests;
 #[path = "tests/linked_secret_sources.rs"]
 mod secret_source_tests;
 
-#[cfg(all(test, feature = "auth-admin-tokens", linked_axis_body_ingress))]
+#[cfg(all(test, linked_operator_auth, linked_axis_body_ingress))]
 #[path = "tests/linked_auth.rs"]
 mod auth_tests;
 

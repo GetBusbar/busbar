@@ -21,6 +21,7 @@
 pub mod abi_freeze;
 pub mod abi_header;
 pub mod abi_location;
+pub mod admin_config_parity;
 pub mod blocking_ffi;
 pub mod c1_literals;
 pub mod changelog;
@@ -29,6 +30,7 @@ pub mod config_schema;
 pub mod conformance_sync;
 pub mod construction;
 pub mod contract_stateless;
+pub mod default_measurements;
 pub mod deferral_words;
 pub mod denylist_gate;
 pub mod dep_wall;
@@ -3188,6 +3190,20 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(deferral_words::DeferralWordsGate),
         summary: "DECISIONS #15 banned-word shapes over the 1.6.0 docs (report-only) + the pinned positive control",
+    },
+    Registration {
+        name: "default-measurements",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(default_measurements::DefaultMeasurementsGate),
+        summary: "a manifest comment that authorises a default by a measurement names the registered gate that re-runs it",
+    },
+    Registration {
+        name: "admin-config-parity",
+        batch: 1,
+        tier: Tier::Fast,
+        build: || Box::new(admin_config_parity::AdminConfigParityGate),
+        summary: "#52: the admin config doors parse the whole document with the boot loader's parser, and are mounted",
     },
     Registration {
         name: "design-docs-allowlist",

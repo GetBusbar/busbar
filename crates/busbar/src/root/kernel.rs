@@ -5,7 +5,7 @@
 //!
 //! Three things the design draws have, until now, existed in the tree only as test doubles: an
 //! implementor of `busbar_kernel::teller::Units`, an implementor of
-//! `busbar_kernel::inflight::ArrivalDoor`, and a live `busbar_contract::Registration`. This file is
+//! `busbar_kernel::inflight::ArrivalDoor`, and a live `busbar_kernel::Registration`. This file is
 //! where the production ones live, and it is the only place in the workspace entitled to name all
 //! fourteen units at once.
 //!
@@ -81,12 +81,12 @@ pub fn new_kernel() -> busbar_kernel::teller::Kernel {
 /// Config-derived open-vocabulary keys — a lane, a pool, a model, a provider host, a dialect name,
 /// a loaded plugin's key — are leaked into `&'static str` exactly once, here, at registration. The
 /// resulting allocation is fixed and countable; a leak per connection or per dial is a defect
-/// rather than a variant of the rule. [`busbar_contract::Registration`] enforces the "exactly
+/// rather than a variant of the rule. [`busbar_kernel::Registration`] enforces the "exactly
 /// once, and never after boot" half itself: it is idempotent, and it refuses a new key once the
 /// image's vocabulary is frozen.
 #[must_use]
-pub fn new_registration() -> busbar_contract::Registration {
-    busbar_contract::Registration::new()
+pub fn new_registration() -> busbar_kernel::Registration {
+    busbar_kernel::Registration::new()
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -843,7 +843,7 @@ impl RootHistory {
 
 /// The process's history holder, reached by the root's units and by nothing below them.
 ///
-/// A `static` for the same reason the LLM node is one: the seam a unit is driven through is a bare
+/// A `static` for the same reason the plane node is one: the seam a unit is driven through is a bare
 /// `fn` and a bare `fn` cannot capture, so the holder has to be reachable by name. It exists before
 /// the boot that reads the configuration finishes, holding no history, which is exactly the state a
 /// report arriving that early should be priced in — it isn't.
@@ -858,9 +858,9 @@ pub static ROOT_CARD: LazyLock<RootHistory> = LazyLock::new(RootHistory::default
 /// it. No plane sees a rate at all.
 ///
 /// THE ROOT'S, NOT A PLANE'S. The card this builds is the one every plane's exit prices against —
-/// the holder above is the process's, reached by mcp, a2a, voice and admin exactly as it is by llm —
+/// the holder above is the process's, reached by every plane and by admin exactly as by the node —
 /// so the relay belongs beside the holder and the repricer rather than in one plane's unit file. It
-/// lived in the node's file (now `plane_node`) while llm was the only leg switched over, and a
+/// lived in the node's file (now `plane_node`) while the node was the only leg switched over, and a
 /// plane's unit file is compiled out with its plane: any build without that plane's feature lost the
 /// root's ability to price a card at all. The deletability of a plane is the whole point of the feature, so the thing
 /// that must survive every deletion lives on the ungated side of the seam.
@@ -973,7 +973,7 @@ pub(crate) fn card_from_raw(
 /// apply, both of which are registration time (config is finite). The reserved four, every installed
 /// plane's declared billable classes, and every open class a lane's `units:` names go into the
 /// process vocabulary, so a unit's one line can resolve the classes
-/// it reports by lookup ([`busbar_contract::Registration::resolve`]) and never intern one per unit.
+/// it reports by lookup ([`busbar_kernel::Registration::resolve`]) and never intern one per unit.
 pub(crate) fn register_classes(rates: &busbar_kernel::rate_apply::RawRates<'_>) {
     let mut registration = new_registration();
     for class in busbar_contract::records::RESERVED_UNITS {
@@ -2336,7 +2336,7 @@ const OP_UNCLAIMED: &str = "unclaimed";
 ///
 /// The admin plane's "the verb did not resolve" facts used to answer here, and they name an
 /// administrative READ — so every unit of every other plane that reached this door was sealed as
-/// one. A voice turn or a chat completion refused at the root is not an operator reading a
+/// one. A session turn or a completion refused at the root is not an operator reading a
 /// configuration page, and a record that says it was is wrong about the one thing an audit record
 /// exists to state. Nothing here is derived from the admin plane, because nothing about this unit
 /// is administrative.

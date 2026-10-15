@@ -914,7 +914,7 @@ impl Units for DoorSteps<'_> {
         _ctx: &UnitCtx,
         _principal: &PrincipalId,
     ) -> SeatVerdict<Verify> {
-        // A UNIT ROUTED BY SCOPE (ROUTE_SCOPE, ARCHITECT Q-DEL-A2A-SELECT: scope seals the
+        // A UNIT ROUTED BY SCOPE (ROUTE_SCOPE, the ARCHITECT scope-select ruling: scope seals the
         // destinations): the one entry the principal's grant of the plane's scope kind reaches is
         // its route, directly; zero or several seal nothing and it is refused at admission, the
         // several named in its refusal's words.
@@ -1026,7 +1026,7 @@ impl Units for DoorSteps<'_> {
         // is audited as every unit is.
         // A local unit whose plane EXPECTS units (its admission estimate) is charged as any keyed
         // unit is: the plane's own round, on the caller's budget (the served engine charged busbar's
-        // own ask round before it was asked; lane-dg-mcp 05e053183a). So is one the plane answers
+        // own ask round before it was asked; 05e053183a). So is one the plane answers
         // AS AN ADMITTED CALL (ROUTE_COUNTED): a keyed one passes the one check-then-charge on the
         // plane's pool, counting its request (R2, 1.5.5's rule), and keeps only the fee units the
         // plane reports.
@@ -1038,7 +1038,7 @@ impl Units for DoorSteps<'_> {
                 .is_some_and(|(class, _)| *class == ROUTE_LOCAL);
             (local, local && u.counted, !u.expected.is_empty())
         };
-        // A UNIT ROUTED BY SCOPE that no one entry reached (Q-DEL-A2A-SELECT): refused before
+        // A UNIT ROUTED BY SCOPE that no one entry reached (the scope-select ruling): refused before
         // anything is charged, as 1.5.5 chose the agent before its admission.
         let unrouted_scope = self
             .lock()
@@ -1370,7 +1370,8 @@ pub fn door_config(cfg: &busbar_kernel::config::RootCfg) -> Arc<dyn std::any::An
 /// dialect fields of the providers it references and resolves model -> dialect itself"): `providers`
 /// (catalog-merged, each provider's dialect fields: no `base_url`, no credential reference, no
 /// health or token endpoint), `models`, `pools` (each pool's members and its fallback pool) and
-/// `limits` (the output-cap default and the effort budgets). The previous release kept these in the
+/// `limits` (the output-cap default, the effort budgets and the translation cap,
+/// `request_body_max_bytes`). The previous release kept these in the
 /// kernel; they are the root's to hand a door plane whose Statement names them. `pools` is present
 /// whenever `models` is: a deployment with models and no pools routes to its models directly.
 #[must_use]
@@ -1507,8 +1508,11 @@ pub fn kernel_sections(
         }
         pools.insert(name.clone(), Value::Object(p));
     }
+    // The translation cap (row 155): the operator's one knob for the inbound body limit and the
+    // egress translate cap, handed so the plane enforces the kernel's value from its own settings.
     let limits = json!({
         "default_max_tokens": cfg.limits.default_max_tokens,
+        "request_body_max_bytes": cfg.limits.request_body_max_bytes,
         "reasoning_effort_budgets": {
             "minimal": cfg.limits.reasoning_effort_budgets.minimal,
             "low": cfg.limits.reasoning_effort_budgets.low,
@@ -1596,12 +1600,12 @@ impl StyleParams {
 
 /// The `auth:` spelling of a provider's style override, as config writes it.
 fn style_word(auth: busbar_kernel::config::ProviderAuth) -> &'static str {
-    use busbar_kernel::config::ProviderAuth;
+    use busbar_kernel::config::ProviderAuth as Style;
     match auth {
-        ProviderAuth::Bearer => "bearer",
-        ProviderAuth::ApiKey => "api-key",
-        ProviderAuth::JwtBearer => "jwt-bearer",
-        ProviderAuth::OAuthClientCredentials => "oauth-client-credentials",
+        Style::Bearer => "bearer",
+        Style::ApiKey => "api-key",
+        Style::JwtBearer => "jwt-bearer",
+        Style::OAuthClientCredentials => "oauth-client-credentials",
     }
 }
 
@@ -2297,7 +2301,7 @@ pub fn member_routes(
                     continue;
                 }
             }
-            // A PROGRAM MEMBER (Q-L3B-STDIO-UPSTREAM (A)): a registration that names a program is
+            // A PROGRAM MEMBER (the program-upstream ruling (A)): a registration that names a program is
             // reached at its own long-lived child, the connector keeps it per member.
             if let Some(need) = member_program {
                 if registration

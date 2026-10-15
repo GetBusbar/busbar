@@ -1105,6 +1105,7 @@ fn piece(
         status_namespace: None,
         retry_after_secs: None,
         reason,
+        declared_len: None,
     }
 }
 

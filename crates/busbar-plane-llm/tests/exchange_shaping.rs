@@ -104,6 +104,26 @@ fn empty_settings_are_an_empty_generation_with_the_defaults() {
     assert_eq!(s.reasoning_budgets, DEFAULT_REASONING_BUDGETS);
 }
 
+/// THE TRANSLATE CAP IS THE SETTINGS' (row 155): the cap a generation enforces is the
+/// `limits.request_body_max_bytes` the kernel handed in the settings it was opened or refreshed
+/// with, and the kernel's own 32 MiB default when it handed none.
+#[test]
+fn the_translate_cap_is_the_one_the_settings_carry_else_the_default() {
+    let s = Shaping::from_settings(&json!({ "limits": { "request_body_max_bytes": 131072 } }))
+        .expect("reads");
+    assert_eq!(s.translate_cap(), 131_072);
+    let s = Shaping::from_settings(&settings()).expect("reads");
+    assert_eq!(
+        s.translate_cap(),
+        busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT
+    );
+    let s = Shaping::from_settings(&json!({})).expect("reads");
+    assert_eq!(
+        s.translate_cap(),
+        busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT
+    );
+}
+
 #[test]
 fn the_glob_takes_prefix_suffix_and_middle_wildcards() {
     assert!(glob_match("gpt-*", "gpt-4o"));

@@ -436,7 +436,10 @@ impl DynPlane {
             return StatusClass::Unsupported;
         };
         let work_ptr: *const WorkItem = work;
-        match crate::ffi_guard(&self.path, "plane_dispatch", || f(state, work_ptr)) {
+        // No mechanism crossing: the mark is nulled for it (#74).
+        match crate::dispatch::plugin::without_crossing(|| {
+            crate::ffi_guard(&self.path, "plane_dispatch", || f(state, work_ptr))
+        }) {
             Ok(status) => status.class(),
             Err(_) => StatusClass::Fault,
         }

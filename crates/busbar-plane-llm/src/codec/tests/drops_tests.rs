@@ -374,6 +374,7 @@ fn answer(egress: &str, ingress: &str, body: &Value) -> (String, Vec<String>, Wa
         request: None,
         now_s: 1,
         elapsed_ms: None,
+        translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let bytes = serde_json::to_vec(body).unwrap();
     let cap = WarnCapture::default();

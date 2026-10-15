@@ -348,6 +348,9 @@ pub use busbar_contract::transport::transport;
 #[path = "tests/transport_tests.rs"]
 mod transport_tests;
 pub mod trust;
+pub mod vocabulary;
+/// The image's word interner, at the crate root where the composition root names it.
+pub use vocabulary::{Registration, MAX_VOCABULARY};
 
 // ── THE CRATE-ROOT SURFACE ───────────────────────────────────────────────────────────────────────
 // The moved crate-root items live in three modules split by concern (`appbuild`, `preflight`,

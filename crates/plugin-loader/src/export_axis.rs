@@ -286,6 +286,7 @@ impl<'r> ExportRows<'r> {
         let text = settings.to_string();
         let p = self.load(row, label, Some(settings))?;
         crate::observe::grant_series(
+            self.dispatcher.observing(),
             &row.manifest.name,
             row.first_party(),
             &row.manifest.declares.metrics,

@@ -125,9 +125,7 @@ fn host(conns: *const ConnectorSlots) -> Host {
     Host::of(&HostTables {
         size: std::mem::size_of::<HostTables>() as u32,
         _reserved: 0,
-        ctx: HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
+        ctx: HostCtx::NONE,
         wake: None,
         conns,
         services: services(),
@@ -242,9 +240,7 @@ fn open_learns_the_hosts_verdict_on_a_need() {
     let bare = Host::of(&HostTables {
         size: std::mem::size_of::<HostTables>() as u32,
         _reserved: 0,
-        ctx: HostCtx {
-            ptr: std::ptr::null_mut(),
-        },
+        ctx: HostCtx::NONE,
         wake: None,
         conns: &SLOTS,
         services: std::ptr::null(),

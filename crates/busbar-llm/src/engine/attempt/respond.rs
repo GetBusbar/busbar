@@ -258,6 +258,7 @@ async fn deliver_stream(
             request: ingress_request_body.as_ref(),
             handler: hop.op.op_handler,
             meter: usage_sink.is_some(),
+            translate_cap: max_translated_body_bytes(),
         });
     // The stream wrapper owns the refund decision from here (via `budget_spent`).
     budget_guard.disarm();
