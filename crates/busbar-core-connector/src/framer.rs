@@ -24,9 +24,9 @@ use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOS
 use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
     FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, EMIT_TEXT,
-    PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
-    PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED, YIELD_HAS_DEADLINE,
-    YIELD_MORE,
+    PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN,
+    PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED,
+    YIELD_HAS_DEADLINE, YIELD_MORE,
 };
 
 /// One framer op, its `in` and its `out`, as the connector hands it to a [`FramerDoor`].
@@ -152,6 +152,9 @@ pub struct Got {
     pub status_class: u8,
     /// The far side's `Retry-After`, in seconds, where it asked.
     pub retry_after_secs: Option<u64>,
+    /// On a head's field block: the body length the head declared on the wire, as the framer
+    /// stated it (`PIECE_HAS_DECLARED_LEN`); handed on untouched.
+    pub declared_len: Option<u64>,
     /// The bytes are a field block (`PIECE_FIELDS`): the far end's head, or its trailers.
     pub fields: bool,
     /// The bytes belong to a text message (`PIECE_TEXT`), read up as `FrameMeta::text`.
@@ -357,6 +360,7 @@ const EMPTY_PIECE: FramePiece = FramePiece {
     flags: 0,
     _reserved: 0,
     retry_after_secs: 0,
+    declared_len: 0,
 };
 
 impl Buffers {
@@ -455,6 +459,7 @@ impl Buffers {
                 status_class: p.status_class,
                 retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0)
                     .then_some(p.retry_after_secs),
+                declared_len: (p.flags & PIECE_HAS_DECLARED_LEN != 0).then_some(p.declared_len),
                 fields: p.flags & PIECE_FIELDS != 0,
                 text: p.flags & PIECE_TEXT != 0,
                 reason: None,

@@ -1066,7 +1066,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=f8ba71d25945dcf1145501d7a9aa14d430931045#f8ba71d25945dcf1145501d7a9aa14d430931045"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=140691cf2eb5108ca922bf26fc8d13c33fd91770#140691cf2eb5108ca922bf26fc8d13c33fd91770"
 dependencies = [
  "busbar-contract",
  "serde_json",

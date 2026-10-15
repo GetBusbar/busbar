@@ -900,6 +900,7 @@ fn reply_piece(kind: busbar_contract::conn::PieceKind, len: usize) -> busbar_con
         status_namespace: None,
         retry_after_secs: None,
         reason: None,
+        declared_len: None,
     }
 }
 

@@ -407,6 +407,24 @@ fn text_rides_a_message_piece_only() {
     }
 }
 
+/// A declared body length is a head's statement: on a field block it passes; on a payload piece it
+/// is FAULT.
+#[test]
+fn a_declared_length_rides_a_field_block_only() {
+    let mut o: FramerOut = z();
+    o.yielded.frame_len = 4;
+    o.yielded.pieces_len = 1;
+    let mut head = piece(0, 4);
+    head.flags = PIECE_FIELDS | PIECE_HAS_DECLARED_LEN | PIECE_END_OF_FRAME;
+    head.declared_len = 9;
+    assert_eq!(check_framer(Ready, &o, &[head], 8, 8, 8), Ok(()));
+    head.flags = PIECE_HAS_DECLARED_LEN | PIECE_END_OF_FRAME;
+    assert_eq!(
+        check_framer(Ready, &o, &[head], 8, 8, 8),
+        f(Rule::Contradiction, "framer.piece.declared_len_not_fields")
+    );
+}
+
 /// A stream's head slots: within the capacity, one per stream, every slot inside the frame bytes
 /// written; a method and a target together (an accepted head) or both absent (a dialled answer's
 /// reason alone).

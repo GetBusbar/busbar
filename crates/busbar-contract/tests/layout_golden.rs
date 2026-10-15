@@ -894,7 +894,8 @@ fn compute_layout() -> String {
             _reserved,
             ns,
             retry_after_secs,
-            reason
+            reason,
+            declared_len
         ]
     );
 
@@ -1472,7 +1473,8 @@ fn compute_layout() -> String {
             status_class,
             _reserved,
             flags,
-            retry_after_secs
+            retry_after_secs,
+            declared_len
         ]
     );
     record!(

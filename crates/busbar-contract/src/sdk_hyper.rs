@@ -44,9 +44,9 @@ macro_rules! hyper_io {
             use $crate::abi::sdk::{HostBuf, Lent, Out};
             use $crate::abi::transport::{
                 FramePiece, FrameSpan, FramerOut, FramerSink, HeadSlots, PIECE_CONTINUED,
-                PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_RETRY_AFTER,
-                PIECE_STREAM_FAILED, PIECE_WRITABLE, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
-                YIELD_STREAM_FULL,
+                PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN,
+                PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_WRITABLE, YIELD_ENDED,
+                YIELD_HAS_DEADLINE, YIELD_MORE, YIELD_STREAM_FULL,
             };
 
             /// The most bytes `hyper` may leave in the pipe's write half before its writes pend.
@@ -439,6 +439,9 @@ macro_rules! hyper_io {
                 pub status: Option<u16>,
                 /// The wait the far side asked for.
                 pub retry_after_secs: Option<u64>,
+                /// On a head's field block: the body length the head declared on the wire
+                /// (`PIECE_HAS_DECLARED_LEN`), where it declared one.
+                pub declared_len: Option<u64>,
                 /// The stream failed; `bytes` are the reason, and this is its last piece.
                 pub failed: bool,
                 /// `bytes` are a field block (`PIECE_FIELDS`): a head, or the trailers.
@@ -461,6 +464,7 @@ macro_rules! hyper_io {
                         bytes,
                         status: None,
                         retry_after_secs: None,
+                        declared_len: None,
                         failed: false,
                         fields: false,
                         continued: false,
@@ -620,6 +624,7 @@ macro_rules! hyper_io {
                         flags: 0,
                         _reserved: 0,
                         retry_after_secs: 0,
+                        declared_len: 0,
                     };
                     if let Some(code) = piece.status {
                         flags |= PIECE_HAS_CODE;
@@ -629,6 +634,10 @@ macro_rules! hyper_io {
                     if let Some(secs) = piece.retry_after_secs {
                         flags |= PIECE_HAS_RETRY_AFTER;
                         fp.retry_after_secs = secs;
+                    }
+                    if let Some(declared) = piece.declared_len {
+                        flags |= PIECE_HAS_DECLARED_LEN;
+                        fp.declared_len = declared;
                     }
                     fp.flags = flags;
                     // `take <= room` and `n < pieces_cap`: both fit.

@@ -476,6 +476,7 @@ impl PollConns for Recorder {
             status_namespace: None,
             retry_after_secs: None,
             reason: None,
+            declared_len: None,
         }))
     }
 }

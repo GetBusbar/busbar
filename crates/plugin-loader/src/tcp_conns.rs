@@ -279,6 +279,7 @@ impl Conns for TcpConns {
                 status_namespace: None,
                 retry_after_secs: None,
                 reason: None,
+                declared_len: None,
             }),
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
                 if ticket != 0 {

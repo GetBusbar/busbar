@@ -274,6 +274,85 @@ fn a_text_write_through_the_table_reaches_the_framer_as_text() {
     });
 }
 
+/// The table's head piece from a framer whose head field block states `declared` as its declared
+/// body length (or states none), read through the connection table from a far end that answers a
+/// one-field head.
+fn head_through_the_table(declared: Option<u64>) -> Piece {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        tokio::spawn(async move {
+            use tokio::io::AsyncWriteExt;
+            let (mut s, _) = l.accept().await.unwrap();
+            s.write_all(b"k: v\r\n").await.unwrap();
+            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+            drop(s);
+        });
+        let door = Arc::new(TestDoor::new(
+            "bytes",
+            &["bytes"],
+            &[],
+            crate::support::Knobs {
+                fields: true,
+                declared_len: declared,
+                ..crate::support::Knobs::default()
+            },
+        ));
+        let view = Transports::new(vec![
+            Entry {
+                door,
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::identity("carrier")),
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap();
+        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_: Ticket| {}));
+        c.declare_over(OWNER, NeedId(0), "bytes")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let started = std::time::Instant::now();
+        let piece = loop {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) => {
+                    assert!(
+                        started.elapsed() < std::time::Duration::from_secs(5),
+                        "the head never arrived"
+                    );
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                other => break other.expect("the head reads"),
+            }
+        };
+        assert_eq!(
+            piece.kind,
+            PieceKind::Fields,
+            "the framer's field block is the head"
+        );
+        assert_eq!(&buf[..piece.len], b"k: v\r\n");
+        c.close(OWNER, id).unwrap();
+        piece
+    })
+}
+
+/// RED (1.5.5 parity, the pre-body download cap): the declared body length a framer states on its
+/// head's field block reaches the table's head piece untouched, never as a field; a framer that
+/// states none yields none.
+#[test]
+fn a_framers_declared_body_length_reaches_the_tables_head_piece() {
+    assert_eq!(
+        head_through_the_table(Some(1 << 40)).declared_len,
+        Some(1 << 40)
+    );
+    assert_eq!(head_through_the_table(None).declared_len, None);
+}
+
 /// RED: a metadata target is refused through the table even when a transport serves the need.
 #[test]
 fn a_metadata_target_is_refused_even_over_a_served_transport() {

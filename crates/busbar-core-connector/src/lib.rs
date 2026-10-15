@@ -1353,6 +1353,7 @@ impl Connector {
                         status_namespace: None,
                         retry_after_secs: got.retry_after_secs,
                         reason: None,
+                        declared_len: got.declared_len,
                     },
                     got.bytes,
                 )
@@ -1421,6 +1422,7 @@ fn completion(stream: u64) -> Piece {
         status_namespace: None,
         retry_after_secs: None,
         reason: None,
+        declared_len: None,
     }
 }
 

@@ -190,6 +190,7 @@ fn piece(kind: PieceKind, len: usize, end: bool) -> Piece {
         status_namespace: None,
         retry_after_secs: None,
         reason: None,
+        declared_len: None,
     }
 }
 
