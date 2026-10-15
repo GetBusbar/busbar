@@ -329,15 +329,6 @@ pub fn merged_boot_plane_decls(
             .position(|k| *k == d.key)
             .unwrap_or(canonical.len())
     });
-    // REGISTER EACH PLANE'S SCOPE KINDS with the neutral `busbar_contract` scope-kind wire registry, so a
-    // `VirtualKey` grant of a plane's kind (`mcp_server`, …) serializes to its `allowed_{kind}s` wire
-    // field instead of failing the write. The kind strings are DATA off each `PlaneDecl.scope_kinds`
-    // — core names no plane vocabulary here. Idempotent, so re-folding under the test surface is safe.
-    for d in &decls {
-        for kind in d.scope_kinds {
-            busbar_contract::records::register_scope_kind(kind);
-        }
-    }
     // PLANE-OWNED-CONFIG DUP-CLAIM GUARD (1.6.0 config-seam, stage 1). Refuse the boot if two planes
     // claim the same top-level config section, or if a plane claims a section core STILL owns
     // concretely (`CORE_OWNED_CONCRETE_SECTIONS`) — the invariant that makes the later section moves
