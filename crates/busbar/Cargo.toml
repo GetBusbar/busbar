@@ -509,7 +509,7 @@ row = "auth-admin-tokens"
 # compiled when its row's cargo feature is on (the node, keyed `node`, in every build) and exporting
 # a `ROOT_UNIT` (`root::linked::RootUnit`). Order is
 # the order their boot steps run in: seals, then the configuration step, then the book step.
-# THE SERVED-LEG WITNESSES (`[package.metadata.busbar.served-witness]`: cargo feature -> the plane
+# THE SERVED-LEG WITNESSES (the `package.metadata.busbar.served-witness` table: cargo feature -> the plane
 # crate whose `testkit::SERVED` table the root's rider tests drive) have no row left: FLIP-A2A (#787)
 # and FLIP-STREAMING (#503) each struck the last legacy crate's row, so the table leaves and
 # `build.rs` emits an empty witness list, as it reads no linked-swaps table once the last switch went.

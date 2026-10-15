@@ -240,12 +240,8 @@ fn body_end_user(v: &Value) -> Option<String> {
 fn turn(m: &Value, dialect: &str) -> (String, String) {
     let text = if dialect == PROTO_GEMINI {
         gemini_parts(m)
-    } else if dialect == PROTO_RESPONSES && is_reasoning_item(m) {
-        block_text(m, PROTO_RESPONSES)
-            .text()
-            .map(Cow::into_owned)
-            .unwrap_or_default()
-    } else if dialect == PROTO_RESPONSES && m.get("content").is_none() {
+    } else if dialect == PROTO_RESPONSES && (is_reasoning_item(m) || m.get("content").is_none()) {
+        // A reasoning item, or an item with no `content`, reads through its block's text.
         block_text(m, PROTO_RESPONSES)
             .text()
             .map(Cow::into_owned)
