@@ -137,10 +137,6 @@ impl std::fmt::Debug for TapCell {
     }
 }
 
-/// The floor over a truncated tail (the plane's reply), read by the tests.
-#[cfg(test)]
-pub(crate) use crate::engine::xchg::reply::wire::estimate_usage_from_truncated_tail;
-
 use crate::engine::xchg::reply::relay::{Fed, Relay};
 
 /// Body wrapper that drives IR-based usage extraction, billing, and mid-stream error handling for

@@ -1801,12 +1801,17 @@ fn read_bedrock_usage(
     usage_obj: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let mut ir = crate::codec::usage_count::read_usage(VENDOR_NAME, usage_obj, USAGE)?;
-    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
-        VENDOR_NAME,
-        BEDROCK_USAGE_IDENTITY,
-        usage_obj.and_then(|u| u.get(TOTAL_TOKENS_CAMEL)),
-        &ir,
-    );
+    // A refused count leaves no gap to ledger (`refused_any`): the total is not cross-checked.
+    ir.detail.usage_identity_note = (!crate::codec::usage_count::refused_any(usage_obj, USAGE))
+        .then(|| {
+            crate::codec::usage_count::stated_total_note(
+                VENDOR_NAME,
+                BEDROCK_USAGE_IDENTITY,
+                usage_obj.and_then(|u| u.get(TOTAL_TOKENS_CAMEL)),
+                &ir,
+            )
+        })
+        .flatten();
     Ok(ir)
 }
 
@@ -1837,9 +1842,10 @@ const GUARDRAIL_INVOCATION_METRICS: &str = "invocationMetrics";
 /// line under its meter class, priced by the ratecard). Each count is summed over every guardrail
 /// and assessment on both sides; a zero sum is no hit on its class.
 ///
-/// A count that is PRESENT and not a count REFUSES (#42, the rule every billed count in this crate
-/// reads under): it cannot be ledgered, and a zero in its place is a bill that disagrees with AWS's
-/// invoice and says nothing. `null` is absence.
+/// A count that is PRESENT and not a count is REFUSED on its own (#42; ARCHITECT ruling 2026-10-15,
+/// the rule every billed count in this crate reads under): it cannot be ledgered, so it bills
+/// nothing and is warned, never read as a zero; the readable counts beside it bill. `null` is
+/// absence.
 ///
 /// The assessment's other integers (`guardrailProcessingLatency`, `guardrailCoverage.*`) are a
 /// latency and the coverage the policy units are computed from, not units AWS bills; ledgering
@@ -1872,18 +1878,18 @@ fn guardrail_units(
         .filter_map(usage_of);
     for usage in input.chain(output) {
         for &(count, class) in crate::codec::ir::open_class::GUARDRAIL_COUNT_CLASSES {
-            let n =
-                crate::codec::usage_count::billed_count(&usage, count).map_err(|unreadable| {
-                    tracing::warn!(
-                        protocol = VENDOR_NAME,
-                        field = unreadable.field,
-                        spelling = %unreadable.spelling,
-                        "guardrail usage count is present but unreadable; refusing rather than \
-                         counting it as zero (#42)"
-                    );
-                    crate::codec::dialect::ir_parse_error()
-                })?;
-            crate::codec::ir::open_class::add(&mut units, class, n);
+            // Each count is judged on its own (ARCHITECT ruling 2026-10-15): an unreadable one is
+            // REFUSED loudly and bills nothing; the readable ones bill as stated.
+            match crate::codec::usage_count::billed_count(&usage, count) {
+                Ok(n) => crate::codec::ir::open_class::add(&mut units, class, n),
+                Err(unreadable) => tracing::warn!(
+                    protocol = VENDOR_NAME,
+                    field = unreadable.field,
+                    spelling = %unreadable.spelling,
+                    "guardrail usage count is present but unreadable: REFUSED, it bills nothing \
+                     and is never read as zero (#42, #81)"
+                ),
+            }
         }
     }
     Ok(units)

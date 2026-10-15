@@ -16,8 +16,8 @@ impl ProtocolReader for BedrockReader {
                 super::super::usage_tail::isolate_tail_usage_object(&tail[at..end], KEY)
             {
                 if TOKEN_USAGE_MEMBERS.iter().any(|k| v.get(*k).is_some()) {
-                    // An unreadable billed count yields NO recovered usage, never a zero one
-                    // (#42): the caller then bills its conservative floor estimate instead of $0.
+                    // An unreadable billed count is refused on its own and bills nothing; the
+                    // readable counts recover (#42; ARCHITECT ruling 2026-10-15).
                     // The per-TTL cache-write split rides the same `usage` object a truncated
                     // body still carries, so a body too large to buffer whole reports the same
                     // breakdown a small one does.

@@ -1045,6 +1045,8 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     provider,
                 }) => {
                     run.bufs.passthrough = passthrough;
+                    // A new attempt's answer is its own: a cut the walk left behind is not its.
+                    run.lock().facts.cut = false;
                     self.steps.attempting(run.ctx, run.bufs.dialect, &provider);
                     run.bufs.provider = provider;
                     ((name, pool), None)
@@ -1211,7 +1213,13 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
                     run.bufs.head = FieldList::new(piece.head.clone());
                 }
                 first = false;
-                let streamed = run.lock().facts.streamed;
+                let streamed = {
+                    let mut st = run.lock();
+                    if piece.last && piece.cut {
+                        st.facts.cut = true;
+                    }
+                    st.facts.streamed
+                };
                 let far = Piece {
                     from: FROM_FAR_END,
                     flags: far_flags(&piece, status.is_some(), streamed),

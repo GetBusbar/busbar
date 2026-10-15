@@ -681,6 +681,12 @@ pub trait DriverSteps: Units {
     /// `reason` (`abi::plane::OnPieceOut::tap_fault`): the steps count it, once per answer that
     /// carries it (`handlers::usage_tap_fault`).
     fn usage_tap_fault(&self, _ctx: &UnitCtx, _dialect: u32, _reason: &'static str) {}
+    /// How the unit's answer went, as the driver saw it, handed just before its audit seat: a byte
+    /// of the reply reached the caller (`streamed`), and the far end CUT the answer after its head
+    /// (`cut`). The steps class the unit's finish by them (ARCHITECT ruling 2026-10-15: a unit cut
+    /// by the far end, or dropped after its first byte, is `Partial`; a cut is not a refusal,
+    /// #77(7)/#62).
+    fn answered(&self, _ctx: &UnitCtx, _streamed: bool, _cut: bool) {}
     /// THE STEPS' OWN WORDS for a refusal they decided with `reason`, handed to the plane's
     /// `refusal` as [`busbar_contract::abi::plane::RefusalIn::text`] (as a limit names the bucket
     /// that blocked); `None` = the reason's word. A `ROUTE_SCOPE` unit refused because several
@@ -1285,9 +1291,18 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         authenticate(token: &Pass<Authenticate>, ctx: &UnitCtx) -> StepAnswer<Authenticate>;
         meter(token: &Pass<Meter>, usage: &Grant<Consumption>, ctx: &UnitCtx, provisional: &Outcome,
             destinations: &[VerifiedDestination]) -> StepAnswer<Meter>;
-        audit(token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> StepAnswer<Audit>;
         evidence(ctx: &UnitCtx) -> Evidence;
         at_parent_exit(ctx: &UnitCtx, accrual: &HoldAccrual) -> Result<u64, Refusal>;
+    }
+
+    /// The unit's audit, after the steps are told how its answer went ([`DriverSteps::answered`]).
+    fn audit(&self, token: &Pass<Audit>, ctx: &UnitCtx, outcome: &Outcome) -> StepAnswer<Audit> {
+        let (streamed, cut) = {
+            let st = self.lock();
+            (st.facts.streamed, st.facts.cut)
+        };
+        self.steps.answered(ctx, streamed, cut);
+        self.steps.audit(token, ctx, outcome)
     }
 
     /// The refused unit's audit, after the driver keeps the wait its refusal carries (ARCHITECT

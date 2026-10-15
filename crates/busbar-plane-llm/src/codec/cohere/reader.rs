@@ -24,8 +24,8 @@ impl ProtocolReader for CohereReader {
         // bucket and the separately-metered `billed_units` bucket the operator is invoiced on — and
         // `to_token_usage` lets the metered counts WIN for the reserved input/output tiers. Carrying
         // only `tokens` here meant a head-truncated body reported the RAW counts while the identical
-        // untruncated body reported the metered ones. An unreadable count yields NO recovered usage,
-        // never a zero one (#42).
+        // untruncated body reported the metered ones. An unreadable count is refused on its own and
+        // bills nothing; the readable counts recover (#42; ARCHITECT ruling 2026-10-15).
         Some(read_cohere_usage(Some(&v)).ok()?.to_token_usage())
     }
 

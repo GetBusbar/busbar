@@ -6,9 +6,9 @@ impl ProtocolReader for AnthropicReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
         // The whole usage table, as the buffered read takes it: a truncated turn that ran web
-        // searches ledgers them exactly as its complete twin does. An unreadable billed count
-        // yields NO recovered usage, never a zero one (#42): the caller then bills its
-        // conservative floor estimate for the truncated body instead of $0.
+        // searches ledgers them exactly as its complete twin does. An unreadable billed count is
+        // refused on its own and bills nothing; the readable counts recover (#42; ARCHITECT
+        // ruling 2026-10-15).
         Some(
             crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), USAGE)
                 .ok()?

@@ -25,7 +25,8 @@ impl ProtocolReader for GeminiReader {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usageMetadata\"")?;
         // The same table the complete response reads (`USAGE`): thinking tokens fold into the
         // output and the tool-use prompt term into the input, so a truncated response counts the same
-        // as a complete one. An unreadable count yields NO recovered usage, never a zero one (#42).
+        // as a complete one. An unreadable count is refused on its own and bills nothing; the
+        // readable counts recover (#42; ARCHITECT ruling 2026-10-15).
         // The stated-total check rides too, so a recovered turn ledgers the same `unitemized_tokens`
         // remainder its complete twin does (owner LEDGER-100).
         let mut usage = crate::codec::usage_count::read_usage(COUNT_LABEL, Some(&v), USAGE).ok()?;

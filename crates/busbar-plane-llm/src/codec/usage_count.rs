@@ -304,25 +304,38 @@ fn opt(
 /// THE ONE USAGE READER. Walks a dialect's usage table over one wire usage object (`None` when the
 /// response carried none) and builds the IR usage it states. Each row is read under
 /// [`billed_count`]'s contract: absent is zero (or `None`), a readable count is the count, and a
-/// present-but-UNREADABLE count REFUSES with the one warn line below — the lenient read this
-/// replaces defaulted it to zero, so a stringified `"1500"` reached the kernel as no work at all.
-/// A dialect supplies only the table and its `protocol` label; it never reads a count itself.
+/// present-but-UNREADABLE count is REFUSED.
+///
+/// THE REFUSAL IS PER FIELD (ARCHITECT ruling 2026-10-15, #878 vs #892): each usage field is judged
+/// on its own. A readable field bills as stated; an unreadable one (a stringified `"1500"`) is
+/// refused, so IT bills nothing, and the refusal is loud (the warn line below, naming the protocol,
+/// the field and its spelling; #42/#81 "refuse loudly"). Nothing is substituted for it: it is never
+/// read as a zero count and no floor stands in for it (#77(2)). The answer and its readable counts
+/// are not refused with it: `{"prompt_tokens":"1500","completion_tokens":9}` bills (0, 9), v1.5.5's
+/// figure for that body (v1.5.5 `proto/openai_chat/reader.rs:678`), reached without reading the
+/// unreadable count as anything. A dialect supplies only the table and its `protocol` label; it
+/// never reads a count itself.
 ///
 /// # Errors
-/// A row's count is present, is not `null`, and is not a count.
+/// None today: an unreadable count refuses only itself. The `Result` stays the readers' seam.
 pub fn read_usage(
     protocol: &'static str,
     usage: Option<&serde_json::Value>,
     table: &[UsageCount],
 ) -> Result<crate::codec::ir::IrUsage, busbar_contract::protocol::IrError> {
-    let refuse = |unreadable: UnreadableCount| {
-        tracing::warn!(
-            protocol,
-            field = unreadable.field,
-            spelling = %unreadable.spelling,
-            "usage count is present but unreadable; refusing rather than counting it as zero (#42)"
-        );
-        crate::codec::dialect::ir_parse_error()
+    // One refused field: said loudly, and it bills nothing. The readable fields bill as stated.
+    let kept = |read: Result<Option<u64>, UnreadableCount>| match read {
+        Ok(n) => n,
+        Err(unreadable) => {
+            tracing::warn!(
+                protocol,
+                field = unreadable.field,
+                spelling = %unreadable.spelling,
+                "usage count is present but unreadable: REFUSED, it bills nothing and is never \
+                 read as zero (#42, #81); the readable counts bill as stated"
+            );
+            None
+        }
     };
     let mut slots = [None::<u64>; SLOTS];
     for &(slot, read) in table {
@@ -330,20 +343,20 @@ pub fn read_usage(
         match read {
             CountRead::Zero(path) => {
                 let (up, field) = parent(usage, path);
-                *s = Some(
-                    up.map_or(Ok(0), |u| billed_count(u, field))
-                        .map_err(refuse)?,
-                );
+                *s = kept(up.map_or(Ok(0), |u| billed_count(u, field)).map(Some));
             }
-            CountRead::Opt(path) => *s = opt(usage, path).map_err(refuse)?,
+            CountRead::Opt(path) => *s = kept(opt(usage, path)),
             CountRead::Lenient(path) => *s = at(usage, path).and_then(read_count_u64),
+            // A refused slice or term moves nothing: the total it adjusts stands as read.
             CountRead::Less(path) => {
-                let n = opt(usage, path).map_err(refuse)?.unwrap_or(0);
-                *s = Some(s.unwrap_or(0).saturating_sub(n));
+                if let Some(n) = kept(opt(usage, path)) {
+                    *s = Some(s.unwrap_or(0).saturating_sub(n));
+                }
             }
             CountRead::More(path) => {
-                let n = opt(usage, path).map_err(refuse)?.unwrap_or(0);
-                *s = Some(s.unwrap_or(0).saturating_add(n));
+                if let Some(n) = kept(opt(usage, path)) {
+                    *s = Some(s.unwrap_or(0).saturating_add(n));
+                }
             }
             CountRead::ListSum {
                 list,
@@ -360,7 +373,7 @@ pub fn read_usage(
                     if entry.get(key).and_then(|k| k.as_str()) != Some(value) {
                         continue;
                     }
-                    if let Some(n) = billed_count_opt(Some(entry), count).map_err(refuse)? {
+                    if let Some(n) = kept(billed_count_opt(Some(entry), count)) {
                         sum = Some(sum.unwrap_or(0).saturating_add(n));
                     }
                 }
@@ -406,6 +419,33 @@ pub fn read_usage(
             rejected_prediction_tokens: get(CountSlot::RejectedPrediction),
             ..Default::default()
         },
+    })
+}
+
+/// Whether [`read_usage`] REFUSED a count of `usage` under `table`: a billed row present, not
+/// `null`, and not a count. A usage with a refused count has no stated-total gap to ledger: the
+/// gap would be the refused count itself, priced back in under another name, which is exactly the
+/// substitution a refusal forbids (#77(2); ARCHITECT ruling 2026-10-15). The caller skips
+/// [`stated_total_note`] for it.
+#[must_use]
+pub fn refused_any(usage: Option<&serde_json::Value>, table: &[UsageCount]) -> bool {
+    table.iter().any(|&(_, read)| match read {
+        CountRead::Zero(path)
+        | CountRead::Opt(path)
+        | CountRead::Less(path)
+        | CountRead::More(path) => opt(usage, path).is_err(),
+        CountRead::ListSum {
+            list,
+            key,
+            value,
+            count,
+        } => at(usage, list)
+            .and_then(|l| l.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|entry| entry.get(key).and_then(|k| k.as_str()) == Some(value))
+            .any(|entry| billed_count_opt(Some(entry), count).is_err()),
+        CountRead::Lenient(_) | CountRead::ListFirst { .. } => false,
     })
 }
 

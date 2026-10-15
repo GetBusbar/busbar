@@ -3232,7 +3232,6 @@ mod rehomed_metering {
     use std::borrow::Cow;
 
     use busbar_contract::abi::transport::{FAULT_NONE, FAULT_TRANSIENT};
-    use busbar_plane_llm::codec::wire_shim::TRUNCATED_TAIL_BYTES_PER_TOKEN;
     use busbar_plane_llm::exchange::arrive::PathModel;
     use busbar_plane_llm::exchange::attempt::StreamIntent;
     use busbar_plane_llm::exchange::reply::{Piece, Units};
@@ -4567,12 +4566,6 @@ mod rehomed_metering {
 
     // ── an unreadable usage after delivery (unreadable_usage_floor_tests.rs) ──────────────────
 
-    /// The floor the far end's `delivered` bytes bill when no usage can be read: a quarter of
-    /// them, as output, never 0.
-    fn floor_for(delivered: usize) -> u64 {
-        (delivered as u64 / TRUNCATED_TAIL_BYTES_PER_TOKEN).max(1)
-    }
-
     fn message_with_usage(usage: &str) -> String {
         format!(
             r#"{{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","content":[{{"type":"text","text":"hi"}}],"stop_reason":"end_turn","stop_sequence":null,"usage":{usage}}}"#
@@ -4580,12 +4573,14 @@ mod rehomed_metering {
     }
 
     /// REHOMES `crates/busbar-llm/src/engine/tests/unreadable_usage_floor_tests.rs::buffered_relay_refused_usage_bills_the_floor_not_zero`
-    /// (map row 620). 1.5.5 (item 133): a same-dialect anthropic body relays verbatim; a readable
-    /// usage bills exactly 1500 + 9 = 1509; a count the reader refuses (`"1500"`) bills the floor
-    /// over the delivered bytes (their length / 4, as output), never 0.
-    /// RED: a refused usage on a delivered body billed as zero tokens.
+    /// (map row 620). A same-dialect anthropic body relays verbatim; a readable usage bills exactly
+    /// 1500 + 9 = 1509; a count the reader refuses (`"1500"`) is REFUSED ON ITS OWN: it bills
+    /// nothing, and the readable `output_tokens` bills as stated: (0, 9), v1.5.5's figure for that
+    /// body. ARCHITECT ruling 2026-10-15: each usage field is judged on its own, no floor stands in
+    /// for a refused one (#77(2)), and the refusal is loud (#42/#81).
+    /// RED: the refused count billed as anything, a floor billed, or the readable count dropped.
     #[test]
-    fn buffered_relay_refused_usage_bills_the_floor_not_zero() {
+    fn buffered_relay_refused_usage_bills_only_the_readable_counts() {
         let (arrived, lane) = ask("anthropic", "anthropic", false);
         let ctx = reply_ctx(&arrived, &lane);
         let readable = message_with_usage(r#"{"input_tokens":1500,"output_tokens":9}"#);
@@ -4597,17 +4592,22 @@ mod rehomed_metering {
         let refused = message_with_usage(r#"{"input_tokens":"1500","output_tokens":9}"#);
         let read = answer(&ctx, 200, JSON_HEAD, &[refused.as_bytes()], false);
         assert_eq!(read.body, refused.as_bytes(), "the body relays verbatim");
-        assert_ne!(read.tokens(), (0, 0), "never 0");
-        assert_eq!(read.tokens(), (0, floor_for(refused.len())));
+        assert_eq!(
+            read.tokens(),
+            (0, 9),
+            "v1.5.5's figure: the readable count, nothing else"
+        );
     }
 
     /// REHOMES `crates/busbar-llm/src/engine/tests/unreadable_usage_floor_tests.rs::stream_refused_usage_bills_the_floor_not_zero`
-    /// (map row 621). 1.5.5: a same-dialect chat stream whose usage chunk carries a count the
-    /// reader refuses (`"prompt_tokens":"1500"`) is served 200 and bills the floor over every byte
-    /// the far end sent (their length / 4, as output), never 0.
-    /// RED: a refused stream usage billed as zero tokens.
+    /// (map row 621). A same-dialect chat stream whose usage chunk carries a count the reader
+    /// refuses (`"prompt_tokens":"1500"`) is served 200; the refused count bills nothing and the
+    /// readable `completion_tokens` bills as stated: (0, 9), v1.5.5's figure for that stream
+    /// (v1.5.5 `proto/openai_chat/reader.rs:678`). ARCHITECT ruling 2026-10-15: each usage field
+    /// is judged on its own; neither #878's floor (bytes / 4) nor #892's (0, 0) is right here.
+    /// RED: the refused count billed as anything, a floor billed, or the stream billed nothing.
     #[test]
-    fn stream_refused_usage_bills_the_floor_not_zero() {
+    fn stream_refused_usage_bills_only_the_readable_counts() {
         let (arrived, lane) = ask("openai", "openai", true);
         let ctx = reply_ctx(&arrived, &lane);
         let base = json!({"id": "chatcmpl-refused", "object": "chat.completion.chunk",
@@ -4624,7 +4624,10 @@ mod rehomed_metering {
         far.extend_from_slice(busbar_plane_llm::codec::dialect::SSE_DONE_FRAME);
         let read = answer(&ctx, 200, SSE_HEAD, &[&far], false);
         assert_eq!(read.status, 200);
-        assert_ne!(read.tokens(), (0, 0), "never 0");
-        assert_eq!(read.tokens(), (0, floor_for(far.len())));
+        assert_eq!(
+            read.tokens(),
+            (0, 9),
+            "v1.5.5's figure: the readable count, nothing else"
+        );
     }
 }

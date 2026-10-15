@@ -564,6 +564,9 @@ struct DoorUnit {
     /// The pool a budget `on_exhaust: downgrade` re-admitted the unit through, where one did: its
     /// charge landed there and its walk routes there.
     downgraded: Option<String>,
+    /// How its answer went, as the driver told it before the audit seat: a byte reached the
+    /// caller, and the far end cut the answer after its head ([`DriverSteps::answered`]).
+    answered: (bool, bool),
     /// A `ROUTE_SCOPE_LOCAL` unit's one entry, its scope resolved at verify: the plane answers it
     /// there, with no route walked.
     resolved: Option<String>,
@@ -860,15 +863,29 @@ impl Drop for DoorSteps<'_> {
     }
 }
 
-/// The record's facts for a unit of these steps.
-fn facts(op: OpClassId, outcome: &Outcome) -> busbar_contract::AuditFacts {
+/// The record's facts for a unit of these steps: its op class and its FINISH, new in 1.6.0 (v1.5.5
+/// wrote no per-request audit record, so there is no parity to match). ARCHITECT ruling
+/// 2026-10-15: `Complete` for a whole answer; `Partial` for a unit the far end CUT after its head
+/// (ruling (a) completes it, its transient cleared) or one the node ended after a byte of its reply
+/// reached the caller (the caller dropped it, a `cut-stream` budget cut): a cut is not a refusal
+/// (#77(7), #62), what arrived arrived; `Error` for a refused or failed unit, and for one ended
+/// before its first byte. `streamed` and `cut` are the driver's facts ([`DriverSteps::answered`]).
+fn facts(
+    op: OpClassId,
+    outcome: &Outcome,
+    streamed: bool,
+    cut: bool,
+) -> busbar_contract::AuditFacts {
+    use busbar_contract::FinishClass;
+    let finish = match outcome {
+        Outcome::Completed if cut => FinishClass::Partial,
+        Outcome::Completed => FinishClass::Complete,
+        Outcome::Aborted(_) if streamed => FinishClass::Partial,
+        _ => FinishClass::Error,
+    };
     busbar_contract::AuditFacts {
         op_class: op,
-        finish: if outcome.is_completed() {
-            busbar_contract::FinishClass::Complete
-        } else {
-            busbar_contract::FinishClass::Error
-        },
+        finish,
     }
 }
 
@@ -894,6 +911,10 @@ impl DriverSteps for DoorSteps<'_> {
                 busbar_kernel::telemetry::translation(from, to);
             }
         }
+    }
+
+    fn answered(&self, _ctx: &UnitCtx, streamed: bool, cut: bool) {
+        self.lock().answered = (streamed, cut);
     }
 
     fn usage_tap_fault(&self, _ctx: &UnitCtx, dialect: u32, reason: &'static str) {
@@ -1237,8 +1258,11 @@ impl Units for DoorSteps<'_> {
     }
 
     fn audit(&self, token: &Pass<Audit>, _ctx: &UnitCtx, outcome: &Outcome) -> SeatVerdict<Audit> {
-        let op = self.lock().op.unwrap_or(self.facts.audit_kind);
-        SeatVerdict::proceed(token, facts(op, outcome))
+        let (op, (streamed, cut)) = {
+            let u = self.lock();
+            (u.op.unwrap_or(self.facts.audit_kind), u.answered)
+        };
+        SeatVerdict::proceed(token, facts(op, outcome, streamed, cut))
     }
 
     fn audit_refused(
@@ -1251,7 +1275,10 @@ impl Units for DoorSteps<'_> {
         let step = refusal
             .step()
             .unwrap_or(busbar_contract::caps::StepName::Admit);
-        SeatVerdict::proceed(token, facts(op, &Outcome::Refused(step, refusal.reason())))
+        SeatVerdict::proceed(
+            token,
+            facts(op, &Outcome::Refused(step, refusal.reason()), false, false),
+        )
     }
 
     fn encode(

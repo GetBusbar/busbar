@@ -472,11 +472,11 @@ fn the_reported_units_travel_on_the_usage_billed() {
     }
 }
 
-/// AN UNREADABLE GUARDRAIL COUNT REFUSES (#42, the rule every billed count reads under): it cannot
-/// be ledgered, and a zero in its place is a bill that disagrees with AWS's invoice. `null` is
-/// absence.
+/// AN UNREADABLE GUARDRAIL COUNT IS REFUSED ON ITS OWN (#42; ARCHITECT ruling 2026-10-15, the rule
+/// every billed count reads under): it cannot be ledgered, so it bills nothing, is warned, and is
+/// never read as a zero; the turn's readable counts bill as stated. `null` is absence.
 #[test]
-fn an_unreadable_guardrail_count_refuses_and_null_is_absence() {
+fn an_unreadable_guardrail_count_refuses_on_its_own_and_null_is_absence() {
     let usage = serde_json::json!({"inputTokens": 10, "outputTokens": 5});
     let body = |units: serde_json::Value| {
         serde_json::json!({
@@ -487,15 +487,18 @@ fn an_unreadable_guardrail_count_refuses_and_null_is_absence() {
                 "usage": {"topicPolicyUnits": units}}}}}}
         })
     };
-    assert!(BedrockReader
-        .read_response(
-            crate::codec::test_host::HOST,
-            &body(serde_json::json!("seven"))
-        )
-        .is_err());
-    assert!(BedrockReader
-        .read_response(crate::codec::test_host::HOST, &body(serde_json::json!(7.5)))
-        .is_err());
+    for unreadable in [serde_json::json!("seven"), serde_json::json!(7.5)] {
+        let t = BedrockReader
+            .read_response(crate::codec::test_host::HOST, &body(unreadable.clone()))
+            .unwrap_or_else(|e| panic!("{unreadable}: refuses only itself: {e:?}"))
+            .usage
+            .to_token_usage();
+        assert!(
+            t.open_units.is_empty(),
+            "{unreadable}: the refused count bills nothing"
+        );
+        assert_eq!((t.input, t.output), (10, 5), "{unreadable}");
+    }
     let absent = BedrockReader
         .read_response(
             crate::codec::test_host::HOST,

@@ -1,12 +1,12 @@
-//! ITEM 133 — A PRESENT-BUT-UNREADABLE BILLED COUNT REFUSES; IT IS NEVER LEDGERED AS ZERO (#42).
+//! ITEM 133 — A PRESENT-BUT-UNREADABLE BILLED COUNT IS REFUSED ON ITS OWN; IT IS NEVER LEDGERED AS
+//! ZERO (#42), AND IT REFUSES NOTHING ELSE (ARCHITECT ruling 2026-10-15).
 //!
 //! The Gemini reader used to read every billed count as `.and_then(read_count_u64).unwrap_or(0)`,
 //! so a stringified `"1500"` from a compatible self-hosted backend reached the ledger as ZERO tokens
-//! for work that happened. Each test drives the real read path: the buffered response REFUSES, the
-//! streaming terminal frame ends the stream in an ERROR (a failed stream is not token-billed, and the
-//! refusal is visible rather than a silent zero), and the truncated-tail recovery yields NO usage so
-//! the caller falls back to its conservative floor estimate instead of $0. An ABSENT count keeps its
-//! meaning — zero — and still reads.
+//! for work that happened. Each usage field is now judged on its own: the unreadable one is REFUSED
+//! (warned loudly, it bills nothing, nothing stands in for it) and the readable ones bill as stated,
+//! on the buffered read, the streamed terminal chunk and the truncated-tail recovery alike. An
+//! ABSENT count keeps its meaning — zero — and still reads.
 use super::*;
 
 fn body(usage: serde_json::Value) -> serde_json::Value {
@@ -17,19 +17,25 @@ fn body(usage: serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
-fn buffered_response_refuses_a_stringified_count() {
-    GeminiReader
+fn buffered_response_refuses_a_stringified_count_and_bills_the_readable_ones() {
+    let ir = GeminiReader
         .read_response(
             crate::codec::test_host::HOST,
             &body(serde_json::json!({"promptTokenCount": "1500", "candidatesTokenCount": 9})),
         )
-        .expect_err("a present, unreadable promptTokenCount is a refusal, never a zero");
-    GeminiReader
+        .expect("an unreadable count refuses itself, never the answer");
+    assert_eq!((ir.usage.input_tokens, ir.usage.output_tokens), (0, 9));
+    let ir = GeminiReader
         .read_response(
             crate::codec::test_host::HOST,
             &body(serde_json::json!({"promptTokenCount": 10, "thoughtsTokenCount": "400"})),
         )
-        .expect_err("thinking tokens are billed output; unreadable, they refuse too");
+        .expect("an unreadable thinking count refuses itself, never the answer");
+    assert_eq!(
+        (ir.usage.input_tokens, ir.usage.output_tokens),
+        (10, 0),
+        "the refused thinking tokens add nothing to the output"
+    );
 }
 
 #[test]
@@ -45,7 +51,7 @@ fn buffered_response_with_an_absent_count_still_reads_as_zero() {
 }
 
 #[test]
-fn streaming_terminal_refuses_a_stringified_count() {
+fn streaming_terminal_refuses_a_stringified_count_and_bills_the_readable_ones() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let ev = GeminiReader.read_response_events(
         crate::codec::test_host::HOST,
@@ -54,21 +60,29 @@ fn streaming_terminal_refuses_a_stringified_count() {
         &mut state,
     );
     assert!(
-        matches!(ev.last(), Some(IrStreamEvent::Error(_))),
-        "a terminal chunk with an unreadable count must end the stream in an error; got {ev:?}"
+        !ev.iter().any(|e| matches!(e, IrStreamEvent::Error(_))),
+        "an unreadable count refuses itself, never the stream; got {ev:?}"
     );
-    assert!(
-        !ev.iter()
-            .any(|e| matches!(e, IrStreamEvent::MessageDelta { .. })),
-        "no usage-bearing MessageDelta may carry a zeroed count; got {ev:?}"
-    );
+    let streamed = ev
+        .iter()
+        .find_map(|e| match e {
+            IrStreamEvent::MessageDelta { usage, .. } => {
+                Some((usage.input_tokens, usage.output_tokens))
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the terminal chunk carries its readable usage: {ev:?}"));
+    assert_eq!(streamed, (18, 0));
 }
 
 #[test]
-fn truncated_recovery_yields_no_usage_for_a_stringified_count() {
+fn truncated_recovery_refuses_a_stringified_count_and_recovers_the_readable_ones() {
     let tail =
         br#"...cut"}],"usageMetadata":{"promptTokenCount":"1500","candidatesTokenCount":9}}"#;
-    assert_eq!(GeminiReader.recover_truncated_usage(tail), None);
+    let u = GeminiReader
+        .recover_truncated_usage(tail)
+        .expect("the readable counts recover");
+    assert_eq!((u.input, u.output), (0, 9));
     let tail = br#"...cut"}],"usageMetadata":{"candidatesTokenCount":9}}"#;
     let u = GeminiReader
         .recover_truncated_usage(tail)

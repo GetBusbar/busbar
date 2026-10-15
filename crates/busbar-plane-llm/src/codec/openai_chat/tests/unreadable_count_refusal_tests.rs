@@ -1,24 +1,30 @@
-//! ITEM 133 — A PRESENT-BUT-UNREADABLE BILLED COUNT REFUSES; IT IS NEVER LEDGERED AS ZERO (#42).
+//! ITEM 133 — A PRESENT-BUT-UNREADABLE BILLED COUNT IS REFUSED ON ITS OWN; IT IS NEVER LEDGERED AS
+//! ZERO (#42), AND IT REFUSES NOTHING ELSE (ARCHITECT ruling 2026-10-15).
 //!
 //! The OpenAI Chat reader used to read every billed count as `.and_then(read_count_u64).unwrap_or(0)`,
 //! so a stringified `"1500"` from a compatible self-hosted backend reached the ledger as ZERO tokens
-//! for work that happened. Each test drives the real read path: the buffered response REFUSES, the
-//! streaming terminal frame ends the stream in an ERROR (a failed stream is not token-billed, and the
-//! refusal is visible rather than a silent zero), and the truncated-tail recovery yields NO usage so
-//! the caller falls back to its conservative floor estimate instead of $0. An ABSENT count keeps its
-//! meaning — zero — and still reads.
+//! for work that happened. Each usage field is now judged on its own: the unreadable one is REFUSED
+//! (warned loudly, it bills nothing, nothing stands in for it) and the readable ones bill as stated,
+//! on the buffered read, the streamed usage chunk and the truncated-tail recovery alike.
+//! `{"prompt_tokens":"1500","completion_tokens":9}` bills (0, 9), v1.5.5's figure for that body. An
+//! ABSENT count keeps its meaning — zero — and still reads.
 use super::*;
 
 #[test]
-fn buffered_response_refuses_a_stringified_count() {
+fn buffered_response_refuses_a_stringified_count_and_bills_the_readable_ones() {
     let body = serde_json::json!({
         "id": "c", "object": "chat.completion", "model": "gpt-4o",
         "choices": [{"index": 0, "message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": "1500", "completion_tokens": 9}
     });
-    OpenAiReader
+    let ir = OpenAiReader
         .read_response(crate::codec::test_host::HOST, &body)
-        .expect_err("a present, unreadable prompt_tokens is a refusal, never a zero");
+        .expect("an unreadable count refuses itself, never the answer");
+    assert_eq!(
+        (ir.usage.input_tokens, ir.usage.output_tokens),
+        (0, 9),
+        "the refused prompt_tokens bills nothing; completion_tokens bills as stated"
+    );
 }
 
 #[test]
@@ -36,7 +42,7 @@ fn buffered_response_with_an_absent_count_still_reads_as_zero() {
 }
 
 #[test]
-fn streaming_usage_chunk_refuses_a_stringified_count() {
+fn streaming_usage_chunk_refuses_a_stringified_count_and_bills_the_readable_ones() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let chunk = serde_json::json!({
         "id": "c", "object": "chat.completion.chunk", "model": "gpt-4o",
@@ -46,20 +52,30 @@ fn streaming_usage_chunk_refuses_a_stringified_count() {
     let ev =
         OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut state);
     assert!(
-        matches!(ev.last(), Some(IrStreamEvent::Error(_))),
-        "a usage chunk with an unreadable count must end the stream in an error; got {ev:?}"
+        !ev.iter().any(|e| matches!(e, IrStreamEvent::Error(_))),
+        "an unreadable count refuses itself, never the stream; got {ev:?}"
     );
-    assert!(
-        !ev.iter()
-            .any(|e| matches!(e, IrStreamEvent::MessageDelta { .. })),
-        "no usage-bearing MessageDelta may carry a zeroed count; got {ev:?}"
+    let streamed = ev
+        .iter()
+        .find_map(|e| match e {
+            IrStreamEvent::MessageDelta { usage, .. } => Some(usage.to_token_usage()),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("the usage chunk carries its readable usage: {ev:?}"));
+    assert_eq!(
+        (streamed.input, streamed.output),
+        (10, 0),
+        "prompt_tokens bills as stated; the refused completion_tokens bills nothing"
     );
 }
 
 #[test]
-fn truncated_recovery_yields_no_usage_for_a_stringified_count() {
+fn truncated_recovery_refuses_a_stringified_count_and_recovers_the_readable_ones() {
     let tail = br#"...cut"}}],"usage":{"prompt_tokens":"1500","completion_tokens":9}}"#;
-    assert_eq!(OpenAiReader.recover_truncated_usage(tail), None);
+    let u = OpenAiReader
+        .recover_truncated_usage(tail)
+        .expect("the readable counts recover");
+    assert_eq!((u.input, u.output), (0, 9));
     let tail = br#"...cut"}}],"usage":{"completion_tokens":9}}"#;
     let u = OpenAiReader
         .recover_truncated_usage(tail)

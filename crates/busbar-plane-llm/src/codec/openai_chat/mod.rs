@@ -255,12 +255,17 @@ fn read_openai_usage(
     tier: Option<&serde_json::Value>,
 ) -> Result<crate::codec::ir::IrUsage, IrError> {
     let mut ir = crate::codec::usage_count::read_usage(VENDOR_NAME, usage, USAGE)?;
-    ir.detail.usage_identity_note = crate::codec::usage_count::stated_total_note(
-        VENDOR_NAME,
-        OPENAI_USAGE_IDENTITY,
-        usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
-        &ir,
-    );
+    // A refused count leaves no gap to ledger (`refused_any`): the total is not cross-checked.
+    ir.detail.usage_identity_note = (!crate::codec::usage_count::refused_any(usage, USAGE))
+        .then(|| {
+            crate::codec::usage_count::stated_total_note(
+                VENDOR_NAME,
+                OPENAI_USAGE_IDENTITY,
+                usage.and_then(|u| u.get(keys::TOTAL_TOKENS)),
+                &ir,
+            )
+        })
+        .flatten();
     ir.detail.service_tier = crate::codec::carry::read_word(map::WORDS_SERVED_TIER, tier);
     ir.detail.by_modality = usage.and_then(read_by_modality);
     Ok(ir)

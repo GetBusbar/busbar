@@ -1,12 +1,12 @@
-//! ITEM 133 — A PRESENT-BUT-UNREADABLE BILLED COUNT REFUSES; IT IS NEVER LEDGERED AS ZERO (#42).
+//! ITEM 133 — A PRESENT-BUT-UNREADABLE BILLED COUNT IS REFUSED ON ITS OWN; IT IS NEVER LEDGERED AS
+//! ZERO (#42), AND IT REFUSES NOTHING ELSE (ARCHITECT ruling 2026-10-15).
 //!
 //! The Cohere reader used to read every billed count as `.and_then(read_count_u64).unwrap_or(0)`,
 //! so a stringified `"1500"` from a compatible self-hosted backend reached the ledger as ZERO tokens
-//! for work that happened. Each test drives the real read path: the buffered response REFUSES, the
-//! streaming terminal frame ends the stream in an ERROR (a failed stream is not token-billed, and the
-//! refusal is visible rather than a silent zero), and the truncated-tail recovery yields NO usage so
-//! the caller falls back to its conservative floor estimate instead of $0. An ABSENT count keeps its
-//! meaning — zero — and still reads.
+//! for work that happened. Each usage field is now judged on its own: the unreadable one is REFUSED
+//! (warned loudly, it bills nothing, nothing stands in for it) and the readable ones bill as stated,
+//! on the buffered read, the streamed `message-end` and the truncated-tail recovery alike. An ABSENT
+//! count keeps its meaning — zero — and still reads.
 use super::*;
 
 fn body(usage: serde_json::Value) -> serde_json::Value {
@@ -19,19 +19,27 @@ fn body(usage: serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
-fn buffered_response_refuses_a_stringified_count() {
-    CohereReader
+fn buffered_response_refuses_a_stringified_count_and_bills_the_readable_ones() {
+    let ir = CohereReader
         .read_response(
             crate::codec::test_host::HOST,
             &body(serde_json::json!({"tokens": {"input_tokens": "1500", "output_tokens": 9}})),
         )
-        .expect_err("a present, unreadable tokens.input_tokens is a refusal, never a zero");
-    CohereReader
+        .expect("an unreadable count refuses itself, never the answer");
+    let t = ir.usage.to_token_usage();
+    assert_eq!((t.input, t.output), (0, 9));
+    let ir = CohereReader
         .read_response(
             crate::codec::test_host::HOST,
             &body(serde_json::json!({"billed_units": {"input_tokens": "1500"}})),
         )
-        .expect_err("billed_units.input_tokens WINS the bill; unreadable, it refuses too");
+        .expect("an unreadable billed count refuses itself, never the answer");
+    let t = ir.usage.to_token_usage();
+    assert_eq!(
+        (t.input, t.output),
+        (0, 0),
+        "the refused billed input bills nothing"
+    );
 }
 
 #[test]
@@ -46,27 +54,46 @@ fn buffered_response_with_an_absent_count_still_reads_as_zero() {
     assert_eq!(ir.usage.output_tokens, 9);
 }
 
-#[test]
-fn streaming_message_end_refuses_a_stringified_count() {
+/// The (input, output) a streamed `message-end` with `usage` carries, and its events.
+fn message_end(usage: serde_json::Value) -> (Option<(u64, u64)>, Vec<IrStreamEvent>) {
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let ev = CohereReader.read_response_events(crate::codec::test_host::HOST,
+    let ev = CohereReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": "message-end",
-            "delta": {"finish_reason": "COMPLETE", "usage": {"tokens": {"input_tokens": 10, "output_tokens": "5"}}}
+            "delta": {"finish_reason": "COMPLETE", "usage": usage}
         }),
         &mut state,
     );
-    assert!(
-        matches!(ev.as_slice(), [IrStreamEvent::Error(_)]),
-        "message-end with an unreadable count must end the stream in an error, not a zero; got {ev:?}"
-    );
+    let tokens = ev.iter().find_map(|e| match e {
+        IrStreamEvent::MessageDelta { usage, .. } => {
+            let t = usage.to_token_usage();
+            Some((t.input, t.output))
+        }
+        _ => None,
+    });
+    (tokens, ev)
 }
 
 #[test]
-fn truncated_recovery_yields_no_usage_for_a_stringified_count() {
+fn streaming_message_end_refuses_a_stringified_count_and_bills_the_readable_ones() {
+    let (tokens, ev) =
+        message_end(serde_json::json!({"tokens": {"input_tokens": 10, "output_tokens": "5"}}));
+    assert!(
+        !ev.iter().any(|e| matches!(e, IrStreamEvent::Error(_))),
+        "an unreadable count refuses itself, never the stream; got {ev:?}"
+    );
+    assert_eq!(tokens, Some((10, 0)), "{ev:?}");
+}
+
+#[test]
+fn truncated_recovery_refuses_a_stringified_count_and_recovers_the_readable_ones() {
     let tail = br#"...cut"}],"usage":{"tokens":{"input_tokens":"1500","output_tokens":9}}}"#;
-    assert_eq!(CohereReader.recover_truncated_usage(tail), None);
+    let u = CohereReader
+        .recover_truncated_usage(tail)
+        .expect("the readable counts recover");
+    assert_eq!((u.input, u.output), (0, 9));
     let tail = br#"...cut"}],"usage":{"tokens":{"output_tokens":9}}}"#;
     let u = CohereReader
         .recover_truncated_usage(tail)
@@ -79,7 +106,8 @@ fn truncated_recovery_yields_no_usage_for_a_stringified_count() {
 // These two rode the lenient `.and_then(read_count_u64)` after the rest of the bucket was fixed, so
 // a present-but-unreadable spelling became `None` — indistinguishable from "not reported" — and the
 // unit silently vanished. Absent or `null` keeps meaning `None`; a readable count is the count; an
-// unreadable one REFUSES on every path.
+// unreadable one is REFUSED on its own, loudly, on every path: it bills nothing and the readable
+// counts beside it bill (ARCHITECT ruling 2026-10-15).
 
 const BILLED_UNIT_FIELDS: [&str; 2] = ["search_units", "classifications"];
 
@@ -91,16 +119,22 @@ fn billed_units(field: &str, value: serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
-fn buffered_response_refuses_an_unreadable_billed_unit() {
+fn buffered_response_refuses_an_unreadable_billed_unit_on_its_own() {
     for field in BILLED_UNIT_FIELDS {
-        CohereReader
+        let ir = CohereReader
             .read_response(
                 crate::codec::test_host::HOST,
                 &body(billed_units(field, serde_json::json!("3"))),
             )
-            .expect_err(&format!(
-                "a present, unreadable billed_units.{field} is a refusal, never a dropped unit"
-            ));
+            .unwrap_or_else(|e| panic!("billed_units.{field}: refuses only itself: {e:?}"));
+        assert_eq!(ir.usage.detail.search_units, None, "{field}");
+        assert_eq!(ir.usage.detail.billed_classifications, None, "{field}");
+        let t = ir.usage.to_token_usage();
+        assert_eq!(
+            (t.input, t.output),
+            (10, 5),
+            "{field}: the tokens bill as stated"
+        );
     }
 }
 
@@ -130,36 +164,27 @@ fn buffered_response_reads_a_readable_absent_or_null_billed_unit() {
 }
 
 #[test]
-fn streaming_message_end_refuses_an_unreadable_billed_unit() {
+fn streaming_message_end_refuses_an_unreadable_billed_unit_on_its_own() {
     for field in BILLED_UNIT_FIELDS {
-        let mut state = crate::codec::ir::StreamDecodeState::default();
-        let ev = CohereReader.read_response_events(crate::codec::test_host::HOST,
-            "",
-            &serde_json::json!({
-                "type": "message-end",
-                "delta": {"finish_reason": "COMPLETE", "usage": billed_units(field, serde_json::json!("3"))}
-            }),
-            &mut state,
-        );
+        let (tokens, ev) = message_end(billed_units(field, serde_json::json!("3")));
         assert!(
-            matches!(ev.as_slice(), [IrStreamEvent::Error(_)]),
-            "message-end with an unreadable billed_units.{field} must end the stream in an error, \
-             not drop the unit; got {ev:?}"
+            !ev.iter().any(|e| matches!(e, IrStreamEvent::Error(_))),
+            "billed_units.{field}: refuses only itself, never the stream; got {ev:?}"
         );
+        assert_eq!(tokens, Some((10, 5)), "{field}: {ev:?}");
     }
 }
 
 #[test]
-fn truncated_recovery_yields_no_usage_for_an_unreadable_billed_unit() {
+fn truncated_recovery_refuses_an_unreadable_billed_unit_on_its_own() {
     for field in BILLED_UNIT_FIELDS {
         let tail = format!(
             r#"...cut"}}],"usage":{{"tokens":{{"input_tokens":10,"output_tokens":5}},"billed_units":{{"{field}":"3"}}}}}}"#
         );
-        assert_eq!(
-            CohereReader.recover_truncated_usage(tail.as_bytes()),
-            None,
-            "an unreadable billed_units.{field} yields no recovered usage (the caller bills its floor)"
-        );
+        let u = CohereReader
+            .recover_truncated_usage(tail.as_bytes())
+            .unwrap_or_else(|| panic!("billed_units.{field}: the readable counts recover"));
+        assert_eq!((u.input, u.output), (10, 5), "{field}");
     }
     let tail = br#"...cut"}],"usage":{"tokens":{"input_tokens":10,"output_tokens":5},"billed_units":{"search_units":null}}}"#;
     let u = CohereReader

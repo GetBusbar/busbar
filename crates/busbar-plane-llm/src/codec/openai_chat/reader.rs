@@ -4,8 +4,9 @@ use crate::codec::dialect::ir_parse_error;
 impl ProtocolReader for OpenAiReader {
     fn recover_truncated_usage(&self, tail: &[u8]) -> Option<busbar_contract::billing::TokenUsage> {
         let v = super::super::usage_tail::isolate_tail_usage_object(tail, b"\"usage\"")?;
-        // Every count is read through the dialect's usage table (`USAGE`): an unreadable one yields
-        // NO recovered usage, never a zero one (#42). A truncated body reads the cache tiers an
+        // Every count is read through the dialect's usage table (`USAGE`): an unreadable one is
+        // refused on its own and bills nothing (#42; ARCHITECT ruling 2026-10-15), the readable
+        // ones recover. A truncated body reads the cache tiers an
         // untruncated one does.
         Some(read_openai_usage(Some(&v), None).ok()?.to_token_usage())
     }

@@ -103,6 +103,9 @@ pub(crate) struct Facts {
     pub(crate) far_end_answered: bool,
     /// A byte of the reply reached the caller.
     pub(crate) streamed: bool,
+    /// The far end CUT the answer after its head (its connection failed, or the send's deadline
+    /// passed): the plane was handed its last piece with `PIECE_CUT`.
+    pub(crate) cut: bool,
     /// The reply's head was stated to the caller (once: a head with no body may precede the
     /// answer's first byte).
     pub(crate) headed: bool,

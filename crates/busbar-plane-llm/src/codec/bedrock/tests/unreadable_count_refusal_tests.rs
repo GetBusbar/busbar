@@ -1,24 +1,29 @@
-//! ITEM 133 — A PRESENT-BUT-UNREADABLE BILLED COUNT REFUSES; IT IS NEVER LEDGERED AS ZERO (#42).
+//! ITEM 133 — A PRESENT-BUT-UNREADABLE BILLED COUNT IS REFUSED ON ITS OWN; IT IS NEVER LEDGERED AS
+//! ZERO (#42), AND IT REFUSES NOTHING ELSE (ARCHITECT ruling 2026-10-15).
 //!
 //! The Bedrock reader used to read every billed count as `.and_then(read_count_u64).unwrap_or(0)`,
 //! so a stringified `"1500"` from a compatible self-hosted backend reached the ledger as ZERO tokens
-//! for work that happened. Each test drives the real read path: the buffered response REFUSES, the
-//! streaming terminal frame ends the stream in an ERROR (a failed stream is not token-billed, and the
-//! refusal is visible rather than a silent zero), and the truncated-tail recovery yields NO usage so
-//! the caller falls back to its conservative floor estimate instead of $0. An ABSENT count keeps its
-//! meaning — zero — and still reads.
+//! for work that happened. Each usage field is now judged on its own: the unreadable one is REFUSED
+//! (warned loudly, it bills nothing, nothing stands in for it, and no stated-total gap prices it
+//! back in) and the readable ones bill as stated, on the buffered read, the streamed metadata and
+//! the truncated-tail recovery alike. An ABSENT count keeps its meaning — zero — and still reads.
 use super::*;
 
 #[test]
-fn buffered_response_refuses_a_stringified_count() {
+fn buffered_response_refuses_a_stringified_count_and_bills_the_readable_ones() {
     let body = serde_json::json!({
         "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
         "stopReason": "end_turn",
-        "usage": {"inputTokens": "1500", "outputTokens": 9}
+        "usage": {"inputTokens": "1500", "outputTokens": 9, "totalTokens": 1509}
     });
-    BedrockReader
+    let ir = BedrockReader
         .read_response(crate::codec::test_host::HOST, &body)
-        .expect_err("a present, unreadable inputTokens is a refusal, never a zero");
+        .expect("an unreadable count refuses itself, never the answer");
+    assert_eq!((ir.usage.input_tokens, ir.usage.output_tokens), (0, 9));
+    assert_eq!(
+        ir.usage.detail.usage_identity_note, None,
+        "no stated-total gap prices the refused count back in"
+    );
 }
 
 #[test]
@@ -35,8 +40,8 @@ fn buffered_response_with_an_absent_count_still_reads_as_zero() {
     assert_eq!(ir.usage.output_tokens, 9);
 }
 
-#[test]
-fn streaming_metadata_refuses_a_stringified_count() {
+/// The (input, output) the streamed metadata frame's events carry, after a `messageStop`.
+fn metadata_tokens(usage: serde_json::Value) -> Vec<IrStreamEvent> {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     BedrockReader.read_response_events(
         crate::codec::test_host::HOST,
@@ -44,22 +49,40 @@ fn streaming_metadata_refuses_a_stringified_count() {
         &serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
         &mut state,
     );
-    let ev = BedrockReader.read_response_events(
+    BedrockReader.read_response_events(
         crate::codec::test_host::HOST,
         "",
-        &serde_json::json!({"type": "metadata", "usage": {"inputTokens": 5, "outputTokens": "27"}}),
+        &serde_json::json!({"type": "metadata", "usage": usage}),
         &mut state,
-    );
-    assert!(
-        matches!(ev.as_slice(), [IrStreamEvent::Error(_)]),
-        "metadata with an unreadable count must end the stream in an error, not a zero; got {ev:?}"
-    );
+    )
+}
+
+fn delta_tokens(ev: &[IrStreamEvent]) -> Option<(u64, u64)> {
+    ev.iter().find_map(|e| match e {
+        IrStreamEvent::MessageDelta { usage, .. } => {
+            Some((usage.input_tokens, usage.output_tokens))
+        }
+        _ => None,
+    })
 }
 
 #[test]
-fn truncated_recovery_yields_no_usage_for_a_stringified_count() {
+fn streaming_metadata_refuses_a_stringified_count_and_bills_the_readable_ones() {
+    let ev = metadata_tokens(serde_json::json!({"inputTokens": 5, "outputTokens": "27"}));
+    assert!(
+        !ev.iter().any(|e| matches!(e, IrStreamEvent::Error(_))),
+        "an unreadable count refuses itself, never the stream; got {ev:?}"
+    );
+    assert_eq!(delta_tokens(&ev), Some((5, 0)), "{ev:?}");
+}
+
+#[test]
+fn truncated_recovery_refuses_a_stringified_count_and_recovers_the_readable_ones() {
     let tail = br#"...cut"}],"usage":{"inputTokens":"1500","outputTokens":9}}"#;
-    assert_eq!(BedrockReader.recover_truncated_usage(tail), None);
+    let u = BedrockReader
+        .recover_truncated_usage(tail)
+        .expect("the readable counts recover");
+    assert_eq!((u.input, u.output), (0, 9));
     let tail = br#"...cut"}],"usage":{"outputTokens":9}}"#;
     let u = BedrockReader
         .recover_truncated_usage(tail)
@@ -71,8 +94,9 @@ fn truncated_recovery_yields_no_usage_for_a_stringified_count() {
 //
 // `read_cache_usage` read `cacheReadInputTokens`/`cacheWriteInputTokens` as
 // `.and_then(read_count_u64)` — an unreadable spelling became `None`, "no caching this turn" — and
-// `read_cache_details` SKIPPED a 5m/1h entry whose `inputTokens` would not read, so its tier reported
-// fewer tokens than were written. Both now refuse on every path.
+// `read_cache_details` SKIPPED a 5m/1h entry whose `inputTokens` would not read, silently. Each is
+// now REFUSED on its own, loudly, on every path: it bills nothing and the readable counts beside it
+// bill (ARCHITECT ruling 2026-10-15).
 
 fn converse(usage: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
@@ -83,18 +107,28 @@ fn converse(usage: serde_json::Value) -> serde_json::Value {
 }
 
 #[test]
-fn buffered_response_refuses_an_unreadable_cache_count() {
+fn buffered_response_refuses_an_unreadable_cache_count_on_its_own() {
     for usage in [
         serde_json::json!({"inputTokens": 5, "outputTokens": 9, "cacheReadInputTokens": "40"}),
         serde_json::json!({"inputTokens": 5, "outputTokens": 9, "cacheWriteInputTokens": "40"}),
         serde_json::json!({"inputTokens": 5, "outputTokens": 9, "cacheWriteInputTokens": 40,
                            "cacheDetails": [{"ttl": "5m", "inputTokens": "40"}]}),
     ] {
-        BedrockReader
+        let ir = BedrockReader
             .read_response(crate::codec::test_host::HOST, &converse(usage.clone()))
-            .expect_err(&format!(
-                "{usage} carries an unreadable cache count: refusal, not `none`"
-            ));
+            .unwrap_or_else(|e| {
+                panic!("{usage}: a refused cache count refuses only itself: {e:?}")
+            });
+        assert_eq!(
+            (ir.usage.input_tokens, ir.usage.output_tokens),
+            (5, 9),
+            "{usage}: the readable totals bill as stated"
+        );
+        assert_eq!(ir.usage.cache_read_input_tokens, None, "{usage}");
+        assert_eq!(
+            ir.usage.detail.cache_creation_5m_input_tokens, None,
+            "{usage}"
+        );
     }
 }
 
@@ -122,36 +156,28 @@ fn buffered_response_cache_counts_absent_null_readable_and_unknown_ttl_still_rea
 }
 
 #[test]
-fn streaming_metadata_refuses_an_unreadable_cache_count() {
+fn streaming_metadata_refuses_an_unreadable_cache_count_on_its_own() {
     for usage in [
         serde_json::json!({"inputTokens": 5, "outputTokens": 9, "cacheReadInputTokens": "40"}),
         serde_json::json!({"inputTokens": 5, "outputTokens": 9,
                            "cacheDetails": [{"ttl": "1h", "inputTokens": "40"}]}),
     ] {
-        let mut state = crate::codec::ir::StreamDecodeState::default();
-        BedrockReader.read_response_events(
-            crate::codec::test_host::HOST,
-            "",
-            &serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
-            &mut state,
-        );
-        let ev = BedrockReader.read_response_events(
-            crate::codec::test_host::HOST,
-            "",
-            &serde_json::json!({"type": "metadata", "usage": usage}),
-            &mut state,
-        );
+        let ev = metadata_tokens(usage.clone());
         assert!(
-            matches!(ev.as_slice(), [IrStreamEvent::Error(_)]),
-            "metadata with an unreadable cache count must end the stream in an error; got {ev:?}"
+            !ev.iter().any(|e| matches!(e, IrStreamEvent::Error(_))),
+            "{usage}: an unreadable cache count refuses itself, never the stream; got {ev:?}"
         );
+        assert_eq!(delta_tokens(&ev), Some((5, 9)), "{usage}: {ev:?}");
     }
 }
 
 #[test]
-fn truncated_recovery_yields_no_usage_for_an_unreadable_cache_tier() {
+fn truncated_recovery_refuses_an_unreadable_cache_tier_on_its_own() {
     let tail = br#"...cut"}],"usage":{"inputTokens":5,"outputTokens":9,"cacheDetails":[{"ttl":"5m","inputTokens":"40"}]}}"#;
-    assert_eq!(BedrockReader.recover_truncated_usage(tail), None);
+    let u = BedrockReader
+        .recover_truncated_usage(tail)
+        .expect("the readable counts recover");
+    assert_eq!((u.input, u.output), (5, 9));
 }
 
 // ── EMBEDDINGS (item 133 remainder) ──────────────────────────────────────────────────────────────

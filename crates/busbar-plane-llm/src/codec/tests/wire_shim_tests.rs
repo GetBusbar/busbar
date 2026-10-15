@@ -118,11 +118,10 @@ fn sparse_zero_and_absent_cache_tiers_are_both_omitted() {
 }
 
 /// END TO END, through a real dialect reader this crate owns (not cohere/openai_responses): a
-/// present-but-unparseable top-level `cache_read_input_tokens`/`cache_creation_input_tokens` REFUSES
-/// the buffered response outright (item 133's path — `read_count_opt` over `usage_count::billed_count`)
-/// and never reaches `TokenUsage`, let alone `tier_usage()`. This is the proof that the `None`
-/// `tier_usage()` sees can only ever mean "legitimately absent": the alternative cause never survives
-/// to become a `TokenUsage` at all. Nothing in this crate's existing suites drove an unreadable
+/// present-but-unparseable top-level `cache_read_input_tokens`/`cache_creation_input_tokens` is
+/// REFUSED on its own (item 133's path over `usage_count::billed_count`; ARCHITECT ruling
+/// 2026-10-15: each usage field is judged on its own): it bills nothing, the readable counts beside
+/// it bill as stated, and it never reaches `tier_usage()` as a priced tier. Nothing in this crate's existing suites drove an unreadable
 /// TOP-LEVEL cache count through a buffered response before this test (the item-133 refusal suite,
 /// `anthropic/tests/unreadable_count_refusal_tests.rs`, covers `input_tokens`/`output_tokens` and the
 /// nested 5m/1h cache-creation detail tiers, never the top-level `cache_read_input_tokens`/
@@ -142,10 +141,15 @@ fn unreadable_top_level_cache_count_refuses_before_reaching_tier_usage() {
             "cache_read_input_tokens": "1000",
         }
     });
-    AnthropicReader.read_response(crate::codec::test_host::HOST, &body).expect_err(
-        "a present, unreadable cache_read_input_tokens must refuse — never reach tier_usage() as a \
-         collapsed None",
+    let ir = AnthropicReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("a refused cache_read_input_tokens refuses only itself");
+    let usage = tier_usage(&ir.usage.to_token_usage());
+    assert_eq!(
+        unit(&usage, busbar_contract::records::UNIT_CACHE_READ),
+        None
     );
+    assert_eq!(unit(&usage, busbar_contract::records::UNIT_INPUT), Some(5));
 
     let body = serde_json::json!({
         "role": "assistant",
@@ -157,10 +161,15 @@ fn unreadable_top_level_cache_count_refuses_before_reaching_tier_usage() {
             "cache_creation_input_tokens": "200",
         }
     });
-    AnthropicReader.read_response(crate::codec::test_host::HOST, &body).expect_err(
-        "a present, unreadable cache_creation_input_tokens must refuse — never reach tier_usage() \
-         as a collapsed None",
+    let ir = AnthropicReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("a refused cache_creation_input_tokens refuses only itself");
+    let usage = tier_usage(&ir.usage.to_token_usage());
+    assert_eq!(
+        unit(&usage, busbar_contract::records::UNIT_CACHE_WRITE),
+        None
     );
+    assert_eq!(unit(&usage, busbar_contract::records::UNIT_OUTPUT), Some(9));
 
     // Control: the SAME shape with a readable cache count reads fine and prices through tier_usage
     // as a real, present tier — proving the refusal above is about readability, not the field's mere

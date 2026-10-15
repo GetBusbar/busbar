@@ -917,6 +917,7 @@ fn a_cancel_bill_carries_the_floor_counts_and_never_an_estimate() {
         headed: false,
         far_end_answered: true,
         streamed: true,
+        cut: false,
         relayed: false,
         units: vec![
             floor(INPUT, 40),
