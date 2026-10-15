@@ -1326,6 +1326,35 @@ pub struct TrustKey {
     pub mechanisms_len: usize,
 }
 
+/// THE GRAMMAR OF [`PlaneTail::cli_help`]: the plane's rows of the host's command-line help, each
+/// filling one slot of it. A row opens with [`MARK`], the slot's name and [`NAME_END`], and runs to
+/// the next [`MARK`]; text before the first mark is one [`FLAG`] row (a plane that states only its
+/// `Flags:` block writes it bare). The host places each slot's rows in the plane order it reads
+/// them; a slot it does not know is not printed.
+pub mod cli_help {
+    /// Opens a row (ASCII record separator).
+    pub const MARK: char = '\u{1e}';
+    /// Ends a row's slot name (ASCII unit separator).
+    pub const NAME_END: char = '\u{1f}';
+    /// The one-line description the help opens with (the first one stated is printed).
+    pub const TAGLINE: &str = "tagline";
+    /// A block of the help's `Flags:` rows; its first word is the flag the host accepts.
+    pub const FLAG: &str = "flag";
+    /// A block of the help's `ENDPOINTS` rows.
+    pub const ENDPOINT: &str = "endpoint";
+
+    /// Every `(slot, text)` row `help` states, in order; a row with no [`NAME_END`] names no slot.
+    pub fn rows(help: &str) -> impl Iterator<Item = (&str, &str)> {
+        let (bare, marked) = help.split_once(MARK).unwrap_or((help, ""));
+        let bare = (!bare.is_empty()).then_some((FLAG, bare));
+        let marked = (help.contains(MARK).then_some(marked))
+            .into_iter()
+            .flat_map(|rest| rest.split(MARK))
+            .map(|row| row.split_once(NAME_END).unwrap_or(("", row)));
+        bare.into_iter().chain(marked)
+    }
+}
+
 /// THE PLANE'S STATEMENT TAIL: static facts, `'static` data.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1357,7 +1386,7 @@ pub struct PlaneTail {
     pub signing_domain: AbiStr,
     /// The signature `kid` prefix; absent = the plane signs nothing.
     pub signing_kid_prefix: AbiStr,
-    /// The plane's command-line help text.
+    /// The plane's command-line help text, in the [`cli_help`] grammar.
     pub cli_help: AbiStr,
     /// Its dialects; per-call `dialect` indexes them.
     pub dialects: *const AbiStr,
