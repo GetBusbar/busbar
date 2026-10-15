@@ -68,7 +68,8 @@
 //! refused, both ways (`StatementMismatch`); the door asked for as every other kind is refused,
 //! linked (`WrongKind`) and dropped in (`ManifestKind`); its instance's connection over a need it
 //! never declared is refused (`UndeclaredNeed`), and one instance's use of another's connection is
-//! refused (`NotOwner`) (`red.rs`); the door with a `ready` that fails refuses the boot with the
+//! refused (`NotOwner`); a transport door whose tail states another frame piece size than the
+//! host's is refused, linked and by the pack tool (`FramePieceSize`) (`red.rs`); the door with a `ready` that fails refuses the boot with the
 //! plugin's text; a networked door (the real one, or restated with a `tcp` need) bound to serve with
 //! no connection table is refused at bind, naming the plugin. And `BUSBAR_CONFORMANCE_RED=count` perturbs the both-ways arm itself, so the CI
 //! step can require that the suite FAILS when a count moves.
@@ -1474,6 +1475,8 @@ static NETWORKED: Restated = Restated::new();
 /// `red.rs`'s doors: the Statement arm's other version, the connection arms' outbound need.
 static VERSIONED: Restated = Restated::new();
 static CONNECTED: Restated = Restated::new();
+/// `red.rs`'s transport door whose tail states another frame piece size.
+static PIECED: Restated = Restated::new();
 
 extern "C" fn abi_up_door() -> *const Door {
     ABI_UP.get()
@@ -1482,10 +1485,10 @@ extern "C" fn abi_down_door() -> *const Door {
     ABI_DOWN.get()
 }
 /// The door function of restated door `I`: [`NETWORKED`] (0), [`VERSIONED`] (1), [`CONNECTED`]
-/// (2). One generic entry rather than one `extern` per door: `kind-isolation:law0` reads each ABI
+/// (2), [`PIECED`] (3). One generic entry rather than one `extern` per door: `kind-isolation:law0` reads each ABI
 /// string literal as the secret instance `c`.
 extern "C" fn restated_door<const I: usize>() -> *const Door {
-    [&NETWORKED, &VERSIONED, &CONNECTED][I].get()
+    [&NETWORKED, &VERSIONED, &CONNECTED, &PIECED][I].get()
 }
 extern "C" fn ready_fails_door() -> *const Door {
     READY_FAILS.get()
@@ -1584,7 +1587,9 @@ macro_rules! by_kind {
 
 // The admission and connection arms every kind's run carries (`red.rs`), after `by_kind!`.
 mod red;
-pub use red::{red_cross_instance_conn, red_statement, red_undeclared_need, red_wrong_kind};
+pub use red::{
+    red_cross_instance_conn, red_frame_piece, red_statement, red_undeclared_need, red_wrong_kind,
+};
 
 /// **RED: a door at another kind ABI is refused, both ways.** The real door restated at its kind
 /// ABI + 1 and − 1 is refused by the linked row (`KindAbi`, naming the rebuild); the dropped-in
@@ -1972,6 +1977,13 @@ macro_rules! conformance_suite {
         #[test]
         fn red_a_door_at_another_kind_abi_is_refused() {
             $crate::conformance::red_kind_abi(&__busbar_conformance_subject());
+        }
+
+        /// RED: a transport door whose tail states another frame piece size is refused at load
+        /// (a door of another kind has no pieces).
+        #[test]
+        fn red_a_transport_built_against_another_frame_piece_is_refused() {
+            $crate::conformance::red_frame_piece(&__busbar_conformance_subject());
         }
 
         /// RED: the door under a row or manifest stating another Statement is refused, both ways.

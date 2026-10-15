@@ -1445,7 +1445,9 @@ fn compute_layout() -> String {
             settings,
             settings_len,
             fault_rows,
-            fault_rows_len
+            fault_rows_len,
+            frame_piece_size,
+            _reserved
         ]
     );
     record!(

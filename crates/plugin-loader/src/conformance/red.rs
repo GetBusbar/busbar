@@ -16,7 +16,9 @@
 //!   connection over a need its Statement never declared is refused (`UndeclaredNeed`), as its
 //!   declared need opens;
 //! * [`red_cross_instance_conn`]: one instance writing, reading or closing a connection another
-//!   instance of the door opened is refused (`NotOwner`), and the owner's connection is untouched.
+//!   instance of the door opened is refused (`NotOwner`), and the owner's connection is untouched;
+//! * [`red_frame_piece`]: a transport door restated with a tail stating another frame piece size
+//!   than the host's is refused, linked and by the pack tool ([`LoadError::FramePieceSize`]).
 //!
 //! The connection arms bind the door restated with one outbound need of its own (as
 //! [`super::red_no_table`] restates it, [`super::connection_fixture`]), over the loader's test table
@@ -29,23 +31,27 @@ use std::sync::Arc;
 use busbar_contract::abi::host::conn::connector::{service, EstablishIn, IoIn, StreamIn};
 use busbar_contract::abi::host::service::{ServiceHead, ServiceOut};
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, RawOutcome};
-use busbar_contract::abi::mechanism::door::{Door, DoorFn, Statement};
+use busbar_contract::abi::mechanism::door::{Door, DoorFn, KindTailHead, Statement};
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::transport::{FramePiece, TransportTail};
 use busbar_contract::conn::{ConnError, DeclaredConns};
 
 use super::{
     bind, connection_fixture, dispatcher, load, real_door, restated_door, with_an_outbound_need,
-    Auth, Export, Hook, Leg, Plane, Secret, Store, Subject, Transport, CONNECTED, VERSIONED,
+    Auth, Export, Hook, Leg, Plane, Secret, Store, Subject, Transport, CONNECTED, PIECED,
+    VERSIONED,
 };
 use crate::dispatch::conn_services::CONN_SLOTS;
 use crate::dispatch::{
-    load_dropped, load_linked, Bind, ConnTable, Kind, LinkedRow, LoadError, Plugin,
+    load_dropped, load_linked, rendering_of, Bind, ConnTable, Kind, LinkedRow, LoadError, Plugin,
 };
 
 /// The door functions of [`VERSIONED`] and [`CONNECTED`] (`super::restated_door`).
 const VERSIONED_DOOR: DoorFn = restated_door::<1>;
 const CONNECTED_DOOR: DoorFn = restated_door::<2>;
+/// The door function of [`PIECED`].
+const PIECED_DOOR: DoorFn = restated_door::<3>;
 
 /// Every kind the host has.
 const KINDS: [KindCode; 7] = [
@@ -114,6 +120,71 @@ pub fn red_statement(s: &Subject) {
             "a door stating another version than its row is refused"
         );
     });
+}
+
+/// The real transport door restated with a tail stating a frame piece `stated` bytes long.
+fn with_another_piece(real: Door, stated: u32) -> Door {
+    // SAFETY: a door's Statement is `'static`.
+    let st: Statement = unsafe { real.statement.read_unaligned() };
+    // SAFETY: the honest door loaded, so its kind tail is a whole `'static` `TransportTail` (the
+    // loader refuses a shorter one). Only the piece size is restated.
+    let tail: TransportTail = unsafe { st.kind_tail.cast::<TransportTail>().read_unaligned() };
+    let tail: &'static TransportTail = Box::leak(Box::new(TransportTail {
+        frame_piece_size: stated,
+        ..tail
+    }));
+    let st: &'static Statement = Box::leak(Box::new(Statement {
+        kind_tail: std::ptr::from_ref(tail).cast::<KindTailHead>(),
+        ..st
+    }));
+    Door {
+        statement: st,
+        ..real
+    }
+}
+
+/// **RED: a transport built against another frame piece is refused at load (busbar #1032).** A
+/// framer writes the host's piece buffer at its own `FramePiece` size; one built against another
+/// contract would be read at the wrong stride. The honest door loads linked and dropped in; the
+/// door restated with a tail stating a piece 8 bytes short (the piece before #1032) is refused by
+/// the pack tool and by the linked row, naming the plugin, both sizes and the rebuild
+/// ([`LoadError::FramePieceSize`]). A door of another kind has no pieces: the arm passes.
+///
+/// # Panics
+/// When the restated door loads, or the honest one does not.
+pub fn red_frame_piece(s: &Subject) {
+    if s.kind() != KindCode::Transport {
+        return;
+    }
+    let host = std::mem::size_of::<FramePiece>() as u32;
+    let stated = host - 8;
+    let d = dispatcher();
+    load::<Transport>(s, Leg::Linked, s.bind(&d, "honest-linked"))
+        .expect("the honest door loads linked");
+    load::<Transport>(s, Leg::Dropped, s.bind(&d, "honest-dropped"))
+        .expect("the honest library loads dropped in");
+    let _held = PIECED.hold(with_another_piece(real_door(s), stated));
+    let refused =
+        rendering_of(PIECED_DOOR).expect_err("the pack tool signs no door at another piece");
+    let LoadError::FramePieceSize {
+        stated: said,
+        host: read,
+        ..
+    } = &refused
+    else {
+        panic!("the restated door is refused for its piece: {refused:?}");
+    };
+    assert_eq!((*said, *read), (stated, host), "both sizes, named");
+    assert!(
+        refused
+            .to_string()
+            .contains("rebuild against this busbar-contract"),
+        "{refused}"
+    );
+    let linked = LinkedRow::of(PIECED_DOOR)
+        .and_then(|row| load_linked::<Transport>(&row, s.bind(&d, "red-piece")).map(|_| ()))
+        .expect_err("a linked transport at another piece is refused");
+    assert_eq!(linked, refused, "the same refusal, linked");
 }
 
 /// The door asked for as kind `want`: the linked refusal and the dropped-in one.

@@ -44,9 +44,9 @@ use busbar_contract::abi::transport::{
     AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn, ConnOut, DialIn,
     EmitIn, EncodeIn, FaultRow, FinishIn, FramePiece, FramerOut, FramerSink, FramingIn, IngestIn,
     IoOut, ListenIn, ListenOut, LocateIn, LocateOut, Ops, ReadIn, RefuseIn, ShutIn, StatusRow,
-    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FAULT_CALLER, FRAMING_STREAM, PIECE_END_OF_FRAME,
-    ROLE_FRAMER, SIDE_ACCEPT_STREAM, STATUS_OTHER, STATUS_SUCCESS, UNIT0_FIRST_BYTES, YIELD_ENDED,
-    YIELD_MORE,
+    TransportTail, WriteIn, CANCEL_NOTHING_MOVED, FAULT_CALLER, FRAME_PIECE_SIZE, FRAMING_STREAM,
+    PIECE_END_OF_FRAME, ROLE_FRAMER, SIDE_ACCEPT_STREAM, STATUS_OTHER, STATUS_SUCCESS,
+    UNIT0_FIRST_BYTES, YIELD_ENDED, YIELD_MORE,
 };
 use busbar_contract::transport::registry::facts as tfacts;
 use busbar_contract::SelectorForm;
@@ -141,6 +141,9 @@ const TAIL: TransportTail = TransportTail {
     settings_len: 0,
     fault_rows: FAULT_ROWS.as_ptr(),
     fault_rows_len: FAULT_ROWS.len(),
+    // The stride this framer writes its pieces at: the contract's it was built against.
+    frame_piece_size: FRAME_PIECE_SIZE,
+    _reserved: 0,
 };
 
 /// The door's Statement: the identity framer.

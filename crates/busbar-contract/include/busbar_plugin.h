@@ -537,6 +537,7 @@ extern "C" {
 #define BB_TRANSPORT_PIECE_END UINT16_C(128) /* [`FramePiece::flags`]: the stream ENDS whole here; no piece of it follows. The ONLY way a */
 #define BB_TRANSPORT_PIECE_WRITABLE UINT16_C(256) /* [`FramePiece::flags`]: the stream is WRITABLE again: the queue an `emit` answered with */
 #define BB_TRANSPORT_PIECE_HAS_DECLARED_LEN UINT16_C(512) /* [`FramePiece::flags`], with [`PIECE_FIELDS`]: `declared_len` is present, the body length the */
+#define BB_TRANSPORT_FRAME_PIECE_SIZE UINT32_C(48) /* The size of one [`FramePiece`], in bytes: the stride of [`FramerSink::pieces`]. */
 #define BB_TRANSPORT_EMIT_TEXT UINT32_C(1) /* [`EmitIn::flags`]: the bytes are a TEXT message, not a binary one, on a wire whose messages are */
 #define BB_TRANSPORT_WRITE_END_OF_FRAME UINT32_C(1) /* [`WriteIn::flags`]: the bytes complete a FRAME of the carrier's own wire, for a carrier that */
 #define BB_TRANSPORT_READ_END_OF_FRAME UINT32_C(1) /* [`IoOut::flags`] on a `read`: the bytes complete a FRAME of the carrier's own wire. A carrier */
@@ -3112,6 +3113,8 @@ struct bb_transport_TransportTail {
     size_t settings_len;
     const bb_transport_FaultRow *fault_rows;
     size_t fault_rows_len;
+    uint32_t frame_piece_size;
+    uint32_t _reserved;
 };
 
 /* A carrier's destination, borrowed for the call. */
@@ -5552,7 +5555,7 @@ BB_ASSERT(offsetof(bb_transport_SettingDecl, path) == 0, "bb_transport_SettingDe
 BB_ASSERT(offsetof(bb_transport_SettingDecl, kind) == 16, "bb_transport_SettingDecl.kind: offset");
 BB_ASSERT(offsetof(bb_transport_SettingDecl, _reserved) == 20, "bb_transport_SettingDecl._reserved: offset");
 BB_ASSERT(offsetof(bb_transport_SettingDecl, default_) == 24, "bb_transport_SettingDecl.default_: offset");
-BB_ASSERT(sizeof(bb_transport_TransportTail) == 184, "bb_transport_TransportTail: size");
+BB_ASSERT(sizeof(bb_transport_TransportTail) == 192, "bb_transport_TransportTail: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_TransportTail) == 8, "bb_transport_TransportTail: alignment");
 BB_ASSERT(offsetof(bb_transport_TransportTail, head) == 0, "bb_transport_TransportTail.head: offset");
 BB_ASSERT(offsetof(bb_transport_TransportTail, role) == 8, "bb_transport_TransportTail.role: offset");
@@ -5575,6 +5578,8 @@ BB_ASSERT(offsetof(bb_transport_TransportTail, settings) == 152, "bb_transport_T
 BB_ASSERT(offsetof(bb_transport_TransportTail, settings_len) == 160, "bb_transport_TransportTail.settings_len: offset");
 BB_ASSERT(offsetof(bb_transport_TransportTail, fault_rows) == 168, "bb_transport_TransportTail.fault_rows: offset");
 BB_ASSERT(offsetof(bb_transport_TransportTail, fault_rows_len) == 176, "bb_transport_TransportTail.fault_rows_len: offset");
+BB_ASSERT(offsetof(bb_transport_TransportTail, frame_piece_size) == 184, "bb_transport_TransportTail.frame_piece_size: offset");
+BB_ASSERT(offsetof(bb_transport_TransportTail, _reserved) == 188, "bb_transport_TransportTail._reserved: offset");
 BB_ASSERT(sizeof(bb_transport_Destination) == 72, "bb_transport_Destination: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_Destination) == 8, "bb_transport_Destination: alignment");
 BB_ASSERT(offsetof(bb_transport_Destination, kind) == 0, "bb_transport_Destination.kind: offset");

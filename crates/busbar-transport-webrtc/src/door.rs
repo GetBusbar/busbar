@@ -40,10 +40,11 @@ use busbar_contract::abi::transport::{
     ConnOut, DatagramLane, DatagramRoute, DatagramYield, DialIn, EmitIn, EncodeIn, FinishIn,
     FramePiece, FrameSpan, FramerOut, FramerSink, FramingIn, IngestIn, IoOut, ListenIn, ListenOut,
     LocateIn, LocateOut, Ops, ReadIn, RefuseIn, RendezvousTerms, ShutIn, TransportTail, WriteIn,
-    CANCEL_NOTHING_MOVED, EMIT_TEXT, FRAMING_DATAGRAM, HANDSHAKE_ANSWERS, HANDSHAKE_INITIATES,
-    LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND, PATH_REQUEST_REBIND,
-    PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_TEXT, ROLE_FRAMER,
-    SIDE_ACCEPT, SIDE_DIAL, UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE, YIELD_MORE,
+    CANCEL_NOTHING_MOVED, EMIT_TEXT, FRAME_PIECE_SIZE, FRAMING_DATAGRAM, HANDSHAKE_ANSWERS,
+    HANDSHAKE_INITIATES, LANE_CLEAR, LANE_RENDEZVOUS, LANE_SECURED, PATH_REQUEST_BIND,
+    PATH_REQUEST_REBIND, PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_TEXT,
+    ROLE_FRAMER, SIDE_ACCEPT, SIDE_DIAL, UNIT0_FIRST_DATAGRAM, YIELD_ENDED, YIELD_HAS_DEADLINE,
+    YIELD_MORE,
 };
 
 use crate::framing::{Framing, Lane, Opening, Piece, Request, Side, MEDIA_BASE};
@@ -103,6 +104,9 @@ const TAIL: TransportTail = TransportTail {
     // no reading (`FAULT_NONE`), as the byte-stream carrier's do.
     fault_rows: std::ptr::null(),
     fault_rows_len: 0,
+    // The stride this framer writes its pieces at: the contract's it was built against.
+    frame_piece_size: FRAME_PIECE_SIZE,
+    _reserved: 0,
 };
 
 /// The door's Statement.
