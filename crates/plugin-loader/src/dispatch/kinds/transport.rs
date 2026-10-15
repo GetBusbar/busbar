@@ -75,6 +75,9 @@ pub struct TransportFacts {
     /// Its status table, row by row: `(claim, lo, hi)`, the code ranges each claim's numbering
     /// has (`TransportTail::status_rows`); a stream's final status is judged against them.
     pub status_rows: Vec<(u32, u32, u32)>,
+    /// Its tail states `FRAMING_DATAGRAM`: a framer over the host's datagram port, whose calls
+    /// carry the datagram lane, never a stream's framer.
+    pub datagram: bool,
 }
 
 /// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement without binding it (no
@@ -175,6 +178,7 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     check_fault_rows(faults, tail.claim_rows_len as u64).map_err(broke)?;
     check_fault_cover(status, faults).map_err(broke)?;
     Ok(TransportFacts {
+        datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
         status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),
         role: tail.role,
         claims,

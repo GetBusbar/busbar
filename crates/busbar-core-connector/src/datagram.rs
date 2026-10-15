@@ -281,6 +281,15 @@ impl DatagramFraming {
         judge: Option<(Arc<dyn DialJudge>, u32)>,
         opening: &[(String, Vec<u8>)],
     ) -> Result<(Self, Yielded), Refused> {
+        if !door.facts().datagram {
+            return Err(Refused {
+                outcome: Outcome::Refused,
+                error: format!(
+                    "`{}` is no datagram framer: its calls carry no datagram lane",
+                    door.facts().name
+                ),
+            });
+        }
         let mut f = DatagramFraming {
             door,
             token: 0,
@@ -1049,6 +1058,190 @@ fn check_user(d: &[u8]) -> Option<&str> {
         at += 4 + len.div_ceil(4) * 4;
     }
     None
+}
+
+/// Which leg of a bridged session an association is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Leg {
+    /// The association the caller opened (accepted on the claim door's port).
+    Caller,
+    /// The association the host dialled toward the far end for it.
+    Upstream,
+}
+
+/// What a stream's head block says the stream is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamHead {
+    /// A LINE: a stream of frames the host bridges and never reads (its `kind`).
+    Line {
+        /// The line's kind, as the framer named it.
+        kind: String,
+    },
+    /// A CHANNEL: a stream of messages, the session's (its `label`).
+    Channel {
+        /// The channel's label, as the framer named it.
+        label: String,
+    },
+}
+
+/// Read a stream's head block (`name: value` lines): a `kind` field makes it a line, a `label`
+/// field a channel; anything else is neither.
+#[must_use]
+pub fn stream_head(block: &[u8]) -> Option<StreamHead> {
+    let text = std::str::from_utf8(block).ok()?;
+    let mut label = None;
+    for line in text.split("\r\n").filter(|l| !l.is_empty()) {
+        let (name, value) = line.split_once(':')?;
+        let value = value.trim().to_owned();
+        match name.trim() {
+            "kind" => return Some(StreamHead::Line { kind: value }),
+            "label" => label = Some(value),
+            _ => {}
+        }
+    }
+    label.map(|label| StreamHead::Channel { label })
+}
+
+/// One frame a leg yielded on a line, for the paired line of the other leg.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Across {
+    /// The stream it goes to on the other leg.
+    pub stream: u64,
+    /// The frame, as the line carried it: never read.
+    pub bytes: Vec<u8>,
+    /// It ends its frame.
+    pub end_of_frame: bool,
+}
+
+/// THE BRIDGE: one session's two associations, their LINES paired `i <-> i` by the order each leg
+/// named them (ARCHITECT ruling, row 132: the host pairs lines, the plane pairs channels). The
+/// upstream leg is dialled with the caller's lines mirrored ([`Bridge::opening`]: same count, kind
+/// and order); a leg whose lines do not mirror the other's is no bridge ([`Bridge::mirrored`]) and
+/// nothing crosses half-paired. A line's frames are carried across unread; each leg seals with
+/// its own keys. Once [`Bridge::stop`]ped nothing crosses again: the session's close stops both
+/// directions in one step.
+#[derive(Debug, Default)]
+pub struct Bridge {
+    caller: Vec<(u64, String)>,
+    upstream: Vec<(u64, String)>,
+    stopped: bool,
+}
+
+impl Bridge {
+    /// A bridge with no line yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn lines(&self, leg: Leg) -> &[(u64, String)] {
+        match leg {
+            Leg::Caller => &self.caller,
+            Leg::Upstream => &self.upstream,
+        }
+    }
+
+    /// The upstream dial's opening fields: one `media` field per caller line, its kind, in order,
+    /// then one `channel` field per label the session names.
+    #[must_use]
+    pub fn opening(&self, channels: &[&str]) -> Vec<(String, Vec<u8>)> {
+        self.caller
+            .iter()
+            .map(|(_, kind)| ("media".to_owned(), kind.clone().into_bytes()))
+            .chain(
+                channels
+                    .iter()
+                    .map(|l| ("channel".to_owned(), l.as_bytes().to_vec())),
+            )
+            .collect()
+    }
+
+    /// Whether the two legs' lines mirror: the same count, and the same kind at every position.
+    ///
+    /// # Errors
+    ///
+    /// The mismatch, named: the upstream dial is refused and the unit fails; nothing half-bridges.
+    pub fn mirrored(&self) -> Result<(), String> {
+        if self.caller.len() != self.upstream.len() {
+            return Err(format!(
+                "the upstream leg carries {} line(s), the caller's {}",
+                self.upstream.len(),
+                self.caller.len()
+            ));
+        }
+        for (i, ((_, a), (_, b))) in self.caller.iter().zip(&self.upstream).enumerate() {
+            if a != b {
+                return Err(format!(
+                    "line {i} is `{a}` on the caller's leg and `{b}` upstream"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Stop the bridge: no frame crosses again, in either direction.
+    pub fn stop(&mut self) {
+        self.stopped = true;
+    }
+
+    /// Whether the bridge is stopped.
+    #[must_use]
+    pub fn stopped(&self) -> bool {
+        self.stopped
+    }
+
+    /// The stream a frame on `leg`'s `stream` crosses to on the other leg; `None` = the stream is
+    /// no line, the legs do not mirror, or the bridge is stopped.
+    #[must_use]
+    pub fn across(&self, leg: Leg, stream: u64) -> Option<u64> {
+        if self.stopped || self.mirrored().is_err() {
+            return None;
+        }
+        let i = self.lines(leg).iter().position(|(s, _)| *s == stream)?;
+        let other = match leg {
+            Leg::Caller => Leg::Upstream,
+            Leg::Upstream => Leg::Caller,
+        };
+        self.lines(other).get(i).map(|(s, _)| *s)
+    }
+
+    /// Sort what `leg` yielded: a line's head is recorded, a line's frames go across (or are
+    /// dropped when they cannot: never queued), and every other piece (a channel's head and
+    /// messages, the leg's own description) is handed back for the session.
+    pub fn sort(
+        &mut self,
+        leg: Leg,
+        pieces: Vec<crate::framer::Got>,
+    ) -> (Vec<crate::framer::Got>, Vec<Across>) {
+        let mut session = Vec::new();
+        let mut across = Vec::new();
+        for g in pieces {
+            let known = self.lines(leg).iter().any(|(s, _)| *s == g.stream);
+            if g.fields && !known {
+                if let Some(StreamHead::Line { kind }) = stream_head(&g.bytes) {
+                    match leg {
+                        Leg::Caller => self.caller.push((g.stream, kind)),
+                        Leg::Upstream => self.upstream.push((g.stream, kind)),
+                    }
+                    continue;
+                }
+            }
+            if known {
+                if let Some(stream) = self.across(leg, g.stream) {
+                    if !g.bytes.is_empty() {
+                        across.push(Across {
+                            stream,
+                            bytes: g.bytes,
+                            end_of_frame: g.end_of_frame,
+                        });
+                    }
+                }
+                continue;
+            }
+            session.push(g);
+        }
+        (session, across)
+    }
 }
 
 impl Drop for DatagramFraming {

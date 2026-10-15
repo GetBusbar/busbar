@@ -83,6 +83,10 @@ pub struct DoorFacts {
     /// carries a session (`session`). A claim that states neither is a request and its answer, which
     /// the listener it arrived on frames already; a stream on one of these is this entry's to frame.
     pub duplex: Vec<&'static str>,
+    /// THE DATAGRAM FRAMER (its tail states `FRAMING_DATAGRAM`): every call carries the datagram
+    /// lane and it is driven only by [`crate::datagram::DatagramFraming`] over the host's port and
+    /// secure layer; it never frames a stream, whatever its claim rows say.
+    pub datagram: bool,
 }
 
 /// A transport entry's table, as the host reaches it: a framer's ops ([`FramerDoor::cross`]) and a
