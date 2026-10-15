@@ -4608,12 +4608,20 @@ mod posture_tests {
             excused_from_all("construction", &cx, &verdict(over)).is_none(),
             "a standing row one finding above its figure is a new red inside an excused row"
         );
-        let bare: Vec<Row> = STRUCTURE_LINT_STANDING_REDS
+        // The bare-count case is asked of the list that still carries figures. It was asked of
+        // structure-lint's, which e99edad294 (fixfwd-2) emptied with its figure when #787 armed
+        // `plane-dup:unledgered`: an empty list builds no row, the verdict is green and excused,
+        // and the case asked nothing.
+        assert!(
+            !CONSTRUCTION_STANDING_REDS.is_empty() && !CONSTRUCTION_STANDING_FIGURES.is_empty(),
+            "the bare-count case needs a standing row with a figure"
+        );
+        let bare: Vec<Row> = CONSTRUCTION_STANDING_REDS
             .iter()
             .map(|id| Row::fail(*id, "t", "no count at all"))
             .collect();
         assert!(
-            excused_from_all("structure-lint", &cx, &verdict(bare)).is_none(),
+            excused_from_all("construction", &cx, &verdict(bare)).is_none(),
             "a standing row whose detail carries no count has nothing to hold to its figure"
         );
     }

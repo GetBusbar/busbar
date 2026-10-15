@@ -468,9 +468,19 @@ pub(crate) const SECRET_BEARING_TYPES: &[(&str, SecretBearing)] = &[
         SecretBearing::NotInResolvedConfig(
             "a member PROGRAM the host reads off a plane's settings at open and refresh \
              (`busbar_contract::conn::Program`), never a `RootCfg` type: its `env_refs` \
-             references are resolved by the connector at the spawn, as the previous release \
-             resolved a member's environment, and one that does not resolve refuses the spawn, \
-             naming the variable.",
+             references are resolved when the need that names the program is declared and on the \
+             refresher's lease, with the config-time proof (#865, row 166), and held for its \
+             spawns in a `SpawnEnv`; one that does not resolve refuses every spawn, naming the \
+             variable.",
+        ),
+    ),
+    (
+        "SpawnEnv",
+        SecretBearing::NotInResolvedConfig(
+            "the connector's HELD environment of one member program \
+             (`busbar_core_connector::spawn_env`, #865, row 166): a runtime CARRIER built from a \
+             `Program`'s `env_refs` when its need is declared, resolved there and on the \
+             refresher's lease and never at a spawn; it is never part of `RootCfg`.",
         ),
     ),
     (

@@ -28,7 +28,7 @@
       "body": {"messages": [{"role": "user", "content": [{"text": "hi"}]}]},
       "json_array_when_streamed": false,
       "model_not_found": null,
-      "over_budget_status": "400"
+      "over_budget_status": "429"
     }
   ],
   "body_model": {

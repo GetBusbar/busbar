@@ -242,9 +242,18 @@ fn red_a_forged_ticket_with_no_supplier_counts_toward_the_latch() {
         (2, 1),
         "a supplied forged ticket was counted as unattributed"
     );
-    for _ in 2..LATCH_AT {
+    // The supplied forgery above counts nothing toward the trip, so the supplier-less count is
+    // still 1 here: LATCH_AT - 2 more leave it one short, and the LATCH_AT-th trips it.
+    for _ in 1..LATCH_AT - 1 {
         forged_ticket(None, &latch);
     }
+    assert_eq!(latch.unattributed(), LATCH_AT - 1);
+    assert!(
+        !latch.tripped(),
+        "{} supplier-less forged tickets tripped the latch",
+        LATCH_AT - 1
+    );
+    forged_ticket(None, &latch);
     assert!(
         latch.tripped(),
         "{LATCH_AT} supplier-less forged tickets did not trip the latch"

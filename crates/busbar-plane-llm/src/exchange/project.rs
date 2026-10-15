@@ -12,7 +12,7 @@
 //!
 //! The output-cap signal is the previous release's own read (`max_tokens_for` at `v1.5.5`): the
 //! dialect's cap key off the caller's body, an out-of-range cap saturated to `u32::MAX`, never
-//! dropped. The IR's cap is the far end's, and a reader drops a cap it cannot carry; the hook
+//! dropped; a Bedrock body's nested `inferenceConfig.maxTokens` is read where that key is absent. The IR's cap is the far end's, and a reader drops a cap it cannot carry; the hook
 //! signal is the caller's ask.
 
 use busbar_contract::hooks::RewriteReply;
@@ -54,8 +54,18 @@ pub struct HookView {
 /// The operation's reader refused the body.
 struct Unreadable;
 
+/// The dialect that spells its cap inside a nested config object, and where.
+const BEDROCK: &str = "bedrock";
+const BEDROCK_CAP: &str = "/inferenceConfig/maxTokens";
+
 /// The previous release's output-cap signal: the dialect's cap key (`max_output_tokens` for the
 /// responses dialect, `max_tokens` for every other) off the caller's body, saturated.
+///
+/// A Bedrock Converse body spells its cap `inferenceConfig.maxTokens`, where 1.5.5's top-level read
+/// found nothing and showed a hook `None`; the pre-door engine read it (its
+/// `max_tokens_signal_is_dialect_aware_for_responses`, coverage map v2 row 254), and the driver
+/// proof `max_tokens_signal_reads_the_bedrock_inference_config` pins it. It is read when the
+/// top-level key is absent, so every body 1.5.5 showed a cap for shows the same cap.
 #[must_use]
 pub fn max_tokens_for(v: &Value, dialect: &str) -> Option<u32> {
     let key = if dialect == RESPONSES {
@@ -65,6 +75,13 @@ pub fn max_tokens_for(v: &Value, dialect: &str) -> Option<u32> {
     };
     v.get(key)
         .and_then(Value::as_u64)
+        .or_else(|| {
+            if dialect == BEDROCK {
+                v.pointer(BEDROCK_CAP).and_then(Value::as_u64)
+            } else {
+                None
+            }
+        })
         .map(|n| u32::try_from(n).unwrap_or(u32::MAX))
 }
 

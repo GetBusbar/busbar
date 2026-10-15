@@ -8,6 +8,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -27,19 +28,23 @@ use busbar_contract::plane_calls::{
 use super::kinds::plane::Plane;
 use super::{in_head, now_ns, Dispatcher, Done, Frame, InFrame, OutFrame, Plugin, Reply};
 
-/// One open plane instance, the dispatcher that adopted it, and the worker its unit tickets are
-/// minted on. The instance is shared, never copied: a [`Plugin`] is `!Clone`, so a holder that
-/// keeps the plugin beside this one shares the same `Arc`.
+/// One open plane instance, the dispatcher that adopted it, and the worker its driver ticket is
+/// minted on. Its unit tickets are spread over every worker of the dispatcher, from that one on
+/// (the slab is per instance and worker, `BUSBAR-1.6.0.md` A.4.1): one worker would cross every
+/// piece of every unit of the plane in turn. The instance is shared, never copied: a [`Plugin`] is
+/// `!Clone`, so a holder that keeps the plugin beside this one shares the same `Arc`.
 #[derive(Debug, Clone)]
 pub struct PlaneInstance {
     plugin: Arc<Plugin<Plane>>,
     dispatcher: Arc<Dispatcher>,
     worker: u32,
+    /// How many unit tickets were minted: the next one's worker, counted on from `worker`.
+    minted: Arc<AtomicU32>,
 }
 
 impl PlaneInstance {
-    /// `plugin` (owned, or shared through its `Arc`), adopted by `dispatcher`, its unit tickets
-    /// minted on `worker`.
+    /// `plugin` (owned, or shared through its `Arc`), adopted by `dispatcher`, its driver ticket
+    /// minted on `worker` and its unit tickets on every worker in turn from `worker` on.
     pub fn new(
         plugin: impl Into<Arc<Plugin<Plane>>>,
         dispatcher: Arc<Dispatcher>,
@@ -49,7 +54,15 @@ impl PlaneInstance {
             plugin: plugin.into(),
             dispatcher,
             worker,
+            minted: Arc::new(AtomicU32::new(0)),
         }
+    }
+
+    /// The worker the next unit ticket is minted on: every worker of the dispatcher in turn.
+    fn next_worker(&self) -> u32 {
+        let workers = self.dispatcher.workers().max(1);
+        let turn = self.minted.fetch_add(1, Ordering::Relaxed) % workers;
+        (self.worker % workers + turn) % workers
     }
 
     /// The refusal statuses the plane's tail states, for the driver's config.
@@ -145,7 +158,13 @@ impl PlaneCalls for PlaneInstance {
     }
 
     fn mint(&self) -> Option<Ticket> {
-        self.dispatcher.mint(self.worker)
+        self.dispatcher.mint(self.next_worker())
+    }
+
+    /// On the worker `beside` was minted on: one unit's tickets cross on one worker.
+    fn mint_beside(&self, beside: Ticket) -> Option<Ticket> {
+        let (worker, _) = super::ticket::decode(beside.slot);
+        self.dispatcher.mint(worker)
     }
 
     fn recycle(&self, ticket: Ticket) {
@@ -209,8 +228,10 @@ impl PlaneCalls for PlaneInstance {
     ) -> Box<dyn PieceInFlight> {
         input.head = in_head();
         // The unit's buffers ride with the job: a crossing the watchdog answered FAULT still owns
-        // them until it returns.
-        let reply = self.dispatcher.submit_lent(
+        // them until it returns. A piece of an admitted unit is never refused for the instance's
+        // `max_inflight` ([`Dispatcher::submit_unit`]): refused mid-answer, it would end a stream
+        // its caller was already answered on.
+        let reply = self.dispatcher.submit_unit(
             &*self.plugin,
             ticket,
             slot::ON_PIECE,
@@ -230,8 +251,8 @@ impl PlaneCalls for PlaneInstance {
         lent: Lent,
     ) -> Box<dyn ServeInFlight> {
         input.head = in_head();
-        // As `on_piece`'s: the request's buffers ride with the job.
-        let reply = self.dispatcher.submit_lent(
+        // As `on_piece`'s: the request's buffers ride with the job, on its admitted unit's ticket.
+        let reply = self.dispatcher.submit_unit(
             &*self.plugin,
             ticket,
             slot::SERVE,

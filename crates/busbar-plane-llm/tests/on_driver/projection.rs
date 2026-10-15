@@ -768,7 +768,8 @@ async fn apply_rewrite_to_body_echoes_redacted_marker_as_visible_text() {
 // ── F25 REHOME: the projection rows the coverage map (v2) homes on the driver ────────────────────
 
 /// LEGACY `crates/busbar-llm/src/engine/tests/hook_opt_in_projection_tests.rs::max_tokens_signal_is_dialect_aware_for_responses`
-/// (coverage map v2 row 254), its Bedrock arm. 1.5.5 (the fix it pinned): Bedrock Converse spells
+/// (coverage map v2 row 254), its Bedrock arm, the fix the pre-door engine pinned over 1.5.5 (whose
+/// top-level `max_tokens` read showed `None`): Bedrock Converse spells
 /// the cap `inferenceConfig.maxTokens`, and the size signal a hook is shown carries it: a body with
 /// `{"inferenceConfig":{"maxTokens":128}}` projects `max_tokens` 128.
 ///

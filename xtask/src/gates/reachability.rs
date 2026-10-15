@@ -3060,9 +3060,13 @@ impl Gate for ReachabilityGate {
             "`busbar-plane-zzz`",
         ));
         // A NAME IS NOT A THING: a crate named for a roster plane, declaring no key and linked by no
-        // roster row, maps to nothing. (The subject is the streaming plane crate, whose roster row
-        // links `busbar-voice`: since FLIP-A2A the a2a row links `busbar-plane-a2a` itself, so that
-        // crate is mapped by its row and is no longer a crate named and nothing more.)
+        // roster row, maps to nothing. (The subject is the llm plane crate, whose roster row links
+        // `busbar-llm`: since FLIP-A2A the a2a row links `busbar-plane-a2a` itself and since
+        // FLIP-STREAMING the streaming row links `busbar-plane-streaming`, so each of those crates
+        // is mapped by its row and is no longer a crate named and nothing more. The streaming
+        // subject this case carried went green on that flip (9bd2a58981); the fixture's missing
+        // root manifest, which #935's pinned-plane read needs, reddened every case as DID NOT RUN
+        // and hid it until 0736b5defc laid that `Cargo.toml`.)
         report.push(red_over(
             self,
             cx,
@@ -3072,12 +3076,12 @@ impl Gate for ReachabilityGate {
             evidenced({
                 let mut ov = Overlay::new();
                 ov.set(
-                    "crates/busbar-plane-streaming/src/lib.rs",
-                    "pub struct StreamingPlane;\n",
+                    "crates/busbar-plane-llm/src/lib.rs",
+                    "pub struct LlmPlane;\n",
                 );
                 ov
             }),
-            "`busbar-plane-streaming`",
+            "`busbar-plane-llm`",
         ));
         // A CENSUS THAT FINDS NO PLANE CRATE FOUND NOTHING, which is not zero findings.
         report.push(red_over(

@@ -1968,6 +1968,38 @@ impl Dispatcher {
         )
     }
 
+    /// [`Dispatcher::submit_lent`] for an op of an ADMITTED UNIT, on the request ticket the unit
+    /// minted and reuses for all its ops (`BUSBAR-1.6.0.md` A.4.1: "A request or stream mints one
+    /// ticket and reuses it for all its ops"): a plane unit's `on_piece` and `serve`. Like an op on
+    /// a driver ticket it holds no `max_inflight` unit, so it is never REFUSED for the instance's
+    /// cap: the unit was admitted when it arrived, it has at most one op in flight (its pump awaits
+    /// each), and a piece refused mid-answer would cut a stream already answered to its caller.
+    /// Everything else is [`Dispatcher::submit_lent`]'s: the instance's own refusals, the drain
+    /// count, the lent memory and the watchdog.
+    #[allow(clippy::too_many_arguments)] // `submit_lent`'s seven
+    pub(crate) fn submit_unit<K: Kind, I: InFrame, O: OutFrame>(
+        &self,
+        plugin: &Plugin<K>,
+        ticket: Ticket,
+        s: u32,
+        frame: Frame<I, O>,
+        class: DeadlineClass,
+        deadline_ns: u64,
+        lent: Lent,
+    ) -> Reply<I, O> {
+        self.submit_with(
+            plugin,
+            ticket,
+            s,
+            frame,
+            class,
+            deadline_ns,
+            Some(lent),
+            Duration::ZERO,
+            true,
+        )
+    }
+
     /// `tick` at `now_ns` on `driver`, the instance's driver ticket ([`Dispatcher::driver`]). The
     /// head carries `driver`, so a service that pends inside `tick` registers on it and its wake
     /// calls `drive`. Outside `max_inflight`, as every op on a driver ticket: it never holds a
@@ -2031,7 +2063,8 @@ impl Dispatcher {
         if lifecycle && !inst.enter_lifecycle() {
             return Reply::settled(Outcome::Refused, frame);
         }
-        // An op on a driver ticket holds no `max_inflight` unit.
+        // An op on a driver ticket, or of an admitted unit ([`Dispatcher::submit_unit`]), holds no
+        // `max_inflight` unit.
         let Some(units) = (if driven { Some(0) } else { inst.acquire(s) }) else {
             // Over the cap, or `close` while other ops are in flight: REFUSED, never called.
             if lifecycle {

@@ -1941,10 +1941,10 @@ async fn every_url_model_fixture_reaches_the_end_it_names() {
                 (proto, Fixture::StreamedOk, "200".to_string()),
                 // Refused AFTER the door, so it is charged and audited as an admitted unit.
                 (proto, Fixture::UnknownModel, "404".to_string()),
-                // The door's own turn-away, in each dialect's own status vocabulary: one
-                // answers a throttle as a throttle, the other's envelope carries it as a client
-                // error. Both are the shipped entry point's answer, read off it rather than
-                // assumed — the leg above proves the two legs agree.
+                // The door's own turn-away, in each dialect's own status vocabulary (#958: both
+                // answer a throttle as a throttle, the signed dialect as its Converse-declared
+                // throttling exception). Both are the shipped entry point's answer, read off it
+                // rather than assumed — the leg above proves the two legs agree.
                 (proto, Fixture::OverBudget, over_budget_status(proto)),
             ]
         })

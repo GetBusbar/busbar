@@ -39,6 +39,47 @@ fn recorded(cell: &str) -> u32 {
     .expect("a status")
 }
 
+/// Recorded refusals whose 1.6.0 status is an owner-accepted difference from 1.5.5: the cell, the
+/// status 1.6.0 answers, and the `id` of its entry in `testing/shadow-oracle/accepted-differences.json`
+/// (asserted present and naming the cell, so this list can never forgive more than the register does).
+/// PR #958: a Bedrock caller whose budget is spent is refused 429 `ThrottlingException`.
+const ACCEPTED: &[(&str, u32, &str)] = &[(
+    "llm__bedrock__bedrock__request__over_budget_total",
+    429,
+    "C-22 bedrock budget refusal is a declared Converse error",
+)];
+
+/// The status 1.6.0 owes for `cell`: the accepted difference's, else the recording's.
+fn owed(cell: &str) -> u32 {
+    let Some((_, status, id)) = ACCEPTED.iter().find(|(c, _, _)| *c == cell) else {
+        return recorded(cell);
+    };
+    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testing/shadow-oracle/accepted-differences.json");
+    let text = std::fs::read_to_string(&path).expect("the register is readable");
+    let register: serde_json::Value = serde_json::from_str(&text).expect("the register is JSON");
+    let entry = register["accepted"]
+        .as_array()
+        .expect("the register holds `accepted`")
+        .iter()
+        .find(|e| e["id"].as_str() == Some(*id))
+        .unwrap_or_else(|| panic!("accepted difference {id:?} is in the register"));
+    let id_form = cell.replace("__", "\\|");
+    assert!(
+        entry["cells"]
+            .as_str()
+            .is_some_and(|c| c.contains(&id_form)),
+        "accepted difference {id:?} names {cell}"
+    );
+    assert!(
+        entry["classes"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|v| v == "status")),
+        "accepted difference {id:?} accepts the status class"
+    );
+    *status
+}
+
 /// The driver's configuration over this plane's stated rows, as the root composes it.
 fn config() -> DriverConfig {
     DriverConfig {
@@ -78,8 +119,8 @@ fn every_dialect(condition: &str, reason: ReasonCode) -> Vec<(String, &'static s
 
 /// LEGACY `crates/busbar-llm/tests/llm_refusal_statuses.rs::every_recorded_llm_refusal_wears_the_status_the_driver_chooses`
 /// (coverage map v2 row 743). 1.5.5: every recorded llm refusal wears the status the driver now
-/// chooses: unauthenticated 401 (403 on bedrock, 400 on gemini), a spend cap 429 (400 on bedrock),
-/// a count cap 429, an unreadable body 400, every member down 503 for every ingress and far
+/// chooses: unauthenticated 401 (403 on bedrock, 400 on gemini), a spend cap 429 (1.5.5 answered
+/// 400 on bedrock; 1.6.0 answers 429 there too, PR #958, see `ACCEPTED`), a count cap 429, an unreadable body 400, every member down 503 for every ingress and far
 /// dialect, an oversized body 413, and a model no rate prices 400.
 ///
 /// RED: a stated row goes missing, or a row says something the recording does not.
@@ -123,10 +164,10 @@ fn every_recorded_llm_refusal_wears_the_status_the_driver_chooses() {
     let mut wrong = Vec::new();
     for (cell, d, reason) in &cells {
         let chosen = config.status(dialect(d), *reason);
-        let want = recorded(cell);
+        let want = owed(cell);
         if chosen != want {
             wrong.push(format!(
-                "{cell}: {d} {reason:?} chose {chosen}, 1.5.5 answered {want}"
+                "{cell}: {d} {reason:?} chose {chosen}, 1.6.0 owes {want}"
             ));
         }
     }

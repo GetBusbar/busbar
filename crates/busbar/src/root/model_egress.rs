@@ -436,10 +436,17 @@ impl Breaker for DirectCells {
         _token: &Pass<Route>,
     ) -> bool {
         let cell = self.cell(pool);
+        let (store, lane) = (Arc::clone(&(self.app)().store), lane_of(destination));
+        // The caller's own fault (the one answer the far end records as nothing): counted on the
+        // lane, its breaker untouched, whatever its pool configured (1.5.5's `record_outcome`
+        // `ClientFault` arm). The far end records through this call alone, so the count is here.
+        if matches!(outcome, Outcome::RecordNothing) {
+            store.record_client_fault(lane);
+            return false;
+        }
         let Some(cfg) = self.records.get(cell) else {
             return false;
         };
-        let (store, lane) = (Arc::clone(&(self.app)().store), lane_of(destination));
         match outcome {
             Outcome::Success => {
                 store.record_success_in(cell, lane);
@@ -449,6 +456,7 @@ impl Breaker for DirectCells {
                 store.record_transient_in(cell, lane, "transient", cfg, retry_after)
             }
             Outcome::HardDown => store.record_hard_down_all_cells(lane, "hard_down"),
+            // Counted as the caller's fault above.
             Outcome::RecordNothing => false,
         }
     }
@@ -480,11 +488,8 @@ impl Breaker for DirectCells {
                 }
                 None => false,
             },
-            // The caller's own fault: counted on the lane, its breaker untouched.
-            (Outcome::RecordNothing, Some(400..=499)) => {
-                (self.app)().store.record_client_fault(lane);
-                false
-            }
+            // The caller's own fault is counted by `observe`, the one call the far end records
+            // through.
             (outcome, _) => self.observe(pool, destination, outcome, now, token),
         };
         (classified, tripped)

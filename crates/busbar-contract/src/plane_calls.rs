@@ -397,6 +397,14 @@ pub trait PlaneCalls: Send + Sync {
     /// A request ticket for one unit; `None` when none can be minted.
     fn mint(&self) -> Option<Ticket>;
 
+    /// A second request ticket of the unit `beside` was minted for (a session's other leg), on the
+    /// same worker as `beside`, so the unit's crossings stay on one worker; `None` when none can be
+    /// minted. By default, [`Self::mint`]'s.
+    fn mint_beside(&self, beside: Ticket) -> Option<Ticket> {
+        let _ = beside;
+        self.mint()
+    }
+
     /// The unit is over: `ticket` goes back (at once when idle, else when its op ends).
     fn recycle(&self, ticket: Ticket);
 

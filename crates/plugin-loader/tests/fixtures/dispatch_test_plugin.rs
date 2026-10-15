@@ -301,6 +301,10 @@ unsafe impl Send for Gauges {}
 #[derive(Default)]
 struct State {
     tickets: HashMap<Ticket, TicketState>,
+    /// Every ticket a `pend:*` op was handed, in the order it was first handed: what `pend:stale`
+    /// wakes late. `tickets` forgets a ticket the moment its op answers READY, so it holds no
+    /// recycled ticket to wake.
+    handed: Vec<Ticket>,
     held: Vec<(Ticket, Arc<AtomicBool>)>,
     /// `cancel`'s answer per held ticket: `Some(d)` a disposition, `None` FAULT.
     dispositions: HashMap<Ticket, Option<u32>>,
@@ -691,6 +695,9 @@ unsafe fn pend(me: &Inst, tin: &TickIn, mode: &[u8], out: *mut c_void) -> RawOut
     me.invocations.fetch_add(1, Ordering::SeqCst);
     let resume = tin.head.flags & FLAG_RESUME != 0;
     let mut st = me.state.lock().unwrap();
+    if !resume && t.generation != 0 && !st.handed.contains(&t) {
+        st.handed.push(t);
+    }
     let ts = st.tickets.entry(t).or_default();
     ts.invocations += 1;
     let ready = ts.ready.clone();
@@ -711,9 +718,10 @@ unsafe fn pend(me: &Inst, tin: &TickIn, mode: &[u8], out: *mut c_void) -> RawOut
                 // ticket generation is a keyed permutation of the slot's counter, so a guessed one
                 // is a forgery and quarantines the instance).
                 let stale: Vec<Ticket> = st
-                    .tickets
-                    .keys()
-                    .filter(|k| **k != t && k.generation != 0)
+                    .handed
+                    .iter()
+                    .rev()
+                    .filter(|k| **k != t)
                     .take(2)
                     .copied()
                     .collect();
