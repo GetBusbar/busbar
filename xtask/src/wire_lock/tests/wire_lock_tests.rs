@@ -193,7 +193,6 @@ fn discovery_refs_are_schema_names() {
         ]
     );
     assert!(!lock.dirs.contains_key("stream"));
-    assert!(!lock.streams());
 }
 
 /// DETERMINISM: two generations of the same document are byte-identical, and the committed form
@@ -209,7 +208,7 @@ fn generation_is_deterministic_and_round_trips() {
 }
 
 #[test]
-fn the_inventory_marks_only_streaming_dialects() {
+fn the_inventory_marks_every_dialect_streaming() {
     let locks = committed(&Ctx::workspace().expect("workspace")).expect("the committed locks");
     let inv: Value = serde_json::from_str(&render_inventory(&locks)).expect("json");
     assert_eq!(
@@ -229,9 +228,17 @@ fn the_inventory_marks_only_streaming_dialects() {
         .iter()
         .filter_map(|f| f["dialect"].as_str())
         .collect();
+    // gemini has no stream section (its frames are its response schema) and streams all the same.
     assert_eq!(
         streaming,
-        ["anthropic", "openai", "responses", "bedrock", "cohere"]
+        [
+            "anthropic",
+            "openai",
+            "responses",
+            "gemini",
+            "bedrock",
+            "cohere"
+        ]
     );
 }
 
