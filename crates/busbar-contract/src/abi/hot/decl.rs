@@ -145,43 +145,7 @@ pub type AdmissionFn = extern "C-unwind" fn(
 pub type DispatchFn =
     extern "C-unwind" fn(state: *mut c_void, work: *const crate::abi::hot::WorkItem) -> RawStatus;
 
-/// A borrowed UTF-8 range in a [`PlaneDecl`] — the `(ptr, len)` pair the vocabulary fields spell
-/// out inline, as one `#[repr(C)]` value so a list of them can be borrowed too. A NULL `ptr` is the
-/// ABSENT value (an optional fact the plane does not state); a non-null `ptr` is a stated string,
-/// even when `len` is 0. Like every decl range it MUST point at bytes that outlive the decl.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct DeclStr {
-    /// Borrowed UTF-8 bytes (NOT owned); NULL = absent.
-    pub ptr: *const u8,
-    /// Length of the range.
-    pub len: usize,
-}
-
-impl DeclStr {
-    /// The absent value: a NULL range.
-    pub const NONE: DeclStr = DeclStr {
-        ptr: core::ptr::null(),
-        len: 0,
-    };
-
-    /// A stated string, borrowed for the life of the image.
-    #[must_use]
-    pub const fn new(s: &'static str) -> Self {
-        DeclStr {
-            ptr: s.as_ptr(),
-            len: s.len(),
-        }
-    }
-}
-
-// SAFETY: a `DeclStr` is a borrowed range into the plugin image's own read-only bytes — the same
-// lifetime contract (and the same reasoning) as the `*const u8` vocabulary fields of `PlaneDecl`
-// below: mapped for the whole life of the loaded plugin, never mutated or freed while a decl that
-// references them exists. A plane holds its lists of these in `static`s, which requires `Sync`.
-unsafe impl Send for DeclStr {}
-// SAFETY: see the `Send` impl above.
-unsafe impl Sync for DeclStr {}
+pub use crate::abi::shared::DeclStr;
 
 /// One billable class a plane ledgers, and the unit family its count is in — borrowed in a list by
 /// [`PlaneDecl::billable_classes_ptr`].
