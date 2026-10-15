@@ -311,13 +311,14 @@ export-prometheus = ["dep:busbar-export-prometheus"]
 # crate on the export axis. Off, the module resolves only when a signed tarball of the sink is dropped
 # into `plugins/`.
 export-otlp = ["dep:busbar-export-otlp"]
-# THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON: it was held
-# off until the oracle's admin family was green on it, and it is. The switch is what makes an admin
-# request travel through the kernel's loop instead of reaching its handler directly; the 234 owed
-# `admin.ops` cells and the whole 890-cell owed golden read the same either way, which is the
-# measurement the default was waiting for. The leg stays switchable — turning it off drops one
-# unbuilt module and nothing else, because `main.rs` names the mount inside a `cfg` and the router it
-# wraps is untouched.
+# THE ROOT-DRIVEN ADMIN SURFACE (composition-root step C1 / switch-over S1). DEFAULT ON. The switch is
+# what makes an admin request travel through the kernel's loop instead of reaching its handler
+# directly. The byte-neutrality this default was turned on for is NOT established: the 2x2 over
+# `root-admin` x `root-llm` found it moves the two `ledger|amend` cells 404 -> 403 (TODO l.2147-2163,
+# item 155), and nothing repeats the comparison: a comment here that claims otherwise names the
+# registered gate that reproduces it (TODO l.2165). The leg stays switchable — turning it off drops
+# one unbuilt module and nothing else, because `main.rs` names the mount inside a `cfg` and the
+# router it wraps is untouched.
 #
 # `tower` is the feature's own edge: wrapping a mounted router means calling it as the service it
 # already is, which is the one thing that guarantees the inner surface answers exactly as it did.
