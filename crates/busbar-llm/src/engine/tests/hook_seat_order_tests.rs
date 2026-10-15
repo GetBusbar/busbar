@@ -15,8 +15,8 @@ use busbar_contract::hooks::{
     Candidate, PolicyResult, RewriteReply, RoutingContext, RoutingDecision, RoutingPolicy,
     RoutingRequest, TransformOutcome,
 };
-use busbar_kernel::hooks::ResolvedPolicy;
 use busbar_kernel::test_support::engine_kit::{EngineTestKit as _, TestAppKit};
+use busbar_kernel::{hooks::ResolvedPolicy, seal::lend};
 use std::sync::{Arc, Mutex};
 
 /// The marker the rewrite hook plants in the prompt; a tap payload carrying it saw the rewrite.
@@ -235,7 +235,7 @@ async fn rig(reject_at_gate: bool) -> (Rig, Arc<dyn Fn() -> Ledger + Send + Sync
     (
         Rig {
             addr,
-            secret: secret.expose(&busbar_kernel::seal::lend()).clone(),
+            secret: secret.expose(&lend()).clone(),
             log,
             request_tap,
             candidate_tap,

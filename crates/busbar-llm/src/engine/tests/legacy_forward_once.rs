@@ -14,7 +14,7 @@
 use crate::engine::*;
 
 use busbar_contract::diag_debug;
-use busbar_kernel::observability::HOTPATH_LEVEL;
+use busbar_kernel::{observability::HOTPATH_LEVEL, seal::lend};
 
 /// Forward one request to a specific lane and relay the response. Shared by the degraded
 /// last-resort exhaustion paths (FallbackPool routing + LeastBad). Unlike the main forward
@@ -201,9 +201,9 @@ pub(super) async fn forward_once(
         // keyless passthrough (lane.api_key already empty); only changes the misconfigured
         // passthrough+configured-key case.
         busbar_contract::config::UpstreamCreds::Passthrough => caller_token.unwrap_or(""),
-        busbar_contract::config::UpstreamCreds::Own => EngineTables::new(rt).lanes()[i]
-            .api_key
-            .expose(&busbar_kernel::seal::lend()),
+        busbar_contract::config::UpstreamCreds::Own => {
+            EngineTables::new(rt).lanes()[i].api_key.expose(&lend())
+        }
     };
 
     // per-request auth (SigV4 for Bedrock; static otherwise). The (operation × stream) egress
