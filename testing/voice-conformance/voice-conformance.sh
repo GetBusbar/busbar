@@ -41,7 +41,7 @@
 # `VOICE_CONFORM_RED=1` makes the planted answers the subject, and every leg must then go RED). Each
 # leg judges the DOOR'S half of its seam and names the half that is the kernel's (lib/conform-bin.sh):
 #
-#   spec-per-dialect   every fixture, per dialect (MATRIX: openai, gemini): codec round trip, and the
+#   spec-per-dialect   every fixture, per dialect (MATRIX: openai, gemini, twilio): codec round trip, and the
 #                      door's relay of it by the session rules.
 #   replay             each captured transcript through one session: codec skeleton, and the door's
 #                      relay and skeleton in emitted order.
@@ -57,6 +57,9 @@
 #   audit-record       the audit kind and operation the kernel's one row is written under; no door row.
 #   exit-terminal      one session, one end; a stream that ended is refused on every side.
 #   tool-reply         a tool call is relayed to the caller and never answered by busbar (Law 11).
+#   twilio-route       the Twilio claim (ws, one-level /twilio, webhook-signature alone); opens on `start`.
+#   twilio-media       Twilio media in and out, mark, clear; stop ends the session once.
+#   twilio-metering    a Twilio session's units once per turn; the open turn settled at stop.
 #   governance         the 5 vision checkpoints (incl. D2 hard-close-on-exhaustion). GOVERNANCE IS
 #                      NOT A CONFORMANCE RESULT — it can never move the conformance verdict, exactly
 #                      as `testing/a2a-governance/` can never contribute to the A2A verdict.
@@ -95,9 +98,10 @@ VOICE_LEGS_DIR="${VOICE_LEGS_DIR:-$HERE/legs}"
 
 # A FLOOR on the declared-leg count, for the same reason the python verdict linter has one: every
 # equality below would hold for a battery that had been gutted to a single leg, so the count is
-# checked first. Fourteen legs ship today (spec-per-dialect, replay, cross-parity,
+# checked first. Seventeen legs ship today (spec-per-dialect, replay, cross-parity,
 # provider-credential, metering-lease, session-scope, gemini-live-route, provider-dial,
-# admit-refusal, route-failover, audit-record, exit-terminal, tool-reply, plus governance).
+# admit-refusal, route-failover, audit-record, exit-terminal, tool-reply, twilio-route, twilio-media,
+# twilio-metering, plus governance).
 MIN_LEGS="${VOICE_MIN_LEGS:-3}"
 
 say()  { printf '%s\n' "$*"; }

@@ -17,11 +17,12 @@
 //! Non-`RESULT` lines (`SUBITEM`) are ignored by the runner.
 //!
 //! ```text
-//! voice_conform spec <openai|gemini> <fixtures_dir>
+//! voice_conform spec <openai|gemini|twilio> <fixtures_dir>
 //! voice_conform replay <fixtures_root>
 //! voice_conform cross <oo|og|go|gg> <openai_dir> <gemini_dir> <map.json>
 //! voice_conform governance <checkpoint>
 //! voice_conform composition <slice>
+//! voice_conform twilio <twilio-route|twilio-media|twilio-metering> <fixtures_dir>
 //! ```
 
 use std::path::Path;
@@ -30,12 +31,14 @@ mod codec_legs;
 mod composition;
 mod door;
 mod governance;
+mod twilio_legs;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  voice_conform spec <openai|gemini> <fixtures_dir>\n  voice_conform replay \
+        "usage:\n  voice_conform spec <openai|gemini|twilio> <fixtures_dir>\n  voice_conform replay \
          <fixtures_root>\n  voice_conform cross <oo|og|go|gg> <openai_dir> <gemini_dir> \
-         <map.json>\n  voice_conform governance <checkpoint>\n  voice_conform composition <slice>"
+         <map.json>\n  voice_conform governance <checkpoint>\n  voice_conform composition <slice>\n  \
+         voice_conform twilio <slice> <fixtures_dir>"
     );
     std::process::exit(2);
 }
@@ -52,7 +55,9 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let rig = door::Rig::boot();
     let code = match nth(&args, 1) {
+        "spec" if nth(&args, 2) == "twilio" => twilio_legs::spec(&rig, Path::new(nth(&args, 3))),
         "spec" => codec_legs::spec(&rig, nth(&args, 2), Path::new(nth(&args, 3))),
+        "twilio" => twilio_legs::run(&rig, nth(&args, 2), Path::new(nth(&args, 3))),
         "replay" => codec_legs::replay(&rig, Path::new(nth(&args, 2))),
         "cross" => {
             let map: serde_json::Value = match std::fs::read(nth(&args, 5))
