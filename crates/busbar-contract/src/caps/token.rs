@@ -124,24 +124,16 @@ impl KernelSeal {
     /// `#[inline]` on purpose: the call is instantiated only in the crate that calls it, so an
     /// image with no kernel in it (a dropped plugin, this crate's own tests) never references the
     /// symbol.
+    ///
+    /// The symbol is declared, and the one `unsafe` call made, in [`crate::abi`]: the contract's
+    /// unsafe lives in that module and nowhere else (the unsafe policy in `lib.rs`), so this
+    /// module stays `forbid(unsafe_code)`.
     #[doc(hidden)]
     #[inline]
-    #[allow(unsafe_code)]
     #[must_use]
     pub fn deliver() -> Box<dyn std::any::Any + Send + Sync> {
-        // SAFETY: `__busbar_kernel_root` is defined exactly once, by `busbar-kernel`
-        // (`crates/busbar-kernel/src/seal.rs`), with this exact signature, and both crates are
-        // built together by one compiler in one workspace, so the Rust ABI of the declaration and
-        // the definition agree. The definition takes the seal by value and returns an owned box;
-        // it touches no other state.
-        unsafe { __busbar_kernel_root(KernelSeal(())) }
+        crate::abi::kernel_root(KernelSeal(()))
     }
-}
-
-// The kernel's one entry for a seal: declared here, DEFINED only by `busbar-kernel`
-// (`crates/busbar-kernel/src/seal.rs`). See [`KernelSeal::deliver`].
-extern "Rust" {
-    fn __busbar_kernel_root(seal: KernelSeal) -> Box<dyn std::any::Any + Send + Sync>;
 }
 
 impl std::fmt::Debug for KernelSeal {

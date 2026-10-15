@@ -57,7 +57,7 @@ pub fn acquire() -> KernelSeal {
 // `no_mangle` is an unsafe attribute (a second definition of the name is undefined behaviour at
 // link time, which the linker refuses as a duplicate symbol); this is the one kernel item that
 // needs it, so the crate's `deny(unsafe_code)` is lifted for this item only.
-// SAFETY: the signature is exactly the declaration in `busbar-contract/src/caps/token.rs`
+// SAFETY: the signature is exactly the declaration in `busbar-contract/src/abi/mod.rs`
 // (`fn __busbar_kernel_root(seal: KernelSeal) -> Box<dyn Any + Send + Sync>`), built by the same
 // compiler in the same workspace; the body touches no state.
 #[allow(unsafe_code)]
