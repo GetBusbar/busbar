@@ -1075,7 +1075,7 @@ fn served_core(
         gov,
         app,
         key,
-        token: token.expose_secret().to_string(),
+        token: token.expose(&busbar_kernel::seal::lend()).to_string(),
         handle,
         book: Arc::clone(&book.durability),
         post: end,
@@ -4747,7 +4747,7 @@ fn another_caller(
     row.allowed_scopes = scopes;
     s.gov.store().put_key(&row).expect("the grant is written");
     s.gov.refresh().expect("the book reloads");
-    (row, token.expose_secret().to_string())
+    (row, token.expose(&busbar_kernel::seal::lend()).to_string())
 }
 
 /// The agents busbar's extended card names for the caller presenting `token`: its status, and

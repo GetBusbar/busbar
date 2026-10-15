@@ -20,7 +20,7 @@ use busbar_contract::abi::secret::{
     ERROR_KIND_DENIED, ERROR_KIND_INTERNAL, ERROR_KIND_UNAVAILABLE,
 };
 use busbar_contract::config_time::{ConfigScope, RESOLVE_OFF_CONFIG_TIME};
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use busbar_contract::secret::{SecretAxis, SecretRefused};
 use busbar_contract::secret_ref::SecretRef;
 
@@ -54,9 +54,12 @@ fn hit() -> Vec<u8> {
     format!(r#"{{"key":"{HIT}"}}"#).into_bytes()
 }
 
-fn spell(r: Result<Redacted<Vec<u8>>, SecretRefused>) -> String {
+fn spell(r: Result<Secret<Vec<u8>>, SecretRefused>) -> String {
     match r {
-        Ok(m) => format!("ok {}", String::from_utf8_lossy(m.expose_secret())),
+        Ok(m) => format!(
+            "ok {}",
+            String::from_utf8_lossy(m.expose(&busbar_contract::plugin::TestKernelSeal))
+        ),
         Err(e) => format!("refused {} {}", e.error_kind, e.text),
     }
 }

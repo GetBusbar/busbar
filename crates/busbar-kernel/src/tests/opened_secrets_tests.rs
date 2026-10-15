@@ -9,7 +9,7 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use busbar_contract::secret::{SecretCalls, SecretRefused};
 
 use crate::preflight::OpenedSecrets;
@@ -20,14 +20,14 @@ struct Source {
 }
 
 impl SecretCalls for Source {
-    fn resolve(&self, settings: &[u8]) -> Result<Redacted<Vec<u8>>, SecretRefused> {
+    fn resolve(&self, settings: &[u8]) -> Result<Secret<Vec<u8>>, SecretRefused> {
         if let Some(gate) = &self.gate {
             let _ = gate
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .recv_timeout(Duration::from_secs(10));
         }
-        Ok(Redacted::new(settings.to_vec()))
+        Ok(Secret::new(settings.to_vec()))
     }
 }
 
@@ -90,7 +90,7 @@ fn a_plugin_is_opened_once_under_its_key() {
 struct DiskSource;
 
 impl SecretCalls for DiskSource {
-    fn resolve(&self, _settings: &[u8]) -> Result<Redacted<Vec<u8>>, SecretRefused> {
+    fn resolve(&self, _settings: &[u8]) -> Result<Secret<Vec<u8>>, SecretRefused> {
         Err(SecretRefused {
             error_kind: busbar_contract::abi::secret::ERROR_KIND_DENIED,
             text: busbar_contract::config_time::RESOLVE_OFF_CONFIG_TIME.to_string(),
@@ -101,8 +101,8 @@ impl SecretCalls for DiskSource {
         &self,
         settings: &[u8],
         _scope: &busbar_contract::config_time::ConfigScope,
-    ) -> Result<Redacted<Vec<u8>>, SecretRefused> {
-        Ok(Redacted::new(settings.to_vec()))
+    ) -> Result<Secret<Vec<u8>>, SecretRefused> {
+        Ok(Secret::new(settings.to_vec()))
     }
 }
 

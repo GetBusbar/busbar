@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use busbar_contract::auth_calls::{AuthField, Fielding, Fields, FieldsRequest, OutboundAuth};
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 
 use super::{lead_with, UserinfoBasic};
 
@@ -92,7 +92,7 @@ impl OutboundAuth for Answers {
     fn fields_now(&self, _: u64, _: &FieldsRequest) -> Option<Fields> {
         Some(Fields::Ready(vec![AuthField {
             name: self.0.to_vec(),
-            value: Redacted::new(b"k".to_vec()),
+            value: Secret::new(b"k".to_vec()),
             sensitive: true,
         }]))
     }
@@ -108,7 +108,8 @@ fn names_and_values(answer: Option<Fields>) -> Vec<(String, String)> {
             .map(|f| {
                 (
                     String::from_utf8_lossy(&f.name).into_owned(),
-                    String::from_utf8_lossy(f.value.expose_secret()).into_owned(),
+                    String::from_utf8_lossy(f.value.expose(&busbar_kernel::seal::lend()))
+                        .into_owned(),
                 )
             })
             .collect(),

@@ -44,8 +44,8 @@ fn egress_trust_debug_redacts_client_private_key() {
 }
 
 /// THE 1.5.5 TEXT, PINNED: `ClientIdentity`'s `Debug` is customer-visible log text, so it prints
-/// exactly what it printed before the key became `Redacted` — the chain as itself, the key as
-/// `"<redacted>"` — and not `Redacted`'s own `[REDACTED]`.
+/// exactly what it printed before the key became a `Secret` — the chain as itself, the key as
+/// `"<redacted>"` — and not `Secret`'s own `[REDACTED]`.
 #[test]
 fn client_identity_debug_text_is_the_1_5_5_text() {
     let id = ClientIdentity {

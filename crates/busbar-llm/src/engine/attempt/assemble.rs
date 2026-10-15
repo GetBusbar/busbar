@@ -86,7 +86,7 @@ pub(super) async fn build(
         (Some(pre), busbar_contract::config::UpstreamCreds::Own) => pre.clone(),
         (None, busbar_contract::config::UpstreamCreds::Own) => convert_headers(lane_auth_headers(
             hop.lane_row(),
-            hop.lane_row().api_key.expose_secret(),
+            hop.lane_row().api_key.expose(&busbar_kernel::seal::lend()),
             &signing_ctx,
         )),
     };

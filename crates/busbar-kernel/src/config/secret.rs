@@ -144,7 +144,7 @@ impl SecretResolver {
                 None => shared.resolve(settings.as_bytes()),
             };
             return material
-                .map(|m| m.expose_secret().clone())
+                .map(|m| m.expose(&crate::seal::lend()).clone())
                 .map_err(|r| r.text);
         }
         let Some(f) = &self.plugin else {

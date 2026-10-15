@@ -94,11 +94,13 @@ busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-trans
 busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "70f356722c37b7efe9e8fc5f23d3f30e606556f0" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
 # `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
-# rev that names the connection table's credential-unavailable cause in its exhaustive maps.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "97627f860d457e3d7b18d5ee9e97179575995627" }
+# rev that names the connection table's credential-unavailable cause in its exhaustive maps, plus the
+# sealed-Secret port (#1021, Part 2 #54): the plugin holds its own credentials in a private `Held`.
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "b0f504e1b0874c72759848ff158c0bd1c8d6d050" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
-# `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin.
-busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "963df8e00421a574a7d68bd8371472ff59f345c8" }
+# `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin. The
+# pin carries the sealed-Secret port (#1021, Part 2 #54): its signing secret is a private `Held`.
+busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "c50e40bda6f5c176655119b438228bda2df5650e" }
 # THE RANKING HOOK (kind: hook), pulled at a pinned rev: the logic crate the root links on its hooks
 # axis (feature `hooks-ranking`). The root alone takes it: the kernel's test build links its in-crate
 # R-FIX3 double (`busbar_kernel::test_support::ranking_double`) instead, and the root's

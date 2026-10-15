@@ -376,7 +376,7 @@ impl DiskReport {
 /// same cost (the kernel's credential lookup holds that rule; an implementation only delegates).
 pub trait CredentialRead: Send + Sync {
     /// The secret and its liveness.
-    fn read(&self, kind: &str, id: &str) -> (crate::redacted::Redacted<String>, bool);
+    fn read(&self, kind: &str, id: &str) -> (crate::redacted::Secret<String>, bool);
 }
 
 /// A `records.list` request, as the host copied it out of the caller's `in`.

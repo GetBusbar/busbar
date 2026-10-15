@@ -590,7 +590,7 @@ pub struct DoorSteps<'s> {
     /// How deep the unit is nested.
     depth: u32,
     /// The caller's verified credential, lent on the unit's record at authenticate.
-    credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
+    credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
     /// A nested unit's parent's hold cell: its door accrues against the parent's admission.
     parent: Option<&'s busbar_contract::caps::HoldCell>,
     unit: Mutex<DoorUnit>,
@@ -622,7 +622,7 @@ pub struct DoorCaller {
     pub depth: u32,
     /// The caller's verified credential, lent on the unit's record while it runs: a passthrough
     /// member's auth call made inside the unit (the plane's own fetches included) is lent it.
-    pub credential: Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
+    pub credential: Option<busbar_contract::redacted::Secret<Vec<u8>>>,
 }
 
 impl<'s> DoorSteps<'s> {
@@ -2857,7 +2857,7 @@ fn upstream_credential(
             )
         })?;
     let settings = placement_settings(header.as_deref());
-    let credential = busbar_contract::redacted::Redacted::new(
+    let credential = busbar_contract::redacted::Secret::new(
         reach
             .secrets
             .resolve_string(&secret)
@@ -2875,8 +2875,10 @@ fn upstream_credential(
              '{style}' its upstream credential is presented under"
         )
     })?;
+    // Revealed under the kernel's seal (Part 2 #54): to open the binding, and for its digest.
+    let seal = busbar_kernel::seal::lend();
     let handle = auth
-        .open_outbound(style, credential.expose_secret(), &settings)
+        .open_outbound(style, credential.expose(&seal), &settings)
         .map_err(|e| format!("member '{member_name}' {e}"))?;
     // The binding holds the reference and the digest of the value its handle was opened with,
     // never the value.
@@ -2888,7 +2890,7 @@ fn upstream_credential(
         header,
         lease,
         held: arc_swap::ArcSwapOption::from_pointee(Held {
-            digest: busbar_contract::abi::sdk::digest::sha256(credential.expose_secret()),
+            digest: busbar_contract::abi::sdk::digest::sha256(credential.expose(&seal)),
             handle,
         }),
         refreshing: Mutex::new(()),
@@ -2964,8 +2966,10 @@ impl PerHop {
             self.held.store(None);
             return;
         };
-        let value = busbar_contract::redacted::Redacted::new(value.into_bytes());
-        let digest = busbar_contract::abi::sdk::digest::sha256(value.expose_secret());
+        let value = busbar_contract::redacted::Secret::new(value.into_bytes());
+        // Revealed under the kernel's seal (Part 2 #54): for its digest, and to open a rotation.
+        let seal = busbar_kernel::seal::lend();
+        let digest = busbar_contract::abi::sdk::digest::sha256(value.expose(&seal));
         if self
             .held
             .load()
@@ -2976,7 +2980,7 @@ impl PerHop {
         }
         let opened = self.auth.open_outbound(
             self.style,
-            value.expose_secret(),
+            value.expose(&seal),
             &placement_settings(self.header.as_deref()),
         );
         drop(value);

@@ -387,7 +387,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=97627f860d457e3d7b18d5ee9e97179575995627#97627f860d457e3d7b18d5ee9e97179575995627"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=b0f504e1b0874c72759848ff158c0bd1c8d6d050#b0f504e1b0874c72759848ff158c0bd1c8d6d050"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -428,7 +428,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=963df8e00421a574a7d68bd8371472ff59f345c8#963df8e00421a574a7d68bd8371472ff59f345c8"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=c50e40bda6f5c176655119b438228bda2df5650e#c50e40bda6f5c176655119b438228bda2df5650e"
 dependencies = [
  "busbar-contract",
  "hex",
@@ -4213,6 +4213,7 @@ version = "0.0.0"
 dependencies = [
  "busbar-contract",
  "busbar-core-connector",
+ "busbar-kernel",
  "busbar-plugin-loader",
  "busbar-transport-webrtc",
  "serde_json",
@@ -4359,6 +4360,7 @@ version = "0.0.0"
 dependencies = [
  "busbar-contract",
  "busbar-core-connector",
+ "busbar-kernel",
  "busbar-plugin-loader",
  "busbar-transport-tcp",
  "busbar-transport-ws",

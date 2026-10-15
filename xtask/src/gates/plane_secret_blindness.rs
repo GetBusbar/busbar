@@ -5,8 +5,8 @@
 //! non-plane plugin whose settings reference it … A plane never receives secret bytes."* The
 //! kernel resolves every secret through the secret kind table (`SecretAxis`/`SecretCalls`); a
 //! plane crate that names a secret resolver is a plane that can turn a reference into bytes, and a
-//! plane crate that calls a resolved secret's accessor (`Redacted::expose_secret`) is a plane that
-//! already holds them.
+//! plane crate that calls a resolved secret's accessor (`Secret::expose`, Part 2 #54: the one raw
+//! accessor, sealed by a `KernelSeal`) is a plane that already holds them.
 //!
 //! Two rows over every plane-family crate the kind census names
 //! ([`crate::gates::kind_isolation::plane_kind_src_roots`]: the `busbar-plane-*` crates and the
@@ -16,7 +16,7 @@
 //! either list (an undefined name reds `:ledger`). The sites the tree still carries are the
 //! drain-only ledger `qa/plane-secret-blindness.toml` — each OWED to the slot that gives it a
 //! host-held replacement: a2a's and voice's provider credentials to the auth styles (step 21), and
-//! the legacy engines' `expose_secret` reads to their deletion (row 155). An exposure row is
+//! the legacy engines' `Secret::expose` reads to their deletion (row 155). An exposure row is
 //! COUNTED (`count = N`, one per line), so it only shrinks. A new site is RED; a drained site must
 //! be struck (or its count lowered) in the same commit.
 
@@ -40,10 +40,11 @@ pub const NEEDLES: &[&str] = &[
     "resolve_linked_string",
 ];
 
-/// The accessors that hand their caller a RESOLVED secret's plaintext, as whole words:
-/// `busbar_contract::redacted::Redacted::expose_secret` is the one way to reach the value inside a
-/// `Redacted`. Each must be defined in the tree ([`undefined_names`]).
-pub const EXPOSERS: &[&str] = &["expose_secret"];
+/// The accessors that hand their caller a RESOLVED secret's plaintext, as whole words (a call, a
+/// path, a method reference): `busbar_contract::redacted::Secret::expose` is the one way to reach
+/// the value inside a `Secret` (Part 2 #54), sealed by a `KernelSeal`. Each must be defined in the
+/// tree ([`undefined_names`]).
+pub const EXPOSERS: &[&str] = &["expose"];
 
 pub const SPEC: Spec = Spec {
     gate: "plane-secret-blindness",
@@ -61,7 +62,7 @@ pub const SPEC: Spec = Spec {
     header: "# plane-secret-blindness: DRAIN-ONLY ledger (THE DESIGN, the trust boundary: a plane never receives secret\n\
              # bytes). Each row is a plane site that still resolves a secret reference or reads a resolved\n\
              # secret's bytes, OWED to the slot that gives it a host-held replacement: a2a/voice provider\n\
-             # credentials to the auth styles (step 21); the legacy engines' expose_secret reads to their\n\
+             # credentials to the auth styles (step 21); the legacy engines' Secret::expose reads to their\n\
              # deletion (row 155). An exposes-secret-bytes row is COUNTED (`count = N`, one per line) and\n\
              # only goes down. Strike a row (or lower its count) in the commit that drains it; never add\n\
              # one. `cargo xtask gate plane-secret-blindness --write` regenerates the keys; it does not\n\
@@ -190,12 +191,12 @@ impl Gate for PlaneSecretBlindnessGate {
         let mut exposure = Overlay::new();
         exposure.set(
             exposed,
-            "pub fn planted(k: &busbar_contract::redacted::Redacted<String>) -> usize {\n    k.expose_secret().len()\n}\n",
+            "pub fn planted(\n    k: &busbar_contract::redacted::Secret<String>,\n    s: &busbar_contract::plugin::TestKernelSeal,\n) -> usize {\n    k.expose(s).len()\n}\n",
         );
         let mut prose = Overlay::new();
         prose.set(
             file,
-            "// a plane never names SecretResolve or calls expose_secret\npub const NOTE: &str = \"secret_resolver expose_secret\";\n",
+            "// a plane never names SecretResolve or calls expose\npub const NOTE: &str = \"secret_resolver Secret::expose\";\n",
         );
         let mut report = one_abi::selftest(
             cx,
@@ -210,9 +211,9 @@ impl Gate for PlaneSecretBlindnessGate {
                 ),
                 (
                     ROW_EXPOSES,
-                    "a plane crate calling Redacted::expose_secret is RED, naming it",
+                    "a plane crate calling Secret::expose is RED, naming it",
                     exposure,
-                    vec![exposed, "expose_secret"],
+                    vec![exposed, "expose"],
                 ),
             ],
         );
@@ -224,7 +225,7 @@ impl Gate for PlaneSecretBlindnessGate {
             prose,
         ));
 
-        // RED: a counted exposure row only shrinks. One more `expose_secret` line in a file the
+        // RED: a counted exposure row only shrinks. One more `expose` line in a file the
         // ledger already counts is over its count, though the (rule, file, item) key is on record.
         let counted = "crates/busbar-llm/src/engine/build_runtime.rs";
         if let Ok(text) = cx.read(counted) {
@@ -232,13 +233,13 @@ impl Gate for PlaneSecretBlindnessGate {
             ov.set(
                 counted,
                 format!(
-                    "{text}\npub fn planted_more(k: &busbar_contract::redacted::Redacted<String>) -> usize {{\n    k.expose_secret().len()\n}}\n"
+                    "{text}\npub fn planted_more(k: &busbar_contract::redacted::Secret<String>) -> usize {{\n    k.expose(&busbar_kernel::seal::lend()).len()\n}}\n"
                 ),
             );
             report.push(crate::gates::prove_rows_red(
                 cx,
                 self,
-                "one more expose_secret line in a file the ledger counts is RED: a counted row never grows",
+                "one more expose line in a file the ledger counts is RED: a counted row never grows",
                 &[ROW_EXPOSES],
                 ov,
                 &[counted, "over its counted row"],
@@ -250,10 +251,7 @@ impl Gate for PlaneSecretBlindnessGate {
         let home = "crates/busbar-contract/src/redacted.rs";
         if let Ok(text) = cx.read(home) {
             let mut ov = Overlay::new();
-            ov.set(
-                home,
-                text.replace("fn expose_secret(", "fn expose_secret_renamed("),
-            );
+            ov.set(home, text.replace("fn expose<", "fn expose_renamed<"));
             let ledger_row = SPEC.ledger_row();
             report.push(crate::gates::prove_rows_red(
                 cx,
@@ -261,7 +259,7 @@ impl Gate for PlaneSecretBlindnessGate {
                 "a forbidden name defined nowhere in the tree is RED, naming it",
                 &[ledger_row.as_str()],
                 ov,
-                &["`expose_secret` is defined nowhere"],
+                &["`expose` is defined nowhere"],
             ));
         }
         report

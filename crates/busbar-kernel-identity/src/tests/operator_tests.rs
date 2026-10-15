@@ -10,14 +10,15 @@ use busbar_contract::auth::AuthVerdict;
 use busbar_contract::auth_calls::{
     AuthCalls, Verified, VerifiedIdentity, VerifyAnswer, VerifyRequest, Verifying,
 };
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
-/// The lines each crossing was handed, in order.
-type Seen = Mutex<Vec<Vec<(String, Vec<u8>)>>>;
+/// The lines each crossing was handed, in order, still sealed (compared in constant time, never
+/// revealed: a test double holds no seal).
+type Seen = Mutex<Vec<Vec<(String, Secret<Vec<u8>>)>>>;
 
 /// Answers `verified` on every call and records the lines it was handed.
 struct Double {
@@ -39,7 +40,7 @@ impl Double {
         let lines = request
             .lines
             .iter()
-            .map(|(n, v)| (n.clone(), v.expose_secret().clone()))
+            .map(|(n, v)| (n.clone(), v.clone()))
             .collect();
         self.seen.lock().unwrap().push(lines);
     }
@@ -92,8 +93,8 @@ fn ready<F: Future>(f: F) -> F::Output {
 fn request() -> VerifyRequest {
     VerifyRequest {
         lines: vec![
-            ("line-a".into(), Redacted::new(b"one".to_vec())),
-            ("line-b".into(), Redacted::new(b"two".to_vec())),
+            ("line-a".into(), Secret::new(b"one".to_vec())),
+            ("line-b".into(), Secret::new(b"two".to_vec())),
         ],
         ..VerifyRequest::default()
     }
@@ -132,8 +133,8 @@ fn every_answer_is_read_as_the_admin_chain_reads_it() {
             assert_eq!(
                 lines,
                 &vec![
-                    ("line-a".to_string(), b"one".to_vec()),
-                    ("line-b".to_string(), b"two".to_vec())
+                    ("line-a".to_string(), Secret::new(b"one".to_vec())),
+                    ("line-b".to_string(), Secret::new(b"two".to_vec()))
                 ],
                 "the request's lines reach the plugin as presented"
             );

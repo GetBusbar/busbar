@@ -68,8 +68,8 @@ impl CallerCredential {
     /// drop and printed as presence only, for the one outbound auth call of a passthrough member
     /// (`FieldsRequest::caller_credential`). Never handed to a plane.
     #[must_use]
-    pub fn lend(&self) -> busbar_contract::redacted::Redacted<Vec<u8>> {
-        busbar_contract::redacted::Redacted::new(self.0.as_bytes().to_vec())
+    pub fn lend(&self) -> busbar_contract::redacted::Secret<Vec<u8>> {
+        busbar_contract::redacted::Secret::new(self.0.as_bytes().to_vec())
     }
 
     /// A ref over `token`, for a test that stands in for the gate.

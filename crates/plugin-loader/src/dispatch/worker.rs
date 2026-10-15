@@ -235,6 +235,11 @@ pub(crate) struct Env {
     /// The latch a forged ticket with no supplier counts against: the process's, but in a test
     /// that names its own ([`Dispatcher::judge_against`]).
     latch: std::sync::OnceLock<&'static super::handle::Latch>,
+    /// THE SEAL THE HOST LENT THIS DISPATCHER (Part 2 #54): what a door it binds presents to read
+    /// a resolved `Secret` it hands a plugin ([`Dispatcher::lend_seal`]). None lent: every such
+    /// reveal is refused.
+    pub(crate) seal:
+        std::sync::OnceLock<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>>,
 }
 
 impl Env {
@@ -796,6 +801,10 @@ impl WakeRoute for Pool {
 
     fn io(&self) -> Option<Arc<dyn busbar_contract::io_host::IoHost>> {
         self.env.io.get().cloned()
+    }
+
+    fn seal(&self) -> Option<Arc<dyn busbar_contract::plugin::KernelSeal + Send + Sync>> {
+        self.env.seal.get().cloned()
     }
 
     fn inline_waker(&self, t: Ticket) -> Option<std::task::Waker> {
@@ -1628,6 +1637,24 @@ impl Dispatcher {
         &self.pool.env.observing
     }
 
+    /// LEND THIS DISPATCHER THE HOST'S SEAL (Part 2 #54): a kernel-minted `Pass` or `Grant`, what
+    /// a door it binds presents to read a resolved `Secret` it hands a plugin (a verify's
+    /// credential, a login's submitted fields, an outbound caller credential, a secret source's
+    /// material). The composition root lends `busbar_kernel::seal::lend()` on the process's one
+    /// dispatcher at boot. The first lend holds; a later one answers `false`. A dispatcher lent no
+    /// seal REFUSES every such reveal (fail closed).
+    pub fn lend_seal(
+        &self,
+        seal: impl busbar_contract::plugin::KernelSeal + Send + Sync + 'static,
+    ) -> bool {
+        self.pool.env.seal.set(Arc::new(seal)).is_ok()
+    }
+
+    /// The seal this dispatcher was lent, if any ([`Self::lend_seal`]).
+    pub(crate) fn seal(&self) -> Option<&(dyn busbar_contract::plugin::KernelSeal + Send + Sync)> {
+        self.pool.env.seal.get().map(|seal| &**seal)
+    }
+
     /// INSTALL THE PROCESS'S RUNTIME every worker runs its crossings inside (see `Env::runtime`):
     /// the one the host drives on a thread of its own. The first install holds; a later one is
     /// ignored and answers `false`. Never taken from a submitter.
@@ -1669,6 +1696,26 @@ impl Dispatcher {
         provider: Option<Arc<dyn HostServices>>,
         ticket_key: super::handle::TicketKey,
     ) -> Self {
+        let built = Self::build_unlent(config, provider, ticket_key);
+        // This crate's own tests lend the dev-only test seal to every dispatcher they build.
+        #[cfg(test)]
+        let _ = built.lend_seal(busbar_contract::plugin::TestKernelSeal);
+        built
+    }
+
+    /// TEST ONLY: a dispatcher lent NO seal, so every reveal its doors would make is refused (the
+    /// fail-closed arm of [`Self::lend_seal`]).
+    #[cfg(test)]
+    pub(crate) fn new_unlent(config: DispatchConfig) -> Self {
+        let key = super::handle::ticket_key().unwrap_or_else(|e| panic!("{e}"));
+        Self::build_unlent(config, None, key)
+    }
+
+    fn build_unlent(
+        config: DispatchConfig,
+        provider: Option<Arc<dyn HostServices>>,
+        ticket_key: super::handle::TicketKey,
+    ) -> Self {
         // The last worker index names the inline tickets (`inline::INLINE_WORKER`), never a worker.
         let n = config.workers.clamp(1, MAX_WORKERS - 1);
         let env = Arc::new(Env {
@@ -1683,6 +1730,7 @@ impl Dispatcher {
             observing: Arc::default(),
             ticket_key,
             latch: std::sync::OnceLock::new(),
+            seal: std::sync::OnceLock::new(),
         });
         let mut started = Vec::new();
         let slots = (0..n)

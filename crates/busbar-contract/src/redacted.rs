@@ -1,108 +1,127 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! [`Redacted`] — the in-memory wrapper for a RESOLVED secret VALUE.
+//! [`Secret`] — the in-memory type for a RESOLVED secret VALUE (Part 2 #54, OWNER-LOCKED
+//! 2026-09-20: "Secrets use a dedicated `Secret` type, not a bare string + lint").
 //!
 //! Every secret busbar resolves at boot and then HOLDS in memory — a `SecretRef` resolved to its
 //! plaintext, an egress bearer/client-credentials/sigv4 secret, the admin token, a provider api_key,
-//! the browser-login `client_secret`, and (1.5.2) a submitted credential password — is wrapped in
-//! `Redacted<T>` so that:
+//! the browser-login `client_secret`, and (1.5.2) a submitted credential password — is a
+//! `Secret<T>`, so that:
 //!
-//! * **`Debug` / `Display` never reveal it.** Both print the literal `"[REDACTED]"`. A struct that
-//!   embeds a `Redacted` field and derives `Debug` therefore cannot leak the secret into a log line,
-//!   a `tracing` field, a panic message, or an error `{:?}` — the redaction is STRUCTURAL, not a
-//!   convention each call site must remember.
-//! * **It does not serialize its plaintext.** `Redacted` deliberately implements NEITHER `Serialize`
+//! * **`Debug` / `Display` never reveal it.** Both print the literal `"[REDACTED]"`, byte for byte
+//!   what 1.5.5's `Redacted` printed, so a log line reads as it did. A struct that embeds a `Secret`
+//!   field and derives `Debug` therefore cannot leak the secret into a log line, a `tracing` field, a
+//!   panic message, or an error `{:?}` — the redaction is STRUCTURAL, not a convention each call site
+//!   must remember.
+//! * **It does not serialize its plaintext.** `Secret` deliberately implements NEITHER `Serialize`
 //!   NOR `Deserialize`. A secret held in engine memory therefore cannot be accidentally written into
-//!   an audit record, a config dump, or any JSON payload. The ONE place a resolved credential must
-//!   legitimately cross a boundary — the `complete_login` call that hands a submitted credential to
-//!   the auth plugin that will verify it — does so through a plain field on the auth door's wire
-//!   (the submitted credential of a `CompleteLogin`), an explicit, documented, single plaintext
-//!   boundary, converted from `Redacted` via [`Redacted::expose_secret`]. There is no
-//!   implicit serialization path.
-//! * **It zeroizes its backing memory on drop.** `T: Zeroize`, so when a `Redacted<String>` is
+//!   an audit record, a config dump, or any JSON payload.
+//! * **It zeroizes its backing memory on drop.** `T: Zeroize`, so when a `Secret<String>` is
 //!   dropped the heap bytes are overwritten rather than left in freed memory.
+//! * **Its value is reached through ONE SEALED METHOD.** [`Secret::expose`] takes a
+//!   [`KernelSeal`](crate::plugin::KernelSeal) — a `Pass` or a `Grant` the kernel minted (#40, #65)
+//!   — so only host code the kernel lent a seal can read the plaintext. A plugin holds no seal and
+//!   can implement none (the trait is sealed), so it cannot reach a secret's value by any path the
+//!   type offers. There is no other raw accessor: the one crate-private read is this crate's own,
+//!   where the SDK writes back a credential the plugin itself supplied.
 //!
-//! Reaching the underlying value is done ONLY through [`Redacted::expose_secret`] — every call site is
-//! an audit point where the secret escapes redaction on purpose.
+//! Every [`Secret::expose`] call site is an audit point where the secret escapes on purpose.
 
 use core::fmt;
 
 use zeroize::Zeroize;
 
 /// A resolved secret held in memory. `Debug`/`Display` print `"[REDACTED]"`; the value never
-/// serializes; the backing memory is zeroized on drop. See the module docs. `Default` is an EMPTY
-/// secret (what a `#[derive(Default)]` on a struct with a `Redacted` field fills in): no material.
+/// serializes; the backing memory is zeroized on drop; the value is read only through
+/// [`Secret::expose`], under a kernel seal. See the module docs. `Default` is an EMPTY secret (what
+/// a `#[derive(Default)]` on a struct with a `Secret` field fills in): no material.
 #[derive(Default)]
-pub struct Redacted<T: Zeroize>(T);
+pub struct Secret<T: Zeroize>(pub(crate) T);
 
-impl<T: Zeroize> Redacted<T> {
+impl<T: Zeroize> Secret<T> {
     /// Wrap a resolved secret value.
     pub fn new(secret: T) -> Self {
         Self(secret)
     }
 
-    /// Borrow the underlying secret. AUDIT POINT: the value escapes redaction here — every call site
-    /// is a deliberate, reviewable place where the plaintext is used (a hop injection, an outbound
-    /// credential, a constant-time compare, the single credential-transport wire boundary).
-    pub fn expose_secret(&self) -> &T {
+    /// Borrow the underlying secret: THE ONE RAW ACCESSOR, sealed (#54). `seal` is a kernel-minted
+    /// `Pass` or `Grant` ([`KernelSeal`](crate::plugin::KernelSeal) is sealed to exactly those), so
+    /// a caller that holds none cannot read the value. AUDIT POINT: every call site is a deliberate,
+    /// reviewable place where the plaintext is used (a hop injection, an outbound credential, a
+    /// constant-time compare, the single credential-transport wire boundary).
+    ///
+    /// Without a seal it does not compile:
+    ///
+    /// ```compile_fail,E0061
+    /// let key = busbar_contract::Secret::new(String::from("sk-live"));
+    /// let _ = key.expose();
+    /// ```
+    ///
+    /// and the unsealed accessor it replaced is gone:
+    ///
+    /// ```compile_fail,E0599
+    /// let key = busbar_contract::Secret::new(String::from("sk-live"));
+    /// let _ = key.expose_secret();
+    /// ```
+    pub fn expose<S: crate::plugin::KernelSeal + ?Sized>(&self, _seal: &S) -> &T {
         &self.0
     }
 }
 
-impl<T: Zeroize> From<T> for Redacted<T> {
+impl<T: Zeroize> From<T> for Secret<T> {
     fn from(secret: T) -> Self {
         Self(secret)
     }
 }
 
 /// `Debug` NEVER reveals the secret — this is the core guarantee that makes redaction structural for
-/// any struct that embeds a `Redacted` field and derives `Debug`.
-impl<T: Zeroize> fmt::Debug for Redacted<T> {
+/// any struct that embeds a `Secret` field and derives `Debug`.
+impl<T: Zeroize> fmt::Debug for Secret<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("[REDACTED]")
     }
 }
 
 /// `Display` NEVER reveals the secret either (a `{}`-format into a log/message is just as leaky).
-impl<T: Zeroize> fmt::Display for Redacted<T> {
+impl<T: Zeroize> fmt::Display for Secret<T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("[REDACTED]")
     }
 }
 
-impl<T: Zeroize> Drop for Redacted<T> {
+impl<T: Zeroize> Drop for Secret<T> {
     fn drop(&mut self) {
         self.0.zeroize();
     }
 }
 
-impl<T: Zeroize + Clone> Clone for Redacted<T> {
+impl<T: Zeroize + Clone> Clone for Secret<T> {
     fn clone(&self) -> Self {
         Self(self.0.clone())
     }
 }
 
 /// Equality on two secrets is CONSTANT-TIME. This type exists to make secret handling safe, and an
-/// ordinary `==` on the plaintext (or a derived `PartialEq` on a struct that embeds a `Redacted`
+/// ordinary `==` on the plaintext (or a derived `PartialEq` on a struct that embeds a `Secret`
 /// field — e.g. `ExchangeRequest`, `CompleteLogin`) would compare byte-by-byte with a data-dependent
 /// early exit, leaking through timing how long a common prefix two secrets share. Routing through the
 /// crate's [`constant_time_eq`](crate::constant_time_eq) — the same primitive the auth path uses to
 /// compare credentials, here over its byte form — closes that channel for every secret comparison,
 /// structurally. The bound is `AsRef<[u8]>`, satisfied by both shapes a secret is wrapped in: a
 /// `String` (a token, a key) and a `Vec<u8>` (DER key material, a raw credential).
-impl<T: Zeroize + AsRef<[u8]>> PartialEq for Redacted<T> {
+impl<T: Zeroize + AsRef<[u8]>> PartialEq for Secret<T> {
     fn eq(&self, other: &Self) -> bool {
         constant_time_eq(&self.0, &other.0)
     }
 }
 
-impl<T: Zeroize + AsRef<[u8]>> Eq for Redacted<T> {}
+impl<T: Zeroize + AsRef<[u8]>> Eq for Secret<T> {}
 
-// ── The constant-time primitive `Redacted`'s `PartialEq` is built on ───────────────────────────
+// ── The constant-time primitive `Secret`'s `PartialEq` is built on ───────────────────────────
 //
-// MOVED HERE VERBATIM from `busbar-api`'s `auth.rs` with `Redacted` itself, because the two are one
-// thing: `Redacted`'s whole reason to exist is that comparing secrets must not leak through timing,
+// MOVED HERE VERBATIM from `busbar-api`'s `auth.rs` with `Secret` itself, because the two are one
+// thing: `Secret`'s whole reason to exist is that comparing secrets must not leak through timing,
 // and that guarantee IS this function. Leaving it behind would have meant a SECOND copy of a
 // security primitive on the contract side — the exact shape the duplication census ranks above
 // every other duplicate ("a duplicate that encodes a SECURITY or MONEY property outranks any
@@ -126,7 +145,7 @@ impl<T: Zeroize + AsRef<[u8]>> Eq for Redacted<T> {}
 /// first (see `sha256_hex`'s doc) so length never enters the comparison at all; this primitive alone
 /// does not guarantee that for its caller.
 ///
-/// Generic over any byte view (`str`, `String`, `[u8]`, `Vec<u8>`), so [`Redacted`]'s `PartialEq`
+/// Generic over any byte view (`str`, `String`, `[u8]`, `Vec<u8>`), so [`Secret`]'s `PartialEq`
 /// (which also compares `Vec<u8>` secrets) runs this same loop: one constant-time primitive.
 #[inline(never)]
 pub fn constant_time_eq<A: AsRef<[u8]> + ?Sized, B: AsRef<[u8]> + ?Sized>(a: &A, b: &B) -> bool {
@@ -158,7 +177,7 @@ pub fn sha256_hex(data: &[u8]) -> String {
 #[path = "tests/redacted_tests.rs"]
 mod tests;
 
-// The compile-time SERDE FENCE: pins `Redacted<T>: !Serialize`/`!Deserialize` so a secret value can
+// The compile-time SERDE FENCE: pins `Secret<T>: !Serialize`/`!Deserialize` so a secret value can
 // never reach an audit/wire/disk/log sink by construction (Part 3, Check 3 of the secret-hygiene design).
 #[cfg(test)]
 #[path = "tests/redacted_no_serde.rs"]

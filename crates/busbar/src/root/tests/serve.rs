@@ -618,9 +618,14 @@ async fn the_late_attach_binds_the_governance_store_as_the_record_store() {
     use busbar_contract::store_calls::{StoreAxis as _, StoreDoor};
     use busbar_kernel::host_records::RecordRows as _;
     let axis = crate::root::loader::store_v3::DoorStoreAxis {
-        dispatcher: Arc::new(crate::root::loader::dispatch::Dispatcher::new(
-            crate::root::loader::dispatch::DispatchConfig::default(),
-        )),
+        dispatcher: {
+            let d = Arc::new(crate::root::loader::dispatch::Dispatcher::new(
+                crate::root::loader::dispatch::DispatchConfig::default(),
+            ));
+            // The host lends the dispatcher its seal (Part 2 #54), as the root does at boot.
+            let _ = d.lend_seal(busbar_kernel::seal::lend());
+            d
+        },
         logs: crate::root::boot::plugin_logs().clone(),
         // The build's ephemeral store declares no need: it serves with no connection table.
         conns: crate::root::loader::dispatch::ConnTable::NoNeeds,

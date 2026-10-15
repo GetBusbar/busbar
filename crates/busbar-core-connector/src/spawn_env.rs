@@ -24,7 +24,7 @@ use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 use std::time::Duration;
 
 use busbar_contract::config_time::ConfigScope;
-use busbar_contract::redacted::Redacted;
+use busbar_contract::redacted::Secret;
 use busbar_contract::secret_ref::SecretRef;
 
 /// How a program's environment REFERENCE turns into its value: a string secret resolved through
@@ -48,14 +48,14 @@ pub const SPAWN_ENV_LEASE: Duration = Duration::from_secs(60);
 /// What a program's spawn hands its child now: every reference's value, name and value in the
 /// settings' order; or why the environment did not resolve (a refusal naming the variable and the
 /// reference's source, never a value).
-pub struct Resolved(Result<Vec<(String, Redacted<String>)>, String>);
+pub struct Resolved(Result<Vec<(String, Secret<String>)>, String>);
 
 impl Resolved {
     /// The values, or the refusal.
     ///
     /// # Errors
     /// Why the environment did not resolve at its last load or refresh.
-    pub fn env(&self) -> Result<&[(String, Redacted<String>)], &str> {
+    pub fn env(&self) -> Result<&[(String, Secret<String>)], &str> {
         self.0.as_deref().map_err(String::as_str)
     }
 }
@@ -106,7 +106,7 @@ fn resolve(refs: &[(String, SecretRef)], scope: &ConfigScope) -> Resolved {
 fn resolve_each(
     refs: &[(String, SecretRef)],
     scope: &ConfigScope,
-) -> Result<Vec<(String, Redacted<String>)>, String> {
+) -> Result<Vec<(String, Secret<String>)>, String> {
     let mut env = Vec::with_capacity(refs.len());
     for (name, reference) in refs {
         let secret = SPAWN_SECRETS.get().ok_or_else(|| {
@@ -123,7 +123,7 @@ fn resolve_each(
                     reference.describe()
                 )
             })?;
-        env.push((name.clone(), Redacted::new(value)));
+        env.push((name.clone(), Secret::new(value)));
     }
     Ok(env)
 }

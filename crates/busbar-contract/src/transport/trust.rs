@@ -26,20 +26,20 @@
 /// material a composition root already resolved, not a handle into a registry the transport cannot
 /// reach.
 ///
-/// The key is a [`Redacted`](crate::Redacted): it zeroizes on drop, compares in constant time, and a
-/// TLS stack reads it through `expose_secret()` at the one site that hands it to the handshake.
+/// The key is a [`Secret`](crate::Secret): it zeroizes on drop, compares in constant time, and a
+/// TLS stack reads it through the sealed `expose` at the one site that hands it to the handshake.
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct ClientIdentity {
     /// The certificate chain to present, leaf first, each entry one DER certificate.
     pub cert_chain: Vec<Vec<u8>>,
     /// The private key, in DER, that proves the leaf.
-    pub private_key: crate::Redacted<Vec<u8>>,
+    pub private_key: crate::Secret<Vec<u8>>,
 }
 
 impl core::fmt::Debug for ClientIdentity {
     /// Hand-rolled so the text stays exactly what 1.5.5 printed (log text is customer-visible): the
     /// certificate chain is public and prints as itself, and the key prints as `<redacted>`, not as
-    /// `Redacted`'s own `[REDACTED]`.
+    /// `Secret`'s own `[REDACTED]`.
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ClientIdentity")
             .field("cert_chain", &self.cert_chain)
