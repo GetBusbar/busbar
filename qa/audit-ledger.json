@@ -444,18 +444,18 @@
    "paths": [
     "crates/busbar-core-oauth2/src"
    ],
-   "tree_hash": "7140d2e692de6bd1506606c8bec1a7ba1e09c3e26c9199b0892bcafb05ee8ba9",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 2,
+   "tree_hash": "f353e547e85b152f5d8e96fa30ddc928eed397cfb2ea07a3dc3218a956f47134",
+   "audited_at": "af6cc2c6f84e49352910ab692ee9065248b11e04",
+   "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 3,
-    "MEDIUM": 4,
-    "LOW": 5,
+    "HIGH": 0,
+    "MEDIUM": 5,
+    "LOW": 6,
     "NIT": 0
    },
-   "report": "The authorization server now fetches client metadata documents through the root connector, and its consent return check refuses control characters. Three serious defects remain. The consent screen stakes an approval under the raw scope text, but the library spends it under a sorted, defaulted scope set, so unsorted or omitted scopes loop forever. All server state is in-memory per node. Every config reload rebuilds the server, wiping tokens, clients and replay ledgers. Metadata fetches are uncached and unbounded, and refresh tokens never expire. Read fully.",
-   "auditor": "opus-ledger-core-oauth2",
+   "report": "The authorization server keeps its records in the deployment's store and now files every point-read record where the linked in-tree store reads it back, so logins complete there. A lost bucket write now blocks a client for two minutes instead of an hour, and the signing key has one minting claim. The store write is still unfenced, so a write landing past its claim can overwrite a newer version. Store rows are never reclaimed, the minted key sits in clear, and document fetches can be starved. Read fully.",
+   "auditor": "opus-reaudit-core-oauth2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-oauth2/src/tests"
@@ -486,6 +486,34 @@
       "NIT": 0
      },
      "report": "The authorization server now fetches client metadata documents through the root connector, and its consent return check refuses control characters. Three serious defects remain. The consent screen stakes an approval under the raw scope text, but the library spends it under a sorted, defaulted scope set, so unsorted or omitted scopes loop forever. All server state is in-memory per node. Every config reload rebuilds the server, wiping tokens, clients and replay ledgers. Metadata fetches are uncached and unbounded, and refresh tokens never expire. Read fully."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-reaudit-core-oauth2",
+     "audited_at": "a72156fe1a746a6a26c62272a4ff85837c469881",
+     "tree_hash": "042fe900ff89e736c00c85c2825d0ab9fc75e8a30b7924ed40b16da211417111",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 6,
+      "LOW": 6,
+      "NIT": 0
+     },
+     "report": "The authorization server now keeps its records in the deployment's store, carries them across reloads, bounds document fetches and token lifetimes, and keys each consent approval on the exact request. One serious defect remains. Its versioned records and staked answers are written under a sequence and parent that the linked in-tree store keys differently, so none read back and no login completes. A failed write can lock a client for an hour. Store rows are never reclaimed. The minted signing key sits in clear. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-reaudit-core-oauth2",
+     "audited_at": "af6cc2c6f84e49352910ab692ee9065248b11e04",
+     "tree_hash": "f353e547e85b152f5d8e96fa30ddc928eed397cfb2ea07a3dc3218a956f47134",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 5,
+      "LOW": 6,
+      "NIT": 0
+     },
+     "report": "The authorization server keeps its records in the deployment's store and now files every point-read record where the linked in-tree store reads it back, so logins complete there. A lost bucket write now blocks a client for two minutes instead of an hour, and the signing key has one minting claim. The store write is still unfenced, so a write landing past its claim can overwrite a newer version. Store rows are never reclaimed, the minted key sits in clear, and document fetches can be starved. Read fully."
     }
    ]
   },
