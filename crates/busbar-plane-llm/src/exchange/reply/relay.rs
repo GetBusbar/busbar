@@ -389,7 +389,10 @@ impl Relay {
         } else if !self.far_is_stream && !self.nonstream_buf.is_empty() {
             let buf = std::mem::take(&mut self.nonstream_buf);
             if self.nonstream_buf_truncated {
-                Some(wire::unrecovered_usage(self.ingress, &buf))
+                // A body past the usage tap's cap bills no tokens, as 1.5.5 billed none: it kept
+                // only the body's first `cap` bytes, whose reading found no usage, and warned that
+                // the request was undercounted (v1.5.5 proxy/response_body.rs:230-262).
+                None
             } else {
                 let tapped = self.handler.extract_usage(self.ingress, &buf);
                 tap_fault = tapped.as_ref().err().copied();
@@ -501,6 +504,7 @@ impl Relay {
             && !self.far_is_stream
             && self.meter
             && self.handler.taps_usage()
+            && !self.nonstream_buf_truncated
             && self.upstream_bytes > 0)
             .then(|| wire::estimate_usage_from_truncated_tail(self.upstream_bytes))
     }
@@ -512,7 +516,12 @@ impl Relay {
     pub fn incurred_usage(&self) -> Option<TokenUsage> {
         match self.translate.as_ref() {
             Some(t) => t.usage(),
-            None if self.far_is_stream || self.nonstream_buf.is_empty() => None,
+            None if self.far_is_stream
+                || self.nonstream_buf.is_empty()
+                || self.nonstream_buf_truncated =>
+            {
+                None
+            }
             None if self.upstream_failed => wire::reported_usage(self.ingress, &self.nonstream_buf),
             None => Some(wire::unrecovered_usage(self.ingress, &self.nonstream_buf)),
         }
