@@ -4,8 +4,11 @@ use crate::codec::usage_count::{CountRead, CountSlot, UsageCount};
 
 impl ProtocolReader for CohereReader {
     /// The top-level `finish_reason` — the field `read_response` reads its stop reason from.
-    fn stop_reason_key(&self) -> Option<&'static [u8]> {
-        Some(b"\"finish_reason\"")
+    fn stop_reason_key(&self) -> Option<crate::codec::usage_tail::StopKey> {
+        Some(crate::codec::usage_tail::StopKey {
+            key: b"\"finish_reason\"",
+            depth: 1,
+        })
     }
 
     /// The same `read_cohere_stop_reason` `read_response` maps it through. An empty token is no

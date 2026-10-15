@@ -29,7 +29,18 @@ fn shipped_plane_keys() -> Vec<String> {
                 .map(str::to_string)
         })
         .collect();
+    // A PLANE THAT LEFT FOR ITS OWN REPO is still a plane this tree links: the root pins it as a
+    // `git` row of `[workspace.dependencies]` (`busbar-plane-<key> = { git = …, rev = … }`), and
+    // its key is banned exactly as when its crate lived here (ARCHITECT row 106 (A)).
+    let root_manifest = std::fs::read_to_string(crates_dir.join("../Cargo.toml"))
+        .expect("the workspace's root Cargo.toml is readable");
+    keys.extend(root_manifest.lines().filter_map(|l| {
+        let (name, spec) = l.trim().split_once('=')?;
+        let key = name.trim().strip_prefix("busbar-plane-")?;
+        (spec.contains("git =") && !key.ends_with("-plugin")).then(|| key.to_string())
+    }));
     keys.sort();
+    keys.dedup();
     // A derivation that found nothing would make both ratchets below pass on any source at all.
     assert!(
         keys.len() >= 2,

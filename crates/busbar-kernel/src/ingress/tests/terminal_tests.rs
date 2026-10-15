@@ -144,3 +144,80 @@ fn each_finish_door_is_one_terminal() {
     );
     assert_eq!(terminals(proto) - before, 2, "the charged door");
 }
+
+/// F25 row 702: rehomed from crates/busbar-llm/src/unit/tests/chain.rs::the_refused_terminal_labels_a_configured_pool_with_its_name.
+/// Pins: the live pre-admission guard's refusal (403) against a CONFIGURED pool ends its unit on a
+/// terminal labelled with that pool's own name, and a refusal against a name no deployment
+/// configured is labelled with the reserved `unresolved` label — the bound is unchanged.
+#[test]
+fn the_refused_terminal_labels_a_configured_pool_with_its_name() {
+    let pool = "ingress-terminal-label-pool";
+    let app = deployment(pool);
+    assert_eq!(
+        pool_label(&app, pool),
+        pool,
+        "the fixture's pool is configured, so the live label is its name"
+    );
+
+    // LEG 1 — a configured pool the key may not reach: 403, one terminal, labelled by name.
+    let proto = "ingress-terminal-label-proto";
+    let labelled = |label: &str| {
+        metric_sum(
+            crate::snapshot::REQUESTS_TOTAL,
+            &[("ingress_protocol", proto), ("pool", label)],
+        )
+        .round() as u64
+    };
+    let before = labelled(pool);
+    let Err(refused) = destination_guard(
+        &app,
+        &caller(&["some-other-pool"]),
+        proto,
+        pool,
+        Instant::now(),
+        0,
+    ) else {
+        panic!("the key may not reach the pool it named");
+    };
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        labelled(pool) - before,
+        1,
+        "the refusal's terminal is labelled with the configured pool's name"
+    );
+
+    // LEG 2 — a name nothing configured: the bound still reads it back as `unresolved`.
+    let unknown = "ingress-terminal-no-such-pool";
+    assert_eq!(
+        pool_label(&app, unknown),
+        crate::proxy::POOL_LABEL_UNRESOLVED
+    );
+    let unresolved_proto = "ingress-terminal-label-unresolved-proto";
+    let unresolved = || {
+        metric_sum(
+            crate::snapshot::REQUESTS_TOTAL,
+            &[
+                ("ingress_protocol", unresolved_proto),
+                ("pool", crate::proxy::POOL_LABEL_UNRESOLVED),
+            ],
+        )
+        .round() as u64
+    };
+    let before = unresolved();
+    let Err(refused) = destination_guard(
+        &app,
+        &caller(&["some-other-pool"]),
+        unresolved_proto,
+        unknown,
+        Instant::now(),
+        0,
+    ) else {
+        panic!("the key may not reach a name it holds no grant on");
+    };
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        unresolved() - before,
+        1,
+        "an unconfigured name is never widened into a label of its own"
+    );
+}

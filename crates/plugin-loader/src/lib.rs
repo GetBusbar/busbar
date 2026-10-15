@@ -8,11 +8,10 @@
 //! transports that have not moved to their door still ride ([`plane`], [`transport`]).
 //!
 //! No plugin of any kind loads through a JSON lane: the COLD/JSON lane is gone. What remains of
-//! its symbols here is the HOT lane's handshake ([`validate_plugin`], `abi_handshake`), deleted
-//! with the HOT lane.
+//! its symbols here is the HOT lane's handshake (`abi_handshake`, `read_plugin_kind`), deleted with
+//! the HOT lane.
 
-use busbar_contract::abi::cold::{symbol, CallFn, CloseFn, FreeFn};
-use busbar_contract::abi::cold::{PluginKindFn, TRANSPORT_VERSION};
+use busbar_contract::abi::cold::{symbol, PluginKindFn, TRANSPORT_VERSION};
 use libloading::Library;
 use std::path::Path;
 
@@ -425,72 +424,6 @@ pub fn plugin_library_filename(crate_snake: &str) -> String {
     }
 }
 
-/// Validate that a library is a busbar plugin the engine can speak to — it exports the TRANSPORT
-/// handshake at a matching version, a supported kind, and all operational symbols — WITHOUT
-/// constructing an instance (no `open`). Returns the transport ABI version. Used to vet an uploaded
-/// artifact before writing it into the plugins directory, and to inventory the directory.
-#[cold] // boot/admin-only — keeps hot text dense (never inlined into a warm path)
-#[inline(never)]
-pub fn validate_plugin(lib_path: &Path) -> Result<u32, String> {
-    let display = lib_path.display().to_string();
-    // SAFETY: loading runs the library's init code — the same trust as loading it to serve, which is
-    // itself the trust of compiling it in. The path is operator/admin-supplied, never request data.
-    let lib = dlopen_on_worker(lib_path.as_os_str())
-        .map_err(|e| format!("failed to load plugin '{display}': {e}"))?;
-    // UNLOAD ON A WORKER, on EVERY exit path. The handshake below has five of them, and letting
-    // `lib` drop out of scope would `dlclose` — running the image's `.fini_array`, which is plugin
-    // code — on the CALLER's thread. A `.fini_array` that touches a plugin-side `thread_local!` with
-    // a destructor arms the plugin's `pthread_key` on that thread, and a caller that later retires
-    // (a libtest harness thread, a Tokio blocking thread) then calls that destructor inside the
-    // image it just unmapped. Every other unload in this crate (`RawPlugin::drop`, `LoadGuard::drop`)
-    // is already routed; the admin inventory/upload-vet path is the one that was not.
-    let verdict = validate_mapped(&lib, &display);
-    dlclose_on_worker(lib);
-    verdict
-}
-
-/// The handshake half of [`validate_plugin`], over an ALREADY-MAPPED library. Split out so its five
-/// exit paths cannot each be responsible for routing the unload — the caller unloads once.
-fn validate_mapped(lib: &Library, display: &str) -> Result<u32, String> {
-    let display = display.to_string();
-    let abi_version = abi_handshake(abi_symbol(lib, &display)?, &display, "plugin")?;
-    // The exported kind must be one the engine supports (a range exists for it).
-    let plugin_kind = read_plugin_kind(lib, &display)?;
-    if supported_abi(&plugin_kind).is_empty() {
-        return Err(format!(
-            "plugin '{display}' declares unsupported kind '{plugin_kind}'"
-        ));
-    }
-    // Confirm the operational symbols resolve too, so a half-built library is caught here rather than
-    // at first use.
-    unsafe {
-        lib.get::<busbar_contract::abi::cold::OpenFn>(symbol::OPEN)
-            .map_err(|e| format!("plugin '{display}' missing busbar_open: {e}"))?;
-        lib.get::<CallFn>(symbol::CALL)
-            .map_err(|e| format!("plugin '{display}' missing busbar_call: {e}"))?;
-        lib.get::<FreeFn>(symbol::FREE)
-            .map_err(|e| format!("plugin '{display}' missing busbar_free: {e}"))?;
-        lib.get::<CloseFn>(symbol::CLOSE)
-            .map_err(|e| format!("plugin '{display}' missing busbar_close: {e}"))?;
-    }
-    Ok(abi_version)
-}
-
-/// One entry in a plugins-directory inventory: the library filename and whether it validated as a
-/// busbar store plugin (with its ABI version, or the reason it didn't). Serialized by the admin
-/// `GET /admin/plugins` endpoint.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct PluginInfo {
-    /// The library filename (not the full path).
-    pub file: String,
-    /// True when the library exports the store ABI at a version the engine speaks.
-    pub valid: bool,
-    /// The plugin's ABI version when `valid`.
-    pub abi_version: Option<u32>,
-    /// Why it didn't validate, when `!valid`.
-    pub error: Option<String>,
-}
-
 /// Is `file` a dynamic-library name for this platform (by extension)?
 ///
 /// THE COMPARISON FOLLOWS THE FILESYSTEM'S OWN CASE RULE, which is not the same rule everywhere.
@@ -521,10 +454,10 @@ fn is_library_file(file: &str) -> bool {
 }
 
 /// List the dynamic-library FILENAMES in `dir` (sorted), WITHOUT opening any of them - the pure,
-/// side-effect-free directory scan. Unlike [`inventory`], this NEVER `dlopen`s a library, so an
-/// untrusted plugin's init/constructor code cannot run just from enumerating the directory. The trust
-/// gate (and only then the ABI [`validate_plugin`], which does `dlopen`) is applied by the caller,
-/// per file, so no library's code runs until it passes trust. A missing directory is an empty list.
+/// side-effect-free directory scan. It NEVER `dlopen`s a library, so an untrusted plugin's
+/// init/constructor code cannot run just from enumerating the directory; the trust gate is applied by
+/// the caller, per file, so no library's code runs until it passes trust. A missing directory is an
+/// empty list.
 pub fn list_plugin_files(dir: &Path) -> Vec<String> {
     let mut out = Vec::new();
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -540,46 +473,6 @@ pub fn list_plugin_files(dir: &Path) -> Vec<String> {
         }
     }
     out.sort();
-    out
-}
-
-/// Inventory the plugins directory: every dynamic library present, each validated (ABI handshake) so
-/// the admin surface can show what's installed and whether it's loadable. A missing directory is an
-/// empty inventory, not an error.
-///
-/// WARNING: this `dlopen`s (via [`validate_plugin`]) EVERY library to run the ABI handshake, which
-/// executes each library's init/constructor code. It must therefore only be called on libraries that
-/// have ALREADY passed the trust gate - never as an untrusted-directory inspection. The admin catalog
-/// uses [`list_plugin_files`] + a per-file trust check instead, and `dlopen`s only what trust permits.
-pub fn inventory(dir: &Path) -> Vec<PluginInfo> {
-    let mut out = Vec::new();
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return out;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(file) = path.file_name().and_then(|f| f.to_str()) else {
-            continue;
-        };
-        if !path.is_file() || !is_library_file(file) {
-            continue;
-        }
-        match validate_plugin(&path) {
-            Ok(v) => out.push(PluginInfo {
-                file: file.to_string(),
-                valid: true,
-                abi_version: Some(v),
-                error: None,
-            }),
-            Err(e) => out.push(PluginInfo {
-                file: file.to_string(),
-                valid: false,
-                abi_version: None,
-                error: Some(e),
-            }),
-        }
-    }
-    out.sort_by(|a, b| a.file.cmp(&b.file));
     out
 }
 

@@ -46,7 +46,11 @@ pub const PLANE_KEYS: [&str; 3] = ["llm", "a2a", "voice"];
 /// `scripts/plane-keys.sh`'s `PLANE_KEYS_KIND_ONLY`. A roster that must notice a plane VANISHING
 /// (structure-lint's plane-roots row) reads these beside [`PLANE_KEYS`]: leaving the legacy roster
 /// must not take a plane off the roster that refuses an unlocatable plane.
-pub const PLANE_KEYS_KIND_ONLY: [&str; 1] = ["mcp"];
+///
+/// `decisions` (#48, the fifth plane) has never had a legacy-engine crate: it is one plane-kind
+/// crate, `busbar-plane-decisions`, located by its door row alone (`plane-decisions`, FLIP-DECISIONS).
+/// Off this list, a door row that vanished took it off structure-lint's roster with no finding.
+pub const PLANE_KEYS_KIND_ONLY: [&str; 2] = ["mcp", "decisions"];
 
 /// The default ownership grammar. Overridable for a fixture tree, the way
 /// `PLANE_ROOTS_GRAMMAR` is in the shell.
@@ -293,6 +297,9 @@ impl fmt::Display for PlaneRootError {
 pub struct PlaneRoots {
     search_root: PathBuf,
     grammar: String,
+    /// The context whose BASE layer lays the pinned planes (ARCHITECT row 106 (A)): a door crate
+    /// that left for its own repo is found where it lived, read from its pinned checkout.
+    laid: Option<crate::ctx::Ctx>,
 }
 
 impl PlaneRoots {
@@ -300,7 +307,15 @@ impl PlaneRoots {
         PlaneRoots {
             search_root: search_root.into(),
             grammar: PLANE_GRAMMAR.to_string(),
+            laid: None,
         }
+    }
+
+    /// The resolver over `cx`'s tree: a door crate the context's BASE layer lays (a pinned plane,
+    /// ARCHITECT row 106 (A)) is a door home exactly as it was on disk.
+    pub fn over(mut self, cx: &crate::ctx::Ctx) -> PlaneRoots {
+        self.laid = Some(cx.clone());
+        self
     }
 
     pub fn grammar(mut self, grammar: impl Into<String>) -> PlaneRoots {
@@ -330,8 +345,16 @@ impl PlaneRoots {
     pub fn door_home(&self, plane: &str) -> Option<PathBuf> {
         let manifest = std::fs::read_to_string(self.search_root.join(DOOR_MANIFEST)).ok()?;
         let krate = door_planes(&manifest).remove(plane)?;
-        let src = self.search_root.join(krate).join("src");
-        holds_source(&src).then_some(src)
+        let src = self.search_root.join(&krate).join("src");
+        if holds_source(&src) {
+            return Some(src);
+        }
+        let cx = self.laid.as_ref()?;
+        let rel = src.strip_prefix(cx.root()).ok()?;
+        cx.base_children(rel)
+            .iter()
+            .any(|f| f.ends_with(".rs"))
+            .then_some(src)
     }
 
     /// The three-answers rule, over candidates somebody else located. THE SAME judgement the disk

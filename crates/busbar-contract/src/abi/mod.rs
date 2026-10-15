@@ -106,6 +106,8 @@ pub mod hook;
 pub mod mechanism;
 pub mod plane;
 pub mod secret;
+/// The shapes the memory ABI's connection table carries that the condemned HOT lane named first.
+pub mod shared;
 pub mod store;
 pub mod transport;
 

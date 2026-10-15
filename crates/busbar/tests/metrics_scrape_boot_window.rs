@@ -111,6 +111,8 @@ models:
 
 struct Scrape {
     status: u16,
+    /// The `content-type` value the answer carried (empty when absent).
+    content_type: String,
     body: String,
 }
 
@@ -281,6 +283,7 @@ fn parse_response(raw: &[u8]) -> Scrape {
     let Some(split) = text.find("\r\n\r\n") else {
         return Scrape {
             status: 0,
+            content_type: String::new(),
             body: String::new(),
         };
     };
@@ -292,7 +295,18 @@ fn parse_response(raw: &[u8]) -> Scrape {
         .and_then(|l| l.split_whitespace().nth(1))
         .and_then(|s| s.parse().ok())
         .unwrap_or(0);
-    Scrape { status, body }
+    let content_type = head
+        .lines()
+        .skip(1)
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.trim().eq_ignore_ascii_case("content-type"))
+        .map(|(_, value)| value.trim().to_string())
+        .unwrap_or_default();
+    Scrape {
+        status,
+        content_type,
+        body,
+    }
 }
 
 fn read_to_string(path: &Path) -> String {
@@ -301,4 +315,58 @@ fn read_to_string(path: &Path) -> String {
         let _ = f.read_to_string(&mut s);
     }
     s
+}
+
+/// LEGACY the retiring engine crate's `src/engine/tests/forward_pool_integration_tests.rs::test_metrics_admitted_in_open_relay_mode`
+/// (coverage map v2 row 137). 1.5.5: under an open auth chain (`chain: []`) a `GET /metrics` with
+/// no credential is admitted: `200`, a `content-type` that starts `text/plain` (the Prometheus text
+/// exposition), and a body that carries a series (the legacy test seeded the request counter in
+/// process; a spawned node with no traffic yet renders its scrape-time lane series, `busbar_lane_state`).
+///
+/// RED: the open-chain scrape is refused, answers another content type (a JSON or empty-typed
+/// body a Prometheus scraper rejects), or the exposition lacks the request counter.
+#[test]
+fn test_metrics_admitted_in_open_relay_mode() {
+    let dir = fixture_dir();
+    let data_port = free_port();
+    let admin_port = free_port();
+    write_configs(&dir, data_port, admin_port);
+    let log_path = dir.join("out.log");
+    let log = std::fs::File::create(&log_path).unwrap();
+    let log_err = log.try_clone().unwrap();
+    let mut child = Command::new(common::boot::exe())
+        .env("BUSBAR_CONFIG", dir.join("config.yaml"))
+        .env("BUSBAR_PROVIDERS", dir.join("providers.yaml"))
+        .env("MOCK_KEY", "x")
+        .env("RUST_LOG", "warn")
+        .stdout(log)
+        .stderr(log_err)
+        .spawn()
+        .expect("spawn busbar");
+    let scraped = wait_for_full_scrape(data_port, Duration::from_secs(30));
+    let _ = child.kill();
+    let _ = child.wait();
+    let Scrape {
+        status,
+        content_type,
+        body,
+    } = scraped.unwrap_or_else(|| {
+        panic!(
+            "busbar never answered a full GET /metrics within 30s; log:\n{}",
+            read_to_string(&log_path)
+        )
+    });
+    assert_eq!(
+        status, 200,
+        "an open chain admits the scrape with no credential"
+    );
+    assert!(
+        content_type.starts_with("text/plain"),
+        "content-type was {content_type}"
+    );
+    assert!(
+        body.contains("busbar_lane_state"),
+        "exposition should contain a metric; got:\n{body}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -2,13 +2,9 @@
 // Copyright (C) 2026 Busbar Inc and contributors
 
 //! Direct unit tests for the worker-routing/panic-guard primitives at the top of `lib.rs`:
-//! [`dlclose_on_worker`] and [`free_guarded`]. `validate_plugin_unloads_on_a_worker_not_the_callers_thread`
-//! (in `lib_tests.rs`) already pins the end-to-end unload path, but it SKIPS whenever the in-tree
-//! example store plugin cdylib isn't sitting next to the test binary — which is exactly the case
-//! under an isolated single-package build (`cargo test --package busbar-plugin-loader`), so a
-//! regression that guts `dlclose_on_worker` or `free_guarded` to a no-op is invisible to that test
-//! in that build. These tests exercise both functions directly, with no on-disk plugin fixture, so
-//! they run (and catch the regression) everywhere.
+//! [`dlclose_on_worker`] and [`free_guarded`], exercised with no on-disk plugin fixture, so a
+//! regression that guts either to a no-op is caught in every build, an isolated single-package one
+//! (`cargo test --package busbar-plugin-loader`) included.
 
 use super::*;
 
@@ -33,8 +29,7 @@ fn a_library_handle_to_this_process() -> Library {
 /// is the whole point of the function — see its doc comment), which this crate makes observable via
 /// the test-only [`UNLOADS_ON_WORKER`] counter. A mutant that replaces the function body with `()`
 /// still compiles (the `Library` parameter is simply dropped, inline, on the caller's thread) but
-/// never touches the counter — this test is what would go red for that mutant that the on-disk-cdylib
-/// end-to-end test cannot see under an isolated single-package build.
+/// never touches the counter — this test goes red for that mutant.
 #[test]
 fn dlclose_on_worker_routes_the_unload_and_counts_it() {
     let before = UNLOADS_ON_WORKER.with(std::cell::Cell::get);

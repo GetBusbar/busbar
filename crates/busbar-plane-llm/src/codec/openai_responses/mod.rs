@@ -487,8 +487,11 @@ fn synthesize_item_id(prefix: &str) -> String {
 //   * the streaming path has no answer to carry it, so the value rides the writer instance
 //     (`ResponsesWriter::stamped_at`), set once by whoever opened the stream.
 //
-// With neither supplied the writer stamps `UNSTAMPED_CREATED_AT`, which is what a caller that never
-// offered a time asked for.
+// With neither supplied the writer stamps the HOST's wall clock, read once per stream through the
+// host-installed reader (`busbar_contract::codec::wall_clock_now`, the reading the Chat writer's
+// `created` takes too), as 1.5.5 stamped `now_unix_secs()` (v1.5.5
+// `crates/busbar/src/proto/openai_responses/writer.rs:479`); `UNSTAMPED_CREATED_AT` only in a
+// process whose host installed no clock.
 //
 // The rule is about FABRICATING a time, not about clocks as such. The crate does read a monotonic
 // clock in two places — the Bedrock writer and the stream framer both start an `Instant` to MEASURE
@@ -2303,10 +2306,8 @@ fn read_responses_usage(
 /// so the counter is stream-scoped by construction and the increments are plain `&self` atomics on
 /// that one owned instance — no thread affinity, so the counter follows the stream across Tokio
 /// worker migrations.
-/// The `created_at` a Responses answer wears when NO caller supplied a creation time.
-///
-/// Zero, and deliberately so: it is the unix epoch, it is obviously not a real reading, and it says
-/// "nobody offered one" without the writer having to invent an answer by reading a clock.
+/// The `created_at` a Responses answer wears when NO caller supplied a creation time AND the host
+/// installed no wall clock (see [`ResponsesWriter::default_created_at`]).
 pub const UNSTAMPED_CREATED_AT: u64 = 0;
 
 pub struct ResponsesWriter {
@@ -2781,7 +2782,20 @@ impl ResponsesWriter {
             .lock()
             .ok()
             .and_then(|c| *c)
-            .unwrap_or(self.stamped_created_at)
+            .unwrap_or_else(|| self.default_created_at())
+    }
+
+    /// The `created_at` for an answer that carries none: the caller's stamp when one was given,
+    /// else the HOST's wall clock (`busbar_contract::codec::wall_clock_now`, the reading the Chat
+    /// writer stamps), as 1.5.5 stamped `now_unix_secs()` (v1.5.5
+    /// `crates/busbar/src/proto/openai_responses/writer.rs:479`). A translated stream clears the
+    /// upstream's creation time, so without this every translated stream into a Responses client
+    /// carried `created_at: 0` (1970). `UNSTAMPED_CREATED_AT` only when the host installed no clock.
+    pub(crate) fn default_created_at(&self) -> u64 {
+        if self.stamped_created_at != UNSTAMPED_CREATED_AT {
+            return self.stamped_created_at;
+        }
+        busbar_contract::codec::wall_clock_now().unwrap_or(UNSTAMPED_CREATED_AT)
     }
 
     /// This writer, stamped with the creation time the caller read.

@@ -1060,6 +1060,175 @@ async fn the_planes_fields_go_out_but_the_per_connection_mechanics() {
     );
 }
 
+/// F25 row 83: rehomed from crates/busbar-llm/src/engine/tests/client_header_forwarding_tests.rs::
+/// hop_by_hop_host_and_length_are_re_derived. MECHANICS: the caller's hop-by-hop fields (and a field
+/// its `connection` nominates), `host` and `content-length` never reach the upstream; the upstream
+/// connection derives its own. Every field of the legacy matrix is handed over and only the trace
+/// field crosses beside the auth and content-type fields; the connection dials the member's own host.
+#[tokio::test]
+async fn hop_by_hop_host_and_length_are_re_derived() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    let mut req = request();
+    for (n, v) in [
+        ("connection", "keep-alive, x-nominated"),
+        ("x-nominated", "1"),
+        ("keep-alive", "timeout=5"),
+        ("te", "trailers"),
+        ("upgrade", "websocket"),
+        ("proxy-authorization", "Basic Zm9v"),
+        ("host", "client.example"),
+        ("content-length", "9999"),
+        ("x-client-trace", "abc"),
+    ] {
+        req.fields
+            .push((n.as_bytes().to_vec(), v.as_bytes().to_vec()));
+    }
+    assert!(far.send(&t, req).await);
+    let _ = drain(&far, &t).await;
+    let opened = r.table.opened.lock().unwrap().clone();
+    assert_eq!(opened.len(), 1);
+    let (target, fields, _, _) = &opened[0];
+    for gone in [
+        "connection",
+        "x-nominated",
+        "keep-alive",
+        "te",
+        "upgrade",
+        "proxy-authorization",
+        "host",
+        "content-length",
+    ] {
+        assert!(
+            !fields.iter().any(|(n, _)| n.eq_ignore_ascii_case(gone)),
+            "{gone} is per-connection: {fields:?}"
+        );
+    }
+    assert!(
+        !fields
+            .iter()
+            .any(|(_, v)| v.as_slice() == b"client.example"),
+        "the caller's host never goes upstream"
+    );
+    assert!(
+        !fields.iter().any(|(_, v)| v.as_slice() == b"9999"),
+        "the caller's length never goes upstream"
+    );
+    assert_eq!(
+        target, "https://a.test/v1/chat",
+        "the connection dials the member's own host"
+    );
+    let head: Vec<(&str, &[u8])> = fields
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+    assert_eq!(
+        head,
+        [
+            ("authorization", b"Bearer sk-test".as_slice()),
+            ("content-type", b"application/json".as_slice()),
+            ("x-client-trace", b"abc".as_slice()),
+        ]
+    );
+}
+
+/// The pool labels the walk's telemetry was handed, attempt by attempt.
+#[derive(Default)]
+struct Labels(Mutex<Vec<(String, DestinationId)>>);
+impl Telemetry for Labels {
+    fn upstream_attempt(&self, pool: &str, d: DestinationId) {
+        self.0.lock().unwrap().push((pool.to_string(), d));
+    }
+    fn upstream_failure(&self, _: &str, _: DestinationId, _: &'static str) {}
+    fn failover(&self, _: &str, _: &'static str) {}
+    fn breaker_trip(&self, _: &str, _: DestinationId) {}
+    fn queued(&self, _: &str, _: i64) {}
+}
+
+/// F25 row 124: rehomed from crates/busbar-llm/src/engine/tests/forward_once_pool_cell_tests.rs::
+/// test_metric_pool_label_resolves_model_for_default_cell. The upstream METRIC pool label resolves
+/// the default (`""`) cell, shared by every direct route, to the ROUTED lane's model name (so those
+/// series correlate with `busbar_requests_total`), lane by lane; a NAMED pool keeps its name
+/// verbatim.
+#[tokio::test]
+async fn test_metric_pool_label_resolves_model_for_default_cell() {
+    let mut r = rig(
+        &[
+            ("a.test", Script::Answer(200, None, vec![b"ok"])),
+            ("b.test", Script::Answer(200, None, vec![b"ok"])),
+        ],
+        OnExhausted::Status503,
+        None,
+    );
+    let labels = Arc::new(Labels::default());
+    r.egress.telemetry = Arc::clone(&labels) as Arc<dyn Telemetry>;
+    let t = token();
+    let direct = || UnitRoute {
+        pool: String::new(),
+        ..UnitRoute::default()
+    };
+
+    // Default ("") cell, lane 0: labelled by its model, not the empty cell key.
+    r.egress.pools.insert(
+        String::new(),
+        Pool::new(
+            String::new(),
+            vec![Member::new(DestinationId::new(1), "claude-sonnet", 1)],
+        ),
+    );
+    {
+        let far = r.egress.unit(direct());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        assert!(far.send(&t, request()).await);
+        let _ = drain(&far, &t).await;
+    }
+    // Default ("") cell, lane 1: the label tracks the specific routed lane's model.
+    r.egress.pools.insert(
+        String::new(),
+        Pool::new(
+            String::new(),
+            vec![Member::new(DestinationId::new(2), "gpt-4o", 1)],
+        ),
+    );
+    {
+        let far = r.egress.unit(direct());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        assert!(far.send(&t, request()).await);
+        let _ = drain(&far, &t).await;
+    }
+    // A NAMED pool keeps its pool name verbatim (bounded, operator-controlled label).
+    r.egress.pools.insert(
+        "prod-pool".to_string(),
+        Pool::new(
+            "prod-pool",
+            vec![Member::new(DestinationId::new(1), "claude-sonnet", 1)],
+        ),
+    );
+    {
+        let far = r.egress.unit(UnitRoute {
+            pool: "prod-pool".into(),
+            ..UnitRoute::default()
+        });
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        assert!(far.send(&t, request()).await);
+        let _ = drain(&far, &t).await;
+    }
+    assert_eq!(
+        labels.0.lock().unwrap().clone(),
+        vec![
+            ("claude-sonnet".to_string(), DestinationId::new(1)),
+            ("gpt-4o".to_string(), DestinationId::new(2)),
+            ("prod-pool".to_string(), DestinationId::new(1)),
+        ]
+    );
+}
+
 /// A target that is not a path never leaves: joined onto the base it could move the authority
 /// (`api.host@evil.test`) and carry the member's auth fields there. Nothing is opened, the auth
 /// binding is never called, nothing is recorded against the member.
@@ -1110,6 +1279,91 @@ async fn a_plane_field_name_that_is_not_a_token_is_refused_before_the_dial() {
     );
     assert_eq!(r.auth.calls.load(Ordering::SeqCst), 0);
     assert!(r.book.observed.lock().unwrap().is_empty());
+}
+
+/// F25 row 75: rehomed from crates/busbar-llm/src/engine/tests/auth_style_tests.rs::
+/// test_host_from_base_backslash_authority_matches_wire_host (its signed-host half; the dialler's
+/// reading of each URL is pinned in busbar-kernel-egress's `net_tests`). A WHATWG reader ends a web
+/// URL's authority at the first `\` exactly as at `/`, so the host the auth call signs must be the
+/// host the connection dials, byte for byte, never the post-`@` host a backslash-blind split reads
+/// (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`, `host_from_base`); the port survives and the
+/// backslash path rides the head as a path.
+#[tokio::test]
+async fn test_host_from_base_backslash_authority_matches_wire_host() {
+    for (base, script_host, authority, host, port, head_path) in [
+        (
+            "https://evil.example.com\\@victim.example/path",
+            "evil.example.com",
+            "evil.example.com",
+            "evil.example.com",
+            None,
+            "/@victim.example/path/chat",
+        ),
+        (
+            "https://host.example.com\\some\\path",
+            "host.example.com",
+            "host.example.com",
+            "host.example.com",
+            None,
+            "/some/path/chat",
+        ),
+        (
+            "https://host.example.com:8443\\v1\\foo",
+            "host.example.com:8443",
+            "host.example.com:8443",
+            "host.example.com",
+            Some(8443),
+            "/v1/foo/chat",
+        ),
+    ] {
+        let mut r = rig(
+            &[(script_host, Script::Answer(200, None, vec![b"ok"]))],
+            OnExhausted::Status503,
+            None,
+        );
+        r.egress
+            .routes
+            .get_mut(&DestinationId::new(1))
+            .expect("m0's route")
+            .base_url = base.to_string();
+        let t = token();
+        let far = r.egress.unit(route());
+        assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+        assert!(far.send(&t, request()).await, "{base}");
+        let pieces = drain(&far, &t).await;
+        assert_eq!(pieces[0].status, Some((200, 1)), "{base}");
+        drop(far);
+
+        let signed = r.auth.facts.lock().unwrap()[0].1.clone();
+        assert_eq!(signed, authority, "{base}: the signed host");
+        let opened = r.table.opened.lock().unwrap().clone();
+        assert_eq!(opened.len(), 1, "{base}");
+        let dialled =
+            busbar_contract::net::parse_url(&opened[0].0).unwrap_or_else(|e| panic!("{base}: {e}"));
+        assert_eq!(
+            (dialled.host.as_str(), dialled.port),
+            (host, port),
+            "{base}: the dialled host"
+        );
+        let dialled_authority = match dialled.port {
+            Some(p) => format!("{}:{p}", dialled.host),
+            None => dialled.host.clone(),
+        };
+        assert_eq!(
+            signed, dialled_authority,
+            "{base}: the signed host is the dialled host"
+        );
+        assert_eq!(
+            r.table.words.lock().unwrap()[0],
+            (b"POST".to_vec(), head_path.as_bytes().to_vec()),
+            "{base}: the head's path"
+        );
+        assert_eq!(
+            r.auth.facts.lock().unwrap()[0].2,
+            head_path.as_bytes().to_vec(),
+            "{base}: the signed path is the head's path"
+        );
+    }
 }
 
 /// An auth binding that must wait (a refresh that never comes back) is awaited no longer than the

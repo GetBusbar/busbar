@@ -195,10 +195,11 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
         ChokeRow {
             id: "B-plugin-export".into(),
             tag: "EXPORT-BYPASS".into(),
-            owner: "crates/busbar-contract/src/abi/sdk/{boundary.rs, door.rs} (via export_*_plugin! / export_door!)".into(),
-            // door.rs: sdk_door_cdylib.rs proves panic->FAULT and the single export.
-            class_test: "crates/busbar-contract/tests/boundary_class.rs::null_out_pointer_never_leaks".into(),
-            remedy: "define exports via export_*_plugin!, never by hand".into(),
+            owner: "crates/busbar-contract/src/abi/sdk/{mod.rs, door.rs} (via export_door! and the kind export macros)".into(),
+            // sdk_door_cdylib.rs proves panic->FAULT through the dropped-in door and, beside it,
+            // that the macros export exactly the one door symbol.
+            class_test: "crates/busbar-contract/tests/sdk_door_cdylib.rs::the_dropped_in_door_answers_and_a_panicking_slot_is_fault_not_abort".into(),
+            remedy: "define exports via export_door! or a kind export macro, never by hand".into(),
             rules: vec![
                 BanRule::new(
                     r"#\[(unsafe\()?no_mangle",
@@ -206,6 +207,10 @@ pub fn table(a: &Addresses) -> Vec<ChokeRow> {
                     &[
                         "crates/busbar-contract/src/abi/sdk/mod.rs".into(),
                         "crates/busbar-contract/src/abi/sdk/door.rs".into(),
+                        // Not a plugin export: the kernel's seal symbol (#65, ARCHITECT ruling
+                        // 2026-10-14), the one symbol the contract hands the kernel seal to.
+                        // one-memory-abi pins it to this file by name.
+                        "crates/busbar-kernel/src/seal.rs".into(),
                     ],
                 ),
                 BanRule::new(

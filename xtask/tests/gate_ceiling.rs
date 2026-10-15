@@ -29,7 +29,9 @@ fn repo_root() -> PathBuf {
 }
 
 fn cx() -> Ctx {
-    Ctx::new(repo_root()).expect("the real tree opens with a writable scratch dir")
+    Ctx::new(repo_root())
+        .and_then(|cx| cx.with_pinned_planes())
+        .expect("the real tree opens with a writable scratch dir and its pinned planes")
 }
 
 /// Run `f` on its own thread and REFUSE to wait forever, so a hang is a named failure.

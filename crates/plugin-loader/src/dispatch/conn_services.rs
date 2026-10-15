@@ -42,7 +42,8 @@
 //!
 //! THE REPLAY RULE (`abi::sdk::conn`): the host never runs a service twice. A ticketed service's
 //! answer is kept under its completion handle, and a re-issued handle answers it again without a
-//! second run; the worker forgets a ticket's answers when it recycles the ticket, a driver
+//! second run (a `READ_REPLY`'s with its piece and its bytes, written again into what the replay
+//! lends); the worker forgets a ticket's answers when it recycles the ticket, a driver
 //! ticket's when its next tick starts, and any other ticket's when a new op (not a short answer's
 //! re-call) starts on it ([`forget`]).
 
@@ -231,6 +232,10 @@ fn slot(
             // A never-pend service that writes the caller's memory is run afresh on a replay: a
             // kept answer would say the bytes were written into memory this call never touched.
             Some((id, table)) if service == service::IDENTITY => body(*id, table, head),
+            Some((id, table)) if service == service::READ_REPLY => {
+                replay_read(*id, head.handle, input);
+                kept(*id, head.handle, || body(*id, table, head))
+            }
             Some((id, table)) => kept(*id, head.handle, || body(*id, table, head)),
             None => Answer::of(ConnError::Unarmed),
         }
@@ -675,12 +680,55 @@ fn kept(id: InstanceId, h: CompletionHandle, run: impl FnOnce() -> Answer) -> An
     a
 }
 
+/// Every ticketed `READ_REPLY`'s piece and the bytes it wrote, by instance and ticket, then by the
+/// handle's issue order, kept beside its answer: the read wrote the caller's memory, so its replay
+/// writes them again ([`replay_read`]), as a replayed `IDENTITY` does. A short answer's re-call
+/// starts the op over with fresh buffers, and its kept reads are the far end's whole reply.
+type KeptReads = HashMap<(InstanceId, Ticket), HashMap<u32, (ReplyPiece, Box<[u8]>)>>;
+
+fn kept_reads() -> MutexGuard<'static, KeptReads> {
+    static KEPT: OnceLock<Mutex<KeptReads>> = OnceLock::new();
+    KEPT.get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Keep what a ticketed read wrote: its piece and its bytes.
+fn keep_read(id: InstanceId, h: CompletionHandle, piece: ReplyPiece, bytes: &[u8]) {
+    if !h.ticket.is_none() {
+        kept_reads()
+            .entry((id, h.ticket))
+            .or_default()
+            .insert(h.seq, (piece, bytes.into()));
+    }
+}
+
+/// A replayed read: what it wrote, written again into the piece slot and the buffer the replay's
+/// `in` lends (as much of the bytes as the buffer holds).
+fn replay_read(id: InstanceId, h: CompletionHandle, input: *const c_void) {
+    let all = kept_reads();
+    let Some((piece, kept)) = all.get(&(id, h.ticket)).and_then(|r| r.get(&h.seq)) else {
+        return;
+    };
+    // SAFETY: `slot` checked the head covers a `ReplyIn`.
+    let i = unsafe { input.cast::<ReplyIn>().read_unaligned() };
+    // SAFETY: the caller's buffer, lent for this call only.
+    let (false, Some(buf)) = (i.piece.is_null(), unsafe { bytes(i.buf, i.len) }) else {
+        return;
+    };
+    let n = kept.len().min(buf.len());
+    buf[..n].copy_from_slice(&kept[..n]);
+    // SAFETY: the caller's descriptor slot, checked non-NULL.
+    unsafe { i.piece.write_unaligned(*piece) };
+}
+
 /// Forget every answer instance `id` kept under `ticket` (its worker recycled it, a driver
 /// ticket's tick started, or a new op started on it); how many there were. Keyed by the instance as well as the ticket:
 /// tickets are minted per dispatcher, so another dispatcher's instance may hold an identical
 /// ticket, and its kept answers are never its neighbour's to drop (dropping them would make it run
 /// a stored establish or write a second time).
 pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> usize {
+    kept_reads().remove(&(id, ticket));
     kept_answers()
         .remove(&(id, ticket))
         .map_or(0, |issued| issued.len())
@@ -689,8 +737,11 @@ pub(crate) fn forget(id: InstanceId, ticket: Ticket) -> usize {
 /// Forget every answer the instances `ids` kept under worker `worker`'s tickets: it was replaced.
 /// Another dispatcher's worker of the same index is not touched.
 pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
-    kept_answers()
-        .retain(|(id, t), _| !(ids.contains(id) && super::ticket::decode(t.slot).0 == worker));
+    let gone = |(id, t): &(InstanceId, Ticket)| {
+        ids.contains(id) && super::ticket::decode(t.slot).0 == worker
+    };
+    kept_reads().retain(|k, _| !gone(k));
+    kept_answers().retain(|k, _| !gone(k));
 }
 
 /// FORGET EVERYTHING instance `id` holds on the connector's process-wide maps — its held streams
@@ -702,6 +753,7 @@ pub(crate) fn forget_worker(ids: &[InstanceId], worker: u32) {
 pub(crate) fn purge(id: InstanceId, table: &Arc<dyn DeclaredConns>) {
     held_facts().retain(|(i, _), _| *i != id);
     kept_answers().retain(|(i, _), _| *i != id);
+    kept_reads().retain(|(i, _), _| *i != id);
     let gone: Vec<Stream> = {
         let mut all = held_conns();
         let keys: Vec<(InstanceId, u64)> = all.keys().filter(|(i, _)| *i == id).copied().collect();
@@ -1220,6 +1272,10 @@ extern "C" fn read_reply(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             if let Some(p) = piece {
                 // SAFETY: the caller's descriptor slot, checked non-NULL.
                 unsafe { i.piece.write_unaligned(p) };
+                if answer.outcome != Outcome::Pending {
+                    let n = usize::try_from(answer.len).map_or(buf.len(), |n| n.min(buf.len()));
+                    keep_read(id, head.handle, p, &buf[..n]);
+                }
             }
             answer
         },

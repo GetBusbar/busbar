@@ -59,7 +59,7 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use busbar_contract::abi::host::service::{self as svc, ItemSpan, MAX_SPANS};
 use busbar_contract::abi::mechanism::call::{Outcome, Span};
-use busbar_contract::caps::{IdempotencyKey, KernelSeal};
+use busbar_contract::caps::IdempotencyKey;
 use busbar_contract::ids::RecordSchemaId;
 use busbar_contract::kinds::RecordBytes;
 use busbar_contract::records::RecordStore;
@@ -1509,7 +1509,7 @@ pub fn claim_token(instance: &str, kind: &str, key: &[u8]) -> String {
         &[0],
         key,
     ]);
-    let minted = IdempotencyKey::mint(&KernelSeal::acquire_for_kernel(), digest);
+    let minted = IdempotencyKey::mint(&crate::seal::acquire(), digest);
     hex::encode(minted.bytes())
 }
 

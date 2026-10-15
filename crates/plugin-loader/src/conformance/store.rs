@@ -258,7 +258,7 @@ fn audit(seq: u64, action: &str) -> AuditRecord {
 /// schemas hold, 1.5.5's, `abi::cold`'s `PutCredential` "today only" kind; a store whose schema
 /// constrains the kind refuses any other). The kind is the plugin's `conformance.json`
 /// `store.credential_kind`, never a word this crate spells (`c1-literals`: the loader names no auth
-/// style).
+/// style). Its secret is in the contract's at-rest form (`CredentialSecret::secret`, `v1:plain`).
 pub(super) fn secret(kind: &str, id: &str, key_id: &str, public_id: &str) -> CredentialSecret {
     CredentialSecret {
         meta: CredentialMeta {
@@ -275,7 +275,7 @@ pub(super) fn secret(kind: &str, id: &str, key_id: &str, public_id: &str) -> Cre
             revoke_reason: None,
             revision: 0,
         },
-        secret: format!("s3cret-{id}"),
+        secret: format!("v1:plain:s3cret-{id}"),
     }
 }
 

@@ -709,15 +709,25 @@ pub fn auth_modules_compiled_in() -> Vec<&'static str> {
     modules
 }
 
-/// The removable hook plugins COMPILED INTO this binary (feature-gated). Excludes the always-present,
+/// The hook rows this binary LINKS, by the name every surface prints (the root's `linked-name` row for
+/// each `hooks`-axis row), installed once by the composition root.
+static HOOK_PLUGINS: OnceLock<&'static [&'static str]> = OnceLock::new();
+
+/// Install the names of the hook rows this build links — the composition root's one write, at boot,
+/// before the first info read. This crate names no hook plugin (Law 1): the list is the root's data.
+/// Idempotent by `OnceLock`: a second install is a no-op.
+pub fn install_hook_plugins(names: &'static [&'static str]) {
+    let _ = HOOK_PLUGINS.set(names);
+}
+
+/// The removable hook plugins COMPILED INTO this binary: the linked hook rows the composition root
+/// installed ([`install_hook_plugins`]); none before it does. Excludes the always-present,
 /// non-removable weighted SWRR floor, which is reported separately (as `weighted_floor` / the
 /// `weighted` compiled-in entry).
 pub(crate) fn hook_plugins_compiled_in() -> Vec<&'static str> {
-    [
-        #[cfg(feature = "hooks-ranking")]
-        "ranking",
-    ]
-    .to_vec()
+    HOOK_PLUGINS
+        .get()
+        .map_or_else(Vec::new, |names| names.to_vec())
 }
 
 /// Longest a plugin filename may be — generous headroom over any real tarball name, guarding the

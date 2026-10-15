@@ -106,11 +106,6 @@ item = "openapi"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/config/providers.rs"
-item = "anthropic"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/config_validate/mod.rs"
 item = "ranking"
 

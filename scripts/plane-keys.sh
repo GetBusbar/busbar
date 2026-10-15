@@ -58,7 +58,11 @@ PLANE_KEYS="llm a2a voice"
 # its plane-kind crate `crates/busbar-plane-<key>` (P3 DEL-MCP, ARCHITECT 2026-10-05: `mcp`). Never a
 # `crates/busbar-<key>` root; STILL a plane noun, so a needle gate that bans the other planes' keys
 # keeps banning it (`plane_noun_keys_other`). Leaving PLANE_KEYS must not let the word in.
-PLANE_KEYS_KIND_ONLY="mcp"
+# `decisions` (#48) never had a legacy-engine crate: one plane-kind crate, located by its door row
+# alone, so it is kind-only from birth and on this list so a vanished door row is PLANE-ROOT-MISSING
+# (xtask/src/planes.rs, the twin, pinned equal by xtask/tests/infra.rs). As a needle it reaches only
+# the report-only meters that source this list (plane-grep-gate.sh, plane-noun-gate.sh).
+PLANE_KEYS_KIND_ONLY="mcp decisions"
 
 # The protocol subset: every plane key except `llm`. Derived from PLANE_KEYS so adding a plane in
 # one place flows here automatically.
@@ -83,8 +87,9 @@ PLANE_KEYS_LOCKED="llm mcp a2a streaming decisions"
 # its `crates/busbar-<key>` directory), or empty if none exists yet. `streaming` is reachable — under
 # its pre-rename name `voice`, the crate DECISIONS #18 has not yet renamed — so a caller asking "is
 # streaming covered" gets a truthful "yes, as voice", not a false gap. `decisions` is reachable as
-# `plane-decisions`: the plane is ONE crate, `crates/busbar-plane-decisions`, with no I/O host crate
-# beside it, so its on-disk key is that crate's suffix. It is NOT in `PLANE_KEYS` (see the header:
+# `plane-decisions`: the plane is ONE crate, `busbar-plane-decisions`, with no I/O host crate beside
+# it, so its key is that crate's suffix. Since P5 that crate (like `busbar-plane-mcp`) lives in its own
+# repo and the root PINS it; the deletion harness removes a pinned plane by its pin row. It is NOT in `PLANE_KEYS` (see the header:
 # the bare word would flood the grep gates that treat every entry as a needle); it is in
 # `PLANE_KEYS_DELETE` below, the list the deletion harness removes crates by. A locked key with no
 # entry here returns empty: a caller must report that plane as a NAMED GAP, never as a silent pass.
@@ -99,8 +104,8 @@ plane_ondisk_key() {
   esac
 }
 
-# PLANE_KEYS_DELETE — every on-disk key the strong-form deletion harness can `git rm -r` as
-# `crates/busbar-<key>`: `PLANE_KEYS`, plus the on-disk key of every locked plane that has one and is
+# PLANE_KEYS_DELETE — every key the strong-form deletion harness can remove as `crates/busbar-<key>`
+# (`git rm -r`) or, for a plane pinned from its own repo, as the root's `busbar-<key>` pin row: `PLANE_KEYS`, plus the on-disk key of every locked plane that has one and is
 # not already in it. DERIVED, so a locked plane that gains an on-disk key joins the harness with no
 # second edit, and a key that is not on disk is never invented.
 PLANE_KEYS_DELETE="$PLANE_KEYS"

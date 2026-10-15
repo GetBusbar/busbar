@@ -239,9 +239,9 @@ pub trait Plugin: Send + Sync + 'static {
 ///
 /// - No crate outside this one can implement this trait AT ALL — in-tree or out-of-tree, test code
 ///   or production. The compiler refuses it; see the `compile_fail` fixture below. A fixture that
-///   needs a seal mints a real token instead, which routes it through
-///   [`KernelSeal::acquire_for_kernel`](crate::caps::KernelSeal::acquire_for_kernel) — the one
-///   audited symbol CI's `seal-witness` scan watches.
+///   needs a seal mints a real token instead, and a real token needs the kernel's seal, which
+///   reaches only the kernel ([`KernelSeal::deliver`](crate::caps::KernelSeal::deliver), #65);
+///   a test mints with the test-only `acquire_for_kernel`, which CI's `seal-witness` scan watches.
 /// - The `kernel-seal-impls` source scan in the construction gate still runs, but it is now a
 ///   belt-and-braces check behind a compiler guarantee rather than the only thing standing there.
 ///

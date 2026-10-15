@@ -1512,16 +1512,6 @@ reason = "ARCHITECT EXT-PILOT design (owner rulings 2026-09-25: one repo per plu
 # count, its verdict the one the architecture implies, and its drain.
 
 [[dep]]
-from    = "busbar-core-admin"
-to      = "busbar-export-prometheus"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "A cleanliness crate's dependency is ONE-WAY onto the kernel (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37): `cleanliness -> export` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only. ARCHITECT ruling W4B-Q1 (2026-10-03; RUN.md:119 \"read pinned_exemplars, never skip\"): a plugin crate pulled at a pinned rev is a crate of the census, read from its checkout at crates/<package> (xtask/src/gates/kind_isolation/pinned.rs), so this edge, unmeasured while the census read only this tree, is measured."
-why     = "busbar-core-admin names busbar-export-prometheus: declared dev in the test graph so the named-map tests resolve `module: prometheus` against the scrape sink LINKED into the test binary, as the composition root links it into the shipped one. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "moves with the plugin-specific tests under BUSBAR-CI-PLUGIN-AGNOSTIC (owner 2026-10-03): the named-map tests resolve the export axis through a contract-only row, and the dev-dependency is deleted."
-
-[[dep]]
 from    = "busbar"
 to      = "busbar-auth-oidc"
 half    = "test"
@@ -1578,8 +1568,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar"
 axis  = "instance:secret"
-count = "35"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 34 -> 35, the measure at the arming SHA dc83ff1553 (#597; Law 9). Predev 9c0a394771 measures 36: #560 (7b5f5d8be4) grew it after the row was live, invisible to a figure that counted findings. That excess is a Law 0 rise, so it stays RED until drained; this row does not raise to cover it"
+count = "19"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 34 -> 35, the measure at the arming SHA dc83ff1553 (#597; Law 9). Predev 9c0a394771 measures 36: #560 (7b5f5d8be4) grew it after the row was live, invisible to a figure that counted findings. That excess is a Law 0 rise, so it stays RED until drained; this row does not raise to cover it; LOWERED 35 -> 19: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured)"
 
 [[law0]]
 crate = "busbar"
@@ -1638,8 +1628,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-contract"
 axis  = "instance:secret"
-count = "133"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value"
+count = "43"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; RE-ARMED 128 -> 133 (Law 9, BUSBAR-1.6.0.md: it pins its ceiling at TODAY'S MEASURED VALUE): the row went live on predev at dc83ff1553 (#597) and measured 133 there; the 128 was f830faa691's, nine hours older than the arming, so the row armed red. 133 is predev 9c0a394771's measure, at or under the arming value; LOWERED 133 -> 131 by GetBusbar/busbar#904 (row 84): the cold lane's SDK side and its suites are deleted, and two secret-instance hits went with them (the gate's measure on #904: 131) (Law 9: the ceiling ratchets down); LOWERED 131 -> 43 (-88, GetBusbar/busbar#940): plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured 133 -> 45 on #940; both deltas applied)"
 
 [[law0]]
 crate = "busbar-contract"
@@ -1668,14 +1658,14 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "export"
-count = "4"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "1"
+cite  = "measured 1 by ModernCI on #917 (busbar-export-prometheus dev-dep dropped; 4 -> 1, drain only, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "hooks"
-count = "4"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 4 -> 0: the admin crate's compiled-in hook list is the root's installed linked-name data (KN-1, Law 1), its tests read the installed rows"
 
 [[law0]]
 crate = "busbar-core-admin"
@@ -1692,14 +1682,14 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "instance:hooks"
-count = "3"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 3 -> 0: the admin crate's compiled-in hook list is the root's installed linked-name data (KN-1, Law 1), its tests read the installed rows"
 
 [[law0]]
 crate = "busbar-core-admin"
 axis  = "instance:secret"
-count = "50"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "38"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 50 -> 38: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured)"
 
 [[law0]]
 crate = "busbar-core-admin"
@@ -1728,8 +1718,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-core-connector"
 axis  = "instance:secret"
-count = "3"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 3 -> 0: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured)"
 
 [[law0]]
 crate = "busbar-core-connector"
@@ -1776,8 +1766,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "instance:secret"
-count = "114"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -2 for R-FIX3 (the kernel's plugin tests move onto in-crate doubles); lowered 115 -> 114 by the deletion of the kernel's dead ask-state seal (audit K2-H3), the gate's measure on this branch merged with predev 1617e9f019"
+count = "67"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -2 for R-FIX3 (the kernel's plugin tests move onto in-crate doubles); lowered 115 -> 114 by the deletion of the kernel's dead ask-state seal (audit K2-H3), the gate's measure on this branch merged with predev 1617e9f019; LOWERED 114 -> 67: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1788,8 +1778,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel"
 axis  = "plane"
-count = "1122"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; REBALANCED 1172 -> 1168 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the cross-plane cells moved verbatim into the composition root's crates/busbar/tests/, which takes the same 4 hits (busbar × plane 822 -> 826); LOWERED 1168 -> 1141 by row 157: the hits drained with the deleted HOT trust and guard slots (plane_host/trust.rs, plane_host/guard.rs); LOWERED 1141 -> 1132 by row 156: the hits drained with the deleted kernel call log (calllog.rs, plane/calllog.rs); LOWERED 1132 -> 1128 by this PR: the deletion of the kernel's dead ask-state seal (audit K2-H3) removes four hits, its two `crate::mcp::roots` doc links and its two `\\x6dcp` seal domains; LOWERED 1128 -> 1122 by status row 130 E2: net_guard.rs and its two suites deleted (six plane hits, the gate's measure on the E2 candidate)"
+count = "1121"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1193 -> 1175, predev 9c0a394771's measure: the drain landed without giving its row back (Law 9: the ceiling ratchets down); LOWERED 1175 -> 1173, the merge-base d7929b661d's measure, which GetBusbar/busbar#570 holds (its scrape double spells no plane alias) (Law 9: the ceiling ratchets down to today's number); LOWERED 1173 -> 1172, the gate's measure on this branch merged with predev 1617e9f019: Q128 A4's plane_driver/gated.rs drain; REBALANCED 1172 -> 1168 (Q128, PR #686 architect ruling, BUSBAR-1.6.0.md l.475-483): the cross-plane cells moved verbatim into the composition root's crates/busbar/tests/, which takes the same 4 hits (busbar × plane 822 -> 826); LOWERED 1168 -> 1141 by row 157: the hits drained with the deleted HOT trust and guard slots (plane_host/trust.rs, plane_host/guard.rs); LOWERED 1141 -> 1132 by row 156: the hits drained with the deleted kernel call log (calllog.rs, plane/calllog.rs); LOWERED 1132 -> 1128 by this PR: the deletion of the kernel's dead ask-state seal (audit K2-H3) removes four hits, its two `crate::mcp::roots` doc links and its two `\\x6dcp` seal domains; LOWERED 1128 -> 1122 by status row 130 E2: net_guard.rs and its two suites deleted (six plane hits, the gate's measure on the E2 candidate); LOWERED 1122 -> 1121 by status row 155 B1a: DEFAULT_PROTOCOL and its frozen-wire pragma leave the kernel's config/providers.rs (one plane hit, the gate's measure on #937)"
 
 [[law0]]
 crate = "busbar-kernel"
@@ -1824,8 +1814,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-kernel-egress"
 axis  = "instance:secret"
-count = "1"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance"
+count = "0"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance; LOWERED 1 -> 0: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured)"
 
 [[law0]]
 crate = "busbar-kernel-egress"
@@ -1878,8 +1868,8 @@ cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain 
 [[law0]]
 crate = "busbar-plugin-loader"
 axis  = "instance:secret"
-count = "107"
-cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -2 (GetBusbar/busbar#532, Q1; 109 - 2 = 107): the raw JSON-lane loader and the cold auth lane are deleted (111 -> 109 on #532 merged with predev 1617e9f019); #532 touches neither of predev's two drains above"
+count = "12"
+cite  = "measured on predev f830faa691 (ARCHITECT 2026-10-07, Law 9); the drain is THE DESIGN §1 / DoD item 2: core names no instance. -1: dispatch/plugin.rs no longer edits a member's `env` map in place (a member's env references resolve at the spawn). predev -1: the secret shared-instance open moved to OpenOnce (f664bca2cf) -2 (GetBusbar/busbar#532, Q1; 109 - 2 = 107): the raw JSON-lane loader and the cold auth lane are deleted (111 -> 109 on #532 merged with predev 1617e9f019); #532 touches neither of predev's two drains above; LOWERED 107 -> 12: plugins.yaml's secret alias `c` (busbar-secret-c, no 1.5.5 spelling) is `secret-c`, so a one-letter literal no longer reads as that plugin (measured)"
 
 [[law0]]
 crate = "busbar-plugin-loader"

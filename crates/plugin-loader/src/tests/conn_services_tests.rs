@@ -1997,6 +1997,55 @@ fn a_replayed_identity_writes_the_callers_memory_again() {
     );
 }
 
+/// RED (THE DESIGN §11.12, "on resume the plugin re-issues the SAME handle and receives the stored
+/// result"): a `READ_REPLY` wrote the caller's memory, its piece and its bytes, so a replayed handle
+/// writes both again into the memory the replay lends, never a kept READY over memory nothing
+/// touched. A short answer's re-call starts the op over with fresh buffers: without this its replayed
+/// reads hand it no reply at all (busbar-hook-webrequest's conformance, a forwarded `decide`
+/// re-called on a short buffer). The far end is read once.
+#[test]
+fn a_replayed_read_reply_writes_its_piece_and_bytes_again() {
+    let table = Arc::new(Scripted::default());
+    table.script.lock().unwrap().extend([
+        (
+            piece(PieceKind::Fields, Some(201), Some(6..16), 6),
+            b"x: y\r\nFine By Me".to_vec(),
+        ),
+        (piece(PieceKind::Body, None, None, 3), b"abc".to_vec()),
+        (piece(PieceKind::Completion, None, None, 0), Vec::new()),
+    ]);
+    let p = bound_over(&table);
+    let stream = opened_stream(&p, 0).value;
+    let mut first = [0_u8; 64];
+    let (o, h) = read_reply(&p, 1, stream, &mut first);
+    assert!(ready(&o));
+    let (_, b) = read_reply(&p, 2, stream, &mut first);
+    assert_eq!(b.kind, REPLY_BODY);
+    let (_, e) = read_reply(&p, 3, stream, &mut first);
+    assert_eq!(e.kind, REPLY_END);
+    let mut again = [0_u8; 64];
+    let (ro, rh) = read_reply(&p, 1, stream, &mut again);
+    assert!(ready(&ro) && ro.len == o.len);
+    assert_eq!(rh, h, "the replayed head's piece");
+    assert_eq!(
+        &again[..16],
+        b"x: y\r\nFine By Me",
+        "the replayed head's bytes"
+    );
+    let (ro, rb) = read_reply(&p, 2, stream, &mut again);
+    assert_eq!((rb.kind, ro.len), (REPLY_BODY, 3));
+    assert_eq!(&again[..3], b"abc", "the replayed body's bytes");
+    assert_eq!(read_reply(&p, 3, stream, &mut again).1.kind, REPLY_END);
+    assert!(
+        table.script.lock().unwrap().is_empty(),
+        "every piece was read from the far end once"
+    );
+    super::forget(p.instance(), T);
+    let mut fresh = [0_u8; 64];
+    let (_, gone) = read_reply(&p, 1, stream, &mut fresh);
+    assert_ne!(gone, h, "a forgotten ticket's read is not replayed");
+}
+
 /// The connector's `RANDOM` slot is RETIRED and served by no host: `random.fill`, a host service,
 /// is the one random service.
 #[test]

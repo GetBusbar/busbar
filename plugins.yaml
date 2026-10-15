@@ -433,10 +433,11 @@ plugins:
     gate: suite
     description: "First-party signed kind:plane plugin cdylib: the mcp plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "plane-mcp/declares.json"
-    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
-    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    # Moved out of busbar into its own repo (P5); busbar LINKS it at a pinned rev. Its tests read
+    # busbar's own files at the pin (the conformance battery, qa/method-inventory.json), so its CI
+    # checks busbar out. Its first release is cut with the core version that pins it.
+    busbar_checkout: true
     released: false
-    pending_crate: true
   - repo: busbar-plane-a2a
     kind: plane
     alias: a2a
@@ -475,10 +476,9 @@ plugins:
     gate: suite
     description: "First-party signed kind:plane plugin cdylib: the decisions plane, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "plane-decisions/declares.json"
-    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
-    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    # Moved out of busbar into its own repo (P5); busbar LINKS it at a pinned rev. Its first release
+    # is cut with the core version that pins it.
     released: false
-    pending_crate: true
   - repo: busbar-transport-http
     kind: transport
     alias: http
@@ -517,10 +517,9 @@ plugins:
     gate: suite
     description: "First-party signed kind:transport plugin cdylib: the stdio transport, packaged as a droppable busbar plugin. Drop the signed tarball into plugins/."
     declares: "transport-stdio/declares.json"
-    # A twin repo seeded by `busbar-release plugin sync` (owner, 2026-09-30: every plugin repo a twin);
-    # its crates land in it from busbar. Its first release is cut with the core version that pins it.
+    # Moved out of busbar into its own repo (P5); busbar LINKS it at a pinned rev. Its first release
+    # is cut with the core version that pins it.
     released: false
-    pending_crate: true
   - repo: busbar-transport-grpc
     kind: transport
     alias: grpc
@@ -645,7 +644,10 @@ plugins:
     pending_crate: true
   - repo: busbar-secret-c
     kind: secret
-    alias: c
+    # Its alias is the repo's own name, not the bare language letter: a one-character alias is a word
+    # every one-letter string literal spells, so no instance census could tell the plugin from text.
+    # It has no 1.5.5 spelling to keep (registered 2026-10-02, decision #84).
+    alias: secret-c
     crate: busbar-secret-c
     version_line: "1.0"
     service: none

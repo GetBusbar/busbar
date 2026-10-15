@@ -444,7 +444,7 @@ fn finish_admin_reply(
             // body was serialized handler-side by the SAME `serde_json::to_string(&view)` call.
             (
                 StatusCode::OK,
-                [(CONTENT_TYPE, busbar_kernel::proxy::APPLICATION_JSON)],
+                [(CONTENT_TYPE, busbar_contract::protocol::APPLICATION_JSON)],
                 body,
             )
                 .into_response()

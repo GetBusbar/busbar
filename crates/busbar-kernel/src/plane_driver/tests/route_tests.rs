@@ -120,12 +120,115 @@ fn every_piece_says_whether_the_attempts_member_relays_the_callers_credential() 
     }
 }
 
+/// F25 row 628: rehomed from crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::
+/// test_stable_hash_is_deterministic. The walk's affinity hash is stable across calls AND processes
+/// (unlike `DefaultHasher`) so session affinity survives restarts: FNV-1a pinned to a precomputed
+/// golden, so an algorithm or offset/prime swap is caught directly.
+#[test]
+fn test_stable_hash_is_deterministic() {
+    use crate::plane_driver::sticky_hash;
+    assert_eq!(sticky_hash(b"session-abc"), 0xe909_c864_ab05_9bea);
+    assert_eq!(sticky_hash(b"session-abc"), sticky_hash(b"session-abc"));
+    assert_ne!(sticky_hash(b"session-abc"), sticky_hash(b"session-xyz"));
+}
+
 #[test]
 fn a_node_without_signing_material_lends_no_caller_reference() {
     let mut b = bufs(0);
     b.caller_ref.clear();
     let (i, _) = frame(&mut b, &piece(FROM_CALLER, 0, false), 9);
     assert!(i.caller_ref.ptr.is_null() && i.caller_ref.len == 0);
+}
+
+// ── F25 rows 630-633: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs. The
+// route-policy transparency pair as the pump stamps it
+// (`route_policy_fields`, 1.5.5's `maybe_attach_route_policy_gated`), over the full 2x2 matrix of
+// the outer (operator opt-in) and inner (a non-default policy chose) gates.
+
+/// Both `x-busbar-route-*` fields the pump would stamp after the plane's own `fields` for
+/// `(enabled, policy, member)`, as a `(policy, target)` pair (empty strings when absent); the
+/// plane's own fields stay first and untouched.
+fn built_route_fields(enabled: bool, policy: Option<&str>, member: &[u8]) -> (String, String) {
+    let mut fields: HeadFields = vec![(b"content-type".to_vec(), b"application/json".to_vec())];
+    route_policy_fields(&mut fields, enabled, policy, member);
+    assert_eq!(
+        fields[0],
+        (b"content-type".to_vec(), b"application/json".to_vec()),
+        "the plane's own fields lead"
+    );
+    let get = |name: &str| {
+        fields
+            .iter()
+            .find(|(n, _)| n.as_slice() == name.as_bytes())
+            .map(|(_, v)| String::from_utf8(v.clone()).expect("utf8"))
+            .unwrap_or_default()
+    };
+    (
+        get(crate::proxy::HDR_ROUTE_POLICY),
+        get(crate::proxy::HDR_ROUTE_TARGET),
+    )
+}
+
+/// F25 row 630: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::
+/// route_policy_headers_suppressed_when_outer_gate_disabled_even_with_a_policy_name. Even with a
+/// policy name present, the outer gate off suppresses BOTH fields.
+#[test]
+fn route_policy_headers_suppressed_when_outer_gate_disabled_even_with_a_policy_name() {
+    let (policy, target) = built_route_fields(false, Some("cheapest"), b"claude");
+    assert_eq!(
+        policy, "",
+        "route-policy header must be absent when the outer gate is off"
+    );
+    assert_eq!(
+        target, "",
+        "route-target header must be absent when the outer gate is off"
+    );
+}
+
+/// F25 row 631: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::
+/// route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled. With the outer
+/// gate ON, a default routing decision (no policy name) attaches nothing.
+#[test]
+fn route_policy_headers_absent_for_a_default_policy_even_when_outer_gate_enabled() {
+    let (policy, target) = built_route_fields(true, None, b"claude");
+    assert_eq!(
+        policy, "",
+        "no policy name -> no header, regardless of the outer gate"
+    );
+    assert_eq!(
+        target, "",
+        "no policy name -> no header, regardless of the outer gate"
+    );
+}
+
+/// F25 row 632: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::
+/// route_policy_headers_present_only_when_both_gates_open. Both gates open is the only combination
+/// that emits the pair, carrying the exact policy name and target member.
+#[test]
+fn route_policy_headers_present_only_when_both_gates_open() {
+    let (policy, target) = built_route_fields(true, Some("cheapest"), b"claude");
+    assert_eq!(policy, "cheapest");
+    assert_eq!(target, "claude");
+    let mut fields: HeadFields = Vec::new();
+    route_policy_fields(&mut fields, true, Some("cheapest"), b"claude");
+    assert_eq!(
+        fields,
+        vec![
+            (b"x-busbar-route-policy".to_vec(), b"cheapest".to_vec()),
+            (b"x-busbar-route-target".to_vec(), b"claude".to_vec()),
+        ],
+        "exactly the pair, policy first"
+    );
+}
+
+/// F25 row 633: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::
+/// route_policy_headers_absent_when_both_gates_closed. The fourth combination (outer off, inner off)
+/// is also silent, completing the 2x2 matrix.
+#[test]
+fn route_policy_headers_absent_when_both_gates_closed() {
+    let (policy, target) = built_route_fields(false, None, b"claude");
+    assert_eq!(policy, "");
+    assert_eq!(target, "");
 }
 
 /// The reference the driver derives is the node's keyed digest of the principal, never the

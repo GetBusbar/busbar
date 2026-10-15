@@ -3,10 +3,17 @@ use crate::codec::dialect::ir_parse_error;
 use crate::codec::keys;
 
 impl ProtocolReader for GeminiReader {
-    /// The FIRST `finishReason` is the first candidate's — the one `read_response` reads its stop
-    /// reason from. `FIELD_FINISH_REASON`, quoted, spelled as bytes so the lookup allocates nothing.
-    fn stop_reason_key(&self) -> Option<&'static [u8]> {
-        Some(b"\"finishReason\"")
+    /// A candidate's own `finishReason` member (`{"candidates":[{…,"finishReason":…}]}`, depth 3):
+    /// the first is the first candidate's, the one `read_response` reads its stop reason from.
+    /// Located structurally, so a `finishReason` key inside the candidate's `content` (a model-written
+    /// `functionCall.args` object holding `"finishReason":"MALFORMED_FUNCTION_CALL"`) is never read
+    /// as the stop reason and never faults a shared lane. `FIELD_FINISH_REASON`, quoted, spelled as
+    /// bytes so the lookup allocates nothing.
+    fn stop_reason_key(&self) -> Option<crate::codec::usage_tail::StopKey> {
+        Some(crate::codec::usage_tail::StopKey {
+            key: b"\"finishReason\"",
+            depth: 3,
+        })
     }
 
     /// The same `map_gemini_finish_reason` `read_response` maps it through.
@@ -996,7 +1003,12 @@ impl ProtocolReader for GeminiReader {
                                     // not index arithmetic) — the ID space is unrelated to the IR
                                     // index space. Recorded in `open_tools` so the finishReason
                                     // handler emits a matching BlockStop for every tool block.
-                                    let text_base = usize::from(state.text_block_open);
+                                    // A text part anywhere before this call counts as position 0,
+                                    // open or already closed, exactly as 1.5.5 counted it (v1.5.5
+                                    // `crates/busbar/src/proto/gemini/reader.rs:895`,
+                                    // `state.text_index.is_some()`) and as the buffered reader counts
+                                    // it, so a streamed and a buffered answer name a call alike.
+                                    let text_base = usize::from(state.text_index.is_some());
                                     let ir_idx = state.claim_ir_index();
                                     state.open_tools.insert(ir_idx);
 

@@ -324,9 +324,10 @@ pub fn sources(cx: &Ctx) -> Result<Vec<String>, String> {
         "crates/busbar-plane-mcp/src/tools_config.rs".to_string(),
         // `mcp:` — the plane's endpoint block (`McpCfg`), in the plane crate beside `tools:`.
         "crates/busbar-plane-mcp/src/endpoint.rs".to_string(),
-        // `tool_pools:` / `agent_pools:` — one type, two sections, and `repeatable:` is the SAFETY
-        // declaration that decides whether an operation with effects may be performed twice.
-        core_file(cx, &core, "failover/mod.rs")?,
+        // (`tool_pools:` / `agent_pools:` — `CandidatePoolCfg`, one type for two sections whose
+        // `repeatable:` is the SAFETY declaration that decides whether an operation with effects may
+        // be performed twice — lives in the kernel's `config/pools.rs`, which the grammar directory
+        // above tracks, so it carries no entry of its own here.)
         // `streams:` — the streaming plane's grammar, including the three plane-imposed session
         // CEILINGS that bound what a live-voice deployment may ever hold.
         "crates/busbar-plane-streaming/src/config.rs".to_string(),

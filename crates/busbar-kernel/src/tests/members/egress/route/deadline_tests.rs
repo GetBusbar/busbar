@@ -245,6 +245,91 @@ fn an_upstream_that_says_nothing_and_has_no_cap_is_cut_by_the_walk_budget() {
     );
 }
 
+// ── a streamed head that never comes (F25 row 155 rehomes) ─────────────────────────────────────
+
+use super::walk_tests::{real_egress, route_over, RealBreaker};
+
+/// F25 row 33: rehomed from crates/busbar-llm/src/engine/engine_tests/send_envelope_tests.rs::a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_failure.
+/// A STREAMED send to a member that accepts and never sends its head resolves at the stream
+/// ceiling (300 s from the send, past the walk's 120 s budget: 1.5.5 ran a streamed request under
+/// the client ceiling and never the failover deadline), never hangs, is refused 503, and records
+/// exactly one transient against the member in the served breaker. The connector's own bound on
+/// the head is the same ceiling.
+#[test]
+fn a_black_holed_stream_send_times_out_at_the_ceiling_and_records_the_failure() {
+    let node = one_lane_pool(true);
+    node.conns.script("a", Script::Hang);
+    let real = RealBreaker::new();
+    let started = node.clock.now_millis();
+
+    let outcome = route_over(&node, &real_egress(&node, &real), "primary");
+
+    assert_eq!(
+        node.clock.now_millis() - started,
+        u128::from(CEILING_MS),
+        "the stream send resolves at the ceiling"
+    );
+    assert_eq!(
+        outcome.shed(),
+        Some(&timed_out()),
+        "black-holed headers are an upstream failure, never a 2xx and never a hang: {outcome:?}"
+    );
+    assert_eq!(
+        real.outcomes("primary", DestinationId::new(0)),
+        vec![busbar_kernel_egress::ports::Outcome::Transient { retry_after: None }]
+    );
+    assert_eq!(
+        real.cell("primary", DestinationId::new(0)).err_count(),
+        1,
+        "the ceiling expiry records exactly one breaker transient, not just an error status"
+    );
+    let caps: Vec<u64> = node
+        .conns
+        .opened
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, cap)| *cap)
+        .collect();
+    assert_eq!(caps, vec![CEILING_MS]);
+}
+
+/// How long, in the paused runtime's milliseconds, a streamed send to a black hole takes to resolve
+/// under the deployment's stream ceiling of `secs` (the composition root hands the far end
+/// `limits.upstream_request_timeout_secs` as that ceiling) and the walk's own 120 s budget.
+fn cut_after(secs: u64) -> u128 {
+    let node = one_lane_pool(true);
+    node.conns.script("a", Script::Hang);
+    let mut egress = node.egress();
+    egress.stream_ceiling_secs = secs;
+    let started = node.clock.now_millis();
+
+    let outcome = route_over(&node, &egress, "primary");
+
+    assert_eq!(
+        outcome.shed().map(|r| r.status),
+        Some(u32::from(
+            busbar_kernel_egress::wire::STATUS_SERVICE_UNAVAILABLE
+        )),
+        "a cut stream is an upstream failure: {outcome:?}"
+    );
+    node.clock.now_millis() - started
+}
+
+/// F25 row 35: rehomed from crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier.
+/// The same silent hole under two configured ceilings: cut at exactly 7 s under 7, and at exactly
+/// 23 s under 23. The cut is the configured total deadline and nothing else: an idle timer would
+/// fire at the same moment in both runs, and the walk's 120 s budget at neither.
+#[test]
+fn a_proxied_stream_is_cut_at_the_configured_second_and_by_nothing_earlier() {
+    assert_eq!(cut_after(7), 7_000, "cut at the configured seven seconds");
+    assert_eq!(
+        cut_after(23),
+        23_000,
+        "the same hole, cut at twenty-three: the deadline tracks the configuration"
+    );
+}
+
 /// A drip-fed answer: `count` pieces, one every `step_ms`, completing when asked.
 fn drip(count: usize, step_ms: u64, complete: bool) -> Script {
     Script::Drip {

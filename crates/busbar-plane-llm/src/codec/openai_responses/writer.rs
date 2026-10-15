@@ -689,7 +689,7 @@ impl ProtocolWriter for ResponsesWriter {
                 // Carry this stream's id forward so the terminal events (and any failure) replay
                 // the SAME `response.id`.
                 self.set_response_id(&id);
-                let created_at = created.unwrap_or(self.stamped_created_at);
+                let created_at = created.unwrap_or_else(|| self.default_created_at());
                 // Carry this stream's `created_at` forward so the terminal events (and any failure)
                 // replay the SAME timestamp — a native stream's `created_at` is constant across
                 // every event.
@@ -1728,7 +1728,7 @@ impl ProtocolWriter for ResponsesWriter {
         // protocol-correct `resp_` id and the current unix time so the body stays SDK-valid.
         // `created_at` is the Responses field name (the official SDK's `Response.created_at`).
         let id = resp.id.clone().unwrap_or_else(synthesize_response_id);
-        let created_at = resp.created.unwrap_or(self.stamped_created_at);
+        let created_at = resp.created.unwrap_or_else(|| self.default_created_at());
         obj.insert(keys::ID.to_string(), serde_json::json!(id));
         obj.insert(keys::OBJECT.to_string(), serde_json::json!(OBJ_RESPONSE));
         obj.insert(keys::CREATED_AT.to_string(), serde_json::json!(created_at));
