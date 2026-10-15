@@ -379,7 +379,7 @@ fn the_hop_presents_the_userinfo_first_unless_the_request_names_authorization() 
     let request_with = |fields: &[(&'static str, &'static str)], carry: bool| {
         let mut headers = http::HeaderMap::new();
         for (n, v) in fields {
-            headers.append(*n, http::HeaderValue::from_static(*v));
+            headers.append(*n, http::HeaderValue::from_static(v));
         }
         let mut req = egress_request(
             "https://api.example.com/v1/messages".parse().unwrap(),

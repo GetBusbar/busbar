@@ -7,10 +7,13 @@
 
 use super::*;
 
+/// One outbound serving asked for: the style, its settings and the credential handed with it.
+type Asked = (String, serde_json::Value, Option<Vec<u8>>);
+
 /// An auth axis that records each outbound serving it is asked for, and serves none.
 #[derive(Default)]
 struct Recording {
-    seen: std::sync::Mutex<Vec<(String, serde_json::Value, Option<Vec<u8>>)>>,
+    seen: std::sync::Mutex<Vec<Asked>>,
 }
 
 impl AuthAxis for Recording {

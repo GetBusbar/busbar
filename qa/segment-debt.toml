@@ -40,34 +40,6 @@ dialect = "anthropic"
 owner = "kernel-neutrality lane"
 
 [[segment-debt]]
-file = "crates/busbar-kernel/src/appbuild.rs"
-line = 902
-text = "anthropic_adaptive_thinking: provider_cfg.anthropic_adaptive_thinking,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/config/mod.rs"
-line = 2084
-text = "anthropic_adaptive_thinking: deploy_cfg"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/config/mod.rs"
-line = 2085
-text = ".anthropic_adaptive_thinking"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/config/mod.rs"
-line = 2086
-text = ".or(def.anthropic_adaptive_thinking),"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
 file = "crates/busbar-kernel/src/config/providers.rs"
 line = 81
 text = "pub anthropic_adaptive_thinking: Option<bool>,"
@@ -99,13 +71,6 @@ owner = "kernel-neutrality lane"
 file = "crates/busbar-kernel/src/config/tests/tests.rs"
 line = 45
 text = "anthropic_adaptive_thinking: None,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/config_validate/secret_refs.rs"
-line = 222
-text = "anthropic_adaptive_thinking: _,"
 dialect = "anthropic"
 owner = "kernel-neutrality lane"
 

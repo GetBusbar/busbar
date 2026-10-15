@@ -723,7 +723,6 @@ mod door_units {
     use std::sync::Arc;
 
     use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Field, Outcome, BLOB_OCTETS};
-    use busbar_contract::abi::mechanism::lifecycle::slot as life;
     use busbar_contract::abi::plane::{
         slot, ArriveIn, ArriveOut, OnPieceIn, OnPieceOut, OutField, PlaneOpenIn, PlaneOpenOut,
         UnitCount, EMIT_DONE, FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_FINAL,
