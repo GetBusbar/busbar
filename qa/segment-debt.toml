@@ -166,41 +166,6 @@ dialect = "anthropic"
 owner = "kernel-neutrality lane"
 
 [[segment-debt]]
-file = "crates/busbar-kernel/src/auth/tests/tests.rs"
-line = 1180
-text = "crate::proto::PROTO_ANTHROPIC,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/auth/tests/tests.rs"
-line = 1294
-text = "crate::proto::PROTO_ANTHROPIC,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/auth/tests/tests.rs"
-line = 1430
-text = "crate::proto::PROTO_ANTHROPIC,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/auth/tests/tests.rs"
-line = 1631
-text = ".lane(LaneSpec::new(\"m\", crate::proto::PROTO_ANTHROPIC, &server.base_url()).api_key(\"up\"))"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/auth/tests/tests.rs"
-line = 2098
-text = "LaneSpec::new(\"m\", crate::proto::PROTO_ANTHROPIC, &server.base_url()).api_key(\"up\"),"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
 file = "crates/busbar-kernel/src/config/mod.rs"
 line = 2084
 text = "anthropic_adaptive_thinking: deploy_cfg"
@@ -268,20 +233,6 @@ file = "crates/busbar-kernel/src/config_validate/tests/tests.rs"
 line = 82
 text = "anthropic_adaptive_thinking: None,"
 dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/config_validate/tests/tests.rs"
-line = 5618
-text = "&[proto_a(), \"openai_chat\"],"
-dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/config_validate/tests/tests.rs"
-line = 5625
-text = "errors[0].contains(&format!(\"must be one of: {}, openai_chat\", proto_a())),"
-dialect = "openai"
 owner = "kernel-neutrality lane"
 
 [[segment-debt]]
@@ -386,90 +337,6 @@ owner = "kernel-neutrality lane"
 file = "crates/busbar-kernel/src/test_support/fixtures.rs"
 line = 50
 text = "anthropic_adaptive_thinking: None,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/tests/metrics_tests.rs"
-line = 151
-text = ".lane(LaneSpec::new(\"m\", crate::proto::PROTO_OPENAI, \"http://m\"))"
-dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/tests/metrics_tests.rs"
-line = 212
-text = ".lane(LaneSpec::new(\"m\", crate::proto::PROTO_OPENAI, \"http://m\"))"
-dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/tests/metrics_tests.rs"
-line = 294
-text = ".lane(LaneSpec::new(\"m\", crate::proto::PROTO_OPENAI, \"http://m\"))"
-dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/tests/metrics_tests.rs"
-line = 419
-text = ".lane(LaneSpec::new(\"m\", crate::proto::PROTO_OPENAI, \"http://m\"))"
-dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/tests/metrics_tests.rs"
-line = 495
-text = ".lane(LaneSpec::new(\"m\", crate::proto::PROTO_OPENAI, \"http://m\"))"
-dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/tests/metrics_tests.rs"
-line = 556
-text = ".lane(LaneSpec::new(\"m\", crate::proto::PROTO_OPENAI, \"http://m\"))"
-dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/tests/metrics_tests.rs"
-line = 788
-text = ".lane(LaneSpec::new(\"m\", crate::proto::PROTO_OPENAI, \"http://m\"))"
-dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/tests/metrics_tests.rs"
-line = 837
-text = ".lane(LaneSpec::new(\"m\", crate::proto::PROTO_OPENAI, \"http://m\"))"
-dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/tests/plugin_routes_tests.rs"
-line = 257
-text = "crate::proto::PROTO_ANTHROPIC,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/tests/plugin_routes_tests.rs"
-line = 386
-text = "crate::proto::PROTO_ANTHROPIC,"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/tests/tests.rs"
-line = 426
-text = "async fn test_fallback_openai_404_is_json_no_amzn_headers() {"
-dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/tests/tests.rs"
-line = 2140
-text = "api_key_env: ANTHROPIC_KEY"
 dialect = "anthropic"
 owner = "kernel-neutrality lane"
 

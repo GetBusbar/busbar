@@ -423,7 +423,7 @@ fn residual_planes() -> crate::plane::PlaneDispatch {
 
 /// A 404 fallback on the OpenAI path is shaped as the OpenAI error envelope (no amzn headers).
 #[tokio::test]
-async fn test_fallback_openai_404_is_json_no_amzn_headers() {
+async fn test_fallback_chat_completions_404_is_json_no_amzn_headers() {
     let resp = fallback_error_response(
         &residual_planes(),
         "/v1/chat/completions",
@@ -2137,7 +2137,7 @@ governance:
   admin_token: '${PATH}'
 providers:
   upstream-a:
-    api_key_env: ANTHROPIC_KEY
+    api_key_env: UPSTREAM_A_KEY
 models:
   claude: { provider: upstream-a }
 pools:
