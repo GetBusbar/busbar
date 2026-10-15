@@ -391,3 +391,71 @@ fn parallel_tool_calls_discarded_on_gemini_cohere_bedrock_warns() {
         cap2.messages()
     );
 }
+
+// ── F25 REHOME (rows 613, 614): the Cohere stop-sequence cap ─────────────────────────────────────
+
+/// The production request translate steps onto `egress` (reader → egress seam → writer).
+fn rehome_xreq(ingress: &'static str, egress: &str, body: &serde_json::Value) -> serde_json::Value {
+    let ingress_p = crate::codec::proto_codec::protocol_for(ingress).expect("ingress");
+    let egress_p = crate::codec::proto_codec::protocol_for(egress).expect("egress");
+    let mut req = ingress_p.reader().read_request(body).expect("read_request");
+    crate::codec::chat_handle::chat_prepare_for_egress(
+        &mut req,
+        &busbar_contract::ir::egress_prep::EgressPrep {
+            thought_signature_fill: false,
+            ingress_protocol: ingress,
+            egress_requires_max_tokens: egress_p.decl().is_some_and(|d| d.requires_max_tokens),
+            lane_default_max_tokens: None,
+            global_default_max_tokens: 4096,
+            reasoning_allowed: true,
+            reasoning_budgets: crate::codec::ir::REASONING_BUDGET_DEFAULTS,
+            prompt_caching_allowed: true,
+            cache_control_cap: None,
+            lane_caps: Default::default(),
+        },
+    );
+    egress_p.writer().write_request(&req)
+}
+
+/// F25 REHOME row 613, from `crates/busbar-llm/src/engine/tests/stop_sequence_cap_degrade_tests.rs:23`
+/// (`openai_to_cohere_over_cap_stop_sequences_is_clamped_not_rejected`): an OpenAI caller's six stop
+/// sequences onto a Cohere lane are CLAMPED to Cohere's cap of 5 and forwarded, not rejected
+/// (v1.5.4's truncate-and-forward).
+#[test]
+fn openai_to_cohere_over_cap_stop_sequences_are_clamped_not_rejected() {
+    let out = rehome_xreq(
+        "openai",
+        "cohere",
+        &serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stop": ["a", "b", "c", "d", "e", "f"]
+        }),
+    );
+    assert_eq!(
+        out.get("stop_sequences"),
+        Some(&serde_json::json!(["a", "b", "c", "d", "e"])),
+        "an over-cap stop list is clamped to Cohere's cap of 5: {out}"
+    );
+}
+
+/// F25 REHOME row 614, from `crates/busbar-llm/src/engine/tests/stop_sequence_cap_degrade_tests.rs:63`
+/// (`openai_to_cohere_exactly_cap_stop_sequences_is_allowed`): exactly five stop sequences is within
+/// Cohere's cap and is forwarded whole.
+#[test]
+fn openai_to_cohere_exactly_cap_stop_sequences_are_forwarded_whole() {
+    let out = rehome_xreq(
+        "openai",
+        "cohere",
+        &serde_json::json!({
+            "model": "gpt-4o",
+            "messages": [{"role": "user", "content": "hi"}],
+            "stop": ["a", "b", "c", "d", "e"]
+        }),
+    );
+    assert_eq!(
+        out.get("stop_sequences"),
+        Some(&serde_json::json!(["a", "b", "c", "d", "e"])),
+        "an at-cap stop list is forwarded whole: {out}"
+    );
+}

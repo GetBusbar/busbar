@@ -5227,27 +5227,41 @@ fn raw_stop_reason_agrees_with_read_response() {
         );
     }
     // A value too long to be a stop token is not read at all.
-    let long = format!("{{\"finishReason\":\"{}\"}}", "A".repeat(4096));
+    let long = format!(
+        "{{\"candidates\":[{{\"finishReason\":\"{}\"}}]}}",
+        "A".repeat(4096)
+    );
     assert_eq!(GeminiReader.raw_stop_reason(long.as_bytes()), None);
     assert_eq!(GeminiReader.raw_stop_reason(b"{}"), None);
 }
 
-/// The relay's INCREMENTAL scan answers exactly what the whole-body `first_string_value_after`
-/// answers, wherever the body is split — the key, the colon, the quotes or the token cut at any byte
-/// (owner ruling Q31 follow-up: the ungoverned same-protocol relay keeps no copy of the body).
+/// The relay's INCREMENTAL scan answers the same wherever the body is split — the key, the colon,
+/// the quotes or the token cut at any byte (owner ruling Q31 follow-up: the ungoverned
+/// same-protocol relay keeps no copy of the body) — and it reads only a candidate's own
+/// `finishReason` member: the name spelled inside delivered text, or as a key of a model-written
+/// tool `args` object, is content.
 #[test]
-fn stop_key_scanner_matches_the_whole_body_scan_at_every_split() {
-    use crate::codec::usage_tail::{first_string_value_after, StopKeyScanner};
-    let bodies: [&[u8]; 5] = [
-        br#"{"candidates":[{"content":{"parts":[{"text":"x"}]},"finishReason" : "MALFORMED_FUNCTION_CALL"}]}"#,
-        br#"{"candidates":[{"content":{"parts":[{"text":"\"finishReason\":\"STOP\""}]},"finishReason":"SAFETY"}]}"#,
-        br#"{"candidates":[{"finishReason":null}]}"#,
-        br#"{"usageMetadata":{"promptTokenCount":1}}"#,
-        br#"{"finishReason":"has\"escape"}"#,
+fn stop_key_scanner_reads_the_candidate_member_at_every_split() {
+    use crate::codec::usage_tail::StopKeyScanner;
+    let bodies: [(&[u8], Option<&str>); 6] = [
+        (
+            br#"{"candidates":[{"content":{"parts":[{"text":"x"}]},"finishReason" : "MALFORMED_FUNCTION_CALL"}]}"#,
+            Some("MALFORMED_FUNCTION_CALL"),
+        ),
+        (
+            br#"{"candidates":[{"content":{"parts":[{"text":"\"finishReason\":\"STOP\""}]},"finishReason":"SAFETY"}]}"#,
+            Some("SAFETY"),
+        ),
+        (br#"{"candidates":[{"finishReason":null}]}"#, None),
+        (br#"{"usageMetadata":{"promptTokenCount":1}}"#, None),
+        (br#"{"candidates":[{"finishReason":"has\"escape"}]}"#, None),
+        (
+            br#"{"candidates":[{"content":{"parts":[{"functionCall":{"name":"f","args":{"finishReason":"MALFORMED_FUNCTION_CALL"}}}]},"finishReason":"STOP"}]}"#,
+            Some("STOP"),
+        ),
     ];
-    let key: &'static [u8] = b"\"finishReason\"";
-    for body in bodies {
-        let whole = first_string_value_after(body, key).map(str::to_owned);
+    let key = GeminiReader.stop_reason_key().expect("gemini is scanned");
+    for (body, want) in bodies {
         for a in 0..=body.len() {
             for b in a..=body.len() {
                 let mut scan = StopKeyScanner::new(key).expect("a short key");
@@ -5255,8 +5269,8 @@ fn stop_key_scanner_matches_the_whole_body_scan_at_every_split() {
                 scan.feed(&body[a..b]);
                 scan.feed(&body[b..]);
                 assert_eq!(
-                    scan.token().map(str::to_owned),
-                    whole,
+                    scan.token(),
+                    want,
                     "split at {a}/{b} of {}",
                     String::from_utf8_lossy(body)
                 );
@@ -5264,12 +5278,49 @@ fn stop_key_scanner_matches_the_whole_body_scan_at_every_split() {
         }
     }
     // A token longer than the bound is never read, however it arrives.
-    let long = format!("{{\"finishReason\":\"{}\"}}", "A".repeat(200));
+    let long = format!(
+        "{{\"candidates\":[{{\"finishReason\":\"{}\"}}]}}",
+        "A".repeat(200)
+    );
     let mut scan = StopKeyScanner::new(key).expect("a short key");
     for byte in long.as_bytes().chunks(1) {
         scan.feed(byte);
     }
     assert_eq!(scan.token(), None);
+}
+
+/// A MODEL-WRITTEN TOOL ARGUMENT NEVER FAULTS THE LANE. A Gemini answer writes `content` before
+/// `finishReason`, so a `functionCall.args` object holding `"finishReason":"MALFORMED_FUNCTION_CALL"`
+/// was the FIRST `finishReason` in the body: the same-protocol relay read it as a failed generation
+/// and raised a transient fault on a lane other tenants share. The stop reason is the candidate's
+/// own member, as `read_response` reads it. RED while the scanner took the first key anywhere.
+#[test]
+fn a_finish_reason_inside_tool_args_is_not_the_stop_reason() {
+    let body = serde_json::json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": [{"functionCall": {
+                "name": "report",
+                "args": {"finishReason": "MALFORMED_FUNCTION_CALL"}
+            }}]},
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {"promptTokenCount": 10, "candidatesTokenCount": 5}
+    });
+    // The raw scan reads the CANDIDATE's own token (`STOP`), never the args' copy, which would map
+    // to a failed generation. `read_response` then promotes a tool-call `STOP` to `ToolUse` from
+    // the content, which a token-only scan cannot see and the fault check does not need.
+    assert_eq!(
+        GeminiReader.raw_stop_reason(body.to_string().as_bytes()),
+        Some(crate::codec::ir::IrStopReason::EndTurn)
+    );
+    let parsed = GeminiReader.read_response(&body).expect("read_response");
+    assert_eq!(
+        parsed.stop_reason,
+        Some(crate::codec::ir::IrStopReason::ToolUse)
+    );
+    assert!(!crate::exchange::reply::wire::generation_failed(
+        "gemini", &body
+    ));
 }
 
 /// The Error event is scoped to the failed-generation reason: a SAFETY stop is a correctly-served
@@ -7406,4 +7457,48 @@ fn status_word_golden() {
             "class={class:?}"
         );
     }
+}
+
+/// STREAMED AND BUFFERED ANSWERS NAME A CALL ALIKE, AS IN 1.5.5. For parts `[text, call, call]` the
+/// second call is tool position 1: a text part before it counts once whether its block is still open
+/// or already closed (v1.5.5 `crates/busbar/src/proto/gemini/reader.rs:895`,
+/// `state.text_index.is_some()`). RED while the stream counted only a still-open text block (closed
+/// before the first call opened), so the second call hashed position 2 and its synthesized `call_…`
+/// id differed from 1.5.5's and from the buffered answer's.
+#[test]
+fn streamed_tool_ids_after_text_match_the_buffered_ids() {
+    let body = serde_json::json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": [
+                {"text": "let me check"},
+                {"functionCall": {"name": "get_weather", "args": {"city": "Paris"}}},
+                {"functionCall": {"name": "get_time", "args": {"tz": "CET"}}}
+            ]},
+            "finishReason": "STOP"
+        }],
+        "usageMetadata": {"promptTokenCount": 3, "candidatesTokenCount": 4},
+        "responseId": "r-ids"
+    });
+    let buffered: Vec<String> = GeminiReader
+        .read_response(&body)
+        .expect("read_response")
+        .content
+        .into_iter()
+        .filter_map(|b| match b {
+            crate::codec::ir::IrBlock::ToolUse { id, .. } => Some(id),
+            _ => None,
+        })
+        .collect();
+    let streamed: Vec<String> = collect_stream(&[body])
+        .into_iter()
+        .filter_map(|e| match e {
+            IrStreamEvent::BlockStart {
+                block: crate::codec::ir::IrBlockMeta::ToolUse { id, .. },
+                ..
+            } => Some(id),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(buffered.len(), 2, "{buffered:?}");
+    assert_eq!(streamed, buffered);
 }

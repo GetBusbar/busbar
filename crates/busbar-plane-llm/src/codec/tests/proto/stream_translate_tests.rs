@@ -5081,3 +5081,94 @@ fn responses_failed_stream_bills_its_reported_usage() {
     assert!(none.usage().is_none());
     assert!(none.terminal_error().is_some());
 }
+
+/// A TRANSLATED STREAM INTO A RESPONSES CLIENT IS STAMPED WITH THE HOST'S CLOCK, NOT 1970. The
+/// translator clears the upstream's creation time, and the Responses writer then stamped
+/// `UNSTAMPED_CREATED_AT` (`0`) on `response.created` and every terminal event. 1.5.5 stamped
+/// `now_unix_secs()` (v1.5.5 `crates/busbar/src/proto/openai_responses/writer.rs:479`); the plane
+/// reads the host's wall clock through `busbar_contract::codec::wall_clock_now`, as the Chat
+/// writer's `created` does. RED while every translated stream carried `created_at: 0`.
+#[test]
+fn a_translated_stream_into_responses_carries_the_host_clock_created_at() {
+    crate::codec::ensure_test_protocols_registered();
+    let before = busbar_contract::codec::wall_clock_now().expect("the test host arms a clock");
+    let mut st = StreamTranslate::new("responses", "anthropic").expect("translator");
+    let mut out = st.feed(
+        b"event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude\",\"content\":[],\"stop_reason\":null,\"stop_sequence\":null,\"usage\":{\"input_tokens\":3,\"output_tokens\":1}}}\n\n",
+    );
+    out.extend(st.feed(
+        b"event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\",\"stop_sequence\":null},\"usage\":{\"output_tokens\":2}}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n",
+    ));
+    out.extend(st.finish());
+    let text = String::from_utf8_lossy(&out);
+    let stamps: Vec<u64> = text
+        .lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .filter_map(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+        .filter_map(|v| v["response"]["created_at"].as_u64())
+        .collect();
+    assert!(
+        stamps.len() >= 2,
+        "response.created and the terminal event carry created_at: {text}"
+    );
+    for s in &stamps {
+        assert!(
+            *s >= before,
+            "created_at {s} is the host clock, never 0: {text}"
+        );
+    }
+    assert!(
+        stamps.windows(2).all(|w| w[0] == w[1]),
+        "one created_at across the stream: {stamps:?}"
+    );
+}
+
+/// F25 REHOME row 350, from `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs:2234`
+/// (`test_forward_once_cross_protocol_remaps_tool_call_id`): an Anthropic answer whose `tool_use` id
+/// is `toolu_origRAW123`, delivered to an OpenAI caller through the production ingress seam
+/// (`chat_prepare_for_ingress`, which every attempt path runs), carries an OpenAI-native `call_…`
+/// id, never the raw one, and the raw id appears nowhere in the client body. The client's echo of
+/// that id decodes back to the far end's original.
+#[test]
+fn an_anthropic_tool_call_id_reaches_an_openai_client_remapped_and_unleaked() {
+    let ir_resp = AnthropicReader
+        .read_response(&serde_json::json!({
+            "id": "msg_x",
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "tool_use",
+                "id": "toolu_origRAW123",
+                "name": "get_weather",
+                "input": {"city": "SF"}
+            }],
+            "model": "claude-3",
+            "stop_reason": "tool_use",
+            "usage": {"input_tokens": 3, "output_tokens": 2}
+        }))
+        .expect("anthropic read");
+    let mut ir_resp = ir_resp;
+    crate::codec::chat_handle::chat_prepare_for_ingress(&mut ir_resp, "openai", 1_752_000_000);
+    let body = crate::codec::proto_codec::protocol_for("openai")
+        .expect("openai")
+        .writer()
+        .write_response(&ir_resp);
+    let tool_id = body
+        .pointer("/choices/0/message/tool_calls/0/id")
+        .and_then(|s| s.as_str())
+        .unwrap_or_else(|| panic!("expected an OpenAI tool_calls id in: {body}"))
+        .to_string();
+    assert!(tool_id.starts_with("call_"), "{tool_id}");
+    assert_ne!(tool_id, "toolu_origRAW123");
+    let bytes = serde_json::to_vec(&body).expect("serializes");
+    assert!(
+        !bytes
+            .windows("toolu_origRAW123".len())
+            .any(|w| w == b"toolu_origRAW123"),
+        "the raw Anthropic tool id must not appear anywhere in the client body: {body}"
+    );
+    assert_eq!(
+        decode_native_tool_id("openai", &tool_id).as_deref(),
+        Some("toolu_origRAW123")
+    );
+}

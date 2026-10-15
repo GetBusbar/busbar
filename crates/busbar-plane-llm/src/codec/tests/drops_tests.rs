@@ -817,3 +817,52 @@ fn every_drop_list_is_sorted_for_the_walks_search() {
         });
     }
 }
+
+/// F25 REHOME row 109, from `crates/busbar-llm/src/engine/tests/egress_dropped_controls_audit_tests.rs:146`
+/// (`egress_dropped_controls_reports_the_right_controls_per_dialect`): the chat handle's dropped
+/// controls, per egress dialect, for an OpenAI request carrying tools, `response_format: json_object`
+/// and `tool_choice: "none"`. Anthropic on a default lane drops `response_format` (1.5.5's drop,
+/// v1.5.5 `crates/busbar/src/proto/anthropic/writer.rs:343-347`; the legacy expectation of an empty
+/// list pinned the post-1.5.5 forced tool) and on a native-structured-output lane drops the
+/// schema-less `response_format` too; Bedrock drops `response_format` and `tool_choice=none`;
+/// OpenAI drops nothing.
+#[test]
+fn egress_dropped_controls_reports_the_right_controls_per_dialect() {
+    use busbar_contract::ir::handle::IrHandle as _;
+    let body = json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [{
+            "type": "function",
+            "function": {"name": "get_weather", "parameters": {"type": "object"}}
+        }],
+        "response_format": {"type": "json_object"},
+        "tool_choice": "none"
+    });
+    let ir = protocol_for("openai")
+        .unwrap()
+        .reader()
+        .read_request(&body)
+        .expect("openai body must parse to IR");
+    let default_lane = crate::codec::chat_handle::ChatReqHandle(ir.clone(), Default::default());
+    assert_eq!(
+        default_lane.egress_dropped_controls("anthropic"),
+        vec!["response_format"]
+    );
+    assert_eq!(
+        default_lane.egress_dropped_controls("bedrock"),
+        vec!["response_format", "tool_choice=none"]
+    );
+    assert!(default_lane.egress_dropped_controls("openai").is_empty());
+    let native_lane = crate::codec::chat_handle::ChatReqHandle(
+        ir,
+        busbar_contract::ir::egress_prep::LaneCaps {
+            native_structured_output: true,
+            ..Default::default()
+        },
+    );
+    assert_eq!(
+        native_lane.egress_dropped_controls("anthropic"),
+        vec!["response_format"]
+    );
+}

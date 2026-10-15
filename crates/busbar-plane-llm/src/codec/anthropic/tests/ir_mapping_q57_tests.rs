@@ -329,11 +329,13 @@ fn ant07_response_format_is_native_and_leaves_tool_choice_alone() {
 }
 
 /// ANT-07, the lane that does NOT declare native structured outputs (the default — Claude 3.x,
-/// Sonnet 4 / Opus 4.0 400 on `output_config.format`): the directive takes the pre-capability
-/// forced-tool form, byte for byte what this writer sent before the capability existed, and the
-/// forced answer is mapped back to text on the buffered path.
+/// Sonnet 4 / Opus 4.0 400 on `output_config.format`): the directive is DROPPED with a warn and
+/// reported, exactly as 1.5.5 dropped it (v1.5.5 `crates/busbar/src/proto/anthropic/writer.rs:343-347`;
+/// CHANGELOG 1.6.0: an omitted lane-capability key "sends what 1.5.5 sent"). No synthetic tool, no
+/// forced `tool_choice` overwriting the caller's, and a `tool_use` named like the old sentinel is
+/// an ordinary tool call. RED while the writer sent `busbar_response_format` with a forced choice.
 #[test]
-fn ant07_default_lane_keeps_the_forced_tool() {
+fn ant07_default_lane_drops_the_directive_as_in_1_5_5() {
     let body = json!({
         "model": "gpt-4o",
         "messages": [{"role": "user", "content": "hi"}],
@@ -342,34 +344,30 @@ fn ant07_default_lane_keeps_the_forced_tool() {
     });
     let out = xreq_lane("openai", "anthropic", &body, &Default::default());
     assert!(out.get("output_config").is_none(), "{out}");
-    assert_eq!(
-        out["tool_choice"],
-        json!({"type": "tool", "name": "busbar_response_format"}),
-        "{out}"
-    );
-    assert_eq!(
-        out["tools"][0]["input_schema"],
-        json!({"type": "object", "properties": {"n": {"type": "integer"}}}),
-        "{out}"
-    );
+    assert!(out.get("tool_choice").is_none(), "{out}");
+    assert!(out.get("tools").is_none(), "{out}");
     // The model-blind write is the default-lane write.
     assert_eq!(xreq("openai", "anthropic", &body), out);
-    // A schema-less JSON mode is carried (permissive object schema), so nothing is reported dropped.
-    let ir = protocol_for("openai")
-        .unwrap()
-        .reader()
-        .read_request(
-            &json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
-            "response_format": {"type": "json_object"}}),
-        )
-        .unwrap();
     let anthropic = protocol_for("anthropic").unwrap();
     let w = anthropic.writer();
-    assert!(!w
-        .dropped_egress_controls_for_lane(&ir, &Default::default())
-        .contains(&"response_format"));
+    for rf in [
+        json!({"type": "json_object"}),
+        json!({"type": "json_schema", "json_schema": {"name": "out", "schema": {"type": "object"}}}),
+    ] {
+        let ir = protocol_for("openai")
+            .unwrap()
+            .reader()
+            .read_request(
+                &json!({"model": "m", "messages": [{"role": "user", "content": "hi"}],
+                "response_format": rf}),
+            )
+            .unwrap();
+        assert!(w
+            .dropped_egress_controls_for_lane(&ir, &Default::default())
+            .contains(&"response_format"));
+    }
 
-    // The forced tool_use answer comes back to a foreign client as text.
+    // A tool_use answer is an ordinary tool call, whatever its name.
     let resp = json!({"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-x",
         "content": [{"type": "tool_use", "id": "toolu_1", "name": "busbar_response_format",
                      "input": {"n": 3}}],
@@ -377,11 +375,11 @@ fn ant07_default_lane_keeps_the_forced_tool() {
         "usage": {"input_tokens": 3, "output_tokens": 4}});
     let o = xresp("anthropic", "openai", &resp);
     assert_eq!(
-        o["choices"][0]["message"]["content"],
-        json!("{\"n\":3}"),
+        o["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+        json!("busbar_response_format"),
         "{o}"
     );
-    assert_eq!(o["choices"][0]["finish_reason"], json!("stop"), "{o}");
+    assert_eq!(o["choices"][0]["finish_reason"], json!("tool_calls"), "{o}");
 }
 
 /// ANT-09: Anthropic adaptive thinking and `output_config.effort` reach foreign backends.
@@ -733,4 +731,78 @@ fn ant18_search_result_citation_source_maps_both_ways() {
         json!({"type": "search_result_location", "cited_text": "c", "source": "https://kb/1",
                "title": "KB", "search_result_index": 0, "start_block_index": 0, "end_block_index": 1}),
     );
+}
+
+/// F25 REHOME row 107, from `crates/busbar-llm/src/engine/tests/egress_dropped_controls_audit_tests.rs:26`
+/// (`openai_to_anthropic_response_format_forwards_and_translates_not_dropped`), PORTED AT 1.5.5: the
+/// legacy test pinned the post-1.5.5 synthetic `busbar_response_format` forced tool (drift; ARCHITECT
+/// 2026-10-13: 1.5.5 wins). An OpenAI caller's `{"type":"json_object"}` onto a DEFAULT (non-native)
+/// Anthropic lane forwards with no `response_format`, no `tool_choice` and no `tools`, and is
+/// reported as the dropped control `response_format` (the caller's `response_format on anthropic`
+/// audit row) — exactly as 1.5.5 dropped it (v1.5.5 `crates/busbar/src/proto/anthropic/writer.rs:343-347`).
+#[test]
+fn openai_json_object_onto_a_default_anthropic_lane_is_dropped_and_reported() {
+    let body = json!({
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "hi"}],
+        "response_format": {"type": "json_object"}
+    });
+    let out = xreq_lane("openai", "anthropic", &body, &Default::default());
+    assert!(out.as_object().is_some_and(|o| !o.is_empty()), "{out}");
+    assert!(out.get("response_format").is_none(), "{out}");
+    assert!(out.get("tool_choice").is_none(), "{out}");
+    assert!(out.get("tools").is_none(), "{out}");
+    let ir = protocol_for("openai")
+        .unwrap()
+        .reader()
+        .read_request(&body)
+        .unwrap();
+    assert!(protocol_for("anthropic")
+        .unwrap()
+        .writer()
+        .dropped_egress_controls_for_lane(&ir, &Default::default())
+        .contains(&"response_format"));
+}
+
+/// F25 REHOME row 110, from `crates/busbar-llm/src/engine/tests/egress_dropped_controls_audit_tests.rs:245`
+/// (`native_structured_output_lane_drops_schema_less_json_with_audit`): on a lane declaring native
+/// structured outputs a `json_schema` directive rides `output_config.format.type: json_schema` with no
+/// `tool_choice`; a schema-less `json_object` writes no `output_config` and no `tools`, and is reported
+/// as the dropped control `response_format` (the caller's `response_format on anthropic` audit row).
+#[test]
+fn native_structured_output_lane_drops_schema_less_json_and_reports_it() {
+    let native = busbar_contract::ir::egress_prep::LaneCaps {
+        native_structured_output: true,
+        ..Default::default()
+    };
+    let schema = json!({"type": "object", "properties": {"a": {"type": "string"}}});
+    let with_schema = xreq_lane(
+        "openai",
+        "anthropic",
+        &json!({"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}],
+               "response_format": {"type": "json_schema", "json_schema": {"name": "o", "schema": schema}}}),
+        &native,
+    );
+    assert_eq!(
+        with_schema.pointer("/output_config/format/type"),
+        Some(&json!("json_schema")),
+        "{with_schema}"
+    );
+    assert!(with_schema.get("tool_choice").is_none(), "{with_schema}");
+
+    let object_body = json!({"model": "gpt-4o", "messages": [{"role": "user", "content": "hi"}],
+                             "response_format": {"type": "json_object"}});
+    let object_mode = xreq_lane("openai", "anthropic", &object_body, &native);
+    assert!(object_mode.get("output_config").is_none(), "{object_mode}");
+    assert!(object_mode.get("tools").is_none(), "{object_mode}");
+    let ir = protocol_for("openai")
+        .unwrap()
+        .reader()
+        .read_request(&object_body)
+        .unwrap();
+    assert!(protocol_for("anthropic")
+        .unwrap()
+        .writer()
+        .dropped_egress_controls_for_lane(&ir, &native)
+        .contains(&"response_format"));
 }

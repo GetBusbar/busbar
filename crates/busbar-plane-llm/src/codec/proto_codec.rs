@@ -110,17 +110,19 @@ pub trait ProtocolReader: Send + Sync {
     /// plain token. Defaulted to `None`: only a dialect whose stop vocabulary can say
     /// [`crate::codec::ir::IrStopReason::Error`] needs to answer.
     fn raw_stop_reason(&self, body: &[u8]) -> Option<crate::codec::ir::IrStopReason> {
-        let key = self.stop_reason_key()?;
-        crate::codec::usage_tail::first_string_value_after(body, key)
+        let mut scan = crate::codec::usage_tail::StopKeyScanner::new(self.stop_reason_key()?)?;
+        scan.feed(body);
+        scan.token()
             .and_then(|token| self.stop_reason_of_token(token))
     }
 
-    /// This dialect's non-stream stop-reason KEY as it appears on the wire, quotes included (e.g.
-    /// `"finish_reason"`): the field [`Self::raw_stop_reason`] — and the relay's incremental
-    /// [`crate::codec::usage_tail::StopKeyScanner`], which answers the same over a body it never holds —
-    /// locate. The FIRST occurrence in the body is the one read, so it must be the one
-    /// [`Self::read_response`] reads. `None` (the default): this dialect is not scanned.
-    fn stop_reason_key(&self) -> Option<&'static [u8]> {
+    /// This dialect's non-stream stop-reason FIELD, located structurally (a member name, quotes
+    /// included, at a container depth — see [`crate::codec::usage_tail::StopKey`]): the field
+    /// [`Self::raw_stop_reason`] and the relay's incremental
+    /// [`crate::codec::usage_tail::StopKeyScanner`] read. The FIRST such member in the body is the
+    /// one read, so it must be the one [`Self::read_response`] reads. `None` (the default): this
+    /// dialect is not scanned.
+    fn stop_reason_key(&self) -> Option<crate::codec::usage_tail::StopKey> {
         None
     }
 
