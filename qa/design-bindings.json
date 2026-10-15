@@ -785,7 +785,7 @@
   {
    "id": "PB-16",
    "surface": "`/usage` and every legacy admin response",
-   "binding": "byte-identical; NO additive lines — every alarm or delta named \"on the ledger endpoint (PB-16)\" in the governance inventory and Appendix A lives on the 1.6.0 ledger endpoints (`/api/v1/admin/ledger/*`); a legacy metering row (`requests`, `spend_micros`, tokens) is written ONLY by the delivered-response tap — an admitted-but-undelivered unit (pool-empty 503, deadline 503, rewrite 500) writes no row and its fee is refunded on the non-2xx status; a terminal-error stream (delivered on 2xx headers) writes no token line and no legacy metering row but KEEPS the flat fee",
+   "binding": "byte-identical; NO additive lines (except `rate_card_version` on /usage and audit responses, additive per Q93 (OWNER 2026-09-27)) — every alarm or delta named \"on the ledger endpoint (PB-16)\" in the governance inventory and Appendix A lives on the 1.6.0 ledger endpoints (`/api/v1/admin/ledger/*`); a legacy metering row (`requests`, `spend_micros`, tokens) is written ONLY by the delivered-response tap — an admitted-but-undelivered unit (pool-empty 503, deadline 503, rewrite 500) writes no row and its fee is refunded on the non-2xx status; a terminal-error stream (delivered on 2xx headers) writes no token line and no legacy metering row but KEEPS the flat fee",
    "inventory": "governance (`proxy/usage.rs:57-107`), routes-admin",
    "status": "mapped",
    "checks": [
