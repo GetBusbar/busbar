@@ -402,6 +402,8 @@ extern "C" {
 #define BB_PLANE_PIECE_FIELDS UINT32_C(8) /* [`OnPieceIn::flags`], [`FROM_FAR_END`]: the bytes are a head of the far end's fields that */
 #define BB_PLANE_PIECE_CATALOGUE_MOVED UINT32_C(16) /* [`OnPieceIn::flags`]: the CATALOGUE-MOVED TICK. With [`FROM_KERNEL`], `attempt_no == 0` and no */
 #define BB_PLANE_PIECE_REFUSED UINT32_C(32) /* [`OnPieceIn::flags`]: the REFUSED PIECE. With [`FROM_KERNEL`], [`PIECE_LAST`], */
+#define BB_PLANE_PIECE_CUT UINT32_C(64) /* [`OnPieceIn::flags`], [`FROM_FAR_END`] with [`PIECE_LAST`]: the far end's answer ended without */
+#define BB_PLANE_PIECE_FINAL UINT32_C(128) /* [`OnPieceIn::flags`], [`FROM_FAR_END`] with [`PIECE_HAS_STATUS`] (the answer's first piece): the */
 #define BB_PLANE_EMIT_TO_FAR_END UINT32_C(1) /* [`OnPieceOut::flags`]: the emitted bytes go to the far end (else to the caller). */
 #define BB_PLANE_EMIT_DONE UINT32_C(2) /* [`OnPieceOut::flags`]: the unit's reply is complete. */
 #define BB_PLANE_PIECE_OUT_TEXT UINT32_C(4) /* [`OnPieceOut::flags`]: the bytes this answer emits are ONE text message (a carrier with text and */

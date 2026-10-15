@@ -105,6 +105,7 @@ impl Far {
                 fields: false,
                 head: Vec::new(),
                 relayed: false,
+                cut: false,
             })
             .collect();
         Far {
@@ -226,6 +227,7 @@ impl FarEnd for Far {
                 fields: false,
                 head: Vec::new(),
                 relayed: false,
+                cut: false,
             }]
         } else if request.member.starts_with("trailers") {
             // The body, then the far end's trailers after it.
@@ -239,6 +241,13 @@ impl FarEnd for Far {
                 fields: true,
                 ..FarPiece::default()
             });
+            script
+        } else if request.member.starts_with("cut") {
+            // The body, its last piece marked cut: the far end's answer ended without completing.
+            let mut script = self.script.clone();
+            if let Some(last) = script.last_mut() {
+                last.cut = true;
+            }
             script
         } else if held_body.is_some() {
             // The socket opens and greets; the dial's body is its first frame.
@@ -1166,6 +1175,31 @@ async fn trailers_reach_the_plane_which_decides() {
                 "{way:?} {member}"
             );
             assert_eq!(caller.text(), expect, "{way:?} {member}");
+        }
+    }
+}
+
+/// A CUT ANSWER, TO A PLANE THAT READS NO CUT (back-compat for `PIECE_CUT`): the far end's last
+/// piece marked cut reaches a plane that ignores the bit, which ends the unit exactly as it ends a
+/// complete answer. RED: a driver that withholds or reorders the marked piece, or faults it.
+#[tokio::test]
+async fn a_cut_answer_ends_cleanly_on_a_plane_that_reads_no_cut() {
+    for way in ways() {
+        for member in ["cut", "ok"] {
+            let r = rig(way, BufferCaps::default(), Book::default());
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(&[member], CHUNKS),
+                Caller::default(),
+            );
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival("/call", b"p"), 0);
+            assert!(
+                matches!(drive(&units).await, Outcome::Completed),
+                "{way:?} {member}"
+            );
+            assert_eq!(caller.text(), "hello far end", "{way:?} {member}");
         }
     }
 }
