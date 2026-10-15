@@ -16,8 +16,8 @@ use crate::diagnostics::{
     STORE_SECRET_REF_UNRESOLVED,
 };
 use crate::preflight::{
-    build_secret_resolver, plugin_fetch_downloader, plugins_preflight, resolve_admin_token,
-    resolve_signing_key, validate_secret_refs,
+    build_secret_resolver, plugins_preflight, resolve_admin_token, resolve_signing_key,
+    validate_secret_refs,
 };
 use crate::router::project_auth_scope_caps;
 use crate::state::App;
@@ -618,12 +618,12 @@ pub fn build_app_from_config(
                 dir.display()
             ));
         }
-        // The root fetches; the kernel's SSRF-guarded downloader is the only way it downloads.
-        let downloader = plugin_fetch_downloader(&cfg.blocked_metadata_hosts);
+        // The root fetches and downloads, through the connector (row 130 E6: the kernel dials
+        // nothing); the operator's metadata denylist extends the download's SSRF pre-check.
         let fetch = crate::preflight::root_rows()
             .plugins_fetch
             .ok_or("plugins.fetch failed:\n  - no composition root installed the plugins fetch")?;
-        let outcomes = fetch(&dir, &targets, prior.is_none(), &downloader)
+        let outcomes = fetch(&dir, &targets, prior.is_none(), &cfg.blocked_metadata_hosts)
             .map_err(|errs| format!("plugins.fetch failed:\n  - {}", errs.join("\n  - ")))?;
         for outcome in &outcomes {
             match outcome {
@@ -1776,11 +1776,15 @@ pub fn build_app_from_config(
             // otherwise; spawned once per generation).
             // The PRIOR generation's server goes in with it: what the server holds carries across
             // the swap, so a reload does not void its tokens, clients, sessions and replay ledgers.
+            // The deployment's store, when one is configured: the server keeps its records there,
+            // shared by every node on it (the governance state holds the store's calls).
+            let store = governance.as_ref().and_then(|gs| gs.store_calls());
             Some((seam.build)(
                 &checked.block,
                 secrets,
                 protected_resources,
                 prior.and_then(state::App::oauth_as_any),
+                store,
             )?)
         }
     };

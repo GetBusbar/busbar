@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! CROSS-PLANE `entitlement_check` SCOPE-KIND BIJECTION TEST, relocated here from
-//! `src/plane_host/tests/dispatch_tests.rs`: which kind sits at which ABI scope-kind index is a claim
-//! about the REAL roster's declared vocabulary, so it runs over the planes this binary links (the
-//! test-linked table, `tests/linked/mod.rs`) and reads every kind back from the plane's own
-//! declaration — spelling none. `busbar_kernel::plane_host::dispatch::entitlement_check` stays
+//! CROSS-PLANE `entitlement_check` SCOPE-KIND BIJECTION TEST, relocated (by way of busbar-kernel's
+//! `tests/`) from busbar-kernel's `src/plane_host/tests/dispatch_tests.rs`: which kind sits at
+//! which ABI scope-kind index is a claim about the REAL roster's declared vocabulary, so it runs
+//! over the planes this binary links (the test-linked table, `tests/linked/mod.rs`) and reads every
+//! kind back from the plane's own declaration — spelling none. `busbar_kernel::plane_host::dispatch::entitlement_check` stays
 //! `pub(crate)` (widening it trips clippy's `not_unsafe_ptr_arg_deref` — see its doc), so this drives
 //! the REAL wired fn through the PUBLIC `PlaneHostVtable::entitlement_check` field
 //! `with_dispatch_scope` hands back — the same seam a real plane calls through. Every OTHER test in

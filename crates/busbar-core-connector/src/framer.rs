@@ -24,7 +24,7 @@ use busbar_contract::abi::transport::{check::check_final_status, StatusRow, CLOS
 use busbar_contract::abi::transport::{
     AdoptIn, BeginIn, ConnFacts, EmitIn, EncodeIn, FinishIn, FramePiece, FrameSpan, FramerOut,
     FramerSink, FramingIn, HeadSlots, IngestIn, LocateIn, LocateOut, RefuseIn, EMIT_TEXT,
-    PIECE_CONTINUED, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN,
+    PIECE_CONTINUED, PIECE_END, PIECE_END_OF_FRAME, PIECE_FIELDS, PIECE_HAS_CODE, PIECE_HAS_DECLARED_LEN,
     PIECE_HAS_RETRY_AFTER, PIECE_STREAM_FAILED, PIECE_TEXT, SIDE_ACCEPT, SIDE_DIAL, YIELD_ENDED,
     YIELD_HAS_DEADLINE, YIELD_MORE,
 };
@@ -83,6 +83,10 @@ pub struct DoorFacts {
     /// carries a session (`session`). A claim that states neither is a request and its answer, which
     /// the listener it arrived on frames already; a stream on one of these is this entry's to frame.
     pub duplex: Vec<&'static str>,
+    /// THE DATAGRAM FRAMER (its tail states `FRAMING_DATAGRAM`): every call carries the datagram
+    /// lane and it is driven only by [`crate::datagram::DatagramFraming`] over the host's port and
+    /// secure layer; it never frames a stream, whatever its claim rows say.
+    pub datagram: bool,
 }
 
 /// A transport entry's table, as the host reaches it: a framer's ops ([`FramerDoor::cross`]) and a
@@ -150,6 +154,8 @@ pub struct Got {
     pub status_code: Option<u32>,
     /// The status class (`STATUS_*`).
     pub status_class: u8,
+    /// The fault reading (`FAULT_*`), the breaker's leg.
+    pub fault: u8,
     /// The far side's `Retry-After`, in seconds, where it asked.
     pub retry_after_secs: Option<u64>,
     /// On a head's field block: the body length the head declared on the wire, as the framer
@@ -165,15 +171,18 @@ pub struct Got {
     /// The stream FAILED (`PIECE_STREAM_FAILED`): this is its last piece and the bytes are the
     /// reason; its siblings on the connection carry on.
     pub failed: bool,
+    /// The stream ENDS whole here (`PIECE_END`): no piece of it follows.
+    pub end: bool,
 }
 
 impl Got {
-    /// Whether this piece ENDS its stream whole: the EMPTY payload piece that closes a stream's
-    /// frames (`busbar_contract::abi::transport`, "streams end by piece"). An empty fields piece is
-    /// an empty head, never the end, and a failed stream's piece ends it failed.
+    /// Whether this piece ENDS its stream whole: the framer said so (`PIECE_END`,
+    /// `busbar_contract::abi::transport`, "streams end by flag"), and nothing else says it. An
+    /// EMPTY piece without it is an empty message, text or binary, and is relayed as one; an empty
+    /// fields piece is an empty head; a failed stream's piece ends it failed.
     #[must_use]
-    pub fn ends_stream(&self) -> bool {
-        self.end_of_frame && self.bytes.is_empty() && !self.fields && !self.failed
+    pub const fn ends_stream(&self) -> bool {
+        self.end
     }
 }
 
@@ -358,7 +367,7 @@ const EMPTY_PIECE: FramePiece = FramePiece {
     code: 0,
     status_class: 0,
     flags: 0,
-    _reserved: 0,
+    fault: 0,
     retry_after_secs: 0,
     declared_len: 0,
 };
@@ -457,6 +466,7 @@ impl Buffers {
                 end_of_frame: p.flags & PIECE_END_OF_FRAME != 0,
                 status_code: (p.flags & PIECE_HAS_CODE != 0).then_some(p.code),
                 status_class: p.status_class,
+                fault: p.fault,
                 retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0)
                     .then_some(p.retry_after_secs),
                 declared_len: (p.flags & PIECE_HAS_DECLARED_LEN != 0).then_some(p.declared_len),
@@ -464,6 +474,7 @@ impl Buffers {
                 text: p.flags & PIECE_TEXT != 0,
                 reason: None,
                 failed: p.flags & PIECE_STREAM_FAILED != 0,
+                end: p.flags & PIECE_END != 0,
             });
         }
         let heads = self

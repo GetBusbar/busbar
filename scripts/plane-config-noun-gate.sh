@@ -117,6 +117,13 @@ hdr()  { printf '\n== %s ==\n' "$*"; }
 # reached through the surviving root rather than through a path that stopped existing.
 CORE_ROOTS="crates/busbar-kernel/src"
 
+# SECTION NOUNS KEPT BY NAME (ARCHITECT 2026-10-05, Q7): `streams` is the 1.5.5 customer config key
+# of the streaming plane, whose legacy crate (`busbar-voice`, the one that declared it in a PlaneDecl)
+# the P3 flip deleted. The plane is a door now (`busbar-plane-streaming`) and declares no PlaneDecl,
+# so the noun cannot be read off one; it is kept here by name rather than dropped from the scan. The
+# floor below counts it.
+NAMED_NOUNS="streams"
+
 # Resolve the four section nouns from each plane crate's DECLARED PlaneDecl.config_section — never a
 # restated literal. `<key> -> crates/busbar-<key>/src`; read the `config_section: "<noun>",` line.
 #
@@ -154,6 +161,7 @@ section_nouns() {
     fi
     [ -n "$noun" ] && out="${out:+$out }$noun"
   done
+  for noun in $NAMED_NOUNS; do out="${out:+$out }$noun"; done
   printf '%s' "$out"
 }
 
@@ -214,7 +222,7 @@ require_nouns() {
   # shellcheck disable=SC2086  # the split is the count; `set -f` makes it glob-safe
   set -f; set -- $nouns;      got=$#; set +f
   # shellcheck disable=SC2086  # same
-  set -f; set -- $PLANE_KEYS; want=$#; set +f
+  set -f; set -- $PLANE_KEYS $NAMED_NOUNS; want=$#; set +f
   [ "$got" -eq "$want" ] && return 0
   red "plane-config-noun gate: FAIL — resolved $got section noun(s) for $want plane key(s): [$nouns]"
   note "Each plane declares its own noun via PlaneDecl.config_section; a plane that resolves to nothing"

@@ -700,12 +700,12 @@
     "number": 4018,
     "class": "auth",
     "slug": "trust-sweep-contact-failed",
-    "title": "Scheduled trust sweep could not authenticate the upstream (failed contact recorded)",
+    "title": "Scheduled trust sweep could not authenticate the upstream (failed contact recorded) — RETIRED",
     "severity": "actionable",
-    "summary": "A scheduled trust sweep reached the upstream but could not authenticate it, so busbar records a failed contact against the registration. Repeated failed contacts feed the anomaly breaker toward suspension (see BUSBAR-4021).",
-    "action": "Investigate the named upstream's reachability and credentials for the logged subject. A transient failure is recorded and self-heals on a later clean sweep; persistent failures will suspend the registration.",
+    "summary": "RETIRED. Nothing emits this code, and no anomaly breaker counts a failed contact toward suspension (there is none). A registration stops serving only on a drift (BUSBAR-4019) or an operator's suspension.",
+    "action": "Nothing emits this code. See BUSBAR-4019.",
     "since": "1.6.0",
-    "retired": false
+    "retired": true
   },
   {
     "code": "BUSBAR-4019",
@@ -736,12 +736,12 @@
     "number": 4021,
     "class": "auth",
     "slug": "trust-registration-suspended",
-    "title": "Anomaly breaker suspended a trust registration",
+    "title": "Anomaly breaker suspended a trust registration — RETIRED",
     "severity": "actionable",
-    "summary": "The trust anomaly breaker suspended a registration — accumulated failed contacts or drift crossed its threshold — so the registration stops serving until the condition clears or an operator intervenes. A transition event, emitted once per suspension.",
-    "action": "Investigate the named subject's upstream (see the preceding contact-failure or drift diagnostics for the cause). Resolve the underlying fault; the registration recovers or requires re-approval depending on why it was suspended.",
+    "summary": "RETIRED. Nothing emits this code: no anomaly breaker suspends a trust registration. The one breaker that was to raise it was never armed (no configuration set its thresholds) and is deleted, so a registration stops serving only on a drift (BUSBAR-4019) or an operator's suspension.",
+    "action": "Nothing emits this code. See BUSBAR-4019.",
     "since": "1.6.0",
-    "retired": false
+    "retired": true
   },
   {
     "code": "BUSBAR-4022",
@@ -1553,8 +1553,8 @@
     "class": "plane",
     "slug": "webhook-delivery-non-2xx",
     "title": "Webhook log delivery returned non-2xx (log dropped)",
-    "severity": "benign_recurring",
-    "summary": "A request-log webhook delivery got a non-2xx response from the sink, so that one log line was dropped (deliveries are fire-and-forget and never retried). This can recur per request when a sink is unhealthy, so it is logged at debug.",
+    "severity": "actionable",
+    "summary": "A request-log webhook delivery got a non-2xx response from the sink, so that one log line was dropped (deliveries are fire-and-forget and never retried). It is warned on every dropped line, as 1.5.5 warned it: an unhealthy sink is the operator's to fix.",
     "action": "If logs are being lost, check the webhook sink's health and the delivery counters. `busbar_webhook_logs_dropped_total` tracks the volume.",
     "since": "1.6.0",
     "retired": false
@@ -1565,8 +1565,8 @@
     "class": "plane",
     "slug": "webhook-delivery-transport-error",
     "title": "Webhook log delivery transport error (log dropped)",
-    "severity": "benign_recurring",
-    "summary": "A request-log webhook delivery failed with a transport error (connection/timeout/DNS), so that one log line was dropped. Deliveries are fire-and-forget and never retried; this can recur per request when a sink is unreachable, so it is logged at debug.",
+    "severity": "actionable",
+    "summary": "A request-log webhook delivery failed with a transport error (connection/timeout/DNS), so that one log line was dropped. Deliveries are fire-and-forget and never retried. It is warned on every dropped line, as 1.5.5 warned it: an unreachable sink is the operator's to fix.",
     "action": "If logs are being lost, check the webhook sink's reachability and the delivery counters. `busbar_webhook_logs_dropped_total` tracks the volume.",
     "since": "1.6.0",
     "retired": false
@@ -1892,18 +1892,6 @@
     "severity": "actionable",
     "summary": "The submit-time retention sweep found an ACTIVE task idle past the abandonment ceiling (24h since its last update) and tried to settle it as `canceled` through the normal durable write path, but the row upsert or chained event append failed. The task stays active in the working set (never ahead of the store) and the next sweep retries. Typically a durable-store outage. Warned once on the transition into the failing state; subsequent failures hold at debug to avoid spam.",
     "action": "Investigate the durable task-store outage. Abandoned tasks settle (and then age out of the working set) once the store accepts writes again.",
-    "since": "1.6.0",
-    "retired": false
-  },
-  {
-    "code": "BUSBAR-7104",
-    "number": 7104,
-    "class": "plane",
-    "slug": "plane-sse-frame-not-utf8",
-    "title": "A relayed SSE frame was not valid UTF-8 and was dropped",
-    "severity": "actionable",
-    "summary": "The shared SSE frame reader (the JSON-RPC plane relays) assembled a complete event whose bytes are not valid UTF-8. The event-stream format is UTF-8 BY DEFINITION, so this is a malformed backend; the frame is DROPPED rather than lossily transcoded, which would hand the client a corrupted payload. The stream itself continues, so a client sees a missing event, not a failure. The `bytes` field carries the size of the frame that was dropped.",
-    "action": "Investigate the named backend agent: its event stream is emitting non-UTF-8 bytes, which no conforming event-stream consumer can read. Until it is fixed the affected events are lost; busbar relays every well-formed event around them.",
     "since": "1.6.0",
     "retired": false
   },

@@ -43,15 +43,17 @@ extra_crates = []
 # treated as zero: a group whose members have all been renamed measures nothing and reads clean.
 label = "the plane work 1.6.0 adds that v1.5.5 had no counterpart for"
 crates = [
-  "busbar-a2a",
+  # `busbar-a2a` STRUCK (FLIP-A2A): the engine is deleted; the a2a plane is `busbar-plane-a2a`,
+  # listed below.
   # `busbar-mcp` STRUCK (P3 DEL-MCP, ARCHITECT 2026-10-05): the engine is deleted; the mcp plane is
   # `busbar-plane-mcp`, listed below.
   "busbar-plane-a2a",
   "busbar-plane-decisions",
   "busbar-plane-mcp",
   "busbar-plane-streaming",
-  "busbar-voice",
 ]
+# `busbar-voice` HAS NO ROW ANY MORE: FLIP-STREAMING deleted the legacy streams crate once the
+# streaming plane's door served every route (#18).
 # `busbar-voice-codec` HAS NO ROW ANY MORE (owner ruling R7, 2026-09-27, #39): it dissolved into
 # `busbar-plane-streaming`'s own `codec` module, a pure move — the LOC it carried is still counted,
 # now under the `busbar-plane-streaming` row above.

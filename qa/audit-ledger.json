@@ -239,54 +239,6 @@
    ]
   },
   {
-   "id": "crates/busbar-a2a/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-a2a/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-a2a/src/tests"
-   ]
-  },
-  {
-   "id": "crates/busbar-a2a/build.rs",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-a2a/build.rs"
-   ],
-   "tree_hash": "c83f08b43391af3ceb387e5233af49ed1c7c675e26a58c1392204b87ccf4854f",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "LOW": 1
-   },
-   "report": "Generates an extern-crate import of an auth plugin for the plane's admin tests: a test-only lateral plugin edge kept out of source scans by moving the name into manifest metadata. The generator is correct and emits nothing into the production library. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "c83f08b43391af3ceb387e5233af49ed1c7c675e26a58c1392204b87ccf4854f",
-     "counts": {
-      "LOW": 1
-     },
-     "report": "Generates an extern-crate import of an auth plugin for the plane's admin tests: a test-only lateral plugin edge kept out of source scans by moving the name into manifest metadata. The generator is correct and emits nothing into the production library. Read fully."
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-auth-admin-tokens/src",
    "kind": "production",
    "paths": [
@@ -492,18 +444,18 @@
    "paths": [
     "crates/busbar-core-oauth2/src"
    ],
-   "tree_hash": "7140d2e692de6bd1506606c8bec1a7ba1e09c3e26c9199b0892bcafb05ee8ba9",
-   "audited_at": "d526455b8e8920a235aebf8528ff9e1ad0fd75c0",
-   "round": 2,
+   "tree_hash": "f353e547e85b152f5d8e96fa30ddc928eed397cfb2ea07a3dc3218a956f47134",
+   "audited_at": "af6cc2c6f84e49352910ab692ee9065248b11e04",
+   "round": 4,
    "result": "findings",
    "counts": {
-    "HIGH": 3,
-    "MEDIUM": 4,
-    "LOW": 5,
+    "HIGH": 0,
+    "MEDIUM": 5,
+    "LOW": 6,
     "NIT": 0
    },
-   "report": "The authorization server now fetches client metadata documents through the root connector, and its consent return check refuses control characters. Three serious defects remain. The consent screen stakes an approval under the raw scope text, but the library spends it under a sorted, defaulted scope set, so unsorted or omitted scopes loop forever. All server state is in-memory per node. Every config reload rebuilds the server, wiping tokens, clients and replay ledgers. Metadata fetches are uncached and unbounded, and refresh tokens never expire. Read fully.",
-   "auditor": "opus-ledger-core-oauth2",
+   "report": "The authorization server keeps its records in the deployment's store and now files every point-read record where the linked in-tree store reads it back, so logins complete there. A lost bucket write now blocks a client for two minutes instead of an hour, and the signing key has one minting claim. The store write is still unfenced, so a write landing past its claim can overwrite a newer version. Store rows are never reclaimed, the minted key sits in clear, and document fetches can be starved. Read fully.",
+   "auditor": "opus-reaudit-core-oauth2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-oauth2/src/tests"
@@ -534,6 +486,34 @@
       "NIT": 0
      },
      "report": "The authorization server now fetches client metadata documents through the root connector, and its consent return check refuses control characters. Three serious defects remain. The consent screen stakes an approval under the raw scope text, but the library spends it under a sorted, defaulted scope set, so unsorted or omitted scopes loop forever. All server state is in-memory per node. Every config reload rebuilds the server, wiping tokens, clients and replay ledgers. Metadata fetches are uncached and unbounded, and refresh tokens never expire. Read fully."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-reaudit-core-oauth2",
+     "audited_at": "a72156fe1a746a6a26c62272a4ff85837c469881",
+     "tree_hash": "042fe900ff89e736c00c85c2825d0ab9fc75e8a30b7924ed40b16da211417111",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 6,
+      "LOW": 6,
+      "NIT": 0
+     },
+     "report": "The authorization server now keeps its records in the deployment's store, carries them across reloads, bounds document fetches and token lifetimes, and keys each consent approval on the exact request. One serious defect remains. Its versioned records and staked answers are written under a sequence and parent that the linked in-tree store keys differently, so none read back and no login completes. A failed write can lock a client for an hour. Store rows are never reclaimed. The minted signing key sits in clear. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-reaudit-core-oauth2",
+     "audited_at": "af6cc2c6f84e49352910ab692ee9065248b11e04",
+     "tree_hash": "f353e547e85b152f5d8e96fa30ddc928eed397cfb2ea07a3dc3218a956f47134",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 5,
+      "LOW": 6,
+      "NIT": 0
+     },
+     "report": "The authorization server keeps its records in the deployment's store and now files every point-read record where the linked in-tree store reads it back, so logins complete there. A lost bucket write now blocks a client for two minutes instead of an hour, and the signing key has one minting claim. The store write is still unfenced, so a write landing past its claim can overwrite a newer version. Store rows are never reclaimed, the minted key sits in clear, and document fetches can be starved. Read fully."
     }
    ]
   },
@@ -1862,36 +1842,6 @@
       "LOW": 2
      },
      "report": "Boots the real shipped binary and times a no-hook request against a loopback stub, so it measures the shipped path; but it names a dialect in composition-root source, no longer measures any hook despite its name, and its header quotes readings for removed cells. Read fully."
-    }
-   ]
-  },
-  {
-   "id": "crates/busbar-a2a/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-a2a/src/tests"
-   ],
-   "tree_hash": "0f80dba5d71d26a0fabd12959300a2897cd86f6d9eb87d243ed1eb33c4d6ca18",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "LOW": 2
-   },
-   "report": "The SSE reader tests are sound, but exist because the legacy plane carries its own SSE framer duplicating the transport's; the diagnostics-page gate imports the plane plugin sideways and vanishes with the legacy crate. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "0f80dba5d71d26a0fabd12959300a2897cd86f6d9eb87d243ed1eb33c4d6ca18",
-     "counts": {
-      "LOW": 2
-     },
-     "report": "The SSE reader tests are sound, but exist because the legacy plane carries its own SSE framer duplicating the transport's; the diagnostics-page gate imports the plane plugin sideways and vanishes with the legacy crate. Read fully."
     }
    ]
   },

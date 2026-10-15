@@ -709,7 +709,7 @@ impl Durability {
             // of the figures era that carried none, its whole-second arrival.
             let arrived_ms = match &hold.held {
                 Held::Counts { arrived_ms, .. } => *arrived_ms,
-                Held::Figure(_) => hold.wall.saturating_mul(1_000),
+                Held::FiguresEra(_) => hold.wall.saturating_mul(1_000),
             };
             let at = Settling {
                 key: &hold.key,
@@ -1889,8 +1889,24 @@ pub enum Held {
         /// The unit's arrival, in milliseconds: the card epoch.
         arrived_ms: u64,
     },
-    /// A record of the era that carried the reserved FIGURE. Read as written.
-    Figure(u64),
+    /// A record of the era that carried the reserved FIGURE: decoded, never written. Its figure
+    /// sits in [`FiguresEra`], whose field only [`HoldOpened::from_record`] can fill, so no writer
+    /// in this build can put a money figure on a hold (#71: the ledger records counts; #77: money
+    /// holds no record field). Money-shape hardening; no amount moves.
+    FiguresEra(FiguresEra),
+}
+
+/// The reserved figure (nanos) a FIGURES-ERA hold record holds, as it was read. Constructible only
+/// by decoding such a record ([`HoldOpened::from_record`]); read through [`FiguresEra::nanos`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FiguresEra(u64);
+
+impl FiguresEra {
+    /// The figure the old record holds, in nanos, exactly as written.
+    #[must_use]
+    pub fn nanos(self) -> u64 {
+        self.0
+    }
 }
 
 /// A hold as the journal carries it (item 127): opened, and not yet closed by a posting.
@@ -1928,13 +1944,15 @@ impl HoldOpened {
                 body.num(*arrived_ms);
                 write_counts(&mut body, Some(counts));
             }
-            Held::Figure(reserved) => {
+            // A decoded figures-era hold re-spells exactly the bytes it was read from: the figure
+            // is the record's own, never one this build minted (only `from_record` makes one).
+            Held::FiguresEra(era) => {
                 body.text(HOLD_OPENED);
                 body.num(self.incarnation);
                 body.text(&self.principal);
                 write_key(&mut body, &self.key);
                 body.num(self.window);
-                body.num(*reserved);
+                body.num(era.nanos());
             }
         }
         body.finish()
@@ -1962,7 +1980,7 @@ impl HoldOpened {
                 arrived_ms,
             }
         } else {
-            Held::Figure(body.num()?)
+            Held::FiguresEra(FiguresEra(body.num()?))
         };
         body.is_done().then_some(HoldOpened {
             key,
@@ -1981,7 +1999,7 @@ impl HoldOpened {
     #[must_use]
     pub fn reserved(&self, history: Option<&HistoryView<'_>>) -> u64 {
         match &self.held {
-            Held::Figure(reserved) => *reserved,
+            Held::FiguresEra(era) => era.nanos(),
             Held::Counts { counts, arrived_ms } => price_counts(history, counts, *arrived_ms)
                 .ok()
                 .and_then(|nanos| u64::try_from(nanos).ok())

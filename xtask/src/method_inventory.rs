@@ -25,7 +25,8 @@
 //! requirement ids that exercise them; every N/A cell carries a reason.
 //!
 //! The SDK sources are located in the cargo registry (`$CARGO_HOME` or `~/.cargo`,
-//! `registry/src/*/rmcp-3.1.2/src/model.rs` and `a2a-pb-0.2.0/proto/a2a.proto`) and the command
+//! `registry/src/*/rmcp-3.1.2/src/model.rs`; a2a-pb 0.2.0's `proto/a2a.proto` is the copy the A2A
+//! plane vendors, `crates/busbar-plane-a2a/proto/a2a.proto`) and the command
 //! REFUSES rather than skips when they are absent: an inventory derived from an absent source would
 //! be an inventory of nothing.
 //!
@@ -862,15 +863,27 @@ pub fn find_source(pattern: &str, what: &str) -> Result<PathBuf, String> {
     })
 }
 
+/// Where the plane keeps its vendored copy of a2a-pb's `proto/a2a.proto`, repo-relative.
+const A2A_PROTO_IN_TREE: &str = "crates/busbar-plane-a2a/proto/a2a.proto";
+
 fn read_sources() -> Result<(String, String), String> {
     let rmcp = find_source(
         &format!("rmcp-{RMCP_VERSION}/src/model.rs"),
         &format!("rmcp {RMCP_VERSION}"),
     )?;
-    let proto = find_source(
-        &format!("a2a-pb-{A2A_PB_VERSION}/proto/a2a.proto"),
-        &format!("a2a-pb {A2A_PB_VERSION}"),
-    )?;
+    // THE A2A PLANE VENDORS a2a-pb's `proto/a2a.proto` byte for byte (its gRPC line generates the
+    // messages from it, ARCHITECT ruling Q1 (C)), so the source is the plane's copy in this tree,
+    // not a registry download of a crate nothing depends on any more.
+    let proto = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(A2A_PROTO_IN_TREE);
+    if !proto.exists() {
+        return Err(format!(
+            "cannot find a2a-pb {A2A_PB_VERSION}'s a2a.proto at {}. This REFUSES rather than \
+             skipping: an inventory derived from an absent source would be an inventory of nothing.",
+            proto.display()
+        ));
+    }
     let rd = |p: &PathBuf| std::fs::read_to_string(p).map_err(|e| format!("{}: {e}", p.display()));
     Ok((rd(&rmcp)?, rd(&proto)?))
 }

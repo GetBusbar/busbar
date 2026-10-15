@@ -13,6 +13,8 @@
 //! * [`routes`] — the mount: which paths this plane serves, at what admission bar.
 //! * [`consent`] — the consent screen's session state and `oauth-as`'s subject/approval resolvers.
 //! * [`cimd`] — Client ID Metadata Document fetch-and-validate (the CIMD registration mechanism).
+//! * [`shared`] — what the server holds, kept in the deployment's store so every node on it serves
+//!   one server.
 //! * [`policy`] — the DCR registration ceiling and the impersonation refusal.
 //! * [`signer`] — the plane's own ES256 key (distinct from `busbar_kernel::governance::signing`'s
 //!   token signer; this plane never touches busbar's own resource-server signing material).
@@ -48,6 +50,7 @@ pub mod consent;
 pub mod plane;
 pub mod policy;
 pub mod routes;
+pub mod shared;
 pub mod signer;
 // `testkit` names `busbar_kernel::test_support::TestApp`, which only exists when core compiles with
 // its own `test-support` feature (or under `cfg(test)`) — so this module is gated the same way, and

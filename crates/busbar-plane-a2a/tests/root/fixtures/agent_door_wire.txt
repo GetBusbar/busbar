@@ -1,0 +1,38 @@
+# THE AGENT DOOR'S WIRE WORDS (serve_door.rs, the agent door's root leg) -- golden input data, one
+# `key = value` per line (`#` starts a comment). These are the linked plane's own words its
+# Statement does not carry, as the root's door cells use them: the section its grammar reads (the
+# door the cells drive is the linked plane door that owns it), its key (the `hooks:` container the
+# cells attach an agent's hooks under), the mount its claims sit under, and the resource type its
+# task rows are named by in a refusal's details.
+#
+# Copied from the line-served plane's own sources: lib.rs (CONFIG_SECTION, PLANE_KEY, MOUNT_PATH)
+# and the task row's ErrorInfo resource type.
+section = agents
+plane_key = a2a
+mount = /a2a
+task_resource_type = a2a.busbar/task
+# The domain of the ErrorInfo every A2A-defined error carries in its details.
+error_info_domain = a2a-protocol.org
+# The unit's audit row (door.rs AUDIT_ACTION, agent_resource): its action, and the kind its
+# resource names the agent under (`<resource_kind>:<agent id>`).
+audit_action = agent.call
+resource_kind = agent
+# The scope kind a key's grant names an agent under (door.rs SCOPE): `<scope_kind>:<agent id>`.
+scope_kind = agent
+# The section's subject noun in the config refusals (a2a/config.rs SUBJECT_NOUN), and the billable
+# class a hop's moved bytes are counted in (meta.rs CLASS_BYTES).
+subject_noun = fronted agent
+bytes_class = bytes
+# The gRPC binding (framed.rs SERVICE_PATH, binding.rs BINDING_GRPC): the service every rpc's path
+# sits under, and the card word an agent serving it names.
+grpc_service = /lf.a2a.v1.A2AService
+grpc_binding = GRPC
+# The callback an agent reports a task's move to (lib.rs MOUNT_PATH + PUSH_PATH_SUFFIX).
+push_path = /a2a/push
+# The domain busbar's card-signing key is derived under (door.rs CARD_SIGNING_DOMAIN).
+card_signing_domain = a2a/agent-card-signing/v1
+# The binding word a JSON-RPC hop goes out on (surface.rs BINDING_DOCUMENT): the `lane` label its
+# attempts' counters carry, as predev's relay counted them (relay.rs:1705).
+binding_document = jsonrpc
+# The prefix of the task ids busbar mints (identity.rs TASK_ID_PREFIX): `<prefix>-<agent>-<16 hex>`.
+task_id_prefix = a2a

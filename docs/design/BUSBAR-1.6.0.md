@@ -3611,7 +3611,7 @@ typedef uint8_t (*bb_op)(void* instance, const void* in, void* out);   /* extern
 | `open(host tables, settings blob, secrets, gen)` | boot, control lane | may return not-ready |
 | `refresh(gen)` | reload | may return not-ready |
 | `retire(gen)` | after RCU drain | |
-| `tick(now)` | kernel clock | returns the next tick time |
+| `tick(now)` | kernel clock, and every driver-ticket wake after its `drive` | returns the next tick time; `0` = no tick until the next wake (R-PUSH) |
 | `drive(driver)` | a driver ticket woke | §A.4.3 |
 | `cancel(ticket, out bb_cancel_out)` | deadline, or client drop on request-path ops only | out carries a kind disposition |
 | `release(lease)` | host done with off-path/secret bytes | |
@@ -4700,6 +4700,7 @@ ARCHITECT RULINGS from DRIVER-REVIEW (binding on v2):
 - R-L DAG: K1/K2 ARE TD 4/23/24 (no new names — reuse TD numbering); K3 IS TD 13-17's consumer, not a re-do.
   Critical path: M1(landed) -> M1-async -> P1 -> K1 -> {K2->K5, TD13-17->K3, M3-store->K4} -> MCP-1; FOLD-MCP phase A alongside.
   Folds still wait for TD 23 (F2). STRM row: key `streaming`, proof = conformance rig + money suites (Q96).
+- R-PUSH (coordinator 2026-10-07): a driver-ticket wake re-polls tick; next_tick_ns 0 = no tick until the next wake
 
 ### OWNER 2026-09-28: HTTP/2 is a DESIGN question (ARCHITECT's), not a rules question.
 Settled: h1/h2 framing lives in the http TRANSPORT plugin; host (kernel+connector) keeps OS socket/readiness (io.*), TLS, ALPN, pools.
@@ -5167,6 +5168,52 @@ Other rulings:
   subtracted the time since the attempt opened a second time, cutting at about half the budget).
   Kernel, contract, loader and root stay kind-neutral.
 
+### 2026-10-07 — ARCHITECT ruling (A2A-FLIP R4): an unreachable agent card, by path
+- 2026-10-07 ARCHITECT (A2A-FLIP R4): trust.sight UNREACHABLE on the background reverify keeps the
+  last verdict (ARCHITECT 2026-10-06); the call-path verify of a hop fails closed (ARCHITECT
+  2026-10-07, predev baseline). The background reverify (the tick, a `trust.due` refetch) reports
+  `trust.unreachable` (#499 `TRUST_UNREACHABLE`): the kernel's last verdict answers and nothing is
+  recorded. Verify-on-call, where the caller's hop needs a verdict now, refuses the hop itself (the
+  hop gate's demoted refusal, predev's `receive::verify_agent_on_call` + `still_delegable` bytes)
+  without asking `trust.serves` for it; it may still report `trust.unreachable` for the record, and
+  the kernel's last verdict stays untouched.
+
+### 2026-10-07 — COORDINATOR ruling (B) (A2A-FLIP): an a2a refusal names "this key", never the caller's key id
+- 2026-10-07 COORDINATOR (A2A-FLIP, ruling (B)): the a2a door's caller refusals say "this key is
+  not granted `agent:<id>`" (`403`) and "this key is not live" (`401`), `-32004`, no id, where
+  predev named the caller's key id ("key `<key_id>` is ..."): a plane never sees the raw principal
+  (Part 3 l.2639-2641, outranking predev's bytes; l.423, l.4848). Every other byte of those
+  refusals is predev's.
+
+### 2026-10-07 — COORDINATOR ruling (A2A-FLIP pools round 2, item 5): a pinned refusal answers the pinned member's own wait
+- 2026-10-07 COORDINATOR (A2A-FLIP, pools round 2): `OnPieceOut` gains `wait_member: Span`, a tail
+  addition under the SIZES rule (`abi::mechanism::call`: the host reads an absent tail field as zero,
+  so a plane whose answer stops short of it states none and the layout before it is unchanged). It
+  is stated only on the answer to the walk's exhausted refused piece (`TAIL_REFUSED_PIECE`, reason
+  `BreakerOpen`): the ONE member of the unit's pool the plane may send the unit to, and the refusal's
+  `Retry-After` is then that member's own cooldown in the pool. Stated anywhere else, not UTF-8, or
+  naming no member of the unit's pool, it is refused (the unit ends as the plane's fault), never
+  ignored. A zero length keeps the walk's figure, the soonest admissible cooldown across the pool,
+  which is 1.5.5's for an exhausted model pool (v1.5.5 `crates/busbar/src/proxy/engine/walk.rs:49-63`)
+  and stays the figure for every plane that states none (llm states none). The a2a door states the
+  member a pinned task-scoped verb is pinned to (predev `crates/busbar-a2a/src/a2a/relay.rs:1659`:
+  the pinned hop's refusal read the pinned member's cell). The narrowing is plane-stated, not
+  kernel-wide.
+
+### 2026-10-07 — COORDINATOR ruling (A2A-FLIP pools round 3, item 3): `ROUTE_SCOPE_LOCAL`, a unit the plane answers at its scope's one entry
+- 2026-10-07 COORDINATOR (A2A-FLIP, pools round 3): `ArriveOut::route` gains the value
+  `ROUTE_SCOPE_LOCAL = 4` (a route VALUE, not a flag): the plane answers the unit itself at the ONE
+  entry the principal's grant reaches. The kernel resolves the entry exactly as `ROUTE_SCOPE` does
+  (the candidates may be named; zero or several reachable entries refuse `no_destination`, rendered
+  as `ROUTE_SCOPE`'s), then admits it with NO route walk: no pool, no breaker, no egress. It bills as
+  `ROUTE_LOCAL` does (nothing, unless `ROUTE_COUNTED`, which it may carry), and it is audited under the
+  resolved entry, which the kernel lends to the plane as `OnPieceIn::member` on the unit's pieces with
+  no attempt (`attempt_no` `0`); no layout moved. The a2a door states it for every unaddressed unit
+  it answers itself (counted), as predev answered its local verbs at the agent `select` chose
+  (`crates/busbar-a2a/src/a2a/receive.rs:1257-1260`, `admit` `:1279`, the local verbs `:1559-1593`),
+  before the egress gate and before any pool was read (`pool_of` `:1839`). Addressed local verbs stay
+  direct; the round-2 scope-to-pool widening stays for relayed units alone. llm, mcp and decisions
+  never state it.
 ### 2026-10-14 — OWNER RULINGS: MONEY IS LEDGER × RATE CARD; NAMED CONFORMANCE GAPS ARE 0
 - OWNER (2026-10-14, verbatim *"money is bank auditor grade. its either right or its wrong. make it right."* /
   *"money - ledger * ratecard"*): money = ledger quantity × rate card, exact integer minor units, no

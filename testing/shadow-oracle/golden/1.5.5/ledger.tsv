@@ -2465,3 +2465,4 @@ llm|responses|responses|request|ok_stream_whole_answer	PASS	HTTP 200; usage Δ {
 neutrality|routes|decisions-shaped-404	PASS	HTTP 404; usage Δ {}	
 neutrality|routes|oauth-as-shaped-404	PASS	HTTP 404; usage Δ {}	
 neutrality|routes|ws-shaped-404	PASS	HTTP 404; usage Δ {}	
+billing|budget|downgrade	PASS	script budget-downgrade.sh: status 200	

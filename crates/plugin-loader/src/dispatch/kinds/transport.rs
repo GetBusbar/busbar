@@ -26,22 +26,23 @@ use busbar_contract::abi::mechanism::door::Statement;
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, CancelOut};
 use busbar_contract::abi::mechanism::KindCode;
 use busbar_contract::abi::transport::check::{
-    check_accept, check_arrival, check_cancel, check_claims, check_composes_over, check_framer,
-    check_framer_fields, check_head_slots, check_io, check_listen, check_locate, check_settings,
-    check_tail,
+    check_accept, check_arrival, check_cancel, check_claims, check_composes_over,
+    check_fault_cover, check_fault_rows, check_framer, check_framer_fields, check_head_slots,
+    check_io, check_listen, check_locate, check_settings, check_status_rows, check_tail,
 };
 use busbar_contract::abi::transport::{
     self, slot, AcceptIn, AcceptOut, AdoptIn, ArrivalIn, ArrivalOut, BeginIn, Claim, ConnIn,
-    ConnOut, DialIn, EmitIn, EncodeIn, FinishIn, FramerOut, FramerSink, FramingIn, IngestIn, IoOut,
-    ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, SettingDecl, ShutIn, StatusRow,
-    TransportTail, WriteIn,
+    ConnOut, DialIn, EmitIn, EncodeIn, FaultRow, FinishIn, FramerOut, FramerSink, FramingIn,
+    IngestIn, IoOut, ListenIn, ListenOut, LocateIn, LocateOut, ReadIn, RefuseIn, SettingDecl,
+    ShutIn, StatusRow, TransportTail, WriteIn,
 };
 
 use crate::dispatch::{lifecycle_name, Answer, Context, InFrame, Kind, OutFrame};
 
-/// The transport tail's last frozen size: it has not grown, so it is this host's (THE KIND TAIL
-/// GROWTH RULE, `abi::mechanism::door::tail_read_len`).
-const TRANSPORT_TAIL_FROZEN: usize = std::mem::size_of::<TransportTail>();
+/// The transport tail's last frozen size, before the fault table was appended (THE KIND TAIL
+/// GROWTH RULE, `abi::mechanism::door::tail_read_len`): a tail that predates the fault table loads
+/// and reads it as absent, and is then judged by [`check_fault_cover`] like any other.
+const TRANSPORT_TAIL_FROZEN: usize = std::mem::offset_of!(TransportTail, fault_rows);
 
 /// WHAT A TRANSPORT STATES, read once at bind and checked by the kind's own `check_tail`,
 /// `check_claims`, `check_claim_rows` and `check_composes_over`: its role, every scheme it answers
@@ -81,6 +82,19 @@ pub struct TransportFacts {
     /// Its tail states `FRAMING_DATAGRAM`: a framer over the host's datagram port, whose calls
     /// carry the datagram lane, never a stream's framer.
     pub datagram: bool,
+}
+
+/// WHAT A COMPILED-IN TRANSPORT DOOR STATES, read off its Statement without binding it (no
+/// `validate` or `open` runs), checked as a bind checks it.
+///
+/// # Errors
+///
+/// The door, its Statement or its transport tail is refused.
+pub fn stated(
+    door_fn: busbar_contract::abi::mechanism::door::DoorFn,
+) -> Result<TransportFacts, String> {
+    let st = crate::dispatch::load::statement_of(door_fn).map_err(|e| e.to_string())?;
+    tail_facts(&st)
 }
 
 /// A plugin string, interned.
@@ -156,12 +170,23 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
         .filter(|(_, row)| row.session == 1)
         .map(|(name, _)| *name)
         .collect();
+    // THE TWO TABLES: the status class (the fee decision's leg) and the fault reading (the
+    // breaker's). A claim that classes its answers reads them for the breaker too.
     let status: &[StatusRow] = if tail.status_rows_len == 0 {
         &[]
     } else {
         // SAFETY: `check_tail` refused a NULL list with a count; the list is `'static` plugin data.
         unsafe { std::slice::from_raw_parts(tail.status_rows, tail.status_rows_len) }
     };
+    let faults: &[FaultRow] = if tail.fault_rows_len == 0 {
+        &[]
+    } else {
+        // SAFETY: as above.
+        unsafe { std::slice::from_raw_parts(tail.fault_rows, tail.fault_rows_len) }
+    };
+    check_status_rows(status, tail.claim_rows_len as u64).map_err(broke)?;
+    check_fault_rows(faults, tail.claim_rows_len as u64).map_err(broke)?;
+    check_fault_cover(status, faults).map_err(broke)?;
     Ok(TransportFacts {
         datagram: tail.framing == busbar_contract::abi::transport::FRAMING_DATAGRAM,
         status_rows: status.iter().map(|r| (r.claim, r.lo, r.hi)).collect(),

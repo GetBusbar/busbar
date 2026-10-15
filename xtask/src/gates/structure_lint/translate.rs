@@ -44,7 +44,6 @@ fn nominal() -> Addresses {
         src_roots: Vec::new(),
         planes: Vec::new(),
         mcp: "crates/busbar-mcp/src/mcp".to_string(),
-        a2a: "crates/busbar-a2a/src/a2a".to_string(),
     }
 }
 

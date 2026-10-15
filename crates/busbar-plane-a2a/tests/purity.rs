@@ -2,16 +2,12 @@
 //!
 //! A plane is pure over its inputs and performs no input or output of its own. Those are two
 //! separate claims and they are checked two separate ways: the source is walked for the shapes that
-//! would make either false, and the methods are driven twice over the same inputs and their answers
-//! compared. A comment claiming purity is worth nothing; a scan and a repeat are worth something.
+//! would make either false, and the door's arrival is driven repeatedly over the same inputs and its
+//! answers compared. A comment claiming purity is worth nothing; a scan and a repeat are worth something.
 
-use busbar_contract::plane::{Ingress, Plane, PlaneMeta};
-use busbar_contract::wire::FrameCursor;
+use busbar_contract::plane::PlaneMeta;
 use busbar_plane_a2a::A2aPlane;
 use std::path::{Path, PathBuf};
-
-mod common;
-use common::{frame, Scaffold};
 
 /// The crate's own source directory.
 fn src_dir() -> PathBuf {
@@ -32,6 +28,31 @@ fn walk(dir: &Path, f: &mut impl FnMut(&Path, &str)) {
             f(&path, &text);
         }
     }
+}
+
+/// THE GENERATED MESSAGES (`build.rs`, the gRPC line's `lf.a2a.v1` package): the plane's source
+/// includes them from the build's output directory, so the scans read them as the plane's own
+/// source and read the include line itself as what it is, a compile-time inclusion.
+const GENERATED: &[&str] = &["lf.a2a.v1.rs", "lf.a2a.v1.serde.rs"];
+
+/// Every source file of the plane: its own, then the generated messages it includes.
+fn each_source(f: &mut impl FnMut(&Path, &str)) {
+    walk(&src_dir(), f);
+    for name in GENERATED {
+        let path = Path::new(env!("OUT_DIR")).join(name);
+        let text = std::fs::read_to_string(&path).expect("the generated source is readable");
+        f(&path, &text);
+    }
+}
+
+/// The plane's inclusion of one [`GENERATED`] file, whose text [`each_source`] scans in its place.
+fn is_generated_include(line: &str) -> bool {
+    // The macro's name is spliced in so this file holds no include of its own for a scan of the
+    // crate's build inputs to read.
+    let t = line.trim();
+    GENERATED
+        .iter()
+        .any(|name| t == format!("{}!(concat!(env!(\"OUT_DIR\"), \"/{name}\"));", "include"))
 }
 
 /// A line that is only a comment says nothing about what the code does.
@@ -65,9 +86,9 @@ fn the_plane_holds_no_interior_state() {
         "static mut",
     ];
     let mut offenders = Vec::new();
-    walk(&src_dir(), &mut |path, text| {
+    each_source(&mut |path, text| {
         for (n, line) in text.lines().enumerate() {
-            if is_comment(line) {
+            if is_comment(line) || is_generated_include(line) {
                 continue;
             }
             for name in forbidden {
@@ -107,9 +128,9 @@ fn the_plane_performs_no_input_or_output() {
         "eprintln!",
     ];
     let mut offenders = Vec::new();
-    walk(&src_dir(), &mut |path, text| {
+    each_source(&mut |path, text| {
         for (n, line) in text.lines().enumerate() {
-            if is_comment(line) {
+            if is_comment(line) || is_generated_include(line) {
                 continue;
             }
             for name in forbidden {
@@ -138,9 +159,9 @@ fn the_plane_names_no_kernel_side_crate() {
         "busbar_substrate",
     ];
     let mut offenders = Vec::new();
-    walk(&src_dir(), &mut |path, text| {
+    each_source(&mut |path, text| {
         for (n, line) in text.lines().enumerate() {
-            if is_comment(line) {
+            if is_comment(line) || is_generated_include(line) {
                 continue;
             }
             for name in forbidden {
@@ -163,10 +184,9 @@ fn the_plane_names_no_kernel_side_crate() {
     );
 }
 
-/// The decode step gives the same answer every time it is asked the same question.
+/// The door's arrival gives the same answer every time it is asked the same question.
 #[test]
-fn the_decode_step_is_deterministic() {
-    let plane = A2aPlane::EMPTY;
+fn the_arrival_is_deterministic() {
     let bodies: Vec<Vec<u8>> = A2aPlane::OP_CLASSES
         .iter()
         .filter_map(|op| busbar_plane_a2a::ops::METHODS.iter().find(|r| r.op == *op))
@@ -187,84 +207,19 @@ fn the_decode_step_is_deterministic() {
         "no request body was derived from the declared op classes, so nothing was driven twice"
     );
     for body in &bodies {
-        let mut answers = Vec::new();
-        for _ in 0..8 {
-            let scaffold = Scaffold::new("http");
-            let ctx = scaffold.ctx();
-            let frames = vec![frame(body)];
-            let mut cursor = FrameCursor::new(&frames);
-            let ingress = plane
-                .decode_ingress(&mut cursor, None, &ctx)
-                .expect("a known method decodes");
-            let summary = match ingress {
-                Ingress::Open(d) | Ingress::OneShot(d) => {
-                    format!("{:?}/{:?}/{}", d.op, d.correlation_out, d.facts.len())
-                }
-                other => format!("{other:?}"),
-            };
-            answers.push(summary);
-        }
+        let answers: Vec<String> = (0..8)
+            .map(|_| {
+                format!(
+                    "{:?}",
+                    busbar_plane_a2a::agent_arrival::decide_arrival(body, |_| None)
+                )
+            })
+            .collect();
         assert!(
             answers.windows(2).all(|w| w[0] == w[1]),
-            "the decode step varied over one body: {answers:?}"
+            "the arrival varied over one body: {answers:?}"
         );
     }
-}
-
-/// The encode step writes the same bytes every time it is asked the same question.
-#[test]
-fn the_encode_step_is_deterministic() {
-    let plane = A2aPlane::EMPTY;
-    let answer = br#"{"id":1,"jsonrpc":"2.0","result":{"a":1,"b":2}}"#;
-    let mut written = Vec::new();
-    for _ in 0..8 {
-        let scaffold = Scaffold::new("http");
-        let ctx = scaffold.ctx();
-        let r = busbar_contract::plane::Response {
-            ir: busbar_contract::bounded::Ir::new(answer, &[]),
-            finish: busbar_contract::unit::FinishClass::Complete,
-            facts: busbar_contract::bounded::Facts::new(),
-        };
-        let out = plane
-            .encode_response(&r, None, &ctx)
-            .expect("it re-encodes");
-        written.push(out.as_slice().to_vec());
-    }
-    assert!(
-        written.windows(2).all(|w| w[0] == w[1]),
-        "the encode step varied over one answer"
-    );
-}
-
-/// The plane does not read the clock, so a call at a different time gives the same answer.
-///
-/// The two readings are DECADES apart and the second is the earlier one, so a plane that folded
-/// `ctx.clock` into what it decoded — a timestamp, an expiry, a monotonic tie-break — cannot land on
-/// the same answer by accident.
-#[test]
-fn the_answer_does_not_move_with_the_clock() {
-    let plane = A2aPlane::EMPTY;
-    let body = br#"{"jsonrpc":"2.0","id":9,"method":"tasks/get","params":{"id":"t1"}}"#;
-    let mut answers = Vec::new();
-    for unix_secs in [2_000_000_000_u64, 1_000_000_000] {
-        let scaffold = Scaffold::new("http");
-        let ctx = scaffold.ctx_at(unix_secs);
-        assert_eq!(
-            ctx.clock().unix_secs,
-            unix_secs,
-            "the scaffold handed the plane the reading this test chose"
-        );
-        let frames = vec![frame(body)];
-        let mut cursor = FrameCursor::new(&frames);
-        let Ok(Ingress::OneShot(draft)) = plane.decode_ingress(&mut cursor, None, &ctx) else {
-            panic!("a single-answer method decodes as one shot");
-        };
-        answers.push(format!("{:?}{:?}", draft.op, draft.correlation_out));
-    }
-    assert_eq!(
-        answers[0], answers[1],
-        "the decoded answer moved with the clock: {answers:?}"
-    );
 }
 
 /// The plane never hands back a decision, an amount or a credential.
@@ -287,9 +242,9 @@ fn the_plane_names_no_money_and_no_decision() {
         "auth_token_raw",
     ];
     let mut offenders = Vec::new();
-    walk(&src_dir(), &mut |path, text| {
+    each_source(&mut |path, text| {
         for (n, line) in text.lines().enumerate() {
-            if is_comment(line) {
+            if is_comment(line) || is_generated_include(line) {
                 continue;
             }
             // A lint attribute is an instruction to the compiler, not a decision about a
@@ -308,5 +263,96 @@ fn the_plane_names_no_money_and_no_decision() {
     assert!(
         offenders.is_empty(),
         "the plane names money or decisions: {offenders:?}"
+    );
+}
+
+/// THE PUSH TOKEN IS NEVER LOGGED (`BUSBAR-1.6.0.md` l.4882: the plane checks its own callback
+/// correlation token, "never logged/audited"; the push route is audited nowhere, the door's own
+/// cell): no diagnostic line the plane writes, in any of its sources, names the token, the field
+/// it rides in, or a value read from either.
+#[test]
+fn no_diagnostic_line_of_the_plane_carries_the_push_token() {
+    let mut lines = 0;
+    each_source(&mut |path, text| {
+        for (start, _) in text.match_indices("diag_") {
+            let rest = &text[start..];
+            let Some(open) = rest.find("!(").filter(|o| {
+                rest[..*o]
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b == b'_')
+            }) else {
+                continue;
+            };
+            // The call's arguments, to the parenthesis that closes them.
+            let mut depth = 0usize;
+            let close = rest[open + 1..]
+                .char_indices()
+                .find(|(_, c)| {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => depth -= 1,
+                        _ => {}
+                    }
+                    depth == 0
+                })
+                .map_or(rest.len(), |(i, _)| open + 1 + i);
+            let call = rest[open..close].to_ascii_lowercase();
+            lines += 1;
+            for word in ["token", "authorization", "presented", "claim"] {
+                assert!(
+                    !call.contains(word),
+                    "{}: a diagnostic line names `{word}`: {call}",
+                    path.display()
+                );
+            }
+        }
+    });
+    assert!(lines > 0, "the scan read the plane's diagnostic lines");
+}
+
+/// THE PLANE DECLARES NO TRUST STATE OF ITS OWN.
+///
+/// Ported from the deleted engine crate's `reuse_tests::the_a2a_plane_declares_no_trust_state_of_its_own`.
+/// The trust lifecycle (the states, the drift, the approval, the pinned artifact and the verbs that
+/// move a registration through them) is the kernel's, written once and plane-neutral. The plane
+/// contributes its report types (`Sighting`, `CardObservation`: what a look saw) and parameterises the
+/// machine over them; a second declaration of the machine here is a fork, and two machines disagree
+/// the first time one of them is fixed. The sources are enumerated off disk (a hand-kept file list
+/// silently stops covering the newest code), and a scan that finds nothing is a failure, not a pass.
+#[test]
+fn the_a2a_plane_declares_no_trust_state_of_its_own() {
+    const BANNED: &[&str] = &[
+        "enum TrustState",
+        "enum Drift",
+        "struct Approval",
+        "trait PinnedArtifact",
+        "fn serves",
+        "fn suspend",
+        "fn resume",
+        "fn unpin",
+    ];
+    let mut scanned = 0usize;
+    let mut offenders = Vec::new();
+    walk(&src_dir(), &mut |path, text| {
+        scanned += 1;
+        for (n, line) in text.lines().enumerate() {
+            if is_comment(line) {
+                continue;
+            }
+            for needle in BANNED {
+                if line.contains(needle) {
+                    offenders.push(format!("{}:{}: `{needle}`", path.display(), n + 1));
+                }
+            }
+        }
+    });
+    assert!(
+        scanned >= 4,
+        "the scan found {scanned} source file(s), which cannot be right: a scan that discovers \
+         nothing passes vacuously"
+    );
+    assert!(
+        offenders.is_empty(),
+        "the plane forks the trust machine, which is the kernel's and plane-neutral: {offenders:?}"
     );
 }

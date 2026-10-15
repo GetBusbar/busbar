@@ -1,6 +1,6 @@
 # busbar container image: FROM scratch, because the binary is the whole product.
-# Static musl binaries are built by the release engine's container build (busbar-release) and copied
-# in per-arch; CA roots are compiled into the binary (webpki-roots), so no /etc/ssl
+# Static musl binaries are built by the release build of the `dev` -> `qa` move (ModernCI, .ci/dev.yaml)
+# and copied in per-arch; CA roots are compiled into the binary (webpki-roots), so no /etc/ssl
 # is needed. The vetted provider catalog ships inside the image as the default.
 #
 # /lib/lib{c.musl-*,gcc_s,stdc++}.* are ALSO in this image, and are NOT busbar's own runtime deps —

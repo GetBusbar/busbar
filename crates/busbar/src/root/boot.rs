@@ -128,7 +128,8 @@ pub fn harness_first_party_key(
 
 /// THE ROOT'S PLUGINS FETCH (the kernel preflight's `PluginsFetch`): every `plugins.fetch` target
 /// through the loader's fetch (cache-by-pin, verify-before-write, atomic write) into `dir`, and only
-/// ever through the kernel's SSRF-guarded `download`.
+/// ever through the SSRF-guarded download over the one connector
+/// ([`super::plugin_fetch::downloader`], the operator's metadata denylist `blocked` extending it).
 ///
 /// # Errors
 ///
@@ -137,8 +138,9 @@ pub fn plugins_fetch(
     dir: &std::path::Path,
     targets: &[FetchTarget],
     fatal_on_miss: bool,
-    download: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+    blocked: &[String],
 ) -> Result<Vec<Fetched>, Vec<String>> {
+    let download = super::plugin_fetch::downloader(blocked);
     let specs: Vec<super::loader::FetchSpec> = targets
         .iter()
         .map(|t| super::loader::FetchSpec {
@@ -147,7 +149,7 @@ pub fn plugins_fetch(
             filename: t.filename.clone(),
         })
         .collect();
-    let outcomes = super::loader::fetch_plugins(dir, &specs, fatal_on_miss, download)?;
+    let outcomes = super::loader::fetch_plugins(dir, &specs, fatal_on_miss, &download)?;
     Ok(outcomes
         .into_iter()
         .map(|o| match o {
@@ -934,6 +936,15 @@ pub fn book(
     let token = super::kernel::new_kernel().durability_token();
     let data_dir = busbar_kernel::preflight::fleet_data_dir();
     let (durability, rows, migration) = compose_book(&adapter, lane, data_dir, &mig, now, &token)?;
+    // THE CALLER REFERENCE OF EVERY VERIFIED PRINCIPAL (row 159 H2): a node that keeps no signing
+    // material derives it from the deployment keyset just bound, so no verified principal is lent
+    // an empty reference and two principals never share one.
+    if let Some(material) = durability
+        .record
+        .derived_secret(super::keyset::CALLER_REF_MATERIAL)
+    {
+        gov.bind_deployment_caller_ref(material);
+    }
     // DEBUG, NOT INFO, and that is a neutrality decision rather than a taste one. The
     // boot log's INFO+ line set is part of what "one plane alone ≡ 1.5.5" means — it is pinned
     // by `tests/boot_lines_neutrality.rs` and recorded by the oracle's

@@ -34,7 +34,7 @@ There is a second consequence worth knowing: the `a2a_inbound` credential kind i
 
 ### The `agents:` section
 
-`agents:` is a sibling of `pools:` and `tools:`: a map whose keys are registrations, with the same two words reserved at the section level on every plane (`crates/busbar-a2a/src/a2a/config.rs:13-20`).
+`agents:` is a sibling of `pools:` and `tools:`: a map whose keys are registrations, with the same two words reserved at the section level on every plane (`crates/busbar-plane-a2a/src/a2a/config.rs:327-329`).
 
 | Reserved section key | Type | Combine rule |
 |---|---|---|
@@ -45,7 +45,7 @@ Naming an agent `hooks` or `upstream_credentials` is refused at parse (`crates/b
 
 #### `agents.<name>` — one registered agent
 
-`deny_unknown_fields`: a typo'd key fails boot rather than silently un-pinning an agent (`crates/busbar-a2a/src/a2a/config.rs:196`).
+`deny_unknown_fields`: a typo'd key fails boot rather than silently un-pinning an agent (`crates/busbar-plane-a2a/src/a2a/config.rs:249`).
 
 | Key | Type | Required | Default | Notes |
 |---|---|---|---|---|
@@ -62,19 +62,19 @@ Naming an agent `hooks` or `upstream_credentials` is refused at parse (`crates/b
 | `protocol_version` | string | no | the release default | Pinned per registration because the well-known card path moved between versions, and a registration that follows whatever the upstream now claims has no pin at all. |
 | `allow_private` | bool | no | `false` | Permits a plaintext `http://` endpoint and a loopback / link-local / RFC1918 / CGNAT address for this one agent. **Never** permits a cloud-metadata address, whatever it says. |
 | `upstream_credentials` | `own` | no; **`passthrough` refused** | | |
-| `upstream_credential` | object | no | absent | The leased outbound credential Busbar presents. See below. |
-| `egress_scopes` | list of strings | no | `[]` | **Which fronted agents may delegate here.** Absent or empty ⇒ NONE may — reading an empty list as "everyone" would be a registration granting egress nobody wrote down. |
+| `upstream_credential` | object | no | absent | Busbar's own credential for this agent, presented on every hop. See below. Absent ⇒ the agent is dialled with no credential. |
+| `egress_scopes` | list of strings | no | `[]` | Accepted and validated (an empty name is refused), and **never enforced**: no relayed hop consults it, and none ever did (the delegation check that would have read it had no caller). What gates a hop is the caller key's own `agent:<id>` grant for the agent it reaches, and the key being live. |
 | `hooks` | list of bare names | no | `[]` | Adds to `agents.hooks:`. |
 
-**`upstream_credential`** (`crates/busbar-a2a/src/a2a/creds.rs:238-250`), `deny_unknown_fields`, three fields and no more:
+**`upstream_credential`** (`crates/busbar-plane-a2a/src/a2a/creds.rs`), `deny_unknown_fields`, three fields and no more:
 
 | Field | Type | Required | Default | Notes |
 |---|---|---|---|---|
-| `secret` | `SecretRef` | **yes** | — | A handle resolved at delegation time. Never the secret, never the caller's. |
-| `placement` | `bearer` \| `{ header: <name> }` | no | `bearer` | `bearer` sends `Authorization: Bearer <secret>`; `header:` sends the named header carrying the secret verbatim, which is several vendors' `APIKey` scheme. It is an enum precisely so a secret cannot be placed in a query string, which lands in every access log on the path (`creds.rs:211-214`). |
-| `lease_ttl_ms` | u64 milliseconds | **yes** | — | Must be > 0. |
+| `secret` | `SecretRef` | **yes** | — | A reference, re-resolved once per lease, off the request path. Never the secret, never the caller's. |
+| `placement` | `bearer` \| `{ header: <name> }` | no | `bearer` | `bearer` sends `Authorization: Bearer <secret>`; `header:` sends the named header carrying the secret verbatim, which is several vendors' `APIKey` scheme. It is an enum precisely so a secret cannot be placed in a query string, which lands in every access log on the path. |
+| `lease_ttl_ms` | u64 milliseconds | **yes** | — | Must be > 0. How long one resolution of `secret` is presented: the host re-resolves it once per lease. |
 
-`lease_ttl_ms` is enforced inside the lease type, not at call sites: the secret leaves a `Lease` by exactly one route, `header_for(agent_id, now_ms)`, which refuses `WrongAgent` if the lease was minted for a different agent and `Expired` if the TTL has elapsed (`crates/busbar-a2a/src/a2a/creds.rs:344-367`). A `Lease` prints `<redacted; present>` under `Debug`. Minting reads the agent id **off the egress grant** rather than as a sibling parameter, so "authorise against A, mint against B" is not expressible (`creds.rs:411-430`), and the grant type is producible only by the egress gate, so skipping the gate does not compile (`creds.rs:201-208`).
+The credential is **busbar's own**, never the caller's, and the plane never holds it. The composition root binds it to the auth kind that serves its placement (`bearer`, or `api-key` over the named header) and the kernel presents it through that auth kind's per-request call on every request to the agent: relayed hops, the extended card read through the relay, and busbar's own requests to it (the `ListTasks` refresh, the push-config mirror). The door's public and verification card fetches carry no credential. The `secret` reference is resolved when the configuration is applied and **re-resolved once per lease** (`lease_ttl_ms`) by the host, on a thread of its own and never on a request: a rotated secret is presented from the first hop after the next re-resolution, and the binding is re-opened only when the resolved value changed (`crates/busbar/src/root/door_steps.rs` `upstream_credential_binding`, `refresher`). A secret that does not resolve when the configuration is applied refuses the load, naming the agent. One that **stops resolving** afterwards refuses every hop from the next re-resolution on with `502`, and nothing is dialled: a relayed task hop answers `-32006` "the backend agent did not complete this task" naming the task, which ends `failed`; the extended card read answers `-32006` "the extended agent card could not be fetched"; busbar's own requests to the agent are not made. `lease_ttl_ms` must be greater than zero. It is how long one resolution of the credential is presented before the host resolves it again: a rotation, or a secret that stopped resolving, is seen within one lease. The previous plane minted a lease from the secret on every hop and presented it at once; 1.6.0 resolves the secret off the request path instead (a resolution can block its thread, and no request waits on one), and the lease is its cadence.
 
 ```yaml
 public_url: https://gateway.example.com     # REQUIRED for the receiving side
@@ -91,13 +91,13 @@ agents:
       secret: { env: PLANNER_API_KEY }
       placement: { header: X-API-Key }
       lease_ttl_ms: 30000
-    egress_scopes: [triage]                 # only the fronted agent `triage` may delegate here
+    egress_scopes: [triage]                 # accepted and validated; no hop reads it
     hooks: [planner-audit]
 ```
 
 ### Boot refusals: the `agents:` section
 
-`validate_agent` is called from **both** the config file's `Deserialize` and the admin write path, so the API refuses exactly what the file refuses (`crates/busbar-a2a/src/a2a/config.rs:315-322`). This was not always true, and the defect it fixed is instructive: the API used to persist a definition the file would have refused, then drop it at the next rebuild with a log line.
+`validate_agent` is called from **both** the config file's `Deserialize` and the admin write path, so the API refuses exactly what the file refuses (`crates/busbar-plane-a2a/src/a2a/config.rs:370`). This was not always true, and the defect it fixed is instructive: the API used to persist a definition the file would have refused, then drop it at the next rebuild with a log line.
 
 | Refusal | Condition | `a2a/config.rs` |
 |---|---|---|
@@ -115,7 +115,7 @@ agents:
 | a `hooks:` entry that is not a bare name, or that reaches onto another section | | `plane/config.rs:180-201` |
 | a `hooks:` entry naming a hook not defined in the top-level `hooks:` map | checked over the whole config in `resolve` | `config/mod.rs:4405-4414` |
 
-**The `passthrough` refusal is the one to understand.** `passthrough` means "forward the CALLER's credential upstream". On the delegation plane that would hand a third-party vendor a working Busbar credential belonging to somebody else — the caller's key authenticated them *to Busbar* and authorised them against *Busbar's* scopes, and it means nothing anywhere else. **Busbar delegates as itself.** The word stays reserved on every plane so the vocabulary is learned once; the value is refused loudly, because accepting it and quietly doing something else is how an operator ends up believing a credential is being forwarded when it is not, or the reverse (`crates/busbar-a2a/src/a2a/config.rs:82-95`).
+**The `passthrough` refusal is the one to understand.** `passthrough` means "forward the CALLER's credential upstream". On the delegation plane that would hand a third-party vendor a working Busbar credential belonging to somebody else — the caller's key authenticated them *to Busbar* and authorised them against *Busbar's* scopes, and it means nothing anywhere else. **Busbar delegates as itself.** The word stays reserved on every plane so the vocabulary is learned once; the value is refused loudly, because accepting it and quietly doing something else is how an operator ends up believing a credential is being forwarded when it is not, or the reverse (`crates/busbar-plane-a2a/src/a2a/config.rs:130-145`).
 
 ### There is no empty-`auth.chain` boot refusal on this plane
 
@@ -481,9 +481,9 @@ The relay is this plane's Stage-1 normalizer; Stage 2 is the one core classifier
 
 **A tripped agent that is a member of a `pools:` failover pool is not what produces the `rejected` task above.** For a FRESH submission the walk runs at admission, before any refusal is composed, and tries the next member whose approved card fingerprint matches the primary's (`crates/busbar-a2a/src/a2a/route.rs:82-219`); the caller gets that member's answer. Only an *exhausted* pool yields the `rejected` task, and then it names the **pool**, because the pool is the unit with nothing left (`crates/busbar-a2a/src/a2a/receive.rs:1497-1501`). A verb naming an **existing** task is unaffected either way: that task is pinned to the member that accepted it, so a tripped backend refuses the verb and the row keeps its last-known state.
 
-### Anomaly-driven suspension
+### No anomaly-driven suspension
 
-Separately from the breaker, a registration can be suspended on operator-configured thresholds over four signals (`crates/busbar-a2a/src/a2a/anomaly.rs:42-112`): `error_rate`, `terminal_failure_rate`, `latency_p95_ms`, `egress_budget_ratio`, each gated by a `min_observations` floor. **Every threshold is optional, and `None` means not configured and can never trip** — reading an absent threshold as zero would suspend every agent in the deployment on the day the feature shipped. A trip carries the signal, the observed value, the threshold and the observation window, for the audit row.
+There is no anomaly breaker on this plane. No `agents:` key configures one and nothing accumulates the observations one would judge, so a registration is taken out of service by the breaker above and by its trust state, and by nothing else.
 
 ---
 
@@ -500,7 +500,7 @@ That per-binding label is what makes a per-binding number readable from Busbar's
 
 A handled response is stamped so the plane's mount-level boundary does not count it a second time (`receive.rs:705-712`). **A refusal that reached no handler is still counted** — the audience-bound `401`, a `413`, a `404` — and on the gRPC binding, which has a door of its own, it is counted with the `grpc` label off the claim without any handler running (`crates/busbar-core/src/plane/observe.rs:51-70`).
 
-**No metric family is defined inside the A2A tree.** There are no A2A-specific counters, histograms or gauges: the plane's only emission is the mounted-plane request pair above. Anomaly evaluation and provenance produce audit rows, chain events and log lines, not metrics.
+**No metric family is defined inside the A2A tree.** There are no A2A-specific counters, histograms or gauges: the plane's only emission is the mounted-plane request pair above. Provenance produces audit rows, chain events and log lines, not metrics.
 
 **There is no `operation` metric label**, on this plane or any other. `invoke` / `catalogue` / `fetch` / `task` / `subscribe` / `control` are `OpShape::as_str()` values — a closed internal vocabulary for the *shape* of an exchange (`crates/busbar-core/src/operation.rs:174-183`). No metric family carries them (`crates/busbar-core/src/metrics.rs:147-153`).
 
@@ -532,7 +532,7 @@ The **per-task provenance chain** is one hash chain per task, over the core chai
 
 The claim is **tamper-evidence, not tamper-prevention**, and the boot verifier reports breaks while still restoring the rows.
 
-**Egress is gated.** The delegating direction runs through the shared egress gate, whose grant is the only thing that can produce a credential lease (`crates/busbar-a2a/src/a2a/creds.rs:201-208`). Which fronted agents may delegate to a given registration is `egress_scopes:`, fail-closed on absent or empty.
+**Egress is gated by the caller's grant.** A hop reaches an agent only when the caller's key is live and holds the `agent:<id>` grant for that agent; busbar does not spend its own credential on behalf of a caller that is not itself authorised for the backend agent. `egress_scopes:` is accepted and validated but no hop reads it.
 
 ---
 
@@ -546,6 +546,8 @@ The claim is **tamper-evidence, not tamper-prevention**, and the boot verifier r
 Mounted at `crates/busbar-core/src/admin/v1/json/mod.rs:91-100`. **Without these the `agents:` surface is CRUD only, every registration stays `Pending`, and no sequence of operator actions can make a fronted agent serve** — `Pending` is the fail-closed floor its only constructor puts it in.
 
 `approve` refuses if the observed fingerprint differs from the one you echoed, if the sighting is `Failed`, or if the registration is `unpinned` (there is no authenticity root, so there is nothing to approve). The `404` is answered **before** the body is parsed, so the error shape is not an existence oracle (`crates/busbar-a2a/src/a2a/verbs.rs:505-516`, `:600-…`). The write re-finds the registration **under the registry lock** rather than mutating a clone, because a config apply may have removed the row while the card was being fetched.
+
+**The decision is the kernel's** (ARCHITECT, FLIP-A2A): `connect` SIGHTS the verified card fingerprint on the kernel's trust book, and `approve` approves the agent's trust key `<instance>/<agent>` there — the same decision the generic `POST /api/v1/admin/trust/approve` makes, which an operator may use instead (`/trust/revoke` refuses the agent again). A first sighting is refused until approved; a card that moves from its approved fingerprint quarantines the agent until it is approved again; an unreachable card keeps the last verdict. An agent the book does not serve is refused `403`, `-32004`, "fronted agent `<id>` is not serving (Pending)" (or `(Quarantined)`).
 
 `connect` deliberately does not approve. Adopting what was seen is a separate, explicit operator act, precisely so a poisoned card cannot be adopted by the same call that fetched it (`crates/busbar-core/src/admin/planeverbs.rs:44-47`).
 

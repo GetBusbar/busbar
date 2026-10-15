@@ -418,8 +418,7 @@ fn mount_one_admin_spec(
 
 /// Frame a plane handler's [`busbar_kernel::admin_verbs::AdminReply`] onto the wire, and record the
 /// audit row for an `Audited` verb. The variants encode the pre-seam behaviour exactly: `Refused` is
-/// the un-audited resolve-time refusal, `Applied`/`Rejected` are the audited look-time outcomes, and
-/// `Prebuilt` is a verb that built its own envelope and audited itself (returned verbatim).
+/// the un-audited resolve-time refusal, and `Applied`/`Rejected` are the audited look-time outcomes.
 fn finish_admin_reply(
     plane: &'static str,
     name: &str,
@@ -436,7 +435,6 @@ fn finish_admin_reply(
         }
     };
     match reply {
-        AdminReply::Prebuilt(resp) => resp,
         AdminReply::Refused(e) => crate::planeverbs::refusal_response(plane, name, e),
         AdminReply::Applied(body) => {
             record_audit(audit::OUTCOME_APPLIED);

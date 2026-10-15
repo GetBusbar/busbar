@@ -1,5 +1,5 @@
-# cargo-deny policy for busbar. Run locally with `cargo deny check`; in CI the predev hop
-# (busbar-release) runs it as a build-test row. This file mechanically enforces the
+# cargo-deny policy for busbar. Run locally with `cargo deny check`; in CI ModernCI runs it on every
+# move into predev (the `deny` check of .ci/default.yaml). This file mechanically enforces the
 # supply-chain discipline that Cargo.toml already applies by hand (single TLS/HTTP
 # stack, no unmaintained/unsafe deps, license hygiene) so a future PR cannot
 # silently regress it.
@@ -18,7 +18,7 @@ ignore = [
     "RUSTSEC-2024-0436",
     # RUSTSEC-2024-0449: `unsafe-libyaml` 0.2.11 is unmaintained. It is pulled in only via
     # serde_yaml_ng 0.10, busbar's YAML config parser (`cargo tree -i unsafe-libyaml`:
-    # busbar, busbar-a2a, busbar-contract, busbar-kernel, busbar-voice, busbar-core-oauth2,
+    # busbar, busbar-a2a, busbar-contract, busbar-kernel, busbar-core-oauth2,
     # xtask and others -> serde_yaml_ng -> unsafe-libyaml). Advisory is "unmaintained", not a
     # security hole. There is no safe swap now: a different YAML parser risks 1.5.5 config-parse
     # parity (customer-visible behaviour, guarded by the oracle). Re-evaluate when serde_yaml_ng
@@ -104,7 +104,7 @@ deny = [
 # THE ACCEPTED DUPLICATES: each version here is one a parent forces and busbar cannot collapse.
 skip = [
     { crate = "getrandom@0.2", reason = "ring 0.17 pins getrandom 0.2" },
-    { crate = "getrandom@0.4", reason = "uuid (a2a-lf) and tempfile (build) are on getrandom 0.4" },
+    { crate = "getrandom@0.4", reason = "rand, quinn-proto and tempfile (build) are on getrandom 0.4" },
     { crate = "r-efi@5", reason = "follows getrandom 0.3; UEFI only, never built on linux/macOS" },
     { crate = "windows-sys@0.52", reason = "follows ring's getrandom 0.2; windows only" },
     { crate = "syn@2", reason = "compile time only; the ecosystem is mid-migration to syn 3" },

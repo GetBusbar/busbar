@@ -265,6 +265,8 @@ pub const CAUSE_EXCHANGE: u64 = 3;
 pub const CAUSE_DEADLINE: u64 = 4;
 /// `ServiceOut::value` on a failure: the open connection's framer failed it; `error` is its own.
 pub const CAUSE_FRAMER: u64 = 5;
+/// `ServiceOut::value` on a refusal: the request's credential is unavailable; nothing was sent.
+pub const CAUSE_CREDENTIAL_UNAVAILABLE: u64 = 6;
 
 /// The `in` of [`service::REJECT_ENDPOINT`], [`service::SIDE_STREAM`] and [`service::CLOSE`].
 /// `REJECT_ENDPOINT` answers the stream on the next endpoint, or FAILED when none is left.

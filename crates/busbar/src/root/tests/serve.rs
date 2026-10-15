@@ -774,3 +774,40 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
     );
     assert!(handed.get("fs").is_some(), "the plane's own entry is kept");
 }
+
+/// AN OPEN CLAIM'S LINE TAKES NO AUTH, WHATEVER THE CHAIN (ARCHITECT, FLIP-A2A): a plane's
+/// discovery documents answer a caller who holds no credential yet, with the operator's data chain
+/// configured exactly as without one.
+#[cfg(linked_axis_node)]
+#[test]
+fn an_open_claims_line_takes_no_auth_whatever_the_data_chain() {
+    use busbar_contract::abi::auth::AuthPoints;
+    use busbar_kernel::guest::LineAuth;
+    let chain = vec![("keys".to_string(), AuthPoints(0))];
+    assert_eq!(line_auth(CLAIM_OPEN, &chain), LineAuth::None);
+    assert_eq!(line_auth(CLAIM_OPEN, &[]), LineAuth::None);
+    assert_eq!(
+        line_auth(CLAIM_OPEN | CLAIM_EXACT, &chain),
+        LineAuth::None,
+        "openness is a flag of its own, beside the claim's match shape"
+    );
+}
+
+/// THE RED ARM: a claim that is NOT open owes the operator's chain, configured or empty — the open
+/// exception never widens to a line a credential is owed on.
+#[cfg(linked_axis_node)]
+#[test]
+fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
+    use busbar_contract::abi::auth::AuthPoints;
+    use busbar_kernel::guest::LineAuth;
+    let chain = vec![("keys".to_string(), AuthPoints(0))];
+    let owed = LineAuth::Chain(vec!["keys".to_string()], AuthPoints(0));
+    assert_eq!(line_auth(CLAIM_EXACT, &chain), owed);
+    assert_eq!(line_auth(CLAIM_PATTERN, &chain), owed);
+    assert_eq!(line_auth(0, &chain), owed);
+    assert_eq!(
+        line_auth(CLAIM_EXACT, &[]),
+        LineAuth::Chain(Vec::new(), AuthPoints(0)),
+        "an empty chain admits none on a credentialed line; it never opens it"
+    );
+}

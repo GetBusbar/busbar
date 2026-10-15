@@ -540,8 +540,9 @@ fn dup_claim_guard_passes_for_the_shipped_registry() {
 // ---------------------------------------------------------------------------------------------
 // THE THREE ADMISSION RATCHETS (Step 2.2). These drive `build_dispatch` — the registry-driven
 // fold that assembles the dispatch table from each plane's decl and its runtime object — directly,
-// with the SAME real MCP/A2A objects a boot builds, so the security property they pin is the one
-// production has rather than one a fixture invented.
+// with the SAME runtime objects a boot builds — the linked tool plane's own, and the `agents:` door
+// row's slot built by the kernel's door fold over that plane's own door — so the property they pin is
+// the one production has rather than one a fixture invented.
 // ---------------------------------------------------------------------------------------------
 
 /// A deployment's configuration, lowered by the kernel's own entry points (`deploy_from_yaml_str` →
@@ -603,14 +604,15 @@ fn slot_refs<'a>(
 ///
 /// For each registered plane, every `(path, wire)` its decl declares against its real object is
 /// mounted, and [`busbar_kernel::plane::PlaneDispatch::admission_for`] resolves an audience on it —
-/// including the A2A gRPC SECOND claim, `/lf.a2a.v1.A2AService`, whose path a gRPC client cannot be
-/// pointed off of. A path a plane answers on but does not claim here is a confused-deputy hole where
-/// no token's `aud` is checked, which is the whole reason the claim set — not the router — is what
-/// this pins.
+/// including a multi-binding door's framed SECOND claim (a service path a client derives from its
+/// service description and cannot be pointed off of). A path a plane answers on but does not claim
+/// here is a confused-deputy hole where no token's `aud` is checked, which is the whole reason the
+/// claim set — not the router — is what this pins.
 ///
-/// RED, watched: drop the gRPC entry from the A2A decl's `claims` and this fails —
-/// `admission_for("/lf.a2a.v1.A2AService/SendMessage")` returns `None` on a path the plane still
-/// answers, the exact audience-less door the ratchet forbids.
+/// RED, watched (on the deleted engine row this ratchet was written against): drop the framed entry
+/// from a multi-binding plane's `claims` and this fails — `admission_for` on the framed service's
+/// method path returns `None` on a path the plane still answers, the exact audience-less door the
+/// ratchet forbids.
 #[test]
 fn r1_every_declared_path_resolves_an_admission() {
     let owned = built_slots(&receiving_cfg());

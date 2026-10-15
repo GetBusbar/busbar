@@ -63,6 +63,8 @@ pub enum ConnOutcome {
     Fault = 7,
     /// [`ConnError::Unarmed`].
     Unarmed = 8,
+    /// [`ConnError::CredentialUnavailable`].
+    CredentialUnavailable = 9,
 }
 
 impl RawConnOutcome {
@@ -79,6 +81,7 @@ impl RawConnOutcome {
             Err(ConnError::Refused) => ConnOutcome::Refused,
             Err(ConnError::Fault) => ConnOutcome::Fault,
             Err(ConnError::Unarmed) => ConnOutcome::Unarmed,
+            Err(ConnError::CredentialUnavailable) => ConnOutcome::CredentialUnavailable,
         } as u8)
     }
 
@@ -97,6 +100,7 @@ impl RawConnOutcome {
             5 => Err(ConnError::UndeclaredNeed),
             6 => Err(ConnError::Refused),
             8 => Err(ConnError::Unarmed),
+            9 => Err(ConnError::CredentialUnavailable),
             _ => Err(ConnError::Fault),
         }
     }
@@ -741,6 +745,7 @@ impl HostConns {
             status_namespace: ns,
             retry_after_secs: (p.flags & PIECE_HAS_RETRY_AFTER != 0).then_some(p.retry_after_secs),
             declared_len: (p.flags & PIECE_HAS_DECLARED_LEN != 0).then_some(p.declared_len),
+            fault: None,
             reason: match p.reason.len {
                 0 => None,
                 n => {

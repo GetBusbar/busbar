@@ -375,13 +375,9 @@
       "transparent": false
     },
     "CredentialPlacement": {
-      "deny_unknown_fields": false,
-      "kind": "enum",
-      "transparent": false,
-      "variants": [
-        "bearer",
-        "header"
-      ]
+      "deserialize": "manual",
+      "fields": {},
+      "kind": "struct"
     },
     "DecisionsSection": {
       "deny_unknown_fields": true,
@@ -421,10 +417,6 @@
           "optional": true,
           "type": "AdvancedCfg"
         },
-        "agents": {
-          "optional": true,
-          "type": "AgentsSection"
-        },
         "auth": {
           "optional": true,
           "type": "AuthDeployCfg"
@@ -432,6 +424,10 @@
         "config": {
           "optional": true,
           "type": "ConfigMgmtCfg"
+        },
+        "decisions": {
+          "optional": true,
+          "type": "DeclaredSections"
         },
         "export": {
           "optional": true,
@@ -2526,6 +2522,15 @@
       "refused": [],
       "wire_keys": []
     },
+    "manual-de CredentialPlacement": {
+      "fields": {},
+      "kind": "manual",
+      "refused": [],
+      "wire_keys": [
+        "bearer",
+        "header"
+      ]
+    },
     "manual-de LimitCfg": {
       "fields": {
         "admission": {
@@ -2655,6 +2660,10 @@
       "kind": "alias",
       "target": "indexmap::IndexMap<String, AskEntryCfg>"
     },
+    "type AuthKey": {
+      "kind": "alias",
+      "target": "(InstanceId, NeedId, String, String)"
+    },
     "type AuthMethods": {
       "kind": "alias",
       "target": "indexmap::IndexMap<String, AuthMethodCfg>"
@@ -2682,6 +2691,10 @@
     "type Listeners": {
       "kind": "alias",
       "target": "Mutex<HashMap<(InstanceId, NeedId), Arc<Mutex<Listening>>>>"
+    },
+    "type MemberAnchored": {
+      "kind": "alias",
+      "target": "Mutex<HashMap<(InstanceId, NeedId, String), (String, Option<Arc<tls::client::Sealed>>)>>"
     },
     "type Members": {
       "kind": "alias",

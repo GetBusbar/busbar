@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use axum::body::{Body, Bytes};
-use axum::http::{HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
 use axum::response::Response;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome as AbiOutcome, BLOB_JSON};
 use busbar_contract::abi::mechanism::lifecycle::{OpenIn, OpenOut};
@@ -543,6 +543,8 @@ pub struct ApplyReach {
     conns: Arc<dyn busbar_contract::conn::PollConns>,
     journal: Arc<dyn busbar_kernel_egress::ports::Journal>,
     stream_ceiling_secs: u64,
+    /// The top-level models catalog the deployment booted with ([`catalog_routes`]).
+    catalog: Option<std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
     upgrades: Vec<&'static str>,
 }
 
@@ -593,7 +595,11 @@ impl DoorApply {
         // with the generation's unified pools at its reserved `pools` key ([`with_pools`]); the plane
         // is handed it with the core-owned `work:` struck ([`handed_settings`]).
         let section = applied_section(app, &self.facts.plane, self.served_facts.section, &now);
-        match self.refreshed(&section, now.generation + 1, &*app.secret_resolver) {
+        match self.refreshed(
+            &section,
+            now.generation + 1,
+            Arc::clone(&app.secret_resolver) as Arc<dyn busbar_contract::secret::SecretResolve>,
+        ) {
             Ok(next) => {
                 *self
                     .live
@@ -618,7 +624,7 @@ impl DoorApply {
         &self,
         section: &serde_yaml::Value,
         generation: u64,
-        secrets: &dyn busbar_contract::secret::SecretResolve,
+        secrets: Arc<dyn busbar_contract::secret::SecretResolve>,
     ) -> Result<DoorLive, String> {
         let settings = if section.is_null() {
             Vec::new()
@@ -630,7 +636,11 @@ impl DoorApply {
             &settings,
             generation,
         )?;
-        let pools = DoorPools::of(section);
+        let table = routes_of(
+            section,
+            self.reach.as_ref().and_then(|r| r.catalog.as_ref()),
+        );
+        let pools = DoorPools::of(&table);
         let egress = match &self.reach {
             Some(r) => {
                 let reach = crate::root::door_steps::DoorReach {
@@ -639,11 +649,12 @@ impl DoorApply {
                     auths: Arc::clone(&r.auths),
                     conns: Arc::clone(&r.conns),
                     stream_ceiling_secs: r.stream_ceiling_secs,
+                    catalog: r.catalog.as_ref(),
                     upgrades: r.upgrades.clone(),
                     models: None,
                 };
                 let routes = crate::root::door_steps::member_routes(
-                    section,
+                    &table,
                     &pools,
                     &self.served_facts,
                     &reach,
@@ -675,9 +686,9 @@ impl DoorApply {
 /// THE SECTION A CONFIG APPLY REFRESHES A DOOR PLANE ONTO: the plane's slot in the generation `app`
 /// installed (its section as written), carrying the unified pools that generation resolved for the
 /// plane's section `section_key` ([`installed_door_pools`]: the `tools` pools off `App::tool_pools`,
-/// the `agents` pools off the generic per-plane pool map `App::plane_pools`), as the boot
-/// composition carries them ([`with_pools`]); a generation with no slot for the plane keeps the
-/// section it serves now.
+/// the `agents` pools off the generic per-plane pool map `App::plane_pools`, read first under the
+/// plane's own key, the key its slot is under), as the boot composition carries them
+/// ([`with_pools`]); a generation with no slot for the plane keeps the section it serves now.
 #[must_use]
 pub fn applied_section(
     app: &busbar_kernel::state::App,
@@ -692,7 +703,19 @@ pub fn applied_section(
     else {
         return now.section.clone();
     };
-    section_with_pools(section_key, &slot.section.value, &installed_door_pools(app))
+    let mut pools = installed_door_pools(app);
+    // The generic per-plane pool map is keyed by the plane's key, the key its slot is under: read
+    // there first, so an apply carries the pools whatever the registry holds.
+    if section_key == busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3] {
+        if let Some(own) = app.plane_pools(plane) {
+            for (owner, stated) in &mut pools {
+                if *owner == section_key {
+                    *stated = own.clone();
+                }
+            }
+        }
+    }
+    section_with_pools(section_key, &slot.section.value, &pools)
 }
 
 /// EVERY SERVED DOOR PLANE'S APPLY, kept when the planes move into the data routes, for the
@@ -1473,6 +1496,14 @@ pub(crate) fn compose_planes_over(
             Some(stage) => driver.with_hooks(stage.routed(&served_facts.dialects)),
             None => driver,
         };
+        // A plane whose tail takes a refusal as a piece first is handed it on the unit's own
+        // ticket, before `refusal` renders it.
+        let driver =
+            if served_facts.tail_flags & busbar_contract::abi::plane::TAIL_REFUSED_PIECE != 0 {
+                driver.with_refused_piece()
+            } else {
+                driver
+            };
         let routes = snapshot
             .admin_routes
             .iter()
@@ -1534,20 +1565,19 @@ pub(crate) fn compose_planes_over(
         )?;
         // The door's own requests to its members carry the members' bindings (ARCHITECT round 5
         // Q-L3B-DOOR-EXCHANGE), held on the connection table its need is declared on.
-        if let (Some(egress), Some(table)) = (egress, plugin.conn_table()) {
-            let pools = DoorPools::of(section);
-            let routes = crate::root::door_steps::member_routes(
-                section,
-                &pools,
-                &served_facts,
-                egress.reach,
-            )
-            .map_err(|e| format!("{instance}: {e}"))?;
+        if let (Some(egress), Some(conn_table)) = (egress, plugin.conn_table()) {
+            // The route table: the section, with the catalog model its `session.model` names
+            // folded in.
+            let table = routes_of(section, egress.reach.catalog);
+            let pools = DoorPools::of(&table);
+            let routes =
+                crate::root::door_steps::member_routes(&table, &pools, &served_facts, egress.reach)
+                    .map_err(|e| format!("{instance}: {e}"))?;
             crate::root::door_steps::bind_member_fetches(
                 &served_facts,
                 &routes,
                 plugin.instance(),
-                &*table,
+                &*conn_table,
                 kernel.units(),
             );
         }
@@ -1565,6 +1595,7 @@ pub(crate) fn compose_planes_over(
             conns: Arc::clone(&e.reach.conns),
             journal: Arc::clone(&e.journal),
             stream_ceiling_secs: e.reach.stream_ceiling_secs,
+            catalog: e.reach.catalog.cloned(),
             upgrades: e.reach.upgrades.clone(),
         });
         let live = Arc::new(DoorApply {
@@ -1590,6 +1621,60 @@ pub(crate) fn compose_planes_over(
         });
     }
     Ok(served)
+}
+
+/// The `session:` block of a section, and the `model:` key inside it that names a top-level catalog
+/// model.
+const SESSION_KEY: &str = "session";
+const MODEL_KEY: &str = "model";
+
+/// THE ROUTE TABLE A SECTION'S DOOR STEPS RESOLVE AGAINST (ARCHITECT Q-L5B-ROUTE, 2026-10-03): the
+/// section as written, plus, where it states no `models:` of its own and its `session.model` names an
+/// entry of the top-level models `catalog`, that one entry folded in as its `models:` map (its
+/// provider, upstream model and attempt cap), so the plane's door names it as a DIRECT route and the
+/// kernel's door steps resolve it as any entry of the plane's own section. The 1.5.5 shape of both
+/// sections is unchanged: only the route table is folded, never the settings the door opens with.
+#[must_use]
+pub fn catalog_routes(
+    section: &serde_yaml::Value,
+    catalog: &std::collections::HashMap<String, busbar_contract::config::ModelCfg>,
+) -> serde_yaml::Value {
+    use serde_yaml::{Mapping, Value};
+    let mut routes = section.clone();
+    let named = section
+        .get(SESSION_KEY)
+        .and_then(|s| s.get(MODEL_KEY))
+        .and_then(Value::as_str);
+    let (Some(map), Some(model)) = (routes.as_mapping_mut(), named) else {
+        return routes;
+    };
+    let models_key = Value::from(busbar_contract::section::RESERVED_MODELS_KEY);
+    let Some(entry) = catalog
+        .get(model)
+        .filter(|_| !map.contains_key(&models_key))
+    else {
+        return routes;
+    };
+    let mut folded = Mapping::new();
+    folded.insert("provider".into(), entry.provider.clone().into());
+    if let Some(upstream) = &entry.upstream_model {
+        folded.insert("upstream_model".into(), upstream.clone().into());
+    }
+    if let Some(ms) = entry.attempt_timeout_ms {
+        folded.insert("attempt_timeout_ms".into(), ms.into());
+    }
+    let mut models = Mapping::new();
+    models.insert(model.into(), Value::Mapping(folded));
+    map.insert(models_key, Value::Mapping(models));
+    routes
+}
+
+/// The route table of `section` under `catalog` ([`catalog_routes`]); the section itself without one.
+fn routes_of(
+    section: &serde_yaml::Value,
+    catalog: Option<&std::collections::HashMap<String, busbar_contract::config::ModelCfg>>,
+) -> serde_yaml::Value {
+    catalog.map_or_else(|| section.clone(), |c| catalog_routes(section, c))
 }
 
 /// THE GENERATION A DOOR PLANE'S UNITS ARE SERVED BY ([`DoorLive`], refresh generation `generation`), sealed over its walked
@@ -1636,6 +1721,12 @@ fn seal_live(
     // THE PLANE'S STATED STREAM CEILING (ARCHITECT ruling 2026-10-07, STREAM-CEILING), off its
     // tail: the deadline of its streamed units once their route is known; `0` = none.
     facts.stream_ceiling_secs = served_facts.stream_ceiling_secs;
+    // THE PLANE'S DECLARED COUNTER LANE WORDS: what, beside its entries, its attempts may state.
+    facts.metric_lanes = served_facts
+        .metric_lanes
+        .iter()
+        .map(|w| (*w).to_string())
+        .collect();
     if let Some(egress) = egress {
         facts.translations = (
             served_facts
@@ -1653,11 +1744,14 @@ fn seal_live(
             ),
         );
     }
-    let pools = DoorPools::of(section);
+    // The route table: the section, with the catalog model its `session.model` names folded in
+    // ([`catalog_routes`]).
+    let table = routes_of(section, egress.and_then(|e| e.reach.catalog));
+    let pools = DoorPools::of(&table);
     let egress = match egress {
         Some(egress) => {
             let routes =
-                crate::root::door_steps::member_routes(section, &pools, served_facts, egress.reach)
+                crate::root::door_steps::member_routes(&table, &pools, served_facts, egress.reach)
                     .map_err(|e| format!("{instance}: {e}"))?;
             let sealed = match egress.reach.models {
                 Some(models) if models_plane => crate::root::model_egress::compose(
@@ -2071,11 +2165,13 @@ pub struct DoorRequest {
 }
 
 /// THE AUTH ON A DOOR CLAIM'S GUEST-LIST LINE (THE DESIGN §6, "Auth points and guest lists"): the
-/// operator's data chain (`auth.chain`) is the auth of every data-listener line; only where it gives
-/// the line none does the claim's own declared default inbound style apply. `CLAIM_OPEN` declares
-/// none; any other claim takes a credential, verified by the deployment's (empty) chain.
+/// operator's data chain (`auth.chain`) is the auth of every data-listener line a credential is owed
+/// on. A `CLAIM_OPEN` line owes none, WHATEVER THE CHAIN (ARCHITECT, FLIP-A2A): a plane's discovery
+/// documents (its protected-resource metadata, its own card) are what a caller reads BEFORE it holds
+/// a credential, and they answer the same with a chain configured as without one. Every other claim
+/// takes a credential, verified by the deployment's chain (an empty chain admits none).
 fn line_auth(flags: u32, data_chain: &[ChainAuth]) -> busbar_kernel::guest::LineAuth {
-    if data_chain.is_empty() && flags & CLAIM_OPEN != 0 {
+    if flags & CLAIM_OPEN != 0 {
         busbar_kernel::guest::LineAuth::None
     } else {
         chain_auth(data_chain)
@@ -3387,11 +3483,31 @@ impl FarEnd for DoorFar<'_, '_> {
         }
     }
 
+    /// The plane's fault reading of the answer it was handed reaches the walk's breaker.
+    fn judged(&self, token: &Pass<Route>, fault: u8) {
+        if let Some(far) = self.far() {
+            far.judged(token, fault);
+        }
+    }
+
     async fn write(&self, token: &Pass<Route>, request: OutboundRequest) -> bool {
         match self.far() {
             Some(far) => far.write(token, request).await,
             None => false,
         }
+    }
+
+    /// The plane's counter labels for the attempt, handed on to the walk, whose counters bound
+    /// them.
+    fn stated(&self, token: &Pass<Route>, labels: busbar_kernel_egress::ports::StatedLabels) {
+        if let Some(far) = self.far() {
+            far.stated(token, labels);
+        }
+    }
+
+    /// The wait of the member the plane stated its exhausted refusal answers, read off the walk.
+    fn member_wait(&self, token: &Pass<Route>, member: &str) -> Option<u32> {
+        self.far().and_then(|far| far.member_wait(token, member))
     }
 
     // THE WALK'S FACTS FOR THE HOOK STAGE, as the unit's egress walk states them: its candidates,
@@ -3656,7 +3772,7 @@ impl IngressReply {
         let IngressReply {
             mut head,
             body,
-            trailers,
+            mut trailers,
         } = self;
         let first = tokio::select! {
             biased;
@@ -3674,7 +3790,13 @@ impl IngressReply {
             }
             // A STREAMED ANSWER: the unit runs on, on its own task, once its head is stated
             // (ARCHITECT ruling 2026-10-07, STREAM-CEILING); the body only drains what it writes.
+            // A stream already closed before its first body byte goes out whole instead, the unit
+            // run to its end.
             Ok(Some(h)) => {
+                if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
+                    let _ = unit.await;
+                    return closed_whole(h, block);
+                }
                 let running = Running(tokio::spawn(unit));
                 return stated(h, Body::new(ReplyBody(body, Some(running), trailers)));
             }
@@ -3690,7 +3812,12 @@ impl IngressReply {
                     }
                     return stated(unlengthed(h), Body::from(whole));
                 }
-                Ok(h) => return stated(h, Body::new(ReplyBody(body, None, trailers))),
+                Ok(h) => {
+                    if let Some(block) = closed_before_body(&body, trailers.as_mut()) {
+                        return closed_whole(h, block);
+                    }
+                    return stated(h, Body::new(ReplyBody(body, None, trailers)));
+                }
                 Err(_) => rendered,
             },
         };
@@ -3705,6 +3832,31 @@ type UnitCaller = (
     Option<Arc<busbar_contract::records::VirtualKey>>,
     Option<busbar_contract::redacted::Redacted<Vec<u8>>>,
 );
+
+/// A FRAMED STREAM THAT CLOSED BEFORE ITS FIRST BODY BYTE (ARCHITECT ruling on #787): its close is
+/// already rendered and nothing of its body was written. The closing block, taken; `None` when the
+/// body holds bytes or the stream is still open.
+///
+/// The probe takes the trailers only when they are ready (`try_recv` leaves an open stream's where
+/// it is), and a body with bytes is never asked for its close.
+fn closed_before_body(
+    body: &mpsc::Receiver<Bytes>,
+    trailers: Option<&mut oneshot::Receiver<HeaderMap>>,
+) -> Option<HeaderMap> {
+    if !body.is_empty() {
+        return None;
+    }
+    trailers?.try_recv().ok()
+}
+
+/// [`closed_before_body`]'s answer, WHOLE: the head and the closing block as ONE header block and no
+/// body, as the previous release closed a call that ended before its first message (the line's
+/// trailers-only answer). The host renders none of the claim's wire: the block is the framer's.
+fn closed_whole(h: Head, block: HeaderMap) -> Response {
+    let mut response = stated(h, Body::empty());
+    response.headers_mut().extend(block);
+    response
+}
 
 /// Whether a reply head is a WHOLE answer's: it states its length and is no event stream (SSE, or
 /// the AWS event-stream framing, which the previous release relayed piece by piece).
@@ -3880,13 +4032,19 @@ pub(crate) mod planes_tests;
 
 // The doors served end to end through this composition: the decisions plane's (the `root-decisions`
 // leg's own cells, qa/capability-equality.json, under its feature) and the MCP plane's (the
-// `root-mcp` leg's loop cells, under the linked plane-door axis), each gated item by item inside, so
-// either plane's switch alone still compiles its own. Its MCP cells reach the door_steps helpers
+// `root-mcp` leg's loop cells, under the linked plane-door axis), each gated item by item inside,
+// so either plane's switch alone still compiles its own, and the session door's root-leg cells,
+// which find their door among the linked plane doors. Its MCP cells reach the door_steps helpers
 // that need the default build's linked auth rows (gated with the node-axis plane that carries that
 // build), and the capability cells of the door serving the `pools` map.
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_tests.rs"]
 mod door_tests;
+
+// The door planes' own root cells (each plane crate's `tests/root/`, one module per enabled
+// `[package.metadata.busbar.door-cells]` row), compiled here beside the rig they drive.
+#[cfg(all(test, linked_axis_node))]
+include!(concat!(env!("OUT_DIR"), "/door_cells.rs"));
 
 #[cfg(test)]
 #[path = "tests/serve_money.rs"]
@@ -3895,6 +4053,10 @@ mod money_tests;
 #[cfg(all(test, linked_fold_on_driver, linked_axis_node))]
 #[path = "tests/serve_hook_seats.rs"]
 mod hook_seat_tests;
+
+#[cfg(all(test, linked_axis_node))]
+#[path = "tests/serve_door_far.rs"]
+mod door_far_tests;
 
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_framed.rs"]

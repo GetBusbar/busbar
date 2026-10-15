@@ -106,7 +106,10 @@ pub fn concerns(_a: &Addresses) -> Vec<Concern> {
 /// with nothing owed is a heading somebody adds a row under.
 pub fn ledger() -> Vec<LedgerRow> {
     // Every row below was argued for the MCP and A2A planes — the only pair the scan could see
-    // when each was written — and signs for exactly that pair.
+    // when each was written — and signs for exactly that pair. FLIP-A2A deleted the a2a engine
+    // (`busbar-a2a`); the a2a plane's home is its door crate `busbar-plane-a2a`, which still declares
+    // `a2a/config.rs`, so `config.rs` stays: the filename is still declared in more than one plane,
+    // and the row is still read.
     let d = |name: &str, note: &str| LedgerRow {
         name: name.to_string(),
         class: Class::Distinct,
@@ -114,7 +117,41 @@ pub fn ledger() -> Vec<LedgerRow> {
         note: note.to_string(),
         planes: vec!["mcp".to_string(), "a2a".to_string()],
     };
+    // FLIP-STREAMING: the streaming plane's home moved from `busbar-voice` to its door crate
+    // `busbar-plane-streaming`, and every row below was argued for exactly the planes it names
+    // against that crate. NOT signed, because they are copies and not distinct concerns: `settle`
+    // (decisions' `plane_door` and streaming's `piece`), `absolute` (a2a's `serve` and streaming's
+    // `door`) and `claim` (mcp's `tool_claims` and streaming's `claims`) — those stay findings.
+    let s = |name: &str, planes: &[&str], note: &str| LedgerRow {
+        name: name.to_string(),
+        class: Class::Distinct,
+        concern: String::new(),
+        note: note.to_string(),
+        planes: planes.iter().map(|p| (*p).to_string()).collect(),
+    };
     vec![
+        s("claims.rs", &["decisions", "streaming"], "Each plane's own claim table: decisions declares two exact-path claims under its decision-inbound scheme, streaming five dialect-tagged claims over ws and http under its streaming-key scheme. The table is per plane by construction; the claim grammar they both build is the contract's."),
+        s("diagnostics.rs", &["mcp", "streaming"], "Each plane's own diagnostic catalogue handed to the root's install_diagnostics: the MCP_* entries and STREAMING_SESSION_LEASE_EXHAUSTED. They share no entry; the catalogue type is the contract's."),
+        s("door.rs", &["mcp", "streaming"], "Each plane's door declaration: its Statement tail, its ROUTES table, its snapshot and settings. A door is per plane by definition; the ABI it fills is the contract's."),
+        s("driven.rs", &["decisions", "streaming"], "Each plane's answers to the kernel plane driver's crossings (arrive, on_piece, refusal): jev's systemone operation for decisions, the mint and SDP-offer doors for streaming. The slots are the ABI's; the answers are the plane's."),
+        s("meta.rs", &["decisions", "streaming"], "Each plane's PlaneMeta with its own meter classes: decisions' single decision class, streaming's audio token classes. The classes are what makes each plane's meter its own."),
+        s("usage.rs", &["llm", "streaming"], "Unrelated: llm's engine file bills a non-streaming token response to a key's budget (record_resp_usage); streaming's codec file is the Realtime and Gemini duplex usage IR and its float-tolerant count reader."),
+        s("Answer", &["mcp", "streaming"], "Unrelated: mcp's Answer is the reply to one MCP arrival (here with a status and body, or far); streaming's is a RequestUnit's per-piece answer (nothing, attempt, to the far end, to the caller, refused)."),
+        s("Arrival", &["mcp", "streaming"], "Unrelated: mcp's Arrival is one carrier line read (a LineUnit and an optional dispatch body); streaming's is its arrive slot's answer (door, op class, dialect)."),
+        s("CredentialPlacement", &["a2a", "streaming"], "Unrelated: a2a's places a leased credential in an HTTP header (Authorization Bearer or a named header); streaming's places a provider key on a WebSocket dial per dialect (a query parameter or a prefixed header)."),
+        s("Dialect", &["a2a", "streaming"], "Unrelated: a2a's Dialect is the push-config verb spelling (V03 or V10); streaming's is its voice dialect roster (OpenAI Realtime, Gemini Live, Twilio Media Streams, one-shot transcribe and tts)."),
+        s("Held", &["mcp", "streaming"], "Unrelated: mcp's Held is one generation's catalogue, tools section and pools; streaming's is a one-request door unit's state (its RequestUnit, what it owes, a short answer)."),
+        s("Outbound", &["a2a", "streaming"], "Unrelated: a2a's Outbound is the caller's request in three forms for the outbound hop; streaming's is a session frame plan (upstream and downlink wire events, close, a refused reply)."),
+        s("Reply", &["mcp", "streaming"], "Unrelated: mcp's Reply is a caller's answer to one of busbar's own asks (answered or failed); streaming's is the caller's HTTP answer (status, fields, body, the rtc call id)."),
+        s("Route", &["mcp", "streaming"], "Each plane's own row type for its door's ROUTES table: mcp's carries verb, target, carrier and open; streaming's adds upgrade, auth, dialect and refusal dialect. The row is shaped by what the plane routes on."),
+        s("Session", &["mcp", "streaming"], "Unrelated: mcp's Session is the carrier session's state (streams, buffered events, revision, owner); streaming's is the Realtime or Gemini enum over a codec's SessionUnit."),
+        s("Unit", &["decisions", "streaming"], "Unrelated: decisions' Unit is one unit's attempt, reading and owed bytes in its plane door; streaming's is the Realtime or Gemini codec enum its session door dispatches over."),
+        s("arrive", &["mcp", "decisions", "streaming"], "Each plane's body for the arrive slot: mcp reads a carrier line, decisions classifies verb and target through its ops table, streaming maps a claim index to a door. The slot is the ABI's; what an arrival means is the plane's."),
+        s("open", &["mcp", "streaming"], "Unrelated: mcp's door_listen open starts a subscriptions/listen subscription and its tool_claims open builds a claim with no credential scheme; streaming's constructs a live Session for a door."),
+        s("outbound", &["mcp", "streaming"], "Unrelated: mcp's builds the OutboundCall request (POST, path, body) for one tool-call round; streaming's is a const naming a connection need on the provider egress class."),
+        s("parse", &["a2a", "streaming"], "Unrelated: a2a's reads an agent card value into an AgentCard; streaming's reads wire bytes into a JSON value in its codec."),
+        s("read_settings", &["decisions", "streaming"], "Each plane judges its own settings blob by its own grammar and answers its own section for an empty one: DecisionsSection for decisions, StreamsCfg for streaming. The grammar is the plane's."),
+        s("refusal_body", &["decisions", "streaming"], "Each plane renders the kernel's refusal in its own wire's error shape: jev's error code and message for decisions, the OpenAI REST error envelope for streaming. The status and text are the kernel's; the shape is the dialect's."),
         d("config.rs", "The parse ORDER these two files shared is gone: plane::config::split_section owns the reserved-key refusals, the two typed lifts and the sequence they run in, and all THREE plane sections are read through it. What is left in each file is that plane's GRAMMAR and nothing else — they share no type, no field, no value rule, no sentence and no caller. What they share is a filename, which on every plane says the same true and un-actionable thing: this is where that section's grammar is written."),
         // STRUCK at P3 DEL-MCP (ARCHITECT 2026-10-05: busbar-mcp deleted, the mcp plane is served
         // through its door crate alone): `transport.rs`, `judge`, `revalidate`, `observed_pin`,
@@ -354,14 +391,77 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
     }
 }
 
-pub fn rows(f: &Findings) -> Vec<Row> {
-    vec![
-        row(
+/// THE UNLEDGERED ROW'S ARMED COUNT (Law 9: armed at the measure and never above it; ARCHITECT
+/// ruling on #787, its accounting corrected 2026-10-14). FLIP-A2A moved the a2a plane's home from
+/// the engine `busbar-a2a` to its door crate `busbar-plane-a2a`, where this scan reads it. The 42
+/// findings are, name by name:
+///
+/// * 15 CARRIED from predev (2bce54dc57 measured 26; 11 left: the engine's `meter.rs`, `plane.rs`,
+///   `route.rs`, `verify.rs`, `admit`, `approve`, `deliver`, `task_verb` and `Verified` with the
+///   deleted crate, and decisions' `Relayed` and `Routed` renamed): `config.rs`, `absolute`,
+///   `Admitted`, `arrive`, `attempt`, `build_runtime`, `drive`, `fingerprint`, `Hop`, `meter`,
+///   `op_class`, `owe`, `refused`, `relayed`, `serve`;
+/// * 27 SCOPE-MOVED: declarations in files `busbar-plane-a2a` already held on predev, seen once the
+///   plane's home moved there: modules `claims.rs`, `diagnostics.rs`, `facts.rs`, `jsonrpc.rs`,
+///   `meta.rs`, `ops.rs`, `record.rs`, `records.rs`; symbols `Envelope`, `IdShape`, `MethodRow`,
+///   `Tap`, `Task`, `correlation_for`, `correlation_value`, `decode`, `encode`, `error`, `id_shape`,
+///   `id_value`, `is_canonical_number`, `is_number`, `open`, `operations_for`, `read`, `row_for`,
+///   `success`.
+///
+/// The door code this branch added (52 names, and the 2 #703 met through predev's `door_sessions.rs`)
+/// is DRAINED, not armed: what was the same concept as the mcp door's copy is shared once in the
+/// SDK (`busbar_contract::abi::sdk`: `publish::ServedRoute`, `publish::admin_route`,
+/// `publish::class_index`, `Lent::stated`, `digest::lower_hex`, `trust::Sighting`,
+/// `trust::State`) and used by both doors; what only shared a name is renamed to what it is. A row
+/// per duplicate stays refused (it would be evasion), so the row holds the COUNT: above it is a new
+/// plane-local copy, below it is a drain that did not give its number back. DRAIN: the remaining
+/// door scaffolding moves to the SDK (planes never depend on each other, Law 0), the duplicates
+/// that encode a security or money property first (DoD item 5); lower this count in the commit
+/// that drains each one.
+pub const UNLEDGERED_ARMED: usize = 42;
+
+/// [`ROW_UNLEDGERED`], judged against [`UNLEDGERED_ARMED`]. A tree with none is clean.
+fn unledgered_row(unledgered: &[String]) -> Row {
+    let n = unledgered.len();
+    if n == 0 {
+        return Row::pass(
             ROW_UNLEDGERED,
             "no name is declared in two planes without a signed claim about why",
-            "a shared concern grew a second, plane-local implementation",
-            &f.unledgered,
-        ),
+            super::CLEAN,
+        );
+    }
+    if n == UNLEDGERED_ARMED {
+        return Row::pass(
+            ROW_UNLEDGERED,
+            "the plane-local duplicates are the armed count and no more",
+            format!(
+                "{n} finding(s), armed at {UNLEDGERED_ARMED} (predev's carried findings and the \
+                 a2a plane's pre-existing files its home move to busbar-plane-a2a made visible; \
+                 drain: shared door scaffolding to the SDK): {}",
+                unledgered.join(" | ")
+            ),
+        );
+    }
+    let why = if n > UNLEDGERED_ARMED {
+        format!(
+            "{n} finding(s) against an armed count of {UNLEDGERED_ARMED}: a new plane-local copy"
+        )
+    } else {
+        format!(
+            "{n} finding(s) under an armed count of {UNLEDGERED_ARMED}: lower UNLEDGERED_ARMED to \
+             {n} in the commit that drained it (Law 9: the count ratchets down)"
+        )
+    };
+    Row::fail(
+        ROW_UNLEDGERED,
+        "a shared concern grew a second, plane-local implementation",
+        format!("{why}: {}", unledgered.join(" | ")),
+    )
+}
+
+pub fn rows(f: &Findings) -> Vec<Row> {
+    vec![
+        unledgered_row(&f.unledgered),
         row(
             ROW_LEDGER_INTEGRITY,
             "every ledger row is a complete, single, well-classed claim",

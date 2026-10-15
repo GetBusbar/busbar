@@ -6,8 +6,6 @@ members = [
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
     "crates/busbar-llm",
-    "crates/busbar-a2a",
-    "crates/busbar-voice",
     "crates/busbar-contract",
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",
@@ -23,6 +21,7 @@ members = [
     "crates/plugin-loader",
     "crates/busbar-transport-webrtc",
     "testing/ws-conformance/subject",
+    "testing/voice-conformance/harness",
     "xtask",
 ]
 
@@ -75,26 +74,27 @@ busbar-secret-file = { git = "https://github.com/GetBusbar/busbar-secret-file", 
 # THE REQUEST-LOG WEBHOOK SINK: the one home of its pinned rev (a rev bump is this one edit). `busbar`
 # links the logic crate; `busbar-plugin-loader`'s conformance test builds the cdylib crate. Same repo,
 # same rev, one resolved copy in Cargo.lock.
-busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
+busbar-export-webhook = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "b5240b33d1da15007fac3f74a1ead87f06289fe4" }
 # THE HTTP TRANSPORT (kind: transport), pulled at a pinned rev; the logic crate the root links.
-busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "0ff8635b8321dc713cd453ff09ba557c17440610" }
+busbar-transport-http = { git = "https://github.com/GetBusbar/busbar-transport-http", rev = "af1a352e7df829e3a4b42539f0cb02ca77639d70" }
 # THE GRPC TRANSPORT: the gRPC framer door (kind: transport), pulled at a pinned rev; the logic crate the root
 # links on the transport-door axis (the gRPC module left busbar-transport-http for it).
-busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "4f44683894e99f1f7e285bfe9ece1b2f06e96dd6" }
+busbar-transport-grpc = { git = "https://github.com/GetBusbar/busbar-transport-grpc", rev = "9a564277f6a9f5d73a7fa6eda56ff72058414419" }
 # THE WS TRANSPORT: the websocket framer door (kind: transport), pulled at a pinned rev; the logic
 # crate the root links (behind plane-streaming) and the ws-conformance subject drives.
-busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "140691cf2eb5108ca922bf26fc8d13c33fd91770" }
-busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "46cd95ba78f6639b28d14067bc7c6876e00c5458" }
+busbar-transport-ws = { git = "https://github.com/GetBusbar/busbar-transport-ws", rev = "2e3210386c560c597dca5475eaaf001ced2f462c" }
+busbar-export-webhook-plugin = { git = "https://github.com/GetBusbar/busbar-export-webhook", rev = "b5240b33d1da15007fac3f74a1ead87f06289fe4" }
 # THE TCP TRANSPORT: the identity framer door (kind: transport), one pin for the logic crate the root
 # links and the cdylib crate the loader's both-ways proof builds. Same repo, same rev, one resolved copy.
-busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "4e44de9bf0352524b2cebbf7b1e066062b465b7f" }
-busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "4e44de9bf0352524b2cebbf7b1e066062b465b7f" }
+busbar-transport-tcp = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "9cb4a0dd92a4a03622754a112b74746114e2126a" }
+busbar-transport-tcp-plugin = { git = "https://github.com/GetBusbar/busbar-transport-tcp", rev = "9cb4a0dd92a4a03622754a112b74746114e2126a" }
 # THE OUTBOUND HEADER STYLES (kind: auth): the logic crate the root links on its `auths` axis
 # (feature `auth-header`), pulled at a pinned rev (P5; OWNER Q99 keep the split).
 busbar-auth-header = { git = "https://github.com/GetBusbar/busbar-auth-header", rev = "70f356722c37b7efe9e8fc5f23d3f30e606556f0" }
 # THE OAUTH MINTING STYLES (kind: auth): the logic crate the root links on its `auths` axis (feature
-# `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin.
-busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "7022a0891c7e197b1a7f87ab839aee2c8e2b9b3c" }
+# `auth-oauth`; P2 D1: the kernel's own minting copies are deleted). One pin: the lane pin over predev's
+# rev that names the connection table's credential-unavailable cause in its exhaustive maps.
+busbar-auth-oauth = { git = "https://github.com/GetBusbar/busbar-auth-oauth", rev = "97627f860d457e3d7b18d5ee9e97179575995627" }
 # THE SIGV4 STYLE (kind: auth): outbound signing and the inbound SigV4 verify, linked on the root's
 # `auths` axis (feature `auth-sigv4`; P2 D1: the kernel's own SigV4 copies are deleted). One pin.
 busbar-auth-sigv4 = { git = "https://github.com/GetBusbar/busbar-auth-sigv4", rev = "963df8e00421a574a7d68bd8371472ff59f345c8" }
@@ -106,7 +106,7 @@ busbar-hook-ranking = { git = "https://github.com/GetBusbar/busbar-hook-ranking"
 # THE STDIO TRANSPORT: the carrier of a spawned program's pipes (kind: transport), pulled at a pinned
 # rev; the logic crate the root links on the transport-door axis. Its dropped-in cdylib twin
 # (`busbar-transport-stdio-plugin`) and its gates live in that repo's plugin CI.
-busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "581c6459e48e48554360854271461b159a51a97e" }
+busbar-transport-stdio = { git = "https://github.com/GetBusbar/busbar-transport-stdio", rev = "60682d3d3aadd8a27beca4b2691ee7bfb39d2a7f" }
 # THE MEMORY STORE (kind: store), pulled at a pinned rev: the logic crate the root links on its store
 # axis in every build (`[package.metadata.busbar.linked] store-memory`) and the plugin loader's `store`
 # both-ways fixture. The kernel names it under no name: its test build links the in-crate R-FIX3
@@ -116,46 +116,15 @@ busbar-store-memory = { git = "https://github.com/GetBusbar/busbar-store-memory"
 # THE MCP PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the mcp plane's
 # door row (`plane-mcp-door`, `busbar_plane_mcp::tool_door::door`) and installs in every build's tests.
 # Its dropped-in cdylib twin (`busbar-plane-mcp-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "a5e2ae355c138d8a57a4012225bf441c79bb84bd" }
+busbar-plane-mcp = { git = "https://github.com/GetBusbar/busbar-plane-mcp", rev = "ee7e04ed5449ba806599ad917bdaccdd1aa4f627" }
 # THE DECISIONS PLANE (kind: plane), pulled at a pinned rev: the logic crate the root links as the
 # decisions plane's door row (`plane-decisions`, `busbar_plane_decisions::plane_door::door`). Its
 # dropped-in cdylib twin (`busbar-plane-decisions-plugin`) and its gates live in that repo's plugin CI.
-busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "d78c070da407c53d7235145fb76d69ed41b7046b" }
-# ── A2A, from the a2aproject's OWN crates ──────────────────────────────────────────────────────
-# THE OBVIOUS NAME IS THE WRONG ONE. `a2a-rs` on crates.io is `emillindfors/a2a-rs` (MIT, v0.5.0) —
-# a different author entirely. The a2aproject family is the `a2a-*-lf` / `a2a-pb` set, all
-# Apache-2.0, and pinning by name similarity would have taken the impostor.
-#
-# WHAT IS DELIBERATELY ABSENT, and it is the whole shape of this adoption:
-#   a2a-server-lf   a server FRAMEWORK. Its router is a pre-built `axum::Router`, which would enter
-#                   the tree with no entry in `CoreRouteTable` — the identical objection recorded
-#                   against `oauth-as`'s `axum` feature below, and it applies unchanged. Worse, it
-#                   carries its own `AgentExecutor` and `TaskStore`, and a SECOND task store means
-#                   two answers to "what happened" with the auditor reading whichever was wired last.
-#   a2a-client-lf   same framework, dialling out. busbar's own transport does resolve-then-pin (one
-#                   DNS resolution per hop, every returned address judged, the connection made to the
-#                   address that was judged). An SDK client handed a URL resolves it AGAIN, which is
-#                   the TOCTOU that transport exists to close. Taking it would be a measurable
-#                   security regression, not a convenience.
-#   a2a-grpc        looks like the one to take for the gRPC binding and is not: its `GrpcHandler`
-#                   implements the tonic service BY WRAPPING `a2a_server::RequestHandler`, so it
-#                   drags both crates above in behind it.
-#
-# Together those three cost +65 crate names. What is taken below costs +42 in the lock and **+13 in
-# the binary** — the other 29 are build-only. Measured with `cargo tree -e normal`, not estimated.
-#
-# a2a-lf   the core wire types. The protocol vocabulary, which is where compliance comes from and
-#          where hand-rolling was never justified.
-# a2a-pb   the protobuf types, generated from the a2aproject's own vendored `a2a.proto`. Required
-#          for the gRPC binding; there is no types-only path to one. Its build script shells out to
-#          protoc via `protoc-bin-vendored` — BUILD-only, so it ships nothing, but it is why this
-#          pin is gated on `cargo deny` and the 11-configuration gate rather than landing quietly.
-a2a-lf = "0.3.0"
-a2a-pb = "0.2.0"
+busbar-plane-decisions = { git = "https://github.com/GetBusbar/busbar-plane-decisions", rev = "0ac65e1727d9a09be2d58b038de2da6a7f4b0686" }
 arc-swap = "1"
 async-trait = "0.1"
 axum = "0.8"
-# 0.22, the line axum, tonic, pbjson, oauth-as and a2a-lf already ship: one base64 in the binary.
+# 0.22, the line axum, pbjson and oauth-as already ship: one base64 in the binary.
 # STANDARD / URL_SAFE_NO_PAD encode and decode identically on 0.22 and 0.23 (same PAD/NO_PAD configs).
 base64 = "0.22"
 # THE CHUNK-CHAINING BUMP ALLOCATOR behind the per-call scratch pad (DECISIONS #41). It grows by
@@ -352,35 +321,18 @@ tokio-rustls = { version = "0.26", default-features = false, features = ["ring"]
 # tungstenite in the graph (no duplicate version); the handshake is generic over the already-wrapped
 # stream, so this tracks axum's tungstenite rather than the connector's tokio-rustls.
 tokio-tungstenite = { version = "0.29", default-features = false, features = ["handshake"] }
-# The generic gRPC runtime for the A2A gRPC binding. NOT an A2A-specific framework — this is the
-# same crate every Rust gRPC server uses, and taking it is what lets busbar implement the tonic
-# service trait itself, over its own admission and its own store, rather than adopting
-# `a2a-grpc`'s handler and the two framework crates behind it.
-#
-# `prost 0.14` is already in the lock (via `opentelemetry-otlp`) and the major aligns, so the
-# protobuf runtime is not new to the tree — only the service layer is.
-tonic = { version = "0.14", default-features = false }
-# The protobuf runtime, named directly because busbar is now a gRPC CLIENT as well as a server. The
-# server direction never had to touch it: `tonic` decodes the request and encodes the answer, and
-# `a2a-pb`'s generated types carry the `Message` impls. The A2A gRPC binding in the DELEGATING
-# direction has to put the length-prefixed frame on the wire itself — busbar's outbound hop is its
-# own resolve-then-pin transport, not a tonic `Channel`, precisely so the address the SSRF guard
-# judged is the address that connects — so `Message::encode`/`decode` have to be nameable.
-#
-# ZERO NEW SUPPLY-CHAIN SURFACE, which is the same argument `tonic` above makes for itself: prost
-# 0.14 is already in `Cargo.lock` and already in the shipped artifact (a2a-pb, tonic and
-# opentelemetry-otlp all depend on it). What changes is that busbar can say its name.
+# The protobuf runtime: the A2A plane's gRPC line decodes and encodes the a2aproject's messages,
+# generated in the plane from the vendored `a2a.proto` (below), with it. Already in the lock and the
+# shipped artifact through opentelemetry-otlp.
 prost = { version = "0.14", default-features = false, features = ["std"] }
-# The tonic project's own `google.rpc` types (`Status`, `ErrorInfo`) and the richer-error model
-# that puts them in the `grpc-status-details-bin` trailer. Taken for exactly one MUST: A2A section
-# 10.6 requires every A2A-specific gRPC refusal to carry a `google.rpc.ErrorInfo` in
-# `status.details` (the TCK's `GRPC-ERR-001`), and neither message is in the tree — the vendored
-# `a2a.proto` brings `google.api` and nothing else. The alternative was hand-encoding two protobuf
-# messages beside the service, and hand-writing a wire fact is what adopting the publisher's own
-# generated types was meant to end. Same authors and same workspace as `tonic` itself, and its
-# whole dependency set (`prost`, `prost-types`, `tonic`) is already in the lock, so the new
-# supply-chain surface is this one crate.
-tonic-types = "0.14"
+# THE A2A PLANE'S gRPC LINE (ARCHITECT ruling Q1 (C), 2026-10-04): the plane generates the a2aproject's
+# messages from the vendored `a2a.proto` itself (prost-build at build time, protoc from
+# protoc-bin-vendored) with their ProtoJSON mapping (pbjson-build), so no gRPC server stack enters a
+# plane's closure.
+prost-build = "0.14"
+pbjson = "0.9"
+pbjson-build = "0.9"
+protoc-bin-vendored = "3"
 tower = "0.5"
 tracing = "0.1.44"
 tracing-core = "0.1"
@@ -394,7 +346,7 @@ log = "0.4"
 tungstenite = { version = "0.29", default-features = false }
 # The WHATWG URL parser, named under its OWN name: every `reqwest::Url` in the tree was this crate
 # under reqwest's re-export alias, and the egress-symmetry sweep spells the dependency honestly.
-# Already in the lock (reqwest, a2a-lf and friends all resolve it).
+# Already in the lock (reqwest and friends all resolve it).
 url = "2"
 # THE IDNA BACKEND SELECTOR `idna` itself documents: 1.1.x maps Unicode hostnames through the small
 # unicode-rs crates (unicode-normalization, unicode-bidi) instead of ICU4X's ~20-crate stack, which

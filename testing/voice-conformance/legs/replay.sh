@@ -6,19 +6,15 @@
 #
 # LEG: replay — captured-transcript replay.
 #
-# A recorded voice session (a captured transcript under
-# testing/voice-conformance/fixtures/{openai,gemini}/) must re-derive IDENTICALLY when replayed
-# through busbar's voice plane: same turn boundaries, same tool invocations, same barge-in points,
-# same settlement. Replay is the leg that catches a change which passes the live spec but silently
-# alters behaviour a real caller already depended on — the regression a spec-only battery cannot see.
-#
-# STATUS: ready. Each dialect's captured `transcript.jsonl` golden is driven through the real codec —
-# threading ONE session `DecodeState`, honoring each line's `dir` (client → uplink, server →
-# downlink) — and the decoded IR must re-derive the expected ordered concept skeleton
-# (config → connect → audio → tool call → tool result → audio → barge-in → close/complete) with no
-# load-bearing drop, and every decoded frame must re-encode to valid wire JSON. The Gemini uplink
-# `realtimeInput.audio{}` frames the shipped codec does not read are recorded as a documented replay
-# sub-item (the openai→gemini bridge still exercises that concept in cross-parity).
+# Each dialect's captured `transcript.jsonl` (testing/voice-conformance/fixtures/{openai,gemini}/):
+#   * CODEC: decoded through ONE session state in order, every event re-framed to valid wire JSON, and
+#     the expected concept skeleton (config → connect → audio → tool call → tool result → audio →
+#     barge-in → close/complete) re-derived in order;
+#   * DOOR: the whole transcript driven through ONE live session on the door (client lines as caller
+#     pieces, server lines as far-end pieces), linked AND dropped; what the door relays must equal the
+#     session rules, and the same skeleton must appear in the order the door emitted it (less the far
+#     end's usage, which the session consumes into reported units). RED arm: a door reporting a token
+#     the transcript never sent fails.
 
 # shellcheck source=../lib/conform-bin.sh disable=SC1091
 . "$(dirname "${BASH_SOURCE[0]}")/../lib/conform-bin.sh"

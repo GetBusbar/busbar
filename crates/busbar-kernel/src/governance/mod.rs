@@ -747,6 +747,13 @@ pub struct GovState {
     /// through a door ([`busbar_contract::store_calls::OpenedStore::calls`]): what the kernel's host
     /// services serve plane records over ([`Self::attach_store_calls`]).
     store_calls: std::sync::OnceLock<Arc<dyn busbar_contract::store_calls::StoreCalls>>,
+    /// THE CALLER-REFERENCE KEY a verified principal's units are lent their reference under, live
+    /// ([`crate::plane_driver::CallerRefs`]): derived from the signing material when the node has
+    /// one, else from the deployment keyset the book binds (row 159 H2), so every verified principal
+    /// gets a stable, non-empty reference whatever its auth chain.
+    caller_refs: crate::plane_driver::CallerRefs,
+    /// The deployment keyset's caller-reference material, once the book binds the keyset.
+    deployment_caller_ref: RwLock<Option<[u8; 32]>>,
 }
 
 /// The busbar signing key as ONE unit: the mint-side signer and the verify-side keyset derived

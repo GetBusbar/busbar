@@ -1358,24 +1358,24 @@ fn an_inbound_need_listens_and_its_connections_are_its_owners() {
     });
 }
 
-/// RED (ARCHITECT ruling 2026-10-02, WIRE-EXPORT userinfo): a need declared with a target that
-/// carries a userinfo — a URL's `user:pass@` or a bare `user@host:port` — is REFUSED, fail closed:
-/// the answer is kept for the need's admission, and nothing opens on it. The same target without
-/// the userinfo is declared.
+/// RED (ARCHITECT ruling 2026-10-02, WIRE-EXPORT userinfo; kept by the row 159 settings-URL
+/// userinfo ruling (a)): the refusal of a userinfo in a need's target STAYS for every target the need's own
+/// settings did not give it — a need with no `target_from`, a member path, a path outside its
+/// settings. Such a target carrying a userinfo — a URL's `user:pass@` or a bare `user@host:port` —
+/// is REFUSED, fail closed: the answer is kept for the need's admission, and nothing opens on it.
+/// So is a settings-derived target whose userinfo cannot be read out of it. The same target
+/// without the userinfo is declared.
 #[test]
-fn a_declared_target_carrying_a_userinfo_is_refused() {
+fn a_target_not_from_its_own_settings_carrying_a_userinfo_is_still_refused() {
     worker().block_on(async {
         let (_listening, resolved) = far_end().await;
         let c = literal_connector();
-        let need = config_targeted_need("settings.url");
-        for credentialed in [
-            format!("http://user:secret@{resolved}/v1/traces"),
-            format!("user@{resolved}"),
-        ] {
+        let refused = |need: &ReadNeed, credentialed: &str| {
             assert_eq!(
-                DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&credentialed), None),
+                DeclaredConns::declare(&c, OWNER, NeedId(0), need, Some(credentialed), None),
                 Err(ConnError::Refused),
-                "{credentialed}"
+                "{:?} {credentialed}",
+                need.target_from
             );
             assert_eq!(
                 DeclaredConns::declared(&c, OWNER, NeedId(0)),
@@ -1391,19 +1391,107 @@ fn a_declared_target_carrying_a_userinfo_is_refused() {
                     },
                 )
                 .is_err());
+        };
+        for target_from in [
+            "",
+            "settings.*.url",
+            "request.url",
+            "settings.",
+            "settings..url",
+        ] {
+            let need = config_targeted_need(target_from);
+            for credentialed in [
+                format!("http://user:secret@{resolved}/v1/traces"),
+                format!("user@{resolved}"),
+            ] {
+                refused(&need, &credentialed);
+            }
         }
+        refused(
+            &config_targeted_need("settings.url"),
+            &format!("http:\\\\user:secret@{resolved}/v1/traces"),
+        );
         assert_eq!(
             DeclaredConns::declare(
                 &c,
                 OWNER,
                 NeedId(0),
-                &need,
+                &config_targeted_need("settings.url"),
                 Some(&format!("http://{resolved}/v1/traces")),
                 None
             ),
             Ok(())
         );
     });
+}
+
+/// RED (ARCHITECT ruling, row 159 settings-URL userinfo finding (a)(b)): USERINFO IS NOT PART OF A
+/// SETTINGS-DERIVED TARGET. A need whose `target_from` reads the plugin's own settings, declared
+/// with a target carrying a userinfo — a URL's `user:pass@`, a bare `user:pass@host:port` or
+/// `user@host:port` — is declared, pinned to that target WITHOUT the userinfo, and opens there.
+/// The userinfo is dropped: no record the connector keeps holds it, no event logged while the need
+/// is declared, admitted, opened or refused carries it, and no error text says it.
+#[test]
+fn a_settings_derived_target_is_declared_without_its_userinfo() {
+    const USER: &str = "the-user";
+    const SECRET: &str = "s3cret-pw";
+    let cap = busbar_contract::testkit::WarnCapture::capturing_debug();
+    let mut said: Vec<String> = Vec::new();
+    tracing::subscriber::with_default(cap.clone(), || {
+        worker().block_on(async {
+            let (_listening, resolved) = far_end().await;
+            let c = literal_connector();
+            let need = config_targeted_need("settings.url");
+            let pinned = |need_id: NeedId| {
+                c.over
+                    .lock()
+                    .unwrap()
+                    .get(&(OWNER, need_id))
+                    .and_then(|d| d.declared_target.clone())
+            };
+            for (credentialed, cleared) in [
+                (
+                    format!("http://{USER}:{SECRET}@{resolved}/v1/traces"),
+                    format!("http://{resolved}/v1/traces"),
+                ),
+                (format!("{USER}:{SECRET}@{resolved}"), resolved.clone()),
+                (format!("{USER}@{resolved}"), resolved.clone()),
+            ] {
+                assert_eq!(
+                    DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some(&credentialed), None),
+                    Ok(()),
+                    "{credentialed}"
+                );
+                assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(0)), Some(Ok(())));
+                assert_eq!(pinned(NeedId(0)).as_deref(), Some(cleared.as_str()));
+                said.push(format!("{:?}", pinned(NeedId(0))));
+                said.push(format!("{:?}", c.declared_spec(OWNER, NeedId(0))));
+            }
+            // The cleared target is the one the need dials: an open naming none opens there.
+            let id = c
+                .open(OWNER, NeedId(0), &OpenDesc::default())
+                .expect("the cleared target opens");
+            c.close(OWNER, id).unwrap();
+            // A settings-derived target refused on other grounds (a cloud metadata host) says
+            // nothing of its userinfo either, and leaves no record of it.
+            let metadata = format!("{USER}:{SECRET}@169.254.169.254:80");
+            let e = DeclaredConns::declare(&c, OWNER, NeedId(1), &need, Some(&metadata), None)
+                .expect_err("a metadata host is refused");
+            said.push(format!("{e:?} {}", e.text()));
+            assert_eq!(pinned(NeedId(1)), None);
+            let e = c
+                .open(OWNER, NeedId(1), &OpenDesc::default())
+                .expect_err("nothing opens on a refused need");
+            said.push(format!("{e:?} {}", e.text()));
+        });
+    });
+    said.extend(cap.messages());
+    for line in &said {
+        assert!(
+            !line.contains(SECRET) && !line.contains(USER),
+            "the dropped userinfo was repeated: {line}"
+        );
+    }
 }
 
 // ── a need whose target is a PROGRAM ───────────────────────────────────────────────────────────
@@ -1565,6 +1653,81 @@ fn a_program_need_is_refused_unless_the_operator_declared_it_as_written() {
             Err(ConnError::Refused),
             "a program need dials no target of the open's"
         );
+    });
+}
+
+/// RED (ARCHITECT, the stream-end ruling): a dialled exchange's EMPTY answers, binary and text,
+/// reach the caller as body pieces; the exchange completes only on the framer's `PIECE_END`, never
+/// on an empty piece.
+#[test]
+fn a_dialled_exchange_relays_empty_messages_and_completes_only_on_the_end_flag() {
+    worker().block_on(async {
+        let (l, far) = far_end().await;
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            let (mut s, _) = l.accept().await.unwrap();
+            let mut buf = [0_u8; 3];
+            s.read_exact(&mut buf).await.unwrap();
+            s.write_all(b"btxe").await.unwrap();
+            let mut hold = [0_u8; 1];
+            let _ = s.read(&mut hold).await;
+        });
+        let view = Transports::new(vec![
+            Entry {
+                door: Arc::new(TestDoor::new(
+                    "messages",
+                    &["messages"],
+                    &[],
+                    crate::support::Knobs {
+                        messages: Some(crate::compose::EXCHANGE_STREAM),
+                        ..crate::support::Knobs::default()
+                    },
+                )),
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: Arc::new(TestDoor::identity("carrier")),
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap();
+        let c = Connector::serving(view, loopback_literals(), None, Arc::new(|_| {}));
+        c.declare_over(OWNER, NeedId(0), "messages")
+            .expect("a served scheme declares");
+        let desc = OpenDesc {
+            target: &far,
+            body: b"ask",
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let mut seen = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while std::time::Instant::now() < deadline {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Ok(p) => {
+                    seen.push((p.kind, buf[..p.len].to_vec()));
+                    if p.kind == PieceKind::Completion {
+                        break;
+                    }
+                }
+                Err(ConnError::Pending) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                Err(e) => panic!("the read failed: {e:?}"),
+            }
+        }
+        assert_eq!(
+            seen,
+            [
+                (PieceKind::Body, Vec::new()),
+                (PieceKind::Body, Vec::new()),
+                (PieceKind::Body, b"x".to_vec()),
+                (PieceKind::Completion, Vec::new()),
+            ],
+            "two empty messages and one byte, then the exchange's end"
+        );
+        c.close(OWNER, id).unwrap();
     });
 }
 
@@ -1746,7 +1909,8 @@ mod transport_pin {
                 client_identity: None,
                 private_reach: false,
             };
-            c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
+            c.anchor(OWNER, NeedId(0), "", &far, &anchors)
+                .expect("sealed");
             let (id, got) = exchange(&c, &far).await;
             assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
             let facts = c.facts(OWNER, id).expect("facts");
@@ -1774,7 +1938,8 @@ mod transport_pin {
                 client_identity: None,
                 private_reach: false,
             };
-            c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
+            c.anchor(OWNER, NeedId(0), "", &far, &anchors)
+                .expect("sealed");
             let (id, got) = exchange(&c, &far).await;
             assert_eq!(got, Err(ConnError::Refused));
             let facts = c.facts(OWNER, id).expect("facts after the refusal");
@@ -1789,7 +1954,7 @@ mod transport_pin {
             );
             c.close(OWNER, id).expect("closed");
             // Unsealed, the same far end is reached again: the refusal was the anchors'.
-            c.anchor(OWNER, NeedId(0), &far, &Anchors::default())
+            c.anchor(OWNER, NeedId(0), "", &far, &Anchors::default())
                 .expect("unsealed");
             let (_, got) = exchange(&c, &far).await;
             assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
@@ -1816,7 +1981,8 @@ mod transport_pin {
                 }),
                 private_reach: false,
             };
-            c.anchor(OWNER, NeedId(0), &far, &anchors).expect("sealed");
+            c.anchor(OWNER, NeedId(0), "", &far, &anchors)
+                .expect("sealed");
             let (id, got) = exchange(&c, &far).await;
             assert_eq!(got.as_deref(), Ok(&b"answer"[..]));
             let facts = c.facts(OWNER, id).expect("facts");
@@ -1825,6 +1991,65 @@ mod transport_pin {
             assert_eq!(
                 seen.lock().unwrap().clone(),
                 Some((b"first".to_vec(), true))
+            );
+        });
+    }
+
+    /// Open need 0 at `far` naming registration `member` and read to its first answer.
+    async fn exchange_as(c: &Connector, far: &str, member: &str) -> Result<Vec<u8>, ConnError> {
+        let desc = OpenDesc {
+            target: far,
+            body: b"first",
+            member,
+            ..OpenDesc::default()
+        };
+        let id = c.open(OWNER, NeedId(0), &desc).expect("opens");
+        let mut buf = [0_u8; 64];
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match c.read(OWNER, id, 7, &mut buf) {
+                Err(ConnError::Pending) if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+                Ok(p) => return Ok(buf[..p.len].to_vec()),
+                Err(e) => return Err(e),
+            }
+        }
+    }
+
+    /// RED: two REGISTRATIONS at one authority hold their own anchors. The first seals a client
+    /// identity, the second (sealed after it, at the same `host:port`) seals none: an open naming
+    /// the first still presents ITS identity to the mutual far end, and an open naming the second
+    /// presents nothing, never the first's. Keyed by the authority alone, the second seal dropped
+    /// the first's and the first registration's own open was refused.
+    #[test]
+    fn two_registrations_at_one_authority_each_present_their_own_identity() {
+        worker().block_on(async {
+            let pki = Pki::new();
+            let server = pki.leaf("localhost");
+            let client = pki.leaf("busbar.client");
+            let (far, _seen) = tls_far_end(&pki, &server, true).await;
+            let c = trusting(&pki);
+            let own = Anchors {
+                key_pin: Some(server.pin.clone()),
+                client_identity: Some(ClientIdentity {
+                    cert_chain: vec![client.der.clone()],
+                    private_key: client.key.clone().into(),
+                }),
+                private_reach: false,
+            };
+            c.anchor(OWNER, NeedId(0), "planner", &far, &own)
+                .expect("sealed");
+            c.anchor(OWNER, NeedId(0), "bare", &far, &Anchors::default())
+                .expect("sealed");
+            assert_eq!(
+                exchange_as(&c, &far, "planner").await.as_deref(),
+                Ok(&b"answer"[..]),
+                "the registration presents its own identity"
+            );
+            assert!(
+                exchange_as(&c, &far, "bare").await.is_err(),
+                "a registration holding no identity presents none, never another's"
             );
         });
     }
@@ -1843,7 +2068,8 @@ mod transport_pin {
                 client_identity: None,
                 private_reach: false,
             };
-            c.anchor(OWNER, NeedId(1), &far, &anchors).expect("sealed");
+            c.anchor(OWNER, NeedId(1), "", &far, &anchors)
+                .expect("sealed");
             assert_eq!(open_in(&c, 1, &far), Err(ConnError::Refused));
             let bad = Anchors {
                 key_pin: None,
@@ -1854,12 +2080,12 @@ mod transport_pin {
                 private_reach: false,
             };
             assert_eq!(
-                c.anchor(OWNER, NeedId(0), &far, &bad),
+                c.anchor(OWNER, NeedId(0), "", &far, &bad),
                 Err(ConnError::Refused)
             );
             // A need the owner never declared seals nothing.
             assert_eq!(
-                c.anchor(OTHER, NeedId(0), &far, &anchors),
+                c.anchor(OTHER, NeedId(0), "", &far, &anchors),
                 Err(ConnError::Refused)
             );
         });
@@ -2074,5 +2300,116 @@ fn a_pinned_metadata_literal_is_refused_at_declare() {
     assert_eq!(
         DeclaredConns::declared(&c, OWNER, NeedId(0)),
         Some(Err(ConnError::Refused))
+    );
+}
+
+/// An outbound auth that is only ever bound: it opens nothing and answers no fields.
+struct OnlyBound;
+
+impl busbar_contract::auth_calls::OutboundAuth for OnlyBound {
+    fn open_outbound(&self, _: &str, _: &[u8], _: &serde_json::Value) -> Result<u64, String> {
+        Err("only bound".to_string())
+    }
+    fn fields_now(
+        &self,
+        _: u64,
+        _: &busbar_contract::auth_calls::FieldsRequest,
+    ) -> Option<busbar_contract::auth_calls::Fields> {
+        Some(busbar_contract::auth_calls::Fields::Refused)
+    }
+    fn fields(
+        &self,
+        _: u64,
+        _: busbar_contract::auth_calls::FieldsRequest,
+        _: u64,
+    ) -> Box<dyn busbar_contract::auth_calls::Fielding> {
+        unreachable!("no cell here asks a bound auth for fields")
+    }
+}
+
+/// A binding under `handle`, nothing else to it.
+fn bound_as(handle: u64) -> busbar_contract::conn::ConnAuth {
+    busbar_contract::conn::ConnAuth {
+        auth: Arc::new(OnlyBound),
+        handle,
+        style_flags: 0,
+        points: busbar_contract::abi::auth::AuthPoints(0),
+        passthrough: false,
+        lender: None,
+        per_request: None,
+    }
+}
+
+/// EACH MEMBER'S BINDING IS ITS OWN, even at an origin it shares (predev `creds.rs`
+/// `Lease::header_for`: a lease minted for one agent is refused on a hop to another; R5: an agent
+/// with no credential is dialled with none): two members at one origin each answer their own
+/// binding, a member that bound none answers none (never its neighbour's), a request naming no
+/// member answers none, and a member's binding reaches no other origin. RED: the table held one
+/// binding per origin, the last member bound there answering for every request to it.
+#[test]
+fn members_sharing_an_origin_each_answer_their_own_binding_and_never_a_neighbours() {
+    let c = Connector::default();
+    let (owner, need) = (InstanceId(3), NeedId(1));
+    let origin = "https://vendor.example";
+    c.bind_auth(owner, need, "planner", origin, bound_as(1));
+    c.bind_auth(owner, need, "summarizer", origin, bound_as(2));
+    let handle =
+        |member: &str, target: &str| c.auth_of(owner, need, member, target).map(|b| b.handle);
+    assert_eq!(handle("planner", "https://vendor.example/planner"), Some(1));
+    assert_eq!(
+        handle("summarizer", "https://vendor.example/summarizer"),
+        Some(2)
+    );
+    assert_eq!(
+        handle("scout", "https://vendor.example/scout"),
+        None,
+        "a member with none"
+    );
+    assert_eq!(
+        handle("", "https://vendor.example/planner"),
+        None,
+        "a request naming none"
+    );
+    assert_eq!(
+        handle("planner", "https://elsewhere.example/planner"),
+        None,
+        "another origin"
+    );
+    assert_eq!(
+        c.auth_of(owner, NeedId(2), "planner", origin)
+            .map(|b| b.handle),
+        None,
+        "another need"
+    );
+}
+
+/// A REQUEST NAMING NO MEMBER GETS NO BINDING, even where EXACTLY ONE member is bound at its origin
+/// (the coordinator's answer: no origin fallback; R5: a request that is no member's is dialled
+/// with no credential): the connector keys a binding by (instance, need, member, target origin),
+/// so the one member's own request answers its binding and a memberless request to the same origin
+/// answers none, its request carrying no `authorization`. RED: an origin fallback (answer the
+/// binding when a single member holds one at the origin) lends that member's credential to a
+/// request that is not its own.
+#[test]
+fn a_request_naming_no_member_gets_no_binding_even_from_the_one_member_at_its_origin() {
+    let c = Connector::default();
+    let (owner, need) = (InstanceId(3), NeedId(1));
+    c.bind_auth(owner, need, "solo", "https://solo.example", bound_as(7));
+    let handle =
+        |member: &str, target: &str| c.auth_of(owner, need, member, target).map(|b| b.handle);
+    assert_eq!(
+        handle("solo", "https://solo.example/solo"),
+        Some(7),
+        "the member's own request carries its binding"
+    );
+    assert_eq!(
+        handle("", "https://solo.example/solo"),
+        None,
+        "a request naming no member carries no binding, though one member alone is bound there"
+    );
+    assert_eq!(
+        handle("", "https://solo.example"),
+        None,
+        "nor at the bare origin"
     );
 }

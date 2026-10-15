@@ -21,8 +21,6 @@
 
 use std::collections::HashMap;
 
-use bytes::Bytes;
-
 use crate::codec::ir::codec::{DecodeState, DuplexReader, DuplexWriter, WireEvent};
 use crate::codec::ir::config::SessionConfig;
 use crate::codec::ir::control::IrDuplexControl;
@@ -80,31 +78,13 @@ impl TurnSink for Unmetered {
     }
 }
 
-/// A tool call the far end closed that this session serves itself: the call's correlation, its id,
-/// its name and its accumulated arguments. The caller runs it and hands the output back through
-/// [`SessionPump::tool_executed`].
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolRun {
-    /// The call's correlation.
-    pub call_ref: CallRef,
-    /// The call id on the wire.
-    pub call_id: String,
-    /// The tool's name.
-    pub name: String,
-    /// The arguments, accumulated across the streamed deltas.
-    pub args: Vec<u8>,
-}
-
-/// ONE IN-FLIGHT TOOL CALL, accumulated across the `CallOpen → CallArgs* → CallClose` frames the
-/// model streams. The raw call id is kept so the stateless writer can frame the output without
-/// consulting the map.
+/// ONE IN-FLIGHT TOOL CALL, correlated across the `CallOpen → CallArgs* → CallClose` frames the
+/// model streams: its wire id, so a close that carries only the correlation still names its call,
+/// and whether its close was already handed to the node's open-call table.
 #[derive(Debug, Default, Clone)]
 struct PendingCall {
     call_id: String,
-    name: String,
-    args: Vec<u8>,
-    closed: bool,
-    executed: bool,
+    planned: bool,
 }
 
 /// THE SESSION PUMP over the session's codec `C`.
@@ -120,8 +100,8 @@ pub struct SessionPump<C> {
     /// The format uplink audio is counted in when a frame's wire states none: the locked config's
     /// input format, else PCM16.
     audio_in: AudioFormat,
-    /// The node's open-call table, when one is composed. `None`: every call is served in-process and
-    /// a caller-authored result is carried upstream verbatim.
+    /// The node's open-call table, when one is composed. `None`: a caller-authored result is carried
+    /// upstream verbatim.
     governed: Option<GovernedSession>,
 }
 
@@ -186,18 +166,18 @@ where
         )
     }
 
-    /// A FRAME FROM THE FAR END, at `now_ms`. `serves` answers whether this session runs a named tool
-    /// itself; the calls it does are returned beside the plan, in close order, to be run and handed
-    /// back through [`Self::tool_executed`].
+    /// A FRAME FROM THE FAR END, at `now_ms`. A tool call is part of the model's response: it is
+    /// relayed to the caller as the model streamed it (translated only between dialects), and the
+    /// caller runs the tool and answers it (Law 11; QUESTIONS Q98). Nothing here runs a tool or
+    /// authors its result. A call's close enters the wait for the caller's reply in the node's
+    /// open-call table, when one is bound.
     pub fn on_server_frame(
         &mut self,
         frame: WireEvent,
         now_ms: u64,
         sink: &mut dyn TurnSink,
-        serves: &dyn Fn(&str) -> bool,
-    ) -> (Outbound, Vec<ToolRun>) {
+    ) -> Outbound {
         let mut out = Outbound::default();
-        let mut to_exec: Vec<ToolRun> = Vec::new();
         let events = self.codec.read_down(frame, &mut self.decode);
         for ev in events {
             if matches!(ev, IrServerEvent::Error { .. }) {
@@ -229,46 +209,42 @@ where
                 }
                 IrServerEvent::Tool(t) => {
                     let call_ref = t.call_ref();
-                    match t {
-                        IrDuplexTool::CallOpen { call_id, name, .. } => {
+                    match &t {
+                        IrDuplexTool::CallOpen { call_id, .. } => {
                             self.turn.open_tool_call();
-                            let e = self.calls.entry(call_ref).or_default();
-                            e.call_id = call_id;
-                            e.name = name;
+                            self.calls
+                                .entry(call_ref)
+                                .or_default()
+                                .call_id
+                                .clone_from(call_id);
                         }
-                        IrDuplexTool::CallArgs {
-                            call_id,
-                            json_delta,
-                            ..
-                        } => {
+                        IrDuplexTool::CallArgs { call_id, .. } => {
                             let e = self.calls.entry(call_ref).or_default();
                             if e.call_id.is_empty() {
-                                e.call_id = call_id;
+                                e.call_id.clone_from(call_id);
                             }
-                            e.args.extend_from_slice(&json_delta);
                         }
                         IrDuplexTool::CallClose { call_id, .. } => {
                             let e = self.calls.entry(call_ref).or_default();
                             if e.call_id.is_empty() {
-                                e.call_id = call_id;
+                                e.call_id.clone_from(call_id);
                             }
-                            e.closed = true;
-                            if !e.executed {
-                                e.executed = true;
-                                match &self.governed {
-                                    Some(g) if !serves(&e.name) => {
-                                        g.calls.planned(g.session, &e.call_id, now_ms);
-                                    }
-                                    _ => to_exec.push(ToolRun {
-                                        call_ref,
-                                        call_id: e.call_id.clone(),
-                                        name: e.name.clone(),
-                                        args: e.args.clone(),
-                                    }),
+                            if !e.planned {
+                                e.planned = true;
+                                if let Some(g) = &self.governed {
+                                    g.calls.planned(g.session, &e.call_id, now_ms);
                                 }
                             }
                         }
                         IrDuplexTool::CallResult { .. } => {}
+                    }
+                    // The call is the caller's to answer, as the realtime protocols define it: it is
+                    // relayed as-is, and the gateway never authors its result.
+                    if !matches!(t, IrDuplexTool::CallResult { .. }) {
+                        out.downlink.extend(
+                            self.codec
+                                .write_down(IrServerEvent::Tool(t), &mut self.decode),
+                        );
                     }
                 }
                 ev @ (IrServerEvent::AudioFrame(_)
@@ -282,25 +258,7 @@ where
                 IrServerEvent::RateLimits => {}
             }
         }
-        (out, to_exec)
-    }
-
-    /// A tool this session ran answered `output`: the result goes to the far end, then a request for
-    /// the model's next response.
-    pub fn tool_executed(&mut self, run: ToolRun, output: Vec<u8>, out: &mut Outbound) {
-        out.push_up(self.codec.write_up(
-            IrClientEvent::Tool(IrDuplexTool::CallResult {
-                call_ref: run.call_ref,
-                call_id: run.call_id,
-                name: run.name,
-                output: Bytes::from(output),
-            }),
-            &mut self.decode,
-        ));
-        out.push_up(self.codec.write_up(
-            IrClientEvent::Control(IrDuplexControl::ResponseCreate { response: None }),
-            &mut self.decode,
-        ));
+        out
     }
 
     /// A FRAME FROM THE CALLER. A `session.update` is replaced by the locked config; a tool reply is

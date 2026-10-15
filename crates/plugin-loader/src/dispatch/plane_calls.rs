@@ -164,6 +164,17 @@ impl PlaneCalls for PlaneInstance {
         self.dispatcher.driver(&*self.plugin, self.worker)
     }
 
+    fn woke(&self) -> Pin<Box<dyn Future<Output = bool> + Send>> {
+        let inst = self.plugin.inner.clone();
+        Box::pin(async move {
+            if !inst.is_open() {
+                return false;
+            }
+            inst.driven.woken().await;
+            true
+        })
+    }
+
     fn ready(&self) -> Pin<Box<dyn Future<Output = Vec<u64>> + Send>> {
         let inst = self.plugin.inner.clone();
         Box::pin(async move {

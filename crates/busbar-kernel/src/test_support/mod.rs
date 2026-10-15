@@ -914,7 +914,7 @@ pub struct TestApp {
     /// per-generation runtime under [`crate::state::runtime_slot_key`]). Filled from OUTSIDE core by
     /// each plane's test-kit through [`TestApp::install_plane_runtime`], so `build()` names no plane
     /// runtime type — the whole point of the B2/B3 relocation: core's fixture is plane-AGNOSTIC and
-    /// the `busbar-mcp` / `busbar-a2a` test-kits own their own construction.
+    /// the `busbar-mcp` and agent-engine test-kits own their own construction.
     installed_plane_runtimes:
         std::collections::BTreeMap<&'static str, std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     /// THE NEUTRAL DISPATCH TABLE the built App mounts. A plane's test-kit describes its mounts and
@@ -1027,23 +1027,6 @@ impl TestApp {
             plane_scratch: std::collections::HashMap::new(),
             plane_finalizers: Vec::new(),
         }
-    }
-
-    /// TEST-KIT SEAM — the fixture's configured `public_url:`, which a plane's finalizer needs to lower
-    /// its runtime (the A2A plane derives its card/discovery origins from it). Named distinctly from
-    /// the `public_url(url)` builder SETTER above.
-    pub fn configured_public_url(&self) -> Option<&str> {
-        self.public_url.as_deref()
-    }
-
-    /// TEST-KIT SEAM — busbar's PUBLIC A2A card-issuer key off the fixture's governance, computed EXACTLY
-    /// as production's `a2a_start` hook / `boot::start_planes` computes it, returned as the neutral
-    /// substrate `CardIssuer`. The A2A test-kit stamps it onto its plane so a fixture that configures
-    /// both an a2a plane and a card-signing governance key serves signed cards without running the boot
-    /// fold. `None` when no governance / no card key — core exposes only the neutral value, never its
-    /// `pub` governance accessor.
-    pub fn card_issuer(&self) -> Option<busbar_kernel::plane::registry::CardIssuer> {
-        self.governance.as_ref().and_then(|g| g.card_issuer())
     }
 
     /// THE PLANE INSTALL SEAM. Install a pre-built, type-erased plane runtime under its plane decl
@@ -2388,32 +2371,27 @@ fn fixture_manifest(
 #[path = "tests/eventstream_frame_tests.rs"]
 mod eventstream_frame_tests;
 
-/// A test build's `plugins.fetch` (it has no composition root): each target downloaded through the
-/// kernel's guarded `download` and written into `dir`. No cache and no pin check: the root's fetch
-/// owns those, and its tests prove them.
+/// A test build's `plugins.fetch` (it has no composition root, so no connector): every target is a
+/// miss, refused before any dial (status row 130 E6: the kernel dials nothing; the root's fetch
+/// downloads through the connector, and its tests prove it).
 pub fn fetch_stand_in(
-    dir: &std::path::Path,
+    _dir: &std::path::Path,
     targets: &[crate::config::FetchTarget],
     _fatal_on_miss: bool,
-    download: &dyn Fn(&str) -> Result<Vec<u8>, String>,
+    _blocked: &[String],
 ) -> Result<Vec<crate::preflight::Fetched>, Vec<String>> {
-    let mut errors = Vec::new();
-    let mut done = Vec::new();
-    for t in targets {
-        match download(&t.url)
-            .and_then(|b| std::fs::write(dir.join(&t.filename), b).map_err(|e| e.to_string()))
-        {
-            Ok(()) => done.push(crate::preflight::Fetched::Fetched {
-                filename: t.filename.clone(),
-            }),
-            Err(e) => errors.push(format!("download failed: {e}")),
-        }
+    if targets.is_empty() {
+        return Ok(Vec::new());
     }
-    if errors.is_empty() {
-        Ok(done)
-    } else {
-        Err(errors)
-    }
+    Err(targets
+        .iter()
+        .map(|t| {
+            format!(
+                "{}: a test build has no connector to download through",
+                t.url
+            )
+        })
+        .collect())
 }
 
 /// A test build's release key: the first-party key [`trust_policy`] holds in place of the embedded

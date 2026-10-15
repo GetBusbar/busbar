@@ -444,8 +444,8 @@ fn corpus() -> Vec<Fixture> {
 /// struct table: the assertion is a whole-corpus diff a reviewer reads top to bottom, and a
 /// hand-maintained struct table invites updating one field and calling it a review.
 ///
-/// `REJECTED` stands for a body the reader refuses — the shape that is now a 400 rather than
-/// something a guardrail is asked to screen best-effort while it goes upstream anyway.
+/// `REJECTED` stands for a body the reader refuses; the door projects such a body off its raw
+/// JSON instead (exchange/project_raw.rs), as 1.5.5 did.
 fn render_view(measured: &Result<View, String>) -> String {
     match measured {
         Err(_) => "REJECTED".to_string(),
@@ -585,13 +585,14 @@ fn the_nine_intended_divergences_are_the_ones_that_landed() {
         "the tool result stays visible too"
     );
 
-    // ── THE UNKNOWN ROLE. The old projection could not fail: it screened `role: "wizard"` and the
-    // request went upstream regardless. Five readers hard-reject it, and the ruling is that a body
-    // busbar cannot read is the REQUEST's failure — stricter, in the safe direction, and NOT keyed
-    // on whether a content hook happens to be configured.
+    // ── THE UNKNOWN ROLE. The readers refuse `role: "wizard"`, so the IR view does not exist for
+    // it. The door does not refuse the request for that: like 1.5.5's projection, which never
+    // failed (v1.5.5 proxy/hooks.rs:682), it projects the raw body and the request goes on
+    // (exchange/project_raw.rs; tests/hook_unknown_role_1_5_5.rs). Only a translation to another
+    // dialect refuses it, as 1.5.5's did (v1.5.5 proxy/wire.rs:456).
     assert!(
         view("openai_unknown_role").is_err(),
-        "a role no reader recognises is a 400, not something to screen best-effort and forward"
+        "the reader refuses a role it does not recognise"
     );
 }
 

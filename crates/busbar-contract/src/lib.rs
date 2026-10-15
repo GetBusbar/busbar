@@ -101,6 +101,7 @@ pub mod plugin_rows;
 pub mod protocol;
 // The provider-key descriptor a plane states in its Statement's extensions (row 155 B1c).
 pub mod provider_keys;
+pub mod proxy_route;
 pub mod redacted;
 // The money-path durable record SHAPES (DECISIONS #83: contract = shapes, ledger = semantics;
 // DECISIONS #84: nothing on the plugin path may link a crate holding semantics). The module is a
@@ -212,7 +213,7 @@ pub use wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, EnvelopeField, Frame, FrameCursor, FrameMeta, Framing, Handoff, HandshakeTrigger,
     Listener, ListenerHandle, RawIo, RawStream, StatusAt, TransportEnvelope, TransportError,
-    Unit0Trigger, WireStatus, WireStatusClass,
+    Unit0Trigger, WireFault, WireStatus, WireStatusClass,
 };
 
 /// The default admin-scope CEILING for an identity provider that names none (`read-only`). Relocated

@@ -12,7 +12,7 @@
 pub use crate::transport::wire::{
     ArrivalRecord, CertFacts, CloseReason, Conn, ConnHandle, Decode, Direction, DiscardCode,
     Encode, FrameMeta, Framing, Handoff, HandshakeTrigger, Listener, ListenerHandle, RawIo,
-    RawStream, StatusAt, TransportError, Unit0Trigger, WireStatus, WireStatusClass,
+    RawStream, StatusAt, TransportError, Unit0Trigger, WireFault, WireStatus, WireStatusClass,
 };
 
 use crate::bounded::{BoundedVec, ScratchBytes, SlabBytes, MAX_CURSOR_BYTES, MAX_KEYS};

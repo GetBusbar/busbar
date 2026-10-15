@@ -28,6 +28,7 @@ type AsPlaneBuildFn = fn(
     Vec<(String, String)>,
     Vec<String>,
     Option<&Arc<dyn Any + Send + Sync>>,
+    Option<Arc<dyn busbar_contract::store_calls::StoreCalls>>,
 ) -> Result<Arc<dyn Any + Send + Sync>, String>;
 
 /// The plane's config check (the type of [`AsPlaneSeam::check`]).
@@ -71,7 +72,10 @@ pub struct AsPlaneSeam {
     /// [`Self::check`] reported (an unresolved signing key means an ephemeral one), and this
     /// deployment's protected-resource audiences (RFC 8707 `allowed_resources`), and the PRIOR
     /// generation's object (`None` at boot): what the server holds (its records, its consent
-    /// sessions, an ephemeral key) carries across the generation swap. Also spawns the
+    /// sessions, an ephemeral key) carries across the generation swap. And the deployment's
+    /// configured store (its typed records and its single-use claims; `None` without one): the
+    /// server keeps what it holds there, under the kernel's own record kinds, so every node on one
+    /// store serves one authorization server (THE DESIGN §1, "Nodes share one store"). Also spawns the
     /// plane's own expired-record sweeper, mirroring what `appbuild.rs` did inline before the
     /// extraction — the seam owns the whole "how do I come alive" act, not just allocation.
     /// Returns the type-erased object `App::oauth_as` stores, or the plane's own build error

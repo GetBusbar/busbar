@@ -7,7 +7,7 @@
 //! `gauntlet_kernel`'s own shadow proves the bridge byte-identical for a plane that charges
 //! nothing. This one proves the other half of the thin-verbatim-rider claim (DECISIONS #28/#29):
 //! a plane whose ONE flat per-call charge fires INSIDE `drive` (the shape of the A2A invoke plane's
-//! `meter_request`, `busbar-a2a`'s `receive.rs`) is driven through BOTH loops — `leg_legacy` =
+//! `meter_request`, the retired agent engine's `receive.rs`) is driven through BOTH loops — `leg_legacy` =
 //! `busbar_kernel::plane_host::run_gauntlet` (the shipped authority), `leg_loop` =
 //! `run_gauntlet_via_kernel` (the plane-neutral bridge `gauntlet_install::install()` registers as
 //! the runner) — on the same input, and the test asserts (1) byte-identical status/headers/body AND

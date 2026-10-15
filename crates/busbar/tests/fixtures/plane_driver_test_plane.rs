@@ -301,6 +301,8 @@ static TAIL: Shared<PlaneTail> = Shared(PlaneTail {
     admin_routes: std::ptr::null(),
     admin_routes_len: 0,
     admin_openapi: NO_BLOB,
+    metric_lanes: std::ptr::null(),
+    metric_lanes_len: 0,
     stream_ceiling_secs: 0,
 });
 

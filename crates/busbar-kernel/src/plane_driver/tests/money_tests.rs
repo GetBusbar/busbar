@@ -1062,3 +1062,65 @@ fn a_unit_with_no_new_counts_writes_nothing() {
     );
     assert!(site.taken().is_empty());
 }
+
+/// EVERY VERIFIED PRINCIPAL IS LENT A STABLE, NON-EMPTY CALLER REFERENCE (row 159 H2): a book with
+/// no signing material (an OIDC or plugin-auth chain names no `auth.signing_key`) lends one keyed by
+/// the deployment keyset it binds, through the live slot every plane driver holds, so two principals
+/// get two references and one principal gets one reference on every node of the deployment. RED:
+/// with the slot read before the keyset is bound (or never bound), every principal is lent nothing,
+/// which the plane reads as the one ungoverned owner.
+#[test]
+fn red_a_book_with_no_signing_key_lends_every_principal_its_own_reference() {
+    let node = |material: Option<[u8; 32]>| {
+        let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+        let money = PlaneMoney::new(Arc::clone(&gov), Arc::new(Posted::default()));
+        let slot = money.caller_refs().expect("the book lends a slot");
+        if let Some(m) = material {
+            gov.bind_deployment_caller_ref(m);
+        }
+        let lent = |p: &str| {
+            slot.read()
+                .unwrap()
+                .as_ref()
+                .map(|k| k.caller_ref(p))
+                .unwrap_or_default()
+        };
+        (lent("oidc:alice"), lent("oidc:bob"))
+    };
+    // The RED shape: nothing bound, nothing lent, and the two principals are indistinguishable.
+    assert_eq!(node(None), (String::new(), String::new()));
+    let keyset = [7u8; 32];
+    let (alice, bob) = node(Some(keyset));
+    assert!(
+        !alice.is_empty() && !bob.is_empty(),
+        "a verified principal was lent nothing"
+    );
+    assert_ne!(alice, bob, "two principals share one reference");
+    // A second node of the same deployment binds the same keyset: the same references.
+    assert_eq!(node(Some(keyset)), (alice.clone(), bob));
+    // Another deployment's keyset gives another reference.
+    assert_ne!(node(Some([8u8; 32])).0, alice);
+}
+
+/// The signing material, when the node has one, still keys the reference (it wins over the
+/// deployment keyset), and a reload that drops it falls back to the keyset, never to nothing.
+#[test]
+fn the_signing_material_keys_the_reference_and_the_keyset_backs_it() {
+    let gov = Arc::new(GovState::new(Arc::new(MemoryStore::new()), None).expect("gov"));
+    let slot = gov.caller_ref_slot();
+    gov.bind_deployment_caller_ref([7u8; 32]);
+    let by_keyset = slot.read().unwrap().as_ref().unwrap().caller_ref("p");
+    gov.set_signing_key(Some(
+        crate::governance::signing::TokenSigner::from_secret_bytes(&[9u8; 32], "k"),
+    ));
+    let by_signer = slot.read().unwrap().as_ref().unwrap().caller_ref("p");
+    assert_ne!(
+        by_signer, by_keyset,
+        "the signing material did not key the reference"
+    );
+    gov.set_signing_key(None);
+    assert_eq!(
+        slot.read().unwrap().as_ref().unwrap().caller_ref("p"),
+        by_keyset
+    );
+}

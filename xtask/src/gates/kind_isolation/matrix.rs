@@ -3405,7 +3405,7 @@ fn measured_row(
                     .stack_size(16 * 1024 * 1024)
                     .spawn_scoped(scope, || vendors::offenders(cx, crates, &files))
                     .expect("spawn the vendor-name scan thread");
-                let inst = instances::measure(crates, &files, &ivocab);
+                let inst = instances::measure_reserved(crates, &files, &ivocab, &reg.shape_words);
                 (
                     inst,
                     vendor
@@ -3413,7 +3413,8 @@ fn measured_row(
                         .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
                 )
             });
-            (ivocab, inst, vendor)
+            let ((inst, unreserved), vendor) = (inst, vendor);
+            (ivocab, inst, unreserved, vendor)
         });
         (
             measured
@@ -3444,7 +3445,7 @@ fn measured_row(
     // THE FIVE INSTANCE AXES (item 118). Same scan set, read a second way — see [`instances`].
     // LAW 1 OVER THE NEUTRAL CENSUS (item 203) — a vendor name in a neutral crate plane-purity does
     // not list. Ceiling 0 in both twins; see [`vendors`].
-    let (ivocab, inst, vendor) = match rest {
+    let (ivocab, inst, unreserved, vendor) = match rest {
         Ok(r) => r,
         Err(e) => {
             return (
@@ -3528,6 +3529,7 @@ fn measured_row(
     let mut offenders: Vec<String> = duplicates(reg);
     offenders.extend(minted_rows(cx));
     offenders.extend(instances::offenders(&inst, &ivocab, reg));
+    offenders.extend(unreserved);
     offenders.extend(instances::law0(&inst, Some(LAW0_ENFORCED_NEUTRAL_CRATES)));
     if let Some(measured) = law0.as_ref() {
         offenders.extend(law0_arming(LAW0_ENFORCED_NEUTRAL_CRATES, crates, measured));
@@ -4826,7 +4828,10 @@ pub fn selftest<'a>(
     // The subject is `busbar-core-connector`, the cleanliness crate whose `× plane` cell has NO
     // `[[cell]]` row: presence can only see this refusal where a row does not already list the cell.
     // `busbar-core-oauth2` names planes by design (a listed `× plane` cell, count→presence owner
-    // 2026-10-03), so the same plant there is green — a listed edge, not a refusal.
+    // 2026-10-03), so the same plant there is green — a listed edge, not a refusal. The plant names
+    // the a2a plane by a path into its crate: `mcp` is also the retiring engine's id, and a word two
+    // crates own counts only as a reference ([`mask_colliding_words`]), so the bare
+    // `busbar_plane_mcp` this used to plant read as no plane at all and the case went green.
     report.push(prove_rows_red(
         cx,
         gate,
@@ -4835,7 +4840,7 @@ pub fn selftest<'a>(
         plant(
             cx,
             "crates/busbar-core-connector/src/leak.rs",
-            "// busbar_plane_mcp is not this crate's to name.\n",
+            "// busbar_plane_a2a::meta is not this crate's to name.\n",
         ),
         &["unlisted-cell", "busbar-core-connector \u{d7} plane"],
     ));
@@ -5163,7 +5168,7 @@ pub fn selftest<'a>(
     // The honest fixture for "this row covers nothing" is a tree in which the thing it covered is
     // GONE, and a crate leaves the measurement the way it leaves the census: its manifest goes.
 
-    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-breaker` carries a live cell; it
+    // A `[[cell]]` ROW WHOSE CRATE IS NOT THERE. `busbar-kernel-egress` carries a live cell; it
     // measures nothing the moment the crate stops being one.
     //
     // RE-TARGETED TWICE. The subject was `busbar-auth-admin-tokens × api`, and that row went dead
@@ -5177,16 +5182,18 @@ pub fn selftest<'a>(
     // [`COLLIDING_INSTANCE_WORDS`] no longer counts, so that row went dead on the real tree.
     // Re-targeted a fourth time: the subject was `busbar-kernel-ledger × kernel`, whose last hit was
     // the dev-dependency on the deleted `busbar-kernel-budget` (DEL-BUDGET-R), so that row went dead
-    // on the real tree and was struck.
+    // on the real tree and was struck. Re-targeted a fifth time: the subject was
+    // `busbar-kernel-breaker × plane`, which went dead when the breaker stopped naming a plane
+    // (row 66: it reads the transport's and the plane's fault readings) and was struck.
     let mut ov = crate::ctx::Overlay::new();
-    ov.remove("crates/busbar-kernel-breaker/Cargo.toml");
+    ov.remove("crates/busbar-kernel-egress/Cargo.toml");
     report.push(prove_rows_red(
         cx,
         gate,
         "a `[[cell]]` row whose cell measures nothing is a dead allowance, not a tight one",
         &[ROW_MATRIX],
         ov,
-        &["dead-cell", "busbar-kernel-breaker \u{d7} plane"],
+        &["dead-cell", "busbar-kernel-egress \u{d7} plane"],
     ));
 
     // AN `[[edge]]` ROW WHOSE WHOLE CLASS IS GONE. The case used to delete the one crate of kind

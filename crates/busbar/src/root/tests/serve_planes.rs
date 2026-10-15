@@ -35,8 +35,9 @@ pub(super) fn post() -> Arc<NodeEndPost> {
 }
 
 /// THE ADMIN TABLE IS THE PROCESS'S ONE: every test that publishes a plane's admin routes holds
-/// this while its plane is published, and withdraws it ([`Published`]) before letting go.
-pub(crate) static PUBLISHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+/// this while its plane is published, and withdraws it ([`Published`]) before letting go. It is
+/// the root's one lock over the process-wide admin surfaces ([`crate::root::PUBLISHING`]).
+pub(crate) use crate::root::PUBLISHING;
 
 /// A published instance, withdrawn from the admin table when the test lets go of it.
 pub(crate) struct Published(pub(crate) &'static str);
@@ -204,6 +205,48 @@ fn no_door_plane_composes_nothing_and_needs_no_services() {
     assert!(served.planes.is_empty());
 }
 
+/// THE CATALOG ROUTE (ARCHITECT Q-L5B-ROUTE, 2026-10-03): a section whose `session.model` names a
+/// top-level catalog model has that entry folded into its route table, so the door steps resolve the
+/// door's DIRECT route to it (unchanged); a section with its own `models:`, or naming a model the
+/// catalog lacks, keeps its table as written. The settings the door opens with are never folded.
+#[test]
+fn a_session_model_from_the_top_level_catalog_is_folded_into_the_route_table() {
+    use crate::root::door_steps::DoorPools;
+    use busbar_contract::abi::plane::ROUTE_DIRECT;
+    let catalog: std::collections::HashMap<String, busbar_contract::config::ModelCfg> =
+        serde_yaml::from_str(
+            "gpt-rt: { provider: p, upstream_model: gpt-realtime, attempt_timeout_ms: 900 }\n",
+        )
+        .expect("the catalog");
+    let section: serde_yaml::Value =
+        serde_yaml::from_str("session: { model: gpt-rt }\nsession_max_secs: 60\n").expect("yaml");
+    let routes = super::catalog_routes(&section, &catalog);
+    assert_eq!(
+        routes["models"]["gpt-rt"],
+        serde_yaml::from_str::<serde_yaml::Value>(
+            "{ provider: p, upstream_model: gpt-realtime, attempt_timeout_ms: 900 }"
+        )
+        .expect("yaml"),
+        "the catalog entry's routing facts, folded"
+    );
+    assert_eq!(
+        routes["session"], section["session"],
+        "the section stays as written"
+    );
+    let pools = DoorPools::of(&routes);
+    assert_eq!(
+        pools.resolve(ROUTE_DIRECT, Some(b"gpt-rt")),
+        Some((String::new(), vec!["gpt-rt".to_string()])),
+        "the door's DIRECT route resolves to the folded entry"
+    );
+    let unknown: serde_yaml::Value =
+        serde_yaml::from_str("session: { model: nope }\n").expect("yaml");
+    assert_eq!(super::catalog_routes(&unknown, &catalog), unknown);
+    let own: serde_yaml::Value =
+        serde_yaml::from_str("session: { model: gpt-rt }\nmodels: { mine: {} }\n").expect("yaml");
+    assert_eq!(super::catalog_routes(&own, &catalog), own);
+}
+
 /// A PLANE NEVER RECEIVES SECRET BYTES (THE DESIGN §6; SECURITY ruling 2026-10-07). `${VAR}` is
 /// spliced into the config text before it is parsed, so its plaintext used to reach a door plane's
 /// `open` settings, its owned sections and its `refresh` settings. The test plane records the bytes
@@ -269,10 +312,11 @@ test_plane_owned:
         None,
     )
     .expect("the door plane composes");
-    let secrets = busbar_kernel::config::secret::SecretResolver::builtins_only();
+    let secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve> =
+        std::sync::Arc::new(busbar_kernel::config::secret::SecretResolver::builtins_only());
     served.planes[0]
         .live
-        .refreshed(&sections["test_plane"], 2, &secrets)
+        .refreshed(&sections["test_plane"], 2, secrets)
         .expect("the plane refreshes");
 
     let read = |name: &str| {
@@ -410,6 +454,67 @@ fn a_door_plane_is_handed_its_referenced_providers_dialect_facts_at_open() {
     )
     .expect("the door opens");
     assert_eq!(snapshot.resource_facts, None);
+}
+
+/// THE CHAINED RECORDS of record kind `kind` in `store`, read back as the host's verified read
+/// answers them (`busbar_kernel::host_chains::verified`, the one chain mechanism, over the kind's
+/// declared `framing`): the one instance that wrote them, and each record's `(scope, sequence)` in
+/// key order. A chain that does not verify is announced by a span keyed by its bare scope, which
+/// this refuses, so a broken link fails the read. The flush is write-behind: the read waits up to
+/// five seconds for at least `want` records to land.
+/// One instance's chained records: its label, and each record's `(scope, sequence)`.
+pub(crate) type ChainedRecords = (String, Vec<(Vec<u8>, u64)>);
+
+pub(crate) fn chained_records(
+    store: &MemoryStore,
+    kind: &'static str,
+    framing: busbar_contract::abi::plane::RecordChain,
+    want: usize,
+) -> ChainedRecords {
+    use busbar_contract::services::chain_key_parts;
+    let schema = busbar_contract::ids::RecordSchemaId::new(kind);
+    let framing =
+        busbar_kernel::host_chains::ChainFraming::of(&framing).expect("a framing this host keeps");
+    let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let rows = loop {
+        let rows = store.record_scan(schema, b"", u32::MAX).expect("a read");
+        if rows.len() >= want || std::time::Instant::now() >= until {
+            break rows;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    type Rows = Vec<(Vec<u8>, Vec<u8>)>;
+    let mut by_instance: BTreeMap<String, Rows> = BTreeMap::new();
+    for (key, value) in rows {
+        let len = usize::from(u16::from_be_bytes([key[0], key[1]]));
+        let label = String::from_utf8(key[2..2 + len].to_vec()).expect("a label");
+        by_instance
+            .entry(label)
+            .or_default()
+            .push((key[2 + len..].to_vec(), value.as_slice().to_vec()));
+    }
+    assert!(
+        by_instance.len() <= 1,
+        "one instance's records: {:?}",
+        by_instance.keys().collect::<Vec<_>>()
+    );
+    let Some((instance, rows)) = by_instance.into_iter().next() else {
+        return (String::new(), Vec::new());
+    };
+    let read = busbar_kernel::host_chains::verified(&instance, schema, rows, framing);
+    let records: Vec<(Vec<u8>, u64)> = read
+        .iter()
+        .map(|(key, value)| {
+            let (scope, seq) = chain_key_parts(key).unwrap_or_else(|| {
+                panic!(
+                    "a chain that does not verify: {}",
+                    String::from_utf8_lossy(value)
+                )
+            });
+            (scope.to_vec(), seq)
+        })
+        .collect();
+    (instance, records)
 }
 
 /// THE RED ARM OF "NEVER SKIPS": a fixture that is not built fails the test, naming what builds it.

@@ -10,7 +10,7 @@
 // linked crates' own docs and the README for what a running deployment answers on the wire and the
 // `--help` output above for the CLI surface this binary exposes.
 //
-// See `register_protocols`/`register_planes`/`register_diagnostics`/`register_ws_arrivals` below
+// See `register_protocols`/`register_planes`/`register_diagnostics` below
 // for the composition root's one write into each axis: each linked crate contributes its own
 // declarations here, under its own Cargo feature, and nowhere else.
 
@@ -337,14 +337,6 @@ fn register_diagnostics() {
     root::linked::register_diagnostics(&LINKED);
 }
 
-/// REGISTER THE LINKED DUPLEX PLANES' INBOUND WS-ACCEPT ARRIVALS — the composition root's one write
-/// into the neutral WS-accept registry. Installed BEFORE the router is built (in `run()`), so
-/// `take_ws_arrivals` drains a populated set; a build with no duplex plane installs nothing and the
-/// router mounts no WS-accept route.
-fn register_ws_arrivals() {
-    root::linked::register_ws_arrivals(&LINKED);
-}
-
 /// The data-plane worker count and its warnings, resolved once at the top of `main()`.
 static WORKERS: std::sync::LazyLock<(usize, Vec<String>)> =
     std::sync::LazyLock::new(resolve_worker_threads);
@@ -391,12 +383,6 @@ fn main() {
     // any reader. Each linked entry contributes its owned diagnostics; a no-planes build installs
     // nothing and the catalog is the neutral built-ins alone.
     register_diagnostics();
-    // INBOUND WS-ACCEPT ARRIVAL REGISTRATION, same slot and the same reason as the axes above: the
-    // core router drains the installed arrivals at build (`take_ws_arrivals`), which happens later in
-    // `run()` — so the duplex planes' arrivals must be installed here, before the router is built. Each
-    // duplex entry installs its `WsArrivalSpec`s; a build with no duplex plane installs nothing and
-    // the router mounts no WS-accept route — strong-form deletable.
-    register_ws_arrivals();
     // THE COMPOSITION ROOT'S OWN SEAL is NOT here, and it is the one boot step that is not: it
     // composes the transports a switched-over plane would serve through, and the http one carries
     // the operator's `limits.request_body_max_bytes`, so it cannot run before the configuration it
@@ -925,13 +911,15 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     };
     let door_reach = root::door_steps::DoorReach {
         providers: &door_providers,
-        secrets: &*app.secret_resolver,
+        secrets: Arc::clone(&app.secret_resolver)
+            as Arc<dyn busbar_contract::secret::SecretResolve>,
         auths: std::sync::Arc::clone(&door_auths),
         conns: Arc::clone(root::connector::the()) as Arc<dyn busbar_contract::conn::PollConns>,
         stream_ceiling_secs: busbar_kernel::config::limits::installed().map_or(
             busbar_kernel::config::limits::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_SECS,
             |l| l.upstream_request_timeout_secs,
         ),
+        catalog: Some(&deploy.models),
         models: Some(&door_models),
         upgrades: root::serve::upgrade_carriers(LINKED.transports),
     };
@@ -1125,7 +1113,8 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             };
             let reach = root::door_steps::DoorReach {
                 providers: &cfg.providers,
-                secrets: &*next.secret_resolver,
+                secrets: Arc::clone(&next.secret_resolver)
+                    as Arc<dyn busbar_contract::secret::SecretResolve>,
                 auths: std::sync::Arc::clone(&auths),
                 conns: Arc::clone(root::connector::the())
                     as Arc<dyn busbar_contract::conn::PollConns>,
@@ -1134,6 +1123,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
                     |l| l.upstream_request_timeout_secs,
                 ),
                 models: Some(&models),
+                catalog: None,
                 upgrades: upgrades.clone(),
             };
             door_appliers.refresh_models(
@@ -1225,68 +1215,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // never one with the surface.)
     #[cfg(feature = "root-admin")]
     let admin_router = match &book {
-        Some(book) => root::units_admin::mount(
+        Some(book) => root::units_admin::mount_node(
             admin_router,
-            root::kernel::new_kernel(),
-            // The same ingress cap the router below the wrap was built with, because the wrap reads the
-            // body before that router's own limit can.
             req_body_max,
-            |dispatch| {
-                // THE ADMIN DOOR: the deployment's live `admin_auth` chain, read per unit off the same
-                // snapshot the kernel middleware reads and `PUT /api/v1/admin/admin-auth` swaps.
-                // Over the book boot opened AND the store boot bound beside it, so the three
-                // disaster-recovery verbs reach the configured store (row 113).
-                let mut units = root::kernel::ProductionUnits::admin_over_book(
-                    dispatch,
-                    root::units_admin::live_admin_door(std::sync::Arc::clone(&app_handle)),
-                    book,
-                );
-                // D38 PRODUCTION SEALING (composition-root, binding-only). Replace the assembly's
-                // `UnsealedPosture` default with the posture THIS fleet sealed: `SealedPosture` carries
-                // the boot-resolved operator key, so `operator.pub` present ⇒ `OperatorState::Set` (a
-                // valid-signed `amend_rate_history` is now performable + ed25519-verified) and absent ⇒
-                // `OperatorState::Unset` (amend refused at the ceremony gate, byte-identical to before).
-                // Bound over the SAME public `posture` seam `AdminBinding::with_posture_view` sets — and
-                // the same one the ledger view beside it is bound through — so this is a binding, not a
-                // structural change to the units.
-                units.admin.posture =
-                    std::sync::Arc::new(root::units_admin::SealedPosture::new(operator_key));
-                // Q64/Q67: an `adjust` names the pool its unit was dispatched through, checked against
-                // the pools this node has CONFIGURED — read off the live snapshot on every call, so a
-                // config apply that adds or removes a pool is what the check sees.
-                let live = std::sync::Arc::clone(&app_handle);
-                units.admin.pools = std::sync::Arc::new(move |pool: &str| {
-                    busbar_kernel::governance::group_provision::pool_known(&live.load(), pool)
-                });
-                // Q71(2): `plane_facts` / `plane_record_write` read the planes this node serves off the
-                // live snapshot (Law 7) and write through the configured store's plane-facing seam.
-                units.admin.planes =
-                    root::units_admin::live_planes(std::sync::Arc::clone(&app_handle));
-                units.admin.records = Some(root::units_admin::live_records(std::sync::Arc::clone(
-                    &app_handle,
-                )));
-                // ARCHITECT 2026-10-06: the trust verbs read and decide over the kernel's trust
-                // book — the composed services, reached through the late install.
-                let late = std::sync::Arc::clone(&late_services);
-                units.admin.trust = std::sync::Arc::new(move || late.kernel());
-                // The root breaker is the kernel's own: one cell set on the node, read through the
-                // live snapshot so an apply's rebuilt store is the one it observes into.
-                units.breaker = root::adapters::BreakerAdapter::over_kernel(
-                    std::sync::Arc::clone(&app_handle),
-                    breaker_policy,
-                );
-                // THE REVOCATION SET the authenticate step gates an identification with: the same
-                // governance state's directory, so the revocation set is the one this node keeps. No
-                // governance state is no directory, left as the assembly built it.
-                match app_handle.load().governance.clone() {
-                    Some(gov) => units.with_auth_bindings(
-                        root::kernel::auth_bindings::AuthBindings::new(std::sync::Arc::new(
-                            root::kernel::auth_bindings::GovernanceDirectory::new(gov),
-                        )),
-                    ),
-                    None => units,
-                }
-            },
+            &app_handle,
+            book,
+            operator_key,
+            &late_services,
+            breaker_policy,
         ),
         None => admin_router,
     };

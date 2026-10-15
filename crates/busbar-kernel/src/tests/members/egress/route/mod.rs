@@ -257,7 +257,14 @@ impl Node {
                             retry_after,
                         })
                     }
-                    // A hook restriction's refusal; no hook binds in these walk proofs.
+                    // A hook restriction's refusal, or a member credential refusal; neither
+                    // occurs in these walk proofs.
+                    Pick::Refused(_) => {
+                        return Routed::Refused(Refusal {
+                            status: 502,
+                            retry_after: None,
+                        })
+                    }
                     Pick::Vetoed { status, .. } => {
                         return Routed::Refused(Refusal {
                             status,

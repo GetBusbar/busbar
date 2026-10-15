@@ -4,87 +4,155 @@
 //! and audits secret material and delivers it only to the auth object bound to it and to the
 //! non-plane plugin whose settings reference it … A plane never receives secret bytes."* The
 //! kernel resolves every secret through the secret kind table (`SecretAxis`/`SecretCalls`); a
-//! plane crate that names a secret resolver is a plane that can turn a reference into bytes.
+//! plane crate that names a secret resolver is a plane that can turn a reference into bytes, and a
+//! plane crate that calls a resolved secret's accessor (`Redacted::expose_secret`) is a plane that
+//! already holds them.
 //!
-//! One row: no plane crate's production source names a secret-resolving surface
-//! ([`NEEDLES`]). The sites the tree still carries are the drain-only ledger
-//! `qa/plane-secret-blindness.toml` — each OWED to the slot that gives it a host-held replacement:
-//! a2a's and voice's provider credentials to the auth styles (step 21), mcp's token-exchange
-//! subject token to the auth styles, and the mcp stdio child's environment to the stdio transport.
-//! A new site is RED; a drained site must be struck in the same commit.
+//! Two rows over every plane-family crate the kind census names
+//! ([`crate::gates::kind_isolation::plane_kind_src_roots`]: the `busbar-plane-*` crates and the
+//! legacy engines, never a hand list): no production source names a secret-resolving surface
+//! ([`NEEDLES`]), and none calls a secret-exposing accessor ([`EXPOSERS`]). Every forbidden name
+//! must be DEFINED somewhere in the tree's production source, so a rename cannot silently empty
+//! either list (an undefined name reds `:ledger`). The sites the tree still carries are the
+//! drain-only ledger `qa/plane-secret-blindness.toml` — each OWED to the slot that gives it a
+//! host-held replacement: a2a's and voice's provider credentials to the auth styles (step 21), and
+//! the legacy engines' `expose_secret` reads to their deletion (row 155). An exposure row is
+//! COUNTED (`count = N`, one per line), so it only shrinks. A new site is RED; a drained site must
+//! be struck (or its count lowered) in the same commit.
 
-use crate::ctx::{Ctx, Overlay};
+use crate::ctx::{Ctx, Overlay, WalkSpec};
 use crate::gates::one_abi::{self, Finding, Spec};
 use crate::gates::{Gate, Report};
 use crate::ledger::Verdict;
 
 pub const ROW_NAMES: &str = "plane-secret-blindness:names-a-resolver";
+pub const ROW_EXPOSES: &str = "plane-secret-blindness:exposes-secret-bytes";
 
-/// The secret-resolving surfaces, as whole words.
+/// The secret-resolving surfaces, as whole words. Each must be defined in the tree
+/// ([`undefined_names`]).
 pub const NEEDLES: &[&str] = &[
     "SecretResolve",
     "SecretResolver",
     "secret_resolver",
     "SecretCalls",
     "SecretAxis",
+    "SecretModule",
     "resolve_linked_string",
-    "resolve_builtin",
-    "resolve_builtin_string",
 ];
 
-/// The crates that still carry plane code beside the `busbar-plane-*` crates.
-pub const PLANE_HOMES: &[&str] = &["busbar-llm", "busbar-mcp", "busbar-a2a", "busbar-voice"];
+/// The accessors that hand their caller a RESOLVED secret's plaintext, as whole words:
+/// `busbar_contract::redacted::Redacted::expose_secret` is the one way to reach the value inside a
+/// `Redacted`. Each must be defined in the tree ([`undefined_names`]).
+pub const EXPOSERS: &[&str] = &["expose_secret"];
 
 pub const SPEC: Spec = Spec {
     gate: "plane-secret-blindness",
     ledger: "qa/plane-secret-blindness.toml",
-    rules: &[(
-        ROW_NAMES,
-        "no plane crate names a secret-resolving surface (THE DESIGN, the trust boundary)",
-    )],
+    rules: &[
+        (
+            ROW_NAMES,
+            "no plane crate names a secret-resolving surface (THE DESIGN, the trust boundary)",
+        ),
+        (
+            ROW_EXPOSES,
+            "no plane crate reads a resolved secret's bytes (THE DESIGN, the trust boundary)",
+        ),
+    ],
     header: "# plane-secret-blindness: DRAIN-ONLY ledger (THE DESIGN, the trust boundary: a plane never receives secret\n\
-             # bytes). Each row is a plane site that still resolves a secret reference, OWED to the slot\n\
-             # that gives it a host-held replacement: a2a/voice provider credentials and the mcp\n\
-             # token-exchange subject token to the auth styles (step 21); the mcp stdio child's\n\
-             # environment to the stdio transport (CONNECTOR). Strike a row in the commit that drains\n\
-             # it; never add one. Regenerate with `cargo xtask gate plane-secret-blindness --write`.\n",
+             # bytes). Each row is a plane site that still resolves a secret reference or reads a resolved\n\
+             # secret's bytes, OWED to the slot that gives it a host-held replacement: a2a/voice provider\n\
+             # credentials to the auth styles (step 21); the legacy engines' expose_secret reads to their\n\
+             # deletion (row 155). An exposes-secret-bytes row is COUNTED (`count = N`, one per line) and\n\
+             # only goes down. Strike a row (or lower its count) in the commit that drains it; never add\n\
+             # one. `cargo xtask gate plane-secret-blindness --write` regenerates the keys; it does not\n\
+             # write counts, so a regenerated ledger restates each count before it is committed.\n",
 };
 
-fn is_plane(name: &str) -> bool {
-    name.starts_with("busbar-plane-") || PLANE_HOMES.contains(&name)
+/// The plane-family crate directories (`crates/x`), from the kind census.
+fn plane_dirs(cx: &Ctx) -> Result<Vec<String>, String> {
+    Ok(crate::gates::kind_isolation::plane_kind_src_roots(cx)?
+        .into_iter()
+        .map(|root| root.strip_suffix("/src").unwrap_or(&root).to_string())
+        .collect())
+}
+
+/// THE FORBIDDEN-NAME CENSUS: every name in `names` that no production line under `crates/*/src`
+/// defines (`fn`, `struct`, `trait`, `enum`, `type`, or a `pub` field). A list that names an API the
+/// tree no longer has polices nothing, so a rename must red here rather than empty the list.
+pub fn undefined_names(cx: &Ctx, names: &[&str]) -> Result<Vec<String>, String> {
+    let files = cx
+        .walk(
+            &WalkSpec::new(["crates"])
+                .ext("rs")
+                .exclude(["/tests/", "/benches/"])
+                .min_files(1),
+        )
+        .map_err(|e| format!("crates: {e:?}"))?;
+    let mut missing: Vec<&str> = names.to_vec();
+    for f in &files {
+        if missing.is_empty() {
+            break;
+        }
+        if !f.rel_str().contains("/src/") {
+            continue;
+        }
+        for sl in one_abi::production(&f.text) {
+            missing.retain(|n| {
+                !["fn", "struct", "trait", "enum", "type"]
+                    .iter()
+                    .any(|kw| one_abi::has_word(&sl.counted, &format!("{kw} {n}")))
+                    && !one_abi::has_word(&sl.counted, &format!("pub {n}:"))
+            });
+        }
+    }
+    Ok(missing.into_iter().map(str::to_string).collect())
 }
 
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
     let mut findings = Vec::new();
     let mut errors = Vec::new();
-    let members = match one_abi::members(cx) {
-        Ok(m) => m,
-        Err(e) => return (findings, vec![e]),
-    };
-    let planes: Vec<_> = members.iter().filter(|m| is_plane(&m.name)).collect();
-    if planes.len() < PLANE_HOMES.len() {
-        errors.push(format!(
-            "the workspace read as {} plane crate(s); the scan has gone blind",
-            planes.len()
-        ));
+    let all: Vec<&str> = NEEDLES.iter().chain(EXPOSERS).copied().collect();
+    match undefined_names(cx, &all) {
+        Ok(gone) => {
+            for n in gone {
+                errors.push(format!(
+                    "forbidden name `{n}` is defined nowhere in crates/*/src production source: the list names an API the tree no longer has (a rename emptied it); name the live API"
+                ));
+            }
+        }
+        Err(e) => errors.push(e),
     }
-    for m in planes {
-        let files = match one_abi::rs_files(cx, &m.dir) {
+    let dirs = match plane_dirs(cx) {
+        Ok(d) => d,
+        Err(e) => {
+            errors.push(e);
+            return (findings, errors);
+        }
+    };
+    for dir in dirs {
+        let files = match one_abi::rs_files(cx, &dir) {
             Ok(f) => f,
             Err(e) => {
                 errors.push(e);
                 continue;
             }
         };
+        if files.is_empty() {
+            errors.push(format!(
+                "{dir}: a plane-family crate with ZERO .rs files under src/ is unscanned, not clean"
+            ));
+        }
         for f in &files {
             let rel = f.rel_str();
             if rel.contains("/testkit/") || rel.contains("/bin/") {
                 continue;
             }
             for sl in one_abi::production(&f.text) {
-                for n in NEEDLES {
-                    if one_abi::has_word(&sl.counted, n) {
-                        findings.push(Finding::new(ROW_NAMES, &rel, *n, sl.no));
+                for (rule, list) in [(ROW_NAMES, NEEDLES), (ROW_EXPOSES, EXPOSERS)] {
+                    for n in list {
+                        if one_abi::has_word(&sl.counted, n) {
+                            findings.push(Finding::new(rule, &rel, *n, sl.no));
+                        }
                     }
                 }
             }
@@ -116,29 +184,86 @@ impl Gate for PlaneSecretBlindnessGate {
             file,
             "pub fn planted(r: &dyn busbar_contract::secret::SecretResolve) { let _ = r; }\n",
         );
+        // RED (audit xtask H1 HIGH 1): a plane that reads a resolved secret's bytes through the live
+        // accessor. The old needles were resolver names only, so this line matched none of them.
+        let exposed = "crates/busbar-plane-llm/src/planted_exposure.rs";
+        let mut exposure = Overlay::new();
+        exposure.set(
+            exposed,
+            "pub fn planted(k: &busbar_contract::redacted::Redacted<String>) -> usize {\n    k.expose_secret().len()\n}\n",
+        );
         let mut prose = Overlay::new();
         prose.set(
             file,
-            "// a plane never names SecretResolve\npub const NOTE: &str = \"secret_resolver\";\n",
+            "// a plane never names SecretResolve or calls expose_secret\npub const NOTE: &str = \"secret_resolver expose_secret\";\n",
         );
         let mut report = one_abi::selftest(
             cx,
             self,
             &SPEC,
-            vec![(
-                ROW_NAMES,
-                "a plane crate naming a secret resolver is RED, naming it",
-                plant,
-                vec![file, "SecretResolve"],
-            )],
+            vec![
+                (
+                    ROW_NAMES,
+                    "a plane crate naming a secret resolver is RED, naming it",
+                    plant,
+                    vec![file, "SecretResolve"],
+                ),
+                (
+                    ROW_EXPOSES,
+                    "a plane crate calling Redacted::expose_secret is RED, naming it",
+                    exposure,
+                    vec![exposed, "expose_secret"],
+                ),
+            ],
         );
         report.push(crate::gates::prove_rows_green(
             cx,
             self,
-            "a comment or a string literal naming a resolver is not a finding",
-            &[ROW_NAMES],
+            "a comment or a string literal naming a resolver or the accessor is not a finding",
+            &[ROW_NAMES, ROW_EXPOSES],
             prose,
         ));
+
+        // RED: a counted exposure row only shrinks. One more `expose_secret` line in a file the
+        // ledger already counts is over its count, though the (rule, file, item) key is on record.
+        let counted = "crates/busbar-llm/src/engine/build_runtime.rs";
+        if let Ok(text) = cx.read(counted) {
+            let mut ov = Overlay::new();
+            ov.set(
+                counted,
+                format!(
+                    "{text}\npub fn planted_more(k: &busbar_contract::redacted::Redacted<String>) -> usize {{\n    k.expose_secret().len()\n}}\n"
+                ),
+            );
+            report.push(crate::gates::prove_rows_red(
+                cx,
+                self,
+                "one more expose_secret line in a file the ledger counts is RED: a counted row never grows",
+                &[ROW_EXPOSES],
+                ov,
+                &[counted, "over its counted row"],
+            ));
+        }
+
+        // RED: the forbidden-name census. Rename the accessor at its home and the list would name
+        // an API the tree no longer has; the old gate never asked, so a rename emptied it silently.
+        let home = "crates/busbar-contract/src/redacted.rs";
+        if let Ok(text) = cx.read(home) {
+            let mut ov = Overlay::new();
+            ov.set(
+                home,
+                text.replace("fn expose_secret(", "fn expose_secret_renamed("),
+            );
+            let ledger_row = SPEC.ledger_row();
+            report.push(crate::gates::prove_rows_red(
+                cx,
+                self,
+                "a forbidden name defined nowhere in the tree is RED, naming it",
+                &[ledger_row.as_str()],
+                ov,
+                &["`expose_secret` is defined nowhere"],
+            ));
+        }
         report
     }
 }

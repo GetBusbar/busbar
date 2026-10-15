@@ -166,7 +166,7 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
 /// registered to own this config section". Call at the top of a test that builds/parses a
 /// `RootCfg`/`DeployCfg` (directly or via `resolve`) but asserts nothing about real llm/mcp/a2a
 /// behaviour; a test that DOES assert real plane behaviour belongs in `tests/*_cross_plane.rs`
-/// instead, where the real `busbar_llm`/`busbar_mcp`/`busbar_a2a` crates are reachable.
+/// instead, where the real `busbar_llm`/`busbar_mcp` and agent-engine crates are reachable.
 pub fn register_neutral_test_plane() {
     crate::plane::registry::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
 }
@@ -273,7 +273,7 @@ pub async fn oversized_413_body(
 
 // ── THE NEUTRAL TEST-APP SEAM (busbar_kernel::test_support::TestAppSeam) ──────────────────────────────
 // Core implements the neutral fixture seam for its concrete `TestApp`, so the extracted plane
-// test-kits (`busbar-mcp`/`busbar-a2a`) build and drive the test App through the trait — naming no
+// test-kits (`busbar-mcp` and agent-engine) build and drive the test App through the trait — naming no
 // `busbar_kernel::state::App`/`test_support::TestApp` backwards. Each method delegates to the inherent
 // fixture logic above (or to the type-erased scratch map); the object-safe scratch primitives back the
 // generic `TestAppSeamExt::plane_scratch::<T>` sugar the plane test-kits call.
@@ -295,17 +295,6 @@ impl busbar_kernel::test_support::TestAppSeam for TestApp {
         f: Box<dyn FnOnce(&mut dyn busbar_kernel::test_support::TestAppSeam)>,
     ) {
         self.plane_finalizers.push(f);
-    }
-
-    fn configured_public_url(&self) -> Option<&str> {
-        TestApp::configured_public_url(self)
-    }
-
-    fn card_issuer(
-        &self,
-        _plane_key: &'static str,
-    ) -> Option<busbar_kernel::plane::registry::CardIssuer> {
-        TestApp::card_issuer(self)
     }
 
     fn install_plane_runtime(

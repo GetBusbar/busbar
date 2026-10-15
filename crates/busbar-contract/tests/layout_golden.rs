@@ -1409,6 +1409,7 @@ fn compute_layout() -> String {
         ]
     );
     record!(s, tkind::StatusRow, [claim, lo, hi, class]);
+    record!(s, tkind::FaultRow, [claim, lo, hi, fault]);
     record!(
         s,
         tkind::route::FieldPredicate,
@@ -1442,7 +1443,9 @@ fn compute_layout() -> String {
             status_rows,
             status_rows_len,
             settings,
-            settings_len
+            settings_len,
+            fault_rows,
+            fault_rows_len
         ]
     );
     record!(
@@ -1474,7 +1477,7 @@ fn compute_layout() -> String {
             len,
             code,
             status_class,
-            _reserved,
+            fault,
             flags,
             retry_after_secs,
             declared_len
@@ -1726,7 +1729,9 @@ fn compute_layout() -> String {
             admin_routes,
             admin_routes_len,
             admin_openapi,
-            stream_ceiling_secs
+            stream_ceiling_secs,
+            metric_lanes,
+            metric_lanes_len
         ]
     );
     record!(
@@ -1834,7 +1839,7 @@ fn compute_layout() -> String {
             head_fields,
             head_fields_len,
             passthrough,
-            _reserved_tail
+            reason
         ]
     );
     record!(
@@ -1865,7 +1870,10 @@ fn compute_layout() -> String {
             final_status,
             _final_reserved,
             final_message,
-            final_details
+            final_details,
+            metric_pool,
+            metric_lane,
+            wait_member
         ]
     );
     record!(

@@ -175,6 +175,7 @@ fn open_stated(
                 composes_over: stated.composes_over,
                 ported: stated.ported,
                 status_rows: stated.status_rows,
+                datagram: stated.datagram,
                 duplex: stated
                     .upgrades
                     .iter()
@@ -645,4 +646,161 @@ fn an_opening_messages_head_words_reach_the_far_end_through_the_table() {
         );
         c.close(owner, id).unwrap();
     });
+}
+
+// ── the plugins.fetch download (status row 130 E6) ──────────────────────────────────────────────
+
+/// The download's table over a connector serving the composing door beside the test carrier, every
+/// IP literal its own address: the door's own plain scheme, and the table.
+fn fetch_table() -> (&'static str, busbar_core_connector::fetch::Table) {
+    use busbar_contract::conn::{DeclaredConns, InstanceId, NeedId, PollConns};
+    use busbar_core_connector::registry::{Entry, Transports};
+    use busbar_core_connector::{Connector, Judged};
+
+    let door = composing_door();
+    let scheme = door.facts().claims[0];
+    let layer: std::sync::Arc<dyn busbar_core_connector::framer::FramerDoor> =
+        std::sync::Arc::new(support::TestDoor::identity("test-carrier"));
+    let judge = |dest: &str, _: u32, _: Judged| {
+        Some(dest.parse::<std::net::SocketAddr>().map_err(|_| 1_u64))
+    };
+    let c = std::sync::Arc::new(Connector::serving(
+        Transports::new(vec![
+            Entry {
+                door,
+                alpn: Vec::new(),
+            },
+            Entry {
+                door: layer,
+                alpn: Vec::new(),
+            },
+        ])
+        .unwrap(),
+        std::sync::Arc::new(judge),
+        None,
+        std::sync::Arc::new(|_| {}),
+    ));
+    let table = busbar_core_connector::fetch::Table {
+        owner: InstanceId(9),
+        secured_need: NeedId(1),
+        plain_need: NeedId(2),
+        declared: std::sync::Arc::clone(&c) as std::sync::Arc<dyn DeclaredConns>,
+        conns: c as std::sync::Arc<dyn PollConns>,
+    };
+    (scheme, table)
+}
+
+/// One download of `path` from a far end answering `response` (a [`respond`] template), off the
+/// runtime as boot and reload run it: what came back, and the request head the far end read.
+fn fetch_once(path: &str, response: &str, cap: usize) -> (Result<Vec<u8>, String>, String) {
+    let (scheme, table) = fetch_table();
+    let response = respond(scheme, response);
+    let path = path.to_owned();
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
+        .enable_all()
+        .build()
+        .unwrap();
+    rt.block_on(async move {
+        let (far, seen) = serve_once(response).await;
+        let url = format!("{scheme}://{far}{path}");
+        let got = tokio::task::spawn_blocking(move || {
+            busbar_core_connector::fetch::download(&table, &url, &[], cap)
+        })
+        .await
+        .unwrap();
+        let head = tokio::time::timeout(std::time::Duration::from_secs(10), seen)
+            .await
+            .map(|h| h.unwrap_or_default())
+            .unwrap_or_default();
+        (got, head)
+    })
+}
+
+/// THE DOWNLOAD'S WIRE IS 1.5.5's: `GET <path>` with the client defaults the transport owns,
+/// `accept: */*` and then `host`, and nothing else (oracle cell `egress.fetch|plugins|url`; the
+/// kernel engine sent no `accept`), and the artifact comes back byte for byte.
+#[test]
+fn the_plugins_fetch_download_sends_1_5_5s_request_through_the_table() {
+    let (got, head) = fetch_once(
+        "/releases/busbar-oracle-fetch-1.0.0.tar.gz",
+        "{V} 200 OK\r\ncontent-length: 8\r\nconnection: close\r\n\r\nartifact",
+        4096,
+    );
+    assert_eq!(got.as_deref(), Ok(&b"artifact"[..]));
+    let scheme = composing_door().facts().claims[0];
+    let version = format!("{}/1.1", scheme.to_ascii_uppercase());
+    let host = head
+        .split("\r\n")
+        .find_map(|l| l.strip_prefix("host: "))
+        .unwrap_or_default()
+        .to_owned();
+    assert_eq!(
+        head,
+        format!(
+            "GET /releases/busbar-oracle-fetch-1.0.0.tar.gz {version}\r\naccept: */*\r\n\
+             host: {host}\r\n\r\n"
+        ),
+        "the request on the wire is 1.5.5's"
+    );
+    assert!(host.starts_with("127.0.0.1:"), "{head}");
+}
+
+/// An oversized body is refused under the cap, from an honest `Content-Length` (before a body
+/// byte) and from a chunked answer with none (counted as it arrives); a within-cap body downloads
+/// byte for byte.
+#[test]
+fn the_plugins_fetch_download_refuses_an_oversized_body_and_keeps_a_small_one() {
+    let big = "x".repeat(256);
+    let (got, _) = fetch_once(
+        "/big",
+        &format!("{{V}} 200 OK\r\ncontent-length: 256\r\n\r\n{big}"),
+        64,
+    );
+    let err = got.expect_err("an over-cap download is a clear error");
+    assert!(
+        err.contains("declared Content-Length 256 exceeds the 64-byte"),
+        "{err}"
+    );
+
+    let chunks = "8\r\nxxxxxxxx\r\n".repeat(32);
+    let (got, _) = fetch_once(
+        "/big-streamed",
+        &format!("{{V}} 200 OK\r\ntransfer-encoding: chunked\r\n\r\n{chunks}0\r\n\r\n"),
+        64,
+    );
+    let err = got.expect_err("an over-cap download with no Content-Length is still refused");
+    assert!(
+        err.contains("response exceeded the 64-byte plugins.fetch download cap"),
+        "{err}"
+    );
+
+    let small = "y".repeat(32);
+    let (got, _) = fetch_once(
+        "/small",
+        &format!("{{V}} 200 OK\r\ncontent-length: 32\r\nconnection: close\r\n\r\n{small}"),
+        64,
+    );
+    assert_eq!(
+        got,
+        Ok(small.into_bytes()),
+        "a within-cap download is the body exactly"
+    );
+}
+
+/// A redirect is refused and never followed, in 1.5.5's words.
+#[test]
+fn the_plugins_fetch_download_refuses_to_follow_a_redirect() {
+    let (got, _) = fetch_once(
+        "/artifact",
+        "{V} 302 Found\r\nlocation: /metadata\r\ncontent-length: 0\r\n\r\n",
+        4096,
+    );
+    let err = got.expect_err("a redirect is refused, not followed");
+    assert!(
+        err.contains(
+            "302 Found — refusing to follow a plugins.fetch redirect (redirect-SSRF guard)"
+        ),
+        "{err}"
+    );
 }

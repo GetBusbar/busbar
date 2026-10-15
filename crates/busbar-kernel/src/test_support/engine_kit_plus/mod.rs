@@ -20,7 +20,6 @@
 
 use super::engine_kit::{CostKit, EngineApp, EngineTestKit, GovKit, HookEnvHandle, TestAppKit};
 use super::TestAppSeam;
-use crate::plane::registry::CardIssuer;
 use crate::plane::PlaneAdmission;
 use busbar_contract::abi::mechanism::route::RouteAuth;
 use busbar_contract::secret::SecretResolve;
@@ -194,12 +193,6 @@ impl TestAppSeam for AppBuilder {
     }
     fn register_plane_finalizer(&mut self, f: Box<dyn FnOnce(&mut dyn TestAppSeam)>) {
         self.inner.register_plane_finalizer(f)
-    }
-    fn configured_public_url(&self) -> Option<&str> {
-        self.inner.configured_public_url()
-    }
-    fn card_issuer(&self, plane_key: &'static str) -> Option<CardIssuer> {
-        self.inner.card_issuer(plane_key)
     }
     fn install_plane_runtime(&mut self, key: &'static str, rt: Arc<dyn Any + Send + Sync>) {
         self.inner.install_plane_runtime(key, rt)

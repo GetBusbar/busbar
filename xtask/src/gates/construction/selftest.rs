@@ -198,6 +198,7 @@ pub fn run<'a>(gate: &'a dyn Gate, cx: &'a Ctx) -> Report<'a> {
     r.append(unit_crate_cases(gate, &gcx, &fixture));
     r.append(ceiling_file_cases(gate, &gcx, cx, &fixture, &cleared));
     r.append(census_rename_cases(gate, &gcx, &fixture));
+    r.append(census_base_cases(gate, &gcx, &fixture));
     r.append(kind_cases(gate, &gcx, &fixture));
     r.append(vocabulary_cases(gate, &gcx, &fixture));
     r.append(money_cases(gate, &gcx, &fixture));
@@ -355,10 +356,13 @@ fn green_fixture(
     }
     // The base's copy of this file is THIS file, so `ceiling-census` compares the fixture's floors
     // with themselves and every floor holds; the base is pinned so a long run cannot see it move.
-    if let Ok(based) = ceilings::base_ref(cx) {
-        g.set_command(ceilings::BASE_PIN_KEY, based.sha.clone());
-        g.set_command(format!("git-show:{based}:{CEILINGS}"), text.clone());
-    }
+    // A checkout with no base (detached, no XTASK_CEILING_BASE) pins a synthetic one: the census
+    // reds a missing base, and the fixture's question is the rules, not this checkout's history.
+    let based = ceilings::base_ref(cx)
+        .map(|b| b.sha)
+        .unwrap_or_else(|_| "zz-fixture-base".to_string());
+    g.set_command(ceilings::BASE_PIN_KEY, based.clone());
+    g.set_command(format!("git-show:{based}:{CEILINGS}"), text.clone());
     g.set(CEILINGS, text);
     cleared.sort();
     cleared.dedup();
@@ -1124,6 +1128,41 @@ fn census_rename_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Repo
     r
 }
 
+/// NO BASE, NO CENSUS PASS (finding X2-1). Each plant pins a synthetic base the comparison cannot
+/// read: one whose ref resolves but carries no ceilings file, and one whose copy does not parse.
+/// The old code nested `if let Ok(..)` three deep with no else arm, so either plant skipped the
+/// floors-against-base check and the row printed "none below its pinned floor".
+fn census_base_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
+    const SYN_BASE: &str = "zz-census-no-base";
+    let mut r = Report::new();
+    let mut absent = on(base);
+    absent.set_command(ceilings::BASE_PIN_KEY, SYN_BASE);
+    absent.set_command(format!("git-ref:{SYN_BASE}"), "1");
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a base that carries no ceilings file is a census problem, not a skipped floor check",
+        &[census::ROW_CENSUS],
+        absent,
+        &["has no readable"],
+    ));
+    let mut garbled = on(base);
+    garbled.set_command(ceilings::BASE_PIN_KEY, SYN_BASE);
+    garbled.set_command(
+        format!("git-show:{SYN_BASE}:{CEILINGS}"),
+        "[gate.census\nzz planted = = unparsable\n",
+    );
+    r.push(prove_rows_red(
+        cx,
+        gate,
+        "a base whose ceilings file does not parse is a census problem, not a skipped floor check",
+        &[census::ROW_CENSUS],
+        garbled,
+        &["does not parse"],
+    ));
+    r
+}
+
 /// The plugin kinds: the manifest allow-list, the source denylist and the unsafe attributes.
 fn kind_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     let mut r = Report::new();
@@ -1213,6 +1252,26 @@ fn kind_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         &refs(&ids("source-denylist:", &pure)),
         ov,
         &["zz_planted_io.rs"],
+    ));
+
+    // THE GROUPED IMPORT (xtask-D finding 2). `use std::{fs, net::TcpStream}` as rustfmt lays it
+    // out spells neither `std::fs` nor `std::net` on any line, so the per-line search read the
+    // crate as clean; the expanded use tree names both.
+    let mut ov = on(base);
+    for c in &pure {
+        ov.set(
+            format!("crates/{c}/src/zz_planted_grouped_io.rs"),
+            "use std::{\n    fs,\n    net::TcpStream,\n};\n\npub fn planted_grouped_io() {\n    \
+             let _ = TcpStream::connect(addr);\n    let _ = fs::read(path);\n}\n",
+        );
+    }
+    r.push(prove_red(
+        cx,
+        gate,
+        "every pure-kind crate opens a socket and a file through a grouped std import",
+        &refs(&ids("source-denylist:", &pure)),
+        ov,
+        &["zz_planted_grouped_io.rs"],
     ));
 
     // ITEM 167: THE CLOSURE HALF THAT NEVER ANSWERED. The rule's UNPROVEN arm was unreachable —

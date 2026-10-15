@@ -92,9 +92,6 @@ pub struct Linked {
     pub protocol_seams: &'static [fn()],
     /// Owned diagnostics, joining the rendered catalog.
     pub diagnostics: &'static [&'static [&'static busbar_contract::diagnostic::Diagnostic]],
-    /// Installers of a duplex plane's inbound WS-accept arrivals (the seam is set once: the first
-    /// duplex entry in table order is the one installed).
-    pub ws_arrivals: &'static [fn()],
     /// Background work re-anchored on every generation's engine host (boot, then each swap).
     pub on_host: &'static [fn(&Arc<dyn EngineHost>)],
     /// Providers composed off the resolved configuration (see [`Compose`]).
@@ -1287,6 +1284,7 @@ pub const HOST_SERIES: &[&str] = &[
     busbar_kernel::snapshot::METERING_PENDING_COALESCED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_REQUEST_HEADERS_TRUNCATED_TOTAL,
     busbar_kernel::snapshot::PLUGIN_RESPONSE_HEADERS_REJECTED_TOTAL,
+    busbar_kernel::snapshot::PLUGIN_LABEL_REFUSED_TOTAL,
     busbar_kernel::snapshot::KEY_SPEND_CENTS,
     busbar_kernel::snapshot::KEY_TOKENS_TOTAL,
     busbar_kernel::snapshot::BUCKET_TOKENS,
@@ -1449,28 +1447,17 @@ fn catalogue_entries(
     Ok(declared)
 }
 
-/// THE WS-ACCEPT AXIS: each duplex entry installs its inbound arrivals — and none does when no entry
-/// is duplex, so the router mounts no WS-accept route.
-pub fn register_ws_arrivals(linked: &Linked) {
-    for install in linked.ws_arrivals {
-        install();
-    }
-}
-
 /// THE ROOT-BOUND SEAMS an enabled entry drives, each bound once and only when some entry drives it
-/// (the manifest's `plane-sections` / `admin-envelope` axes, emitted by the build script as
-/// `linked_*` cfgs): the parse-time section list a cross-plane hook refusal reads. The envelope a
-/// self-enveloping admin verb replies through is the admin crate's, bound by its `install()`. The
-/// `egress` axis binds nothing here: the hostless-egress driver is the App's, handed to each plane on
-/// its build context (`BuildCtx::hostless`). The egress-trust host is installed by `run` once the
-/// configuration loads, over the destination guard.
+/// (the manifest's `plane-sections` axis, emitted by the build script as a `linked_*` cfg): the
+/// parse-time section list a cross-plane hook refusal reads. The `egress` axis binds nothing here:
+/// the hostless-egress driver is the App's, handed to each plane on its build context
+/// (`BuildCtx::hostless`). The egress-trust host is installed by `run` once the configuration
+/// loads, over the destination guard.
 pub fn register_seams() {
     #[cfg(linked_plane_sections)]
     busbar_kernel::plane::config::install_plane_sections(
         busbar_kernel::plane::config::config_sections,
     );
-    // `admin-envelope`: the self-enveloping plane-verb backing is the admin crate's own, bound by
-    // its `install()` (main.rs), which the composition root calls unconditionally.
 }
 
 /// THE ROOT UNITS' SEALS, in table order. A composition that disagrees with itself must not bind a

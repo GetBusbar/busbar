@@ -218,6 +218,10 @@ struct ModelCfg {
     reasoning: Option<bool>,
     #[serde(default)]
     prompt_caching: Option<bool>,
+    /// The model's dialect override (#51): the wire protocol this model is spoken in when it
+    /// differs from its provider's; absent = the provider's.
+    #[serde(default)]
+    protocol: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -421,12 +425,19 @@ impl Shaping {
                     m.provider
                 )
             })?;
-            let asked = p.protocol.as_deref().unwrap_or(DEFAULT_PROTOCOL);
+            // #51: the model's own `protocol` overrides its provider's default; the plane serves the
+            // resolved dialect only if it knows it (fail-closed).
+            let asked = m
+                .protocol
+                .as_deref()
+                .or(p.protocol.as_deref())
+                .unwrap_or(DEFAULT_PROTOCOL);
             let decl = DECLS
                 .iter()
                 .find(|d| d.name == asked && d.codec.is_some())
-                .ok_or_else(|| {
-                    format!("provider '{}' uses unknown protocol '{asked}'", m.provider)
+                .ok_or_else(|| match m.protocol {
+                    Some(_) => format!("model '{name}' uses unknown protocol '{asked}'"),
+                    None => format!("provider '{}' uses unknown protocol '{asked}'", m.provider),
                 })?;
             let dialect = decl.name;
             let statics = match p.auth.as_deref() {

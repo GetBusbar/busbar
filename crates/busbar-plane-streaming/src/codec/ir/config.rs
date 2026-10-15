@@ -154,7 +154,8 @@ pub struct SessionConfig {
     )]
     pub turn_detection: Option<Option<IrVad>>,
     /// The tool set, carried VERBATIM as opaque JSON (the plane locks the set but never reshapes a
-    /// definition — the plane's tool moat (`BUSBAR-1.6.0.md` #18/#45) normalizes call CORRELATION, not the argument/definition bytes).
+    /// definition — the tool layer (`BUSBAR-1.6.0.md` #18/#45) normalizes call CORRELATION, not the
+    /// argument/definition bytes).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tools: Vec<serde_json::Value>,
     /// Tool-choice policy (`"auto"` / `"none"` / `"required"` / a forced-call object), opaque.

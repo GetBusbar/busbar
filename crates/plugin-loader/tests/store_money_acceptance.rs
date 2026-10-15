@@ -285,16 +285,16 @@ fn the_floor_makes_arrival_order_matter() {
     for s in subjects() {
         s.store
             .add_usage("charge-first", DAY, &delta(0, 1, "m", &[]))
-            .expect("c");
+            .expect("the charge");
         s.store
             .add_usage("charge-first", DAY, &delta(0, -1, "m", &[]))
-            .expect("r");
+            .expect("the refund");
         s.store
             .add_usage("refund-first", DAY, &delta(0, -1, "m", &[]))
-            .expect("r");
+            .expect("the refund");
         s.store
             .add_usage("refund-first", DAY, &delta(0, 1, "m", &[]))
-            .expect("c");
+            .expect("the charge");
         let a = s.store.get_usage("charge-first", DAY).expect("read");
         let b = s.store.get_usage("refund-first", DAY).expect("read");
         assert_eq!(a.billable_requests, 0, "{}", s.door);

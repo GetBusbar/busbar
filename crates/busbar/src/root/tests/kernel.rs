@@ -408,6 +408,125 @@ fn the_units_assemble_from_values_configuration_decided() {
     assert!(durability.ledger.is_dual_writing());
 }
 
+/// A store that writes down every primitive it is asked for, so a test can say WHICH store a call
+/// landed on rather than inferring it from an `Ok`.
+#[cfg(feature = "root-admin")]
+#[derive(Default)]
+struct ReachedStore(Mutex<Vec<String>>);
+
+#[cfg(feature = "root-admin")]
+impl ReachedStore {
+    fn note(&self, line: String) {
+        self.0.lock().expect("the log lock").push(line);
+    }
+
+    fn reached(&self) -> Vec<String> {
+        self.0.lock().expect("the log lock").clone()
+    }
+}
+
+#[cfg(feature = "root-admin")]
+impl busbar_contract::verb_store::Store for ReachedStore {
+    fn chain_break(
+        &self,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        self.note("chain_break".to_string());
+        Ok(())
+    }
+
+    fn store_restore(
+        &self,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+        backup_ref: &str,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        self.note(format!("store_restore {backup_ref}"));
+        Ok(())
+    }
+
+    fn reseal_epoch_floor(
+        &self,
+        _admin: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        self.note("reseal_epoch_floor".to_string());
+        Ok(())
+    }
+
+    fn replay_new_verb(
+        &self,
+        key: &(String, String),
+    ) -> Result<Option<Vec<u8>>, busbar_contract::verb_store::StoreError> {
+        self.note(format!("replay_new_verb {} {}", key.0, key.1));
+        Ok(None)
+    }
+
+    fn commit_new_verb_replay(
+        &self,
+        key: &(String, String),
+        _response: &[u8],
+    ) -> Result<(), busbar_contract::verb_store::StoreError> {
+        self.note(format!("commit_new_verb_replay {} {}", key.0, key.1));
+        Ok(())
+    }
+}
+
+/// ROW 113: THE ADMIN UNITS OVER A BOOK REACH THAT BOOK'S STORE, for every recovery primitive and
+/// the replay slot.
+///
+/// `ProductionUnits::admin_over_book` is the one composition `main` serves the admin listener
+/// through, and the `route` step hands `units.store` to the verbs unit. So the store the units hold
+/// IS the store every disaster-recovery verb lands on. The book here carries a store that writes
+/// down what reached it; each primitive is driven through the units' handle and must appear on that
+/// store, in order, with the backup the operator named. RED: units that hold no store (the refusing
+/// stand-in this row deleted) fail the `expect`; units that hold any other store leave this one's
+/// log empty.
+#[cfg(feature = "root-admin")]
+#[test]
+fn the_admin_units_over_a_book_reach_that_books_store_for_every_recovery_verb() {
+    let configured = Arc::new(ReachedStore::default());
+    let mut book = crate::root::durability::node_book();
+    book.verb_store = Some(Arc::clone(&configured) as _);
+    let units = ProductionUnits::admin_over_book(
+        Arc::new(crate::root::units_admin::RefusingDispatch),
+        crate::root::units_admin::open_door(),
+        &book,
+    );
+    let store = units
+        .store
+        .as_ref()
+        .expect("units over a book with a configured store hold a store");
+
+    let key = (
+        "idem-row-113".to_string(),
+        "POST /api/v1/admin/keys".to_string(),
+    );
+    store
+        .chain_break(&units.admin_token)
+        .expect("chain_break applies");
+    store
+        .store_restore(&units.admin_token, "nightly")
+        .expect("store_restore applies");
+    store
+        .reseal_epoch_floor(&units.admin_token)
+        .expect("reseal_epoch_floor applies");
+    store
+        .commit_new_verb_replay(&key, b"first answer")
+        .expect("the replay slot commits");
+    store.replay_new_verb(&key).expect("the replay slot reads");
+
+    assert_eq!(
+        configured.reached(),
+        vec![
+            "chain_break".to_string(),
+            "store_restore nightly".to_string(),
+            "reseal_epoch_floor".to_string(),
+            "commit_new_verb_replay idem-row-113 POST /api/v1/admin/keys".to_string(),
+            "replay_new_verb idem-row-113 POST /api/v1/admin/keys".to_string(),
+        ],
+        "every recovery primitive and the replay slot landed on the book's configured store"
+    );
+}
+
 /// **The units carry no metering policy, and the root has no pool-expansion boot check** (items
 /// 239/246).
 ///
