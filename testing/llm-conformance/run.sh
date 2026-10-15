@@ -11,9 +11,8 @@
 #   --out         where ledger.tsv, report.json, report.md, owed.txt, owed-gaps.txt go
 #                 (default target/llm-conformance/<basename of recording>)
 #   --cells       the cell universe (default testing/shadow-oracle/cells.json)
-#   --named-gaps  the named-gap list (default named-gaps.json; see that file's own header). A
-#                 violation it names becomes a named gap on its row instead of a FAIL, and only
-#                 when it is the ONLY violation on that row. A stale entry is RED.
+#   --named-gaps  the named-gap list (default named-gaps.json). Owner rule 22 (2026-10-14): named
+#                 conformance gaps are zero, so any entry in it, and any SKIP row, is RED.
 #   --no-vendor   trust the cache as-is (vendor.sh --check still runs: an absent spec is red)
 #
 # ONE MECHANISM, THE SAME AS EVERY OTHER GATE HERE: validate.py appends one ledger row per owed
@@ -186,6 +185,15 @@ with open(ledger_path) as f:
             reasons[p[0]] = p[3].strip()
 
 problems = []
+# OWNER RULE 22 (2026-10-14): named conformance gaps are ZERO. Every SKIP row is a row this run did
+# not verify, and none is admitted, however it is named; nor may the file declare a ceiling or an
+# `accepted` entry that would admit one. The naming checks below still run, so the row says why too.
+if entries:
+    problems.append(f"{gaps_path} `accepted` names {len(entries)} entr{'y' if len(entries) == 1 else 'ies'}: owner rule 22 (2026-10-14) — named conformance gaps are zero")
+if doc.get("expected") != 0:
+    problems.append(f"{gaps_path} `expected` is {doc.get('expected')!r}: owner rule 22 (2026-10-14) — it must be 0")
+for gid in observed:
+    problems.append(f"{gid} is a gap (reason on the row: {reasons.get(gid, '(none)')!r}): owner rule 22 (2026-10-14) — named conformance gaps are zero; fix the defect")
 for gid in observed:
     if gid in gap_rows:
         if not reasons.get(gid):

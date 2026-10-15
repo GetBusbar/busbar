@@ -411,6 +411,13 @@ class NamedGaps:
         if not isinstance(gaps_field, list):
             return NamedGaps([]), [f"{path}: `gaps` must be a list"]
         bad, seen, ok = [], set(), []
+        # OWNER RULE 22 (2026-10-14): named conformance gaps are ZERO. A violation is a defect to fix
+        # in code, never a named gap, so ANY entry refuses the list. The checks below still run, so a
+        # refusal also names what else is wrong with the entry.
+        if gaps_field:
+            bad.append(f"{path}: `gaps` names {len(gaps_field)} entr{'y' if len(gaps_field) == 1 else 'ies'}: "
+                       "owner rule 22 (2026-10-14) — named conformance gaps are zero; a violation is a defect "
+                       "to fix, never a named gap")
         for i, g in enumerate(gaps_field):
             where = f"{path}: gaps[{i}]"
             if not isinstance(g, dict):

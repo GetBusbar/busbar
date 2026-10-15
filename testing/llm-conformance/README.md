@@ -76,24 +76,19 @@ that PyYAML ≥ 6.0 is needed on **every** run, not only the first.
 To move a pin: `vendor.sh --repin <spec>` prints the row for the current upstream document;
 paste it in and read what changed in the report before trusting it.
 
-## What is a named gap (SKIP)
+## What is a named gap (SKIP): none is admitted
 
-A SKIP is never a pass. It is printed with `::warning ... DID NOT VERIFY`, listed in
-`owed-gaps.txt`, and removed from the owed set so the verdict can still judge the rows that exist.
+A SKIP is never a pass. It is printed with `::warning ... DID NOT VERIFY` and listed in
+`owed-gaps.txt`. **Owner rule 22 (2026-10-14): named conformance gaps are zero.** A gap is a defect
+to fix in code, never a re-baseline (busbar #619, which raised the ceiling 16 -> 21, was closed for
+that reason). So:
+- `named-gaps.json` holds `"gaps": []`, `"expected": 0` and `"accepted": []`, and nothing else.
+- `validate.py` refuses any `gaps` entry at load, and nothing is judged.
+- `run.sh`'s reconciliation row (`gate|llm-conformance|named-gaps`, added to the owed set so the one
+  verdict decides it) is RED on any `accepted` entry, on any `expected` other than 0, and on every
+  SKIP row the run produced, naming each row and the reason it carries.
 
-That removal is also exactly how a gap could hide: an id that stops being checked stops being
-counted, and a run that verified one thing fewer read the same green as a run that verified one
-more. So the gaps a run may have are **declared in `named-gaps.json`** — one entry per gap, `cells`
-a regex over the ledger id, plus an `owner` and a `rationale`, and an `expected` ceiling on how many
-SKIP rows there may be. `run.sh` reconciles the observed gaps against that file and writes its
-answer as a ledger row (`gate|llm-conformance|named-gaps`) added to the owed set, so the single
-verdict decides it like every other check and the reconciliation failing to run is DID NOT RUN. A
-gap no entry names is red; a gap whose own row carries no reason is red; more gaps than were
-declared is red — including one that falls inside an entry the file already names, which the naming
-alone cannot see. **Fewer** gaps than declared is never red: a gap that closed is what the file
-exists to drive towards, and the run prints the instruction to lower `expected` behind it.
-
-The kinds of gap that arise:
+The kinds of SKIP the validator can still produce, each of them RED:
 
 * **Gemini error bodies.** The discovery document does not describe error responses. They are
   checked against `schemas/google-rpc-status.json`, a hand transcription of `google.rpc.Status`
