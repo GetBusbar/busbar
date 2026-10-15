@@ -645,6 +645,22 @@ fn protocol_names(mut b: &[u8]) -> Option<Vec<Vec<u8>>> {
 ///
 /// The entry refused the target, or answered an offer that is not a protocol list.
 pub fn locate(door: &dyn FramerDoor, target: &str) -> Result<Located, Refused> {
+    locate_as(door, target, false)
+}
+
+/// THE OFFER A LISTENER FRAMED BY `door` MAKES in the handshake (ALPN, most preferred first):
+/// `locate` asked for the ACCEPTING side (`LocateIn::accept`). The framer's, as a dial's offer is
+/// (`BUSBAR-1.6.0.md` l.477-478), and not the same one: v1.5.5's client offered two protocols,
+/// its listener one of them alone.
+///
+/// # Errors
+///
+/// The entry refused, or answered an offer that is not a protocol list.
+pub fn accept_offer(door: &dyn FramerDoor) -> Result<Vec<Vec<u8>>, Refused> {
+    locate_as(door, "", true).map(|l| l.offer)
+}
+
+fn locate_as(door: &dyn FramerDoor, target: &str, accept: bool) -> Result<Located, Refused> {
     let (mut auth_cap, mut name_cap, mut alpn_cap) = (256_usize, 256_usize, 256_usize);
     for _ in 0..2 {
         let mut authority = vec![0_u8; auth_cap];
@@ -658,6 +674,7 @@ pub fn locate(door: &dyn FramerDoor, target: &str) -> Result<Located, Refused> {
         i.name_cap = name.len();
         i.alpn_buf = alpn.as_mut_ptr();
         i.alpn_cap = alpn.len();
+        i.accept = u32::from(accept);
         let mut o: LocateOut = blank_out();
         let c = door.cross(Call::Locate(&mut i, &mut o));
         let short = o.authority_needed > auth_cap as u64

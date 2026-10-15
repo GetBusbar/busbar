@@ -347,3 +347,103 @@ fn a_stream_listener_hands_up_the_socket_as_it_arrived_under_the_cap() {
         );
     });
 }
+
+/// RED (INBOUND-LISTEN, `BUSBAR-1.6.0.md` l.477-478): THE LISTENER'S PROTOCOL OFFER IS THE ENTRY'S
+/// OFFER FOR ITS ACCEPTING SIDE. An entry that dials offering `x-two, x-one` and listens offering
+/// `x-one` alone answers the two apart, and a TLS client offering `x-two, x-one` to the need's
+/// listener (bound through the connector) agrees `x-one`: never the dial offer, never the server
+/// config's own (v1.5.5's client offered two protocols, its listener one).
+#[test]
+fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
+    use busbar_contract::conn::{ConnError, Conns as _, InstanceId, NeedId};
+    const OWNER: InstanceId = InstanceId(1);
+    crate::tls::install_crypto_provider();
+    let door = TestDoor::new(
+        "sec",
+        &["sec"],
+        &[],
+        crate::support::Knobs {
+            secure_name: Some("localhost"),
+            offer: Some(b"\x05x-two\x05x-one"),
+            accept_offer: Some(b"\x05x-one"),
+            ..crate::support::Knobs::default()
+        },
+    );
+    assert_eq!(
+        crate::framer::locate(&door, "127.0.0.1:443").unwrap().offer,
+        vec![b"x-two".to_vec(), b"x-one".to_vec()],
+        "the dial offer"
+    );
+    assert_eq!(
+        crate::framer::accept_offer(&door).unwrap(),
+        vec![b"x-one".to_vec()],
+        "the accept offer is the entry's own, and not its dial offer"
+    );
+    let (ca, leaf, key) = localhost_cert();
+    worker().block_on(async move {
+        let view = crate::registry::Transports::new(vec![crate::registry::Entry {
+            door: Arc::new(door),
+            alpn: Vec::new(),
+        }])
+        .unwrap();
+        let c = crate::Connector::serving(
+            view,
+            crate::tests::loopback_literals(),
+            None,
+            Arc::new(|_| {}),
+        );
+        c.declare_over(OWNER, NeedId(0), "sec")
+            .expect("a served scheme declares");
+        let addr = c
+            .listen(
+                OWNER,
+                NeedId(0),
+                "127.0.0.1:0",
+                Some(server(leaf, key)),
+                AcceptLimits::default(),
+            )
+            .expect("listens");
+        let client = tokio::spawn(async move {
+            let mut roots = rustls::RootCertStore::empty();
+            roots.add(ca.into()).unwrap();
+            let mut cfg = rustls::ClientConfig::builder()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            cfg.alpn_protocols = vec![b"x-two".to_vec(), b"x-one".to_vec()];
+            let connector = tokio_rustls::TlsConnector::from(Arc::new(cfg));
+            let s = Client::connect(addr).await.unwrap();
+            let name = rustls_pki_types::ServerName::try_from("localhost").unwrap();
+            let mut s = connector
+                .connect(name, s)
+                .await
+                .expect("the handshake completes");
+            let agreed = s.get_ref().1.alpn_protocol().map(<[u8]>::to_vec);
+            s.write_all(b"knock").await.unwrap();
+            let mut got = [0_u8; 1];
+            let _ = s.read(&mut got).await;
+            agreed
+        });
+        let id = loop {
+            match c.accept(OWNER, NeedId(0), 3) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                other => break other.expect("accepted").0,
+            }
+        };
+        let mut buf = [0_u8; 64];
+        let mut got = 0;
+        while got < 5 {
+            match c.read(OWNER, id, 3, &mut buf) {
+                Err(ConnError::Pending) => tokio::task::yield_now().await,
+                Ok(p) => got += p.len,
+                Err(e) => panic!("{e:?}"),
+            }
+        }
+        c.close(OWNER, id).unwrap();
+        let agreed = client.await.unwrap();
+        assert_eq!(
+            agreed.as_deref(),
+            Some(&b"x-one"[..]),
+            "the listener agreed off the entry's accept offer"
+        );
+    });
+}

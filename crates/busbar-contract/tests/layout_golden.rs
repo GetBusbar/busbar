@@ -1542,7 +1542,9 @@ fn compute_layout() -> String {
             name_buf,
             name_cap,
             alpn_buf,
-            alpn_cap
+            alpn_cap,
+            accept,
+            _accept_reserved
         ]
     );
     record!(
