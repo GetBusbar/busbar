@@ -23,7 +23,7 @@ fn read_req(body: &serde_json::Value) -> crate::codec::ir::IrRequest {
 fn write_req(ir: &crate::codec::ir::IrRequest) -> serde_json::Value {
     // Bind the interior-mutable const to a local before borrowing (clippy::borrow_interior_mutable_const).
     let w = ResponsesWriter;
-    w.write_request(ir)
+    w.write_request(crate::codec::test_host::HOST, ir)
 }
 
 /// Read a request JSON, translate to IR, and write it back on the SAME dialect — the round-trip a
@@ -94,7 +94,7 @@ fn mk_response(
 fn write_response(resp: &crate::codec::ir::IrResponse) -> serde_json::Value {
     // Bind the interior-mutable const to a local before borrowing (clippy::borrow_interior_mutable_const).
     let w = ResponsesWriter;
-    w.write_response(resp)
+    w.write_response(crate::codec::test_host::HOST, resp)
 }
 
 fn text_block(text: &str) -> crate::codec::ir::IrBlock {
@@ -116,7 +116,7 @@ fn with_warns<T>(f: impl FnOnce() -> T) -> (T, WarnCapture) {
 
 /// Emit `ev` through `w` and return the ordered wire event-type names.
 fn event_names(w: &ResponsesWriter, ev: crate::codec::ir::IrStreamEvent) -> Vec<String> {
-    w.write_response_events(&ev)
+    w.write_response_events(crate::codec::test_host::HOST, &ev)
         .into_iter()
         .map(|(name, _)| name)
         .collect()
@@ -703,13 +703,16 @@ fn responses_response_request_echo_members_mirror_the_client_request_streaming()
         "tool_choice": "none",
         "parallel_tool_calls": false,
     }));
-    let frames = w.write_response_events(&crate::codec::ir::IrStreamEvent::MessageStart {
-        role: crate::codec::ir::IrRole::Assistant,
-        usage: None,
-        id: Some("resp_stream".to_string()),
-        created: Some(1_700_000_000),
-        model: Some("gpt-carry".to_string()),
-    });
+    let frames = w.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::MessageStart {
+            role: crate::codec::ir::IrRole::Assistant,
+            usage: None,
+            id: Some("resp_stream".to_string()),
+            created: Some(1_700_000_000),
+            model: Some("gpt-carry".to_string()),
+        },
+    );
     let (_, data) = frames.first().expect("response.created must emit a frame");
     let response = &data["response"];
     assert_eq!(
@@ -800,7 +803,7 @@ fn responses_response_error_field_carried() {
         "error": { "code": "rate_limit_exceeded", "message": "slow down" }
     });
     let err = ResponsesReader
-        .read_response(&failed)
+        .read_response(crate::codec::test_host::HOST, &failed)
         .expect_err("a failed body must surface as an error");
     assert_eq!(
         err.provider_signal.as_deref(),
@@ -833,7 +836,9 @@ fn responses_response_incomplete_details_carried() {
         "output": [],
         "usage": { "input_tokens": 1, "output_tokens": 1 }
     });
-    let ir = ResponsesReader.read_response(&body).expect("read_response");
+    let ir = ResponsesReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         ir.stop_reason,
         Some(crate::codec::ir::IrStopReason::MaxTokens),
@@ -854,7 +859,9 @@ fn responses_response_cached_tokens_survive_roundtrip() {
             "output_tokens_details": { "reasoning_tokens": 0 }
         }
     });
-    let ir = ResponsesReader.read_response(&body).expect("read_response");
+    let ir = ResponsesReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         ir.usage.cache_read_input_tokens,
         Some(40),
@@ -964,7 +971,11 @@ fn responses_response_hosted_tool_item_dropped_with_warn() {
         egress: "responses",
     };
     let ((ir, cap), dropped) = crate::codec::drops::scope(seam, || {
-        with_warns(|| ResponsesReader.read_response(&body).expect("read_response"))
+        with_warns(|| {
+            ResponsesReader
+                .read_response(crate::codec::test_host::HOST, &body)
+                .expect("read_response")
+        })
     });
     assert_eq!(dropped, vec!["output[].type=file_search_call".to_string()]);
 
@@ -1002,7 +1013,11 @@ fn responses_response_instructions_metadata_dropped_with_warn() {
         ],
         "usage": { "input_tokens": 1, "output_tokens": 1 }
     });
-    let (_ir, cap) = with_warns(|| ResponsesReader.read_response(&body).expect("read_response"));
+    let (_ir, cap) = with_warns(|| {
+        ResponsesReader
+            .read_response(crate::codec::test_host::HOST, &body)
+            .expect("read_response")
+    });
 
     assert!(
         cap.contains("instructions"),
@@ -1128,33 +1143,38 @@ fn responses_duplicate_message_start_does_not_restart_stream() {
     };
 
     let mut frames: Vec<(String, serde_json::Value)> = Vec::new();
-    frames.extend(w.write_response_events(&start("resp_first")));
-    frames.extend(
-        w.write_response_events(&crate::codec::ir::IrStreamEvent::BlockStart {
+    frames.extend(w.write_response_events(crate::codec::test_host::HOST, &start("resp_first")));
+    frames.extend(w.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::codec::ir::IrBlockMeta::Text,
             refusal: false,
-        }),
-    );
-    frames.extend(
-        w.write_response_events(&crate::codec::ir::IrStreamEvent::BlockDelta {
+        },
+    ));
+    frames.extend(w.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockDelta {
             index: 0,
             delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
-        }),
-    );
+        },
+    ));
     // The duplicate, under a DIFFERENT id. Everything after it must continue the SAME stream, under
     // the SAME identity.
-    frames.extend(w.write_response_events(&start("resp_second")));
-    frames
-        .extend(w.write_response_events(&crate::codec::ir::IrStreamEvent::BlockStop { index: 0 }));
-    frames.extend(
-        w.write_response_events(&crate::codec::ir::IrStreamEvent::MessageDelta {
+    frames.extend(w.write_response_events(crate::codec::test_host::HOST, &start("resp_second")));
+    frames.extend(w.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockStop { index: 0 },
+    ));
+    frames.extend(w.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::MessageDelta {
             stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
             stop_sequence: None,
             usage: usage(1, 1),
             stop_detail: None,
-        }),
-    );
+        },
+    ));
 
     let seqs: Vec<u64> = frames
         .iter()
@@ -1236,29 +1256,35 @@ fn responses_reset_clears_citation_and_logprob_accumulators() {
     );
 
     // The new stream opens, which is what performs the reset.
-    let mut frames: Vec<(String, serde_json::Value)> =
-        w.write_response_events(&crate::codec::ir::IrStreamEvent::MessageStart {
+    let mut frames: Vec<(String, serde_json::Value)> = w.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::MessageStart {
             role: crate::codec::ir::IrRole::Assistant,
             usage: None,
             id: Some("resp_reset".to_string()),
             created: Some(1_700_000_000),
             model: Some("gpt-reset".to_string()),
-        });
-    frames.extend(
-        w.write_response_events(&crate::codec::ir::IrStreamEvent::BlockStart {
+        },
+    );
+    frames.extend(w.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockStart {
             index: 0,
             block: crate::codec::ir::IrBlockMeta::Text,
             refusal: false,
-        }),
-    );
-    frames.extend(
-        w.write_response_events(&crate::codec::ir::IrStreamEvent::BlockDelta {
+        },
+    ));
+    frames.extend(w.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockDelta {
             index: 0,
             delta: crate::codec::ir::IrDelta::TextDelta("fresh".to_string()),
-        }),
-    );
-    frames
-        .extend(w.write_response_events(&crate::codec::ir::IrStreamEvent::BlockStop { index: 0 }));
+        },
+    ));
+    frames.extend(w.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockStop { index: 0 },
+    ));
 
     for (name, data) in &frames {
         let blob = data.to_string();
@@ -1328,7 +1354,12 @@ fn responses_stream_in_progress_consumed_by_reader() {
     let data = serde_json::json!({
         "response": { "id": "resp_p", "created_at": 1, "model": "m" }
     });
-    let events = ResponsesReader.read_response_events("response.in_progress", &data, &mut state);
+    let events = ResponsesReader.read_response_events(
+        crate::codec::test_host::HOST,
+        "response.in_progress",
+        &data,
+        &mut state,
+    );
     assert!(
         events
             .iter()
@@ -1344,6 +1375,7 @@ fn responses_stream_reasoning_summary_delta_consumed_by_reader() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let data = serde_json::json!({ "output_index": 0, "delta": "musing" });
     let events = ResponsesReader.read_response_events(
+        crate::codec::test_host::HOST,
         "response.reasoning_summary_text.delta",
         &data,
         &mut state,
@@ -1384,7 +1416,8 @@ fn top_logprobs_carries_responses_roundtrip_and_cross_to_openai() {
         Some(5),
         "IR must carry the top_logprobs ask"
     );
-    let openai = crate::codec::openai_chat::openai_writer().write_request(&ir);
+    let openai = crate::codec::openai_chat::openai_writer()
+        .write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         openai.get("top_logprobs"),
         Some(&serde_json::json!(5)),
@@ -1484,7 +1517,7 @@ fn responses_stateful_response_id_correlation_round_trips() {
         "usage": { "input_tokens": 3, "output_tokens": 1 },
     });
     let ir = ResponsesReader
-        .read_response(&upstream)
+        .read_response(crate::codec::test_host::HOST, &upstream)
         .expect("read_response ok");
     assert_eq!(
         ir.id.as_deref(),

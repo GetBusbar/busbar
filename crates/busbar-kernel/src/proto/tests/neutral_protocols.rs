@@ -13,7 +13,7 @@
 
 use busbar_contract::billing::TokenUsage;
 use busbar_contract::codec::{
-    CodecError, EgressCtx, IngressReject, OperationHandler, RequestHandler,
+    CodecError, CodecHost, EgressCtx, IngressReject, OperationHandler, RequestHandler,
 };
 use busbar_contract::ir::handle::IrHandle;
 use busbar_contract::operation::OpVerb;
@@ -28,7 +28,7 @@ use serde_json::{json, Map, Value};
 struct Passthrough;
 
 impl DialectCodec for Passthrough {
-    fn probe_body(&self, _model: &str) -> Vec<u8> {
+    fn probe_body(&self, _: &dyn CodecHost, _model: &str) -> Vec<u8> {
         b"{}".to_vec()
     }
     fn apply_rewrite_to_ingress_body(
@@ -42,26 +42,39 @@ impl DialectCodec for Passthrough {
     fn recover_truncated_usage(&self, _tail: &[u8]) -> Option<TokenUsage> {
         None
     }
-    fn ingress_response_request_id(&self, _: Option<&str>) -> Option<(&'static str, String)> {
+    fn ingress_response_request_id(
+        &self,
+        _: &dyn CodecHost,
+        _: Option<&str>,
+    ) -> Option<(&'static str, String)> {
         None
     }
-    fn write_error(&self, _status: u16, kind: &str, message: &str) -> Value {
+    fn write_error(&self, _: &dyn CodecHost, _status: u16, kind: &str, message: &str) -> Value {
         json!({ "error": { "type": kind, "message": message } })
     }
     fn requested_candidate_count(&self, _body: &Value) -> Option<u64> {
         None
     }
-    fn write_response_exception(&self, _: &CanonicalSignal) -> Option<(String, String)> {
+    fn write_response_exception(
+        &self,
+        _: &dyn CodecHost,
+        _: &CanonicalSignal,
+    ) -> Option<(String, String)> {
         None
     }
-    fn write_error_frame(&self, _: &CanonicalSignal) -> Option<(String, Value)> {
+    fn write_error_frame(&self, _: &dyn CodecHost, _: &CanonicalSignal) -> Option<(String, Value)> {
         None
     }
     fn wants_array_stream(&self, _body: &Value) -> bool {
         false
     }
     fn inject_response_metrics(&self, _value: &mut Value, _elapsed_ms: Option<u64>) {}
-    fn error_response_fields(&self, _: &str, _: &Value) -> Vec<(String, Vec<u8>)> {
+    fn error_response_fields(
+        &self,
+        _: &dyn CodecHost,
+        _: &str,
+        _: &Value,
+    ) -> Vec<(String, Vec<u8>)> {
         Vec::new()
     }
     fn extract_error(&self, status: u16, _body: &[u8]) -> RawUpstreamError {
@@ -89,7 +102,11 @@ impl OperationHandler for Cell {
     fn read_request(&self, _: &[u8], _: &str) -> Result<Box<dyn IrHandle>, IngressReject> {
         Err(IngressReject::BadRequest("synthetic protocol".into()))
     }
-    fn read_response(&self, _wire: &[u8]) -> Result<Box<dyn IrHandle>, CodecError> {
+    fn read_response(
+        &self,
+        _host: &dyn CodecHost,
+        _wire: &[u8],
+    ) -> Result<Box<dyn IrHandle>, CodecError> {
         Err(CodecError::Malformed("synthetic protocol".into()))
     }
 }

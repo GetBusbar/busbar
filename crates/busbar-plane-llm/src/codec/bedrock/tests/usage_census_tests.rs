@@ -187,15 +187,19 @@ fn read_all_paths(usage: &serde_json::Value, trace: Option<&serde_json::Value>) 
         body["trace"] = trace.clone();
         metadata["trace"] = trace.clone();
     }
-    let buffered = BedrockReader.read_response(&body).expect("read").usage;
+    let buffered = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read")
+        .usage;
     let mut state = crate::codec::ir::StreamDecodeState::default();
     BedrockReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
         &mut state,
     );
     let streamed = BedrockReader
-        .read_response_events("", &metadata, &mut state)
+        .read_response_events(crate::codec::test_host::HOST, "", &metadata, &mut state)
         .into_iter()
         .find_map(|e| match e {
             IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
@@ -388,15 +392,19 @@ fn usage_on_both_paths(
         body["trace"] = trace.clone();
         metadata["trace"] = trace.clone();
     }
-    let buffered = BedrockReader.read_response(&body).expect("read").usage;
+    let buffered = BedrockReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read")
+        .usage;
     let mut state = crate::codec::ir::StreamDecodeState::default();
     BedrockReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "messageStop", "stopReason": "end_turn"}),
         &mut state,
     );
     let streamed = BedrockReader
-        .read_response_events("", &metadata, &mut state)
+        .read_response_events(crate::codec::test_host::HOST, "", &metadata, &mut state)
         .into_iter()
         .find_map(|e| match e {
             IrStreamEvent::MessageDelta { usage, .. } => Some(usage),
@@ -480,13 +488,19 @@ fn an_unreadable_guardrail_count_refuses_and_null_is_absence() {
         })
     };
     assert!(BedrockReader
-        .read_response(&body(serde_json::json!("seven")))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &body(serde_json::json!("seven"))
+        )
         .is_err());
     assert!(BedrockReader
-        .read_response(&body(serde_json::json!(7.5)))
+        .read_response(crate::codec::test_host::HOST, &body(serde_json::json!(7.5)))
         .is_err());
     let absent = BedrockReader
-        .read_response(&body(serde_json::Value::Null))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &body(serde_json::Value::Null),
+        )
         .expect("null is absence")
         .usage
         .to_token_usage();

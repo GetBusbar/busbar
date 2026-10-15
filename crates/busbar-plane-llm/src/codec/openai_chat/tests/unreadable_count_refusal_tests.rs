@@ -17,7 +17,7 @@ fn buffered_response_refuses_a_stringified_count() {
         "usage": {"prompt_tokens": "1500", "completion_tokens": 9}
     });
     OpenAiReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect_err("a present, unreadable prompt_tokens is a refusal, never a zero");
 }
 
@@ -29,7 +29,7 @@ fn buffered_response_with_an_absent_count_still_reads_as_zero() {
         "usage": {"completion_tokens": 9}
     });
     let ir = OpenAiReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("an absent count is zero");
     assert_eq!(ir.usage.input_tokens, 0);
     assert_eq!(ir.usage.output_tokens, 9);
@@ -43,7 +43,8 @@ fn streaming_usage_chunk_refuses_a_stringified_count() {
         "choices": [],
         "usage": {"prompt_tokens": 10, "completion_tokens": "9"}
     });
-    let ev = OpenAiReader.read_response_events("", &chunk, &mut state);
+    let ev =
+        OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut state);
     assert!(
         matches!(ev.last(), Some(IrStreamEvent::Error(_))),
         "a usage chunk with an unreadable count must end the stream in an error; got {ev:?}"
@@ -97,7 +98,7 @@ fn cache_write_tokens_bill_inside_the_input_on_every_path() {
             "prompt_tokens_details": {"cache_write_tokens": spelling}
         });
         let ir = OpenAiReader
-            .read_response(&chat_body(usage.clone()))
+            .read_response(crate::codec::test_host::HOST, &chat_body(usage.clone()))
             .expect("the cache-write slice never refuses the answer");
         let t = ir.usage.to_token_usage();
         assert_eq!((t.input, t.output, t.cache_creation), (100, 9, None));
@@ -108,7 +109,7 @@ fn cache_write_tokens_bill_inside_the_input_on_every_path() {
             "choices": [],
             "usage": usage
         });
-        let ev = OpenAiReader.read_response_events("", &chunk, &mut state);
+        let ev = OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut state);
         let streamed = ev
             .iter()
             .find_map(|e| match e {

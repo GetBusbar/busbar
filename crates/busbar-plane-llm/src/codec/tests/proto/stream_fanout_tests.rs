@@ -15,7 +15,12 @@ fn test_openai_read_fanout_text() {
         json!({"choices":[{"delta":{"content":"lo"}}]}),
         json!({"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":5}}),
     ] {
-        events.extend(reader.read_response_events("", &chunk, &mut st));
+        events.extend(reader.read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &chunk,
+            &mut st,
+        ));
     }
     assert_eq!(
         events,
@@ -68,7 +73,12 @@ fn test_openai_read_fanout_tool_call() {
         json!({"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"loc\":\"SF\"}"}}]}}]}),
         json!({"choices":[{"delta":{},"finish_reason":"tool_calls"}]}),
     ] {
-        events.extend(reader.read_response_events("", &chunk, &mut st));
+        events.extend(reader.read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &chunk,
+            &mut st,
+        ));
     }
     assert_eq!(
         events,
@@ -129,7 +139,12 @@ fn openai_sparse_tool_index_does_not_collide_text_onto_tool_block() {
         json!({"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}),
         json!({"choices":[{"delta":{"content":"hi"}}]}),
     ] {
-        events.extend(reader.read_response_events("", &chunk, &mut st));
+        events.extend(reader.read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &chunk,
+            &mut st,
+        ));
     }
 
     let tool_index = events.iter().find_map(|e| match e {
@@ -196,7 +211,12 @@ fn openai_tool_index_zero_after_text_does_not_collide() {
         json!({"choices":[{"delta":{"content":"hi"}}]}),
         json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_2","type":"function","function":{"name":"get_time","arguments":""}}]}}]}),
     ] {
-        events.extend(reader.read_response_events("", &chunk, &mut st));
+        events.extend(reader.read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &chunk,
+            &mut st,
+        ));
     }
 
     let mut start_indices: Vec<usize> = events
@@ -222,7 +242,7 @@ fn openai_tool_index_zero_after_text_does_not_collide() {
 fn openai_sparse_tool_indices_are_dense_from_zero() {
     let reader = OpenAiReader;
     let mut st = StreamDecodeState::default();
-    let events = reader.read_response_events(
+    let events = reader.read_response_events(crate::codec::test_host::HOST,
         "",
         &json!({"choices":[{"delta":{"tool_calls":[{"index":5,"id":"call_1","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}),
         &mut st,
@@ -263,7 +283,12 @@ fn openai_tool_after_finish_chunk_claims_a_fresh_index() {
         // must still not collide.
         json!({"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","type":"function","function":{"name":"get_time","arguments":""}}]}}]}),
     ] {
-        events.extend(reader.read_response_events("", &chunk, &mut st));
+        events.extend(reader.read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &chunk,
+            &mut st,
+        ));
     }
 
     // Index claimed by the pre-finish tool (tool0) and by the text block.
@@ -317,11 +342,12 @@ fn test_openai_read_fanout_cached_tokens() {
     let mut st = StreamDecodeState::default();
     let mut events: Vec<IrStreamEvent> = Vec::new();
     events.extend(reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &json!({"choices":[{"delta":{"content":"hi"}}]}),
         &mut st,
     ));
-    events.extend(reader.read_response_events(
+    events.extend(reader.read_response_events(crate::codec::test_host::HOST,
             "",
             &json!({"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":100,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":7}}}),
             &mut st,
@@ -356,8 +382,14 @@ fn test_anthropic_read_events_wraps_singular() {
     let mut st = StreamDecodeState::default();
     let data =
         json!({"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}});
-    let single = reader.read_response_event("content_block_delta", &data);
-    let plural = reader.read_response_events("content_block_delta", &data, &mut st);
+    let single =
+        reader.read_response_event(crate::codec::test_host::HOST, "content_block_delta", &data);
+    let plural = reader.read_response_events(
+        crate::codec::test_host::HOST,
+        "content_block_delta",
+        &data,
+        &mut st,
+    );
     assert_eq!(
         plural,
         single.into_iter().collect::<Vec<_>>(),
@@ -366,7 +398,7 @@ fn test_anthropic_read_events_wraps_singular() {
     assert_eq!(plural.len(), 1);
     // ping → empty
     assert_eq!(
-        reader.read_response_events("ping", &json!({}), &mut st),
+        reader.read_response_events(crate::codec::test_host::HOST, "ping", &json!({}), &mut st),
         Vec::<IrStreamEvent>::new()
     );
 }

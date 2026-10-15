@@ -266,7 +266,12 @@ fn pending<'a>() -> Piece<'a> {
 impl Reply {
     /// OPEN the answer on the far end's `status` and head.
     #[must_use]
-    pub fn new(ctx: &ReplyCtx<'_>, status: u16, head: HeadFields<'_>) -> Self {
+    pub fn new(
+        host: &dyn busbar_contract::codec::CodecHost,
+        ctx: &ReplyCtx<'_>,
+        status: u16,
+        head: HeadFields<'_>,
+    ) -> Self {
         if !(200..300).contains(&status) {
             return Reply {
                 ended_partial: false,
@@ -336,7 +341,7 @@ impl Reply {
                 }
             }
         }
-        fields.extend(failure::request_id_field(ingress, head));
+        fields.extend(failure::request_id_field(host, ingress, head));
         if ingress == egress {
             wire::relay_far_head(ingress, &mut fields, head);
         }
@@ -365,16 +370,17 @@ impl Reply {
     /// FEED one far-end piece; `last` says no piece follows.
     pub fn feed<'a>(
         &mut self,
+        host: &dyn busbar_contract::codec::CodecHost,
         ctx: &ReplyCtx<'_>,
         bytes: &'a [u8],
         last: bool,
         at: At,
     ) -> Piece<'a> {
         let Some(transcoder) = self.invoke.as_mut() else {
-            return self.read(ctx, bytes, last, at);
+            return self.read(host, ctx, bytes, last, at);
         };
         let framed = transcoder.feed(bytes);
-        let p = self.read(ctx, &framed, last, at);
+        let p = self.read(host, ctx, &framed, last, at);
         Piece {
             head: p.head,
             bytes: Cow::Owned(p.bytes.into_owned()),
@@ -388,13 +394,20 @@ impl Reply {
     }
 
     /// READ one piece in the answer's own framing.
-    fn read<'a>(&mut self, ctx: &ReplyCtx<'_>, bytes: &'a [u8], last: bool, at: At) -> Piece<'a> {
+    fn read<'a>(
+        &mut self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ctx: &ReplyCtx<'_>,
+        bytes: &'a [u8],
+        last: bool,
+        at: At,
+    ) -> Piece<'a> {
         match &mut self.state {
             State::Done => pending(),
             State::Error { body, .. } => {
                 body.extend_from_slice(bytes);
                 if last {
-                    self.judge(ctx)
+                    self.judge(host, ctx)
                 } else {
                     pending()
                 }
@@ -403,7 +416,7 @@ impl Reply {
                 body.extend_from_slice(bytes);
                 if body.len() > ctx.translate_cap {
                     self.state = State::Done;
-                    let w = whole::over_cap(ctx.arrived.dialect);
+                    let w = whole::over_cap(host, ctx.arrived.dialect);
                     return answered(w.answer, Units::default(), Verdict::Hard, None);
                 }
                 if !last {
@@ -415,10 +428,10 @@ impl Reply {
                     .iter()
                     .map(|(n, v)| (n.as_slice(), v.as_slice()))
                     .collect();
-                whole_piece(ctx, status, &body, &far_head, at)
+                whole_piece(host, ctx, status, &body, &far_head, at)
             }
             State::Relay { relay, head, units } => {
-                let (fed, _) = relay.feed(bytes);
+                let (fed, _) = relay.feed(host, bytes);
                 let mut out: Cow<'a, [u8]> = match fed {
                     relay::Fed::Bytes(b) => b,
                     relay::Fed::Nothing => Cow::Borrowed(&[]),
@@ -449,7 +462,7 @@ impl Reply {
                     };
                 }
                 let partial = relay.partial();
-                let end = relay.end();
+                let end = relay.end(host);
                 if !end.bytes.is_empty() {
                     out.to_mut().extend_from_slice(&end.bytes);
                 }
@@ -502,15 +515,20 @@ impl Reply {
 
     /// CUT the answer: the far end's transfer failed (`transport`) or the kernel's ceiling for it
     /// expired, before its last piece.
-    pub fn cut(&mut self, ctx: &ReplyCtx<'_>, transport: bool) -> Piece<'static> {
+    pub fn cut(
+        &mut self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ctx: &ReplyCtx<'_>,
+        transport: bool,
+    ) -> Piece<'static> {
         match std::mem::replace(&mut self.state, State::Done) {
             State::Done => pending(),
             state @ State::Error { .. } => {
                 self.state = state;
-                self.judge(ctx)
+                self.judge(host, ctx)
             }
             State::Whole { .. } => {
-                let w = whole::cut(ctx.arrived.dialect);
+                let w = whole::cut(host, ctx.arrived.dialect);
                 answered(
                     w.answer,
                     Units::default(),
@@ -521,7 +539,7 @@ impl Reply {
             State::Relay {
                 mut relay, head, ..
             } => {
-                let cut = relay.cut(transport);
+                let cut = relay.cut(host, transport);
                 self.ended_partial = cut.partial;
                 Piece {
                     head,
@@ -537,7 +555,11 @@ impl Reply {
         }
     }
 
-    fn judge<'a>(&mut self, ctx: &ReplyCtx<'_>) -> Piece<'a> {
+    fn judge<'a>(
+        &mut self,
+        host: &dyn busbar_contract::codec::CodecHost,
+        ctx: &ReplyCtx<'_>,
+    ) -> Piece<'a> {
         let State::Error { status, head, body } = std::mem::replace(&mut self.state, State::Done)
         else {
             return pending();
@@ -558,6 +580,7 @@ impl Reply {
             body: &body,
         };
         let j = failure::judge(
+            host,
             ctx.arrived.dialect,
             ctx.lane.dialect,
             ctx.arrived.operation,
@@ -589,6 +612,7 @@ impl Reply {
 }
 
 fn whole_piece<'a>(
+    host: &dyn busbar_contract::codec::CodecHost,
     ctx: &ReplyCtx<'_>,
     status: u16,
     body: &[u8],
@@ -596,6 +620,7 @@ fn whole_piece<'a>(
     at: At,
 ) -> Piece<'a> {
     let mut w = whole::translate(
+        host,
         &whole::WholeCtx {
             ingress: ctx.arrived.dialect,
             egress: ctx.lane.dialect,

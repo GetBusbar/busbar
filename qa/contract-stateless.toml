@@ -20,11 +20,6 @@ cite = "ARCHITECT ruling 2026-10-14: the plugin-logging capture is the ONE sanct
 drain = "none — mandated by SPEC 1297"
 
 [[finding]]
-rule = "contract-stateless:once-cell"
-file = "crates/busbar-contract/src/codec.rs"
-item = "OnceLock"
-
-[[finding]]
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/abi/hot/host.rs"
 item = "LIVE_GENERATIONS"
@@ -33,26 +28,6 @@ item = "LIVE_GENERATIONS"
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/abi/hot/host.rs"
 item = "NEXT_GENERATION"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/hot/services.rs"
-item = "ARMED"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/abi/hot/services.rs"
-item = "ARMED_SIZE"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/codec.rs"
-item = "ENTROPY_SOURCE"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/codec.rs"
-item = "WALL_CLOCK"
 
 [[finding]]
 rule = "contract-stateless:thread-local"

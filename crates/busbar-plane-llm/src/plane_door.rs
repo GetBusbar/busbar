@@ -48,7 +48,7 @@ use busbar_contract::abi::hook::{REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQU
 use busbar_contract::abi::host::conn::connector::{
     Need, DIRECTION_OUTBOUND, EGRESS_PROVIDER, KEEP_ALL_EXCEPT_DENIED,
 };
-use busbar_contract::abi::host::service::ClockReading;
+use busbar_contract::abi::host::service::{ClockReading, MAX_RANDOM_FILL};
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT, BLOB_OCTETS,
 };
@@ -622,12 +622,45 @@ impl LlmDoor {
 
     /// One reading of the host's clock; none when the host serves no clock.
     fn clock(&self) -> Option<ClockReading> {
-        let handle = CompletionHandle {
-            ticket: Ticket::NONE,
-            seq: 0,
-            _reserved: 0,
+        self.services.and_then(|s| s.clock_now(UNTICKETED).ok())
+    }
+
+    /// The codec host this instance hands its codecs: the host services it was given at open.
+    fn host(&self) -> DoorHost {
+        DoorHost(self.services)
+    }
+}
+
+/// A ticketless handle: the two services a codec reads never pend, so they are called outside any
+/// op's ticket (the host runs a ticketless call fresh every time and stores nothing).
+const UNTICKETED: CompletionHandle = CompletionHandle {
+    ticket: Ticket::NONE,
+    seq: 0,
+    _reserved: 0,
+};
+
+/// THE DOOR'S CODEC HOST: the [`CodecHost`](busbar_contract::codec::CodecHost) this plane's codecs
+/// are handed, down their call graph, over the host services the instance was given at open — the
+/// host's CSPRNG (`random.fill`, at most [`MAX_RANDOM_FILL`] bytes a call, so a larger draw is
+/// several) and the host's wall clock (`clock.now`, whole seconds). A host that serves neither
+/// answers each one's failure path: no entropy, no clock.
+#[derive(Clone, Copy)]
+struct DoorHost(Option<Services>);
+
+impl busbar_contract::codec::CodecHost for DoorHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        let Some(services) = self.0 else {
+            return false;
         };
-        self.services.and_then(|s| s.clock_now(handle).ok())
+        let most = usize::try_from(MAX_RANDOM_FILL).unwrap_or(usize::MAX);
+        out.chunks_mut(most)
+            .all(|chunk| services.random_fill(UNTICKETED, chunk).is_ok())
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        self.0
+            .and_then(|s| s.clock_now(UNTICKETED).ok())
+            .map(|reading| reading.wall_ns / 1_000_000_000)
     }
 }
 
@@ -966,7 +999,7 @@ struct PieceIn<'a> {
 }
 
 /// An ATTEMPT: the far-end request for the member the walk picked.
-fn attempt(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
+fn attempt(host: &DoorHost, unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     unit.member = String::from_utf8_lossy(piece.member).into_owned();
     unit.final_answer = false;
     unit.reply = None;
@@ -976,12 +1009,12 @@ fn attempt(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     let built = if unit.probe {
         unit.shaping
             .lane(&unit.member)
-            .and_then(probe::request)
+            .and_then(|lane| probe::request(host, lane))
             .ok_or(None)
     } else if let Some(arrived) = &unit.arrived {
         let pool = String::from_utf8_lossy(piece.pool);
         let caller = unit.caller_fields();
-        attempt::build(arrived, &caller, &unit.shaping, &pool, &unit.member).map_err(Some)
+        attempt::build(host, arrived, &caller, &unit.shaping, &pool, &unit.member).map_err(Some)
     } else {
         Err(None)
     };
@@ -1013,13 +1046,13 @@ fn attempt(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
             answer
         }
         // The attempt answers the caller itself: the far end is not reached.
-        Err(Some(refused)) => answered(refuse::answered(&refused)),
+        Err(Some(refused)) => answered(refuse::answered(host, &refused)),
         Err(None) => Answer::hard(),
     }
 }
 
 /// One piece of the far end's answer.
-fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
+fn far_end(host: &DoorHost, unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     let Some(lane) = unit.shaping.lane(&unit.member) else {
         return Answer::hard();
     };
@@ -1049,7 +1082,7 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
     };
     if let Some(status) = piece.status {
         unit.far_status = u16::try_from(status).unwrap_or(0);
-        unit.reply = Some(Reply::new(&ctx, unit.far_status, &piece.fields));
+        unit.reply = Some(Reply::new(host, &ctx, unit.far_status, &piece.fields));
     }
     let Some(reply) = unit.reply.as_mut() else {
         return Answer::hard();
@@ -1065,9 +1098,9 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
         let mut fed = if arrived.is_empty() {
             Piece::default()
         } else {
-            reply.feed(&ctx, arrived, false, at(piece.clock, unit.started))
+            reply.feed(host, &ctx, arrived, false, at(piece.clock, unit.started))
         };
-        let mut cut = reply.cut(&ctx, true);
+        let mut cut = reply.cut(host, &ctx, true);
         if matches!(cut.fault, Some(Fault::Transient(_))) {
             cut.fault = None;
         }
@@ -1082,7 +1115,7 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
         }
         return far_answer(cut, unit.far_status);
     }
-    let mut fed = reply.feed(&ctx, piece.bytes, piece.last, at(piece.clock, unit.started));
+    let mut fed = reply.feed(host, &ctx, piece.bytes, piece.last, at(piece.clock, unit.started));
     // An answer member the caller's dialect has no form for, one degraded row each (`<path> from
     // <dialect>`, the row 1.5.5 wrote as it delivered the translated answer).
     let dropped = std::mem::take(&mut fed.dropped);
@@ -1100,9 +1133,9 @@ fn far_end(unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer {
 }
 
 /// The plane's answer to one piece.
-fn answer(unit: &mut UnitState, from: u32, piece: &PieceIn<'_>) -> Answer {
+fn answer(host: &DoorHost, unit: &mut UnitState, from: u32, piece: &PieceIn<'_>) -> Answer {
     match from {
-        FROM_KERNEL => attempt(unit, piece),
+        FROM_KERNEL => attempt(host, unit, piece),
         // A unit the plane answers itself: its acknowledgement, once the caller's body is in.
         FROM_CALLER if unit.local => {
             let ack = piece.last.then(|| unit.ack.take()).flatten();
@@ -1130,7 +1163,7 @@ fn answer(unit: &mut UnitState, from: u32, piece: &PieceIn<'_>) -> Answer {
                 .unwrap_or_default(),
             ..Answer::default()
         },
-        FROM_FAR_END => far_end(unit, piece),
+        FROM_FAR_END => far_end(host, unit, piece),
         _ => Answer::hard(),
     }
 }
@@ -1517,7 +1550,7 @@ slot!(
                 passthrough: given.passthrough != 0,
                 clock: if given.from == FROM_CALLER { None } else { door.clock() },
             };
-            let mut answer = answer(&mut unit, given.from, &piece);
+            let mut answer = answer(&door.host(), &mut unit, given.from, &piece);
             fee_unit(&mut unit, &mut answer);
             unit.pending = Some(Pending {
                 answer,
@@ -1544,10 +1577,11 @@ slot!(
         };
         let given = input.get();
         let held = guard(&door.units).remove(&given.unit);
+        let host = door.host();
         let rendered = match &held {
             Some(UnitState {
                 declined: Some(d), ..
-            }) if given.plane_code != 0 => refuse::declined(d),
+            }) if given.plane_code != 0 => refuse::declined(&host, d),
             _ => {
                 let arrived = held.as_ref().and_then(|u| u.arrived.as_ref());
                 let envelope = match arrived {
@@ -1575,9 +1609,16 @@ slot!(
                 };
                 let status = u16::try_from(given.status).unwrap_or(500);
                 if given.cause == REFUSAL_GATE {
-                    refuse::gate_refusal(envelope, status, &text)
+                    refuse::gate_refusal(&host, envelope, status, &text)
                 } else {
-                    refuse::kernel_refusal(envelope, given.reason, status, &text, given.retry_after_s)
+                    refuse::kernel_refusal(
+                        &host,
+                        envelope,
+                        given.reason,
+                        status,
+                        &text,
+                        given.retry_after_s,
+                    )
                 }
             }
         };

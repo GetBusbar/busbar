@@ -42,7 +42,10 @@ fn every_declared_writer_frames_a_stream_error_in_band() {
         }
         let proto = protocol_for(decl.name).expect("a codec protocol resolves its writer");
         assert!(
-            proto.writer().write_error_frame(&err).is_some(),
+            proto
+                .writer()
+                .write_error_frame(crate::codec::test_host::HOST, &err)
+                .is_some(),
             "{}: write_error_frame returned None — a mid-stream error would fall back to core's \
              dialect-free frame instead of this protocol's native stream-error shape",
             decl.name

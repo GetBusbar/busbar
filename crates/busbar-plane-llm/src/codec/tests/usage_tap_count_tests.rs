@@ -29,9 +29,9 @@ fn the_chat_cells_three_fault_paths_each_return_their_reason() {
     let chat = crate::codec::chat_handle::ChatOperation("bedrock");
     let unknown = crate::codec::chat_handle::ChatOperation("no-such-dialect");
     let faults = [
-        chat.extract_usage("bedrock", UNREADABLE),
-        chat.extract_usage("bedrock", NOT_JSON),
-        unknown.extract_usage("no-such-dialect", b"{}"),
+        chat.extract_usage(crate::codec::test_host::HOST, "bedrock", UNREADABLE),
+        chat.extract_usage(crate::codec::test_host::HOST, "bedrock", NOT_JSON),
+        unknown.extract_usage(crate::codec::test_host::HOST, "no-such-dialect", b"{}"),
     ];
     assert_eq!(
         faults,
@@ -52,7 +52,7 @@ fn the_chat_cells_three_fault_paths_each_return_their_reason() {
 fn a_leaf_cells_default_tap_returns_a_refused_body_as_a_decode_fault() {
     for op in [OpVerb::EMBEDDINGS, OpVerb::IMAGE] {
         assert_eq!(
-            cell(op).extract_usage("bedrock", NOT_JSON),
+            cell(op).extract_usage(crate::codec::test_host::HOST, "bedrock", NOT_JSON),
             Err(UsageTapFault::Decode),
             "{op:?}"
         );
@@ -64,5 +64,7 @@ fn a_leaf_cells_default_tap_returns_a_refused_body_as_a_decode_fault() {
 fn a_readable_body_is_no_fault() {
     let chat = crate::codec::chat_handle::ChatOperation("bedrock");
     let body = br#"{"output":{"message":{"role":"assistant","content":[{"text":"hi"}]}},"stopReason":"end_turn","usage":{"inputTokens":3,"outputTokens":2,"totalTokens":5}}"#;
-    assert!(chat.extract_usage("bedrock", body).is_ok());
+    assert!(chat
+        .extract_usage(crate::codec::test_host::HOST, "bedrock", body)
+        .is_ok());
 }

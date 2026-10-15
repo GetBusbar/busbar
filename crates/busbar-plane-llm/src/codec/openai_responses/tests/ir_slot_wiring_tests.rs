@@ -27,7 +27,9 @@ fn seam(egress: &str, body: &serde_json::Value) -> serde_json::Value {
         },
     );
     assert!(req.extra.is_empty(), "the seam clears extra");
-    egress_p.writer().write_request(&req)
+    egress_p
+        .writer()
+        .write_request(crate::codec::test_host::HOST, &req)
 }
 
 fn thinking(
@@ -240,7 +242,10 @@ fn ir11_hosted_tools_cross_the_seam() {
     let mut req = request_with(Vec::new());
     req.hosted_tools = vec![crate::codec::ir::IrHostedTool::WebFetch(Default::default())];
     let w = ResponsesWriter;
-    assert!(w.write_request(&req).get("tools").is_none());
+    assert!(w
+        .write_request(crate::codec::test_host::HOST, &req)
+        .get("tools")
+        .is_none());
     assert!(w.dropped_egress_controls(&req).contains(&"web_fetch"));
 
     // A code interpreter bound to explicit files has no neutral form: it stays raw (same-protocol
@@ -279,13 +284,15 @@ fn ir02_response_refusal_is_a_refusal_part_buffered_and_streamed() {
     let body = serde_json::json!({"id": "resp_1", "object": "response", "created_at": 1,
         "status": "completed", "model": "gpt", "output": output,
         "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}});
-    let ir = ResponsesReader.read_response(&body).expect("read");
+    let ir = ResponsesReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read");
     assert!(matches!(
         &ir.content[0],
         crate::codec::ir::IrBlock::Text { refusal: true, text, .. } if text == "No."
     ));
     let w = ResponsesWriter;
-    let out = w.write_response(&ir);
+    let out = w.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["output"][0]["content"],
         serde_json::json!([{"type": "refusal", "refusal": "No."}]),
@@ -294,6 +301,7 @@ fn ir02_response_refusal_is_a_refusal_part_buffered_and_streamed() {
 
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let evs = ResponsesReader.read_response_events(
+        crate::codec::test_host::HOST,
         "response.completed",
         &serde_json::json!({"type": "response.completed", "response": {"id": "resp_1",
             "status": "completed", "output": output,
@@ -339,7 +347,7 @@ fn ir02_stream_refusal_block_writes_refusal_events() {
         },
         IrStreamEvent::BlockStop { index: 0 },
     ] {
-        frames.extend(w.write_response_events(&ev));
+        frames.extend(w.write_response_events(crate::codec::test_host::HOST, &ev));
     }
     let names: Vec<&str> = frames.iter().map(|(n, _)| n.as_str()).collect();
     assert_eq!(
@@ -380,31 +388,35 @@ fn rsp13_foreign_signature_is_not_sent_as_encrypted_content() {
     };
     let w = ResponsesWriter;
 
-    let out = w.write_request(&request_with(vec![assistant(thinking(
-        "",
-        Some("SIG-ANTHROPIC"),
-        Some(O::Anthropic),
-        false,
-    ))]));
+    let out = w.write_request(
+        crate::codec::test_host::HOST,
+        &request_with(vec![assistant(thinking(
+            "",
+            Some("SIG-ANTHROPIC"),
+            Some(O::Anthropic),
+            false,
+        ))]),
+    );
     assert!(reasoning_items(&out).is_empty(), "{out}");
 
-    let out = w.write_request(&request_with(vec![assistant(thinking(
-        "hmm",
-        Some("SIG-GEMINI"),
-        Some(O::Gemini),
-        false,
-    ))]));
+    let out = w.write_request(
+        crate::codec::test_host::HOST,
+        &request_with(vec![assistant(thinking(
+            "hmm",
+            Some("SIG-GEMINI"),
+            Some(O::Gemini),
+            false,
+        ))]),
+    );
     let items = reasoning_items(&out);
     assert_eq!(items.len(), 1, "{out}");
     assert!(items[0].get("encrypted_content").is_none(), "{out}");
 
     for origin in [Some(O::OpenAi), None] {
-        let out = w.write_request(&request_with(vec![assistant(thinking(
-            "",
-            Some("ENC"),
-            origin,
-            false,
-        ))]));
+        let out = w.write_request(
+            crate::codec::test_host::HOST,
+            &request_with(vec![assistant(thinking("", Some("ENC"), origin, false))]),
+        );
         assert_eq!(
             reasoning_items(&out)[0]["encrypted_content"],
             "ENC",
@@ -413,12 +425,15 @@ fn rsp13_foreign_signature_is_not_sent_as_encrypted_content() {
     }
 
     // A redacted block (a vendor's opaque bytes) is never sent, whatever its origin.
-    let out = w.write_request(&request_with(vec![assistant(thinking(
-        "OPAQUE",
-        Some("SIG"),
-        Some(O::Anthropic),
-        true,
-    ))]));
+    let out = w.write_request(
+        crate::codec::test_host::HOST,
+        &request_with(vec![assistant(thinking(
+            "OPAQUE",
+            Some("SIG"),
+            Some(O::Anthropic),
+            true,
+        ))]),
+    );
     assert!(reasoning_items(&out).is_empty(), "{out}");
 }
 
@@ -440,7 +455,9 @@ fn ir18_responses_encrypted_content_is_openai_origin() {
         "status": "completed", "model": "gpt", "output": [
             {"type": "reasoning", "id": "rs_1", "summary": [], "encrypted_content": "ENC"}],
         "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}});
-    let ir = ResponsesReader.read_response(&resp).expect("read");
+    let ir = ResponsesReader
+        .read_response(crate::codec::test_host::HOST, &resp)
+        .expect("read");
     assert!(matches!(
         &ir.content[0],
         crate::codec::ir::IrBlock::Thinking {
@@ -516,7 +533,7 @@ fn shr03_chat_file_id_reaches_responses_input() {
         ],
     }]);
     let w = ResponsesWriter;
-    let out = w.write_request(&req);
+    let out = w.write_request(crate::codec::test_host::HOST, &req);
     assert_eq!(
         out["input"][0]["content"],
         serde_json::json!([
@@ -543,7 +560,7 @@ fn ir03_06_same_dialect_member_bytes_are_the_callers() {
     });
     let writer = ResponsesWriter;
     let ir = ResponsesReader.read_request(&body).expect("read");
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     for key in [
         "metadata",
         "service_tier",
@@ -554,6 +571,9 @@ fn ir03_06_same_dialect_member_bytes_are_the_callers() {
         assert_eq!(out.get(key), body.get(key), "{key}");
     }
     let plain = serde_json::json!({"model": "gpt-4.1", "input": "hi"});
-    let out = writer.write_request(&ResponsesReader.read_request(&plain).expect("read"));
+    let out = writer.write_request(
+        crate::codec::test_host::HOST,
+        &ResponsesReader.read_request(&plain).expect("read"),
+    );
     assert!(out.get("metadata").is_none() && out.get("store").is_none());
 }

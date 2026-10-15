@@ -57,7 +57,8 @@ use busbar_kernel::{
         UPSTREAM_PREFIRSTBYTE_TRANSPORT_ERROR, USAGE_TAP_REASSEMBLY_CAP_EXCEEDED,
     },
     handlers::{request_handler, Op, OpDispatch},
-    proto::convert_headers,
+    // The kernel's codec host: the host services every codec the linked engine drives is handed.
+    proto::{convert_headers, CODEC_HOST},
 };
 // App-retype WEDGE 3 (THE FLIP): the engine no longer names core's `state::App`. The forward
 // path threads the neutral `host: &Arc<dyn EngineHost>` (minted core-side, carried on the arrival) and

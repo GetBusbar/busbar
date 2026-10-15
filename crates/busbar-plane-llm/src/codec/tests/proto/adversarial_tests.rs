@@ -135,7 +135,9 @@ fn non_object_top_level_response_body_rejects_every_dialect() {
         let proto = protocol_for(name).expect("known dialect");
         for bad in non_object_bodies() {
             expect_ir_parse(
-                proto.reader().read_response(&bad),
+                proto
+                    .reader()
+                    .read_response(crate::codec::test_host::HOST, &bad),
                 &format!("{name}: non-object top-level response body ({bad})"),
             );
         }
@@ -158,7 +160,9 @@ fn openai_wrong_typed_or_empty_choices_response_rejects() {
         serde_json::json!({"id": "c", "object": "chat.completion"}), // absent
     ] {
         expect_ir_parse(
-            proto.reader().read_response(&bad),
+            proto
+                .reader()
+                .read_response(crate::codec::test_host::HOST, &bad),
             &format!("openai: wrong-typed/empty/absent choices ({bad})"),
         );
     }
@@ -177,7 +181,9 @@ fn responses_wrong_typed_output_response_rejects() {
         serde_json::json!({"id": "r", "object": "response", "status": "completed", "output": {"a": 1}}),
     ] {
         expect_ir_parse(
-            proto.reader().read_response(&bad),
+            proto
+                .reader()
+                .read_response(crate::codec::test_host::HOST, &bad),
             &format!("responses: wrong-typed output ({bad})"),
         );
     }
@@ -230,9 +236,12 @@ fn unknown_stop_reason_degrades_to_other_not_reject() {
     for dialect in ["anthropic", "openai", "gemini", "bedrock", "cohere"] {
         let proto = protocol_for(dialect).expect("dialect");
         let body = native_response_with_stop(dialect, "TOTALLY_MADE_UP_REASON_9000");
-        let ir = proto.reader().read_response(&body).unwrap_or_else(|e| {
-            panic!("{dialect}: unknown stop reason must degrade, not reject: {e:?}")
-        });
+        let ir = proto
+            .reader()
+            .read_response(crate::codec::test_host::HOST, &body)
+            .unwrap_or_else(|e| {
+                panic!("{dialect}: unknown stop reason must degrade, not reject: {e:?}")
+            });
         assert_eq!(
             ir.stop_reason,
             Some(crate::codec::ir::IrStopReason::Other),
@@ -255,7 +264,7 @@ fn responses_unknown_status_degrades_to_none() {
     });
     let ir = proto
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .unwrap_or_else(|e| panic!("responses: unknown status must degrade, not reject: {e:?}"));
     assert_eq!(
         ir.stop_reason, None,
@@ -276,13 +285,13 @@ fn unknown_stop_reason_does_not_leak_across_writer() {
     let body = native_response_with_stop("anthropic", bogus);
     let ir = anth
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("degrades to Other");
     assert_eq!(ir.stop_reason, Some(crate::codec::ir::IrStopReason::Other));
     let openai_out = protocol_for("openai")
         .expect("openai")
         .writer()
-        .write_response(&ir);
+        .write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         openai_out["choices"][0]["finish_reason"], "stop",
         "the degraded `Other` must write as the SDK-safe `stop`, not the raw token; got {openai_out}"
@@ -407,7 +416,12 @@ fn hostile_stream_events_are_total_no_panic_no_bad_index() {
                 }
             }
             // The call itself is the assertion: a panic here fails the test.
-            let events = proto.reader().read_response_events(et, &data, &mut state);
+            let events = proto.reader().read_response_events(
+                crate::codec::test_host::HOST,
+                et,
+                &data,
+                &mut state,
+            );
             // No hostile frame may surface a text delta at a pathological (unclamped) index.
             for ev in &events {
                 if let crate::codec::ir::IrStreamEvent::BlockDelta {
@@ -429,11 +443,12 @@ fn hostile_stream_events_are_total_no_panic_no_bad_index() {
         let mut ok_state = crate::codec::ir::StreamDecodeState::default();
         let mut healthy: Vec<crate::codec::ir::IrStreamEvent> = Vec::new();
         for (et, data) in valid_text_delta_frames(name) {
-            healthy.extend(
-                proto
-                    .reader()
-                    .read_response_events(et, &data, &mut ok_state),
-            );
+            healthy.extend(proto.reader().read_response_events(
+                crate::codec::test_host::HOST,
+                et,
+                &data,
+                &mut ok_state,
+            ));
         }
         let texts: Vec<&str> = healthy
             .iter()
@@ -464,17 +479,23 @@ fn bedrock_huge_content_block_index_is_clamped() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     // Open the message first (BlockStart is guarded behind MessageStart).
     let start = serde_json::json!({"type": "messageStart", "role": "assistant"});
-    let _ = proto
-        .reader()
-        .read_response_events("messageStart", &start, &mut state);
+    let _ = proto.reader().read_response_events(
+        crate::codec::test_host::HOST,
+        "messageStart",
+        &start,
+        &mut state,
+    );
     let hostile = serde_json::json!({
         "type": "contentBlockStart",
         "contentBlockIndex": u64::MAX,
         "start": {"toolUse": {"toolUseId": "t1", "name": "f"}}
     });
-    let events = proto
-        .reader()
-        .read_response_events("contentBlockStart", &hostile, &mut state);
+    let events = proto.reader().read_response_events(
+        crate::codec::test_host::HOST,
+        "contentBlockStart",
+        &hostile,
+        &mut state,
+    );
     let block_start_idx = events.iter().find_map(|e| match e {
         crate::codec::ir::IrStreamEvent::BlockStart { index, .. } => Some(*index),
         _ => None,
@@ -562,13 +583,16 @@ fn truncated_sse_stream_finish_terminates_no_hang() {
     // translate reassembly buffer.
     let mut st = StreamTranslate::new("anthropic", "openai").expect("translator");
     // A well-formed first frame, then a second frame that is cut off mid-JSON with no terminator.
-    let mut out =
-        st.feed(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n");
-    out.extend_from_slice(
-        &st.feed(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"never-term"),
+    let mut out = st.feed(
+        crate::codec::test_host::HOST,
+        b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hi\"}}]}\n\n",
     );
+    out.extend_from_slice(&st.feed(
+        crate::codec::test_host::HOST,
+        b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"never-term",
+    ));
     // Must return (no hang) — the partial is small so the stream is not aborted for overflow.
-    out.extend_from_slice(&st.finish());
+    out.extend_from_slice(&st.finish(crate::codec::test_host::HOST));
     // The healthy FIRST frame must still reach the client. Discarding the output (`let _ = tail;`)
     // meant a translator that dropped the complete `"hi"` delta along with the truncated tail —
     // silent content loss on every truncated upstream — passed this case.
@@ -597,13 +621,17 @@ fn truncated_sse_stream_finish_terminates_no_hang() {
 #[test]
 fn garbage_non_json_sse_frames_skipped_no_false_abort() {
     let mut st = StreamTranslate::new("anthropic", "openai").expect("translator");
-    let mut out = st.feed(b": keep-alive comment\n\n");
-    out.extend_from_slice(&st.feed(b"data: {this is not valid json\n\n"));
-    out.extend_from_slice(&st.feed(b"data: not-json-at-all\n\n"));
-    out.extend_from_slice(
-        &st.feed(b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n"),
-    );
-    out.extend_from_slice(&st.finish());
+    let mut out = st.feed(crate::codec::test_host::HOST, b": keep-alive comment\n\n");
+    out.extend_from_slice(&st.feed(
+        crate::codec::test_host::HOST,
+        b"data: {this is not valid json\n\n",
+    ));
+    out.extend_from_slice(&st.feed(crate::codec::test_host::HOST, b"data: not-json-at-all\n\n"));
+    out.extend_from_slice(&st.feed(
+        crate::codec::test_host::HOST,
+        b"data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n",
+    ));
+    out.extend_from_slice(&st.finish(crate::codec::test_host::HOST));
     // The healthy frame interleaved among the garbage must still reach the client. Discarding the
     // output (`let _ = out;`) meant a translator that dropped the `"ok"` delta together with the
     // garbage — precisely the "corrupt an otherwise healthy stream" outcome this case names —

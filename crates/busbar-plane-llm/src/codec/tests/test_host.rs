@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THIS CRATE'S TEST HOST (#83a SD-3): the host services a shipped binary's composition root arms
-//! behind the contract seams, armed for this crate's own test binary by the test itself — so the
-//! codec's tests prove the codec's own seam and never reach the host crate. Test-only by
-//! construction (`#[cfg(test)]` at its one `mod` line).
+//! THIS CRATE'S TEST HOST (#83a SD-3): the host services a shipped binary's host hands the codec,
+//! provided for this crate's own test binary by the test itself — so the codec's tests prove the
+//! codec's own seam and never reach the host crate. Nothing is armed behind the contract: it holds
+//! no port. Test-only by construction (`#[cfg(test)]` at its one `mod` line).
 //!
-//! - ENTROPY: the OS CSPRNG, the same source the host arms.
-//! - WALL CLOCK: the system clock in whole seconds, as the host reads it.
+//! - ENTROPY and WALL CLOCK: [`HOST`], the [`CodecHost`] every codec call in this crate's tests is
+//!   handed — the OS CSPRNG (the same source the kernel hands) and the system clock in whole
+//!   seconds, as the kernel reads it.
 //! - TRANSLATE CAP: none armed — the contract's documented 32 MiB default applies, which is the
 //!   host's own default for an unconfigured limit.
 //! - USAGE-TAP FAULTS: none to arm. A tap returns its fault as data (row 155); what the kernel does
@@ -17,27 +18,30 @@
 //!   in off the shared fixture `testing/plane-copies/upstream-classes.json`, which the host's suite
 //!   holds its classifier to.
 
+use busbar_contract::codec::CodecHost;
 use busbar_contract::upstream::{CanonicalSignal, RawUpstreamError, StatusClass};
 
-fn os_entropy(out: &mut [u8]) -> bool {
-    getrandom::fill(out).is_ok()
+/// THE TEST HOST'S [`CodecHost`]: the OS CSPRNG and the system clock in whole seconds — the services
+/// the kernel hands a codec, read the way the kernel reads them.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct TestHost;
+
+impl CodecHost for TestHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        getrandom::fill(out).is_ok()
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+    }
 }
 
-fn system_clock() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
-/// Arm the test host's services behind the contract seams, ONCE per process — the counterpart of
-/// the composition root arming the host's own. `Once`-guarded.
-pub fn ensure_test_protocols_registered() {
-    static ARM: std::sync::Once = std::sync::Once::new();
-    ARM.call_once(|| {
-        busbar_contract::codec::install_entropy_source(os_entropy);
-        busbar_contract::codec::install_wall_clock(system_clock);
-    });
-}
+/// The handle every codec call in this crate's tests is handed.
+pub const HOST: &dyn CodecHost = &TestHost;
 
 /// The class the host's classifier places `raw` in with an EMPTY operator `error_map`, read off the
 /// shared fixture. A raw shape the fixture does not list fails the test that produced it: a dialect

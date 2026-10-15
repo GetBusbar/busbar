@@ -28,7 +28,7 @@ fn a_native_reasoning_ask_is_not_promoted_to_the_ir() {
     let ir = BedrockReader.read_request(&nova).expect("read");
     assert_eq!(ir.reasoning, None);
     // Same-protocol: the native object is re-emitted verbatim.
-    let back = writer().write_request(&ir);
+    let back = writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         back["additionalModelRequestFields"],
         json!({"reasoningConfig": {"type": "enabled", "maxReasoningEffort": "high"}}),
@@ -61,7 +61,7 @@ fn a_foreign_reasoning_ask_is_dropped_on_bedrock_egress() {
         )),
         ..Default::default()
     };
-    let out = writer().write_request(&ir);
+    let out = writer().write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         out.pointer("/additionalModelRequestFields/thinking")
             .is_none(),
@@ -91,7 +91,7 @@ fn bed08_output_config_and_tool_strict_map_both_ways() {
     assert_eq!(rf.description.as_deref(), Some("d"));
     assert_eq!(ir.tools[0].strict, Some(true));
     // Same-protocol round trip keeps the native bytes (the raw textFormat wins).
-    let back = writer().write_request(&ir);
+    let back = writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(back["outputConfig"], body["outputConfig"], "{back}");
     assert_eq!(
         back["toolConfig"]["tools"][0]["toolSpec"]["strict"], true,
@@ -105,7 +105,12 @@ fn bed08_output_config_and_tool_strict_map_both_ways() {
         native_structured_output: true,
         ..Default::default()
     };
-    let out = writer().write_request_for_lane(&cross, "anthropic.claude-opus-4-7", &native);
+    let out = writer().write_request_for_lane(
+        crate::codec::test_host::HOST,
+        &cross,
+        "anthropic.claude-opus-4-7",
+        &native,
+    );
     assert_eq!(
         out["outputConfig"]["textFormat"]["type"], "json_schema",
         "{out}"
@@ -119,7 +124,7 @@ fn bed08_output_config_and_tool_strict_map_both_ways() {
         .is_empty());
     // A lane that does not declare them drops the directive (the pre-structured-output form) and
     // says so; per-tool strict still rides.
-    let out = writer().write_request(&cross);
+    let out = writer().write_request(crate::codec::test_host::HOST, &cross);
     assert!(out.get("outputConfig").is_none(), "{out}");
     assert_eq!(
         out["toolConfig"]["tools"][0]["toolSpec"]["strict"], true,

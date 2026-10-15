@@ -36,7 +36,7 @@ fn item12_off_writes_no_thinking_on_any_lane() {
     for caps in [always_on, LaneCaps::default()] {
         let out = w
             .writer()
-            .write_request_for_lane(&anthropic_off(), model, &caps);
+            .write_request_for_lane(crate::codec::test_host::HOST, &anthropic_off(), model, &caps);
         assert!(
             out.pointer("/additionalModelRequestFields/thinking")
                 .is_none(),
@@ -70,7 +70,7 @@ fn item8_a_word_ask_on_an_adaptive_lane_writes_no_thinking() {
     let out = protocol_for("bedrock")
         .unwrap()
         .writer()
-        .write_request_for_lane(&ir, model, &caps);
+        .write_request_for_lane(crate::codec::test_host::HOST, &ir, model, &caps);
     assert!(
         out.pointer("/additionalModelRequestFields").is_none(),
         "{out}"
@@ -95,7 +95,7 @@ fn item14_web_citation_domain_round_trips() {
     let ir = protocol_for("bedrock")
         .unwrap()
         .reader()
-        .read_response(&converse)
+        .read_response(crate::codec::test_host::HOST, &converse)
         .expect("read");
     let cit = ir
         .content
@@ -109,7 +109,7 @@ fn item14_web_citation_domain_round_trips() {
     let out = protocol_for("bedrock")
         .unwrap()
         .writer()
-        .write_response(&ir);
+        .write_response(crate::codec::test_host::HOST, &ir);
     let s = out.to_string();
     assert!(
         s.contains(r#""web":{"domain":"atlas.example","url":"https://atlas.example/p"}"#)
@@ -147,7 +147,7 @@ fn item14_converse_service_tier_maps_both_ways() {
         let out = protocol_for("bedrock")
             .unwrap()
             .writer()
-            .write_request(&req);
+            .write_request(crate::codec::test_host::HOST, &req);
         assert_eq!(
             out.pointer("/serviceTier/type").and_then(|t| t.as_str()),
             want,

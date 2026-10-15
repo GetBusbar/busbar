@@ -533,13 +533,11 @@ pub type CounterAddFn = extern "C-unwind" fn(
     delta: u64,
 ) -> StatusClass;
 
-// ── THE HOST SERVICES (minor 30; ARCHITECT SD-3 queue (6), DEC-SERVE G2). The contract ports a
-//    codec reaches — `busbar_contract::codec::{fill_entropy, wall_clock_now}` — are process-wide
-//    `OnceLock`s the host arms in ITS image. A plane dropped in as a `cdylib` carries its own copy of
-//    the contract, whose ports nothing armed, so it read the failure path of every one. These slots
-//    carry the host's own services across the seam; the dropped-in door arms the plane image's ports
-//    over them (`services::arm`) when the host opens the door. The usage-tap fault latch is RETIRED
-//    (row 155): the fault crosses as data on the plane's answer
+// ── THE HOST SERVICES (minor 30; ARCHITECT SD-3 queue (6), DEC-SERVE G2). The host's entropy and
+//    its wall clock, carried across the seam, each slot filled by the HOST from its own services
+//    (the kernel's table serves them). The contract holds neither: a codec is HANDED them, as a
+//    `codec::CodecHost`, down its call graph, and there is no contract port to arm. The usage-tap
+//    fault latch is RETIRED (row 155): the fault crosses as data on the plane's answer
 //    (`abi::plane::OnPieceOut::tap_fault`). So is the translate cap: the kernel hands it in the
 //    settings the plane is opened and refreshed with. No host serves either slot and no plane calls
 //    them. Process-wide, so `host` may be `HostCtx::NULL`. ──
@@ -710,9 +708,9 @@ pub struct PlaneHostVtable {
     //    same sized/versioned discipline (the minor-25 bump). ──────────────────────────────────────────
     /// Add to one series of a metric family the plane declared.
     pub counter_add: Option<CounterAddFn>,
-    // ── APPENDED (minor-30, the HOST-SERVICES seam): the contract ports a codec reaches (entropy,
-    //    wall clock, usage-tap fault latch, translate cap), so a dropped-in plane gets the services a
-    //    linked one does. Trailing slots, append-only, same sized/versioned discipline. ─────────────
+    // ── APPENDED (minor-30, the HOST-SERVICES seam): the host's entropy and wall clock (the
+    //    host fills them; the contract holds neither), and the retired usage-tap fault latch and
+    //    translate cap. Trailing slots, append-only, same sized/versioned discipline. ─────────────
     /// Fill a buffer from the host's entropy source.
     pub entropy_fill: Option<EntropyFillFn>,
     /// Read the host's wall clock (whole Unix seconds).
@@ -796,7 +794,7 @@ impl PlaneHostVtable {
 
     /// CHECK a peer-supplied `*const PlaneHostVtable` before ANY slot is read, and return the number
     /// of bytes this side will honour — the missing half of the sized-struct discipline on the table
-    /// itself. `size` was written at construction (`EMPTY`/`SERVICES`) and, until this existed, was never
+    /// itself. `size` was written at construction (`EMPTY`) and, until this existed, was never
     /// read by anything: the field the guard was written for was inert.
     ///
     /// Two refusals and one clamp:
@@ -930,15 +928,6 @@ impl PlaneHostVtable {
         wall_clock: None,
         tap_fault_latch: None,
         translate_cap: None,
-    };
-
-    /// [`EMPTY`](Self::EMPTY) plus the two HOST SERVICES, each served from THIS image's own armed
-    /// contract ports ([`super::services`]). A host grants them by building its table over this
-    /// (`..PlaneHostVtable::SERVICES`): the services are the contract's, so the host adds no code.
-    pub const SERVICES: PlaneHostVtable = PlaneHostVtable {
-        entropy_fill: Some(super::services::entropy_fill),
-        wall_clock: Some(super::services::wall_clock),
-        ..Self::EMPTY
     };
 }
 

@@ -10,6 +10,26 @@
 use busbar_contract::operation::OpVerb;
 use busbar_plane_llm::exchange::reply::relay::{Relay, RelayCtx};
 
+/// The codec host these relays are handed: the OS CSPRNG and the system clock in whole seconds.
+struct TestHost;
+
+impl busbar_contract::codec::CodecHost for TestHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        getrandom::fill(out).is_ok()
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+    }
+}
+
+/// The handle every codec call here is handed.
+const HOST: &dyn busbar_contract::codec::CodecHost = &TestHost;
+
 /// The usage tap's cap these relays carry.
 const CAP: usize = 64;
 
@@ -52,14 +72,14 @@ fn a_body_past_the_usage_taps_cap_bills_no_tokens_and_one_under_it_bills_its_usa
     assert!(over.len() > CAP);
     let mut r = relay();
     for piece in over.chunks(16) {
-        let _ = r.feed(piece);
+        let _ = r.feed(HOST, piece);
     }
     assert!(r.relayed_floor().is_none(), "no floor past the cap");
     assert!(
         r.incurred_usage().is_none(),
         "nothing incurred past the cap"
     );
-    let end = r.end();
+    let end = r.end(HOST);
     assert!(
         end.usage.is_none(),
         "no tokens past the cap: {:?}",
@@ -70,7 +90,7 @@ fn a_body_past_the_usage_taps_cap_bills_no_tokens_and_one_under_it_bills_its_usa
     let under: &[u8] = br#"{"data":[],"usage":{"prompt_tokens":5,"total_tokens":5}}"#;
     assert!(under.len() <= CAP);
     let mut r = relay();
-    let _ = r.feed(under);
-    let end = r.end();
+    let _ = r.feed(HOST, under);
+    let end = r.end(HOST);
     assert!(end.usage.is_some(), "a body under the cap bills its usage");
 }

@@ -110,7 +110,7 @@ fn test_write_request() {
     };
 
     let writer = CohereWriter;
-    let json = writer.write_request(&ir);
+    let json = writer.write_request(crate::codec::test_host::HOST, &ir);
 
     assert!(json.get("messages").is_some());
     let msgs = json.get("messages").unwrap().as_array().unwrap();
@@ -205,7 +205,7 @@ fn test_read_request_roundtrip() {
 
     let writer = CohereWriter;
     let reader = CohereReader;
-    let json = writer.write_request(&ir);
+    let json = writer.write_request(crate::codec::test_host::HOST, &ir);
     let ir2 = reader
         .read_request(&json)
         .expect("read_request should succeed");
@@ -230,7 +230,7 @@ fn test_read_response() {
 
     let reader = CohereReader;
     let resp = reader
-        .read_response(&json)
+        .read_response(crate::codec::test_host::HOST, &json)
         .expect("read_response should succeed");
 
     assert_eq!(resp.role, crate::codec::ir::IrRole::Assistant);
@@ -256,9 +256,9 @@ fn test_write_response_roundtrip() {
     let reader = CohereReader;
     let writer = CohereWriter;
     let resp = reader
-        .read_response(&json)
+        .read_response(crate::codec::test_host::HOST, &json)
         .expect("read_response should succeed");
-    let json2 = writer.write_response(&resp);
+    let json2 = writer.write_response(crate::codec::test_host::HOST, &resp);
 
     assert_eq!(json, json2);
 }
@@ -270,6 +270,7 @@ fn test_stream_fanout() {
 
     // message-start
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_MESSAGE_START, "delta": {"message": {"role": "assistant"}}}),
         &mut state,
@@ -281,7 +282,7 @@ fn test_stream_fanout() {
     ));
 
     // content-start
-    let evs = reader.read_response_events("", &serde_json::json!({"type": ET_CONTENT_START, "index": 0, "delta": {"message": {"content": {"type": "text", "text": ""}}}}), &mut state);
+    let evs = reader.read_response_events(crate::codec::test_host::HOST, "", &serde_json::json!({"type": ET_CONTENT_START, "index": 0, "delta": {"message": {"content": {"type": "text", "text": ""}}}}), &mut state);
     assert_eq!(evs.len(), 1);
     assert!(matches!(
         evs[0],
@@ -293,7 +294,7 @@ fn test_stream_fanout() {
     ));
 
     // content-delta x2
-    let evs = reader.read_response_events("", &serde_json::json!({"type": ET_CONTENT_DELTA, "index": 0, "delta": {"message": {"content": "he"}}}), &mut state);
+    let evs = reader.read_response_events(crate::codec::test_host::HOST, "", &serde_json::json!({"type": ET_CONTENT_DELTA, "index": 0, "delta": {"message": {"content": "he"}}}), &mut state);
     assert_eq!(evs.len(), 1);
     let crate::codec::ir::IrStreamEvent::BlockDelta {
         index,
@@ -311,7 +312,7 @@ fn test_stream_fanout() {
     );
     assert_eq!(t, "he");
 
-    let evs = reader.read_response_events("", &serde_json::json!({"type": ET_CONTENT_DELTA, "index": 0, "delta": {"message": {"content": "llo"}}}), &mut state);
+    let evs = reader.read_response_events(crate::codec::test_host::HOST, "", &serde_json::json!({"type": ET_CONTENT_DELTA, "index": 0, "delta": {"message": {"content": "llo"}}}), &mut state);
     assert_eq!(evs.len(), 1);
     let crate::codec::ir::IrStreamEvent::BlockDelta {
         index,
@@ -331,6 +332,7 @@ fn test_stream_fanout() {
 
     // content-end
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_CONTENT_END, "index": 0}),
         &mut state,
@@ -342,7 +344,7 @@ fn test_stream_fanout() {
     ));
 
     // message-end with usage
-    let evs = reader.read_response_events("", &serde_json::json!({"type": ET_MESSAGE_END, "delta": {"finish_reason": COHERE_FINISH_COMPLETE, "usage": {"tokens": {"input_tokens": 10, "output_tokens": 5}}}}), &mut state);
+    let evs = reader.read_response_events(crate::codec::test_host::HOST, "", &serde_json::json!({"type": ET_MESSAGE_END, "delta": {"finish_reason": COHERE_FINISH_COMPLETE, "usage": {"tokens": {"input_tokens": 10, "output_tokens": 5}}}}), &mut state);
     assert_eq!(evs.len(), 2);
     let crate::codec::ir::IrStreamEvent::MessageDelta {
         stop_reason,
@@ -384,7 +386,7 @@ fn test_cross_protocol_system_prompt_preserved_to_cohere() {
         "anthropic system must land in IrRequest.system"
     );
     let writer = CohereWriter;
-    let cohere = writer.write_request(&ir);
+    let cohere = writer.write_request(crate::codec::test_host::HOST, &ir);
     let msgs = cohere.get("messages").unwrap().as_array().unwrap();
     assert_eq!(
         msgs[0].get("role").and_then(|r| r.as_str()),
@@ -407,7 +409,7 @@ fn test_write_response_event() {
         index: 0,
         delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
     };
-    let result = writer.write_response_event(&ev);
+    let result = writer.write_response_event(crate::codec::test_host::HOST, &ev);
     assert!(result.is_some());
     let (_, data) = result.unwrap();
     assert_eq!(
@@ -486,7 +488,7 @@ fn test_write_response_preserves_parallel_tool_calls() {
     };
 
     let writer = CohereWriter;
-    let json = writer.write_response(&resp);
+    let json = writer.write_response(crate::codec::test_host::HOST, &resp);
     // tool_calls are nested under the `message` object (native Cohere v2 shape).
     let tool_calls = json
         .get("message")
@@ -552,7 +554,7 @@ fn test_write_request_sole_tooluse_omits_empty_content() {
     };
 
     let writer = CohereWriter;
-    let json = writer.write_request(&ir);
+    let json = writer.write_request(crate::codec::test_host::HOST, &ir);
     let msgs = json.get("messages").unwrap().as_array().unwrap();
     let assistant = &msgs[0];
     assert!(
@@ -614,7 +616,7 @@ fn test_write_request_text_block_shapes() {
         output_modalities: None,
     };
     let writer = CohereWriter;
-    let j = writer.write_request(&single);
+    let j = writer.write_request(crate::codec::test_host::HOST, &single);
     assert_eq!(
         j.get("messages").unwrap().as_array().unwrap()[0].get("content"),
         Some(&serde_json::json!("hi"))
@@ -642,7 +644,7 @@ fn test_write_request_text_block_shapes() {
         }],
         ..single
     };
-    let j = writer.write_request(&multi);
+    let j = writer.write_request(crate::codec::test_host::HOST, &multi);
     let content = j.get("messages").unwrap().as_array().unwrap()[0]
         .get("content")
         .unwrap()
@@ -783,7 +785,7 @@ fn test_stream_content_start_after_close_does_not_reopen_the_text_block() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let reader = CohereReader;
 
-    let evs = reader.read_response_events(
+    let evs = reader.read_response_events(crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_CONTENT_START, "index": 0, "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
         &mut state,
@@ -795,6 +797,7 @@ fn test_stream_content_start_after_close_does_not_reopen_the_text_block() {
     ));
 
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_CONTENT_END, "index": 0}),
         &mut state,
@@ -806,7 +809,7 @@ fn test_stream_content_start_after_close_does_not_reopen_the_text_block() {
     ));
 
     // A second content-start after the close must be dropped entirely: no BlockStart, no event.
-    let evs = reader.read_response_events(
+    let evs = reader.read_response_events(crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_CONTENT_START, "index": 1, "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
         &mut state,
@@ -826,13 +829,14 @@ fn test_stream_content_delta_array_form_only_emits_text_typed_blocks() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let reader = CohereReader;
 
-    let _ = reader.read_response_events(
+    let _ = reader.read_response_events(crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_CONTENT_START, "index": 0, "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
         &mut state,
     );
 
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_CONTENT_DELTA, "index": 0, "delta": {"message": {"content": [
             {"type": "not_text", "text": "must be skipped"},
@@ -865,7 +869,12 @@ fn test_stream_content_delta_array_form_only_emits_text_typed_blocks() {
 #[test]
 fn test_write_error_native_cohere_envelope() {
     let writer = CohereWriter;
-    let v = writer.write_error(404, "not_found", "model 'x' not found");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        404,
+        "not_found",
+        "model 'x' not found",
+    );
 
     // Serializes (no panic) and re-parses as valid JSON.
     let serialized = serde_json::to_string(&v).expect("write_error output must serialize");
@@ -910,7 +919,7 @@ fn test_same_protocol_roundtrip_preserves_id() {
     });
 
     let resp = CohereReader
-        .read_response(&json)
+        .read_response(crate::codec::test_host::HOST, &json)
         .expect("read_response should succeed");
     assert_eq!(
         resp.id.as_deref(),
@@ -919,7 +928,7 @@ fn test_same_protocol_roundtrip_preserves_id() {
     );
 
     let writer = CohereWriter;
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.get("id").and_then(|i| i.as_str()),
         Some(upstream_id),
@@ -933,6 +942,7 @@ fn test_same_protocol_stream_roundtrip_preserves_id() {
     let upstream_id = "c14c80c3-18eb-4519-9460-6c92edd8cfb4";
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let evs = CohereReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "id": upstream_id,
@@ -950,7 +960,7 @@ fn test_same_protocol_stream_roundtrip_preserves_id() {
 
     let writer = CohereWriter;
     let (_, frame) = writer
-        .write_response_event(&evs[0])
+        .write_response_event(crate::codec::test_host::HOST, &evs[0])
         .expect("message-start must serialize");
     assert_eq!(
         frame.get("id").and_then(|i| i.as_str()),
@@ -992,7 +1002,7 @@ fn test_cross_protocol_write_synthesizes_valid_id() {
     };
 
     let writer = CohereWriter;
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     let id = out
         .get("id")
         .and_then(|i| i.as_str())
@@ -1037,7 +1047,7 @@ fn is_uuid_v4(s: &str) -> bool {
 /// client comparing against the documented UUID shape could use as a proxy tell.
 #[test]
 fn test_synthesized_id_is_uuid_shaped() {
-    let id = synthesize_cohere_id();
+    let id = synthesize_cohere_id(crate::codec::test_host::HOST);
     assert!(
         is_uuid_shaped(&id),
         "synthesized id must match the UUID layout, got {id}"
@@ -1057,7 +1067,7 @@ fn test_synthesized_id_is_uuid_shaped() {
 #[test]
 fn test_synthesized_id_is_valid_uuid_v4() {
     for _ in 0..1000 {
-        let id = synthesize_cohere_id();
+        let id = synthesize_cohere_id(crate::codec::test_host::HOST);
         assert!(
             is_uuid_v4(&id),
             "synthesized id must be a valid RFC-4122 UUIDv4 (version nibble 4, variant 10xx), \
@@ -1084,7 +1094,7 @@ fn test_synthesized_id_does_not_leak_timestamp() {
     // the intent (no deterministic clock prefix) unambiguous.
     let mut matched = 0u32;
     for _ in 0..256 {
-        let id = synthesize_cohere_id();
+        let id = synthesize_cohere_id(crate::codec::test_host::HOST);
         let first_group = id.split('-').next().unwrap_or("");
         if first_group == leaked_prefix {
             matched += 1;
@@ -1108,7 +1118,7 @@ fn test_synthesized_ids_are_unique() {
     const N: usize = 4096;
     let mut seen = std::collections::HashSet::with_capacity(N);
     for _ in 0..N {
-        let id = synthesize_cohere_id();
+        let id = synthesize_cohere_id(crate::codec::test_host::HOST);
         assert!(
             is_uuid_v4(&id),
             "each synthesized id must be a well-formed UUIDv4, got {id}"
@@ -1242,7 +1252,7 @@ fn test_safety_finish_reason_writes_complete_non_stream() {
         ..Default::default()
     };
     let writer = CohereWriter;
-    let body = writer.write_response(&resp);
+    let body = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         body.get("finish_reason").and_then(|v| v.as_str()),
         Some("COMPLETE"), // golden wire-contract literal (kept bare on purpose)
@@ -1253,7 +1263,7 @@ fn test_safety_finish_reason_writes_complete_non_stream() {
     // Reading it back lands on `EndTurn`, not `Safety` — the v2 enum has no filter token, so the
     // distinction is genuinely lost on this wire. This is NOT a round-trip; it is also not a fault.
     let back = CohereReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read self-written body");
     assert_eq!(
         back.stop_reason,
@@ -1277,7 +1287,7 @@ fn test_safety_finish_reason_writes_complete_stream() {
     };
     let writer = CohereWriter;
     let (_, frame) = writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("message-end must serialize");
     assert_eq!(
         frame
@@ -1308,7 +1318,9 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
         "message": { "content": [] },
         "usage": { "tokens": { "input_tokens": 1, "output_tokens": 1 } }
     });
-    let err_ir = reader.read_response(&err_body).expect("read ERROR body");
+    let err_ir = reader
+        .read_response(crate::codec::test_host::HOST, &err_body)
+        .expect("read ERROR body");
     assert_eq!(
         err_ir.stop_reason,
         Some(crate::codec::ir::IrStopReason::Error),
@@ -1321,7 +1333,7 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
         "usage": { "tokens": { "input_tokens": 1, "output_tokens": 1 } }
     });
     let toxic_ir = reader
-        .read_response(&toxic_body)
+        .read_response(crate::codec::test_host::HOST, &toxic_body)
         .expect("read ERROR_TOXIC body");
     assert_eq!(
         toxic_ir.stop_reason,
@@ -1353,7 +1365,7 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
         stop_detail: None,
         ..Default::default()
     };
-    let err_out = writer.write_response(&err_resp);
+    let err_out = writer.write_response(crate::codec::test_host::HOST, &err_resp);
     assert_eq!(
         err_out.get("finish_reason").and_then(|v| v.as_str()),
         Some("ERROR"), // golden wire-contract literal (kept bare on purpose)
@@ -1366,7 +1378,8 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
         "type": ET_MESSAGE_END,
         "delta": { "finish_reason": COHERE_FINISH_ERROR, "usage": { "tokens": {} } }
     });
-    let evs = reader.read_response_events("", &err_frame, &mut state);
+    let evs =
+        reader.read_response_events(crate::codec::test_host::HOST, "", &err_frame, &mut state);
     assert!(
         evs.iter().any(|e| matches!(
             e,
@@ -1380,7 +1393,8 @@ fn test_generic_error_does_not_fold_into_safety_and_round_trips() {
         "type": ET_MESSAGE_END,
         "delta": { "finish_reason": COHERE_FINISH_ERROR_TOXIC, "usage": { "tokens": {} } }
     });
-    let toxic_evs = reader.read_response_events("", &toxic_frame, &mut state2);
+    let toxic_evs =
+        reader.read_response_events(crate::codec::test_host::HOST, "", &toxic_frame, &mut state2);
     assert!(
         toxic_evs.iter().any(|e| matches!(
             e,
@@ -1413,7 +1427,7 @@ fn test_huge_tool_frame_index_clamped_below_sentinel() {
             "function": { "name": "f", "arguments": "{}" }
         }}}
     });
-    let evs = reader.read_response_events("", &start, &mut state);
+    let evs = reader.read_response_events(crate::codec::test_host::HOST, "", &start, &mut state);
 
     // The clamp must keep the recorded frame index strictly below the sentinel so it is never
     // confused with the text-high-water marker.
@@ -1450,7 +1464,8 @@ fn test_huge_tool_frame_index_clamped_below_sentinel() {
             "function": { "arguments": "more" }
         }}}
     });
-    let delta_evs = reader.read_response_events("", &delta, &mut state);
+    let delta_evs =
+        reader.read_response_events(crate::codec::test_host::HOST, "", &delta, &mut state);
     assert_eq!(
         delta_evs
             .iter()
@@ -1460,7 +1475,7 @@ fn test_huge_tool_frame_index_clamped_below_sentinel() {
         "a clamped tool-call-delta must forward to the open block, got {delta_evs:?}"
     );
     let end = serde_json::json!({ "type": ET_TOOL_CALL_END, "index": huge });
-    let end_evs = reader.read_response_events("", &end, &mut state);
+    let end_evs = reader.read_response_events(crate::codec::test_host::HOST, "", &end, &mut state);
     assert_eq!(
         end_evs
             .iter()
@@ -1489,7 +1504,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
         retry_after: None,
     });
     let (event_type, frame) = writer
-        .write_response_event(&infra)
+        .write_response_event(crate::codec::test_host::HOST, &infra)
         .expect("Error must serialize to a native frame");
     // The SSE `event:` field is empty for Cohere v2 (the type lives in the JSON `type` key).
     assert_eq!(event_type, "");
@@ -1548,7 +1563,8 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
     // The reader maps ONLY `ERROR_TOXIC` to `safety`; a generic `ERROR` must NOT be folded into
     // the moderation bucket — it falls through to the lowercase passthrough -> `error`.
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let decoded = CohereReader.read_response_events("", &frame, &mut state);
+    let decoded =
+        CohereReader.read_response_events(crate::codec::test_host::HOST, "", &frame, &mut state);
     assert!(
         decoded.iter().any(|e| matches!(
             e,
@@ -1565,7 +1581,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
         retry_after: None,
     });
     let (_, toxic_frame) = writer
-        .write_response_event(&toxic)
+        .write_response_event(crate::codec::test_host::HOST, &toxic)
         .expect("Error must serialize");
     assert_eq!(
         toxic_frame
@@ -1587,7 +1603,7 @@ fn test_stream_error_emits_native_message_end_not_error_event() {
         retry_after: None,
     });
     let (_, bare_frame) = writer
-        .write_response_event(&bare)
+        .write_response_event(crate::codec::test_host::HOST, &bare)
         .expect("Error must serialize");
     assert_eq!(
         bare_frame.get("type").and_then(|v| v.as_str()),
@@ -1622,7 +1638,7 @@ fn test_read_response_missing_usage_defaults_to_zero() {
         // NOTE: no `usage` key at all.
     });
     let resp = CohereReader
-        .read_response(&json)
+        .read_response(crate::codec::test_host::HOST, &json)
         .expect("missing usage must not hard-error (zero-usage fallback)");
     assert_eq!(resp.usage.input_tokens, 0);
     assert_eq!(resp.usage.output_tokens, 0);
@@ -1638,7 +1654,7 @@ fn test_read_response_missing_usage_defaults_to_zero() {
         "usage": {}
     });
     let resp2 = CohereReader
-        .read_response(&json_empty_usage)
+        .read_response(crate::codec::test_host::HOST, &json_empty_usage)
         .expect("empty usage object must not hard-error");
     assert_eq!(resp2.usage.input_tokens, 0);
     assert_eq!(resp2.usage.output_tokens, 0);
@@ -1671,7 +1687,7 @@ fn test_read_response_usage_float_token_counts_survive_as_integers() {
         }
     });
     let resp = CohereReader
-        .read_response(&json)
+        .read_response(crate::codec::test_host::HOST, &json)
         .expect("read_response should succeed");
     assert_eq!(
         resp.usage.input_tokens, 27,
@@ -1695,6 +1711,7 @@ fn test_stream_message_end_usage_float_token_counts_survive_as_integers() {
     let reader = CohereReader;
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_MESSAGE_END,
@@ -1806,7 +1823,7 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
     };
 
     let writer = CohereWriter;
-    let body = writer.write_response(&resp);
+    let body = writer.write_response(crate::codec::test_host::HOST, &resp);
 
     // tool_calls live under message, NOT at the top level.
     assert!(
@@ -1822,7 +1839,7 @@ fn test_write_response_tool_calls_nested_and_roundtrip() {
 
     // Round-trips through this protocol's own reader: every tool call comes back.
     let back = CohereReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("read_response of self-written body");
     let tool_uses: Vec<(&str, &str)> = back
         .content
@@ -1860,7 +1877,7 @@ fn test_write_response_event_content_delta_is_object() {
     };
     let writer = CohereWriter;
     let (_, frame) = writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("content-delta must serialize");
     let content = frame
         .get("delta")
@@ -1889,10 +1906,13 @@ fn test_write_response_event_content_delta_is_object() {
 fn test_content_delta_writer_reader_roundtrip_object_shape() {
     let writer = CohereWriter;
     let (_, frame) = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::codec::ir::IrDelta::TextDelta("hi".to_string()),
+            },
+        )
         .expect("content-delta must serialize");
     // Sanity: the writer really emitted the object shape this test guards.
     assert!(
@@ -1903,7 +1923,8 @@ fn test_content_delta_writer_reader_roundtrip_object_shape() {
     );
     // Feed the writer's own frame back through the reader.
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let evs = CohereReader.read_response_events("", &frame, &mut state);
+    let evs =
+        CohereReader.read_response_events(crate::codec::test_host::HOST, "", &frame, &mut state);
     let decoded_text: Option<String> = evs.iter().find_map(|e| match e {
         IrStreamEvent::BlockDelta {
             delta: crate::codec::ir::IrDelta::TextDelta(t),
@@ -1929,7 +1950,8 @@ fn test_content_delta_real_cohere_shape_no_type_field() {
     )
     .unwrap();
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let evs = CohereReader.read_response_events("", &frame, &mut state);
+    let evs =
+        CohereReader.read_response_events(crate::codec::test_host::HOST, "", &frame, &mut state);
     let decoded: Option<String> = evs.iter().find_map(|e| match e {
         IrStreamEvent::BlockDelta {
             delta: crate::codec::ir::IrDelta::TextDelta(t),
@@ -1953,6 +1975,7 @@ fn test_stream_tool_call_events_mapped() {
 
     // start
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_CALL_START,
@@ -1981,6 +2004,7 @@ fn test_stream_tool_call_events_mapped() {
 
     // delta (streamed arguments)
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_CALL_DELTA,
@@ -2000,6 +2024,7 @@ fn test_stream_tool_call_events_mapped() {
 
     // end
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_TOOL_CALL_END, "index": 0}),
         &mut state,
@@ -2036,6 +2061,7 @@ fn test_stream_tool_before_text_no_index_collision() {
 
     // Tool opens FIRST — claims IR index 0 (no text seen yet).
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_CALL_START,
@@ -2064,6 +2090,7 @@ fn test_stream_tool_before_text_no_index_collision() {
 
     // Text content opens AFTER the tool — must take the NEXT free index (1), not collide on 0.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_CONTENT_START, "index": 0}),
         &mut state,
@@ -2088,6 +2115,7 @@ fn test_stream_tool_before_text_no_index_collision() {
 
     // A text delta rides the SAME dynamic index, not a hardcoded 0.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_CONTENT_DELTA,
@@ -2110,6 +2138,7 @@ fn test_stream_tool_before_text_no_index_collision() {
 
     // content-end closes the text block at the index it actually opened (1), not 0.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_CONTENT_END, "index": 0}),
         &mut state,
@@ -2137,6 +2166,7 @@ fn test_stream_tool_before_text_no_index_collision() {
     // its index 0, then the tool opens at index 1, so the emitted stream stays balanced.
     let mut state2 = crate::codec::ir::StreamDecodeState::default();
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_CONTENT_START, "index": 0}),
         &mut state2,
@@ -2150,6 +2180,7 @@ fn test_stream_tool_before_text_no_index_collision() {
         }
     ));
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_CALL_START,
@@ -2191,6 +2222,7 @@ fn test_stream_text_not_reopened_after_close() {
     // same index a leading text block would; what changed is the block KIND, because a tool_plan is
     // the model's internal plan and must not reach the user as visible content.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_PLAN_DELTA,
@@ -2212,6 +2244,7 @@ fn test_stream_text_not_reopened_after_close() {
 
     // tool-call-start closes the still-open text block (BlockStop{0}) and opens the tool at index 1.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_CALL_START,
@@ -2233,6 +2266,7 @@ fn test_stream_text_not_reopened_after_close() {
 
     // A resumed tool-plan-delta AFTER the close is dropped — no reopen, no delta into a stopped index.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_PLAN_DELTA,
@@ -2247,6 +2281,7 @@ fn test_stream_text_not_reopened_after_close() {
 
     // Likewise a content-delta after the close is dropped (would otherwise be an unbalanced start/delta).
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_CONTENT_DELTA,
@@ -2272,6 +2307,7 @@ fn test_stream_message_end_closes_dangling_text_block() {
     // tool-plan opens a reasoning block at index 0 (BlockStart + BlockDelta), then the stream ends
     // abruptly. The dangling-block close below is index-based and kind-independent.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_PLAN_DELTA,
@@ -2293,6 +2329,7 @@ fn test_stream_message_end_closes_dangling_text_block() {
 
     // message-end (no content-end, no tool-call-start) must emit BlockStop{0} BEFORE MessageStop.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_MESSAGE_END, "delta": {"finish_reason": "COMPLETE"}}),
         &mut state,
@@ -2318,6 +2355,7 @@ fn test_stream_message_end_closes_dangling_text_block() {
 fn test_stream_unknown_event_is_noop() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let evs = CohereReader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "debug", "index": 0}),
         &mut state,
@@ -2343,13 +2381,16 @@ fn test_stream_citations_match_non_stream() {
 
     // Non-streaming read of the answer.
     let buffered = CohereReader
-        .read_response(&serde_json::json!({
-            "id": "c1", "finish_reason": "COMPLETE",
-            "message": {"role": "assistant",
-                        "content": [{"type": "text", "text": "Paris is capital."}],
-                        "citations": [citation.clone(), second.clone()]},
-            "usage": {"tokens": {"input_tokens": 3, "output_tokens": 4}}
-        }))
+        .read_response(
+            crate::codec::test_host::HOST,
+            &serde_json::json!({
+                "id": "c1", "finish_reason": "COMPLETE",
+                "message": {"role": "assistant",
+                            "content": [{"type": "text", "text": "Paris is capital."}],
+                            "citations": [citation.clone(), second.clone()]},
+                "usage": {"tokens": {"input_tokens": 3, "output_tokens": 4}}
+            }),
+        )
         .expect("buffered read");
     let buffered_cits = buffered
         .content
@@ -2389,7 +2430,9 @@ fn test_stream_citations_match_non_stream() {
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let events: Vec<crate::codec::ir::IrStreamEvent> = frames
         .iter()
-        .flat_map(|f| CohereReader.read_response_events("", f, &mut state))
+        .flat_map(|f| {
+            CohereReader.read_response_events(crate::codec::test_host::HOST, "", f, &mut state)
+        })
         .collect();
 
     let text_idx = events
@@ -2450,9 +2493,9 @@ fn test_stream_citation_after_content_end_is_dropped() {
                            "delta": {"message": {"content": {"text": "hi"}}}}),
         serde_json::json!({"type": "content-end", "index": 0}),
     ] {
-        CohereReader.read_response_events("", &f, &mut state);
+        CohereReader.read_response_events(crate::codec::test_host::HOST, "", &f, &mut state);
     }
-    let evs = CohereReader.read_response_events(
+    let evs = CohereReader.read_response_events(crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": "citation-start", "index": 0,
                             "delta": {"message": {"citations": {"start": 0, "end": 2, "text": "hi"}}}}),
@@ -2487,7 +2530,7 @@ fn test_write_response_event_citation_start_is_single_object() {
         }]),
     };
     let (_, frame) = writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("a citation delta emits a citation-start frame");
     assert_eq!(
         frame.get("type").and_then(|t| t.as_str()),
@@ -2708,16 +2751,19 @@ fn test_write_request_stream_field_conditional() {
     };
 
     let writer = CohereWriter;
-    let non_streaming = writer.write_request(&base);
+    let non_streaming = writer.write_request(crate::codec::test_host::HOST, &base);
     assert!(
         non_streaming.get("stream").is_none(),
         "non-streaming request must omit the `stream` key, got {non_streaming}"
     );
 
-    let streaming = writer.write_request(&crate::codec::ir::IrRequest {
-        stream: true,
-        ..base
-    });
+    let streaming = writer.write_request(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrRequest {
+            stream: true,
+            ..base
+        },
+    );
     assert_eq!(
         streaming.get("stream"),
         Some(&serde_json::json!(true)),
@@ -2739,7 +2785,7 @@ fn test_stream_field_roundtrip_omitted() {
         .expect("read_request should succeed");
     assert!(!ir.stream, "absent `stream` reads as false");
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         out.get("stream").is_none(),
         "round-trip must not inject a `stream` field, got {out}"
@@ -2765,7 +2811,7 @@ fn test_write_response_event_message_end_carries_usage() {
     };
     let writer = CohereWriter;
     let (_, frame) = writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("message-end must serialize");
     assert_eq!(
         frame.get("type").and_then(|t| t.as_str()),
@@ -2804,7 +2850,7 @@ fn test_write_response_event_message_end_zero_usage_present() {
     };
     let writer = CohereWriter;
     let (_, frame) = writer
-        .write_response_event(&ev)
+        .write_response_event(crate::codec::test_host::HOST, &ev)
         .expect("message-end must serialize");
     let tokens = frame
         .get("delta")
@@ -2831,16 +2877,20 @@ fn test_message_end_usage_stream_roundtrip() {
     };
     let writer = CohereWriter;
     let (_, frame) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: usage.clone(),
-            stop_detail: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: usage.clone(),
+                stop_detail: None,
+            },
+        )
         .expect("message-end must serialize");
 
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let evs = CohereReader.read_response_events("", &frame, &mut state);
+    let evs =
+        CohereReader.read_response_events(crate::codec::test_host::HOST, "", &frame, &mut state);
     let back = evs
         .iter()
         .find_map(|e| {
@@ -2917,7 +2967,7 @@ fn test_tool_role_text_alongside_result_not_dropped() {
         output_modalities: None,
     };
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let msgs = out.get("messages").unwrap().as_array().unwrap();
     assert_eq!(msgs.len(), 1, "one tool message emitted");
     let content = msgs[0].get("content").and_then(|c| c.as_str()).unwrap();
@@ -2995,7 +3045,7 @@ fn test_tool_result_multi_block_content_joins_without_space() {
         output_modalities: None,
     };
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let msgs = out.get("messages").unwrap().as_array().unwrap();
     let content = msgs[0].get("content").and_then(|c| c.as_str()).unwrap();
     assert_eq!(
@@ -3054,7 +3104,7 @@ fn test_tool_role_text_without_result_not_dropped() {
         output_modalities: None,
     };
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let msgs = out.get("messages").unwrap().as_array().unwrap();
     assert_eq!(
         msgs.len(),
@@ -3127,7 +3177,7 @@ fn test_tool_role_multi_text_without_result_is_string() {
         output_modalities: None,
     };
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let msgs = out.get("messages").unwrap().as_array().unwrap();
     assert_eq!(
         msgs.len(),
@@ -3150,7 +3200,12 @@ fn test_tool_role_multi_text_without_result_is_string() {
 #[test]
 fn test_write_error_via_trait_object_is_live_path() {
     let writer: Box<dyn ProtocolWriter> = Box::new(CohereWriter);
-    let v = writer.write_error(401, "authentication_error", "bad key");
+    let v = writer.write_error(
+        crate::codec::test_host::HOST,
+        401,
+        "authentication_error",
+        "bad key",
+    );
     assert_eq!(
         v.get("message").and_then(|m| m.as_str()),
         Some("bad key"),
@@ -3327,6 +3382,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
 
     // --- Tool 1: start (frame index 0) ---
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_CALL_START,
@@ -3353,6 +3409,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
 
     // Tool 1 delta + end (closing the first tool BEFORE the second starts — the trigger).
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_CALL_DELTA,
@@ -3366,6 +3423,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
         crate::codec::ir::IrStreamEvent::BlockDelta { index, .. } if *index == idx1
     ));
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_TOOL_CALL_END, "index": 0}),
         &mut state,
@@ -3377,6 +3435,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
 
     // --- Tool 2: start (frame index 1), AFTER tool 1 closed ---
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_CALL_START,
@@ -3409,6 +3468,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
 
     // Tool 2's delta and end resolve to ITS index, not tool 1's.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_CALL_DELTA,
@@ -3422,6 +3482,7 @@ fn test_stream_two_sequential_tool_calls_get_distinct_indices() {
         crate::codec::ir::IrStreamEvent::BlockDelta { index, .. } if *index == idx2
     ));
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_TOOL_CALL_END, "index": 1}),
         &mut state,
@@ -3465,9 +3526,24 @@ fn test_stream_tool_ir_index_stable_under_non_monotonic_frame_indices() {
     };
 
     // Open three tools with DELIBERATELY non-monotonic wire indices: 10, then 5, then 2.
-    let a_idx = start_idx(&reader.read_response_events("", &start(10, "call_a"), &mut state));
-    let b_idx = start_idx(&reader.read_response_events("", &start(5, "call_b"), &mut state));
-    let c_idx = start_idx(&reader.read_response_events("", &start(2, "call_c"), &mut state));
+    let a_idx = start_idx(&reader.read_response_events(
+        crate::codec::test_host::HOST,
+        "",
+        &start(10, "call_a"),
+        &mut state,
+    ));
+    let b_idx = start_idx(&reader.read_response_events(
+        crate::codec::test_host::HOST,
+        "",
+        &start(5, "call_b"),
+        &mut state,
+    ));
+    let c_idx = start_idx(&reader.read_response_events(
+        crate::codec::test_host::HOST,
+        "",
+        &start(2, "call_c"),
+        &mut state,
+    ));
 
     // Assignment is by INSERTION ORDER, so the three tools get distinct, contiguous indices
     // regardless of their (descending) wire indices.
@@ -3487,14 +3563,15 @@ fn test_stream_tool_ir_index_stable_under_non_monotonic_frame_indices() {
             "index": wire,
             "delta": {"message": {"tool_calls": {"function": {"arguments": "{}"}}}}
         });
-        let devs = reader.read_response_events("", &delta, &mut state);
+        let devs =
+            reader.read_response_events(crate::codec::test_host::HOST, "", &delta, &mut state);
         assert!(
             matches!(devs.first(), Some(IrStreamEvent::BlockDelta { index, .. }) if *index == expected),
             "delta for wire {wire} must resolve to its assigned IR index {expected}, got {devs:?}"
         );
 
         let end = serde_json::json!({ "type": ET_TOOL_CALL_END, "index": wire });
-        let eevs = reader.read_response_events("", &end, &mut state);
+        let eevs = reader.read_response_events(crate::codec::test_host::HOST, "", &end, &mut state);
         assert!(
             matches!(eevs.first(), Some(IrStreamEvent::BlockStop { index }) if *index == expected),
             "end for wire {wire} must close its assigned IR index {expected}, got {eevs:?}"
@@ -3509,13 +3586,13 @@ fn test_stream_tool_indices_offset_by_open_text_block() {
     let reader = CohereReader;
 
     // Open a text block at index 0.
-    reader.read_response_events(
+    reader.read_response_events(crate::codec::test_host::HOST,
             "",
             &serde_json::json!({"type": ET_CONTENT_START, "index": 0, "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
             &mut state,
         );
 
-    let evs = reader.read_response_events(
+    let evs = reader.read_response_events(crate::codec::test_host::HOST,
             "",
             &serde_json::json!({
                 "type": ET_TOOL_CALL_START,
@@ -3540,12 +3617,13 @@ fn test_stream_tool_indices_offset_by_open_text_block() {
     assert_eq!(idx1, 1, "first tool follows the open text block at index 0");
 
     reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_TOOL_CALL_END, "index": 0}),
         &mut state,
     );
 
-    let evs = reader.read_response_events(
+    let evs = reader.read_response_events(crate::codec::test_host::HOST,
             "",
             &serde_json::json!({
                 "type": ET_TOOL_CALL_START,
@@ -3578,7 +3656,7 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
     let reader = CohereReader;
 
     // Text block: start at index 0 ...
-    let evs = reader.read_response_events(
+    let evs = reader.read_response_events(crate::codec::test_host::HOST,
             "",
             &serde_json::json!({"type": ET_CONTENT_START, "index": 0, "delta": {"message": {"content": {"type": "text", "text": ""}}}}),
             &mut state,
@@ -3594,6 +3672,7 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
 
     // ... and CLOSE it before any tool arrives (the trigger for the defect).
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_CONTENT_END, "index": 0}),
         &mut state,
@@ -3608,7 +3687,7 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
     );
 
     // Now the first tool starts. It must land at IR index 1, NOT reuse the closed text block's 0.
-    let evs = reader.read_response_events(
+    let evs = reader.read_response_events(crate::codec::test_host::HOST,
             "",
             &serde_json::json!({
                 "type": ET_TOOL_CALL_START,
@@ -3632,6 +3711,7 @@ fn test_stream_tool_after_closed_text_block_does_not_reuse_index_zero() {
 
     // The tool's delta and end resolve to the same index 1, never back to 0.
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_TOOL_CALL_END, "index": 0}),
         &mut state,
@@ -3679,7 +3759,7 @@ fn test_write_response_event_emits_tool_call_frames() {
         refusal: false,
     };
     let (_, frame) = writer
-        .write_response_event(&start)
+        .write_response_event(crate::codec::test_host::HOST, &start)
         .expect("BlockStart ToolUse must emit a frame");
     assert_eq!(
         frame.get("type").and_then(|t| t.as_str()),
@@ -3713,7 +3793,7 @@ fn test_write_response_event_emits_tool_call_frames() {
         delta: crate::codec::ir::IrDelta::InputJsonDelta("{\"city\":\"SF\"}".to_string()),
     };
     let (_, frame) = writer
-        .write_response_event(&delta)
+        .write_response_event(crate::codec::test_host::HOST, &delta)
         .expect("BlockDelta InputJsonDelta must emit a frame");
     assert_eq!(
         frame.get("type").and_then(|t| t.as_str()),
@@ -3738,25 +3818,32 @@ fn test_write_response_event_emits_tool_call_frames() {
 fn test_writer_tool_call_frames_roundtrip_through_reader() {
     let writer = CohereWriter;
     let (_, start_frame) = writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::ToolUse {
-                id: "call_z".to_string(),
-                name: "lookup".to_string(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::ToolUse {
+                    id: "call_z".to_string(),
+                    name: "lookup".to_string(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        })
+        )
         .expect("start frame");
     let (_, delta_frame) = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: crate::codec::ir::IrDelta::InputJsonDelta("{\"q\":1}".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::codec::ir::IrDelta::InputJsonDelta("{\"q\":1}".to_string()),
+            },
+        )
         .expect("delta frame");
 
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let reader = CohereReader;
-    let start_evs = reader.read_response_events("", &start_frame, &mut state);
+    let start_evs =
+        reader.read_response_events(crate::codec::test_host::HOST, "", &start_frame, &mut state);
     match &start_evs[0] {
         crate::codec::ir::IrStreamEvent::BlockStart {
             block: crate::codec::ir::IrBlockMeta::ToolUse { id, name },
@@ -3767,7 +3854,8 @@ fn test_writer_tool_call_frames_roundtrip_through_reader() {
         }
         other => panic!("expected BlockStart ToolUse, got {other:?}"),
     }
-    let delta_evs = reader.read_response_events("", &delta_frame, &mut state);
+    let delta_evs =
+        reader.read_response_events(crate::codec::test_host::HOST, "", &delta_frame, &mut state);
     match &delta_evs[0] {
         crate::codec::ir::IrStreamEvent::BlockDelta {
             delta: crate::codec::ir::IrDelta::InputJsonDelta(args),
@@ -3788,35 +3876,47 @@ fn test_writer_tool_call_frames_roundtrip_through_reader() {
 fn test_write_response_event_redacted_thinking_and_image_blocks_suppressed() {
     let writer = CohereWriter;
     assert!(writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::RedactedThinking,
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::RedactedThinking,
+                refusal: false,
+            }
+        )
         .is_none());
     assert!(writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::Image,
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::Image,
+                refusal: false,
+            }
+        )
         .is_none());
     // The plaintext reasoning block MUST open — as a native `thinking` content block.
     let (_, start) = writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::Thinking { kind: None },
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::Thinking { kind: None },
+                refusal: false,
+            },
+        )
         .expect("a reasoning block has a native Cohere opening frame");
     assert_eq!(start["type"], ET_CONTENT_START);
     assert_eq!(start["delta"]["message"]["content"]["type"], "thinking");
     // The reasoning DELTA MUST emit — into the thinking content block, never `tool-plan-delta`.
     let (_, frame) = writer
-        .write_response_event(&IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: crate::codec::ir::IrDelta::ThinkingDelta("x".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::codec::ir::IrDelta::ThinkingDelta("x".to_string()),
+            },
+        )
         .expect("a reasoning delta has a native Cohere frame");
     assert_eq!(frame["type"], ET_CONTENT_DELTA);
     assert_eq!(frame["delta"]["message"]["content"]["thinking"], "x");
@@ -3896,7 +3996,7 @@ fn test_tool_message_roundtrip_no_duplicate_text() {
         .read_request(&body)
         .expect("read_request should succeed");
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     let msgs = out.get("messages").unwrap().as_array().unwrap();
     let tool_msg = msgs
         .iter()
@@ -4062,6 +4162,7 @@ fn test_open_tools_growth_is_capped() {
     let reader = CohereReader;
     for frame_idx in 0..(MAX_TRACKED_TOOL_FRAMES + 50) {
         reader.read_response_events(
+            crate::codec::test_host::HOST,
             "",
             &serde_json::json!({
                 "type": ET_TOOL_CALL_START,
@@ -4177,14 +4278,17 @@ fn test_block_stop_closes_tool_block_with_tool_call_end() {
     let writer = CohereWriter;
     // Open a tool-call block at index 0.
     let (_, start) = writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::ToolUse {
-                id: "call_1".to_string(),
-                name: "get_weather".to_string(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::ToolUse {
+                    id: "call_1".to_string(),
+                    name: "get_weather".to_string(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        })
+        )
         .expect("tool-call-start must emit");
     assert_eq!(
         start.get("type").and_then(|t| t.as_str()),
@@ -4192,7 +4296,10 @@ fn test_block_stop_closes_tool_block_with_tool_call_end() {
     );
     // Closing it must use tool-call-end at the SAME index.
     let (_, stop) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 0 },
+        )
         .expect("tool block stop must emit");
     assert_eq!(
         stop.get("type").and_then(|t| t.as_str()),
@@ -4210,18 +4317,24 @@ fn test_block_stop_closes_text_block_with_content_end() {
     let writer = CohereWriter;
     // Open a text block at index 0.
     let (_, start) = writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::Text,
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::Text,
+                refusal: false,
+            },
+        )
         .expect("content-start must emit");
     assert_eq!(
         start.get("type").and_then(|t| t.as_str()),
         Some("content-start") // golden wire-contract literal (kept bare on purpose)
     );
     let (_, stop) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 0 },
+        )
         .expect("text block stop must emit");
     assert_eq!(
         stop.get("type").and_then(|t| t.as_str()),
@@ -4239,26 +4352,35 @@ fn test_block_stop_mixed_text_and_tool_close_events() {
     let writer = CohereWriter;
     // Text block at index 0.
     writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::Text,
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::Text,
+                refusal: false,
+            },
+        )
         .expect("text start");
     // Tool block at index 1.
     writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 1,
-            block: crate::codec::ir::IrBlockMeta::ToolUse {
-                id: "call_2".to_string(),
-                name: "lookup".to_string(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 1,
+                block: crate::codec::ir::IrBlockMeta::ToolUse {
+                    id: "call_2".to_string(),
+                    name: "lookup".to_string(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        })
+        )
         .expect("tool start");
 
     let (_, stop_text) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 0 },
+        )
         .expect("text stop");
     assert_eq!(
         stop_text.get("type").and_then(|t| t.as_str()),
@@ -4267,7 +4389,10 @@ fn test_block_stop_mixed_text_and_tool_close_events() {
     );
 
     let (_, stop_tool) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 1 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 1 },
+        )
         .expect("tool stop");
     assert_eq!(
         stop_tool.get("type").and_then(|t| t.as_str()),
@@ -4283,17 +4408,23 @@ fn test_block_stop_mixed_text_and_tool_close_events() {
 fn test_tool_block_open_close_roundtrip_through_reader() {
     let writer = CohereWriter;
     let (_, start_frame) = writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: crate::codec::ir::IrBlockMeta::ToolUse {
-                id: "call_z".to_string(),
-                name: "lookup".to_string(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 0,
+                block: crate::codec::ir::IrBlockMeta::ToolUse {
+                    id: "call_z".to_string(),
+                    name: "lookup".to_string(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        })
+        )
         .expect("start frame");
     let (_, stop_frame) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 0 },
+        )
         .expect("stop frame");
     assert_eq!(
         stop_frame.get("type").and_then(|t| t.as_str()),
@@ -4302,7 +4433,8 @@ fn test_tool_block_open_close_roundtrip_through_reader() {
 
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let reader = CohereReader;
-    let start_evs = reader.read_response_events("", &start_frame, &mut state);
+    let start_evs =
+        reader.read_response_events(crate::codec::test_host::HOST, "", &start_frame, &mut state);
     assert!(matches!(
         &start_evs[0],
         crate::codec::ir::IrStreamEvent::BlockStart {
@@ -4310,7 +4442,8 @@ fn test_tool_block_open_close_roundtrip_through_reader() {
             ..
         }
     ));
-    let stop_evs = reader.read_response_events("", &stop_frame, &mut state);
+    let stop_evs =
+        reader.read_response_events(crate::codec::test_host::HOST, "", &stop_frame, &mut state);
     assert!(
         matches!(
             &stop_evs[0],
@@ -4328,17 +4461,23 @@ fn test_tool_block_open_close_roundtrip_through_reader() {
 fn test_block_stop_tool_index_consumed_on_close() {
     let writer = CohereWriter;
     writer
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 3,
-            block: crate::codec::ir::IrBlockMeta::ToolUse {
-                id: "c".to_string(),
-                name: "f".to_string(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 3,
+                block: crate::codec::ir::IrBlockMeta::ToolUse {
+                    id: "c".to_string(),
+                    name: "f".to_string(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        })
+        )
         .expect("start");
     let (_, first) = writer
-        .write_response_event(&IrStreamEvent::BlockStop { index: 3 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStop { index: 3 },
+        )
         .expect("first stop");
     assert_eq!(
         first.get("type").and_then(|t| t.as_str()),
@@ -4346,7 +4485,10 @@ fn test_block_stop_tool_index_consumed_on_close() {
     );
     // The tool marker was consumed and no text block was ever opened at index 3, so a second
     // close is an untracked index → no frame (no orphan content-end).
-    let second = writer.write_response_event(&IrStreamEvent::BlockStop { index: 3 });
+    let second = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStop { index: 3 },
+    );
     assert!(
             second.is_none(),
             "a tool index consumed on first close must emit no frame on a duplicate close, got {second:?}"
@@ -4388,7 +4530,7 @@ fn test_write_response_stop_sequence_maps_to_stop_sequence() {
         ..Default::default()
     };
     let writer = CohereWriter;
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.get("finish_reason").and_then(|r| r.as_str()),
         Some("STOP_SEQUENCE"), // golden wire-contract literal (kept bare on purpose)
@@ -4428,7 +4570,7 @@ fn test_write_response_end_turn_maps_to_complete() {
         ..Default::default()
     };
     let writer = CohereWriter;
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.get("finish_reason").and_then(|r| r.as_str()),
         Some("COMPLETE") // golden wire-contract literal (kept bare on purpose)
@@ -4441,18 +4583,21 @@ fn test_write_response_end_turn_maps_to_complete() {
 fn test_stream_message_delta_stop_sequence_maps_to_stop_sequence() {
     let writer = CohereWriter;
     let (_, frame) = writer
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::StopSequence),
-            stop_sequence: None,
-            usage: crate::codec::ir::IrUsage {
-                input_tokens: 2,
-                output_tokens: 3,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-                detail: crate::codec::ir::IrUsageDetail::default(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::StopSequence),
+                stop_sequence: None,
+                usage: crate::codec::ir::IrUsage {
+                    input_tokens: 2,
+                    output_tokens: 3,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    detail: crate::codec::ir::IrUsageDetail::default(),
+                },
+                stop_detail: None,
             },
-            stop_detail: None,
-        })
+        )
         .expect("message-end frame");
     assert_eq!(
         frame
@@ -4476,14 +4621,16 @@ fn test_stop_sequence_roundtrips_symmetrically() {
         "message": { "role": "assistant", "content": [{ "type": "text", "text": "x" }] },
         "usage": { "tokens": { "input_tokens": 1, "output_tokens": 1 } }
     });
-    let ir = reader.read_response(&native).expect("read native response");
+    let ir = reader
+        .read_response(crate::codec::test_host::HOST, &native)
+        .expect("read native response");
     assert_eq!(
         ir.stop_reason,
         Some(crate::codec::ir::IrStopReason::StopSequence)
     );
 
     let writer = CohereWriter;
-    let out = writer.write_response(&ir);
+    let out = writer.write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("finish_reason").and_then(|r| r.as_str()),
         Some("STOP_SEQUENCE"), // golden wire-contract literal (kept bare on purpose)
@@ -4518,7 +4665,7 @@ fn test_duplicate_tool_call_start_is_noop() {
         }}}
     });
 
-    let first = reader.read_response_events("", &start, &mut state);
+    let first = reader.read_response_events(crate::codec::test_host::HOST, "", &start, &mut state);
     // First start opens the block exactly once (text never appeared, so tool IR index is 0).
     assert_eq!(
         count_block_starts_at(&first, 0),
@@ -4526,7 +4673,7 @@ fn test_duplicate_tool_call_start_is_noop() {
         "first tool-call-start must open the block once"
     );
 
-    let second = reader.read_response_events("", &start, &mut state);
+    let second = reader.read_response_events(crate::codec::test_host::HOST, "", &start, &mut state);
     assert_eq!(
         count_block_starts_at(&second, 0),
         0,
@@ -4560,7 +4707,7 @@ fn test_over_cap_tool_call_start_emits_no_block() {
                 "function": { "name": "f", "arguments": "" }
             }}}
         });
-        let _ = reader.read_response_events("", &start, &mut state);
+        let _ = reader.read_response_events(crate::codec::test_host::HOST, "", &start, &mut state);
     }
     assert_eq!(state.open_tools.len(), MAX_TRACKED_TOOL_FRAMES);
 
@@ -4575,7 +4722,7 @@ fn test_over_cap_tool_call_start_emits_no_block() {
             "function": { "name": "f", "arguments": "abc" }
         }}}
     });
-    let evs = reader.read_response_events("", &over, &mut state);
+    let evs = reader.read_response_events(crate::codec::test_host::HOST, "", &over, &mut state);
     assert!(
         evs.is_empty(),
         "an over-cap tool-call-start must emit no block events, got {evs:?}"
@@ -4601,6 +4748,7 @@ fn test_text_block_normalized_to_ir_index_zero() {
 
     // Backend numbers the text content block at a NON-ZERO wire index.
     let cs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_CONTENT_START,
@@ -4625,6 +4773,7 @@ fn test_text_block_normalized_to_ir_index_zero() {
     }
 
     let cd = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_CONTENT_DELTA,
@@ -4645,6 +4794,7 @@ fn test_text_block_normalized_to_ir_index_zero() {
     }
 
     let ce = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({ "type": ET_CONTENT_END, "index": 2 }),
         &mut state,
@@ -4659,6 +4809,7 @@ fn test_text_block_normalized_to_ir_index_zero() {
     // A tool block that follows the (now-closed) text block must take IR index 1, NOT reuse the
     // wire index 2 the text block carried.
     let ts = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_CALL_START,
@@ -4747,31 +4898,43 @@ fn test_thinking_blockstop_emits_no_orphan_content_end() {
     let writer = CohereWriter;
 
     // Redacted-thinking BlockStart → no frame.
-    let start = writer.write_response_event(&IrStreamEvent::BlockStart {
-        index: 0,
-        block: crate::codec::ir::IrBlockMeta::RedactedThinking,
-        refusal: false,
-    });
+    let start = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::codec::ir::IrBlockMeta::RedactedThinking,
+            refusal: false,
+        },
+    );
     assert!(
         start.is_none(),
         "a redacted-thinking BlockStart must not emit an opening frame"
     );
 
     // Its BlockStop → no frame (the orphan-content-end defect).
-    let stop = writer.write_response_event(&IrStreamEvent::BlockStop { index: 0 });
+    let stop = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStop { index: 0 },
+    );
     assert!(
         stop.is_none(),
         "a redacted-thinking BlockStop must emit no frame (no orphan content-end)"
     );
 
     // A plaintext Thinking block is balanced: content-start, then content-end.
-    let start = writer.write_response_event(&IrStreamEvent::BlockStart {
-        index: 1,
-        block: crate::codec::ir::IrBlockMeta::Thinking { kind: None },
-        refusal: false,
-    });
+    let start = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStart {
+            index: 1,
+            block: crate::codec::ir::IrBlockMeta::Thinking { kind: None },
+            refusal: false,
+        },
+    );
     assert_eq!(start.expect("thinking opens").1["type"], ET_CONTENT_START);
-    let stop = writer.write_response_event(&IrStreamEvent::BlockStop { index: 1 });
+    let stop = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStop { index: 1 },
+    );
     assert_eq!(stop.expect("thinking closes").1["type"], ET_CONTENT_END);
 }
 
@@ -4781,18 +4944,24 @@ fn test_thinking_blockstop_emits_no_orphan_content_end() {
 fn test_text_block_emits_balanced_content_start_and_end() {
     let writer = CohereWriter;
 
-    let start = writer.write_response_event(&IrStreamEvent::BlockStart {
-        index: 0,
-        block: crate::codec::ir::IrBlockMeta::Text,
-        refusal: false,
-    });
+    let start = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::codec::ir::IrBlockMeta::Text,
+            refusal: false,
+        },
+    );
     let (_, start_data) = start.expect("Text BlockStart must emit a content-start frame");
     assert_eq!(
         start_data.get("type").and_then(|t| t.as_str()),
         Some("content-start") // golden wire-contract literal (kept bare on purpose)
     );
 
-    let stop = writer.write_response_event(&IrStreamEvent::BlockStop { index: 0 });
+    let stop = writer.write_response_event(
+        crate::codec::test_host::HOST,
+        &IrStreamEvent::BlockStop { index: 0 },
+    );
     let (_, stop_data) = stop.expect("Text BlockStop must emit a content-end frame");
     assert_eq!(
         stop_data.get("type").and_then(|t| t.as_str()),
@@ -4878,7 +5047,7 @@ fn test_cohere_tool_choice_required_roundtrips() {
     );
 
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("tool_choice").and_then(|v| v.as_str()),
         Some("REQUIRED") // golden wire-contract literal (kept bare on purpose)
@@ -4901,7 +5070,7 @@ fn test_cohere_tool_choice_none() {
     assert_eq!(ir.tool_choice, Some(crate::codec::ir::IrToolChoice::None));
 
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("tool_choice").and_then(|v| v.as_str()),
         Some("NONE") // golden wire-contract literal (kept bare on purpose)
@@ -4917,7 +5086,7 @@ fn test_cohere_tool_choice_specific_degrades_to_required() {
         name: "get_weather".to_string(),
     }));
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("tool_choice").and_then(|v| v.as_str()),
         Some("REQUIRED"), // golden wire-contract literal (kept bare on purpose)
@@ -4931,7 +5100,7 @@ fn test_cohere_tool_choice_auto_omitted() {
     // be invalid for Cohere v2), and an absent inbound tool_choice reads as None (the Option).
     let ir = ir_with_tool_choice(Some(crate::codec::ir::IrToolChoice::Auto));
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(
         out.get("tool_choice").is_none(),
         "Auto must omit tool_choice (it is Cohere's default)"
@@ -4946,7 +5115,7 @@ fn test_cohere_tool_choice_auto_omitted() {
         .expect("read_request should succeed");
     assert_eq!(ir.tool_choice, None);
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert!(out.get("tool_choice").is_none());
 }
 
@@ -4957,7 +5126,7 @@ fn test_cohere_writer_clamps_temperature_above_one() {
     let mut ir = ir_with_tool_choice(None);
     ir.temperature = Some(1.8);
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.get("temperature").and_then(|v| v.as_f64()),
         Some(1.0),
@@ -5025,7 +5194,7 @@ fn test_cohere_sampling_controls_survive_roundtrip() {
 
     let out = {
         let __w = CohereWriter;
-        __w.write_request(&ir)
+        __w.write_request(crate::codec::test_host::HOST, &ir)
     };
     assert_eq!(out.get("frequency_penalty"), Some(&serde_json::json!(0.5)));
     assert_eq!(out.get("presence_penalty"), Some(&serde_json::json!(0.25)));
@@ -5085,7 +5254,7 @@ fn test_cohere_image_content_part_read_write_roundtrip() {
     // image parts in native `image_url` shape, reconstructing the original URLs.
     let out = {
         let __w = CohereWriter;
-        __w.write_request(&ir)
+        __w.write_request(crate::codec::test_host::HOST, &ir)
     };
     let msgs = out.get("messages").and_then(|m| m.as_array()).unwrap();
     let parts = msgs[0].get("content").and_then(|c| c.as_array()).unwrap();
@@ -5150,13 +5319,15 @@ fn read_write_response_error_finish_reason_round_trips() {
         "message": {"role": "assistant", "content": [{"type": "text", "text": ""}]},
         "usage": {"tokens": {"input_tokens": 4, "output_tokens": 0}}
     });
-    let resp = CohereReader.read_response(&body).expect("read_response");
+    let resp = CohereReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("read_response");
     assert_eq!(
         resp.stop_reason,
         Some(crate::codec::ir::IrStopReason::Error)
     );
     let writer = CohereWriter;
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(
         out.get("finish_reason").and_then(|v| v.as_str()),
         Some("ERROR") // golden wire-contract literal (kept bare on purpose)
@@ -5196,7 +5367,7 @@ fn tool_choice_maps_to_cohere_native_strings() {
         };
         req.tool_choice = tc;
         let writer = CohereWriter;
-        writer.write_request(&req)
+        writer.write_request(crate::codec::test_host::HOST, &req)
     };
     assert_eq!(
         mk(Some(crate::codec::ir::IrToolChoice::Required))
@@ -5262,7 +5433,7 @@ fn response_format_json_schema_round_trips_cohere_shape() {
 
     // WRITE re-emits Cohere's native json_object + json_schema shape (schema directly under key).
     let writer = CohereWriter;
-    let out = writer.write_request(&ir);
+    let out = writer.write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out.pointer("/response_format/type")
             .and_then(|t| t.as_str()),
@@ -5292,7 +5463,7 @@ fn n_candidate_count_never_emitted_on_cohere() {
     };
     req.n = Some(3);
     let writer = CohereWriter;
-    let out = writer.write_request(&req);
+    let out = writer.write_request(crate::codec::test_host::HOST, &req);
     assert!(
         out.get("n").is_none() && out.get("num_generations").is_none(),
         "Cohere v2 models no n/num_generations; it must never be emitted: {out}"
@@ -5322,6 +5493,7 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
 
     // message-start
     reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_MESSAGE_START, "delta": {"message": {"role": "assistant"}}}),
         &mut state,
@@ -5329,7 +5501,7 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
 
     // tool-plan-delta x2 — opens the leading reasoning block at index 0 on first appearance, then a
     // ThinkingDelta per token.
-    let evs = reader.read_response_events(
+    let evs = reader.read_response_events(crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_TOOL_PLAN_DELTA, "delta": {"message": {"tool_plan": "I will "}}}),
         &mut state,
@@ -5356,7 +5528,7 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
         "the plan token must be a ThinkingDelta, got {evs:?}"
     );
 
-    let evs = reader.read_response_events(
+    let evs = reader.read_response_events(crate::codec::test_host::HOST,
         "",
         &serde_json::json!({"type": ET_TOOL_PLAN_DELTA, "delta": {"message": {"tool_plan": "check the weather."}}}),
         &mut state,
@@ -5378,7 +5550,7 @@ fn test_stream_tool_plan_delta_becomes_leading_reasoning_before_tool_call() {
     // CLOSE the leading plan Text block (BlockStop at index 0) — otherwise it would leak an
     // unbalanced content_block_start on an Anthropic egress — then open the tool at index 1. This
     // mirrors the non-stream fold: the plan is the LEADING block and the tool follows it.
-    let evs = reader.read_response_events(
+    let evs = reader.read_response_events(crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_TOOL_CALL_START,
@@ -5449,7 +5621,7 @@ fn test_write_response_reemits_folded_tool_plan_as_content_not_tool_plan() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = writer.write_response(&resp);
+    let out = writer.write_response(crate::codec::test_host::HOST, &resp);
     let message = out.get("message").expect("message");
     assert!(
         message.get("tool_plan").is_none(),
@@ -5505,8 +5677,11 @@ fn test_stream_tool_plan_to_anthropic_writer_is_balanced() {
     let mut starts = 0usize;
     let mut stops = 0usize;
     for frame in &frames {
-        for ev in reader.read_response_events("", frame, &mut state) {
-            if let Some((event_type, _payload)) = writer.write_response_event(&ev) {
+        for ev in reader.read_response_events(crate::codec::test_host::HOST, "", frame, &mut state)
+        {
+            if let Some((event_type, _payload)) =
+                writer.write_response_event(crate::codec::test_host::HOST, &ev)
+            {
                 if event_type == "content_block_start" {
                     starts += 1;
                 } else if event_type == "content_block_stop" {
@@ -5572,7 +5747,7 @@ fn test_anthropic_user_tool_result_survives_to_cohere() {
     );
 
     let writer = CohereWriter;
-    let cohere = writer.write_request(&ir);
+    let cohere = writer.write_request(crate::codec::test_host::HOST, &ir);
     let msgs = cohere.get("messages").unwrap().as_array().unwrap();
     let tool_msg = msgs
         .iter()
@@ -5636,7 +5811,7 @@ fn test_anthropic_user_tool_result_plus_text_splits_to_tool_and_user() {
     assert_eq!(bundled.role, crate::codec::ir::IrRole::User);
 
     let writer = CohereWriter;
-    let cohere = writer.write_request(&ir);
+    let cohere = writer.write_request(crate::codec::test_host::HOST, &ir);
     let msgs = cohere.get("messages").unwrap().as_array().unwrap();
 
     // The tool result is its own `tool` message, carrying ONLY the result; the user text must NOT
@@ -5690,7 +5865,12 @@ fn cohere_empty_or_missing_stream_event_type_is_ignored_not_panic() {
 
     // Empty `type` — the exact frame that used to trip the debug_assert!.
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let evs = reader.read_response_events("", &serde_json::json!({ "type": "" }), &mut state);
+    let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
+        "",
+        &serde_json::json!({ "type": "" }),
+        &mut state,
+    );
     assert!(
         evs.is_empty(),
         "an empty-type Cohere frame must be ignored (no IR events), got {evs:?}"
@@ -5699,7 +5879,12 @@ fn cohere_empty_or_missing_stream_event_type_is_ignored_not_panic() {
     // `type` absent entirely — same contract, another shape of misframed upstream data
     // (event_type_val resolves to "" via unwrap_or, reaching the same catch-all arm).
     let mut state = crate::codec::ir::StreamDecodeState::default();
-    let evs = reader.read_response_events("", &serde_json::json!({ "index": 0 }), &mut state);
+    let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
+        "",
+        &serde_json::json!({ "index": 0 }),
+        &mut state,
+    );
     assert!(
         evs.is_empty(),
         "a type-less Cohere frame must be ignored (no IR events), got {evs:?}"
@@ -5721,6 +5906,7 @@ fn test_stream_generic_error_finish_pushes_ir_error_event() {
 
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_MESSAGE_END,
@@ -5756,6 +5942,7 @@ fn test_stream_generic_error_finish_pushes_ir_error_event() {
 
     let mut toxic_state = crate::codec::ir::StreamDecodeState::default();
     let toxic_evs = reader.read_response_events(
+        crate::codec::test_host::HOST,
         "",
         &serde_json::json!({
             "type": ET_MESSAGE_END,
@@ -5792,13 +5979,16 @@ fn cohere_writer_emits_every_citation_in_a_multi_citation_delta() {
         ..Default::default()
     };
     let writer = CohereWriter;
-    let frames = writer.write_response_events(&crate::codec::ir::IrStreamEvent::BlockDelta {
-        index: 0,
-        delta: crate::codec::ir::IrDelta::CitationsDelta(vec![
-            cit("https://example.invalid/a"),
-            cit("https://example.invalid/b"),
-        ]),
-    });
+    let frames = writer.write_response_events(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockDelta {
+            index: 0,
+            delta: crate::codec::ir::IrDelta::CitationsDelta(vec![
+                cit("https://example.invalid/a"),
+                cit("https://example.invalid/b"),
+            ]),
+        },
+    );
 
     let starts: Vec<&serde_json::Value> = frames
         .iter()
@@ -5849,7 +6039,9 @@ fn raw_stop_reason_agrees_with_read_response() {
             "message": {"role": "assistant", "content": [{"type": "text", "text": "x"}]},
             "usage": {"tokens": {"input_tokens": 10, "output_tokens": 5}}
         });
-        let parsed = CohereReader.read_response(&body).expect("read_response");
+        let parsed = CohereReader
+            .read_response(crate::codec::test_host::HOST, &body)
+            .expect("read_response");
         assert_eq!(
             CohereReader.raw_stop_reason(body.to_string().as_bytes()),
             parsed.stop_reason,

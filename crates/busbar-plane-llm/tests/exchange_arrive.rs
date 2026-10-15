@@ -219,13 +219,22 @@ use busbar_plane_llm::exchange::shaping::Shaping;
 use busbar_plane_llm::refusal::reason;
 use serde_json::json;
 
-/// The host's entropy, so a dialect that mints a request id mints one.
-fn entropy() {
-    busbar_contract::codec::install_entropy_source(|out| {
+/// The host the exchange is handed: a fixed entropy byte, so a dialect that mints a request id
+/// mints one (the same one every time), and no clock.
+struct FixedHost;
+
+impl busbar_contract::codec::CodecHost for FixedHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
         out.fill(7);
         true
-    });
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        None
+    }
 }
+
+const HOST: &dyn busbar_contract::codec::CodecHost = &FixedHost;
 
 fn body_json(bytes: &[u8]) -> Value {
     busbar_plane_llm::codec::json::parse(bytes).expect("JSON")
@@ -233,7 +242,7 @@ fn body_json(bytes: &[u8]) -> Value {
 
 /// The caller's rendered refusal for a declined arrival, as JSON.
 fn rendered(d: &Declined) -> (u16, Vec<String>, Value) {
-    let r = declined(d);
+    let r = declined(HOST, d);
     let names = r.fields.iter().map(|(n, _)| n.clone()).collect();
     (r.status, names, body_json(&r.body))
 }
@@ -401,6 +410,7 @@ fn the_adhoc_route_reaches_configured_models_only() {
         .expect("the no-destination status");
     assert_eq!(row.status, 404);
     let r = kernel_refusal(
+        HOST,
         a.dialect,
         reason::NO_DESTINATION,
         404,
@@ -438,11 +448,12 @@ fn a_buffered_gemini_arrival_routes_by_its_url_model_and_reads_gemini_back() {
     let pm = a.path_model.clone().expect("a path model");
     assert!(!pm.stream && !pm.json_array);
     let s = openai_lane("foo");
-    let r = build(&a, &json(), &s, "p", "foo").expect("built");
+    let r = build(HOST, &a, &json(), &s, "p", "foo").expect("built");
     let far = body_json(&r.body);
     assert!(far.get("messages").is_some(), "{far}");
     assert_ne!(far.get("stream"), Some(&json!(true)), "{far}");
     let w = whole::translate(
+        HOST,
         &gemini_from_openai(&a, "foo", false),
         200,
         &openai_ok_body(),
@@ -490,7 +501,7 @@ fn a_colon_less_gemini_path_is_a_gemini_404() {
         (d.why, d.status, d.envelope),
         (Decline::PathNotFound, 404, "gemini")
     );
-    let r = declined(&d);
+    let r = declined(HOST, &d);
     assert_eq!(r.status, 404);
     assert_eq!(
         r.fields
@@ -513,7 +524,7 @@ fn an_empty_gemini_model_is_a_404() {
         br#"{"contents":[]}"#,
     );
     assert_eq!((d.why, d.status), (Decline::PathNotFound, 404));
-    assert_eq!(declined(&d).status, 404);
+    assert_eq!(declined(HOST, &d).status, 404);
 }
 
 /// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_gemini_v1_surface_error_echoes_v1_not_v1beta`.
@@ -606,7 +617,7 @@ fn a_gemini_model_with_a_colon_splits_on_the_last_colon() {
     );
     assert_eq!(a.model, "tunedModels/abc:1");
     let s = openai_lane("tunedModels/abc:1");
-    assert!(build(&a, &json(), &s, "p", "tunedModels/abc:1").is_ok());
+    assert!(build(HOST, &a, &json(), &s, "p", "tunedModels/abc:1").is_ok());
 }
 
 /// Rehomes `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_percent_decode_colon`.
@@ -726,10 +737,9 @@ fn a_responses_bool_model_is_an_invalid_request_400() {
 /// RED if the status, the type or the header differs.
 #[test]
 fn a_bedrock_non_object_body_is_a_validation_400() {
-    entropy();
     let d = no("/model/foo/converse", &json(), b"[1,2]");
     assert_eq!((d.why, d.status), (Decline::NotAnObject, 400));
-    let r = declined(&d);
+    let r = declined(HOST, &d);
     assert_eq!(r.status, 400);
     assert!(r.fields.iter().any(|(n, _)| n == "x-amzn-errortype"));
     assert_eq!(body_json(&r.body)["__type"], "ValidationException");
@@ -753,7 +763,7 @@ fn a_percent_encoded_bedrock_model_is_decoded_and_streamed() {
     );
     assert!(a.path_model.as_ref().is_some_and(|p| p.stream));
     let s = openai_lane("anthropic.claude-3:haiku");
-    let r = build(&a, &json(), &s, "p", "anthropic.claude-3:haiku").expect("built");
+    let r = build(HOST, &a, &json(), &s, "p", "anthropic.claude-3:haiku").expect("built");
     assert_eq!(body_json(&r.body)["stream"], true);
     assert_eq!(
         busbar_plane_llm::exchange::reply::wire::ingress_stream_content_type("bedrock"),
@@ -782,7 +792,7 @@ fn a_gemini_unknown_model_reads_geminis_versioned_sentence() {
             "models/no-such-model is not found for API version {version}, or is not supported for the task you are trying to perform."
         );
         assert_eq!(message, want, "{target}");
-        let r = kernel_refusal("gemini", reason::NO_DESTINATION, 404, &message, 0);
+        let r = kernel_refusal(HOST, "gemini", reason::NO_DESTINATION, 404, &message, 0);
         assert_eq!(r.status, 404);
         let body = body_json(&r.body);
         assert_eq!(body["error"]["message"], want.as_str(), "{target}");
@@ -807,7 +817,7 @@ fn the_stable_gemini_surface_streams_events_with_alt_sse() {
     assert!(body_json(&a.body)
         .get("__busbar_gemini_json_array")
         .is_none());
-    let r = build(&a, &json(), &openai_lane("foo"), "p", "foo").expect("built");
+    let r = build(HOST, &a, &json(), &openai_lane("foo"), "p", "foo").expect("built");
     assert_eq!(body_json(&r.body)["stream"], true);
 }
 
@@ -824,7 +834,12 @@ fn the_stable_gemini_surface_without_alt_sse_reads_a_json_array() {
     );
     let pm = a.path_model.clone().expect("a path model");
     assert!(pm.stream && pm.json_array);
-    let w = whole::translate(&gemini_from_openai(&a, "foo", true), 200, &openai_ok_body());
+    let w = whole::translate(
+        HOST,
+        &gemini_from_openai(&a, "foo", true),
+        200,
+        &openai_ok_body(),
+    );
     assert_eq!(w.end, WholeEnd::Delivered, "{:?}", w.refused);
     assert_eq!(
         w.answer
@@ -1238,8 +1253,9 @@ fn a_pre_forward_refusal_renders_the_released_400_before_any_unit() {
         (d.why, d.status, d.envelope),
         (Decline::MissingModel, 400, "openai")
     );
-    let unit = declined(&d);
+    let unit = declined(HOST, &d);
     let live = render(
+        HOST,
         "openai",
         400,
         "invalid_request_error",
@@ -1361,7 +1377,6 @@ fn every_shape_of_no_model_is_the_missing_model_400() {
 /// RED if the two collapse into one, or either sentence or status differs.
 #[test]
 fn the_two_operation_misses_render_distinct_404s_in_every_dialect() {
-    entropy();
     for dialect in [
         "anthropic",
         "openai",
@@ -1371,19 +1386,23 @@ fn the_two_operation_misses_render_distinct_404s_in_every_dialect() {
         "cohere",
     ] {
         let protocol_miss = render(
+            HOST,
             dialect,
             404,
             "not_found_error",
             "This protocol does not support that operation.",
             0,
         );
-        let endpoint_miss = declined(&Declined {
-            why: Decline::UnsupportedOperation,
-            status: 404,
-            envelope: dialect,
-            kind: "not_found_error",
-            message: "This endpoint does not support that operation.".into(),
-        });
+        let endpoint_miss = declined(
+            HOST,
+            &Declined {
+                why: Decline::UnsupportedOperation,
+                status: 404,
+                envelope: dialect,
+                kind: "not_found_error",
+                message: "This endpoint does not support that operation.".into(),
+            },
+        );
         assert_eq!((protocol_miss.status, endpoint_miss.status), (404, 404));
         assert_ne!(protocol_miss.body, endpoint_miss.body, "{dialect}");
         let text = String::from_utf8_lossy(&endpoint_miss.body);

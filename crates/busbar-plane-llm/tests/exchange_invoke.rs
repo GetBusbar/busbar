@@ -17,6 +17,27 @@ use busbar_plane_llm::exchange::reply::{At, Reply, ReplyCtx, Verdict};
 use busbar_plane_llm::exchange::shaping::Shaping;
 use serde_json::{json, Value};
 
+/// The codec host these tests hand the plane: the OS CSPRNG and the system clock in whole seconds,
+/// read the way the kernel's host reads them.
+struct TestHost;
+
+impl busbar_contract::codec::CodecHost for TestHost {
+    fn fill_entropy(&self, out: &mut [u8]) -> bool {
+        getrandom::fill(out).is_ok()
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        Some(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_secs()),
+        )
+    }
+}
+
+/// The handle every codec call here is handed.
+const HOST: &dyn busbar_contract::codec::CodecHost = &TestHost;
+
 /// A Bedrock provider (its own dialect, SigV4), one model served over it in Converse and one over
 /// the invoke envelope, and an Anthropic provider for the carried dialect's own lane.
 fn shaping() -> Shaping {
@@ -120,7 +141,7 @@ fn a_carried_dialect_caller_is_relayed_inside_the_envelope() {
             &b"prompt-caching-2024-07-31, output-128k-2025-02-19"[..],
         )],
     );
-    let r = build(&a, &h, &shaping(), "p", "claude-invoke").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "claude-invoke").expect("built");
     assert!(
         r.target.ends_with("/invoke-with-response-stream"),
         "{}",
@@ -152,7 +173,7 @@ fn a_carried_dialect_caller_is_relayed_inside_the_envelope() {
 fn a_whole_answer_is_asked_for_on_the_plain_operation() {
     let body = r#"{"model":"claude-invoke","max_tokens":64,"messages":[]}"#;
     let (a, h) = arrived(body, &[]);
-    let r = build(&a, &h, &shaping(), "p", "claude-invoke").expect("built");
+    let r = build(HOST, &a, &h, &shaping(), "p", "claude-invoke").expect("built");
     assert!(r.target.ends_with("/invoke"), "{}", r.target);
     let sent: Value = serde_json::from_slice(&r.body).expect("json");
     assert_eq!(sent.get("anthropic_beta"), None, "no beta flags, no member");
@@ -275,14 +296,14 @@ fn a_streamed_answer_meters_the_carried_dialects_usage() {
         translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let head: &[(&[u8], &[u8])] = &[(b"content-type", invoke::EVENTSTREAM.as_bytes())];
-    let mut reply = Reply::new(&ctx, 200, head);
+    let mut reply = Reply::new(HOST, &ctx, 200, head);
     let wire: Vec<u8> = events().iter().flat_map(chunk).collect();
     let pieces: Vec<&[u8]> = wire.chunks(50).collect();
     let mut out = Vec::new();
     let mut last_piece = None;
     for (i, p) in pieces.iter().enumerate() {
         let last = i + 1 == pieces.len();
-        let piece = reply.feed(&ctx, p, last, At::default());
+        let piece = reply.feed(HOST, &ctx, p, last, At::default());
         if let Some(h) = &piece.head {
             let ct = h
                 .fields

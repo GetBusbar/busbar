@@ -34,7 +34,7 @@ fn anthropic_request_provider_specific_fields_carry() {
         "betas": ["token-counting-2024-11-01", "pdfs-2024-09-25"]
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
 
     // metadata: the WHOLE object survives (user_id is also promoted to `user`, but the verbatim
     // extra overlay wins so custom keys are not lost).
@@ -100,7 +100,7 @@ fn anthropic_request_top_k_carry() {
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
     assert_eq!(ir.top_k, Some(40), "top_k read first-class");
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(out["top_k"], 40, "top_k must re-emit");
 }
 
@@ -118,7 +118,7 @@ fn anthropic_request_tools_carry() {
         }]
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     let tool = &out["tools"][0];
     assert_eq!(tool["name"], "get_weather", "tool name survives");
     assert_eq!(
@@ -145,7 +145,7 @@ fn anthropic_request_tool_choice_carry() {
         "tool_choice": {"type": "tool", "name": "f"}
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["tool_choice"]["type"], "tool",
         "tool_choice type survives"
@@ -168,7 +168,7 @@ fn anthropic_request_thinking_carry() {
         Some(crate::codec::ir::IrReasoningAsk::Budget(6000)),
         "thinking read into the reasoning ask"
     );
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["thinking"]["type"], "enabled",
         "thinking param re-emitted"
@@ -212,7 +212,7 @@ fn anthropic_content_block_field_carry() {
         ]
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     let user0 = out["messages"][0]["content"].as_array().unwrap();
     let text = &user0[0];
     assert_eq!(
@@ -266,7 +266,7 @@ fn anthropic_thinking_content_block_carry() {
         ]}]
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     let block = &out["messages"][0]["content"][0];
     assert_eq!(block["type"], "thinking");
     assert_eq!(
@@ -298,7 +298,7 @@ fn anthropic_document_block_carry() {
     let ir = AnthropicReader.read_request(&body).expect("parses");
 
     // SAME-protocol: everything survives verbatim.
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     let doc = &out["messages"][0]["content"][0];
     assert_eq!(doc["type"], "document");
     assert_eq!(
@@ -323,7 +323,7 @@ fn anthropic_document_block_carry() {
     // context and citations, which ride the IR-12 Media slots.
     let mut crossed = ir.clone();
     crossed.extra.clear();
-    let cout = anthropic_writer().write_request(&crossed);
+    let cout = anthropic_writer().write_request(crate::codec::test_host::HOST, &crossed);
     let cdoc = &cout["messages"][0]["content"][0];
     assert_eq!(cdoc["type"], "document");
     assert_eq!(
@@ -357,7 +357,7 @@ fn anthropic_search_result_block_carry() {
         ]}]
     });
     let ir = AnthropicReader.read_request(&body).expect("parses");
-    let out = anthropic_writer().write_request(&ir);
+    let out = anthropic_writer().write_request(crate::codec::test_host::HOST, &ir);
     let sr = &out["messages"][0]["content"][0];
     assert_eq!(sr["type"], "search_result");
     assert_eq!(
@@ -389,7 +389,9 @@ fn anthropic_response_usage_extras_carry() {
             "service_tier": "priority"
         }
     });
-    let ir = AnthropicReader.read_response(&body).expect("parses");
+    let ir = AnthropicReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("parses");
     assert_eq!(
         ir.usage.detail.web_search_requests,
         Some(2),
@@ -400,7 +402,7 @@ fn anthropic_response_usage_extras_carry() {
         Some("priority"),
         "service_tier read into IR"
     );
-    let out = anthropic_writer().write_response(&ir);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["usage"]["server_tool_use"]["web_search_requests"], 2,
         "usage.server_tool_use.web_search_requests survives"
@@ -425,10 +427,10 @@ fn anthropic_stream_event_roundtrip_carry() {
     let writer = AnthropicWriter;
     let rw = |et: &str, data: serde_json::Value| -> (String, serde_json::Value) {
         let ev = AnthropicReader
-            .read_response_event(et, &data)
+            .read_response_event(crate::codec::test_host::HOST, et, &data)
             .unwrap_or_else(|| panic!("read event {et}"));
         writer
-            .write_response_event(&ev)
+            .write_response_event(crate::codec::test_host::HOST, &ev)
             .unwrap_or_else(|| panic!("write event {et}"))
     };
 
@@ -502,10 +504,10 @@ fn anthropic_stream_delta_roundtrip_carry() {
     let rw = |delta: serde_json::Value| -> serde_json::Value {
         let data = serde_json::json!({"type": "content_block_delta", "index": 0, "delta": delta});
         let ev = AnthropicReader
-            .read_response_event("content_block_delta", &data)
+            .read_response_event(crate::codec::test_host::HOST, "content_block_delta", &data)
             .expect("read delta");
         anthropic_writer()
-            .write_response_event(&ev)
+            .write_response_event(crate::codec::test_host::HOST, &ev)
             .expect("write delta")
             .1
     };
@@ -561,13 +563,18 @@ fn anthropic_stream_delta_roundtrip_carry() {
 fn anthropic_stream_ping_same_proto_carry() {
     assert!(
         AnthropicReader
-            .read_response_event("ping", &serde_json::json!({"type": "ping"}))
+            .read_response_event(
+                crate::codec::test_host::HOST,
+                "ping",
+                &serde_json::json!({"type": "ping"})
+            )
             .is_none(),
         "a ping keepalive must produce no cross-protocol event (no payload to reconstruct)"
     );
     // A ping must not leak into the multi-event reader path either (no spurious BlockStart/Delta).
     let mut state = crate::codec::ir::StreamDecodeState::default();
     let events = AnthropicReader.read_response_events(
+        crate::codec::test_host::HOST,
         "ping",
         &serde_json::json!({"type": "ping"}),
         &mut state,
@@ -595,7 +602,9 @@ fn anthropic_drops_penalties_seed_n_observably() {
 
     let cap = WarnCapture::default();
     let sub = cap.clone();
-    let out = tracing::subscriber::with_default(sub, || anthropic_writer().write_request(&ir));
+    let out = tracing::subscriber::with_default(sub, || {
+        anthropic_writer().write_request(crate::codec::test_host::HOST, &ir)
+    });
 
     // None of the four leaks onto the Anthropic wire.
     for field in ["frequency_penalty", "presence_penalty", "seed", "n"] {
@@ -631,11 +640,14 @@ fn streamed_redacted_reasoning_preserves_bytes_on_anthropic_egress() {
 
     // 1. The redacted BlockStart emits NO wire event (the plaintext thinking seed is suppressed; the
     //    native start is emitted from the delta below).
-    let start = w.write_response_event(&crate::codec::ir::IrStreamEvent::BlockStart {
-        index: 0,
-        block: crate::codec::ir::IrBlockMeta::RedactedThinking,
-        refusal: false,
-    });
+    let start = w.write_response_event(
+        crate::codec::test_host::HOST,
+        &crate::codec::ir::IrStreamEvent::BlockStart {
+            index: 0,
+            block: crate::codec::ir::IrBlockMeta::RedactedThinking,
+            refusal: false,
+        },
+    );
     assert!(
         start.is_none(),
         "a RedactedThinking BlockStart must emit no plaintext thinking seed: {start:?}"
@@ -643,10 +655,15 @@ fn streamed_redacted_reasoning_preserves_bytes_on_anthropic_egress() {
 
     // 2. The delta emits the native redacted_thinking content_block_start carrying the opaque bytes.
     let (evt, body) = w
-        .write_response_event(&crate::codec::ir::IrStreamEvent::BlockDelta {
-            index: 0,
-            delta: crate::codec::ir::IrDelta::RedactedReasoningDelta("ENCRYPTED_BLOB".to_string()),
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::BlockDelta {
+                index: 0,
+                delta: crate::codec::ir::IrDelta::RedactedReasoningDelta(
+                    "ENCRYPTED_BLOB".to_string(),
+                ),
+            },
+        )
         .expect("the redacted delta must emit the native redacted_thinking start");
     assert_eq!(
         evt, "content_block_start",
@@ -670,7 +687,10 @@ fn streamed_redacted_reasoning_preserves_bytes_on_anthropic_egress() {
 
     // 3. The BlockStop closes the block with content_block_stop.
     let (stop_evt, _) = w
-        .write_response_event(&crate::codec::ir::IrStreamEvent::BlockStop { index: 0 })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &crate::codec::ir::IrStreamEvent::BlockStop { index: 0 },
+        )
         .expect("the redacted block must close");
     assert_eq!(stop_evt, "content_block_stop");
 }
@@ -731,7 +751,7 @@ fn anthropic_response_carries_every_spec_required_member_with_default_shapes() {
         stop_detail: None,
         ..Default::default()
     };
-    let out = anthropic_writer().write_response(&resp);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(out["stop_details"], serde_json::Value::Null);
     assert_eq!(out["container"], serde_json::Value::Null);
     assert_eq!(out["content"][0]["citations"], serde_json::Value::Null);
@@ -778,9 +798,11 @@ fn anthropic_response_spec_required_members_pass_reported_values_through() {
             "output_tokens_details": {"thinking_tokens": 2}
         }
     });
-    let ir = AnthropicReader.read_response(&body).expect("reads");
+    let ir = AnthropicReader
+        .read_response(crate::codec::test_host::HOST, &body)
+        .expect("reads");
     assert_eq!(ir.usage.detail.reasoning_tokens, Some(2));
-    let out = anthropic_writer().write_response(&ir);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &ir);
     assert_eq!(
         out["content"][0]["citations"],
         body["content"][0]["citations"]
@@ -829,7 +851,7 @@ fn anthropic_response_cache_creation_is_null_when_total_known_but_tiers_are_not(
         stop_detail: None,
         ..Default::default()
     };
-    let out = anthropic_writer().write_response(&resp);
+    let out = anthropic_writer().write_response(crate::codec::test_host::HOST, &resp);
     assert_eq!(out["usage"]["cache_creation_input_tokens"], 9);
     assert_eq!(out["usage"]["cache_creation"], serde_json::Value::Null);
 }
@@ -843,13 +865,16 @@ fn anthropic_stream_events_carry_every_spec_required_member() {
     use crate::codec::ir::{IrBlockMeta, IrStreamEvent};
     let w = AnthropicWriter;
     let (_, start) = w
-        .write_response_event(&IrStreamEvent::MessageStart {
-            role: crate::codec::ir::IrRole::Assistant,
-            usage: None,
-            id: None,
-            created: None,
-            model: None,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageStart {
+                role: crate::codec::ir::IrRole::Assistant,
+                usage: None,
+                id: None,
+                created: None,
+                model: None,
+            },
+        )
         .expect("message_start");
     let m = &start["message"];
     assert_eq!(m["stop_details"], serde_json::Value::Null);
@@ -873,25 +898,31 @@ fn anthropic_stream_events_carry_every_spec_required_member() {
     }
 
     let (_, text_start) = w
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 0,
-            block: IrBlockMeta::Text,
-            refusal: false,
-        })
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 0,
+                block: IrBlockMeta::Text,
+                refusal: false,
+            },
+        )
         .expect("text start");
     assert_eq!(
         text_start["content_block"]["citations"],
         serde_json::Value::Null
     );
     let (_, tool_start) = w
-        .write_response_event(&IrStreamEvent::BlockStart {
-            index: 1,
-            block: IrBlockMeta::ToolUse {
-                id: "toolu_1".into(),
-                name: "f".into(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::BlockStart {
+                index: 1,
+                block: IrBlockMeta::ToolUse {
+                    id: "toolu_1".into(),
+                    name: "f".into(),
+                },
+                refusal: false,
             },
-            refusal: false,
-        })
+        )
         .expect("tool start");
     assert_eq!(
         tool_start["content_block"]["caller"],
@@ -899,18 +930,21 @@ fn anthropic_stream_events_carry_every_spec_required_member() {
     );
 
     let (_, delta) = w
-        .write_response_event(&IrStreamEvent::MessageDelta {
-            stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
-            stop_sequence: None,
-            usage: crate::codec::ir::IrUsage {
-                input_tokens: 1,
-                output_tokens: 2,
-                cache_creation_input_tokens: None,
-                cache_read_input_tokens: None,
-                detail: crate::codec::ir::IrUsageDetail::default(),
+        .write_response_event(
+            crate::codec::test_host::HOST,
+            &IrStreamEvent::MessageDelta {
+                stop_reason: Some(crate::codec::ir::IrStopReason::EndTurn),
+                stop_sequence: None,
+                usage: crate::codec::ir::IrUsage {
+                    input_tokens: 1,
+                    output_tokens: 2,
+                    cache_creation_input_tokens: None,
+                    cache_read_input_tokens: None,
+                    detail: crate::codec::ir::IrUsageDetail::default(),
+                },
+                stop_detail: None,
             },
-            stop_detail: None,
-        })
+        )
         .expect("message_delta");
     assert_eq!(delta["delta"]["container"], serde_json::Value::Null);
     assert_eq!(delta["delta"]["stop_details"], serde_json::Value::Null);

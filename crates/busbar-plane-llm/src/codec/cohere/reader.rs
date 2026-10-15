@@ -715,6 +715,7 @@ impl ProtocolReader for CohereReader {
 
     fn read_response_events(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         _event_type: &str,
         data: &serde_json::Value,
         state: &mut crate::codec::ir::StreamDecodeState,
@@ -737,7 +738,7 @@ impl ProtocolReader for CohereReader {
                         .and_then(|v| v.as_str())
                         .filter(|s| !s.is_empty())
                         .map(String::from)
-                        .or_else(|| Some(synthesize_cohere_id()));
+                        .or_else(|| Some(synthesize_cohere_id(host)));
                     out.push(IrStreamEvent::MessageStart {
                         role: crate::codec::ir::IrRole::Assistant,
                         usage: None,
@@ -1281,6 +1282,7 @@ impl ProtocolReader for CohereReader {
 
     fn read_response(
         &self,
+        host: &dyn busbar_contract::codec::CodecHost,
         body: &serde_json::Value,
     ) -> Result<crate::codec::ir::IrResponse, IrError> {
         let obj = body.as_object().ok_or_else(ir_parse_error)?;
@@ -1447,7 +1449,7 @@ impl ProtocolReader for CohereReader {
             .and_then(|v| v.as_str())
             .filter(|s| !s.is_empty())
             .map(String::from)
-            .or_else(|| Some(synthesize_cohere_id()));
+            .or_else(|| Some(synthesize_cohere_id(host)));
 
         Ok(crate::codec::ir::IrResponse {
             logprobs,

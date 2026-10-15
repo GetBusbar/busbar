@@ -157,6 +157,22 @@ fn served_generation() -> busbar_plane_llm::exchange::shaping::Shaping {
     .expect("a well-formed generation reads")
 }
 
+/// The host the gated forward is handed: no entropy and no clock (a passthrough forward mints no
+/// id and stamps no time), so the gate counts the plane's allocations and nothing of a host's.
+struct GateHost;
+
+impl busbar_contract::codec::CodecHost for GateHost {
+    fn fill_entropy(&self, _out: &mut [u8]) -> bool {
+        false
+    }
+
+    fn wall_clock_now(&self) -> Option<u64> {
+        None
+    }
+}
+
+const HOST: &dyn busbar_contract::codec::CodecHost = &GateHost;
+
 /// A canned far-end chat completion (the 1.5.5 gate's upstream answer).
 const FAR_OK: &[u8] = br#"{"id":"chatcmpl-gate","object":"chat.completion","created":0,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}"#;
 
@@ -170,7 +186,8 @@ fn one_forward(shaping: &busbar_plane_llm::exchange::shaping::Shaping, body: &[u
     let caller: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
     let arrived = arrive("POST", "/v1/chat/completions", caller, body, shaping)
         .expect("the caller's request arrives");
-    let far = build(&arrived, caller, shaping, "p", "gpt-4o").expect("the attempt is written");
+    let far =
+        build(HOST, &arrived, caller, shaping, "p", "gpt-4o").expect("the attempt is written");
     assert!(!far.body.is_empty(), "the far end is sent a body");
     let lane = shaping.lane("gpt-4o").expect("the member's lane");
     let ctx = ReplyCtx {
@@ -183,12 +200,12 @@ fn one_forward(shaping: &busbar_plane_llm::exchange::shaping::Shaping, body: &[u
         translate_cap: busbar_contract::codec::TRANSLATE_BODY_MAX_BYTES_DEFAULT,
     };
     let head: &[(&[u8], &[u8])] = &[(b"content-type", b"application/json")];
-    let mut reply = Reply::new(&ctx, 200, head);
+    let mut reply = Reply::new(HOST, &ctx, 200, head);
     let at = At {
         now_s: 1_752_000_000,
         elapsed_ms: Some(1),
     };
-    let piece = reply.feed(&ctx, FAR_OK, true, at);
+    let piece = reply.feed(HOST, &ctx, FAR_OK, true, at);
     assert!(piece.done, "a whole answer ends on its last piece");
     piece.head.map_or(0, |h| h.status)
 }

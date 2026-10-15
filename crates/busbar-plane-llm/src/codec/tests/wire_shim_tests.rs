@@ -142,7 +142,7 @@ fn unreadable_top_level_cache_count_refuses_before_reaching_tier_usage() {
             "cache_read_input_tokens": "1000",
         }
     });
-    AnthropicReader.read_response(&body).expect_err(
+    AnthropicReader.read_response(crate::codec::test_host::HOST, &body).expect_err(
         "a present, unreadable cache_read_input_tokens must refuse — never reach tier_usage() as a \
          collapsed None",
     );
@@ -157,7 +157,7 @@ fn unreadable_top_level_cache_count_refuses_before_reaching_tier_usage() {
             "cache_creation_input_tokens": "200",
         }
     });
-    AnthropicReader.read_response(&body).expect_err(
+    AnthropicReader.read_response(crate::codec::test_host::HOST, &body).expect_err(
         "a present, unreadable cache_creation_input_tokens must refuse — never reach tier_usage() \
          as a collapsed None",
     );
@@ -176,7 +176,7 @@ fn unreadable_top_level_cache_count_refuses_before_reaching_tier_usage() {
         }
     });
     let ir = AnthropicReader
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("a readable cache_read_input_tokens must read, not refuse");
     let tu = ir.usage.to_token_usage();
     let usage = tier_usage(&tu);

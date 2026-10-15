@@ -33,7 +33,7 @@ fn an_answer_web_search_result_reads_as_a_hosted_record() {
     let resp = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("reads");
     assert_eq!(
         resp.content.first(),
@@ -67,7 +67,7 @@ fn a_web_search_error_reads_as_a_record_with_its_status() {
     let resp = protocol_for("anthropic")
         .unwrap()
         .reader()
-        .read_response(&body)
+        .read_response(crate::codec::test_host::HOST, &body)
         .expect("reads");
     assert!(
         matches!(&resp.content[0], IrBlock::HostedToolRecord { status: Some(s), results, .. }
@@ -96,7 +96,7 @@ fn a_foreign_hosted_record_is_dropped_on_anthropic_egress() {
     let out = protocol_for("anthropic")
         .unwrap()
         .writer()
-        .write_response(&resp);
+        .write_response(crate::codec::test_host::HOST, &resp);
     let content = out["content"].as_array().expect("content");
     assert_eq!(content.len(), 1, "{out}");
     assert_eq!(content[0]["text"], "hi");
