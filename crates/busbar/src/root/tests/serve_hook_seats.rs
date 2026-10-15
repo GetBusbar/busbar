@@ -130,6 +130,9 @@ struct SeatProbe {
     last_payload: Mutex<Option<Vec<u8>>>,
     /// Gate seat: each candidate the last decide was shown, as one line.
     candidates: Mutex<Vec<String>>,
+    /// Gate seat: each candidate's signal bag the last decide was shown, its values as they are
+    /// (`<model> <Signal>=<SignalValue>` ...), one line each.
+    values: Mutex<Vec<String>>,
 }
 
 impl SeatProbe {
@@ -141,6 +144,7 @@ impl SeatProbe {
             reject: None,
             last_payload: Mutex::new(None),
             candidates: Mutex::new(Vec::new()),
+            values: Mutex::new(Vec::new()),
         }
     }
 }
@@ -155,6 +159,17 @@ impl RoutingPolicy for SeatProbe {
         _budget: std::time::Duration,
     ) -> PolicyResult {
         self.log.lock().unwrap().push(self.seat.to_string());
+        *self.values.lock().unwrap() = candidates
+            .iter()
+            .map(|candidate| {
+                let bag: Vec<String> = candidate
+                    .signals
+                    .iter()
+                    .map(|(signal, value)| format!("{signal:?}={value:?}"))
+                    .collect();
+                format!("{} {}", candidate.model, bag.join(" "))
+            })
+            .collect();
         *self.candidates.lock().unwrap() = candidates
             .iter()
             .map(|c| {
@@ -464,6 +479,41 @@ pub(super) struct RigOpts<'a> {
     /// Every provider's `api_key`, a secret reference as written (YAML) (`None`: a credential file
     /// of the rig's own, gone once the door composed).
     pub api_key: Option<&'a str>,
+    /// More fields of every provider entry, as written (YAML, one level below the provider's name:
+    /// `error_map:`, `health:`).
+    pub provider_yaml: &'a str,
+    /// More fields of pool `p`, as written (YAML, one level below the pool's name:
+    /// `upstream_credentials:`, `on_exhausted:`, `failover:`).
+    pub pool_yaml: &'a str,
+    /// More fields of each of pool `p`'s members, by member (YAML: `context_max:`).
+    pub member_yaml: &'a [&'a str],
+    /// More fields of each model entry, by member (YAML: `max_concurrent:`).
+    pub model_yaml: &'a [&'a str],
+    /// More pools beside `p`: each its name and its members as (member index, weight).
+    pub more_pools: &'a [(&'a str, &'a [(usize, u32)])],
+    /// The key's group as configured: its name and its limits (replaces `budget_cents`' group).
+    pub group: Option<(&'a str, &'a [busbar_kernel::config::groups::LimitCfg])>,
+    /// The group the key names, configured or not (`None`: the configured group, if any).
+    pub key_group: Option<&'a str>,
+    /// Requests already on a bucket's all-time window before the money hydrates: (bucket, count),
+    /// each a billable request.
+    pub seed: &'a [(&'a str, u64)],
+    /// The door asks no caller credential (an open front door).
+    pub open_door: bool,
+    /// With `described`, the candidate catalog signals the generation declares (`None`: breaker
+    /// state, error rate and p95 latency).
+    pub declared: Option<&'a [busbar_contract::Signal]>,
+    /// The destination judge refuses every private address, so each member's dial is refused
+    /// before it leaves.
+    pub refuse_private: bool,
+}
+
+/// `text`, each line indented by `by` spaces (empty lines dropped).
+fn indented(text: &str, by: usize) -> String {
+    text.lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| format!("{}{l}\n", " ".repeat(by)))
+        .collect()
 }
 
 /// THE POOLS DOOR, SERVED END TO END, as production composes it: the data router built with the
@@ -479,6 +529,8 @@ pub(super) struct DoorRig {
     pub book: Arc<std::sync::Mutex<crate::root::durability::Durability>>,
     /// The key's id.
     pub key_id: String,
+    /// The governance book the key was minted on.
+    pub gov: Arc<GovState>,
     /// The served door's generations, as a config apply refreshes them.
     appliers: super::DoorAppliers,
     /// A config apply of the same deployment onto the door ([`DoorAppliers::refresh_models`], as
@@ -514,6 +566,12 @@ impl DoorRig {
         self.gate_seat.candidates.lock().unwrap().clone()
     }
 
+    /// Each candidate's signal bag the pool's ranking policy was last shown, its values as they
+    /// are: `<model> <Signal>=<SignalValue> ...`, one line each.
+    pub fn gate_signals(&self) -> Vec<String> {
+        self.gate_seat.values.lock().unwrap().clone()
+    }
+
     /// One request through the door as the keyed caller: its status, head and body.
     pub async fn send(
         &self,
@@ -529,6 +587,76 @@ impl DoorRig {
             .expect("the body")
             .to_vec();
         (status, head, bytes)
+    }
+
+    /// One request through the door carrying only `fields` (no credential of the rig's): its
+    /// status, head and body.
+    pub async fn send_bare(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<serde_json::Value>,
+        fields: &[(&str, &str)],
+    ) -> (u16, axum::http::HeaderMap, Vec<u8>) {
+        use tower::ServiceExt as _;
+        let mut req = axum::http::Request::builder().method(method).uri(path);
+        for (name, value) in fields {
+            req = req.header(*name, *value);
+        }
+        if body.is_some() {
+            req = req.header("content-type", "application/json");
+        }
+        let req = req
+            .body(match body {
+                Some(b) => axum::body::Body::from(b.to_string()),
+                None => axum::body::Body::empty(),
+            })
+            .expect("a request");
+        let response = self
+            .router
+            .clone()
+            .oneshot(req)
+            .await
+            .expect("the router answers");
+        let status = response.status().as_u16();
+        let head = response.headers().clone();
+        let bytes = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("the body")
+            .to_vec();
+        (status, head, bytes)
+    }
+
+    /// The audit records the node's book sealed so far, oldest first.
+    pub fn records(&self) -> Vec<busbar_kernel_audit::AuditRecord> {
+        self.book
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .audit_records
+            .clone()
+    }
+
+    /// A bucket's all-time ledger as the money reads it: (admission count, derived spend in
+    /// cents), and the durable row's (admission count, billable count).
+    pub fn bucket(&self, bucket: &str) -> (u64, i64, u64, u64) {
+        let derived = self
+            .gov
+            .derived_bucket_usage(
+                &self.app.cost,
+                bucket,
+                "total",
+                true,
+                busbar_kernel::store::now(),
+            )
+            .expect("usage read");
+        self.gov.flush_budgets();
+        let row = self.gov.store().get_usage(bucket, 0).expect("ledger row");
+        (
+            derived.requests,
+            derived.spend_cents,
+            row.requests,
+            row.billable_requests,
+        )
     }
 
     /// One request through the door as the keyed caller, with `fields` beside its own: the
@@ -628,7 +756,7 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     node_plane::testkit::install_test_seams();
     busbar_kernel::snapshot::init();
     let judge = crate::root::connector::guard_for(&busbar_kernel::config::Destinations {
-        block_private_addresses: false,
+        block_private_addresses: opts.refuse_private,
         ..Default::default()
     })
     .expect("the guard");
@@ -682,10 +810,12 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             "  oai{i}:\n    api_key: {}\n",
             opts.api_key.unwrap_or(&own_key)
         ));
+        yaml.push_str(&indented(opts.provider_yaml, 4));
     }
     yaml.push_str("models:\n");
     for (i, _) in opts.members.iter().enumerate() {
         yaml.push_str(&format!("  m{i}:\n    provider: oai{i}\n"));
+        yaml.push_str(&indented(opts.model_yaml.get(i).copied().unwrap_or(""), 4));
     }
     yaml.push_str("pools:\n  p:\n    members:\n");
     let pooled = opts.pooled.unwrap_or(opts.members.len());
@@ -694,7 +824,9 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         if opts.described {
             yaml.push_str(&format!("        tier: t{i}\n        tags: [g{i}]\n"));
         }
+        yaml.push_str(&indented(opts.member_yaml.get(i).copied().unwrap_or(""), 8));
     }
+    yaml.push_str(&indented(opts.pool_yaml, 4));
     if let Some(secs) = opts.failover_timeout_secs {
         yaml.push_str(&format!("    failover:\n      timeout_secs: {secs}\n"));
     }
@@ -702,6 +834,12 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         yaml.push_str(&format!(
             "    affinity:\n      mode: session\n      header_name: {header}\n"
         ));
+    }
+    for (name, members) in opts.more_pools {
+        yaml.push_str(&format!("  {name}:\n    members:\n"));
+        for (i, weight) in members.iter() {
+            yaml.push_str(&format!("      - model: m{i}\n        weight: {weight}\n"));
+        }
     }
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).map_err(|e| e.to_string())?;
     let mut defs_yaml = String::new();
@@ -728,8 +866,20 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer))
             .expect("governance"),
     );
+    let configured = opts.group.map(|(name, limits)| {
+        (
+            name.to_string(),
+            busbar_kernel::config::GroupCfg {
+                parent: None,
+                enabled: true,
+                limits: limits.to_vec(),
+                ..Default::default()
+            },
+        )
+    });
     let groups: BTreeMap<String, busbar_kernel::config::GroupCfg> = opts
         .budget_cents
+        .filter(|_| configured.is_none())
         .map(|amount| {
             let limit = busbar_kernel::config::groups::LimitCfg {
                 metric: busbar_kernel::config::groups::LimitMetric::Budget,
@@ -752,6 +902,7 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             )
         })
         .into_iter()
+        .chain(configured)
         .collect();
     let cost = if groups.is_empty() {
         CostModel::flat(1)
@@ -762,7 +913,10 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         .mint_signed(
             NewKeySpec {
                 name: "seats".to_string(),
-                group: groups.keys().next().cloned(),
+                group: opts
+                    .key_group
+                    .map(str::to_string)
+                    .or_else(|| groups.keys().next().cloned()),
                 allowed_pools: opts
                     .allowed_pools
                     .map(|pools| pools.iter().map(|p| (*p).to_string()).collect()),
@@ -772,6 +926,19 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             1_700_000_000,
         )
         .expect("mint");
+    for (bucket, requests) in opts.seed {
+        gov.store()
+            .put_usage(
+                bucket,
+                0,
+                &busbar_contract::records::UsageLedger {
+                    requests: *requests,
+                    billable_requests: *requests,
+                    models: Vec::new(),
+                },
+            )
+            .expect("seed the bucket");
+    }
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
     let node = Arc::new(Node::new());
     let book = crate::root::durability::node_book_over(Box::new(|| CARD.pin()));
@@ -787,10 +954,11 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     };
 
     // THE GENERATION: the lanes, the pool, the fee, and the four seats.
-    let mut builder = busbar_kernel::test_support::TestApp::new()
-        .keys_chain()
-        .governance(Arc::clone(&gov))
-        .cost(cost);
+    let mut builder = busbar_kernel::test_support::TestApp::new();
+    if !opts.open_door {
+        builder = builder.keys_chain();
+    }
+    let mut builder = builder.governance(Arc::clone(&gov)).cost(cost);
     for (i, (port, _)) in opts.members.iter().enumerate() {
         let lane = busbar_kernel::test_support::LaneSpec::new(
             &format!("m{i}"),
@@ -809,7 +977,11 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         .take(pooled)
         .map(|(i, (_, w))| (i, *w))
         .collect();
-    let mut app = builder.pool("p", &weights).build();
+    builder = builder.pool("p", &weights);
+    for (name, members) in opts.more_pools {
+        builder = builder.pool(name, members);
+    }
+    let mut app = builder.build();
     let log = Arc::new(Mutex::new(Vec::new()));
     let read: Arc<dyn Fn() -> Ledger + Send + Sync> = {
         let (gov, cost, key_id) = (Arc::clone(&gov), app.cost.clone(), key.id.clone());
@@ -862,12 +1034,13 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
             let r: Arc<dyn RoutingPolicy> = ranker.clone();
             a.pool_orderings.insert("p".to_string(), gate(r));
             use busbar_contract::Signal;
-            for s in [
+            let all = [
                 Signal::CandidateBreakerState,
                 Signal::CandidateErrorRate,
                 Signal::CandidateLatencyP95Ms,
-            ] {
-                a.requested_signals.insert(s);
+            ];
+            for signal in opts.declared.unwrap_or(&all) {
+                a.requested_signals.insert(*signal);
             }
         }
     }
@@ -980,6 +1153,7 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         app,
         book: Arc::clone(&book.durability),
         key_id: key.id.to_string(),
+        gov,
         appliers,
         reapply,
         log,
