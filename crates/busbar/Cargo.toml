@@ -67,7 +67,7 @@ busbar-plane-llm = { path = "../busbar-plane-llm", optional = true }
 busbar-plane-mcp = { workspace = true, optional = true }
 # THE A2A PLANE, through its memory-ABI door: the edge `plane-a2a` carries through its door row
 # (`plane-a2a-door`, see that feature).
-busbar-plane-a2a = { path = "../busbar-plane-a2a", optional = true }
+busbar-plane-a2a = { workspace = true, optional = true }
 # Boot-time plugin listing (`--plugins`) reads the registry the loader builds.
 busbar-plugin-loader = { path = "../plugin-loader" }
 
@@ -290,7 +290,7 @@ plane-mcp-door = ["dep:busbar-plane-mcp"]
 # is gone: the plane is flipped onto the driver, BUSBAR-1.6.0.md Part 3 section 12). The plane's
 # memory-ABI door (`busbar_plane_a2a::agent_door::door`) is a `plane-door` row, bound through the
 # loader's one load beside every dropped-in plane door, the same table as its dropped-in cdylib
-# (`a2a_door`; #2, #30; THE DESIGN section 11.4). It is complete on its own: no linked row of the
+# (`busbar-plane-a2a-plugin`; #2, #30; THE DESIGN section 11.4). It is complete on its own: no linked row of the
 # plane's key stands beside it.
 plane-a2a-door = ["dep:busbar-plane-a2a"]
 # THE REQUEST-LOG FILE SINK, DEFAULT ON: the `busbar-export-file` crate on the export axis. Off, the
@@ -579,7 +579,7 @@ busbar-llm = { path = "../busbar-llm", features = ["test-support"] }
 # whatever plane features the build enables (a single-plane build's tests still install the whole
 # roster).
 busbar-plane-mcp = { workspace = true }
-busbar-plane-a2a = { path = "../busbar-plane-a2a" }
+busbar-plane-a2a = { workspace = true }
 # `root::door_steps` tests: a member bound under an OAuth grant, its credential minted by the real
 # token-style auth plugin through its own need (TODO row 22). The same pin the `auth-oauth` row links.
 busbar-auth-oauth = { workspace = true }
