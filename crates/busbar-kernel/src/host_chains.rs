@@ -39,9 +39,9 @@ use busbar_contract::kinds::RecordBytes;
 use busbar_contract::services::{chain_key, chain_key_parts};
 
 use crate::audit::journal::NeutralRecord;
+use crate::audit::stream_registry::{StreamInput, StreamRecord};
 use crate::audit::{verify_chain, Chain, ChainBreak, ChainedRecord, Framing};
 use crate::host_records::{record_key, RecordRows, WRITE_FAILED};
-use crate::audit::stream_registry::{StreamInput, StreamRecord};
 
 /// The refusal of a chained write whose key is no scope: empty, not UTF-8, or ending in what a
 /// listed record key ends in.
