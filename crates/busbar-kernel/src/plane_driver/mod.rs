@@ -160,10 +160,16 @@ pub struct DriverConfig {
     pub status_of: fn(ReasonCode) -> u32,
     /// The statuses the plane's tail states per dialect and reason (validated at load).
     pub refusal_statuses: Vec<RefusalStatus>,
-    /// The key the caller's opaque reference is derived under (the node's signing material);
-    /// `None` = the node keeps none, and no reference is lent.
-    pub caller_refs: Option<Arc<CallerRefKey>>,
+    /// The key the caller's opaque reference is derived under, LIVE ([`CallerRefs`]: the book's
+    /// slot, which holds the key once the node binds signing material or its deployment keyset);
+    /// `None` = no book, and no reference is lent.
+    pub caller_refs: Option<CallerRefs>,
 }
+
+/// THE BOOK'S CALLER-REFERENCE KEY, shared live with every plane driver
+/// ([`crate::governance::GovState::caller_ref_slot`]): a key bound after the planes were composed
+/// (the deployment keyset, bound with the book) reaches every unit verified from then on.
+pub type CallerRefs = Arc<std::sync::RwLock<Option<Arc<CallerRefKey>>>>;
 
 impl DriverConfig {
     /// The status a refusal for `reason` wears in `dialect`: the plane's row for that dialect,
@@ -1364,7 +1370,13 @@ impl<S: DriverSteps + Sync, F: FarEnd, C: CallerEnd> Units for PlaneUnits<'_, S,
         ctx: &UnitCtx,
         principal: &PrincipalId,
     ) -> StepAnswer<Verify> {
-        if let Some(key) = &self.driver.config.caller_refs {
+        let key = self
+            .driver
+            .config
+            .caller_refs
+            .as_ref()
+            .and_then(|slot| slot.read().unwrap_or_else(|e| e.into_inner()).clone());
+        if let Some(key) = key {
             self.lock().caller_ref = key.caller_ref(principal.as_str()).into_bytes();
         }
         // The verified principal: the hooks the unit binds read it, and the unit's audit row is
