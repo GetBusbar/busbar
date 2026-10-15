@@ -925,7 +925,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-grpc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=d2d84e46cba01be00a2117dca9c6405618f70944#d2d84e46cba01be00a2117dca9c6405618f70944"
+source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=d5f42eb4322236c27e5c0dffa1fe7555af25f763#d5f42eb4322236c27e5c0dffa1fe7555af25f763"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -938,7 +938,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=d473d3ddc171f819444f2275630f0e2615caf991#d473d3ddc171f819444f2275630f0e2615caf991"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=a220d8732cb57fd39f8ec102bb692998f813bb87#a220d8732cb57fd39f8ec102bb692998f813bb87"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -952,7 +952,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-stdio"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=442a2f3e261559705a6c833b7aa1c1c9a60f013e#442a2f3e261559705a6c833b7aa1c1c9a60f013e"
+source = "git+https://github.com/GetBusbar/busbar-transport-stdio?rev=cbcccec77d83edcaf48e8356c8ade88cd1259f8e#cbcccec77d83edcaf48e8356c8ade88cd1259f8e"
 dependencies = [
  "busbar-contract",
 ]
@@ -960,7 +960,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=c7b826323fc6be5a3d4b27e456856855f1529909#c7b826323fc6be5a3d4b27e456856855f1529909"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=e5014aef4f1cff11901843ddf4cf7a2910585ac6#e5014aef4f1cff11901843ddf4cf7a2910585ac6"
 dependencies = [
  "busbar-contract",
 ]
@@ -968,7 +968,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-tcp-plugin"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=c7b826323fc6be5a3d4b27e456856855f1529909#c7b826323fc6be5a3d4b27e456856855f1529909"
+source = "git+https://github.com/GetBusbar/busbar-transport-tcp?rev=e5014aef4f1cff11901843ddf4cf7a2910585ac6#e5014aef4f1cff11901843ddf4cf7a2910585ac6"
 dependencies = [
  "busbar-contract",
  "busbar-transport-tcp",
@@ -990,7 +990,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-ws"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=fb72d4744816654764bb5ff826d807b34ed35d3d#fb72d4744816654764bb5ff826d807b34ed35d3d"
+source = "git+https://github.com/GetBusbar/busbar-transport-ws?rev=028afe94b71ce2f099d458a8bcaa09d1570394ba#028afe94b71ce2f099d458a8bcaa09d1570394ba"
 dependencies = [
  "busbar-contract",
  "serde_json",
