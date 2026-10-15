@@ -77,8 +77,9 @@ serde_json = { workspace = true }
 getrandom = { workspace = true }
 # THE DOOR'S BOTH-WAYS WITNESS (`tests/conformance.rs`): the linked door and this crate's own
 # dropped-in image (the `llm_door` example below), admitted through the one loader and driven
-# through the one dispatcher.
-busbar-plugin-loader = { path = "../plugin-loader" }
+# through the one dispatcher; and the published plane conformance suite over `tests/conformance.json`
+# (`conformance_suite!`), so every billable class the tail declares is reported by a case.
+busbar-plugin-loader = { path = "../plugin-loader", features = ["conformance"] }
 
 # THE DROPPED-IN DOOR: built by `cargo test`.
 [[example]]
