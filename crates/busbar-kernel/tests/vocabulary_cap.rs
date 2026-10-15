@@ -4,15 +4,14 @@
 //! The vocabulary is bounded even in an image where nobody ever freezes it.
 //!
 //! The freeze is what a composition root does; the cap is what holds where there is no composition
-//! root to do it. A dynamically loaded plugin linked against its own copy of this crate has its own
-//! statics, so it has its own vocabulary and its own open window — and a test binary, a fuzz target
-//! or a bench has no boot phase at all. In every one of those images the freeze never happens, and
-//! the only thing standing between a per-request `key()` and an unbounded leak is this ceiling.
+//! root to do it: a test binary, a fuzz target or a bench has no boot phase at all. In every one of
+//! those images the freeze never happens, and the only thing standing between a per-request `key()`
+//! and an unbounded leak is this ceiling.
 //!
 //! Its own test binary on purpose: the vocabulary is one per process, so a test that fills it must
 //! not share a process with a test that counts it.
 
-use busbar_contract::{Registration, MAX_VOCABULARY};
+use busbar_kernel::{Registration, MAX_VOCABULARY};
 
 #[test]
 fn interning_stops_at_the_ceiling_rather_than_growing_with_traffic() {

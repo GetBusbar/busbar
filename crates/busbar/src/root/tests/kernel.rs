@@ -2141,13 +2141,13 @@ fn applying_rates_registers_the_classes_a_unit_may_report() {
     );
     for class in busbar_contract::records::RESERVED_UNITS {
         assert!(
-            busbar_contract::Registration::resolve(class).is_some(),
+            busbar_kernel::Registration::resolve(class).is_some(),
             "{class}"
         );
     }
-    assert!(busbar_contract::Registration::resolve("configured_open_units").is_some());
+    assert!(busbar_kernel::Registration::resolve("configured_open_units").is_some());
     assert_eq!(
-        busbar_contract::Registration::resolve("a_class_nobody_declared_or_configured"),
+        busbar_kernel::Registration::resolve("a_class_nobody_declared_or_configured"),
         None
     );
 }

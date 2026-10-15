@@ -10,11 +10,6 @@ item = "OnceLock"
 
 [[finding]]
 rule = "contract-stateless:once-cell"
-file = "crates/busbar-contract/src/ids.rs"
-item = "LazyLock"
-
-[[finding]]
-rule = "contract-stateless:once-cell"
 file = "crates/busbar-contract/src/testkit/warn_capture.rs"
 item = "OnceLock"
 
@@ -159,16 +154,6 @@ item = "TRANSLATE_CAP_READER"
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/codec.rs"
 item = "WALL_CLOCK"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/ids.rs"
-item = "FROZEN"
-
-[[finding]]
-rule = "contract-stateless:static"
-file = "crates/busbar-contract/src/ids.rs"
-item = "VOCABULARY"
 
 [[finding]]
 rule = "contract-stateless:static"
