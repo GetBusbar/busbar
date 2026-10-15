@@ -287,7 +287,7 @@ fn a_plane_card_silent_about_a_declared_class_refuses_at_boot() {
             d.config_section
         );
         assert!(
-            errs.iter().any(|e| *e == want),
+            errs.contains(&want),
             "{}: the refusal names the unpriced class: {errs:?}",
             d.key
         );

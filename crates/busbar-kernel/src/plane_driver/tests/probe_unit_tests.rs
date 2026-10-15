@@ -408,30 +408,18 @@ impl crate::proxy::egress_unit::ports::Breaker for Cells {
     }
 
     fn classify(&self, _destination: DestinationId, status: UpstreamStatus) -> Classified {
-        use busbar_kernel_breaker::port::UpstreamCode;
-        let code = match status.code {
-            None => match status.class {
-                Some(WireStatusClass::CallerFault) => Some(UpstreamCode::Http(400)),
-                Some(WireStatusClass::FarEndFault) => Some(UpstreamCode::Http(500)),
-                Some(WireStatusClass::Success | WireStatusClass::Other) | None => None,
-            },
-            Some(code) => code
-                .http()
-                .and_then(|n| u16::try_from(n).ok())
-                .map(UpstreamCode::Http)
-                .or_else(|| {
-                    code.grpc()
-                        .and_then(|n| u8::try_from(n).ok())
-                        .map(UpstreamCode::Grpc)
-                }),
+        // The root adapter's own reading (`root::adapters`): no number crosses, the transport's
+        // fault reading of the frame does; no class and no reading at all is no answer.
+        let reading = if status.class.is_none() && status.fault.is_none() {
+            busbar_kernel_breaker::classify::Reading::NoAnswer
+        } else {
+            busbar_kernel_breaker::classify::Reading::Answered(status.fault)
         };
         let classified = busbar_kernel_breaker::port::classify_upstream(
-            &HashMap::new(),
             busbar_kernel_breaker::port::UpstreamStatus {
-                code,
+                reading,
                 retry_after: status.retry_after,
             },
-            &busbar_kernel_breaker::classify::NoopDiagnostics,
         );
         Classified {
             disposition: classified.disposition,
