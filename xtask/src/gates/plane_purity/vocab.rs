@@ -17,7 +17,7 @@
 //!   `busbar-<key>` engines each name their key in their directory. And every plane declares its
 //!   own key in its `PlaneMeta` impl (`const KEY: &'static str = "…";`), which is read too, so a
 //!   plane whose crate is spelled some other way still names itself.
-//! * **TRANSPORTS** — every `crates/busbar-transport-<key>` crate.
+//! * **TRANSPORTS** — every `crates/busbar-transport-<key>` crate, on disk or laid by the pinned base.
 //! * **DIALECTS** — every `busbar-plane-<plane>-<dialect>` crate (the kind scheme's four-segment
 //!   dialect name), plus the dialects a plane crate DECLARES in production source: a `name: "…"`
 //!   field of a `Dialect { … }` table row, and a `=> "…"` arm of an `impl Dialect` block.
@@ -292,8 +292,10 @@ fn declared_in(text: &str, planes: &mut BTreeSet<String>, dialects: &mut BTreeSe
     }
 }
 
-/// Every directory directly under `crates/` that holds a `Cargo.toml`, overlay included — a plant
-/// that adds a crate adds it here, and a plant that deletes its manifest removes it.
+/// Every directory directly under `crates/` that holds a `Cargo.toml`, base and overlay included —
+/// a pinned crate the BASE layer lays where it lived (a transport extracted to its own repo) is
+/// still an instance of the tree, a plant that adds a crate adds it here, and a plant that deletes
+/// its manifest removes it.
 fn crate_dirs_on_tree(cx: &Ctx) -> BTreeSet<String> {
     let mut dirs: BTreeSet<String> = BTreeSet::new();
     if let Ok(rd) = std::fs::read_dir(cx.abs("crates")) {
@@ -303,6 +305,7 @@ fn crate_dirs_on_tree(cx: &Ctx) -> BTreeSet<String> {
             }
         }
     }
+    dirs.extend(cx.base_children("crates"));
     if let Some(ov) = cx.overlay() {
         for p in ov.paths() {
             let s = p.to_string_lossy().replace('\\', "/");

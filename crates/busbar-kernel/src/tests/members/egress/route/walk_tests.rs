@@ -606,7 +606,7 @@ fn a_dispatch_that_cannot_be_recorded_sends_nothing() {
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use busbar_contract::abi::transport::{STATUS_FAR_END_FAULT, STATUS_SUCCESS};
+use busbar_contract::abi::transport::{FAULT_NONE, STATUS_FAR_END_FAULT, STATUS_SUCCESS};
 use busbar_contract::caps::{Pass, Route};
 use busbar_kernel_breaker::cell::{BreakerCell, BreakerState};
 use busbar_kernel_breaker::cfg::{BreakerCfg, TripConfig, TripMode};
@@ -1229,7 +1229,10 @@ fn test_failover_exclusions_remove_member_from_pool() {
 
 /// F25 row 155: rehomed from crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_permit_lifetime_during_stream.
 /// A lane of one concurrency slot streams a five-piece answer: the slot is free before the request,
-/// held while the stream is relayed (after its 200 head), and free again once it is drained.
+/// held while the stream is relayed (after its 200 head), and free again once it is drained. The
+/// test is the plane: it states its reading of every far-end piece it is handed, as the plane
+/// driver does for each one (`plane_driver::route`'s `judged_stating`), so the last one's reading
+/// settles the attempt.
 #[test]
 fn test_permit_lifetime_during_stream() {
     let lane = DestinationId::new(0);
@@ -1267,6 +1270,7 @@ fn test_permit_lifetime_during_stream() {
         };
         assert!(far.send(&token, super::request(&name, &pool, 1)).await);
         let head = far.next(&token).await.expect("the stream's first piece");
+        far.judged(&token, FAULT_NONE);
         assert_eq!(head.status, ok_200());
         assert!(!head.last && !head.fail_over, "{head:?}");
         assert!(
@@ -1276,6 +1280,7 @@ fn test_permit_lifetime_during_stream() {
         let mut pieces = 1;
         loop {
             let piece = far.next(&token).await.expect("the rest of the stream");
+            far.judged(&token, FAULT_NONE);
             if !piece.fields && !piece.bytes.is_empty() {
                 pieces += 1;
             }

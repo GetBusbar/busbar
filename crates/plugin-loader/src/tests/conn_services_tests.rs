@@ -1946,7 +1946,10 @@ fn a_members_auth_call_and_its_open_run_outside_the_connectors_lock() {
         auth: Some(probe.clone()),
         ..Scripted::default()
     });
-    let p = bound_over(&table);
+    // Adopted by a dispatcher, as every production instance is: the member's field is revealed
+    // under the seal the host lent it (#1021), and an unadopted instance has none to reveal under.
+    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let p = bound_over_by(&table, dispatcher.adopter());
     whole_request(&p, 0);
     assert_eq!(
         probe.seen.calls.load(AtomicOrdering::SeqCst),
@@ -2337,7 +2340,10 @@ fn whole_request_with(p: &Plugin<TestKind>, seq: u32, head: &RequestPiece, bytes
 #[test]
 fn a_waived_request_carries_no_member_auth_and_the_waiver_never_reaches_the_table() {
     let (table, per, auth) = resolving_table(&[Some(4), Some(6)]);
-    let p = bound_over(&table);
+    // Adopted by a dispatcher, as every production instance is: the credential is revealed under
+    // the seal the host lent it (#1021).
+    let dispatcher = crate::dispatch::Dispatcher::new(crate::dispatch::DispatchConfig::default());
+    let p = bound_over_by(&table, dispatcher.adopter());
     let waived = RequestPiece {
         fields: span(10, WAIVED_HEAD.len() - 10),
         ..head_piece()

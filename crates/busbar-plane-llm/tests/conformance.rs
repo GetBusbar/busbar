@@ -1380,7 +1380,7 @@ fn the_fee_is_decided_by_the_leg_and_the_client_facing_status() {
     );
     for (leg, line) in [("attempt", &attempt), ("body", &body)] {
         assert!(
-            line.contains("to_far_end=true") && line.ends_with("units=[]"),
+            line.contains("to_far_end=true") && line.contains(" units=[] "),
             "the {leg} leg goes TO the far end, so it is no delivered request and carries no \
              fee: {line}"
         );
@@ -1409,7 +1409,7 @@ fn the_fee_is_decided_by_the_leg_and_the_client_facing_status() {
     let mut piece = Piece::new(1024);
     let probe_attempt = piece.call(&door, 11, FROM_KERNEL, 0, b"", 1);
     assert!(
-        probe_attempt.contains("to_far_end=true") && probe_attempt.ends_with("units=[]"),
+        probe_attempt.contains("to_far_end=true") && probe_attempt.contains(" units=[] "),
         "the probe's request goes to the far end and carries no fee: {probe_attempt}"
     );
     let probe_far = piece.call(

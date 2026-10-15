@@ -509,6 +509,9 @@ pub(super) struct RigOpts<'a> {
     /// No rewrite seat is installed, so the caller's own messages reach the translation (a cell
     /// that reads what the plane does with the caller's parts).
     pub no_rewrite: bool,
+    /// The deployment's `limits.request_body_max_bytes` (`None`: the default): the translation cap
+    /// the kernel hands the door in its settings, which the plane enforces (row 155).
+    pub request_body_max_bytes: Option<usize>,
 }
 
 /// `text`, each line indented by `by` spaces (empty lines dropped).
@@ -778,8 +781,15 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     .expect("the connector builds");
 
     // THE POOLS DOOR, linked, bound through the loader's one load, its needs declared on the
-    // connector.
-    let dispatcher = Arc::new(Dispatcher::new(DispatchConfig::default()));
+    // connector. Its dispatcher is the boot's (`root::dispatch::build`): it serves the composition's
+    // host services (the door's codecs draw their entropy and read their clock there, #1028) and is
+    // lent the kernel's seal (a caller's or a member's credential is revealed only under it, #1021).
+    let services = composed_services();
+    let dispatcher = Arc::new(Dispatcher::with_services(
+        DispatchConfig::default(),
+        Arc::clone(&services) as Arc<dyn busbar_contract::services::HostServices>,
+    ));
+    let _ = dispatcher.lend_seal(busbar_kernel::seal::lend());
     let row = LinkedRow::of(pools_door()).expect("the door states itself");
     let plane = Arc::new(
         load_linked::<Plane>(
@@ -843,6 +853,9 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
         for (i, weight) in members.iter() {
             yaml.push_str(&format!("      - model: m{i}\n        weight: {weight}\n"));
         }
+    }
+    if let Some(cap) = opts.request_body_max_bytes {
+        yaml.push_str(&format!("limits:\n  request_body_max_bytes: {cap}\n"));
     }
     let deploy = busbar_kernel::config::deploy_from_yaml_str(&yaml).map_err(|e| e.to_string())?;
     let mut defs_yaml = String::new();
@@ -1093,7 +1106,7 @@ pub(super) async fn try_rig(instance: &'static str, opts: RigOpts<'_>) -> Result
     let served = compose_planes(
         &[(instance.to_string(), plane)],
         &dispatcher,
-        &composed_services(),
+        &services,
         &sections,
         None,
         &plane_money,

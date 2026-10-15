@@ -1298,28 +1298,29 @@ async fn under_hold<U: Units, R: RouteAwait>(
     // THE STAGE'S COMPARE (#74): the Route stage is handed this call's pass or nothing; a pass of
     // another call is refused at the stage, as a replay.
     if !presented(&token, ctx) {
-        return Outcome::Failed(StepName::Route, ReasonCode::Replayed);
-    }
-    let leg = route.route_leg(&token, ctx, destinations).await;
-    match leg.into_result(seal) {
-        Err(refusal) => {
-            Outcome::Failed(refusal.step().unwrap_or(StepName::Route), refusal.reason())
-        }
-        Ok(_) => {
-            let provisional = Outcome::Completed;
-            match units
-                .meter(
-                    &Pass::<Meter>::mint_bound(seal, ctx.call),
-                    &Grant::<Consumption>::mint_bound(seal, ctx.call),
-                    ctx,
-                    &provisional,
-                    destinations,
-                )
-                .into_result(seal)
-            {
-                Ok(_) => Outcome::Completed,
-                Err(refusal) => {
-                    Outcome::Failed(refusal.step().unwrap_or(StepName::Meter), refusal.reason())
+        Outcome::Failed(StepName::Route, ReasonCode::Replayed)
+    } else {
+        let leg = route.route_leg(&token, ctx, destinations).await;
+        match leg.into_result(seal) {
+            Err(refusal) => {
+                Outcome::Failed(refusal.step().unwrap_or(StepName::Route), refusal.reason())
+            }
+            Ok(_) => {
+                let provisional = Outcome::Completed;
+                match units
+                    .meter(
+                        &Pass::<Meter>::mint_bound(seal, ctx.call),
+                        &Grant::<Consumption>::mint_bound(seal, ctx.call),
+                        ctx,
+                        &provisional,
+                        destinations,
+                    )
+                    .into_result(seal)
+                {
+                    Ok(_) => Outcome::Completed,
+                    Err(refusal) => {
+                        Outcome::Failed(refusal.step().unwrap_or(StepName::Meter), refusal.reason())
+                    }
                 }
             }
         }
