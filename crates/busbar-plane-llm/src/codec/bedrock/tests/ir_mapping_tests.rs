@@ -369,8 +369,10 @@ fn bed09_refusal_writes_content_filtered() {
     assert!(wire.contains("content_filtered"), "{wire}");
 }
 
-/// BED-10: `model_context_window_exceeded` and `malformed_*` fell to `Other` (a foreign client saw
-/// a natural stop). The first is a token-limit cut; the second an error termination.
+/// BED-10: `model_context_window_exceeded` is a token-limit cut. `malformed_*` reads as `Other`,
+/// as in 1.5.5 (v1.5.5 `crates/busbar/src/proto/bedrock/mod.rs:705-716`, `_ => S::Other`): the
+/// answer is served and billed, never a generation failure (no 502, no lane fault). RED while
+/// `malformed_*` read as `Error`.
 #[test]
 fn bed10_context_window_and_malformed_stop_reasons_map() {
     let mut body = cited_response();
@@ -385,11 +387,15 @@ fn bed10_context_window_and_malformed_stop_reasons_map() {
         let ir = BedrockReader.read_response(&body).expect("read");
         assert_eq!(
             ir.stop_reason,
-            Some(crate::codec::ir::IrStopReason::Error),
+            Some(crate::codec::ir::IrStopReason::Other),
             "{token}"
         );
+        assert!(
+            !crate::exchange::reply::wire::generation_failed("bedrock", &body),
+            "{token}: a served answer, never a generation failure"
+        );
         let c = xresp("bedrock", "cohere", &body);
-        assert_eq!(c["finish_reason"], "ERROR", "{token}: {c}");
+        assert_eq!(c["finish_reason"], "COMPLETE", "{token}: {c}");
     }
 }
 
