@@ -381,12 +381,17 @@ fn ir18_signature_origin_is_read_and_a_foreign_signature_is_not_sent() {
     assert_eq!(sig(Some(O::OpenAi)), None);
 }
 
-/// LANE CAPS: a Bedrock Claude lane declaring adaptive thinking gets `thinking:{type:"adaptive"}`
-/// plus `output_config.effort` for a WORD ask (the newest Claude models 400 on `budget_tokens`);
-/// "model decides" is adaptive with no invented word; a numeric ask keeps its budget; and a lane
-/// without the capability keeps the budget form.
+/// A REASONING ASK DOES NOT CROSS INTO OR OUT OF BEDROCK, as in 1.5.5. The writer dropped every
+/// cross-protocol ask ("no Bedrock Converse mapping in this release", v1.5.5
+/// `crates/busbar/src/proto/bedrock/writer.rs:139-146`) and the reader promoted none (v1.5.5
+/// `crates/busbar/src/proto/bedrock/reader.rs:678`, `reasoning: None`), so no request bills
+/// thinking tokens 1.5.5 did not bill. Whatever the ask, the lane capabilities or the model family,
+/// the egress body carries no `thinking`/`output_config`, keeps its sampling knobs, and the drop
+/// is reported; a Bedrock caller's native ask stays a same-protocol member, re-emitted verbatim.
+/// RED while a foreign ask wrote Claude `thinking` (and stripped `temperature`) on a Claude lane, or
+/// the reader promoted `thinking`/`reasoningConfig`/`output_config.effort` into the IR.
 #[test]
-fn lane_caps_adaptive_thinking_on_a_bedrock_claude_lane() {
+fn a_reasoning_ask_neither_reaches_nor_leaves_bedrock_as_in_1_5_5() {
     let chat = json!({
         "model": "gpt-5",
         "messages": [{"role": "user", "content": "hi"}],
@@ -394,64 +399,52 @@ fn lane_caps_adaptive_thinking_on_a_bedrock_claude_lane() {
         "temperature": 0.5,
         "reasoning_effort": "high"
     });
-    let out = xreq_lane("openai", &chat, CLAUDE_NEWEST, adaptive());
-    assert_eq!(
-        out["additionalModelRequestFields"],
-        json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "high"}}),
-        "{out}"
-    );
-    assert!(out["inferenceConfig"].get("temperature").is_none(), "{out}");
-    // Without the capability: the budget form, exactly as before.
-    let out = xreq_lane("openai", &chat, CLAUDE_NEWEST, LaneCaps::default());
-    assert_eq!(
-        out["additionalModelRequestFields"]["thinking"]["type"], "enabled",
-        "{out}"
-    );
-    assert!(out
-        .pointer("/additionalModelRequestFields/output_config")
-        .is_none());
-
-    let req = |ask| crate::codec::ir::IrRequest {
-        messages: vec![user_turn("hi")],
-        max_tokens: Some(8192),
-        reasoning: Some(ask),
-        ..Default::default()
-    };
+    for caps in [LaneCaps::default(), adaptive()] {
+        for model in [CLAUDE_NEWEST, "amazon.nova-pro-v1:0"] {
+            let out = xreq_lane("openai", &chat, model, caps);
+            assert!(
+                out.get("additionalModelRequestFields").is_none(),
+                "{model}: {out}"
+            );
+            assert_eq!(out["inferenceConfig"]["temperature"], 0.5, "{model}: {out}");
+        }
+    }
     use crate::codec::ir::{IrReasoningAsk as A, IrReasoningEffort as E};
-    let amrf = |ask| {
-        writer().write_request_for_lane(&req(ask), CLAUDE_NEWEST, &adaptive())
-            ["additionalModelRequestFields"]
-            .clone()
-    };
-    assert_eq!(amrf(A::Dynamic), json!({"thinking": {"type": "adaptive"}}));
-    assert_eq!(
-        amrf(A::Effort(E::Max)),
-        json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "max"}})
-    );
-    assert_eq!(
-        amrf(A::Effort(E::Minimal)),
-        json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}})
-    );
-    assert_eq!(
-        amrf(A::Budget(2048)),
-        json!({"thinking": {"type": "enabled", "budget_tokens": 2048}})
-    );
-    // A non-Claude model never gets Claude's spelling, capability or not.
-    let nova = writer().write_request_for_lane(
-        &req(A::Effort(E::High)),
-        "amazon.nova-pro-v1:0",
-        &adaptive(),
-    );
-    assert!(nova.get("additionalModelRequestFields").is_none(), "{nova}");
-}
-
-/// IR-09 `Off`: Claude's `thinking:{type:"disabled"}` and Nova's `reasoningConfig:{type:"disabled"}`
-/// read as the explicit OFF ask, and OFF is written as `disabled` — never projected through the
-/// budget table, where it would read as the smallest ENABLE ask — with sampling knobs kept.
-#[test]
-fn ir09_reasoning_off_reads_and_writes_disabled() {
+    for ask in [
+        A::Off,
+        A::Dynamic,
+        A::Budget(2048),
+        A::Effort(E::High),
+        A::Effort(E::Max),
+    ] {
+        let req = crate::codec::ir::IrRequest {
+            messages: vec![user_turn("hi")],
+            max_tokens: Some(8192),
+            temperature: Some(0.5),
+            top_k: Some(40),
+            reasoning: Some(ask),
+            ..Default::default()
+        };
+        for caps in [LaneCaps::default(), adaptive()] {
+            let out = writer().write_request_for_lane(&req, CLAUDE_NEWEST, &caps);
+            assert_eq!(
+                out["additionalModelRequestFields"],
+                json!({"top_k": 40}),
+                "{ask:?}: {out}"
+            );
+            assert_eq!(out["inferenceConfig"]["temperature"], 0.5, "{ask:?}: {out}");
+        }
+        assert!(writer()
+            .dropped_egress_controls(&req)
+            .contains(&crate::codec::drops::name::REASONING));
+    }
     for amrf in [
+        json!({"thinking": {"type": "enabled", "budget_tokens": 4096}}),
         json!({"thinking": {"type": "disabled"}}),
+        json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "xhigh"}}),
+        json!({"thinking": {"type": "adaptive"}}),
+        json!({"output_config": {"effort": "medium"}}),
+        json!({"reasoningConfig": {"type": "enabled", "maxReasoningEffort": "high"}}),
         json!({"reasoningConfig": {"type": "disabled"}}),
     ] {
         let body = json!({
@@ -459,61 +452,13 @@ fn ir09_reasoning_off_reads_and_writes_disabled() {
             "additionalModelRequestFields": amrf
         });
         let ir = BedrockReader.read_request(&body).expect("read");
-        assert_eq!(
-            ir.reasoning,
-            Some(crate::codec::ir::IrReasoningAsk::Off),
-            "{body}"
-        );
-    }
-    let req = crate::codec::ir::IrRequest {
-        messages: vec![user_turn("hi")],
-        max_tokens: Some(8192),
-        temperature: Some(0.5),
-        reasoning: Some(crate::codec::ir::IrReasoningAsk::Off),
-        ..Default::default()
-    };
-    for caps in [LaneCaps::default(), adaptive()] {
-        let out = writer().write_request_for_lane(&req, CLAUDE_NEWEST, &caps);
-        assert_eq!(
-            out["additionalModelRequestFields"],
-            json!({"thinking": {"type": "disabled"}}),
-            "{out}"
-        );
-        assert_eq!(out["inferenceConfig"]["temperature"], 0.5, "{out}");
-    }
-}
-
-/// The adaptive reader half: Anthropic-on-Bedrock `thinking:{type:"adaptive"}` with an
-/// `output_config.effort` word reads as that effort (`xhigh`/`max` included), without one as
-/// "model decides"; and the same-protocol body is re-emitted verbatim, not re-synthesized.
-#[test]
-fn adaptive_thinking_ask_is_read_from_additional_model_request_fields() {
-    use crate::codec::ir::{IrReasoningAsk as A, IrReasoningEffort as E};
-    let read = |amrf: Value| {
-        let body = json!({
-            "messages": [{"role": "user", "content": [{"text": "hi"}]}],
-            "additionalModelRequestFields": amrf
-        });
-        let ir = BedrockReader.read_request(&body).expect("read");
+        assert_eq!(ir.reasoning, None, "{body}");
         let back = writer().write_request(&ir);
         assert_eq!(
             back["additionalModelRequestFields"], body["additionalModelRequestFields"],
-            "{back}"
+            "the same-protocol native ask is re-emitted verbatim: {back}"
         );
-        ir.reasoning
-    };
-    assert_eq!(
-        read(json!({"thinking": {"type": "adaptive"}, "output_config": {"effort": "xhigh"}})),
-        Some(A::Effort(E::XHigh))
-    );
-    assert_eq!(
-        read(json!({"thinking": {"type": "adaptive"}})),
-        Some(A::Dynamic)
-    );
-    assert_eq!(
-        read(json!({"output_config": {"effort": "medium"}})),
-        Some(A::Effort(E::Medium))
-    );
+    }
 }
 
 /// A fresh writer per use (the const constructor carries per-stream state).
