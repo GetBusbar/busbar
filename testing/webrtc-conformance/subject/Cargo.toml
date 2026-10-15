@@ -19,7 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 busbar-contract = { path = "../../../crates/busbar-contract" }
-busbar-transport-webrtc = { path = "../../../crates/busbar-transport-webrtc" }
+busbar-transport-webrtc = { workspace = true }
 busbar-core-connector = { path = "../../../crates/busbar-core-connector" }
 busbar-plugin-loader = { path = "../../../crates/plugin-loader" }
 # The mounted doors module lends the dispatcher the kernel's seal (`busbar_kernel::seal::lend()`, #1021).
