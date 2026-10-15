@@ -1,5 +1,5 @@
-# cargo-deny policy for busbar. Run locally with `cargo deny check`; in CI the predev hop
-# (busbar-release) runs it as a build-test row. This file mechanically enforces the
+# cargo-deny policy for busbar. Run locally with `cargo deny check`; in CI ModernCI runs it on every
+# move into predev (the `deny` check of .ci/default.yaml). This file mechanically enforces the
 # supply-chain discipline that Cargo.toml already applies by hand (single TLS/HTTP
 # stack, no unmaintained/unsafe deps, license hygiene) so a future PR cannot
 # silently regress it.

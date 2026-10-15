@@ -10,9 +10,8 @@ The conformance-claim manifest home (`CONFORMANCE-SYNC-DESIGN.md` §3.1).
 - `manifest.json` — NOT YET GENERATED. Written only by
   `cargo xtask conformance-manifest --write` (§3.2), which is NOT YET BUILT.
   Until that xtask subcommand and its `xtask conformance check --suite <id>`
-  companion land, the busbar-release `conformance::conformance_checks`
-  `CommandCheck`s that shell to `cargo xtask conformance check --suite <id>`
-  will fail closed (non-zero exit / could-not-spawn) — the correct deny-safe
+  companion land, the checks that run `cargo xtask conformance check`
+  (ModernCI's `conformance` check in `.ci/predev.yaml`) will fail closed (non-zero exit / could-not-spawn) — the correct deny-safe
   default for an unimplemented check, not a silent pass.
 
 ## What still needs building (tracked, not done here)
@@ -34,8 +33,8 @@ The conformance-claim manifest home (`CONFORMANCE-SYNC-DESIGN.md` §3.1).
    (`CONFORMANCE-GATES-PLAN.md` §5).
 
 See `CONFORMANCE-GATES-PLAN.md`, `CONFORMANCE-SYNC-DESIGN.md`, and
-`CONFORMANCE-MATRIX-RULING.md` for the full grounding. The turnstile/train
-gate wiring that CONSUMES this manifest is landed in the `busbar-release`
-repo (`crates/busbar-release-turnstile/src/conformance.rs`,
-`crates/busbar-release-turnstile/src/auto_apply.rs`,
-`crates/busbar-release-train/src/conformance.rs`).
+`CONFORMANCE-MATRIX-RULING.md` for the full grounding. What CONSUMES this
+manifest is ModernCI's `conformance` check on the `predev` → `dev` move
+(`.ci/predev.yaml`: `cargo xtask conformance record --all`, then
+`cargo xtask conformance check --musts`). The busbar-release turnstile and
+train that consumed it before are deleted.
