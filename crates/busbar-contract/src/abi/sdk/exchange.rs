@@ -241,6 +241,19 @@ impl Exchange {
     pub fn send(bytes: Vec<u8>) -> Self {
         Self::over(Sending::Raw(bytes.into_boxed_slice()))
     }
+
+    /// THE FIELDS THIS EXCHANGE FRAMES, read back off the head it sends: `(name, value)`, in
+    /// order, exactly what the far end is handed rather than what the caller meant to hand it.
+    /// Empty for an exchange that sends raw bytes ([`Exchange::send`]).
+    #[must_use]
+    pub fn framed_fields(&self) -> Vec<(&[u8], &[u8])> {
+        match &self.sending {
+            Sending::Framed {
+                head, head_piece, ..
+            } => fields::lines(spanned(head, head_piece.fields)).collect(),
+            Sending::Raw(_) => Vec::new(),
+        }
+    }
 }
 
 /// The bytes `span` names in `buf`, or none past its end.
