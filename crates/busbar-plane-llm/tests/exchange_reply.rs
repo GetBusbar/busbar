@@ -2902,7 +2902,14 @@ mod rehomed_answers {
                                 )),
                                 "{what}"
                             );
-                            assert!(!read.text().contains("invalid x-api-key"), "{what}");
+                            // Never the far body; and never the far sentence, except where the
+                            // caller's own refusal sentence IS that sentence (the anthropic
+                            // dialect's 1.5.5 words), which the envelope equality above already
+                            // pins as the caller's own.
+                            assert_ne!(read.body, body, "{what}: never the far body");
+                            if decl.auth_failure_message != "invalid x-api-key" {
+                                assert!(!read.text().contains("invalid x-api-key"), "{what}");
+                            }
                         }
                     }
                     checked += 1;

@@ -22,8 +22,9 @@
 //!    `caps` (each asserts it in its own purity test) and may not take a dev edge onto the kernel
 //!    (`kind-isolation:test-deps` refuses a plane/transport -> kernel edge as not-allowed), so its
 //!    harness has no other legal way to present a seal. `plugin::TestKernelSeal` and its two impls
-//!    in `caps/token.rs` are that seal. The hazard this file exists for — a plugin and the kernel
-//!    disagreeing at the call — needs the item to exist in a shipped build, and it does not:
+//!    in `caps/token.rs` are that seal, and `KernelSeal::acquire_for_kernel` is the tests' minter
+//!    of the concrete seal (#65: a release build's only seal is the kernel's own). The hazard this
+//!    file exists for — a plugin and the kernel disagreeing at the call — needs the item to exist in a shipped build, and it does not:
 //!    `tests/test_seal_is_dev_only.rs` fails if any non-dev dependency edge anywhere in the
 //!    workspace enables the feature, which is the guard this exemption rests on.
 //!
@@ -81,8 +82,10 @@ const SERVICES_DOUBLE_CFG: &str = "#[cfg(any(test, feature = \"services-double\"
 const SERVICES_DOUBLE_ITEM: (&str, &str) = ("services.rs", "pub mod double;");
 
 /// Every item `test-seal` may gate: `(file under src/, the item's first line)`. The type and its two
-/// sealed-trait impls, and nothing else.
-const TEST_SEAL_ITEMS: [(&str, &str); 3] = [
+/// sealed-trait impls, and the tests' seal `KernelSeal::acquire_for_kernel` (#65, ARCHITECT ruling
+/// 2026-10-14: the release seal reaches the kernel through its own symbol, so the minter is
+/// dev-only), and nothing else.
+const TEST_SEAL_ITEMS: [(&str, &str); 4] = [
     ("plugin.rs", "pub struct TestKernelSeal;"),
     (
         "caps/token.rs",
@@ -92,6 +95,7 @@ const TEST_SEAL_ITEMS: [(&str, &str); 3] = [
         "caps/token.rs",
         "impl crate::plugin::KernelSeal for crate::plugin::TestKernelSeal {",
     ),
+    ("caps/token.rs", "pub fn acquire_for_kernel() -> Self {"),
 ];
 
 /// Every finding against the manifest's `[features]` table and optional dependencies.

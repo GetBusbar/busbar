@@ -187,11 +187,10 @@ async fn read_whole(held: &Held<'_>, url: &str, cap: usize) -> Result<Vec<u8>, O
                     return Err(Some(refused));
                 }
                 // A declared Content-Length over the cap is rejected BEFORE reading a single body
-                // byte; a dishonest or absent header falls through to the counted cap below.
-                let declared = busbar_contract::abi::transport::fields::lines(&buf[..piece.len])
-                    .find(|(name, _)| name.eq_ignore_ascii_case(b"content-length"))
-                    .and_then(|(_, v)| std::str::from_utf8(v).ok()?.trim().parse::<u64>().ok());
-                if let Some(len) = declared {
+                // byte; a dishonest or absent header falls through to the counted cap below. The
+                // length is the head piece's `declared_len`, as the framer stated it (#1032): the
+                // field block never carries the wire's `content-length` (`abi::transport::fields`).
+                if let Some(len) = piece.declared_len {
                     let over = match usize::try_from(len) {
                         Ok(l) => l > cap,
                         Err(_) => true,

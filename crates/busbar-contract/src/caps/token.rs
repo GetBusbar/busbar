@@ -27,8 +27,8 @@
     doc = include_str!("fixtures/no_release_seal.md")
 )]
 //!
-//! `acquire_for_kernel` survives ONLY for tests (`cfg(test)` or the dev-only `test-seal` feature,
-//! which `tests/test_seal_is_dev_only.rs` keeps off every non-dev edge), so the test suites that
+//! `acquire_for_kernel` survives ONLY for tests (the dev-only `test-seal` feature, one of the four
+//! items that feature's exemption names, which `tests/test_seal_is_dev_only.rs` keeps off every non-dev edge), so the test suites that
 //! mint tokens to show a step's shape keep doing so, and nothing that ships can.
 //!
 //! # The unified vocabulary (#73)
@@ -96,8 +96,8 @@ use std::marker::PhantomData;
 pub struct KernelSeal(());
 
 impl KernelSeal {
-    /// A seal for TESTS. **Absent from every release build:** it exists only under `cfg(test)`
-    /// or the dev-only `test-seal` feature, and the kernel's production path never names it (it
+    /// A seal for TESTS. **Absent from every release build:** it exists only under the dev-only
+    /// `test-seal` feature, and the kernel's production path never names it (it
     /// takes its seal through [`KernelSeal::deliver`] and the kernel's own symbol, #65).
     ///
     /// The seal TRAIT the kernel-built views take, [`KernelSeal`](crate::plugin::KernelSeal), is
@@ -110,7 +110,7 @@ impl KernelSeal {
     /// only way to mint one of those is a seal, and the only seal a release build has is the one
     /// the kernel opens out of its own symbol.
     #[doc(hidden)]
-    #[cfg(any(test, feature = "test-seal"))]
+    #[cfg(feature = "test-seal")]
     pub fn acquire_for_kernel() -> Self {
         KernelSeal(())
     }

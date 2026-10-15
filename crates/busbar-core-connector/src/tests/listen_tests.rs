@@ -381,10 +381,18 @@ fn a_listener_offers_the_entrys_accept_offer_not_its_dial_offer() {
     );
     let (ca, leaf, key) = localhost_cert();
     worker().block_on(async move {
-        let view = crate::registry::Transports::new(vec![crate::registry::Entry {
-            door: Arc::new(door),
-            alpn: Vec::new(),
-        }])
+        // The entry is a FRAMER (it names a secure layer and an offer), so its listener rides the
+        // address carrier the view holds beside it, as every connector does (`Connector::listen`).
+        let view = crate::registry::Transports::new(vec![
+            crate::registry::Entry {
+                door: Arc::new(door),
+                alpn: Vec::new(),
+            },
+            crate::registry::Entry {
+                door: Arc::new(TestDoor::identity("carrier")),
+                alpn: Vec::new(),
+            },
+        ])
         .unwrap();
         let c = crate::Connector::serving(
             view,

@@ -50,10 +50,10 @@ use core::mem::MaybeUninit;
 /// to the traits. A table's slots answer [`hot::transport::RawWireOutcome`] unless the list states
 /// another outcome byte (`-> Outcome`).
 ///
-/// A list led by `extern "C";` lowers to `extern "C"` slots (THE DESIGN §11.11 M3: unwinding across a
-/// foreign cdylib is undefined behaviour, so a slot catches its own panic and answers its fault
-/// byte, and a panic that escapes it aborts). A list without it is still `extern "C-unwind"`, each
-/// one a `one-memory-abi:c-unwind` row until it is lowered.
+/// A list led by `extern "C";` lowers to `extern "C"` slots (THE DESIGN, the signed kind-ABI
+/// design's finding M3: unwinding across a foreign cdylib is undefined behaviour, so a slot catches
+/// its own panic and answers its fault byte, and a panic that escapes it aborts). A list without it
+/// is still `extern "C-unwind"`, each one a `one-memory-abi:c-unwind` row until it is lowered.
 macro_rules! slot_table {
     (
         extern "C";

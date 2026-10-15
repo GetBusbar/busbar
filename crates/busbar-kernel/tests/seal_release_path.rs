@@ -9,10 +9,10 @@ use busbar_contract::caps::KernelSeal;
 
 #[test]
 fn the_release_path_hands_the_kernel_a_seal_and_anyone_else_an_unopenable_box() {
-    // The kernel's own path: a seal it can mint with.
-    let seal = busbar_kernel::seal::acquire();
-    let _pass: busbar_contract::caps::Pass<busbar_contract::caps::Admit> =
-        busbar_contract::caps::Pass::mint(&seal);
+    // The kernel's own path: the box its root symbol was handed opens as a seal (`acquire` panics
+    // where it does not). What the seal mints is the Teller's to spell, inside `src/` alone
+    // (`token-sealed`), so this test holds the seal and mints nothing.
+    let _seal: KernelSeal = busbar_kernel::seal::acquire();
 
     // Anyone else's: the box the contract hands back is the kernel's private wrapper, and it is
     // not a seal (nor a box of one) to anything outside the kernel's seal module.

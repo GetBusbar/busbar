@@ -256,11 +256,20 @@ fn a_plane_card_silent_about_a_declared_class_refuses_at_boot() {
             .filter(|c| !d.fee_units.contains(c))
             .collect();
         let (unpriced, priced) = classes.split_last().expect("a priced class");
+        // A present card prices every registration the section bills (#42, #77(5)): its row is
+        // the registration's lane, `<the door's first scope kind>:<name>` (`DoorSection`'s
+        // ledger lanes), here the one registration `probe`.
+        let lane = format!(
+            "{}:probe",
+            d.scope_kinds
+                .first()
+                .expect("a billed door states a scope kind")
+        );
         let section = |card: Option<&[&str]>| {
             let card = card.map_or(String::new(), |classes| {
                 let units: Vec<String> = classes.iter().map(|c| format!("{c}: 0")).collect();
                 format!(
-                    "  rate_card:\n    lane: {{ units: {{ {} }} }}\n",
+                    "  rate_card:\n    {lane}: {{ units: {{ {} }} }}\n",
                     units.join(", ")
                 )
             });

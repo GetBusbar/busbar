@@ -98,6 +98,9 @@ const CALLER: &[Field] = &[
     field(b"content-type", b"application/json"),
     field(b"anthropic-version", b"2023-06-01"),
 ];
+/// An openai caller's head: no `anthropic-version`, whose header claim outranks the
+/// `/v1/chat/completions` path claim in 1.5.5's detection order (`codec/anthropic/mod.rs`).
+const OPENAI_CALLER: &[Field] = &[field(b"content-type", b"application/json")];
 /// What the far end answers: 7 tokens in, 3 out.
 const ANSWER: &[u8] = br#"{"id":"msg_1","type":"message","role":"assistant","model":"claude","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":3}}"#;
 /// The far end's kept response field.
@@ -174,10 +177,21 @@ impl Piece {
 }
 
 fn arrive(p: &Plugin<Plane>, unit: u64, target: &'static [u8], body: &'static [u8]) -> String {
+    arrive_with(p, unit, target, CALLER, body)
+}
+
+/// [`arrive`], the caller's head `fields`.
+fn arrive_with(
+    p: &Plugin<Plane>,
+    unit: u64,
+    target: &'static [u8],
+    fields: &'static [Field],
+    body: &'static [u8],
+) -> String {
     let mut a: Frame<ArriveIn, ArriveOut> = Frame::new(z(), z());
     (a.input.head, a.out.head) = (in_head(), out_head());
     (a.input.unit, a.input.method, a.input.target) = (unit, text(b"POST"), text(target));
-    (a.input.fields, a.input.fields_len) = (CALLER.as_ptr(), CALLER.len());
+    (a.input.fields, a.input.fields_len) = (fields.as_ptr(), fields.len());
     a.input.body = octets(body);
     let c = p.call(slot::ARRIVE, &mut a);
     format!(
@@ -545,7 +559,10 @@ const SETTINGS_CAPPED: &[u8] = br#"{
 /// One openai caller's unit against the anthropic far end, its whole answer [`ANSWER`]: the far
 /// end's answer line.
 fn translated(p: &Plugin<Plane>, unit: u64) -> String {
-    assert!(arrive(p, unit, b"/v1/chat/completions", CHAT).starts_with("arrive Ready"));
+    assert!(
+        arrive_with(p, unit, b"/v1/chat/completions", OPENAI_CALLER, CHAT)
+            .starts_with("arrive Ready")
+    );
     let mut wide = Piece::new(1024);
     assert!(wide
         .call(p, unit, FROM_KERNEL, 0, b"", 1)

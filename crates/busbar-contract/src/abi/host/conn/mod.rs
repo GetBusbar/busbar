@@ -16,9 +16,9 @@
 //!   operations, without the caller.
 //!
 //! Every slot catches its own panics and answers [`ConnOutcome::Fault`]; nothing unwinds across the
-//! table (THE DESIGN §11.11 M3), and a panic that escaped a slot would abort, never unwind. What a
-//! slot hands back that borrows the host — a piece's status numbering, a connection's facts — stays
-//! valid until that connection is closed.
+//! table (THE DESIGN, the signed kind-ABI design's finding M3), and a panic that escaped a slot
+//! would abort, never unwind. What a slot hands back that borrows the host — a piece's status
+//! numbering, a connection's facts — stays valid until that connection is closed.
 
 use std::collections::HashMap;
 use std::os::raw::c_void;

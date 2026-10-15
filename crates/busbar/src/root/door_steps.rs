@@ -2618,7 +2618,7 @@ mod refresher {
     };
 
     /// The process's one book, its thread started the first time it is reached.
-    fn book() -> &'static Book {
+    fn kept_book() -> &'static Book {
         static STARTED: Once = Once::new();
         STARTED.call_once(|| {
             std::thread::Builder::new()
@@ -2634,7 +2634,7 @@ mod refresher {
 
     /// Keep `per`, first due one lease from now (its build has just resolved it).
     pub(super) fn keep(per: &Arc<PerHop>) {
-        let book = book();
+        let book = kept_book();
         book.kept
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -2694,7 +2694,7 @@ mod refresher {
     #[cfg(test)]
     #[allow(dead_code)] // reached only by a door plane's own root cells, which a build may not link
     pub(crate) fn refresh_all() {
-        let live: Vec<Arc<PerHop>> = book()
+        let live: Vec<Arc<PerHop>> = kept_book()
             .kept
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
