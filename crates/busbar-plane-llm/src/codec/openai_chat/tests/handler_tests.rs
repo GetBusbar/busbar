@@ -418,11 +418,13 @@ fn transcription_taps_usage_in_its_own_dialect() {
     let tokens = br#"{"text":"hi","usage":{"type":"tokens","input_tokens":14,"output_tokens":3,"total_tokens":17}}"#;
     let usage = OpenAiTranscription
         .extract_usage("openai", tokens)
+        .expect("the tap reads the body")
         .expect("a token-metered transcription yields usage");
     assert_eq!((usage.input, usage.output), (14, 3));
     let whisper = br#"{"text":"hi","usage":{"type":"duration","seconds":3}}"#;
     assert!(OpenAiTranscription
         .extract_usage("openai", whisper)
+        .expect("the tap reads the body")
         .is_none());
     let billed = super::read_transcription_response(whisper)
         .expect("whisper's answer reads")
