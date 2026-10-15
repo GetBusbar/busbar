@@ -1914,10 +1914,11 @@ fn red_an_instance_is_quarantined_on_its_nth_breach_and_not_before() {
         ..config()
     });
     let (p, _sink) = opened(&d);
+    let p = Arc::new(p);
     let (p2, _s2) = opened(&d);
     let breaches = || p.inner.breaches.load(std::sync::atomic::Ordering::SeqCst);
 
-    let hung = p.clone();
+    let hung = Arc::clone(&p);
     let first =
         std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:quarantine-n-1")).outcome);
     until("the watchdog counts the first breach", || breaches() == 1);
@@ -1937,7 +1938,7 @@ fn red_an_instance_is_quarantined_on_its_nth_breach_and_not_before() {
         "below N the instance keeps serving"
     );
 
-    let hung = p.clone();
+    let hung = Arc::clone(&p);
     let second =
         std::thread::spawn(move || hung.call(TICK, &mut frame(b"hang:quarantine-n-2")).outcome);
     until("the second breach quarantines the instance", || {

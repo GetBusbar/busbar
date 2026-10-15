@@ -595,7 +595,7 @@ pub(crate) struct Records {
 impl Records {
     pub(crate) fn new(inner: MemoryStorage) -> Self {
         Self {
-            inner: Backend::Memory(inner),
+            inner: Backend::Memory(Box::new(inner)),
             pushed: Mutex::new(HashMap::new()),
         }
     }
@@ -628,7 +628,8 @@ impl Default for Records {
 
 /// Where the records are: this process, or the deployment's store.
 pub(crate) enum Backend {
-    Memory(MemoryStorage),
+    // Boxed: the in-process store is the large variant, and the enum is held per plane.
+    Memory(Box<MemoryStorage>),
     Shared(crate::shared::SharedStorage, Arc<crate::shared::Shared>),
 }
 

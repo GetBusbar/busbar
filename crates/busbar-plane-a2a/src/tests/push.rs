@@ -191,7 +191,7 @@ fn the_request_is_a_post_to_the_callbacks_path_with_the_credential_only_once_hel
         "t1",
         Some(DeliveryAuth {
             scheme: "Bearer".into(),
-            credentials: busbar_contract::Redacted::new("s3cret".into()),
+            credentials: PushCredential::new("s3cret".into()),
         }),
     );
     assert_eq!(
@@ -211,7 +211,7 @@ fn a_terminal_tasks_last_delivery_forgets_its_credential() {
     let d = Deliveries::new();
     let auth = DeliveryAuth {
         scheme: "Basic".into(),
-        credentials: busbar_contract::Redacted::default(),
+        credentials: PushCredential::new(String::new()),
     };
     d.remember_auth("t1", Some(auth));
     let last = Delivery::of(&task("t1", TaskState::Completed)).expect("a callback");
@@ -227,7 +227,7 @@ fn a_terminal_tasks_last_delivery_forgets_its_credential() {
 fn the_credential_never_prints() {
     let auth = DeliveryAuth {
         scheme: "Bearer".into(),
-        credentials: busbar_contract::Redacted::new("s3cret".into()),
+        credentials: PushCredential::new("s3cret".into()),
     };
     assert!(!format!("{auth:?}").contains("s3cret"));
     assert_eq!(auth.header_value(), "Bearer s3cret");
@@ -472,7 +472,7 @@ fn reached_addresses_are_bounded() {
 fn the_credential_round_trips_through_the_record_and_stays_redacted() {
     let auth = DeliveryAuth {
         scheme: "Bearer".into(),
-        credentials: busbar_contract::Redacted::new("s3cret".into()),
+        credentials: PushCredential::new("s3cret".into()),
     };
     let bytes = serde_json::to_vec(&auth).expect("serializes");
     assert_eq!(
@@ -582,4 +582,37 @@ fn the_callback_mac_is_compared_in_constant_time() {
         !body.contains("presented ==") && !body.contains("== presented"),
         "a variable-time compare of the presented MAC sits beside the constant-time one: {body}"
     );
+}
+
+/// RED (BUSBAR-1.6.0.md THE DESIGN §6: logs, audit records, metrics and error text never carry a
+/// credential's value): the caller's webhook credential is caller payload the plane holds as a
+/// [`PushCredential`], and its bytes reach the `Authorization` field and nothing else. The
+/// credential's own `Debug`, a registered config's `Debug`, and the refusal of a credential busbar
+/// cannot present (the registration's error path) all leave the bytes out. A `PushCredential`
+/// whose `Debug` derived its field, or a refusal that quoted the value back, fails here.
+#[test]
+fn the_push_credential_reaches_the_authorization_field_and_no_debug_or_error_text() {
+    let secret = "s3cret-webhook-tok";
+    let auth = DeliveryAuth {
+        scheme: "Bearer".into(),
+        credentials: PushCredential::new(secret.into()),
+    };
+    assert_eq!(format!("{:?}", auth.credentials), "[redacted]");
+    assert!(!format!("{auth:?}").contains(secret), "{auth:?}");
+    assert!(!format!("{:?}", Some(&auth)).contains(secret));
+    assert_eq!(auth.header_value(), format!("Bearer {secret}"));
+
+    let registered = crate::local::delivery_auth(&serde_json::json!({
+        "authentication": { "scheme": "Bearer", "credentials": secret }
+    }))
+    .expect("a presentable credential registers")
+    .expect("it names one");
+    assert_eq!(registered, auth);
+    assert!(!format!("{registered:?}").contains(secret));
+
+    let refused = crate::local::delivery_auth(&serde_json::json!({
+        "authentication": { "scheme": "Bearer", "credentials": format!("{secret}\u{7}") }
+    }))
+    .expect_err("a credential with a control byte cannot be presented");
+    assert!(!refused.contains(secret), "{refused}");
 }

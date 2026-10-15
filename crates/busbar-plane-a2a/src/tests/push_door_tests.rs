@@ -49,7 +49,7 @@ fn a_moved_task_with_a_registered_config_queues_its_notification_to_that_config(
     let row = moved(&mut book, "");
     let auth = DeliveryAuth {
         scheme: "Bearer".into(),
-        credentials: busbar_contract::Redacted::new("tok".into()),
+        credentials: crate::push::PushCredential::new("tok".into()),
     };
     let d = Deliveries::new();
     assert!(queue(
@@ -246,7 +246,7 @@ fn queued(callback: &str) -> Deliveries {
     let d = Deliveries::new();
     let auth = DeliveryAuth {
         scheme: "Bearer".into(),
-        credentials: busbar_contract::Redacted::new("tok".into()),
+        credentials: crate::push::PushCredential::new("tok".into()),
     };
     assert!(queue(&d, &row, Some(&config(callback, Some(auth)))));
     d
@@ -319,7 +319,7 @@ fn the_callers_own_webhook_credential_is_presented_on_the_delivery() {
     let d = Deliveries::new();
     let auth = DeliveryAuth {
         scheme: "Bearer".into(),
-        credentials: busbar_contract::Redacted::new("receiver-issued-token".into()),
+        credentials: crate::push::PushCredential::new("receiver-issued-token".into()),
     };
     assert!(queue(&d, &row, Some(&config(callback, Some(auth)))));
     let mut host = TestHost::answering(vec![Some((DEST_ALLOWED, &[AT_REGISTRATION][..]))], 200);

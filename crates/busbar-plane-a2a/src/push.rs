@@ -119,38 +119,71 @@ pub fn notification_body(task: &Task) -> Vec<u8> {
 pub struct DeliveryAuth {
     /// The HTTP authentication scheme, as the caller wrote it.
     pub scheme: String,
-    /// The credential itself, redacted in memory (predev `pushdeliver.rs:117`). Its one way out is
-    /// [`DeliveryAuth::header_value`]; the record's serde form carries it as the plain string the
-    /// sealed field always held.
+    /// The credential itself (predev `pushdeliver.rs:117` held it redacted in memory). Its one way
+    /// onto the wire is [`DeliveryAuth::header_value`]; the record's serde form carries it as the
+    /// plain string the sealed field always held.
     #[serde(with = "sealed_credential")]
-    pub credentials: busbar_contract::Redacted<String>,
+    pub credentials: PushCredential,
+}
+
+/// THE CALLER'S WEBHOOK CREDENTIAL AS THE PLANE HOLDS IT: caller payload the A2A body carried, not
+/// secret material the kernel resolved, so it is the plane's own type and never the contract's
+/// `Redacted` (whose accessor no plane reaches, DECISIONS #40). Logs, audit records, metrics and
+/// error text never carry its value (BUSBAR-1.6.0.md THE DESIGN §6): no `Display`, no
+/// `Serialize`, and its `Debug` prints `[redacted]`. Its readers are [`DeliveryAuth::header_value`],
+/// the `Authorization` field [`request`] writes, and the push_config record's serde form.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PushCredential(String);
+
+impl PushCredential {
+    /// Hold `value` as the caller's webhook credential.
+    #[must_use]
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    /// Whether the caller gave no credential bytes (a bare scheme).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The bytes, for this module's two readers alone.
+    fn reveal(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for PushCredential {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("[redacted]")
+    }
 }
 
 impl DeliveryAuth {
     /// The `Authorization` value: `<scheme> <credentials>`, or the bare scheme when there are none.
     #[must_use]
     pub fn header_value(&self) -> String {
-        let credentials = self.credentials.expose_secret();
-        if credentials.is_empty() {
+        if self.credentials.is_empty() {
             self.scheme.clone()
         } else {
-            format!("{} {credentials}", self.scheme)
+            format!("{} {}", self.scheme, self.credentials.reveal())
         }
     }
 }
 
 /// The push_config record's form of [`DeliveryAuth::credentials`]: the plain string, written into
-/// the sealed field and read straight back into a [`busbar_contract::Redacted`].
+/// the sealed field and read straight back into a [`PushCredential`].
 mod sealed_credential {
-    use busbar_contract::Redacted;
+    use super::PushCredential;
     use serde::{Deserialize, Deserializer, Serializer};
 
-    pub fn serialize<S: Serializer>(value: &Redacted<String>, s: S) -> Result<S::Ok, S::Error> {
-        s.serialize_str(value.expose_secret())
+    pub fn serialize<S: Serializer>(value: &PushCredential, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(value.reveal())
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Redacted<String>, D::Error> {
-        String::deserialize(d).map(Redacted::new)
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<PushCredential, D::Error> {
+        String::deserialize(d).map(PushCredential::new)
     }
 }
 
