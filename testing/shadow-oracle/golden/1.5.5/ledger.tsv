@@ -2482,3 +2482,5 @@ boot.refusal|LAW0-HOOKWORD-tokens|validate	PASS	exit 1;
 boot.refusal|LAW0-HOOKWORD-usage|validate	PASS	exit 1; 	
 config.migrate|LAW0-MIG-OPERATOR-14X|boot	PASS	exit 0; models: {}	
 config.migrate|LAW0-MIG-OPERATOR-INLINE|boot	PASS	exit 0; models: {}	
+egress.fetch|plugins|chunked-over-cap	PASS	capture	
+egress.fetch|plugins|declared-over-cap	PASS	capture	
