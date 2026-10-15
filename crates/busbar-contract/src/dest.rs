@@ -6,7 +6,7 @@
 //! connection and never names a lane outside the set its claim's configuration declares.
 
 use crate::bounded::{BoundedVec, ScratchBytes, MAX_LEGS};
-use crate::ids::{LaneId, OpClassId, RecordSchemaId, SchemeKey, StreamId, UpstreamIdx};
+use crate::ids::{LaneId, OpClassId, RecordSchemaId, SchemeKey, StreamId, UnitKey, UpstreamIdx};
 use crate::plugin::KernelSeal;
 use crate::wire::TransportEnvelope;
 use core::fmt;
@@ -354,32 +354,42 @@ pub struct SecretSlot {
 
 /// A one-time minted secret's placeholder.
 ///
-/// Minted by the verbs unit under an admin token. It must appear exactly once at its declared
-/// target location, and if it does not, the encode step fails and the mint is reversed. It never
-/// appears in content facts.
+/// Minted by the verbs unit under an admin token. It is bound to the unit that minted it and to the
+/// one target location it may appear at: it must appear exactly once there, and if it does not, the
+/// encode step fails and the mint is reversed. It never appears in content facts.
 ///
 /// The nonce IS the minted secret: it is the value the encoded bytes must contain exactly once, so
 /// a reader who has printed it has what the verb minted. The `Debug` is hand-written and says the
-/// target only, in the same spelling the capability crate's placeholder uses.
+/// unit and the target only.
+///
+/// This is the ONE `SecretOnce` (#73, X-1802): the capability module's differently-shaped copy (a
+/// `String` target and a unit binding) folded into this one, which now carries the unit too.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct SecretOnce {
     nonce: u128,
+    unit: UnitKey,
     target: &'static str,
 }
 
 impl fmt::Debug for SecretOnce {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SecretOnce")
+            .field("unit", &self.unit)
             .field("target", &self.target)
             .finish_non_exhaustive()
     }
 }
 
 impl SecretOnce {
-    /// Mint a placeholder. Verbs-unit-only; the seal is what says so.
+    /// Mint a placeholder for `unit`, to appear once at `target`. Verbs-unit-only; the seal is what
+    /// says so.
     #[must_use]
-    pub fn mint(_seal: &dyn KernelSeal, nonce: u128, target: &'static str) -> Self {
-        Self { nonce, target }
+    pub fn mint(_seal: &dyn KernelSeal, nonce: u128, unit: UnitKey, target: &'static str) -> Self {
+        Self {
+            nonce,
+            unit,
+            target,
+        }
     }
 
     /// The nonce that must appear exactly once.
@@ -388,10 +398,22 @@ impl SecretOnce {
         self.nonce
     }
 
+    /// The unit the placeholder is bound to.
+    #[must_use]
+    pub fn unit(&self) -> UnitKey {
+        self.unit
+    }
+
     /// Where it must appear.
     #[must_use]
     pub fn target(&self) -> &'static str {
         self.target
+    }
+
+    /// Whether a nonce seen in the encoded bytes is this one.
+    #[must_use]
+    pub fn matches(&self, nonce: u128) -> bool {
+        self.nonce == nonce
     }
 }
 
