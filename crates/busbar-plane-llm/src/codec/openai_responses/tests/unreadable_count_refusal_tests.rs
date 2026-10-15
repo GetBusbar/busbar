@@ -176,8 +176,12 @@ fn cache_write_tokens_bill_inside_the_input_on_every_path() {
         let completed = serde_json::json!({
             "response": {"status": STATUS_COMPLETED, "usage": usage}
         });
-        let ev =
-            ResponsesReader.read_response_events(crate::codec::test_host::HOST, EVT_RESPONSE_COMPLETED, &completed, &mut state);
+        let ev = ResponsesReader.read_response_events(
+            crate::codec::test_host::HOST,
+            EVT_RESPONSE_COMPLETED,
+            &completed,
+            &mut state,
+        );
         let streamed = ev
             .iter()
             .find_map(|e| match e {

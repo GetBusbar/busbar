@@ -34,9 +34,12 @@ fn item12_off_writes_no_thinking_on_any_lane() {
     };
     let model = "us.anthropic.claude-fable-5-v1:0";
     for caps in [always_on, LaneCaps::default()] {
-        let out = w
-            .writer()
-            .write_request_for_lane(crate::codec::test_host::HOST, &anthropic_off(), model, &caps);
+        let out = w.writer().write_request_for_lane(
+            crate::codec::test_host::HOST,
+            &anthropic_off(),
+            model,
+            &caps,
+        );
         assert!(
             out.pointer("/additionalModelRequestFields/thinking")
                 .is_none(),

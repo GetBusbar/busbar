@@ -109,7 +109,12 @@ fn cache_write_tokens_bill_inside_the_input_on_every_path() {
             "choices": [],
             "usage": usage
         });
-        let ev = OpenAiReader.read_response_events(crate::codec::test_host::HOST, "", &chunk, &mut state);
+        let ev = OpenAiReader.read_response_events(
+            crate::codec::test_host::HOST,
+            "",
+            &chunk,
+            &mut state,
+        );
         let streamed = ev
             .iter()
             .find_map(|e| match e {

@@ -399,7 +399,11 @@ fn bed10_context_window_and_malformed_stop_reasons_map() {
             "{token}"
         );
         assert!(
-            !crate::exchange::reply::wire::generation_failed(crate::codec::test_host::HOST, "bedrock", &body),
+            !crate::exchange::reply::wire::generation_failed(
+                crate::codec::test_host::HOST,
+                "bedrock",
+                &body
+            ),
             "{token}: a served answer, never a generation failure"
         );
         let c = xresp("bedrock", "cohere", &body);

@@ -3740,7 +3740,9 @@ mod rehomed_metering {
         let mut ctx = super::relay_ctx("openai", "openai", false);
         ctx.translate_cap = cap;
         let mut relay = Relay::new(ctx);
-        body.chunks(512).filter(|piece| relay.feed(HOST, piece).1).count()
+        body.chunks(512)
+            .filter(|piece| relay.feed(HOST, piece).1)
+            .count()
     }
 
     /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_same_protocol_nonstream_over_cap_body_still_bills_tail_usage`

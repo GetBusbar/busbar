@@ -753,7 +753,11 @@ fn timeout_is_served_and_billed_as_in_1_5_5() {
         .expect("read");
     assert_eq!(ir.stop_reason, Some(IrStopReason::Other));
     assert!(
-        !crate::exchange::reply::wire::generation_failed(crate::codec::test_host::HOST, "cohere", &body),
+        !crate::exchange::reply::wire::generation_failed(
+            crate::codec::test_host::HOST,
+            "cohere",
+            &body
+        ),
         "a TIMEOUT answer is served, never a generation failure"
     );
     let t = ir.usage.to_token_usage();

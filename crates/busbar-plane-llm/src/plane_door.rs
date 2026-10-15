@@ -1115,7 +1115,13 @@ fn far_end(host: &DoorHost, unit: &mut UnitState, piece: &PieceIn<'_>) -> Answer
         }
         return far_answer(cut, unit.far_status);
     }
-    let mut fed = reply.feed(host, &ctx, piece.bytes, piece.last, at(piece.clock, unit.started));
+    let mut fed = reply.feed(
+        host,
+        &ctx,
+        piece.bytes,
+        piece.last,
+        at(piece.clock, unit.started),
+    );
     // An answer member the caller's dialect has no form for, one degraded row each (`<path> from
     // <dialect>`, the row 1.5.5 wrote as it delivered the translated answer).
     let dropped = std::mem::take(&mut fed.dropped);

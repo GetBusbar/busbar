@@ -436,7 +436,12 @@ fn a_reasoning_ask_neither_reaches_nor_leaves_bedrock_as_in_1_5_5() {
             ..Default::default()
         };
         for caps in [LaneCaps::default(), adaptive()] {
-            let out = writer().write_request_for_lane(crate::codec::test_host::HOST, &req, CLAUDE_NEWEST, &caps);
+            let out = writer().write_request_for_lane(
+                crate::codec::test_host::HOST,
+                &req,
+                CLAUDE_NEWEST,
+                &caps,
+            );
             assert_eq!(
                 out["additionalModelRequestFields"],
                 json!({"top_k": 40}),
