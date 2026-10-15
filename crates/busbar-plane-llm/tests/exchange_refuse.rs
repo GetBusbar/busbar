@@ -373,7 +373,6 @@ fn message_in(dialect: &str, body: &Value) -> Option<String> {
 /// RED if any of the seven sentences differs or busbar's own wording appears.
 #[test]
 fn an_authentication_refusal_reads_each_vendors_own_sentence() {
-    entropy();
     for (dialect, status, sentence) in [
         ("anthropic", 401, "invalid x-api-key"),
         ("openai", 401, "Incorrect API key provided."),
@@ -426,7 +425,6 @@ fn an_authentication_refusal_reads_each_vendors_own_sentence() {
 /// neither. RED if either field is missing on bedrock, the type differs, or openai carries one.
 #[test]
 fn a_bedrock_throttle_carries_both_amzn_fields_and_an_openai_refusal_neither() {
-    entropy();
     for r in [
         render(HOST, "bedrock", 429, "rate_limit_error", "slow down", 0),
         kernel_refusal(
@@ -456,7 +454,6 @@ fn a_bedrock_throttle_carries_both_amzn_fields_and_an_openai_refusal_neither() {
 /// RED if the id is not UUID-shaped or the type differs.
 #[test]
 fn a_bedrock_not_found_carries_a_uuid_request_id_and_its_exception() {
-    entropy();
     let r = render(
         HOST,
         "bedrock",
@@ -487,7 +484,6 @@ fn a_bedrock_not_found_carries_a_uuid_request_id_and_its_exception() {
 /// field. RED if a value differs from its body or the table, or openai carries one.
 #[test]
 fn a_bedrock_refusals_errortype_is_its_body_type_for_every_kind() {
-    entropy();
     for (kind, status, code, expected) in [
         (
             "invalid_request_error",
@@ -566,7 +562,6 @@ fn unknown_model(target: &str, body: &[u8]) -> (String, Rendered) {
 /// RED if the status, the envelope or the sentence differs.
 #[test]
 fn a_gemini_unknown_model_reads_gemini_not_found() {
-    entropy();
     let (message, r) = unknown_model(
         "/v1beta/models/no-such:generateContent",
         br#"{"contents":[]}"#,
@@ -585,7 +580,6 @@ fn a_gemini_unknown_model_reads_gemini_not_found() {
 /// RED if the status, the type or the header differs.
 #[test]
 fn a_bedrock_unknown_model_reads_resource_not_found() {
-    entropy();
     let (message, r) = unknown_model("/model/no-such/converse", br#"{"messages":[]}"#);
     assert_eq!(
         message,
@@ -599,7 +593,6 @@ fn a_bedrock_unknown_model_reads_resource_not_found() {
 /// bare `{"message": ...}` envelope. RED if the status or the envelope differs.
 #[test]
 fn a_cohere_unknown_model_reads_coheres_not_found() {
-    entropy();
     let (message, r) = unknown_model("/v2/chat", br#"{"model":"no-such-model","messages":[]}"#);
     assert_eq!(
         message,
@@ -614,7 +607,6 @@ fn a_cohere_unknown_model_reads_coheres_not_found() {
 /// RED if the status, the type or the envelope differs.
 #[test]
 fn a_responses_unknown_model_reads_not_found_error() {
-    entropy();
     let (message, r) = unknown_model(
         "/v1/responses",
         br#"{"model":"no-such-model","input":"hi"}"#,
@@ -631,7 +623,6 @@ fn a_responses_unknown_model_reads_not_found_error() {
 /// RED if any body contains `router:`.
 #[test]
 fn no_refusal_body_carries_the_router_prefix() {
-    entropy();
     let json = [("content-type", "application/json")];
     let mut bodies: Vec<(String, Rendered)> = Vec::new();
     for (target, body) in [
@@ -693,7 +684,6 @@ const NOT_PERMITTED: &str = "Your API key does not have permission to access thi
 /// RED if the status, the envelope or the sentence differs.
 #[test]
 fn a_cohere_pool_refusal_reads_coheres_403() {
-    entropy();
     assert_native(
         "cohere",
         &pool_not_permitted("cohere"),
@@ -708,7 +698,6 @@ fn a_cohere_pool_refusal_reads_coheres_403() {
 /// `error.type` is `permission_error`. RED if the status, the type or the envelope differs.
 #[test]
 fn a_responses_pool_refusal_reads_permission_error() {
-    entropy();
     let r = pool_not_permitted("responses");
     assert_native("responses", &r, 403, "permission_error", NOT_PERMITTED);
     assert_eq!(body_of(&r)["error"]["type"], "permission_error");
@@ -719,7 +708,6 @@ fn a_responses_pool_refusal_reads_permission_error() {
 /// `error.type` is `permission_error`. RED if the status, the type or the envelope differs.
 #[test]
 fn an_openai_pool_refusal_reads_permission_error() {
-    entropy();
     let r = pool_not_permitted("openai");
     assert_native("openai", &r, 403, "permission_error", NOT_PERMITTED);
     assert_eq!(body_of(&r)["error"]["type"], "permission_error");
@@ -730,7 +718,6 @@ fn an_openai_pool_refusal_reads_permission_error() {
 /// `error.code` 403 and `error.status` PERMISSION_DENIED. RED if any of the three differs.
 #[test]
 fn a_gemini_pool_refusal_reads_permission_denied() {
-    entropy();
     let r = pool_not_permitted("gemini");
     assert_native("gemini", &r, 403, "permission_error", NOT_PERMITTED);
     assert_eq!(body_of(&r)["error"]["code"], 403);
@@ -743,7 +730,6 @@ fn a_gemini_pool_refusal_reads_permission_denied() {
 /// RED if the status, the type, either header or the envelope differs.
 #[test]
 fn a_bedrock_pool_refusal_reads_access_denied() {
-    entropy();
     let r = pool_not_permitted("bedrock");
     assert_native("bedrock", &r, 403, "permission_error", NOT_PERMITTED);
     assert_eq!(
@@ -790,7 +776,6 @@ fn refusal_in(
 /// RED if any of the three bodies is accepted or refused otherwise, or a dialect's bytes differ.
 #[test]
 fn a_non_object_body_reads_the_released_400_in_every_dialect() {
-    entropy();
     let json = [("content-type", "application/json")];
     for body in [&b"[]"[..], &b"\"a string\""[..], &b"7"[..]] {
         for (dialect, target) in [
@@ -836,7 +821,6 @@ fn a_non_object_body_reads_the_released_400_in_every_dialect() {
 /// envelope. RED if a dialect's bytes differ.
 #[test]
 fn the_reserialize_guard_reads_the_released_400_in_every_dialect() {
-    entropy();
     for dialect in SIX {
         assert_native(
             dialect,
@@ -861,7 +845,6 @@ fn the_reserialize_guard_reads_the_released_400_in_every_dialect() {
 /// RED if the set changes size or any cell's status, body or head fields differ.
 #[test]
 fn every_arrival_refusal_reads_the_released_bytes_in_every_dialect_and_none() {
-    entropy();
     let cases = [
         (
             Decline::BodyParse,
@@ -913,7 +896,6 @@ fn a_parse_refusal_renders_for_a_dialect_the_plane_does_not_hold() {
 /// RED if any dialect's status, body or head fields differ.
 #[test]
 fn the_missing_model_refusal_reads_the_released_bytes_in_every_dialect() {
-    entropy();
     let json = [("content-type", "application/json")];
     let message = "Missing required parameter: 'model'.";
     for dialect in ["anthropic", "openai", "responses", "cohere"] {
@@ -939,7 +921,6 @@ fn the_missing_model_refusal_reads_the_released_bytes_in_every_dialect() {
 /// dialect the plane does not hold. RED if the set changes size or any cell differs.
 #[test]
 fn every_decode_refusal_reads_the_released_bytes_in_every_dialect_and_none() {
-    entropy();
     let cases = [
         (
             Decline::UnsupportedOperation,
