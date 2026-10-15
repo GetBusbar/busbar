@@ -1415,3 +1415,16 @@ fn the_fee_is_decided_by_the_leg_and_the_client_facing_status() {
         "a probe's 2xx is no billable request: {probe_far}"
     );
 }
+
+// THE PUBLISHED CONFORMANCE SUITE, run over this plane (TODO ABI-b4; OWNER 2026-10-03: plugins
+// test themselves against busbar's published suite): the linked door and the `llm_door` cdylib,
+// driven by busbar-plugin-loader's plane script over `conformance.json`, every step at its pinned
+// crossing count, the two folds equal. Its sessions are the far ends' own answers, one per dialect
+// that reports a class (Anthropic server tools, an OpenAI stated total, Cohere billed units, three
+// Bedrock guardrail traces, an OpenAI per-image answer, a whisper duration), each wanting its
+// counts exactly, so every billable class the tail declares is reported by a case (TODO L-R22).
+busbar_plugin_loader::conformance_suite! {
+    door: busbar_plane_llm::plane_door::door,
+    cdylib: "llm_door",
+    inputs: include_str!("conformance.json"),
+}
