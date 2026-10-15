@@ -1437,6 +1437,7 @@ fn every_dialect_operation_shape_and_stream_intent_reads_the_released_far_path()
                 caps: Default::default(),
                 error_map: Default::default(),
                 statics: &[],
+                invoke: false,
             };
             for (op, label) in OPS {
                 for stream in [false, true] {

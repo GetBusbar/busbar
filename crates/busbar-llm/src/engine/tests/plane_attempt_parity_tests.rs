@@ -31,6 +31,7 @@ fn plane_lane(dialect: &'static str, model: &str, path: Option<&str>, base: Opti
         caps: Default::default(),
         error_map: Default::default(),
         statics: &[],
+        invoke: false,
     }
 }
 

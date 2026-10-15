@@ -819,6 +819,14 @@ each dialect translates, field by field, is listed in the generated
   not a usable PEM certificate refuses the boot, naming `agent_push.ca`, and a config apply carrying
   one is refused with the same words while the running configuration stays in force. It is read at
   boot and at every config apply. **Migration:** none.
+- 1.6.0 Added: a model entry's `protocol: bedrock-invoke` serves an Anthropic model over Amazon Bedrock's `InvokeModel` and `InvokeModelWithResponseStream`.
+  The request and answer are the Anthropic Messages API's own bodies and events, so an Anthropic
+  caller's request is relayed inside the envelope, with `model` and `stream` moved off the body,
+  `anthropic_version: bedrock-2023-05-31` stated, and `anthropic-beta` carried as `anthropic_beta`.
+  The answer, its stream and its usage read exactly as on an Anthropic provider. The model's provider
+  is a Bedrock provider and keeps its SigV4 credential; a provider cannot default to
+  `bedrock-invoke`, and `protocol:` on a provider still lists 1.5.5's six protocols. **Migration:**
+  none.
 - 1.6.0 Added: `GET /api/v1/admin/ledger/checkpoints` lists sealed checkpoints, sealed every 10,000 journal records or every 60 seconds with a change, whichever comes first.
   The read serves the latest 1,024 seals, oldest first; the journal keeps every seal. A node that
   has not reached either threshold serves an empty list. **Migration:** none.
