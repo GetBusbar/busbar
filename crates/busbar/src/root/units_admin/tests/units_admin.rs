@@ -4270,7 +4270,8 @@ fn a_replayed_signed_correction_is_refused_and_appends_nothing() {
         "a replay records nothing"
     );
     let pinned = history.pin().expect("pinned");
-    let (seq, card) = pinned.view().card_at(1_000).expect("the window is priced");
+    let view = pinned.view();
+    let (seq, card) = view.card_at(1_000).expect("the window is priced");
     assert_eq!(seq, busbar_kernel_ledger::cost::HistorySeq(2));
     assert_eq!(
         card.fee(),
