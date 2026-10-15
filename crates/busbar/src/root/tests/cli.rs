@@ -162,3 +162,17 @@ fn the_list_plugins_header_heads_the_row_formats_columns() {
         )
     );
 }
+
+/// THE DEFAULT BUILD'S `busbar --help`, BYTE FOR BYTE: the root's own text with the rows its linked
+/// plane doors state — the llm door's tagline and `ENDPOINTS` rows, the mcp door's `Flags:` row —
+/// read off their tails. The fixture is the help the binary printed while the llm rows still came
+/// off the legacy engine's linked row, so a door that stops stating them (or a reader that drops a
+/// slot) fails here.
+#[cfg(all(feature = "plane-llm", feature = "plane-mcp"))]
+#[test]
+fn the_default_builds_help_is_byte_identical() {
+    assert_eq!(
+        render_help("<VERSION>", &help_rows()),
+        include_str!("../../../tests/fixtures/help_default_build.txt")
+    );
+}
