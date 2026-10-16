@@ -13,9 +13,9 @@ use xtask::conformance_record::{
 };
 use xtask::conformance_record::{
     b64url, decide_h2, decide_jev, decide_oidf, decide_slsa, decide_tls, discriminates, es256_jwk,
-    governance_observed, is_jev_refusal, judge_jev_ledger, junit_cases, module_results,
-    provenance_commit, rig_for, tests_passed, CaseResult, H2Run, JevRun, OidfRun, SlsaRun, Status,
-    TlsRun, NEGATIVE_PAIRS, OIDF_SUITES, REPORTED_UNITS,
+    governance_observed, is_jev_refusal, jev_battery_command, judge_jev_ledger, junit_cases,
+    module_results, provenance_commit, rig_for, tests_passed, CaseResult, H2Run, JevRun, OidfRun,
+    SlsaRun, Status, TlsRun, JEV_PLANE, NEGATIVE_PAIRS, OIDF_SUITES, REPORTED_UNITS,
 };
 
 fn registry_ids() -> Vec<String> {
@@ -83,6 +83,30 @@ fn a_correctly_served_decisions_plane_passes() {
     let o = decide_jev(&jev_green());
     assert_eq!(o.status, Status::Pass, "{o:?}");
     assert!(o.armed);
+}
+
+/// The decisions plane lives in its own repo (BUSBAR-1.6.0.md #68: the MUST set covers every plane
+/// wherever its crate lives): its battery runs in the workspace the lock pins it at, never as `-p`
+/// of this workspace, which holds no such member. RED ARM: `cargo test -p busbar-plane-decisions`
+/// in this workspace exited 101 in 0s (ModernCI conformance on dev 68df8203a9).
+#[test]
+fn the_jev_battery_runs_in_the_pinned_planes_own_workspace() {
+    let manifest = std::path::Path::new("/git/checkouts/busbar-plane-decisions/2f5a9d9/Cargo.toml");
+    let cmd = jev_battery_command(manifest, std::path::Path::new("/work/target"));
+    assert_eq!(
+        cmd,
+        [
+            "cargo",
+            "test",
+            "--locked",
+            "--manifest-path",
+            "/git/checkouts/busbar-plane-decisions/2f5a9d9/Cargo.toml",
+            "-p",
+            JEV_PLANE,
+            "--target-dir",
+            "/work/target",
+        ]
+    );
 }
 
 #[test]
