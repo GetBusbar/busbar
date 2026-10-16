@@ -194,6 +194,45 @@ fn resolve_linked_env_genuinely_unset_still_reports_unset() {
 
 // ── the `file` source ───────────────────────────────────────────────────────────────────────────
 
+/// R4 (BUSBAR-1.6.0.md l.1464-1469, OWNER 2026-10-13): the secret kind's file source reads the disk
+/// only at config time (boot, a config apply, a refresh), on the host's disk lane, and is never
+/// reachable from a request path. A resolve WITHOUT the config-time proof (the request-path form)
+/// is refused with the contract's own sentence before anything is read: the file below exists and
+/// is readable, and the refusal must not carry its bytes. With the proof, the same reference reads.
+/// RED ARM: the linked file source declares no disk need, so the request-path form opens the file.
+#[test]
+fn a_request_path_resolve_of_the_file_source_reads_nothing() {
+    let path = temp_path("FILE_REQUEST_PATH");
+    std::fs::write(&path, b"never-read-on-a-request-path").unwrap();
+    let reference = SecretRef::file(path.to_str().unwrap());
+    let refused = resolve_linked(&reference).expect_err("a request-path resolve is refused");
+    assert!(
+        refused.contains(busbar_contract::config_time::RESOLVE_OFF_CONFIG_TIME),
+        "{refused}"
+    );
+    assert!(
+        !refused.contains("never-read-on-a-request-path"),
+        "{refused}"
+    );
+    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
+        .expect("the linked secret doors state");
+    let settings = serde_json::Value::Object(reference.settings.clone()).to_string();
+    let at_config = axis
+        .shared(&reference.module)
+        .expect("the linked file source")
+        .resolve_at_config(
+            settings.as_bytes(),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map(|m| m.expose(&busbar_kernel::seal::lend()).clone())
+        .map_err(|r| r.text);
+    assert_eq!(
+        at_config.as_deref(),
+        Ok(&b"never-read-on-a-request-path"[..])
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn resolve_linked_file_happy_path_reads_the_file() {
     let path = temp_path("FILE_HAPPY");
