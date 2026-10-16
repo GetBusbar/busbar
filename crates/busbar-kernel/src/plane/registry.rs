@@ -847,6 +847,12 @@ plane_behaviour! {
     /// the superset-IR rule remains a rule rather than a fact about today's planes.
     wire_format_names: fn() -> &'static [&'static str],
 
+    /// THE DIALECTS A PROVIDER'S `protocol` MAY NAME, of those this plane speaks, in its order
+    /// (ARCHITECT ruling 2026-10-16, item 3; BUSBAR-1.6.0.md #49: declared data). A door plane's
+    /// are the dialects its tail's `dialect_auth` lines flag `DIALECT_PROVIDER`. The boot accepts a
+    /// provider whose `protocol` some registered plane lists here, and its refusal lists them all.
+    provider_dialects: fn() -> &'static [&'static str],
+
     /// THE PATHS THIS PLANE ANSWERS ON, and the wire format each is spoken in, computed from the
     /// plane's own RUNTIME OBJECT (its app slot, type-erased as `&dyn Any`). Every `(path, wire)`
     /// this returns is mounted into `PlaneDispatch` and — since `PlaneDispatch::admission_for`
