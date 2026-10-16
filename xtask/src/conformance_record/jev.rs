@@ -3,9 +3,11 @@
 //!
 //! Two legs, one verdict:
 //!
-//! * BATTERY — `cargo test -p busbar-plane-decisions`: the codec, the fixtures, the PII witness,
-//!   purity and invariance, and the both-ways door. It says the plane reads and writes jev. It
-//!   cannot say busbar SERVES jev, and a battery that selected zero tests says nothing at all.
+//! * BATTERY — `cargo test -p busbar-plane-decisions`, in the plane's own workspace at the rev this
+//!   checkout's lock pins (the plane lives in its own repo; [`jev_battery_command`]): the codec,
+//!   the fixtures, the PII witness, purity and invariance, and the both-ways door. It says the
+//!   plane reads and writes jev. It cannot say busbar SERVES jev, and a battery that selected zero
+//!   tests says nothing at all.
 //! * SERVED — a busbar built from this checkout, booted with one `decisions.models` entry (so a
 //!   request naming no model routes over it, the default, `busbar-plane-decisions/src/driven.rs`),
 //!   whose provider is a far end this rig owns ([`super::upstream::FarEnd`]). The leg judges the
@@ -116,6 +118,28 @@ pub const SUCCESS: &[u8] =
     b"{\"request_id\" : \"req_conformance\", \"usage\":{\"units\":42},\"answers\":{\"decision\":\"approve\"}}";
 /// The far end's 422, echoing state and answers (the PII witness fixture's shape).
 const UNPROCESSABLE: &[u8] = b"{\"error\":{\"code\":\"invalid_state\",\"message\":\"bad transition\"},\"state\":{\"session\":\"conformance-state\"},\"answers\":{\"leaked\":\"never\"}}";
+
+/// The decisions plane's crate, as this workspace's lock names it.
+pub const JEV_PLANE: &str = "busbar-plane-decisions";
+
+/// THE BATTERY'S COMMAND: the plane's own tests, in the pinned workspace `manifest` names (its
+/// committed lock held), built into this checkout's `target` (test-gated's `plugin()` shape).
+pub fn jev_battery_command(manifest: &Path, target: &Path) -> Vec<String> {
+    [
+        "cargo",
+        "test",
+        "--locked",
+        "--manifest-path",
+        &manifest.to_string_lossy(),
+        "-p",
+        JEV_PLANE,
+        "--target-dir",
+        &target.to_string_lossy(),
+    ]
+    .into_iter()
+    .map(String::from)
+    .collect()
+}
 
 /// What the jev rig measured.
 #[derive(Debug, Clone)]
@@ -768,13 +792,17 @@ impl Runner {
         }
         let dir = self.work_dir(rig);
         let mut run = JevRun::new(self.rel(&dir));
-        run.battery = self.leg(
-            rig,
-            "battery",
-            &["cargo", "test", "-p", "busbar-plane-decisions"],
-            None,
-            &[],
-        );
+        // The plane lives in its own repo (#68: the MUST set covers every plane wherever its crate
+        // lives): its battery runs in the workspace this checkout's lock pins it at, the way
+        // test-gated builds a pinned plugin, never as a member of this workspace.
+        match super::oidf::pinned_repo_manifest(&self.root, JEV_PLANE) {
+            Ok(manifest) => {
+                let cmd = jev_battery_command(&manifest, &self.target);
+                let cmd: Vec<&str> = cmd.iter().map(String::as_str).collect();
+                run.battery = self.leg(rig, "battery", &cmd, None, &[]);
+            }
+            Err(e) => eprintln!("  {}: battery: {e}", rig.name()),
+        }
         run.battery_tests = tests_passed(&self.log_text(rig, "battery"));
         if run.battery == Some(0) && run.battery_tests > 0 {
             match self.busbar() {
