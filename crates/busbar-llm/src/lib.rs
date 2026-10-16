@@ -322,6 +322,7 @@ pub const PLANE_DECLARATION: busbar_contract::plane::PlaneDeclaration =
 /// the kernel side of every fold.
 pub const PLANE_HOOKS: PlaneHooks = PlaneHooks {
     wire_format_names: busbar_kernel::proto::known_protocols,
+    provider_dialects: busbar_kernel::proto::known_protocols,
     // THE FALLBACK MOUNTS NOTHING — the catch-all every unclaimed path falls through to, so it
     // claims no path and binds no audience.
     claims: |_| Vec::new(),

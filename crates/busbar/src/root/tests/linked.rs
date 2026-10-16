@@ -368,6 +368,7 @@ fn native(key: &'static str) -> &'static [PlaneDecl] {
     };
     let hooks = busbar_kernel::plane::registry::PlaneHooks {
         wire_format_names: || &[busbar_kernel::plane::WIRE_HTTP_JSON],
+        provider_dialects: || &[],
         claims: |_| Vec::new(),
         admission: |_| None,
         build: |_| None,
