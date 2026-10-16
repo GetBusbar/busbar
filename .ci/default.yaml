@@ -1,6 +1,7 @@
-# What a lane must pass to enter predev, judged by ModernCI (required check `ci`) on the lane
-# merged onto predev's tip, no worse than predev itself. Live: ModernCI decides and lands.
-to: predev
+# What a lane must pass to enter dev, judged by ModernCI (required check `ci`) on the lane merged
+# onto dev's tip, no worse than dev itself. Live: ModernCI decides and lands. predev is retired
+# (OWNER 2026-10-16): every lane lands on dev, and dev never gets worse.
+to: dev
 on_green: merge
 deadline: 6h
 # The PR battery, named explicitly so a check declared below but NOT listed here is on-demand only
@@ -168,7 +169,7 @@ checks:
   gates:
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
-      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=predev
+      export XTASK_CEILING_BASE="$MODERNCI_TO_SHA" XTASK_SHIP_TARGET=dev
       cargo xtask gate --all --format=tsv
     baseline: target
     # The ledgers and ceilings are rules: a row this move arms is judged on its own.
@@ -301,7 +302,7 @@ checks:
     baseline: target
     needs: [preflight]
     requires: [cc]
-  # ON-DEMAND ONLY (not in on.move): the predev->dev oracle, measurable on a PR head that changes the
+  # ON-DEMAND ONLY (not in on.move): the dev->qa oracle (.ci/dev.yaml), measurable on a PR head that changes the
   # served LLM path (e.g. a plane default flip), so claim C3 is proven before landing, not only at the move.
   oracle:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.

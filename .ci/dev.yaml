@@ -1,10 +1,10 @@
-# What predev must pass to move into dev: the `dev` rung (gates, oracle, conformance), the 1.6.0
-# done-oracle, and the Q128 architecture audit (`cargo xtask q128 audit`). ModernCI names a branch
-# file for the branch being moved, so the move predev -> dev reads this file, and ModernCI alone
-# judges it: promote.yml, the busbar-release hop that judged it before, is deleted (OWNER
-# 2026-10-12, "ModernCI only"; docs/design/BUSBAR-1.6.0.md Part 6, "BUSBAR-RELEASE RETIRED FROM
-# BUSBAR"). Its green landing is DEV-GREEN.
-to: dev
+# What dev must pass to move into qa: gates, the oracle against the 1.5.5 golden, conformance, the
+# 1.6.0 done-oracle, the Q128 architecture audit (`cargo xtask q128 audit`) and the feature-gated
+# suites. ModernCI names a branch file for the branch being moved, so the move dev -> qa reads this
+# file. predev is retired (OWNER 2026-10-16): lanes land on dev through .ci/default.yaml, and this
+# move judges dev's head. All six green on dev's head is DEV-GREEN; the landing into qa is the
+# owner's approval (docs/design/BUSBAR-1.6.0.md Part 6).
+to: qa
 on_green: merge
 # The owner's approval on the pull request holds the merge too; q128-audit gates the move on the
 # audit's record for the commit (no open BLOCK).
@@ -162,9 +162,8 @@ on:
 checks:
   gates:
     # The rung re-runs every registered gate on the commit, ABSOLUTE (no `baseline`: every row
-    # green, not "no worse than dev"; dev holds no xtask and no ledgers to be measured against).
-    # The base-relative rules (new edges, minted rows) take predev's own last landed commit as their
-    # base: every lane move already judged its delta against predev, so dev is never the base.
+    # green, not "no worse than qa"). The base-relative rules (new edges, minted rows) take dev's
+    # own previous commit as their base: every lane move already judged its delta against dev.
     run: |
       if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
       export XTASK_CEILING_BASE="$(git rev-parse "$MODERNCI_HEAD~1")" XTASK_SHIP_TARGET="$MODERNCI_TO"
@@ -300,7 +299,7 @@ checks:
       cargo nextest run --locked --no-fail-fast -p busbar -p busbar-kernel -p busbar-core-admin --features busbar/test-harness,busbar/transport-webrtc,busbar/openapi-schema,busbar-kernel/timing -E 'binary(mcp_stdio_serve) | binary(hook_parity_driver) | binary(admin_cross_plane) | binary(timing_smoke) | package(busbar-core-admin) | (package(busbar-kernel) & test(/timing::/)) | (package(busbar) & test(/(serve_tests|secret_source|connector|boot)::/))'
       cargo nextest run --locked --no-fail-fast -p busbar-plugin-loader --features pack -E 'binary(/busbar-plugin-pack/)'
       timeout 3000 cargo test --release --locked -p busbar-kernel --features loom-model txn_loom
-    # Absolute at this rung, as every check of this move (no `baseline`: dev holds no suites to be
+    # Absolute at this rung, as every check of this move (no `baseline`: qa holds no suites to be
     # measured against).
     requires: [cc, git-history]
     needs: [gates]
