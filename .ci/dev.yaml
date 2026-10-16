@@ -5,6 +5,9 @@
 # move judges dev's head. All six green on dev's head is DEV-GREEN; the landing into qa is the
 # owner's approval (docs/design/BUSBAR-1.6.0.md Part 6).
 to: qa
+# Open the dev -> qa move on every new dev head by itself (ModernCI's default is off); approve: true
+# below still holds the landing into qa for the owner.
+promote: auto
 on_green: merge
 # The owner's approval on the pull request holds the merge too; q128-audit gates the move on the
 # audit's record for the commit (no open BLOCK).
