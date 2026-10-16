@@ -341,6 +341,13 @@ pub const TAIL_HOOKS_GATED: u32 = 1 << 2;
 /// `refusal` renders it. Without the bit no such piece is sent.
 pub const TAIL_REFUSED_PIECE: u32 = 1 << 3;
 
+/// [`DialectAuth::flags`]: a provider's `protocol` may name this dialect.
+///
+/// The kernel reads it as declared data (ARCHITECT ruling 2026-10-16, item 3): a provider whose
+/// `protocol` is a dialect no linked plane flags is refused at boot, and the refusal lists the
+/// flagged dialects, in the planes' registration order and each plane's dialect order.
+pub const DIALECT_PROVIDER: u32 = 1;
+
 /// [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it
 /// without verifying a caller. Without it, the route takes one.
 pub const CLAIM_OPEN: u32 = 1;
@@ -1155,8 +1162,10 @@ pub fn class_of_word(word: &str) -> Option<RefusalClass> {
 pub struct DialectAuth {
     /// Index into [`PlaneTail::dialects`].
     pub dialect: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// [`DIALECT_PROVIDER`]; any other bit refuses the load. The word was the line's alignment
+    /// padding, so a line that predates it states `0`: a dialect no provider may name (ARCHITECT
+    /// ruling 2026-10-16, an append in place).
+    pub flags: u32,
     /// The style, an open string.
     pub style: AbiStr,
     /// The style's parameters for this dialect, a [`super::mechanism::call::BLOB_JSON`] object the

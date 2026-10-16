@@ -173,6 +173,10 @@ pub struct ServedFacts {
     /// (THE DESIGN §6 step 2: a provider entry's `auth:`, else this), and the style's parameters
     /// for it, a JSON object's text (empty: none; ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
     pub dialect_auth: Vec<(u32, &'static str, &'static [u8])>,
+    /// Each dialect's `DIALECT_*` flags off its `dialect_auth` line, parallel to
+    /// [`Self::dialects`] (`0` for a dialect with no line): whether a provider may name it
+    /// (ARCHITECT ruling 2026-10-16, item 3).
+    pub dialect_flags: Vec<u32>,
     /// The tail's `label`, `subject_noun` and `admin_noun` (what the kernel's registry entry names
     /// the plane and one registration by).
     pub nouns: (&'static str, &'static str, &'static str),
@@ -373,6 +377,7 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
                 .into_iter()
                 .map(|d| (d.dialect, kept(d.style), kept_blob(d.params)))
                 .collect(),
+            dialect_flags: dialect_flags(&tail),
             nouns: (
                 kept(tail.label),
                 kept(tail.subject_noun),
@@ -406,6 +411,19 @@ fn stated_provider_keys(
     let bytes = unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) };
     busbar_contract::provider_keys::stated(bytes)
         .map_err(|e| format!("the plane's provider keys are refused: {e}"))
+}
+
+/// Each of the tail's dialects' `DIALECT_*` flags, by dialect index: the union of its
+/// `dialect_auth` lines' flags (`check_dialect_auth` judged every line's index and bits), `0` for a
+/// dialect with none.
+fn dialect_flags(tail: &busbar_contract::abi::plane::PlaneTail) -> Vec<u32> {
+    let mut flags = vec![0; tail.dialects_len];
+    for d in listed(tail.dialect_auth, tail.dialect_auth_len) {
+        if let Some(f) = flags.get_mut(d.dialect as usize) {
+            *f |= d.flags;
+        }
+    }
+    flags
 }
 
 /// A tail string, kept for the process (`""` when absent).
@@ -641,6 +659,7 @@ pub fn registration(
         audit_kind: served.audit_kind,
         signing: declared.signing,
         dialects: served.dialects.clone(),
+        dialect_flags: served.dialect_flags.clone(),
         scope_kinds: declared.scope_kinds.clone(),
         billable_classes: served
             .billable_classes

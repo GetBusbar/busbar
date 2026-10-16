@@ -368,6 +368,7 @@ extern "C" {
 #define BB_PLANE_TAIL_PROBES UINT32_C(2) /* [`PlaneTail::flags`]: the plane answers health probes. A probe is a kernel-originated unit */
 #define BB_PLANE_TAIL_HOOKS_GATED UINT32_C(4) /* [`PlaneTail::flags`]: the plane's request-stage hooks run GATE-FIRST (spec Part 3 section 12 */
 #define BB_PLANE_TAIL_REFUSED_PIECE UINT32_C(8) /* [`PlaneTail::flags`]: the plane takes a unit's refusal as a piece first where the unit's hop */
+#define BB_PLANE_DIALECT_PROVIDER UINT32_C(1) /* [`DialectAuth::flags`]: a provider's `protocol` may name this dialect. */
 #define BB_PLANE_CLAIM_OPEN UINT32_C(1) /* [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it */
 #define BB_PLANE_CLAIM_EXACT UINT32_C(2) /* [`Claim::flags`]: the target matches exactly. Without it (and without [`CLAIM_PATTERN`]), the */
 #define BB_PLANE_CLAIM_PATTERN UINT32_C(4) /* [`Claim::flags`]: the target is a path pattern. Each `/`-separated segment is a literal, or a */
@@ -2547,7 +2548,7 @@ struct bb_plane_Ops {
 /* A dialect's default auth style (the 1.5.5 dialect defaults), as data. */
 struct bb_plane_DialectAuth {
     uint32_t dialect;
-    uint32_t _reserved;
+    uint32_t flags;
     bb_mech_AbiStr style;
     bb_mech_Blob params;
 };
@@ -5114,7 +5115,7 @@ BB_ASSERT(offsetof(bb_plane_Ops, project) == 128, "bb_plane_Ops.project: offset"
 BB_ASSERT(sizeof(bb_plane_DialectAuth) == 48, "bb_plane_DialectAuth: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_DialectAuth) == 8, "bb_plane_DialectAuth: alignment");
 BB_ASSERT(offsetof(bb_plane_DialectAuth, dialect) == 0, "bb_plane_DialectAuth.dialect: offset");
-BB_ASSERT(offsetof(bb_plane_DialectAuth, _reserved) == 4, "bb_plane_DialectAuth._reserved: offset");
+BB_ASSERT(offsetof(bb_plane_DialectAuth, flags) == 4, "bb_plane_DialectAuth.flags: offset");
 BB_ASSERT(offsetof(bb_plane_DialectAuth, style) == 8, "bb_plane_DialectAuth.style: offset");
 BB_ASSERT(offsetof(bb_plane_DialectAuth, params) == 24, "bb_plane_DialectAuth.params: offset");
 BB_ASSERT(sizeof(bb_plane_OpClass) == 32, "bb_plane_OpClass: size");
