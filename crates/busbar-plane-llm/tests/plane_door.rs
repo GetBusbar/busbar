@@ -39,6 +39,45 @@ fn the_tail_states_the_planes_help_rows() {
     );
 }
 
+/// THE TAIL STATES EACH DIALECT'S PROVIDER FLAG (ARCHITECT ruling 2026-10-16, item 3), read off its
+/// `dialect_auth` lines as the kernel reads them: every one of the six is a dialect a provider's
+/// `protocol` may name (1.5.5's `must be one of:` list, in its order). RED arm: a line that dropped
+/// the flag empties the boot's provider list.
+#[test]
+fn the_tail_flags_every_dialect_a_provider_dialect() {
+    use busbar_contract::abi::plane::{check::check_dialect_auth, DIALECT_PROVIDER};
+    // SAFETY: the tail's lists are `'static` plugin data of their stated lengths.
+    let (lines, names) = unsafe {
+        (
+            std::slice::from_raw_parts(TAIL.dialect_auth, TAIL.dialect_auth_len),
+            std::slice::from_raw_parts(TAIL.dialects, TAIL.dialects_len),
+        )
+    };
+    assert_eq!(check_dialect_auth(lines, names.len() as u64), Ok(()));
+    let name = |i: u32| {
+        let s = names[i as usize];
+        // SAFETY: a tail string is `len` bytes of `'static` plugin data.
+        std::str::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }).expect("text")
+    };
+    let provider: Vec<&str> = lines
+        .iter()
+        .filter(|l| l.flags & DIALECT_PROVIDER != 0)
+        .map(|l| name(l.dialect))
+        .collect();
+    assert_eq!(
+        provider,
+        [
+            "anthropic",
+            "openai",
+            "gemini",
+            "bedrock",
+            "responses",
+            "cohere"
+        ],
+        "the provider dialects, in 1.5.5's order"
+    );
+}
+
 #[test]
 fn the_tail_is_one_the_contract_accepts() {
     assert_eq!(check_tail(TAIL), Ok(()));
