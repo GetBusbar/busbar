@@ -5293,6 +5293,31 @@ Other rulings:
 - #84: the struck JSON lane, two-encoding and both-lanes witness text and the struck vN-1 load clause removed.
 - #85: the struck two-value loader window removed.
 
+
+### 2026-10-16 — ARCHITECT ruling (busbar-llm retirement, step 3): planes fill the protocol registry
+Not (c) (accept a customer-visible difference): (b), with (a) limited to the existing per-dialect
+claim line. Governing: Part 3 §0 (core names zero plane types; one code path), #49 (the kernel knows no
+plane strings; everything is declared data), Part 2 #4 (a dialect lives inside a plane), the
+2026-09-30 OWNER auth points and guest lists ruling, FOLD-LLM2 (the plane renders refusals), and the
+`/v1/models` rule (each plane generation's listed names are appended).
+1. Detection, fingerprints and the residual default dialect are plane-internal; kernel-side detection
+   over declarations goes away and the plane matches its own claimed routes.
+2. `GET /v1/models` and `/v1beta/models/` are served by the plane, which claims them and renders the
+   dialect-shaped envelope; other planes' listed names reach it as a neutral host-supplied list. Bytes
+   stay 1.5.5's, "unchanged when none" included; the kernel's models route is deleted.
+3. A provider's `protocol` must be a dialect some linked plane declares provider-capable: one
+   append-only field on the per-dialect line (`abi::plane::DialectAuth::flags`, `DIALECT_PROVIDER`;
+   the line's padding word, so a line that predates it states 0). `appbuild` and the validator read
+   only that declared data; the refusal texts are byte-identical.
+4. `/metrics` `ingress_protocol` families and the translation counters are keyed by the declared
+   dialect names, not a codec list; series names and label values are unchanged.
+5. The per-dialect signed-ingress fact is declared on the claim line; the auth-failure body is rendered
+   by the plane through its refusal path, 1.5.5's bytes per dialect pinned by tests.
+6. Append-only on the plane ABI; every shape lives in `busbar-contract/src/abi/`, and the linked and
+   dropped-in folds read the same fields.
+Each item is one commit with a byte-for-byte test against 1.5.5 (RED arm kept). An item that would
+change customer-visible bytes stops and is reported.
+
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
 

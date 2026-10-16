@@ -341,6 +341,13 @@ pub const TAIL_HOOKS_GATED: u32 = 1 << 2;
 /// `refusal` renders it. Without the bit no such piece is sent.
 pub const TAIL_REFUSED_PIECE: u32 = 1 << 3;
 
+/// [`DialectAuth::flags`]: a provider's `protocol` may name this dialect.
+///
+/// The kernel reads it as declared data (ARCHITECT ruling 2026-10-16, item 3): a provider whose
+/// `protocol` is a dialect no linked plane flags is refused at boot, and the refusal lists the
+/// flagged dialects, in the planes' registration order and each plane's dialect order.
+pub const DIALECT_PROVIDER: u32 = 1;
+
 /// [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it
 /// without verifying a caller. Without it, the route takes one.
 pub const CLAIM_OPEN: u32 = 1;
@@ -1147,8 +1154,10 @@ pub fn class_of_word(word: &str) -> Option<RefusalClass> {
 pub struct DialectAuth {
     /// Index into [`PlaneTail::dialects`].
     pub dialect: u32,
-    /// Alignment padding.
-    pub _reserved: u32,
+    /// [`DIALECT_PROVIDER`]; any other bit refuses the load. The word was the line's alignment
+    /// padding, so a line that predates it states `0`: a dialect no provider may name (ARCHITECT
+    /// ruling 2026-10-16, an append in place).
+    pub flags: u32,
     /// The style, an open string.
     pub style: AbiStr,
     /// The style's parameters for this dialect, a [`super::mechanism::call::BLOB_JSON`] object the
@@ -1318,6 +1327,35 @@ pub struct TrustKey {
     pub mechanisms_len: usize,
 }
 
+/// THE GRAMMAR OF [`PlaneTail::cli_help`]: the plane's rows of the host's command-line help, each
+/// filling one slot of it. A row opens with [`MARK`], the slot's name and [`NAME_END`], and runs to
+/// the next [`MARK`]; text before the first mark is one [`FLAG`] row (a plane that states only its
+/// `Flags:` block writes it bare). The host places each slot's rows in the plane order it reads
+/// them; a slot it does not know is not printed.
+pub mod cli_help {
+    /// Opens a row (ASCII record separator).
+    pub const MARK: &str = "\u{1e}";
+    /// Ends a row's slot name (ASCII unit separator).
+    pub const NAME_END: &str = "\u{1f}";
+    /// The one-line description the help opens with (the first one stated is printed).
+    pub const TAGLINE: &str = "tagline";
+    /// A block of the help's `Flags:` rows; its first word is the flag the host accepts.
+    pub const FLAG: &str = "flag";
+    /// A block of the help's `ENDPOINTS` rows.
+    pub const ENDPOINT: &str = "endpoint";
+
+    /// Every `(slot, text)` row `help` states, in order; a row with no [`NAME_END`] names no slot.
+    pub fn rows(help: &str) -> impl Iterator<Item = (&str, &str)> {
+        let (bare, marked) = help.split_once(MARK).unwrap_or((help, ""));
+        let bare = (!bare.is_empty()).then_some((FLAG, bare));
+        let marked = (help.contains(MARK).then_some(marked))
+            .into_iter()
+            .flat_map(|rest| rest.split(MARK))
+            .map(|row| row.split_once(NAME_END).unwrap_or(("", row)));
+        bare.into_iter().chain(marked)
+    }
+}
+
 /// THE PLANE'S STATEMENT TAIL: static facts, `'static` data.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -1349,7 +1387,7 @@ pub struct PlaneTail {
     pub signing_domain: AbiStr,
     /// The signature `kid` prefix; absent = the plane signs nothing.
     pub signing_kid_prefix: AbiStr,
-    /// The plane's command-line help text.
+    /// The plane's command-line help text, in the [`cli_help`] grammar.
     pub cli_help: AbiStr,
     /// Its dialects; per-call `dialect` indexes them.
     pub dialects: *const AbiStr,

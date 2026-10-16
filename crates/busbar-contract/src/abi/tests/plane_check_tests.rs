@@ -1289,7 +1289,7 @@ fn exactly_one_section_is_the_declaring_one() {
 fn dialect_auth_names_a_dialect_and_a_style() {
     let d = DialectAuth {
         dialect: 0,
-        _reserved: 0,
+        flags: 0,
         style: s("st"),
         params: Blob::ABSENT,
     };
@@ -1324,6 +1324,27 @@ fn dialect_auth_names_a_dialect_and_a_style() {
     assert_eq!(
         check_dialect_auth(&[dangling], 1),
         f(Rule::NullWithCount, "dialect_auth.params")
+    );
+}
+
+/// THE PER-DIALECT FLAGS (ARCHITECT ruling 2026-10-16, item 3): a line states whether a provider may
+/// name its dialect; the word was padding, so `0` (a line that predates it) states no. RED arm: a
+/// bit past the known one refuses the load.
+#[test]
+fn dialect_auth_flags_are_provider_and_nothing_else() {
+    let mut d = DialectAuth {
+        dialect: 0,
+        flags: 0,
+        style: s("st"),
+        params: Blob::ABSENT,
+    };
+    assert_eq!(check_dialect_auth(&[d], 1), Ok(()));
+    d.flags = DIALECT_PROVIDER;
+    assert_eq!(check_dialect_auth(&[d], 1), Ok(()));
+    d.flags = DIALECT_PROVIDER << 1;
+    assert_eq!(
+        check_dialect_auth(&[d], 1),
+        f(Rule::UnknownCode, "dialect_auth.flags")
     );
 }
 
