@@ -6215,6 +6215,7 @@ static CLASS_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::
         caller_credential_refusal: None,
     },
     wire_format_names: || &[],
+    provider_dialects: || &[],
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,

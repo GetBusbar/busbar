@@ -33,6 +33,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
         audit_kind: "fleet_member",
         signing: Some(("fleet/signing/v1", "fleet-")),
         dialects: vec!["first", "second"],
+        dialect_flags: vec![0, 0],
         scope_kinds: vec!["member"],
         billable_classes: vec![("bytes", "byte")],
         fee_units: vec!["request"],
