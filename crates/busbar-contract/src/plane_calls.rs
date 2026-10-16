@@ -262,6 +262,10 @@ pub struct PlaneRegistration {
     pub signing: Option<(&'static str, &'static str)>,
     /// The tail's dialects, in order (the plane's wire formats).
     pub dialects: Vec<&'static str>,
+    /// Each dialect's `DIALECT_*` flags (its `dialect_auth` line's), parallel to
+    /// [`Self::dialects`]: whether a provider's `protocol` may name it (ARCHITECT ruling
+    /// 2026-10-16, item 3).
+    pub dialect_flags: Vec<u32>,
     /// The tail's scope kinds.
     pub scope_kinds: Vec<&'static str>,
     /// The tail's billable classes, each with its unit family.

@@ -139,6 +139,9 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
         caller_credential_refusal: None,
     },
     wire_format_names: || &[],
+    // The test binary's provider dialects are the codecs its protocol registry seeds, so a test
+    // lane names one the boot accepts.
+    provider_dialects: || crate::proto::registry::registry().codec_protocols(),
     claims: |_| Vec::new(),
     admission: |_| None,
     build: |_| None,
