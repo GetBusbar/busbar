@@ -139,6 +139,36 @@ fn openapi_json_matches_committed_file() {
     );
 }
 
+/// THE PLANES' COMPONENT SCHEMAS ARE THE COMMITTED ONES (ARCHITECT Q2): every component schema a
+/// plane's `openapi_schemas` registers equals the committed document's entry of that name. A linked
+/// plane's come from schemars; a door plane's are the data its admin OpenAPI blob states under
+/// `components.schemas`, which the kernel's fold inserts as written, so this is the drift test that
+/// holds a door's stated schemas to the committed openapi.json. Not vacuous: some plane registers one.
+/// (Moved from busbar-core-admin's `src/v1/json/tests/tests.rs`, assertions unchanged: that crate
+/// links no door, so no plane registered a schema there.)
+#[cfg(feature = "openapi-schema")]
+#[test]
+fn openapi_plane_component_schemas_are_the_committed_ones() {
+    crate::ensure_seam();
+    let committed: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(COMMITTED_OPENAPI_PATH).expect("read committed openapi"),
+    )
+    .expect("committed openapi parses");
+    let committed = committed["components"]["schemas"]
+        .as_object()
+        .expect("committed component schemas");
+    let mut seen = 0usize;
+    for (plane, name, schema) in busbar_core_admin::test_support::plane_component_schemas() {
+        assert_eq!(
+            committed.get(&name),
+            Some(&schema),
+            "plane `{plane}` registers component schema `{name}` unlike the committed openapi.json"
+        );
+        seen += 1;
+    }
+    assert!(seen > 0, "no plane registered a component schema");
+}
+
 /// The mirror of the response drift test, for REQUEST bodies. Every mutating operation must either
 /// declare a `requestBody` whose schema resolves, or be named in `BODYLESS` — so an operation can
 /// never escape coverage by being silently omitted, which is exactly how all 26 came to document
