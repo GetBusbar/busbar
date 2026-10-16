@@ -24,6 +24,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
         section,
         owns: Vec::new(),
         consumes: Vec::new(),
+        requires: Vec::new(),
         admin_routes: Vec::new(),
         admin_openapi: None,
         secret_refs: vec!["settings.*.token.secret", "settings.*.env.*"],
@@ -172,6 +173,22 @@ fn the_provider_keys_a_door_states_are_kept_by_the_fold() {
     .expect("folds");
     assert!(is_door(decl));
     assert_eq!(provider_keys(), Some(&keys));
+}
+
+/// CONFIG-REQ (ARCHITECT 2026-09-27, Law 7): the sections a door's Statement marks required
+/// (`SECTION_REQUIRED`, carried as `requires`) are the folded row's `required_config_sections`, in
+/// Statement order, so the config pre-pass watches for them as it does a linked plane's. RED ARM:
+/// the fold wrote `&[]`, so a door plane required nothing.
+#[test]
+fn the_sections_a_door_requires_are_the_folded_rows_required_sections() {
+    let decl = fold(PlaneRegistration {
+        requires: vec!["catalog_a", "catalog_b"],
+        ..registration("door-requiring-row", "door_requiring_row")
+    })
+    .expect("folds");
+    assert_eq!(decl.required_config_sections, ["catalog_a", "catalog_b"]);
+    let none = fold(registration("door-requiring-none", "door_requiring_none")).expect("folds");
+    assert!(none.required_config_sections.is_empty());
 }
 
 #[test]

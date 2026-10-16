@@ -37,7 +37,9 @@ use std::sync::Arc;
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, Outcome};
 use busbar_contract::abi::mechanism::call::{InHead, OutHead};
 use busbar_contract::abi::mechanism::check::{fault, reported, Fault, Rule};
-use busbar_contract::abi::mechanism::door::{Statement, SECTION_CONSUMED, SECTION_DECLARING};
+use busbar_contract::abi::mechanism::door::{
+    Statement, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED,
+};
 use busbar_contract::abi::mechanism::lifecycle::{slot as life, DriveIn, OpenIn, RefreshIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::mechanism::KindCode;
@@ -122,6 +124,9 @@ pub struct ServedFacts {
     pub owns: Vec<&'static str>,
     /// The keys of the sections it consumes (`SECTION_CONSUMED`), in Statement order.
     pub consumes: Vec<&'static str>,
+    /// The keys of the sections it marks required (`SECTION_REQUIRED`), in Statement order: a
+    /// document must carry each while the plane is linked (CONFIG-REQ).
+    pub requires: Vec<&'static str>,
     /// The Statement's secret-reference paths (`Statement::secret_refs`), in order.
     pub secret_refs: Vec<&'static str>,
     /// The admin routes the tail states, in order.
@@ -285,6 +290,11 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
             consumes: sections
                 .iter()
                 .filter(|s| s.flags & SECTION_CONSUMED != 0)
+                .map(|s| kept(s.name))
+                .collect(),
+            requires: sections
+                .iter()
+                .filter(|s| s.flags & SECTION_REQUIRED != 0)
                 .map(|s| kept(s.name))
                 .collect(),
             secret_refs: listed(st.secret_refs, st.secret_refs_len)
@@ -621,6 +631,7 @@ pub fn registration(
         section: served.section,
         owns: served.owns.clone(),
         consumes: served.consumes.clone(),
+        requires: served.requires.clone(),
         secret_refs: served.secret_refs.clone(),
         admin_routes: served.admin_routes.clone(),
         admin_openapi: served.admin_openapi,
