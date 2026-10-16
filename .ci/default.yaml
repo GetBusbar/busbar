@@ -6,11 +6,13 @@ on_green: merge
 deadline: 6h
 # The PR battery, named explicitly so a check declared below but NOT listed here is on-demand only
 # (`modernci call measure {repo, from, check}`), never run on every move.
-# oracle and test-gated run on every move too (OWNER 2026-10-16, "dev should stay green"): a lane
-# that changes customer-visible behaviour (the 1.5.5 diff) or breaks a feature-gated suite is caught
-# at the PR, never first at dev -> qa. Both judged no worse than dev.
+# test-gated runs on every move (OWNER 2026-10-16, "dev should stay green"), no worse than dev. oracle
+# joins on.move once ModernCI's backends provide the pinned judge (BUSBAR_ORACLE_RUST_BIN is unset on
+# them today, so the check judges nothing and would hold every PR); until then it is manual here and
+# absolute on .ci/dev.yaml.
 on:
-  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, oracle, test-gated]
+  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated]
+  manual: [oracle]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never

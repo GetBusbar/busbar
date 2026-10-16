@@ -237,7 +237,7 @@ checks:
         rm -rf "$T/testssl"; mkdir "$T/testssl"; tar -C "$T/testssl" --strip-components=1 -xzf "$T/testssl.tgz"
         ln -sf "$T/testssl/testssl.sh" "$T/bin/testssl.sh"
       fi
-      export PATH="$T/bin:$PATH"
+      export PATH="$T/bin:$T/go/bin:$PATH"
       cargo xtask conformance record --all --recording target/oracle/recordings/candidate
       cargo xtask conformance check --musts --sha "$MODERNCI_COMMIT" --format=tsv
     needs: [oracle]
