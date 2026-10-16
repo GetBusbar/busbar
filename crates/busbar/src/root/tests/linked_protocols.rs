@@ -344,3 +344,36 @@ fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
         );
     }
 }
+
+// ══ THE METRIC LABELS ARE DECLARED DATA (ARCHITECT LLM-RETIRE-3 item 4) ═════════════════════════
+
+/// The fallback plane every linked door row folds to, as the composition root folds it: the one
+/// linked door whose Statement tail flags it the fallback.
+fn fallback_door_row() -> &'static busbar_kernel::plane::registry::PlaneDecl {
+    use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
+    let mut fallbacks: Vec<_> = crate::LINKED
+        .plane_doors
+        .iter()
+        .map(|door| registration(linked_probe(*door, "fallback-dialects")).expect("binds"))
+        .filter(|reg| reg.fallback)
+        .collect();
+    assert_eq!(fallbacks.len(), 1, "one linked door is the fallback plane");
+    busbar_kernel::plane::door::fold(fallbacks.remove(0)).expect("the door folds")
+}
+
+/// **THE `/metrics` LABEL VOCABULARY IS UNCHANGED FROM 1.5.5.** The kernel banks
+/// `busbar_requests_total{ingress_protocol,..}`, `busbar_request_duration_seconds{ingress_protocol,..}`
+/// and `busbar_translations_total{from,to}` over the fallback plane's DECLARED dialects (its door's
+/// Statement tail, read through its registry row), never a codec list; telemetry indexes the families
+/// by position, so the order is load-bearing too. Held to the 1.5.5 list (the fixture's
+/// `protocol_order`, the published binary's). RED arm: a fallback door that declared a different
+/// list, or one in another order, renames or renumbers every banked series.
+#[test]
+fn the_fallback_doors_declared_dialects_are_the_1_5_5_metric_labels() {
+    let row = fallback_door_row();
+    assert_eq!(
+        (row.wire_format_names)(),
+        strs(&FIXTURE["protocol_order"]).as_slice(),
+        "the banked ingress_protocol / from / to labels, and their order, are 1.5.5's"
+    );
+}
