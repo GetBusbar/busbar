@@ -6,9 +6,11 @@ on_green: merge
 deadline: 6h
 # The PR battery, named explicitly so a check declared below but NOT listed here is on-demand only
 # (`modernci call measure {repo, from, check}`), never run on every move.
+# oracle and test-gated run on every move too (OWNER 2026-10-16, "dev should stay green"): a lane
+# that changes customer-visible behaviour (the 1.5.5 diff) or breaks a feature-gated suite is caught
+# at the PR, never first at dev -> qa. Both judged no worse than dev.
 on:
-  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny]
-  manual: [oracle, test-gated]
+  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, oracle, test-gated]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
@@ -302,11 +304,12 @@ checks:
     baseline: target
     needs: [preflight]
     requires: [cc]
-  # ON-DEMAND ONLY (not in on.move): the dev->qa oracle (.ci/dev.yaml), measurable on a PR head that changes the
-  # served LLM path (e.g. a plane default flip), so claim C3 is proven before landing, not only at the move.
+  # On every move (above): the same judge as the dev -> qa oracle (.ci/dev.yaml), here no worse than
+  # dev, so a lane cannot land a customer-visible change the 1.5.5 golden does not forgive.
   oracle:
     # cargo links with the system C linker: only a backend with a C compiler may run this check.
     requires: [cc]
+    baseline: target
     # busbar's own check tool, the pinned busbar-oracle (the backend's busbar-oracle tool sets
     # BUSBAR_ORACLE_RUST_BIN): the judge is the one dev's oracle-rust.pin names, run only when its
     # sha256 is that pin's for this host (a candidate never picks its own judge); the 1.5.5 golden is
