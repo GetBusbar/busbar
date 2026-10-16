@@ -349,8 +349,8 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     {
         if let Some(default_section) = decl.default_section {
             if let Some(dialects) = default_section().known_dialects() {
-                // A dialect already a wire codec's (the llm door's six, since it is the default
-                // plane, #824) is listed once: the refusal names each legal protocol once.
+                // A dialect already a wire codec's (the fallback plane's door declares its codecs'
+                // dialects too, #824) is listed once: the refusal names each legal protocol once.
                 for d in dialects.iter().copied() {
                     if !known_protocols.contains(&d) {
                         known_protocols.push(d);
