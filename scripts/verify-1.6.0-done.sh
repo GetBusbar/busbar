@@ -109,10 +109,10 @@ case "${1:-}" in --fast) FAST=1 ;; --selftest) SELFTEST=1 ;; "" ) ;; -h|--help) 
 # THE BASE THE GATES ARE MEASURED AGAINST, named as CI names it. `ceiling-census` and kind-isolation
 # hold their floors against a base, and a detached checkout derives none, which is RED (a base that
 # cannot be established is never a silent pass). So name it: a caller's own value stands, then the
-# ModernCI target sha the gates check exports, then the merge-base with origin/predev. If none
+# ModernCI target sha the gates check exports, then the merge-base with origin/dev. If none
 # resolves it stays unset and the gates say so.
 if [ -z "${XTASK_CEILING_BASE:-}" ]; then
-  XTASK_CEILING_BASE="${MODERNCI_TO_SHA:-$(git merge-base HEAD origin/predev 2>/dev/null || true)}"
+  XTASK_CEILING_BASE="${MODERNCI_TO_SHA:-$(git merge-base HEAD origin/dev 2>/dev/null || true)}"
   [ -n "$XTASK_CEILING_BASE" ] && export XTASK_CEILING_BASE || unset XTASK_CEILING_BASE
 fi
 
