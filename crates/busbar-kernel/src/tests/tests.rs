@@ -1642,6 +1642,8 @@ fn secrets_block_rejects_non_secret_kind() {
 /// read.
 #[test]
 fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     const SENTINEL: &str = "sk-sentinel-must-never-be-printed";
     let set_var = format!("BUSBAR_TEST_PROVIDER_KEY_SET_{}", std::process::id());
@@ -1694,6 +1696,8 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
 /// re-derived here through a lane accessor that exists only for the test.
 #[test]
 fn boot_starts_a_keyless_lane_declared_none() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let mut cfg = cfg_with_provider_api_key(crate::config::SecretRef::none());
     cfg.models
@@ -1725,6 +1729,8 @@ fn model_cfg_for_provider(provider: &str) -> crate::config::ModelCfg {
 /// registry exists) to `validate_secret_refs`, which consults the SAME registry the resolver uses.
 #[test]
 fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (dir, reg) = secret_registry("secretref-vault-ok");
     // The `vault` alias AND the canonical `acme-secret-vault` name both resolve → both pass.
     for module in ["vault", "acme-secret-vault"] {
@@ -1750,6 +1756,8 @@ fn secret_ref_plugin_backed_module_passes_when_plugin_present() {
 /// (`env`/`file`) nor a loaded plugin — must still FAIL, so the deferral does not weaken the check.
 #[test]
 fn secret_ref_typo_module_still_fails_at_preflight() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     let (dir, reg) = secret_registry("secretref-typo");
     let cfg = cfg_with_provider_api_key(crate::config::SecretRef {
         module: "vaultt".to_string(), // typo of the `vault` alias — no such plugin
@@ -1834,6 +1842,8 @@ fn secret_ref_wrong_kind_plugin_fails_at_preflight() {
 /// 1.5.4.
 #[test]
 fn a_rebuild_carries_the_session_store_and_defaults_scan_off() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let cfg = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
@@ -2484,6 +2494,8 @@ fn auth_scope_caps_are_keyed_by_provider_name_not_module() {
 /// went live through an apply.
 #[test]
 fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     const REFUSED: &str = "https://refused.root-rules.test";
     struct Refusing;
     impl crate::appbuild::RootRules for Refusing {
@@ -2545,6 +2557,8 @@ fn a_configuration_the_root_rules_refuse_is_refused_by_the_build() {
 /// (learned reliability survives every apply).
 #[test]
 fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
+    // The provider dialects a lane may name are DECLARED by a registered plane (ruling 2026-10-16 D).
+    crate::test_support::register_neutral_test_plane();
     crate::snapshot::init();
     let planeless = || {
         cfg_with_provider_api_key(crate::config::SecretRef::env(
