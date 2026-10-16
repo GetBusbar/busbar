@@ -62,6 +62,7 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::check::check_piece_in;
+use busbar_contract::abi::plane::DIALECT_PROVIDER;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
@@ -278,11 +279,16 @@ const _: () = assert!(
     "EGRESS_STYLES names every dialect's default style, each once"
 );
 
+/// THE TAIL'S PER-DIALECT FLAGS (ARCHITECT ruling 2026-10-16, item 3): a provider's `protocol`
+/// may name every dialect this plane speaks ([`DIALECT_PROVIDER`]); the kernel reads it as declared
+/// data.
+const DIALECT_FLAG: u32 = DIALECT_PROVIDER;
+
 const fn dialect_auth(i: usize) -> DialectAuth {
     let params = DIALECTS[i].egress_params.as_bytes();
     DialectAuth {
         dialect: i as u32,
-        _reserved: 0,
+        flags: DIALECT_FLAG,
         style: abi_str(DIALECTS[i].egress_style),
         // The default style's parameters (ARCHITECT RULING 2026-10-03, Q-L6-AUTHPARAMS).
         params: if params.is_empty() {

@@ -27,9 +27,9 @@ use super::{
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
     RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
     CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    CLAIM_PATTERN, CLAIM_RAW_AFFIX, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
-    EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
-    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    CLAIM_PATTERN, CLAIM_RAW_AFFIX, DIALECT_PROVIDER, EMIT_DONE, EMIT_FINAL_STATUS,
+    EMIT_MESSAGE_END, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE,
+    INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
     INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT,
     PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
     REFUSAL_ANY_DIALECT, REFUSED_UNSUPPORTED_ACTION, ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED,
@@ -1309,6 +1309,11 @@ pub fn check_sections(sections: &[Section]) -> Result<(), Fault> {
 pub fn check_dialect_auth(entries: &[DialectAuth], dialects_len: u64) -> Result<(), Fault> {
     for d in entries {
         index(d.dialect, dialects_len, "dialect_auth.dialect")?;
+        bits(
+            u64::from(d.flags),
+            u64::from(DIALECT_PROVIDER),
+            "dialect_auth.flags",
+        )?;
         named(d.style, "dialect_auth.style")?;
         crate::abi::mechanism::check::blob(
             &d.params,

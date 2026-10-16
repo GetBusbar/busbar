@@ -478,7 +478,7 @@ pub fn translation(from: &str, to: &str) {
 /// THE DIALECT NAMES `plane` DECLARES (its registry row's `wire_format_names`: a door plane's are
 /// its Statement tail's `dialects`), in its order — the `ingress_protocol` / `from` / `to` label
 /// vocabulary the bank registers its families over. Read as declared data, never off a codec list
-/// (ARCHITECT LLM-RETIRE-3 item 4; BUSBAR-1.6.0.md #49: the kernel knows no plane strings). A key
+/// (ARCHITECT ruling 2026-10-16 item 4; BUSBAR-1.6.0.md #49: the kernel knows no plane strings). A key
 /// no plane registers declares none.
 fn declared_dialects(plane: &str) -> &'static [&'static str] {
     crate::plane::registry::plane_decl_for(plane).map_or(&[], |d| (d.wire_format_names)())

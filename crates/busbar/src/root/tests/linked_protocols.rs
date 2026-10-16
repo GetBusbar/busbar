@@ -345,7 +345,7 @@ fn test_residual_dialect_names_none_rather_than_defaulting_to_openai() {
     }
 }
 
-// ══ THE METRIC LABELS ARE DECLARED DATA (ARCHITECT LLM-RETIRE-3 item 4) ═════════════════════════
+// ══ THE METRIC LABELS ARE DECLARED DATA (ARCHITECT ruling 2026-10-16 item 4) ═════════════════════════
 
 /// The fallback plane every linked door row folds to, as the composition root folds it: the one
 /// linked door whose Statement tail flags it the fallback.
@@ -375,5 +375,22 @@ fn the_fallback_doors_declared_dialects_are_the_1_5_5_metric_labels() {
         (row.wire_format_names)(),
         strs(&FIXTURE["protocol_order"]).as_slice(),
         "the banked ingress_protocol / from / to labels, and their order, are 1.5.5's"
+    );
+}
+
+/// **THE PROVIDER PROTOCOLS ARE DECLARED DATA, AND 1.5.5'S** (ARCHITECT ruling 2026-10-16 item 3). The
+/// boot accepts a provider whose `protocol` a registered plane declares provider-capable (its
+/// door's `dialect_auth` lines flagged `DIALECT_PROVIDER`), and the validator's `must be one of:`
+/// tail and the lane build's `(supported: …)` list are that declaration, in order. Held to the 1.5.5
+/// list (the fixture's `protocol_order`); `tests/cli_validate.rs` holds the binary's refusal bytes.
+/// RED arm: a fallback door that flagged no dialect refuses every provider, and one that flagged
+/// them in another order reorders the operator's refusal.
+#[test]
+fn the_fallback_doors_provider_dialects_are_the_1_5_5_provider_protocols() {
+    let row = fallback_door_row();
+    assert_eq!(
+        (row.provider_dialects)(),
+        strs(&FIXTURE["protocol_order"]).as_slice(),
+        "the provider protocols a config may name, and their order, are 1.5.5's"
     );
 }
