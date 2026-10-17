@@ -3,12 +3,12 @@
 
 //! The HOST side of the [`PlaneHostVtable`]: the construction point that fills every slot with a
 //! host-side `extern "C-unwind"` fn wired over a real core primitive. After the Phase-1 capability
-//! fan-out (breaker, govern, egress) its slots are wired, except the trust family, `guard_url`, the
-//! journal, dispatch and pipe families, which are absent: no plane calls them, the
+//! fan-out (breaker, govern) its slots are wired, except the trust family, `guard_url`, the egress,
+//! journal, dispatch and pipe families and `auth_resolve`, which are absent: no plane calls them, the
 //! host services a plane calls are the `HostSlots` families (BUSBAR-1.6.0.md Part 3 §4, SUPERSEDED
 //! 2026-09-28), and `trust.*` is served there. The three PROOF-OF-LIFE impls (`clock_now`,
 //! `metrics_emit`, `govern_admit`) live here; the rest forward into their capability modules
-//! ([`super::breaker`], [`super::govern`], [`super::egress`]).
+//! ([`super::breaker`], [`super::govern`]).
 //!
 //! ## Boundary discipline (reused from `busbar-contract/src/abi/sdk/boundary.rs`)
 //!
@@ -23,8 +23,7 @@
 use super::recover;
 use busbar_contract::abi::hot::host::{HostCtx, PlaneHostVtable};
 use busbar_contract::abi::hot::{
-    AuthQuery, AuthResolved, Decision, Facts, GovRefusal, MeterOutcome, MetricSample, StatusClass,
-    Usage,
+    Decision, Facts, GovRefusal, MeterOutcome, MetricSample, StatusClass, Usage,
 };
 use busbar_contract::abi::shared::DeclStr;
 use busbar_contract::abi::AbiPreamble;
@@ -48,18 +47,12 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         metrics_emit: Some(metrics_emit),
         clock_now: Some(clock_now),
 
-        // ── WIRED capability slots — each forwards into its capability module (breaker / trust /
-        //    egress / journal / dispatch), or a wired local fn (meter_charge, auth_resolve) ────────
+        // ── WIRED capability slots — each forwards into its capability module (breaker), or a
+        //    wired local fn (meter_charge) ────────
         meter_charge: Some(meter_charge),
         breaker_admit: Some(super::breaker::breaker_admit),
         breaker_admit_reason: Some(super::breaker::breaker_admit_reason),
         breaker_settle: Some(super::breaker::breaker_settle),
-        egress_open: Some(super::egress::egress_open),
-        egress_poll: Some(super::egress::egress_poll),
-        egress_write: Some(super::egress::egress_write),
-        egress_close: Some(super::egress::egress_close),
-        egress_fault: Some(super::egress::egress_fault),
-        auth_resolve: Some(auth_resolve),
         // ── The CARD-SIGN seam (minor-10): the host derives the deployment's domain-separated card
         //    subkey and signs a plane-framed input, so the card SECRET never crosses to the plane.
         //    Wired only when a plane declares a card-signing domain (the neutral `card-signing`
@@ -477,36 +470,3 @@ extern "C-unwind" fn meter_charge(host: HostCtx, usage: *const Usage) -> MeterOu
 }
 // `breaker_admit` / `breaker_settle` are WIRED over the real breaker in `super::breaker` (the BREAKER
 // family fan-out); its vtable slots reference that module directly.
-// The EGRESS family (`egress_open`/`_poll`/`_write`/`_close`/`_fault`) is WIRED in `super::egress`;
-// its vtable slots reference that module directly.
-/// WIRED `auth_resolve` → the REAL principal resolution over `crate::auth` (see
-/// [`super::govern::resolve_auth`]): resolve a credential REF to an OPAQUE host-side reference (NEVER
-/// plaintext), writing the [`AuthResolved`] out-param ONLY on `Ok`. Fail-closed (`Refused`) on a null
-/// query or a query naming no credential; `Fault` on any panic.
-extern "C-unwind" fn auth_resolve(
-    host: HostCtx,
-    query: *const AuthQuery,
-    out: *mut MaybeUninit<AuthResolved>,
-) -> StatusClass {
-    catch_unwind(AssertUnwindSafe(|| {
-        // SAFETY: recovery invariant (see `recover`).
-        let Some(state) = (unsafe { recover(host) }) else {
-            return StatusClass::Refused;
-        };
-        if query.is_null() {
-            return StatusClass::Refused;
-        }
-        // SAFETY: a non-null `query` is a live, initialized `AuthQuery` for the call (ABI discipline).
-        let q = unsafe { &*query };
-        match super::govern::resolve_auth(state, q) {
-            Some(resolved) => {
-                // SAFETY: `out` is a writable, aligned `MaybeUninit<AuthResolved>` for the call; the
-                // write publishes ONLY on the Ok path (init-only-on-Ok), tolerating a null slot.
-                unsafe { busbar_contract::abi::write_out(out, resolved) };
-                StatusClass::Ok
-            }
-            None => StatusClass::Refused, // nothing to resolve → out-param left uninitialized.
-        }
-    }))
-    .unwrap_or(StatusClass::Fault) // caught panic → the distinct fault class, never `Ok`.
-}
