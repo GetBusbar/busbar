@@ -5612,9 +5612,9 @@ fn proof_minted_admission_is_store_state_config_signing_is_not() {
 fn the_metering_accrual_reads_the_millisecond_clock_not_the_lifted_second() {
     let src = include_str!("../state.rs");
     let body = src
-        .split("pub fn record_metering(")
+        .split("fn record_metered_request(")
         .nth(1)
-        .expect("record_metering is declared")
+        .expect("record_metered_request is declared")
         .split("\n    }")
         .next()
         .expect("its body closes");

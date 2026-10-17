@@ -375,6 +375,42 @@ pub fn is_token_class(class: &str) -> bool {
         })
 }
 
+/// THE TOKEN SERIES OF ONE LANE'S COUNTS, in the order the scrape names them: first every
+/// token-family class the lane's own plane declares, in its declared order and at 0 when the lane
+/// counted none of it (the plane that owns a `"<plane>\u{1f}<subject>"` lane, the fallback plane
+/// for an unqualified one); then every other class in `counts` that [`is_token_class`] counts as a
+/// token, in name order. Fee units are no token series. The kernel reads the class names from the
+/// declarations and names none itself.
+pub fn token_series(
+    lane: &str,
+    counts: &std::collections::BTreeMap<String, u64>,
+) -> Vec<(String, u64)> {
+    use crate::plane::registry::{plane_decls, TOKEN_FAMILY};
+    let (plane, _) = busbar_kernel_ledger::cost::split_plane_lane(lane);
+    let owner = plane_decls().iter().find(|d| {
+        if plane.is_empty() {
+            d.fallback
+        } else {
+            d.key == plane
+        }
+    });
+    let mut series: Vec<(String, u64)> = owner
+        .into_iter()
+        .flat_map(|d| {
+            (d.billable_classes.iter())
+                .filter(|c| c.family == TOKEN_FAMILY && !d.fee_units.contains(&c.class))
+                .map(|c| c.class)
+        })
+        .map(|class| (class.to_string(), counts.get(class).copied().unwrap_or(0)))
+        .collect();
+    for (class, n) in counts {
+        if is_token_class(class) && !series.iter().any(|(named, _)| named == class) {
+            series.push((class.clone(), *n));
+        }
+    }
+    series
+}
+
 /// Saturating sum of the token-family counts across name-keyed unit maps.
 fn token_total<'a>(maps: impl Iterator<Item = &'a std::collections::BTreeMap<String, u64>>) -> u64 {
     maps.flat_map(|m| m.iter())
@@ -1295,6 +1331,24 @@ pub struct MeterCounts {
 }
 
 impl MeterCounts {
+    /// ONE METERED REQUEST whose count columns are read from `units` by class name. The metering
+    /// row's four count columns are the contract's reserved classes
+    /// ([`busbar_contract::records::RESERVED_UNITS`], in its canonical order), so which classes the
+    /// columns hold is the row's own fact, read from the contract, never a plane's. Every other
+    /// class rides the row's `usage_units` through the ledger's class mirror, not here.
+    pub fn request(units: &std::collections::BTreeMap<String, u64>) -> Self {
+        let [input, output, cache_read, cache_write] = busbar_contract::records::RESERVED_UNITS
+            .map(|class| units.get(class).copied().unwrap_or(0));
+        Self {
+            requests: 1,
+            tokens_input: input,
+            tokens_output: output,
+            tokens_cache_read: cache_read,
+            tokens_cache_write: cache_write,
+            usage_units: std::collections::BTreeMap::new(),
+        }
+    }
+
     /// Accumulate `other` into `self`, saturating each counter — the one place metering cells are
     /// merged, so accrual and flush-retry both add usage the same way and neither can wrap.
     pub fn merge(&mut self, other: MeterCounts) {
