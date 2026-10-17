@@ -680,3 +680,59 @@ fn a_leases_bound_below_the_answer_is_a_timeout_and_the_answer_spends_it() {
         c.close(OWNER, id).unwrap();
     });
 }
+
+/// Read `id` for `bound`, every piece taken: the body bytes read.
+async fn drain(c: &Connector, id: ConnId, bound: Duration) -> usize {
+    let mut buf = vec![0_u8; 64 * 1024];
+    let mut read = 0;
+    let started = std::time::Instant::now();
+    while started.elapsed() < bound {
+        match c.read(OWNER, id, 7, &mut buf) {
+            Ok(p) if p.kind == PieceKind::Body => read += p.len,
+            Ok(_) => {}
+            Err(ConnError::Pending) => tokio::time::sleep(Duration::from_millis(1)).await,
+            Err(e) => panic!("the read failed: {e:?}"),
+        }
+    }
+    read
+}
+
+/// RED (resource bounds; THE DESIGN §5, back-pressure): every frame the program writes is kept for
+/// every open lease until it reads it, so a lease that does not read holds the program back, as a
+/// holder that does not read holds a line's far end back. Kept with no cap, a lease that never read
+/// grew host memory by everything the program wrote while another lease read on; once it reads,
+/// the program runs on.
+#[test]
+fn a_lease_that_does_not_read_holds_its_program_back() {
+    worker().block_on(async {
+        let c = connector();
+        declare(
+            &c,
+            &[(
+                "one",
+                sh(
+                    "/usr/bin/yes 0123456789abcdef0123456789abcdef0123456789abcdef",
+                    &[],
+                ),
+            )],
+        )
+        .unwrap();
+        let reading = open(&c, "one", b"").unwrap();
+        assert_eq!(generation(&c, reading).await, 1);
+        let idle = open(&c, "one", b"").unwrap();
+        assert_eq!(generation(&c, idle).await, 1);
+        let read = drain(&c, reading, Duration::from_secs(2)).await;
+        assert!(
+            read < 8 * 1024 * 1024,
+            "one lease read {read} bytes while another read none: the other kept them all"
+        );
+        // The idle lease reads: the program is read again for both.
+        assert!(drain(&c, idle, Duration::from_millis(500)).await > 0);
+        assert!(
+            drain(&c, reading, Duration::from_millis(500)).await > 0,
+            "once the idle lease read, the program runs on"
+        );
+        c.close(OWNER, reading).unwrap();
+        c.close(OWNER, idle).unwrap();
+    });
+}

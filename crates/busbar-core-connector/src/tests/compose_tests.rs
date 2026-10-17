@@ -692,3 +692,54 @@ fn a_holder_that_does_not_read_holds_the_far_end_back() {
         );
     });
 }
+
+/// RED (THE DESIGN §5 "Writes are back-pressured (a full buffer answers not-ready)"; resource
+/// bounds): what the framer answers to what it read on its own (an h2 PING's ack, a ws pong) is
+/// bounded too. A far end that sends and never reads stops being read once those answers fill the
+/// write side; queued with no cap while the socket kept being read, they grew host memory at the
+/// far end's line rate.
+#[test]
+fn a_far_end_that_never_reads_is_not_read_past_the_answers_it_is_owed() {
+    const SENT: usize = 64 * 1024 * 1024;
+    worker().block_on(async {
+        let l = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let far = l.local_addr().unwrap().to_string();
+        tokio::spawn(async move {
+            let (mut s, _) = l.accept().await.unwrap();
+            let chunk = vec![7_u8; 64 * 1024];
+            for _ in 0..SENT / chunk.len() {
+                if s.write_all(&chunk).await.is_err() {
+                    return;
+                }
+            }
+            // Held open, never read.
+            let _keep = s;
+            std::future::pending::<()>().await;
+        });
+        let door = Arc::new(TestDoor::new(
+            "echo",
+            &["echo"],
+            &[],
+            Knobs {
+                echo: true,
+                ..Knobs::default()
+            },
+        ));
+        let mut c = Connection::dial(door, &crate::support::via(), dial(&far)).expect("dials");
+        let waker = std::task::Waker::noop();
+        let started = Instant::now();
+        let mut most = 0;
+        while started.elapsed() < Duration::from_secs(3) {
+            // The holder takes every piece it is handed: only the owed answers can pile up.
+            while let std::task::Poll::Ready(Ok(Some(_))) =
+                c.poll_piece(&mut std::task::Context::from_waker(waker))
+            {}
+            most = most.max(c.out.len());
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        assert!(
+            most <= 4 * WRITE_BUFFER_BYTES,
+            "{most} bytes owed to a far end that never reads"
+        );
+    });
+}
