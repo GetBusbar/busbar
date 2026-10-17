@@ -325,15 +325,26 @@ struct DeclaredNeed {
 /// A judgement's answer once it came, and the waker of the read or wait that found none.
 type Answer = Arc<Mutex<(Option<Result<SocketAddr, Verdict>>, Option<Waker>)>>;
 
-/// The trust anchors sealed per destination (the transport pin, ARCHITECT 2026-10-03), by the need's owner, the need and
-/// the destination's authority (lower-case, `host:port`).
+/// The trust anchors sealed per destination by a seal naming no registration (the transport pin,
+/// ARCHITECT 2026-10-03), by the need's owner, the need and the destination's authority
+/// (lower-case, `host:port`).
 type Anchored = Mutex<HashMap<(InstanceId, NeedId, String), Arc<tls::client::Sealed>>>;
 
 /// The trust anchors sealed per REGISTRATION, by the need's owner, the need and the registration's
 /// name: the authority (lower-case, `host:port`) of its own target and what it is held to there
-/// (`None`: the registration holds no anchors, and borrows none of another registration's).
-type MemberAnchored =
-    Mutex<HashMap<(InstanceId, NeedId, String), (String, Option<Arc<tls::client::Sealed>>)>>;
+/// (`None`: the registration holds no anchors, and borrows none of another registration's), and the
+/// anchors as sealed, so an open naming no registration can tell whether the registrations at its
+/// authority agree.
+type MemberAnchored = Mutex<
+    HashMap<
+        (InstanceId, NeedId, String),
+        (
+            String,
+            Option<Arc<tls::client::Sealed>>,
+            busbar_contract::transport::trust::Anchors,
+        ),
+    >,
+>;
 
 /// What a member's auth binding is held under: the need's owner, the need, the registration's
 /// name and its target's origin (`scheme://authority`).
@@ -2096,6 +2107,45 @@ impl Connector {
         Ok(held.dialling(dialled::Dialled::new(framing, port, pairing, due)))
     }
 
+    /// THE DESTINATION'S ANCHORS, for an open naming no registration sealed at `authority`: what a
+    /// seal naming no registration sealed for the destination itself, else what every registration
+    /// sealed there agrees on (none sealed: nothing). Where the registrations disagree there is no
+    /// one answer, and the open is refused: a pin is never dropped, and no registration's identity
+    /// is chosen by the order they were sealed in.
+    fn destination_anchors(
+        &self,
+        caller: InstanceId,
+        need: NeedId,
+        authority: &str,
+    ) -> Result<Option<Arc<tls::client::Sealed>>, ConnError> {
+        let destination = self
+            .anchored
+            .lock()
+            .expect("anchors")
+            .get(&(caller, need, authority.to_owned()))
+            .cloned();
+        if destination.is_some() {
+            return Ok(destination);
+        }
+        let by_member = self.member_anchored.lock().expect("anchors");
+        let mut first: Option<&busbar_contract::transport::trust::Anchors> = None;
+        let mut held: Option<Arc<tls::client::Sealed>> = None;
+        for ((owner, held_need, _), (at, sealed, anchors)) in by_member.iter() {
+            if *owner != caller || *held_need != need || at.as_str() != authority {
+                continue;
+            }
+            match first {
+                None => {
+                    first = Some(anchors);
+                    held.clone_from(sealed);
+                }
+                Some(agreed) if agreed == anchors => {}
+                Some(_) => return Err(ConnError::Refused),
+            }
+        }
+        Ok(held)
+    }
+
     /// THE DIALLED EXCHANGE over `door` (a framer of a stream, or a carrier carried as itself):
     /// judged and pinned, its connection security, the pool where `poolable`, the dial.
     #[allow(clippy::too_many_arguments)]
@@ -2115,9 +2165,10 @@ impl Connector {
         poolable: bool,
     ) -> Result<Held, ConnError> {
         endpoint::check(target).map_err(|_| ConnError::Refused)?;
+        let config = tls.or_else(|| self.tls.clone());
         let dial = Dial {
             target: target.to_owned(),
-            tls: tls.or_else(|| self.tls.clone()),
+            tls: config.clone(),
             alpn,
             open_timeout,
             opening: Some((
@@ -2137,27 +2188,24 @@ impl Connector {
         // sealed at this authority is held to THAT registration's anchors alone (or none, where it
         // holds none), never to another registration's at the same `host:port`.
         let authority = planned.authority().to_ascii_lowercase();
-        let own = (!desc.member.is_empty())
-            .then(|| {
-                self.member_anchored
-                    .lock()
-                    .expect("anchors")
-                    .get(&(caller, need, desc.member.to_owned()))
-                    .filter(|(at, _)| *at == authority)
-                    .map(|(_, sealed)| sealed.clone())
-            })
-            .flatten();
+        // `Some(held)`: the open names a registration sealed at this authority, and is held to
+        // what IT holds there (`None`: nothing), never to another registration's.
+        let own: Option<Option<Arc<tls::client::Sealed>>> = if desc.member.is_empty() {
+            None
+        } else {
+            self.member_anchored
+                .lock()
+                .expect("anchors")
+                .get(&(caller, need, desc.member.to_owned()))
+                .filter(|(at, _, _)| *at == authority)
+                .map(|(_, sealed, _)| sealed.clone())
+        };
         // The registration whose own anchors the dial is held to, if any: a pooled line is lent
         // only to an open held to the same.
         let anchored_as = own.is_some().then(|| desc.member.to_owned());
         let anchors = match own {
             Some(sealed) => sealed,
-            None => self
-                .anchored
-                .lock()
-                .expect("anchors")
-                .get(&(caller, need, authority))
-                .cloned(),
+            None => self.destination_anchors(caller, need, &authority)?,
         };
         if anchors
             .as_ref()
@@ -2165,6 +2213,10 @@ impl Connector {
         {
             return Err(ConnError::Refused);
         }
+        let trust = pool::Trust {
+            config,
+            anchors: anchors.clone(),
+        };
         let planned = planned.anchored(anchors);
         // THE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, sealed per
         // registration): an open that names a registration holding one, to that registration's own
@@ -2205,6 +2257,9 @@ impl Connector {
             (
                 self.pools.shard(),
                 PoolKey {
+                    owner: caller,
+                    need,
+                    trust,
                     door: Arc::as_ptr(&door).cast::<()>() as usize,
                     authority: planned.authority().to_ascii_lowercase(),
                     secure: planned.secure(),
@@ -2609,17 +2664,23 @@ impl PollConns for Connector {
         // A REGISTRATION'S anchors are kept under its name too: an open naming it, at its own
         // authority, is held to what it holds there (or to nothing, where it holds nothing), apart
         // from every other registration at that `host:port`.
+        // A registration's seal is ITS OWN alone: it neither overwrites nor erases what another
+        // registration at that `host:port` holds ([`Connector::destination_anchors`] reads the
+        // destination's for an open naming none).
         if !member.is_empty() {
             let key = (owner, need, member.to_owned());
             let mut by_member = self.member_anchored.lock().expect("anchors");
-            match &at {
+            match at {
                 Some((_, _, authority)) => {
-                    by_member.insert(key, (authority.clone(), sealed.clone()));
+                    let mut held = anchors.clone();
+                    held.private_reach = false;
+                    by_member.insert(key, (authority, sealed, held));
                 }
                 None => {
                     by_member.remove(&key);
                 }
             }
+            return Ok(());
         }
         let Some(at) = at else {
             return Ok(());

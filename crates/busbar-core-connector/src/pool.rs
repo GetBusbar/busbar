@@ -18,18 +18,26 @@
 //! rides it as its next stream (ARCHITECT ruling Q-L18-MUX, 1.5.5's pooled h2 client). An HTTP/1.1
 //! connection carries one exchange at a time and is lent again only once idle.
 //!
-//! A pooled connection is keyed by everything its dial was judged and secured for: the entry, the
-//! authority, the security and the name offered, and the egress class it was judged under. A dial
-//! stated `within` an address set is never pooled (its landing rule is per open). An idle
-//! connection is lent only after it has read what the far end sent while it sat idle, so one the far
-//! end closed or said goodbye on is closed here, never handed out.
+//! A pooled connection is keyed by everything its dial was judged and secured for: the instance and
+//! the need that dialled it, the entry, the authority, the security and the name offered, the
+//! egress class it was judged under, and the trust it was secured with (the client config and the
+//! sealed anchors, by identity: a seal replaced is another trust, so a line verified under the old
+//! one is never lent again). A dial stated `within` an address set is never pooled (its landing
+//! rule is per open). An idle connection is lent only after it has read what the far end sent while
+//! it sat idle, so one the far end closed or said goodbye on is closed here, never handed out. Idle
+//! connections past their time are closed whenever the pool is used, on every shard and for every
+//! place, never only when their own place is opened to again.
 
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use busbar_contract::conn::{InstanceId, NeedId};
+
 use crate::line::Line;
+use crate::tls::client::Sealed;
 
 /// The deployment's pool posture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,9 +63,65 @@ impl Default for PoolPosture {
     }
 }
 
+/// What a dial trusted, compared by IDENTITY: the client config it was secured under and the
+/// destination's sealed anchors it was held to. Each is held here, so neither can be freed and its
+/// address reused while a line keyed by it is pooled.
+#[derive(Clone)]
+pub(crate) struct Trust {
+    /// The client config the dial was secured under (`None`: none).
+    pub(crate) config: Option<Arc<rustls::ClientConfig>>,
+    /// The sealed anchors the dial was held to (`None`: none).
+    pub(crate) anchors: Option<Arc<Sealed>>,
+}
+
+/// Whether `a` and `b` are the same one (or both none).
+fn same<T>(a: Option<&Arc<T>>, b: Option<&Arc<T>>) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+        _ => false,
+    }
+}
+
+/// The address `a` names (`0`: none).
+fn address<T>(a: Option<&Arc<T>>) -> usize {
+    a.map_or(0, |a| Arc::as_ptr(a).cast::<()>() as usize)
+}
+
+impl PartialEq for Trust {
+    fn eq(&self, other: &Self) -> bool {
+        same(self.config.as_ref(), other.config.as_ref())
+            && same(self.anchors.as_ref(), other.anchors.as_ref())
+    }
+}
+
+impl Eq for Trust {}
+
+impl Hash for Trust {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        address(self.config.as_ref()).hash(state);
+        address(self.anchors.as_ref()).hash(state);
+    }
+}
+
+impl std::fmt::Debug for Trust {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Trust")
+            .field("config", &address(self.config.as_ref()))
+            .field("anchors", &address(self.anchors.as_ref()))
+            .finish()
+    }
+}
+
 /// What a pooled connection was dialled for; an open reuses it only for the same.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct PoolKey {
+    /// The instance whose open dialled it: a line is never lent across instances.
+    pub(crate) owner: InstanceId,
+    /// The need it was dialled on: a line is never lent across needs.
+    pub(crate) need: NeedId,
+    /// What the dial trusted: a line is lent only to an open held to the same.
+    pub(crate) trust: Trust,
     /// The entry (its table's address: one per loaded entry for the process).
     pub(crate) door: usize,
     /// The authority dialled, lower-cased.
@@ -89,6 +153,8 @@ pub(crate) struct Pools {
     posture: PoolPosture,
     per_shard: usize,
     shards: Box<[Shard]>,
+    /// When every shard was last swept for idle lines past their time ([`Pools::sweep`]).
+    swept: Mutex<Instant>,
 }
 
 impl std::fmt::Debug for Pools {
@@ -121,6 +187,42 @@ impl Pools {
             posture,
             per_shard,
             shards: (0..count).map(|_| Mutex::new(HashMap::new())).collect(),
+            swept: Mutex::new(Instant::now()),
+        }
+    }
+
+    /// Close every idle line, on every shard and for every place, that has sat past the idle time:
+    /// at most once per idle time, whenever the pool is used, so a place never opened to again does
+    /// not keep its lines open.
+    fn sweep(&self, now: Instant) {
+        let timeout = self.posture.idle_timeout;
+        {
+            let mut swept = self.swept.lock().expect("pool sweep");
+            if now.saturating_duration_since(*swept) < timeout {
+                return;
+            }
+            *swept = now;
+        }
+        let mut spent = Vec::new();
+        for shard in &*self.shards {
+            let mut map = shard.lock().expect("pool");
+            map.retain(|_, entries| {
+                entries.retain(|e| {
+                    let expired = e
+                        .idle
+                        .is_some_and(|since| now.saturating_duration_since(since) >= timeout);
+                    if expired {
+                        spent.push(Arc::clone(&e.line));
+                    }
+                    !expired
+                });
+                !entries.is_empty()
+            });
+        }
+        for line in spent {
+            if line.users() == 0 {
+                line.close();
+            }
         }
     }
 
@@ -165,6 +267,7 @@ impl Pools {
             return None;
         }
         let now = Instant::now();
+        self.sweep(now);
         let mut spent = Vec::new();
         let lent = {
             let mut map = self.shards[shard].lock().expect("pool");
@@ -271,6 +374,7 @@ impl Pools {
                 line.close();
             }
         }
+        self.sweep(now);
     }
 
     /// Drop `line` from the pool for `key` on `shard` (it failed its exchange's open); closed when
