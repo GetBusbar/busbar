@@ -213,8 +213,8 @@ checks:
       T="${XDG_CACHE_HOME:-$HOME/.cache}/busbar-conformance-tools"
       mkdir -p "$T/bin"
       case "$(uname -m)" in
-        aarch64|arm64) GOARCH=arm64; GO_SHA=4a97373d49fcacdcf3694fea368a500b00ee3e963974f3e7514132717632f052; SLSA_SHA=5d3b2349ede7bfec19e7a21569f18b9f7410145ad12e9584b175370669e14061 ;;
-        x86_64) GOARCH=amd64; GO_SHA=42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d; SLSA_SHA=946dbec729094195e88ef78e1734324a27869f03e2c6bd2f61cbc06bd5350339 ;;
+        aarch64|arm64) GOARCH=arm64; NODEARCH=arm64; NODE_SHA=a44aeb94849a299b22df10b9e622ec2f605c2183501bc40590705131de7c740f; GO_SHA=4a97373d49fcacdcf3694fea368a500b00ee3e963974f3e7514132717632f052; SLSA_SHA=5d3b2349ede7bfec19e7a21569f18b9f7410145ad12e9584b175370669e14061 ;;
+        x86_64) GOARCH=amd64; NODEARCH=x64; NODE_SHA=df450af89261115ef9f9e3830c3eeb2cc9213b63c720b1af623cb5dcbe2e02de; GO_SHA=42d158b4d8f7b61ac0a830567c940a86098fb7aac52e467a5ebec03ef5cc2f8d; SLSA_SHA=946dbec729094195e88ef78e1734324a27869f03e2c6bd2f61cbc06bd5350339 ;;
         *) echo "conformance tools: no pins for $(uname -m)"; exit 1 ;;
       esac
       fetch() { # url sha256 dest
@@ -237,7 +237,13 @@ checks:
         rm -rf "$T/testssl"; mkdir "$T/testssl"; tar -C "$T/testssl" --strip-components=1 -xzf "$T/testssl.tgz"
         ln -sf "$T/testssl/testssl.sh" "$T/bin/testssl.sh"
       fi
-      export PATH="$T/bin:$T/go/bin:$PATH"
+      # node + npm (pinned v22.23.3, sha256 checked) for the rigs that drive browsers and the official
+      # conformance suites (a2a, ws, webrtc-browser, mcp battery-control, voice self-tests).
+      if [ ! -x "$T/node/bin/node" ]; then
+        fetch "https://nodejs.org/dist/v22.23.3/node-v22.23.3-linux-$NODEARCH.tar.xz" "$NODE_SHA" "$T/node.txz"
+        rm -rf "$T/node"; mkdir "$T/node"; tar -C "$T/node" --strip-components=1 -xJf "$T/node.txz"
+      fi
+      export PATH="$T/bin:$T/go/bin:$T/node/bin:$PATH"
       cargo xtask conformance record --all --recording target/oracle/recordings/candidate
       cargo xtask conformance check --musts --sha "$MODERNCI_COMMIT" --format=tsv
     needs: [oracle]
