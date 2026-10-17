@@ -953,7 +953,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-http"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=a220d8732cb57fd39f8ec102bb692998f813bb87#a220d8732cb57fd39f8ec102bb692998f813bb87"
+source = "git+https://github.com/GetBusbar/busbar-transport-http?rev=12b078389496d4c1fd81b730f5d9d0887537c3b0#12b078389496d4c1fd81b730f5d9d0887537c3b0"
 dependencies = [
  "busbar-contract",
  "bytes",
