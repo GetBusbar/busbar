@@ -13607,3 +13607,7 @@ mod spec_allowed_tests {
 // the kind table and its rules are cited by line number across the ledgers.
 mod neutral;
 pub use neutral::{neutral_census, neutral_kind_src_roots, NeutralCensus};
+
+// The census and face readings over the real tree, one plant each (row 159, audit XC1).
+#[cfg(test)]
+mod census_faces_tests;
