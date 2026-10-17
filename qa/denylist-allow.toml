@@ -104,8 +104,8 @@
 # two compose and the second edge still has to be defended here. That is why the llm row below still
 # exists and now names `getrandom` alone: `getrandom -> libc` is a DIFFERENT edge with a different
 # argument, and the ruling above is explicit that it is NOT ruled on. (The streaming row went with
-# its crate's last route to `getrandom`: the plane is pinned from its own repo (row 106), and a
-# pinned crate's dev edge to the loader is no edge cargo compiles here.)
+# its crate's last route to `getrandom`, its dev edge to the loader: the plane is pinned from its own
+# repo (row 106), and its both-ways witness, the one user of the loader, lives in its cdylib twin.)
 
 [[allow]]
 crate = "busbar-plane-llm"

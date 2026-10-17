@@ -1918,9 +1918,10 @@ fn a_pinned_planes_evidence_is_read_from_its_checkout_and_is_red_without_it() {
         }
     }
     let root = repo_root();
+    // A pinned plane's own crate, and its cdylib twin in the same repo at the same rev.
     let prefixes: Vec<String> = common::pinned_planes::pinned_rows(&root)
         .into_iter()
-        .map(|(name, _)| format!("crates/{name}/"))
+        .flat_map(|(name, _)| [format!("crates/{name}/"), format!("crates/{name}-plugin/")])
         .collect();
     assert!(!prefixes.is_empty(), "the workspace pins a plane today");
     let mut tests = Vec::new();
@@ -1937,4 +1938,57 @@ fn a_pinned_planes_evidence_is_read_from_its_checkout_and_is_red_without_it() {
         );
         named_test_is_real(&root, "pinned", test, "cell").unwrap_or_else(|e| panic!("{e}"));
     }
+}
+
+/// A CITATION OF A PINNED PLANE'S TWIN IS READ IN THAT TWIN, AND A MISSING ONE IS REFUSED (ARCHITECT
+/// ruling on #1072 (2)). The streaming plane's both-ways witness lives in its cdylib twin
+/// (`busbar-plane-streaming-plugin`, `tests/both_ways.rs`), in the same repo at the rev the root
+/// pins: a cell citing it is read there and is the real test. RED ARMS: a fn the twin does not have,
+/// a file the twin does not have, and the twin of a plane the root does not pin are each refused,
+/// never resolved to something else and never skipped.
+#[test]
+fn a_pinned_planes_twin_citation_is_read_from_its_checkout_and_a_missing_one_is_refused() {
+    let root = repo_root();
+    let twin = "crates/busbar-plane-streaming-plugin/tests/both_ways.rs";
+    assert!(
+        !root.join(twin).exists(),
+        "{twin} is on disk: a pinned plane's source re-entered the tree"
+    );
+    named_test_is_real(
+        &root,
+        "twin",
+        &format!("{twin}::a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it"),
+        "cell",
+    )
+    .unwrap_or_else(|e| panic!("{e}"));
+
+    let err = named_test_is_real(
+        &root,
+        "twin",
+        &format!("{twin}::a_test_the_twin_does_not_have"),
+        "cell",
+    )
+    .expect_err("RED: a fn the twin does not have is refused");
+    assert!(
+        err.contains("no `fn a_test_the_twin_does_not_have(`"),
+        "{err}"
+    );
+
+    let err = named_test_is_real(
+        &root,
+        "twin",
+        "crates/busbar-plane-streaming-plugin/tests/no_such_file.rs::anything",
+        "cell",
+    )
+    .expect_err("RED: a file the twin does not have is refused");
+    assert!(err.contains("cannot be read"), "{err}");
+
+    let err = named_test_is_real(
+        &root,
+        "twin",
+        "crates/busbar-plane-unpinned-plugin/tests/both_ways.rs::anything",
+        "cell",
+    )
+    .expect_err("RED: the twin of a plane the root does not pin is refused");
+    assert!(err.contains("cannot be read"), "{err}");
 }

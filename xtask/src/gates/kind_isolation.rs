@@ -9816,24 +9816,6 @@ impl Gate for KindIsolationGate {
             &["lock-drift", "Cargo.lock", "busbar-transport-stdio"],
         ));
 
-        // A MEMBER'S DEV EDGE THE LOCK LOST. A crate the lock pins from a source is a dependency,
-        // and cargo resolves no dev edge of a dependency; a MEMBER's dev edges are compiled by its
-        // own tests, so the lock must still carry every one (`busbar-kernel-egress`'s test half
-        // alone names `busbar-kernel-breaker`).
-        report.push(prove_rows_red(
-            cx,
-            subject,
-            "a member's dev-dependency the lock does not carry",
-            &[ROW_INPUTS],
-            lock_minus(cx, "busbar-kernel-egress", "busbar-kernel-breaker"),
-            &[
-                "lock-drift",
-                "Cargo.lock",
-                "crates/busbar-kernel-egress/Cargo.toml",
-                "busbar-kernel-breaker",
-            ],
-        ));
-
         // A REGISTRY ENTRY FILED UNDER THE WRONG KIND. `plugins.yaml` is what the loader believes,
         // and a store plugin filed as `auth` is a store handed the auth ABI.
         //
@@ -12069,26 +12051,6 @@ fn lock_plus(cx: &Ctx, package: &str, dep: &str) -> Overlay {
             }
             None => text.clone(),
         },
-        None => text.clone(),
-    };
-    let mut ov = Overlay::new();
-    ov.set("Cargo.lock", body);
-    ov
-}
-
-/// The live lock with `dep` struck from `package`'s dependency list.
-fn lock_minus(cx: &Ctx, package: &str, dep: &str) -> Overlay {
-    let text = cx.read("Cargo.lock").unwrap_or_default();
-    let head = format!("name = \"{package}\"\n");
-    let line = format!(" \"{dep}\",\n");
-    let body = match text.find(&head) {
-        Some(at) => {
-            let end = text[at..].find("\n\n").map_or(text.len(), |e| at + e);
-            match text[at..end].find(&line) {
-                Some(rel) => format!("{}{}", &text[..at + rel], &text[at + rel + line.len()..]),
-                None => text.clone(),
-            }
-        }
         None => text.clone(),
     };
     let mut ov = Overlay::new();

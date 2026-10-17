@@ -198,34 +198,6 @@ fn feature_names(text: &str) -> Vec<String> {
 }
 
 /// One `[[package]]` of `Cargo.lock`: its name and the packages it names.
-/// The `[[package]]` entries the lock pins from a SOURCE (a git or registry row), by name: a crate
-/// cargo resolves as a dependency, never as a member of this workspace. Its lock entry carries the
-/// edges cargo compiles for a dependency, its normal and build ones; a dependency's
-/// `[dev-dependencies]` are never resolved, so the lock never names them.
-fn lock_sourced(text: &str) -> BTreeSet<String> {
-    let mut out = BTreeSet::new();
-    let mut name: Option<String> = None;
-    for raw in text.lines() {
-        let t = raw.trim();
-        if t == "[[package]]" {
-            name = None;
-            continue;
-        }
-        if let Some((k, v)) = t.split_once('=') {
-            match k.trim() {
-                "name" => name = Some(v.trim().trim_matches('"').to_string()),
-                "source" => {
-                    if let Some(n) = &name {
-                        out.insert(n.clone());
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-    out
-}
-
 fn lock_packages(text: &str) -> BTreeMap<String, BTreeSet<String>> {
     let mut out: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut name: Option<String> = None;
@@ -1078,7 +1050,6 @@ pub fn rule_inputs(
     match cx.read("Cargo.lock") {
         Ok(text) => {
             let locked = lock_packages(&text);
-            let sourced = lock_sourced(&text);
             for c in crates {
                 let Some(in_lock) = locked.get(&c.name) else {
                     offenders.push(format!(
@@ -1089,15 +1060,10 @@ pub fn rule_inputs(
                     ));
                     continue;
                 };
-                // A crate the lock pins from a source (a plane laid from its pinned checkout) is
-                // a DEPENDENCY of this workspace: cargo compiles its normal and build edges and
-                // never its `[dev-dependencies]`, so the lock has no entry to hold those to. A
-                // member's dev edges are compiled by its own tests and are held as before.
-                let dev = (!sourced.contains(&c.name)).then_some(c.dev_deps.iter());
                 let declared: BTreeSet<&str> = c
                     .deps
                     .iter()
-                    .chain(dev.into_iter().flatten())
+                    .chain(c.dev_deps.iter())
                     .map(|d| d.pkg.as_str())
                     .filter(|n| by_name.contains_key(n))
                     .collect();
@@ -1291,14 +1257,6 @@ mod tests {
             quoted_after("const S: &str = include_str!(\"../z.rs\");", "include_str!"),
             vec!["../z.rs"]
         );
-    }
-
-    #[test]
-    fn a_sourced_lock_entry_is_a_dependency_and_a_member_is_not() {
-        let l = "[[package]]\nname = \"member\"\nversion = \"1\"\ndependencies = [\n \"pinned\",\n]\n\n[[package]]\nname = \"pinned\"\nversion = \"1\"\nsource = \"git+https://example.invalid/pinned?rev=1#1\"\n";
-        let s = lock_sourced(l);
-        assert!(s.contains("pinned"), "{s:?}");
-        assert!(!s.contains("member"), "{s:?}");
     }
 
     #[test]
