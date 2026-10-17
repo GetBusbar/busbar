@@ -12,18 +12,37 @@
 //! diagnosis, the regular-file and size-cap guards) and on its 1.5.5 refusal words also lives here,
 //! unchanged, against the real sources — the pin the double's copied text is held to.
 //!
-//! [`resolve_linked`] is the kernel resolver's linked branch (`SecretResolver::resolve`: the axis's
-//! one shared instance of the module, the settings as their JSON object, the refusal's text
-//! verbatim) over the root's axis rather than the kernel's installed one: a test build of this crate
-//! links the kernel's test support, whose stand-in axis the kernel reads.
+//! [`resolve_linked`] is the kernel resolver's linked branch at CONFIG TIME
+//! (`SecretResolver::resolve_at_config`: the axis's one shared instance of the module, the settings
+//! as their JSON object, the config-time proof, the refusal's text verbatim) over the root's axis
+//! rather than the kernel's installed one: a test build of this crate links the kernel's test
+//! support, whose stand-in axis the kernel reads. Every resolve a shipped build makes of these
+//! sources is a config-time one (boot, a config apply, a refresh; BUSBAR-1.6.0.md l.1464-1469, R4);
+//! [`resolve_on_a_request_path`] is the form a request path would take, which a disk-reading source
+//! refuses.
 
 use busbar_contract::secret::SecretAxis;
 use busbar_contract::secret_ref::{SECRET_MODULE_ENV, SECRET_MODULE_FILE};
 use busbar_kernel::config::SecretRef;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// A reference's bytes through the root's linked secret sources.
+/// A reference's bytes through the root's linked secret sources, at config time (with the proof).
 fn resolve_linked(secret: &SecretRef) -> Result<Vec<u8>, String> {
+    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
+        .expect("the linked secret doors state");
+    let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
+    axis.shared(&secret.module)?
+        .resolve_at_config(
+            settings.as_bytes(),
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .map(|m| m.expose(&busbar_kernel::seal::lend()).clone())
+        .map_err(|r| r.text)
+}
+
+/// A reference's bytes through the root's linked secret sources as a request path would ask: with
+/// no config-time proof.
+fn resolve_on_a_request_path(secret: &SecretRef) -> Result<Vec<u8>, String> {
     let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
         .expect("the linked secret doors state");
     let settings = serde_json::Value::Object(secret.settings.clone()).to_string();
@@ -205,7 +224,8 @@ fn a_request_path_resolve_of_the_file_source_reads_nothing() {
     let path = temp_path("FILE_REQUEST_PATH");
     std::fs::write(&path, b"never-read-on-a-request-path").unwrap();
     let reference = SecretRef::file(path.to_str().unwrap());
-    let refused = resolve_linked(&reference).expect_err("a request-path resolve is refused");
+    let refused =
+        resolve_on_a_request_path(&reference).expect_err("a request-path resolve is refused");
     assert!(
         refused.contains(busbar_contract::config_time::RESOLVE_OFF_CONFIG_TIME),
         "{refused}"
@@ -214,18 +234,7 @@ fn a_request_path_resolve_of_the_file_source_reads_nothing() {
         !refused.contains("never-read-on-a-request-path"),
         "{refused}"
     );
-    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
-        .expect("the linked secret doors state");
-    let settings = serde_json::Value::Object(reference.settings.clone()).to_string();
-    let at_config = axis
-        .shared(&reference.module)
-        .expect("the linked file source")
-        .resolve_at_config(
-            settings.as_bytes(),
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
-        .map(|m| m.expose(&busbar_kernel::seal::lend()).clone())
-        .map_err(|r| r.text);
+    let at_config = resolve_linked(&reference);
     assert_eq!(
         at_config.as_deref(),
         Ok(&b"never-read-on-a-request-path"[..])

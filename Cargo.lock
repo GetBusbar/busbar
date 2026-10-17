@@ -923,7 +923,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-file"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=479c833a108bc5d94e03f754b0a1b5f9ea97c0e3#479c833a108bc5d94e03f754b0a1b5f9ea97c0e3"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=e1a5a17a4953faaeb69ba5b6e5bc141d21cd133c#e1a5a17a4953faaeb69ba5b6e5bc141d21cd133c"
 dependencies = [
  "busbar-contract",
  "serde_json",
