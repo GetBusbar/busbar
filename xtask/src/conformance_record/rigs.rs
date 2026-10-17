@@ -685,6 +685,19 @@ pub fn mcp_node_platform(os: &str, arch: &str) -> Option<(&'static str, &'static
     MCP_NODE_SHA256.iter().find(|(p, _)| *p == plat).copied()
 }
 
+/// Whether `recording` may be judged as the recording of the subject whose release binary has
+/// sha256 `subject_sha256`.
+pub fn recording_for_subject(recording: &Path, _subject_sha256: &str) -> Result<(), String> {
+    let has_rows = read_opt(&recording.join("ledger.tsv")).is_some_and(|l| !l.trim().is_empty());
+    if !has_rows {
+        return Err(format!(
+            "the recording {} has no ledger rows: the oracle recorded nothing to judge",
+            recording.display()
+        ));
+    }
+    Ok(())
+}
+
 pub(super) fn read_opt(p: &Path) -> Option<String> {
     std::fs::read_to_string(p).ok()
 }
@@ -942,15 +955,8 @@ impl Runner {
                 ),
             );
         };
-        let has_rows = read_opt(&rec.join("ledger.tsv")).is_some_and(|l| !l.trim().is_empty());
-        if !has_rows {
-            return fan(
-                ids(),
-                &Outcome::not_run(format!(
-                    "the recording {} has no ledger rows: the oracle recorded nothing to judge",
-                    rec.display()
-                )),
-            );
+        if let Err(why) = recording_for_subject(rec, "") {
+            return fan(ids(), &Outcome::not_run(why));
         }
         if self.leg(rig, "pyyaml", &["python3", "-c", "import yaml"], None, &[]) != Some(0) {
             return fan(
