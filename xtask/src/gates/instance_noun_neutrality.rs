@@ -93,6 +93,23 @@ pub const ROW_FROZEN_LITERAL: &str = "instance-noun-neutrality:frozen-literal";
 /// above the ceiling is a new exemption nobody armed; a count below it is slack the ledger must give
 /// back — so the number can only fall.
 pub const ROW_PRAGMA_CEILING: &str = "instance-noun-neutrality:pragma-ceiling";
+/// THE NOUN LIST ANSWERS TO WHAT THE BINARY LINKS (audit XG HIGH 3; Law 8, "a roster maintained by
+/// hand is a defect with a date on it"). The plugin instances are DERIVED from the composition
+/// root's manifest (every `busbar-<kind>-<instance>` package in its `[dependencies]`), and each must
+/// be covered by a noun of its kind that matches the package's crate identifier. A linked instance
+/// with no noun, or a kind with no linked instance, reds this row.
+pub const ROW_ROSTER: &str = "instance-noun-neutrality:roster";
+
+/// The seven plugin kinds the census speaks for (the header's "EVERY one of the seven").
+const PLUGIN_KINDS: &[&str] = &[
+    "plane",
+    "transport",
+    "store",
+    "auth",
+    "secret",
+    "hook",
+    "export",
+];
 
 /// THE NEEDLE every per-noun census row carries. `--all` excuses this gate's standing red only when
 /// every red row names it (see the REPORT_ONLY posture); the `:undocumented` and `:stale-baseline`
@@ -256,6 +273,16 @@ const NOUNS: &[Noun] = &[
         kind: "plane",
         family: FAM_DECISION,
         tokens: &["jev"],
+        camel: &[],
+        section: None,
+    },
+    // The decisions plane's CRATE, which `jev` (its dialect) does not spell: the composition root
+    // links `busbar-plane-decisions`, and the `:roster` row requires a noun that covers it.
+    Noun {
+        key: "decisions",
+        kind: "plane",
+        family: FAM_DECISION,
+        tokens: &["busbar_plane_decisions", "busbar-plane-decisions"],
         camel: &[],
         section: None,
     },
@@ -431,6 +458,122 @@ const NOUNS: &[Noun] = &[
         kind: "hook",
         family: FAM_HOOKS_RANKING,
         tokens: &["busbar_hook_ranking"],
+        camel: &[],
+        section: None,
+    },
+    // THE LINKED INSTANCES (audit XG HIGH 3). Every plugin package the composition root links
+    // (`crates/busbar/Cargo.toml` [dependencies], the `:roster` row) needs a noun of its kind. Each of
+    // these is pinned from its own repository, so no crate here is its family, and each is matched on
+    // its crate identifier only: the bare instance words (`env`, `file`, `header`, `webhook`, ...)
+    // are core vocabulary, and `sigv4` is protocol vocabulary (Q76), so `busbar_auth_sigv4` names the
+    // plugin while a bare `sigv4` names the scheme.
+    Noun {
+        key: "webrtc",
+        kind: "transport",
+        family: FAM_NONE,
+        tokens: &["busbar_transport_webrtc", "busbar-transport-webrtc"],
+        camel: &[],
+        section: None,
+    },
+    Noun {
+        key: "secret-env",
+        kind: "secret",
+        family: FAM_NONE,
+        tokens: &["busbar_secret_env", "busbar-secret-env"],
+        camel: &[],
+        section: None,
+    },
+    Noun {
+        key: "secret-file",
+        kind: "secret",
+        family: FAM_NONE,
+        tokens: &["busbar_secret_file", "busbar-secret-file"],
+        camel: &[],
+        section: None,
+    },
+    Noun {
+        key: "auth-header",
+        kind: "auth",
+        family: FAM_NONE,
+        tokens: &["busbar_auth_header", "busbar-auth-header"],
+        camel: &[],
+        section: None,
+    },
+    Noun {
+        key: "auth-sigv4",
+        kind: "auth",
+        family: FAM_NONE,
+        tokens: &["busbar_auth_sigv4", "busbar-auth-sigv4"],
+        camel: &[],
+        section: None,
+    },
+    Noun {
+        key: "auth-oauth",
+        kind: "auth",
+        family: FAM_NONE,
+        tokens: &["busbar_auth_oauth", "busbar-auth-oauth"],
+        camel: &[],
+        section: None,
+    },
+    Noun {
+        key: "auth-oidc",
+        kind: "auth",
+        family: FAM_NONE,
+        tokens: &["busbar_auth_oidc", "busbar-auth-oidc"],
+        camel: &[],
+        section: None,
+    },
+    Noun {
+        key: "auth-webhook-signature",
+        kind: "auth",
+        family: FAM_NONE,
+        tokens: &[
+            "busbar_auth_webhook_signature",
+            "busbar-auth-webhook-signature",
+        ],
+        camel: &[],
+        section: None,
+    },
+    Noun {
+        key: "auth-admin-tokens",
+        kind: "auth",
+        family: FAM_NONE,
+        tokens: &[
+            "busbar_auth_admin_tokens_plugin",
+            "busbar-auth-admin-tokens-plugin",
+        ],
+        camel: &[],
+        section: None,
+    },
+    Noun {
+        key: "export-file",
+        kind: "export",
+        family: FAM_NONE,
+        tokens: &["busbar_export_file", "busbar-export-file"],
+        camel: &[],
+        section: None,
+    },
+    Noun {
+        key: "export-webhook",
+        kind: "export",
+        family: FAM_NONE,
+        tokens: &["busbar_export_webhook", "busbar-export-webhook"],
+        camel: &[],
+        section: None,
+    },
+    Noun {
+        key: "export-prometheus",
+        kind: "export",
+        family: FAM_NONE,
+        tokens: &["busbar_export_prometheus", "busbar-export-prometheus"],
+        camel: &[],
+        section: None,
+    },
+    Noun {
+        key: "export-otlp",
+        kind: "export",
+        family: FAM_NONE,
+        tokens: &["busbar_export_otlp", "busbar-export-otlp"],
         camel: &[],
         section: None,
     },
@@ -690,6 +833,98 @@ fn line_hits_exact(orig: &str, lower: &str, noun: &Noun) -> bool {
                     .section
                     .is_some_and(|k| !section_spans(&chars, k).is_empty())
         }
+}
+
+/// The plugin packages a Cargo manifest links, as `(package, kind)`: every key of its
+/// `[dependencies]` (and `[target.<cfg>.dependencies]`) tables spelled `busbar-<kind>-<instance>`
+/// for one of the seven [`PLUGIN_KINDS`]. Dev and build dependencies are not what the binary links.
+fn linked_instances(manifest: &str) -> Vec<(String, &'static str)> {
+    let mut out = Vec::new();
+    let mut linked = false;
+    for line in manifest.lines() {
+        let t = line.trim();
+        if t.starts_with('[') {
+            linked = t == "[dependencies]"
+                || (t.starts_with("[target.") && t.ends_with(".dependencies]"));
+            continue;
+        }
+        if !linked {
+            continue;
+        }
+        let Some((key, _)) = t.split_once('=') else {
+            continue;
+        };
+        let key = key.trim().trim_matches('"');
+        if let Some(kind) = PLUGIN_KINDS.iter().find(|k| {
+            key.strip_prefix("busbar-")
+                .and_then(|r| r.strip_prefix(**k))
+                .is_some_and(|r| r.len() > 1 && r.starts_with('-'))
+        }) {
+            out.push((key.to_string(), *kind));
+        }
+    }
+    out
+}
+
+/// The `:roster` row over the composition root's manifest (see [`ROW_ROSTER`]).
+fn roster_row(cx: &Ctx) -> Row {
+    let manifest = match cx.read(ROOT_MANIFEST) {
+        Ok(m) => m,
+        Err(e) => {
+            return Row::fail(
+                ROW_ROSTER,
+                "the linked plugin roster could not be derived",
+                format!("{ROOT_MANIFEST}: {e} — an unread roster is not a covered one"),
+            )
+        }
+    };
+    let linked = linked_instances(&manifest);
+    let uncovered: Vec<String> = linked
+        .iter()
+        .filter(|(pkg, kind)| {
+            let ident = pkg.replace('-', "_");
+            !NOUNS
+                .iter()
+                .any(|n| n.kind == *kind && line_hits(&ident, &ident, n))
+        })
+        .map(|(pkg, kind)| format!("{pkg} ({kind})"))
+        .collect();
+    let absent: Vec<&str> = PLUGIN_KINDS
+        .iter()
+        .copied()
+        .filter(|k| !linked.iter().any(|(_, kind)| kind == k))
+        .collect();
+    if uncovered.is_empty() && absent.is_empty() {
+        return Row::pass(
+            ROW_ROSTER,
+            "every plugin instance the binary links has a census noun",
+            format!(
+                "{} linked plugin package(s) across all {} kinds in {ROOT_MANIFEST}, each covered",
+                linked.len(),
+                PLUGIN_KINDS.len()
+            ),
+        );
+    }
+    let mut why = Vec::new();
+    if !uncovered.is_empty() {
+        why.push(format!(
+            "linked with no census noun of its kind matching its crate identifier: {} — add a \
+             noun for the instance",
+            uncovered.join(", ")
+        ));
+    }
+    if !absent.is_empty() {
+        why.push(format!(
+            "plugin kind(s) with no linked instance in {ROOT_MANIFEST}: {} — the roster cannot speak \
+             for a kind it does not see",
+            absent.join(", ")
+        ));
+    }
+    Row::fail(
+        ROW_ROSTER,
+        "the census nouns do not cover the plugin instances the binary links",
+        why.join(" | "),
+    )
 }
 
 /// The crate directory name for a `crates/<name>/...` path, or `None` for anything else.
@@ -1175,6 +1410,7 @@ impl Gate for InstanceNounNeutralityGate {
         ids.push(ROW_DEAD_PATH.to_string());
         ids.push(ROW_FROZEN_LITERAL.to_string());
         ids.push(ROW_PRAGMA_CEILING.to_string());
+        ids.push(ROW_ROSTER.to_string());
         ids
     }
 
@@ -1206,6 +1442,7 @@ impl Gate for InstanceNounNeutralityGate {
                 for id in [ROW_DEAD_PATH, ROW_FROZEN_LITERAL, ROW_PRAGMA_CEILING] {
                     rows.push(Row::fail(id, "the scan did not run", DID_NOT_RUN));
                 }
+                rows.push(roster_row(cx));
                 return Verdict::of(rows);
             }
         };
@@ -1366,6 +1603,7 @@ impl Gate for InstanceNounNeutralityGate {
 
         rows.push(pragma_row(&pragmas));
         rows.push(ceiling_row(&ceiling, pragmas.len()));
+        rows.push(roster_row(cx));
 
         Verdict::of(rows)
     }

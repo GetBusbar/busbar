@@ -49,6 +49,19 @@ fn main() { let _ = "plane-streaming"; }
 "#,
     ),
     (
+        "crates/busbar/Cargo.toml",
+        r#"[package]
+name = "busbar"
+
+[dependencies]
+busbar-transport-http = { path = "x" }
+busbar-plane-mcp = { path = "x" }
+
+[dev-dependencies]
+busbar-secret-env = { path = "x" }
+"#,
+    ),
+    (
         "crates/busbar-kernel/src/diagnostics/mod.rs",
         r#"pub const WARN: &str = "the GCP/Azure metadata hosts";
 pub fn valkey_store() {}
@@ -96,6 +109,7 @@ instance-noun-neutrality:llm	PASS	no crate outside the plane family names `llm`	
 instance-noun-neutrality:streaming	FAIL	`streaming` (plane) is named in 2 file(s) outside its family [busbar-plane-streaming, busbar-voice]	tracked known-debt census — 2: crates/busbar-core/src/lib.rs×2 [core] | crates/busbar/src/main.rs×1 [composition-root]
 instance-noun-neutrality:voice	PASS	no crate outside the plane family names `voice`	the scan cleared its floors and named nothing
 instance-noun-neutrality:jev	FAIL	`jev` (plane) is named in 1 file(s) outside its family [busbar-plane-decisions]	tracked known-debt census — 1: crates/busbar-core/src/lib.rs×1 [core]
+instance-noun-neutrality:decisions	PASS	no crate outside the plane family names `decisions`	the scan cleared its floors and named nothing
 instance-noun-neutrality:http	FAIL	`http` (transport) is named in 1 file(s) outside its family [busbar-transport-http]	tracked known-debt census — 1: crates/busbar/src/main.rs×1 [composition-root]
 instance-noun-neutrality:ws	PASS	no crate outside the transport family names `ws`	the scan cleared its floors and named nothing
 instance-noun-neutrality:stdio	PASS	no crate outside the transport family names `stdio`	the scan cleared its floors and named nothing
@@ -113,11 +127,25 @@ instance-noun-neutrality:gcp	FAIL	`gcp` (auth) is named in 1 file(s) outside its
 instance-noun-neutrality:vault	FAIL	`vault` (secret) is named in 1 file(s) outside its family [(no crate in this tree)]	tracked known-debt census — 1: crates/busbar-contract/src/lib.rs×1 [shared-crate]
 instance-noun-neutrality:hook	PASS	no crate outside the hook family names `hook`	the scan cleared its floors and named nothing
 instance-noun-neutrality:ranking	PASS	no crate outside the hook family names `ranking`	the scan cleared its floors and named nothing
+instance-noun-neutrality:webrtc	PASS	no crate outside the transport family names `webrtc`	the scan cleared its floors and named nothing
+instance-noun-neutrality:secret-env	PASS	no crate outside the secret family names `secret-env`	the scan cleared its floors and named nothing
+instance-noun-neutrality:secret-file	PASS	no crate outside the secret family names `secret-file`	the scan cleared its floors and named nothing
+instance-noun-neutrality:auth-header	PASS	no crate outside the auth family names `auth-header`	the scan cleared its floors and named nothing
+instance-noun-neutrality:auth-sigv4	PASS	no crate outside the auth family names `auth-sigv4`	the scan cleared its floors and named nothing
+instance-noun-neutrality:auth-oauth	PASS	no crate outside the auth family names `auth-oauth`	the scan cleared its floors and named nothing
+instance-noun-neutrality:auth-oidc	PASS	no crate outside the auth family names `auth-oidc`	the scan cleared its floors and named nothing
+instance-noun-neutrality:auth-webhook-signature	PASS	no crate outside the auth family names `auth-webhook-signature`	the scan cleared its floors and named nothing
+instance-noun-neutrality:auth-admin-tokens	PASS	no crate outside the auth family names `auth-admin-tokens`	the scan cleared its floors and named nothing
+instance-noun-neutrality:export-file	PASS	no crate outside the export family names `export-file`	the scan cleared its floors and named nothing
+instance-noun-neutrality:export-webhook	PASS	no crate outside the export family names `export-webhook`	the scan cleared its floors and named nothing
+instance-noun-neutrality:export-prometheus	PASS	no crate outside the export family names `export-prometheus`	the scan cleared its floors and named nothing
+instance-noun-neutrality:export-otlp	PASS	no crate outside the export family names `export-otlp`	the scan cleared its floors and named nothing
 instance-noun-neutrality:undocumented	FAIL	a live instance-noun leak is NOT in the baseline, or outgrew its baselined count	11 undocumented leak(s): a2a@crates/busbar-core/src/lib.rs, gcp@crates/busbar-core/src/lib.rs, http@crates/busbar/src/main.rs, jev@crates/busbar-core/src/lib.rs, mcp@crates/busbar-core/src/lib.rs grew 1→3, mysql@crates/busbar-core/src/lib.rs, streaming@crates/busbar-core/src/lib.rs, streaming@crates/busbar/src/main.rs, tls@crates/busbar-core/src/lib.rs, valkey@crates/busbar-kernel/src/diagnostics/mod.rs, vault@crates/busbar-contract/src/lib.rs — a NEW cross-family coupling landed. Neutralize it, or (if it is genuine debt) record it in qa/instance-noun-neutrality.toml with its owning wave.
 instance-noun-neutrality:stale-baseline	FAIL	a baseline row no longer names a live leak	2 stale row(s): mysql@crates/gone.rs, voice@crates/busbar-core/src/lib.rs — the coupling is gone; strike the row from qa/instance-noun-neutrality.toml in the same commit that neutralized it.
 instance-noun-neutrality:dead-path	FAIL	a baseline row names a path the census cannot scan	1 zero-match row(s): mysql@crates/gone.rs — the path matches no scanned `.rs` file (deleted, renamed, or now a directory), so the row can only ever measure zero. Repoint it at the file(s) that now hold the code, or strike it, in qa/instance-noun-neutrality.toml.
 instance-noun-neutrality:frozen-literal	PASS	every frozen-literal pragma is reasoned, literal-only and pinned	0 pragma(s) honoured:
 instance-noun-neutrality:pragma-ceiling	PASS	the frozen-literal pragma count sits exactly at its ledger ceiling	frozen_literal 0 == ceiling 0
+instance-noun-neutrality:roster	FAIL	the census nouns do not cover the plugin instances the binary links	plugin kind(s) with no linked instance in crates/busbar/Cargo.toml: store, auth, secret, hook, export — the roster cannot speak for a kind it does not see
 "#;
 
 fn plant(root: &Path) {
