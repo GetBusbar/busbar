@@ -3481,3 +3481,28 @@ fn a_raw_affix_matches_the_previous_releases_paths_byte_for_byte() {
         "not a raw affix"
     );
 }
+
+/// THE SIGNED FLAG RIDES A RAW AFFIX ALONE (ARCHITECT ruling 2026-10-17): a signed path is matched
+/// against the raw path as the previous release matched it, so the flag on an exact, pattern or
+/// prefix claim is refused at bind, and a raw affix, which mounts no route, lists no catalog.
+#[test]
+fn a_signed_claim_is_a_raw_affix_and_a_raw_affix_is_no_catalog() {
+    let signed = CLAIM_RAW_AFFIX | CLAIM_SIGNED_INGRESS;
+    assert_eq!(check_claim_target("/door/*/sign", signed), Ok(()));
+    // RED: the flag beside every other path form.
+    for (target, form) in [
+        ("/door/x/sign", CLAIM_EXACT),
+        ("/door/{id+}/sign", CLAIM_PATTERN),
+        ("/door", 0),
+    ] {
+        assert_eq!(
+            check_claim_target(target, form | CLAIM_SIGNED_INGRESS),
+            f(Rule::Contradiction, "claim.flags"),
+            "{target}"
+        );
+    }
+    assert_eq!(
+        check_claim_target("/door/*/sign", CLAIM_RAW_AFFIX | CLAIM_CATALOG),
+        f(Rule::Contradiction, "claim.flags")
+    );
+}
