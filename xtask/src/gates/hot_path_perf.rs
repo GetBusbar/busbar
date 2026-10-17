@@ -8,7 +8,7 @@
 //! instrument making every one of the budget's claims, so a claim cannot be quietly dropped from the bench
 //! without an owed row going missing.
 //!
-//! Five claims, five rows — the same shape as `duplex-ws-default-edge`:
+//! Six claims, six rows — the same shape as `duplex-ws-default-edge`:
 //!
 //! | row | the claim it holds |
 //! | --- | --- |
@@ -17,6 +17,7 @@
 //! | `:delta-p50-under-1us` | it asserts `p50_delta_nanos < HOT_PATH_BUDGET_NANOS`, the budget `1_000` |
 //! | `:delta-p99-under-1us` | …and `p99_delta_nanos < HOT_PATH_BUDGET_NANOS` |
 //! | `:per-token-host-calls-zero` | it asserts `per_token_crossings == 0` on the stream |
+//! | `:door-crossing-under-1us` | the DOOR lane's witness measures every request-path op through the dispatcher against its direct call and asserts the delta under `1_000`ns at p50 and p99 |
 //!
 //! EACH ROW HOLDS ITS OWN COMPARISON, NOT ITS TOKENS. A claim is a list of CLAUSES — token
 //! sequences such as `assert!(p50_delta_nanos < HOT_PATH_BUDGET_NANOS,` — matched against the
@@ -40,13 +41,20 @@
 //! skipped-green. It builds the bench profile, so it runs on the qa cadence through
 //! `xtask/tests/hot_path_gates.rs`'s `--ignored` executing tests, not on every push.
 //!
-//! THE PENDING-RIDER DEPENDENCY. `PlaneHostVtable`
-//! (`crates/busbar-contract/src/abi/hot/host.rs`) has NO production caller yet — the keystone
-//! loop-unification (`crates/busbar/src/root/kernel.rs` + `main.rs`, reserved for the keystone wave)
-//! has not landed. So the instrument this gate guards is ARMED against the vtable's own construction
-//! (the `#[repr(C)]` subject `crates/busbar-contract/tests/layout_golden.rs` pins), and binds to the
-//! production crossing unchanged when the rider lands: the measured slot is the same fn pointer
-//! either way. This gate is GREEN now and stays green across that transition.
+//! THE DOOR LANE'S WITNESS (`:door-crossing-under-1us`). The bench above times the HOT lane's
+//! `PlaneHostVtable` slot, which row 84 deletes with `abi/hot`; the request path crosses the DOOR
+//! lane, `Plugin::call` on the one dispatcher. `crates/busbar/tests/door_crossing_perf.rs` is that
+//! lane's perf witness: every op the plane contract marks `request_path`, crossed through the
+//! dispatcher and called directly on the same instance and frame, one call per sample, the delta
+//! judged under the same `1_000`ns at p50 and at p99. It is a test in the workspace suite, so the
+//! budget is MEASURED on every move (the `test` check runs it), not only when the bench is run by
+//! hand; this row holds its clauses as code, so the witness cannot lose its coverage, its budget, a
+//! percentile or its assertion while the gate stays green. The same shape as `hot-path-alloc`'s
+//! `:door-ready-zero` over `crates/busbar/tests/door_ready_alloc.rs`.
+//!
+//! The hot-lane instrument stays ARMED against the vtable's own construction (the `#[repr(C)]`
+//! subject `crates/busbar-contract/tests/layout_golden.rs` pins): no production crossing calls
+//! through `PlaneHostVtable`, which is why the door lane carries the request path's measurement.
 
 use crate::ctx::{Ctx, Overlay};
 use crate::gates::{prove_green, prove_red, prove_red_by_configuration, Gate, Report};
@@ -381,6 +389,7 @@ impl Gate for HotPathPerfGate {
     fn owed(&self) -> Vec<String> {
         std::iter::once(ROW_INSTRUMENT.to_string())
             .chain(CLAIMS.iter().map(|c| c.row.to_string()))
+            .chain(std::iter::once(ROW_DOOR.to_string()))
             .collect()
     }
 
@@ -401,8 +410,21 @@ impl Gate for HotPathPerfGate {
     }
 }
 
-/// The five text rows: the registration row, then one row per claim. A missing instrument makes
-/// every text claim fail too — a rule that could not read its subject is not a rule that passed.
+/// The door lane's row: the witness the request path's crossing is measured by, its clauses as code.
+fn door_row(cx: &Ctx) -> Row {
+    match cx.read(DOOR_REL).and_then(|t| code_tokens(&t)) {
+        Ok(code) => claim_row_over(&DOOR_CLAIM, DOOR_REL, &code, "door perf"),
+        Err(e) => Row::fail(
+            ROW_DOOR,
+            DOOR_CLAIM.bad,
+            format!("{DOOR_REL}: {e} — the door perf witness could not be read"),
+        ),
+    }
+}
+
+/// The six text rows: the registration row, one row per hot-lane claim, and the door lane's row.
+/// A missing instrument makes every text claim fail too — a rule that could not read its subject is
+/// not a rule that passed.
 fn text_rows(cx: &Ctx) -> Vec<Row> {
     let mut rows = vec![instrument_row(cx)];
     let bench = cx.read(BENCH_REL).and_then(|t| code_tokens(&t));
@@ -416,6 +438,7 @@ fn text_rows(cx: &Ctx) -> Vec<Row> {
             )),
         }
     }
+    rows.push(door_row(cx));
     rows
 }
 
