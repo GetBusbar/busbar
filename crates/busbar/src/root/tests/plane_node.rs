@@ -285,7 +285,7 @@ async fn rig_with_billing(fixture: Fixture, billed: bool) -> Rig {
     gov.hydrate_budgets(&cost, 0).expect("hydrate");
 
     let app = TestApp::new()
-        // THE CONFIGURED AUTH CHAIN, so `identity_admit_over` runs the same resolution the HTTP
+        // THE CONFIGURED AUTH CHAIN, so `admit_session` runs the same resolution the HTTP
         // middleware runs rather than falling through an open front door.
         .keys_chain()
         .lane(LaneSpec::new(LANE, PROTO, &server.base_url()).provider("test"))
@@ -2420,10 +2420,9 @@ async fn admit(
     rig: &Rig,
     cred: Credential,
 ) -> Result<busbar_contract::records::PlaneRequestCtx, String> {
-    busbar_kernel::plane_host::identity_admit_over(
+    busbar_kernel::auth::admit::admit_session(
         Arc::clone(&rig.app),
         Some(cred.present(rig)),
-        String::new(),
         String::new(),
     )
     .await
@@ -2496,7 +2495,7 @@ async fn leg_loop_as(rig: &Rig, gov: busbar_contract::records::PlaneRequestCtx) 
 /// every 401 this plane could raise is raised upstream of it. A cell that hand-built a context and
 /// handed it to the loop would prove nothing about that, because it would be asserting the fixture.
 /// So every credential here goes through the deployment's OWN door
-/// (`plane_host::identity_admit_over`: the configured chain plus the one verdict resolution the
+/// (`auth::admit::admit_session`: the configured chain plus the one verdict resolution the
 /// HTTP middleware runs) and the loop is driven with whatever the door left behind.
 ///
 /// Three credentials, and the door's answer decides which half of the cell runs:

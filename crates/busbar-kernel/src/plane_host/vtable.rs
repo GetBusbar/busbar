@@ -53,11 +53,6 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         breaker_admit: Some(super::breaker::breaker_admit),
         breaker_admit_reason: Some(super::breaker::breaker_admit_reason),
         breaker_settle: Some(super::breaker::breaker_settle),
-        // ── WIRED `identity_admit` (minor-17) → the host-side inbound admission in
-        //    `super::identity_admit`: the configured auth chain + the one verdict resolution over the
-        //    caller's own credential, returning an opaque resolved-identity handle. Always wired (the
-        //    host owns the auth chain whatever the plane); no plane feature gates it. ────────────────────
-        identity_admit: Some(super::identity_admit::identity_admit),
         // ── WIRED `counter_add` (minor-25, the METRIC-FAMILY seam) → the recorder, over a family the
         //    emitting plane DECLARED. Always wired; what a plane may add to is its declaration's. ──
         counter_add: Some(counter_add),
