@@ -548,3 +548,103 @@ tools:
     assert_eq!(code, 0, "EOF on stdin is a clean shutdown");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// ASKED FOR THE LINE CARRIER, NO PLANE CLAIMING IT: the launch is refused, never turned into a
+/// network server its supervisor did not ask for. With no plane section configured, no served
+/// plane claims the stdio transport (Law 7: the plane is not loaded), so the child exits nonzero
+/// with the line carrier's own refusal on stderr and binds neither listener.
+///
+/// RED ARM: before the fix boot fell through to the listener path, bound `listen` and
+/// `admin_listen`, and ran until killed, so the bounded wait fails.
+#[test]
+fn the_stdio_flag_with_no_plane_claiming_stdio_refuses_and_binds_nothing() {
+    let dir = fixture_dir("unclaimed");
+    let provider_lanes = cfg!(linked_section_pools);
+    std::fs::write(
+        dir.join("providers.yaml"),
+        if provider_lanes {
+            "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n"
+        } else {
+            "{}\n"
+        },
+    )
+    .unwrap();
+    let providers = if provider_lanes {
+        "providers:\n  mock:\n    api_key: { env: MOCK_KEY }\nmodels:\n  test-model:\n    provider: mock\n"
+    } else {
+        ""
+    };
+    std::fs::write(
+        dir.join("config.yaml"),
+        format!(
+            "listen: \"127.0.0.1:0\"\nadmin_listen: \"127.0.0.1:0\"\nstore: {{module: memory}}\n{providers}"
+        ),
+    )
+    .unwrap();
+    let mut child = spawn(&dir, None);
+    let exited = common::lines::try_wait_bounded(&mut child.child, Duration::from_secs(80));
+    let stderr = child.stderr_so_far();
+    let _ = std::fs::remove_dir_all(&dir);
+    let code = exited.unwrap_or_else(|e| {
+        panic!("a stdio launch with no plane claiming stdio must refuse, not serve: {e}\n{stderr}")
+    });
+    assert_ne!(code, 0, "the refusal exits nonzero: {stderr}");
+    assert!(
+        stderr.contains("nothing to serve on stdin"),
+        "the line carrier's refusal names why: {stderr}"
+    );
+    assert!(
+        !stderr.contains("busbar listening"),
+        "no listener is bound on a stdio launch: {stderr}"
+    );
+    assert!(
+        child.stdout.try_recv().is_err(),
+        "nothing is written to stdout"
+    );
+}
+
+/// A SHUTDOWN SIGNAL STOPS THE LINE CARRIER: the signal busbar catches in every mode (SIGTERM, the
+/// way a supervisor stops its child) ends a live stdio session with stdin still open, runs the one
+/// shutdown tail and exits 0, as the listener path does on the same signal.
+///
+/// RED ARM: before the fix the handler was installed and nothing awaited it in this mode, so the
+/// child kept serving until stdin closed and the bounded wait fails.
+#[cfg(unix)]
+#[test]
+fn a_shutdown_signal_ends_a_live_stdio_session_cleanly() {
+    let dir = fixture_dir("sigterm");
+    install_auth_plugin(&dir);
+    let token = token_for(canonical());
+    write_configs(
+        &dir,
+        &governed_config(
+            &dir,
+            r#"  role_bindings:
+    idp:
+      tester: {}
+"#,
+        ),
+    );
+    let mut child = spawn(&dir, Some(&token));
+    // A served answer first: boot is over and the signal handler is installed.
+    child.send(&serde_json::json!({
+        "jsonrpc": "2.0", "id": 1, "method": "server/discover", "params": { "_meta": meta() }
+    }));
+    let discover = child.recv();
+    assert_eq!(discover["id"], 1, "{discover}");
+    let killed = Command::new("kill")
+        .arg("-TERM")
+        .arg(child.child.id().to_string())
+        .status()
+        .expect("run kill");
+    assert!(killed.success(), "SIGTERM delivered");
+    // stdin stays open: only the signal can end the session.
+    let exited = common::lines::try_wait_bounded(&mut child.child, Duration::from_secs(60));
+    let stderr = child.stderr_so_far();
+    let _ = std::fs::remove_dir_all(&dir);
+    let code = exited.unwrap_or_else(|e| {
+        panic!("SIGTERM must end the stdio session with stdin still open: {e}\n{stderr}")
+    });
+    assert_eq!(code, 0, "a signalled stop is a clean shutdown: {stderr}");
+    assert!(child.stdin.is_some(), "stdin was never closed by the test");
+}
