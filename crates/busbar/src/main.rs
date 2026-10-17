@@ -1049,7 +1049,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     if let Some(refusal) = root::serve::lines::refusal() {
         die(refusal);
     }
-    // The flag passed is the whole decision: a launch that asked for the line carrier is served on
+    // The flag passed settles it: a launch that asked for the line carrier is served on
     // it or refused by it (`serve_lines` refuses when no served plane claims the carrier), and never
     // falls through to the listeners its supervisor did not ask for.
     let mut served = served;
