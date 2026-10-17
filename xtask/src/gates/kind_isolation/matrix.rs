@@ -2876,6 +2876,11 @@ pub struct Law0Base {
     pub commit: String,
     pub counts: Law0Counts,
     pub rows: BTreeMap<(String, String), usize>,
+    /// The base ledger's `[[shape-word]]` rows, as [`shape_key`] spells them.
+    pub shape_words: BTreeSet<String>,
+    /// The matrix's PRESENCE findings at the base, as [`presence_key`] spells them (row 159,
+    /// XC2#5): what [`presence_row`] holds this tree's against.
+    pub presence: BTreeSet<String>,
     /// What the base's cells were measured over, in words (Law 8): its file denominator and whose
     /// vocabulary. Printed in the row's detail, pass or fail.
     pub how: String,
@@ -3003,7 +3008,7 @@ fn read_law0_base(cx: &Ctx, commit: &str, meta: Option<String>) -> Result<Law0Ba
         );
     }
     let mut law0 = None;
-    let (row, _) = measured_row(
+    let (row, reading) = measured_row(
         &bcx,
         &crates,
         vocab_reg.as_ref().unwrap_or(&base_reg),
@@ -3024,6 +3029,20 @@ fn read_law0_base(cx: &Ctx, commit: &str, meta: Option<String>) -> Result<Law0Ba
             .iter()
             .map(|r| ((r.krate.clone(), r.axis.clone()), r.count))
             .collect(),
+        shape_words: base_reg
+            .shape_words
+            .iter()
+            .map(|r| shape_key(&r.word, &r.file, &r.holder))
+            .collect(),
+        presence: reading
+            .map(|r| {
+                r.presence
+                    .iter()
+                    .map(String::as_str)
+                    .map(presence_key)
+                    .collect()
+            })
+            .unwrap_or_default(),
         how,
     })
 }
@@ -3170,6 +3189,17 @@ pub fn rule_law0_base(
         here.entry((r.krate.clone(), r.axis.clone()))
             .or_insert(r.count);
     }
+    // A RAISE IS PAID FOR BY A FALL, OR IT COVERS NOTHING (row 159, XC2#1). The cover below was a
+    // row this branch raised over the base's own, and nothing asked what paid for it: N new hits and
+    // the cell's row raised by N in the same diff were green here AND on `kind-isolation:law0`. An
+    // approved delta moves a hit from one row to another, so the cover is the rows this branch
+    // LOWERED (or struck) under the base's, spent once across every grown cell; a raise with no
+    // such fall is the branch writing its own ceiling, and its cell is `law0-row-raised`.
+    let mut budget: usize = base
+        .rows
+        .iter()
+        .map(|(key, b)| b.saturating_sub(here.get(key).copied().unwrap_or(0)))
+        .sum();
     let keys: BTreeSet<&(String, String)> = now.keys().chain(base.counts.keys()).collect();
     let (mut grown_total, mut drained, mut moved) = (0usize, 0usize, 0usize);
     let mut findings = Vec::new();
@@ -3180,15 +3210,18 @@ pub fn rule_law0_base(
             drained += was - n;
             continue;
         }
-        // THE ONE COVER: a row this branch RAISED over the base's own row. Slack the base carried
-        // (its row above its measure) and a row minted here are no cover at all.
+        // THE ONE COVER: a row this branch RAISED over the base's own row, paid for by a row it
+        // lowered. Slack the base carried (its row above its measure) and a row minted here are no
+        // cover at all.
         let raised = match (here.get(key), base.rows.get(key)) {
             (Some(h), Some(b)) => h.saturating_sub(*b),
             _ => 0,
         };
         let grown = n - was;
-        let uncovered = grown.saturating_sub(raised);
-        moved += grown - uncovered;
+        let paid = raised.min(grown).min(budget);
+        budget -= paid;
+        let uncovered = grown - paid;
+        moved += paid;
         if uncovered == 0 {
             continue;
         }
@@ -3197,6 +3230,18 @@ pub fn rule_law0_base(
             || "no `[[law0]]` row".to_string(),
             |c| format!("its `[[law0]]` row {c}"),
         );
+        if raised > paid {
+            findings.push(format!(
+                "law0-row-raised\t{} \u{d7} {}\t{was} -> {n} hit(s) over the same cell at the \
+                 merge-base {short} ({row} there), and this branch raised that row by {raised} with \
+                 {paid} of it paid for by a row lowered elsewhere: {uncovered} hit(s) covered only by \
+                 a ceiling the branch wrote itself. A ceiling only falls (BUSBAR-1.6.0.md Law 9: \
+                 \"refuses every rise from that moment\"); an approved delta lowers one row by what \
+                 it raises another",
+                key.0, key.1
+            ));
+            continue;
+        }
         findings.push(format!(
             "law0-grown\t{} \u{d7} {}\t{was} -> {n} hit(s) over the same cell at the merge-base \
              {short} ({row} there): this branch wrote {uncovered} instance-vocabulary hit(s) into a \
@@ -3205,6 +3250,34 @@ pub fn rule_law0_base(
              own, as an approved delta, covers a moved hit",
             key.0, key.1
         ));
+    }
+    // A `[[shape-word]]` ROW SWALLOWS ONE LITERAL HIT BEFORE ANY CELL COUNTS IT, so a row this
+    // branch wrote beside the literal it reserves leaves every cell flat on both rows. A row the
+    // merge-base ledger does not carry is refused unless as many base rows were struck.
+    let shapes: Vec<String> = registry
+        .shape_words
+        .iter()
+        .map(|r| shape_key(&r.word, &r.file, &r.holder))
+        .collect();
+    let minted: Vec<&String> = shapes
+        .iter()
+        .filter(|k| !base.shape_words.contains(*k))
+        .collect();
+    let struck = base
+        .shape_words
+        .iter()
+        .filter(|k| !shapes.contains(k))
+        .count();
+    if minted.len() > struck {
+        grown_total += minted.len() - struck;
+        for k in minted {
+            findings.push(format!(
+                "shape-word-minted\t{k}\tthis `[[shape-word]]` row is in no copy of {LEDGER} at \
+                 the merge-base {short}, and {struck} base row(s) were struck: a reservation the \
+                 branch wrote for a literal it wrote is a Law 0 hit nobody counts. Delete the \
+                 literal, or land the row in a commit whose message says why the shape needs it"
+            ));
+        }
     }
     if findings.is_empty() {
         return Row::pass(
@@ -3256,7 +3329,7 @@ pub fn rule_matrix(
     gating: bool,
 ) -> Row {
     let mut law0 = None;
-    matrix_row(cx, crates, reg, ship, gating, &mut law0)
+    matrix_row(cx, crates, reg, ship, gating, &mut law0).0
 }
 
 /// THE MATRIX ROW AND THE LAW 0 ROW, from ONE scan. The matrix stays report-only (owner
@@ -3271,7 +3344,7 @@ pub fn rule_matrix_rows(
     let mut law0 = None;
     // THE MERGE-BASE IS READ BESIDE THE TREE: an independent second scan of the same code over the
     // base's bytes, so it costs the wall time of the slower of the two, not their sum.
-    let (matrix_row, base) = std::thread::scope(|scope| {
+    let ((matrix_row, presence), base) = std::thread::scope(|scope| {
         let base = std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn_scoped(scope, || law0_base(cx))
@@ -3283,6 +3356,12 @@ pub fn rule_matrix_rows(
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic)),
         )
     });
+    // The self-test's subject gates every finding already; a registered gate gates presence.
+    let matrix_row = if gating {
+        matrix_row
+    } else {
+        presence_row(matrix_row, presence.as_deref(), base.as_deref())
+    };
     vec![
         matrix_row,
         rule_law0(crates, reg, law0.as_ref()),
@@ -3297,9 +3376,10 @@ fn matrix_row(
     ship: bool,
     gating: bool,
     law0: &mut Option<Law0Counts>,
-) -> Row {
+) -> (Row, Option<Vec<String>>) {
     let (row, reading) = measured_row(cx, crates, reg, ship, law0);
-    match reading {
+    let presence = reading.as_ref().map(|r| r.presence.clone());
+    let row = match reading {
         Some(r) if !gating => {
             let verdict = if row.status == crate::ledger::Status::Fail {
                 "findings"
@@ -3320,7 +3400,102 @@ fn matrix_row(
             )
         }
         _ => row,
+    };
+    (row, presence)
+}
+
+/// The finding codes that are PRESENCE — a crate naming a kind, a plugin's instances, a vendor or
+/// a homoglyph where it did not before, or a ledger row this branch minted — as against a count,
+/// a dead row or a duplicate (row 159, XC2#5).
+const PRESENCE_CODES: &[&str] = &[
+    "unlisted-cell",
+    "unlisted-edge",
+    "minted-row",
+    "unlisted-instance",
+    "confusable",
+    "vendor-name",
+    "vendor-frozen-wire",
+];
+
+/// A presence finding's identity, without its line numbers or prose: the code and its subject
+/// (`unlisted-cell\tcrate × kind`), the vendor word for a vendor name, the file for a pragma and
+/// the token and file for a homoglyph. A finding the merge-base carried under the same key is the
+/// base's; one it did not is this branch's.
+fn presence_key(finding: &str) -> String {
+    let f: Vec<&str> = finding.split('\t').collect();
+    let at = |i: usize| f.get(i).copied().unwrap_or("");
+    let strip_line = |s: &str| -> String {
+        match s.rsplit_once(':') {
+            Some((path, n)) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {
+                path.to_string()
+            }
+            _ => s.to_string(),
+        }
+    };
+    match at(0) {
+        "vendor-name" => format!("{}\t{}\t{}", at(0), at(1), at(4)),
+        "vendor-frozen-wire" => format!("{}\t{}\t{}", at(0), at(1), strip_line(at(2))),
+        "confusable" => format!("{}\t{}\t{}\t{}", at(0), at(1), at(2), strip_line(at(3))),
+        _ => format!("{}\t{}", at(0), at(1)),
     }
+}
+
+/// A `[[shape-word]]` row's identity: its word, file and holder.
+fn shape_key(word: &str, file: &str, holder: &str) -> String {
+    format!("{word} in {file} at {holder}")
+}
+
+/// THE MATRIX ROW ON A REGISTERED GATE: report-only in its COUNTS, gating in its PRESENCE (row
+/// 159, XC2#5; BUSBAR-1.6.0.md: "kind-isolation EDGES — a new cross-kind dependency edge, or a
+/// crate newly naming another kind's vocabulary, is still DENIED").
+///
+/// Every presence finding the tree carries today is debt the merge-base carried too, so the row
+/// is judged against the base: a presence finding whose key the base's own reading did not have
+/// ([`Law0Base::presence`]) is this branch's, and it FAILS the row, on both registrations and for
+/// every crate — a transport or a store newly naming another plane, another plugin's instances or
+/// a vendor included, which no Law 0 row reads. A count that grew inside a cell the base already
+/// had stays in the report-only detail. A base that cannot be read is RED, as on
+/// [`ROW_LAW0_BASE`].
+fn presence_row(row: Row, presence: Option<&[String]>, base: Result<&Law0Base, &String>) -> Row {
+    let Some(presence) = presence else {
+        return row;
+    };
+    let base = match base {
+        Ok(b) => b,
+        Err(why) => {
+            return Row::fail(
+                ROW_MATRIX,
+                "the merge-base's presence findings could not be read",
+                format!(
+                    "no-base\t{why}. A crate newly naming another kind is judged against the \
+                     merge-base, and a base that cannot be established is RED, never a silent pass"
+                ),
+            )
+        }
+    };
+    let short = &base.commit[..8.min(base.commit.len())];
+    let mut new: Vec<&str> = presence
+        .iter()
+        .filter(|f| !base.presence.contains(&presence_key(f)))
+        .map(String::as_str)
+        .collect();
+    new.sort_unstable();
+    new.dedup();
+    if new.is_empty() {
+        return row;
+    }
+    Row::fail(
+        ROW_MATRIX,
+        "a crate newly names another kind's vocabulary (presence, against the merge-base)",
+        format!(
+            "{} new presence finding(s) over the merge-base {short}, which carried {} presence \
+             key(s): {}. A new cross-kind edge, or a crate newly naming another kind's vocabulary, \
+             is DENIED (BUSBAR-1.6.0.md); the counts stay report-only",
+            new.len(),
+            base.presence.len(),
+            new.join(" | ")
+        ),
+    )
 }
 
 /// What the report-only detail opens with, so a caller (and the self-test) reads the number back.
@@ -3340,11 +3515,13 @@ fn measured_total(row: &Row) -> Option<usize> {
 struct Reading {
     total: usize,
     cells: usize,
+    /// Every PRESENCE finding of this reading ([`PRESENCE_CODES`]), whatever the twin.
+    presence: Vec<String>,
     /// The ten heaviest cells, `crate x kind = n (heaviest file)`.
     top: String,
 }
 
-fn reading_of(matrix: &Matrix, total: usize) -> Reading {
+fn reading_of(matrix: &Matrix, total: usize, presence: &[String]) -> Reading {
     let mut cells: Vec<(&(String, &'static str), &Cell)> = matrix.iter().collect();
     cells.sort_by(|a, b| b.1.count.cmp(&a.1.count).then(a.0.cmp(b.0)));
     let top = cells
@@ -3375,6 +3552,7 @@ fn reading_of(matrix: &Matrix, total: usize) -> Reading {
     Reading {
         total,
         cells: matrix.len(),
+        presence: presence.to_vec(),
         top,
     }
 }
@@ -3483,6 +3661,28 @@ fn measured_row(
         crates,
     ));
 
+    // THE PRESENCE FINDINGS, READ ON BOTH TWINS (row 159, XC2#5). The ship twin's row below does
+    // not consult the ledger, but a registered gate judges presence against the merge-base
+    // ([`presence_row`]) on both registrations, so both readings carry it.
+    let listed = read_ledger(reg);
+    let kind_of: BTreeMap<&str, &'static str> = crates
+        .iter()
+        .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))
+        .collect();
+    let minted = minted_rows(cx);
+    let inst_found = instances::offenders(&inst, &ivocab, reg);
+    let unlisted = unlisted_cells(&matrix, &listed, &kind_of);
+    let confused = confusables(&matrix);
+    let presence: Vec<String> = minted
+        .iter()
+        .chain(&inst_found)
+        .chain(&unlisted)
+        .chain(&confused)
+        .chain(&vendor)
+        .filter(|f| PRESENCE_CODES.contains(&f.split('\t').next().unwrap_or("")))
+        .cloned()
+        .collect();
+
     // THE SHIP TWIN OWES ZERO EVERYWHERE, and owes it without consulting the ledger.
     if ship {
         if total == 0 && inst_total == 0 && ivocab.unattributed.is_empty() && vendor.is_empty() {
@@ -3492,7 +3692,7 @@ fn measured_row(
                     "no crate names another kind's vocabulary anywhere",
                     format!("{scanned} file(s) scanned, every cell of the matrix is 0"),
                 ),
-                Some(reading_of(&matrix, total)),
+                Some(reading_of(&matrix, total, &presence)),
             );
         }
         let worst: Vec<String> = matrix
@@ -3520,15 +3720,13 @@ fn measured_row(
                     }
                 ),
             ),
-            Some(reading_of(&matrix, total)),
+            Some(reading_of(&matrix, total, &presence)),
         );
     }
 
-    let listed = read_ledger(reg);
-
     let mut offenders: Vec<String> = duplicates(reg);
-    offenders.extend(minted_rows(cx));
-    offenders.extend(instances::offenders(&inst, &ivocab, reg));
+    offenders.extend(minted);
+    offenders.extend(inst_found);
     offenders.extend(unreserved);
     offenders.extend(instances::law0(&inst, Some(LAW0_ENFORCED_NEUTRAL_CRATES)));
     if let Some(measured) = law0.as_ref() {
@@ -3536,46 +3734,8 @@ fn measured_row(
     }
     // Law 1 is armed at 0 on the everyday gate too: no ledger row exists that could raise it.
     offenders.extend(vendor.iter().cloned());
-    let kind_of: BTreeMap<&str, &'static str> = crates
-        .iter()
-        .filter_map(|c| c.kind.map(|k| (c.name.as_str(), k)))
-        .collect();
 
-    // PRESENCE, NOT SIZE (owner 2026-10-02: size is not a CI check). A cell above zero is a
-    // crate-level cross-kind EDGE, and the only question asked of it is whether a row says it may
-    // exist. No finding here carries a hit count: a count in the text would make every extra hit
-    // inside an already-listed (or already-standing) cell read as a new or larger finding, which is
-    // the line counter the ruling deleted. The numbers stay in `--report`.
-    for ((krate, kind), cell) in &matrix {
-        if cell.count == 0 {
-            continue;
-        }
-        let src = kind_of.get(krate.as_str()).copied().unwrap_or("?");
-        let edge = (src.to_string(), (*kind).to_string());
-        // A CLASS PART 0 ALLOWS IN SOURCE IS LISTED BY THE SPEC ([`super::spec_allows_source`]):
-        // neither a missing `[[edge]]` nor a missing `[[cell]]` is a finding. A row that exists is
-        // still compared below.
-        let spec_allowed = super::spec_allows_source(src, kind);
-        if !spec_allowed && !listed.edges.contains_key(&edge) {
-            offenders.push(format!(
-                "unlisted-edge\t{src} -> {kind}\t{krate} names {kind} vocabulary and there is no \
-                 `[[edge]] from = \"{src}\", to = \"{kind}\"` in {LEDGER}. An edge nobody wrote \
-                 down is an edge nobody reviewed: add the class with its ARCHITECTURE citation and \
-                 the line that deletes it, or delete the hits."
-            ));
-        }
-        if !listed.cells.contains(&(krate.clone(), (*kind).to_string())) {
-            if spec_allowed {
-                continue;
-            }
-            offenders.push(format!(
-                "unlisted-cell\t{krate} \u{d7} {kind}\tno `[[cell]] crate = \"{krate}\", kind = \
-                 \"{kind}\"` in {LEDGER}: this is a NEW crate-level cross-kind edge. Delete the \
-                 hits (`--report` lists them, file:line), or add the row in a commit that says why \
-                 the tree now needs the edge."
-            ));
-        }
-    }
+    offenders.extend(unlisted);
 
     // A ROW WHOSE CELL IS GONE IS A DEAD ALLOWANCE. The exemption cannot outlive the coupling.
     for (krate, kind) in &listed.cells {
@@ -3623,22 +3783,7 @@ fn measured_row(
         }
     }
 
-    // A HOMOGLYPH IS NEVER A SPELLING ANYBODY MEANT, AND ITS CEILING IS ZERO.
-    //
-    // Every other cell in this row is held to a `[[cell]]` row, because every other hit is a word
-    // somebody wrote on purpose and the question is whether the edge it makes was reviewed. This
-    // one is different in kind: a token whose ASCII fold is a plane's name and whose raw bytes are
-    // not is a token that reads as that name to the reviewer and to nothing else. There is no row
-    // that allows it — the ceiling is zero, exactly, and it is measured at zero on this tree today.
-    for ((krate, kind), cell) in &matrix {
-        for c in &cell.confusables {
-            offenders.push(format!(
-                "confusable\t{krate} \u{d7} {kind}\t{c}\ta token whose ASCII fold is this \
-                 kind's vocabulary and whose raw bytes are not — a homoglyph reads as the name to \
-                 every reviewer and to no scanner. The ceiling is 0 and no `[[cell]]` row raises it."
-            ));
-        }
-    }
+    offenders.extend(confused);
 
     // LAW 0/1, EVERYDAY BRANCH: armed unconditionally of the `[[cell]]` ledger, but BLOCKING
     // only for the crates [`LAW0_ENFORCED_NEUTRAL_CRATES`] has caught up to — the readiness
@@ -3714,7 +3859,7 @@ fn measured_row(
                     offenders.join(" | ")
                 ),
             ),
-            Some(reading_of(&matrix, total)),
+            Some(reading_of(&matrix, total, &presence)),
         );
     }
 
@@ -3724,8 +3869,76 @@ fn measured_row(
             "every crate's naming of every other kind is a listed edge",
             format!("every non-zero cell has its {LEDGER} row; {headline}"),
         ),
-        Some(reading_of(&matrix, total)),
+        Some(reading_of(&matrix, total, &presence)),
     )
+}
+
+/// Every cell above zero that no `[[cell]]` row, `[[edge]]` class or Part 0 grant allows: the
+/// `unlisted-edge` and `unlisted-cell` presence findings.
+fn unlisted_cells(
+    matrix: &Matrix,
+    listed: &Ledger,
+    kind_of: &BTreeMap<&str, &'static str>,
+) -> Vec<String> {
+    let mut offenders = Vec::new();
+    // PRESENCE, NOT SIZE (owner 2026-10-02: size is not a CI check). A cell above zero is a
+    // crate-level cross-kind EDGE, and the only question asked of it is whether a row says it may
+    // exist. No finding here carries a hit count: a count in the text would make every extra hit
+    // inside an already-listed (or already-standing) cell read as a new or larger finding, which is
+    // the line counter the ruling deleted. The numbers stay in `--report`.
+    for ((krate, kind), cell) in matrix {
+        if cell.count == 0 {
+            continue;
+        }
+        let src = kind_of.get(krate.as_str()).copied().unwrap_or("?");
+        let edge = (src.to_string(), (*kind).to_string());
+        // A CLASS PART 0 ALLOWS IN SOURCE IS LISTED BY THE SPEC ([`super::spec_allows_source`]):
+        // neither a missing `[[edge]]` nor a missing `[[cell]]` is a finding. A row that exists is
+        // still compared below.
+        let spec_allowed = super::spec_allows_source(src, kind);
+        if !spec_allowed && !listed.edges.contains_key(&edge) {
+            offenders.push(format!(
+                "unlisted-edge\t{src} -> {kind}\t{krate} names {kind} vocabulary and there is no \
+                 `[[edge]] from = \"{src}\", to = \"{kind}\"` in {LEDGER}. An edge nobody wrote \
+                 down is an edge nobody reviewed: add the class with its ARCHITECTURE citation and \
+                 the line that deletes it, or delete the hits."
+            ));
+        }
+        if !listed.cells.contains(&(krate.clone(), (*kind).to_string())) {
+            if spec_allowed {
+                continue;
+            }
+            offenders.push(format!(
+                "unlisted-cell\t{krate} \u{d7} {kind}\tno `[[cell]] crate = \"{krate}\", kind = \
+                 \"{kind}\"` in {LEDGER}: this is a NEW crate-level cross-kind edge. Delete the \
+                 hits (`--report` lists them, file:line), or add the row in a commit that says why \
+                 the tree now needs the edge."
+            ));
+        }
+    }
+    offenders
+}
+
+/// Every homoglyph the scan read: the `confusable` presence findings.
+fn confusables(matrix: &Matrix) -> Vec<String> {
+    let mut offenders = Vec::new();
+    // A HOMOGLYPH IS NEVER A SPELLING ANYBODY MEANT, AND ITS CEILING IS ZERO.
+    //
+    // Every other cell in this row is held to a `[[cell]]` row, because every other hit is a word
+    // somebody wrote on purpose and the question is whether the edge it makes was reviewed. This
+    // one is different in kind: a token whose ASCII fold is a plane's name and whose raw bytes are
+    // not is a token that reads as that name to the reviewer and to nothing else. There is no row
+    // that allows it — the ceiling is zero, exactly, and it is measured at zero on this tree today.
+    for ((krate, kind), cell) in matrix {
+        for c in &cell.confusables {
+            offenders.push(format!(
+                "confusable\t{krate} \u{d7} {kind}\t{c}\ta token whose ASCII fold is this \
+                 kind's vocabulary and whose raw bytes are not — a homoglyph reads as the name to \
+                 every reviewer and to no scanner. The ceiling is 0 and no `[[cell]]` row raises it."
+            ));
+        }
+    }
+    offenders
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -4120,13 +4333,18 @@ pub fn selftest<'a>(
     // as FAIL rows so a planted case can observe a red; `registered` is the gate as it is
     // registered, and this case reads what it reports: the row does not fail over a planted plane
     // name in a `.rs` file, and the measured total it carries RISES by it.
+    //
+    // The name lands in a cell the merge-base already has (`busbar-kernel × plane`): a cell that
+    // is NEW is presence, and presence gates on the registered gate too (row 159, XC2#5, the case
+    // below). What stays report-only is the count inside a cell that already existed.
     report.push(report_only_total_rises(
         cx,
         registered,
-        "REPORT-ONLY: a plane named in a .rs file raises the measured total and does not fail the row",
-        wire_plant(
+        "REPORT-ONLY: a plane named in a .rs file of a cell the base already has raises the \
+         measured total and does not fail the row",
+        plant(
             cx,
-            "src/names_a_plane.rs",
+            "crates/busbar-kernel/src/names_a_plane.rs",
             "pub const P: &str = \"busbar-plane-mcp\";\n",
         ),
     ));
@@ -5664,6 +5882,8 @@ mod tests {
                 .map(|(k, a, n)| (((*k).to_string(), (*a).to_string()), *n))
                 .collect(),
             how: "the planted base's files; its own vocabulary".to_string(),
+            shape_words: BTreeSet::new(),
+            presence: BTreeSet::new(),
         }
     }
 
@@ -5943,6 +6163,8 @@ mod tests {
                 .map(|r| ((r.krate.clone(), r.axis.clone()), r.count))
                 .collect(),
             how: ONE_FIVE_FIVE_HOW.to_string(),
+            shape_words: BTreeSet::new(),
+            presence: BTreeSet::new(),
         };
         let head = law0_counts_of(&[("busbar", "plane", 824), ("busbar-kernel", "plane", 12)]);
         let reg = law0_reg(&[("busbar", "plane", 824), ("busbar-kernel", "plane", 12)]);
@@ -5985,6 +6207,8 @@ mod tests {
             counts: law0_counts_of(&[("busbar", "plane", 820), ("busbar", "transport", 300)]),
             rows: BTreeMap::new(),
             how: ONE_FIVE_FIVE_HOW.to_string(),
+            shape_words: BTreeSet::new(),
+            presence: BTreeSet::new(),
         };
         let head = law0_counts_of(&[("busbar", "plane", 824), ("busbar", "transport", 208)]);
         let reg = law0_reg(&[("busbar", "plane", 824), ("busbar", "transport", 208)]);

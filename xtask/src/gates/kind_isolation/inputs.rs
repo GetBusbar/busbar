@@ -393,25 +393,40 @@ const INCLUDE_MARKERS: &[(&str, &str, &str)] = &[
 ///   variable — is an `Err`, and the caller reds on it. An input this gate cannot resolve is an
 ///   input it cannot score, and `quoted_after` took the FIRST literal, so
 ///   `concat!(env!("X"), "…")` used to resolve to a path inside the crate and be dropped.
+///
+/// `in_code` is whether the marker stands in CODE rather than in a comment or a string literal
+/// (row 159, XC2#7). There an argument this reader cannot parse at all — a raw string
+/// `include!(r"…")`, a macro metavariable `include!($p)`, a marker with no literal after it — is
+/// an `Err` like any other splice: it compiles, and nothing here can say what it opens. A marker
+/// in prose or inside a string (a build script's generated text, a test's expected output) opens
+/// nothing in this file, and keeps the old reading.
 fn include_targets(
     tail: &str,
     crate_dir: &str,
     here: &str,
     has_build_script: bool,
+    in_code: bool,
 ) -> Vec<Result<String, String>> {
+    let unread = |what: &str| -> Vec<Result<String, String>> {
+        if in_code {
+            vec![Err(what.to_string())]
+        } else {
+            Vec::new()
+        }
+    };
     let t = tail.trim_start();
     // `#[path = "…"]` — an `=` and a literal, never a call.
     let Some(rest) = t.strip_prefix('(') else {
         return match first_literal(t) {
             Some(p) => vec![Ok(resolve(here, &p))],
-            None => Vec::new(),
+            None => unread("no literal at all"),
         };
     };
     let rest = rest.trim_start();
     if rest.starts_with('"') {
         return match first_literal(rest) {
             Some(p) => vec![Ok(resolve(here, &p))],
-            None => Vec::new(),
+            None => unread("an unterminated literal"),
         };
     }
     let ident: String = rest
@@ -419,7 +434,16 @@ fn include_targets(
         .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
         .collect();
     if ident.is_empty() || !rest[ident.len()..].starts_with('!') {
-        return Vec::new();
+        let what = if rest.starts_with('$') {
+            "a macro metavariable"
+        } else if (ident == "r" || ident == "br")
+            && rest[ident.len()..].starts_with(|c| c == '"' || c == '#')
+        {
+            "a raw string"
+        } else {
+            "an argument that is no literal"
+        };
+        return unread(what);
     }
     let Some(inner) = balanced(&rest[ident.len() + 1..]) else {
         return vec![Err(format!("{ident}!(…)"))];
@@ -589,10 +613,19 @@ struct Compiled {
 /// reported whatever the reason. A `git check-ignore` hit on a compiled path is reported as well
 /// and in its own words, because that is the same hole reachable from a file nobody has to name:
 /// one line in a `.gitignore` retires a source file from every scanner in this gate at once.
+///
+/// AN INCLUDE IS IN THE COMPILED SET TOO (row 159, XC2#4). `spliced` is every `include!`,
+/// `include_str!` and `include_bytes!` in code whose target lies in a crate of the census: the
+/// compiler splices or embeds that file, so it must be in the scan the Law 0 rows read, which is
+/// every file the walker lists under `crates/` (`listed`), not only its `.rs` files. Before this,
+/// `include!("target/leak.rs")` in a kernel crate compiled a file no rule read, while the same
+/// file reached by `#[path]` was `hidden-source`.
 fn hidden_sources(
     cx: &Ctx,
     scanned: &BTreeSet<String>,
     files: &[crate::ctx::SourceFile],
+    spliced: &[Compiled],
+    listed: &BTreeSet<String>,
 ) -> Vec<String> {
     // Each file's compiled set is a pure function of its path and bytes ([`compiled_in`]): read
     // across the cores, gathered in walk order.
@@ -606,12 +639,17 @@ fn hidden_sources(
     // in this repository will ever be handed.
     let asked: Vec<String> = compiled
         .iter()
+        .chain(spliced)
         .flat_map(|c| c.candidates.iter().cloned())
         .collect();
     let ignored = cx.ignored(&asked);
 
     let mut out = Vec::new();
-    for c in &compiled {
+    let judged = compiled
+        .iter()
+        .map(|c| (c, scanned))
+        .chain(spliced.iter().map(|c| (c, listed)));
+    for (c, scanned) in judged {
         for cand in &c.candidates {
             if ignored.contains(cand) {
                 out.push(format!(
@@ -670,8 +708,156 @@ fn compiled_in(rel: &str, text: &str) -> std::sync::Arc<Vec<Compiled>> {
     built
 }
 
+/// One `path = …` an attribute writes: the line the `path` key sits on, the line the attribute
+/// closes on (where the `mod` it governs may begin), and the path — or what stood there instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PathAttr {
+    line: usize,
+    end_line: usize,
+    path: Result<String, String>,
+}
+
+/// EVERY `path = …` AN ATTRIBUTE IN CODE WRITES (row 159, XC2#7), in every spelling the compiler
+/// accepts: `#[path = "…"]`, `#[ path = "…" ]`, `# [path = "…"]`, an attribute spread over lines,
+/// and a `path = "…"` directly inside `#[cfg_attr(<predicate>, …)]`. The marker reader matched the
+/// six bytes `#[path` and nothing else, so `#[cfg_attr(all(), path = "../../busbar-plane-llm/…")]`
+/// read as a plain `mod`, and a decoy file beside it satisfied the compiled-set check.
+///
+/// The attribute is FOUND in the blanked text (a `#[path]` quoted in a comment or a string is no
+/// attribute) and its value READ off the raw text at the same character: the blanker keeps one
+/// character per character. A value that is not a string literal (`"…"`, `r"…"`, `r#"…"#`) is an
+/// `Err` carrying what stood there; the compiler accepts no other spelling, so it is refused rather
+/// than guessed at.
+fn path_attrs(text: &str) -> Vec<PathAttr> {
+    let mut lex = crate::scan::LexState::default();
+    let mut code: Vec<char> = Vec::with_capacity(text.len());
+    let mut raw: Vec<char> = Vec::with_capacity(text.len());
+    for line in text.lines() {
+        code.extend(crate::scan::blank_code(line, &mut lex).chars());
+        code.push('\n');
+        raw.extend(line.chars());
+        raw.push('\n');
+    }
+    if code.len() != raw.len() {
+        return Vec::new();
+    }
+    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let skip_ws = |mut i: usize| {
+        while code.get(i).is_some_and(|c| c.is_whitespace()) {
+            i += 1;
+        }
+        i
+    };
+    let line_of = |i: usize| code[..i].iter().filter(|c| **c == '\n').count();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    while i < code.len() {
+        if code[i] != '#' {
+            i += 1;
+            continue;
+        }
+        let open = skip_ws(i + 1);
+        if code.get(open) != Some(&'[') {
+            i += 1;
+            continue;
+        }
+        // The attribute's body, to its balanced `]` (brackets inside literals are blanked).
+        let mut depth = 0i32;
+        let mut close = None;
+        for (j, c) in code.iter().enumerate().skip(open) {
+            match c {
+                '[' => depth += 1,
+                ']' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        close = Some(j);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let Some(close) = close else {
+            break;
+        };
+        let head_at = skip_ws(open + 1);
+        let head: String = code[head_at..close]
+            .iter()
+            .take_while(|c| ident(**c))
+            .collect();
+        // Where a `path` key may stand: the head itself, or directly inside `cfg_attr(…)`.
+        let mut keys: Vec<usize> = Vec::new();
+        if head == "path" {
+            keys.push(head_at);
+        } else if head == "cfg_attr" {
+            let mut paren = 0i32;
+            for (j, c) in code
+                .iter()
+                .enumerate()
+                .take(close)
+                .skip(head_at + head.len())
+            {
+                match c {
+                    '(' => paren += 1,
+                    ')' => paren -= 1,
+                    'p' if paren == 1
+                        && code[j..close].starts_with(&['p', 'a', 't', 'h'])
+                        && !code[j - 1].is_ascii_alphanumeric()
+                        && !matches!(code[j - 1], '_' | ':')
+                        && !code.get(j + 4).is_some_and(|c| ident(*c)) =>
+                    {
+                        keys.push(j);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        for k in keys {
+            let eq = skip_ws(k + 4);
+            if code.get(eq) != Some(&'=') || code.get(eq + 1) == Some(&'=') {
+                continue;
+            }
+            let v = skip_ws(eq + 1);
+            out.push(PathAttr {
+                line: line_of(k),
+                end_line: line_of(close),
+                path: literal_at(&raw, v),
+            });
+        }
+        i = close + 1;
+    }
+    out
+}
+
+/// The string literal that opens at `at` in `raw`: `"…"` (escapes are not a path's business), or a
+/// raw `r"…"` / `r#"…"#`. Anything else is an `Err` naming what stood there.
+fn literal_at(raw: &[char], at: usize) -> Result<String, String> {
+    let rest: String = raw[at.min(raw.len())..].iter().take(200).collect();
+    let rest = rest.as_str();
+    if let Some(body) = rest.strip_prefix('"') {
+        if let Some(end) = body.find('"') {
+            return Ok(body[..end].to_string());
+        }
+    }
+    if let Some(tail) = rest.strip_prefix('r') {
+        let hashes = tail.chars().take_while(|c| *c == '#').count();
+        if let Some(body) = tail[hashes..].strip_prefix('"') {
+            let close = format!("\"{}", "#".repeat(hashes));
+            if let Some(end) = body.find(&close) {
+                return Ok(body[..end].to_string());
+            }
+        }
+    }
+    let shown: String = rest.chars().take_while(|c| *c != '\n').take(40).collect();
+    Err(format!("`path = {}`", shown.trim()))
+}
+
 fn read_compiled(rel: &str, text: &str) -> Vec<Compiled> {
     let mut compiled: Vec<Compiled> = Vec::new();
+    let attrs: BTreeMap<usize, Option<String>> = path_attrs(text)
+        .into_iter()
+        .map(|a| (a.end_line, a.path.ok()))
+        .collect();
     {
         let root_dir = module_dir(rel);
         let file_dir = dir_of(rel);
@@ -702,21 +888,24 @@ fn read_compiled(rel: &str, text: &str) -> Vec<Compiled> {
             // string literal the blanker would erase, and a `#[path = "…"]` quoted inside a comment
             // is not a declaration. `busbar-core`'s own header describes the shims it deleted in
             // exactly that shape, and reading it would have re-declared them.
-            let on_this_line = if code.contains("#[path") {
-                quoted_after(raw, "#[path").into_iter().next()
-            } else {
-                None
-            };
+            //
+            // EVERY SPELLING OF THE ATTRIBUTE (row 159, XC2#7): `#[path = …]`, `#[ path = … ]` and
+            // a `path = …` inside `#[cfg_attr(…)]`, read by [`path_attrs`] on the line the
+            // attribute closes. An attribute whose value it cannot read (`None`) compiles a file
+            // nobody can name; `rule_inputs` refuses it, and it is no plain `mod` here, so a decoy
+            // where a plain `mod` would look satisfies nothing.
+            let on_this_line: Option<Option<String>> = attrs.get(&line_no).cloned();
             let names = mod_decls(&code);
             let attr = on_this_line.clone().or_else(|| pending.clone());
             for name in &names {
                 match &attr {
+                    Some(None) => {}
                     // A `#[path]` OUTSIDE AN INLINE BLOCK IS RELATIVE TO THE FILE'S OWN DIRECTORY,
                     // and INSIDE one it is relative to the module directory — the language's rule,
                     // and the difference between reading `src/tests/auth_tests.rs` (which exists,
                     // sixty times over in this tree) and `src/auth/tests/auth_tests.rs` (which does
                     // not). A rule that got this backwards would report every one of them.
-                    Some(p) => compiled.push(Compiled {
+                    Some(Some(p)) => compiled.push(Compiled {
                         at: at.clone(),
                         how: format!("#[path = \"{p}\"] mod {name};"),
                         candidates: vec![resolve(
@@ -819,21 +1008,7 @@ fn redirect_findings(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
         if !is_cargo_toml && !is_cargo_config {
             continue;
         }
-        for (i, raw) in text.lines().enumerate() {
-            let t = raw.trim().trim_start_matches('\u{feff}');
-            let t = match t.split_once('#') {
-                Some((head, _)) => head.trim(),
-                None => t,
-            };
-            let Some(head) = t.strip_prefix('[') else {
-                continue;
-            };
-            let head = head.trim_end_matches(']').trim_start_matches('[');
-            let first = head.split('.').next().unwrap_or(head).trim();
-            if !REDIRECT_HEADS.contains(&first) {
-                continue;
-            }
-            let entry = head.trim();
+        for (i, entry) in redirect_entries(text) {
             if reg
                 .patch_allows
                 .iter()
@@ -854,10 +1029,10 @@ fn redirect_findings(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
     for a in &reg.patch_allows {
         let live = manifests.iter().any(|(rel, text)| {
             *rel == a.file
-                && text.lines().any(|l| {
+                && (text.lines().any(|l| {
                     let t = l.trim();
                     t.starts_with('[') && t.trim_matches(['[', ']']).trim() == a.entry
-                })
+                }) || redirect_entries(text).iter().any(|(_, e)| *e == a.entry))
         });
         if !live {
             out.push(format!(
@@ -868,6 +1043,137 @@ fn redirect_findings(cx: &Ctx, reg: &super::KindRegistry) -> Vec<String> {
         }
     }
     out
+}
+
+/// EVERY REDIRECT ONE CARGO FILE WRITES, as `(line index, entry)` (row 159, XC2#6).
+///
+/// Cargo reads a `[patch]`, `[replace]` or `[source]` table however TOML lets it be written, and
+/// the header-line reader saw one spelling of three: a top-level dotted key
+/// (`patch.crates-io.busbar-plane-llm = { path = "…" }`, `source.crates-io.replace-with = "x"`),
+/// an inline table (`patch = { crates-io = { … } }`) and a quoted header (`["patch".crates-io]`)
+/// all substitute a crate with no `[patch` on any line. So each line is read as TOML reads it: a
+/// header sets the table every following key lands in, and a key's full path is that table's path
+/// and its own dotted, quoted segments. A header whose first segment is a redirect table is one
+/// entry, spelled as the file spells it (so a `[[patch]]` row names it as before); a key that
+/// lands in a redirect table from OUTSIDE one is one entry, its first two segments. The raw read of
+/// the header line is kept as a second witness: a header this reader cannot parse is still a
+/// redirect when its first `.`-segment says so.
+fn redirect_entries(text: &str) -> Vec<(usize, String)> {
+    let is_head = |seg: &str| REDIRECT_HEADS.contains(&seg);
+    let mut out = Vec::new();
+    let mut table: Vec<String> = Vec::new();
+    let mut in_table = false;
+    let mut multiline: Option<&str> = None;
+    for (i, raw) in text.lines().enumerate() {
+        let t = raw.trim().trim_start_matches('\u{feff}');
+        if let Some(close) = multiline {
+            if t.matches(close).count() % 2 == 1 {
+                multiline = None;
+            }
+            continue;
+        }
+        let opens = |q: &str| t.matches(q).count() % 2 == 1;
+        let next_multiline = if opens("\"\"\"") {
+            Some("\"\"\"")
+        } else if opens("'''") {
+            Some("'''")
+        } else {
+            None
+        };
+        if t.starts_with('[') {
+            let witness = match t.split_once('#') {
+                Some((head, _)) => head.trim(),
+                None => t,
+            };
+            let head = witness
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .trim_start_matches('[');
+            let raw_first = head.split('.').next().unwrap_or(head).trim();
+            let parsed = key_path(t.trim_start_matches('[')).map(|(segs, _)| segs);
+            in_table = parsed
+                .as_ref()
+                .and_then(|segs| segs.first())
+                .is_some_and(|f| is_head(f))
+                || is_head(raw_first);
+            table = parsed.unwrap_or_default();
+            if in_table {
+                out.push((i, head.trim().to_string()));
+            }
+        } else if !in_table && !t.starts_with('#') {
+            if let Some((key, rest)) = key_path(t) {
+                if rest.starts_with('=') && !rest.starts_with("==") {
+                    let full: Vec<&String> = table.iter().chain(key.iter()).collect();
+                    if full.first().is_some_and(|f| is_head(f)) {
+                        let entry: Vec<&str> = full.iter().take(2).map(|s| s.as_str()).collect();
+                        out.push((i, entry.join(".")));
+                    }
+                }
+            }
+        }
+        multiline = next_multiline;
+    }
+    out
+}
+
+/// A TOML key path at the head of `s` — bare, `"quoted"` and `'literal'` segments joined by `.`,
+/// with the space TOML allows around each dot — and the text after it, trimmed. `None` when `s`
+/// opens with no key.
+fn key_path(s: &str) -> Option<(Vec<String>, &str)> {
+    let mut segs = Vec::new();
+    let mut rest = s.trim_start();
+    loop {
+        let (seg, after) = if let Some(r) = rest.strip_prefix('"') {
+            let end = r.find('"')?;
+            (r[..end].to_string(), &r[end + 1..])
+        } else if let Some(r) = rest.strip_prefix('\'') {
+            let end = r.find('\'')?;
+            (r[..end].to_string(), &r[end + 1..])
+        } else {
+            let n = rest
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+                .unwrap_or(rest.len());
+            if n == 0 {
+                return None;
+            }
+            (rest[..n].to_string(), &rest[n..])
+        };
+        segs.push(seg);
+        let after = after.trim_start();
+        match after.strip_prefix('.') {
+            Some(r) => rest = r.trim_start(),
+            None => return Some((segs, after)),
+        }
+    }
+}
+
+/// The finding for a path this row cannot resolve.
+fn unresolvable(rel: &str, line: usize, me: &str, marker: &str, built_with: &str) -> String {
+    format!(
+        "unresolvable-include\t{rel}:{line}\t{me} builds a `{marker}` path with `{built_with}`, \
+         which this gate cannot resolve. An input it cannot resolve is an input it cannot score, \
+         and the first literal inside a splice is not the path. Write the path, or splice it from \
+         `env!(\"CARGO_MANIFEST_DIR\")`, which resolves to this crate's own directory and IS \
+         scored. {MAKE_A_NEW_KIND}"
+    )
+}
+
+/// The finding for a source file reaching another crate's file with no dependency edge.
+fn reach(
+    label: &str,
+    rel: &str,
+    line: usize,
+    me: &str,
+    what: &str,
+    target: &str,
+    theirs: &str,
+) -> String {
+    format!(
+        "{label}\t{rel}:{line}\t{me} is {what} `{target}` — {theirs}'s own source, and {me} \
+         declares no dependency on it in any table. A crate reaches another crate through Cargo, \
+         where the edge is written down and scored; reading its files compiles it in with no edge \
+         to score. {MAKE_A_NEW_KIND}"
+    )
 }
 
 pub fn rule_inputs(
@@ -900,6 +1206,7 @@ pub fn rule_inputs(
         .filter(|r| r.ends_with("/build.rs"))
         .collect();
     let mut scanned = 0usize;
+    let mut spliced: Vec<Compiled> = Vec::new();
     for f in &files {
         let rel = f.rel_str();
         let Some(dir) = owning_dir(&rel) else {
@@ -911,16 +1218,24 @@ pub fn rule_inputs(
         scanned += 1;
         let here = dir_of(&rel);
         let mut line_start = 0usize;
+        let mut lex = crate::scan::LexState::default();
         for (line_no, raw) in f.text.lines().enumerate() {
             // THE ATTRIBUTE IS READ OFF THE RAW LINE. `blank_literals` would erase the very string
             // this rule is about — which is exactly why `#[path]` was invisible to `:vocab`.
             if rel.ends_with("build.rs") {
                 offenders.extend(build_script_reach(&by_dir, me, &here, &rel, line_no, raw));
             }
+            let code = crate::scan::blank_code(raw, &mut lex);
             for (marker, label, what) in INCLUDE_MARKERS {
                 let mut cut = 0usize;
                 while let Some(p) = raw[cut..].find(marker) {
                     let at = line_start + cut + p + marker.len();
+                    // IN CODE, OR IN A COMMENT OR A LITERAL: the blanker keeps one char per char.
+                    let in_code = code
+                        .chars()
+                        .skip(raw[..cut + p].chars().count())
+                        .take(marker.chars().count())
+                        .eq(marker.chars());
                     cut += p + marker.len();
                     // THE ARGUMENT, NOT THE REST OF THE FILE. Far enough to cross the two or three
                     // lines a wrapped `concat!(` spans, and no further, so a marker that carries no
@@ -930,7 +1245,7 @@ pub fn rule_inputs(
                         .unwrap_or(f.text.len());
                     let has_build_script = build_scripts.contains(&format!("{}/build.rs", me.dir));
                     for target in
-                        include_targets(&f.text[at..end], &me.dir, &here, has_build_script)
+                        include_targets(&f.text[at..end], &me.dir, &here, has_build_script, in_code)
                     {
                         // A PATH THIS GATE CANNOT RESOLVE IS RED, NOT SKIPPED. Splicing is not a
                         // spelling this row is allowed to read past: an input it cannot resolve is
@@ -940,38 +1255,69 @@ pub fn rule_inputs(
                         let target = match target {
                             Ok(t) => t,
                             Err(built_with) => {
-                                offenders.push(format!(
-                                    "unresolvable-include\t{rel}:{}\t{} builds a `{marker}` path \
-                                     with `{built_with}`, which this gate cannot resolve. An input \
-                                     it cannot resolve is an input it cannot score, and the first \
-                                     literal inside a splice is not the path. Write the path, or \
-                                     splice it from `env!(\"CARGO_MANIFEST_DIR\")`, which resolves \
-                                     to this crate's own directory and IS scored. \
-                                     {MAKE_A_NEW_KIND}",
+                                offenders.push(unresolvable(
+                                    &rel,
                                     line_no + 1,
-                                    me.name
+                                    &me.name,
+                                    marker,
+                                    &built_with,
                                 ));
                                 continue;
                             }
                         };
+                        // `OUT_DIR` is the build script's output, scored by `build_script_reach`.
+                        if in_code
+                            && *marker != "#[path"
+                            && by_dir.keys().any(|d| inside(d, &target))
+                            && !target.starts_with(&format!("{}/OUT_DIR/", me.dir))
+                        {
+                            spliced.push(Compiled {
+                                at: format!("{rel}:{}", line_no + 1),
+                                how: format!("{marker}(\"{target}\")"),
+                                candidates: vec![target.clone()],
+                            });
+                        }
                         let Some(theirs) = foreign_owner(&by_dir, me, &target) else {
                             continue;
                         };
-                        offenders.push(format!(
-                            "{label}\t{rel}:{}\t{} is {what} `{target}` — {}'s own source, and {} \
-                             declares no dependency on it in any table. A crate reaches another \
-                             crate through Cargo, where the edge is written down and scored; \
-                             reading its files compiles it in with no edge to score. \
-                             {MAKE_A_NEW_KIND}",
+                        offenders.push(reach(
+                            label,
+                            &rel,
                             line_no + 1,
-                            me.name,
-                            theirs.name,
-                            me.name
+                            &me.name,
+                            what,
+                            &target,
+                            &theirs.name,
                         ));
                     }
                 }
             }
             line_start += raw.len() + 1;
+        }
+        // EVERY SPELLING OF `path = …` (row 159, XC2#7): `#[ path = … ]` and `#[cfg_attr(…, path =
+        // …)]` reach another crate's source exactly as `#[path = …]` does, and a value no reader
+        // can name is refused. A plain `#[path = …]` is also read by the marker loop above; the
+        // two findings are one line and the list is de-duplicated below.
+        for a in path_attrs(&f.text) {
+            match a.path {
+                Err(what) => {
+                    offenders.push(unresolvable(&rel, a.line + 1, &me.name, "#[path", &what))
+                }
+                Ok(p) => {
+                    let target = resolve(&here, &p);
+                    if let Some(theirs) = foreign_owner(&by_dir, me, &target) {
+                        offenders.push(reach(
+                            "path-include",
+                            &rel,
+                            a.line + 1,
+                            &me.name,
+                            "a module compiled from",
+                            &target,
+                            &theirs.name,
+                        ));
+                    }
+                }
+            }
         }
     }
     if scanned == 0 {
@@ -985,7 +1331,20 @@ pub fn rule_inputs(
 
     // ── 1b. THE COMPILED SET IS THE SCANNED SET ──────────────────────────────────────────────────
     let scan_set: BTreeSet<String> = files.iter().map(|f| f.rel_str()).collect();
-    offenders.extend(hidden_sources(cx, &scan_set, &files));
+    let listed: BTreeSet<String> = match cx.list(&WalkSpec::new(["crates"])) {
+        Ok(all) => all
+            .iter()
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .collect(),
+        Err(e) => {
+            offenders.push(format!(
+                "hidden-source\tcrates\t{e} — the listing every included file is held to did not \
+                 run, and an include held to nothing is an include nobody read."
+            ));
+            BTreeSet::new()
+        }
+    };
+    offenders.extend(hidden_sources(cx, &scan_set, &files, &spliced, &listed));
 
     // ── 2 and 5. THE PATHS AND THE NAMES A MANIFEST WRITES ───────────────────────────────────────
     for c in crates {

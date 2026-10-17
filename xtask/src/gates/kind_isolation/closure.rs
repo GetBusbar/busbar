@@ -52,9 +52,10 @@
 //! subprocess that fails, or resolves nothing, hands back an empty graph, which satisfies every
 //! dependency ban vacuously. So the reader is the claim, cargo is the CHECK ON the claim, an
 //! unreadable `cargo metadata` is RED rather than silent, and a graph smaller than the census is
-//! RED rather than clean. The corroboration is not asked of an overlaid tree, for the one reason
-//! that matters: an overlaid tree is not the tree cargo resolved, so a disagreement there is a
-//! fact about the plant and not about the wall.
+//! RED rather than clean. The corroboration is not asked of a PLANTED tree, for the one reason
+//! that matters: a planted tree is not the tree cargo resolved, so a disagreement there is a fact
+//! about the plant and not about the wall. The pinned checkouts laid beneath every run
+//! ([`super::pinned`]) are not a plant: cargo resolved them, so the tree they make IS asked.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -197,8 +198,12 @@ fn switches(features: &BTreeMap<String, Vec<String>>, key: &str, pkg: &str) -> V
 /// which is the array #40(a)'s own sentence points at. `resolve.nodes` is a different and narrower
 /// answer — the graph under the DEFAULT feature set — and reading it as if it were the closure is
 /// how an optional breach becomes invisible.
+///
+/// EVERY FEATURE ON, as the census reads every declared edge and as the pinned mount resolves its
+/// packages ([`super::pinned`]): a plugin the root links only behind a default-off feature is no
+/// package of the default resolution, and the census would carry a crate cargo does not.
 fn cargo_graph(cx: &Ctx) -> Result<BTreeMap<String, BTreeSet<String>>, String> {
-    graph_from_metadata(&cx.cargo_metadata("Cargo.toml")?)
+    graph_from_metadata(&cx.cargo_metadata_all_features("Cargo.toml")?)
 }
 
 /// The reading half of [`cargo_graph`], with the subprocess taken out so the member check and the
@@ -396,9 +401,11 @@ pub fn rule_closure(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     let census_crates = census.len();
 
     // THE CORROBORATION. See this module's own note for why cargo is the check and not the claim,
-    // and why an overlaid tree is not asked.
-    let mut corroborated = "not asked (the tree is overlaid)".to_string();
-    if cx.overlay().is_none() {
+    // and why a PLANTED tree is not asked. The pinned mount is not a plant (row 159, XC2#3): every
+    // production run reads the tree through it, so "overlaid" was "never", and cargo resolves the
+    // pinned packages from the same git sources the mount laid down.
+    let mut corroborated = "not asked (a planted tree, which cargo cannot read)".to_string();
+    if !super::pinned::is_planted(cx) {
         match cargo_graph(cx) {
             Ok(cargo) => {
                 let known: BTreeSet<&str> = census.keys().map(String::as_str).collect();
