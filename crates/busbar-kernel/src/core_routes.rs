@@ -123,22 +123,16 @@ impl CoreRouteTable {
     }
 
     /// Whether a door plane flags `path` a SIGNED path (`abi::plane::CLAIM_SIGNED_INGRESS`; ARCHITECT
-    /// ruling 2026-10-16, 3b A): some claim of a door plane, whatever its verb, whose guest-line path
-    /// `path` matches. Looked up by path alone, so a signed request with a verb no claim takes is
-    /// verified first and then answered the method refusal.
+    /// ruling 2026-10-16, 3b A): some raw-affix claim of a door plane (`abi::plane::CLAIM_RAW_AFFIX`,
+    /// ARCHITECT ruling 2026-10-17), whatever its verb, whose prefix and suffix the raw `path` starts
+    /// and ends with, as bytes. Looked up by path alone, so a signed request with a verb no claim
+    /// takes is verified first and then answered the method refusal.
     pub(crate) fn signed_ingress(&self, path: &str) -> bool {
-        use busbar_contract::abi::transport::route::{path_matches, PATH_EXACT, PATH_PATTERN};
+        use busbar_contract::abi::plane::check::raw_affix_matches;
         self.door_refusals
             .iter()
             .flat_map(|r| r.signed_ingress.iter())
-            .any(|p| {
-                let form = if p.contains('{') {
-                    PATH_PATTERN
-                } else {
-                    PATH_EXACT
-                };
-                path_matches(form, p, path)
-            })
+            .any(|target| raw_affix_matches(target, path))
     }
 
     /// Every declared route, in mount order. The enumeration a router-walking test iterates so a

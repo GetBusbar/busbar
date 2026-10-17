@@ -626,21 +626,26 @@ fn the_plane_declares_its_published_key_and_is_the_fallback() {
     assert_eq!(kinds, vec![b"pool".as_slice()]);
 }
 
-/// THE SIGNED PATHS ARE THE PREVIOUS RELEASE'S (ARCHITECT ruling 2026-10-16, 3b A): the claims the
-/// door flags `CLAIM_SIGNED_INGRESS`, matched by the guest list's path grammar, name exactly the
-/// paths 1.5.5 put through the signed-request pre-step (the signing dialect's residual rule, its own
-/// codec declaration) — an unencoded inference-profile ARN, which carries a raw `/`, and an encoded
-/// one alike — and no other: the dialect's invoke surfaces and every other dialect's paths sign
-/// nothing. RED arm: a `{id}` placeholder misses the unencoded ARN; a `/model` subtree flag signs
-/// invoke.
+/// THE SIGNED PATHS ARE THE PREVIOUS RELEASE'S (ARCHITECT rulings 2026-10-16, 3b A, and
+/// 2026-10-17): the raw-affix claims the door flags `CLAIM_SIGNED_INGRESS`, matched against the raw
+/// path, name exactly the paths 1.5.5 put through the signed-request pre-step (the signing dialect's
+/// residual rule, its own codec declaration) — an unencoded inference-profile ARN, which carries a
+/// raw `/`, and an encoded one alike, and the odd paths as 1.5.5 judged them (no identifier, an
+/// empty segment: signed; a trailing `/`, a leading `//`: not) — and no other: the dialect's invoke
+/// surfaces and every other dialect's paths sign nothing. RED arms: the trailing `/` and the
+/// leading `//`, which a segment grammar signs; invoke, which a `/model` subtree flag signs.
 #[test]
 fn the_signed_claims_name_the_paths_the_previous_release_signed() {
-    use busbar_contract::abi::plane::CLAIM_SIGNED_INGRESS;
-    use busbar_contract::abi::transport::route::{path_matches, PATH_PATTERN};
+    use busbar_contract::abi::plane::check::raw_affix_matches;
+    use busbar_contract::abi::plane::{CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS};
     let signed: Vec<_> = claims()
         .into_iter()
         .filter(|c| c.flags & CLAIM_SIGNED_INGRESS != 0)
         .collect();
+    assert!(
+        signed.iter().all(|c| c.flags & CLAIM_RAW_AFFIX != 0),
+        "every signed claim is a raw affix"
+    );
     assert!(!signed.is_empty(), "the door flags its signed paths");
     let rule = busbar_plane_llm::codec::DECLS
         .iter()
@@ -664,10 +669,25 @@ fn the_signed_claims_name_the_paths_the_previous_release_signed() {
         "/v1/chat/completions".to_string(),
         "/v1beta/models/m:generateContent".to_string(),
         "/x/model/m/converse".to_string(),
+        // The odd paths, each as 1.5.5 judged it.
+        "/model/converse".to_string(),
+        "/model/converse-stream".to_string(),
+        "/model//converse".to_string(),
+        "/model/m/converse/".to_string(),
+        "//model/m/converse".to_string(),
     ] {
-        let by_claims = signed
-            .iter()
-            .any(|c| path_matches(PATH_PATTERN, &c.target, &path));
+        let by_claims = signed.iter().any(|c| raw_affix_matches(&c.target, &path));
         assert_eq!(by_claims, rule(&path).is_some(), "{path}");
+    }
+    // The odd paths, written down as 1.5.5 answered them rather than read off the rule.
+    for (path, was_signed) in [
+        ("/model/converse", true),
+        ("/model/converse-stream", true),
+        ("/model//converse", true),
+        ("/model/m/converse/", false),
+        ("//model/m/converse", false),
+    ] {
+        let by_claims = signed.iter().any(|c| raw_affix_matches(&c.target, path));
+        assert_eq!(by_claims, was_signed, "{path}");
     }
 }
