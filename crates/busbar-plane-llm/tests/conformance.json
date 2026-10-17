@@ -134,6 +134,14 @@
       ],
       [
         "GET",
+        "/v1/models"
+      ],
+      [
+        "GET",
+        "/v1beta/models"
+      ],
+      [
+        "GET",
         "/"
       ],
       [
@@ -181,6 +189,14 @@
       [
         "POST",
         "/v1/models"
+      ],
+      [
+        "GET",
+        "/v1/models"
+      ],
+      [
+        "GET",
+        "/v1beta/models"
       ],
       [
         "GET",
