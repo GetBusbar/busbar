@@ -1313,7 +1313,8 @@ impl Storage for SharedStorage {
         })
         .await?;
         let mut removed = 0u64;
-        for client in s.client_of("fam", family_id).await? {
+        // A family is minted for one client: its index names that one.
+        if let Some(client) = s.client_of("fam", family_id).await? {
             removed += s
                 .update(&client, |b| {
                     let before = b.tokens.len() + b.refresh.len();
