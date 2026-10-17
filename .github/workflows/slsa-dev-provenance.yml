@@ -18,7 +18,8 @@
 #
 # THE GENERATOR IS REFERENCED BY TAG. slsa-verifier trusts the generic generator only under its
 # builder id `.../generator_generic_slsa3.yml@refs/tags/vX.Y.Z`; a workflow called by sha mints
-# provenance it refuses. v2.1.0 is commit f7dd8c54c2067bafc12ca7a55595d5ee9b75204a.
+# provenance it refuses. v2.1.0 is commit f7dd8c54c2067bafc12ca7a55595d5ee9b75204a, stated as the
+# call's trailing comment and held to that by workflow-rules R14's one tag-pinned entry.
 #
 # SECRET: `BUSBAR_DEV_BIN_TOKEN`, a token with contents:write on GetBusbar/busbar-release (the
 # owner sets it); it is used by `publish` alone.
@@ -87,7 +88,7 @@ jobs:
       actions: read
       id-token: write
       contents: write
-    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0 # f7dd8c54c2067bafc12ca7a55595d5ee9b75204a
     with:
       base64-subjects: ${{ needs.hashes.outputs.subjects }}
       provenance-name: busbar-linux-${{ github.sha }}.intoto.jsonl
