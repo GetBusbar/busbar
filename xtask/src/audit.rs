@@ -23,7 +23,10 @@
 //!    nothing is `unconfirmed`, which is not a pass. The rounds list is APPEND-ONLY; `record` never
 //!    edits or replaces a round, and `sync` carries the list across verbatim. An auditor is
 //!    identified by [`auditor_identity`], not by the bytes typed: `alice`, `alice ` and `Alice` are
-//!    ONE reader, and the two rounds must also be two DIFFERENT rounds.
+//!    ONE reader, and the two rounds must also be two DIFFERENT rounds. `--check` states its floor
+//!    over this: every production scope `clean`, over a denominator that is not empty, and it is
+//!    red below it. The excuse list and each scope's `kind`/`paths`/`exclude` are held to what the
+//!    source derives, so neither the floor's denominator nor a clean scope's files move by hand.
 //! 4. **`fixed` IS NOT SELF-CERTIFYING.** Stamping a fix re-hashes the scope to the fix commit, so
 //!    the fixer's own pre-fix zero rounds cannot match the new hash — and a scope whose recorded
 //!    HIGH or MEDIUM count is non-zero stays RED until SOMEBODY ELSE records a confirming zero round
@@ -33,10 +36,12 @@
 //!    `counts` that is not an object, an unknown severity, a negative or boolean count — each is
 //!    `invalid`, and `invalid` can never fall through to `clean`. Every ROUND is held to the same
 //!    bar as the record it belongs to, and the top-level record must BE the last round.
-//! 6. **A RECORDED FINDING DOES NOT EXPIRE BECAUSE A LATER ROUND SAID `in_progress`.** The decisive
-//!    record about a tree is the latest round that REACHED A VERDICT — `zero` or `findings`. A round
-//!    that is merely running cannot outrank one that finished, so `record --result in_progress`
-//!    cannot take a scope off the worklist or out of `--check`.
+//! 6. **A RECORDED FINDING STANDS UNTIL IT IS ANSWERED.** A `findings` round is answered by a fix
+//!    stamp, or by two zero rounds after it at one tree from two auditors who are neither each other
+//!    nor the one who found it ([`open_findings`]). Nothing less answers it: not a round that is
+//!    merely running (`in_progress`), not an `unaudited` note, and not ONE zero, which is a
+//!    disagreement rather than a closure. So none of them can take a scope off the worklist, out of
+//!    `--check`, or out of the register through `sync`.
 //! 7. **A TREE THAT CANNOT BE PRODUCED IS NOT A TREE THAT MATCHED.** When git cannot resolve the
 //!    commit a record names, the anti-forgery rule is RED, never silent — see [`audited_tree_hash`].
 
@@ -131,7 +136,8 @@ const REGISTER_COMMENT: [&str; 6] = [
 ///
 /// This is a CONSTANT, not a read of the committed file, and `sync --write` regenerates the file's
 /// copy from it. That is what makes an excuse a source edit somebody reviews rather than a line
-/// somebody adds to a JSON file. `xtask/tests/readers.rs` pins it against the committed array.
+/// somebody adds to a JSON file. `ledger --check` holds the committed array to it entry for entry
+/// ([`excuse_drift`]) and is red on any difference.
 pub const UNCOVERED_BY_DESIGN: &[(&str, &str)] = &[
     (
         "crates/*/Cargo.toml",
@@ -1102,46 +1108,63 @@ pub fn confirmed(sc: &Json, current_hash: Option<&str>) -> bool {
     })
 }
 
-/// The latest round that REACHED A VERDICT about the current tree — `zero` or `findings`.
+/// Whether a zero-round pair after it ANSWERS the finding `found`; `after` is the rounds that
+/// follow `found` in the list.
 ///
-/// `in_progress` and `unaudited` are not verdicts, they are notes that a reading is or is not
-/// happening, and a note cannot outrank a finding. Without this, `record --result in_progress` over
-/// a recorded HIGH finding erased it from every red rule and from the worklist at once.
-pub fn decisive_round<'a>(sc: &'a Json, current_hash: Option<&str>) -> Option<&'a Json> {
-    sc.get("rounds").as_array()?.iter().rev().find(|r| {
-        matches!(r.get("result").as_str(), Some("zero" | "findings"))
-            && r.get("tree_hash").as_str() == current_hash
+/// A finding is answered by two zero rounds that follow it AT ONE TREE, read by two auditors who
+/// are neither each other nor the auditor who found it, under two different round numbers. The
+/// tree is the finding's own or one the code has moved to since: either way two independent
+/// readers looked at one set of bytes after the finding and found nothing, which is the bar
+/// `clean` is held to (property 3). Anything less is a disagreement, not an answer. One zero at the
+/// same tree used to be read as the newest verdict and erased the finding outright, and the
+/// finder's own zero used to count as one of the two.
+fn answered(found: &Json, after: &[Json]) -> bool {
+    let finder = auditor_identity(found.get("auditor"));
+    let zeros: Vec<(&str, String, i64)> = after
+        .iter()
+        .filter(|r| r.get("result").as_str() == Some("zero"))
+        .filter_map(|r| {
+            let hash = r.get("tree_hash").as_str()?;
+            let who = auditor_identity(r.get("auditor"))?;
+            let round = r.get("round").as_i64()?;
+            (Some(&who) != finder.as_ref()).then_some((hash, who, round))
+        })
+        .collect();
+    zeros.iter().enumerate().any(|(i, a)| {
+        zeros[i + 1..]
+            .iter()
+            .any(|b| a.0 == b.0 && a.1 != b.1 && a.2 != b.2)
     })
 }
 
-/// The findings that STAND against the current tree with no fix stamped, as the record that carries
-/// their counts.
+/// The findings that STAND with no fix stamped, as the record that carries their counts.
 ///
-/// Three rungs, most specific first: the latest round that reached a verdict about THIS tree; the
-/// latest round that reached a verdict about ANY tree; the scope's own record. Each rung is a
-/// weaker claim than the one above it, and the status the caller derives weakens with it — the
-/// first is `open`, the other two are `stale`.
-pub fn open_findings<'a>(sc: &'a Json, current_hash: Option<&str>) -> Option<&'a Json> {
+/// A `findings` round stands until a fix is stamped (`fixed_at`) or it is [`answered`]: two zero
+/// rounds after it at one tree, from two auditors other than its own. The newest round that stands
+/// is returned. Whether a finding stands does not depend on the tree in front of us, only on what
+/// was read after it; the caller's status says where it stands (`open` while the scope's record is
+/// at the current tree, `stale` once the tree has moved, both red at HIGH/MEDIUM). An
+/// `in_progress` or `unaudited` note answers nothing, and neither does a single zero, so none of
+/// them can take a finding off the worklist, out of `--check`, or out of the register through
+/// `sync`.
+///
+/// A register with no round that reached a verdict (`zero` or `findings`) falls back to the
+/// scope's own record, which still says `findings` when it says it.
+pub fn open_findings(sc: &Json) -> Option<&Json> {
     if sc.get("fixed_at").truthy() {
         return None;
     }
-    if let Some(round) = decisive_round(sc, current_hash) {
-        return (round.get("result").as_str() == Some("findings")).then_some(round);
+    if let Some(rounds) = sc.get("rounds").as_array() {
+        let verdicts = rounds
+            .iter()
+            .any(|r| matches!(r.get("result").as_str(), Some("zero" | "findings")));
+        if verdicts {
+            return rounds.iter().enumerate().rev().find_map(|(i, r)| {
+                (r.get("result").as_str() == Some("findings") && !answered(r, &rounds[i + 1..]))
+                    .then_some(r)
+            });
+        }
     }
-    // NO ROUND REACHED A VERDICT ABOUT THIS TREE, so fall back to the latest verdict about ANY
-    // tree. A finding recorded against an older tree has not been answered just because the tree
-    // moved and a later `in_progress` note landed on top of it; it reads `stale`, which is a red
-    // status, rather than vanishing. Without this, eight `findings`-then-`in_progress` scopes whose
-    // trees had since moved stayed hidden from `--check` behind the top-level note.
-    if let Some(round) = sc.get("rounds").as_array().and_then(|rs| {
-        rs.iter()
-            .rev()
-            .find(|r| matches!(r.get("result").as_str(), Some("zero" | "findings")))
-    }) {
-        return (round.get("result").as_str() == Some("findings")).then_some(round);
-    }
-    // No round reached a verdict at all: the scope's own record is all there is, and when it says
-    // `findings` it is still saying it — including when the tree has since moved (`stale`).
     (sc.get("result").as_str() == Some("findings")).then_some(sc)
 }
 
@@ -1156,7 +1179,7 @@ pub fn status_of(sc: &Json, current_hash: Option<&str>) -> &'static str {
     // A STANDING FINDING SURVIVES A LATER `unaudited` OR `in_progress` RECORD. Both of those are
     // writable by `record`, and either one would otherwise return the scope to "never audited" or
     // "somebody is on it" over findings nobody fixed.
-    let open = open_findings(sc, current_hash).is_some();
+    let open = open_findings(sc).is_some();
     if !open && (result == "unaudited" || sc.get("audited_at").as_str().is_none()) {
         return "unaudited";
     }
@@ -1405,8 +1428,9 @@ pub fn coverage_gaps(doc: &Json, all: &BTreeMap<String, String>) -> Vec<String> 
             }
         }
     }
-    // THE EXCUSES COME FROM THE FILE, not from the constant. `--check` judges the register that is
-    // committed; `sync --write` is what regenerates the list from source.
+    // THE EXCUSES COME FROM THE FILE, not from the constant: this answers what the committed
+    // register claims. Whether the file's list IS the constant is a separate red of its own
+    // (`excuse_drift`), so a hand-added excuse cannot reach this line unchallenged.
     let excused: Vec<String> = doc
         .get("uncovered_by_design")
         .as_array()
@@ -1420,6 +1444,116 @@ pub fn coverage_gaps(doc: &Json, all: &BTreeMap<String, String>) -> Vec<String> 
         .filter(|p| !owned.contains(p) && !excused.iter().any(|g| glob_match(p, g)))
         .cloned()
         .collect()
+}
+
+/// Every way the register's `uncovered_by_design` differs from [`UNCOVERED_BY_DESIGN`].
+///
+/// AN EXCUSE IS A SOURCE EDIT, NOT A JSON EDIT. [`coverage_gaps`] reads the committed list, so a
+/// glob added to the file by hand excused a new file from every scope with nothing red. The list
+/// the file carries must be the list the source grants: the same globs, the same reasons, in the
+/// same order. `sync --write` writes exactly that.
+pub fn excuse_drift(doc: &Json) -> Vec<String> {
+    let granted: Vec<(String, String)> = UNCOVERED_BY_DESIGN
+        .iter()
+        .map(|(g, r)| ((*g).to_string(), (*r).to_string()))
+        .collect();
+    let Some(list) = doc.get("uncovered_by_design").as_array() else {
+        return vec![format!(
+            "uncovered_by_design is {}, want the {} excuse(s) xtask/src/audit.rs grants",
+            json_lite::py_type_name(doc.get("uncovered_by_design")),
+            granted.len()
+        )];
+    };
+    let mut bad = Vec::new();
+    let mut carried: Vec<(String, String)> = Vec::new();
+    for (i, e) in list.iter().enumerate() {
+        match (e.get("glob").as_str(), e.get("reason").as_str()) {
+            (Some(g), Some(r)) if e.as_object().is_some_and(|o| o.len() == 2) => {
+                carried.push((g.to_string(), r.to_string()));
+            }
+            _ => bad.push(format!(
+                "uncovered_by_design[{i}] is {}, want {{glob, reason}}",
+                json_lite::py_repr_json(e)
+            )),
+        }
+    }
+    for (g, r) in &carried {
+        match granted.iter().find(|(gg, _)| gg == g) {
+            None => bad.push(format!(
+                "`{g}` ({r}) is excused in the register but granted by no entry of \
+                 UNCOVERED_BY_DESIGN"
+            )),
+            Some((_, rr)) if rr != r => bad.push(format!(
+                "`{g}` carries the reason {} in the register, but the source grants it for {}",
+                json_lite::py_repr(r),
+                json_lite::py_repr(rr)
+            )),
+            Some(_) => {}
+        }
+    }
+    for (g, _) in &granted {
+        if !carried.iter().any(|(cg, _)| cg == g) {
+            bad.push(format!(
+                "`{g}` is granted by UNCOVERED_BY_DESIGN but missing from the register"
+            ));
+        }
+    }
+    if bad.is_empty() && carried != granted {
+        bad.push(
+            "the register's excuses are the source's but not in its order, or one is listed twice"
+                .to_string(),
+        );
+    }
+    bad
+}
+
+/// Every register scope whose SHAPE is not the shape the tree derives: its `kind`, its `paths` or
+/// its `exclude` differ from [`derive_scopes`]'s scope of the same id, or the tree derives no scope
+/// of that id at all.
+///
+/// A SHAPE IS DERIVED, NOT KEPT. `exclude` decides which files a scope's hash is over, so a path
+/// added to it by hand takes a file out of a `clean` scope without moving the hash; `kind` decides
+/// whether a scope counts towards the production floor. `sync --write` writes the derived shape and
+/// `move` carries records onto it, so a register that differs was edited by hand.
+pub fn shape_drift(doc: &Json, derived: &[Json]) -> Vec<String> {
+    let mut bad = Vec::new();
+    for sc in doc.get("scopes").as_array().unwrap_or(&[]) {
+        let id = sc.get("id").as_str().unwrap_or("<no id>");
+        let Some(d) = derived.iter().find(|d| d.get("id").as_str() == Some(id)) else {
+            bad.push(format!(
+                "{id}  is not a scope this tree derives (`sync --write` derives the scope list)"
+            ));
+            continue;
+        };
+        if sc.get("kind") != d.get("kind") {
+            bad.push(format!(
+                "{id}  kind is {}, the tree derives {}",
+                json_lite::py_repr_json(sc.get("kind")),
+                json_lite::py_repr_json(d.get("kind"))
+            ));
+        }
+        if sc.get("paths") != d.get("paths") {
+            bad.push(format!(
+                "{id}  paths are {}, the tree derives {}",
+                json_lite::py_repr_json(sc.get("paths")),
+                json_lite::py_repr_json(d.get("paths"))
+            ));
+        }
+        // A derived scope carries `exclude` only when it is non-empty, so an absent key and an
+        // empty array are one shape; anything else must be the derived list exactly.
+        let want = d.get("exclude");
+        let have = sc.get("exclude");
+        let same = have == want
+            || (matches!(want, Json::Null) && have.as_array().is_some_and(<[Json]>::is_empty));
+        if !same {
+            bad.push(format!(
+                "{id}  exclude is {}, the tree derives {}",
+                json_lite::py_repr_json(have),
+                json_lite::py_repr_json(want)
+            ));
+        }
+    }
+    bad
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1840,7 +1974,7 @@ mod tests {
                  ]}}"#
         ));
         assert_eq!(status_of(&sc, Some(HASH)), "open");
-        let found = open_findings(&sc, Some(HASH)).expect("the finding still stands");
+        let found = open_findings(&sc).expect("the finding still stands");
         assert_eq!(found.get("counts").get("HIGH").as_i64(), Some(1));
         assert_eq!(found.get("round").as_i64(), Some(5));
     }
@@ -1859,15 +1993,16 @@ mod tests {
                  ]}}"#
         ));
         assert_eq!(status_of(&sc, Some(HASH)), "stale");
-        let found = open_findings(&sc, Some(HASH)).expect("nobody answered the finding");
+        let found = open_findings(&sc).expect("nobody answered the finding");
         assert_eq!(found.get("counts").get("HIGH").as_i64(), Some(1));
     }
 
-    /// A LATER `zero` IS a verdict, and it DOES supersede the finding. The fallback must not
-    /// resurrect a finding somebody has since re-read and closed.
+    /// A `zero` AFTER THE FINDING IS a verdict, but ONE of them is a disagreement, not an answer (XA1#1). Two
+    /// zero rounds from two other auditors at one tree DO supersede the finding, and the fallback
+    /// must not resurrect a finding that has been answered that way.
     #[test]
-    fn a_later_zero_round_does_supersede_the_finding() {
-        let sc = scope(&format!(
+    fn a_zero_round_pair_after_it_does_supersede_the_finding() {
+        let one = scope(&format!(
             r#"{{"round": 6, "result": "zero", "counts": {{}}, "audited_at": "c0",
                  "tree_hash": "{HASH}", "rounds": [
                    {{"round": 5, "result": "findings", "tree_hash": "{OLD}",
@@ -1875,8 +2010,20 @@ mod tests {
                    {{"round": 6, "result": "zero", "auditor": "alice", "tree_hash": "{HASH}"}}
                  ]}}"#
         ));
-        assert_eq!(open_findings(&sc, Some(HASH)), None);
-        assert_eq!(status_of(&sc, Some(HASH)), "unconfirmed");
+        assert!(open_findings(&one).is_some(), "one zero answers nothing");
+        assert_eq!(status_of(&one, Some(HASH)), "open");
+
+        let two = scope(&format!(
+            r#"{{"round": 7, "result": "zero", "counts": {{}}, "audited_at": "c0",
+                 "auditor": "bob", "tree_hash": "{HASH}", "rounds": [
+                   {{"round": 5, "result": "findings", "tree_hash": "{OLD}",
+                     "counts": {{"HIGH": 1}}}},
+                   {{"round": 6, "result": "zero", "auditor": "alice", "tree_hash": "{HASH}"}},
+                   {{"round": 7, "result": "zero", "auditor": "bob", "tree_hash": "{HASH}"}}
+                 ]}}"#
+        ));
+        assert_eq!(open_findings(&two), None);
+        assert_eq!(status_of(&two, Some(HASH)), "clean");
     }
 
     /// `unaudited` IS A NOTE TOO. Recording it over a finding must not return the scope to "never
@@ -1905,7 +2052,7 @@ mod tests {
                      "counts": {{"HIGH": 1}}}}
                  ]}}"#
         ));
-        assert_eq!(open_findings(&sc, Some(HASH)), None);
+        assert_eq!(open_findings(&sc), None);
         assert_eq!(status_of(&sc, Some(HASH)), "fixed");
     }
 
@@ -1917,3 +2064,7 @@ mod tests {
         assert_eq!(status_of(&sc, Some(HASH)), "invalid");
     }
 }
+
+#[cfg(test)]
+#[path = "tests/audit_rules_tests.rs"]
+mod rules_tests;
