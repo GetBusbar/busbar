@@ -44,7 +44,7 @@ const ADMIN_PATH_PREFIX: &str = "/api/";
 /// ([`crate::governance::GovState::credential_secret`]): the verifying auth plugin still runs its
 /// full verification over it, so the timing is indistinguishable from a bad-signature rejection
 /// (no identifier-enumeration oracle).
-pub const DUMMY_SECRET: &str = "AWS4-DUMMY-SECRET-FOR-CONSTANT-TIME-REJECT-PATH";
+pub const DUMMY_SECRET: &str = "busbar-dummy-secret-for-the-constant-time-reject-path";
 
 // The UPSTREAM-credential mode (`upstream_credentials:`) now lives in the neutral contracts crate
 // so a plane names it without reaching into busbar-core; re-exported here so every
@@ -129,6 +129,9 @@ pub struct AuthMiddleware {
     /// stating `FACT_DEFAULT_INBOUND_STYLE`, in its Statement's order, read on every line the
     /// operator's config leaves without a style. Opaque words: the kernel names none of them.
     carriers: Vec<HeaderName>,
+    /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key: the first host-held credentials'
+    /// verifier stating an issued shape, as its first kind and that shape ([`Self::issued_credential`]).
+    issued: Option<(String, busbar_contract::auth_calls::IssuedShape)>,
 }
 
 /// ONE HOST-HELD CREDENTIAL'S VERIFIER: the opened instance, the credential kinds it reads through
@@ -137,6 +140,9 @@ struct CredentialReader {
     calls: std::sync::Arc<dyn AuthCalls>,
     kinds: Vec<String>,
     carriers: Vec<HeaderName>,
+    /// The shape of the credential the host issues for `kinds`, as the verifier's Statement states
+    /// it; `None` = the host issues none for it.
+    issued: Option<busbar_contract::auth_calls::IssuedShape>,
 }
 
 impl CredentialReader {
@@ -843,6 +849,7 @@ impl AuthMiddleware {
                 if let Some(calls) = calls {
                     readers.push(CredentialReader {
                         kinds: calls.credential_kinds(),
+                        issued: calls.issued_shape(),
                         carriers: calls
                             .carriers()
                             .iter()
@@ -864,11 +871,16 @@ impl AuthMiddleware {
                 .unwrap_or_default(),
         };
 
+        let issued = readers.iter().find_map(|r| {
+            let kind = r.kinds.first()?.clone();
+            r.issued.clone().map(|shape| (kind, shape))
+        });
         Ok(Self {
             keys_in_chain,
             chain,
             readers,
             carriers: header_names(&carriers),
+            issued,
         })
     }
 
@@ -886,6 +898,9 @@ impl AuthMiddleware {
         .expect("builtin-only auth chain never fails to construct");
         if mw.carriers.is_empty() {
             mw.carriers = test_inbound_style();
+        }
+        if mw.issued.is_none() && crate::preflight::linked_auth_names().is_empty() {
+            mw.issued = Some(crate::test_support::issued::double());
         }
         mw
     }
@@ -1145,6 +1160,14 @@ impl AuthMiddleware {
     /// lists"); the returned token is validated identically whichever line carried it.
     pub fn extract_client_token(&self, headers: &HeaderMap) -> Option<String> {
         carried_credential(&self.carriers, headers)
+    }
+
+    /// THE CREDENTIAL THE HOST ISSUES beside a signed-token key (the admin `POST /keys` second
+    /// credential, 1.5.5's `issue_aws_credential`): the first host-held credentials' verifier whose
+    /// Statement states an issued shape, as its first credential kind and that shape. `None` when no
+    /// verifier states one: the host then issues none. Kind and shape are the verifier's words.
+    pub fn issued_credential(&self) -> Option<(String, busbar_contract::auth_calls::IssuedShape)> {
+        self.issued.clone()
     }
 
     /// The default inbound style's carriers: every line the host strips from a plane's request
@@ -2600,6 +2623,7 @@ impl AuthMiddleware {
             chain,
             readers: Vec::new(),
             carriers: test_inbound_style(),
+            issued: None,
         }
     }
 }

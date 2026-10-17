@@ -2252,6 +2252,27 @@ pub mod tokens;
 pub mod export_axis;
 /// The kind-neutral outbound auth double a test build binds lane credentials on.
 pub mod outbound_auth;
+
+/// THE ISSUED-CREDENTIAL DOUBLE: the kind and shape a test binary's governance issues a key's
+/// second credential under, standing for the linked signed-request verifier's Statement marks (a
+/// test binary links no auth plugin). Test data, never shipped.
+pub mod issued {
+    /// `(kind, shape)` as the linked signed-request verifier states them.
+    #[must_use]
+    pub fn double() -> (String, busbar_contract::auth_calls::IssuedShape) {
+        (
+            "issued-double".to_string(),
+            busbar_contract::auth_calls::IssuedShape {
+                id_prefix: "AKIA".to_string(),
+                id_len: 20,
+                id_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789".to_string(),
+                secret_len: 40,
+                secret_alphabet: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+                    .to_string(),
+            },
+        )
+    }
+}
 /// The stand-in secret axis a test build installs in place of the root's.
 pub mod secrets;
 pub use secrets::SecretsStandIn;

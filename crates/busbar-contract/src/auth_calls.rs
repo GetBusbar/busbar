@@ -287,6 +287,25 @@ impl LoginCall for LoginSettled {
     }
 }
 
+/// THE SHAPE OF THE CREDENTIAL THE HOST ISSUES for an auth row that reads host-held credentials,
+/// as the row's Statement states it in its `MARK_WORD_ISSUED_*` word marks
+/// ([`crate::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX`] and its siblings), checked at load.
+/// Kind-neutral: the host draws every symbol after the prefix from the OS CSPRNG over the stated
+/// alphabets, each symbol with equal weight, and names no format of its own.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct IssuedShape {
+    /// The public id's literal prefix (empty = none).
+    pub id_prefix: String,
+    /// The public id's total length in characters, the prefix included.
+    pub id_len: usize,
+    /// The public id's alphabet after the prefix: distinct ASCII graphic characters.
+    pub id_alphabet: String,
+    /// The secret's length in characters.
+    pub secret_len: usize,
+    /// The secret's alphabet: distinct ASCII graphic characters.
+    pub secret_alphabet: String,
+}
+
 /// ONE AUTH INSTANCE'S CALLS, as the kernel's identity chain makes them.
 pub trait AuthCalls: Send + Sync {
     /// The name the plugin's Statement states.
@@ -300,6 +319,13 @@ pub trait AuthCalls: Send + Sync {
     /// otherwise.
     fn credential_kinds(&self) -> Vec<String> {
         Vec::new()
+    }
+
+    /// With [`crate::abi::auth::FACT_READS_CREDENTIALS`]: the shape of the credential the host issues
+    /// for the kinds it reads, as its Statement's issued-shape word marks state it; `None` when it
+    /// states none (the host then issues no credential for it).
+    fn issued_shape(&self) -> Option<IssuedShape> {
+        None
     }
 
     /// The auth points `verify` is called at, as the tail states them
