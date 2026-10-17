@@ -1173,6 +1173,169 @@ pub fn rule_inputs(
     )
 }
 
+/// THE ROW 159 CASES (audit XC2#4, #6, #7), each a spelling that reached the compiler, or cargo,
+/// with this row green.
+pub fn selftest<'a>(
+    cx: &'a Ctx,
+    gate: &'a dyn crate::gates::Gate,
+    report: &mut crate::gates::Report<'a>,
+) {
+    use crate::ctx::Overlay;
+    use crate::gates::prove_rows_red;
+
+    const WIRE: &str = "crates/busbar-transport-stdio";
+    const STORE: &str = "crates/busbar-store-memory";
+    fn with(files: &[(&str, &str)]) -> Overlay {
+        let mut ov = Overlay::new();
+        for (rel, body) in files {
+            ov.set(*rel, (*body).to_string());
+        }
+        ov
+    }
+
+    // XC2#4: AN INCLUDE INTO AN UNSCANNED FILE OF THE SAME CRATE. `#[path = "target/leak.rs"]` is
+    // `hidden-source`; the same file spliced by `include!` was read by nothing, because the include
+    // reader only reports a target in ANOTHER crate.
+    let lib = cx.read(&format!("{STORE}/src/lib.rs")).unwrap_or_default();
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an `include!` of a walker-skipped file in the crate's own directory is source no rule \
+         has read",
+        &[ROW_INPUTS],
+        with(&[
+            (
+                format!("{STORE}/src/target/spliced.rs").as_str(),
+                "pub const P: &str = \"busbar-plane-llm\";\n",
+            ),
+            (
+                format!("{STORE}/src/lib.rs").as_str(),
+                format!(
+                    "{}\npub mod spliced {{\n    include!(\"target/spliced.rs\");\n}}\n",
+                    lib.trim_end()
+                )
+                .as_str(),
+            ),
+        ]),
+        &[
+            "hidden-source",
+            "crates/busbar-store-memory/src/target/spliced.rs",
+        ],
+    ));
+
+    // XC2#6: THE SAME REDIRECTS, WRITTEN AS KEYS RATHER THAN HEADERS. Cargo reads a top-level
+    // dotted key, a quoted header and an inline table exactly as it reads `[patch.crates-io]`.
+    let root = cx.read("Cargo.toml").unwrap_or_default();
+    let patch_line = "busbar-plane-llm = { path = \"crates/busbar-plane-mcp\" }";
+    for (name, manifest, entry) in [
+        (
+            "a `[patch]` written as a top-level dotted key is the same redirect",
+            format!("patch.crates-io.{patch_line}\n{root}"),
+            "patch.crates-io",
+        ),
+        (
+            "a `[patch]` written under a quoted header is the same redirect",
+            format!(
+                "{}\n\n[\"patch\".crates-io]\n{patch_line}\n",
+                root.trim_end()
+            ),
+            "patch",
+        ),
+        (
+            "a `[patch]` written as an inline table is the same redirect",
+            format!("patch = {{ crates-io = {{ {patch_line} }} }}\n{root}"),
+            "patch",
+        ),
+    ] {
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            name,
+            &[ROW_INPUTS],
+            with(&[("Cargo.toml", manifest.as_str())]),
+            &["redirect", entry, "Cargo.toml"],
+        ));
+    }
+    let config = cx.read(".cargo/config.toml").unwrap_or_default();
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "a `[source]` replacement written as a dotted key in .cargo/config.toml is the same \
+         redirect",
+        &[ROW_INPUTS],
+        with(&[(
+            ".cargo/config.toml",
+            format!("source.crates-io.replace-with = \"vendored\"\n{config}").as_str(),
+        )]),
+        &["redirect", "source.crates-io", ".cargo/config.toml"],
+    ));
+
+    // XC2#7: THE SPELLINGS THE INCLUDE READER COULD NOT PARSE, AND SKIPPED. A raw string and a
+    // macro metavariable are refused; a `path` inside `cfg_attr`, or after a space, is read, and a
+    // decoy file where a plain `mod` would look satisfies nothing.
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an `include!` of a raw string is refused, not skipped",
+        &[ROW_INPUTS],
+        with(&[(
+            format!("{WIRE}/src/planted_raw_include.rs").as_str(),
+            "pub mod smuggled {\n    include!(r\"../../busbar-plane-llm/src/meta.rs\");\n}\n",
+        )]),
+        &[
+            "unresolvable-include",
+            "busbar-transport-stdio",
+            "planted_raw_include.rs",
+        ],
+    ));
+    report.push(prove_rows_red(
+        cx,
+        gate,
+        "an `include!` of a macro metavariable is refused, not skipped",
+        &[ROW_INPUTS],
+        with(&[(
+            format!("{WIRE}/src/planted_macro_include.rs").as_str(),
+            "macro_rules! splice {\n    ($p:literal) => {\n        include!($p);\n    };\n}\n\
+             splice!(\"../../busbar-plane-llm/src/meta.rs\");\n",
+        )]),
+        &[
+            "unresolvable-include",
+            "busbar-transport-stdio",
+            "planted_macro_include.rs",
+        ],
+    ));
+    for (name, stem, attr) in [
+        (
+            "a `path` inside `#[cfg_attr(..)]` is a cross-crate module like `#[path]`",
+            "planted_cfg_path",
+            "#[cfg_attr(all(), path = \"../../busbar-plane-llm/src/meta.rs\")]",
+        ),
+        (
+            "a spaced `#[ path = .. ]` is a cross-crate module like `#[path]`",
+            "planted_spaced_path",
+            "#[ path = \"../../busbar-plane-llm/src/meta.rs\" ]",
+        ),
+    ] {
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            name,
+            &[ROW_INPUTS],
+            with(&[
+                (
+                    format!("{WIRE}/src/{stem}.rs").as_str(),
+                    format!("{attr}\npub mod smuggled;\n").as_str(),
+                ),
+                (
+                    format!("{WIRE}/src/{stem}/smuggled.rs").as_str(),
+                    "//! A decoy where a plain `mod smuggled;` would look.\n",
+                ),
+            ]),
+            &["path-include", "busbar-plane-llm", "busbar-transport-stdio"],
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

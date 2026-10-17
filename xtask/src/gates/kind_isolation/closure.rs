@@ -640,6 +640,43 @@ pub fn rule_closure(cx: &Ctx, crates: &[CrateInfo]) -> Row {
     )
 }
 
+/// THE CORROBORATION RUNS ON THE TREE THE GATE SHIPS (row 159, XC2#3). `registered` is the gate
+/// as registered, run over the battery's tree: this tree with the pinned checkouts mounted beneath
+/// it, and nothing planted. That is the tree every production run reads, and `cargo metadata` must
+/// be asked of it; a closure row whose corroboration reads "not asked" there is a cross-check that
+/// never runs.
+pub fn selftest<'a>(
+    cx: &'a Ctx,
+    registered: &'a dyn crate::gates::Gate,
+    report: &mut crate::gates::Report<'a>,
+) {
+    use crate::gates::{execute, Case, CasePlan, Expect};
+    let cx = cx.clone();
+    report.push(CasePlan::new(move || {
+        let verdict = execute(registered, &cx);
+        let got = match verdict.rows.iter().find(|r| r.id == ROW_CLOSURE) {
+            Some(r) if r.detail.contains("corroboration: not asked") => Expect::Red {
+                naming: vec![format!(
+                    "{} {:?}: the unplanted, mounted tree was not cross-checked against `cargo \
+                     metadata`: {}",
+                    r.id, r.status, r.detail
+                )],
+            },
+            Some(_) => Expect::Green,
+            None => Expect::Red {
+                naming: vec![format!("the gate emitted no {ROW_CLOSURE} row")],
+            },
+        };
+        Case {
+            name: "the closure's `cargo metadata` cross-check runs on the mounted, unplanted tree"
+                .to_string(),
+            covers: vec![ROW_CLOSURE.to_string()],
+            expected: Expect::Green,
+            got,
+        }
+    }));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
