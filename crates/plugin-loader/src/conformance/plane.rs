@@ -2017,3 +2017,7 @@ fn judge(label: &str, line: &str, want: &Value, short: Option<&str>) {
 #[cfg(test)]
 #[path = "../tests/conformance_plane_sessions_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../tests/conformance_plane_host_tests.rs"]
+mod host_tests;
