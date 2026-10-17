@@ -641,7 +641,7 @@ dependencies = [
 [[package]]
 name = "busbar-hook-ranking"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=7e1285e2e3293627723ab2754b9ddbfddeba9c46#7e1285e2e3293627723ab2754b9ddbfddeba9c46"
+source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=50a43e1819da5586c2ecdf401040d9c5ddad3a8e#50a43e1819da5586c2ecdf401040d9c5ddad3a8e"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -932,9 +932,10 @@ dependencies = [
 [[package]]
 name = "busbar-store-memory"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=848851e63ac7a454eb3d5daf9e11d739c48d738b#848851e63ac7a454eb3d5daf9e11d739c48d738b"
+source = "git+https://github.com/GetBusbar/busbar-store-memory?rev=0db18e38aa720a6a01e1f8a5a4e03b645aca7ccc#0db18e38aa720a6a01e1f8a5a4e03b645aca7ccc"
 dependencies = [
  "busbar-contract",
+ "sha2",
 ]
 
 [[package]]
