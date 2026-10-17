@@ -1681,7 +1681,7 @@ pub fn build_app_from_config(
     // the config that produced it never disagree. With that plane compiled out there is no built-in
     // decl, so no slot is inserted and nothing downcasts it (no accessor exists then).
     if let Some((slot_key, runtime_slot)) = crate::plane::registry::plane_decl_for_config_section(
-        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
     )
     .and_then(|d| {
         d.build_runtime
@@ -1832,10 +1832,10 @@ pub fn build_app_from_config(
             // deployment protects no such audience).
             let protected_resources: Vec<String> = cfg
                 .endpoint_resources
-                .get(busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2])
+                .get(busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2])
                 .and_then(|slot| {
                     crate::plane::registry::plane_decl_for_config_section(
-                        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+                        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
                     )
                     .and_then(|d| (d.admission)(slot.as_ref()))
                 })
@@ -1945,7 +1945,7 @@ pub fn build_app_from_config(
             // key identically to the former empty-value entry.
             let mut m = std::collections::BTreeMap::new();
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+                busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ) {
                 m.insert(decl.key, cfg.agent_pools.clone());
             }
@@ -1973,12 +1973,12 @@ pub fn build_app_from_config(
             // (empty) gate map is simply not inserted — byte-identical to the former empty-value entry.
             let mut m = std::collections::BTreeMap::new();
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+                busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
             ) {
                 m.insert(decl.key, tools_gates);
             }
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+                busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ) {
                 m.insert(decl.key, agents_gates);
             }
@@ -1989,12 +1989,12 @@ pub fn build_app_from_config(
         plane_rewrites: {
             let mut m = std::collections::BTreeMap::new();
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+                busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
             ) {
                 m.insert(decl.key, tools_rewrites);
             }
             if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+                busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ) {
                 m.insert(decl.key, agents_rewrites);
             }

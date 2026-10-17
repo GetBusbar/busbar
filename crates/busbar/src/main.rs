@@ -370,7 +370,7 @@ fn main() {
     // unknown-protocol refusal — the deletion test's runtime half (scripts/proto-deletion-gate.sh).
     register_protocols();
     // PLANE REGISTRATION, same slot and the same reason: `--validate` (just below) reads the plane
-    // list through `plane::config::config_sections()`, so the plane axis must be installed before
+    // list through `config::plane_sections::config_sections()`, so the plane axis must be installed before
     // any reader — including the CLI flags — can run.
     register_planes();
     // HOST-SELECTION SEAM INSTALL (loop unification, DECISIONS #28), after the planes are registered

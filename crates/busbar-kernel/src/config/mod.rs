@@ -52,10 +52,12 @@ pub use secret::SecretRef;
 
 // Re-export status_class_from_str for config validation
 pub use crate::breaker::status_class_from_str;
+use crate::config::plane_sections::{
+    AgentsSection, DeclaredSections, EndpointSection, ToolsSection,
+};
 use crate::diagnostics::{
     diag_warn, CONFIG_ANTIDOWNGRADE_FLOOR_INVALID, CONFIG_FIRSTPARTY_FLOOR_INVALID,
 };
-use crate::plane::config::{AgentsSection, DeclaredSections, EndpointSection, ToolsSection};
 use busbar_kernel_ledger::cost::compose_plane_cards;
 
 /// Reject an env-var value that could break out of the surrounding YAML scalar when substituted
@@ -455,7 +457,7 @@ pub struct RootCfg {
     /// generation. Lowering it here would give the registry two representations that could disagree
     /// about what the operator approved — precisely the disagreement the trust lifecycle removes by
     /// DERIVING state from intent-versus-observation instead of storing it.
-    pub tool_defs: Box<dyn busbar_kernel::plane::config::PlaneCfg>,
+    pub tool_defs: Box<dyn busbar_kernel::config::plane_sections::PlaneCfg>,
     /// Optional native inbound TLS. `None` ⇒ plain HTTP (today's path, byte-for-byte).
     pub tls: Option<TlsCfg>,
     /// Separate admin listen address — the admin API is served ONLY here, never on the data
@@ -546,7 +548,7 @@ pub struct RootCfg {
     // Neutral capture when this section's owning plane is compiled out: the resolved registry type
     // does not exist then, and a non-empty `agents:` section is refused at `resolve` (the raw capture
     // is carried through unchanged, as `RootCfg` is for any plane section whose plane is off).
-    pub agent_defs: Box<dyn busbar_kernel::plane::config::PlaneCfg>,
+    pub agent_defs: Box<dyn busbar_kernel::config::plane_sections::PlaneCfg>,
     /// The `tool_pools:` failover pools for this section's owning plane, carried through `resolve`
     /// VERBATIM — operator intent, like `tool_defs` beside it, projected onto
     /// `state::App::tool_pools` at build. Empty ⇒ no failover on that plane.
@@ -1028,14 +1030,14 @@ impl<'de> Deserialize<'de> for PoolsCfg {
     where
         D: serde::Deserializer<'de>,
     {
-        // THE SECTION SPLIT is `plane::config`'s, and the pool plane reads its section through the
+        // THE SECTION SPLIT is `config::plane_sections`'s, and the pool plane reads its section through the
         // same six steps in the same order as `tools:` and `agents:` — including the refusal of a
         // reserved key holding a MAPPING before the typed lifts, which is the step this rule exists
         // for and the step a per-plane copy is likeliest to lose.
         //
         // The pool plane declares NO value rules here: `PoolCfg`'s are run later, over the whole
         // config, where they can see the cross-section references a single entry cannot.
-        let section = crate::plane::config::split_section_for_plane::<D, PoolCfg>(
+        let section = crate::config::plane_sections::split_section_for_plane::<D, PoolCfg>(
             deserializer,
             crate::plane::fallback_key(),
             |_, _| Ok(()),
@@ -1402,13 +1404,13 @@ impl DeployCfg {
     /// (the two core sections, or an unknown key). The two plane fields exist unconditionally (they
     /// hold a `RawPlaneSection` when their plane is compiled out), so a present key always answers
     /// `Some`; the section KEYS are read off the frozen static
-    /// [`busbar_kernel::plane::config::NAMED_MAP_SECTIONS`] mirror so this accessor spells no
+    /// [`busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS`] mirror so this accessor spells no
     /// plane noun.
     pub fn plane_section(
         &self,
         section: &str,
-    ) -> Option<&dyn busbar_kernel::plane::config::PlaneCfg> {
-        let mirror = busbar_kernel::plane::config::NAMED_MAP_SECTIONS;
+    ) -> Option<&dyn busbar_kernel::config::plane_sections::PlaneCfg> {
+        let mirror = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS;
         if section == mirror[2] {
             Some(&*self.tools.0)
         } else if section == mirror[3] {
@@ -1424,8 +1426,8 @@ impl DeployCfg {
     pub fn plane_section_mut(
         &mut self,
         section: &str,
-    ) -> Option<&mut dyn busbar_kernel::plane::config::PlaneCfg> {
-        let mirror = busbar_kernel::plane::config::NAMED_MAP_SECTIONS;
+    ) -> Option<&mut dyn busbar_kernel::config::plane_sections::PlaneCfg> {
+        let mirror = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS;
         if section == mirror[2] {
             Some(&mut *self.tools.0)
         } else if section == mirror[3] {
@@ -2126,8 +2128,8 @@ pub fn resolve(
         // stays on the fallback lane. Reading the discriminant off the frozen named-map mirror (rather
         // than a hard-coded plane key) is what lets a registered plane's pools route with nothing
         // about that plane written here.
-        let tools_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
-        let agents_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3];
+        let tools_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
+        let agents_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3];
         let member_kind = |name: &str| -> Option<&'static str> {
             // Global-unique noun names make this a name-only lookup — the router never asks "which
             // kind of `x`?". A name defined in two nouns is a collision the validator rejects.
@@ -2248,7 +2250,7 @@ pub fn resolve(
     // per-agent lists are checked at parse by that plane's own validator; the section list has no
     // per-entry parse to hang off, so it is checked here, where every other cross-reference is.
     // `` `agents.hooks` `` is this plane's own WORDING for the site; the rule and the sentence are
-    // `plane::config`'s, shared with the `tools:` plane below.
+    // `config::plane_sections`'s, shared with the `tools:` plane below.
     //
     // The whole block reads the `agents:` registry through its always-present type-erased seam.
     // With the owning plane compiled out the seam holds a `RawPlaneSection` whose `container_gates`
@@ -2260,10 +2262,10 @@ pub fn resolve(
     // agent's own list are read through the neutral `container_gates` seam, in registry order.
     {
         let g = deploy.agents.0.container_gates();
-        if let Err(e) = crate::plane::config::validate_section_hooks(
+        if let Err(e) = crate::config::plane_sections::validate_section_hooks(
             "`agents.hooks`",
             &g.section_hooks,
-            &crate::plane::config::config_sections(),
+            &crate::config::plane_sections::config_sections(),
         ) {
             errors.push(e);
         }
@@ -2373,10 +2375,10 @@ pub fn resolve(
     // below do nothing — the same as the per-plane feature gate compiling this out entirely.
     {
         let g = deploy.tools.0.container_gates();
-        if let Err(e) = crate::plane::config::validate_section_hooks(
+        if let Err(e) = crate::config::plane_sections::validate_section_hooks(
             "`tools.hooks`",
             &g.section_hooks,
-            &crate::plane::config::config_sections(),
+            &crate::config::plane_sections::config_sections(),
         ) {
             errors.push(e);
         }
@@ -2402,7 +2404,10 @@ pub fn resolve(
     // `validate`) is judged HERE too, so `--validate` and boot refuse a section its plane refuses,
     // naming the section, and the parsed section answers the same reserved-word checks a declared
     // one does (its `hooks:` list here, its model map's provider references below).
-    let raw_judged: Vec<(&'static str, Box<dyn crate::plane::config::PlaneCfg>)> = deploy
+    let raw_judged: Vec<(
+        &'static str,
+        Box<dyn crate::config::plane_sections::PlaneCfg>,
+    )> = deploy
         .plane_raw
         .iter()
         .filter(|(_, v)| !v.is_null())
@@ -2572,7 +2577,7 @@ pub fn resolve(
     let endpoint_block = deploy.endpoint.0.as_ref();
     // The endpoint's owning plane is looked up by its CONFIG SECTION (the `tools:` plane owns the
     // `mcp:` door), so no plane key is named here.
-    let endpoint_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+    let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
     let lower = crate::plane::registry::plane_decl_for_config_section(endpoint_section)
         .and_then(|d| d.lower_endpoint);
     // The endpoint door belongs to the plane that owns `endpoint_section`: a present block configures it.
@@ -2726,6 +2731,7 @@ mod resolved_provider_tests;
 pub mod auth;
 pub mod hooks;
 pub mod limits;
+pub mod plane_sections;
 pub mod pools;
 pub mod providers;
 pub mod sections;

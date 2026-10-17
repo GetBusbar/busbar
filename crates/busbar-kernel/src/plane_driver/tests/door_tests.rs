@@ -13,7 +13,7 @@ use busbar_contract::plane_calls::PlaneRegistration;
 use super::*;
 
 /// A 1.5.3 named-definition section, read off the frozen list (no literal here).
-const NAMED: &str = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3];
+const NAMED: &str = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3];
 
 /// A registration as a door states one: a named-definition section `fleet`, a pin and a cadence,
 /// and a `validate` that refuses an entry without `url` in its own value-rule words and anything

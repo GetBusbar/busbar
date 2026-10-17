@@ -8,8 +8,8 @@ fn make_root_cfg(
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
     config::RootCfg {
-        tool_defs: crate::plane::config::ToolsSection::default().0,
-        agent_defs: crate::plane::config::AgentsSection::default().0,
+        tool_defs: crate::config::plane_sections::ToolsSection::default().0,
+        agent_defs: crate::config::plane_sections::AgentsSection::default().0,
         tool_pools: Default::default(),
         agent_pools: Default::default(),
         plane_sections: Default::default(),
@@ -4191,8 +4191,8 @@ fn priced_entry() -> config::RateEntryCfg {
 /// A `tools:` section the operator actually WROTE content for, through the same neutral
 /// type-erased seam `DeployCfg` deserializes it through — so this reads the same in a build with
 /// the owning plane compiled in (a parsed registry) and one with it compiled out (a raw capture).
-fn present_tools_section() -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
-    let section: crate::plane::config::ToolsSection =
+fn present_tools_section() -> Box<dyn busbar_kernel::config::plane_sections::PlaneCfg> {
+    let section: crate::config::plane_sections::ToolsSection =
         serde_yaml::from_str("a-tool-server:\n  url: \"https://tools.example.com/rpc\"\n")
             .expect("a one-registration tools section must parse");
     assert!(

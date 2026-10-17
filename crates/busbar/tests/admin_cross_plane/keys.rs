@@ -3007,7 +3007,7 @@ async fn named_map_app_opts(
         let cfg = parse(&disk[section]).unwrap_or_else(|e| panic!("`{section}:` parses: {e}"));
         (
             decl,
-            std::sync::Arc::<dyn busbar_kernel::plane::config::PlaneCfg>::from(cfg),
+            std::sync::Arc::<dyn busbar_kernel::config::plane_sections::PlaneCfg>::from(cfg),
         )
     };
     // `tools:` — a per-generation runtime built through the plane's own `build_runtime`, installed

@@ -599,7 +599,7 @@ fn admin_require_mtls_defaults_on_and_the_retired_key_loud_fails() {
 /// NEVER panic the process, and it must never silently default/skip the section (DECISIONS #42: an
 /// unknown is refused, never defaulted).
 ///
-/// RED before the fix: `PoolsCfg::deserialize` → `plane::config::split_section_for_plane` called
+/// RED before the fix: `PoolsCfg::deserialize` → `config::plane_sections::split_section_for_plane` called
 /// `super::plane_decl(fallback_key())` — the PANICKING lookup — with `fallback_key()`'s own
 /// documented, honest empty-string answer for "no fallback plane registered", so this exact
 /// scenario (a build with a registered plane count of zero) crashed the process instead of
@@ -3812,7 +3812,7 @@ fn test_auth_policy_rejects_bad_input_at_parse() {
 const NEUTRAL_SECTION: &str = "neutral_section";
 
 /// A NEUTRAL plane that DECLARES AND OWNS a singular section of its own ([`NEUTRAL_SECTION`]) — the
-/// map carrier `plane::config::DeclaredSections` holds it — all hooks stubbed, so the
+/// map carrier `config::plane_sections::DeclaredSections` holds it — all hooks stubbed, so the
 /// pre-pass, which lifts only the sections a REGISTERED plane declares, lifts it. With no
 /// `parse_section` hook the value is captured raw.
 static NEUTRAL_SECTION_PLANE: crate::plane::registry::PlaneDecl =
@@ -4067,9 +4067,9 @@ static PLANE_SAW: std::sync::Mutex<Vec<serde_yaml::Value>> = std::sync::Mutex::n
 
 fn record_plane_section(
     v: &serde_yaml::Value,
-) -> Result<Box<dyn busbar_kernel::plane::config::PlaneCfg>, String> {
+) -> Result<Box<dyn busbar_kernel::config::plane_sections::PlaneCfg>, String> {
     PLANE_SAW.lock().unwrap().push(v.clone());
-    Ok(Box::<crate::plane::config::RawPlaneSection>::default())
+    Ok(Box::<crate::config::plane_sections::RawPlaneSection>::default())
 }
 
 /// A stub plane owning the registry section a card is authored in, whose `parse_section` records

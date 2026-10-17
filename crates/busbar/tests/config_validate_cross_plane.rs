@@ -27,8 +27,8 @@ fn make_root_cfg(
     pools: HashMap<String, config::PoolCfg>,
 ) -> RootCfg {
     config::RootCfg {
-        tool_defs: busbar_kernel::plane::config::ToolsSection::default().0,
-        agent_defs: busbar_kernel::plane::config::AgentsSection::default().0,
+        tool_defs: busbar_kernel::config::plane_sections::ToolsSection::default().0,
+        agent_defs: busbar_kernel::config::plane_sections::AgentsSection::default().0,
         tool_pools: Default::default(),
         agent_pools: Default::default(),
         plane_sections: Default::default(),
@@ -86,7 +86,7 @@ fn make_model_unbounded(provider: &str) -> config::ModelCfg {
 /// the section is parsed through the kernel's own config entry point (`deploy_from_yaml_str`), so the
 /// plane that declares `tools:` (a test-linked plane, `tests/linked/mod.rs`) lifts it into its own
 /// type-erased config exactly as boot does; this file names no plane type.
-fn tools_with(id: &str) -> Box<dyn busbar_kernel::plane::config::PlaneCfg> {
+fn tools_with(id: &str) -> Box<dyn busbar_kernel::config::plane_sections::PlaneCfg> {
     linked::install();
     let text = format!(
         "providers: {{}}\nmodels: {{}}\ntools:\n  {id}: {{ url: \"https://x.example/t\", pin: {{ mechanism: unpinned }} }}\n"

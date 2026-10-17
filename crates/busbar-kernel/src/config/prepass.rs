@@ -53,7 +53,9 @@ use serde::Deserialize;
 use super::DeployCfg;
 // Every carrier is lifted through the config seam's plane-NEUTRAL spellings, so this generic lift
 // machinery names no concrete plane (DECISIONS #1).
-use crate::plane::config::{AgentsSection, DeclaredSections, EndpointSection, ToolsSection};
+use crate::config::plane_sections::{
+    AgentsSection, DeclaredSections, EndpointSection, ToolsSection,
+};
 use crate::plane::registry::{PlaneDeclaration, CORE_OWNED_CONCRETE_SECTIONS};
 
 /// HOW `cargo xtask gate config-schema` ties a carrier to its key. The gate reads this from source:

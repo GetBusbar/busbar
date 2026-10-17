@@ -746,7 +746,7 @@ async fn a_framed_claims_caller_reads_the_deframed_messages() {
 /// door's pools survive the apply, and the plane is handed it with the core-owned `work:` struck.
 #[test]
 fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
-    let key = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+    let key = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
     let written: serde_yaml::Value =
         serde_yaml::from_str("fs: { url: \"http://fs\" }\nwork: { max_live: 4 }\n")
             .expect("a section");

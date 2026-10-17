@@ -991,22 +991,22 @@ plane_behaviour! {
     >,
 
     /// PARSE THIS PLANE'S TOP-LEVEL REGISTRY SECTION from a positionless `serde_yaml::Value` into its
-    /// own typed config, boxed as the neutral [`crate::plane::config::PlaneCfg`] — the seam
+    /// own typed config, boxed as the neutral [`crate::config::plane_sections::PlaneCfg`] — the seam
     /// `DeployCfg`'s `tools:`/`agents:` field deserializes through, so core names no plane config type.
     /// `None` for a plane with no registry section (the LLM / `proto` planes).
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     parse_section:
-        Option<fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneCfg>, String>>,
+        Option<fn(&serde_yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneCfg>, String>>,
 
     /// PARSE THIS PLANE'S TOP-LEVEL ENDPOINT block (the MCP plane's `mcp:` door) from a positionless
-    /// `serde_yaml::Value`, boxed as the neutral [`crate::plane::config::PlaneEndpointCfg`] — the seam
+    /// `serde_yaml::Value`, boxed as the neutral [`crate::config::plane_sections::PlaneEndpointCfg`] — the seam
     /// `DeployCfg`'s `mcp:` field deserializes through. `None` for a plane with no endpoint block
     /// (every plane but MCP).
     #[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
     #[allow(clippy::type_complexity)]
     parse_endpoint: Option<
-        fn(&serde_yaml::Value) -> Result<Box<dyn crate::plane::config::PlaneEndpointCfg>, String>,
+        fn(&serde_yaml::Value) -> Result<Box<dyn crate::config::plane_sections::PlaneEndpointCfg>, String>,
     >,
 
     /// LOWER THIS PLANE'S ENDPOINT block into its validated runtime resource, type-erased as
@@ -1017,7 +1017,7 @@ plane_behaviour! {
     #[allow(clippy::type_complexity)]
     lower_endpoint: Option<
         fn(
-            &dyn crate::plane::config::PlaneEndpointCfg,
+            &dyn crate::config::plane_sections::PlaneEndpointCfg,
         ) -> Result<std::sync::Arc<dyn std::any::Any + Send + Sync>, String>,
     >,
 
@@ -1057,13 +1057,13 @@ plane_behaviour! {
     /// verify-on-call gate (the LLM / `proto` planes).
     retain_verify_gates: Option<fn(&dyn crate::plane_host::PlaneSlots)>,
 
-    /// THIS PLANE'S EMPTY REGISTRY SECTION, boxed as the neutral [`crate::plane::config::PlaneCfg`] —
+    /// THIS PLANE'S EMPTY REGISTRY SECTION, boxed as the neutral [`crate::config::plane_sections::PlaneCfg`] —
     /// the value `DeployCfg`'s `#[serde(default)]` `tools:`/`agents:` field takes when the section is
     /// ABSENT, so the default is the plane's own `Default` (byte-identical to the pre-seam
     /// `ToolsCfg::default()`) rather than a re-parse of an empty document. `None` for a plane with no
     /// registry section (the LLM / `proto` planes).
     #[cfg_attr(not(any(feature = "dispatch", feature = "relay")), allow(dead_code))]
-    default_section: Option<fn() -> Box<dyn crate::plane::config::PlaneCfg>>,
+    default_section: Option<fn() -> Box<dyn crate::config::plane_sections::PlaneCfg>>,
 
     /// MERGE ONE PROVIDER'S CATALOG DEFINITION (`providers.yaml`, [`crate::config::providers::ProviderDef`])
     /// WITH ITS OPERATOR DEPLOYMENT (`config.yaml`'s `providers:` entry,
