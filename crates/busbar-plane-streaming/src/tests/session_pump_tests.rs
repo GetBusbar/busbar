@@ -312,15 +312,21 @@ fn a_barge_in_bills_what_the_interrupted_turn_served_on_the_turn_that_takes_over
     assert_eq!((closed.audio_ms_in, closed.tool_calls), (1_000, 1));
 }
 
-/// A caller frame the reader cannot read is the caller's to send (Law 5): it is relayed and
-/// counts nothing.
+/// A caller frame that is not JSON goes nowhere and counts nothing: the lock is judged on what the
+/// reader reads, and bytes it cannot read never reach a far end that might read them otherwise.
 #[test]
-fn a_caller_frame_the_reader_cannot_read_is_relayed_and_counts_nothing() {
+fn a_caller_frame_that_is_not_json_goes_nowhere_and_counts_nothing() {
     let mut p = pump();
     let mut sink = Turns::default();
     let bad = p.on_client_frame(WireEvent(Bytes::from_static(&[0xff, 0xfe, 0x00])));
-    assert_eq!(bad.upstream.len(), 1);
-    assert!(bad.downlink.is_empty() && !bad.close);
+    assert!(bad.upstream.is_empty() && bad.downlink.is_empty() && !bad.close);
+    let unclosed = p.on_client_frame(WireEvent(Bytes::from_static(
+        br#"{"type":"session.update","session":{"instructions":"x"},}"#,
+    )));
+    assert!(
+        unclosed.upstream.is_empty(),
+        "a near-JSON update is not passed"
+    );
     p.settle_open_turn(&mut sink);
     assert!(sink.closed.is_empty(), "nothing was counted");
 }

@@ -109,7 +109,7 @@ pub fn splice(frame: &[u8], rule: &Rule) -> Option<Vec<u8>> {
 }
 
 /// One member of an object: its key as the far end reads it, where it starts and its value's span.
-struct Member {
+struct JsonMember {
     key: String,
     start: usize,
     value: (usize, usize),
@@ -211,7 +211,7 @@ fn value_end(b: &[u8], i: usize) -> Option<usize> {
 }
 
 /// The members of the object at `b[open]`, and the index past its closing brace.
-fn members(b: &[u8], open: usize) -> Option<(Vec<Member>, usize)> {
+fn members(b: &[u8], open: usize) -> Option<(Vec<JsonMember>, usize)> {
     if b.get(open) != Some(&b'{') {
         return None;
     }
@@ -232,7 +232,7 @@ fn members(b: &[u8], open: usize) -> Option<(Vec<Member>, usize)> {
         }
         let start = ws(b, colon + 1);
         let end = value_end(b, start)?;
-        out.push(Member {
+        out.push(JsonMember {
             key,
             start: i,
             value: (start, end),

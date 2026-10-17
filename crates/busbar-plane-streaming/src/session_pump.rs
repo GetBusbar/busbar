@@ -131,6 +131,9 @@ where
         sink: &mut dyn TurnSink,
     ) -> Outbound {
         let mut out = Outbound::default();
+        if frame.0.is_empty() {
+            return out;
+        }
         for ev in self
             .codec
             .read_down_ref(WireRef(&frame.0), &mut self.decode)
@@ -148,9 +151,14 @@ where
 
     /// A FRAME FROM THE CALLER. It reaches the far end as the caller sent it; uplink audio is
     /// counted; a frame that configures the session or asks for a response under its own settings
-    /// takes the locked keys, and one that cannot be read as the object it says it is goes nowhere.
+    /// takes the locked keys. A frame that is not JSON goes nowhere: the lock is judged on what
+    /// the reader reads, and bytes it cannot read are never handed to a far end whose own reader
+    /// might read them differently.
     pub fn on_client_frame(&mut self, frame: WireEvent) -> Outbound {
         let mut out = Outbound::default();
+        if serde_json::from_slice::<serde::de::IgnoredAny>(&frame.0).is_err() {
+            return out;
+        }
         let mut configures = false;
         let mut responds = false;
         for ev in self.codec.read_up_ref(WireRef(&frame.0), &mut self.decode) {
