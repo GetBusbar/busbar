@@ -6,27 +6,7 @@
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-contract/src/abi/hot/decl.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
 file = "crates/busbar-contract/src/abi/hot/host.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-contract/src/abi/hot/mod.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-contract/src/abi/hot/pod.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-contract/src/abi/hot/workitem.rs"
 item = "extern 'C-unwind'"
 
 [[finding]]
