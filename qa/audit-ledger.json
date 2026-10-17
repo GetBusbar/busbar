@@ -1930,18 +1930,18 @@
    "paths": [
     "crates/busbar-transport-grpc/src"
    ],
-   "tree_hash": "e17986e6c2b2aea02f0cd0cedbc35e215c7fc625471c81348875a289d3aabe95",
-   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
-   "round": 2,
+   "tree_hash": "e841019263f80793c3c996e0ed36e1c0c275309531e85919159daf2d5bbf3221",
+   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+   "round": 3,
    "result": "findings",
    "counts": {
     "HIGH": 1,
-    "MEDIUM": 5,
-    "LOW": 4,
+    "MEDIUM": 4,
+    "LOW": 6,
     "NIT": 1
    },
-   "report": "The gRPC framer keeps a clean shape: hyper's HTTP/2 both ways over the contract's sans-IO drive, no global state, no socket, te checked at the door, head, trailers and terminal piece as specified. It does not bound what it queues: emitted messages wait without limit behind a shut peer window, and the stream-full signal is never raised. A client cancel after half-close goes unreported, a stray emit opens a phantom dialled call, the per-stream accept side is refused, and refusal and oversize statuses differ from predev's bytes. Read fully.",
-   "auditor": "opus-ledger-pinned-transport-grpc",
+   "report": "The gRPC framer runs hyper's HTTP/2 both ways over the contract's sans-IO drive, checks te at the door, and now frames the one-stream accept side, closing each call in 1.5.5's status bytes. Emitted messages still queue without limit behind a far end that grants no room, and the stream-full signal is never raised. A client's cancel after its half-close goes unreported, a late emit opens a phantom dialled call, a refusal's grpc-message spaces are not percent-encoded as predev's were, and an oversize message fails INTERNAL. Read fully.",
+   "auditor": "opus-q128-l159",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-grpc/src/tests"
@@ -1960,6 +1960,20 @@
       "NIT": 1
      },
      "report": "The gRPC framer keeps a clean shape: hyper's HTTP/2 both ways over the contract's sans-IO drive, no global state, no socket, te checked at the door, head, trailers and terminal piece as specified. It does not bound what it queues: emitted messages wait without limit behind a shut peer window, and the stream-full signal is never raised. A client cancel after half-close goes unreported, a stray emit opens a phantom dialled call, the per-stream accept side is refused, and refusal and oversize statuses differ from predev's bytes. Read fully."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-q128-l159",
+     "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+     "tree_hash": "e841019263f80793c3c996e0ed36e1c0c275309531e85919159daf2d5bbf3221",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 4,
+      "LOW": 6,
+      "NIT": 1
+     },
+     "report": "The gRPC framer runs hyper's HTTP/2 both ways over the contract's sans-IO drive, checks te at the door, and now frames the one-stream accept side, closing each call in 1.5.5's status bytes. Emitted messages still queue without limit behind a far end that grants no room, and the stream-full signal is never raised. A client's cancel after its half-close goes unreported, a late emit opens a phantom dialled call, a refusal's grpc-message spaces are not percent-encoded as predev's were, and an oversize message fails INTERNAL. Read fully."
     }
    ]
   },
