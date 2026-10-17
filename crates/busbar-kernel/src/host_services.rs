@@ -957,9 +957,9 @@ impl KernelServices {
         }
         let prefix = demotion_key(instance, "");
         let replayed = rows.iter().filter_map(|r| {
-            let counterparty = match r.server.strip_prefix(prefix.as_str()) {
+            let counterparty = match r.upstream.strip_prefix(prefix.as_str()) {
                 Some(cp) => cp,
-                None if default && !r.server.contains(DEMOTION_SEP) => r.server.as_str(),
+                None if default && !r.upstream.contains(DEMOTION_SEP) => r.upstream.as_str(),
                 None => return None,
             };
             Some((counterparty, r.recorded_at.saturating_mul(1000)))
