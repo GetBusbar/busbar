@@ -43,7 +43,7 @@ pub fn no_planes() -> PlaneLookup {
 }
 
 /// Where `plane_record_write` lands one record: the plane-facing store seam
-/// (`busbar_kernel::plane::store::PlaneStore::upsert_plane_record`). `Err` carries the store's own
+/// (`busbar_kernel::store::plane_view::PlaneStore::upsert_plane_record`). `Err` carries the store's own
 /// words, for the node's log only.
 pub type PlaneRecordSink = Arc<dyn Fn(&PlaneRecord) -> Result<(), String> + Send + Sync>;
 
@@ -510,7 +510,7 @@ pub fn live_records(app: Arc<busbar_kernel::state::AppHandle>) -> PlaneRecordSin
             .governance
             .as_ref()
             .ok_or_else(|| "no record store is configured".to_string())?;
-        busbar_kernel::plane::store::PlaneStoreView::narrow(gov.store())
+        busbar_kernel::store::plane_view::PlaneStoreView::narrow(gov.store())
             .upsert_plane_record(record.view())
             .map_err(|e| e.0)
     })

@@ -184,7 +184,9 @@ fn rig() -> Rig {
 /// A durable demotion record over `store`.
 fn demotions(store: &Arc<MemoryStore>) -> Arc<DemotionRecord> {
     let d = DemotionRecord::default();
-    d.set_sink(crate::plane::store::PlaneStoreView::narrow(store.clone()));
+    d.set_sink(crate::store::plane_view::PlaneStoreView::narrow(
+        store.clone(),
+    ));
     Arc::new(d)
 }
 
@@ -423,7 +425,7 @@ fn trust_sight_judges_from_the_admitted_entries_and_writes_the_demotion() {
     assert_eq!(sight("moved").value, svc::TRUST_DRIFTED);
     let demoted = r.s.demotions.get().unwrap().record.list();
     assert_eq!(demoted.len(), 1);
-    assert_eq!(demoted[0].server, demotion_key("inst", "cp"));
+    assert_eq!(demoted[0].upstream, demotion_key("inst", "cp"));
     assert_eq!(sight("moved").value, svc::TRUST_QUARANTINED);
     assert_eq!(sight("fp").value, svc::TRUST_SAME);
     assert!(r.s.demotions.get().unwrap().record.list().is_empty());

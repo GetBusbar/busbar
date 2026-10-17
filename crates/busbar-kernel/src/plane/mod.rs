@@ -94,17 +94,7 @@ pub mod approvals;
 pub mod config;
 pub mod door;
 pub mod observe;
-pub(crate) mod quarantine;
-/// The durable demotion record, which the root attaches to the kernel's host services.
-pub use quarantine::DemotionRecord;
 pub mod registry;
-// `store` is a core-internal plane primitive. Its module is widened to `pub` ONLY under the
-// test-support surface so an extracted plane's own test binary can name the durable-body
-// helpers it exercises (`StoreNamedTestExt`, `KIND_TASK_EVENT`, `task_event_row_from_body`); the
-// tamper-critical `encode` stays `pub(crate)` regardless (see `store::encode`), so widening the
-// module does NOT hand any out-of-crate caller the row-forging primitive.
-// W4.b P2: widened to `pub` (planes absorbed substrate's neutral PlaneStore here); `encode` stays pub(crate).
-pub mod store;
 // A durable task set and its per-task provenance chain were RELOCATED wholesale to a plane crate
 // in the 1.7.0 plane extraction: a task is a SINGLE-plane mechanism, so it lives on the plane that
 // owns it, backed by the generic neutral `PlaneRecord` store. Core names none of it.
@@ -904,10 +894,6 @@ mod sections_tests;
 // The NEUTRAL plane-observe response marker `Counted` — the one type a plane's handler and core's
 // `plane::observe` boundary both name. It carries nothing and names no engine type, so it lives
 // here; core re-exports it from `busbar_kernel::plane::observe` so its middleware reads the same type.
-
-// The plane store seam's narrowing adapter: the `PlaneStore` trait a plane persists through and the
-// `PlaneStoreView` that narrows a real `busbar_contract::records::RecordStore` to it. Both name only `busbar_contract` leaf
-// types, so they live here; core re-exports them from `busbar_kernel::plane::store`.
 
 // Phase-C config-seam: the NEUTRAL config-seam CONTRACTS a plane's config section is read through
 // (`PlaneCfg`/`PlaneEndpointCfg`/`ContainerGateInputs`) and the parse-time bare-hook-reference rule

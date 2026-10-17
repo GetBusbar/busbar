@@ -73,7 +73,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::plane::store::PlaneStore;
+use crate::store::plane_view::PlaneStore;
 use busbar_contract::records::{PlaneRecord, PlaneSelector, RecordStoreError, RecordStoreResult};
 
 /// The NEUTRAL projection of a plane row the engine reads to run its mechanics WITHOUT decoding the

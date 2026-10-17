@@ -79,10 +79,10 @@ use crate::host_work::{
     owner_of, parse_reference, reference_text, refusal as work_refusal, work_key, Owner, Work,
     WorkBook, WorkBounds, WORK_SCHEMA,
 };
-use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{
     Distrust, Effect, KeyRow, KeyState, Ruling, Sight, TrustBook, TrustFacts, Undecided, Unjudged,
 };
+use crate::trust::demotion::DemotionRecord;
 use crate::trust::section::TrustEntry;
 use crate::trust::signed;
 
@@ -957,9 +957,9 @@ impl KernelServices {
         }
         let prefix = demotion_key(instance, "");
         let replayed = rows.iter().filter_map(|r| {
-            let counterparty = match r.server.strip_prefix(prefix.as_str()) {
+            let counterparty = match r.upstream.strip_prefix(prefix.as_str()) {
                 Some(cp) => cp,
-                None if default && !r.server.contains(DEMOTION_SEP) => r.server.as_str(),
+                None if default && !r.upstream.contains(DEMOTION_SEP) => r.upstream.as_str(),
                 None => return None,
             };
             Some((counterparty, r.recorded_at.saturating_mul(1000)))
@@ -1045,7 +1045,7 @@ impl KernelServices {
                 .map_err(TrustRefused::Store)?;
             if fact.item.is_none() && ruling == Ruling::Approve {
                 let cleared = |server: &str| {
-                    crate::plane::quarantine::settle(
+                    crate::trust::demotion::settle(
                         &d.record,
                         server,
                         crate::trust::TrustState::Approved,
@@ -1721,7 +1721,7 @@ impl HostServices for KernelServices {
         let unprefixed = (caller.instance == d.default_instance).then(|| counterparty.to_string());
         submit(pool, later, move || {
             let settle = |server: &str, state| {
-                crate::plane::quarantine::settle(&record, server, state);
+                crate::trust::demotion::settle(&record, server, state);
             };
             if effect == Effect::Demote {
                 settle(&key, crate::trust::TrustState::Quarantined);
