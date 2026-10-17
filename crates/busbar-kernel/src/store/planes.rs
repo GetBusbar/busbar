@@ -133,8 +133,8 @@ impl PlaneBreakers {
             health: HealthState::new(
                 (0..MAX_POOL_MEMBERS)
                     .map(|_| LaneData {
-                        model: "plane-target".to_string(),
-                        provider: "plane".to_string(),
+                        member: "plane-target".to_string(),
+                        route: "plane".to_string(),
                         max: 1,
                         sem: Arc::new(tokio::sync::Semaphore::new(1)),
                         limited: false,
@@ -146,10 +146,6 @@ impl PlaneBreakers {
                         ok: 0,
                         err: 0,
                         client_fault: 0,
-                        upstream_model: None,
-                        attempt_timeout_ms: None,
-                        reasoning: false,
-                        prompt_caching: false,
                     })
                     .collect(),
             ),
@@ -177,11 +173,8 @@ impl PlaneBreakers {
         }
     }
 
-    // R5-store: `PlaneBreakers::{tool_key, agent_key}` DELETED. Both were one-line delegations to
-    // `busbar_kernel::store::{tool_key, agent_key}` — the prefix spellings had already moved down
-    // to the neutral substrate — and both had ZERO production callers in the whole workspace (they
-    // carried `#[allow(dead_code)]` for exactly that reason). The keyspace rule is unchanged and
-    // single-sourced where it now lives; every caller left names the substrate directly.
+    // A cell key is the caller's own string: each caller prefixes its registration ids with a
+    // namespace of its own, so two callers' keys never share a cell. The store spells no prefix.
 
     /// ADMIT ONE DISPATCH against the target's cell — [`LaneRuntime::try_admit_breaker`], the same
     /// admission the primary plane's queue dispatch makes. `lane` is the member's position in its

@@ -51,8 +51,8 @@ fn seed_outcome(store: &HealthState, lane: usize, t: u64, is_error: bool) {
 
 fn make_lane_data(id: usize, max_permits: usize) -> LaneData {
     LaneData {
-        model: format!("model-{}", id),
-        provider: format!("provider-{}", id),
+        member: format!("model-{}", id),
+        route: format!("provider-{}", id),
         max: max_permits,
         sem: Arc::new(Semaphore::new(max_permits)),
         limited: false,
@@ -64,10 +64,6 @@ fn make_lane_data(id: usize, max_permits: usize) -> LaneData {
         ok: 0,
         err: 0,
         client_fault: 0,
-        upstream_model: None,
-        attempt_timeout_ms: None,
-        reasoning: false,
-        prompt_caching: false,
     }
 }
 
@@ -89,7 +85,7 @@ fn test_health_state_follows_identity_across_rebuild() {
     a.record_latency_in("p", 1, 123.0);
     let snaps = a.export_health();
     assert_eq!(snaps.len(), 2);
-    let s1 = snaps.iter().find(|s| s.model == "model-1").unwrap();
+    let s1 = snaps.iter().find(|s| s.member == "model-1").unwrap();
     assert!(
         !s1.cells.is_empty(),
         "the tripped pool cell must be exported"
@@ -119,7 +115,7 @@ fn test_health_state_follows_identity_across_rebuild() {
     assert_eq!(b.lane_latency_ms(0), None, "no inherited latency");
     // model-0's snapshot had no surviving lane — dropped without error.
     let b_snaps = b.export_health();
-    assert!(b_snaps.iter().all(|s| s.model != "model-0"));
+    assert!(b_snaps.iter().all(|s| s.member != "model-0"));
 
     // And the carried state keeps EVOLVING normally: cooldown expiry recovers the lane.
     set_now_for_test(1000 + 24 * 3600);

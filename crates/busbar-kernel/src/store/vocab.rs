@@ -113,30 +113,6 @@ pub enum BreakerState {
     HalfOpen,
 }
 
-/// A namespaced breaker-cell key for one caller-registered id, fixed-prefixed with `tool:` so a
-/// registration keyed this way can never collide with a bare-name key another caller uses directly,
-/// nor with a key built under a different fixed prefix (e.g. [`agent_key`]'s `agent:`). The id is
-/// the caller's own registration id, which is what every refusal names. Lives here (not only on
-/// core's `PlaneBreakers`) so a plane crate builds the key without reaching into `busbar-core`;
-/// core's `PlaneBreakers::tool_key` delegates to it so the ONE spelling of the prefix stays
-/// single-sourced.
-#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
-pub fn tool_key(server: &str) -> String {
-    format!("tool:{server}")
-}
-
-/// A namespaced breaker-cell key for one caller-registered id, fixed-prefixed with `agent:` so a
-/// registration keyed this way can never collide with a bare-name key another caller uses directly,
-/// nor with a key built under a different fixed prefix (e.g. [`tool_key`]'s `tool:`). The id is
-/// the caller's own registration id, which is what every refusal names. Lives here (not only on
-/// core's `PlaneBreakers`) so a plane crate builds the key without reaching into `busbar-core`;
-/// core's `PlaneBreakers::agent_key` delegates to it so the ONE spelling of the prefix stays
-/// single-sourced.
-#[cfg_attr(not(feature = "relay"), allow(dead_code))]
-pub fn agent_key(agent: &str) -> String {
-    format!("agent:{agent}")
-}
-
 /// Get current time in seconds since epoch — THE host wall clock (the kernel hands it to every codec
 /// it drives as `proto::CodecHostServices`; a plane reads time through the host it is handed, never
 /// here).
@@ -342,8 +318,10 @@ pub struct Admit {
 /// Snapshot of lane stats for /stats endpoint.
 #[derive(Debug, Clone)]
 pub struct LaneSnapshot {
-    pub model: String,
-    pub provider: String,
+    /// The member the lane serves: the config entry's name, as the routing table keys it.
+    pub member: String,
+    /// The route the lane dials: the destination entry the member is bound to.
+    pub route: String,
     pub max_concurrent: usize,
     pub inflight: i64,
     pub free_slots: usize,
@@ -387,7 +365,7 @@ pub struct LaneSnapshot {
     pub last_trip_at: u64,
 }
 
-/// One lane's PORTABLE health state, keyed by its STABLE IDENTITY (model + provider) instead of
+/// One lane's PORTABLE health state, keyed by its STABLE IDENTITY (member + route) instead of
 /// its array position. This is the carrier that lets learned reliability state survive the
 /// two events that invalidate positional indexing: a config APPLY that changes the lane set (the
 /// new store is built with the surviving lanes' snapshots restored), and — via serde, for the
@@ -400,8 +378,12 @@ pub struct LaneSnapshot {
 #[allow(dead_code)]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LaneHealthSnapshot {
-    pub model: String,
-    pub provider: String,
+    /// The member the lane serves ([`LaneSnapshot::member`]); serialized under its 1.5.5 key.
+    #[serde(rename = "model")]
+    pub member: String,
+    /// The route the lane dials ([`LaneSnapshot::route`]); serialized under its 1.5.5 key.
+    #[serde(rename = "provider")]
+    pub route: String,
     /// Remaining lifetime request budget (`-1` = unlimited).
     pub budget: i64,
     /// Default-cell breaker: FSM state, cooldown deadline (unix secs), consecutive-error streak.
