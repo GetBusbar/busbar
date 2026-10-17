@@ -89,6 +89,25 @@ fn a_path_dependency_onto_a_crate_the_census_never_read_is_refused() {
 }
 
 #[test]
+fn a_spaced_or_quoted_package_header_names_its_crate() {
+    assert!(is_package_header("[package]"));
+    assert!(is_package_header("[ package ]"));
+    assert!(is_package_header("[\"package\"]"));
+    assert!(!is_package_header("[[package]]"));
+    assert!(!is_package_header("[package.metadata]"));
+    let cx = ws();
+    let mut ov = Overlay::new();
+    ov.set(
+        "vendor/busbar-plane-spaced/Cargo.toml",
+        "[ package ]\nname = \"busbar-plane-spaced\"\nversion = \"0.0.0\"\n",
+    );
+    assert_red_naming(
+        &registry_row(&cx.with_overlay(ov)),
+        &["off-tree-crate", "vendor/busbar-plane-spaced"],
+    );
+}
+
+#[test]
 fn a_face_reached_through_a_reexport_super_or_a_renamed_contract_is_the_face() {
     let cx = ws();
     let mut ov = Overlay::new();
@@ -135,6 +154,18 @@ fn a_plane_building_another_kinds_door_is_a_foreign_entry() {
 }
 
 #[test]
+fn naming_another_kinds_abi_without_building_its_door_is_no_face() {
+    let text = "use busbar_contract::abi::transport::{FAULT_NONE, Ops};\n\
+                pub const KEEP: u32 = FAULT_NONE;\n\
+                pub fn width() -> usize { core::mem::size_of::<Ops>() }\n\
+                pub struct Held { kind_ops: u8 }\n";
+    assert!(built_door_kinds(text).is_empty());
+    let built = "use busbar_contract::abi::secret::Ops as Table;\n\
+                 busbar_contract::plugin_door! { ops: Table, }\nbusbar_contract::hook_door! {}\n";
+    assert_eq!(built_door_kinds(built), vec!["secret", "hooks"]);
+}
+
+#[test]
 fn a_kind_whose_door_table_the_contract_no_longer_defines_is_refused() {
     let cx = ws();
     let wire_abi = "crates/busbar-contract/src/abi/transport/mod.rs";
@@ -148,19 +179,5 @@ fn a_kind_whose_door_table_the_contract_no_longer_defines_is_refused() {
     assert_red_naming(
         &faces_row(&cx.with_overlay(ov)),
         &["face-door-gone", "transport"],
-    );
-}
-
-#[test]
-fn a_spaced_package_header_names_its_crate() {
-    let cx = ws();
-    let mut ov = Overlay::new();
-    ov.set(
-        "vendor/busbar-plane-spaced/Cargo.toml",
-        "[ package ]\nname = \"busbar-plane-spaced\"\nversion = \"0.0.0\"\n",
-    );
-    assert_red_naming(
-        &registry_row(&cx.with_overlay(ov)),
-        &["off-tree-crate", "vendor/busbar-plane-spaced"],
     );
 }

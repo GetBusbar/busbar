@@ -1907,7 +1907,7 @@ fn package_name(text: &str) -> Option<String> {
     for raw in text.lines() {
         let t = normalise_header_line(raw);
         if t.starts_with('[') {
-            in_package = t == "[package]";
+            in_package = is_package_header(t);
             continue;
         }
         if !in_package {
@@ -1921,6 +1921,28 @@ fn package_name(text: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Is a normalised header line the `[package]` table, however TOML lets it be spelled?
+///
+/// `t == "[package]"` read `[ package ]` and `["package"]` — both valid TOML, both the table Cargo
+/// reads — as some other table, so the crate had no name, no kind and no census entry, and was
+/// reported only if it also declared dependencies (`nameless-manifest`). Whitespace inside the
+/// brackets and a quoted key are the same table.
+fn is_package_header(t: &str) -> bool {
+    let Some(inner) = t.strip_prefix('[').and_then(|r| r.strip_suffix(']')) else {
+        return false;
+    };
+    if inner.starts_with('[') {
+        return false;
+    }
+    let key = inner.trim();
+    let key = key
+        .strip_prefix('"')
+        .and_then(|k| k.strip_suffix('"'))
+        .or_else(|| key.strip_prefix('\'').and_then(|k| k.strip_suffix('\'')))
+        .unwrap_or(key);
+    key == "package"
 }
 
 /// ONE MANIFEST LINE, NORMALISED, so a header is judged on what Cargo reads and not on its bytes.
@@ -3886,7 +3908,28 @@ fn rule_registry(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, ship: bool)
         for c in crates {
             for decl in c.deps.iter().chain(c.dev_deps.iter()) {
                 let Some(p) = &decl.path else { continue };
-                let Some(at) = off_tree_dirs.get(&join_rel(&c.dir, p)) else {
+                let target = join_rel(&c.dir, p);
+                let Some(at) = off_tree_dirs.get(&target) else {
+                    // A PATH DEPENDENCY ONTO A DIRECTORY THE CENSUS DID NOT READ IS A FINDING, NOT
+                    // "NO EDGE". Every edge rule looks the declaration's package up in the census
+                    // and `continue`s when it is absent, so a crate the walk never lists — under a
+                    // dot-directory, behind a header this reader cannot place — carried every
+                    // edge it had into the shipped graph with `:deps`, `:vocab`, `:registry` and
+                    // the ship twin green. Cargo compiles what the path names whether or not this
+                    // census read it; when the instrument cannot score the edge it false-fails
+                    // (BUSBAR-1.6.0.md Part 1, "When an instrument must choose, it false-fails").
+                    if !dirs.contains(target.as_str()) {
+                        offenders.push(format!(
+                            "unread-path-dep\t{target}\t{} path-depends on `{}` at `{target}`, \
+                             and no crate of the census lives there: the edge reaches a crate \
+                             this gate never read, so it has no kind, no class and no row, and \
+                             every edge rule would score it as no edge at all. Move the crate \
+                             under crates/<dir> with a `[package] name` the census reads, or \
+                             delete the dependency.",
+                            c.name,
+                            decl.cite()
+                        ));
+                    }
                     continue;
                 };
                 offenders.push(format!(
@@ -4299,6 +4342,9 @@ struct SourceIndex {
     /// dir -> entry-face label -> how many shipped impls are THAT face, matched by path
     /// ([`face_label`]). What `:faces` and the `[[face]]` rows read.
     faces: BTreeMap<String, BTreeMap<String, usize>>,
+    /// dir -> entry-face label -> how many shipped files build a door over that kind's ops table
+    /// ([`built_door_kinds`]). Read with [`SourceIndex::faces`] by [`face_counts`].
+    door_faces: BTreeMap<String, BTreeMap<String, usize>>,
 }
 
 /// `(live, ignored)` `#[test]` entries in a battery file.
@@ -4786,16 +4832,19 @@ const FACE_GRANTS: &[(&str, &str)] = &[("plugin-tooling", "store")];
 
 /// The entry face a resolved impl head IS, by its label, or `None`.
 ///
-/// A qualified head (resolved through the file's `use` bindings) is that face only if it is one of
-/// the face's paths. An UNRESOLVED bare name — a glob brought it in, or nothing did — is matched by
-/// the trait's own name: the instrument cannot tell, so it takes the false RED (Part 1, "When an
-/// instrument must choose, it false-fails").
+/// A head (resolved through the file's `use` bindings) is that face when it is one of the face's
+/// paths, OR when its last segment is the face's trait name. The second arm is the false RED (Part
+/// 1, "When an instrument must choose, it false-fails"): a qualified head counted only when it was
+/// byte-equal to a listed path, so `pub use busbar_contract::Plane;` in `lib.rs` plus `use
+/// crate::Plane; impl Plane for Wire {}`, a `use super::Plane`, and a renamed dependency (`contract
+/// = { package = "busbar-contract" }` + `impl contract::plane::Plane for Wire`) each resolved to a
+/// path this reader does not follow and scored no face. This reader does not resolve modules
+/// across files, so a path it cannot follow to the contract is still the face's trait by name.
 fn face_label(head: &str) -> Option<&'static str> {
     FACE_PATHS.iter().find_map(|(_, label, paths)| {
         let hit = match paths.first() {
             None => head_name(head) == *label,
-            Some(_) if head.contains("::") => paths.contains(&head),
-            Some(canonical) => head == head_name(canonical),
+            Some(canonical) => paths.contains(&head) || head_name(head) == head_name(canonical),
         };
         hit.then_some(*label)
     })
@@ -4808,6 +4857,40 @@ fn face_label(head: &str) -> Option<&'static str> {
 fn face_paths_hold(cx: &Ctx) -> Vec<String> {
     let mut gone = Vec::new();
     for (kind, _, paths) in FACE_PATHS {
+        // EVERY FACE IS SEEN THROUGH ITS DOOR, and five kinds have nothing else: the contract
+        // defines no trait for them, so a label match is a word no compilable impl can carry. The
+        // door's ops table is what [`built_door_kinds`] reads, so a kind whose table the contract
+        // no longer defines is a face this rule cannot see, and it is named, never skipped.
+        let module = DOOR_KIND_MODULES
+            .iter()
+            .find(|(k, _)| k == kind)
+            .map(|(_, m)| *m);
+        let door_found = module.is_some_and(|m| {
+            let base = format!("crates/busbar-contract/src/abi/{m}");
+            [format!("{base}.rs"), format!("{base}/mod.rs")]
+                .iter()
+                .filter_map(|f| cx.read(f).ok())
+                .any(|t| {
+                    production_code(&t).iter().any(|l| {
+                        let c = l.code.trim_start();
+                        c.starts_with("pub struct Ops ") || c.starts_with("pub struct Ops{")
+                    })
+                })
+        });
+        if !door_found {
+            gone.push(format!(
+                "face-door-gone\t{kind}\tthe `{kind}` face is read through its door's ops table \
+                 (`busbar_contract::abi::{}::Ops`), and the contract no longer defines one there, \
+                 so a crate building that kind's door reads as no face at all{}. Point the face \
+                 at where the kind's door table lives now",
+                module.unwrap_or("?"),
+                if paths.is_empty() {
+                    " — and the kind has no contract trait either, so nothing sees it"
+                } else {
+                    ""
+                }
+            ));
+        }
         for path in *paths {
             let segs: Vec<&str> = path.split("::").skip(1).collect();
             let Some((name, modpath)) = segs.split_last() else {
@@ -4910,6 +4993,7 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
         conformance: BTreeSet::new(),
         conformance_dead: BTreeSet::new(),
         faces: BTreeMap::new(),
+        door_faces: BTreeMap::new(),
     };
     // Each file's facts are a pure function of its path and bytes (see [`source_facts`]), so they
     // are read across the cores and folded here in walk order, as the serial loop folded them.
@@ -4954,6 +5038,12 @@ fn index_sources(cx: &Ctx) -> Result<SourceIndex, String> {
         if !test_only.iter().any(|p| rel.starts_with(p.as_str())) {
             for f in &facts.faces {
                 *faces.entry((*f).to_string()).or_default() += 1;
+            }
+            if !facts.door_faces.is_empty() {
+                let doors = idx.door_faces.entry(dir.clone()).or_default();
+                for f in &facts.door_faces {
+                    *doors.entry((*f).to_string()).or_default() += 1;
+                }
             }
         }
         if facts.door_tails > 0 {
@@ -5062,6 +5152,8 @@ struct SourceFacts {
     heads: Vec<String>,
     /// The entry face each trait-impl head is, by its resolved PATH ([`face_label`]), when shipped.
     faces: Vec<&'static str>,
+    /// The entry face of each kind whose door it BUILDS ([`built_door_kinds`]), when shipped.
+    door_faces: Vec<&'static str>,
     /// How many door tails it states, when shipped; 0 otherwise. See [`door_tails`].
     door_tails: usize,
     /// Whether it exports a door through the SDK door macro. See [`exports_door`].
@@ -5110,6 +5202,7 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
     let mut mods = None;
     let mut heads = Vec::new();
     let mut faces = Vec::new();
+    let mut door_faces = Vec::new();
     let mut tails = 0;
     let mut builds = Vec::new();
     let mut kinds = Vec::new();
@@ -5133,6 +5226,12 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
         }
         let resolved = impl_heads(text);
         faces = resolved.iter().filter_map(|h| face_label(h)).collect();
+        // THE DOOR IS THE ENTRY, so a door built over a kind's ops table is that kind's face as
+        // much as an `impl` of its trait is ([`built_door_kinds`]).
+        door_faces = built_door_kinds(text)
+            .into_iter()
+            .filter_map(kind_face_label)
+            .collect();
         heads = resolved.iter().map(|h| head_name(h).to_string()).collect();
         tails = door_tails(text);
     }
@@ -5142,6 +5241,7 @@ fn source_facts(rel: &str, dir: &str, text: &str) -> std::sync::Arc<SourceFacts>
         mods,
         heads,
         faces,
+        door_faces,
         door_tails: tails,
         exports_door: exports,
         door_macros: builds,
@@ -5391,6 +5491,100 @@ fn door_kind_marks(text: &str) -> Vec<&'static str> {
         .collect()
 }
 
+/// The kind whose memory-ABI ops table a resolved path names: `…::abi::<module>::Ops`.
+fn ops_table_kind(path: &str) -> Option<&'static str> {
+    let segs: Vec<&str> = path.split("::").collect();
+    let [.., abi, module, ops] = segs.as_slice() else {
+        return None;
+    };
+    if *abi != "abi" || *ops != "Ops" {
+        return None;
+    }
+    DOOR_KIND_MODULES
+        .iter()
+        .find(|(_, m)| m == module)
+        .map(|(kind, _)| *kind)
+}
+
+/// THE KINDS WHOSE DOOR A FILE BUILDS, read off the door itself rather than off the ABI it names.
+///
+/// Five of the seven kinds have no contract trait at all: their entry IS the memory-ABI door. So a
+/// face rule that reads only `impl <Trait> for` was blind to a plane crate building and exporting a
+/// transport door — the crate loads as a transport and no row says so. A door states its kind in
+/// exactly two places, both read here:
+///
+/// * the ops table a door macro is handed — `ops: busbar_contract::abi::<module>::Ops` — resolved
+///   through the file's `use` bindings, so `use busbar_contract::abi::transport::Ops; … ops: Ops`
+///   and `use busbar_contract::abi::transport as wire; … ops: wire::Ops` are the same door;
+/// * a kind's own door builder, whose name begins with the kind's ABI module (`store_door!`,
+///   `auth_verify_door!`, `hook_door!`), derived from the builders the contract defines
+///   ([`door_macro_calls`]; `export_door!` exports a door and builds none, [`NOT_DOOR_BUILDERS`]).
+///
+/// Merely NAMING another kind's ABI (a plane reading the transport's fault codes) builds no door,
+/// which is why this is not [`door_kind_marks`].
+fn built_door_kinds(text: &str) -> Vec<&'static str> {
+    let mut bound: BTreeMap<String, String> = BTreeMap::new();
+    let mut joined = String::new();
+    for line in production_code(text).iter() {
+        joined.push_str(&line.blanked);
+        joined.push(' ');
+    }
+    for stmt in use_statements(&joined) {
+        for (local, path) in use_bindings(stmt) {
+            bound.insert(local, path);
+        }
+    }
+    let mut out: Vec<&'static str> = Vec::new();
+    let b = joined.as_bytes();
+    let mut i = 0usize;
+    while let Some(p) = joined[i..].find("ops:") {
+        let at = i + p;
+        i = at + 4;
+        // `kind_ops:` is the table's slots, and `ops::` is a path, not a field.
+        if at > 0 && (b[at - 1].is_ascii_alphanumeric() || b[at - 1] == b'_') {
+            continue;
+        }
+        let rest = &joined[at + 4..];
+        if rest.starts_with(':') {
+            continue;
+        }
+        let rest = rest.trim_start().trim_start_matches('&').trim_start();
+        let rest = rest.strip_prefix("'static").map_or(rest, str::trim_start);
+        let path: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+            .collect();
+        if path.is_empty() {
+            continue;
+        }
+        if let Some(kind) = ops_table_kind(&resolve_head(&bound, &path)) {
+            if !out.contains(&kind) {
+                out.push(kind);
+            }
+        }
+    }
+    for name in door_macro_calls(text) {
+        if NOT_DOOR_BUILDERS.contains(&name.as_str()) {
+            continue;
+        }
+        let head = name.split('_').next().unwrap_or("");
+        if let Some(&(kind, _)) = DOOR_KIND_MODULES.iter().find(|(_, m)| *m == head) {
+            if !out.contains(&kind) {
+                out.push(kind);
+            }
+        }
+    }
+    out
+}
+
+/// The `:faces` label of a kind's entry face ([`FACE_PATHS`]).
+fn kind_face_label(kind: &str) -> Option<&'static str> {
+    FACE_PATHS
+        .iter()
+        .find(|(k, _, _)| *k == kind)
+        .map(|(_, label, _)| *label)
+}
+
 /// THE DOOR IS THE KIND'S IMPLEMENTATION (ARCHITECT ruling GRPC-DOOR 2026-10-02, widened to every
 /// kind; spec §11, owner-locked 2026-09-27: a plugin talks to busbar ONLY through its memory-ABI
 /// door table, and compiled in = dropped in = the same table). A crate of kind K whose shipped
@@ -5635,6 +5829,27 @@ fn rule_shape(
 /// A DIALECT MAY IMPLEMENT ITS PLANE'S FACE, and nothing else may. That is what a dialect IS: the
 /// plane's other half, written against the plane's own face; the split is about where the code
 /// lives, not about which trait it satisfies.
+/// Every entry face `dir` states in shipped source, by label: its trait impls ([`face_label`]) plus
+/// the doors it builds ([`built_door_kinds`]). `None` when the index read no shipped source there.
+///
+/// The CONTRACT's doors are not its faces: it is where every kind's door builder and ops table are
+/// defined, and its own source invokes them as the SDK's machinery, not as a crate entering busbar
+/// as that kind. Its trait impls are still read.
+fn face_counts(idx: &SourceIndex, dir: &str, kind: &str) -> Option<BTreeMap<String, usize>> {
+    let impls = idx.faces.get(dir);
+    let doors = (kind != CONTRACT_KIND)
+        .then(|| idx.door_faces.get(dir))
+        .flatten();
+    if impls.is_none() && doors.is_none() {
+        return None;
+    }
+    let mut out = impls.cloned().unwrap_or_default();
+    for (label, n) in doors.into_iter().flatten() {
+        *out.entry(label.clone()).or_default() += n;
+    }
+    Some(out)
+}
+
 fn rule_faces(
     cx: &Ctx,
     crates: &[CrateInfo],
@@ -5654,11 +5869,11 @@ fn rule_faces(
 
     for c in crates {
         let Some(mine) = c.kind else { continue };
-        let Some(impls) = idx.faces.get(&c.dir) else {
+        let Some(impls) = face_counts(idx, &c.dir, mine) else {
             continue;
         };
         checked += 1;
-        for (trait_name, n) in impls {
+        for (trait_name, n) in &impls {
             let Some(owner) = faces.get(trait_name) else {
                 continue;
             };
@@ -5686,9 +5901,10 @@ fn rule_faces(
                 )),
                 None => offenders.push(format!(
                     "foreign-entry\t{}\t{} is kind `{mine}` and implements `{trait_name}` {n} \
-                     time(s) in shipped source — the entry face of kind `{owner}`. A trait \
-                     implementation is a claim made to the COMPILER, and when it disagrees with \
-                     the crate's kind the compiler's claim is the one that runs; {MAKE_A_NEW_KIND}",
+                     time(s) in shipped source (an `impl` of its trait, or a door built over its \
+                     ops table) — the entry face of kind `{owner}`. A trait implementation or a \
+                     door is a claim made to the COMPILER and the loader, and when it disagrees \
+                     with the crate's kind that claim is the one that runs; {MAKE_A_NEW_KIND}",
                     c.dir, c.name
                 )),
             }
@@ -7015,9 +7231,8 @@ fn repins(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry) -> Result<Vec<Repi
         let now = crates
             .iter()
             .find(|c| c.name == f.krate)
-            .and_then(|c| idx.faces.get(&c.dir))
-            .and_then(|m| m.get(&f.face))
-            .copied()
+            .and_then(|c| face_counts(&idx, &c.dir, c.kind.unwrap_or("")))
+            .and_then(|m| m.get(&f.face).copied())
             .unwrap_or(0) as i64;
         if now != f.count {
             out.push(Repin {
@@ -13216,6 +13431,7 @@ mod plant_tests {
             conformance: BTreeSet::new(),
             conformance_dead: BTreeSet::new(),
             faces: BTreeMap::new(),
+            door_faces: BTreeMap::new(),
         }
     }
 
