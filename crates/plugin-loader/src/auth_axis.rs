@@ -129,10 +129,15 @@ impl AuthRows {
         let name = row.key();
         let refused = |e: String| format!("auth plugin '{name}': {e}");
         let sink = AuthSink::new(name);
+        // Opened to serve: its own plugin log file (THE DESIGN §11.2). A fact read binds no file.
+        let envelope = match self.logs.filter(|_| serving) {
+            Some(logs) => sink.to_file(&logs(), label).map_err(refused)?,
+            None => sink.bind(),
+        };
         let bind = Bind {
             instance: Arc::from(label),
             max_inflight_cap: MAX_INFLIGHT_CAP,
-            sink: sink.bind(),
+            sink: envelope,
             dispatcher: self.dispatcher.adopter(),
             // Serving: the host's table (else a table the axis holds), or (none) a door that
             // declares no need. A fact read: a probe, bound with no table whatever it declares.
