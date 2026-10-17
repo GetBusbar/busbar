@@ -448,7 +448,7 @@ filtered_cargo_test() {  # $1 = expected passing count ; rest = the cargo argv
 #     checkout and PARITY records and diffs some OTHER tree's candidate while this script's own
 #     banner still says this tree is what was proven.
 #   * BUSBAR_ORACLE_TOOL_DIR repoints where bin/oracle's generated record.sh shim (and any
-#     caller that locates the harness through this var, e.g. the turnstile) are read from — an
+#     caller that locates the harness through this var, e.g. HarnessOracle) are read from — an
 #     operator-chosen tool dir is an operator-chosen judge.
 #   * BUSBAR_ORACLE_CACHE repoints the cached golden `fetch-golden --check` verifies against
 #     (default `$HOME/.cache/busbar-oracle`). Point it at a cache seeded with a hand-edited "1.5.5"

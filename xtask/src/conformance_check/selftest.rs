@@ -1,4 +1,4 @@
-//! `cargo xtask conformance check --selftest` — the RED/GREEN proofs for the turnstile-facing
+//! `cargo xtask conformance check --selftest` — the RED/GREEN proofs for the CI-facing
 //! admission command. Mirrors `gates::conformance_sync::selftest`'s shape (a GREEN control, then one
 //! plant per failure mode) but drives the plain functions in [`super`] directly: this command
 //! answers a CLI question against explicit `--suite`/`--sha`/`--manifest` flags rather than a fixed
@@ -158,7 +158,7 @@ pub fn run(cx: &Ctx) -> i32 {
         proven: musts_green,
     });
 
-    // ── `--musts` RED: the single call turnstile makes denies the moment any MUST suite is not a
+    // ── `--musts` RED: the single call the `conformance` check makes denies the moment any MUST suite is not a
     //    fresh pass — here `beta` is not-run.
     let musts_rows_mixed = check_musts(&planted_cx, DEFAULT_MANIFEST_PATH, SHA);
     let musts_red = musts_rows_mixed.iter().any(|r| r.status == Status::Fail)
