@@ -927,6 +927,63 @@ impl Runner {
         code
     }
 
+    /// THE ORACLE'S RECORD STEP, run by the llm rig on this commit when no recording was handed
+    /// in: the oracle check's own commands (`.ci/dev.yaml` `oracle`), the release binary built
+    /// from this checkout and recorded over the corpus into `rec`.
+    fn record_candidate(&self, rig: Rig, rec: &Path) -> Result<(), String> {
+        if let Some(o) = self.missing(rig, &["cargo"]) {
+            return Err(o.reason.unwrap_or_default());
+        }
+        let build = self.leg(
+            rig,
+            "oracle-build",
+            &[
+                "cargo",
+                "build",
+                "--locked",
+                "--release",
+                "-p",
+                "busbar",
+                "--bin",
+                "busbar",
+            ],
+            None,
+            &[],
+        );
+        if build != Some(0) {
+            return Err(format!("the release build {}", rc(build)));
+        }
+        if self.leg(rig, "oracle-tool", &["./bin/oracle", "tool-dir"], None, &[]) != Some(0) {
+            return Err("the oracle's judge could not be obtained (`bin/oracle tool-dir`)".into());
+        }
+        let bin = self.target.join("release").join("busbar");
+        let _ = std::fs::remove_dir_all(rec);
+        let (bin_s, rec_s) = (
+            bin.to_string_lossy().into_owned(),
+            rec.to_string_lossy().into_owned(),
+        );
+        let record = self.leg(
+            rig,
+            "oracle-record",
+            &[
+                "./bin/oracle",
+                "record",
+                "--bin",
+                &bin_s,
+                "--plane",
+                "all",
+                "--out",
+                &rec_s,
+            ],
+            None,
+            &[],
+        );
+        if record != Some(0) {
+            return Err(format!("`bin/oracle record` {}", rc(record)));
+        }
+        Ok(())
+    }
+
     fn run_llm(&self) -> BTreeMap<String, Outcome> {
         let ids = || LLM_DIALECTS.iter().map(|d| llm_suite(d));
         let rig = Rig::Llm;
@@ -942,8 +999,24 @@ impl Runner {
                 ),
             );
         };
-        let has_rows = read_opt(&rec.join("ledger.tsv")).is_some_and(|l| !l.trim().is_empty());
-        if !has_rows {
+        let has_rows = || read_opt(&rec.join("ledger.tsv")).is_some_and(|l| !l.trim().is_empty());
+        // SELF-SUFFICIENT (ARCHITECT ruling 2026-10-17): the recording is the oracle check's, and no
+        // check may lean on a file another check left on the host. Absent, the rig records it HERE,
+        // on this commit, by the oracle check's own steps, and judges that; a recording that still
+        // holds no rows is not-run, never a pass on nothing (Law 9).
+        if !has_rows() {
+            if let Err(why) = self.record_candidate(rig, rec) {
+                return fan(
+                    ids(),
+                    &Outcome::not_run(format!(
+                        "the recording {} has no ledger rows and recording it on this commit \
+                         failed: {why}",
+                        rec.display()
+                    )),
+                );
+            }
+        }
+        if !has_rows() {
             return fan(
                 ids(),
                 &Outcome::not_run(format!(
