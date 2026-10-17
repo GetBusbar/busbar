@@ -655,12 +655,16 @@ impl PluginRegistry {
         self.kind_refusal(kind::SECRET, "resolve config secrets", name_or_alias)
     }
 
-    /// Open EVERY loadable transport, in scan order, through its memory-ABI door
-    /// ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]): admitted through the one dispatcher's door
-    /// validation and bound with `bind`, labelled with its own plugin name (each opened door is its
-    /// own instance to the host services). A library with no door is refused: the HOT transport lane
-    /// is deleted (row 84), and no other lane reads it. Each image is staged and opened once. The
-    /// first that will not load fails the whole set, naming it.
+    /// Open every loadable transport the configuration USES, in scan order, through its memory-ABI
+    /// door ([`busbar_contract::abi::mechanism::DOOR_SYMBOL`]): admitted through the one
+    /// dispatcher's door validation and bound with `bind`, labelled with its own plugin name (each
+    /// opened door is its own instance to the host services). SELECT FIRST (Law 7; `BUSBAR-1.6.0.md`
+    /// l.351: "Select picks a dropped-in transport from the signed manifest without opening it"): a
+    /// transport is opened only when a scheme its signed Statement claims is one `uses` names; one
+    /// no configured URL dials is never staged, loaded or opened. A manifest that states no
+    /// Statement cannot be selected and is refused without opening it, and a library with no door is
+    /// refused: the HOT transport lane is deleted (row 84), and no other lane reads it. Each image
+    /// is staged and opened once. The first that will not load fails the whole set, naming it.
     ///
     /// # Errors
     ///
@@ -668,7 +672,7 @@ impl PluginRegistry {
     pub fn open_transport_entries(
         &self,
         bind: &crate::dispatch::Bind,
-        _uses: &crate::boot::Uses,
+        uses: &crate::boot::Uses,
     ) -> Result<TransportEntries, String> {
         use crate::dispatch::load::{load_staged, Staging};
         let mut entries = TransportEntries::default();
@@ -678,12 +682,33 @@ impl PluginRegistry {
             .filter(|p| p.manifest.kind == kind::TRANSPORT)
         {
             let name = &p.manifest.name;
-            let stated = p.manifest.stated_rendering()?;
+            let Some(stated) = p.manifest.stated_rendering()? else {
+                return Err(format!(
+                    "transport plugin '{name}' states no Statement in its signed manifest: a \
+                     transport is selected by the schemes its Statement claims and loads only \
+                     through its memory-ABI door (`busbar_plugin_door`)"
+                ));
+            };
+            let claims = busbar_contract::abi::mechanism::rendering::read(&stated)
+                .map_err(|e| {
+                    format!(
+                        "transport plugin '{name}': its Statement does not read back: byte {} is \
+                         not {}",
+                        e.at, e.what
+                    )
+                })?
+                .claims;
+            if !claims
+                .iter()
+                .any(|c| uses.schemes.contains(&c.to_ascii_lowercase()))
+            {
+                continue;
+            }
             let (lib, staged) = crate::stage::load_library_from_bytes(&p.lib_bytes, name)?;
             match load_staged::<crate::dispatch::kinds::transport::Transport>(
                 lib,
                 staged,
-                stated.as_deref(),
+                Some(stated.as_slice()),
                 crate::dispatch::Bind {
                     instance: std::sync::Arc::from(name.as_str()),
                     ..bind.clone()

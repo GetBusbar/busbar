@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
 use busbar_contract::abi::mechanism::door::{
-    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_DECLARING,
+    DoorFn, REWRITE_ALIAS, REWRITE_SUGAR, SECTION_CONSUMED, SECTION_DECLARING,
 };
 use busbar_contract::abi::mechanism::rendering::{read, Read, ReadNeed};
 use busbar_contract::abi::mechanism::KindCode;
@@ -539,13 +539,34 @@ pub struct PlaneSet {
     pub doors: Vec<Candidate>,
 }
 
-/// THE PLANES THE CONFIGURATION USES, of the discovered `doors`.
+/// THE PLANES THE CONFIGURATION USES, of the discovered `doors` (Law 7, `BUSBAR-1.6.0.md`
+/// l.1908-1910: "Core loads a plugin **iff** its configuration section is present. No verb
+/// configured → that plugin is never loaded."). A plane is used iff the document writes a section
+/// its Statement owns: its declaring section (its verb) or another it owns, never one it only
+/// consumes. That is the same test the composition's serve makes of a bound plane ("a door plane is
+/// configured when the document writes ANY section it owns"), read here off the Statement
+/// rendering, so a plane the document does not configure is never bound. Read in order; a door
+/// whose rendering does not read is kept, so its own load names why.
 #[must_use]
-pub fn used_planes(_uses: &Uses, doors: &[Candidate]) -> Vec<Candidate> {
-    doors.to_vec()
+pub fn used_planes(uses: &Uses, doors: &[Candidate]) -> Vec<Candidate> {
+    doors
+        .iter()
+        .filter(|c| c.kind == KindCode::Plane)
+        .filter(|c| {
+            c.verbs.iter().any(|v| uses.roots.contains(v))
+                || match read(&c.stated) {
+                    Ok(r) => r.sections.iter().any(|(name, flags)| {
+                        flags & SECTION_CONSUMED == 0 && uses.roots.contains(name)
+                    }),
+                    Err(_) => true,
+                }
+        })
+        .cloned()
+        .collect()
 }
 
-/// THE PLANES' ONE LOAD: every door plane of a [`PlaneSet`] selected under its own name and bound
+/// THE PLANES' ONE LOAD: every door plane given (the boot gives it [`used_planes`]: Law 7) bound
+/// under its own name
 /// through [`load`] — a linked row by `load_linked`, a dropped one by `load_dropped` over its
 /// verified bytes, each against its stated Statement and tail, on `dispatcher`, to its own log
 /// sink.

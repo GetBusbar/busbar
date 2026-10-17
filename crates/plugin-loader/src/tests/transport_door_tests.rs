@@ -143,8 +143,10 @@ fn a_transport_library_with_no_door_is_refused() {
         .open_transport_entries(&bind(), &uses(&["no-door"]))
         .err()
         .expect("a library with no door is not a transport");
+    // Its manifest states no Statement (a door-less image has none to state), so it is refused
+    // before it is opened, naming the door it lacks.
     assert!(
-        why.contains("exports no memory-ABI door"),
+        why.contains("memory-ABI door"),
         "the refusal names the missing door: {why}"
     );
 }

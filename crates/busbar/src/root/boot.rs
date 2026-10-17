@@ -609,8 +609,9 @@ pub type DoorPlane = std::sync::Arc<
 >;
 
 /// THE DOOR PLANES' ONE LOAD, run once the process's dispatcher is built
-/// ([`crate::root::dispatch::boot`]): every plane [`discover_planes`] discovered, linked and
-/// dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
+/// ([`crate::root::dispatch::boot`]): every plane [`discover_planes`] discovered that the
+/// configuration USES ([`crate::root::loader::boot::used_planes`], Law 7: a plane none of whose
+/// sections the document writes is never bound), linked and dropped alike, bound through the loader's one load on that dispatcher, each to its own log sink
 /// under the configured `plugins.logs`, each declaring its needs on the process's one connection
 /// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
 pub fn load_door_planes() {
@@ -697,7 +698,9 @@ pub fn door_planes() -> &'static [(String, DoorPlane)] {
 }
 
 /// THE TRANSPORTS DROPPED INTO THE CONFIGURED `plugins.dir` (the registry [`dropped_from_config`]
-/// scanned): every `kind: transport` plugin it admitted, loaded ONCE and held for the process, so the
+/// scanned): every `kind: transport` plugin it admitted whose claimed scheme a configured URL uses
+/// (Law 7: selected off its signed Statement, never opened otherwise), loaded ONCE and held for the
+/// process, so the
 /// boot seal folds them beside the linked wires (`crate::root::registry::compose`) and a wire the
 /// data door serves through lives as long as the door. Each image is a memory-ABI door, opened
 /// through the one dispatcher and served over the host's sockets (`crate::root::doors`, opened with
