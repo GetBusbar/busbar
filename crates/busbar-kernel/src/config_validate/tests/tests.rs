@@ -1847,6 +1847,34 @@ fn test_validate_chain_tokens_module_removed_message() {
     }
 }
 
+/// The removed static-token modules' refusal is 1.5.5's, byte for byte
+/// (v1.5.5:crates/busbar/src/config_validate/mod.rs:1237-1242), for each word the root legacy table
+/// names removed (`removed_auth_modules`): the kernel spells none of them.
+#[test]
+fn the_removed_auth_module_refusal_is_1_5_5s_bytes() {
+    let words = crate::config::legacy::text("removed_auth_modules");
+    assert!(
+        !words.trim().is_empty(),
+        "the root legacy table carries no `removed_auth_modules` row"
+    );
+    for legacy in words.split_whitespace() {
+        let (providers, models, pools) = valid_maps();
+        let mut cfg = make_root_cfg(providers, models, pools);
+        cfg.auth = Some(make_auth_chain(&[legacy], crate::auth::UpstreamCreds::Own));
+        let errs = validate(&cfg)
+            .unwrap_err_or_default(format!("chain module '{legacy}' must fail validation"));
+        let want = format!(
+            "auth.chain names '{legacy}': the static-token allowlist module was REMOVED in 1.5.0. \
+             Data-plane auth is `keys` (busbar-signed keys, minted via POST /api/v1/admin/keys) \
+             and IdP auth plugins - write:\n\n    auth:\n      chain:\n        - keys\n"
+        );
+        assert!(
+            errs.contains(&want),
+            "not 1.5.5's bytes for '{legacy}':\n{want}\ngot: {errs:#?}"
+        );
+    }
+}
+
 #[test]
 fn test_validate_chain_unknown_module_rejected_keys_accepted() {
     // `config_validate::validate` runs BEFORE the plugin registry exists (see this crate's
