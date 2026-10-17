@@ -171,6 +171,15 @@ use super::mechanism::lifecycle::{OpsHead, LIFECYCLE_SLOTS};
 /// The transport kind's ABI version: new in 1.6.0 (v1.5.5 had no transport kind ABI), so it ships `1`.
 pub const ABI_VERSION: u32 = 1;
 
+/// The transport kind's generation as the Rust face states it (`Plugin::abi`): [`ABI_VERSION`]
+/// itself, defined here and nowhere else, so a bump of the kind's version moves it and there is no
+/// second number to fall behind (THE DESIGN §11.5: an ABI version constant lives under `abi/`).
+pub const TRANSPORT_ABI: crate::transport::AbiVersion =
+    crate::transport::AbiVersion(ABI_VERSION as u16);
+
+// The Rust face is a `u16`: a kind version that outgrew it would truncate, so it refuses to build.
+const _: () = assert!(ABI_VERSION <= u16::MAX as u32);
+
 /// [`crate::abi::mechanism::call::InHead::op`] of each transport op, in table order: kind op `k` is
 /// [`LIFECYCLE_SLOTS`]` + k`.
 pub mod slot {

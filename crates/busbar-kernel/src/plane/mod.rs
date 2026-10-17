@@ -120,10 +120,9 @@ pub mod store;
 //                    than another wire format's envelope. A literal spelled per site is how those two
 //                    answers start to differ.
 //   WIRE_HTTP_JSON — a request-line-addressed binding, where the REQUEST LINE names the operation
-//                    rather than a body member. Read three ways that must agree: a `wire_format_names`
-//                    entry, the `crate::transport::Transport::HttpJson` label, and (upper-cased by the
-//                    owning plane's own serve-layer binding-advertiser) the `protocolBinding` a served
-//                    card advertises. The card spelling is upper-cased; this is that lower-cased.
+//                    rather than a body member. Read two ways that must agree: a `wire_format_names`
+//                    entry and (upper-cased by the owning plane's own serve-layer binding-advertiser)
+//                    the `protocolBinding` a served card advertises. The card spelling is upper-cased; this is that lower-cased.
 //   WIRE_GRPC      — a second binding a plane may declare as a wire-format name. Lower-case here and
 //                    upper-cased once, by the owning plane's own serve-layer binding-advertiser, into
 //                    the spelling a served card advertises — so the card cannot claim a binding the
@@ -953,9 +952,7 @@ pub struct PlaneAdmission {
     pub resource_metadata: String,
 }
 
-/// THE THREE WIRE-FORMAT NAMES, re-exported at their historical path. They are read by
-/// `Transport::name` as well as by the declarations here — one spelling for the metric label, the
-/// plane's wire-format list and the served card's `protocolBinding`, which is the entire reason they
-/// are constants — so they moved into the values crate with the transport axis. Nothing about them
-/// changed: `busbar_kernel::plane::WIRE_JSONRPC` and its siblings still resolve to these strings.
+/// THE THREE WIRE-FORMAT NAMES, re-exported at their historical path: one spelling for a plane's
+/// wire-format list and the readers that compare against it. Nothing about them changed:
+/// `busbar_kernel::plane::WIRE_JSONRPC` and its siblings still resolve to these strings.
 pub use busbar_contract::transport::transport::plane::{WIRE_GRPC, WIRE_HTTP_JSON, WIRE_JSONRPC};
