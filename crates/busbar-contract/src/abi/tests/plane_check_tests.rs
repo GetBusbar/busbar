@@ -3299,3 +3299,82 @@ fn a_cut_and_a_final_mark_ride_only_the_far_ends_own_pieces() {
         );
     }
 }
+
+/// A RAW-AFFIX CLAIM'S TARGET (`CLAIM_RAW_AFFIX`, ARCHITECT ruling 2026-10-17): exactly one `*`
+/// between a prefix that starts with `/` and a non-empty suffix, never beside the open, exact or
+/// pattern bits. RED: each malformed spelling and each forbidden pairing is refused.
+#[test]
+fn a_raw_affix_target_is_a_prefix_a_star_and_a_suffix() {
+    assert_eq!(
+        check_claim_target("/model/*/converse", CLAIM_RAW_AFFIX),
+        Ok(())
+    );
+    assert_eq!(
+        raw_affix("/model/*/converse"),
+        Some(("/model/", "/converse"))
+    );
+    for bad in [
+        "/model/converse",
+        "/model/*/a*b",
+        "model/*/converse",
+        "/model/*",
+        "*/converse",
+    ] {
+        assert_eq!(
+            check_claim_target(bad, CLAIM_RAW_AFFIX),
+            f(Rule::Contradiction, "claim.affix"),
+            "{bad}"
+        );
+    }
+    for pair in [CLAIM_OPEN, CLAIM_EXACT, CLAIM_PATTERN] {
+        assert_eq!(
+            check_claim_target("/model/*/converse", CLAIM_RAW_AFFIX | pair),
+            f(Rule::Contradiction, "claim.flags"),
+            "{pair}"
+        );
+    }
+    // The bit is a known claim bit; the next one up is not.
+    assert_eq!(
+        check_claims(&[claim("V", "/model/*/converse", CLAIM_RAW_AFFIX)], 0),
+        Ok(())
+    );
+    assert!(check_claims(&[claim("V", "/t", CLAIM_RAW_AFFIX << 1)], 0).is_err());
+}
+
+/// A RAW AFFIX MATCHES THE RAW PATH AS BYTES, so the previous release's rule (`starts_with` the
+/// prefix and `ends_with` a suffix) holds on every path, the odd ones included: empty segments, a
+/// trailing `/` and a leading `//` count as bytes, and the affixes may share their `/`. RED: the
+/// two paths that rule refuses stay refused.
+#[test]
+fn a_raw_affix_matches_the_previous_releases_paths_byte_for_byte() {
+    let claims = ["/model/*/converse", "/model/*/converse-stream"];
+    let matched = |path: &str| claims.iter().any(|c| raw_affix_matches(c, path));
+    for path in [
+        "/model/m/converse",
+        "/model/converse",
+        "/model/converse-stream",
+        "/model//converse",
+        "/model/arn:aws:bedrock:us-east-1:1:inference-profile/us.m/converse-stream",
+        "/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A1%3Ainference-profile%2Fus.m/converse",
+    ] {
+        assert!(
+            matched(path),
+            "{path} is matched, as the previous release matched it"
+        );
+    }
+    for path in [
+        "/model/m/converse/",
+        "//model/m/converse",
+        "/models/m/converse",
+        "/model/m/invoke",
+    ] {
+        assert!(
+            !matched(path),
+            "{path} is not matched, as the previous release did not match it"
+        );
+    }
+    assert!(
+        !raw_affix_matches("/model/converse", "/model/converse"),
+        "not a raw affix"
+    );
+}
