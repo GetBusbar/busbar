@@ -222,7 +222,7 @@ impl Routes {
             }
             // SAFETY: a non-NULL slot holds a box published by `compare_exchange` and freed only
             // when the table drops, after every call on the instance has returned.
-            let name: &str = unsafe { &**at };
+            let name: &str = unsafe { &*at };
             if name == entry {
                 return Some(AbiStr {
                     ptr: name.as_ptr(),
