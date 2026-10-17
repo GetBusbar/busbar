@@ -1,0 +1,1 @@
+{"metrics":{"latencyMs":123},"output":{"message":{"content":[{"text":"Checking."},{"toolUse":{"input":{"city":"Paris"},"name":"get_weather","toolUseId":"tooluse_bb1746f6f6c755f3031414141"}}],"role":"assistant"}},"stopReason":"tool_use","usage":{"inputTokens":50,"outputTokens":20,"totalTokens":70}}

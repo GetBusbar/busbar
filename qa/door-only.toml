@@ -1,0 +1,108 @@
+# door-only: DRAIN-ONLY ledger (M0 ABI-SPEC, REPORT-ONLY).
+# The binary closure reaches a plugin only through its door, and installs no static
+# fn-pointer seam but the two ruled core (oauth_as/seam.rs, admin/seam.rs). Each row
+# is one the tree carries today. Strike a row in the commit that drains it; never
+# add one. Regenerate with `cargo xtask gate door-only --write`.
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/attempt/respond.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/engine_tests/inject_include_usage_tests.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/exhaustion/mod.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/hooks.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/lazy_body.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/pipeline.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/usage.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/engine/wire.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/lib.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/native_ingress.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/testkit/shell.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/unit/arrival.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:plugin-path"
+file = "crates/busbar-llm/src/unit/meter.rs"
+item = "busbar_plane_llm"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-core-admin/src/v1/service.rs"
+item = "USAGE_RATE_HISTORY"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel-audit/src/amend.rs"
+item = "SINK"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel/src/plane/config.rs"
+item = "PLANE_SECTIONS"
+
+# judge_answer: interim for the 8 pooled-client builders; struck when D1-D6 move onto conns (Phase B).
+# (ARCHITECT ruling (C), DEST-GUARD 2026-10-02: the engine's pooled resolver asks the connector's
+# destination guard through this seam; no new static.)
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel/src/egress/trust/mod.rs"
+item = "EGRESS_TRUST"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel/src/rate_apply.rs"
+item = "APPLY"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-kernel/src/rate_apply.rs"
+item = "EPOCH"
+
+[[finding]]
+rule = "door-only:static-seam"
+file = "crates/busbar-llm/src/unit/node.rs"
+item = "NATIVE_SEATS"

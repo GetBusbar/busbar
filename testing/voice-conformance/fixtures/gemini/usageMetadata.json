@@ -1,0 +1,14 @@
+{
+  "usageMetadata": {
+    "promptTokenCount": 140,
+    "responseTokenCount": 80,
+    "totalTokenCount": 220,
+    "promptTokensDetails": [
+      { "modality": "TEXT", "tokenCount": 40 },
+      { "modality": "AUDIO", "tokenCount": 100 }
+    ],
+    "responseTokensDetails": [
+      { "modality": "AUDIO", "tokenCount": 80 }
+    ]
+  }
+}

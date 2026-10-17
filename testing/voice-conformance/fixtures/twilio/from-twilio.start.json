@@ -1,0 +1,23 @@
+{
+  "event": "start",
+  "sequenceNumber": "1",
+  "start": {
+    "accountSid": "ACXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "streamSid": "MZXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "callSid": "CAXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "tracks": [
+      "inbound"
+    ],
+    "mediaFormat": {
+      "encoding": "audio/x-mulaw",
+      "sampleRate": 8000,
+      "channels": 1
+    },
+    "customParameters": {
+      "FirstName": "Jane",
+      "LastName": "Doe",
+      "RemoteParty": "Bob"
+    }
+  },
+  "streamSid": "MZXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
+}

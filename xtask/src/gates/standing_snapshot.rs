@@ -1,0 +1,479 @@
+//! A STANDING RED THAT CAN ONLY SHRINK: a committed snapshot of the exact findings a gate's
+//! standing rows carry, and the posture that excuses those findings and nothing else.
+//!
+//! [`crate::gates::Excused::OnlyRows`] excuses a whole row. That is right for a row whose red is
+//! one fact, and wrong for a row that carries hundreds of findings. Excused wholesale, such a row
+//! absorbs every new finding that lands under it, and the standing debt grows unseen. So a
+//! row posted here is excused only for the findings the snapshot records, each at its recorded
+//! figure:
+//!
+//! * a finding that is NOT in the snapshot turns the posture RED: a new edge, a new cell, a new
+//!   vendor name, anything the debt did not already hold;
+//! * a finding whose figure is ABOVE its snapshot figure turns the posture RED: the debt grew;
+//! * a listed row whose detail carries a chunk that does not read as a finding (no TAB, an empty
+//!   tag, an empty subject), or that is red and parses to no finding at all, turns the posture RED:
+//!   a red the snapshot cannot read is a red it never evaluated, and so is a listed row that
+//!   recorded no row, two disagreeing rows or a SKIP;
+//! * a finding that points toward the drain (a `dead-*` allowance, a `STALE SLACK` ceiling) is
+//!   never a new debt and is reported, not scored;
+//! * a snapshot entry that no finding matches any more is STALE, and reported, not scored:
+//!   `--write-standing` strikes it and lowers every figure that fell, and writes nothing else.
+//!
+//! A finding is `<tag>\t<subject>\t<message...>`; the findings of one row are its detail after the
+//! summary, joined by ` | `. Its key is the row, the tag and the subject, with any ` = N` figure the
+//! subject carries taken out of it; its figure is the number the message measures.
+
+use std::collections::BTreeMap;
+
+use crate::ctx::Ctx;
+use crate::ledger::{Row, Status, Verdict};
+
+/// One gate's snapshot-standing rows.
+pub struct SnapshotReds {
+    /// The row ids excused finding by finding.
+    pub rows: &'static [&'static str],
+    /// The committed snapshot, repository-relative.
+    pub file: &'static str,
+}
+
+/// A finding's key: `<row>\t<tag>\t<subject>`.
+pub type Key = String;
+
+/// Every finding of `row`, as `(key, figure, drains)`. `drains` is true for a finding that points
+/// toward the drain rather than at a debt. A chunk that does not read as a finding is not here: it
+/// is in [`unparsed`], and [`judge`] blocks on it.
+pub fn findings(row: &Row) -> Vec<(Key, i64, bool)> {
+    row.detail
+        .split(" | ")
+        .filter_map(|chunk| finding(&row.id, chunk))
+        .collect()
+}
+
+/// Every chunk of `row`'s detail that does not read as a finding: no TAB, an empty tag, or an
+/// empty subject. A posture cannot excuse what it could not read, so a listed row carrying one is
+/// a NEW RED rather than a red the snapshot silently holds.
+pub fn unparsed(row: &Row) -> Vec<&str> {
+    row.detail
+        .split(" | ")
+        .filter(|chunk| finding(&row.id, chunk).is_none())
+        .collect()
+}
+
+/// One chunk of a detail, read as `<tag>\t<subject>\t<message...>`, or `None`.
+fn finding(row_id: &str, chunk: &str) -> Option<(Key, i64, bool)> {
+    let tab = chunk.find('\t')?;
+    let head = &chunk[..tab];
+    let tag = head
+        .rsplit([' ', ':'])
+        .next()
+        .unwrap_or(head)
+        .trim()
+        .to_string();
+    if tag.is_empty() {
+        return None;
+    }
+    let fields: Vec<&str> = chunk[tab + 1..].split('\t').collect();
+    let (s, r) = fields.split_first()?;
+    let (mut subject, rest) = (s.trim().to_string(), r.join("\t"));
+    if subject.is_empty() {
+        return None;
+    }
+    let mut figure = None;
+    if let Some((s, n)) = subject.rsplit_once(" = ") {
+        if let Ok(n) = n.trim().parse::<i64>() {
+            figure = Some(n);
+            subject = s.trim().to_string();
+        }
+    }
+    if tag == "vendor-name" {
+        // `<crate>\t<file>:<line>\t...`: keyed by crate and file, never by line (a line moves
+        // with every edit above it), and the figure is how many such findings there are.
+        let file = fields
+            .get(1)
+            .map(|f| f.rsplit_once(':').map_or(*f, |(p, _)| p))
+            .unwrap_or("");
+        subject = format!("{subject} {file}");
+        figure = Some(1);
+    }
+    let figure = figure
+        .or_else(|| number_after(&rest, "they differ by "))
+        .or_else(|| number_after(&rest, "vs measured "))
+        .or_else(|| number_after(&rest, "scored count is the higher, "))
+        .or_else(|| number_before(&rest, " time(s)"))
+        .unwrap_or(1);
+    let drains = tag.starts_with("dead-")
+        || tag.starts_with("rule-granted-")
+        || rest.contains("STALE SLACK");
+    Some((format!("{row_id}\t{tag}\t{subject}"), figure, drains))
+}
+
+fn number_after(text: &str, needle: &str) -> Option<i64> {
+    let at = text.find(needle)? + needle.len();
+    let digits: String = text[at..]
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+fn number_before(text: &str, needle: &str) -> Option<i64> {
+    let at = text.find(needle)?;
+    let digits: String = text[..at]
+        .chars()
+        .rev()
+        .take_while(char::is_ascii_digit)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    digits.parse().ok()
+}
+
+/// The debt findings of the standing rows, summed by key.
+fn debt(sr: &SnapshotReds, verdict: &Verdict) -> (BTreeMap<Key, i64>, Vec<String>) {
+    let mut debt: BTreeMap<Key, i64> = BTreeMap::new();
+    let mut drains = Vec::new();
+    for row in verdict
+        .rows
+        .iter()
+        .filter(|r| r.status != Status::Pass && sr.rows.contains(&r.id.as_str()))
+    {
+        for (key, figure, drain) in findings(row) {
+            if drain {
+                drains.push(key);
+            } else {
+                *debt.entry(key).or_insert(0) += figure;
+            }
+        }
+    }
+    (debt, drains)
+}
+
+/// Parse a snapshot: `<row>\t<tag>\t<subject>\t<figure>` per line, `#` comments and blanks ignored.
+pub fn parse(text: &str) -> Result<BTreeMap<Key, i64>, String> {
+    let mut out = BTreeMap::new();
+    for (n, line) in text.lines().enumerate() {
+        let t = line.trim_end();
+        if t.trim().is_empty() || t.trim_start().starts_with('#') {
+            continue;
+        }
+        let Some((key, figure)) = t.rsplit_once('\t') else {
+            return Err(format!(
+                "line {}: not `<row>\\t<tag>\\t<subject>\\t<figure>`",
+                n + 1
+            ));
+        };
+        let figure: i64 = figure
+            .trim()
+            .parse()
+            .map_err(|_| format!("line {}: figure `{figure}` is not a number", n + 1))?;
+        if key.split('\t').count() != 3 {
+            return Err(format!(
+                "line {}: the key is not `<row>\\t<tag>\\t<subject>`",
+                n + 1
+            ));
+        }
+        out.insert(key.to_string(), figure);
+    }
+    Ok(out)
+}
+
+/// The judgement of `verdict` against `snapshot`: `(blocking, report_only)`. Empty `blocking` means
+/// the posture holds.
+pub fn judge(
+    sr: &SnapshotReds,
+    verdict: &Verdict,
+    snapshot: &BTreeMap<Key, i64>,
+) -> (Vec<String>, Vec<String>) {
+    let mut blocking: Vec<String> = verdict
+        .rows
+        .iter()
+        .filter(|r| r.status != Status::Pass && !sr.rows.contains(&r.id.as_str()))
+        .map(|r| format!("NEW RED {} {}", r.id, r.detail))
+        .collect();
+    // A reconciliation problem is excused only when it is a listed row's own `<id>: FAIL`, whose
+    // findings are judged below. Every other problem about a listed row (no row recorded, two rows
+    // that disagree, a SKIP) carries no finding the snapshot can read, so it blocks like any other.
+    blocking.extend(
+        verdict
+            .problems
+            .iter()
+            .filter(|t| !sr.rows.iter().any(|id| t.as_str() == format!("{id}: FAIL")))
+            .map(|t| format!("NEW RED {t}")),
+    );
+    // A LISTED row is excused only for the findings the snapshot can read. A chunk it cannot read
+    // (a read error, a scan that stopped, a finding with no tag or subject) is a red the posture
+    // never evaluated, and so is a red row that parses to no finding at all.
+    for r in verdict
+        .rows
+        .iter()
+        .filter(|r| r.status != Status::Pass && sr.rows.contains(&r.id.as_str()))
+    {
+        let odd = unparsed(r);
+        if !odd.is_empty() {
+            blocking.push(format!(
+                "NEW RED {} carries {} detail chunk(s) the snapshot cannot read as \
+                 `<tag>\\t<subject>\\t<message>`, so no snapshot entry can excuse them: {}",
+                r.id,
+                odd.len(),
+                odd.iter()
+                    .map(|c| format!("`{c}`"))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            ));
+        } else if findings(r).is_empty() {
+            blocking.push(format!(
+                "NEW RED {} is red and its detail parses to no finding: {}",
+                r.id, r.detail
+            ));
+        }
+    }
+    let (debt, drains) = debt(sr, verdict);
+    for (key, figure) in &debt {
+        match snapshot.get(key) {
+            None => blocking.push(format!(
+                "NEW FINDING {} = {figure}: not in {} — a debt the snapshot does not hold",
+                key.replace('\t', " "),
+                sr.file
+            )),
+            Some(was) if figure > was => blocking.push(format!(
+                "RISE {}: {was} -> {figure} — the standing debt grew",
+                key.replace('\t', " ")
+            )),
+            Some(_) => {}
+        }
+    }
+    let mut report: Vec<String> = snapshot
+        .iter()
+        .filter(|(k, _)| !debt.contains_key(*k))
+        .map(|(k, v)| {
+            format!(
+                "STALE {} = {v}: no finding carries it any more — `--write-standing` strikes it",
+                k.replace('\t', " ")
+            )
+        })
+        .collect();
+    report.extend(snapshot.iter().filter_map(|(k, was)| {
+        let now = debt.get(k)?;
+        (now < was).then(|| {
+            format!(
+                "LOWER {}: {was} -> {now} — `--write-standing` lowers it",
+                k.replace('\t', " ")
+            )
+        })
+    }));
+    report.extend(drains.into_iter().map(|k| {
+        format!(
+            "DRAINING {}: an allowance the tree no longer needs — the ledger's own `--write` strikes it",
+            k.replace('\t', " ")
+        )
+    }));
+    (blocking, report)
+}
+
+/// Read the committed snapshot through `cx`.
+pub fn load(cx: &Ctx, sr: &SnapshotReds) -> Result<BTreeMap<Key, i64>, String> {
+    parse(&cx.read(sr.file).map_err(|e| format!("{}: {e}", sr.file))?)
+}
+
+const HEADER: &str = "\
+# THE STANDING FINDINGS of a gate's snapshot-standing rows (see xtask/src/gates/standing_snapshot.rs).
+# One line per finding: <row>\\t<tag>\\t<subject>\\t<figure>. The `--posture` run excuses exactly these,
+# at or below these figures, and reds anything new or higher. Written ONLY by
+# `cargo xtask gate <gate> --posture --write-standing`, which strikes and lowers and never adds.
+";
+
+/// The lowered snapshot text: every entry a finding still carries, at the lower of its two figures.
+/// Nothing is added. `bootstrap` writes every current debt finding, and is refused unless the
+/// snapshot does not exist yet.
+pub fn rewrite(
+    sr: &SnapshotReds,
+    verdict: &Verdict,
+    snapshot: Option<&BTreeMap<Key, i64>>,
+) -> String {
+    let (debt, _) = debt(sr, verdict);
+    let kept: BTreeMap<&Key, i64> = match snapshot {
+        Some(snap) => snap
+            .iter()
+            .filter_map(|(k, was)| debt.get(k).map(|now| (k, (*was).min(*now))))
+            .collect(),
+        None => debt.iter().map(|(k, v)| (k, *v)).collect(),
+    };
+    let mut out = HEADER.to_string();
+    for (k, v) in kept {
+        out.push_str(&format!("{k}\t{v}\n"));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SR: SnapshotReds = SnapshotReds {
+        rows: &["g:matrix"],
+        file: "qa/planted.standing.txt",
+    };
+
+    fn row(detail: &str) -> Row {
+        Row::fail("g:matrix", "t", detail)
+    }
+
+    const TREE: &str = "2 hit(s): ratchet\tbusbar × auth\tceiling 26 vs measured 30 (RAISED). | \
+                        unlisted-edge\tcleanliness -> auth\tbusbar-core-admin names auth vocabulary 29 time(s). | \
+                        dead-cell\tbusbar-x × plane\tthe cell measures 0.";
+
+    fn snap_of(tree: &str) -> BTreeMap<Key, i64> {
+        parse(&rewrite(&SR, &Verdict::of(vec![row(tree)]), None)).expect("parses")
+    }
+
+    /// A measurement-disagreement finding carries the GAP between its scanners, never the cell's
+    /// scored count: that count is the same cell's ratchet finding, and filing it twice made the
+    /// snapshot's figure-sum count every disagreeing cell twice.
+    #[test]
+    fn a_disagreement_carries_its_gap_not_its_cells_count() {
+        let tree = "2 hit(s): ratchet\tbusbar-kernel × transport\tceiling 4 vs measured 308 \
+                    (RAISED). | measurement-disagreement\tbusbar-kernel × transport\tsegment \
+                    scanner 303 vs window scanner 308: they differ by 5, and the cell scores the \
+                    higher, 308 (that count is the cell's own row).";
+        let f = findings(&row(tree));
+        assert!(f.contains(&(
+            "g:matrix\tmeasurement-disagreement\tbusbar-kernel × transport".to_string(),
+            5,
+            false
+        )));
+        let sum: i64 = snap_of(tree).values().sum();
+        assert_eq!(
+            sum,
+            308 + 5,
+            "the cell is counted once, its disagreement is its gap"
+        );
+    }
+
+    #[test]
+    fn a_finding_is_keyed_by_row_tag_and_subject_and_carries_its_measurement() {
+        let f = findings(&row(TREE));
+        assert!(f.contains(&("g:matrix\tratchet\tbusbar × auth".to_string(), 30, false)));
+        assert!(f.contains(&(
+            "g:matrix\tunlisted-edge\tcleanliness -> auth".to_string(),
+            29,
+            false
+        )));
+        assert!(f.contains(&("g:matrix\tdead-cell\tbusbar-x × plane".to_string(), 1, true)));
+        let cell = findings(&row(
+            "x: unlisted-cell\tbusbar × export = 7\tadd `count = \"7\"`.",
+        ));
+        assert_eq!(
+            cell,
+            vec![(
+                "g:matrix\tunlisted-cell\tbusbar × export".to_string(),
+                7,
+                false
+            )]
+        );
+    }
+
+    #[test]
+    fn green_when_the_snapshot_equals_the_tree() {
+        let v = Verdict::of(vec![row(TREE)]);
+        let (blocking, _) = judge(&SR, &v, &snap_of(TREE));
+        assert!(blocking.is_empty(), "{blocking:?}");
+    }
+
+    #[test]
+    fn red_on_a_planted_new_edge() {
+        let planted = format!(
+            "{TREE} | unlisted-edge\thooks -> cleanliness\tbusbar-hooks-x names cleanliness vocabulary 1 time(s)."
+        );
+        let (blocking, _) = judge(&SR, &Verdict::of(vec![row(&planted)]), &snap_of(TREE));
+        assert!(
+            blocking
+                .iter()
+                .any(|b| b.starts_with("NEW FINDING") && b.contains("hooks -> cleanliness")),
+            "{blocking:?}"
+        );
+    }
+
+    #[test]
+    fn red_on_a_planted_rise_in_a_standing_cell() {
+        let planted = TREE.replace("vs measured 30", "vs measured 31");
+        let (blocking, _) = judge(&SR, &Verdict::of(vec![row(&planted)]), &snap_of(TREE));
+        assert!(
+            blocking
+                .iter()
+                .any(|b| b.starts_with("RISE") && b.contains("30 -> 31")),
+            "{blocking:?}"
+        );
+    }
+
+    #[test]
+    fn a_stale_or_lowered_entry_is_reported_not_scored_and_write_only_shrinks() {
+        let drained = TREE
+            .replace("vs measured 30", "vs measured 28")
+            .replace(" | unlisted-edge\tcleanliness -> auth\tbusbar-core-admin names auth vocabulary 29 time(s).", "");
+        let v = Verdict::of(vec![row(&drained)]);
+        let snap = snap_of(TREE);
+        let (blocking, report) = judge(&SR, &v, &snap);
+        assert!(blocking.is_empty(), "{blocking:?}");
+        assert!(report
+            .iter()
+            .any(|r| r.starts_with("STALE") && r.contains("cleanliness -> auth")));
+        assert!(report
+            .iter()
+            .any(|r| r.starts_with("LOWER") && r.contains("30 -> 28")));
+        let lowered = parse(&rewrite(&SR, &v, Some(&snap))).expect("parses");
+        assert_eq!(lowered.get("g:matrix\tratchet\tbusbar × auth"), Some(&28));
+        assert!(!lowered.contains_key("g:matrix\tunlisted-edge\tcleanliness -> auth"));
+        // A new finding is never written by the lowering path.
+        let grown = format!("{drained} | unlisted-cell\tnew × kind = 3\tadd it.");
+        let still =
+            parse(&rewrite(&SR, &Verdict::of(vec![row(&grown)]), Some(&snap))).expect("parses");
+        assert!(!still.contains_key("g:matrix\tunlisted-cell\tnew × kind"));
+    }
+
+    /// X5 finding 10: a LISTED row that goes red with a detail the snapshot cannot read is a red
+    /// the posture never evaluated. A plain sentence (a read error, a scan that stopped) parses to
+    /// zero findings, and the posture used to hold over it; it must block, naming the row and the
+    /// text it could not read.
+    #[test]
+    fn a_listed_row_red_with_a_plain_sentence_detail_blocks() {
+        let stopped = "the scan stopped: Cargo.lock could not be read (permission denied)";
+        let (blocking, _) = judge(&SR, &Verdict::of(vec![row(stopped)]), &snap_of(TREE));
+        assert!(
+            blocking
+                .iter()
+                .any(|b| b.starts_with("NEW RED g:matrix") && b.contains(stopped)),
+            "{blocking:?}"
+        );
+    }
+
+    /// The same, with the plain sentence riding beside findings the snapshot holds: every chunk is
+    /// read or the row blocks. An empty tag and an empty subject are not readable either.
+    #[test]
+    fn an_unparsed_chunk_beside_standing_findings_blocks() {
+        for odd in [
+            "and then the walk gave up",
+            "x: \tbusbar × auth\tno tag",
+            "ratchet\t \tno subject",
+        ] {
+            let planted = format!("{TREE} | {odd}");
+            let (blocking, _) = judge(&SR, &Verdict::of(vec![row(&planted)]), &snap_of(TREE));
+            assert!(
+                blocking
+                    .iter()
+                    .any(|b| b.starts_with("NEW RED g:matrix") && b.contains(odd)),
+                "{odd:?}: {blocking:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_red_row_outside_the_snapshot_rows_is_new() {
+        let v = Verdict::of(vec![row(TREE), Row::fail("g:name", "t", "a fused name")]);
+        let (blocking, _) = judge(&SR, &v, &snap_of(TREE));
+        assert!(
+            blocking.iter().any(|b| b.starts_with("NEW RED g:name")),
+            "{blocking:?}"
+        );
+    }
+}

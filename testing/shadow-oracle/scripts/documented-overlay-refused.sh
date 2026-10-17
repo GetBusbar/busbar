@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: Apache-2.0
+# Copyright (C) 2026 Busbar Inc and contributors
+#
+# Script-driver cell for the PB-71 `documented` family. Proves the ACTUAL 1.5.5 behaviour behind
+# two documented-behaviour claims about a config with no writable overlay (`config.locked: true`,
+# or a writable-by-declaration config whose overlay backend cannot actually be written):
+#   - README.md:272 (CONTRADICTED — the code does NOT refuse to boot; PB-71 pins the code)
+#   - CHANGELOG.md:40-46 (1.5.4 entry, CONFIRMED — boots, serves, WARNs, refuses admin mutations)
+# One arg selects which config shape is under test; both land on the SAME `overlay_path == None`
+# code path (config/overlay.rs; main.rs:1053-1073 in the 1.5.5 tag), so the observable facts —
+# boots to /healthz, then refuses a PUT /api/v1/admin/config/settings with the fixed
+# NO_WRITABLE_OVERLAY_MSG — are identical for both variants; only the boot-time WARN/INFO line
+# differs (checked as a boolean, since its exact wording is the CONTRADICTED/CONFIRMED claim text
+# already quoted in the cell's `why`, not a second thing to pin here).
+#
+# busbar's own stdout/stderr are captured SEPARATELY (never merged with `2>&1`) and land under the
+# STANDARD paths every other driver in this suite uses: raw stderr under `effects.stderr` (a plain
+# string), so the shared accepted-differences.json transforms (D-1 diagnostic codes, D-2 jemalloc
+# line) reach it exactly as they reach an exec cell's capture-exec.py output. Everything else this
+# cell asserts is a fact DERIVED from a stream (a boolean, a status code), never raw log text under
+# a custom key — the same discipline documented-docker-defaults.sh already used for its own
+# `open_relay_warn_present` boolean.
+#
+#   documented-overlay-refused.sh <locked|overlay-unwritable>
+#
+# Writes $RAW/captured.json: status = 0 once the boot + mutation attempt both ran (else the failing
+# step number). Env from the recorder: BUSBAR_BIN RAW WORK ORACLE_ADMIN_TOKEN.
+set -uo pipefail
+here="$(cd "$(dirname "$0")/.." && pwd)"
+repo="$(cd "${here}/../.." && pwd)"
+source "${repo}/testing/fleet-fixtures/lib.sh"
+BIN="${BUSBAR_BIN:?}"; RAW="${RAW:?}"; ADMIN="${ORACLE_ADMIN_TOKEN:-shadow-oracle-admin}"
+VARIANT="${1:-overlay-unwritable}"
+LP="${OVRL_LISTEN_PORT:-${SCRIPT_LISTEN_PORT:-48901}}" AP="${OVRL_ADMIN_PORT:-${SCRIPT_ADMIN_PORT:-48902}}"
+W="$RAW/overlay-work"; mkdir -p "$W"
+
+for p in "$LP" "$AP"; do
+  assert_port_free "$p" || { echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"port $p busy\"}}" >"$RAW/captured.json"; exit 0; }
+done
+
+"$BIN" --generate-signing-key >"$W/signing.key" 2>/dev/null
+cat >"$W/providers.yaml" <<YAML
+openai-chat:
+  protocol: openai
+  base_url: "http://127.0.0.1:1"
+YAML
+
+case "$VARIANT" in
+  locked) config_block='config:
+  locked: true' ;;
+  overlay-unwritable) config_block='config:
+  overlay:
+    file: "/dev/null/oracle-overlay.json"' ;;
+  *) echo "{\"status\":-1,\"headers\":{},\"body\":\"\",\"effects\":{\"error\":\"unknown variant $VARIANT\"}}" >"$RAW/captured.json"; exit 0 ;;
+esac
+
+cat >"$W/config.yaml" <<YAML
+listen: "127.0.0.1:${LP}"
+admin_listen: "127.0.0.1:${AP}"
+${config_block}
+identity-providers:
+  admin-tokens:
+    module: admin-tokens
+    token: { env: BUSBAR_ADMIN_TOKEN }
+auth:
+  chain: [keys]
+  signing_key: { file: "${W}/signing.key" }
+  admin_auth: [admin-tokens]
+groups:
+  oracle:
+    limits:
+      - { budget: 1000000, per: day }
+providers:
+  openai-chat:
+    api_key: { env: ORACLE_UPSTREAM_KEY }
+models:
+  m-openai-chat:
+    provider: openai-chat
+rate_card:
+  m-openai-chat: { input_utok: 100000, output_utok: 200000 }
+YAML
+# The operator upgrade step (owner ruling Q42, docs/migration-1.6.md): the binary under test adds, at 0,
+# each billable class it names as unconfigured on this card. The 1.5.5 golden names none: its config runs as written.
+"${BUSBAR_ORACLE_BIN:?}" upgrade-config "$BIN" "$W/config.yaml" || exit 1
+
+eff='{}'
+step() { eff="$(jq -c --arg k "$1" --arg v "$2" '. + {($k): $v}' <<<"$eff")"; }
+stepbool() { eff="$(jq -c --arg k "$1" --argjson v "$2" '. + {($k): $v}' <<<"$eff")"; }
+# A `fail` IS THE HARNESS GIVING UP, NOT AN OUTCOME OF THE BINARY. It writes a captured.json like
+# any other result, and the recorder used to read `status` alone — so `fail 1 "openssl produced no
+# cert"` was recorded as a golden that says "this cell is exit 1", with a PASS row behind it, and
+# the candidate agreed because it failed the same way. `harness_error` says which of the two this
+# is; record.sh refuses any cell that carries it (a status of -1 stays a named gap, as before).
+fail() { jq -n --argjson st "$1" --argjson eff "$eff" --arg body "$2" '{status:$st, headers:{}, body:$body, effects:($eff + {harness_error: $body})}' >"$RAW/captured.json"; exit 0; }
+
+( exec env BUSBAR_CONFIG="$W/config.yaml" BUSBAR_PROVIDERS="$W/providers.yaml" \
+    ORACLE_UPSTREAM_KEY=unused BUSBAR_ADMIN_TOKEN="$ADMIN" RUST_LOG=warn "$BIN" ) \
+  >"$W/stdout.log" 2>"$W/stderr.log" &
+pid=$!; track_pid $pid
+if wait_for_http "http://127.0.0.1:${LP}/healthz" 30; then
+  stepbool booted true
+else
+  stepbool booted false
+  fail 1 "$(tail -c 800 "$W/stdout.log")$(tail -c 800 "$W/stderr.log")"
+fi
+
+# the boot-posture line (README:272 / CHANGELOG:40-46's "config is READ-ONLY …", or the `locked`
+# variant's "config is LOCKED …") is a tracing::warn!/info! line, which this binary's subscriber
+# writes to STDOUT — checked as a presence boolean, its exact wording already quoted in the why.
+case "$VARIANT" in
+  locked) warn_marker="config is LOCKED" ;;
+  overlay-unwritable) warn_marker="config is READ-ONLY" ;;
+esac
+stepbool posture_line_present "$(grep -q "$warn_marker" "$W/stdout.log" && echo true || echo false)"
+eff="$(jq -c --arg v "$(cat "$W/stderr.log" 2>/dev/null)" '. + {stderr: $v}' <<<"$eff")"
+
+mut_status="$(curl -sS -m 10 -o "$W/mut.body" -w '%{http_code}' -X PUT "http://127.0.0.1:${AP}/api/v1/admin/config/settings" \
+  -H "Authorization: Bearer $ADMIN" -H 'Content-Type: application/json' \
+  -d '{"limits":{"request_body_max_bytes":33554432}}')"
+step mutation_status "$mut_status"
+stepjson_body="$(cat "$W/mut.body" 2>/dev/null || echo '{}')"
+eff="$(jq -c --arg v "$stepjson_body" '. + {mutation_body: ($v | try fromjson catch {raw: $v})}' <<<"$eff")"
+
+kill "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+i=0; while [ $i -lt 50 ] && ! assert_port_free "$LP"; do sleep 0.1; i=$((i+1)); done
+
+jq -n --argjson eff "$eff" --arg body "$(jq -c 'del(.stderr)' <<<"$eff")" '{status:0, headers:{}, body:$body, effects:$eff}' >"$RAW/captured.json"
+
+# The script-cell verdict reads the DRIVER'S EXIT STATUS, not just the file it left behind. Say 0
+# out loud on the success path rather than inheriting whatever the last command happened to return.
+exit 0

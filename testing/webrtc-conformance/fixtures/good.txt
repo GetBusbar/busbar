@@ -1,0 +1,14 @@
+webrtc-conformance: chromium answer PASS captured
+webrtc-conformance: chromium connected PASS captured
+webrtc-conformance: chromium channel-text PASS captured
+webrtc-conformance: chromium channel-binary PASS captured
+webrtc-conformance: chromium media-round-trip PASS captured
+webrtc-conformance: chromium media-codec PASS captured
+webrtc-conformance: chromium close PASS captured
+webrtc-conformance: firefox answer PASS captured
+webrtc-conformance: firefox connected PASS captured
+webrtc-conformance: firefox channel-text PASS captured
+webrtc-conformance: firefox channel-binary PASS captured
+webrtc-conformance: firefox media-round-trip PASS captured
+webrtc-conformance: firefox media-codec PASS captured
+webrtc-conformance: firefox close PASS captured

@@ -1,5 +1,5 @@
 {
- "_generator": "assets/readme/install-sizes.py",
+ "_generator": "cargo xtask install-sizes",
  "images": {
   "busbar": {
    "image": "getbusbar/busbar:latest",

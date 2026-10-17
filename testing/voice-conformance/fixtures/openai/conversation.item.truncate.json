@@ -1,0 +1,7 @@
+{
+  "event_id": "evt_client_0010",
+  "type": "conversation.item.truncate",
+  "item_id": "item_asst_002",
+  "content_index": 0,
+  "audio_end_ms": 1200
+}

@@ -1,0 +1,25 @@
+# fixture baseline for the plane-pricing-blindness selftest.
+#
+# Three rows, each planted for one proof:
+#  * a GHOST that names no live finding      -> :stale-baseline is RED
+#  * a live finding with reach = "unproven"  -> :reachability is RED ("no reach")
+#  * a live finding with an EMPTY `why`      -> :reachability is RED ("no citation")
+# and the other live findings appear nowhere here at all -> :undocumented is RED.
+
+[[debt]]
+category = "hold"
+file = "crates/ghost-nonexistent.rs"
+reach = "unreachable"
+why = "a ghost row, kept so the stale-baseline proof has something to find"
+
+[[debt]]
+category = "price"
+file = "crates/busbar-llm/src/unit/money.rs"
+reach = "unproven"
+why = "nobody looked — this row is the 'no reach' proof"
+
+[[debt]]
+category = "hold"
+file = "crates/busbar-llm/src/unit/money.rs"
+reach = "reachable"
+why = ""

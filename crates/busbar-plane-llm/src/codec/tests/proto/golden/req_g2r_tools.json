@@ -1,0 +1,1 @@
+{"input":[{"content":[{"text":"Weather in Paris?","type":"input_text"}],"role":"user"}],"instructions":"be brief","max_output_tokens":128,"model":"gpt-4o-mini","stream":false,"temperature":0.5,"tools":[{"description":"Get weather","name":"get_weather","parameters":{"properties":{"city":{"type":"string"}},"type":"object"},"type":"function"}],"top_p":0.9}

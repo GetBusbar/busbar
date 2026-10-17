@@ -1,0 +1,1 @@
+{"applied":[],"body":{"json":{"group_day_window":{"budget_remaining_cents":999736,"requests":2,"spend_cents":264,"tokens":18},"key_all_time":{"requests":2,"spend_cents":257,"tokens":18},"mint_status":201,"rolling_status":200,"straddling_status":503}},"effects":{"mint_status":"201","rolling_status":"200","straddling_status":"503"},"headers":{},"status":0}

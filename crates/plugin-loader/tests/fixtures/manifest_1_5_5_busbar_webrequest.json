@@ -1,0 +1,18 @@
+{
+  "name": "busbar-webrequest",
+  "alias": "webrequest",
+  "kind": "hook",
+  "version": "1.0.6",
+  "publisher": "busbar",
+  "abi_version": 1,
+  "sha256": "8e583d24bb2a18f5451735c5358b81f01ed86459fc674ab1733ae5519df01bad",
+  "signature": "66cc022f2de1177bfe30c42a67017694661849a03e4c1c8a42d41a62a91b7828a48506ecdd4901e59d95e21280ee02b669669d5a972fe27d0ecc92020c870905",
+  "description": "A transparent HTTP forwarder that POSTs each hook op envelope (decide/transform/notify/configure/describe/status) to an operator-configured URL and returns the capped JSON reply — a busbar first-party kind:hook plugin (dlopen cdylib).",
+  "homepage": "",
+  "license": "Apache-2.0",
+  "needs": {
+    "prompt": "rw",
+    "user": "ro"
+  },
+  "schema_derived": false
+}

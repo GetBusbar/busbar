@@ -1,0 +1,1 @@
+{"contents":[{"parts":[{"text":"Describe these."},{"inlineData":{"data":"aGVsbG8=","mimeType":"image/png"}},{"fileData":{"fileUri":"https://example.com/cat.png","mimeType":"image/png"}}],"role":"user"}],"generationConfig":{"maxOutputTokens":512},"model":"gpt-4o-mini","systemInstruction":{"parts":[{"text":"Be helpful."},{"text":"Cite sources."}]}}

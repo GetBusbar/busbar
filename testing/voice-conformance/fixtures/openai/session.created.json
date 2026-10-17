@@ -1,0 +1,27 @@
+{
+  "event_id": "evt_server_0001",
+  "type": "session.created",
+  "session": {
+    "id": "sess_ABC123",
+    "object": "realtime.session",
+    "model": "gpt-4o-realtime-preview-2024-12-17",
+    "modalities": ["audio", "text"],
+    "instructions": "You are a concise, friendly voice assistant. Keep answers short.",
+    "voice": "alloy",
+    "input_audio_format": "pcm16",
+    "output_audio_format": "pcm16",
+    "input_audio_transcription": null,
+    "turn_detection": {
+      "type": "server_vad",
+      "threshold": 0.5,
+      "prefix_padding_ms": 300,
+      "silence_duration_ms": 500,
+      "create_response": true,
+      "interrupt_response": true
+    },
+    "tools": [],
+    "tool_choice": "auto",
+    "temperature": 0.8,
+    "max_response_output_tokens": "inf"
+  }
+}

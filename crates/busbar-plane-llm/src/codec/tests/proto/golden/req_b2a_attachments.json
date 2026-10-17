@@ -1,0 +1,1 @@
+{"max_tokens":4096,"messages":[{"content":[{"text":"read this","type":"text"},{"source":{"data":"aGVsbG8=","media_type":"image/png","type":"base64"},"type":"image"},{"source":{"data":"JVBERi0=","media_type":"application/pdf","type":"base64"},"title":"spec","type":"document"}],"role":"user"}],"model":"gpt-4o-mini","stream":false}

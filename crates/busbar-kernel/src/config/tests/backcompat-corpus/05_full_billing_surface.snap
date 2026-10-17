@@ -1,0 +1,25 @@
+per_request_fee = 2
+limits.default_max_tokens = 4096
+limits.reasoning_effort_budgets = minimal=1024 low=4096 medium=12000 high=32000
+rate_card:
+  claude-haiku: input=0.8 output=4 cache_read=0.08 cache_write=1
+  claude-sonnet: input=3 output=15 cache_read=0.3 cache_write=3.75
+  gemini-flash: input=0.075 output=0.3 cache_read=0 cache_write=0
+  gpt-4o: input=2.5 output=10 cache_read=1.25 cache_write=0
+models:
+  claude-haiku: default_max_tokens=4096 max_requests=500 max_concurrent=-
+  claude-sonnet: default_max_tokens=8192 max_requests=-1 max_concurrent=32
+  gemini-flash: default_max_tokens=- max_requests=-1 max_concurrent=-
+  gpt-4o: default_max_tokens=4096 max_requests=-1 max_concurrent=-
+groups:
+  org: enabled=true parent=-
+    limit: metric=budget amount=10000000 per=month scope=- on_exhaust=- downgrade_to=-
+    limit: metric=requests amount=200000 per=day scope=- on_exhaust=- downgrade_to=-
+    child_default.limit: metric=tokens amount=2000000 per=day scope=- on_exhaust=- downgrade_to=-
+    child_default.limit: metric=concurrent amount=8 per=- scope=- on_exhaust=- downgrade_to=-
+  team-research: enabled=true parent=org
+    limit: metric=tokens_input amount=5000000 per=hour scope=- on_exhaust=- downgrade_to=-
+    limit: metric=tokens_output amount=1000000 per=hour scope=- on_exhaust=- downgrade_to=-
+    limit: metric=tokens_cache_read amount=8000000 per=day scope=- on_exhaust=- downgrade_to=-
+    limit: metric=tokens_cache_write amount=500000 per=day scope=- on_exhaust=- downgrade_to=-
+    limit: metric=budget amount=250000 per=month scope=pool:premium on_exhaust=downgrade downgrade_to=pool:economy

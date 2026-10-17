@@ -1,0 +1,5 @@
+# plugin-closure-deps: DRAIN-ONLY ledger (M0 ABI-SPEC, REPORT-ONLY).
+# A plugin depends on busbar-contract and nothing else of busbar's. Each row is one
+# the tree carries today; `file` is the plugin's manifest. Strike a row in the commit
+# that drains it; never add one.
+# Regenerate with `cargo xtask gate plugin-closure-deps --write`.

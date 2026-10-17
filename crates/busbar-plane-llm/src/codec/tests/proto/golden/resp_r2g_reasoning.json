@@ -1,0 +1,1 @@
+{"candidates":[{"content":{"parts":[{"text":"42"}],"role":"model"},"finishReason":"STOP"}],"modelVersion":"o3","responseId":"NORMALIZED","usageMetadata":{"candidatesTokenCount":20,"promptTokenCount":10,"totalTokenCount":30}}

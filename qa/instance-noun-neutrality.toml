@@ -1,0 +1,8 @@
+# instance-noun-neutrality burndown ledger — AUTO-DERIVED, HUMAN-REVIEWED.
+# One row per (instance noun, offending file) outside the noun's own crate family.
+# The gate is RED while any row stands; it goes GREEN when this file is empty.
+# Regenerate: XTASK_INSN_EMIT_BASELINE=1 cargo xtask gate instance-noun-neutrality 2>qa/instance-noun-neutrality.toml
+
+# Reviewed `noun-neutrality: frozen-literal` pragmas. May only fall.
+[pragma_ceiling]
+frozen_literal = 1

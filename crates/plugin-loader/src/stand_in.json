@@ -1,0 +1,11 @@
+{
+  "stream": {
+    "transport": "tcp",
+    "local_prefix": "unix:"
+  },
+  "framed": {
+    "transport": "http",
+    "secure_scheme": "https",
+    "default_port": 443
+  }
+}

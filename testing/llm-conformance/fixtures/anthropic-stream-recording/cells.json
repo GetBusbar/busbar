@@ -1,0 +1,16 @@
+{
+ "cells": [
+  {
+   "cross_protocol": true,
+   "egress_dialect": "openai",
+   "family": "llm.wire",
+   "id": "llm|anthropic|openai|request|ok_stream",
+   "ingress_dialect": "anthropic",
+   "op": "chat",
+   "outcome": "ok_stream",
+   "plane": "llm",
+   "transport": "http",
+   "why": "happy path, streamed response (SSE / frames)"
+  }
+ ]
+}

@@ -1,0 +1,1 @@
+{"applied":[],"body":{"text":""},"effects":{"exec_rules":[],"stderr":"[warn] BUSBAR_PROVIDERS is DEPRECATED; set `providers_file:` in config.yaml instead (it is honored for now).\n[error] config.yaml: invalid YAML: a pool `hooks:` entry must be a non-empty strategy keyword or hook name\n"},"headers":{},"status":1}

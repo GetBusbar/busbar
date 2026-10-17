@@ -1,0 +1,16 @@
+# FIXTURE: an allow-list holding exactly one waiver that covers NOTHING in this tree.
+#
+# `reqwest` is on the banned list and no crate here reaches it, so this entry is STALE: the offender
+# it was written to excuse is not here. The real file's own header calls that a RED — "an entry that
+# matches no hit is red" — and `denylist:stale-waivers` is the row that says so. It had no red proof
+# through the gate before this fixture; the crate-level battery proved the computation, never the
+# row.
+#
+# The `libc` hit next door is deliberately NOT waived: the two rules are proven by two cases over
+# this one tree, each reading only its own row, so neither can be discharged by the other's red.
+
+[[allow]]
+crate = "busbar-plane-demo"
+dep = "reqwest"
+reason = "fixture-only: a waiver written for an offender this tree does not contain, so the staleness rule has something to find"
+owner = "xtask selftest fixture"

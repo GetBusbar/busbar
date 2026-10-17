@@ -1,0 +1,33 @@
+# The breaker unit: trip / cooldown / fast-fail per (pool, destination).
+#
+# WHAT THIS CRATE IS. The design (docs/design/BUSBAR-1.6.0.md THE DESIGN, §1, §5) names a `Breaker` unit
+# trait (`observe`/`state`) separate from the egress unit that owns the pool. This crate is that
+# unit: the per-cell circuit-breaker state machine (trip, escalating cooldown with jitter, the
+# Retry-After floor, half-open recovery probes) plus the per-destination lifetime request budget,
+# moved byte-identical from the 1.5.5 store (`busbar-core::store::in_memory::breaker` +
+# `busbar-substrate::breaker`) rather than rewritten.
+#
+# WORKSPACE DEPENDENCIES: busbar-contract only (the capability token and the shared upstream rows
+# `classify` re-exports). Concretely this means: no `axum`, and no `tracing` for the "unrecognized
+# error_map value" diagnostic (routed through an injectable sink instead — see the `// contract:`
+# note on `classify::Diagnostics`). The served path's own normalizer (`normalize`, #83a O1) moved in
+# verbatim with the `httpdate` read it has always made; its unrecognized-value report is injected
+# the same way.
+[package]
+name = "busbar-kernel-breaker"
+version = "1.6.0"
+publish = false
+edition = "2021"
+rust-version = "1.97"
+description = "The breaker unit: per-(pool, destination) circuit breaker (trip/cooldown/half-open) and lifetime request budget."
+license = "Apache-2.0"
+
+[lib]
+name = "busbar_kernel_breaker"
+path = "src/lib.rs"
+
+[dependencies]
+busbar-contract = { path = "../busbar-contract" }
+# The served path's `Retry-After` read (`normalize::parse_retry_after`) accepts every RFC 9110
+# HTTP-date form a provider may send, through the one date parser the host has always used.
+httpdate = { workspace = true }

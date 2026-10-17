@@ -1,0 +1,18 @@
+# A synthetic pure crate that reaches `libc` through TWO SEPARATE intermediate crates
+# (`xtask-fixture-via-multi-a` and `xtask-fixture-via-multi-b`), for `cargo xtask denylist
+# --selftest` to prove the comma-separated `via` list: a waiver naming BOTH crates goes fully
+# GREEN (neither path bypasses either named `via`), while a waiver naming only one stays RED (the
+# other path bypasses it) — mirroring the real `busbar-plane-llm` shape, which reaches `libc`
+# through `cpufeatures` AND `getrandom` as two genuinely separate, reviewed edges.
+[workspace]
+members = [".", "mid-a", "mid-b"]
+
+[package]
+name = "xtask-fixture-via-multi"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+xtask-fixture-via-multi-a = { path = "mid-a" }
+xtask-fixture-via-multi-b = { path = "mid-b" }

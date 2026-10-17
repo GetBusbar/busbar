@@ -1,0 +1,34 @@
+{
+  "schema_version": "1",
+  "releases": [
+    {
+      "version": "dev",
+      "tag": "dev",
+      "qa_sha": "938ef4a218409407dba1175a2b2566cb327deaa0",
+      "recorded_at": "2026-09-04T02:10:31Z",
+      "file": "dev.json",
+      "verdicts": [
+        {
+          "class": "byte-identity",
+          "status": "pass"
+        },
+        {
+          "class": "plane-neutrality",
+          "status": "pass"
+        },
+        {
+          "class": "composability",
+          "status": "pass"
+        },
+        {
+          "class": "field-coverage",
+          "status": "pass"
+        },
+        {
+          "class": "wire-conformance",
+          "status": "unknown"
+        }
+      ]
+    }
+  ]
+}

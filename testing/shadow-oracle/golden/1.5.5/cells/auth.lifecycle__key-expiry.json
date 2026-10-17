@@ -1,0 +1,1 @@
+{"applied":[],"body":{"json":{"mint_body":{"error":{"code":"invalid_request","message":"expires_at is in the past"}},"mint_status":400,"spend_body":null,"spend_status":null}},"effects":{"mint_body":{"error":{"code":"invalid_request","message":"expires_at is in the past"}},"mint_status":"400","spend_body":null,"spend_status":"null"},"headers":{},"status":0}

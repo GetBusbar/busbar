@@ -1,0 +1,1 @@
+{"metrics":{"latencyMs":123},"output":{"message":{"content":[{"citationsContent":{"citations":[{"location":{"documentChar":{"documentIndex":0,"end":5,"start":0}},"sourceContent":[{"text":"Paris"}],"title":"Atlas"}],"content":[{"text":"Paris is the capital."}]}}],"role":"assistant"}},"stopReason":"end_turn","usage":{"inputTokens":0,"outputTokens":0,"totalTokens":0}}

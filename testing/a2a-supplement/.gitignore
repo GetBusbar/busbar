@@ -1,0 +1,7 @@
+# Run artefacts. The REPORT is a fact about one run against one target; committing it would turn a
+# measurement into an expectation, which is the failure `run-tck.sh` refuses for the subject leg
+# for the same reason: a recorded number for our own implementation pins our own defects as the
+# standard.
+reports/
+__pycache__/
+*.pyc

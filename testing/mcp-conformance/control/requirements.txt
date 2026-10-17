@@ -1,0 +1,11 @@
+# Control (reference) implementation, pinned EXACTLY.
+#
+# Upgrading this pin changes what "conformant" means for the whole battery.
+# Treat any bump as a deliberate, reviewed change: re-run the control job and
+# record the new verbatim green output in
+# design/mcp-independent-test-battery.md before merging.
+#
+# mcp 2.0.0 is the first official SDK release that implements the modern
+# stateless revision 2026-07-28 (server/discover, per-request _meta, MRTR,
+# subscriptions/listen). See the battery document, section "Control".
+mcp==2.0.0

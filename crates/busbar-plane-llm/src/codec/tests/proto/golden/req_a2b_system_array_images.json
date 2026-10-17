@@ -1,0 +1,1 @@
+{"inferenceConfig":{"maxTokens":512},"messages":[{"content":[{"text":"Describe these."},{"image":{"format":"png","source":{"bytes":"aGVsbG8="}}}],"role":"user"}],"system":[{"text":"Be helpful."},{"cachePoint":{"type":"default"}},{"text":"Cite sources."}]}

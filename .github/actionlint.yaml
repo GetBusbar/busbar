@@ -1,0 +1,17 @@
+# `latchkey-small|medium|large|xlarge` are Latchkey's runner-size labels (latchkey.dev), used by
+# `runs-on:` lines of the Latchkey-hosted jobs. Without declaring them here actionlint reports each one as an unknown
+# label — 37 findings measured on this migration (LK-4): they are real, fleet-issued
+# (Latchkey-issued) labels, not typos. (`busbar-xl`, the EC2 fleet's label, left with that fleet.)
+#
+# Declaring it here is not a way of silencing the check; it is the check working as designed. The
+# list below is the ONLY custom labels the fleets issue, so a typo (`busbar-x1`, `latchkey-xlage`, a
+# label no runner actually carries) is still caught — the job would otherwise sit queued forever.
+#
+# ACTIONLINT CI ENFORCEMENT: NOT WIRED. No workflow in .github/workflows/ invokes actionlint; this file
+# is read only by a contributor who runs actionlint by hand.
+self-hosted-runner:
+  labels:
+    - latchkey-small
+    - latchkey-medium
+    - latchkey-large
+    - latchkey-xlarge

@@ -1,0 +1,28 @@
+# The rate_card surface: per-model, four per-token tiers in MICRO-units. Exercises a model that
+# prices all four tiers (input/output/cache_read/cache_write), a model that omits the cache tiers
+# (they resolve to 0), a fractional rate, and a flat per_request_fee. rate_card is carried through
+# `resolve` VERBATIM, so this snapshot is exactly what the cost model reads. M3 moving the parse to
+# busbar-llm must leave these numbers byte-identical.
+listen: "0.0.0.0:8080"
+per_request_fee: 5
+providers:
+  anthropic:
+    api_key: { env: ANTHROPIC_API_KEY }
+  openai:
+    api_key: { env: OPENAI_API_KEY }
+models:
+  claude-sonnet:
+    provider: anthropic
+    default_max_tokens: 8192
+  gpt-4o:
+    provider: openai
+    default_max_tokens: 4096
+rate_card:
+  claude-sonnet:
+    input_utok: 3.0
+    output_utok: 15.0
+    cache_read_utok: 0.3
+    cache_write_utok: 3.75
+  gpt-4o:
+    input_utok: 2.5
+    output_utok: 10.0

@@ -9,15 +9,32 @@
 #                 ("first-party signature failed").
 #   4. TAMPERED (lib):      post-signing byte-flip in the cdylib is REFUSED ("integrity").
 #   5. TAMPERED (manifest): post-signing manifest edit is REFUSED (signature failed).
+#   and a RED plant: the unsigned arm re-judged under `plugins.trust.allow_unsigned: true`, where
+#   the loader ACCEPTS the unsigned tarball, must FAIL, or the arm proves nothing.
+#
+# A LINKED ROW ANSWERING THE REFERENCE (busbar links busbar-store-memory, alias `memory`): the
+# config's reference then resolves in-process whatever the tarball's fate, so `--validate` exits 0
+# with the unsigned tarball skipped, and an exit code cannot tell refusal from acceptance. The gate
+# PROBES for that (the config validated with NO tarball installed) and, when a linked row answers,
+# judges the refusing arms by the LOADER'S verdict on the tarball under test (the summary line
+# naming it skipped, for the trust reason, and nothing validated), never by the config's
+# resolution. Without a linked row the refusing arms keep their exit-1 refusal.
 #
 # Usage:
-#   signing-gate.sh <busbar_checkout_dir> <plugin_crate> <plugin_kind> <plugin_alias> <cdylib_path>
+#   signing-gate.sh <busbar_checkout_dir> <plugin_crate> <plugin_kind> <plugin_alias> <cdylib_path> [<manifest_name>]
+#
+# <manifest_name> is the signed manifest's `name`, the plugin's identity at load: what its release
+# packs (plugins.yaml `manifest_name`, default the repo). Default here: <plugin_crate>. A plugin
+# busbar also LINKS carries the linked row's canonical name, so the tarball is the same plugin by
+# the other door (one identity whichever door it arrives by), not a claim conflict.
 # e.g.
-#   signing-gate.sh busbarAI busbar-store-valkey-plugin store valkey plugin/target/debug/libbusbar_store_valkey_plugin.so
+#   signing-gate.sh busbar busbar-store-valkey-plugin store valkey plugin/target/debug/libbusbar_store_valkey_plugin.so
 #
 # Requirements: the busbar checkout must be buildable (cargo). python3 + tar for the tamper cases.
 # The busbar binary and busbar-plugin-pack are built here WITH the ephemeral key embedded — the
 # gate never touches the real release key.
+#
+# package-selector: busbar-secret-env-plugin -- qa/pipeline-checks.json -- the signing-gate check builds this plugin from the fleet busbar-secret-env checkout (cargo --manifest-path into that workspace, resolved from Cargo.lock), where the package exists; it is not a package of this workspace
 set -euo pipefail
 
 BUSBAR_DIR=$(cd "${1:?busbar checkout dir}" && pwd)
@@ -25,17 +42,23 @@ PLUGIN_CRATE=${2:?plugin crate name}
 PLUGIN_KIND=${3:?plugin kind (store|auth|hook|secret)}
 PLUGIN_ALIAS=${4:?plugin alias}
 LIB=$(cd "$(dirname "${5:?cdylib path}")" && pwd)/$(basename "$5")
+MANIFEST_NAME=${6:-$PLUGIN_CRATE}
 [ -f "$LIB" ] || { echo "FAIL: cdylib not found: $LIB" >&2; exit 1; }
 
 WORK=$(mktemp -d)
 trap 'rm -rf "$WORK"' EXIT
-PACK="$BUSBAR_DIR/target/release/busbar-plugin-pack"
-BUSBAR="$BUSBAR_DIR/target/release/busbar"
+# Where cargo puts what it builds below: CARGO_TARGET_DIR when the caller set one (relative to the
+# checkout, where the builds run), else the checkout's own target/. Reading target/ unconditionally
+# ran the PREVIOUS build's binaries, or none, under a runner that sets a target dir.
+TARGET_DIR=${CARGO_TARGET_DIR:-target}
+case "$TARGET_DIR" in /*) ;; *) TARGET_DIR="$BUSBAR_DIR/$TARGET_DIR" ;; esac
+PACK="$TARGET_DIR/release/busbar-plugin-pack"
+BUSBAR="$TARGET_DIR/release/busbar"
 
 # ── 0. Ephemeral keypair ─────────────────────────────────────────────────────────────────────────
 # CI may pre-generate the pair (BUSBAR_GATE_SIGN_KEY/BUSBAR_GATE_PUBKEY) so the busbar binary built
 # here — with that public key embedded — is byte-reusable by later workflow steps with no rebuild.
-(cd "$BUSBAR_DIR" && cargo build --release -q -p busbar-plugin-pack)
+(cd "$BUSBAR_DIR" && cargo build --release -q -p busbar-plugin-loader --features pack --bin busbar-plugin-pack)
 if [ -n "${BUSBAR_GATE_SIGN_KEY:-}" ] && [ -n "${BUSBAR_GATE_PUBKEY:-}" ]; then
   PRIV=$BUSBAR_GATE_SIGN_KEY; PUB=$BUSBAR_GATE_PUBKEY
 else
@@ -49,30 +72,36 @@ echo "gate: ephemeral release pubkey $PUB"
 # ── 1. Build busbar with the ephemeral PUBLIC key embedded ───────────────────────────────────────
 # option_env!("BUSBAR_RELEASE_PUBKEY") is COMPILE-time; cargo tracks env-var deps of env!/option_env!
 # in dep-info, but touch the crate anyway so a cached no-key build can never be reused.
-touch "$BUSBAR_DIR/crates/plugin-sign/src/lib.rs"
+touch "$BUSBAR_DIR/crates/plugin-loader/src/sign.rs"
 (cd "$BUSBAR_DIR" && BUSBAR_RELEASE_PUBKEY="$PUB" cargo build --release -q --bin busbar)
 BUSBAR_VERSION=$("$BUSBAR" --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)
 echo "gate: busbar $BUSBAR_VERSION built with embedded ephemeral key"
 
 # ── 2. Pack the four artifacts ───────────────────────────────────────────────────────────────────
-# Version must be >= the binary's version: a verified first-party plugin below the binary version is
-# hard-rejected by the AUTOMATIC first-party anti-downgrade floor (plugin-sign evaluate()).
+# No --version: the packer stamps the version the plugin's own Statement states, as a release must
+# (busbar-plugin-pack refuses a --version the Statement does not state: one version per plugin).
 pack() { # $1=signing key ("" = unsigned) $2=out $3...=extra flags
   local key=$1 out=$2; shift 2
   # env -u guards the unsigned case even when the CI environment carries a real BUSBAR_SIGN_KEY.
   if [ -n "$key" ]; then
-    BUSBAR_SIGN_KEY="$key" "$PACK" pack --lib "$LIB" --name "$PLUGIN_CRATE" \
-      --alias "$PLUGIN_ALIAS" --kind "$PLUGIN_KIND" --version "$BUSBAR_VERSION" \
+    BUSBAR_SIGN_KEY="$key" "$PACK" pack --lib "$LIB" --name "$MANIFEST_NAME" \
+      --alias "$PLUGIN_ALIAS" --kind "$PLUGIN_KIND" \
       --publisher busbar --license Apache-2.0 --out "$out" "$@"
   else
-    env -u BUSBAR_SIGN_KEY "$PACK" pack --lib "$LIB" --name "$PLUGIN_CRATE" \
-      --alias "$PLUGIN_ALIAS" --kind "$PLUGIN_KIND" --version "$BUSBAR_VERSION" \
+    env -u BUSBAR_SIGN_KEY "$PACK" pack --lib "$LIB" --name "$MANIFEST_NAME" \
+      --alias "$PLUGIN_ALIAS" --kind "$PLUGIN_KIND" \
       --publisher busbar --license Apache-2.0 --out "$out" "$@"
   fi
 }
 pack "$PRIV" "$WORK/signed.tar.gz"
 pack ""      "$WORK/unsigned.tar.gz" --allow-unsigned
 OTHER_PRIV=$("$PACK" keygen | sed -n 's/^private.*: //p')
+# The FIRST keypair is length-checked above; this one was not, and it is the one that decides what
+# the wrong-key case actually tests. `pack` branches on `[ -n "$key" ]`, so an unparseable keygen
+# here silently packs the "wrong key" tarball UNSIGNED — a different defect than the one the case
+# is named for, asserted against a message about signatures.
+[ ${#OTHER_PRIV} -eq 64 ] \
+  || { echo "FAIL: second keygen output unparseable — the wrong-key case would be packed UNSIGNED, testing a different defect than its name claims" >&2; exit 1; }
 pack "$OTHER_PRIV" "$WORK/wrongkey.tar.gz"
 
 # Tampered variants: unpack the SIGNED tarball, mutate, repack (signature/manifest kept as-was).
@@ -111,7 +140,7 @@ EOF
 # i.e. it stopped testing signing at all:
 #   * auth — `auth.chain:` is a list of BARE NAMES into `identity-providers:`; a name with no
 #     definition there is "auth.chain references '<alias>', which is not defined in
-#     `identity-providers:`" (resolve_auth, crates/busbar/src/config/mod.rs). A plugin-backed provider
+#     `identity-providers:`" (resolve_auth, crates/busbar-core/src/config/mod.rs). A plugin-backed provider
 #     needs only `module:`; `token:` is the built-in admin-tokens credential and is REJECTED on any
 #     other module, so it must not appear here.
 #   * hook — top-level `global_hooks:` was REMOVED; hooks are a named-definition map (`hooks: <name>:
@@ -119,16 +148,25 @@ EOF
 #     hit that refuses to boot.
 # store/secret are unchanged. Each kind gets ONLY its own reference: a store or hook invocation must
 # not grow a spurious `identity-providers:` entry, which would itself be a dangling-module error.
+# The module is named by the plugin's manifest NAME ($MANIFEST_NAME), never its alias: a build that
+# links a plugin answering to the same alias (busbar links busbar-store-memory, alias `memory`)
+# keeps the linked row for that alias, so an alias reference would resolve the linked plugin and
+# never judge the tarball under test (crates/busbar/tests/cli_validate.rs pins this).
 case "$PLUGIN_KIND" in
-  store)  REF=$'store:\n  module: '"$PLUGIN_ALIAS" ;;
-  auth)   REF=$'identity-providers:\n  '"$PLUGIN_ALIAS"$':\n    module: '"$PLUGIN_ALIAS"$'\nauth:\n  chain: ['"$PLUGIN_ALIAS"$']' ;;
-  hook)   REF=$'hooks:\n  signing-gate-ref:\n    module: '"$PLUGIN_ALIAS"$'\n    kind: tap' ;;
+  store)  REF=$'store:\n  module: '"$MANIFEST_NAME" ;;
+  auth)   REF=$'identity-providers:\n  '"$PLUGIN_ALIAS"$':\n    module: '"$MANIFEST_NAME"$'\nauth:\n  chain: ['"$PLUGIN_ALIAS"$']' ;;
+  hook)   REF=$'hooks:\n  signing-gate-ref:\n    module: '"$MANIFEST_NAME"$'\n    kind: tap' ;;
   # kind:secret has no config-reference preflight — the trust verdict is asserted from the
   # --validate summary instead (see the SKIP-mode assertions below).
   secret) REF="" ;;
   *) echo "FAIL: unknown plugin kind '$PLUGIN_KIND'" >&2; exit 1 ;;
 esac
-cat > "$WORK/config.yaml" <<EOF
+# A config names its store (Q-STORE = (B), #465): every kind but store, whose reference IS the
+# `store:` block above, boots on the compiled-in memory store.
+STORE_REF=""
+[ "$PLUGIN_KIND" = store ] || STORE_REF=$'store:\n  module: memory'
+write_config() { # $1 = extra `plugins:` lines (the RED plant's trust opt-in), else none
+  cat > "$WORK/config.yaml" <<EOF
 listen: "127.0.0.1:0"
 providers:
   mock:
@@ -139,8 +177,12 @@ models:
 plugins:
   enabled: true
   dir: '$WORK/plugins'
+${1:-}
+$STORE_REF
 $REF
 EOF
+}
+write_config ""
 
 validate() { # runs --validate against whatever is in $WORK/plugins; captures combined output
   rm -f "$WORK/out"
@@ -154,38 +196,93 @@ validate() { # runs --validate against whatever is in $WORK/plugins; captures co
   BUSBAR_CONFIG="$WORK/config.yaml" BUSBAR_PROVIDERS="$WORK/providers.yaml" \
     "$BUSBAR" --validate > "$WORK/out" 2>&1
 }
-expect() { # $1=case $2=want_rc $3=must-contain regex
-  local c=$1 want=$2 re=$3 rc=0
+check() { # $1=case $2=want_rc $3...=regexes the output must ALL match; 0 = held, 1 = did not
+  local c=$1 want=$2 rc=0 re; shift 2
   validate || rc=$?
   if [ "$rc" -ne "$want" ]; then
-    echo "FAIL [$c]: expected exit $want, got $rc"; sed 's/^/    /' "$WORK/out"; exit 1
+    echo "FAIL [$c]: expected exit $want, got $rc"; sed 's/^/    /' "$WORK/out"; return 1
   fi
-  if ! grep -qE "$re" "$WORK/out"; then
-    echo "FAIL [$c]: exit $rc as expected but output lacks /$re/"; sed 's/^/    /' "$WORK/out"; exit 1
-  fi
-  echo "PASS [$c] (exit $rc, matched /$re/)"
+  for re in "$@"; do
+    if ! grep -qE "$re" "$WORK/out"; then
+      echo "FAIL [$c]: exit $rc as expected but output lacks /$re/"; sed 's/^/    /' "$WORK/out"; return 1
+    fi
+  done
+  echo "PASS [$c] (exit $rc, matched $(printf '/%s/ ' "$@"))"
 }
+expect() { check "$@" || exit 1; }
 install_only() { rm -f "$WORK/plugins/"*.tar.gz; cp "$1" "$WORK/plugins/p.tar.gz"; }
+
+# THE LINKED-ROW PROBE: the config validated with NO tarball installed. Exit 0 for a kind whose
+# reference is checked (every kind but secret) means a row this build links answers the reference,
+# so the refusing arms below cannot be read off the exit code.
+rm -f "$WORK/plugins/"*.tar.gz
+PROBE_RC=0; validate || PROBE_RC=$?
+LINKED=0
+if [ "$PLUGIN_KIND" != secret ] && [ "$PROBE_RC" -eq 0 ]; then
+  LINKED=1
+  echo "gate: a linked row answers the reference to '$MANIFEST_NAME'; the refusing arms are judged by the loader's verdict on the tarball"
+fi
+# The loader's own skip line for the tarball under test, and nothing validated beside it.
+skipped_for() { # $1 = the trust reason's regex
+  printf '%s\n' "skipped: $MANIFEST_NAME \\(p\\.tar\\.gz\\) .*$1" '0 validated, 1 skipped'
+}
 
 # For kind:secret there is no reference, so an UNTRUSTED-but-structurally-valid tarball is skipped
 # (exit 0) instead of hard-failing — assert the trust verdict from the summary lines instead.
 POS_RC=0; POS_RE='1 validated, 0 skipped'
-if [ "$PLUGIN_KIND" = secret ]; then
-  UNS_RC=0;  UNS_RE='skipped:.*manifest carries no signature'
-  WRK_RC=0;  WRK_RE='skipped:.*first-party signature failed'
-  TMM_RC=0;  TMM_RE='skipped:.*first-party signature failed'
+if [ "$PLUGIN_KIND" = secret ] || [ "$LINKED" = 1 ]; then
+  UNS_RC=0;  mapfile -t UNS_RE < <(skipped_for 'manifest carries no signature')
+  WRK_RC=0;  mapfile -t WRK_RE < <(skipped_for 'first-party signature failed')
+  TMM_RC=0;  mapfile -t TMM_RE < <(skipped_for 'first-party signature failed')
 else
-  UNS_RC=1;  UNS_RE='was not loaded.*(manifest carries no signature|allow_unsigned)'
-  WRK_RC=1;  WRK_RE='was not loaded.*first-party signature failed'
-  TMM_RC=1;  TMM_RE='was not loaded.*first-party signature failed'
+  UNS_RC=1;  UNS_RE=('was not loaded.*(manifest carries no signature|allow_unsigned)')
+  WRK_RC=1;  WRK_RE=('was not loaded.*first-party signature failed')
+  TMM_RC=1;  TMM_RE=('was not loaded.*first-party signature failed')
 fi
 
 # ── 4. The four assertions ───────────────────────────────────────────────────────────────────────
 install_only "$WORK/signed.tar.gz";            expect "signed-ok"         "$POS_RC" "$POS_RE"
-install_only "$WORK/unsigned.tar.gz";          expect "unsigned-refused"  "$UNS_RC" "$UNS_RE"
-install_only "$WORK/wrongkey.tar.gz";          expect "wrongkey-refused"  "$WRK_RC" "$WRK_RE"
-# A sha256/lib-bytes mismatch is a HARD structural failure for every kind, referenced or not:
-install_only "$WORK/tampered-lib.tar.gz";      expect "tampered-lib-refused"      1 'integrity'
-install_only "$WORK/tampered-manifest.tar.gz"; expect "tampered-manifest-refused" "$TMM_RC" "$TMM_RE"
+install_only "$WORK/unsigned.tar.gz";          expect "unsigned-refused"  "$UNS_RC" "${UNS_RE[@]}"
+install_only "$WORK/wrongkey.tar.gz";          expect "wrongkey-refused"  "$WRK_RC" "${WRK_RE[@]}"
+# A sha256/lib-bytes mismatch is a HARD structural failure for every kind, referenced or not.
+# The needle is the two-word phrase plugin-sign's evaluate() actually emits ("library bytes do not
+# match the manifest sha256 (integrity failure)"), not the bare word `integrity`. The bare word,
+# paired only with exit 1, is satisfied by any boot refusal whose output happens to contain it —
+# and this gate has TWICE been reduced to asserting an unrelated exit-1 refusal (the 1.5.3 config
+# grammar break, then the --validate secret-resolution change), each time still printing PASS while
+# testing nothing about signing. A one-word needle is how that keeps being possible.
+install_only "$WORK/tampered-lib.tar.gz";      expect "tampered-lib-refused"      1 'integrity failure'
+install_only "$WORK/tampered-manifest.tar.gz"; expect "tampered-manifest-refused" "$TMM_RC" "${TMM_RE[@]}"
 
-echo "gate: ALL SIGNING ASSERTIONS PASSED for $PLUGIN_CRATE (kind $PLUGIN_KIND)"
+# ── 5. RED: the unsigned arm must FAIL when the loader ACCEPTS the unsigned tarball ─────────────
+# The same arm, the same expectations, re-judged under `plugins.trust.allow_unsigned: true`, where
+# the unsigned tarball loads. An arm that still passes here is satisfied by something other than the
+# loader's refusal (a linked row, a config error) and proves nothing about signing.
+write_config $'  trust:\n    allow_unsigned: true'
+install_only "$WORK/unsigned.tar.gz"
+if check "unsigned-refused (planted: allow_unsigned)" "$UNS_RC" "${UNS_RE[@]}"; then
+  echo "FAIL [unsigned-refused RED]: an unsigned tarball the loader ACCEPTED still passed the unsigned arm"
+  exit 1
+fi
+echo "PASS [unsigned-refused RED] (the arm fails when the unsigned tarball is accepted)"
+write_config ""
+
+# ── 6. With NO linked row answering, an unsigned tarball the config references still EXITS 1 ─────
+# The same unsigned artifact under a name and alias no row this build links claims, referenced by
+# the config: nothing in-process can answer, so the strict posture's refusal is the exit code, as
+# it is for every plugin busbar does not link (secret: no reference preflight, so not this kind).
+if [ "$PLUGIN_KIND" != secret ]; then
+  UNLINKED="signing-gate-unlinked-$PLUGIN_ALIAS"
+  env -u BUSBAR_SIGN_KEY "$PACK" pack --lib "$LIB" --name "$UNLINKED" --alias "$UNLINKED" \
+    --kind "$PLUGIN_KIND" --publisher busbar --license Apache-2.0 \
+    --out "$WORK/unlinked-unsigned.tar.gz" --allow-unsigned
+  KEEP_REF=$REF
+  REF=${REF//"$MANIFEST_NAME"/"$UNLINKED"}
+  write_config ""
+  install_only "$WORK/unlinked-unsigned.tar.gz"
+  expect "unsigned-refused (no linked row)" 1 'was not loaded.*(manifest carries no signature|allow_unsigned)'
+  REF=$KEEP_REF
+  write_config ""
+fi
+
+echo "gate: ALL SIGNING ASSERTIONS PASSED for $MANIFEST_NAME ($PLUGIN_CRATE, kind $PLUGIN_KIND)"

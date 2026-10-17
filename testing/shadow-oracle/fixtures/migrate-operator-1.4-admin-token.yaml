@@ -1,0 +1,5 @@
+governance:
+  enabled: true
+  admin_token: "${BUSBAR_ADMIN_TOKEN}"
+providers: {}
+models: {}

@@ -1,0 +1,2 @@
+# The ALL-GREEN fixture declares NOTHING, which is the goal state: an empty declaration file means
+# every plane's unit path is reached on its own merits rather than by written exception.

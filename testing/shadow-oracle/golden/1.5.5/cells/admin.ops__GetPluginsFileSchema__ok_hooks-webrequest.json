@@ -1,0 +1,1 @@
+{"applied":["audit.hash","hdr.date","hdr.length"],"body":{"json":{"error":{"code":"not_found","message":"plugin `busbar-webrequest-1.0.6-<TRIPLE>.tar.gz` not found"}}},"effects":{"audit":{"added":0,"items":[]},"egress":[],"metrics":{},"usage":{}},"headers":{"content-length":"<LEN>","content-type":"application/json"},"status":404}

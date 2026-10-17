@@ -1,0 +1,76 @@
+{
+ "cells": [
+  {
+   "cross_protocol": false,
+   "egress_dialect": "gemini",
+   "family": "llm.wire",
+   "id": "llm|gemini|gemini|request|ok_stream_array",
+   "ingress_dialect": "gemini",
+   "op": "chat",
+   "outcome": "ok_stream_array",
+   "plane": "llm",
+   "transport": "http",
+   "why": "selftest fixture: proves the ok_stream_array / error-outcome validator paths"
+  },
+  {
+   "cross_protocol": false,
+   "egress_dialect": "gemini",
+   "family": "llm.wire",
+   "id": "llm|gemini|gemini|request|malformed",
+   "ingress_dialect": "gemini",
+   "op": "chat",
+   "outcome": "malformed",
+   "plane": "llm",
+   "transport": "http",
+   "why": "selftest fixture: proves the ok_stream_array / error-outcome validator paths"
+  },
+  {
+   "cross_protocol": false,
+   "egress_dialect": "gemini",
+   "family": "llm.wire",
+   "id": "llm|gemini|gemini|request|unauthenticated",
+   "ingress_dialect": "gemini",
+   "op": "chat",
+   "outcome": "unauthenticated",
+   "plane": "llm",
+   "transport": "http",
+   "why": "selftest fixture: proves the ok_stream_array / error-outcome validator paths"
+  },
+  {
+   "cross_protocol": false,
+   "egress_dialect": "gemini",
+   "family": "llm.wire",
+   "id": "llm|gemini|gemini|request|out_of_scope",
+   "ingress_dialect": "gemini",
+   "op": "chat",
+   "outcome": "out_of_scope",
+   "plane": "llm",
+   "transport": "http",
+   "why": "selftest fixture: proves the ok_stream_array / error-outcome validator paths"
+  },
+  {
+   "cross_protocol": false,
+   "egress_dialect": "gemini",
+   "family": "llm.wire",
+   "id": "llm|gemini|gemini|request|over_budget",
+   "ingress_dialect": "gemini",
+   "op": "chat",
+   "outcome": "over_budget",
+   "plane": "llm",
+   "transport": "http",
+   "why": "selftest fixture: proves the ok_stream_array / error-outcome validator paths"
+  },
+  {
+   "cross_protocol": false,
+   "egress_dialect": "gemini",
+   "family": "llm.wire",
+   "id": "llm|gemini|gemini|request|upstream_down",
+   "ingress_dialect": "gemini",
+   "op": "chat",
+   "outcome": "upstream_down",
+   "plane": "llm",
+   "transport": "http",
+   "why": "selftest fixture: proves the ok_stream_array / error-outcome validator paths"
+  }
+ ]
+}

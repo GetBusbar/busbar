@@ -1,0 +1,1 @@
+{"input":[{"content":[{"text":"Describe these.","type":"input_text"},{"image_url":"data:image/png;base64,aGVsbG8=","type":"input_image"},{"file_data":"data:application/pdf;base64,JVBERi0=","type":"input_file"}],"role":"user"}],"model":"gpt-4o-mini","stream":false}
