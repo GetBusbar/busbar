@@ -52,6 +52,7 @@ use busbar_contract::abi::host::service::{ClockReading, MAX_RANDOM_FILL};
 use busbar_contract::abi::mechanism::call::{
     AbiStr, Blob, InHead, OutHead, Outcome, Span, BLOB_ABSENT, BLOB_OCTETS,
 };
+use busbar_contract::abi::mechanism::door::SECTION_REQUIRED;
 use busbar_contract::abi::mechanism::door::{
     KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
 };
@@ -131,8 +132,8 @@ const fn section(name: &'static str, flags: u32) -> Section {
 /// opened with as written (the receivers it switches on, [`webhook`]).
 const SECTIONS: &[Section] = &[
     section(sections::POOLS, SECTION_DECLARING),
-    section(sections::PROVIDERS, SECTION_CONSUMED),
-    section(sections::MODELS, SECTION_CONSUMED),
+    section(sections::PROVIDERS, SECTION_CONSUMED | SECTION_REQUIRED),
+    section(sections::MODELS, SECTION_CONSUMED | SECTION_REQUIRED),
     section(sections::LIMITS, SECTION_CONSUMED),
     section(webhook::SECTION, 0),
 ];
