@@ -717,7 +717,7 @@ fn priced_feeds(writer: &str, price_fns: &std::collections::BTreeSet<String>) ->
                 .find(|c| priced_name(c) || price_fns.contains(c))
             {
                 out.push(format!(
-                    "`{}{})` feeds the price function `{p}` to the journal",
+                    "`{}({})` feeds the price function `{p}` to the journal",
                     &call[..call.len() - 1],
                     arg.trim()
                 ));
