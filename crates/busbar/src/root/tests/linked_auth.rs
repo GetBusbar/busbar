@@ -208,12 +208,12 @@ async fn the_admin_door_answers_both_carriers_through_the_linked_row() {
     }
 }
 
-/// THE ADMIN CHAIN COMPOSES (moved from the kernel with the module it needs). `Reject` is TERMINAL
-/// in the admin chain; the operator credential's module DEFERS on a candidate in another scheme's
-/// grammar (a JWS), so an IdP arm configured behind it is reached — and it still refuses, terminally,
-/// an opaque candidate that IS addressed to it and wrong, so the arm behind it never admits that.
+/// THE ADMIN CHAIN ENDS AT THE OPERATOR CREDENTIAL ON ANY WRONG TOKEN, as 1.5.5's did. `Reject` is
+/// TERMINAL in the admin chain, and the operator credential's module rejects every presented
+/// mismatch whatever its shape: a JWS-shaped wrong token is refused there with the frozen 401 and
+/// never reaches an IdP arm configured behind it.
 #[tokio::test]
-async fn the_chain_reaches_the_arm_behind_the_operator_credential_only_on_a_foreign_grammar() {
+async fn the_chain_ends_at_the_operator_credential_on_any_wrong_token() {
     busbar_kernel::snapshot::init();
     let op = op();
     let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
@@ -222,8 +222,9 @@ async fn the_chain_reaches_the_arm_behind_the_operator_credential_only_on_a_fore
 
     let (status, body) = probe(with_idp(), Some(jws), None).await;
     assert_eq!(
-        status, 403,
-        "a JWS reaches the arm behind and is identified there: {body}"
+        (status, body),
+        (401, unauthorized()),
+        "a wrong JWS-shaped token is refused terminally at the first arm, as in 1.5.5"
     );
     let (status, body) = probe(with_idp(), Some(TOKEN), None).await;
     assert_eq!(
@@ -833,22 +834,33 @@ fn the_loop_judges_the_operator_token_on_both_carriers_as_1_5_5_did() {
 /// (c) AN EXTERNAL ADMIN MODULE ON THE CHAIN IS CONSULTED BY THE LOOP, and its verdict decides: a
 /// credential it identifies (roleless, so no grant) is the authorization ending, 403 — not the
 /// door's 401 the hardcoded chain answered — and one the chain refuses is still the door's 401.
+/// The external module stands first: behind the operator credential it would never see a token,
+/// since the operator credential rejects every presented mismatch (1.5.5's chain rule).
 #[cfg(feature = "root-admin")]
 #[test]
 fn an_external_admin_module_is_consulted_by_the_loop() {
     let op = op();
-    let chain = [op, "any-credential"];
-    let handle = Arc::new(busbar_kernel::state::AppHandle::new(app(
-        &chain,
+    let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
+    let first = Arc::new(busbar_kernel::state::AppHandle::new(app(
+        &["any-credential", op],
         vec![("any-credential", Box::new(AnyCredential))],
     )));
-    let jws = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJvcGVyYXRvciJ9.c2ln";
-    assert_eq!(through_the_loop(&handle, INFO, Some(jws), None).0, 403);
-    assert_eq!(through_the_loop(&handle, INFO, Some(TOKEN), None).0, 200);
+    assert_eq!(through_the_loop(&first, INFO, Some(jws), None).0, 403);
     assert_eq!(
-        through_the_loop(&handle, INFO, Some("wrong-opaque-token"), None),
+        through_the_loop(&first, INFO, None, None),
         (401, DOOR_401.to_string())
     );
+    let behind = Arc::new(busbar_kernel::state::AppHandle::new(app(
+        &[op, "any-credential"],
+        vec![("any-credential", Box::new(AnyCredential))],
+    )));
+    assert_eq!(through_the_loop(&behind, INFO, Some(TOKEN), None).0, 200);
+    for wrong in [jws, "wrong-opaque-token"] {
+        assert_eq!(
+            through_the_loop(&behind, INFO, Some(wrong), None),
+            (401, DOOR_401.to_string())
+        );
+    }
 }
 
 /// (d) THE CHAIN IS READ LIVE: swapping the snapshot's admin chain (what `PUT
