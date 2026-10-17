@@ -1,0 +1,24 @@
+# FIXTURE for instance-noun-neutrality selftest: the composition root's linked plugin packages, one
+# or more per plugin kind, each covered by a census noun. The `:roster` row derives the instance set
+# from this table; a package no noun covers reds it.
+[package]
+name = "busbar"
+version = "0.0.0"
+
+[dependencies]
+busbar-plane-mcp = { workspace = true }
+busbar-plane-decisions = { workspace = true }
+busbar-transport-http = { workspace = true }
+busbar-transport-webrtc = { workspace = true }
+busbar-store-memory = { workspace = true }
+busbar-auth-header = { workspace = true }
+busbar-auth-oauth = { workspace = true }
+busbar-secret-env = { workspace = true }
+busbar-secret-file = { workspace = true }
+busbar-hook-ranking = { workspace = true }
+busbar-export-otlp = { workspace = true }
+busbar-export-prometheus = { workspace = true }
+busbar-contract = { workspace = true }
+
+[dev-dependencies]
+busbar-auth-nosuch-dev = { workspace = true }
