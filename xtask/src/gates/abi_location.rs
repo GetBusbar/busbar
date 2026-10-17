@@ -977,6 +977,10 @@ impl Gate for AbiLocationGate {
 
     fn selftest<'a>(&'a self, cx: &'a Ctx) -> Report<'a> {
         let mut report = Report::new();
+        // The ledger row compares the ledger with the base: the unplanted baseline is measured
+        // against `HEAD`, since a detached battery checkout has no other base.
+        let pinned = crate::gates::construction::ceilings::with_head_pin(cx);
+        let cx = &pinned;
         report.push(prove_green(
             cx,
             self,
@@ -1141,6 +1145,36 @@ impl Gate for AbiLocationGate {
                 &["unplantable"],
             )),
         }
+
+        // THE LEDGER AGAINST ITS BASE (Law 9): a row or a not-a-slot exclusion the base's ledger
+        // does not carry was written by this change, and an added row is a new shape forgiven.
+        const SYN: &str = "zz-abi-location-base";
+        let minted = |extra: &str| {
+            let mut ov =
+                crate::gates::construction::ceilings::synthetic_base(SYN, LEDGER, ledger.clone());
+            ov.set(LEDGER, format!("{ledger}{extra}"));
+            ov
+        };
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "an [[offender]] row the base's ledger does not carry is MINTED, and refused",
+            &[ROW_LEDGER],
+            minted(
+                "\n[[offender]]\nfile = \"crates/busbar-kernel/src/planted_minted.rs\"\nshape = \"repr-c\"\nitem = \"PlantedMinted\"\n",
+            ),
+            &["MINTED", "PlantedMinted"],
+        ));
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "a [[not_abi]] exclusion the base's ledger does not carry is MINTED, and refused",
+            &[ROW_LEDGER],
+            minted(
+                "\n[[not_abi]]\nfile = \"crates/busbar-kernel/src/planted_minted.rs\"\nitem = \"planted_minted_slot\"\nwhy = \"planted\"\n",
+            ),
+            &["MINTED", "planted_minted_slot"],
+        ));
 
         report
     }

@@ -1345,6 +1345,39 @@ impl Gate for PlanePricingBlindnessGate {
             &["undocumented"],
         ));
 
+        // THE BASELINE AGAINST ITS BASE (Law 9), over the real tree: a `[[debt]]` row the base's
+        // baseline does not carry is a NEW money reference forgiven by the same change that wrote
+        // it, and reds the undocumented row. The unplanted run is measured against `HEAD` (a
+        // detached battery checkout has no other base); the plant is a synthetic base.
+        {
+            let pinned = crate::gates::construction::ceilings::with_head_pin(cx);
+            let was = cx.read(BASELINE).unwrap_or_default();
+            let mut ov = crate::gates::construction::ceilings::synthetic_base(
+                "zz-plane-pricing-base",
+                BASELINE,
+                was.clone(),
+            );
+            ov.set(
+                BASELINE,
+                format!(
+                    "{was}\n[[debt]]\ncategory = \"{}\"\ncrate = \"busbar-plane-llm\"\n\
+                     file = \"crates/busbar-plane-llm/src/planted_minted.rs\"\ncount = 1\n\
+                     placement = \"production\"\nact = \"{}\"\nreach = \"reachable\"\n\
+                     why = \"planted\"\n",
+                    CATEGORIES[0].key(),
+                    CATEGORIES[0].act()
+                ),
+            );
+            report.push(crate::gates::prove_rows_red(
+                &pinned,
+                self,
+                "a [[debt]] row the base's baseline does not carry is MINTED, and refused",
+                &[ROW_UNDOCUMENTED],
+                ov,
+                &["MINTED", "planted_minted.rs"],
+            ));
+        }
+
         // THE STALE ROW: the fixture baseline names a ghost the tree does not have.
         report.push(prove_rows_red_at(
             cx,

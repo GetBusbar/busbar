@@ -254,7 +254,7 @@ impl Gate for PlaneSecretBlindnessGate {
             ov.set(home, text.replace("fn expose<", "fn expose_renamed<"));
             let ledger_row = SPEC.ledger_row();
             report.push(crate::gates::prove_rows_red(
-                cx,
+                &crate::gates::construction::ceilings::with_head_pin(cx),
                 self,
                 "a forbidden name defined nowhere in the tree is RED, naming it",
                 &[ledger_row.as_str()],

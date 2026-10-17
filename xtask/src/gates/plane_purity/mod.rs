@@ -533,7 +533,11 @@ impl Gate for PlanePurityGate {
         // and stays RED on `cargo xtask gate plane-purity`; what changes is that each case now has
         // a green row to move. The set-aside is DERIVED from the gate's own hits, so a standing red
         // that is drained shrinks it and a new one grows it — nothing here names a file.
-        let base = cx.with_overlay(standing_red_set_aside(cx));
+        //
+        // The set-aside is laid over `cx` with its base PINNED to `HEAD`: the segment-debt row
+        // compares the list with the base's copy, and a detached battery checkout has no other.
+        let pinned = crate::gates::construction::ceilings::with_head_pin(cx);
+        let base = pinned.with_overlay(layered(&pinned).layered(&standing_red_set_aside(cx)));
         let cx: &Ctx = &base;
 
         report.push(prove_green(
@@ -930,7 +934,9 @@ impl Gate for PlanePurityGate {
             ));
         }
 
-        let mut ov = layered(cx);
+        // THE LIST AGAINST ITS BASE (Law 9). The same listed hit, twice: once with its row on the
+        // base's copy of the list too (debt the base already carried: green), and once with the row
+        // written by this change alone (a new dialect segment forgiven by a data edit: RED).
         let mut rows = debt_now;
         rows.push(segment_debt::Debt {
             file: plant_at.clone(),
@@ -939,17 +945,38 @@ impl Gate for PlanePurityGate {
             dialect: "anthropic".to_string(),
             owner: "kernel-neutrality lane".to_string(),
         });
-        ov.set(segment_debt::SEGMENT_DEBT_TOML, segment_debt::render(&rows));
-        if Edit::Create(format!("{seg_line}\n"))
-            .apply(cx, &plant_at, &mut ov)
-            .is_ok()
-        {
+        let listed = segment_debt::render(&rows);
+        let unlisted = segment_debt::render(&rows[..rows.len() - 1]);
+        let on_base = |was: &str| {
+            let mut ov =
+                layered(cx).layered(&crate::gates::construction::ceilings::synthetic_base(
+                    "zz-segment-debt-base",
+                    segment_debt::SEGMENT_DEBT_TOML,
+                    was,
+                ));
+            ov.set(segment_debt::SEGMENT_DEBT_TOML, listed.clone());
+            Edit::Create(format!("{seg_line}\n"))
+                .apply(cx, &plant_at, &mut ov)
+                .ok()
+                .map(|()| ov)
+        };
+        if let Some(ov) = on_base(&listed) {
             report.push(prove_rows_green(
                 cx,
                 self,
                 "a listed segment-only hit is debt, not a DIALECT hit: both rows stay green",
                 &[ROW_SEGMENT_DEBT, ROW_DIALECT],
                 ov,
+            ));
+        }
+        if let Some(ov) = on_base(&unlisted) {
+            report.push(prove_red(
+                cx,
+                self,
+                "a segment-debt row the base's list does not carry is MINTED, and refused",
+                &[ROW_SEGMENT_DEBT],
+                ov,
+                &[ROW_SEGMENT_DEBT, "MINTED", "planted_plane_purity.rs"],
             ));
         }
 

@@ -366,12 +366,16 @@ pub fn verdict(cx: &Ctx, spec: &Spec, mut findings: Vec<Finding>, errors: Vec<St
 /// The shared selftest: the tree is green, every planted rule is RED naming its plant, and a row
 /// the tree does not carry is RED as STALE.
 pub fn selftest<'a>(
-    cx: &'a Ctx,
+    cx: &Ctx,
     gate: &'a dyn crate::gates::Gate,
     spec: &Spec,
     plants: Vec<(&'static str, &'static str, Overlay, Vec<&'static str>)>,
 ) -> Report<'a> {
     let mut report = Report::new();
+    // The ledger row compares the ledger with the base, so the unplanted baseline is measured
+    // against `HEAD` (see `with_head_pin`): a detached battery checkout has no other base.
+    let pinned = crate::gates::construction::ceilings::with_head_pin(cx);
+    let cx = &pinned;
     report.push(prove_green(
         cx,
         gate,
@@ -400,6 +404,70 @@ pub fn selftest<'a>(
         ov,
         &["crates/planted-stale/src/lib.rs", "STALE"],
     ));
+    report.append(base_cases(cx, gate, spec));
+    report
+}
+
+/// THE LEDGER AGAINST ITS BASE (Law 9: a ceiling refuses every rise). Each case plants a
+/// SYNTHETIC base whose copy of the ledger is `was` and a tree whose ledger is `now`, so the
+/// verdict is about the rows the change wrote, never about this checkout's history.
+fn base_cases<'a>(cx: &Ctx, gate: &'a dyn crate::gates::Gate, spec: &Spec) -> Report<'a> {
+    const SYN: &str = "zz-ledger-base";
+    const FILE: &str = "crates/planted-minted/src/lib.rs";
+    let mut report = Report::new();
+    let ledger = cx.read(spec.ledger).unwrap_or_default();
+    let first = spec.rules.first().map_or("", |(id, _)| *id);
+    let row = |count: Option<usize>| {
+        format!(
+            "\n[[finding]]\nrule = \"{first}\"\nfile = \"{FILE}\"\nitem = \"planted_minted_item\"\n{}",
+            count.map(|n| format!("count = {n}\n")).unwrap_or_default()
+        )
+    };
+    let sanctioned = format!(
+        "\n[[sanctioned]]\nrule = \"{first}\"\nfile = \"{FILE}\"\nitem = \"planted_sanctioned_item\"\ncite = \"planted\"\ndrain = \"planted\"\n"
+    );
+    let plant = |now: String, was: String| {
+        let mut ov = crate::gates::construction::ceilings::synthetic_base(SYN, spec.ledger, was);
+        ov.set(spec.ledger, now);
+        ov
+    };
+    let ledger_row = spec.ledger_row();
+    let cases: [(&str, String, String, [&str; 2]); 4] = [
+        (
+            "a [[finding]] row the base's ledger does not carry is MINTED, and refused",
+            format!("{ledger}{}", row(Some(1))),
+            ledger.clone(),
+            ["MINTED", FILE],
+        ),
+        (
+            "a [[sanctioned]] site the base's ledger does not carry is MINTED, and refused",
+            format!("{ledger}{sanctioned}"),
+            ledger.clone(),
+            ["MINTED", "planted_sanctioned_item"],
+        ),
+        (
+            "a row's count that rose against the base is refused",
+            format!("{ledger}{}", row(Some(2))),
+            format!("{ledger}{}", row(Some(1))),
+            ["rose 1 -> 2", "planted_minted_item"],
+        ),
+        (
+            "a row with no count holds no number, and is refused",
+            format!("{ledger}{}", row(None)),
+            format!("{ledger}{}", row(None)),
+            ["no `count`", "planted_minted_item"],
+        ),
+    ];
+    for (name, now, was, naming) in cases {
+        report.push(prove_rows_red(
+            cx,
+            gate,
+            name,
+            &[ledger_row.as_str()],
+            plant(now, was),
+            &naming,
+        ));
+    }
     report
 }
 
@@ -628,3 +696,7 @@ pub fn literals(sl: &ScopeLine) -> Vec<String> {
     }
     out
 }
+
+#[cfg(test)]
+#[path = "one_abi_tests.rs"]
+mod tests;
