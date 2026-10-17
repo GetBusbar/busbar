@@ -164,3 +164,28 @@ fn the_plane_holds_no_tool_executor_port() {
         offenders.join("\n")
     );
 }
+
+/// RED-BEFORE-GREEN (Law 11, "Code that answers, executes or branches on what a request or response
+/// asks for is a defect: it is deleted, never added"): the plane holds no table that refuses a
+/// caller's tool reply by its call id and no seam that authors a `response.create` after one.
+/// RED: `governed.rs` and `open_calls.rs` declared `GovernedCalls` and `OpenToolCalls`, and the
+/// session pump intercepted a caller's reply through them.
+#[test]
+fn the_plane_holds_no_reply_interception() {
+    let mut offenders = Vec::new();
+    walk(&src_dir(), &mut |path, text| {
+        for (n, line) in text.lines().enumerate() {
+            if is_comment(line) {
+                continue;
+            }
+            if line.contains("GovernedCalls") || line.contains("OpenToolCalls") {
+                offenders.push(format!("{}:{}: {}", path.display(), n + 1, line.trim()));
+            }
+        }
+    });
+    assert!(
+        offenders.is_empty(),
+        "a caller's tool reply is the caller's; the plane intercepts none:\n{}",
+        offenders.join("\n")
+    );
+}
