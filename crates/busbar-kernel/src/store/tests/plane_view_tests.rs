@@ -5,7 +5,10 @@
 //! provably NONE of the audit-chain authority `busbar_contract::records::RecordStore` also holds, and `PlaneStoreView`
 //! forwards to the real backend.
 
-use super::super::store::{PlaneStore, PlaneStoreView};
+use super::{PlaneStore, PlaneStoreView};
+
+/// A single-use token kind, as a spent-approval ledger writes it (no production caller names one).
+const KIND_ASK: &str = "ask";
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult,
 };
@@ -155,11 +158,11 @@ impl busbar_contract::records::RecordStore for RecordingStore {
     // The neutral plane verbs the forwarding test observes.
     fn upsert_plane_record(&self, record: PlaneRecordRef<'_>) -> RecordStoreResult<()> {
         let record = &record.to_record();
-        if record.kind == crate::plane::store::KIND_DEMOTION {
+        if record.kind == crate::store::plane_view::KIND_DEMOTION {
             self.demotions
                 .lock()
                 .unwrap()
-                .push(crate::plane::store::decode(&record.body)?);
+                .push(crate::store::plane_view::decode(&record.body)?);
         }
         Ok(())
     }
@@ -169,12 +172,12 @@ impl busbar_contract::records::RecordStore for RecordingStore {
         selector: &PlaneSelector,
     ) -> RecordStoreResult<Vec<Vec<u8>>> {
         match (kind, selector) {
-            (crate::plane::store::KIND_DEMOTION, PlaneSelector::All) => self
+            (crate::store::plane_view::KIND_DEMOTION, PlaneSelector::All) => self
                 .demotions
                 .lock()
                 .unwrap()
                 .iter()
-                .map(crate::plane::store::encode)
+                .map(crate::store::plane_view::encode)
                 .collect(),
             _ => Ok(Vec::new()),
         }
@@ -201,10 +204,10 @@ fn plane_store_view_forwards_to_the_real_backend() {
     // demotion would not survive the call and the redemption ledger would not advance.
     let store: Arc<dyn PlaneStore> = PlaneStoreView::narrow(Arc::new(RecordingStore::default()));
     let list_demotions = |s: &Arc<dyn PlaneStore>| -> Vec<DemoRow> {
-        s.list_plane_records(crate::plane::store::KIND_DEMOTION, &PlaneSelector::All)
+        s.list_plane_records(crate::store::plane_view::KIND_DEMOTION, &PlaneSelector::All)
             .unwrap()
             .iter()
-            .map(|body| crate::plane::store::decode(body).unwrap())
+            .map(|body| crate::store::plane_view::decode(body).unwrap())
             .collect()
     };
     assert!(
@@ -214,13 +217,13 @@ fn plane_store_view_forwards_to_the_real_backend() {
     store
         .upsert_plane_record(
             PlaneRecord {
-                kind: crate::plane::store::KIND_DEMOTION.to_string(),
+                kind: crate::store::plane_view::KIND_DEMOTION.to_string(),
                 id: "srv-1".to_string(),
                 parent: None,
                 seq: 0,
                 ts: 100,
                 disposition: PlaneDisposition::Active,
-                body: crate::plane::store::encode(&DemoRow {
+                body: crate::store::plane_view::encode(&DemoRow {
                     server: "srv-1".to_string(),
                     reason: "drift".to_string(),
                     recorded_at: 100,
@@ -238,13 +241,13 @@ fn plane_store_view_forwards_to_the_real_backend() {
     // which can only hold if both calls reached the one inner instance.
     assert!(
         store
-            .redeem_plane_token(crate::plane::store::KIND_ASK, "nonce-a", 1_000, 10)
+            .redeem_plane_token(KIND_ASK, "nonce-a", 1_000, 10)
             .unwrap(),
         "first redemption is fresh"
     );
     assert!(
         !store
-            .redeem_plane_token(crate::plane::store::KIND_ASK, "nonce-a", 1_000, 10)
+            .redeem_plane_token(KIND_ASK, "nonce-a", 1_000, 10)
             .unwrap(),
         "second redemption sees the same inner ledger the wrapper forwarded to"
     );

@@ -412,8 +412,10 @@ fn old_store_audit_only_in_legacy_table_boots_migrates_and_verifies() {
     let store: std::sync::Arc<dyn busbar_contract::records::RecordStore> =
         std::sync::Arc::new(DualDurableStore::new());
     // Seed the LEGACY table only — plane_records is empty, exactly like an OLD store on first boot.
-    let ad1: busbar_contract::records::AuditRecord = crate::plane::store::decode(AD_1).unwrap();
-    let ad2: busbar_contract::records::AuditRecord = crate::plane::store::decode(AD_2).unwrap();
+    let ad1: busbar_contract::records::AuditRecord =
+        crate::store::plane_view::decode(AD_1).unwrap();
+    let ad2: busbar_contract::records::AuditRecord =
+        crate::store::plane_view::decode(AD_2).unwrap();
     store.append_audit(&ad1).unwrap();
     store.append_audit(&ad2).unwrap();
     assert!(
