@@ -129,6 +129,10 @@ pub use in_memory::*;
 
 mod planes;
 pub use planes::{PlaneBreakers, MAX_POOL_MEMBERS};
+
+/// THE PLANE STORE SEAM: the `PlaneStore` trait a plane persists its own kind-tagged rows through,
+/// and the `PlaneStoreView` that narrows a real `RecordStore` to it (no audit-chain authority).
+pub mod plane_view;
 // `PlaneAdmission` is the RAII admission token the plane dispatch paths hand around; with BOTH
 // planes compiled out nothing names it, so this re-export is unused in that config alone.
 #[allow(unused_imports)]
