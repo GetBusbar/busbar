@@ -92,7 +92,7 @@ busbar-kernel-audit = { path = "../busbar-kernel-audit" }
 # `claims` axis), so the root names none of them. The streaming plane's edge is the crate the
 # `plane-streaming` switch's `plane-door` row names: its memory-ABI door, served through the loader's
 # one load like every dropped-in plane door (FLIP-STREAMING).
-busbar-plane-streaming = { path = "../busbar-plane-streaming", optional = true }
+busbar-plane-streaming = { workspace = true, optional = true }
 # THE DECISIONS PLANE (jev), #48's fifth: the edge the `plane-decisions` switch's `plane-door` row
 # names. The plane is served through its memory-ABI door (`busbar_plane_decisions::plane_door::door`),
 # loaded through the loader's one load like every dropped-in plane door (FLIP-DECISIONS), so its
