@@ -937,6 +937,140 @@ impl Gate for BlockingFfiGate {
             &["1 finding(s)", "planted_test_mod.rs:9"],
         ));
 
+        // A STORE CROSSING IS A SEAM, AND THE ROSTER OF SEAMS IS THE LOADER'S, NOT A HAND LIST.
+        // `impl RecordStore for LoadedStore` waits on the store door on the caller's thread (the
+        // bridge's `wait_done`), so `s.put_key(&k)?` inline in an async fn parks a Tokio worker
+        // for the store's full round trip. The `StoreCalls` method of the same name is submitted
+        // and AWAITED, and stays silent in both spellings.
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_store_call.rs"),
+            "async fn rotate(s: &dyn RecordStore, calls: &dyn StoreCalls, k: VirtualKey) -> Result<(), E> {\n\
+             \x20   s.put_key(&k)?;\n\
+             \x20   calls.upsert_plane_record(rec).await?;\n\
+             \x20   calls\n\
+             \x20       .upsert_plane_record(\n\
+             \x20           rec,\n\
+             \x20       )\n\
+             \x20       .await?;\n\
+             \x20   Ok(())\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a synchronous store call inline in an async fn is flagged, and the awaited door call \
+             of the same name is not",
+            &[ROW_NO_INLINE],
+            ov,
+            &[
+                "1 finding(s)",
+                "planted_store_call.rs:2",
+                "door-backed RecordStore call",
+            ],
+        ));
+
+        // THE DERIVATION READS THE LOADER, so a door-backed trait the loader grows tomorrow is a
+        // seam tomorrow: a planted impl whose method reaches a synchronous wait through a helper
+        // of its own type is named at its call site, and its sibling that only builds a future is
+        // not.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/plugin-loader/src/planted_door.rs",
+            "impl ZapCalls for ZapInstance {\n\
+             \x20   fn zap_now(&self, x: u32) -> Result<(), String> {\n\
+             \x20       self.bridge(x)\n\
+             \x20   }\n\
+             \x20   fn zap_later(&self, x: u32) -> ZapCall<'_> {\n\
+             \x20       Box::pin(async move { self.dispatcher.submit(x).await })\n\
+             \x20   }\n\
+             }\n\n\
+             impl ZapInstance {\n\
+             \x20   fn bridge(&self, x: u32) -> Result<(), String> {\n\
+             \x20       self.dispatcher.submit(x).wait_done().ok()\n\
+             \x20   }\n\
+             }\n",
+        );
+        ov.set(
+            format!("{CORE}/planted_zap_site.rs"),
+            "async fn zap_site(z: &dyn ZapCalls) {\n\
+             \x20   let a = z.zap_later(1).await;\n\
+             \x20   let b = z.zap_now(2);\n\
+             }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a door-backed method the loader grows is a seam without anyone listing it",
+            &[ROW_NO_INLINE],
+            ov,
+            &[
+                "1 finding(s)",
+                "planted_zap_site.rs:3",
+                "door-backed ZapCalls call",
+            ],
+        ));
+
+        // EVERY REAL LINE IS ARMED. A statement that opens with `*` is a deref-assignment, not the
+        // inside of a block comment; `async unsafe fn` and `async extern "C" fn` are async fns; and
+        // a `#[cfg(test)]` on a struct FIELD gates that field, not the fn after the struct.
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_deref.rs"),
+            "async fn refill(env: &HookEnv, slot: &mut Settings) -> Result<(), String> {\n\
+             \x20   *slot = env.resolve_hook_settings(&s)?;\n\
+             \x20   Ok(())\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a deref-assignment opening with `*` is code, not a comment",
+            &[ROW_NO_INLINE],
+            ov,
+            &["1 finding(s)", "planted_deref.rs:2", "secret-plugin FFI"],
+        ));
+
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_async_spellings.rs"),
+            "pub(crate) async unsafe fn raw_resolve(env: &HookEnv) {\n\
+             \x20   let _ = env.resolve_hook_settings(&hook.settings);\n}\n\n\
+             pub(crate) async extern \"C\" fn c_resolve(env: &HookEnv) {\n\
+             \x20   let _ = env.resolve_hook_settings(&hook.settings);\n}\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "an async fn spelled with `unsafe` or an ABI between `async` and `fn` is armed",
+            &[ROW_NO_INLINE],
+            ov,
+            &[
+                "2 finding(s)",
+                "planted_async_spellings.rs:2",
+                "planted_async_spellings.rs:6",
+            ],
+        ));
+
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_field_cfg.rs"),
+            "struct Probe {\n\
+             \x20   #[cfg(test)]\n\
+             \x20   seen: u32,\n\
+             \x20   #[cfg(test)] calls: u32,\n\
+             }\n\n\
+             async fn after_field(env: &HookEnv) {\n\
+             \x20   let _ = env.resolve_hook_settings(&hook.settings);\n\
+             }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a field-level cfg(test) gates its field and not the async fn after the struct",
+            &[ROW_NO_INLINE],
+            ov,
+            &["1 finding(s)", "planted_field_cfg.rs:8"],
+        ));
+
         // THE SCANNER THAT DID NOT GET THROUGH. The shell banked an aborted awk's empty output as
         // "no findings", for every file at once. Here the window that never closes is the same
         // fact, and it must not be reported as a clean file.
