@@ -396,7 +396,7 @@ fn red_an_answer_leased_from_a_table_the_body_dropped_is_fault() {
     assert_eq!(close(inst, 0), Outcome::Ready);
 }
 
-/// THE REQUEST PATH TAKES NO SHARED LOCK WHEN NOTHING IS PARKED (THE DESIGN §11.2, "no allocation
+/// THE REQUEST PATH TAKES NO SHARED LOCK WHEN NOTHING IS PARKED (THE DESIGN, the plugin ABI: "no allocation
 /// and no blocking on the hot path"). Every worker on an instance enters through the same `Head`;
 /// an entry on an instance with nothing parked must not touch the parked table's mutex, so it
 /// cannot wait on another worker holding it.

@@ -45,6 +45,8 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::marker::PhantomData;
 use std::mem::size_of;
+use std::ops::{Deref, DerefMut};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use crate::abi::mechanism::call::{InHead, OutHead, Outcome, FLAG_RESUME};
@@ -63,16 +65,62 @@ type Parked = HashMap<Ticket, Box<dyn Any + Send + Sync>>;
 struct Head {
     tag: TypeId,
     parked: Mutex<Parked>,
+    /// How many tickets `parked` holds, written under its lock as the guard drops and read without
+    /// it, so an entry on an instance with nothing parked never takes the lock every worker shares.
+    parked_len: AtomicUsize,
     kept: Kept,
 }
 
+/// The parked table, locked; dropping it states the table's length in [`Head::parked_len`].
+struct ParkedGuard<'a> {
+    table: MutexGuard<'a, Parked>,
+    len: &'a AtomicUsize,
+}
+
+impl Deref for ParkedGuard<'_> {
+    type Target = Parked;
+    fn deref(&self) -> &Parked {
+        &self.table
+    }
+}
+
+impl DerefMut for ParkedGuard<'_> {
+    fn deref_mut(&mut self) -> &mut Parked {
+        &mut self.table
+    }
+}
+
+impl Drop for ParkedGuard<'_> {
+    fn drop(&mut self) {
+        self.len.store(self.table.len(), Ordering::Release);
+    }
+}
+
 impl Head {
-    fn parked(&self) -> MutexGuard<'_, Parked> {
-        self.parked.lock().unwrap_or_else(PoisonError::into_inner)
+    fn new(tag: TypeId, parked: Parked) -> Self {
+        Self {
+            tag,
+            parked_len: AtomicUsize::new(parked.len()),
+            parked: Mutex::new(parked),
+            kept: Kept::default(),
+        }
     }
 
-    /// Drop what `ticket` parked, outside the lock.
+    fn parked(&self) -> ParkedGuard<'_> {
+        ParkedGuard {
+            table: self.parked.lock().unwrap_or_else(PoisonError::into_inner),
+            len: &self.parked_len,
+        }
+    }
+
+    /// Drop what `ticket` parked, outside the lock. Nothing parked on the instance means nothing
+    /// parked on `ticket`: the lock is not taken. What this ticket parked was parked by an earlier
+    /// entry of the same op, which the host's next entry on the ticket follows, so its length is
+    /// seen here.
     fn forget(&self, ticket: Ticket) {
+        if self.parked_len.load(Ordering::Acquire) == 0 {
+            return;
+        }
         let gone = self.parked().remove(&ticket);
         drop(gone);
     }
@@ -148,11 +196,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
             "Instance::open: the state is installed in `open` only"
         );
         self.opened.set(Some(Box::new(Tagged {
-            head: Head {
-                tag: TypeId::of::<T>(),
-                parked: Mutex::new(HashMap::new()),
-                kept: Kept::default(),
-            },
+            head: Head::new(TypeId::of::<T>(), HashMap::new()),
             state,
         })));
     }
@@ -173,11 +217,7 @@ impl<'call, T: Send + Sync + 'static> Instance<'call, T> {
             map.insert(self.ticket, Box::new(parked));
         }
         self.opened.set(Some(Box::new(Tagged {
-            head: Head {
-                tag: TypeId::of::<T>(),
-                parked: Mutex::new(map),
-                kept: Kept::default(),
-            },
+            head: Head::new(TypeId::of::<T>(), map),
             state,
         })));
     }

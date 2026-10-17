@@ -371,7 +371,10 @@ fn a_route_entry_already_kept_is_named_without_allocating() {
         allocations, 0,
         "naming a kept route entry allocated on the READY path"
     );
-    assert_eq!((again.route, read(again.pool)), (ROUTE_DIRECT, b"entry".to_vec()));
+    assert_eq!(
+        (again.route, read(again.pool)),
+        (ROUTE_DIRECT, b"entry".to_vec())
+    );
 }
 
 /// THE TRUST FACTS SETTER (ARCHITECT 2026-10-06): the counterparty, item and digest a unit rests
