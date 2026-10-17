@@ -132,18 +132,18 @@
    "paths": [
     "crates/busbar/src/root"
    ],
-   "tree_hash": "41577b94ee26a1464059d8f248beb9785f25dcc2072c4d8b85dec6f550d542f5",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 1,
+   "tree_hash": "90048916c9eae4288d2de5befb61062cb8102325184afc7ace7afd487b7d0c38",
+   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 9,
-    "MEDIUM": 10,
-    "LOW": 10,
+    "HIGH": 7,
+    "MEDIUM": 14,
+    "LOW": 12,
     "NIT": 1
    },
-   "report": "The composition root seals every audit record with no destination and default controls, carries a settled money figure in the audit amount, and serves ledger totals from settlement instead of pricing at read time. Without a data directory the journal keeps nothing across a restart although signed corrections are acknowledged. Root code names a transport instance and branches on one vendor's stream framing. Admin units seal no audit record, crash recovery posts dispatched units at zero, and one mutex is held across synchronous journal writes. Read in two parts, fully.",
-   "auditor": "opus-ledger-root",
+   "report": "With no data directory, chain reads after boot see only the newest journal segment, so corrections, the migration marker and checkpoint numbering are lost once the journal outgrows one segment. Duplex sessions seal no audit record and unit records omit hooks and slice. Serving branches on a vendor stream media type and special-cases two plane config sections. Boot binds every plane and dropped-in transport whether configured or not, and one outbound auth style loads every auth plugin. Admin units seal no record. Read in two parts, fully.",
+   "auditor": "opus-r159b-root",
    "fixed_at": null,
    "rounds": [
     {
@@ -159,6 +159,20 @@
       "NIT": 1
      },
      "report": "The composition root seals every audit record with no destination and default controls, carries a settled money figure in the audit amount, and serves ledger totals from settlement instead of pricing at read time. Without a data directory the journal keeps nothing across a restart although signed corrections are acknowledged. Root code names a transport instance and branches on one vendor's stream framing. Admin units seal no audit record, crash recovery posts dispatched units at zero, and one mutex is held across synchronous journal writes. Read in two parts, fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-r159b-root",
+     "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+     "tree_hash": "90048916c9eae4288d2de5befb61062cb8102325184afc7ace7afd487b7d0c38",
+     "counts": {
+      "HIGH": 7,
+      "MEDIUM": 14,
+      "LOW": 12,
+      "NIT": 1
+     },
+     "report": "With no data directory, chain reads after boot see only the newest journal segment, so corrections, the migration marker and checkpoint numbering are lost once the journal outgrows one segment. Duplex sessions seal no audit record and unit records omit hooks and slice. Serving branches on a vendor stream media type and special-cases two plane config sections. Boot binds every plane and dropped-in transport whether configured or not, and one outbound auth style loads every auth plugin. Admin units seal no record. Read in two parts, fully."
     }
    ]
   },
@@ -450,18 +464,18 @@
    "paths": [
     "crates/busbar-contract/src"
    ],
-   "tree_hash": "d40f4596cbd7ee2c451a45c56d48a36428a75ae16ef835e38ed603077bf7e105",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 1,
+   "tree_hash": "852023d52f727f03541844d6b9a149d920ac2d9d55b33fcebb9dd91619289cab",
+   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 13,
-    "MEDIUM": 10,
-    "LOW": 19,
+    "HIGH": 5,
+    "MEDIUM": 9,
+    "LOW": 29,
     "NIT": 1
    },
-   "report": "The abolished JSON lane still ships: every plugin image exports its symbols with unwinding across the boundary and registers through process-global statics, which also misroute plugin logs. The per-crossing door locks, clones and allocates on the hot path. The store door keeps its own lifecycle. Plugin code with no unsafe can make the host read freed memory, statement checks form slices from unchecked lengths, and the signed statement omits a need's response-header rules. Further findings sit in the kind tables and outside the ABI folder. Read in three parts, mostly fully, some SDK files sampled.",
-   "auditor": "opus-ledger-contract-src",
+   "report": "The retired JSON lane and process-global statics are gone. The safe door still takes a shared lock, allocates and counts on request-path crossings; the store door keeps its own lifecycle and accepts an unknown lease. A transport version constant sits outside the ABI folder, the dialect codec seam and an http re-export remain, and the contract names plane and secret-plugin instance vocabulary. Host validators go uncalled, so a malformed claim loads as a dead route. Read in three parts, mostly fully; the old plugin lanes another lane is deleting were not read.",
+   "auditor": "opus-r159b-contract-src",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-contract/src/tests"
@@ -480,6 +494,20 @@
       "NIT": 1
      },
      "report": "The abolished JSON lane still ships: every plugin image exports its symbols with unwinding across the boundary and registers through process-global statics, which also misroute plugin logs. The per-crossing door locks, clones and allocates on the hot path. The store door keeps its own lifecycle. Plugin code with no unsafe can make the host read freed memory, statement checks form slices from unchecked lengths, and the signed statement omits a need's response-header rules. Further findings sit in the kind tables and outside the ABI folder. Read in three parts, mostly fully, some SDK files sampled."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-r159b-contract-src",
+     "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+     "tree_hash": "852023d52f727f03541844d6b9a149d920ac2d9d55b33fcebb9dd91619289cab",
+     "counts": {
+      "HIGH": 5,
+      "MEDIUM": 9,
+      "LOW": 29,
+      "NIT": 1
+     },
+     "report": "The retired JSON lane and process-global statics are gone. The safe door still takes a shared lock, allocates and counts on request-path crossings; the store door keeps its own lifecycle and accepts an unknown lease. A transport version constant sits outside the ABI folder, the dialect codec seam and an http re-export remain, and the contract names plane and secret-plugin instance vocabulary. Host validators go uncalled, so a malformed claim loads as a dead route. Read in three parts, mostly fully; the old plugin lanes another lane is deleting were not read."
     }
    ]
   },
@@ -888,18 +916,18 @@
    "paths": [
     "crates/busbar-kernel/src"
    ],
-   "tree_hash": "a2615394dc7a95fb7bb4cbd019de5cff7acd6844d06c7a2d4fdce5f977f3b4c8",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 1,
+   "tree_hash": "3b39fae654d1888495ed5ee31e569d65e1c21bc12a02a1f544ae43c6792ad518",
+   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 39,
-    "MEDIUM": 46,
-    "LOW": 37,
-    "NIT": 5
+    "HIGH": 19,
+    "MEDIUM": 29,
+    "LOW": 31,
+    "NIT": 4
    },
-   "report": "The kernel still knows planes, protocols and transports. It types and validates plane config sections and names plugin instances; its ingress reads JSON-RPC and WebSocket and mounts a model-plane route; it dials, pools and tunnels HTTP itself beside a second destination guard that lets IP-literal and proxied targets through; it keeps its own outbound auth, a verified-credential cache and inbound request signing; a plugin's replay claim is dropped; static seams beyond the two allowed ones remain; host locks are held across plugin calls; health reports unhealthy without model-plane lanes. Read in five parts, mostly fully; the files another lane is relocating were not read.",
-   "auditor": "opus-ledger-kernel-src",
+   "report": "The kernel still holds plane and protocol knowledge: it types and builds plane config sections, mounts one plane's model-listing, message and stats routes, carries that plane's token tiers in money, metering and telemetry, speaks JSON-RPC and a discovery document, names its own inbound credential lines, hosts the browser login flow, and mints vendor-shaped keys. Arrival functions and an amendment kernel live in statics; admitting a plane reads the store under a host lock; a config apply installs limits before validating them. Read in five parts, mostly fully; the files another lane is deleting were not read.",
+   "auditor": "opus-r159b-kernel-src",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel/src/tests"
@@ -918,6 +946,20 @@
       "NIT": 5
      },
      "report": "The kernel still knows planes, protocols and transports. It types and validates plane config sections and names plugin instances; its ingress reads JSON-RPC and WebSocket and mounts a model-plane route; it dials, pools and tunnels HTTP itself beside a second destination guard that lets IP-literal and proxied targets through; it keeps its own outbound auth, a verified-credential cache and inbound request signing; a plugin's replay claim is dropped; static seams beyond the two allowed ones remain; host locks are held across plugin calls; health reports unhealthy without model-plane lanes. Read in five parts, mostly fully; the files another lane is relocating were not read."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-r159b-kernel-src",
+     "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+     "tree_hash": "3b39fae654d1888495ed5ee31e569d65e1c21bc12a02a1f544ae43c6792ad518",
+     "counts": {
+      "HIGH": 19,
+      "MEDIUM": 29,
+      "LOW": 31,
+      "NIT": 4
+     },
+     "report": "The kernel still holds plane and protocol knowledge: it types and builds plane config sections, mounts one plane's model-listing, message and stats routes, carries that plane's token tiers in money, metering and telemetry, speaks JSON-RPC and a discovery document, names its own inbound credential lines, hosts the browser login flow, and mints vendor-shaped keys. Arrival functions and an amendment kernel live in statics; admitting a plane reads the store under a host lock; a config apply installs limits before validating them. Read in five parts, mostly fully; the files another lane is deleting were not read."
     }
    ]
   },
@@ -1953,18 +1995,18 @@
    "paths": [
     "crates/plugin-loader/src"
    ],
-   "tree_hash": "6a543c56becce4587e35024e184ee21bf52cb944b670fca67daebe4b82411580",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 1,
+   "tree_hash": "830102440d4a4a2861738bf20cfb293c9535f0928789ed519ae5ce460469436a",
+   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 9,
-    "MEDIUM": 9,
-    "LOW": 8,
-    "NIT": 0
+    "HIGH": 8,
+    "MEDIUM": 10,
+    "LOW": 18,
+    "NIT": 2
    },
-   "report": "The loader loads plugins whose configuration is absent: every door plane is bound and every transport, auth row and statement-less plane image is opened, while the computed selection is never applied. The abolished JSON auth lane and the retired transport declaration lane still load and serve, the latter through the loader's own connection stack outside the connector. The crate does not deny unsafe code. Store ledger operations are answered from node memory instead of the store's own slots. Auth plugin code runs under a process-wide lock, plugin lengths become slices unchecked, and plugin log lines are written synchronously on the dispatch worker. Read in two parts, mostly fully.",
-   "auditor": "opus-ledger-loader-src",
+   "report": "Tickets, epochs, signing, unpacking and staging hold up. Host services, I/O slots and plane snapshots form slices from plugin-reported lengths with no cap; an instance's last drop and a plane probe run plugin code under a host lock; store calls lend caller buffers that a watchdog fault can free. Every plane, dropped-in transport and auth row is bound whether configured or not. Auth and transport logs are misrouted, recovery verbs report success from node memory, and the crate lacks its unsafe deny. Read in three parts, fully except test doubles, sampled.",
+   "auditor": "opus-r159b-loader-src",
    "fixed_at": null,
    "exclude": [
     "crates/plugin-loader/src/tests"
@@ -1983,6 +2025,20 @@
       "NIT": 0
      },
      "report": "The loader loads plugins whose configuration is absent: every door plane is bound and every transport, auth row and statement-less plane image is opened, while the computed selection is never applied. The abolished JSON auth lane and the retired transport declaration lane still load and serve, the latter through the loader's own connection stack outside the connector. The crate does not deny unsafe code. Store ledger operations are answered from node memory instead of the store's own slots. Auth plugin code runs under a process-wide lock, plugin lengths become slices unchecked, and plugin log lines are written synchronously on the dispatch worker. Read in two parts, mostly fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-r159b-loader-src",
+     "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+     "tree_hash": "830102440d4a4a2861738bf20cfb293c9535f0928789ed519ae5ce460469436a",
+     "counts": {
+      "HIGH": 8,
+      "MEDIUM": 10,
+      "LOW": 18,
+      "NIT": 2
+     },
+     "report": "Tickets, epochs, signing, unpacking and staging hold up. Host services, I/O slots and plane snapshots form slices from plugin-reported lengths with no cap; an instance's last drop and a plane probe run plugin code under a host lock; store calls lend caller buffers that a watchdog fault can free. Every plane, dropped-in transport and auth row is bound whether configured or not. Auth and transport logs are misrouted, recovery verbs report success from node memory, and the crate lacks its unsafe deny. Read in three parts, fully except test doubles, sampled."
     }
    ]
   },
@@ -2040,18 +2096,18 @@
    "paths": [
     "xtask/src"
    ],
-   "tree_hash": "54f61bd74f953b33e167a5a606ee9b39d9105ff1d4e10d6d8a40fa2e70b5cda8",
-   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
-   "round": 1,
+   "tree_hash": "4315b727396e6484e598a380b8bc4137e295c85d4ac526899e6bf7109e870be9",
+   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 49,
-    "MEDIUM": 79,
-    "LOW": 118,
-    "NIT": 11
+    "HIGH": 50,
+    "MEDIUM": 97,
+    "LOW": 129,
+    "NIT": 12
    },
-   "report": "Many gates can report green on a tree that breaks the rule they enforce. The shared comment scanner loses multi-line strings and hides kernel code from several gates; the tree walker skips dot paths, so a cargo config redirect is never read; an excused standing red holds only its row id; drain ledgers accept new rows; the money-float, money-record, secret-accessor and plugin-blocking gates are lexical or hand-listed and miss live code; conformance admission and the audit ledger's own check can pass without their evidence. Read in eleven parts; self-test bodies sampled.",
-   "auditor": "opus-ledger-xtask-parts",
+   "report": "Many gates can still be satisfied without fixing what they police. Drain-only ledgers, construction ceilings, Law 0 rows and the segment-debt list accept a new row or a raised figure in the same change. Rosters of dialects, nouns, wire fields, literals and seams are typed by hand. Scanners miss legal spellings, continued string lines and pinned plugin sources. The audit ledger passes with nothing audited, and one zero round erases a finding. Conformance deciders admit a manifest subset and ignore a runner's exit. Read in eleven parts; production code fully, selftest batteries sampled.",
+   "auditor": "opus-r159b-xtask",
    "fixed_at": null,
    "exclude": [
     "xtask/src/tests"
@@ -2070,6 +2126,20 @@
       "NIT": 11
      },
      "report": "Many gates can report green on a tree that breaks the rule they enforce. The shared comment scanner loses multi-line strings and hides kernel code from several gates; the tree walker skips dot paths, so a cargo config redirect is never read; an excused standing red holds only its row id; drain ledgers accept new rows; the money-float, money-record, secret-accessor and plugin-blocking gates are lexical or hand-listed and miss live code; conformance admission and the audit ledger's own check can pass without their evidence. Read in eleven parts; self-test bodies sampled."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-r159b-xtask",
+     "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+     "tree_hash": "4315b727396e6484e598a380b8bc4137e295c85d4ac526899e6bf7109e870be9",
+     "counts": {
+      "HIGH": 50,
+      "MEDIUM": 97,
+      "LOW": 129,
+      "NIT": 12
+     },
+     "report": "Many gates can still be satisfied without fixing what they police. Drain-only ledgers, construction ceilings, Law 0 rows and the segment-debt list accept a new row or a raised figure in the same change. Rosters of dialects, nouns, wire fields, literals and seams are typed by hand. Scanners miss legal spellings, continued string lines and pinned plugin sources. The audit ledger passes with nothing audited, and one zero round erases a finding. Conformance deciders admit a manifest subset and ignore a runner's exit. Read in eleven parts; production code fully, selftest batteries sampled."
     }
    ]
   },
