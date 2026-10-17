@@ -43,6 +43,23 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
+/// Take the next channel message a reader has not read into `buf`: how many bytes, and whether
+/// they end the message. The rest of a message longer than `buf` stays first in line.
+pub(crate) fn take_ready(
+    ready: &Mutex<VecDeque<(Vec<u8>, bool)>>,
+    buf: &mut [u8],
+) -> Option<(usize, bool)> {
+    if let Some((bytes, end)) = lock(ready).pop_front() {
+        let n = bytes.len().min(buf.len());
+        buf[..n].copy_from_slice(&bytes[..n]);
+        if n < bytes.len() {
+            lock(ready).push_front((bytes[n..].to_vec(), end));
+        }
+        return Some((n, end && n == bytes.len()));
+    }
+    None
+}
+
 /// Where the composed open stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Phase {
@@ -301,17 +318,12 @@ impl Dialled {
         }
         let mut cx = Context::from_waker(waker);
         loop {
-            if let Some((bytes, end)) = lock(&self.leg.ready).pop_front() {
-                let n = bytes.len().min(buf.len());
-                buf[..n].copy_from_slice(&bytes[..n]);
-                if n < bytes.len() {
-                    lock(&self.leg.ready).push_front((bytes[n..].to_vec(), end));
-                }
+            if let Some((n, end)) = take_ready(&self.leg.ready, buf) {
                 return Ok(Piece {
                     kind: PieceKind::Body,
                     stream: StreamId(0),
                     len: n,
-                    end: end && n == bytes.len(),
+                    end,
                     status: None,
                     status_code: None,
                     status_namespace: None,
@@ -391,3 +403,7 @@ impl Dialled {
         self.leg.close();
     }
 }
+
+#[cfg(test)]
+#[path = "tests/dialled_tests.rs"]
+mod tests;
