@@ -63,27 +63,38 @@ fn every_linked_transport_and_plane_registers() {
             row.key
         );
     }
-    // Every linked plane and the core one: a plane this build does not link registers nothing.
+    // Every linked plane and nothing else: a plane this build does not link registers nothing,
+    // and the admin surface is a cleanliness crate, never a plugin (THE DESIGN §8: "Exactly three
+    // crates are compiled in and are never plugins"; R6).
     assert_eq!(
         registry.count(PluginKind::Plane),
-        crate::LINKED.claims.len() + 1
+        crate::LINKED.claims.len(),
+        "the plane registry holds something no linked plane row declares"
     );
-    // Every plane that claims bytes is registered, and nothing else is: the claimed keys are
-    // read off the planes' own declarations, so this names none of them.
+    // Every linked plane that claims bytes is registered: the claimed keys are read off the
+    // planes' own declarations, so this names none of them.
+    let linked_keys: Vec<&str> = crate::LINKED
+        .claims
+        .iter()
+        .map(|row| (row.plane)().key())
+        .collect();
     let mut claimed: Vec<&str> = linked_claims().iter().map(|c| c.plane).collect();
     claimed.sort_unstable();
     claimed.dedup();
     for key in &claimed {
-        assert!(
-            registry.resolve(PluginKind::Plane, key).is_some(),
-            "plane `{key}` is not registered"
-        );
+        let registered = registry.resolve(PluginKind::Plane, key).is_some();
+        if linked_keys.contains(key) {
+            assert!(registered, "plane `{key}` is not registered");
+        } else {
+            // A cleanliness crate's route (§6 step 3: "a claimant is a plane, a plugin's inbound
+            // need, or a cleanliness crate's route (admin, oauth2)") claims bytes and is no plugin.
+            assert!(
+                !registered,
+                "the claimant `{key}` is no linked plane, yet it is registered as a plane-kind \
+                 plugin"
+            );
+        }
     }
-    assert_eq!(
-        claimed.len(),
-        registry.count(PluginKind::Plane),
-        "a registered plane claims nothing, or a claimed plane is not registered: {claimed:?}"
-    );
     // A plane and the wire its claims ride are present exactly together: every transport a
     // linked plane's claim names is registered.
     for claim in &linked_claims() {
