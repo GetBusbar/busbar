@@ -162,6 +162,13 @@ fn facts(st: &Statement) -> Result<AuthFacts, String> {
         crate::dispatch::plugin::kind_tail(st, "an auth plugin", auth::AUTH_TAIL_FROZEN)
     }?;
     let carriers = carriers(st)?;
+    // The default inbound style IS its carriers: a tail stating it with none refuses the load.
+    if t.facts & auth::FACT_DEFAULT_INBOUND_STYLE != 0 && carriers.is_empty() {
+        return Err(
+            "the auth tail states the default inbound style and its Statement names no carrier"
+                .to_string(),
+        );
+    }
     // The login classification agrees with the login capability, and is one the host knows.
     let logs_in = t.caps & auth::CAP_LOGIN != 0;
     let kind_known = matches!(
