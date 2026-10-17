@@ -1953,3 +1953,7 @@ mod wire_tests;
 #[cfg(test)]
 #[path = "tests/store_v3_axis_tests.rs"]
 mod axis_tests;
+
+#[cfg(test)]
+#[path = "tests/store_v3_lent_tests.rs"]
+mod lent_tests;
