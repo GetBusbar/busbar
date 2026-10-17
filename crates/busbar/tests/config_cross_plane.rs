@@ -212,8 +212,8 @@ other:
 }
 
 /// A member naming nothing is an operator believing a request has somewhere to go when it does not.
-/// 1.6.0: the pool lives in the ONE neutral `pools:` map; kind is INFERRED from the resolvable
-/// member (`search-eu` → a `tools:` server), so the dangling `search-us` is named against `tools:`.
+/// 1.6.0: a plane's pool lives under its own verb (`tools.pools:`), so the dangling `search-us` is
+/// named against `tools:`.
 #[test]
 fn a_tool_pool_member_that_names_no_server_is_refused() {
     register_planes();
@@ -221,9 +221,9 @@ fn a_tool_pool_member_that_names_no_server_is_refused() {
         r#"
 tools:
   search-eu: { url: "https://eu.example/t", pin: { mechanism: unpinned } }
-pools:
-  search:
-    members: [search-eu, search-us]
+  pools:
+    search:
+      members: [search-eu, search-us]
 "#,
     );
     let errs = resolve(&deploy, &HashMap::new()).expect_err("a dangling member must refuse boot");
@@ -234,8 +234,8 @@ pools:
     );
 }
 
-/// KIND IS INFERRED, SO A POOL MUST BE HOMOGENEOUS: a pool whose members span two nouns cannot be
-/// assigned a single plane and is refused with the homogeneity error.
+/// THE SECTION A POOL IS WRITTEN IN IS ITS PLANE: an `agents:` registration named in a `tools.pools`
+/// pool is refused, and the message names the section the member actually lives in.
 #[test]
 fn a_pool_may_not_straddle_two_planes() {
     register_planes();
@@ -245,17 +245,42 @@ agents:
   planner: { url: "https://a.example/card", pin: { mechanism: unpinned } }
 tools:
   search-eu: { url: "https://eu.example/t", pin: { mechanism: unpinned } }
-pools:
-  mixed:
-    members: [planner, search-eu]
+  pools:
+    mixed:
+      members: [planner, search-eu]
 "#,
     );
     let errs =
         resolve(&deploy, &HashMap::new()).expect_err("a cross-plane member must refuse boot");
     assert!(
         errs.iter()
-            .any(|e| e.contains("more than one plane") && e.contains("same kind")),
-        "the message says the pool's members are not all one kind: {errs:?}"
+            .any(|e| e.contains("`planner`") && e.contains("`agents:`") && e.contains("straddle")),
+        "the message says the member lives in another plane's section: {errs:?}"
+    );
+}
+
+/// A plane's pool written in the top-level `pools:` is the model plane's pool there, so its members
+/// are refused as unknown models, as 1.5.5 refused any pool member that named no model.
+#[test]
+fn a_plane_pool_in_the_top_level_pools_is_refused() {
+    register_planes();
+    let deploy = deploy_yaml(
+        r#"
+tools:
+  search-eu: { url: "https://eu.example/t", pin: { mechanism: unpinned } }
+  search-us: { url: "https://us.example/t", pin: { mechanism: unpinned } }
+pools:
+  search:
+    members: [search-eu, search-us]
+"#,
+    );
+    let refused = match resolve(&deploy, &HashMap::new()) {
+        Err(errs) => errs,
+        Ok(cfg) => busbar_kernel::config_validate::validate(&cfg).expect_err("refused"),
+    };
+    assert!(
+        refused.iter().any(|e| e.contains("search-eu")),
+        "the top-level pool's tool member is refused: {refused:?}"
     );
 }
 
@@ -267,9 +292,9 @@ fn a_failover_pool_needs_two_members() {
         r#"
 agents:
   only-one: { url: "https://a.example/card", pin: { mechanism: unpinned } }
-pools:
-  planner:
-    members: [only-one]
+  pools:
+    planner:
+      members: [only-one]
 "#,
     );
     let errs = resolve(&deploy, &HashMap::new()).expect_err("a one-member pool must refuse boot");

@@ -119,9 +119,8 @@ agent_pools:
     busbar_kernel::config_validate::validate(&cfg)
         .unwrap_or_else(|e| panic!("migrated config must validate clean on 1.6.0: {e:?}"));
 
-    // The tool/agent pools folded into the ONE neutral `pools:` map and resolve by INFERRED kind:
-    // `search` (tool members) onto the tool-kind pool map, `planner` (agent members) onto the
-    // agent-kind pool map, and the model pool `fast` onto the model-kind pool map.
+    // The tool/agent pools moved under their verbs (`tools.pools`, `agents.pools`) and resolve
+    // onto those planes' failover maps; the model pool `fast` stays on the model plane.
     assert!(
         cfg.tool_pools.contains_key("search"),
         "the folded tool pool resolves onto the `tools:` plane's failover map: {:?}",
