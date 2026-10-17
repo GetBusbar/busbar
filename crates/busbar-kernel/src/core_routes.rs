@@ -122,6 +122,19 @@ impl CoreRouteTable {
             .map(|r| &r.refuse)
     }
 
+    /// The issued-id prefix of the tickets the door route `(path, method)` takes (row 132): `Some`
+    /// for a `CLAIM_TICKET` route whose plane declares one, `None` for every other route.
+    pub(crate) fn door_ticket(&self, path: &str, method: &Method) -> Option<&str> {
+        if self.door_refusals.is_empty() {
+            return None;
+        }
+        let rm = route_method_of(method)?;
+        self.door_refusals
+            .iter()
+            .find(|r| r.route.method == rm && route_matches(&r.route.path, path))
+            .and_then(|r| r.ticket_prefix.as_deref())
+    }
+
     /// Every declared route, in mount order. The enumeration a router-walking test iterates so a
     /// newly mounted route JOINS the assertion instead of escaping it. Read by the plane-boundary
     /// ratchet; production never enumerates (it only ever asks about one path).

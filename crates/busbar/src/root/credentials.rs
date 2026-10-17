@@ -213,6 +213,20 @@ impl HostServices for CredentialServices {
         self.inner.session_emit(caller, session, bytes)
     }
 
+    fn ticket_mint(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        ttl_secs: u64,
+        record: &[u8],
+    ) -> Stored {
+        self.inner.ticket_mint(caller, unit, ttl_secs, record)
+    }
+
+    fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
+        self.inner.ticket_take(caller, unit)
+    }
+
     fn records_secret(&self, kind: &str, id: &str, _later: Later) -> Ran {
         if !self.credentials.installed() {
             return Ran::Now(Stored::refused(NOT_READABLE));

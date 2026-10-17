@@ -622,6 +622,7 @@ fn mount_plane_route(
                 .as_deref()
                 .and_then(|c| c.caller.as_ref())
                 .map(auth::CallerCredential::lend);
+            let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
@@ -653,6 +654,7 @@ fn mount_plane_route(
                     gov,
                     principal: principal.map(|axum::extract::Extension(p)| p),
                     caller_credential,
+                    ticket,
                     engine,
                     host,
                     slot,
@@ -711,6 +713,7 @@ fn mount_plane_session(
                 .as_deref()
                 .and_then(|c| c.caller.as_ref())
                 .map(auth::CallerCredential::lend);
+            let ticket = consumed.as_deref().and_then(|c| c.ticket.clone());
             let handler = handler.clone();
             let slot = slot.clone();
             let ctx_path = ctx_path.clone();
@@ -743,6 +746,7 @@ fn mount_plane_session(
                         busbar_contract::abi::host::service::SCHEME_UNDECLARED,
                         |axum::extract::Extension(l)| l.0,
                     ),
+                    ticket,
                 };
                 match handler(ctx).await {
                     busbar_kernel::plane_routes::SessionAnswer::Refused(response) => response,
