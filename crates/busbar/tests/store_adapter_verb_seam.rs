@@ -331,3 +331,39 @@ fn the_seams_share_one_shim() {
         "the verbs unit's restore is visible to the kernel's slice seam: one shim, one node"
     );
 }
+
+/// THE DISASTER-RECOVERY VERBS NEVER ACKNOWLEDGE FROM MEMORY (`BUSBAR-1.6.0.md` THE DESIGN §11.11,
+/// "Store: all ten 1.6.0 ledger operations become real store v3 slots").
+///
+/// RED before they refused: `chain_break`, `store_restore` and `reseal_epoch_floor` each answered
+/// `Ok` while changing only this node's memory (a counter, the backup's name, an in-memory floor),
+/// so an operator was told a restore or a chain break happened while the store and the journal were
+/// untouched, and nothing of it survived a restart. No store operation carries any of the three, so
+/// each refuses, and says so in the node's log.
+#[test]
+fn the_disaster_recovery_verbs_refuse_rather_than_acknowledge_from_memory() {
+    let adapter = adapter_over_published_schema();
+    let verbs: Arc<dyn VerbStore + Send + Sync> = adapter.verb_store();
+    let log = EventLog::default();
+    let answers = tracing::subscriber::with_default(log.clone(), || {
+        [
+            ("chain_break", verbs.chain_break(&admin())),
+            ("store_restore", verbs.store_restore(&admin(), "backup-1")),
+            ("reseal_epoch_floor", verbs.reseal_epoch_floor(&admin())),
+        ]
+    });
+    for (verb, answer) in &answers {
+        assert!(
+            matches!(answer, Err(busbar_contract::verb_store::StoreError::Failed)),
+            "{verb} acknowledged a recovery the store never saw: {answer:?}"
+        );
+    }
+    let lines = log.lines();
+    for (verb, _) in &answers {
+        assert!(
+            lines.iter().any(|l| l.contains(verb)),
+            "{verb}'s refusal names the verb in the node's log; captured:\n{}",
+            lines.join("\n")
+        );
+    }
+}
