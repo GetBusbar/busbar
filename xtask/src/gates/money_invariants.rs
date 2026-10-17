@@ -363,7 +363,25 @@ fn parse_decls(file: &str, src: &str) -> Vec<TypeDecl> {
                             break 'body;
                         }
                     }
-                    (_, Some(_)) => break 'body,
+                    (_, Some(_)) => {
+                        // A TUPLE STRUCT (audit XG HIGH 1): `struct FiguresEra(u64);` carries its
+                        // payload exactly as a named field would, so the payload is the field Rust
+                        // itself calls it — `0` — judged by its TYPE (a `0` names no price token).
+                        // It used to have no field at all, so a figure in one was invisible.
+                        if !is_enum && j == i {
+                            if let Some((_, ty)) = strip_vis(trimmed)
+                                .strip_prefix("struct ")
+                                .and_then(tuple_variant)
+                            {
+                                decl.fields.push(Field {
+                                    name: "0".to_string(),
+                                    ty,
+                                    line: *no,
+                                });
+                            }
+                        }
+                        break 'body;
+                    }
                     _ => {}
                 }
             } else {
@@ -585,6 +603,130 @@ fn money_typed(ty: &str) -> bool {
     type_words(ty).any(|w| MONEY_TYPES.contains(&w))
 }
 
+/// Is `name` a price word: an identifier one of [`PRICE_TOKENS`] is a segment of, and not one of
+/// the [`PRICE_ALLOW`] provenance or count names?
+fn priced_name(name: &str) -> bool {
+    !PRICE_ALLOW.contains(&name) && PRICE_TOKENS.iter().any(|t| token_in_ident(name, t))
+}
+
+/// Every identifier in `code` called as a function or method (`name(`, `.name(`, `path::name(`,
+/// `name::<T>(`), in order.
+fn called_names(code: &str) -> Vec<String> {
+    let bytes = code.as_bytes();
+    let wordy = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if !wordy(bytes[i]) || (i > 0 && wordy(bytes[i - 1])) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && wordy(bytes[i]) {
+            i += 1;
+        }
+        let mut after = code[i..].trim_start();
+        if let Some(t) = after.strip_prefix("::<") {
+            after = t.find('>').map_or(after, |c| t[c + 1..].trim_start());
+        }
+        if after.starts_with('(') && is_ident(&code[start..i]) {
+            out.push(code[start..i].to_string());
+        }
+    }
+    out
+}
+
+/// THE PRICE FUNCTIONS A WRITER FILE CAN CALL (audit XG HIGH 1), derived from the file itself: every
+/// `fn` whose name is a price word, and — to a fixed point — every `fn` the file declares whose body
+/// calls one. `HoldOpened::reserved` is one because it calls `price_counts`; what it returns is a
+/// figure priced by the card, whatever integer width carries it.
+fn price_fns(src: &str) -> std::collections::BTreeSet<String> {
+    let lines = scan::production_lines(src);
+    let mut bodies: Vec<(String, Vec<String>)> = Vec::new();
+    for (k, (_, text)) in lines.iter().enumerate() {
+        let sig = strip_vis(text.trim());
+        let sig = sig
+            .strip_prefix("const ")
+            .or_else(|| sig.strip_prefix("async "))
+            .unwrap_or(sig);
+        let Some(rest) = sig.strip_prefix("fn ") else {
+            continue;
+        };
+        let name: String = rest
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        let body = scan::blank_literals(&fn_body(&lines[k..]));
+        bodies.push((name, called_names(&body)));
+    }
+    let mut priced: std::collections::BTreeSet<String> = bodies
+        .iter()
+        .filter(|(n, _)| priced_name(n))
+        .map(|(n, _)| n.clone())
+        .collect();
+    loop {
+        let before = priced.len();
+        for (name, calls) in &bodies {
+            if calls.iter().any(|c| priced_name(c) || priced.contains(c)) {
+                priced.insert(name.clone());
+            }
+        }
+        if priced.len() == before {
+            break;
+        }
+    }
+    priced
+}
+
+/// The `BodyWriter` methods that put a value on the chain (`figure` is judged on its own).
+const WRITER_CALLS: &[&str] = &[".num(", ".text(", ".bytes("];
+
+/// Every writer call in `writer` fed a priced value: an argument that calls a price word
+/// ([`priced_name`]) or a derived price function ([`price_fns`]).
+fn priced_feeds(writer: &str, price_fns: &std::collections::BTreeSet<String>) -> Vec<String> {
+    let code = scan::blank_literals(writer);
+    let bytes = code.as_bytes();
+    let mut out = Vec::new();
+    for call in WRITER_CALLS {
+        let mut from = 0;
+        while let Some(at) = code[from..].find(call) {
+            let open = from + at + call.len() - 1;
+            from = open + 1;
+            let mut depth = 0i32;
+            let mut close = None;
+            for (k, b) in bytes.iter().enumerate().skip(open) {
+                match *b {
+                    b'(' => depth += 1,
+                    b')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close = Some(k);
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let Some(close) = close else { continue };
+            let arg = &code[open + 1..close];
+            if let Some(p) = called_names(arg)
+                .into_iter()
+                .find(|c| priced_name(c) || price_fns.contains(c))
+            {
+                out.push(format!(
+                    "`{}{})` feeds the price function `{p}` to the journal",
+                    &call[..call.len() - 1],
+                    arg.trim()
+                ));
+            }
+        }
+    }
+    out
+}
+
 /// THE JOURNAL WRITERS, DERIVED (audit xtask G HIGH 2): every production file under `crates/` that
 /// builds a journal entry (`Entry::new(`) and names a money record class ([`MONEY_CLASSES`]), with
 /// its text. The FILE is the unit, not the call: a writer may pick the class before it builds the
@@ -802,6 +944,7 @@ fn derive_population(cx: &Ctx) -> Population {
                 writers.push(seam_path.clone());
                 let seam_decls = parse_decls(seam_path, seam);
                 let uses = use_paths(seam);
+                let price_fns = price_fns(seam);
                 for root in journal_roots(seam_path, seam) {
                     roots.push(root.ty.clone());
                     let name = root.ty.as_str();
@@ -885,6 +1028,12 @@ fn derive_population(cx: &Ctx) -> Population {
                         figures.push(format!(
                             "`BodyWriter::figure` (a signed ledger figure) in {at}"
                         ));
+                    }
+                    // WHAT EACH WRITER CALL IS FED (audit XG HIGH 1): a value a price function
+                    // returns is a priced figure whatever integer width carries it —
+                    // `body.num(self.reserved(None))` reads no field and calls no `.figure(`.
+                    for fed in priced_feeds(&root.writer, &price_fns) {
+                        figures.push(format!("{fed} in {at}"));
                     }
                     let mut chain = vec![(written_fields(&def, &root), def, pool)];
                     let mut read = std::collections::BTreeSet::new();

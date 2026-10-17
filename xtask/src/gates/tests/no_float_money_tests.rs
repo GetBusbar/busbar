@@ -15,18 +15,9 @@ fn the_card_build_files_runtime_items_are_outside_every_intake_span() {
     let text = cx().read(CARD_BUILD_FILE).expect("the card-build file");
     let mut spans: Vec<(usize, usize)> = Vec::new();
     for intake in MONEY_INTAKE.iter().filter(|i| i.file == CARD_BUILD_FILE) {
-        match intake.item {
-            IntakeItem::ConversionFn => {
-                let b = find_boundary(&text, intake.boundary)
-                    .unwrap_or_else(|| panic!("`fn {}` was not found", intake.boundary));
-                spans.push((b.first_line, b.last_line));
-            }
-            IntakeItem::DecimalRecord => {
-                let r = record_spans(&text, intake.boundary);
-                assert!(!r.is_empty(), "`struct {}` was not found", intake.boundary);
-                spans.extend(r);
-            }
-        }
+        let b = find_boundary(&text, intake.boundary)
+            .unwrap_or_else(|| panic!("`fn {}` was not found", intake.boundary));
+        spans.push((b.first_line, b.last_line));
     }
     for runtime in [
         "lane_pricing",
@@ -49,26 +40,47 @@ fn the_card_build_files_runtime_items_are_outside_every_intake_span() {
     }
 }
 
-/// A DECIMAL RECORD IS ITS STRUCT AND ITS INHERENT IMPL, and nothing else: a trait impl for it, and
-/// the fn after it, are scanned.
+/// AUDIT XE HIGH 3: A ZERO DEFAULT REACHED THROUGH AN INTERMEDIATE COMBINATOR IS A HIT. Lines 2-4
+/// narrow, map or filter before a zero default; line 5 refuses through `ok_or` and line 6 names a
+/// non-zero default, and neither is a hit.
 #[test]
-fn a_decimal_record_is_its_struct_and_inherent_impl_only() {
-    let src = "pub struct Rates {\n    pub a: f64,\n}\n\
-               impl Rates {\n    fn pairs(self) -> [f64; 1] { [self.a] }\n}\n\
-               impl Default for Rates {\n    fn default() -> Self { Rates { a: 0.0 } }\n}\n\
-               pub fn after(r: Rates) -> u64 { (r.a * 2.0) as u64 }\n";
-    assert_eq!(record_spans(src, "Rates"), vec![(1, 3), (4, 6)]);
-    let mut exempt: IntakeSpans = std::collections::BTreeMap::new();
-    exempt.insert("m.rs".into(), record_spans(src, "Rates"));
-    let mut offenders = Vec::new();
-    scan_file("m.rs", src, &exempt, &mut offenders);
-    let lines: std::collections::BTreeSet<&str> = offenders
-        .iter()
-        .map(|o| o.split(':').nth(1).unwrap_or_default())
-        .collect();
-    assert_eq!(lines, ["8", "10"].into_iter().collect(), "{offenders:#?}");
+fn a_zero_default_after_a_combinator_is_a_hit() {
+    let src = "fn f(v: &Value) -> u64 {\n\
+               \x20   let a = v.as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(0);\n\
+               \x20   let b = v.as_u64().map(|n| n as u32).unwrap_or_default();\n\
+               \x20   let c = v.get(\"t\").and_then(Value::as_u64).filter(|n| *n > 0).map_or(0, |n| n);\n\
+               \x20   let d = v.as_u64().map(|n| n as u32).ok_or(Refused)?;\n\
+               \x20   let e = v.as_u64().map(|n| n as u32).unwrap_or(7);\n\
+               }\n";
+    let hits = scan_count_reads(src);
+    let lines: Vec<usize> = hits.iter().map(|h| h.line).collect();
+    assert_eq!(lines, vec![2, 3, 4], "the hits were {lines:?}");
+}
+
+/// AUDIT XE HIGH 1: THE CARRIERS ARE READ OFF THE TREE. The routing headroom ratio the audit
+/// cast inside `try_admit` is one, and the hand-typed `blended_per_mtok` (declared nowhere) is not.
+#[test]
+fn the_derived_carriers_hold_the_trees_float_returning_items() {
+    let cx = cx();
+    let (files, problems) = crate_src_files(&cx);
+    assert!(problems.is_empty(), "{problems:?}");
+    let carriers = FloatCarriers::from_files(&production_only(&cx, files));
     assert!(
-        record_spans(src, "Absent").is_empty(),
-        "an undeclared record exempts nothing"
+        carriers.fns.contains_key("rate_headroom"),
+        "{:?}",
+        carriers.fns
     );
+    assert!(!carriers.fns.contains_key("blended_per_mtok"));
+    assert!(carriers.len() >= FLOAT_CARRIER_FLOOR, "{}", carriers.len());
+}
+
+/// AUDIT XE HIGH 2: THE CAPABILITY MODULE KEYS THE POPULATION. Every type the hold module declares,
+/// and the money-write capability, are in the key.
+#[test]
+fn the_money_capability_types_key_the_population() {
+    let (key, problems) = money_type_key(&cx());
+    assert!(problems.is_empty(), "{problems:?}");
+    for want in ["Hold", "Posted", "HoldAccrual", "WriteMoney", "RateCard"] {
+        assert!(key.iter().any(|k| k == want), "{want} is not in {key:?}");
+    }
 }
