@@ -140,15 +140,7 @@ jsonschema = { workspace = true }
 # does not name it.
 hyper = { workspace = true }
 
-# The two NEUTRAL capability features that gate the `transport::transport` module's
-# `Transport`/`UpstreamWireKind` wire-selection axis (folded in from `busbar-contract-transport`,
-# DECISIONS #38). Both empty here — they gate `#[cfg]` sites only — and must stay DECLARED or
-# `unexpected_cfgs` fires under `-D warnings`. `busbar-kernel` forwards its own same-named features
-# to these so the gated surface arms in lock-step, exactly as before the fold.
 [features]
-dispatch = []
-runtime = []
-
 # The TEST-ONLY seal (#65). `plugin::TestKernelSeal` is the one implementor of the now-SEALED
 # `plugin::KernelSeal` that exists for fixtures rather than for the kernel, and it exists at all
 # because a PLANE crate may not name `caps` (section 1.2) and so cannot mint a real token for its
