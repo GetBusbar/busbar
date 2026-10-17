@@ -382,7 +382,8 @@ pub const CLAIM_CATALOG: u32 = 1 << 3;
 /// path some claim flags is put through the signed-request pre-step (the auth chain's verifier of
 /// one) before anything else is decided, so a signed request with a verb no claim takes verifies
 /// first and is then answered the method refusal, as the previous release answered it (ARCHITECT
-/// ruling 2026-10-16, 3b A).
+/// ruling 2026-10-16, 3b A). Only on a [`CLAIM_RAW_AFFIX`] claim, matched against the raw path as
+/// the previous release matched it, odd paths included (ARCHITECT ruling 2026-10-17).
 pub const CLAIM_SIGNED_INGRESS: u32 = 1 << 4;
 /// [`Claim::flags`]: the target is a RAW AFFIX, spelled `<prefix>*<suffix>`. It matches a request
 /// whose raw, undecoded path starts with the prefix and ends with the suffix, compared as bytes:

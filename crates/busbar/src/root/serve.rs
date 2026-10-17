@@ -2468,18 +2468,28 @@ fn line_path(
     }
 }
 
-/// THE SIGNED PATHS of a plane's claims (`CLAIM_SIGNED_INGRESS`; ARCHITECT ruling 2026-10-16, 3b A):
-/// each flagged claim's guest-line path, whatever its verb.
+/// THE SIGNED PATHS of a plane's claims (`CLAIM_SIGNED_INGRESS`; ARCHITECT rulings 2026-10-16, 3b A,
+/// and 2026-10-17): each flagged claim's raw-affix target, whatever its verb. The contract refuses
+/// the flag on any claim but a raw affix; one that slipped through signs nothing here.
 fn signed_paths(
     claims: &[crate::root::loader::dispatch::kinds::plane::OwnedClaim],
 ) -> Arc<[String]> {
-    use busbar_contract::abi::plane::CLAIM_SIGNED_INGRESS;
+    use busbar_contract::abi::plane::{CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS};
     claims
         .iter()
-        .filter(|c| c.flags & CLAIM_SIGNED_INGRESS != 0)
-        .map(|c| line_path(c, c.flags & (CLAIM_EXACT | CLAIM_PATTERN) != 0))
+        .filter(|c| {
+            c.flags & (CLAIM_SIGNED_INGRESS | CLAIM_RAW_AFFIX)
+                == CLAIM_SIGNED_INGRESS | CLAIM_RAW_AFFIX
+        })
+        .map(|c| c.target.clone())
         .collect::<Vec<_>>()
         .into()
+}
+
+/// Whether a claim writes a guest line: every claim but a raw affix (`CLAIM_RAW_AFFIX`), which
+/// states a fact about paths and mounts no route (ARCHITECT ruling 2026-10-17).
+fn routed(claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim) -> bool {
+    claim.flags & busbar_contract::abi::plane::CLAIM_RAW_AFFIX == 0
 }
 
 /// Where the data router mounts a guest line's path: the path itself, or for a pattern with a
@@ -2577,8 +2587,8 @@ pub fn door_mounts(
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
             // A claim over the line carrier is served on the process's own stdin/stdout
-            // ([`lines`]), never on the data listener.
-            if lines::carrier() == Some(claim.carrier.as_str()) {
+            // ([`lines`]), never on the data listener; a raw affix is served nowhere.
+            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
                 continue;
             }
             let rung =
@@ -2880,7 +2890,7 @@ pub(crate) fn line_routes(
     let mut of_line = std::collections::HashMap::new();
     for (p, plane) in served.planes.iter().enumerate() {
         for (i, claim) in plane.snapshot.claims.iter().enumerate() {
-            if lines::carrier() == Some(claim.carrier.as_str()) {
+            if !routed(claim) || lines::carrier() == Some(claim.carrier.as_str()) {
                 continue;
             }
             let rung =
