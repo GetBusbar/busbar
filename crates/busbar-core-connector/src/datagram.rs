@@ -446,6 +446,14 @@ impl DatagramFraming {
             .is_some_and(|s| s.knows(path) || s.bound_path() == Some(path))
     }
 
+    /// Whether `path` is the one this association has bound (proven by core's round trip).
+    #[must_use]
+    pub fn binds(&self, path: SocketAddr) -> bool {
+        self.secure
+            .as_ref()
+            .is_some_and(|s| s.bound_path() == Some(path))
+    }
+
     /// The far-end addresses this association owns ([`Self::owns`]) that it has numbered: on the
     /// dialling side its admitted candidates, before any of them has sent a byte.
     pub fn addresses(&self) -> impl Iterator<Item = SocketAddr> + '_ {
@@ -992,8 +1000,29 @@ impl Associations {
         }?;
         let f = self.framings.get_mut(&id)?;
         let answer = f.datagram(from, bytes, now);
-        if answer.is_ok() && f.owns(from) {
-            self.by_path.insert(from, id);
+        let (owns, binds) = (f.owns(from), f.binds(from));
+        if answer.is_ok() && owns {
+            // A path another association holds stays its own while it still owns it, unless this
+            // one has it BOUND (proven by core's round trip) and the holder does not: a heard check
+            // proves only that its sender knows this association's password, never that it owns
+            // the source address.
+            let take = match self.by_path.get(&from) {
+                None => true,
+                Some(holder) if *holder == id => false,
+                Some(holder) => self
+                    .framings
+                    .get(holder)
+                    .is_none_or(|h| !h.owns(from) || (binds && !h.binds(from))),
+            };
+            if take {
+                self.by_path.insert(from, id);
+                // The paths it let go of (a heard path that made room for this one) are let go
+                // here too, so the port routes an association no more paths than it owns.
+                let framings = &self.framings;
+                self.by_path.retain(|addr, holder| {
+                    *holder != id || framings.get(holder).is_some_and(|h| h.owns(*addr))
+                });
+            }
         }
         if answer.is_err() {
             self.remove(id);

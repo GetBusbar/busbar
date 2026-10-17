@@ -38,6 +38,8 @@ use crate::udp::{ReadyPort, MAX_DATAGRAM};
 const READS_PER_DRIVE: usize = 256;
 /// The most channel messages a leg holds for a reader that has not read them.
 const MAX_READY: usize = 1024;
+/// The most bytes of the far end's description the open buffers before its end.
+const MAX_DESCRIPTION: usize = 64 * 1024;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -49,15 +51,16 @@ pub(crate) fn take_ready(
     ready: &Mutex<VecDeque<(Vec<u8>, bool)>>,
     buf: &mut [u8],
 ) -> Option<(usize, bool)> {
-    if let Some((bytes, end)) = lock(ready).pop_front() {
-        let n = bytes.len().min(buf.len());
-        buf[..n].copy_from_slice(&bytes[..n]);
-        if n < bytes.len() {
-            lock(ready).push_front((bytes[n..].to_vec(), end));
-        }
-        return Some((n, end && n == bytes.len()));
+    // The lock is let go before the rest is put back: held through an `if let`, the put-back's
+    // second lock on the same thread would never be granted.
+    let next = lock(ready).pop_front();
+    let (bytes, end) = next?;
+    let n = bytes.len().min(buf.len());
+    buf[..n].copy_from_slice(&bytes[..n]);
+    if n < bytes.len() {
+        lock(ready).push_front((bytes[n..].to_vec(), end));
     }
-    None
+    Some((n, end && n == bytes.len()))
 }
 
 /// Where the composed open stands.
@@ -269,6 +272,15 @@ impl Dialled {
                 Ok(Some(piece))
             }
             (PieceKind::Body, Some(true)) => {
+                if answer.len().saturating_add(bytes.len()) > MAX_DESCRIPTION {
+                    // Past its bound the description settles nothing: the open fails, and
+                    // nothing is attached.
+                    *phase = Phase::Over;
+                    drop(phase);
+                    self.pairing.close();
+                    self.leg.close();
+                    return Err(ConnError::Refused);
+                }
                 answer.extend_from_slice(bytes);
                 Ok(None)
             }
@@ -362,6 +374,12 @@ impl Dialled {
             Phase::Over => return Err(ConnError::Closed),
         }
         let mut gather = lock(&self.gather);
+        // A message is bounded as a write is (THE DESIGN §5, writes are back-pressured): one
+        // gathered past the bound is refused, and what was gathered of it is let go.
+        if gather.len().saturating_add(bytes.len()) > crate::compose::WRITE_BUFFER_BYTES {
+            gather.clear();
+            return Err(ConnError::Refused);
+        }
         gather.extend_from_slice(bytes);
         if !end {
             return Ok(bytes.len());
