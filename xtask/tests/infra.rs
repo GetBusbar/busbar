@@ -863,6 +863,23 @@ fn the_registry_is_non_empty_and_its_names_are_unique_and_sorted_lookups_work() 
     assert!(gates::find("no-such-gate").is_none());
 }
 
+/// LAW 9, SIZE IS NOT A CI CHECK (BUSBAR-1.6.0.md, owner 2026-10-02): "No CI rung measures or
+/// blocks on size ... There is no hand-kept size integer in the tree and no raise to declare."
+/// `abi-freeze` was exactly that rung: every line of the condemned abi/hot lane counted against a
+/// typed `lines = "N"` in `qa/abi-freeze.toml`, red on a deletion until the integer was retyped and
+/// green on a raise typed beside the growth. Neither the gate nor its ledger may come back.
+#[test]
+fn no_gate_blocks_on_a_hand_kept_line_count() {
+    assert!(
+        gates::find("abi-freeze").is_none(),
+        "abi-freeze is registered: a CI rung blocks on a hand-kept line count (Law 9, size is not a CI check)"
+    );
+    assert!(
+        !repo_root().join("qa/abi-freeze.toml").exists(),
+        "qa/abi-freeze.toml exists: a hand-kept size integer is in the tree (Law 9, size is not a CI check)"
+    );
+}
+
 #[test]
 fn every_registration_declares_at_least_one_owed_row_id() {
     for reg in gates::REGISTRY {
