@@ -132,7 +132,7 @@ impl From<StatusClass> for RawStatus {
 }
 
 /// The RAW, unvalidated one-byte status a plugin-implemented slot returns BY VALUE across the
-/// `extern "C-unwind"` seam (see the core→plane fn-pointer slots in [`decl`](super::decl)). Returning
+/// host-table seam. Returning
 /// the [`StatusClass`] enum itself by value is UNSOUND: a signed-but-buggy (or hostile) cdylib can
 /// return any byte, and a byte outside `0..=4` materializes an enum with an INVALID DISCRIMINANT — UB
 /// the instant core touches it, BEFORE any `match`. This `#[repr(transparent)]` u8 is the safe
@@ -1473,30 +1473,6 @@ pub struct EgressOpen {
     pub head: EgressHead,
 }
 
-/// A subprocess command descriptor (used when [`EgressKind::Subprocess`]). Borrowed program +
-/// packed-argv bytes; the host owns lifecycle and the COMMAND-ALLOWLIST.
-///
-/// # Safety / discipline
-/// Both borrowed ranges MUST be live for the call.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct CmdDesc {
-    /// `size_of::<CmdDesc>()` at construction.
-    pub size: u32,
-    /// POD schema version.
-    pub version: u16,
-    /// Number of argv entries packed in `argv_ptr`.
-    pub argv_count: u16,
-    /// Borrowed program-path bytes (NOT owned).
-    pub program_ptr: *const u8,
-    /// Length of the program-path range.
-    pub program_len: usize,
-    /// Borrowed packed-argv bytes (length-prefixed entries; NOT owned).
-    pub argv_ptr: *const u8,
-    /// Length of the packed-argv range.
-    pub argv_len: usize,
-}
-
 /// A per-stream journal framing descriptor: the host re-frames the prelude in this framing and joins
 /// the plane's content suffix, so stored bytes are byte-identical to every deployed store.
 #[repr(C)]
@@ -2070,28 +2046,6 @@ pub struct ContentChunk {
     /// Length of the borrowed content range.
     pub data_len: usize,
 }
-
-/// The opaque `*mut c_void` state handle a plane owns and hands the host, wrapped so the compiler
-/// treats it as `Send + Sync` (a plane may hold it across `.await` and worker threads). Paired with
-/// its own [`free`](Self::free) fn, which must NEVER panic (wrap the body in `catch_unwind`).
-///
-/// This lives in `pod` because both a [`PlaneDecl`](super::decl::PlaneDecl) build result and any
-/// host-side slot store it.
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct OpaqueState {
-    /// The plane-allocated state pointer; the host stores it and NEVER downcasts it.
-    pub ptr: *mut c_void,
-    /// The plane's free function, run by the host on config swap. MUST NOT panic (catch internally).
-    pub free: Option<extern "C-unwind" fn(*mut c_void)>,
-}
-
-// SAFETY: an OpaqueState is a plane-owned handle the plane guarantees is safe to move/share across
-// threads (the plane synchronizes its own interior). The host never dereferences `ptr`; it only
-// stores it and later calls `free`. This is the design's `Send + Sync` opaque-handle requirement.
-unsafe impl Send for OpaqueState {}
-// SAFETY: see the `Send` impl above.
-unsafe impl Sync for OpaqueState {}
 
 #[cfg(test)]
 #[path = "tests/pod_tests.rs"]

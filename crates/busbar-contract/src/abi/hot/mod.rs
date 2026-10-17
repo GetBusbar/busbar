@@ -9,8 +9,7 @@
 //! shared airlock preamble and sized-struct discipline hoisted to the [crate root](crate).
 //!
 //! Every type and signature here is real. The host side of the table is built by busbar-kernel's
-//! `plane_host` (`build_plane_host_vtable`); each plane builds its own decl. Plane authors implement
-//! against these types.
+//! `plane_host` (`build_plane_host_vtable`).
 //!
 //! # The disciplines this lane encodes (all frozen by construction)
 //!
@@ -20,7 +19,7 @@
 //! * **Sized-struct / append-only discipline** — every cross-boundary POD struct here LEADS with a
 //!   `size: u32` and a `version: u16`; a receiver reads a field only when `size` proves the sender
 //!   wrote it (see [`read_sized_field`](crate::read_sized_field)). New fields may ONLY be appended.
-//! * **`extern "C-unwind"` fn-pointer vtables** ([`host::PlaneHostVtable`], [`decl::PlaneDecl`]) —
+//! * **`extern "C-unwind"` fn-pointer vtables** ([`host::PlaneHostVtable`]) —
 //!   POD args by pointer, small results by value, large results into a caller
 //!   `&mut MaybeUninit<Out>` written INSIDE a `catch_unwind` and marked init only on Ok (the
 //!   [`write_out`](crate::abi::write_out) discipline). NO `Vec` returns on the hot calls.
@@ -32,17 +31,10 @@
 //! zero — proof the capability surface was DERIVED from a primitive taxonomy, not ENUMERATED from any
 //! one plane.
 
-pub mod decl;
 pub mod host;
 pub mod pod;
-pub mod workitem;
 
 // Re-export the whole POD surface at the lane root so a plane author writes
 // `crate::abi::hot::Facts`, not `crate::abi::hot::pod::Facts`.
-pub use decl::{BuildCtx, DeclBillableClass, DeclStr, IngressCarrier, OpaqueHandle, PlaneDecl};
 pub use host::PlaneHostVtable;
 pub use pod::*;
-pub use workitem::{
-    EmitBodyFn, EmitHandle, EmitHeadFn, EmitKind, HeadField, HeadPart, HeadReadFn, InboundHandle,
-    InboundKind, WorkItem,
-};
