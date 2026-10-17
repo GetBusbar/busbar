@@ -1412,6 +1412,70 @@ impl Gate for InstanceNounNeutralityGate {
             ));
         }
 
+        // THE LINKED INSTANCES THE HAND LIST NEVER HAD (audit XG HIGH 3): the secret kind's `env`
+        // and `file`, the auth kind's header/sigv4/oauth/oidc/webhook-signature/admin-tokens, every
+        // export sink, the webrtc transport and the decisions plane's crate. Each spelled by its
+        // crate identifier in the fixture's busbar-core must red its own census row.
+        for key in [
+            "decisions",
+            "webrtc",
+            "secret-env",
+            "secret-file",
+            "auth-header",
+            "auth-sigv4",
+            "auth-oauth",
+            "auth-oidc",
+            "auth-webhook-signature",
+            "auth-admin-tokens",
+            "export-file",
+            "export-webhook",
+            "export-prometheus",
+            "export-otlp",
+        ] {
+            let id = row_id(key);
+            report.push(prove_rows_red_at(
+                cx,
+                self,
+                format!("the linked instance `{key}` named by a non-family crate reds its row"),
+                &[id.as_str()],
+                FIX,
+                &["crates/busbar-core/src/lib.rs"],
+            ));
+        }
+
+        // THE ROSTER IS DERIVED FROM WHAT THE BINARY LINKS. The fixture's composition root links one
+        // or more packages per kind, each covered by a noun, so `:roster` is GREEN; a linked package
+        // no noun covers turns it RED, naming the package.
+        report.push(Case {
+            name: "a linked plugin package with no census noun reds the roster row".to_string(),
+            covers: vec![row_id("roster")],
+            expected: Expect::Red {
+                naming: vec!["busbar-secret-nosuch".to_string()],
+            },
+            got: roster_transition(self, cx, FIX, |manifest| {
+                manifest.replace(
+                    "[dependencies]\n",
+                    "[dependencies]\nbusbar-secret-nosuch = { workspace = true }\n",
+                )
+            }),
+        });
+        // A KIND WITH NO LINKED INSTANCE is a roster that cannot speak for that kind: every one of
+        // the seven kinds must be in the derived set.
+        report.push(Case {
+            name: "a roster missing a plugin kind reds the roster row".to_string(),
+            covers: vec![row_id("roster")],
+            expected: Expect::Red {
+                naming: vec!["secret".to_string()],
+            },
+            got: roster_transition(self, cx, FIX, |manifest| {
+                manifest
+                    .lines()
+                    .filter(|l| !l.starts_with("busbar-secret-"))
+                    .map(|l| format!("{l}\n"))
+                    .collect()
+            }),
+        });
+
         // THE UNDOCUMENTED ROW: the fixture's live leaks are absent from its baseline.
         report.push(prove_rows_red_at(
             cx,
@@ -1607,6 +1671,44 @@ fn dead_path_transition(
         (clean, planted) => Expect::Red {
             naming: vec![format!(
                 "no GREEN->RED transition on {ROW_DEAD_PATH}: clean={clean:?} planted={planted:?}"
+            )],
+        },
+    }
+}
+
+/// The composition-root manifest the `:roster` row derives the linked plugin instances from.
+const ROOT_MANIFEST: &str = "crates/busbar/Cargo.toml";
+
+/// A `:roster` TRANSITION over `fixture`: with the fixture's own composition-root manifest the row
+/// must be GREEN, and with `plant` applied to it the row's RED detail is returned for the case to
+/// match its naming against.
+fn roster_transition(
+    gate: &InstanceNounNeutralityGate,
+    cx: &Ctx,
+    fixture: &str,
+    plant: impl FnOnce(&str) -> String,
+) -> Expect {
+    let Ok(fcx) = Ctx::at(cx.abs(fixture), cx.scratch().to_path_buf()) else {
+        return Expect::Skipped;
+    };
+    let id = row_id("roster");
+    let roster_row = |c: &Ctx| {
+        execute(gate, c)
+            .rows
+            .iter()
+            .find(|r| r.id == id)
+            .map(|r| (r.status != Status::Pass, r.detail.clone()))
+    };
+    let manifest = fcx.read(ROOT_MANIFEST).unwrap_or_default();
+    let mut ov = Overlay::new();
+    ov.set(ROOT_MANIFEST, plant(&manifest));
+    match (roster_row(&fcx), roster_row(&fcx.with_overlay(ov))) {
+        (Some((false, _)), Some((true, detail))) => Expect::Red {
+            naming: vec![detail],
+        },
+        (clean, planted) => Expect::Red {
+            naming: vec![format!(
+                "no GREEN->RED transition on {id}: clean={clean:?} planted={planted:?}"
             )],
         },
     }

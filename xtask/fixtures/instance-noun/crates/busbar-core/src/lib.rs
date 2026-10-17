@@ -24,3 +24,18 @@ pub fn hook_test_plugin_leak() {}
 pub fn busbar_store_memory_leak() {}
 pub const GOVERNANCE_STORE_MEMORY_LEAK: &str = "memory";
 pub fn busbar_hook_ranking_leak() {}
+// The linked plugin instances (audit XG HIGH 3): each named by its crate identifier.
+pub fn busbar_plane_decisions_leak() {}
+pub fn busbar_transport_webrtc_leak() {}
+pub fn busbar_secret_env_leak() {}
+pub fn busbar_secret_file_leak() {}
+pub fn busbar_auth_header_leak() {}
+pub fn busbar_auth_sigv4_leak() {}
+pub fn busbar_auth_oauth_leak() {}
+pub fn busbar_auth_oidc_leak() {}
+pub fn busbar_auth_webhook_signature_leak() {}
+pub fn busbar_auth_admin_tokens_plugin_leak() {}
+pub fn busbar_export_file_leak() {}
+pub fn busbar_export_webhook_leak() {}
+pub fn busbar_export_prometheus_leak() {}
+pub fn busbar_export_otlp_leak() {}
