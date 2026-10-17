@@ -56,6 +56,11 @@ pub const ROW_B1: &str = "deferral-words:control-batch1";
 pub const ROW_B2: &str = "deferral-words:control-batch2";
 pub const ROW_B3_REGRESSED: &str = "deferral-words:control-batch3-regressed";
 pub const ROW_B3_STALE: &str = "deferral-words:control-batch3-stale-pin";
+/// LAW 9 over the document set: no `(document, Layer-1 shape)` count rises against the base.
+pub const ROW_RISE: &str = "deferral-words:no-rise";
+
+/// The synthetic base ref the self-test pins, answered entirely from its overlay.
+const SELFTEST_BASE: &str = "deferral-words-selftest-base";
 
 /// The 1.6.0 document set the scan reads: the spec, the TODO, the SLOT-LOG and QUESTIONS. A scan of
 /// fewer is the instrument going blind, not a clean tree.
@@ -853,6 +858,58 @@ impl Gate for DeferralWordsGate {
             "a planted deferral is listed by the report-only scan rows, not scored",
             &[ROW_L1, ROW_L2],
         ));
+
+        // LAW 9: THE SCAN REFUSES A RISE. Against a base pinned to the committed documents, one
+        // more banned shape in one of them is RED, naming the document, the shape and the counts;
+        // the same shape struck (a drain) is green.
+        match collect(cx) {
+            Ok(files) => {
+                let based = |ov: &mut Overlay| {
+                    ov.set_command(
+                        crate::gates::construction::ceilings::BASE_PIN_KEY,
+                        SELFTEST_BASE,
+                    );
+                    ov.set_command(&format!("git-ref:{SELFTEST_BASE}"), SELFTEST_BASE);
+                    for f in &files {
+                        ov.set_command(
+                            &format!("git-show:{SELFTEST_BASE}:{f}"),
+                            cx.read(f).unwrap_or_default(),
+                        );
+                    }
+                };
+                let spec = format!("{ROOT}/BUSBAR-1.6.0.md");
+                let text = cx.read(&spec).unwrap_or_default();
+                let mut risen = Overlay::new();
+                based(&mut risen);
+                risen.set(
+                    spec.clone(),
+                    format!("{text}\nThe remaining call sites are deferred.\n"),
+                );
+                report.push(prove_red(
+                    cx,
+                    self,
+                    "one more banned shape in a 1.6.0 document than its base held is RED",
+                    &[ROW_RISE],
+                    risen,
+                    &[ROW_RISE, spec.as_str(), "defer-family"],
+                ));
+                let mut base_held_more = Overlay::new();
+                based(&mut base_held_more);
+                base_held_more.set_command(
+                    &format!("git-show:{SELFTEST_BASE}:{spec}"),
+                    format!("{text}\nThe remaining call sites are deferred.\n"),
+                );
+                report.push(prove_green(
+                    &cx.with_overlay(base_held_more),
+                    self,
+                    "a banned shape the base held and this tree struck is a drain, and green",
+                    &[ROW_RISE],
+                ));
+            }
+            Err(_) => report.note_infra_failure(
+                "the rise case could not be planted: discovery does not read the real tree",
+            ),
+        }
 
         // BATCH 1 / 2: a phrase BOTH layers miss, and a phrase a named shape was expected to catch
         // that only Layer 2 does. The script's `bad` counter, both arms.
