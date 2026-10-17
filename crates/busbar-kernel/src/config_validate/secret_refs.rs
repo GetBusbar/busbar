@@ -157,28 +157,20 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
         // rather than declined here. It is the one secret on that section, and it is the highest-value
         // one in the process: whoever holds it forges every token this deployment will ever issue.
         oauth_as,
-        // `tool_defs` (one plane's own named-definition section) DOES carry credentials — a
-        // token-exchange subject token and a launched child's environment references — but they are
-        // NO LONGER walked here. The exhaustive destructure that forces the secret/not-secret decision
-        // on every field of that section now lives in `ToolsCfg`'s `PlaneCfg::secret_refs` impl,
-        // beside the fields it guards, and this binding is handed to that impl by the loop below. It
-        // stays NAMED (not `_`) so a new TOP-LEVEL `RootCfg` field is still a compile error somebody
-        // has to answer.
-        tool_defs,
-        // `agent_defs` (another plane's own named-definition section) DOES carry credentials — each
-        // definition's leased outbound delegation secret and both halves of its outbound client
-        // identity — but, like `tool_defs`, they are gathered by that section's own
-        // `AgentsCfg::secret_refs` impl through the loop below, not walked here. Bound by name for the
-        // same reason: the RootCfg destructure keeps forcing a decision on a new top-level field.
-        agent_defs,
-        // THE TWO FAILOVER POOL MAPS hold BARE NAMES and nothing else: a `members:` list of
+        // `plane_defs` (each plane's own declared section) DOES carry credentials — a token-exchange
+        // subject token, a launched child's environment references, an outbound delegation secret,
+        // an outbound client identity — but they are NOT walked here. Each section's own
+        // `PlaneCfg::secret_refs` impl enumerates them beside the fields it guards, and this binding
+        // is handed to that impl by the loop below. It stays NAMED (not `_`) so a new TOP-LEVEL
+        // `RootCfg` field is still a compile error somebody has to answer.
+        plane_defs,
+        // THE FAILOVER POOL MAPS hold BARE NAMES and nothing else: a `members:` list of
         // registrations defined elsewhere, and a `repeatable:` list of operation names. Both are
         // references INTO sections this walk already covers, so a credential could only appear here
         // by somebody putting one in a pool member's name. Declined, and the decline is checkable the
         // same way every other one on this list is: layer 2 fails by TYPE NAME the day
         // `CandidatePoolCfg` grows a field that holds a `SecretRef`.
-        tool_pools: _,
-        agent_pools: _,
+        plane_pools: _,
     } = cfg;
 
     let mut refs: Vec<(String, &crate::config::SecretRef)> = Vec::new();
@@ -326,7 +318,7 @@ fn walk_secret_refs(cfg: &RootCfg, tokens: TokenRefs) -> Vec<(String, &crate::co
     // list is not observed: every consumer (`validate`, `validate_secret_refs`,
     // `validate_builtin_secrets_resolve`) is a per-reference check, and the coverage test compares by
     // SET.
-    for plane_cfg in [tool_defs.as_ref(), agent_defs.as_ref()] {
+    for plane_cfg in plane_defs.values() {
         refs.extend(plane_cfg.secret_refs());
     }
 

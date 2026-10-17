@@ -799,10 +799,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // The model-serving pools the plane serving the `pools` map walks, with every bound the
     // configuration states (`root::model_egress`).
     let door_model_pools = root::model_egress::ModelPools::of(&cfg);
-    // The unified `pools:` a named-definition carrier's members resolved to, by the carrier's
-    // section key: each door plane's section carries its own pools (DoorPools), captured before
-    // `cfg` is consumed.
-    let door_pools = root::serve::door_pools(&cfg.tool_pools, &cfg.agent_pools);
+    // Each door plane's pools, by its section key: each door plane's section carries its own pools
+    // (DoorPools), captured before `cfg` is consumed.
+    let door_pools = root::serve::door_pools(&cfg.plane_pools);
     // The root breaker's per-pool ladders, read off the same `pools:` the build resolves each pool's
     // own dispatch cfg from, before `cfg` is consumed.
     #[cfg(feature = "root-admin")]

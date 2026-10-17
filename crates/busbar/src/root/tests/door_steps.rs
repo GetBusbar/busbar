@@ -4271,10 +4271,10 @@ pub(crate) mod door_boundary {
         value: serde_yaml::Value,
     ) -> Arc<dyn std::any::Any + Send + Sync> {
         let tools = busbar_kernel::plane_driver::door::DoorSection::new(row.config_section, value);
+        let defs = tools.as_defs();
         (row.build)(&BuildCtx {
             endpoint_slot: None,
-            agent_defs: &(),
-            tool_defs: &tools,
+            plane_defs: &defs,
             public_url: Some(PUBLIC_URL),
             prior: None,
             providers: None,

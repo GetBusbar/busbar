@@ -423,7 +423,7 @@
         },
         "agents": {
           "optional": true,
-          "type": "AgentsSection"
+          "type": "DeclaredSections"
         },
         "auth": {
           "optional": true,
@@ -531,7 +531,7 @@
         },
         "tools": {
           "optional": true,
-          "type": "ToolsSection"
+          "type": "DeclaredSections"
         }
       },
       "kind": "struct",

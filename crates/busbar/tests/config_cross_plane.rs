@@ -284,6 +284,30 @@ pools:
     );
 }
 
+/// A pool named after a registration of its own plane would alias that registration's breaker cell
+/// (the two share the keyspace), so it is refused.
+#[test]
+fn a_pool_named_like_a_registration_of_its_plane_is_refused() {
+    register_planes();
+    let deploy = deploy_yaml(
+        r#"
+tools:
+  search: { url: "https://s.example/t", pin: { mechanism: unpinned } }
+  search-eu: { url: "https://eu.example/t", pin: { mechanism: unpinned } }
+  search-us: { url: "https://us.example/t", pin: { mechanism: unpinned } }
+  pools:
+    search:
+      members: [search-eu, search-us]
+"#,
+    );
+    let errs = resolve(&deploy, &HashMap::new()).expect_err("an aliasing pool must refuse boot");
+    assert!(
+        errs.iter()
+            .any(|e| e.contains("`search` is also the id of a `tools:` registration")),
+        "{errs:?}"
+    );
+}
+
 /// A one-member pool changes nothing, so writing one is a mistake and is named as one.
 #[test]
 fn a_failover_pool_needs_two_members() {

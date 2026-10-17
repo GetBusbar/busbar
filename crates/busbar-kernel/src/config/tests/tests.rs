@@ -3594,7 +3594,7 @@ fn root_settings_doc_lists_only_fields_that_exist() {
 
 // ══ THE FAILOVER POOLS' CROSS-REFERENCES ═════════════════════════════════════════════════════════
 //
-// `tool_pools:`/`agent_pools:` are OPT-IN, so the first thing checked is that saying nothing changes
+// A plane's pools (`<section>.pools`) are OPT-IN, so the first thing checked is that saying nothing changes
 // nothing; the rest is the one shared check refusing what an operator cannot have meant.
 
 /// THE DEFAULT IS UNCHANGED. A config that says nothing about failover resolves exactly as it always
@@ -3604,12 +3604,8 @@ fn failover_pools_are_absent_by_default() {
     let deploy = base_deploy();
     let cfg = resolve(&deploy, &HashMap::new()).expect("resolve");
     assert!(
-        cfg.tool_pools.is_empty(),
-        "no tool-plane failover unless asked for"
-    );
-    assert!(
-        cfg.agent_pools.is_empty(),
-        "no agent-plane failover unless asked for"
+        cfg.plane_pools.is_empty(),
+        "no plane failover unless asked for"
     );
 }
 

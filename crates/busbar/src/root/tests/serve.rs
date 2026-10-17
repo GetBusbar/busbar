@@ -754,10 +754,10 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
         members: vec!["fs".to_string()],
         ..Default::default()
     };
-    let pools = door_pools(
-        &BTreeMap::from([("files".to_string(), pool)]),
-        &BTreeMap::new(),
-    );
+    let pools = door_pools(&BTreeMap::from([(
+        key,
+        BTreeMap::from([("files".to_string(), pool)]),
+    )]));
 
     let applied = section_with_pools(key, &written, &pools);
     assert_eq!(

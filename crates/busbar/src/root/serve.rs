@@ -704,9 +704,8 @@ impl DoorApply {
 
 /// THE SECTION A CONFIG APPLY REFRESHES A DOOR PLANE ONTO: the plane's slot in the generation `app`
 /// installed (its section as written), carrying the unified pools that generation resolved for the
-/// plane's section `section_key` ([`installed_door_pools`]: the `tools` pools off `App::tool_pools`,
-/// the `agents` pools off the generic per-plane pool map `App::plane_pools`, read first under the
-/// plane's own key, the key its slot is under), as the boot composition carries them
+/// plane's section `section_key` ([`installed_door_pools`]: each plane's pools off the generic
+/// per-plane pool map `App::plane_pools`), as the boot composition carries them
 /// ([`with_pools`]); a generation with no slot for the plane keeps the section it serves now.
 #[must_use]
 pub fn applied_section(
@@ -722,18 +721,7 @@ pub fn applied_section(
     else {
         return now.section.clone();
     };
-    let mut pools = installed_door_pools(app);
-    // The generic per-plane pool map is keyed by the plane's key, the key its slot is under: read
-    // there first, so an apply carries the pools whatever the registry holds.
-    if section_key == busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3] {
-        if let Some(own) = app.plane_pools(plane) {
-            for (owner, stated) in &mut pools {
-                if *owner == section_key {
-                    *stated = own.clone();
-                }
-            }
-        }
-    }
+    let pools = installed_door_pools(app);
     section_with_pools(section_key, &slot.section.value, &pools)
 }
 
@@ -1194,42 +1182,39 @@ pub fn with_pools(
     sections
 }
 
-/// The unified pools each door section carries at its reserved `pools` key, by section key.
-pub type DoorPoolsByKey = [(
+/// The pools each door section carries at its reserved `pools` key, by section key.
+pub type DoorPoolsByKey = Vec<(
     &'static str,
     BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
-); 2];
+)>;
 
-/// The door sections' unified pools as the generation `tools`/`agents` resolved them, by section
-/// key: the one table boot ([`with_pools`]) and a config apply ([`applied_section`]) both inject
-/// from, so a door plane's section is built the same way on both paths (audit root-R1 leftover C1).
+/// The door sections' pools as the generation resolved them, by section key: the one table boot
+/// ([`with_pools`]) and a config apply ([`applied_section`]) both inject from, so a door plane's
+/// section is built the same way on both paths (audit root-R1 leftover C1).
 #[must_use]
 pub fn door_pools(
-    tools: &BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
-    agents: &BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
+    plane_pools: &BTreeMap<
+        &'static str,
+        BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
+    >,
 ) -> DoorPoolsByKey {
-    [
-        (
-            busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
-            tools.clone(),
-        ),
-        (
-            busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
-            agents.clone(),
-        ),
-    ]
+    plane_pools
+        .iter()
+        .map(|(section, pools)| (*section, pools.clone()))
+        .collect()
 }
 
-/// [`door_pools`] read off an installed generation: the pools a config apply resolved.
+/// [`door_pools`] read off an installed generation: the pools a config apply resolved, each plane's
+/// read off the generation under its own key and filed under its section.
 #[must_use]
 pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
-    let none = BTreeMap::new();
-    let agents = busbar_kernel::plane::registry::plane_decl_for_config_section(
-        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
-    )
-    .and_then(|decl| app.plane_pools(decl.key))
-    .unwrap_or(&none);
-    door_pools(&app.tool_pools, agents)
+    busbar_kernel::plane::registry::plane_decls()
+        .iter()
+        .filter_map(|decl| {
+            app.plane_pools(decl.key)
+                .map(|pools| (decl.config_section, pools.clone()))
+        })
+        .collect()
 }
 
 /// The section a config apply refreshes the door plane serving `key` onto: the section as

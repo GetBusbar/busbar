@@ -530,12 +530,6 @@ impl busbar_kernel::plane_host::RegistryHost for EngineHostImpl {
         // `kind: secret` plugin), fail-closed exactly as core resolution.
         self.app.secret_resolver.clone()
     }
-
-    fn plane_defs(&self) -> Arc<dyn std::any::Any + Send + Sync> {
-        // Pure snapshot read: the type-erased per-plane config the owning plane downcasts, cloned so it
-        // outlives the call. Already an `Arc<dyn Any + Send + Sync>` on `App`, so the clone is the whole seam.
-        self.app.agent_defs.clone()
-    }
 }
 
 impl busbar_kernel::plane_host::HookConfigHost for EngineHostImpl {
@@ -2289,12 +2283,6 @@ pub trait RegistryHost: Send + Sync {
     /// `HostCtx`; the returned `Arc<dyn SecretResolve>` shares the live resolver (built-ins plus any
     /// wired `kind: secret` plugin), fail-closed exactly as core resolution.
     fn secret_resolver(&self) -> Arc<dyn busbar_contract::secret::SecretResolve>;
-
-    /// The deployment's type-erased plane definitions (`Arc<dyn Any + Send + Sync>` holding the
-    /// per-plane config object the owning plane downcasts), off the BOUND snapshot — the
-    /// `App::agent_defs` field that is NOT a `plane_slots` entry. Owned (an `Arc` clone) so it
-    /// outlives the call; a pure snapshot read, no `HostCtx` (mirrors [`secret_resolver`](Self::secret_resolver)).
-    fn plane_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
 }
 
 /// The HOOK/CONFIG-FACADE slice (App-retype WEDGE 2d): the residual `busbar-llm` request-path reads off

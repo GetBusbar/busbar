@@ -188,6 +188,19 @@ pub struct DoorSection {
 }
 
 impl DoorSection {
+    /// This section as the declared-sections map a plane's `build` reads (`BuildCtx::plane_defs`),
+    /// keyed by its config section.
+    #[must_use]
+    pub fn as_defs(
+        &self,
+    ) -> std::collections::BTreeMap<&'static str, Box<dyn crate::config::plane_sections::PlaneCfg>>
+    {
+        std::collections::BTreeMap::from([(
+            self.section,
+            Box::new(self.clone()) as Box<dyn crate::config::plane_sections::PlaneCfg>,
+        )])
+    }
+
     /// The section `section` as written, with the secret references it holds at its door's
     /// declared paths (`settings.<segment>…`, `*` every key of the map there) read out, so
     /// `--validate` and boot resolve each one as they resolve every other reference.
@@ -515,10 +528,11 @@ fn build<const I: usize>(
 ) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>> {
     let d = door(I)?;
     let mine = |s: &DoorSection| s.section == d.reg.section && s.is_present();
-    let section = match [ctx.agent_defs, ctx.tool_defs]
-        .into_iter()
-        .filter_map(|defs| defs.downcast_ref::<DoorSection>())
-        .find(|s| mine(s))
+    let section = match ctx
+        .plane_defs
+        .get(d.reg.section)
+        .and_then(|defs| defs.as_any().downcast_ref::<DoorSection>())
+        .filter(|s| mine(s))
     {
         Some(s) => s.clone(),
         // ITS ENDPOINT BLOCK ALONE CONFIGURES IT (LAW 7): an owned block carried as written, with no

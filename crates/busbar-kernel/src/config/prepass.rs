@@ -53,9 +53,7 @@ use serde::Deserialize;
 use super::DeployCfg;
 // Every carrier is lifted through the config seam's plane-NEUTRAL spellings, so this generic lift
 // machinery names no concrete plane (DECISIONS #1).
-use crate::config::plane_sections::{
-    AgentsSection, DeclaredSections, EndpointSection, ToolsSection,
-};
+use crate::config::plane_sections::{DeclaredSections, EndpointSection};
 use crate::plane::registry::{PlaneDeclaration, CORE_OWNED_CONCRETE_SECTIONS};
 
 /// HOW `cargo xtask gate config-schema` ties a carrier to its key. The gate reads this from source:
@@ -97,18 +95,6 @@ impl LiftableSection for Option<serde_yaml::Value> {
     }
 }
 
-impl LiftableSection for ToolsSection {
-    fn bank(self, into: &mut Lifted) {
-        into.tools = Some(self);
-    }
-}
-
-impl LiftableSection for AgentsSection {
-    fn bank(self, into: &mut Lifted) {
-        into.agents = Some(self);
-    }
-}
-
 impl LiftableSection for DeclaredSections {
     const KEY: Declared = Declared::Any;
     fn bank(self, into: &mut Lifted) {
@@ -142,8 +128,6 @@ const NESTED_TOP_LEVEL_KEY: &str = "auth";
 enum Dest {
     Endpoint,
     OauthAs,
-    Tools,
-    Agents,
     /// A declaring section its plane owns the grammar of: parsed by that plane into the map carrier.
     Declared,
     /// A declaring section no carrier holds: carried RAW, for its plane to read over the ABI.
@@ -153,7 +137,7 @@ enum Dest {
 
 impl Dest {
     /// The carrier `key` lands in when `decl` declares it. A section owned BESIDE the declaring one
-    /// is its owner's endpoint door, else RAW; a declaring section lands in its named carrier, the map
+    /// is its owner's endpoint door, else RAW; a declaring section lands in the map
     /// carrier ([`DeclaredSections::holds`]) or RAW ([`DeployCfg::plane_raw`]), whichever door.
     fn for_declared(decl: &PlaneDeclaration, key: &'static str) -> Option<Dest> {
         if key != decl.config_section {
@@ -163,15 +147,9 @@ impl Dest {
                 .filter(|_| decl.config_section == EndpointSection::OWNER)
                 .or(Some(Dest::Raw));
         }
-        [
-            (ToolsSection::SECTION, Dest::Tools),
-            (AgentsSection::SECTION, Dest::Agents),
-        ]
-        .into_iter()
-        .find(|(s, _)| *s == key)
-        .map(|(_, d)| d)
-        .or(DeclaredSections::holds(decl).then_some(Dest::Declared))
-        .or(Some(Dest::Raw))
+        DeclaredSections::holds(decl)
+            .then_some(Dest::Declared)
+            .or(Some(Dest::Raw))
     }
 }
 
@@ -203,8 +181,6 @@ const AUTH_LIFTS: &[(&str, Dest)] = &[(LIFTED_AUTH_KEYS[0], Dest::AuthPolicy)];
 pub(crate) struct Lifted {
     endpoint: Option<EndpointSection>,
     oauth_as: Option<Option<serde_yaml::Value>>,
-    tools: Option<ToolsSection>,
-    agents: Option<AgentsSection>,
     declared: DeclaredSections,
     auth_policy: Option<crate::config::AuthPolicyCfg>,
     plane_rate_cards: super::PlaneRateCards,
@@ -231,12 +207,6 @@ impl Lifted {
         }
         if let Some(v) = self.oauth_as {
             deploy.oauth_as = v;
-        }
-        if let Some(v) = self.tools {
-            deploy.tools = v;
-        }
-        if let Some(v) = self.agents {
-            deploy.agents = v;
         }
         if let Some(v) = self.auth_policy {
             // A policy block without an `auth:` block cannot happen: `policy:` is lifted from
@@ -278,8 +248,6 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
                     .bank(lifted);
             }
             Dest::OauthAs => Option::<serde_yaml::Value>::deserialize(de)?.bank(lifted),
-            Dest::Tools => lift_plane::<ToolsSection, D>(key, de, lifted)?,
-            Dest::Agents => lift_plane::<AgentsSection, D>(key, de, lifted)?,
             Dest::Declared => {
                 let section = plane_remainder::<D>(key, de, lifted)?;
                 lifted.declared_raw.insert(key, section.clone());
@@ -306,24 +274,6 @@ impl<'de> DeserializeSeed<'de> for LiftedSeed<'_> {
 /// fallback (`pools:`) plane's card and fee are still the flat top-level `rate_card:` and
 /// `per_request_fee:`, loaded byte-identically.
 pub(crate) const PLANE_CARD_KEYS: [&str; 2] = ["rate_card", "fees"];
-
-/// Lift a plane section: strip its core-owned sub-keys (see [`plane_remainder`]), then parse the
-/// REMAINDER through the section's own carrier exactly as before — the plane's parse error reaches
-/// the operator through the same `custom` channel it always did.
-fn lift_plane<'de, S: LiftableSection + for<'a> Deserialize<'a>, D: Deserializer<'de>>(
-    section_key: &'static str,
-    de: D,
-    lifted: &mut Lifted,
-) -> Result<(), D::Error> {
-    let section = plane_remainder::<D>(section_key, de, lifted)?;
-    // A named-map section is a declaring section its plane owns the grammar of, so it is kept as
-    // written too ([`DeployCfg::declared_raw`]): the settings its plane's door opens with.
-    lifted.declared_raw.insert(section_key, section.clone());
-    S::deserialize(section)
-        .map_err(D::Error::custom)?
-        .bank(lifted);
-    Ok(())
-}
 
 /// A plane section with its core-owned sub-keys (see [`PLANE_CARD_KEYS`]) lifted off it and banked
 /// under the plane's registry key: the REMAINDER, which is the plane's own.

@@ -3521,13 +3521,11 @@ mod disposition_matrix_tests {
             let mut pools = HashMap::new();
             pools.insert("mypool".to_string(), pool.clone());
             RootCfg {
-                tool_defs: busbar_kernel::config::plane_sections::ToolsSection::default().0,
+                plane_defs: Default::default(),
                 // No endpoint plane configured.
                 endpoint_resources: Default::default(),
                 oauth_as: None,
-                agent_defs: busbar_kernel::config::plane_sections::AgentsSection::default().0,
-                tool_pools: Default::default(),
-                agent_pools: Default::default(),
+                plane_pools: Default::default(),
                 plane_sections: Default::default(),
                 upstream_credentials: busbar_contract::config::UpstreamCreds::Own,
                 listen: "0.0.0.0:8080".into(),

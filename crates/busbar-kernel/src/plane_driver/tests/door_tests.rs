@@ -387,10 +387,10 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
         NAMED,
         serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
     );
+    let section_defs = section.as_defs();
     let ctx = BuildCtx {
         endpoint_slot: Some(lowered),
-        agent_defs: &(),
-        tool_defs: &section,
+        plane_defs: &section_defs,
         public_url: None,
         prior: None,
         providers: None,
@@ -425,10 +425,10 @@ fn lane_less_healthz(
             decl.config_section,
             serde_yaml::from_str("zed: {url: 'https://z'}").unwrap(),
         );
+        let section_defs = section.as_defs();
         let slot = (decl.build)(&BuildCtx {
             endpoint_slot: None,
-            agent_defs: &(),
-            tool_defs: &section,
+            plane_defs: &section_defs,
             public_url: None,
             prior: None,
             providers: None,
@@ -606,10 +606,10 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
         )
         .unwrap(),
     );
+    let section_defs = section.as_defs();
     let ctx = |providers| BuildCtx {
         endpoint_slot: None,
-        agent_defs: &(),
-        tool_defs: &section,
+        plane_defs: &section_defs,
         public_url: None,
         prior: None,
         providers,

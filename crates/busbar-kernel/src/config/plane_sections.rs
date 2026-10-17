@@ -252,59 +252,10 @@ where
     }
 }
 
-/// THE `tools:` REGISTRY SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
-/// neutral seam the owning plane's own registry-config type deserializes through, so `DeployCfg`
-/// names no plane-local type. Absent ⇒ the plane's `Default` (an empty registry).
-#[derive(Debug)]
-pub struct ToolsSection(pub Box<dyn PlaneCfg>);
-
-impl ToolsSection {
-    /// The declaring section this carrier holds, read off the frozen named-map list.
-    pub(crate) const SECTION: &'static str =
-        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-}
-impl Default for ToolsSection {
-    fn default() -> Self {
-        ToolsSection(default_plane_section(Self::SECTION))
-    }
-}
-impl<'de> serde::Deserialize<'de> for ToolsSection {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserialize_plane_section(Self::SECTION, deserializer).map(ToolsSection)
-    }
-}
-
-/// THE `agents:` REGISTRY SECTION as it lands in `DeployCfg`, type-erased behind [`PlaneCfg`] — the
-/// neutral seam the owning plane's own registry-config type deserializes through. Absent ⇒ an empty
-/// registry.
-#[derive(Debug)]
-pub struct AgentsSection(pub Box<dyn PlaneCfg>);
-
-impl AgentsSection {
-    /// The declaring section this carrier holds, read off the frozen named-map list.
-    pub(crate) const SECTION: &'static str =
-        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3];
-}
-impl Default for AgentsSection {
-    fn default() -> Self {
-        AgentsSection(default_plane_section(Self::SECTION))
-    }
-}
-impl<'de> serde::Deserialize<'de> for AgentsSection {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserialize_plane_section(Self::SECTION, deserializer).map(AgentsSection)
-    }
-}
-
 /// THE DECLARED SECTIONS as they land in `DeployCfg`: every declaring section a REGISTERED plane
-/// OWNS the grammar of (`PlaneDeclaration::owned_config_sections` lists its own `config_section`),
-/// keyed by that section and type-erased behind [`PlaneCfg`] — the one map carrier, so `DeployCfg`
+/// parses (its own `parse_section` hook) and either OWNS the grammar of
+/// (`PlaneDeclaration::owned_config_sections` lists its own `config_section`) or writes as one of the
+/// frozen named-definition maps ([`NAMED_MAP_SECTIONS`]), keyed by that section and type-erased behind [`PlaneCfg`] — the one map carrier, so `DeployCfg`
 /// names no plane section and no plane-local type (#47/#49). Each entry is parsed by its plane's own
 /// `parse_section` hook; an absent section has no entry. `busbar-kernel` has no dependency on any
 /// plane crate (#40), which is why the plane's typed section is reached only through this seam.
@@ -313,11 +264,31 @@ pub struct DeclaredSections(pub std::collections::BTreeMap<&'static str, Box<dyn
 
 impl DeclaredSections {
     /// True when `decl`'s declaring section lands here: the plane owns its own declaring section's
-    /// grammar and no named carrier (`tools:`/`agents:`) holds it.
+    /// grammar, or the section is one of the frozen named-definition maps its plane parses.
     pub(crate) fn holds(decl: &crate::plane::registry::PlaneDeclaration) -> bool {
-        let named = [ToolsSection::SECTION, AgentsSection::SECTION];
         decl.owned_config_sections.contains(&decl.config_section)
-            && !named.contains(&decl.config_section)
+            || (NAMED_MAP_SECTIONS[2..].contains(&decl.config_section)
+                && crate::plane::registry::plane_decl_for_config_section(decl.config_section)
+                    .is_some_and(|d| d.parse_section.is_some()))
+    }
+
+    /// The section `section` this document writes, if it writes it.
+    #[must_use]
+    pub fn get(&self, section: &str) -> Option<&dyn PlaneCfg> {
+        self.0.get(section).map(|b| &**b)
+    }
+
+    /// The section `section` to write into: the one this document writes, or — for a section a
+    /// registered plane declares — that plane's empty section, added. `None` for a section no
+    /// registered plane declares.
+    pub fn get_or_default(&mut self, section: &str) -> Option<&mut dyn PlaneCfg> {
+        let key = crate::plane::registry::plane_decl_for_config_section(section)?.config_section;
+        Some(
+            &mut **self
+                .0
+                .entry(key)
+                .or_insert_with(|| default_plane_section(key)),
+        )
     }
 
     /// Parse one declared section through its plane's `parse_section` hook, as a one-entry carrier.
@@ -340,7 +311,7 @@ impl EndpointSection {
     /// The DECLARING section of the plane that owns the endpoint door. The door's own key is never
     /// spelled: it is whatever section that plane declares beside this one
     /// (`PlaneDeclaration::owned_config_sections`), read by the pre-pass off the registry.
-    pub(crate) const OWNER: &'static str = ToolsSection::SECTION;
+    pub(crate) const OWNER: &'static str = NAMED_MAP_SECTIONS[2];
 }
 
 impl<'de> serde::Deserialize<'de> for EndpointSection {
