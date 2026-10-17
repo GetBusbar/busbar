@@ -38,6 +38,8 @@ use busbar_kernel::plane_driver::{
     refusal_status, BufferCaps, CallerEnd, DriverConfig, Egress, HeadFields, MoneySeam,
     PlaneDriver, PlaneMoney, Rendered, SessionCaller,
 };
+/// The stream `Content-Type` every declared protocol states, folded at boot.
+use busbar_kernel::proto::streaming_content_types as declared_stream_media;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::root::boot::DoorPlane;
@@ -4206,15 +4208,11 @@ fn whole_answer(fields: &HeadFields) -> bool {
 
 /// Whether `content_type` is a stream's, read off the DECLARED ROWS and never spelled here (Law 1;
 /// BUSBAR-1.6.0.md: "Dialects are internal to their plane"): the event stream the contract names,
-/// or a streaming `Content-Type` a declared protocol states
-/// (`ProtocolDecl::streaming_content_type`, folded at boot).
+/// or the stream `Content-Type` a declared protocol states on its `ProtocolDecl` row, folded at
+/// boot ([`declared_stream_media`]).
 fn streamed_media(content_type: &str) -> bool {
     std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
-        .chain(
-            busbar_kernel::proto::streaming_content_types()
-                .iter()
-                .copied(),
-        )
+        .chain(declared_stream_media().iter().copied())
         .any(|media| {
             content_type
                 .get(..media.len())
@@ -4382,13 +4380,13 @@ mod tests;
 #[path = "tests/serve_planes.rs"]
 pub(crate) mod planes_tests;
 
-// The doors served end to end through this composition: the decisions plane's (the `root-decisions`
-// leg's own cells, qa/capability-equality.json, under its feature) and the MCP plane's (the
-// `root-mcp` leg's loop cells, under the linked plane-door axis), each gated item by item inside,
-// so either plane's switch alone still compiles its own, and the session door's root-leg cells,
-// which find their door among the linked plane doors. Its MCP cells reach the door_steps helpers
-// that need the default build's linked auth rows (gated with the node-axis plane that carries that
-// build), and the capability cells of the door serving the `pools` map.
+// The doors served end to end through this composition: each linked plane door's root-leg cells
+// (its own cells, qa/capability-equality.json, under its feature, or its loop cells under the
+// linked plane-door axis), each gated item by item inside, so one plane's switch alone still
+// compiles its own, and the session door's root-leg cells, which find their door among the linked
+// plane doors. Cells that reach the door_steps helpers needing the default build's linked auth rows
+// are gated with the node-axis plane that carries that build, as are the capability cells of the
+// door serving the `pools` map.
 #[cfg(all(test, linked_axis_node))]
 #[path = "tests/serve_tests.rs"]
 mod door_tests;
