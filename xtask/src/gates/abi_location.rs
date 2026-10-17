@@ -1048,6 +1048,35 @@ impl Gate for AbiLocationGate {
             ],
         ));
 
+        // EVERY LEGAL SPELLING OF A C LAYOUT AND A C SLOT: `C` after another hint, a `repr` that
+        // shares its line with a `derive`, a `repr` under `cfg_attr`, and `extern` with its ABI
+        // string left out (which Rust reads as "C"), as a definition and as a pointer type.
+        let spelled = "crates/busbar-kernel/src/planted_spellings.rs";
+        let mut ov = Overlay::new();
+        ov.set(
+            spelled,
+            "#[repr(align(8), C)]\npub struct PlantedAligned {\n    pub a: u32,\n}\n\
+             #[derive(Clone, Copy)] #[repr(C)]\npub struct PlantedSameLine {\n    pub a: u32,\n}\n\
+             #[cfg_attr(target_os = \"linux\", repr(C))]\npub struct PlantedCfgAttr {\n    pub a: u32,\n}\n\
+             pub extern fn planted_bare_slot(x: u32) -> u32 {\n    x\n}\n\
+             pub type PlantedBarePtr = Option<unsafe extern fn(u32) -> u32>;\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            self,
+            "#[repr(align(8), C)], a same-line #[derive] #[repr(C)], #[cfg_attr(.., repr(C))] and \
+             an ABI-less `extern fn` (definition and pointer type) outside abi/ are RED",
+            &[ROW_REPR_C, ROW_EXTERN],
+            ov,
+            &[
+                "PlantedAligned",
+                "PlantedSameLine",
+                "PlantedCfgAttr",
+                "extern-fn crates/busbar-kernel/src/planted_spellings.rs:13 planted_bare_slot",
+                "fn-ptr crates/busbar-kernel/src/planted_spellings.rs:16 fn-ptr-1",
+            ],
+        ));
+
         // TEST DOUBLES: under tests/, and under #[cfg(test)], and in comments/strings — all GREEN.
         let mut ov = Overlay::new();
         ov.set(
