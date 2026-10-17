@@ -40,8 +40,9 @@ use crate::config::groups::{AdmissionMode, LimitMetric};
 /// naming the ledger crate. Each name is the ledger's own item re-exported as it is: the same type
 /// and the same function, so a figure priced through this path is the ledger's figure.
 pub use busbar_kernel_ledger::cost::{
-    plane_fee_lane, price_ledger, Author, CardEntryDraft, History, HistorySeq, HistoryView,
-    LedgerEntry, MeteredRow, MoneyError, PlaneFees, RateCard, TierRates, PER_SESSION,
+    budget_remaining, plane_fee_lane, price_ledger, sum_spend, Author, CardEntryDraft, History,
+    HistorySeq, HistoryView, LedgerEntry, MeteredRow, MoneyError, PlaneFees, RateCard, TierRates,
+    PER_SESSION,
 };
 
 /// The prefix namespacing GROUP bucket ids in the store, so a group named like a key id can never
