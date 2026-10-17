@@ -563,12 +563,14 @@ impl DatagramFraming {
     /// applied.
     fn cross(&mut self, first: Op<'_>, y: &mut Yielded, now: Instant) -> Result<(), Refused> {
         let mut op = first;
+        let mut recalls = crate::framer::Recalls::default();
         loop {
             let o = self.cross_once(op)?;
             let done = self.take(&o, y, now)?;
             if done {
                 return Ok(());
             }
+            recalls.owed(&o)?;
             op = op.again();
         }
     }

@@ -45,8 +45,11 @@
 //! No `unsafe` is written here outside the tests' framer entry, which writes a host sink through its
 //! raw pointers as a plugin does.
 //!
-//! No thread is started here, per connection or otherwise: every socket's readiness is the
-//! registering worker's reactor's, and every wait is not-ready with a wake.
+//! No thread is started per connection: every socket's readiness is the registering worker's
+//! reactor's, and every wait is not-ready with a wake. The threads that are started: a name lookup
+//! runs on one of its own (the system resolver blocks), at most [`compose::MAX_PENDING_LOOKUPS`]
+//! at once; the spawn environment keeps one refresher ([`spawn_env`]); a plugin download runs on a
+//! scoped one of its own ([`fetch`]).
 
 #![deny(unsafe_code)]
 #![deny(missing_docs)]
