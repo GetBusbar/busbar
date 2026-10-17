@@ -378,11 +378,9 @@ pub struct LaneSnapshot {
 #[allow(dead_code)]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LaneHealthSnapshot {
-    /// The member the lane serves ([`LaneSnapshot::member`]); serialized under its 1.5.5 key.
-    #[serde(rename = "model")]
+    /// The member the lane serves ([`LaneSnapshot::member`]).
     pub member: String,
-    /// The route the lane dials ([`LaneSnapshot::route`]); serialized under its 1.5.5 key.
-    #[serde(rename = "provider")]
+    /// The route the lane dials ([`LaneSnapshot::route`]).
     pub route: String,
     /// Remaining lifetime request budget (`-1` = unlimited).
     pub budget: i64,
