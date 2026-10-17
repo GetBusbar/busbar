@@ -6,7 +6,7 @@ use super::*;
 use busbar_contract::grammar::{Claim, Selector};
 use busbar_kernel::registry::{check_claims, claims_overlap, ConflictReason, PluginKind};
 
-/// Every linked plane's claims and the core plane's, as the boot seal pairs them.
+/// Every linked plane's claims and the admin surface's route, as the boot seal pairs them.
 fn linked_claims() -> Vec<PlaneClaim> {
     plane_claims(crate::LINKED.claims)
 }
@@ -26,7 +26,7 @@ fn linked_rows() -> Vec<Registered> {
     linked_fold().into_iter().map(|(row, _)| row).collect()
 }
 
-/// The registry the seal fills: the folded transports, then every linked plane and the core one.
+/// The registry the seal fills: the folded transports, then every linked plane.
 fn linked_registry() -> Registry {
     register_all(&linked_rows(), crate::LINKED.claims).expect("nothing collides on a key")
 }
@@ -138,7 +138,7 @@ fn every_linked_planes_claims_are_its_declared_claims() {
         );
         total += row.claims.len();
     }
-    // The rest is the core plane's own, which no linked row carries.
+    // The rest is the admin surface's route, which no linked row carries.
     assert!(
         total <= claims.len(),
         "more linked claims than the seal holds"
@@ -147,10 +147,8 @@ fn every_linked_planes_claims_are_its_declared_claims() {
         claims
             .iter()
             .filter(|c| !keys.contains(&c.plane))
-            .all(|c| core_planes()
-                .iter()
-                .any(|row| (row.plane)().key() == c.plane)),
-        "a sealed claim belongs to no linked or core plane"
+            .all(|c| core_claims().any(|core| core.plane == c.plane)),
+        "a sealed claim belongs to no linked plane and is not the admin surface's route"
     );
 }
 
@@ -554,11 +552,15 @@ fn an_unregistered_layer_refuses_at_boot() {
 
 /// A guard against a claim slice that quietly names a plane the registry never took: the
 /// pairing in `plane_claims` is done by hand, so the one thing worth asserting about it is that
-/// every key it produces is a key the registry actually resolves.
+/// every key it produces is a key the registry actually resolves — except the admin surface's
+/// route, a cleanliness crate's claimant that is no plugin (§6 step 3, §8).
 #[test]
 fn every_claimed_plane_key_is_a_registered_plane() {
     let registry = linked_registry();
     for claim in &linked_claims() {
+        if core_claims().any(|core| core.plane == claim.plane) {
+            continue;
+        }
         assert!(
             registry.resolve(PluginKind::Plane, claim.plane).is_some(),
             "claim names plane `{}`, which is not registered",

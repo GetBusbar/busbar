@@ -255,7 +255,7 @@ const _: () = assert!(
 /// The operation class every read-only verb prices under.
 ///
 /// The design's admin row prices every verb the same (a flat, zero-priced `count` class, itself
-/// kernel-reserved — see `meta.rs`), so the read/write split exists only to keep the audit step's
+/// kernel-reserved), so the read/write split exists only to keep the audit step's
 /// dispute check meaningful (a verb whose scope tier changed between resolution and audit is a real
 /// finding, not noise) and to mirror the closed 34/32 `ReadOnly`/`Full` split the design pins.
 pub(crate) const OP_READ: OpClassId = OpClassId::new("admin_read");
