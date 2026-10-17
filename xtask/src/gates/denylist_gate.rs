@@ -256,6 +256,59 @@ impl Gate for DenylistGate {
             ));
         }
 
+        // A PURE CRATE THE RESOLVE GRAPH DOES NOT KNOW WAS SKIPPED AND STILL COUNTED (audit XA1 HIGH
+        // 4). The run printed a warning, walked no closure, and `crates_scanned` counted the crate
+        // anyway, so the scan row read green over a crate whose dependencies nobody looked at. A hook
+        // crate planted at `crates/hook-planted`, which no `cargo metadata` answer resolves, must be
+        // a red scan row naming it.
+        let mut unresolved = Overlay::new();
+        unresolved.set(
+            "crates/hook-planted/Cargo.toml",
+            "[package]\nname = \"busbar-hook-planted\"\nversion = \"0.0.0\"\nedition = \"2021\"\n",
+        );
+        unresolved.set("crates/hook-planted/src/lib.rs", "pub fn planted() {}\n");
+        report.push(prove_red(
+            cx,
+            self,
+            "a pure crate cargo metadata does not resolve is a red scan row, not a counted warning",
+            &[ROW_SCAN],
+            unresolved,
+            &["busbar-hook-planted"],
+        ));
+
+        // THE PINNED PURE PLUGINS' CLOSURES ARE WALKED (audit XA1 HIGH 4). A pinned plane is laid by
+        // the base layer at `crates/<package>`, where `cargo metadata` reports a checkout manifest
+        // under `$CARGO_HOME`, so matching on the manifest path skipped it; a pinned hook or auth
+        // plugin is laid nowhere and was never listed. Each case plants the REAL resolve graph with
+        // one extra normal edge from a shipped pinned plugin to `reqwest` (BUSBAR-1.6.0.md l.2184:
+        // "source-denylist (hyper/reqwest/tokio-net out of plane closure)"), and the hits row must
+        // go red naming the plugin and the offender.
+        let real_metadata = cx.cargo_metadata("Cargo.toml").unwrap_or_default();
+        for (label, from) in [
+            (
+                "a pinned plane's closure reaching a banned crate is a red hits row",
+                "busbar-plane-mcp",
+            ),
+            (
+                "a pinned hook plugin's closure reaching a banned crate is a red hits row",
+                "busbar-hook-ranking",
+            ),
+            (
+                "a pinned auth plugin's closure reaching a banned crate is a red hits row",
+                "busbar-auth-header",
+            ),
+        ] {
+            let real = real_metadata.clone();
+            report.push(prove_red(
+                cx,
+                self,
+                label,
+                &[ROW_HITS],
+                move || metadata_with_edge(&real, from, "reqwest").unwrap_or_default(),
+                &[from, "reqwest"],
+            ));
+        }
+
         // The crate's own twelve-fixture battery (planted banned deps, own-src paths, via-narrowing
         // bypasses, phantom optional edges, stale waivers) proves the PREDICATE in both directions,
         // at a granularity no single tree can carry. It is driven here so `cargo xtask selftest`
@@ -280,4 +333,37 @@ impl Gate for DenylistGate {
 
         report
     }
+}
+
+/// The overlay key a planted `cargo metadata` answer for the root manifest is read under
+/// ([`Ctx::cargo_metadata`]).
+const METADATA_KEY: &str = "cargo-metadata:Cargo.toml";
+
+/// The `cargo metadata` answer `real`, with one planted NORMAL edge `from -> to` in the resolve
+/// graph, as an overlay planting that answer. `None` when either package is absent from the answer:
+/// an empty overlay, which the harness reports as an inert plant rather than a proof.
+fn metadata_with_edge(real: &str, from: &str, to: &str) -> Option<Overlay> {
+    let mut v: serde_json::Value = serde_json::from_str(real).ok()?;
+    let id_of = |v: &serde_json::Value, name: &str| {
+        v["packages"]
+            .as_array()?
+            .iter()
+            .find(|p| p["name"] == name)
+            .and_then(|p| p["id"].as_str())
+            .map(str::to_string)
+    };
+    let from_id = id_of(&v, from)?;
+    let to_id = id_of(&v, to)?;
+    let node = v["resolve"]["nodes"]
+        .as_array_mut()?
+        .iter_mut()
+        .find(|n| n["id"] == from_id.as_str())?;
+    node["deps"].as_array_mut()?.push(serde_json::json!({
+        "name": to.replace('-', "_"),
+        "pkg": to_id,
+        "dep_kinds": [{ "kind": null, "target": null }],
+    }));
+    let mut ov = Overlay::new();
+    ov.set_command(METADATA_KEY, serde_json::to_string(&v).ok()?);
+    Some(ov)
 }
