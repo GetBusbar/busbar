@@ -214,11 +214,8 @@ pub mod diagnostics;
 // #33) so the loader's own writes and this crate's route through the SAME primitive. Re-exported here
 // so every existing `crate::durable::*` call site in this binary resolves unchanged.
 pub use busbar_plugin_loader::durable;
-// The host-owned outbound surface: the neutral SSRF-pinned client (re-exported wholesale from
-// busbar-substrate) plus the host-mediated `seam` adapter that drives egress through the
-// `plane_host` FFI vtable, gated behind the neutral `egress-seam` capability feature rather than
-// any one plane. Always compiled, because the host owns every outbound byte
-// whether or not a plane needing the seam is built. See the module header.
+// The host-owned outbound surface: the neutral SSRF-pinned client and the egress-trust seam. See the
+// module header.
 /// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
 pub mod bound_credential;
 pub mod egress;
