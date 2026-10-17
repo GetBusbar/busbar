@@ -725,8 +725,13 @@ impl Node {
         post.open(key, principal.clone(), arrived, history.clone());
         let meter = Arc::new(AccrualMeter::new());
         let origin = parent.map_or(OriginKind::Client, |p| OriginKind::Nested { parent: p.key });
-        let hold =
-            busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
+        let call = self.kernel.next_call();
+        let hold = busbar_kernel::inflight::arrival_hold(
+            &self.kernel,
+            &self.door,
+            principal.clone(),
+            call,
+        );
         let Ok(slot) = self.inflight.insert(busbar_kernel::inflight::Enter {
             key,
             origin,
@@ -747,7 +752,7 @@ impl Node {
             reached_end: false,
         };
         let ctx = UnitCtx {
-            call: busbar_contract::caps::CallId::UNBOUND,
+            call,
             key,
             origin,
             session: None,
@@ -817,8 +822,13 @@ impl Node {
         }
         post.open(key, principal.clone(), arrived, history);
         let meter = Arc::new(AccrualMeter::new());
-        let hold =
-            busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
+        let call = self.kernel.next_call();
+        let hold = busbar_kernel::inflight::arrival_hold(
+            &self.kernel,
+            &self.door,
+            principal.clone(),
+            call,
+        );
         let Ok(slot) = self.inflight.insert(busbar_kernel::inflight::Enter {
             key,
             origin: OriginKind::Client,
@@ -838,7 +848,7 @@ impl Node {
             reached_end: false,
         };
         let ctx = UnitCtx {
-            call: busbar_contract::caps::CallId::UNBOUND,
+            call,
             key,
             origin: OriginKind::Client,
             session: None,
@@ -935,8 +945,13 @@ impl Node {
         // billed in and the stamp the table enters it under cannot be two different instants.
         let (units, route, finish) = build((self.resolver(), arrived.secs()));
 
-        let hold =
-            busbar_kernel::inflight::arrival_hold(&self.kernel, &self.door, principal.clone());
+        let call = self.kernel.next_call();
+        let hold = busbar_kernel::inflight::arrival_hold(
+            &self.kernel,
+            &self.door,
+            principal.clone(),
+            call,
+        );
         let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
             key,
             origin: OriginKind::Client,
@@ -971,7 +986,7 @@ impl Node {
                     reached_end: false,
                 };
                 let ctx = UnitCtx {
-                    call: busbar_contract::caps::CallId::UNBOUND,
+                    call,
                     key,
                     origin: OriginKind::Client,
                     session: None,
