@@ -1941,54 +1941,78 @@ fn a_pinned_planes_evidence_is_read_from_its_checkout_and_is_red_without_it() {
 }
 
 /// A CITATION OF A PINNED PLANE'S TWIN IS READ IN THAT TWIN, AND A MISSING ONE IS REFUSED (ARCHITECT
-/// ruling on #1072 (2)). The streaming plane's both-ways witness lives in its cdylib twin
-/// (`busbar-plane-streaming-plugin`, `tests/both_ways.rs`), in the same repo at the rev the root
-/// pins: a cell citing it is read there and is the real test. RED ARMS: a fn the twin does not have,
-/// a file the twin does not have, and the twin of a plane the root does not pin are each refused,
-/// never resolved to something else and never skipped.
+/// ruling on #1072 (2)). A plane's both-ways witness lives in its cdylib twin (`<plane>-plugin`), in
+/// the same repo at the rev the root pins: every cell citing one is read there and is the real test.
+/// RED ARMS, built from each cited twin file: a fn it does not have, a file its twin does not have,
+/// and the twin of a plane the root does not pin are each refused, never resolved to something else
+/// and never skipped. Generic over the plane kind: the citations are the ledger's, no plane is named.
 #[test]
 fn a_pinned_planes_twin_citation_is_read_from_its_checkout_and_a_missing_one_is_refused() {
+    fn cited(v: &serde_json::Value, twins: &[String], out: &mut Vec<String>) {
+        match v {
+            serde_json::Value::Object(m) => {
+                for (k, x) in m {
+                    match x.as_str() {
+                        Some(s) if k == "test" && twins.iter().any(|p| s.starts_with(p)) => {
+                            out.push(s.to_string());
+                        }
+                        _ => cited(x, twins, out),
+                    }
+                }
+            }
+            serde_json::Value::Array(a) => a.iter().for_each(|x| cited(x, twins, out)),
+            _ => {}
+        }
+    }
     let root = repo_root();
-    let twin = "crates/busbar-plane-streaming-plugin/tests/both_ways.rs";
+    let twins: Vec<String> = common::pinned_planes::pinned_rows(&root)
+        .into_iter()
+        .map(|(name, _)| format!("crates/{name}-plugin/"))
+        .collect();
+    let mut tests = Vec::new();
+    cited(&real_doc(), &twins, &mut tests);
     assert!(
-        !root.join(twin).exists(),
-        "{twin} is on disk: a pinned plane's source re-entered the tree"
+        !tests.is_empty(),
+        "no proven cell cites a pinned plane's twin, so this arm proves nothing"
     );
-    named_test_is_real(
-        &root,
-        "twin",
-        &format!("{twin}::a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it"),
-        "cell",
-    )
-    .unwrap_or_else(|e| panic!("{e}"));
+    for test in &tests {
+        let (file, _) = test.split_once("::").expect("`<file>::<fn>`");
+        assert!(
+            !root.join(file).exists(),
+            "{file} is on disk: a pinned plane's source re-entered the tree"
+        );
+        named_test_is_real(&root, "twin", test, "cell").unwrap_or_else(|e| panic!("{e}"));
 
-    let err = named_test_is_real(
-        &root,
-        "twin",
-        &format!("{twin}::a_test_the_twin_does_not_have"),
-        "cell",
-    )
-    .expect_err("RED: a fn the twin does not have is refused");
-    assert!(
-        err.contains("no `fn a_test_the_twin_does_not_have(`"),
-        "{err}"
-    );
+        let err = named_test_is_real(
+            &root,
+            "twin",
+            &format!("{file}::a_test_the_twin_does_not_have"),
+            "cell",
+        )
+        .expect_err("RED: a fn the twin does not have is refused");
+        assert!(
+            err.contains("no `fn a_test_the_twin_does_not_have(`"),
+            "{err}"
+        );
 
-    let err = named_test_is_real(
-        &root,
-        "twin",
-        "crates/busbar-plane-streaming-plugin/tests/no_such_file.rs::anything",
-        "cell",
-    )
-    .expect_err("RED: a file the twin does not have is refused");
-    assert!(err.contains("cannot be read"), "{err}");
+        let (twin_dir, _) = file.split_once("/tests/").expect("a twin's test file");
+        let err = named_test_is_real(
+            &root,
+            "twin",
+            &format!("{twin_dir}/tests/no_such_file.rs::anything"),
+            "cell",
+        )
+        .expect_err("RED: a file the twin does not have is refused");
+        assert!(err.contains("cannot be read"), "{err}");
 
-    let err = named_test_is_real(
-        &root,
-        "twin",
-        "crates/busbar-plane-unpinned-plugin/tests/both_ways.rs::anything",
-        "cell",
-    )
-    .expect_err("RED: the twin of a plane the root does not pin is refused");
-    assert!(err.contains("cannot be read"), "{err}");
+        let unpinned = twin_dir.replacen("-plugin", "-unpinned-plugin", 1);
+        let err = named_test_is_real(
+            &root,
+            "twin",
+            &format!("{unpinned}/tests/both_ways.rs::anything"),
+            "cell",
+        )
+        .expect_err("RED: the twin of a plane the root does not pin is refused");
+        assert!(err.contains("cannot be read"), "{err}");
+    }
 }
