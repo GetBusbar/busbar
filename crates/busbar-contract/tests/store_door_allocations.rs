@@ -28,7 +28,7 @@ use std::mem::size_of;
 use std::ptr;
 
 use busbar_contract::abi::mechanism::call::{AbiStr, Blob, InHead, Op, OutHead, Outcome};
-use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut};
+use busbar_contract::abi::mechanism::lifecycle::{slot as life, OpenIn, OpenOut, ReleaseIn};
 use busbar_contract::abi::mechanism::ticket::Ticket;
 use busbar_contract::abi::sdk::conn::Host;
 use busbar_contract::abi::sdk::store::{
@@ -37,9 +37,9 @@ use busbar_contract::abi::sdk::store::{
 };
 use busbar_contract::abi::store::{
     slot, AppendPlaneRecordIn, GetPlaneRecordIn, HostBlobs, HostBuf, HostBytesOut, HostListOut,
-    HostRecords, HostSessions, KindIdIn, ListPlaneRecordsIn, OpId, Ops, PlaneRecordRow,
-    RecordEntry, RecordGetIn, RecordPutIn, RecordScanIn, SessionRow, SessionsForIn, TokenIn,
-    UpsertPlaneRecordIn, VerdictOut, DISPOSITION_ACTIVE, SELECT_ALL, SELECT_PARENT,
+    HostRecords, HostSessions, IdIn, KindIdIn, LeasedBlobOut, ListPlaneRecordsIn, OpId, Ops,
+    PlaneRecordRow, RecordEntry, RecordGetIn, RecordPutIn, RecordScanIn, SessionRow, SessionsForIn,
+    TokenIn, UpsertPlaneRecordIn, VerdictOut, DISPOSITION_ACTIVE, SELECT_ALL, SELECT_PARENT,
 };
 use busbar_contract::kinds::{Head, RecordBytes};
 use busbar_contract::records::{
@@ -288,7 +288,8 @@ impl StoreSlots for Canned {
         unreachable!("not a request-path slot")
     }
     fn get_key(&self, _: &mut StoreOp<'_>, _: &str) -> Step<RecordStoreResult<Option<VirtualKey>>> {
-        unreachable!("not a request-path slot")
+        // Off the request path; answered so the release test below holds a real lease.
+        Step::Ready(Ok(Some(VirtualKey::default())))
     }
     fn list_keys(&self, _: &mut StoreOp<'_>) -> Step<RecordStoreResult<Vec<VirtualKey>>> {
         unreachable!("not a request-path slot")
@@ -966,5 +967,52 @@ fn the_store_doors_request_path_slots_allocate_nothing() {
         allocating.is_empty(),
         "the store door allocated on the request path:\n  {}",
         allocating.join("\n  ")
+    );
+}
+
+// ── release: the one lease rule ─────────────────────────────────────────────────────────────
+
+fn release(instance: *mut c_void, lease: u64) -> Outcome {
+    let input = ReleaseIn {
+        head: in_head::<ReleaseIn>(life::RELEASE),
+        lease,
+    };
+    let mut out = out_head::<OutHead>();
+    call(ops().head.release, instance, &input, &mut out)
+}
+
+/// RELEASING AN UNKNOWN LEASE IS REFUSED (THE DESIGN §11, KIND-SHARE: "releasing an unknown lease
+/// is REFUSED"). The store door answers the host's release of a lease it holds READY, and a
+/// release of one it never handed out, or one already released, REFUSED: a host double or wrong
+/// release is a host bug the door names rather than accepts.
+#[test]
+fn the_store_door_refuses_a_release_of_a_lease_it_does_not_hold() {
+    let instance = open();
+    let t = ops();
+
+    let input = IdIn {
+        head: in_head::<IdIn>(slot::GET_KEY),
+        id: s(b"k"),
+    };
+    let mut out: LeasedBlobOut = zeroed();
+    out.head = out_head::<LeasedBlobOut>();
+    assert_eq!(call(t.get_key, instance, &input, &mut out), Outcome::Ready);
+    let lease = out.head.lease;
+    assert_ne!(lease, 0, "a found record is answered under a lease");
+
+    assert_eq!(
+        release(instance, lease.wrapping_add(1000)),
+        Outcome::Refused,
+        "a lease the door never handed out is refused"
+    );
+    assert_eq!(
+        release(instance, lease),
+        Outcome::Ready,
+        "a held lease is released"
+    );
+    assert_eq!(
+        release(instance, lease),
+        Outcome::Refused,
+        "a lease already released is refused"
     );
 }
