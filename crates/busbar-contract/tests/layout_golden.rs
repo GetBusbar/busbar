@@ -2224,11 +2224,15 @@ fn compute_layout() -> String {
             trust_serves,
             trust_decide,
             trust_state,
-            session_emit
+            session_emit,
+            ticket_mint,
+            ticket_take
         ]
     );
     record!(s, hsvc::NeedAdmitIn, [head, need, _reserved]);
     record!(s, hsvc::SessionEmitIn, [head, session, bytes]);
+    record!(s, hsvc::TicketMintIn, [head, ttl_secs, record, into]);
+    record!(s, hsvc::TicketTakeIn, [head, into]);
     record!(
         s,
         hsvc::TrustVerifyIn,

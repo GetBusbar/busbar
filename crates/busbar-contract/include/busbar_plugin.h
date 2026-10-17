@@ -365,6 +365,7 @@ extern "C" {
 #define BB_PLANE_CLAIM_OPEN UINT32_C(1) /* [`Claim::flags`]: the route takes no inbound credential; the kernel admits an arrival on it */
 #define BB_PLANE_CLAIM_EXACT UINT32_C(2) /* [`Claim::flags`]: the target matches exactly. Without it (and without [`CLAIM_PATTERN`]), the */
 #define BB_PLANE_CLAIM_PATTERN UINT32_C(4) /* [`Claim::flags`]: the target is a path pattern. Each `/`-separated segment is a literal, or a */
+#define BB_PLANE_CLAIM_TICKET UINT32_C(8) /* [`Claim::flags`]: the route's inbound credential may be a TICKET the host minted for the plane */
 #define BB_PLANE_CLAIM_PROBE UINT32_C(0xffffffff) /* [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose */
 #define BB_PLANE_INGRESS_REQUEST_RESPONSE UINT32_C(1) /* [`PlaneTail::ingress`]: a request expecting one reply. */
 #define BB_PLANE_INGRESS_RESPONSE_STREAM UINT32_C(2) /* [`PlaneTail::ingress`]: a request expecting a streamed reply. */
@@ -647,7 +648,9 @@ extern "C" {
 #define BB_HSVC_OP_TRUST_DECIDE UINT32_C(26) /* `trust.decide`. */
 #define BB_HSVC_OP_TRUST_STATE UINT32_C(27) /* `trust.state`. */
 #define BB_HSVC_OP_SESSION_EMIT UINT32_C(28) /* `session.emit`. */
-#define BB_HSVC_SERVICES UINT32_C(29) /* How many services [`HostSlots`] holds. */
+#define BB_HSVC_OP_TICKET_MINT UINT32_C(29) /* `ticket.mint`. */
+#define BB_HSVC_OP_TICKET_TAKE UINT32_C(30) /* `ticket.take`. */
+#define BB_HSVC_SERVICES UINT32_C(31) /* How many services [`HostSlots`] holds. */
 #define BB_HSVC_SECRET_NOT_LIVE UINT64_C(0) /* `value` of [`op::RECORDS_SECRET`]: not live, or no such credential. */
 #define BB_HSVC_SECRET_LIVE UINT64_C(1) /* `value` of [`op::RECORDS_SECRET`]: the credential is live. */
 #define BB_HSVC_ABSENT UINT64_C(0) /* `value` of [`op::RECORDS_GET`]: no such record. */
@@ -732,6 +735,9 @@ extern "C" {
 #define BB_HSVC_DISK_OPEN_FAILED UINT64_C(1) /* A FAILED `disk.append`'s `ServiceOut::value`: the file could not be opened for the append. */
 #define BB_HSVC_DISK_APPEND_FAILED UINT64_C(2) /* A FAILED `disk.append`'s `ServiceOut::value`: the file opened, and writing the bytes failed. */
 #define BB_HSVC_CARRIER_SESSION_FIELD "busbar-carrier-session" /* The head field a CARRIER SESSION's arrivals carry, naming the session they arrived over: the */
+#define BB_HSVC_MAX_TICKET_RECORD UINT64_C(0x10000) /* The most record bytes one `ticket.mint` stores with its ticket. */
+#define BB_HSVC_TICKET_NONE UINT64_C(0) /* `ticket.take`: the unit was admitted by a key, not a ticket; nothing is written. */
+#define BB_HSVC_TICKET_TAKEN UINT64_C(1) /* `ticket.take`: the record of the ticket that admitted the unit, written once. */
 
 /* hio */
 #define BB_HIO_OP_OPEN UINT32_C(0) /* `io.open`. */
@@ -1118,6 +1124,8 @@ typedef struct bb_hsvc_NeedAdmitIn bb_hsvc_NeedAdmitIn;
 typedef struct bb_hsvc_DiskAppendIn bb_hsvc_DiskAppendIn;
 typedef struct bb_hsvc_DiskWritten bb_hsvc_DiskWritten;
 typedef struct bb_hsvc_SessionEmitIn bb_hsvc_SessionEmitIn;
+typedef struct bb_hsvc_TicketMintIn bb_hsvc_TicketMintIn;
+typedef struct bb_hsvc_TicketTakeIn bb_hsvc_TicketTakeIn;
 typedef struct bb_hsvc_HostSlots bb_hsvc_HostSlots;
 typedef struct bb_hio_IoSlots bb_hio_IoSlots;
 typedef struct bb_hio_OpenIn bb_hio_OpenIn;
@@ -3892,6 +3900,20 @@ struct bb_hsvc_SessionEmitIn {
     bb_mech_Blob bytes;
 };
 
+/* [`op::TICKET_MINT`]'s `in`: mint a TICKET, a short-lived single-use credential, for the principal */
+struct bb_hsvc_TicketMintIn {
+    bb_hsvc_ServiceHead head;
+    uint64_t ttl_secs;
+    bb_mech_Blob record;
+    bb_hsvc_ServiceBufs into;
+};
+
+/* [`op::TICKET_TAKE`]'s `in`: the record stored with the ticket that admitted the unit the calling */
+struct bb_hsvc_TicketTakeIn {
+    bb_hsvc_ServiceHead head;
+    bb_hsvc_ServiceBufs into;
+};
+
 /* THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service */
 struct bb_hsvc_HostSlots {
     uint32_t size;
@@ -3925,6 +3947,8 @@ struct bb_hsvc_HostSlots {
     bb_hsvc_ServiceFn trust_decide;
     bb_hsvc_ServiceFn trust_state;
     bb_hsvc_ServiceFn session_emit;
+    bb_hsvc_ServiceFn ticket_mint;
+    bb_hsvc_ServiceFn ticket_take;
 };
 
 /* THE HOST'S I/O TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is one this host */
@@ -6176,7 +6200,17 @@ BB_ASSERT(BB_ALIGNOF(bb_hsvc_SessionEmitIn) == 8, "bb_hsvc_SessionEmitIn: alignm
 BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, head) == 0, "bb_hsvc_SessionEmitIn.head: offset");
 BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, session) == 24, "bb_hsvc_SessionEmitIn.session: offset");
 BB_ASSERT(offsetof(bb_hsvc_SessionEmitIn, bytes) == 32, "bb_hsvc_SessionEmitIn.bytes: offset");
-BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 240, "bb_hsvc_HostSlots: size");
+BB_ASSERT(sizeof(bb_hsvc_TicketMintIn) == 88, "bb_hsvc_TicketMintIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_TicketMintIn) == 8, "bb_hsvc_TicketMintIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_TicketMintIn, head) == 0, "bb_hsvc_TicketMintIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_TicketMintIn, ttl_secs) == 24, "bb_hsvc_TicketMintIn.ttl_secs: offset");
+BB_ASSERT(offsetof(bb_hsvc_TicketMintIn, record) == 32, "bb_hsvc_TicketMintIn.record: offset");
+BB_ASSERT(offsetof(bb_hsvc_TicketMintIn, into) == 56, "bb_hsvc_TicketMintIn.into: offset");
+BB_ASSERT(sizeof(bb_hsvc_TicketTakeIn) == 56, "bb_hsvc_TicketTakeIn: size");
+BB_ASSERT(BB_ALIGNOF(bb_hsvc_TicketTakeIn) == 8, "bb_hsvc_TicketTakeIn: alignment");
+BB_ASSERT(offsetof(bb_hsvc_TicketTakeIn, head) == 0, "bb_hsvc_TicketTakeIn.head: offset");
+BB_ASSERT(offsetof(bb_hsvc_TicketTakeIn, into) == 24, "bb_hsvc_TicketTakeIn.into: offset");
+BB_ASSERT(sizeof(bb_hsvc_HostSlots) == 256, "bb_hsvc_HostSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hsvc_HostSlots) == 8, "bb_hsvc_HostSlots: alignment");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, size) == 0, "bb_hsvc_HostSlots.size: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, slots) == 4, "bb_hsvc_HostSlots.slots: offset");
@@ -6209,6 +6243,8 @@ BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_serves) == 208, "bb_hsvc_HostSlots.t
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_decide) == 216, "bb_hsvc_HostSlots.trust_decide: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, trust_state) == 224, "bb_hsvc_HostSlots.trust_state: offset");
 BB_ASSERT(offsetof(bb_hsvc_HostSlots, session_emit) == 232, "bb_hsvc_HostSlots.session_emit: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_mint) == 240, "bb_hsvc_HostSlots.ticket_mint: offset");
+BB_ASSERT(offsetof(bb_hsvc_HostSlots, ticket_take) == 248, "bb_hsvc_HostSlots.ticket_take: offset");
 BB_ASSERT(sizeof(bb_hio_IoSlots) == 88, "bb_hio_IoSlots: size");
 BB_ASSERT(BB_ALIGNOF(bb_hio_IoSlots) == 8, "bb_hio_IoSlots: alignment");
 BB_ASSERT(offsetof(bb_hio_IoSlots, size) == 0, "bb_hio_IoSlots.size: offset");

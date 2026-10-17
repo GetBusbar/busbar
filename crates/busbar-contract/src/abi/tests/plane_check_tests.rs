@@ -1069,11 +1069,25 @@ fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
 fn a_claim_states_only_known_flags() {
     let open_exact = claim("V", "/t", CLAIM_OPEN | CLAIM_EXACT);
     assert_eq!(check_claims(&[open_exact], 1), Ok(()));
-    // RED: a bit none of CLAIM_OPEN, CLAIM_EXACT, CLAIM_PATTERN.
-    let unknown = claim("V", "/t", CLAIM_PATTERN << 1);
+    // RED: a bit none of CLAIM_OPEN, CLAIM_EXACT, CLAIM_PATTERN, CLAIM_TICKET.
+    let unknown = claim("V", "/t", crate::abi::plane::CLAIM_TICKET << 1);
     assert_eq!(
         check_claims(&[unknown], 1),
         f(Rule::UnknownCode, "claim.flags")
+    );
+}
+
+/// A keyed route may take a ticket; an open route takes no credential, so it never takes one.
+#[test]
+fn a_ticket_claim_is_a_keyed_claim() {
+    use crate::abi::plane::CLAIM_TICKET;
+    let keyed = claim("POST", "/v1/x", CLAIM_EXACT | CLAIM_TICKET);
+    assert_eq!(check_claims(&[keyed], 1), Ok(()));
+    // RED: CLAIM_OPEN with CLAIM_TICKET.
+    let open = claim("POST", "/v1/x", CLAIM_OPEN | CLAIM_EXACT | CLAIM_TICKET);
+    assert_eq!(
+        check_claims(&[open], 1),
+        f(Rule::Contradiction, "claim.flags")
     );
 }
 

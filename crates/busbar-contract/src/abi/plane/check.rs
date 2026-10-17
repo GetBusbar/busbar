@@ -27,7 +27,7 @@ use super::{
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
     RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
     CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    CLAIM_PATTERN, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
+    CLAIM_PATTERN, CLAIM_TICKET, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
     EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
     INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_METRIC_LANES,
     MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
@@ -1036,7 +1036,7 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
         named(c.carrier, "claim.carrier")?;
         bits(
             u64::from(c.flags),
-            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN),
+            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_TICKET),
             "claim.flags",
         )?;
         if dialects_len > 0 || c.refusal_dialect != 0 {
@@ -1047,6 +1047,9 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
             )?;
         }
         if c.flags & CLAIM_EXACT != 0 && c.flags & CLAIM_PATTERN != 0 {
+            return Err(fault(Rule::Contradiction, "claim.flags"));
+        }
+        if c.flags & CLAIM_OPEN != 0 && c.flags & CLAIM_TICKET != 0 {
             return Err(fault(Rule::Contradiction, "claim.flags"));
         }
     }

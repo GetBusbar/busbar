@@ -164,10 +164,14 @@ pub mod op {
     pub const TRUST_STATE: u32 = 27;
     /// `session.emit`.
     pub const SESSION_EMIT: u32 = 28;
+    /// `ticket.mint`.
+    pub const TICKET_MINT: u32 = 29;
+    /// `ticket.take`.
+    pub const TICKET_TAKE: u32 = 30;
 }
 
 /// How many services [`HostSlots`] holds.
-pub const SERVICES: u32 = 29;
+pub const SERVICES: u32 = 31;
 
 /// Whether a service may answer PENDING, and so is callable only inside a ticketed op. `false` for
 /// an index past the table.
@@ -189,6 +193,8 @@ pub const fn may_pend(service: u32) -> bool {
             | op::TRUST_DECIDE
             | op::TRUST_STATE
             | op::SESSION_EMIT
+            | op::TICKET_MINT
+            | op::TICKET_TAKE
     ) && service < SERVICES
 }
 
@@ -1037,6 +1043,68 @@ pub const fn check_session_emit_in(i: &SessionEmitIn) -> Result<(), Fault> {
     Ok(())
 }
 
+// ── tickets ───────────────────────────────────────────────────────────────────────────────────
+
+/// The most record bytes one `ticket.mint` stores with its ticket.
+pub const MAX_TICKET_RECORD: u64 = 64 * 1024;
+
+/// [`op::TICKET_MINT`]'s `in`: mint a TICKET, a short-lived single-use credential, for the principal
+/// of the unit the calling crossing serves, and store `record` with it. The host mints it through
+/// its own token stamp under the mint ceiling (a lifetime above the ceiling is clamped to it),
+/// prefixed with the plugin's declared issued-id prefix, and binds it to the audience only a
+/// [`CLAIM_TICKET`](crate::abi::plane::CLAIM_TICKET) claim's gate verifies. READY: the ticket
+/// credential in the bytes written (no span), `value` = its expiry in Unix seconds. A crossing that
+/// serves no unit, a unit with no principal, or a plugin that declares no issued-id prefix is
+/// REFUSED. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TicketMintIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// The lifetime asked, in seconds.
+    pub ttl_secs: u64,
+    /// The bytes stored with the ticket and handed back once by [`op::TICKET_TAKE`].
+    pub record: Blob,
+    /// Where the ticket goes.
+    pub into: ServiceBufs,
+}
+
+/// `ticket.mint`'s `in`, before anything is minted: a lifetime of at least one second, and a record
+/// within [`MAX_TICKET_RECORD`]. The host REFUSES an `in` that breaks this.
+///
+/// # Errors
+///
+/// [`Rule::Missing`] for `ttl_secs == 0`; [`Rule::OverMax`] for a record above
+/// [`MAX_TICKET_RECORD`].
+pub const fn check_ticket_mint_in(i: &TicketMintIn) -> Result<(), Fault> {
+    if i.ttl_secs == 0 {
+        return Err(fault(Rule::Missing, "ticket_mint.ttl_secs"));
+    }
+    if i.record.len as u64 > MAX_TICKET_RECORD {
+        return Err(fault(Rule::OverMax, "ticket_mint.record"));
+    }
+    Ok(())
+}
+
+/// `ticket.take`: the unit was admitted by a key, not a ticket; nothing is written.
+pub const TICKET_NONE: u64 = 0;
+/// `ticket.take`: the record of the ticket that admitted the unit, written once.
+pub const TICKET_TAKEN: u64 = 1;
+
+/// [`op::TICKET_TAKE`]'s `in`: the record stored with the ticket that admitted the unit the calling
+/// crossing serves. The gate consumed the ticket when it admitted the unit; the record is handed
+/// back ONCE. READY [`TICKET_TAKEN`] with the record in the bytes written (no span), or
+/// [`TICKET_NONE`] with nothing written when a key admitted the unit. A crossing that serves no
+/// unit, or a second take for one unit, is REFUSED. Never pends.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct TicketTakeIn {
+    /// The head.
+    pub head: ServiceHead,
+    /// Where the record goes.
+    pub into: ServiceBufs,
+}
+
 // ── the table ─────────────────────────────────────────────────────────────────────────────────
 
 /// THE HOST SERVICES TABLE: one [`ServiceFn`] per [`op`], in index order. A NULL slot is a service
@@ -1106,6 +1174,10 @@ pub struct HostSlots {
     pub trust_state: Option<ServiceFn>,
     /// [`op::SESSION_EMIT`], in [`SessionEmitIn`].
     pub session_emit: Option<ServiceFn>,
+    /// [`op::TICKET_MINT`], in [`TicketMintIn`]. A tail addition.
+    pub ticket_mint: Option<ServiceFn>,
+    /// [`op::TICKET_TAKE`], in [`TicketTakeIn`]. A tail addition.
+    pub ticket_take: Option<ServiceFn>,
 }
 
 // ── the host's checks of an `in` ──────────────────────────────────────────────────────────────
@@ -1741,6 +1813,54 @@ pub fn check_session_emit(
     out: &ServiceOut,
 ) -> Result<Filled, Fault> {
     answer(ret, &i.head, out, bare(op::SESSION_EMIT, (0, 0)))
+}
+
+/// `ticket.mint`'s answer: the common rules, and on READY a ticket written (at least one byte, no
+/// span) and an expiry after the epoch.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_ticket_mint(
+    i: &TicketMintIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    let filled = answer(
+        ret,
+        &i.head,
+        out,
+        into(op::TICKET_MINT, i.into, (1, u64::MAX)),
+    )?;
+    if ret.outcome() == Outcome::Ready && (out.len == 0 || out.items != 0) {
+        return Err(fault(Rule::Contradiction, "ticket_mint.out.len"));
+    }
+    Ok(filled)
+}
+
+/// `ticket.take`'s answer: the common rules, and on READY no span, and bytes only with
+/// [`TICKET_TAKEN`].
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_ticket_take(
+    i: &TicketTakeIn,
+    ret: RawOutcome,
+    out: &ServiceOut,
+) -> Result<Filled, Fault> {
+    let filled = answer(
+        ret,
+        &i.head,
+        out,
+        into(op::TICKET_TAKE, i.into, (TICKET_NONE, TICKET_TAKEN)),
+    )?;
+    if ret.outcome() == Outcome::Ready
+        && (out.items != 0 || (out.value == TICKET_NONE && out.len != 0))
+    {
+        return Err(fault(Rule::Contradiction, "ticket_take.out.len"));
+    }
+    Ok(filled)
 }
 
 /// `trust.verify`'s answer: the common rules, and on READY no span, and bytes only with the two

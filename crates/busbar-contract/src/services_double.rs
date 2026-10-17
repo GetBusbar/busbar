@@ -167,6 +167,22 @@ pub trait ServicesDouble: Send + Sync {
         Stored::refused(UNSERVED)
     }
 
+    /// `ticket.mint`. Unserved (a host that mints no tickets): REFUSED.
+    fn ticket_mint(
+        &self,
+        _caller: &Caller,
+        _unit: Option<u64>,
+        _ttl_secs: u64,
+        _record: &[u8],
+    ) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+
+    /// `ticket.take`. Unserved (a host that mints no tickets): REFUSED.
+    fn ticket_take(&self, _caller: &Caller, _unit: Option<u64>) -> Stored {
+        Stored::refused(UNSERVED)
+    }
+
     /// `random.fill`. Unserved: REFUSED.
     fn random_fill(&self, _len: u64) -> Stored {
         Stored::refused(UNSERVED)
@@ -347,6 +363,20 @@ impl<T: ServicesDouble> HostServices for T {
 
     fn session_emit(&self, caller: &Caller, session: u64, bytes: &[u8]) -> Stored {
         ServicesDouble::session_emit(self, caller, session, bytes)
+    }
+
+    fn ticket_mint(
+        &self,
+        caller: &Caller,
+        unit: Option<u64>,
+        ttl_secs: u64,
+        record: &[u8],
+    ) -> Stored {
+        ServicesDouble::ticket_mint(self, caller, unit, ttl_secs, record)
+    }
+
+    fn ticket_take(&self, caller: &Caller, unit: Option<u64>) -> Stored {
+        ServicesDouble::ticket_take(self, caller, unit)
     }
 
     fn trust_due(&self, caller: &Caller) -> Stored {
