@@ -330,6 +330,39 @@ pub fn base_line(cx: &Ctx) -> Result<(String, String), String> {
     Ok((r, why))
 }
 
+/// `cx` WITH ITS BASE PINNED TO THE COMMIT `HEAD` NAMES, for a self-test whose rows compare a
+/// ledger with the base. A battery runs on a detached checkout (CI checks out the judged commit
+/// alone), where [`base_ref`] is rightly RED; the self-test's question is the rule, not that
+/// checkout's history, so its unplanted baseline is measured against `HEAD` — the tree's own
+/// ledgers at the commit it stands on — and a case that is ABOUT the base plants a synthetic one.
+/// An overlay that already pins a base keeps it; a `HEAD` that does not read leaves `cx` as it is.
+pub fn with_head_pin(cx: &Ctx) -> Ctx {
+    if cx.overlay_command(BASE_PIN_KEY).is_some() {
+        return cx.clone();
+    }
+    let Some(head) = cx
+        .git(&["rev-parse", "HEAD"])
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+    else {
+        return cx.clone();
+    };
+    let mut ov = cx.overlay().cloned().unwrap_or_default();
+    ov.set_command(BASE_PIN_KEY, head);
+    cx.with_overlay(ov)
+}
+
+/// A self-test plant over a SYNTHETIC base `sha` whose copy of `path` is `was`: the base is pinned
+/// to `sha`, the ref resolves, and every other file reads as absent there.
+pub fn synthetic_base(sha: &str, path: &str, was: impl Into<String>) -> crate::ctx::Overlay {
+    let mut ov = crate::ctx::Overlay::new();
+    ov.set_command(BASE_PIN_KEY, sha);
+    ov.set_command(format!("git-ref:{sha}"), "1");
+    ov.set_command(format!("git-show:{sha}:{path}"), was);
+    ov
+}
+
 /// [`BASE_ENV`], trimmed, with an empty value read as absent.
 ///
 /// A direct `std::env::var` rather than a field on [`Ctx`]'s environment struct because this is an

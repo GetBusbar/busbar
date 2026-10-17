@@ -288,6 +288,32 @@ impl Gate for OneMemoryAbiGate {
             &[ROW_COLD],
             counted(2),
         ));
+        // A PINNED PLUGIN IS A PLUGIN (Law 8; ARCHITECT P5 ruling 2026-10-14): a plugin that left
+        // this tree for its own repo is still linked, so a second export or an unwinding slot
+        // written in its source is read and RED, at the path its crate is mounted at.
+        match one_abi::pinned_plugin_members(cx) {
+            Ok(pinned) if !pinned.is_empty() => {
+                let rel = format!("{}/src/planted_pinned_export.rs", pinned[0].dir);
+                let mut ov = Overlay::new();
+                ov.set(
+                    &rel,
+                    "#[no_mangle]\npub extern \"C\" fn busbar_planted_pinned() {}\n\
+                     pub extern \"C-unwind\" fn planted_pinned_slot() {}\n",
+                );
+                report.push(crate::gates::prove_rows_red(
+                    cx,
+                    self,
+                    "a pinned plugin's second export and its extern \"C-unwind\" slot are RED",
+                    &[ROW_EXPORTED, ROW_C_UNWIND],
+                    ov,
+                    &[rel.as_str(), "busbar_planted_pinned", "C-unwind"],
+                ));
+            }
+            other => report.note_infra_failure(format!(
+                "no pinned plugin crate resolved, so the plant into a pinned plugin is unproven: {}",
+                other.err().unwrap_or_else(|| "cargo metadata names none".to_string())
+            )),
+        }
         report
     }
 }
