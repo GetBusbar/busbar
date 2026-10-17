@@ -1591,43 +1591,24 @@ impl busbar_kernel::rate_apply::RateEpoch for CardRepricer {
     }
 }
 
-/// **THE ROOT, ANSWERING THE USAGE READ'S DATED-HISTORY SEAM** (DECISION #79).
-///
-/// `GET /api/v1/admin/usage` prices each metering row against the card in force at that row's own
-/// instant rather than against the newest card ever authored, and the history it resolves through
-/// is THIS process's — the same one every posting is priced by. The direction is this way round
-/// because it has to be: the admin crate cannot name the binary, so it declares the seam and the
-/// root installs itself as the answer.
-///
-/// It hands over the history and NOTHING ELSE. Which entry answers for an instant is the cost
-/// unit's [`busbar_kernel_ledger::cost::HistoryView::card_at`], and what a metering row's instant
-/// IS belongs to the read; a root that resolved here would be a second opinion about money in a
-/// file nobody reads for one.
-#[derive(Debug, Clone, Copy)]
-pub struct RootUsageHistory;
-
-impl busbar_core_admin::v1::service::UsageRateHistory for RootUsageHistory {
-    fn history(&self) -> Option<Arc<busbar_kernel_ledger::cost::History>> {
-        ROOT_CARD.history()
-    }
-}
-
 /// Install the root as the process's rate holder. Boot only, once.
 ///
 /// THREE HALVES OF ONE FACT — the deployment's rates live here, and all three readings of that
 /// fact go up together or none does. The APPLY half hears the engine resolve a configuration and
 /// appends a dated entry. The DATE half answers the metering accrual asking when the entry it is
 /// serving under started, which is what gives a UTC-day cell an instant finer than the day. The
-/// READ half hands the history to the ledger read that prices against it. Any two without the
-/// third is a node that dates its prices and then reports them off the newest card anyway —
-/// exactly the defect this seam exists to rule out.
+/// READ half hands the history to the ledger reads that price against it — the budget book's and
+/// `GET /api/v1/admin/usage`'s alike, both through the kernel's
+/// `rate_apply::dated_history` — and rides the DATE half's install (`RateEpoch::history`), so
+/// the admin crate holds no seam of its own (R6). Any two without the third is a node that dates
+/// its prices and then reports them off the newest card anyway — exactly the defect this seam
+/// exists to rule out.
 pub fn install_card_repricer() {
     // Armed BEFORE the boot resolution, so the opening entry is held for the book to journal: the
     // boot's book rebuilds the dated history from its chain (#79) before it prices a posting.
     ROOT_CARD.arm_journal();
     busbar_kernel::rate_apply::install_rate_apply(&CardRepricer);
     busbar_kernel::rate_apply::install_rate_epoch(&CardRepricer);
-    busbar_core_admin::v1::service::install_usage_rate_history(&RootUsageHistory);
 }
 
 /// The admission unit, standing at the in-flight table's arrival door.

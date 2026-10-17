@@ -126,6 +126,10 @@ pub struct RootInstall {
     /// the SWITCH-OVER hook axis): every `kind: hook` row, compiled in or dropped in, opened on the
     /// hook kind's ABI over the process's one dispatcher. `None` = no hook opens.
     pub hook_axis: Option<HookAxisBuild>,
+    /// The printed name of each hook row this build LINKS, in manifest order (the root's
+    /// `linked-name` row per `hooks`-axis row): what the operator surface lists as the compiled-in
+    /// hook plugins. The root's data; the kernel and the admin crate spell none of them.
+    pub hook_names: &'static [&'static str],
     /// The root's store axis: what boot opens the configured store through.
     pub store_axis: Option<StoreAxisOf>,
     /// The root's secret axis: every secret plugin it admitted, linked or dropped in, over the
@@ -176,6 +180,7 @@ const STAND_IN: RootInstall = RootInstall {
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
+    hook_names: STAND_IN_HOOK_NAMES,
     store_axis: Some(crate::test_support::store_axis_stand_in),
     secret_axis: Some(&crate::test_support::SecretsStandIn),
     export_axis: Some(&crate::test_support::export_axis::STAND_IN),
@@ -189,6 +194,14 @@ const STAND_IN: RootInstall = RootInstall {
 pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] = &[
     #[cfg(feature = "hooks-ranking")]
     crate::test_support::ranking_double::door,
+];
+
+/// The printed names of the hook doors a test build links ([`STAND_IN_HOOK_DOORS`], one per door):
+/// the ranking double's own Statement name, under its feature.
+#[cfg(any(test, feature = "test-support"))]
+const STAND_IN_HOOK_NAMES: &[&str] = &[
+    #[cfg(feature = "hooks-ranking")]
+    crate::test_support::ranking_double::NAME,
 ];
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when

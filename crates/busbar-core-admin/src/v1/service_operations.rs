@@ -10,7 +10,7 @@
 //! A CHILD MODULE OF `service`, NOT A SIBLING — declared through `#[path]` the way the tree's other
 //! carved modules are. A child sees its ancestors' private items, so one `use super::*` restores
 //! every name these methods already resolved: `AdminService`'s own private fields, the private
-//! helpers (`installed_usage_rate_history`, `catalog_cache`, `validate_plugin_filename`, the `App`
+//! helpers (`dated_rate_history`, `catalog_cache`, `validate_plugin_filename`, the `App`
 //! builders), and the imports the parent module had already pulled in. That relationship is the
 //! reason the move needed no rewriting — nothing here changed except the two lines it took to say
 //! where the block now lives.
@@ -35,18 +35,18 @@ impl AdminService {
     pub(crate) fn new(app: Arc<App>) -> Self {
         Self {
             app,
-            rate_history: installed_usage_rate_history(),
+            rate_history: None,
         }
     }
 
-    /// The same service, resolving usage against `source` instead of the process's history.
+    /// The same service, resolving usage against `history` instead of the process's.
     ///
-    /// The process holder is a `OnceLock` — one deployment has one history and a second install is
-    /// a no-op — so a test that needs to drive the read against a history of its own naming takes
-    /// this rather than racing the lock. Every other caller gets the installed one by construction.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn with_rate_history(mut self, source: &'static dyn UsageRateHistory) -> Self {
-        self.rate_history = Some(source);
+    /// The process's history is the kernel's rate dater's, installed once — so a test that needs to
+    /// drive the read against a history of its own naming pins it here rather than racing that
+    /// install. Every other caller reads the process's by construction.
+    #[cfg(test)]
+    pub(crate) fn with_rate_history(mut self, history: Arc<busbar_kernel::cost::History>) -> Self {
+        self.rate_history = Some(history);
         self
     }
 
@@ -1397,7 +1397,7 @@ impl AdminService {
         // DECISION #79 — THE DATED RATE-CARD HISTORY, taken ONCE for the whole read so every row of
         // one response is answered at one snapshot. A card appended while this read is in flight
         // must not price half its rows against one history and half against another.
-        let history = self.rate_history.and_then(UsageRateHistory::history);
+        let history = self.rate_history.clone().or_else(dated_rate_history);
         // The snapshot the caller named, VALIDATED BEFORE ANY BOOK IS READ, so a request for a
         // state that does not exist is refused rather than quietly answered at some other state —
         // including when governance is off and the read would otherwise return early.
