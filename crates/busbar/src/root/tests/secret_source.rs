@@ -79,8 +79,13 @@ fn source_in(render: &str, secret: &SecretRef) -> Vec<String> {
 /// THE CONTROL: `secret` does not resolve, and the text its source refuses with names it (the
 /// operator's text), so a clean render is a render that withheld it, not one that never had it.
 pub(super) fn refused_naming_its_source(secret: &SecretRef) -> String {
-    let text = busbar_kernel::config::secret::resolve_linked_string(secret)
-        .expect_err("the reference does not resolve");
+    // Asked at CONFIG TIME, as boot and an apply ask it (R4, BUSBAR-1.6.0.md l.1464-1469): a request
+    // path's form is refused by a disk-reading source before the source says anything of its own.
+    let text = busbar_kernel::config::secret::resolve_linked_string_at_config(
+        secret,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .expect_err("the reference does not resolve");
     assert!(
         !source_in(&text, secret).is_empty(),
         "the source's own refusal names it, so the scan has something to find: {text}"
