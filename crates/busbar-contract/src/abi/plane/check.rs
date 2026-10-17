@@ -1135,6 +1135,13 @@ pub fn check_claim_target(target: &str, flags: u32) -> Result<(), Fault> {
     if flags & CLAIM_EXACT != 0 && flags & CLAIM_PATTERN != 0 {
         return Err(fault(Rule::Contradiction, "claim.flags"));
     }
+    // A signed path is read off a raw affix alone, and a raw affix mounts no route, so it lists no
+    // catalog (ARCHITECT ruling 2026-10-17).
+    if (flags & CLAIM_SIGNED_INGRESS != 0 && flags & CLAIM_RAW_AFFIX == 0)
+        || flags & (CLAIM_RAW_AFFIX | CLAIM_CATALOG) == CLAIM_RAW_AFFIX | CLAIM_CATALOG
+    {
+        return Err(fault(Rule::Contradiction, "claim.flags"));
+    }
     if flags & CLAIM_RAW_AFFIX != 0 {
         if flags & (CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN) != 0 {
             return Err(fault(Rule::Contradiction, "claim.flags"));

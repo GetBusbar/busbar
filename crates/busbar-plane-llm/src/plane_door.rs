@@ -75,7 +75,7 @@ use busbar_contract::abi::plane::{
 use busbar_contract::abi::plane::{CatalogIn, CatalogOut, CLAIM_CATALOG, DIALECT_PROVIDER};
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
-use busbar_contract::abi::plane::{CLAIM_PATTERN, CLAIM_SIGNED_INGRESS};
+use busbar_contract::abi::plane::{CLAIM_RAW_AFFIX, CLAIM_SIGNED_INGRESS};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
 use busbar_contract::abi::sdk::life::Refusal;
 use busbar_contract::abi::sdk::publish::{ClaimSpec, SnapshotSpec};
@@ -694,13 +694,14 @@ const DIALECT_CLAIMS: [ClaimRow; 7] = [
     ("POST", "/v1/models", false, "openai"),
 ];
 
-/// THE SIGNED PATHS (ARCHITECT ruling 2026-10-16, 3b A): the request shapes whose callers sign each
-/// request (the bedrock dialect's converse surfaces), claimed as patterns flagged
-/// `CLAIM_SIGNED_INGRESS`, each `{id+}` spanning a model identifier however many segments it
-/// carries (an unencoded inference-profile ARN carries a raw `/`). The kernel looks the flag up by
-/// path, whatever the verb; the dialect's other paths (`/model/{id}/invoke`) sign nothing and ride
-/// the `/model` subtree claim.
-const SIGNED_CLAIMS: [&str; 2] = ["/model/{id+}/converse", "/model/{id+}/converse-stream"];
+/// THE SIGNED PATHS (ARCHITECT rulings 2026-10-16, 3b A, and 2026-10-17): the request shapes whose
+/// callers sign each request (the bedrock dialect's converse surfaces), claimed as raw affixes
+/// flagged `CLAIM_SIGNED_INGRESS`. The kernel matches each against the raw path as the previous
+/// release did (`starts_with("/model/")` and `ends_with` the surface), odd paths included, an
+/// unencoded inference-profile ARN's raw `/` and an encoded one alike, whatever the verb. They mount
+/// no route: the `/model` subtree claim serves the dialect's paths, and its other surfaces
+/// (`/model/{id}/invoke`) sign nothing.
+const SIGNED_CLAIMS: [&str; 2] = ["/model/*/converse", "/model/*/converse-stream"];
 
 /// THE LIST-MODELS CATALOG ROUTES (ARCHITECT ruling 2026-10-16, 3b C): `GET` on each listing path,
 /// exact, answered with no unit by [`CatalogSlot`] over the names the kernel lists for the caller.
@@ -737,7 +738,7 @@ pub fn claims() -> Vec<ClaimSpec> {
                 "POST",
                 target,
                 TRANSPORT,
-                CLAIM_PATTERN | CLAIM_SIGNED_INGRESS,
+                CLAIM_RAW_AFFIX | CLAIM_SIGNED_INGRESS,
             );
             claim.refusal_dialect =
                 u16::try_from(dialect_index(crate::exchange::arrive::envelope_for(target)))
