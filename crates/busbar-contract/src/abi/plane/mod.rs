@@ -358,13 +358,20 @@ pub const CLAIM_EXACT: u32 = 1 << 1;
 /// reads it as the claim grammar's segment pattern ([`check::claim_selector`]), so the registry's
 /// sealed precedence is unchanged: exact beats pattern beats prefix. Never with [`CLAIM_EXACT`].
 pub const CLAIM_PATTERN: u32 = 1 << 2;
+/// [`Claim::flags`]: the route's inbound credential may be a TICKET the host minted for the plane
+/// ([`op::TICKET_MINT`](crate::abi::host::service::op::TICKET_MINT)). The gate verifies a credential
+/// carrying the plane's declared issued-id prefix as a ticket on this route only, consumes it when
+/// it admits the unit (a ticket admits one unit, once), and holds its record for
+/// [`op::TICKET_TAKE`](crate::abi::host::service::op::TICKET_TAKE). A key admits as on any keyed
+/// route. Never with [`CLAIM_OPEN`].
+pub const CLAIM_TICKET: u32 = 1 << 3;
 /// [`Claim::flags`]: the target is a RAW AFFIX, spelled `<prefix>*<suffix>`. It matches a request
 /// whose raw, undecoded path starts with the prefix and ends with the suffix, compared as bytes:
 /// empty segments, a trailing `/` and a leading `//` count as the bytes they are, and the two
 /// affixes may share bytes ([`check::raw_affix_matches`]). One spelling per suffix, so a path with
 /// N suffixes is N claims. A raw-affix claim states a fact about paths, read by path: it mounts no
 /// route and takes no arrival (ARCHITECT ruling 2026-10-17). Never with [`CLAIM_OPEN`],
-/// [`CLAIM_EXACT`] or [`CLAIM_PATTERN`]. Bits 3 and 4 are taken by flags in flight.
+/// [`CLAIM_EXACT`] or [`CLAIM_PATTERN`]. Bit 4 is taken by a flag in flight.
 pub const CLAIM_RAW_AFFIX: u32 = 1 << 5;
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
@@ -1632,7 +1639,8 @@ pub struct Claim {
     pub target: AbiStr,
     /// The transport claim it arrives over.
     pub carrier: AbiStr,
-    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`]; any other bit refuses the snapshot.
+    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`] | [`CLAIM_TICKET`]; any other bit
+    /// refuses the snapshot.
     pub flags: u32,
     /// The dialect a refusal on this route wears before `arrive` has read the arrival: an index
     /// into [`PlaneTail::dialects`], opaque to the kernel, which carries it from the matched route

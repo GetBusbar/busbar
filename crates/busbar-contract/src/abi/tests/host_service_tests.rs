@@ -415,7 +415,7 @@ fn the_host_refuses_a_capacity_with_a_null_buffer() {
 }
 
 #[test]
-fn the_services_that_never_pend_are_exactly_the_stated_sixteen() {
+fn the_services_that_never_pend_are_exactly_the_stated_eighteen() {
     let never: Vec<u32> = (0..SERVICES).filter(|s| !may_pend(*s)).collect();
     assert_eq!(
         never,
@@ -435,7 +435,9 @@ fn the_services_that_never_pend_are_exactly_the_stated_sixteen() {
             op::TRUST_STATE,
             op::SESSION_EMIT,
             op::UNIT_HAND_IN,
-            op::UNIT_REFUSE
+            op::UNIT_REFUSE,
+            op::TICKET_MINT,
+            op::TICKET_TAKE
         ]
     );
     assert!(
@@ -513,6 +515,8 @@ fn every_service_field_sits_at_its_op_index() {
         (offset_of!(HostSlots, auth_call), op::AUTH_CALL),
         (offset_of!(HostSlots, unit_hand_in), op::UNIT_HAND_IN),
         (offset_of!(HostSlots, unit_refuse), op::UNIT_REFUSE),
+        (offset_of!(HostSlots, ticket_mint), op::TICKET_MINT),
+        (offset_of!(HostSlots, ticket_take), op::TICKET_TAKE),
     ];
     for (i, (offset, op)) in table.iter().enumerate() {
         assert_eq!(*op as usize, i, "op constants run 0.. in table order");
@@ -1627,5 +1631,109 @@ fn red_unit_refuse_answer_refuses_each_break() {
     assert_eq!(
         check_unit_refuse(&i, ready(&o), &o).unwrap_err(),
         fault(Rule::Foreign, "unit_refuse.answer")
+    );
+}
+
+fn mint_in(ttl_secs: u64, into: ServiceBufs) -> TicketMintIn {
+    TicketMintIn {
+        head: head(
+            op::TICKET_MINT,
+            Ticket::NONE,
+            core::mem::size_of::<TicketMintIn>(),
+        ),
+        ttl_secs,
+        record: empty_blob(),
+        into,
+    }
+}
+
+/// A mint asks a lifetime and a record within the cap; anything else is refused before the host
+/// mints.
+#[test]
+fn a_mint_asks_a_lifetime_and_a_record_within_the_cap() {
+    let mut buf = [0u8; 8];
+    assert_eq!(
+        check_ticket_mint_in(&mint_in(600, bufs(&mut buf, &mut []))),
+        Ok(())
+    );
+    // RED: no lifetime.
+    assert_eq!(
+        check_ticket_mint_in(&mint_in(0, bufs(&mut buf, &mut []))).map_err(|f| f.rule),
+        Err(Rule::Missing)
+    );
+    // RED: a record over the cap.
+    let over = vec![0u8; MAX_TICKET_RECORD as usize + 1];
+    let mut i = mint_in(600, bufs(&mut buf, &mut []));
+    i.record = Blob {
+        ptr: over.as_ptr(),
+        len: over.len(),
+        fmt: 0,
+        flags: 0,
+    };
+    assert_eq!(
+        check_ticket_mint_in(&i).map_err(|f| f.rule),
+        Err(Rule::OverMax)
+    );
+}
+
+/// A minted ticket is bytes and an expiry: an empty ticket, a span, or an expiry of zero is FAULT.
+#[test]
+fn a_minted_ticket_is_bytes_and_an_expiry() {
+    let mut buf = [0u8; 8];
+    let i = mint_in(600, bufs(&mut buf, &mut []));
+    let mut o = out(Outcome::Ready);
+    o.len = 4;
+    o.value = 1_700_000_600;
+    assert_eq!(check_ticket_mint(&i, ready(&o), &o), Ok(Filled::Written));
+    // RED: nothing written.
+    let mut empty = o;
+    empty.len = 0;
+    assert_eq!(
+        rule(check_ticket_mint(&i, ready(&empty), &empty)),
+        Rule::Contradiction
+    );
+    // RED: no expiry.
+    let mut never = o;
+    never.value = 0;
+    assert_eq!(
+        rule(check_ticket_mint(&i, ready(&never), &never)),
+        Rule::UnknownCode
+    );
+}
+
+/// A take writes the record only when a ticket admitted the unit.
+#[test]
+fn a_take_writes_a_record_only_when_a_ticket_admitted_the_unit() {
+    let mut buf = [0u8; 8];
+    let i = TicketTakeIn {
+        head: head(
+            op::TICKET_TAKE,
+            Ticket::NONE,
+            core::mem::size_of::<TicketTakeIn>(),
+        ),
+        into: bufs(&mut buf, &mut []),
+    };
+    let mut taken = out(Outcome::Ready);
+    taken.value = TICKET_TAKEN;
+    taken.len = 3;
+    assert_eq!(
+        check_ticket_take(&i, ready(&taken), &taken),
+        Ok(Filled::Written)
+    );
+    let none = out(Outcome::Ready);
+    assert!(check_ticket_take(&i, ready(&none), &none).is_ok());
+    // RED: NONE with bytes.
+    let mut stray = none;
+    stray.len = 3;
+    assert_eq!(
+        rule(check_ticket_take(&i, ready(&stray), &stray)),
+        Rule::Contradiction
+    );
+    // RED: a value outside NONE..=TAKEN.
+    let mut odd = taken;
+    odd.value = TICKET_TAKEN + 1;
+    assert_eq!(
+        rule(check_ticket_take(&i, ready(&odd), &odd)),
+        Rule::UnknownCode
     );
 }

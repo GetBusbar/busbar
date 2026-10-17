@@ -10,9 +10,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use busbar_contract::abi::host::service::{
     check_clock_now, check_content_scan, check_dest_judge, check_hook_call, check_random_fill,
-    check_verify_lookup, check_verify_store, ContentScanIn, EntitlementCheckIn, HookCallIn,
-    ItemSpan, RandomFillIn, VerifyLookupIn, VerifyStoreIn, DEST_ALLOWED, DEST_INTERNAL,
-    DEST_METADATA, DEST_RESOLVE,
+    check_ticket_mint, check_ticket_take, check_verify_lookup, check_verify_store, ContentScanIn,
+    EntitlementCheckIn, HookCallIn, ItemSpan, RandomFillIn, VerifyLookupIn, VerifyStoreIn,
+    DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, DEST_RESOLVE,
 };
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::Filled;
@@ -216,6 +216,29 @@ impl busbar_contract::services::double::ServicesDouble for Provider {
         let arg = format!("{unit:?} {target}");
         self.saw(c, "entitlement.check", arg.as_bytes());
         Stored::ready(svc::ENTITLED)
+    }
+
+    /// The ticket double: a ticket naming the unit, expiring `1_700_000_000 + ttl`.
+    fn ticket_mint(&self, c: &Caller, unit: Option<u64>, ttl_secs: u64, record: &[u8]) -> Stored {
+        let arg = format!("{unit:?} {ttl_secs} {}", String::from_utf8_lossy(record));
+        self.saw(c, "ticket.mint", arg.as_bytes());
+        Stored {
+            bytes: format!("tk_{}", unit.unwrap_or(0)).into_bytes(),
+            ..Stored::ready(1_700_000_000 + ttl_secs)
+        }
+    }
+
+    /// The take double: unit 7 was admitted by a ticket whose record is `rec`; any other by a key.
+    fn ticket_take(&self, c: &Caller, unit: Option<u64>) -> Stored {
+        self.saw(c, "ticket.take", format!("{unit:?}").as_bytes());
+        if unit == Some(7) {
+            Stored {
+                bytes: b"rec".to_vec(),
+                ..Stored::ready(svc::TICKET_TAKEN)
+            }
+        } else {
+            Stored::ready(svc::TICKET_NONE)
+        }
     }
 
     /// Every fill's bytes differ from the last one's: all `n`, the fill's ordinal.
@@ -575,6 +598,8 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
         HOST_SLOTS.auth_call,
         HOST_SLOTS.unit_hand_in,
         HOST_SLOTS.unit_refuse,
+        HOST_SLOTS.ticket_mint,
+        HOST_SLOTS.ticket_take,
     ];
     assert_eq!(slots.len(), SERVICES as usize);
     // The room a READ service is handed, so its well-formed call can be answered whole.
@@ -625,6 +650,10 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
             // The auth handle's `in` has one exact size; this one states the buffer's.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
             assert_eq!(error(&o), NOT_EXACT, "service {service}");
+        } else if service == op::TICKET_MINT {
+            // A mint asking no lifetime is refused before the provider.
+            assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
+            assert_eq!(error(&o), MINT_OUT_OF_RANGE, "service {service}");
         } else if service == op::VERIFY_STORE {
             // Served: the zeroed `in` names no key, which is refused before the cache is read.
             assert_eq!(ret.outcome(), Outcome::Refused, "service {service}");
@@ -646,6 +675,7 @@ fn a_may_pend_service_from_a_ticketless_op_is_refused() {
                         | op::RANDOM_FILL
                         | op::TRUST_VERIFY
                         | op::SNAPSHOT_READ
+                        | op::TICKET_TAKE
                 ),
                 "service {service}"
             );
@@ -1484,6 +1514,94 @@ fn random_fill_writes_the_kernels_bytes_and_refuses_outside_its_cap_before_the_k
         d.route.provider.filled.load(Ordering::SeqCst),
         2,
         "a refused fill never reaches the kernel"
+    );
+}
+
+fn mint_in(ttl_secs: u64, record: &[u8], buf: &mut [u8]) -> TicketMintIn {
+    TicketMintIn {
+        head: head(op::TICKET_MINT, Ticket::NONE, 0, size_of::<TicketMintIn>()),
+        ttl_secs,
+        record: Blob {
+            ptr: record.as_ptr(),
+            len: record.len(),
+            fmt: 0,
+            flags: 0,
+        },
+        into: bufs(buf, &mut []),
+    }
+}
+
+fn take_in(buf: &mut [u8]) -> TicketTakeIn {
+    TicketTakeIn {
+        head: head(op::TICKET_TAKE, Ticket::NONE, 0, size_of::<TicketTakeIn>()),
+        into: bufs(buf, &mut []),
+    }
+}
+
+#[test]
+fn tickets_reach_the_kernel_with_the_unit_their_crossing_serves() {
+    let d = double();
+    let mint = |ttl: u64, record: &[u8], buf: &mut [u8]| {
+        let i = mint_in(ttl, record, buf);
+        let mut o = blank();
+        let ret = HOST_SLOTS.ticket_mint.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (check_ticket_mint(&i, ret, &o), ret.outcome(), o)
+    };
+    let take = |buf: &mut [u8]| {
+        let i = take_in(buf);
+        let mut o = blank();
+        let ret = HOST_SLOTS.ticket_take.unwrap()(d.ctx, std::ptr::from_ref(&i).cast(), &mut o);
+        (check_ticket_take(&i, ret, &o), ret.outcome(), o)
+    };
+    let mut buf = [0u8; 16];
+    {
+        let _unit = serving(Some(7));
+        let (checked, outcome, o) = mint(600, b"{\"m\":1}", &mut buf[..]);
+        assert_eq!((checked, outcome), (Ok(Filled::Written), Outcome::Ready));
+        assert_eq!(
+            (&buf[..o.len as usize], o.value),
+            (&b"tk_7"[..], 1_700_000_600)
+        );
+        let (checked, outcome, o) = take(&mut buf[..]);
+        assert_eq!((checked, outcome), (Ok(Filled::Written), Outcome::Ready));
+        assert_eq!(
+            (o.value, &buf[..o.len as usize]),
+            (svc::TICKET_TAKEN, &b"rec"[..])
+        );
+    }
+    {
+        // A unit a key admitted: NONE, nothing written.
+        let _unit = serving(Some(8));
+        let (checked, outcome, o) = take(&mut buf[..]);
+        assert_eq!((checked.is_ok(), outcome), (true, Outcome::Ready));
+        assert_eq!((o.value, o.len), (svc::TICKET_NONE, 0));
+    }
+    // Out of range: refused before the kernel, nothing written.
+    let over = vec![b'x'; svc::MAX_TICKET_RECORD as usize + 1];
+    for (ttl, record) in [(0, &b"{}"[..]), (600, &over[..])] {
+        let mut out = [0u8; 16];
+        let (_, outcome, o) = mint(ttl, record, &mut out[..]);
+        assert_eq!(outcome, Outcome::Refused, "ttl {ttl}");
+        assert_eq!(error(&o), MINT_OUT_OF_RANGE, "ttl {ttl}");
+        assert!(out.iter().all(|x| *x == 0), "nothing written");
+    }
+    let seen: Vec<(&'static str, String)> = d
+        .route
+        .provider
+        .scoped
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(_, what, _)| what.starts_with("ticket."))
+        .map(|(_, what, arg)| (*what, String::from_utf8(arg.clone()).unwrap()))
+        .collect();
+    assert_eq!(
+        seen,
+        vec![
+            ("ticket.mint", "Some(7) 600 {\"m\":1}".to_string()),
+            ("ticket.take", "Some(7)".to_string()),
+            ("ticket.take", "Some(8)".to_string()),
+        ]
     );
 }
 
