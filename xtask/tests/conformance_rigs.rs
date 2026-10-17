@@ -118,7 +118,7 @@ fn the_jev_battery_runs_in_the_pinned_planes_own_workspace() {
 #[test]
 fn the_voice_config_leg_runs_in_the_pinned_planes_own_workspace() {
     assert_eq!(VOICE_PLANE, "busbar-plane-streaming");
-    let manifest = std::path::Path::new("/git/checkouts/busbar-plane-streaming/fd916a2/Cargo.toml");
+    let manifest = std::path::Path::new("/git/checkouts/busbar-plane-streaming/98a7d39/Cargo.toml");
     let cmd = voice_config_command(manifest, std::path::Path::new("/work/target"));
     assert_eq!(
         cmd,
@@ -127,7 +127,7 @@ fn the_voice_config_leg_runs_in_the_pinned_planes_own_workspace() {
             "test",
             "--locked",
             "--manifest-path",
-            "/git/checkouts/busbar-plane-streaming/fd916a2/Cargo.toml",
+            "/git/checkouts/busbar-plane-streaming/98a7d39/Cargo.toml",
             "-p",
             VOICE_PLANE,
             "--lib",
