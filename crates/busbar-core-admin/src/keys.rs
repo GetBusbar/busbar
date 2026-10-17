@@ -568,7 +568,10 @@ pub(crate) async fn create_key(
     let idem_ckey: Option<(String, String)> = idem_key.as_ref().map(|k| (actor.clone(), k.clone()));
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
-        match replays.probe(ck.clone(), busbar_kernel::store::now()) {
+        match replays
+            .probe_off_worker(ck.clone(), busbar_kernel::store::now())
+            .await
+        {
             // The first (and only) probe of a request that presented no key replays nothing.
             Probe::NoKey => {}
             // A COMPLETED prior mint (the real 201 object): replay it verbatim.
@@ -1426,7 +1429,10 @@ pub(crate) async fn rotate_key(
         .map(|k| (actor.clone(), crate::idempotency::rotate_replay_key(&id, k)));
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
-        match replays.probe(ck.clone(), busbar_kernel::store::now()) {
+        match replays
+            .probe_off_worker(ck.clone(), busbar_kernel::store::now())
+            .await
+        {
             Probe::NoKey => {}
             Probe::Replay(cached) => return json_response(StatusCode::OK, cached),
             Probe::InFlight => {
