@@ -9,7 +9,7 @@
 //! resolve against its in-crate secret double (`busbar_kernel::test_support::secrets`), which
 //! reproduces the sources' refusal text for the refusals it makes and nothing more, so every
 //! assertion on a source's own decision (fail-closed on empty / blank / missing, the mis-encoding
-//! diagnosis, the regular-file and size-cap guards) and on its 1.5.5 refusal words also lives here,
+//! diagnosis, the regular-file guard) and on its 1.5.5 refusal words also lives here,
 //! unchanged, against the real sources — the pin the double's copied text is held to.
 //!
 //! [`resolve_linked`] is the kernel resolver's linked branch at CONFIG TIME
@@ -260,26 +260,18 @@ fn resolve_linked_file_empty_file_is_fail_closed() {
     let _ = std::fs::remove_file(&path);
 }
 
-/// A `file:` secret over the size cap is refused (fail-closed), never read fully into memory. One
-/// byte past the cap is enough to prove the boundary is enforced.
+/// PARITY WITH 1.5.5 (audit pinned secret-file #2): 1.5.5 read a `file:` secret whole
+/// (`std::fs::read`), so a file of several MiB (a large PEM bundle) resolves byte for byte, never
+/// refused for its size (THE DESIGN §2: "the default is 1.5.5's behaviour").
 #[test]
-fn resolve_linked_file_over_the_size_cap_is_a_bounded_error_not_an_oom() {
-    let path = temp_path("FILE_OVERSIZE");
-    let oversize = vec![b'a'; 1024 * 1024 + 1];
-    std::fs::write(&path, &oversize).unwrap();
-    let err = resolve_linked(&SecretRef::file(path.to_str().unwrap())).unwrap_err();
-    assert!(err.contains("cannot resolve"), "{err}");
-    let _ = std::fs::remove_file(&path);
-}
-
-/// The cap is exclusive on the correct side: a file of EXACTLY the limit resolves normally.
-#[test]
-fn resolve_linked_file_exactly_at_the_size_cap_still_resolves() {
-    let path = temp_path("FILE_AT_CAP");
-    let exact = vec![b'a'; 1024 * 1024];
-    std::fs::write(&path, &exact).unwrap();
+fn resolve_linked_file_larger_than_a_mebibyte_resolves_whole_as_in_1_5_5() {
+    let path = temp_path("FILE_LARGE");
+    let large: Vec<u8> = (0..3 * 1024 * 1024 + 7)
+        .map(|i| b'a' + (i % 26) as u8)
+        .collect();
+    std::fs::write(&path, &large).unwrap();
     let got = resolve_linked(&SecretRef::file(path.to_str().unwrap())).unwrap();
-    assert_eq!(got.len(), 1024 * 1024);
+    assert_eq!(got, large);
     let _ = std::fs::remove_file(&path);
 }
 
