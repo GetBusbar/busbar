@@ -1917,3 +1917,7 @@ mod tests {
         assert_eq!(status_of(&sc, Some(HASH)), "invalid");
     }
 }
+
+#[cfg(test)]
+#[path = "tests/audit_rules_tests.rs"]
+mod rules_tests;

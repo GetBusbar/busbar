@@ -799,3 +799,7 @@ mod tests {
         assert_eq!(titles(&r, "BLOCK"), ["the audit ledger could not be read"]);
     }
 }
+
+#[cfg(test)]
+#[path = "tests/q128_floor_tests.rs"]
+mod floor_tests;

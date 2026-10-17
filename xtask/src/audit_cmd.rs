@@ -2527,8 +2527,8 @@ mod move_tests {
             "and the register is current"
         );
         assert!(
-            !f.red(),
-            "an all-unaudited, fully covered register is not red"
+            f.red(),
+            "an all-unaudited register is below the floor, however fully covered (XA1#3)"
         );
     }
 
@@ -2541,6 +2541,10 @@ mod move_tests {
         s.write("docs/guide.md", "prose\n");
         s.commit("base");
         settle(&s);
+        // The floor (XA1#3): every production scope read twice, so the positive controls below
+        // are about the top-level arm and nothing else.
+        s.read_by("crates/kernel/src", 1, "alice");
+        s.read_by("crates/kernel/src", 2, "bob");
         let f = s.check();
         assert!(
             !f.red() && f.unscoped.is_empty(),
@@ -2576,3 +2580,7 @@ mod move_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "tests/audit_check_tests.rs"]
+mod check_tests;
