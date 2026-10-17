@@ -816,3 +816,50 @@ fn a_claim_that_is_not_open_owes_the_data_chain_configured_or_empty() {
         "an empty chain admits none on a credentialed line; it never opens it"
     );
 }
+
+/// THE SERVE PATH NAMES NO STREAM MEDIA TYPE OF ITS OWN (audit R1#4; Law 1, BUSBAR-1.6.0.md l.1895
+/// "Dialects are internal to their plane"): whether an answer that states its length still goes out
+/// piece by piece is read off the declared rows — the event stream the contract names, and every
+/// streaming `Content-Type` a declared protocol states (`ProtocolDecl::streaming_content_type`) —
+/// never off a dialect's media type spelled here. Every one of them streams, byte for byte as
+/// written. RED before: the root spelled a vendor framing's media type beside the event stream.
+#[tokio::test]
+async fn every_declared_stream_type_streams_and_the_serve_path_spells_none() {
+    use http_body::Body as _;
+    let source = include_str!("../serve.rs");
+    assert!(
+        !source.contains("application/vnd."),
+        "the serve path spells a dialect's stream media type: it must read the declared rows"
+    );
+    let declared = std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM).chain(
+        busbar_kernel::proto::streaming_content_types()
+            .iter()
+            .copied(),
+    );
+    for media in declared {
+        let fields: HeadFields = vec![
+            (b"content-type".to_vec(), media.as_bytes().to_vec()),
+            (b"content-length".to_vec(), b"11".to_vec()),
+        ];
+        let (caller, reply) = IngressCaller::new();
+        let caller = Arc::new(caller);
+        let writer = Arc::clone(&caller);
+        let unit: DrivenUnit = Box::pin(async move {
+            writer.head(200, fields);
+            assert!(writer.write(b"hello ").await);
+            assert!(writer.write(b"world").await);
+            None
+        });
+        drop(caller);
+        let response = reply.answer(unit).await;
+        assert_eq!(
+            response.body().size_hint().exact(),
+            None,
+            "a `{media}` answer streams piece by piece"
+        );
+        let body = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .expect("the body");
+        assert_eq!(&body[..], b"hello world", "the bytes as written");
+    }
+}
