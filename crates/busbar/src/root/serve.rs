@@ -2437,11 +2437,7 @@ fn claim_line(
             // segment (`CLAIM_PATTERN`); any other is its target's whole subtree, at any depth (the
             // guest list's tail pattern, which matches what remains, including nothing).
             path_form: if exact { PATH_EXACT } else { PATH_PATTERN },
-            path: if exact || pattern {
-                claim.target.clone()
-            } else {
-                format!("{}/{{*{SUBTREE}}}", claim.target.trim_end_matches('/'))
-            },
+            path: line_path(claim, exact || pattern),
             fields: Vec::new(),
             rung,
         },
@@ -2457,6 +2453,50 @@ fn claim_line(
         offered: offered_by(offers, &claim.carrier),
     };
     Ok((line, method))
+}
+
+/// A claim's guest-line path: an exact or pattern claim is its target; any other is its target's
+/// whole subtree, at any depth (the tail pattern, which matches what remains, including nothing).
+fn line_path(
+    claim: &crate::root::loader::dispatch::kinds::plane::OwnedClaim,
+    as_written: bool,
+) -> String {
+    if as_written {
+        claim.target.clone()
+    } else {
+        format!("{}/{{*{SUBTREE}}}", claim.target.trim_end_matches('/'))
+    }
+}
+
+/// THE SIGNED PATHS of a plane's claims (`CLAIM_SIGNED_INGRESS`; ARCHITECT ruling 2026-10-16, 3b A):
+/// each flagged claim's guest-line path, whatever its verb.
+fn signed_paths(
+    claims: &[crate::root::loader::dispatch::kinds::plane::OwnedClaim],
+) -> Arc<[String]> {
+    use busbar_contract::abi::plane::CLAIM_SIGNED_INGRESS;
+    claims
+        .iter()
+        .filter(|c| c.flags & CLAIM_SIGNED_INGRESS != 0)
+        .map(|c| line_path(c, c.flags & (CLAIM_EXACT | CLAIM_PATTERN) != 0))
+        .collect::<Vec<_>>()
+        .into()
+}
+
+/// Where the data router mounts a guest line's path: the path itself, or for a pattern with a
+/// `{name+}` placeholder (which the router's own path syntax has no form for), the literal prefix
+/// before it and that prefix's subtree; the guest list still matches the pattern.
+fn mount_paths(path: &str) -> Option<Vec<String>> {
+    let segs: Vec<&str> = path.split('/').collect();
+    let at = segs
+        .iter()
+        .position(|s| s.starts_with('{') && s.ends_with("+}"))?;
+    let prefix = segs[..at].join("/");
+    let target = if prefix.is_empty() {
+        "/".to_string()
+    } else {
+        prefix.clone()
+    };
+    Some(vec![target, format!("{prefix}/{{*{SUBTREE}}}")])
 }
 
 /// One claim's route: the plane it is of and the claim's index in its snapshot.
@@ -2596,7 +2636,9 @@ pub fn door_mounts(
             LineAuth::Chain(..) => RouteAuth::Key,
         };
         let tail = format!("/{{*{SUBTREE}}}");
-        let paths = if line.route.path_form == PATH_EXACT || !line.route.path.ends_with(&tail) {
+        let paths = if let Some(paths) = mount_paths(&line.route.path) {
+            paths
+        } else if line.route.path_form == PATH_EXACT || !line.route.path.ends_with(&tail) {
             vec![line.route.path.clone()]
         } else {
             let target = line.route.path.trim_end_matches(&tail).to_string();
@@ -2704,6 +2746,12 @@ pub fn door_mounts(
     // the kernel's auth decides there through its plane's `refusal`, in the claim's refusal dialect,
     // for the request target. The decision stays the kernel's; no unit opens, nothing is charged.
     // Keyed by the door route's own identity (`DoorRouteId`), request and session routes alike.
+    let signed: Vec<Arc<[String]>> = routes
+        .served
+        .planes
+        .iter()
+        .map(|p| signed_paths(&p.snapshot.claims))
+        .collect();
     let refusals: Vec<PlaneRefusalSpec> = requests
         .iter()
         .chain(&session_mounts)
@@ -2715,6 +2763,7 @@ pub fn door_mounts(
                     path: path.clone(),
                     method: *method,
                 },
+                signed_ingress: Arc::clone(&signed[plane]),
                 refuse: Arc::new(move |reason: ReasonCode, target: &str| {
                     let served = &routes.served.planes[plane];
                     let dialect = served
