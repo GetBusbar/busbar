@@ -110,18 +110,20 @@ pub fn start_planes(app_handle: &Arc<crate::state::AppHandle>) -> Result<(), Str
     // BUSBAR'S PUBLISHED CARD-ISSUER KEY, computed core-side from the card signer and reduced to its
     // PUBLIC halves before it crosses the seam. The signer (and the seed it derives from) never
     // leaves core; a start hook receives only the `kid` and the base64 SPKI it publishes for callers
-    // to pin busbar by. `None` when this deployment mints no card-issuer key.
-    // The card-issuer key exists only to feed a plane's `start` hook (the sole consumer of the SPKI a
-    // caller pins busbar by). `card_issuer` derives it through that plane's `card_signer` seam
-    // and reduces it to its PUBLIC halves core-side; with that plane compiled out no plane derives
-    // one and it is `None` — no plane's `start` hook reads it — so no `#[cfg]` is needed here.
-    let card_issuer = app_handle
-        .load()
-        .governance
-        .as_ref()
-        .and_then(|g| g.card_issuer());
-    let ctx = crate::plane::registry::BootCtx::for_start(app_handle, card_issuer);
-    run_start_hooks(&configured_decls(&app_handle.load()), &ctx)
+    // to pin busbar by. Each plane's own: the domain and key-id prefix are the ones THAT plane
+    // declares (audit K3 #3), so no section word picks the plane, and a plane that declares none is
+    // handed `None`.
+    let decls = configured_decls(&app_handle.load());
+    for decl in decls {
+        let card_issuer = app_handle
+            .load()
+            .governance
+            .as_ref()
+            .and_then(|g| g.card_issuer(decl));
+        let ctx = crate::plane::registry::BootCtx::for_start(app_handle, card_issuer);
+        run_start_hooks(&[decl], &ctx)?;
+    }
+    Ok(())
 }
 
 /// THE START FOLD. Split from [`start_planes`] and taking its decl list by argument, exactly as

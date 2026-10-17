@@ -69,7 +69,7 @@ fn a_plane_declaring_a_card_domain_under_any_section_gets_its_issuer_key() {
     let g = GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer()))
         .expect("a governance book with a signing key");
     let issuer = g
-        .card_issuer()
+        .card_issuer(&CARD_PLANE)
         .expect("the plane's declared card-signing domain mints its issuer key");
     assert_eq!(
         (issuer.kid, issuer.issuer_spki_base64),
@@ -78,4 +78,19 @@ fn a_plane_declaring_a_card_domain_under_any_section_gets_its_issuer_key() {
             signer().card_subkey_key_info_base64(CARD_DOMAIN)
         )
     );
+}
+
+#[test]
+fn a_plane_declaring_no_card_domain_gets_no_issuer_key() {
+    static PLAIN: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
+        declaration: crate::plane::registry::PlaneDeclaration {
+            card_signing_domain: None,
+            card_kid_prefix: None,
+            ..CARD_PLANE.declaration
+        },
+        ..CARD_PLANE
+    };
+    let g = GovState::new_with_signer(Arc::new(MemoryStore::new()), None, Some(signer()))
+        .expect("a governance book with a signing key");
+    assert!(g.card_issuer(&PLAIN).is_none());
 }

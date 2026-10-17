@@ -481,8 +481,14 @@ impl GovState {
     /// second place the signing key lives that a rotation has to remember to invalidate, and
     /// `set_signing_key` swapping the material underneath a stale card signer is exactly the
     /// mint-under-one-key-verify-under-another failure the material is held together to prevent.
-    pub fn card_issuer(&self) -> Option<crate::plane::registry::CardIssuer> {
-        let decl = crate::plane::registry::plane_decl_for_config_section("agents")?;
+    ///
+    /// The domain and key-id prefix are the ones `decl` DECLARES (audit K3 #3): no section word
+    /// picks the plane, so any plane that declares a card-signing domain gets its own key, and one
+    /// that declares none gets `None`.
+    pub fn card_issuer(
+        &self,
+        decl: &crate::plane::registry::PlaneDecl,
+    ) -> Option<crate::plane::registry::CardIssuer> {
         let domain = decl.card_signing_domain?;
         let prefix = decl.card_kid_prefix?;
         let m = self.signing_material()?;
