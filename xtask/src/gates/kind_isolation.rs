@@ -7908,6 +7908,53 @@ impl Gate for KindIsolationGate {
             ],
         ));
 
+        // A PATH DEPENDENCY ONTO A CRATE THE CENSUS NEVER READ IS NOT "NO EDGE". The walk skips
+        // dot-directories, so a plane-kind crate at `.vendor/` is no crate of the census; a
+        // transport path-depending on it carried a plane into the wire with every edge rule
+        // `continue`-ing past a package it could not look up.
+        let mut ov = manifest_plant(
+            ".vendor/busbar-plane-shadow",
+            "busbar-plane-shadow",
+            &["busbar-plane-llm"],
+        );
+        ov.set(
+            "crates/busbar-transport-stdio/Cargo.toml",
+            manifest_plus(
+                cx,
+                "crates/busbar-transport-stdio/Cargo.toml",
+                "\n[dependencies]\nbusbar-plane-shadow = { path = \"../../.vendor/busbar-plane-shadow\" }\n",
+            ),
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a path dependency onto a crate the census never read is refused",
+            &[ROW_REGISTRY],
+            ov,
+            &[
+                "unread-path-dep",
+                ".vendor/busbar-plane-shadow",
+                "busbar-transport-stdio",
+            ],
+        ));
+
+        // `[ package ]` IS `[package]`. Valid TOML, the table Cargo reads, and the census read it
+        // as some other table: the crate had no name, so with no dependency table it was not even
+        // `nameless-manifest` — a plane-kind crate outside crates/ that no rule saw.
+        let mut ov = Overlay::new();
+        ov.set(
+            "vendor/busbar-plane-spaced/Cargo.toml",
+            "[ package ]\nname = \"busbar-plane-spaced\"\nversion = \"0.0.0\"\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a `[ package ]` header spelled with spaces names its crate",
+            &[ROW_REGISTRY],
+            ov,
+            &["off-tree-crate", "vendor/busbar-plane-spaced"],
+        ));
+
         // …AND A REGISTRATION FOR A CRATE THAT IS NOT THERE IS A KIND ASSIGNMENT FOR NOTHING. The
         // row names a kind the table HAS: a `control` row is refused at load as `unknown-kind`
         // before this arm reads it, so a plant spelled that way names the kind and never the crate.
@@ -9248,18 +9295,78 @@ impl Gate for KindIsolationGate {
             &["foreign-entry", "busbar-transport-stdio", "Plane"],
         ));
 
+        // THE OTHER DIRECTION IS A DOOR, NOT AN `impl`. The contract defines no `Transport` trait
+        // (five of the seven kinds enter through their memory-ABI door alone), so `impl Transport
+        // for P` is code the compiler refuses and a case planting it proved the rule on nothing.
+        // What a plane really does to load as a transport is BUILD A TRANSPORT DOOR: hand the door
+        // macro the transport's ops table. That is the plant, in the two spellings a door states
+        // its kind in — the ops table, resolved through a `use`, and a kind's own door builder.
         let mut ov = Overlay::new();
         ov.set(
-            "crates/busbar-plane-llm/src/planted_wire_impl.rs",
-            "pub struct P;\nimpl Transport for P {}\n",
+            "crates/busbar-plane-llm/src/planted_wire_door.rs",
+            "use busbar_contract::abi::transport as wire;\n\
+             busbar_contract::plugin_door! {\n    ops: wire::Ops,\n    \
+             statement: busbar_contract::abi::sdk::door::statement(\"wire\", \"1.0.0\", 64),\n    \
+             lifecycle: life(Wire),\n    kind_ops: { send: Send },\n}\n",
         );
         report.push(prove_rows_red(
             cx,
             subject,
-            "a plane implementing a wire face",
+            "a plane building a transport door",
             &[ROW_FACES],
             ov,
-            &["foreign-entry", "busbar-plane-llm", "Transport"],
+            &[
+                "foreign-entry",
+                "busbar-plane-llm",
+                "`Transport` 1 time(s)",
+                "door built over its ops table",
+            ],
+        ));
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-llm/src/planted_store_door.rs",
+            "busbar_contract::store_door! {\n    store: Kept,\n}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a plane building a store door with the store kind's own builder",
+            &[ROW_FACES],
+            ov,
+            &["foreign-entry", "busbar-plane-llm", "`Store` 1 time(s)"],
+        ));
+        // …AND THE DOOR IS READ OFF THE CONTRACT'S OWN TABLE. A kind whose ops table moved would
+        // leave every door of it reading as no face, so the table that no longer resolves is the
+        // finding.
+        let wire_abi = "crates/busbar-contract/src/abi/transport/mod.rs";
+        let mut ov = Overlay::new();
+        ov.set(
+            wire_abi,
+            cx.read(wire_abi)
+                .unwrap_or_default()
+                .replace("pub struct Ops {", "pub struct OpsMoved {"),
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a kind whose door table the contract no longer defines is refused, not read as no face",
+            &[ROW_FACES],
+            ov,
+            &["face-door-gone", "transport"],
+        ));
+        // A plane NAMING the transport ABI's constants builds no transport door, and is not one.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-llm/src/planted_wire_names.rs",
+            "use busbar_contract::abi::transport::{FAULT_NONE, Ops};\n\
+             pub const KEEP: u32 = FAULT_NONE;\npub fn width() -> usize { core::mem::size_of::<Ops>() }\n",
+        );
+        report.push(prove_rows_green(
+            cx,
+            subject,
+            "a plane naming the transport ABI without building its door is not a transport face",
+            &[ROW_FACES],
+            ov,
         ));
 
         // THE QUALIFIED SPELLING IS THE SAME IMPLEMENTATION, and without this case the rule above
@@ -9346,6 +9453,30 @@ impl Gate for KindIsolationGate {
             "a crate implementing the admin verbs' `verb_store::Store` seam is not the store face",
             &[ROW_FACES],
             ov,
+        ));
+
+        // A FACE REACHED THROUGH A PATH THIS READER DOES NOT FOLLOW IS STILL THE FACE. A qualified
+        // head counted only when it was byte-equal to a listed path, so a crate-root re-export
+        // (`pub use busbar_contract::Plane;` + `use crate::Plane;`), a `super::` path and a renamed
+        // contract dependency (`contract = { package = "busbar-contract" }`) each scored no face.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-transport-stdio/src/planted_reexported.rs",
+            "use crate::Plane;\npub struct WireR;\nimpl Plane for WireR {}\n\
+             pub struct WireS;\nimpl super::Plane for WireS {}\n\
+             pub struct WireC;\nimpl contract::plane::Plane for WireC {}\n",
+        );
+        report.push(prove_rows_red(
+            cx,
+            subject,
+            "a wire implementing a plane face through a re-export, `super::` or a renamed contract",
+            &[ROW_FACES],
+            ov,
+            &[
+                "foreign-entry",
+                "busbar-transport-stdio",
+                "`Plane` 3 time(s)",
+            ],
         ));
 
         // THE FACE PATHS ARE CHECKED AGAINST THE CONTRACT. A trait that moved out from under its
