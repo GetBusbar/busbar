@@ -16,11 +16,6 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/plane_host/dispatch.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
 file = "crates/busbar-kernel/src/plane_host/egress.rs"
 item = "extern 'C-unwind'"
 
@@ -31,16 +26,5 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/plane_host/journal.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-kernel/src/plane_host/pipe.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
 file = "crates/busbar-kernel/src/plane_host/vtable.rs"
 item = "extern 'C-unwind'"
-

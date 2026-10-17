@@ -31,7 +31,7 @@ fn builds_a_full_vtable_with_frozen_preamble() {
     let vt = build_plane_host_vtable();
     assert_eq!(busbar_contract::abi::check_preamble(&vt.abi), Ok(()));
     assert_eq!(vt.size as usize, core::mem::size_of::<PlaneHostVtable>());
-    // Every slot is populated and wired after the Phase-1 fan-out: no slot is a `None`.
+    // The slots the host still wires are populated.
     assert!(vt.govern_admit.is_some());
     assert!(vt.breaker_admit.is_some());
     assert!(vt.breaker_admit_reason.is_some());
@@ -39,7 +39,10 @@ fn builds_a_full_vtable_with_frozen_preamble() {
     assert!(vt.metrics_emit.is_some());
     assert!(vt.egress_open.is_some());
     assert!(vt.auth_resolve.is_some());
-    assert!(vt.gate_scan.is_some());
+    // The journal, dispatch and pipe families had no rider and are unwired.
+    assert!(vt.gate_scan.is_none());
+    assert!(vt.journal_append.is_none());
+    assert!(vt.pipe_read.is_none());
     // The minor-30 HOST SERVICES are granted, served by the kernel itself (the contract holds no
     // entropy source and no clock): a dropped-in plane gets the host's services a linked one does.
     assert!(vt.entropy_fill.is_some());
