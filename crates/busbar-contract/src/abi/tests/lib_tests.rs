@@ -186,3 +186,28 @@ fn sized_field_guard_reads_a_buffer_shorter_than_the_struct() {
     // SAFETY: as above — the hidden tail means the decoder yields an empty map without a read.
     assert!(unsafe { decode_usage_units(p) }.is_empty());
 }
+
+/// THE AUTH TAIL'S FACT BITS are distinct single bits, the default inbound style among them (row
+/// 159, K3#1: the host's default inbound style is a stated fact, so the kernel names no line).
+#[test]
+fn the_auth_fact_bits_are_distinct_and_name_the_default_inbound_style() {
+    use crate::abi::auth::{
+        FACT_CACHEABLE, FACT_DEFAULT_INBOUND_STYLE, FACT_INBOUND_ALL_HEADERS,
+        FACT_INBOUND_NEEDS_BODY_HASH, FACT_OPERATOR, FACT_READS_CREDENTIALS,
+    };
+    let bits = [
+        FACT_CACHEABLE,
+        FACT_INBOUND_NEEDS_BODY_HASH,
+        FACT_INBOUND_ALL_HEADERS,
+        FACT_OPERATOR,
+        FACT_READS_CREDENTIALS,
+        FACT_DEFAULT_INBOUND_STYLE,
+    ];
+    let mut seen = 0u32;
+    for bit in bits {
+        assert_eq!(bit.count_ones(), 1, "fact {bit:#x} is one bit");
+        assert_eq!(seen & bit, 0, "fact {bit:#x} is distinct");
+        seen |= bit;
+    }
+    assert_eq!(FACT_DEFAULT_INBOUND_STYLE, 32);
+}
