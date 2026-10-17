@@ -5318,6 +5318,33 @@ plane strings; everything is declared data), Part 2 #4 (a dialect lives inside a
 Each item is one commit with a byte-for-byte test against 1.5.5 (RED arm kept). An item that would
 change customer-visible bytes stops and is reported.
 
+
+### 2026-10-16 — ARCHITECT ruling 3b (busbar-llm retirement, step 3), with its amendment
+Governing: Part 3 §0 (one code path; core names no plane), #49 (declared data only), the 2026-09-30
+OWNER guest lists (per-dialect claims: route, transport, auth), FOLD-LLM2 (the plane renders
+refusals), and the `/v1/models` rule (each plane generation's listed names are appended). Cited by
+date in neutral crates.
+- D. Production and test read provider dialects the same way: `plane::provider_dialects()` reads
+  registered planes only; a test declares its dialects through a plane registration.
+- A (amended). The order stays 1.5.5's: auth first, then the method check (405 after auth). Allowed
+  methods are the existing one claim per verb. `SIGNED_INGRESS` is one new bit in `Claim::flags`,
+  looked up by path across all of a path's claims whatever the verb, so a signed GET verifies first
+  and then gets its 405. The claim grammar gains a multi-segment placeholder `{name+}` (one or more
+  segments, encoded or raw `/`; at most one per pattern, a second refused at registration), so the
+  signed claims `/model/{id+}/converse` and `/model/{id+}/converse-stream` reproduce 1.5.5's
+  prefix-and-suffix rule. No per-dialect signed bit.
+- B. Kernel-shaped refusals go through the plane: append-only neutral reason codes
+  `METHOD_NOT_ALLOWED`, `PAYLOAD_TOO_LARGE`, `INTERNAL`; the kernel decides refusal and status, the
+  owning plane renders the body through its refusal hook, 1.5.5's bytes per dialect. After a plane
+  panic, a refusal render that fails too answers the kernel's generic 500 (1.5.5's non-door bytes).
+  Then kernel registry detection is deleted.
+- C. Listings are unit-less: a route-claim flag `CLAIM_CATALOG`. On it the kernel mints no unit,
+  writes no audit record and meters nothing; it computes the names with its 1.5.5 visibility rule
+  (other planes' listed names appended) and calls the plane's pure `catalog(request head, names)`,
+  serving the bytes it renders. The request counter stays as 1.5.5 had it (not counted).
+- Order: D in #1049, then C, A, B as separate PRs, then step 5 (delete the crate). Each PR carries
+  byte-identity cells against 1.5.5 with the RED arm kept.
+
 # APPENDIX C — THE PLANE DRIVER AND HOST SERVICES (design, owner-ruled 2026-09-28)
 
 

@@ -82,20 +82,6 @@ dialect = "anthropic"
 owner = "kernel-neutrality lane"
 
 [[segment-debt]]
-file = "crates/busbar-kernel/src/endpoints.rs"
-line = 187
-text = "gemini_path: bool,"
-dialect = "gemini"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar-kernel/src/endpoints.rs"
-line = 264
-text = "let sniff_path = if gemini_path {"
-dialect = "gemini"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
 file = "crates/busbar-kernel/src/ir/lane_caps.rs"
 line = 49
 text = "pub anthropic_adaptive_thinking: Option<bool>,"
@@ -408,34 +394,6 @@ file = "crates/busbar/tests/endpoints_cross_plane.rs"
 line = 293
 text = "LaneSpec::new(\"wedged\", busbar_kernel::proto::PROTO_OPENAI, \"http://w\")"
 dialect = "openai"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/tests/endpoints_cross_plane.rs"
-line = 417
-text = "async fn test_v1_models_anthropic_fingerprint_gets_anthropic_envelope() {"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/tests/endpoints_cross_plane.rs"
-line = 420
-text = "fingerprint_header(busbar_kernel::proto::PROTO_ANTHROPIC),"
-dialect = "anthropic"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/tests/endpoints_cross_plane.rs"
-line = 434
-text = "async fn test_v1_models_gemini_fingerprint_gets_gemini_envelope() {"
-dialect = "gemini"
-owner = "kernel-neutrality lane"
-
-[[segment-debt]]
-file = "crates/busbar/tests/endpoints_cross_plane.rs"
-line = 567
-text = "fingerprint_header(busbar_kernel::proto::PROTO_ANTHROPIC),"
-dialect = "anthropic"
 owner = "kernel-neutrality lane"
 
 [[segment-debt]]

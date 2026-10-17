@@ -1383,7 +1383,7 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::Ops,
-        [head, arrive, on_piece, refusal, serve, hydrate, start, project]
+        [head, arrive, on_piece, refusal, serve, hydrate, start, project, catalog]
     );
     record!(s, pkind::DialectAuth, [dialect, flags, style, params]);
     record!(s, pkind::OpClass, [op, name]);
@@ -1674,6 +1674,29 @@ fn compute_layout() -> String {
             audit,
             records_written,
             records_needed
+        ]
+    );
+    record!(
+        s,
+        pkind::CatalogIn,
+        [
+            head, method, target, fields, fields_len, names, names_len, reply_buf, reply_cap,
+            fields_buf, fields_cap, arena_buf, arena_cap
+        ]
+    );
+    record!(
+        s,
+        pkind::CatalogOut,
+        [
+            head,
+            reply_written,
+            reply_needed,
+            arena_written,
+            arena_needed,
+            status,
+            fields_written,
+            fields_needed,
+            _reserved
         ]
     );
     record!(s, pkind::PlaneDriveIn, [drive, sessions_buf, sessions_cap]);
