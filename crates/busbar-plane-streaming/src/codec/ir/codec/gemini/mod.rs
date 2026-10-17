@@ -851,10 +851,9 @@ impl DuplexWriter for GeminiLiveCodec {
             IrServerEvent::Usage(u) => json!({ wire::USAGE_METADATA: usage_to_metadata(&u) }),
             // Gemini has no discrete rate-limit event; frame an empty usage-metadata marker.
             IrServerEvent::RateLimits => json!({ wire::USAGE_METADATA: {} }),
-            // Gemini has no first-class error frame; surface it inside serverContent for the client.
-            IrServerEvent::Error { code, message } => json!({
-                wire::SERVER_CONTENT: { "error": { "code": code, "message": message } }
-            }),
+            // Gemini Live has no in-band error message (it reports errors with the socket's close),
+            // so an error frames nothing rather than a member no Gemini client reads.
+            IrServerEvent::Error { .. } => return None,
         };
         Some(wire_of(&v))
     }

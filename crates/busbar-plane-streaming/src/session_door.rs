@@ -314,6 +314,9 @@ pub struct Sessions {
     rewritten: BTreeMap<u64, SessionConfig>,
     /// The tickets each session's pieces crossed on (one per side), so a cancel on either ends it.
     tickets: HashMap<Ticket, u64>,
+    /// The streams whose sessions ended most recently, oldest first (at most [`MAX_SESSIONS`]): a
+    /// cut ends a session before the kernel asks for the cut's frame.
+    ended: VecDeque<u64>,
 }
 
 impl Sessions {
@@ -356,7 +359,12 @@ impl Sessions {
 
     /// Stream `stream`'s session is over: it and its tickets are forgotten.
     pub fn close(&mut self, stream: u64) {
-        self.live.remove(&stream);
+        if self.live.remove(&stream).is_some() {
+            while self.ended.len() >= MAX_SESSIONS {
+                self.ended.pop_front();
+            }
+            self.ended.push_back(stream);
+        }
         self.rewritten.remove(&stream);
         self.tickets.retain(|_, s| *s != stream);
     }
@@ -398,6 +406,13 @@ impl Sessions {
     #[must_use]
     pub fn ready_count(&self) -> usize {
         self.live.values().filter(|l| l.ready()).count()
+    }
+
+    /// Whether `stream` is, or was until recently, a live session's: a refusal of it is told in
+    /// the session's stream, never as the answer to an upgrade.
+    #[must_use]
+    pub fn served(&self, stream: u64) -> bool {
+        self.live.contains_key(&stream) || self.ended.contains(&stream)
     }
 
     /// How many sessions are live.
