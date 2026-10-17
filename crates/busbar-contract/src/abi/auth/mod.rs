@@ -193,6 +193,12 @@ pub const FACT_OPERATOR: u32 = 8;
 /// that read for those kinds only. Needs [`CAP_INBOUND`] and a non-empty list; a tail stating it
 /// otherwise refuses the load.
 pub const FACT_READS_CREDENTIALS: u32 = 16;
+/// [`AuthTail::facts`]: this plugin's carrier marks are the host's default inbound style: where a
+/// caller's credential sits on every line the operator's config leaves without a style, in the
+/// Statement's order (THE DESIGN, "Auth points and guest lists": the line's style names its
+/// credential lines, and core's `keys` verifies what that style yields and names no line). Needs
+/// at least one carrier mark; at most one loaded auth row states it, or boot is refused.
+pub const FACT_DEFAULT_INBOUND_STYLE: u32 = 32;
 
 /// THE CACHE-FLUSH COUNT's metric family name. An auth plugin that caches verdicts declares a
 /// counter family of this name (no labels) in its Statement, and on `refresh` adds to it the number
@@ -241,7 +247,7 @@ pub struct AuthTail {
     /// [`CAP_INBOUND`] | [`CAP_LOGIN`] | [`CAP_OUTBOUND`].
     pub caps: u32,
     /// [`FACT_CACHEABLE`] | [`FACT_INBOUND_NEEDS_BODY_HASH`] | [`FACT_INBOUND_ALL_HEADERS`] |
-    /// [`FACT_OPERATOR`] | [`FACT_READS_CREDENTIALS`].
+    /// [`FACT_OPERATOR`] | [`FACT_READS_CREDENTIALS`] | [`FACT_DEFAULT_INBOUND_STYLE`].
     pub facts: u32,
     /// [`LOGIN_KIND_NONE`] | [`LOGIN_KIND_REDIRECT`] | [`LOGIN_KIND_CREDENTIAL`]: the
     /// classification the login chooser reads without calling `begin_login`. It is `NONE` exactly

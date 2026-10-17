@@ -62,6 +62,11 @@ extern "C" {
 #define BB_MECH_MARKS_KNOWN UINT64_C(15) /* Every [`Statement::marks`] bit; any other bit refuses the load. */
 #define BB_MECH_MARK_WORD_HOOK UINT32_C(1) /* [`MarkWord::class`]: a hook word (a strategy word such as a ranking order). EXCLUSIVE: two */
 #define BB_MECH_MARK_WORD_CARRIER UINT32_C(2) /* [`MarkWord::class`]: a carrier class the plugin consumes (an inbound credential carrier an auth */
+#define BB_MECH_MARK_WORD_ISSUED_ID_PREFIX UINT32_C(3) /* [`MarkWord::class`]: the literal prefix of the public id the host issues for the row's */
+#define BB_MECH_MARK_WORD_ISSUED_ID_LENGTH UINT32_C(4) /* [`MarkWord::class`]: the issued public id's total length in characters, prefix included, as a */
+#define BB_MECH_MARK_WORD_ISSUED_ID_ALPHABET UINT32_C(5) /* [`MarkWord::class`]: the issued public id's alphabet after its prefix: distinct ASCII graphic */
+#define BB_MECH_MARK_WORD_ISSUED_SECRET_LENGTH UINT32_C(6) /* [`MarkWord::class`]: the issued secret's length in characters, as a decimal word. SHARED. */
+#define BB_MECH_MARK_WORD_ISSUED_SECRET_ALPHABET UINT32_C(7) /* [`MarkWord::class`]: the issued secret's alphabet: distinct ASCII graphic characters, each drawn */
 #define BB_MECH_REWRITE_ALIAS UINT32_C(1) /* [`Rewrite::class`]: `from` is another name config may give the plugin (a module alias). The */
 #define BB_MECH_REWRITE_SUGAR UINT32_C(2) /* [`Rewrite::class`]: `from` is a reference key naming the plugin (the `k` in `{k: X}`). `to` is */
 #define BB_MECH_REWRITE_KEY UINT32_C(3) /* [`Rewrite::class`]: the setting key `from` is rewritten to the path `to` before the plugin's */
@@ -201,6 +206,7 @@ extern "C" {
 #define BB_AUTH_FACT_INBOUND_ALL_HEADERS UINT32_C(4) /* [`AuthTail::facts`]: `verify` reads EVERY request header, not only its carriers (the Statement's */
 #define BB_AUTH_FACT_OPERATOR UINT32_C(8) /* [`AuthTail::facts`]: this plugin's `verify` judges THE OPERATOR CREDENTIAL, the one admin */
 #define BB_AUTH_FACT_READS_CREDENTIALS UINT32_C(16) /* [`AuthTail::facts`]: this plugin's `verify` reads host-held credentials of the kinds */
+#define BB_AUTH_FACT_DEFAULT_INBOUND_STYLE UINT32_C(32) /* [`AuthTail::facts`]: this plugin's carrier marks are the host's default inbound style: where a */
 #define BB_AUTH_METRIC_CACHE_FLUSHED "busbar_auth_cache_flushed_total" /* THE CACHE-FLUSH COUNT's metric family name. An auth plugin that caches verdicts declares a */
 #define BB_AUTH_LOGIN_KIND_NONE UINT32_C(0) /* [`AuthTail::login_kind`]: no login ([`CAP_LOGIN`] not declared). */
 #define BB_AUTH_LOGIN_KIND_REDIRECT UINT32_C(1) /* [`AuthTail::login_kind`]: a redirect to an IdP. */
