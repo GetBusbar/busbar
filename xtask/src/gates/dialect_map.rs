@@ -146,6 +146,47 @@ impl Gate for DialectMapGate {
             &["\"stop_reason\" is written twice"],
         ));
 
+        // A MAPPING FILE DELETED, the compile re-run (so the matrix is fresh), and its table file
+        // left behind: the codec module still declares and compiles `cohere/map.gen.rs`, and no
+        // instrument checks it any more (audit XA2 HIGH 1, XF HIGH 12).
+        let cohere_source = format!("{}/cohere.toml", crate::dialect::DIALECT_DIR);
+        let deleted_cx = cx.clone();
+        report.push(prove_red(
+            cx,
+            self,
+            "a deleted mapping file whose table file stays declared is RED, naming the dialect",
+            &[ROW_DRIFT],
+            move || {
+                let mut ov = Overlay::new();
+                ov.remove(&cohere_source);
+                recompiled_matrix(&deleted_cx, ov)
+            },
+            &["cohere"],
+        ));
+
+        // ALL THREE GONE TOGETHER (mapping file, table file, the module's declaration of it), the
+        // compile re-run: the roster still agrees with itself at five, under the floor of six.
+        let codec_mod = "crates/busbar-plane-llm/src/codec/cohere/mod.rs";
+        let gone_cx = cx.clone();
+        let gone_mod = cx
+            .read(codec_mod)
+            .unwrap_or_default()
+            .replace("#[path = \"map.gen.rs\"]", "");
+        report.push(prove_red(
+            cx,
+            self,
+            "a dialect roster under its floor of six is RED, naming the floor",
+            &[ROW_DRIFT],
+            move || {
+                let mut ov = Overlay::new();
+                ov.remove(format!("{}/cohere.toml", crate::dialect::DIALECT_DIR));
+                ov.remove(crate::dialect::gen_path("cohere"));
+                ov.set(codec_mod, gone_mod);
+                recompiled_matrix(&gone_cx, ov)
+            },
+            &["floor"],
+        ));
+
         // A HAND EDIT of the generated translation matrix.
         let matrix = crate::dialect::MATRIX;
         let mut matrix_edit = Overlay::new();
@@ -166,4 +207,18 @@ impl Gate for DialectMapGate {
 
         report
     }
+}
+
+/// `ov` with the translation matrix set to what `cargo xtask dialect compile` would write over it:
+/// a plant that models "deleted, recompiled, committed" rather than a stale matrix.
+fn recompiled_matrix(cx: &Ctx, mut ov: Overlay) -> Overlay {
+    if let Ok(compiled) = crate::dialect::compile_all(&cx.with_overlay(ov.clone())) {
+        if let Some(m) = compiled
+            .into_iter()
+            .find(|c| c.target == crate::dialect::MATRIX)
+        {
+            ov.set(crate::dialect::MATRIX, m.text);
+        }
+    }
+    ov
 }
