@@ -2936,3 +2936,84 @@ async fn unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect() {
     );
     assert_eq!(v["error"]["message"], "everything is on fire");
 }
+
+/// A KERNEL-SHAPED REFUSAL IS RENDERED BY THE DOOR THAT OWNS ITS PATH (ARCHITECT ruling 2026-10-16,
+/// 3b B): the kernel decides the reason, status and words and hands them, with the path and target,
+/// to the bound door renderer; its answer is served as rendered. A path no door owns, or a render
+/// that failed (`None`), gets the kernel's own answer, and the native-API root, the kernel's own
+/// surface, never asks a door. RED arms: the unbound handle, the failed render and the root.
+#[tokio::test]
+async fn a_kernel_refusal_is_rendered_by_the_door_that_owns_its_path() {
+    use busbar_contract::caps::ReasonCode;
+    use busbar_kernel::plane_routes::{KernelRefusal, PlaneRefuseByPathFn};
+    use http_body_util::BodyExt as _;
+    use std::sync::{Arc, Mutex};
+    let seen: Arc<Mutex<Vec<(ReasonCode, u16, String, String, String)>>> = Arc::default();
+    let refuser: PlaneRefuseByPathFn = {
+        let seen = Arc::clone(&seen);
+        Arc::new(move |r: &KernelRefusal<'_>| {
+            seen.lock().unwrap().push((
+                r.reason,
+                r.status,
+                r.text.to_string(),
+                r.path.to_string(),
+                r.target.to_string(),
+            ));
+            (r.path != "/door/failed").then(|| {
+                axum::http::Response::builder()
+                    .status(r.status)
+                    .body(axum::body::Body::from("door"))
+                    .unwrap()
+            })
+        })
+    };
+    let answer = |handle: &crate::state::AppHandle, path: &str| {
+        crate::router::kernel_refusal_response(
+            handle,
+            &residual_planes(),
+            ReasonCode::MethodNotAllowed,
+            path,
+            &format!("{path}?q=1"),
+            axum::http::StatusCode::METHOD_NOT_ALLOWED,
+            crate::taxonomy::ERR_TYPE_INVALID_REQUEST,
+            "method not allowed for this resource",
+        )
+    };
+    let body = |r: axum::response::Response| async move {
+        r.into_body().collect().await.unwrap().to_bytes().to_vec()
+    };
+    let unbound = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
+    let r = answer(&unbound, "/door/x");
+    assert_eq!(r.status(), axum::http::StatusCode::METHOD_NOT_ALLOWED);
+    assert_ne!(body(r).await, b"door", "no door bound: the kernel answers");
+    let bound = crate::state::AppHandle::new(crate::test_support::TestApp::new().build());
+    bound.bind_door_refuser(refuser);
+    let r = answer(&bound, "/door/x");
+    assert_eq!(r.status(), axum::http::StatusCode::METHOD_NOT_ALLOWED);
+    assert_eq!(body(r).await, b"door");
+    assert_eq!(
+        seen.lock().unwrap().last().cloned(),
+        Some((
+            ReasonCode::MethodNotAllowed,
+            405,
+            "method not allowed for this resource".to_string(),
+            "/door/x".to_string(),
+            "/door/x?q=1".to_string(),
+        ))
+    );
+    let r = answer(&bound, "/door/failed");
+    assert_ne!(
+        body(r).await,
+        b"door",
+        "a failed render: the kernel answers"
+    );
+    let asked = seen.lock().unwrap().len();
+    let root = format!("{}/info", crate::admin::gate::API_ROOT);
+    let r = answer(&bound, &root);
+    assert_ne!(body(r).await, b"door");
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        asked,
+        "the native-API root asks no door"
+    );
+}

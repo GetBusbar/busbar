@@ -1062,7 +1062,7 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
             (provider, points)
         })
         .collect();
-    let (doors, sessions, refusals) = root::serve::data_mounts(
+    let (doors, sessions, refusals, refuse_by_path) = root::serve::data_mounts(
         served,
         &data_chain,
         &busbar_kernel::base_data_core_lines(&app),
@@ -1079,6 +1079,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         max_inbound,
         response_headers_cfg.server_timing,
     );
+    // The kernel-shaped refusals render through the door that owns the path (ARCHITECT ruling
+    // 2026-10-16, 3b B).
+    if let Some(refuse) = refuse_by_path {
+        app_handle.bind_door_refuser(refuse);
+    }
     credential_handle.set(std::sync::Arc::clone(&app_handle));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
     app_handle.on_apply(Box::new({

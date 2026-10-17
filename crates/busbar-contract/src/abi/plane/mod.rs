@@ -836,6 +836,10 @@ pub enum RefusalCode {
     Untrusted = 42,
     /// `CredentialUnavailable`.
     CredentialUnavailable = 43,
+    /// `MethodNotAllowed`.
+    MethodNotAllowed = 44,
+    /// `Internal`.
+    Internal = 45,
 }
 
 impl RefusalCode {
@@ -885,6 +889,8 @@ impl RefusalCode {
         RefusalCode::DeadlineExceeded,
         RefusalCode::Untrusted,
         RefusalCode::CredentialUnavailable,
+        RefusalCode::MethodNotAllowed,
+        RefusalCode::Internal,
     ];
 
     /// The number on the wire.
@@ -962,6 +968,8 @@ pub const fn wire_code(reason: ReasonCode) -> RefusalCode {
         ReasonCode::DeadlineExceeded => RefusalCode::DeadlineExceeded,
         ReasonCode::Untrusted => RefusalCode::Untrusted,
         ReasonCode::CredentialUnavailable => RefusalCode::CredentialUnavailable,
+        ReasonCode::MethodNotAllowed => RefusalCode::MethodNotAllowed,
+        ReasonCode::Internal => RefusalCode::Internal,
     }
 }
 
@@ -1018,6 +1026,8 @@ pub const fn reason_of(code: u32) -> Option<ReasonCode> {
         RefusalCode::DeadlineExceeded => ReasonCode::DeadlineExceeded,
         RefusalCode::Untrusted => ReasonCode::Untrusted,
         RefusalCode::CredentialUnavailable => ReasonCode::CredentialUnavailable,
+        RefusalCode::MethodNotAllowed => ReasonCode::MethodNotAllowed,
+        RefusalCode::Internal => ReasonCode::Internal,
     })
 }
 
@@ -1115,7 +1125,8 @@ impl RefusalCode {
             RefusalCode::NoRate
             | RefusalCode::Unpriced
             | RefusalCode::Replayed
-            | RefusalCode::Superseded => C::Rejected,
+            | RefusalCode::Superseded
+            | RefusalCode::MethodNotAllowed => C::Rejected,
             RefusalCode::Unauthenticated
             | RefusalCode::Revoked
             | RefusalCode::SessionUnbound
@@ -1152,7 +1163,8 @@ impl RefusalCode {
             RefusalCode::MeterDisputed
             | RefusalCode::HandoffMismatch
             | RefusalCode::TaskLost
-            | RefusalCode::SecretPlaceholder => C::NodeFault,
+            | RefusalCode::SecretPlaceholder
+            | RefusalCode::Internal => C::NodeFault,
         }
     }
 }

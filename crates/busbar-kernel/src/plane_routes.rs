@@ -54,6 +54,29 @@ pub type PlaneRouteFn = Arc<dyn Fn(PlaneReqCtx) -> PlaneRouteFuture + Send + Syn
 pub type PlaneRefuseFn =
     Arc<dyn Fn(busbar_contract::caps::ReasonCode, &str) -> PlaneResponse + Send + Sync>;
 
+/// A KERNEL-SHAPED REFUSAL (ARCHITECT ruling 2026-10-16, 3b B): what the kernel decided, outside the
+/// auth chain and before any unit, for a request at `path` — the reason, the status and the words —
+/// handed to the plane whose door owns the path to render the body.
+#[derive(Clone, Copy, Debug)]
+pub struct KernelRefusal<'a> {
+    /// Why.
+    pub reason: busbar_contract::caps::ReasonCode,
+    /// The status the kernel answers.
+    pub status: u16,
+    /// The kernel's words.
+    pub text: &'a str,
+    /// The request path, as received (raw).
+    pub path: &'a str,
+    /// The request target the plane reads its path rule off (path and query).
+    pub target: &'a str,
+}
+
+/// THE DOOR PLANES' RENDERING OF A KERNEL-SHAPED REFUSAL, by path: the plane whose door owns the
+/// path (the guest list's own reading of it, whatever the verb) renders the refusal; `None` when no
+/// door owns the path or its render failed, and the kernel answers its own generic refusal.
+pub type PlaneRefuseByPathFn =
+    Arc<dyn Fn(&KernelRefusal<'_>) -> Option<PlaneResponse> + Send + Sync>;
+
 /// THE ROUTE IDENTITY a door route and its unit-less refusal share: the route's axum path pattern,
 /// as mounted, and its method. One key for both, so the two cannot name different routes.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
