@@ -27,8 +27,8 @@ use super::{
     PinMechanism, PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite,
     RefusalOut, RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED,
     CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
-    CLAIM_CATALOG, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, DIALECT_PROVIDER, EMIT_DONE,
-    EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE,
+    CLAIM_CATALOG, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, CLAIM_SIGNED_INGRESS, DIALECT_PROVIDER,
+    EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE,
     EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
     INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT,
     MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
@@ -1065,7 +1065,9 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
         named(c.carrier, "claim.carrier")?;
         bits(
             u64::from(c.flags),
-            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_CATALOG),
+            u64::from(
+                CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_CATALOG | CLAIM_SIGNED_INGRESS,
+            ),
             "claim.flags",
         )?;
         if dialects_len > 0 || c.refusal_dialect != 0 {
@@ -1083,21 +1085,34 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
 }
 
 /// THE PATTERN GRAMMAR, once: the target starts with `/`, and each `/`-separated segment is a
-/// brace-free literal or a whole placeholder `{name}` with a non-empty, brace-free name. A pattern
-/// names at least one placeholder; one that names none is an exact target.
+/// brace-free literal or a whole placeholder with a non-empty, brace-free name: `{name}` takes one
+/// segment, `{name+}` one or more (it spans the arriving path's own `/`, raw or none; ARCHITECT
+/// ruling 2026-10-16, 3b A). A pattern names at least one placeholder, and at most one `{name+}`;
+/// one that names none is an exact target.
 fn pattern_shape(target: &str) -> Result<(), Fault> {
     let bad = || fault(Rule::Contradiction, "claim.pattern");
     let rest = target.strip_prefix('/').ok_or_else(bad)?;
-    let mut placeholders = 0;
+    let (mut placeholders, mut spans) = (0, 0);
     for seg in rest.split('/') {
         match seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
-            Some(n) if !n.is_empty() && !n.contains(['{', '}']) => placeholders += 1,
+            Some(n) if !n.is_empty() && !n.contains(['{', '}']) => {
+                placeholders += 1;
+                if let Some(name) = n.strip_suffix('+') {
+                    if name.is_empty() || name.contains('+') {
+                        return Err(bad());
+                    }
+                    spans += 1;
+                }
+            }
             None if !seg.is_empty() && !seg.contains(['{', '}']) => {}
             _ => return Err(bad()),
         }
     }
     if placeholders == 0 {
         return Err(fault(Rule::Missing, "claim.pattern"));
+    }
+    if spans > 1 {
+        return Err(fault(Rule::Contradiction, "claim.pattern.spans"));
     }
     Ok(())
 }
@@ -1122,8 +1137,8 @@ pub fn check_claim_target(target: &str, flags: u32) -> Result<(), Fault> {
 }
 
 /// A [`CLAIM_PATTERN`] target read as its segment pattern, by the one grammar
-/// ([`check_claim_target`]): each literal segment is a [`PathSeg::Lit`], each placeholder one
-/// [`PathSeg::Var`].
+/// ([`check_claim_target`]): each literal segment is a [`PathSeg::Lit`], each `{name}` one
+/// [`PathSeg::Var`] and a `{name+}` one [`PathSeg::Plus`].
 ///
 /// # Errors
 ///
@@ -1134,7 +1149,9 @@ pub fn claim_pattern(target: &'static str) -> Result<Vec<PathSeg>, Fault> {
     Ok(target[1..]
         .split('/')
         .map(|seg| {
-            if seg.starts_with('{') {
+            if seg.starts_with('{') && seg.ends_with("+}") {
+                PathSeg::Plus
+            } else if seg.starts_with('{') {
                 PathSeg::Var
             } else {
                 PathSeg::Lit(seg)
