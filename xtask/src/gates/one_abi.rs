@@ -11,8 +11,15 @@
 //! * a finding with no ledger row is NEW and reds its rule's row — the fix is to not add it;
 //! * a ledger row with no finding is STALE and reds `<gate>:ledger` — a drain strikes its row in
 //!   the same commit, so the count on record is always the count in the tree;
-//! * `--write` regenerates the ledger from the tree. That is how a gate is ARMED, and how a drain
-//!   strikes; a row it adds is a raise and is reviewed as one.
+//! * `--write` regenerates the ledger from the tree, each row with its `count`. That is how a gate
+//!   is ARMED, and how a drain strikes;
+//! * EVERY ROW IS COUNTED (`count = N`, one finding per line) and the ledger is HELD AGAINST THE
+//!   BASE (Law 9, BUSBAR-1.6.0.md: a ceiling "refuses every rise"): a `[[finding]]` or
+//!   `[[sanctioned]]` row the base's copy of the ledger does not carry is MINTED, a count above the
+//!   base's count ROSE, and a row with no count holds no number — each reds `<gate>:ledger`. So a new
+//!   site cannot be made green by a row, a sanction, a raised count or a deleted count written in
+//!   the same change. The base is `ceiling-census`'s ([`crate::gates::construction::ceilings::base_copy`]);
+//!   a ledger the base does not carry at all is the gate's own arming, and none of its rows is minted.
 //!
 //! Rows are keyed `(rule, file, item)` — never a line number, which rots on every edit above it.
 //!
@@ -96,10 +103,13 @@ impl Spec {
 
 struct Ledger {
     rows: BTreeSet<Key>,
-    /// COUNTED ROWS: a row may state `count = N`, the most findings its key may have (one per
+    /// COUNTED ROWS: every row states `count = N`, the most findings its key may have (one per
     /// line). It only goes down: more findings than N are NEW, fewer is a count to lower in the
-    /// same commit. A row without one holds any number, as before.
+    /// same commit, and a count above the base's ROSE. A row without one is refused
+    /// ([`uncounted`](Self::uncounted)): it would hold any number.
     counts: BTreeMap<Key, usize>,
+    /// The rows that state no `count`.
+    uncounted: Vec<Key>,
     /// SANCTIONED SITES: one finding each, mandated by the ruling `cite` names (module doc).
     sanctioned: BTreeMap<Key, Sanction>,
     errors: Vec<String>,
@@ -113,25 +123,28 @@ struct Sanction {
 }
 
 fn load_ledger(cx: &Ctx, spec: &Spec) -> Ledger {
-    let text = match cx.read(spec.ledger) {
-        Ok(t) => t,
-        Err(e) => {
-            return Ledger {
-                rows: BTreeSet::new(),
-                counts: BTreeMap::new(),
-                sanctioned: BTreeMap::new(),
-                errors: vec![format!(
-                    "{} is unreadable ({e}); every finding is therefore NEW",
-                    spec.ledger
-                )],
-            }
-        }
-    };
-    let doc = crate::toml_lite::parse_text(&text);
+    match cx.read(spec.ledger) {
+        Ok(text) => parse_ledger(&text, spec),
+        Err(e) => Ledger {
+            rows: BTreeSet::new(),
+            counts: BTreeMap::new(),
+            uncounted: Vec::new(),
+            sanctioned: BTreeMap::new(),
+            errors: vec![format!(
+                "{} is unreadable ({e}); every finding is therefore NEW",
+                spec.ledger
+            )],
+        },
+    }
+}
+
+fn parse_ledger(text: &str, spec: &Spec) -> Ledger {
+    let doc = crate::toml_lite::parse_text(text);
     let known: BTreeSet<&str> = spec.rules.iter().map(|(id, _)| *id).collect();
     let mut led = Ledger {
         rows: BTreeSet::new(),
         counts: BTreeMap::new(),
+        uncounted: Vec::new(),
         sanctioned: BTreeMap::new(),
         errors: Vec::new(),
     };
@@ -179,8 +192,8 @@ fn load_ledger(cx: &Ctx, spec: &Spec) -> Ledger {
             ));
             continue;
         }
-        if let Some(c) = t.get_one("count") {
-            match c.parse::<usize>() {
+        match t.get_one("count") {
+            Some(c) => match c.parse::<usize>() {
                 Ok(max) => {
                     led.counts
                         .insert((rule.clone(), file.clone(), item.clone()), max);
@@ -189,7 +202,10 @@ fn load_ledger(cx: &Ctx, spec: &Spec) -> Ledger {
                     "[[finding]] #{}: `count` must be a whole number (got `{c}`)",
                     n + 1
                 )),
-            }
+            },
+            None => led
+                .uncounted
+                .push((rule.clone(), file.clone(), item.clone())),
         }
         if !led.rows.insert((rule, file, item)) {
             led.errors.push(format!(
@@ -202,13 +218,16 @@ fn load_ledger(cx: &Ctx, spec: &Spec) -> Ledger {
 }
 
 /// The ledger text `--write` commits: the sanctioned sites as the ledger states them, then one
-/// row per remaining finding.
+/// row per remaining finding's key, with the number of findings the key has as its `count`.
 fn render_ledger(
     spec: &Spec,
     sanctioned: &BTreeMap<Key, Sanction>,
     findings: &[Finding],
 ) -> String {
-    let keys: BTreeSet<Key> = findings.iter().map(Finding::key).collect();
+    let mut keys: BTreeMap<Key, usize> = BTreeMap::new();
+    for f in findings {
+        *keys.entry(f.key()).or_default() += 1;
+    }
     let mut s = String::from(spec.header);
     if !s.ends_with('\n') {
         s.push('\n');
@@ -220,12 +239,51 @@ fn render_ledger(
             sanitize(&why.drain)
         ));
     }
-    for (rule, file, item) in keys {
+    for ((rule, file, item), count) in keys {
         s.push_str(&format!(
-            "\n[[finding]]\nrule = \"{rule}\"\nfile = \"{file}\"\nitem = \"{item}\"\n"
+            "\n[[finding]]\nrule = \"{rule}\"\nfile = \"{file}\"\nitem = \"{item}\"\ncount = {count}\n"
         ));
     }
     s
+}
+
+/// THE LEDGER AGAINST ITS BASE: every row, sanction and count this change wrote over the base's
+/// copy. A base that cannot be established is one problem (RED), never a skipped comparison.
+fn against_base(cx: &Ctx, spec: &Spec, led: &Ledger) -> Vec<String> {
+    let (base, text) = match crate::gates::construction::ceilings::base_copy(cx, spec.ledger) {
+        Ok((base, Some(text))) => (base, text),
+        Ok((_, None)) => return Vec::new(),
+        Err(e) => return vec![e],
+    };
+    let was = parse_ledger(&text, spec);
+    let short = base.short().to_string();
+    let mut out = Vec::new();
+    for (r, f, i) in led.rows.iter().filter(|k| !was.rows.contains(*k)) {
+        out.push(format!(
+            "MINTED row {r} {f} {i}: in no copy of {} at the base {short} -- a row written beside the \
+             site it forgives is a new finding, and the fix is to not add it",
+            spec.ledger
+        ));
+    }
+    for (r, f, i) in led
+        .sanctioned
+        .keys()
+        .filter(|k| !was.sanctioned.contains_key(*k))
+    {
+        out.push(format!(
+            "MINTED sanctioned site {r} {f} {i}: in no copy of {} at the base {short}",
+            spec.ledger
+        ));
+    }
+    for (k, n) in &led.counts {
+        if let Some(b) = was.counts.get(k).filter(|b| n > *b) {
+            out.push(format!(
+                "count of {} {} {} rose {b} -> {n} since the base {short} -- a count only goes down",
+                k.0, k.1, k.2
+            ));
+        }
+    }
+    out
 }
 
 /// `findings` less the one finding each sanctioned site excuses, and the sanctioned sites the
@@ -313,7 +371,18 @@ pub fn verdict(cx: &Ctx, spec: &Spec, mut findings: Vec<Finding>, errors: Vec<St
         .filter(|k| !found.contains(*k))
         .map(|(r, f, i)| format!("{r} {f} {i}"))
         .collect();
-    let mut problems = led.errors;
+    let mut problems = against_base(cx, spec, &led);
+    problems.extend(led.uncounted.iter().map(|k| {
+        format!(
+            "{} {} {} has no `count`, so it holds any number of findings (the tree has {}): state \
+             it",
+            k.0,
+            k.1,
+            k.2,
+            per_key.get(k).copied().unwrap_or(0)
+        )
+    }));
+    problems.extend(led.errors);
     problems.extend(errors);
     if !stale_sanctioned.is_empty() {
         problems.push(format!(

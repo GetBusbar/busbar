@@ -617,19 +617,57 @@ struct Ledger {
 }
 
 fn load_ledger(cx: &Ctx) -> Ledger {
-    let text = match cx.read(LEDGER) {
-        Ok(t) => t,
-        Err(e) => {
-            return Ledger {
-                external_root: "..".into(),
-                errors: vec![format!(
-                    "{LEDGER} is unreadable ({e}); every shape outside {ONE_HOME} is therefore NEW"
-                )],
-                ..Ledger::default()
-            }
-        }
+    match cx.read(LEDGER) {
+        Ok(text) => parse_ledger(&text),
+        Err(e) => Ledger {
+            external_root: "..".into(),
+            errors: vec![format!(
+                "{LEDGER} is unreadable ({e}); every shape outside {ONE_HOME} is therefore NEW"
+            )],
+            ..Ledger::default()
+        },
+    }
+}
+
+/// THE LEDGER AGAINST ITS BASE (Law 9: a ceiling "refuses every rise"): every `[[offender]]` row
+/// and every `[[not_abi]]` exclusion this change wrote over the base's copy of the ledger, as
+/// multisets (one row per shape). A row added beside the shape it forgives is that shape landing
+/// green; it is MINTED and RED. A ledger the base does not carry is the gate's own arming. The
+/// base is `ceiling-census`'s ([`crate::gates::construction::ceilings::base_copy`]); a base that
+/// cannot be established is RED, never a skipped comparison.
+fn against_base(cx: &Ctx, now: &Ledger) -> Vec<String> {
+    let (base, text) = match crate::gates::construction::ceilings::base_copy(cx, LEDGER) {
+        Ok((base, Some(text))) => (base, text),
+        Ok((_, None)) => return Vec::new(),
+        Err(e) => return vec![e],
     };
-    let doc = crate::toml_lite::parse_text(&text);
+    let was = parse_ledger(&text);
+    let short = base.short().to_string();
+    let mut out: Vec<String> =
+        crate::gates::construction::ceilings::minted(&now.offenders, &was.offenders)
+            .iter()
+            .map(|k| {
+                format!(
+                "MINTED row {}: in no copy of {LEDGER} at the base {short} -- define the shape in \
+                 {ONE_HOME}, never add its row",
+                describe_key(k)
+            )
+            })
+            .collect();
+    out.extend(
+        crate::gates::construction::ceilings::minted(&now.not_abi, &was.not_abi)
+            .iter()
+            .map(|(file, item)| {
+                format!(
+                    "MINTED [[not_abi]] {file} {item}: in no copy of {LEDGER} at the base {short}"
+                )
+            }),
+    );
+    out
+}
+
+fn parse_ledger(text: &str) -> Ledger {
+    let doc = crate::toml_lite::parse_text(text);
     let mut led = Ledger {
         external_root: doc
             .table("external")
@@ -943,6 +981,7 @@ impl Gate for AbiLocationGate {
         }
 
         let mut ledger_problems: Vec<String> = ledger.errors.clone();
+        ledger_problems.extend(against_base(cx, &ledger));
         ledger_problems.extend(stale.iter().map(|k| {
             format!(
                 "STALE row (no such shape in the tree — strike it in the draining commit): {}",

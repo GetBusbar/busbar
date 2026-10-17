@@ -116,6 +116,9 @@ pub struct Measurement {
     /// scan matched it. The listed segment-only hits are already gone from the forward lists above.
     pub segment_debt: Vec<segment_debt::Debt>,
     pub segment_debt_matched: Vec<bool>,
+    /// The rows of the list this change wrote over the base's copy ([`segment_debt::minted`]), or
+    /// why no base could be read.
+    pub segment_debt_minted: Result<Vec<String>, String>,
 }
 
 impl Measurement {
@@ -212,6 +215,7 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
     // the debt is drained out of them once, here, and a segment hit nobody listed stays in as the
     // DIALECT hit it is.
     let segment_debt = segment_debt::load(cx)?;
+    let segment_debt_minted = segment_debt::minted(cx, &segment_debt);
     let mut segment_debt_matched = vec![false; segment_debt.len()];
     let prod_forward =
         segment_debt::drain_listed(&segment_debt, &mut segment_debt_matched, prod_forward);
@@ -230,6 +234,7 @@ fn measure(cx: &Ctx) -> Result<Measurement, String> {
         vocab,
         segment_debt,
         segment_debt_matched,
+        segment_debt_minted,
     })
 }
 
@@ -361,8 +366,12 @@ fn segment_debt_row(m: &Measurement) -> Row {
         })
         .map(|(d, _)| format!("{} `{}`", d.site(), d.text))
         .collect();
+    let (minted, no_base) = match &m.segment_debt_minted {
+        Ok(rows) => (rows.clone(), None),
+        Err(e) => (Vec::new(), Some(e.clone())),
+    };
     let title = "no neutral crate names a dialect as an identifier segment beyond the listed debt";
-    if unlisted.is_empty() && stale.is_empty() {
+    if unlisted.is_empty() && stale.is_empty() && minted.is_empty() && no_base.is_none() {
         return Row::pass(
             ROW_SEGMENT_DEBT,
             title,
@@ -388,6 +397,17 @@ fn segment_debt_row(m: &Measurement) -> Row {
             segment_debt::SEGMENT_DEBT_TOML,
             stale.join("; ")
         ));
+    }
+    if !minted.is_empty() {
+        detail.push(format!(
+            "{} MINTED row(s) — written by this change beside the hit they forgive; the list is \
+             drain-only, so name the dialect in its plane instead: {}",
+            minted.len(),
+            minted.join("; ")
+        ));
+    }
+    if let Some(e) = no_base {
+        detail.push(e);
     }
     Row::fail(ROW_SEGMENT_DEBT, title, detail.join(" | "))
 }
