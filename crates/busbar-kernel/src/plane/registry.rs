@@ -553,7 +553,7 @@ pub fn plane_decl_for_config_section(section: &str) -> Option<&'static PlaneDecl
 ///   path would serve an unauthenticated resource. That is refused here with a named error rather
 ///   than mounted, so a future plane cannot lower its own bar to nothing by omitting an admission.
 ///   A claim is ADMITTED by an audience the plane binds, or — for a plane served through its door
-///   ([`super::door::is_door`]) — by the kernel's key-verify chain (`key_chain`: the data chain
+///   ([`crate::plane_driver::door::is_door`]) — by the kernel's key-verify chain (`key_chain`: the data chain
 ///   verifies the busbar key), which admits a door claim exactly as it admits any data-plane path.
 ///   A door claim with neither is refused, as any plane's is.
 pub fn build_dispatch(
@@ -571,7 +571,7 @@ pub fn build_dispatch(
         let claims = (decl.claims)(slot);
         let admission = (decl.admission)(slot);
         // R2: a claimed path with no admission path is a door with no lock. Refuse the boot.
-        let key_admitted = key_chain && super::door::is_door(decl);
+        let key_admitted = key_chain && crate::plane_driver::door::is_door(decl);
         if !claims.is_empty() && admission.is_none() && !key_admitted {
             return Err(format!(
                 "plane `{}` mounts {} path(s) but bound no admission; a mounted plane must bind an \
