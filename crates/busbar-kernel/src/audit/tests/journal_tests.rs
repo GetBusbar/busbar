@@ -18,7 +18,7 @@
 
 use super::{Journal, JournalRecord, NeutralRecord, Restored};
 use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
-use crate::plane::store::{decode, encode, PlaneStore};
+use crate::store::plane_view::{decode, encode, PlaneStore};
 use busbar_contract::records::{
     PlaneDisposition, PlaneRecord, PlaneRecordRef, PlaneSelector, RecordStoreError,
     RecordStoreResult,
@@ -763,7 +763,7 @@ fn an_evicted_neutral_scopes_tampered_tail_surfaces_a_break_on_resume() {
 fn append_scoped_stamps_a_real_instant_so_a_fresh_row_survives_retention() {
     let store: Arc<dyn busbar_contract::records::RecordStore> =
         Arc::new(crate::governance::MemoryStore::new());
-    let plane_store = crate::plane::store::PlaneStoreView::narrow(store.clone());
+    let plane_store = crate::store::plane_view::PlaneStoreView::narrow(store.clone());
     let j: Journal<NeutralRec> = Journal::new(1024);
     j.set_sink(plane_store);
     write_neutral(&j, "acme", b"|fresh");
