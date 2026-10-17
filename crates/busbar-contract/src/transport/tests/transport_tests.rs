@@ -22,7 +22,7 @@ fn websocket_is_enumerated_with_a_stable_unique_label() {
     assert_eq!(deduped.len(), names.len(), "transport names must be unique");
 }
 
-/// THE AXIS NAMES CHANNELS AND NO PLANE'S BINDINGS (Law 1; THE DESIGN §1, "kernel, contract and
+/// THE AXIS NAMES CHANNELS AND NO PLANE'S BINDINGS (Law 1; THE DESIGN, the kinds: "kernel, contract and
 /// cleanliness crates × every kind instance = 0"). Which wire formats a plane speaks is the plane's
 /// own declaration; the contract's axis is the channels a framed operation rides, and nothing else.
 #[test]

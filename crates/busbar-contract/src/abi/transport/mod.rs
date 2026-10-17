@@ -173,7 +173,7 @@ pub const ABI_VERSION: u32 = 1;
 
 /// The transport kind's generation as the Rust face states it (`Plugin::abi`): [`ABI_VERSION`]
 /// itself, defined here and nowhere else, so a bump of the kind's version moves it and there is no
-/// second number to fall behind (THE DESIGN §11.5: an ABI version constant lives under `abi/`).
+/// second number to fall behind (THE DESIGN, the ABI folders: an ABI version constant lives under `abi/`).
 pub const TRANSPORT_ABI: crate::transport::AbiVersion =
     crate::transport::AbiVersion(ABI_VERSION as u16);
 

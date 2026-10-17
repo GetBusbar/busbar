@@ -11,7 +11,7 @@
 //! A closed set of channels: adding one is a compile error at every exhaustive match and at every
 //! site that builds a framed cell. The axis names channels, never a plane's bindings: which wire
 //! formats a plane speaks over a channel is that plane's own declaration (its `wire_format_names`),
-//! and the contract names no plane (THE DESIGN §1, "kernel, contract and cleanliness crates × every
+//! and the contract names no plane (THE DESIGN, the kinds: "kernel, contract and cleanliness crates × every
 //! kind instance = 0").
 //!
 //! The enum carries no `Serialize`/`Deserialize` and no `repr`: it is not on the wire. Only
