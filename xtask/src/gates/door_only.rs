@@ -224,21 +224,110 @@ impl Gate for DoorOnlyGate {
                 return report;
             }
         };
+        // A PINNED PLUGIN: one the binary links from its own repo and the workspace does not hold
+        // (XF#15). The scan that read workspace members only never knew its name.
+        let pinned: &'static str = match one_abi::pinned_plugin_members(cx).and_then(|ps| {
+            let have: Vec<String> = one_abi::members(cx)?.into_iter().map(|m| m.name).collect();
+            Ok(ps.into_iter().find(|p| !have.contains(&p.name)))
+        }) {
+            Ok(Some(p)) => Box::leak(p.name.into_boxed_str()),
+            Ok(None) => {
+                let mut report = Report::new();
+                report.note_infra_failure(
+                    "door-only selftest: the binary links no pinned plugin to plant a path into",
+                );
+                return report;
+            }
+            Err(e) => {
+                let mut report = Report::new();
+                report.note_infra_failure(format!("door-only selftest: {e}"));
+                return report;
+            }
+        };
+        let pinned_ident: &'static str = Box::leak(pinned.replace('-', "_").into_boxed_str());
         let file = "crates/busbar-kernel/src/planted_door_only.rs";
         let mut path = Overlay::new();
         path.set(
             file,
             format!("pub fn planted() {{ {plugin}::carrier::Planted::go(); }}\n"),
         );
+        let mut pinned_path = Overlay::new();
+        pinned_path.set(
+            file,
+            format!("pub fn planted() {{ {pinned_ident}::carrier::Planted::go(); }}\n"),
+        );
+        // A RENAMED EDGE: the manifest's key is the word the source spells, not the package.
+        let kernel_manifest = "crates/busbar-kernel/Cargo.toml";
+        let mut renamed = Overlay::new();
+        renamed.set(
+            kernel_manifest,
+            cx.read(kernel_manifest).unwrap_or_default().replacen(
+                "[dependencies]\n",
+                &format!(
+                    "[dependencies]\nplanted_door_alias = {{ package = \"{pinned}\", path = \"../{pinned}\" }}\n"
+                ),
+                1,
+            ),
+        );
+        renamed.set(
+            file,
+            "pub fn planted() { planted_door_alias::carrier::Planted::go(); }\n",
+        );
+        // THE COMPOSITION ROOT'S GENERATED TABLE: a path linked_gen.rs emits into a plugin's entry
+        // that is not its door (XF#15; BUSBAR-1.6.0.md: "`linked_gen.rs` names only
+        // `<crate>::door`").
+        let linked_gen = "crates/busbar/src/linked_gen.rs";
+        let mut emitted = Overlay::new();
+        emitted.set(
+            linked_gen,
+            format!(
+                "{}\npub(crate) fn planted_emission(e: &str) -> String {{\n    format!(\"{{e}}::NOT_DOOR, \")\n}}\n",
+                cx.read(linked_gen).unwrap_or_default()
+            ),
+        );
+        // THE ENTRY MODULE linked_gen.rs joins every emitted item onto, read from the root's
+        // manifest: an entry that is not the plugin's door reaches around it.
+        let root_manifest = "crates/busbar/Cargo.toml";
+        let mut entry = Overlay::new();
+        entry.set(
+            root_manifest,
+            cx.read(root_manifest).unwrap_or_default().replacen(
+                "[package.metadata.busbar.linked-entry]\n",
+                &format!(
+                    "[package.metadata.busbar.linked-entry]\nplanted-entry = \"{pinned_ident}::planted_not_door\"\n"
+                ),
+                1,
+            ),
+        );
         let mut seam = Overlay::new();
         seam.set(
             file,
             "pub static PLANTED_SEAM: std::sync::OnceLock<fn() -> u8> = std::sync::OnceLock::new();\n",
         );
+        // A SEAM SPELLED THROUGH A TYPE ALIAS, and one held in a struct's field (XF#14): the
+        // declared type names no `fn`, the alias and the field do.
+        let mut alias_seam = Overlay::new();
+        alias_seam.set(
+            file,
+            "pub type PlantedDrive = fn(u8) -> u8;\n\
+             pub type PlantedTable = Vec<(&'static str, PlantedDrive)>;\n\
+             pub static PLANTED_ALIAS_SEAM: std::sync::OnceLock<PlantedTable> =\n    \
+             std::sync::OnceLock::new();\n",
+        );
+        let mut field_seam = Overlay::new();
+        field_seam.set(
+            file,
+            "pub struct PlantedHolder {\n    pub name: &'static str,\n    pub run: Box<dyn Send + Sync>,\n}\n\
+             pub static PLANTED_FIELD_SEAM: std::sync::OnceLock<PlantedHolder> = std::sync::OnceLock::new();\n",
+        );
         let mut door = Overlay::new();
         door.set(
             file,
-            format!("pub const ROW: fn() = {plugin}::door;\npub static NAME: &str = \"x\";\n"),
+            format!(
+                "pub const ROW: fn() = {plugin}::door;\npub const PINNED_ROW: fn() = {pinned_ident}::door;\n\
+                 pub type PlantedCount = u64;\npub struct PlantedData {{ pub n: PlantedCount }}\n\
+                 pub static NAME: &str = \"x\";\npub static DATA: std::sync::OnceLock<PlantedData> = std::sync::OnceLock::new();\n"
+            ),
         );
         let mut report = one_abi::selftest(
             cx,
@@ -252,10 +341,46 @@ impl Gate for DoorOnlyGate {
                     vec![file, plugin],
                 ),
                 (
+                    ROW_PATH,
+                    "the kernel naming a PINNED plugin's Rust item is RED, naming the crate",
+                    pinned_path,
+                    vec![file, pinned_ident],
+                ),
+                (
+                    ROW_PATH,
+                    "the kernel naming a plugin through a renamed edge is RED, naming the key",
+                    renamed,
+                    vec![file, "planted_door_alias"],
+                ),
+                (
+                    ROW_PATH,
+                    "linked_gen.rs emitting a path into an entry other than its door is RED",
+                    emitted,
+                    vec![linked_gen, "NOT_DOOR"],
+                ),
+                (
+                    ROW_PATH,
+                    "a linked entry module other than the plugin's door is RED, naming it",
+                    entry,
+                    vec![root_manifest, "planted_not_door"],
+                ),
+                (
                     ROW_SEAM,
                     "a static fn-pointer seam in the kernel is RED, naming it",
                     seam,
                     vec![file, "PLANTED_SEAM"],
+                ),
+                (
+                    ROW_SEAM,
+                    "a static seam typed through an alias of a fn pointer is RED, naming it",
+                    alias_seam,
+                    vec![file, "PLANTED_ALIAS_SEAM"],
+                ),
+                (
+                    ROW_SEAM,
+                    "a static seam typed as a struct whose field holds a trait object is RED",
+                    field_seam,
+                    vec![file, "PLANTED_FIELD_SEAM"],
                 ),
             ],
         );
