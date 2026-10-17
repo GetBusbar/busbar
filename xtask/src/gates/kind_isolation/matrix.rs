@@ -3933,6 +3933,69 @@ fn wire_plant(cx: &Ctx, tail: &str, body: &str) -> crate::ctx::Overlay {
     ov
 }
 
+/// The store crate the presence case plants with its manifest: a plugin kind no Law 0 row reads.
+const PRESENCE_PLANT: &str = "busbar-store-presenceplant";
+
+/// THE LEDGER WITH ONE `[[law0]]` CEILING RAISED BY `by`: the first row on `axis` whose crate is a
+/// core-neutral crate of the census with its manifest on the tree, as `(crate dir, overlay)`. The
+/// row is read off the file and rewritten in place, so a ledger that moved under the case makes it
+/// unplantable rather than inert.
+fn law0_row_raised(
+    cx: &Ctx,
+    axis: &str,
+    by: usize,
+) -> Result<(String, crate::ctx::Overlay), String> {
+    let crates = super::census(cx)?;
+    let reg = super::load_registry(cx)?;
+    let (row, dir) = reg
+        .law0
+        .iter()
+        .filter(|r| r.axis == axis)
+        .find_map(|r| {
+            let c = crates
+                .iter()
+                .find(|c| c.name == r.krate && is_core_neutral(c))?;
+            cx.exists(&format!("{}/Cargo.toml", c.dir))
+                .then(|| (r, c.dir.clone()))
+        })
+        .ok_or_else(|| {
+            format!("no `[[law0]]` row on `{axis}` names a core-neutral crate on this tree")
+        })?;
+    let text = cx.read(LEDGER)?;
+    let mut out = String::with_capacity(text.len() + 8);
+    let (mut in_law0, mut krate_ok, mut axis_ok, mut done) = (false, false, false, false);
+    for line in text.split_inclusive('\n') {
+        let t = line.trim();
+        if t.starts_with("[[") {
+            in_law0 = t == "[[law0]]";
+            krate_ok = false;
+            axis_ok = false;
+        } else if in_law0 {
+            if let Some((k, v)) = t.split_once('=') {
+                let v = v.trim().trim_matches('"');
+                match k.trim() {
+                    "crate" => krate_ok = v == row.krate,
+                    "axis" => axis_ok = v == row.axis,
+                    "count" if krate_ok && axis_ok && !done => {
+                        out.push_str(&format!("count = \"{}\"\n", row.count + by));
+                        done = true;
+                        continue;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.push_str(line);
+    }
+    if !done {
+        return Err(format!(
+            "the `[[law0]]` row {} \u{d7} {} is not in {LEDGER} in the shape this case rewrites",
+            row.krate, row.axis
+        ));
+    }
+    Ok((dir, plant(cx, LEDGER, &out)))
+}
+
 fn plant_ledger<'a>(
     cx: &'a Ctx,
     gate: &'a dyn crate::gates::Gate,
@@ -4100,6 +4163,60 @@ pub fn selftest<'a>(
             &[ROW_LAW0_BASE],
             ov,
             &["law0-grown", "busbar-core-oauth2 \u{d7} plane"],
+        ));
+    }
+    // A RAISED `[[law0]]` ROW COVERS NOTHING THE BRANCH DID NOT PAY FOR (row 159, XC2#1). The same
+    // plane hit, written into a neutral crate whose `[[law0]]` row this branch raises in the same
+    // diff, with no row lowered anywhere: the ceiling rose, so the merge-base row refuses it.
+    let name = "a `[[law0]]` row raised in the same diff as the hit it covers is refused unless \
+                an equal fall pays for it (kind-isolation:law0-base)";
+    let naming = ["law0-row-raised", "plane"];
+    match law0_row_raised(cx, "plane", 50) {
+        Ok((dir, mut ov)) => {
+            ov.set(
+                format!("{dir}/src/planted_law0_raise.rs"),
+                "pub fn mcp_tools_listed() -> usize { 0 }\n".to_string(),
+            );
+            report.push(prove_rows_red(
+                cx,
+                gate,
+                name,
+                &[ROW_LAW0_BASE],
+                ov,
+                &naming,
+            ));
+        }
+        Err(why) => report.push(crate::gates::CasePlan::from(super::unplantable(
+            name,
+            &[ROW_LAW0_BASE],
+            &naming,
+            why,
+        ))),
+    }
+    // A CRATE NEWLY NAMING ANOTHER KIND IS DENIED ON THE REGISTERED GATE (row 159, XC2#5;
+    // BUSBAR-1.6.0.md: "a new cross-kind dependency edge, or a crate newly naming another kind's
+    // vocabulary, is still DENIED"). The counts stay report-only; a cell the merge-base did not
+    // have is a presence finding, and presence gates. The subject is a STORE crate (a plugin kind,
+    // outside every Law 0 row) planted with its manifest, so its plane cell is new by construction.
+    {
+        let dir = format!("crates/{PRESENCE_PLANT}");
+        let mut ov = plant(
+            cx,
+            &format!("{dir}/Cargo.toml"),
+            &format!("[package]\nname = \"{PRESENCE_PLANT}\"\nversion = \"0.0.0\"\n"),
+        );
+        ov.set(
+            format!("{dir}/src/lib.rs"),
+            "//! The llm plane's frames are stored here.\n".to_string(),
+        );
+        report.push(prove_rows_red(
+            cx,
+            registered,
+            "a store crate newly naming the plane kind is DENIED by the registered gate, against \
+             the merge-base",
+            &[ROW_MATRIX],
+            ov,
+            &["unlisted-cell", &format!("{PRESENCE_PLANT} \u{d7} plane")],
         ));
     }
     if ship {

@@ -10692,6 +10692,9 @@ impl Gate for KindIsolationGate {
         // THE MATRIX ROW'S OWN CASES, owed by BOTH registrations: the per-push gate holds the
         // ceilings and the ship twin holds zero, and neither is a claim the other proves.
         matrix::selftest(cx, subject, self, self.ship, &mut report);
+        // Row 159 (audit XC2): the build-input spellings and the closure's cargo cross-check.
+        inputs::selftest(cx, subject, &mut report);
+        closure::selftest(cx, self, &mut report);
 
         if !self.ship {
             // A LISTED DRAIN EDGE IS GREEN. The owner's ruling, as the per-push gate reads it:
