@@ -365,6 +365,24 @@ pub fn measure(
     Ok((out, roots.len(), names))
 }
 
+/// The first plugin `cargo metadata` resolves from its own repository that is no carrier and that
+/// nothing lays in the tree (no crate on disk, no base layer at `crates/<name>`): the self-test's
+/// pinned subject, read from its checkout alone.
+fn pinned_unlaid(cx: &Ctx, ledger: &Ledger) -> Option<String> {
+    let json: Value = serde_json::from_str(&cx.cargo_metadata("Cargo.toml").ok()?).ok()?;
+    json["packages"]
+        .as_array()?
+        .iter()
+        .filter(|p| {
+            p["source"]
+                .as_str()
+                .is_some_and(|s| s.starts_with(EXTERNAL_SOURCE))
+        })
+        .filter_map(|p| p["name"].as_str())
+        .find(|n| !ledger.carriers.contains(*n) && !cx.is_dir(format!("crates/{n}")))
+        .map(str::to_string)
+}
+
 pub struct DepWallGate;
 
 impl Gate for DepWallGate {
@@ -503,6 +521,59 @@ impl Gate for DepWallGate {
             &[ROW_NEW],
             ov,
             &["new-offender", "busbar-plane-decisions", "std::net"],
+        ));
+        // A GROUPED IMPORT: `std::{io, net::TcpStream}` names `std::net` as a path, not as text.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-llm/src/planted_grouped_socket.rs",
+            "use std::{io, net::TcpStream};\n\
+             pub fn dial() -> io::Result<TcpStream> { TcpStream::connect(\"127.0.0.1:1\") }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a plugin that reaches a socket through a grouped import is a new offender",
+            &[ROW_NEW],
+            ov,
+            &["new-offender", "busbar-plane-llm", "std::net"],
+        ));
+        // A PLUGIN PINNED FROM ITS OWN REPOSITORY, laid nowhere in the tree: its source is read
+        // from the checkout `cargo metadata` resolves, with a plant at its mount dir on top.
+        let pinned = pinned_unlaid(cx, &read_ledger(&cx.read(LEDGER).unwrap_or_default()));
+        let name = pinned.clone().unwrap_or_default();
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("crates/{name}/src/planted_socket.rs"),
+            "pub fn dial() { let _ = ::std::net::TcpStream::connect(\"127.0.0.1:1\"); }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a plugin pinned from its own repository that opens a socket is a new offender",
+            &[ROW_NEW],
+            ov,
+            &["new-offender", name.as_str(), "std::net"],
+        ));
+        // A PINNED PLUGIN WHOSE SOURCE CANNOT BE READ is refused by name, never passed unread.
+        let mut ov = Overlay::new();
+        if let Ok(meta) = cx.cargo_metadata("Cargo.toml") {
+            if let Ok(mut json) = serde_json::from_str::<Value>(&meta) {
+                for p in json["packages"].as_array_mut().into_iter().flatten() {
+                    if p["name"].as_str() == pinned.as_deref() {
+                        p["manifest_path"] =
+                            Value::from(format!("/nonexistent/dep-wall-plant/{name}/Cargo.toml"));
+                    }
+                }
+                ov.set_command("cargo-metadata:Cargo.toml", json.to_string());
+            }
+        }
+        report.push(prove_red(
+            cx,
+            self,
+            "a pinned plugin whose source cannot be read is refused by name",
+            &[ROW_SCOPE],
+            ov,
+            &[name.as_str(), "cannot be read"],
         ));
         // A DRAINED PIN: a pin for an offence the tree does not have must be struck.
         let mut ov = Overlay::new();

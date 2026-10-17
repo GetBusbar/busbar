@@ -26,3 +26,11 @@ fn asking_tokio_for_net_or_redis_for_aio_is_an_offence() {
     };
     assert_eq!(asks(&p), ["tokio (net)", "redis (aio)"]);
 }
+
+#[test]
+fn every_row_is_proven_able_to_go_red() {
+    let cx = Ctx::workspace().expect("workspace context");
+    let gate = DepWallGate;
+    let report = gate.selftest(&cx);
+    crate::gates::verify_report(&gate, &report).expect("every dep-wall row proven RED");
+}
