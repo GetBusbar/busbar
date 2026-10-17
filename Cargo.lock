@@ -941,7 +941,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-grpc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=a9c1100506ea15016c71388a825de76a6a9a80bc#a9c1100506ea15016c71388a825de76a6a9a80bc"
+source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=a17bb27572fded6618407360152924f8f97c4f95#a17bb27572fded6618407360152924f8f97c4f95"
 dependencies = [
  "busbar-contract",
  "bytes",
