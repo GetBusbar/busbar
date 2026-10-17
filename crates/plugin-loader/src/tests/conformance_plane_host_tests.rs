@@ -24,8 +24,10 @@ use busbar_contract::abi::host::service::{
 };
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::KindCode;
+use busbar_contract::abi::plane::{RecordChain, CHAIN_LENGTH_PREFIXED};
 use busbar_contract::net::METADATA_HOSTS;
-use busbar_contract::services::{Caller, HostServices, Later, Ran, RecordsList, Stored};
+use busbar_contract::plane_calls::InstanceDecl;
+use busbar_contract::services::{chain_key, Caller, HostServices, Later, Ran, RecordsList, Stored};
 use serde_json::{json, Value};
 
 use super::host::Host;
@@ -34,6 +36,12 @@ use super::host::Host;
 const FILL_OUT_OF_RANGE: &str = "a fill asks for 1 to MAX_RANDOM_FILL bytes";
 /// The kernel's words for a caller it never admitted.
 const NOT_ADMITTED: &str = "the instance is not admitted";
+/// The kernel's words for a record kind the caller did not declare.
+const NOT_A_KIND: &str = "not a record kind the instance declared";
+/// The kernel's words for `records.get` on a chained kind.
+const CHAIN_READ_WHOLE: &str = "a chained record kind is read whole, through records.list";
+/// The kernel's words for a claim with no time to live.
+const NO_TTL: &str = "a claim states its time to live";
 /// The kernel's words for a may-pend judgement asked outside a ticketed op.
 const UNTICKETED: &str = "a service that may pend is callable only inside a ticketed op";
 
@@ -197,20 +205,27 @@ fn dest_judge_resolves_through_the_stated_answers_and_writes_what_it_judged() {
         "inner.example": ["10.1.2.3"],
         "empty.example": [] } }));
     // A literal is its own answer: judged at once, written.
-    let s = judged(&h, "https://1.1.1.1/", EGRESS_OPEN_WEB, DEST_RESOLVE);
+    let (l, rx) = later();
+    let s = answer(
+        h.dest_judge("https://1.1.1.1/", EGRESS_OPEN_WEB, DEST_RESOLVE, Some(l)),
+        &rx,
+    );
     assert_eq!(
         (s.outcome, s.value),
         (Outcome::Ready, DEST_ALLOWED),
         "{s:?}"
     );
     assert_eq!(keys(&s), ["1.1.1.1"]);
-    // A name to resolve pends: never asked outside a ticketed op.
-    let s = judged(&h, "https://vendor.example/", EGRESS_OPEN_WEB, DEST_RESOLVE);
-    assert_eq!(
-        (s.outcome, s.error),
-        (Outcome::Refused, UNTICKETED),
-        "{s:?}"
-    );
+    // A judgement asked to resolve may pend: never asked outside a ticketed op, a literal's
+    // included, as the kernel refuses it.
+    for dest in ["https://vendor.example/", "https://1.1.1.1/"] {
+        let s = judged(&h, dest, EGRESS_OPEN_WEB, DEST_RESOLVE);
+        assert_eq!(
+            (s.outcome, s.error),
+            (Outcome::Refused, UNTICKETED),
+            "`{dest}`: {s:?}"
+        );
+    }
     // A refusal the name decides answers at once, ticket or none.
     let s = judged(&h, "https://localhost/", EGRESS_OPEN_WEB, DEST_RESOLVE);
     assert_eq!(
@@ -308,4 +323,155 @@ fn trust_serves_item_less_answers_the_counterpartys_own_verdict() {
     assert_eq!(verdict("pending", None), DISTRUST_NOT_APPROVED);
     // A counterparty no row names is one the instance does not declare.
     assert_eq!(verdict("stranger", None), DISTRUST_UNKNOWN);
+}
+
+/// A host that admitted the instance `plane`, declaring `tasks` and the chained `journal`.
+fn admitted() -> Host {
+    let h = host(&json!({}));
+    h.admit(&InstanceDecl {
+        label: Arc::from("plane"),
+        record_kinds: vec!["tasks", "journal"],
+        record_chains: vec![RecordChain {
+            kind: 1,
+            framing: CHAIN_LENGTH_PREFIXED,
+            flags: 0,
+            _reserved: 0,
+        }],
+        ..InstanceDecl::default()
+    });
+    h
+}
+
+fn get(h: &Host, c: &Caller, kind: &str, key: &str) -> Stored {
+    let (l, rx) = later();
+    answer(h.records_get(c, kind, key.as_bytes(), l), &rx)
+}
+
+fn list(h: &Host, kind: &str, prefix: &str, after: Option<&str>, limit: u32) -> Stored {
+    let (l, rx) = later();
+    let ask = RecordsList {
+        kind: kind.into(),
+        prefix: prefix.as_bytes().to_vec(),
+        after: after.map(|a| a.as_bytes().to_vec()),
+        limit,
+    };
+    answer(h.records_list(&caller("plane"), ask, l), &rx)
+}
+
+fn claim(h: &Host, kind: &str, key: &str, ttl_ms: u64) -> Stored {
+    let (l, rx) = later();
+    answer(
+        h.records_claim(&caller("plane"), kind, key.as_bytes(), ttl_ms, l),
+        &rx,
+    )
+}
+
+/// The rows of a list answer, as text.
+fn rows(s: &Stored) -> Vec<(String, String)> {
+    let at = |sp: busbar_contract::abi::mechanism::call::Span| {
+        if sp.offset == busbar_contract::abi::mechanism::check::SPAN_ABSENT {
+            return String::new();
+        }
+        let (from, len) = (sp.offset as usize, sp.len as usize);
+        String::from_utf8_lossy(&s.bytes[from..from + len]).into_owned()
+    };
+    s.spans
+        .iter()
+        .map(|sp| (at(sp.key), at(sp.value)))
+        .collect()
+}
+
+fn row(k: &[u8], v: &str) -> (String, String) {
+    (String::from_utf8_lossy(k).into_owned(), v.to_string())
+}
+
+#[test]
+fn records_read_the_instances_own_writes_and_claim_once() {
+    use busbar_contract::abi::host::service::{ABSENT, CLAIM_TAKEN, CLAIM_WON, FOUND};
+    let h = admitted();
+    let c = caller("plane");
+    assert_eq!(get(&h, &c, "tasks", "t/1").value, ABSENT);
+    let s = get(&h, &c, "secrets", "t/1");
+    assert_eq!(
+        (s.outcome, s.error),
+        (Outcome::Refused, NOT_A_KIND),
+        "{s:?}"
+    );
+    let s = get(&h, &caller("another"), "tasks", "t/1");
+    assert_eq!(
+        (s.outcome, s.error),
+        (Outcome::Refused, NOT_ADMITTED),
+        "{s:?}"
+    );
+    // What the instance's answers wrote, it reads back.
+    h.keep(0, b"t/2", b"two");
+    h.keep(0, b"t/1", b"one");
+    h.keep(0, b"u/1", b"else");
+    let s = get(&h, &c, "tasks", "t/1");
+    assert_eq!((s.outcome, s.value), (Outcome::Ready, FOUND), "{s:?}");
+    assert_eq!(s.bytes, b"one");
+    assert_eq!(rows(&s), [(String::new(), "one".to_string())]);
+    assert_eq!(
+        rows(&list(&h, "tasks", "t/", None, 0)),
+        [row(b"t/1", "one"), row(b"t/2", "two")]
+    );
+    assert_eq!(
+        rows(&list(&h, "tasks", "t/", Some("t/1"), 0)),
+        [row(b"t/2", "two")]
+    );
+    assert_eq!(rows(&list(&h, "tasks", "", None, 1)), [row(b"t/1", "one")]);
+    // An empty value is a tombstone.
+    h.keep(0, b"t/1", b"");
+    assert_eq!(get(&h, &c, "tasks", "t/1").value, ABSENT);
+    assert_eq!(
+        rows(&list(&h, "tasks", "t/", None, 0)),
+        [row(b"t/2", "two")]
+    );
+    // A claim is won once.
+    assert_eq!(claim(&h, "tasks", "approval", 1000).value, CLAIM_WON);
+    assert_eq!(claim(&h, "tasks", "approval", 1000).value, CLAIM_TAKEN);
+    assert_eq!(claim(&h, "tasks", "another", 1000).value, CLAIM_WON);
+    let s = claim(&h, "tasks", "never", 0);
+    assert_eq!((s.outcome, s.error), (Outcome::Refused, NO_TTL), "{s:?}");
+    let s = claim(&h, "secrets", "k", 1000);
+    assert_eq!(
+        (s.outcome, s.error),
+        (Outcome::Refused, NOT_A_KIND),
+        "{s:?}"
+    );
+}
+
+#[test]
+fn a_chained_kinds_writes_are_appended_to_their_chain_and_read_whole() {
+    let h = admitted();
+    h.keep(1, b"task-a", b"first");
+    h.keep(1, b"task-b", b"other");
+    h.keep(1, b"task-a", b"second");
+    // A key that is no scope is never kept.
+    h.keep(1, &chain_key(b"task-c", 1), b"stray");
+    let s = get(&h, &caller("plane"), "journal", "task-a");
+    assert_eq!(
+        (s.outcome, s.error),
+        (Outcome::Refused, CHAIN_READ_WHOLE),
+        "{s:?}"
+    );
+    assert_eq!(
+        rows(&list(&h, "journal", "", None, 0)),
+        [
+            row(&chain_key(b"task-a", 1), "first"),
+            row(&chain_key(b"task-a", 2), "second"),
+            row(&chain_key(b"task-b", 1), "other"),
+        ]
+    );
+    // An empty write drops the chain; its next append starts again at 1.
+    h.keep(1, b"task-a", b"");
+    assert_eq!(
+        rows(&list(&h, "journal", "", None, 0)),
+        [row(&chain_key(b"task-b", 1), "other")]
+    );
+    h.keep(1, b"task-a", b"again");
+    assert_eq!(
+        rows(&list(&h, "journal", "task-a", None, 0)),
+        [row(&chain_key(b"task-a", 1), "again")]
+    );
 }
