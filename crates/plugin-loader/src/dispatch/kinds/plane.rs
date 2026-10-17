@@ -1795,3 +1795,7 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
             .collect::<Option<_>>()?,
     })
 }
+
+#[cfg(test)]
+#[path = "../../tests/plane_probe_tests.rs"]
+mod probe_tests;
