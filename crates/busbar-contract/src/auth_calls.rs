@@ -399,6 +399,26 @@ pub trait AuthAxis: Send + Sync {
         Vec::new()
     }
 
+    /// The inbound carriers the auth row answering `module` states (its Statement's carrier word
+    /// marks, lower-case, in the Statement's order), read without opening it; none when no row
+    /// answers `module` or it states none. Opaque words to the kernel (THE DESIGN, "Auth points and
+    /// guest lists": the style names its credential lines).
+    fn carriers(&self, module: &str) -> Vec<String> {
+        let _ = module;
+        Vec::new()
+    }
+
+    /// THE HOST'S DEFAULT INBOUND STYLE's carriers: the carrier marks of the one auth row whose
+    /// Statement states [`FACT_DEFAULT_INBOUND_STYLE`](crate::abi::auth::FACT_DEFAULT_INBOUND_STYLE),
+    /// in the Statement's order; none when no row states it. Where the credential sits on every line
+    /// the operator's config leaves without a style.
+    ///
+    /// # Errors
+    /// More than one row states the fact, naming them: boot is refused.
+    fn default_inbound_style(&self) -> Result<Vec<String>, String> {
+        Ok(Vec::new())
+    }
+
     /// THE AUTH PLUGIN SERVING THE OUTBOUND `style` for a binding under `settings` (THE DESIGN
     /// section 6 step 3: the auth plugin that serves the style opens the binding), its instance
     /// opened for its outbound styles; `None` when no row this build reaches states the style.
