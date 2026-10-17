@@ -366,53 +366,79 @@ impl AdminService {
         name: &str,
     ) -> Result<crate::v1::contract::GroupUsageView, AdminError> {
         use crate::v1::contract::{GroupBucketUsageView, GroupUsageView};
-        let Some(rt) = self.app.cost.group_named(name) else {
+        if self.app.cost.group_named(name).is_none() {
             return Err(AdminError::not_found(format!("group `{name}`")));
-        };
-        let now = busbar_kernel::store::now();
-        let mut buckets = Vec::with_capacity(rt.buckets.len());
-        for b in &rt.buckets {
-            let usage = match &self.app.governance {
-                Some(gov) => gov
-                    // Include the flat per-request fee (`true`) — the group `/usage` read must
-                    // match ENFORCEMENT (`try_admit` counts the fee for EVERY chain bucket, groups
-                    // included). Passing `false` here understated spend and overstated remaining
-                    // budget, so operators saw more headroom than the enforcer actually allows.
-                    .derived_bucket_usage_priced(&self.app.cost, &b.bucket_id, b.window, true, now)
-                    .map_err(|e| {
-                        busbar_kernel::diagnostics::diag_error!(
-                            busbar_kernel::diagnostics::GROUP_USAGE_READ_FAILED,
-                            group = name, bucket = %b.bucket_id, err = %e,
-                            "group usage read failed"
-                        );
-                        AdminError::Internal
-                    })?
-                    // An unpriced lane or class is NAMED (`unpriced_class`, 409 — Q25b).
-                    .map_err(|e| usage_refusal("group_usage", &e))?,
-                None => Default::default(),
-            };
-            buckets.push(GroupBucketUsageView {
-                window: b.window,
-                scope: b.scope.as_ref().map(|s| s.value.clone()),
-                requests: usage.requests,
-                tokens: usage.tokens,
-                spend_cents: usage.spend_cents,
-                requests_cap: b.requests_cap,
-                tokens_cap: b.tokens_cap,
-                tokens_input_cap: b.tokens_input_cap,
-                tokens_output_cap: b.tokens_output_cap,
-                tokens_cache_read_cap: b.tokens_cache_read_cap,
-                tokens_cache_write_cap: b.tokens_cache_write_cap,
-                budget_cap: b.budget_cap,
-                // The headroom is the ledger's read-time arithmetic (THE DESIGN, Money), never this crate's.
-                budget_remaining_cents: b
-                    .budget_cap
-                    .map(|cap| busbar_kernel::cost::budget_remaining(cap, usage.spend_cents)),
-            });
         }
+        let now = busbar_kernel::store::now();
+        // THE STORE ROUND-TRIPS RUN ON A BLOCKING THREAD: a bucket whose window is not live in
+        // memory is read from the store (a network store plugin's round-trip, possibly), once per
+        // bucket — the per-key usage read offloads the same call for the same reason.
+        let app = Arc::clone(&self.app);
+        let group = name.to_string();
+        let read = tokio::task::spawn_blocking(move || -> Result<_, AdminError> {
+            let name = group.as_str();
+            let Some(rt) = app.cost.group_named(name) else {
+                return Err(AdminError::not_found(format!("group `{name}`")));
+            };
+            let mut buckets = Vec::with_capacity(rt.buckets.len());
+            for b in &rt.buckets {
+                let usage = match &app.governance {
+                    Some(gov) => gov
+                        // Include the flat per-request fee (`true`) — the group `/usage` read must
+                        // match ENFORCEMENT (`try_admit` counts the fee for EVERY chain bucket,
+                        // groups included). Passing `false` here understated spend and overstated
+                        // remaining budget, so operators saw more headroom than the enforcer
+                        // actually allows.
+                        .derived_bucket_usage_priced(&app.cost, &b.bucket_id, b.window, true, now)
+                        .map_err(|e| {
+                            busbar_kernel::diagnostics::diag_error!(
+                                busbar_kernel::diagnostics::GROUP_USAGE_READ_FAILED,
+                                group = name, bucket = %b.bucket_id, err = %e,
+                                "group usage read failed"
+                            );
+                            AdminError::Internal
+                        })?
+                        // An unpriced lane or class is NAMED (`unpriced_class`, 409 — Q25b).
+                        .map_err(|e| usage_refusal("group_usage", &e))?,
+                    None => Default::default(),
+                };
+                buckets.push(GroupBucketUsageView {
+                    window: b.window,
+                    scope: b.scope.as_ref().map(|s| s.value.clone()),
+                    requests: usage.requests,
+                    tokens: usage.tokens,
+                    spend_cents: usage.spend_cents,
+                    requests_cap: b.requests_cap,
+                    tokens_cap: b.tokens_cap,
+                    tokens_input_cap: b.tokens_input_cap,
+                    tokens_output_cap: b.tokens_output_cap,
+                    tokens_cache_read_cap: b.tokens_cache_read_cap,
+                    tokens_cache_write_cap: b.tokens_cache_write_cap,
+                    budget_cap: b.budget_cap,
+                    // The headroom is the ledger's read-time arithmetic (THE DESIGN, Money), never this crate's.
+                    budget_remaining_cents: b
+                        .budget_cap
+                        .map(|cap| busbar_kernel::cost::budget_remaining(cap, usage.spend_cents)),
+                });
+            }
+            Ok((rt.enabled, buckets))
+        })
+        .await;
+        let (enabled, buckets) = match read {
+            Ok(read) => read?,
+            Err(join_err) => {
+                diag_error!(
+                    USAGE_BLOCKING_TASK_JOIN_FAILED,
+                    operation = "group_usage",
+                    error = %join_err,
+                    "admin blocking task failed"
+                );
+                return Err(AdminError::Internal);
+            }
+        };
         Ok(GroupUsageView {
             group: name.to_string(),
-            enabled: rt.enabled,
+            enabled,
             buckets,
             as_of: now,
         })
