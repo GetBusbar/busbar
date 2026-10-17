@@ -892,12 +892,15 @@ fn log_dir() -> std::path::PathBuf {
 }
 
 fn log_config() -> crate::dispatch::PluginLogConfig {
-    crate::dispatch::PluginLogConfig {
-        dir: log_dir(),
-        named_dir: true,
-        ..crate::dispatch::PluginLogConfig::from_words(None, None, &Default::default(), None, None)
-            .expect("the defaults resolve")
-    }
+    let dir = log_dir();
+    crate::dispatch::PluginLogConfig::from_words(
+        Some(dir.to_str().expect("a UTF-8 scratch path")),
+        None,
+        &Default::default(),
+        None,
+        None,
+    )
+    .expect("the named directory resolves")
 }
 
 /// AN AUTH INSTANCE WRITES ITS OWN PLUGIN LOG (`BUSBAR-1.6.0.md` THE DESIGN §11.2: "all plugins
