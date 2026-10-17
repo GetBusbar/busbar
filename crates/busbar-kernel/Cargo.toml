@@ -189,7 +189,7 @@ plane-mcp = ["jsonrpc-ingress", "dispatch"]
 # Phase-B B1 FORWARDS to substrate, exactly as `plane-mcp` does — `Due::from_verify_decision` and the
 # other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
 # substrate marker on with it.
-plane-a2a = ["card-signing", "jsonrpc-ingress", "relay"]
+plane-a2a = ["jsonrpc-ingress", "relay"]
 # THE NEUTRAL INBOUND WS CAPABILITY — arms the core-side duplex session mount (router.rs,
 # `mount_plane_session`) that answers a door plane's session upgrade. NAMES NO PLANE: any duplex
 # plane turns on the same capability. Forwards to the neutral `runtime` (which arms `axum/ws` and the
@@ -212,10 +212,6 @@ runtime = ["dep:tokio-tungstenite", "axum/ws", "busbar-contract/runtime"]
 # a plane. Each is enabled ONLY transitively by the plane feature(s) that supply the capability, so its
 # truth value — and thus every gated item's compilation — is byte-identical to the plane-token gate it
 # replaced:
-#   card-signing  — the host card-sign vtable slot (`plane_host::vtable::card_sign`), wired only when a
-#                   plane declares a card-signing domain. Enabled by `plane-a2a` only (was `plane-a2a`),
-#                   matching `governance::GovState::card_sign`.
-card-signing = []
 #   jsonrpc-ingress  — the RFC 9728 JSON-RPC discovery/metadata ingress (`ingress::protocol`'s
 #                   re-export + the `App`-facing `ResourceMetadata`/`metadata_handler` stayers). Served
 #                   ONLY by the JSON-RPC-fronted planes; enabled by `plane-mcp` OR `plane-a2a` (was
