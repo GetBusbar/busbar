@@ -718,7 +718,7 @@ pub fn applied_section(
     let Some(slot) = app
         .plane_slots
         .get(plane)
-        .and_then(|s| s.downcast_ref::<busbar_kernel::plane::door::DoorSlot>())
+        .and_then(|s| s.downcast_ref::<busbar_kernel::plane_driver::door::DoorSlot>())
     else {
         return now.section.clone();
     };

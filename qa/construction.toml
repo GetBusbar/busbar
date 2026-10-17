@@ -1328,8 +1328,8 @@ known_sites = [
   #   The declared-diagnostics catalogue, installed once at boot.
   "crates/busbar/src/root/linked.rs::register_diagnostics",
   #   A door plane's registration words, folded once per key (bounded by MAX_DOOR_PLANES).
-  "crates/busbar-kernel/src/plane/door.rs::fold",
-  "crates/busbar-kernel/src/plane/door.rs::declaration_of",
+  "crates/busbar-kernel/src/plane_driver/door.rs::fold",
+  "crates/busbar-kernel/src/plane_driver/door.rs::declaration_of",
   #   A path pattern's segments, interned once per distinct pattern (the interner answers a pattern
   #   it already holds), the leak-once intern shape of vocabulary.rs `key` above.
   "crates/busbar-contract/src/abi/transport/route.rs::intern_pattern",

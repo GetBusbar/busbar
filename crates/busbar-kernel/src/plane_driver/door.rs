@@ -596,10 +596,10 @@ fn claims<const I: usize>(slot: &dyn std::any::Any) -> Vec<(String, &'static str
     out
 }
 
-fn admission<const I: usize>(slot: &dyn std::any::Any) -> Option<super::PlaneAdmission> {
+fn admission<const I: usize>(slot: &dyn std::any::Any) -> Option<crate::plane::PlaneAdmission> {
     let (audience, resource_metadata) =
         slot.downcast_ref::<DoorSlot>()?.facing.admission.clone()?;
-    Some(super::PlaneAdmission {
+    Some(crate::plane::PlaneAdmission {
         audience,
         resource_metadata,
     })
@@ -993,7 +993,7 @@ fn condition_of(
 struct HookRow {
     wire_format_names: fn() -> &'static [&'static str],
     claims: fn(&dyn std::any::Any) -> Vec<(String, &'static str)>,
-    admission: fn(&dyn std::any::Any) -> Option<super::PlaneAdmission>,
+    admission: fn(&dyn std::any::Any) -> Option<crate::plane::PlaneAdmission>,
     build: fn(&BuildCtx) -> Option<std::sync::Arc<dyn std::any::Any + Send + Sync>>,
     config_validate: fn(&str, &serde_json::Value) -> Result<(), String>,
     named_def_list: fn(&dyn crate::plane_host::PlaneSlots) -> Vec<crate::api::NamedDefView>,
