@@ -1754,6 +1754,134 @@ async fn get_group_usage_unknown_group_not_found() {
     );
 }
 
+/// A store whose usage read cannot finish until another task on the runtime has run: it announces
+/// it started, then waits (bounded) for that task's word, and records whether it came. Every other
+/// call is the memory store's.
+struct UsageReadWaitsForTheRuntime {
+    inner: MemoryStore,
+    started: Arc<tokio::sync::Notify>,
+    word: Mutex<std::sync::mpsc::Receiver<()>>,
+    heard: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl busbar_contract::records::RecordStore for UsageReadWaitsForTheRuntime {
+    fn put_key(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        busbar_contract::records::RecordStore::put_key(&self.inner, key)
+    }
+    fn put_key_with_credential(
+        &self,
+        key: &busbar_contract::records::VirtualKey,
+        secret: &busbar_contract::records::CredentialSecret,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        busbar_contract::records::RecordStore::put_key_with_credential(&self.inner, key, secret)
+    }
+    fn get_key(
+        &self,
+        id: &str,
+    ) -> busbar_contract::records::RecordStoreResult<Option<busbar_contract::records::VirtualKey>>
+    {
+        busbar_contract::records::RecordStore::get_key(&self.inner, id)
+    }
+    fn list_keys(
+        &self,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::VirtualKey>>
+    {
+        busbar_contract::records::RecordStore::list_keys(&self.inner)
+    }
+    fn delete_key(&self, id: &str) -> busbar_contract::records::RecordStoreResult<()> {
+        busbar_contract::records::RecordStore::delete_key(&self.inner, id)
+    }
+    fn get_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+    ) -> busbar_contract::records::RecordStoreResult<busbar_contract::records::UsageLedger> {
+        self.started.notify_one();
+        let heard = self
+            .word
+            .lock()
+            .unwrap()
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .is_ok();
+        if heard {
+            self.heard.store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+        busbar_contract::records::RecordStore::get_usage(&self.inner, bucket_id, window_start)
+    }
+    fn put_usage(
+        &self,
+        bucket_id: &str,
+        window_start: u64,
+        ledger: &busbar_contract::records::UsageLedger,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        busbar_contract::records::RecordStore::put_usage(
+            &self.inner,
+            bucket_id,
+            window_start,
+            ledger,
+        )
+    }
+    fn add_metering(
+        &self,
+        delta: &busbar_contract::records::MeteringDelta,
+    ) -> busbar_contract::records::RecordStoreResult<()> {
+        busbar_contract::records::RecordStore::add_metering(&self.inner, delta)
+    }
+    fn list_metering(
+        &self,
+        bucket: u64,
+    ) -> busbar_contract::records::RecordStoreResult<Vec<busbar_contract::records::MeteringRow>>
+    {
+        busbar_contract::records::RecordStore::list_metering(&self.inner, bucket)
+    }
+}
+
+/// `GET /groups/{name}/usage` READS THE STORE OFF THE ASYNC WORKER. A bucket whose window is not
+/// live in memory is read from the store — a round-trip that can be a network store plugin's — once
+/// per bucket; the per-key usage read runs the same call on a blocking thread, and this one must
+/// too. On a one-worker runtime a sibling task can run while that read is in progress only if the
+/// read is on a blocking thread.
+///
+/// RED while the group usage read made the store round-trips inline on the worker: the sibling never
+/// ran, and every bucket's read waited out its bound without hearing it.
+#[tokio::test(flavor = "current_thread")]
+async fn the_group_usage_read_reads_the_store_off_the_async_worker() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    let (tell, word) = std::sync::mpsc::channel();
+    let heard = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let store = Arc::new(UsageReadWaitsForTheRuntime {
+        inner: MemoryStore::new(),
+        started: Arc::clone(&started),
+        word: Mutex::new(word),
+        heard: Arc::clone(&heard),
+    });
+    let gov = Arc::new(GovState::new(store, None).unwrap());
+    // The sibling: it runs once a store read has started, and gives the read its word.
+    let sibling = tokio::spawn(async move {
+        started.notified().await;
+        let _ = tell.send(());
+    });
+    let groups = std::collections::BTreeMap::from([("acme".to_string(), usage_group_cfg())]);
+    let app = crate::new_test_app()
+        .group("acme", usage_group_cfg())
+        .cost(usage_cost(&groups))
+        .governance(gov)
+        .build();
+    AdminService::new(app)
+        .get_group_usage("acme")
+        .await
+        .expect("usage read");
+    sibling.await.expect("the sibling task runs");
+    assert!(
+        heard.load(std::sync::atomic::Ordering::SeqCst),
+        "the group usage read held the async worker through its store round-trip: no other \
+         task ran while it was in progress"
+    );
+}
+
 /// ADMIN-API BACK-COMPAT (M1b): the public GET-usage JSON still emits the FLAT
 /// `tokens_input`/`tokens_output`/`tokens_cache_read`/`tokens_cache_creation` fields, BYTE-IDENTICAL
 /// to pre-M1b for a token workload — the reserved-four dissolution into the name-keyed ledger changed
