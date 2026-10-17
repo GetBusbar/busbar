@@ -32,3 +32,16 @@ fn websocket_selects_the_duplex_upstream_wire() {
         Some(UpstreamWireKind::Duplex)
     );
 }
+
+/// THE AXIS NAMES CHANNELS AND NO PLANE'S BINDINGS (Law 1; THE DESIGN §1, "kernel, contract and
+/// cleanliness crates × every kind instance = 0"). Which wire formats a plane speaks is the plane's
+/// own declaration; the contract's axis is the channels a framed operation rides, and nothing else.
+#[test]
+fn the_transport_axis_names_channels_and_no_plane_binding() {
+    let names: Vec<_> = Transport::ALL.iter().map(|t| t.name()).collect();
+    assert_eq!(
+        names,
+        ["http", "stdio", "websocket"],
+        "the transport axis carries a plane's bindings as channels"
+    );
+}
