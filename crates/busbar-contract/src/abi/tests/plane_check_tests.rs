@@ -1069,8 +1069,11 @@ fn claim(verb: &'static str, target: &'static str, flags: u32) -> Claim {
 fn a_claim_states_only_known_flags() {
     let open_exact = claim("V", "/t", CLAIM_OPEN | CLAIM_EXACT);
     assert_eq!(check_claims(&[open_exact], 1), Ok(()));
-    // RED: a bit none of CLAIM_OPEN, CLAIM_EXACT, CLAIM_PATTERN.
-    let unknown = claim("V", "/t", CLAIM_PATTERN << 1);
+    // A catalog route is a known flag (ARCHITECT ruling 2026-10-16, 3b C).
+    let catalog = claim("V", "/t", CLAIM_EXACT | CLAIM_CATALOG);
+    assert_eq!(check_claims(&[catalog], 1), Ok(()));
+    // RED: a bit none of CLAIM_OPEN, CLAIM_EXACT, CLAIM_PATTERN, CLAIM_CATALOG.
+    let unknown = claim("V", "/t", CLAIM_CATALOG << 1);
     assert_eq!(
         check_claims(&[unknown], 1),
         f(Rule::UnknownCode, "claim.flags")

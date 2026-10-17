@@ -798,9 +798,25 @@ fn table<K: Kind>(ops: *const OpsHead) -> Result<Box<[Op]>, LoadError> {
     (0..slots)
         .map(|i| {
             // SAFETY: `size` equals the host's table, which holds `slots` contiguous slots here.
-            unsafe { first.add(i as usize).read_unaligned() }.ok_or(LoadError::NullSlot(i))
+            match unsafe { first.add(i as usize).read_unaligned() } {
+                Some(op) => Ok(op),
+                None if K::optional_slot(i) => Ok(absent_op as Op),
+                None => Err(LoadError::NullSlot(i)),
+            }
         })
         .collect()
+}
+
+/// THE HOST'S ANSWER FOR AN OPTIONAL OP A PLUGIN LEFT NULL ([`Kind::optional_slot`]): REFUSED,
+/// touching nothing it is lent.
+extern "C" fn absent_op(
+    _instance: *mut std::ffi::c_void,
+    _input: *const std::ffi::c_void,
+    _out: *mut std::ffi::c_void,
+) -> busbar_contract::abi::mechanism::call::RawOutcome {
+    busbar_contract::abi::mechanism::call::RawOutcome::of(
+        busbar_contract::abi::mechanism::call::Outcome::Refused,
+    )
 }
 
 pub(crate) fn statement(door: &Door) -> Result<Statement, LoadError> {

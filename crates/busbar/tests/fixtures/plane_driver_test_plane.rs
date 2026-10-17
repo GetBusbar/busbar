@@ -389,6 +389,8 @@ static OPS: Shared<Ops> = Shared(Ops {
     hydrate: Some(ready),
     start: Some(ready),
     project: Some(project),
+    // This test plane claims no catalog route (ARCHITECT ruling 2026-10-16, 3b C).
+    catalog: None,
 });
 
 static DOOR: Shared<Door> = Shared(Door {

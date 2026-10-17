@@ -384,6 +384,19 @@ pub trait PlaneCalls: Send + Sync {
         grow: Grow<'_, RefusalIn, RefusalOut>,
     ) -> Outcome;
 
+    /// `catalog`, ticketless, with the same one re-call as [`PlaneCalls::arrive`]: a catalog
+    /// route's listing of the names the kernel hands it, rendered by the plane with no unit
+    /// (ARCHITECT ruling 2026-10-16, 3b C). An instance that serves none answers REFUSED.
+    fn catalog(
+        &self,
+        input: &mut crate::abi::plane::CatalogIn,
+        out: &mut crate::abi::plane::CatalogOut,
+        grow: Grow<'_, crate::abi::plane::CatalogIn, crate::abi::plane::CatalogOut>,
+    ) -> Outcome {
+        let _ = (input, out, grow);
+        Outcome::Refused
+    }
+
     /// `project`, ticketless, with the same one re-call as [`PlaneCalls::arrive`]: the hook kind's
     /// view of the unit's request (once per unit, when a hook is bound), and again with a
     /// request-stage hook's rewrite for the plane to apply and re-project.
