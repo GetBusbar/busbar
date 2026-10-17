@@ -2253,15 +2253,15 @@ fn oversize_service_lengths_child() {
         "the child half of red_a_service_length_over_the_byte_cap_is_refused_before_any_copy"
     );
     let b = [7_u8; 8];
-    let over = u32::MAX as usize + 1;
+    let past = u32::MAX as usize + 1;
     let s = AbiStr {
         ptr: b.as_ptr(),
-        len: over,
+        len: past,
     };
     assert!(bytes_of(s, "test.bytes").is_none(), "a string over the cap");
     assert!(text_of(s, "test.text").is_none(), "a text over the cap");
     let blob = Blob {
-        len: over,
+        len: past,
         ..blob_over(&b)
     };
     assert!(blob_of(blob, "test.blob").is_none(), "a blob over the cap");
