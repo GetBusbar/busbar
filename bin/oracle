@@ -11,10 +11,10 @@
 # replaces the old archive digest-pin (an unpinned judge is not a judge; money integrity). The argv
 # contract is UNCHANGED (cells / record / replay / diff / normalize / merge / renormalize /
 # harness-rev / fetch-golden / fetch-plugin / replay-selftest / selftest / tool-dir),
-# so every caller (the removed ci.yml's `./bin/oracle <sub>`, the turnstile's HarnessOracle) is unchanged.
+# so every caller (`./bin/oracle <sub>`, busbar-release-oracle's HarnessOracle) is unchanged.
 #
 # TOOL_DIR is a SHIM directory this shim generates beside the binary: `record.sh` there forwards to
-# `busbar-oracle record --native` so the turnstile's HarnessOracle — which drives
+# `busbar-oracle record --native` so busbar-release-oracle's HarnessOracle — which drives
 # `$BUSBAR_ORACLE_TOOL_DIR/record.sh` — records 100% natively without a code change; replay is already
 # the in-process Rust differ.
 #
@@ -617,7 +617,7 @@ export BUSBAR_ORACLE_TOOL_DIR="${BUSBAR_ORACLE_TOOL_DIR:-$shim_dir}"
 export BUSBAR_ORACLE_BIN="$RUST_BIN"
 
 # ── argv contract (unchanged for callers) → the Rust CLI ────────────────────────────────────────
-# The committed callers (the removed ci.yml, the removed manual-keep-proof.yml, the turnstile's record.sh shim) speak the
+# The callers (the `.ci/` branch files, the scripts, HarnessOracle's record.sh shim) speak the
 # historical Python argv. The Rust CLI takes explicit paths; this dispatcher fills the same
 # BUSBAR_ORACLE_DATA-derived defaults the Python tool derived, so `./bin/oracle <sub> …` is unchanged.
 DATA="$BUSBAR_ORACLE_DATA"
