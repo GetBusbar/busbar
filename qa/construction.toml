@@ -1274,11 +1274,8 @@ known_sites = [
   # was crates/busbar-core/src/plane_host/ (a whole directory) — the eight files of it that carry a
   # reviewed escape, so the seven substrate-origin files the merge added stay uncovered.
   "crates/busbar-kernel/src/plane_host/breaker.rs",
-  "crates/busbar-kernel/src/plane_host/dispatch.rs",
   "crates/busbar-kernel/src/plane_host/egress.rs",
   "crates/busbar-kernel/src/plane_host/identity_admit.rs",
-  "crates/busbar-kernel/src/plane_host/journal.rs",
-  "crates/busbar-kernel/src/plane_host/pipe.rs",
   "crates/busbar-kernel/src/plane_host/vtable.rs",
   # was crates/busbar-core/src/plane/registry.rs (R099)
   "crates/busbar-kernel/src/plane/registry.rs",

@@ -558,8 +558,7 @@ pub(crate) extern "C-unwind" fn egress_open(
             // A governed child process. FFI-F3: no operator configuration wires a subprocess program
             // allowlist over the FFI seam, so the host authorizes NO program and every plane-driven
             // subprocess open is REFUSED, before anything on the descriptor is decoded or resolved.
-            // The spawning path it once reached ran in no served path and is struck (row 166, F11):
-            // see [`super::pipe`].
+            // The spawning path it once reached ran in no served path and is struck (row 166, F11).
             EgressKind::Subprocess => StatusClass::Refused,
         }
     })

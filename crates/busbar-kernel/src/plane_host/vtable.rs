@@ -3,12 +3,12 @@
 
 //! The HOST side of the [`PlaneHostVtable`]: the construction point that fills every slot with a
 //! host-side `extern "C-unwind"` fn wired over a real core primitive. After the Phase-1 capability
-//! fan-out (breaker, govern, journal, egress, dispatch) every slot is wired — ZERO `unimplemented!()`
-//! stubs remain — except the trust family and `guard_url`, which are absent: no plane calls them, the
+//! fan-out (breaker, govern, egress) its slots are wired, except the trust family, `guard_url`, the
+//! journal, dispatch and pipe families, which are absent: no plane calls them, the
 //! host services a plane calls are the `HostSlots` families (BUSBAR-1.6.0.md Part 3 §4, SUPERSEDED
 //! 2026-09-28), and `trust.*` is served there. The three PROOF-OF-LIFE impls (`clock_now`,
 //! `metrics_emit`, `govern_admit`) live here; the rest forward into their capability modules
-//! ([`super::breaker`], [`super::govern`], [`super::journal`], [`super::egress`], [`super::dispatch`]).
+//! ([`super::breaker`], [`super::govern`], [`super::egress`]).
 //!
 //! ## Boundary discipline (reused from `busbar-contract/src/abi/sdk/boundary.rs`)
 //!
@@ -59,31 +59,7 @@ pub fn build_plane_host_vtable() -> PlaneHostVtable {
         egress_write: Some(super::egress::egress_write),
         egress_close: Some(super::egress::egress_close),
         egress_fault: Some(super::egress::egress_fault),
-        journal_append: Some(super::journal::journal_append),
-        journal_read: Some(super::journal::journal_read),
-        nested_dispatch: Some(super::dispatch::nested_dispatch),
-        workhandle_open: Some(super::dispatch::workhandle_open),
-        workhandle_resume: Some(super::dispatch::workhandle_resume),
         auth_resolve: Some(auth_resolve),
-        entitlement_check: Some(super::dispatch::entitlement_check),
-        gate_scan: Some(super::dispatch::gate_scan),
-        // ── The byte-duplex PIPE tier (CLUSTER-3 egress): raw-connection / subprocess byte channels,
-        //    keyed by a `PipeId`, wired over the real governed child process in `super::pipe`. ──────
-        pipe_read: Some(super::pipe::pipe_read),
-        pipe_write: Some(super::pipe::pipe_write),
-        // ── The DURABLE journal seam (minor-9): the slots the kernel's own streams still reach,
-        //    wired over the store-backed `audit::journal::Journal<StreamRecord>` of
-        //    `audit::stream_registry`. A plane's record chains are framed and verified on the
-        //    kernel's record path (`crate::host_chains`, BUSBAR-1.6.0.md Part 3 §5), so the read,
-        //    restore, forget and verify slots no plane reached any more are gone (unwired). ───────
-        journal_register: Some(super::journal::journal_register),
-        journal_append_scoped: Some(super::journal::journal_append_scoped),
-        journal_read_scoped: None,
-        journal_restore: None,
-        journal_seed: Some(super::journal::journal_seed),
-        journal_forget: None,
-        journal_compact: Some(super::journal::journal_compact),
-        journal_verify_scoped: None,
         // ── The CARD-SIGN seam (minor-10): the host derives the deployment's domain-separated card
         //    subkey and signs a plane-framed input, so the card SECRET never crosses to the plane.
         //    Wired only when a plane declares a card-signing domain (the neutral `card-signing`
@@ -503,10 +479,6 @@ extern "C-unwind" fn meter_charge(host: HostCtx, usage: *const Usage) -> MeterOu
 // family fan-out); its vtable slots reference that module directly.
 // The EGRESS family (`egress_open`/`_poll`/`_write`/`_close`/`_fault`) is WIRED in `super::egress`;
 // its vtable slots reference that module directly.
-// journal_append / journal_read are WIRED in `super::journal` (the JOURNAL family, over the real
-// `crate::audit` hash chain). The builder references them directly; no stub lives here.
-// `nested_dispatch` / `workhandle_open` / `workhandle_resume` / `entitlement_check` / `gate_scan`
-// are WIRED in `super::dispatch` (the DISPATCH family); their vtable slots reference that module.
 /// WIRED `auth_resolve` → the REAL principal resolution over `crate::auth` (see
 /// [`super::govern::resolve_auth`]): resolve a credential REF to an OPAQUE host-side reference (NEVER
 /// plaintext), writing the [`AuthResolved`] out-param ONLY on `Ok`. Fail-closed (`Refused`) on a null

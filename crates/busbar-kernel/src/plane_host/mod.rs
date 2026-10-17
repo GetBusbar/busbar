@@ -28,14 +28,10 @@
 
 pub mod breaker;
 mod creds;
-pub mod dispatch;
 pub mod egress;
 mod govern;
 pub(crate) mod identity_admit;
-pub mod journal;
-pub mod pipe;
 pub mod scope;
-pub mod session_meter;
 pub mod vtable;
 
 pub use scope::{DispatchScope, DurableScope, SessionScope};
@@ -2236,8 +2232,8 @@ pub trait LanePoolHost: Send + Sync {
 
 /// THE KERNEL'S PRICING SIDE of a live carrier — the rate card that prices each increment. KERNEL-INTERNAL (#43: "a plane plugin NEVER sees its rate card or
 /// fees"): it is NOT a supertrait of [`EngineHost`], so no plane-side host implements it and no plane
-/// names it. A plane meters a live carrier through the kernel's count-only
-/// [`SessionAccount`](session_meter::SessionAccount), which prices nothing (Q21b). (The hot-ABI
+/// names it. A plane's live carrier is metered by counts alone, through the kernel plane driver's
+/// money seam, which prices nothing (Q21b). (The hot-ABI
 /// reserve-then-settle lease slots that once drove this trait were retired by KERNEL<>PLUGINS step 16:
 /// a plane never hands the kernel a price, #43/#71.) Money-denominated end to end in `u128`
 /// nanodollars; a plain Rust trait, not the frozen hot FFI.
@@ -2569,8 +2565,8 @@ pub trait HookConfigHost: Send + Sync {
 
 /// The BUDGET/METERING slice: the money-path seams a plane drives — COUNTS in, VERDICTS out. The
 /// governance handle and [`MeterPin`] mints, the record-usage / record-metering accruals, the
-/// reserve-then-charge meter, and the pure headroom/budget projections (a live carrier's
-/// [`SessionAccount`](session_meter::SessionAccount) is built over them). No method names a cost or price type: pricing is the kernel's
+/// reserve-then-charge meter, and the pure headroom/budget projections. No method names a cost or
+/// price type: pricing is the kernel's
 /// ([`MeteringHost`], #43), so a plane-side host implements this slice without naming one. Split off
 /// `EngineHost` as a supertrait; the accrual seams read the pin kernel-side, no `HostCtx`.
 pub trait BudgetHost: Send + Sync {
