@@ -718,13 +718,12 @@ pub fn applied_section(
     };
     let mut pools = installed_door_pools(app);
     // The generic per-plane pool map is keyed by the plane's key, the key its slot is under: read
-    // there first, so an apply carries the pools whatever the registry holds.
-    if section_key == busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3] {
-        if let Some(own) = app.plane_pools(plane) {
-            for (owner, stated) in &mut pools {
-                if *owner == section_key {
-                    *stated = own.clone();
-                }
+    // there first, for whichever plane this is, so an apply carries the pools whatever the
+    // registry holds.
+    if let Some(own) = app.plane_pools(plane) {
+        for (owner, stated) in &mut pools {
+            if *owner == section_key {
+                *stated = own.clone();
             }
         }
     }
@@ -4153,8 +4152,8 @@ fn closed_whole(h: Head, block: HeaderMap) -> Response {
     response
 }
 
-/// Whether a reply head is a WHOLE answer's: it states its length and is no event stream (a text
-/// one, or the AWS event-stream framing, which the previous release relayed piece by piece).
+/// Whether a reply head is a WHOLE answer's: it states its length and is no stream (one of the
+/// [`streamed_media`] types, which the previous release relayed piece by piece).
 fn whole_answer(fields: &HeadFields) -> bool {
     let named = |field: &[u8]| {
         fields
@@ -4163,9 +4162,24 @@ fn whole_answer(fields: &HeadFields) -> bool {
             .map(|(_, value)| String::from_utf8_lossy(value).to_ascii_lowercase())
     };
     named(b"content-length").is_some()
-        && !named(b"content-type").is_some_and(|v| {
-            v.starts_with("text/event-stream")
-                || v.starts_with("application/vnd.amazon.eventstream")
+        && !named(b"content-type").is_some_and(|v| streamed_media(&v))
+}
+
+/// Whether `content_type` is a stream's, read off the DECLARED ROWS and never spelled here (Law 1;
+/// BUSBAR-1.6.0.md: "Dialects are internal to their plane"): the event stream the contract names,
+/// or a streaming `Content-Type` a declared protocol states
+/// (`ProtocolDecl::streaming_content_type`, folded at boot).
+fn streamed_media(content_type: &str) -> bool {
+    std::iter::once(busbar_contract::protocol::TEXT_EVENT_STREAM)
+        .chain(
+            busbar_kernel::proto::streaming_content_types()
+                .iter()
+                .copied(),
+        )
+        .any(|media| {
+            content_type
+                .get(..media.len())
+                .is_some_and(|head| head.eq_ignore_ascii_case(media))
         })
 }
 
