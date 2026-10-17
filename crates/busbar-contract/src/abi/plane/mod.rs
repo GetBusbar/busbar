@@ -362,9 +362,12 @@ pub const CLAIM_OPEN: u32 = 1;
 /// target is a one-level prefix.
 pub const CLAIM_EXACT: u32 = 1 << 1;
 /// [`Claim::flags`]: the target is a path pattern. Each `/`-separated segment is a literal, or a
-/// placeholder spelled `{name}` that matches exactly one non-empty segment with no `/`. The host
-/// reads it as the claim grammar's segment pattern ([`check::claim_selector`]), so the registry's
-/// sealed precedence is unchanged: exact beats pattern beats prefix. Never with [`CLAIM_EXACT`].
+/// placeholder spelled `{name}` that matches exactly one non-empty segment with no `/`, or a
+/// placeholder spelled `{name+}` that matches ONE OR MORE segments (the arriving path's own `/`
+/// between them, raw; an encoded `%2F` is inside one segment either way), at most one per pattern,
+/// a second refused at registration (ARCHITECT ruling 2026-10-16, 3b A). The host reads it as the
+/// claim grammar's segment pattern ([`check::claim_selector`]), so the registry's sealed precedence
+/// is unchanged: exact beats pattern beats prefix. Never with [`CLAIM_EXACT`].
 pub const CLAIM_PATTERN: u32 = 1 << 2;
 /// [`Claim::flags`]: the route is a CATALOG listing, answered with no unit.
 ///
@@ -373,6 +376,14 @@ pub const CLAIM_PATTERN: u32 = 1 << 2;
 /// listed names after it) and hands them, with the request head, to the plane's pure `catalog` op
 /// ([`CatalogIn`]), serving the bytes the plane renders (ARCHITECT ruling 2026-10-16, 3b C).
 pub const CLAIM_CATALOG: u32 = 1 << 3;
+/// [`Claim::flags`]: callers sign a request to this route's path (its inbound auth point).
+///
+/// The kernel looks it up BY PATH, across every claim of the path whatever its verb: a request to a
+/// path some claim flags is put through the signed-request pre-step (the auth chain's verifier of
+/// one) before anything else is decided, so a signed request with a verb no claim takes verifies
+/// first and is then answered the method refusal, as the previous release answered it (ARCHITECT
+/// ruling 2026-10-16, 3b A).
+pub const CLAIM_SIGNED_INGRESS: u32 = 1 << 4;
 /// [`Claim::flags`]: the target is a RAW AFFIX, spelled `<prefix>*<suffix>`. It matches a request
 /// whose raw, undecoded path starts with the prefix and ends with the suffix, compared as bytes:
 /// empty segments, a trailing `/` and a leading `//` count as the bytes they are, and the two

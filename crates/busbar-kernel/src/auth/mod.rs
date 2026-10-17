@@ -2290,10 +2290,13 @@ pub(crate) async fn auth_middleware(
     // on `keys_in_chain` keeps an OPEN `chain:[]` open. A credential that is not the verifier's
     // (it PASSes) takes the unchanged token path below. The "which dialect signs" decision is a
     // DECLARED protocol fact (`ProtocolDecl::ingress_auth`), never a name-branch.
-    let ingress_signed = crate::proto::decl_for(crate::ingress::native::envelope_dialect(
-        ingress_for_path(&app, &path),
-    ))
-    .is_some_and(|d| d.uses_sigv4_ingress_auth());
+    // A door plane states its signed paths on its claims (`CLAIM_SIGNED_INGRESS`, ARCHITECT ruling
+    // 2026-10-16, 3b A), looked up by path whatever the verb.
+    let ingress_signed = core_routes.signed_ingress(&path)
+        || crate::proto::decl_for(crate::ingress::native::envelope_dialect(ingress_for_path(
+            &app, &path,
+        )))
+        .is_some_and(|d| d.uses_sigv4_ingress_auth());
     // The lines the chain's positions named for the transport, struck once the request is admitted.
     let mut strips = Vec::new();
     // The pre-step is CONFINED TO THE RESIDUAL PLANE (`admission.is_none()`). An audience-bound

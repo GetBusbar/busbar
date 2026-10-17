@@ -374,6 +374,7 @@ extern "C" {
 #define BB_PLANE_CLAIM_EXACT UINT32_C(2) /* [`Claim::flags`]: the target matches exactly. Without it (and without [`CLAIM_PATTERN`]), the */
 #define BB_PLANE_CLAIM_PATTERN UINT32_C(4) /* [`Claim::flags`]: the target is a path pattern. Each `/`-separated segment is a literal, or a */
 #define BB_PLANE_CLAIM_CATALOG UINT32_C(8) /* [`Claim::flags`]: the route is a CATALOG listing, answered with no unit. */
+#define BB_PLANE_CLAIM_SIGNED_INGRESS UINT32_C(16) /* [`Claim::flags`]: callers sign a request to this route's path (its inbound auth point). */
 #define BB_PLANE_CLAIM_RAW_AFFIX UINT32_C(32) /* [`Claim::flags`]: the target is a RAW AFFIX, spelled `<prefix>*<suffix>`. It matches a request */
 #define BB_PLANE_CLAIM_PROBE UINT32_C(0xffffffff) /* [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose */
 #define BB_PLANE_INGRESS_REQUEST_RESPONSE UINT32_C(1) /* [`PlaneTail::ingress`]: a request expecting one reply. */
@@ -577,7 +578,7 @@ extern "C" {
 #define BB_TRANSPORT_METHOD_TRACE UINT32_C(256) /* `TRACE`. */
 #define BB_TRANSPORT_METHOD_ANY UINT32_C(511) /* Every method. */
 #define BB_TRANSPORT_PATH_EXACT UINT32_C(1) /* The whole path equals the route's path. */
-#define BB_TRANSPORT_PATH_PATTERN UINT32_C(2) /* A segment pattern: `/` separated, a `{name}` segment matches one segment of any value, a last */
+#define BB_TRANSPORT_PATH_PATTERN UINT32_C(2) /* A segment pattern: `/` separated, a `{name}` segment matches one segment of any value, a */
 #define BB_TRANSPORT_PATH_PREFIX UINT32_C(3) /* Exactly one segment under the route's path (`/a` admits `/a/b`, never `/a`, `/ab` or `/a/b/c`). */
 #define BB_TRANSPORT_PATH_SUFFIX UINT32_C(4) /* The path ends with the route's path. */
 #define BB_TRANSPORT_PATH_CONTAINS UINT32_C(5) /* The path contains the route's path. */
