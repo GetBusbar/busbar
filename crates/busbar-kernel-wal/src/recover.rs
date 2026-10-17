@@ -143,6 +143,11 @@ pub struct Quarantine {
     /// acknowledged and may already be in a store, so the log must never hand the same identities
     /// out again: it marks them taken.
     pub identities: Vec<(u64, u64)>,
+    /// The identities in [`Quarantine::identities`] that only a WHOLE frame whose header does not
+    /// check carries: read as the bytes now stand, so the damaged byte may be the number itself. The
+    /// log takes each of them only as far as the set-aside bytes could have numbered: an unverified
+    /// number never moves a node's numbering further than one per set-aside record.
+    pub unverified: Vec<(u64, u64)>,
     /// Every record the set-aside bytes hold whose frames' HEADERS check, assembled as the bytes now
     /// read: a whole altered record (header checks, digest does not) and every acknowledged record
     /// behind the damage. They are gone from the log, and the caller reads what they named — a
@@ -243,6 +248,8 @@ pub struct Recovered {
     pub written_end: u64,
     /// Every identity a verifying frame past the stop carries. See [`Quarantine::identities`].
     pub identities_beyond: Vec<(u64, u64)>,
+    /// The identities past the stop no verified header carries. See [`Quarantine::unverified`].
+    pub unverified_beyond: Vec<(u64, u64)>,
     /// The records the set-aside bytes hold, as they now read. See [`Quarantine::damaged`].
     pub damaged: Vec<Record>,
 }
@@ -264,9 +271,85 @@ impl Recovered {
 ///
 /// This does not modify anything. [`recover_and_truncate`] is the one that cuts.
 pub fn scan(segment: &Segment) -> io::Result<Recovered> {
+    let Walk {
+        records,
+        durable_end,
+        stopped_because,
+        stop_at,
+    } = walk(segment, 0, usize::MAX)?;
+
+    let len = segment.len()?;
+    let mut beyond = look_past(segment, durable_end, stop_at, len)?;
+    // Corrupt when anything is past the verified prefix and either a subsequent commit acknowledges the
+    // damaged one or the damage is not a shape a crash leaves. See the module preamble.
+    let corrupt =
+        beyond.written_end > durable_end && (beyond.acknowledged || !beyond.unfinished_only);
+    let mut unverified = Vec::new();
+    let damaged = if corrupt {
+        let set_aside = read_set_aside(segment, durable_end, len)?;
+        // Every set-aside identity is named, the altered record's first: it was acknowledged, and
+        // it is the one the caller asks about.
+        for id in set_aside.iter().rev().map(|(r, _)| r.identity()) {
+            if let Some(i) = beyond.identities.iter().position(|x| *x == id) {
+                beyond.identities.remove(i);
+            }
+            beyond.identities.insert(0, id);
+        }
+        // An identity no verified header vouches for is named, never trusted to number by.
+        let vouched = |id: &(u64, u64)| {
+            beyond.verified.contains(id)
+                || set_aside
+                    .iter()
+                    .any(|(r, checked)| *checked && r.identity() == *id)
+        };
+        for id in set_aside.iter().map(|(r, _)| r.identity()) {
+            if !vouched(&id) && !unverified.contains(&id) {
+                unverified.push(id);
+            }
+        }
+        set_aside.into_iter().map(|(r, _)| r).collect()
+    } else {
+        Vec::new()
+    };
+    let verdict = if corrupt {
+        TailVerdict::Corrupt { at: stop_at }
+    } else if beyond.written_end > durable_end {
+        TailVerdict::Torn
+    } else {
+        TailVerdict::Clean
+    };
+    Ok(Recovered {
+        records,
+        durable_end,
+        discarded_bytes: len.saturating_sub(durable_end),
+        stopped_because,
+        verdict,
+        quarantined: None,
+        written_end: beyond.written_end,
+        identities_beyond: beyond.identities,
+        unverified_beyond: unverified,
+        damaged,
+    })
+}
+
+/// The complete, verifying records of `segment` from `from` (a record boundary) on, at most `limit`
+/// of them, and where the walk stopped: the frame it could not take, or the leftover short of one.
+struct Walk {
+    records: Vec<Record>,
+    /// The offset the last complete record returned ends at.
+    durable_end: u64,
+    stopped_because: Option<FrameError>,
+    stop_at: u64,
+}
+
+/// Walk `segment` from `from`, assembling records across continuation frames, until the writes end,
+/// a frame does not verify, or `limit` records are complete. The one reader of a segment's records:
+/// a restart's scan walks from the start with no limit, and the store's catch-up reads a run of
+/// them from where it left off.
+fn walk(segment: &Segment, from: u64, limit: usize) -> io::Result<Walk> {
     let mut records = Vec::new();
-    let mut offset: u64 = 0;
-    let mut durable_end: u64 = 0;
+    let mut offset: u64 = from;
+    let mut durable_end: u64 = from;
     let mut stopped_because = None;
     // The record currently being assembled across continuation frames.
     let mut partial: Option<Partial> = None;
@@ -335,84 +418,73 @@ pub fn scan(segment: &Segment) -> io::Result<Recovered> {
                     body: open.body,
                 });
                 durable_end = offset;
+                if records.len() >= limit {
+                    stop_at = offset;
+                    break;
+                }
             }
         }
     }
-
-    let len = segment.len()?;
-    let mut beyond = look_past(segment, durable_end, stop_at, len)?;
-    // Corrupt when anything is past the verified prefix and either a subsequent commit acknowledges the
-    // damaged one or the damage is not a shape a crash leaves. See the module preamble.
-    let corrupt =
-        beyond.written_end > durable_end && (beyond.acknowledged || !beyond.unfinished_only);
-    let damaged = if corrupt {
-        let records = read_set_aside(segment, durable_end, len)?;
-        // Every set-aside identity is taken, the altered record's first: it was acknowledged, and
-        // it is the one the caller asks about.
-        for id in records.iter().rev().map(Record::identity) {
-            if let Some(i) = beyond.identities.iter().position(|x| *x == id) {
-                beyond.identities.remove(i);
-            }
-            beyond.identities.insert(0, id);
-        }
-        records
-    } else {
-        Vec::new()
-    };
-    let verdict = if corrupt {
-        TailVerdict::Corrupt { at: stop_at }
-    } else if beyond.written_end > durable_end {
-        TailVerdict::Torn
-    } else {
-        TailVerdict::Clean
-    };
-    Ok(Recovered {
+    Ok(Walk {
         records,
         durable_end,
-        discarded_bytes: len.saturating_sub(durable_end),
         stopped_because,
-        verdict,
-        quarantined: None,
-        written_end: beyond.written_end,
-        identities_beyond: beyond.identities,
-        damaged,
+        stop_at,
     })
 }
 
+/// The complete, verifying records of `segment` from byte `from` — the start of a record — at most
+/// `limit` of them, and the offset the last one ends at (`from` when there are none). What the log
+/// re-reads from its own medium to hand a store the records it is still owed.
+pub(crate) fn records_from(
+    segment: &Segment,
+    from: u64,
+    limit: usize,
+) -> io::Result<(Vec<Record>, u64)> {
+    let walked = walk(segment, from, limit)?;
+    Ok((walked.records, walked.durable_end))
+}
+
 /// Every record in `[from, len)`, read frame by frame through each frame's full verification or its
-/// HEADER CHECK, payloads joined as they now read.
+/// HEADER CHECK, payloads joined as they now read, each with whether every one of its frames' headers
+/// checked.
 /// A WHOLE frame whose header does not check is read as its bytes stand ([`unchecked_whole`]): it
-/// was acknowledged, so its identity is taken and its record is handed over rather than dropped —
-/// a caller that cannot decode it holds back what it cannot rule out, which is the safe side. A
-/// frame that is none of these is skipped, and so is a record whose parts do not run in order.
-fn read_set_aside(segment: &Segment, from: u64, len: u64) -> io::Result<Vec<Record>> {
+/// was acknowledged, so its identity is named and its record is handed over rather than dropped —
+/// a caller that cannot decode it holds back what it cannot rule out, which is the safe side. Its
+/// identity is unverified (`false`). A frame that is none of these is skipped, and so is a record
+/// whose parts do not run in order.
+fn read_set_aside(segment: &Segment, from: u64, len: u64) -> io::Result<Vec<(Record, bool)>> {
     let mut frame = [0u8; FRAME_BYTES];
     let mut at = from;
     let mut records = Vec::new();
-    let mut open: Option<(u64, u64, u32, Vec<u8>)> = None;
+    let mut open: Option<(u64, u64, u32, Vec<u8>, bool)> = None;
     while at < len && read_full(segment, at, &mut frame)? {
         at += FRAME_BYTES as u64;
         let read = match decode_frame(&frame) {
-            Ok((header, payload)) => Some((header, payload.to_vec())),
+            Ok((header, payload)) => Some((header, payload.to_vec(), true)),
             Err(_) => checked_header(&frame)
-                .or_else(|| unchecked_whole(&frame))
-                .map(|(header, payload)| (header, payload.to_vec())),
+                .map(|(header, payload)| (header, payload.to_vec(), true))
+                .or_else(|| {
+                    unchecked_whole(&frame)
+                        .map(|(header, payload)| (header, payload.to_vec(), false))
+                }),
         };
-        let Some((header, payload)) = read else {
+        let Some((header, payload, checked)) = read else {
             open = None;
             continue;
         };
         match open.as_mut() {
-            Some((node, node_seq, next, body))
+            Some((node, node_seq, next, body, all_checked))
                 if header.node == *node
                     && header.node_seq == *node_seq
                     && header.part_index == *next =>
             {
                 *next += 1;
                 body.extend_from_slice(&payload);
+                *all_checked &= checked;
             }
             _ if header.part_index == 0 => {
-                open = Some((header.node, header.node_seq, 1, payload));
+                open = Some((header.node, header.node_seq, 1, payload, checked));
             }
             _ => {
                 open = None;
@@ -420,8 +492,8 @@ fn read_set_aside(segment: &Segment, from: u64, len: u64) -> io::Result<Vec<Reco
             }
         }
         if !header.more_parts {
-            if let Some((node, node_seq, _, body)) = open.take() {
-                records.push(Record::new(node, node_seq, body));
+            if let Some((node, node_seq, _, body, all_checked)) = open.take() {
+                records.push((Record::new(node, node_seq, body), all_checked));
             }
         }
     }
@@ -442,6 +514,9 @@ struct Beyond {
     /// The identities every verifying frame past the prefix carries, deduplicated, in the order
     /// they were met.
     identities: Vec<(u64, u64)>,
+    /// The same identities, as the set a fully verified frame vouches for. `identities` is the list
+    /// the quarantine names, which gains the set-aside records' own; this one never does.
+    verified: Vec<(u64, u64)>,
 }
 
 /// Walk `[from, len)` a frame at a time: note where the written bytes end, whether a subsequent commit
@@ -455,6 +530,7 @@ fn look_past(segment: &Segment, from: u64, stop_at: u64, len: u64) -> io::Result
         acknowledged: false,
         unfinished_only: true,
         identities: Vec::new(),
+        verified: Vec::new(),
     };
     let mut block = vec![0u8; BLOCK_FRAMES * FRAME_BYTES];
     let mut at = from;
@@ -495,6 +571,7 @@ fn look_past(segment: &Segment, from: u64, stop_at: u64, len: u64) -> io::Result
                     let id = (header.node, header.node_seq);
                     if !beyond.identities.contains(&id) {
                         beyond.identities.push(id);
+                        beyond.verified.push(id);
                     }
                 }
                 Err(_) if unfinished_write(whole) => {}
@@ -570,6 +647,7 @@ pub fn recover_and_truncate(
         bytes: copy.len() as u64,
         why: recovered.stopped_because,
         identities: recovered.identities_beyond.clone(),
+        unverified: recovered.unverified_beyond.clone(),
         damaged: recovered.damaged.clone(),
         at_unix_ms,
         kept,
