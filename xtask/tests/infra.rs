@@ -874,9 +874,18 @@ fn no_gate_blocks_on_a_hand_kept_line_count() {
         gates::find("abi-freeze").is_none(),
         "abi-freeze is registered: a CI rung blocks on a hand-kept line count (Law 9, size is not a CI check)"
     );
+    // TRACKED, not "on disk": a runner's reused checkout can keep an untracked copy of a file the
+    // commit deleted, and what the tree carries is what git tracks.
+    let tracked = std::process::Command::new("git")
+        .arg("-C")
+        .arg(repo_root())
+        .args(["ls-files", "--", "qa/abi-freeze.toml"])
+        .output()
+        .expect("git runs in the test's checkout");
+    assert!(tracked.status.success(), "git ls-files failed: {tracked:?}");
     assert!(
-        !repo_root().join("qa/abi-freeze.toml").exists(),
-        "qa/abi-freeze.toml exists: a hand-kept size integer is in the tree (Law 9, size is not a CI check)"
+        String::from_utf8_lossy(&tracked.stdout).trim().is_empty(),
+        "qa/abi-freeze.toml is tracked: a hand-kept size integer is in the tree (Law 9, size is not a CI check)"
     );
 }
 
