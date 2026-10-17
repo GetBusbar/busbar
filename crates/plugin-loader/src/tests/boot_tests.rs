@@ -824,6 +824,7 @@ fn boot_auth(door: DoorFn, name: &str, settings: &str) -> Result<usize, String> 
             doc: &plan,
             dispatcher: &d,
             secrets: &Resolver,
+            scope: &busbar_contract::config_time::ConfigScope::config_time(),
         }),
     })
     .map(|l| l.bound.len())

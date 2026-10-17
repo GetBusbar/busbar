@@ -63,11 +63,17 @@ pub const ALLOWED: &[(&str, &[&str])] = &[
     ),
     // TLS material, read when the connector's `tls:` block and a plane's client identity load.
     ("crates/busbar-kernel/src/tls.rs", &["read_pem"]),
-    // A door plane's members, bound when the plane loads (boot / apply).
+    // A door plane's members are bound at boot and at a config apply; the proof is minted at those
+    // two moments and handed down to every member credential (BUSBAR-1.6.0.md l.1468, R4: "boot,
+    // config apply, refresh"): the boot's composition, a door's config apply, and the pools
+    // plane's apply (its re-seal over the generation's projection).
     (
-        "crates/busbar/src/root/door_steps.rs",
-        &["token_exchange_binding", "member_routes"],
+        "crates/busbar/src/root/serve.rs",
+        &["compose_planes", "apply", "refresh_models"],
     ),
+    // The served credentials' refresher: its tick is R4's "refresh" (l.1468), minted once per tick
+    // and handed to each due binding.
+    ("crates/busbar/src/root/door_steps.rs", &["run"]),
     // A program need's declaration (a plane's load, a config apply): its environment references
     // resolve here and are held for its spawns, which resolve nothing.
     (

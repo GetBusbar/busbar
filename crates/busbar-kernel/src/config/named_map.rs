@@ -89,15 +89,11 @@ impl NamedMapSection {
         }
     }
 
-    /// The RELATIVE (post-`ADMIN_PREFIX`) collection path — `"/" + key()`. A plane section synthesises
-    /// its path from the registry-supplied section key, so this returns an OWNED `Cow` for the plane
-    /// arm and a `'static` borrow for the two core arms.
+    /// The RELATIVE (post-`ADMIN_PREFIX`) collection path — `"/" + key()`, built from [`Self::key`]
+    /// for every arm: a core section's key is its kind's root key (`Kind::verb()`, the one place a
+    /// kind's root key is spelled; audit K1 #4), a plane section's the registry-supplied one.
     pub fn path_root(self) -> std::borrow::Cow<'static, str> {
-        match self {
-            NamedMapSection::IdentityProviders => std::borrow::Cow::Borrowed("/identity-providers"),
-            NamedMapSection::Export => std::borrow::Cow::Borrowed("/export"),
-            NamedMapSection::Plane(section) => std::borrow::Cow::Owned(format!("/{section}")),
-        }
+        std::borrow::Cow::Owned(format!("/{}", self.key()))
     }
 
     /// Singular human noun for messages and audit resources (`identity-provider:corp-ad`).

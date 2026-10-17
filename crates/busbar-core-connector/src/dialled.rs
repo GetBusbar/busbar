@@ -391,3 +391,71 @@ impl Dialled {
         self.leg.close();
     }
 }
+
+/// THE EXCHANGE BODY OF A COMPOSED OPEN (row 132, the ARCHITECT ticket ruling, item 4): what goes
+/// to the far end beside the dialling association's own `description`.
+///
+/// - An open with no body sends the description as the whole body.
+/// - An open with a body states its head's `content-type` as `multipart/form-data` with a
+///   `boundary`, and its body is the form's leading parts, ending with the opened header block of
+///   the part that carries the description. The exchange body is that body, the description, and
+///   the form's closing delimiter.
+///
+/// The connector frames the form and names no part: the opener's body names them.
+///
+/// # Errors
+///
+/// [`ConnError::Refused`] for a body under any other content type, a form with no boundary, or a
+/// description that holds the form's delimiter.
+pub(crate) fn composed_body(
+    fields: &[(&str, &[u8])],
+    body: &[u8],
+    description: &[u8],
+) -> Result<Vec<u8>, ConnError> {
+    if body.is_empty() {
+        return Ok(description.to_vec());
+    }
+    let boundary = fields
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+        .and_then(|(_, value)| std::str::from_utf8(value).ok())
+        .and_then(form_boundary)
+        .ok_or(ConnError::Refused)?;
+    let delimiter = [b"\r\n--", boundary.as_bytes()].concat();
+    if description
+        .windows(delimiter.len())
+        .any(|w| w == delimiter.as_slice())
+    {
+        return Err(ConnError::Refused);
+    }
+    Ok([body, description, &delimiter, b"--\r\n"].concat())
+}
+
+/// The `boundary` of a `multipart/form-data` content type (RFC 7578, RFC 2046 section 5.1.1),
+/// unquoted; `None` for any other content type, or one with no usable boundary.
+fn form_boundary(content_type: &str) -> Option<String> {
+    let mut params = content_type.split(';');
+    if !params
+        .next()?
+        .trim()
+        .eq_ignore_ascii_case("multipart/form-data")
+    {
+        return None;
+    }
+    let boundary = params.find_map(|p| {
+        let (name, value) = p.split_once('=')?;
+        name.trim()
+            .eq_ignore_ascii_case("boundary")
+            .then(|| value.trim().trim_matches('"').to_string())
+    })?;
+    // RFC 2046: 1 to 70 characters from the boundary alphabet.
+    let fits = (1..=70).contains(&boundary.len())
+        && boundary
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"'()+_,-./:=? ".contains(&b));
+    fits.then_some(boundary)
+}
+
+#[cfg(test)]
+#[path = "tests/dialled_compose_tests.rs"]
+mod compose_tests;

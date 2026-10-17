@@ -1278,6 +1278,7 @@ fn a_configured_api_key_override_presents_the_api_key_header_on_every_dialect() 
             &crate::root::door_steps::DoorPools::of(&section),
             &served,
             &reach,
+            &busbar_contract::config_time::ConfigScope::config_time(),
         )
         .unwrap_or_else(|e| panic!("{dialect}: the overridden member resolves: {e}"));
         let binding = routes["m"]

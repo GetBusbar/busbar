@@ -359,6 +359,14 @@ pub const CLAIM_PATTERN: u32 = 1 << 2;
 /// [`op::TICKET_TAKE`](crate::abi::host::service::op::TICKET_TAKE). A key admits as on any keyed
 /// route. Never with [`CLAIM_OPEN`].
 pub const CLAIM_TICKET: u32 = 1 << 3;
+/// [`Claim::flags`]: the target is a RAW AFFIX, spelled `<prefix>*<suffix>`. It matches a request
+/// whose raw, undecoded path starts with the prefix and ends with the suffix, compared as bytes:
+/// empty segments, a trailing `/` and a leading `//` count as the bytes they are, and the two
+/// affixes may share bytes ([`check::raw_affix_matches`]). One spelling per suffix, so a path with
+/// N suffixes is N claims. A raw-affix claim states a fact about paths, read by path: it mounts no
+/// route and takes no arrival (ARCHITECT ruling 2026-10-17). Never with [`CLAIM_OPEN`],
+/// [`CLAIM_EXACT`] or [`CLAIM_PATTERN`]. Bits 3 and 4 are taken by flags in flight.
+pub const CLAIM_RAW_AFFIX: u32 = 1 << 5;
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
 /// tail states [`TAIL_PROBES`] is sent one.
@@ -1464,8 +1472,8 @@ pub struct Claim {
     pub target: AbiStr,
     /// The transport claim it arrives over.
     pub carrier: AbiStr,
-    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`] | [`CLAIM_TICKET`]; any other bit
-    /// refuses the snapshot.
+    /// [`CLAIM_OPEN`] | [`CLAIM_EXACT`] | [`CLAIM_PATTERN`] | [`CLAIM_TICKET`] |
+    /// [`CLAIM_RAW_AFFIX`]; any other bit refuses the snapshot.
     pub flags: u32,
     /// The dialect a refusal on this route wears before `arrive` has read the arrival: an index
     /// into [`PlaneTail::dialects`], opaque to the kernel, which carries it from the matched route
