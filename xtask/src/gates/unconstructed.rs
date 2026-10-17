@@ -114,8 +114,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::ctx::{Ctx, Overlay, WalkSpec};
-use crate::gates::{prove_green, prove_rows_green, prove_rows_red, Gate, Report};
-use crate::ledger::{Row, Verdict};
+use crate::gates::ship_ready::Posture;
+use crate::gates::{
+    prove_green, prove_rows_green, prove_rows_red, Case, CasePlan, Expect, Gate, Report,
+};
+use crate::ledger::{Row, Status, Verdict};
 use crate::scan::{test_scope, ScopeLine};
 
 /// Where the capability declarations live. DATA, not a Rust table: the whole point is that a human
@@ -210,6 +213,14 @@ pub const KNOWN_UNSHIPPED: &[&str] = &[
     "ledger-is-dual-writing",
     "ledger-book-retirement",
 ];
+
+/// The words a release posture's refusal of a declared-unshipped row carries.
+const RELEASE_REFUSAL: &str = "RELEASE POSTURE";
+
+/// The gate's verdict for `posture`.
+fn run_at(cx: &Ctx, _posture: &Posture) -> Verdict {
+    UnconstructedGate.run(cx)
+}
 
 /// The per-capability row id.
 pub fn row_site(id: &str) -> String {
@@ -1249,6 +1260,23 @@ impl Gate for UnconstructedGate {
             &["below the declaration floor", "0 capability declaration(s)"],
         ));
 
+        // ── CONTROL 14 — A RELEASE POSTURE REFUSES EVERY DECLARED-UNSHIPPED ROW (XH2#1). ────
+        // The register is a dev-line ledger, never a release exemption: "A built type or verb with
+        // no production construction site is either wired or deleted before the cut"
+        // (BUSBAR-1.6.0.md, What this means for the gates). So for a `qa` or `main` target, and for
+        // a posture nobody could read, every row the register names must be RED, by name.
+        for (posture, gate) in [
+            ("a `qa` target", &AT_QA),
+            ("a `main` target", &AT_MAIN),
+            ("an unreadable posture", &AT_UNKNOWN),
+        ] {
+            report.push(release_refuses_register(
+                &base,
+                gate,
+                format!("{posture} reds every declared-unshipped row on the register, by name"),
+            ));
+        }
+
         // ── CONTROL 11 — RESTORING THE SITE RETURNS THE ROW TO GREEN. ───────────────────────
         // Control 2's overlay with the call put back. This is what proves control 2's RED is about
         // THE MISSING CALL and not about the edit, the overlay, or the file having been touched.
@@ -1280,6 +1308,73 @@ impl Gate for UnconstructedGate {
 
         report
     }
+}
+
+/// THE GATE PINNED TO ONE POSTURE, for the self-test. The posture is not a fact of the tree, so no
+/// overlay can plant it: each pinned gate answers for the target it names (`None` is a posture
+/// nobody could read) whatever this checkout is on, and owes exactly what the gate owes.
+struct AtTarget(Option<&'static str>);
+
+static AT_QA: AtTarget = AtTarget(Some("qa"));
+static AT_MAIN: AtTarget = AtTarget(Some("main"));
+static AT_UNKNOWN: AtTarget = AtTarget(None);
+
+impl AtTarget {
+    fn posture(&self) -> Posture {
+        match self.0 {
+            Some(t) => Posture::Named(t.to_string()),
+            None => Posture::Unknown(
+                "the self-test's pinned unreadable posture: no XTASK_SHIP_TARGET and no branch"
+                    .to_string(),
+            ),
+        }
+    }
+}
+
+impl Gate for AtTarget {
+    fn name(&self) -> &'static str {
+        GATE
+    }
+
+    fn owed(&self) -> Vec<String> {
+        UnconstructedGate.owed()
+    }
+
+    fn run(&self, cx: &Ctx) -> Verdict {
+        run_at(cx, &self.posture())
+    }
+
+    fn selftest<'a>(&'a self, _cx: &'a Ctx) -> Report<'a> {
+        Report::new()
+    }
+}
+
+/// One release-posture case: `gate`'s run over `cx` must RED the site row of every id
+/// [`KNOWN_UNSHIPPED`] names, each row naming its id and the release refusal.
+fn release_refuses_register<'a>(cx: &Ctx, gate: &'a AtTarget, name: String) -> CasePlan<'a> {
+    let cx = cx.clone();
+    CasePlan::new(move || {
+        let covers: Vec<String> = KNOWN_UNSHIPPED.iter().map(|id| row_site(id)).collect();
+        let verdict = crate::gates::execute(gate as &dyn Gate, &cx);
+        let red: Vec<String> = verdict
+            .rows
+            .iter()
+            .filter(|r| covers.contains(&r.id) && r.status != Status::Pass)
+            .map(|r| format!("{} {} {}", r.id, r.title, r.detail))
+            .collect();
+        let mut naming: Vec<String> = vec![RELEASE_REFUSAL.to_string()];
+        naming.extend(covers.iter().cloned());
+        Case {
+            name,
+            covers,
+            expected: Expect::Red { naming },
+            got: if red.is_empty() {
+                Expect::Green
+            } else {
+                Expect::Red { naming: red }
+            },
+        }
+    })
 }
 
 /// `decls` with the live `[[capability]]` table whose `id` is `id` cut out: its header line and
