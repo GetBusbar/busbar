@@ -2075,11 +2075,13 @@ impl Connector {
             .ok_or(ConnError::Fault)?;
         let due = (desc.timeout_ms != 0)
             .then(|| std::time::Instant::now() + Duration::from_millis(desc.timeout_ms));
+        // The exchange body: the description alone, or framed into the opener's form.
+        let body = dialled::composed_body(desc.fields, desc.body, &description)?;
         let held = self.dial_exchange(
             caller,
             need,
             &OpenDesc {
-                body: &description,
+                body: &body,
                 ..*desc
             },
             (exchange, alpn),
