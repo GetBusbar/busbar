@@ -2758,6 +2758,33 @@ pub fn door_mounts(
                     }),
                 };
             }
+            // A CATALOG ROUTE (ARCHITECT ruling 2026-10-16, 3b C): the kernel's names for the caller,
+            // rendered by the plane's pure `catalog`; no unit, no audit record, nothing metered.
+            let catalog = routes.served.planes[plane]
+                .snapshot
+                .claims
+                .get(claim as usize)
+                .is_some_and(|c| c.flags & busbar_contract::abi::plane::CLAIM_CATALOG != 0);
+            if catalog {
+                let routes = Arc::clone(&routes);
+                return PlaneRouteSpec {
+                    path,
+                    method,
+                    auth,
+                    handler: Arc::new(move |ctx: PlaneReqCtx| -> PlaneRouteFuture {
+                        let routes = Arc::clone(&routes);
+                        Box::pin(async move {
+                            match DoorRequest::of(ctx) {
+                                Some(req) => routes.catalog(plane, &req),
+                                None => stated(
+                                    (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                                    Body::empty(),
+                                ),
+                            }
+                        })
+                    }),
+                };
+            }
             let routes = Arc::clone(&routes);
             PlaneRouteSpec {
                 path,
@@ -2967,6 +2994,36 @@ type BoundParent = (
 );
 
 impl DataRoutes {
+    /// ONE CATALOG ROUTE'S ANSWER (ARCHITECT ruling 2026-10-16, 3b C; `abi::plane::CLAIM_CATALOG`):
+    /// the names the generation lists for the caller (`endpoints::catalog_names`, the kernel's
+    /// visibility rule) rendered by the plane's pure `catalog` for the request head. No unit is
+    /// minted, no audit record written and nothing metered, as 1.5.5's list-models route.
+    fn catalog(&self, plane: usize, req: &DoorRequest) -> Response {
+        let names = busbar_kernel::endpoints::catalog_names(&req.app, &req.gov);
+        let target = req
+            .uri
+            .path_and_query()
+            .map_or_else(|| req.uri.path().to_string(), |t| t.as_str().to_string());
+        let head: Vec<(Vec<u8>, Vec<u8>)> = req
+            .headers
+            .iter()
+            .map(|(n, v)| (n.as_str().as_bytes().to_vec(), v.as_bytes().to_vec()))
+            .collect();
+        let rendered = self.served.planes[plane].driver.catalog_unitless(
+            req.method.as_str().as_bytes(),
+            target.as_bytes(),
+            &head,
+            &names,
+        );
+        match rendered {
+            Some(r) => stated((r.status, r.fields), Body::from(r.body)),
+            None => stated(
+                (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                Body::empty(),
+            ),
+        }
+    }
+
     /// ONE DUPLEX SESSION ARRIVAL (K6; ARCHITECT Q-L5B-SESSION-SERVE 2026-10-03, TRANSITIONAL with
     /// the session routes): the caller's head delivered once at `arrive`, as a request's is; the
     /// session's unit opened on the node (its steps to the door, one admission) on its own task,

@@ -62,7 +62,6 @@ use busbar_contract::abi::mechanism::lifecycle::{
 };
 use busbar_contract::abi::mechanism::ticket::{CompletionHandle, Ticket};
 use busbar_contract::abi::plane::check::check_piece_in;
-use busbar_contract::abi::plane::DIALECT_PROVIDER;
 use busbar_contract::abi::plane::{
     ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut, OpClass, OutField,
     PlaneDriveIn, PlaneDriveOut, PlaneOpenIn, PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot,
@@ -74,6 +73,7 @@ use busbar_contract::abi::plane::{
     SHAPE_PIECEWISE, SPAN_ABSENT, TAIL_FALLBACK, TAIL_PROBES, UNITS_FLOOR, UNITS_REPORTED,
     VERDICT_HARD, VERDICT_NONE, VERDICT_OK, VERDICT_RETRY,
 };
+use busbar_contract::abi::plane::{CatalogIn, CatalogOut, CLAIM_CATALOG, DIALECT_PROVIDER};
 use busbar_contract::abi::plane::{PlaneCancelIn, PlaneCancelOut};
 use busbar_contract::abi::plane::{RecordWrite, AUDIT_DEGRADED, RECORD_AUDIT};
 use busbar_contract::abi::sdk::door::{abi_str, statement};
@@ -694,26 +694,41 @@ const DIALECT_CLAIMS: [ClaimRow; 7] = [
     ("POST", "/v1/models", false, "openai"),
 ];
 
-/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`], then the previous release's fallback, a prefix claim on
-/// `/` per verb wearing the residual default dialect. The fallback reaches every path at any depth
-/// no more specific claim or kernel route takes (CG-62); the router has no plane-shaped branch.
+/// THE LIST-MODELS CATALOG ROUTES (ARCHITECT ruling 2026-10-16, 3b C): `GET` on each listing path,
+/// exact, answered with no unit by [`CatalogSlot`] over the names the kernel lists for the caller.
+const CATALOG_PATHS: [&str; 2] = [
+    crate::exchange::catalog::PATH,
+    crate::exchange::catalog::BETA_PATH,
+];
+
+/// THE PLANE'S CLAIMS: [`DIALECT_CLAIMS`], the [`CATALOG_PATHS`], then the previous release's
+/// fallback, a prefix claim on `/` per verb wearing the residual default dialect. The fallback
+/// reaches every path at any depth no more specific claim or kernel route takes (CG-62); the router
+/// has no plane-shaped branch.
 #[must_use]
 pub fn claims() -> Vec<ClaimSpec> {
     let fallback = crate::exchange::arrive::envelope_for("/");
+    let catalogs = CATALOG_PATHS.iter().map(|&path| {
+        let mut claim = ClaimSpec::new("GET", path, TRANSPORT, CLAIM_EXACT | CLAIM_CATALOG);
+        claim.refusal_dialect =
+            u16::try_from(dialect_index(crate::exchange::arrive::envelope_for(path))).unwrap_or(0);
+        claim
+    });
     DIALECT_CLAIMS
         .iter()
         .copied()
-        .chain(
-            FALLBACK_VERBS
-                .iter()
-                .map(|&verb| (verb, "/", false, fallback)),
-        )
         .map(|(verb, target, exact, dialect)| {
             let flags = if exact { CLAIM_EXACT } else { 0 };
             let mut claim = ClaimSpec::new(verb, target, TRANSPORT, flags);
             claim.refusal_dialect = u16::try_from(dialect_index(dialect)).unwrap_or(0);
             claim
         })
+        .chain(catalogs)
+        .chain(FALLBACK_VERBS.iter().map(|&verb| {
+            let mut claim = ClaimSpec::new(verb, "/", TRANSPORT, 0);
+            claim.refusal_dialect = u16::try_from(dialect_index(fallback)).unwrap_or(0);
+            claim
+        }))
         .collect()
 }
 
@@ -1769,6 +1784,56 @@ slot!(
     }
 );
 
+slot!(
+    /// `catalog`: a list-models catalog route's listing of the names the kernel hands it, in the
+    /// envelope of the dialect the request names (`exchange::catalog`). Pure, and no unit exists.
+    CatalogSlot, CatalogIn, CatalogOut, |_instance, input, mut out| {
+        let target = String::from_utf8_lossy(input.field(|i| &i.target).bytes()).into_owned();
+        let path = target.split_once('?').map_or(target.as_str(), |(p, _)| p);
+        let head: Vec<(Vec<u8>, Vec<u8>)> = input
+            .fields()
+            .iter()
+            .map(|f| {
+                (
+                    f.field(|f| &f.name).bytes().to_vec(),
+                    f.field(|f| &f.value).bytes().to_vec(),
+                )
+            })
+            .collect();
+        let names: Vec<String> = input
+            .names()
+            .iter()
+            .map(|n| String::from_utf8_lossy(n.bytes()).into_owned())
+            .collect();
+        let rendered = crate::exchange::catalog::render(path, &head, &names);
+        let (mut reply, mut fields, mut arena) =
+            (input.reply_buf(), input.fields_buf(), input.arena_buf());
+        reply.extend(&rendered.body);
+        for (name, value) in &rendered.fields {
+            fields.push(OutField {
+                name: arena.span(name.as_bytes()),
+                value: arena.span(value),
+            });
+        }
+        let short = !(reply.fits() && fields.fits() && arena.fits());
+        let (rw, rnd) = reply.settle(short);
+        let (fw, fnd) = fields.settle(short);
+        let (aw, and) = arena.settle(short);
+        out.set(|o| &o.reply_written, rw as u64);
+        out.set(|o| &o.reply_needed, rnd as u64);
+        out.set(|o| &o.fields_written, fw as u32);
+        out.set(|o| &o.fields_needed, fnd as u32);
+        out.set(|o| &o.arena_written, aw as u64);
+        out.set(|o| &o.arena_needed, and as u64);
+        out.set(|o| &o.status, u32::from(rendered.status));
+        if short {
+            Outcome::Failed
+        } else {
+            Outcome::Ready
+        }
+    }
+);
+
 busbar_contract::plugin_door! {
     ops: busbar_contract::abi::plane::Ops,
     statement: STATEMENT,
@@ -1780,5 +1845,6 @@ busbar_contract::plugin_door! {
     kind_ops: {
         arrive: Safe<Arrive>, on_piece: Safe<OnPiece>, refusal: Safe<RefusalSlot>,
         serve: Safe<Serve>, hydrate: Safe<Hydrate>, start: Safe<Start>, project: Safe<Project>,
+        catalog: Safe<CatalogSlot>,
     },
 }
