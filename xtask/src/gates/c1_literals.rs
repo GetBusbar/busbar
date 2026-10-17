@@ -253,6 +253,13 @@ impl Gate for C1LiteralsGate {
              pub const E: &str = \"a timestamp in unix seconds\";\n\
              pub const F: &str = \"SIGTERM on unix\";\n",
         );
+        // A LITERAL CONTINUED OVER LINES: the word sits on the inner line, where the first quote
+        // the line carries is the literal's CLOSE.
+        let mut continued = Overlay::new();
+        continued.set(
+            file,
+            "pub const PLANTED: &str = \"a refusal that runs \\\n    on: you can't use valkey here\";\n",
+        );
         let mut comment = Overlay::new();
         comment.set(
             file,
@@ -292,6 +299,12 @@ impl Gate for C1LiteralsGate {
                     "a scheme beside a masked identifier URI is still RED",
                     beside,
                     vec![file, "grpc"],
+                ),
+                (
+                    ROW_LITERAL,
+                    "a word on the inner line of a continued literal is RED",
+                    continued,
+                    vec![file, "valkey"],
                 ),
             ],
         );
