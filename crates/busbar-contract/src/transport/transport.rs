@@ -187,9 +187,9 @@ pub enum Transport {
     /// request; here the channel is symmetric and open-ended, so "which frame answers which" is not a
     /// property the transport can assume. ARMED under the `runtime` capability: the neutral WS
     /// transport is real on both legs — the ingress WS-upgrade acceptor (`crate::ingress::duplex_ws`)
-    /// presents an upgraded socket as the `serve_messages` channel, and the egress WS dialer
-    /// (`crate::egress::duplex_ws`) dials an upstream `wss://` THROUGH the egress unit's guard and
-    /// hands back the same channel. A duplex caller selects this variant and lets the transport open the socket.
+    /// presents an upgraded socket as the `serve_messages` channel, and an upstream `wss://` is
+    /// dialled by the one connector (`busbar-core-connector`) under its destination guard. A duplex
+    /// caller selects this variant and lets the transport open the socket.
     WebSocket,
 }
 
@@ -210,9 +210,9 @@ pub enum UpstreamWireKind {
     Stdio,
     /// A BIDIRECTIONAL FRAMED BYTE WIRE — the full-duplex channel shape [`Transport::WebSocket`]
     /// selects, distinct from the two request/response wires above because bytes flow both ways over
-    /// one open connection. ARMED under the `runtime` capability: the neutral WS egress dialer
-    /// (`crate::egress::duplex_ws`) is the site that maps this discriminant to a real guarded socket,
-    /// so a duplex caller that selects `Transport::WebSocket` resolves the axis to a live wire. The
+    /// one open connection. ARMED under the `runtime` capability: the one connector
+    /// (`busbar-core-connector`) dials the guarded socket this discriminant names, so a duplex
+    /// caller that selects `Transport::WebSocket` resolves the axis to a live wire. The
     /// MCP client leg (`mcp/client/wire.rs`) still has no `Duplex` arm — it never selects it.
     Duplex,
 }
@@ -285,9 +285,9 @@ impl Transport {
         match self {
             Transport::Http => Some(UpstreamWireKind::StreamableHttp),
             Transport::Stdio => Some(UpstreamWireKind::Stdio),
-            // The full-duplex framed wire the axis names neutrally. ARMED under `runtime`: the neutral
-            // WS egress dialer (`crate::egress::duplex_ws`) maps this discriminant to a real guarded
-            // socket, so a duplex caller that selects `Transport::WebSocket` resolves the axis to a
+            // The full-duplex framed wire the axis names neutrally. ARMED under `runtime`: the one
+            // connector dials the guarded socket this discriminant names, so a duplex caller that
+            // selects `Transport::WebSocket` resolves the axis to a
             // live wire rather than an unreachable. The MCP client leg never selects it.
             Transport::WebSocket => Some(UpstreamWireKind::Duplex),
             Transport::JsonRpc | Transport::HttpJson | Transport::Grpc => None,
