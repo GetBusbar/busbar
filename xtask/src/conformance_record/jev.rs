@@ -1147,6 +1147,8 @@ impl Runner {
         providers: fn(u16) -> String,
     ) -> Result<Leg, String> {
         let dir = dir.join(name);
+        // The leg's own directory, made before anything is written into it (its signing key first).
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let scratch = dir.join("http");
         let far = FarEnd::start()?;
         let (ports, admin_token, provider_key) = match (
