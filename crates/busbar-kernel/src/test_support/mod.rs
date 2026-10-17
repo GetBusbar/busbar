@@ -965,12 +965,14 @@ impl Default for TestApp {
 }
 
 /// THE ROOT'S `register_seams`, IN A TEST BINARY: the parse-time section list (the test fold,
-/// [`crate::plane::config::default_plane_sections`]), first-wins. A plane's test-kit calls this where
+/// [`crate::config::plane_sections::default_plane_sections`]), first-wins. A plane's test-kit calls this where
 /// the composition root would have bound it, so a plane test that drives a wire leg without building
 /// a [`TestApp`] runs on the same binding a shipped binary does. The hostless-egress driver is no
 /// longer a binding: a plane is handed its App's on the build context (`BuildCtx::hostless`).
 pub fn install_root_seams() {
-    crate::plane::config::install_plane_sections(crate::plane::config::default_plane_sections);
+    crate::config::plane_sections::install_plane_sections(
+        crate::config::plane_sections::default_plane_sections,
+    );
 }
 
 impl TestApp {
@@ -1627,7 +1629,7 @@ impl TestApp {
         // `test-support` build seeds none (`seeded_section_plane_runtime`).
         #[cfg(any(test, feature = "test-support"))]
         if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+            busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
         ) {
             if let Some(rt) = seeded_section_plane_runtime() {
                 plane_slots
@@ -1835,8 +1837,8 @@ impl TestApp {
         let plane_gates_map: crate::state::PlaneGateMap = {
             let mut m = std::collections::BTreeMap::new();
             for section in [
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+                busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
+                busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ] {
                 if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
                     let (containers, section_hooks) = self
@@ -1862,8 +1864,8 @@ impl TestApp {
         let plane_rewrites_map: crate::state::PlaneRewriteMap = {
             let mut m = std::collections::BTreeMap::new();
             for section in [
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+                busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
+                busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             ] {
                 if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(section) {
                     let (containers, section_hooks) = self
@@ -1899,7 +1901,7 @@ impl TestApp {
             // exactly as `plane_pools`/`plane_gates` below. Absent that, a neutral empty placeholder no
             // test-path consumer downcasts (the A2A plane reads its `AgentsCfg` off its runtime object).
             agent_defs: crate::plane::registry::plane_decl_for_config_section(
-                busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+                busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             )
             .and_then(|decl| self.plane_defs_any.remove(decl.key))
             .unwrap_or_else(|| std::sync::Arc::new(())),
@@ -1925,7 +1927,7 @@ impl TestApp {
                 // read treats an absent key identically to the former empty-value entry).
                 let mut m = std::collections::BTreeMap::new();
                 if let Some(decl) = crate::plane::registry::plane_decl_for_config_section(
-                    busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+                    busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
                 ) {
                     m.insert(decl.key, self.agent_pools);
                 }

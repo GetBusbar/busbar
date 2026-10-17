@@ -68,7 +68,7 @@ impl NamedMapSection {
     /// This is a REGISTRY-DERIVED list, so it goes EMPTY of plane sections when a plane is compiled
     /// out. It must NOT be the source the config deletion-gate reads (that would silently accept a
     /// `tools:` block for a compiled-out plane) — the gate reads the frozen static
-    /// [`busbar_kernel::plane::config::NAMED_MAP_SECTIONS`] instead.
+    /// [`busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS`] instead.
     pub fn sections() -> Vec<NamedMapSection> {
         let mut out = vec![NamedMapSection::IdentityProviders, NamedMapSection::Export];
         for decl in crate::plane::registry::plane_decls() {
@@ -347,7 +347,7 @@ impl NamedMapSection {
 /// [`config_validate`](crate::plane::registry::PlaneDecl::config_validate) seam, resolved by config
 /// section — so core routes a plane-section write to the plane's own validator without naming a
 /// plane-specific validate function — after the kernel's own per-registration judgement
-/// ([`crate::plane::config::validate_plane_entry`]). A section whose plane declares no validator (none of
+/// ([`crate::config::plane_sections::validate_plane_entry`]). A section whose plane declares no validator (none of
 /// the sections that reach this helper) validates vacuously; a section whose plane is compiled out is
 /// refused by the caller before it reaches here.
 fn plane_config_validate(
@@ -362,12 +362,12 @@ fn plane_config_validate(
     // entry: the plane's declared trust keys, then its hook references.
     let entry =
         serde_yaml::to_value(def).map_err(|e| format!("`{}.{name}`: {e}", section.key()))?;
-    crate::plane::config::validate_plane_entry(
+    crate::config::plane_sections::validate_plane_entry(
         section.key(),
         name,
         &entry,
         decl.trust_keys,
-        &crate::plane::config::config_sections(),
+        &crate::config::plane_sections::config_sections(),
     )?;
     if let Some(f) = decl.config_validate {
         f(name, def)?;

@@ -183,7 +183,7 @@ tools:
 /// the door's `validate`; GREEN for the same section with distinct names.
 #[test]
 fn a_door_sections_effective_registry_is_judged_whole_at_resolve() {
-    use busbar_kernel::plane::config::PlaneCfg;
+    use busbar_kernel::config::plane_sections::PlaneCfg;
     register_planes();
     let effective = |publish: &str| -> serde_yaml::Value {
         serde_yaml::from_str(&format!(

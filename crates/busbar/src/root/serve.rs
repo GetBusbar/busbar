@@ -719,7 +719,7 @@ pub fn applied_section(
     let mut pools = installed_door_pools(app);
     // The generic per-plane pool map is keyed by the plane's key, the key its slot is under: read
     // there first, so an apply carries the pools whatever the registry holds.
-    if section_key == busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3] {
+    if section_key == busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3] {
         if let Some(own) = app.plane_pools(plane) {
             for (owner, stated) in &mut pools {
                 if *owner == section_key {
@@ -1200,11 +1200,11 @@ pub fn door_pools(
 ) -> DoorPoolsByKey {
     [
         (
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2],
+            busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
             tools.clone(),
         ),
         (
-            busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+            busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
             agents.clone(),
         ),
     ]
@@ -1215,7 +1215,7 @@ pub fn door_pools(
 pub fn installed_door_pools(app: &busbar_kernel::state::App) -> DoorPoolsByKey {
     let none = BTreeMap::new();
     let agents = busbar_kernel::plane::registry::plane_decl_for_config_section(
-        busbar_kernel::plane::config::NAMED_MAP_SECTIONS[3],
+        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
     )
     .and_then(|decl| app.plane_pools(decl.key))
     .unwrap_or(&none);

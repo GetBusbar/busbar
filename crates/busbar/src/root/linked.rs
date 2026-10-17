@@ -910,8 +910,8 @@ fn catalogue_entries(
 /// loads, over the destination guard.
 pub fn register_seams() {
     #[cfg(linked_plane_sections)]
-    busbar_kernel::plane::config::install_plane_sections(
-        busbar_kernel::plane::config::config_sections,
+    busbar_kernel::config::plane_sections::install_plane_sections(
+        busbar_kernel::config::plane_sections::config_sections,
     );
 }
 

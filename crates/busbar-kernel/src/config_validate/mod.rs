@@ -1094,7 +1094,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
     // the neutral SECTION-KEYED accessor and name the plane from its REGISTERED decl (`subject_noun`),
     // so this neutral rule carries no plane token: the concrete noun is registry-supplied at
     // runtime, never a literal here.
-    let endpoint_section = busbar_kernel::plane::config::NAMED_MAP_SECTIONS[2];
+    let endpoint_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
     if cfg.endpoint_resource(endpoint_section).is_some()
         && cfg.auth.as_ref().is_none_or(|a| a.chain.is_empty())
     {
@@ -1708,7 +1708,7 @@ fn validate_cost_model(cfg: &RootCfg, errors: &mut Vec<String>) {
     // about one refuses here with a paste-ready stub, rather than a unit ledgered on a lane no card
     // prices (which fails every read of the bucket that holds it).
     //
-    // [`PlaneCfg::ledger_lanes`]: crate::plane::config::PlaneCfg::ledger_lanes
+    // [`PlaneCfg::ledger_lanes`]: crate::config::plane_sections::PlaneCfg::ledger_lanes
     if let Some(card) = &cfg.rate_card {
         for defs in [cfg.tool_defs.as_ref(), cfg.agent_defs.as_ref()] {
             let lanes = defs.ledger_lanes();
