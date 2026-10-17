@@ -68,30 +68,67 @@ const SCAN_FLOOR: usize = 200;
 /// `*_tests.rs` sibling are fixtures, and a wire literal in one is a fixture's literal.
 const EXCLUDE_TESTS_DIR: &str = "/tests/";
 
-/// The raw wire field name a dialect uses for a token count, WORD-BOUNDARY matched so
+/// The raw wire field names the dialects use for a token count, WORD-BOUNDARY matched so
 /// `input_tokens_total` (a plane-normalized aggregate, if one ever exists) is not a false hit but
-/// the bare provider field name is. The same twelve names, in the same order, the shell listed:
+/// the bare provider field name is.
 ///
-/// * anthropic/bedrock — `input_tokens`, `output_tokens`, `cache_read_input_tokens`,
-///   `cache_creation_input_tokens`
-/// * openai/responses — `prompt_tokens`, `completion_tokens`, `cached_tokens`
-/// * gemini — `promptTokenCount`, `candidatesTokenCount`, `thoughtsTokenCount`,
-///   `cachedContentTokenCount`
-/// * cohere — `billed_units`
-pub const WIRE_FIELDS: &[&str] = &[
+/// DERIVED FROM THE DIALECT TABLES, NEVER TYPED (Law 8; audit XG HIGH 2). The hand-typed list this
+/// replaces held twelve names and missed Bedrock's `inputTokens`/`outputTokens`/
+/// `cacheReadInputTokens`/`cacheWriteInputTokens` and OpenAI's `cache_write_tokens`, all declared
+/// in the mapping files. The set is every wire path segment, after the path's root (`usage`,
+/// `usageMetadata`), of every mapping row whose concept is one of [`TOKEN_CLASSES`], where the
+/// segment is a provider's compound identifier (it holds `_` or an uppercase letter): the leaf
+/// (`prompt_tokens`, `promptTokenCount`) and the containers that carry it (`billed_units`,
+/// `prompt_tokens_details`). A bare lowercase word on such a path (Cohere's `usage.tokens.…`) is
+/// English, not a provider's field name, and is not banned.
+fn wire_fields(cx: &Ctx) -> Result<Vec<String>, String> {
+    let maps = crate::dialect::load_maps(cx)?;
+    let mut fields = std::collections::BTreeSet::new();
+    for m in &maps {
+        for r in m
+            .rows
+            .iter()
+            .filter(|r| TOKEN_CLASSES.contains(&r.concept.as_str()))
+        {
+            for seg in r.path.split('.').skip(1) {
+                let seg = seg.trim_end_matches("[]").trim_end_matches("{}");
+                let compound = seg.contains('_') || seg.bytes().any(|b| b.is_ascii_uppercase());
+                let ident =
+                    !seg.is_empty() && seg.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_');
+                if compound && ident {
+                    fields.insert(seg.to_string());
+                }
+            }
+        }
+    }
+    if fields.len() < WIRE_FIELD_FLOOR {
+        return Err(format!(
+            "the token wire-field set derived from {} holds {} name(s) ({}), below the floor of \
+             {WIRE_FIELD_FLOOR}: a mapping file stopped declaring its token rows, and a shorter \
+             ban list is not a cleaner kernel",
+            crate::dialect::DIALECT_DIR,
+            fields.len(),
+            fields.iter().cloned().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    Ok(fields.into_iter().collect())
+}
+
+/// The usage concepts whose wire fields the kernel must never read: the four token classes
+/// (`tokens_in`, `tokens_out`, `cache_read`, `cache_write`) as the mapping files name them, and
+/// reasoning tokens (Gemini's `thoughtsTokenCount`, billed as output).
+const TOKEN_CLASSES: &[&str] = &[
     "input_tokens",
     "output_tokens",
-    "cache_read_input_tokens",
-    "cache_creation_input_tokens",
-    "prompt_tokens",
-    "completion_tokens",
-    "cached_tokens",
-    "promptTokenCount",
-    "candidatesTokenCount",
-    "thoughtsTokenCount",
-    "cachedContentTokenCount",
-    "billed_units",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "reasoning_tokens",
 ];
+
+/// The floor under the derived wire-field set: 22 names when it was derived (the twelve the shell
+/// listed, plus `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheWriteInputTokens`,
+/// `cache_write_tokens`, `reasoning_tokens` and the four `*_tokens_details` containers).
+const WIRE_FIELD_FLOOR: usize = 22;
 
 pub struct KernelTokenWirePurityGate;
 
@@ -206,7 +243,7 @@ impl Gate for KernelTokenWirePurityGate {
     }
 
     fn run(&self, cx: &Ctx) -> Verdict {
-        let files = match kernel_files(cx) {
+        let files = match wire_fields(cx).and_then(|w| kernel_files(cx).map(|f| (w, f))) {
             Ok(f) => f,
             Err(e) => {
                 // The scan could not be taken. It is NOT a clean kernel, and the finding row says
@@ -231,6 +268,7 @@ impl Gate for KernelTokenWirePurityGate {
             }
         };
 
+        let (wire, files) = files;
         let mut offenders = Vec::new();
         for f in &files {
             let mut in_block = scan::LexState::default();
@@ -239,7 +277,7 @@ impl Gate for KernelTokenWirePurityGate {
                 // `strip_comments` awk applied. A wire field name inside a literal is still the
                 // kernel naming a provider's shape; only prose about the ban is exempt.
                 let code = scan::strip_comment_line(raw, &mut in_block);
-                for field in WIRE_FIELDS {
+                for field in &wire {
                     if word_hit(&code, field) {
                         offenders.push(finding(&f.rel_str(), i + 1, field));
                     }
