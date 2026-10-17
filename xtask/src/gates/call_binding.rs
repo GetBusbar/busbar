@@ -6,7 +6,7 @@
 //!
 //! | row | the claim |
 //! | --- | --- |
-//! | `call-binding:in-process` | the trusted half: EVERY production file of the kernel (its `impl Kernel` token vending aside) mints every `Pass`/`Grant` BOUND to the unit's call (`mint_bound`), never with the unbound `mint`, and never calls the kernel's unbound token factories (the `impl Kernel` fns that mint unbound), outside the named off-loop sites of [`OFF_LOOP`] (recovery, the sweep, the amendment journal), each of which must still mint; the loop opens the call (`next_call`), the stage compares it (`bound_to`), and the money cell refuses another call's grant (`CallMismatch`) |
+//! | `call-binding:in-process` | the trusted half: EVERY production file of the kernel (its `impl Kernel` token vending aside) mints every `Pass`/`Grant` BOUND to the unit's call (`mint_bound`), never with the unbound `mint`, and never calls the kernel's unbound token factories (the `impl Kernel` fns that mint unbound), outside the named off-loop sites of [`OFF_LOOP`] (recovery, the sweep, the secret-read grant, the amendment journal), each of which must still mint; the loop opens the call (`next_call`), the stage compares it (`bound_to`), and the money cell refuses another call's grant (`CallMismatch`) |
 //! | `call-binding:abi-handle` | the untrusted half, the context: no host entry reads a plugin's `HostCtx` as an address; every one resolves it through `handle::resolve`, whose check verifies the tag in constant time, refuses a revoked entry and (inside a crossing) another instance's, and counts a forgery |
 //! | `call-binding:ticket` | the untrusted half, the ticket: a slot's generation (a worker's or an inline one) is the keyed permutation of its counter (`ticket_generation`); a wake that matches no live ticket is judged by the inverse (`ticket_count`) and a never-minted one is blamed on its supplier (`forged_ticket`), as is a wake for a worker the dispatcher does not run; a spent counter retires its slot (`next_count`) |
 //!
@@ -59,6 +59,12 @@ const OFF_LOOP: &[(&str, &str, &str)] = &[
         "crates/busbar-kernel/src/tick.rs",
         "sweep_settle",
         "the sweep settles a slot whose unit is gone, on no unit's call",
+    ),
+    (
+        "crates/busbar-kernel/src/seal.rs",
+        "lend",
+        "the secret-read grant lent to host code holding a `Secret` (a hop, the TLS stack, a once-shown \
+         mint): the read serves no stage of a unit's call",
     ),
     (
         "crates/busbar-kernel/src/audit/amend.rs",
