@@ -1340,12 +1340,12 @@ pub struct DeployCfg {
     /// A lifted CARRIER, exactly as `mcp:` above is: one field for every such section.
     #[serde(skip)]
     pub declared: DeclaredSections,
-    // 1.6.0 UNIFIED POOLS: the separate `tool_pools:` and `agent_pools:` sections are GONE. There is
-    // ONE neutral top-level `pools:` (above); a pool's kind is INFERRED from its members and each
-    // plane's pools are projected to their own carriers in `resolve`. A 1.5.4/1.6.0-dev config still
+    // 1.6.0 POOLS UNDER THEIR VERB: the unreleased `tool_pools:` and `agent_pools:` sections are
+    // GONE. The top-level `pools:` (above) is the model plane's alone, as in 1.5.5; another plane's
+    // pools are its section's reserved `pools` sub-key, read in `resolve`. A 1.6.0-dev config still
     // carrying `tool_pools:`/`agent_pools:` LOUD-FAILS here (unknown field) with the
     // `--migrate-config` breadcrumb, exactly as the retired `observability:` block does — the
-    // migrator folds them into `pools:`.
+    // migrator moves them under their verbs.
     /// The dynamic plugin subsystem (`plugins:` block, top-level). Absent = disabled (the default
     /// `enabled: false` master switch): no plugin is ever discovered or loaded.
     #[serde(default)]
@@ -2108,118 +2108,41 @@ pub fn resolve(
     for pool in pools.values_mut() {
         pool.gates = entity_only_hook_refs(&deploy.pools.all_pool_hooks, &pool.gates);
     }
-    // ── UNIFIED `pools:` KIND INFERENCE (1.6.0). The single neutral `pools:` map holds pools of
-    // every plane; a pool's KIND is INFERRED from its members (never declared), and the pool is
-    // routed to the plane that owns those members. Pools whose members resolve to the residual
-    // (`models:`) fallback kind stay in `pools` (their rich members and routing knobs are read by
-    // that fallback plane exactly as before — byte-identical); pools belonging to any other
-    // registered plane are projected to the neutral `CandidatePoolCfg` carriers those planes already
-    // consume. HOMOGENEITY is enforced here (a pool whose members span two nouns is refused), which
-    // is the check the design puts before resolution so that a clean `--validate` is a clean boot.
-    // An UNRESOLVABLE member is deliberately NOT refused here — see the `None` arm below for the
-    // two checks that own it and why the refusal stays where 1.5.5 put it. This is the ONLY place a
-    // pool's plane is decided.
+    // ── A PLANE'S POOLS SIT UNDER ITS OWN VERB (THE DESIGN §4 POOLS-VERBS, #43/#47). The top-level
+    // `pools:` is the fallback plane's alone, as in 1.5.5: its members are `models:` entries, and a
+    // member that is not one is refused there in 1.5.5's words. Any other plane's failover pools are
+    // the reserved `pools` sub-key of that plane's own section (`<verb>.pools`), read here as the
+    // kernel reads every reserved sub-key, with the uniform grammar (`members:` by bare name and
+    // `repeatable:`). The kernel infers no plane from a member: which plane a pool belongs to is
+    // where the operator wrote it.
     let mut tool_pools_derived = std::collections::BTreeMap::new();
     let mut agent_pools_derived = std::collections::BTreeMap::new();
-    {
-        // A pool's KIND discriminant is its members' shared CONFIG SECTION — the plane-declared
-        // grammar key, used as OPAQUE DATA. The router never names a plane: `tools:` routes to the
-        // tool-pool projection, `agents:` to the agent-pool one, and the residual `models:` section
-        // stays on the fallback lane. Reading the discriminant off the frozen named-map mirror (rather
-        // than a hard-coded plane key) is what lets a registered plane's pools route with nothing
-        // about that plane written here.
-        let tools_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2];
-        let agents_section = busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3];
-        let member_kind = |name: &str| -> Option<&'static str> {
-            // Global-unique noun names make this a name-only lookup — the router never asks "which
-            // kind of `x`?". A name defined in two nouns is a collision the validator rejects.
-            if deploy.models.contains_key(name) {
-                return Some(crate::plane::fallback_key());
-            }
-            // The plane registry sections read through the always-present type-erased seam, resolved
-            // by config section. With the owning plane compiled out the seam holds a
-            // `RawPlaneSection`, whose `contains_def` is empty (a present section is refused earlier),
-            // so no name resolves there.
-            if deploy
-                .plane_section(tools_section)
-                .is_some_and(|cfg| cfg.contains_def(name))
-            {
-                return Some(tools_section);
-            }
-            if deploy
-                .plane_section(agents_section)
-                .is_some_and(|cfg| cfg.contains_def(name))
-            {
-                return Some(agents_section);
-            }
-            None
+    for (section, derived) in [
+        (
+            busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
+            &mut tool_pools_derived,
+        ),
+        (
+            busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
+            &mut agent_pools_derived,
+        ),
+    ] {
+        let Some(stated) = deploy
+            .declared_raw
+            .get(section)
+            .and_then(|v| v.get(busbar_contract::section::RESERVED_POOLS_KEY))
+            .filter(|v| !v.is_null())
+        else {
+            continue;
         };
-        let mut non_fallback: Vec<String> = Vec::new();
-        for (pool_name, pool) in pools.iter() {
-            // The pool's kind = its members' shared kind. Determine it from the FIRST resolvable
-            // member, then require every other member to agree (homogeneity).
-            let mut kind: Option<&'static str> = None;
-            let mut homogeneous = true;
-            for m in &pool.members {
-                match member_kind(m.name()) {
-                    // A MEMBER NOTHING DEFINES IS NOT REFUSED HERE, and the narrowing is the
-                    // point. This loop's only job is to decide which plane a pool belongs to, and
-                    // a name that resolves nowhere decides nothing — so refusing it here buys no
-                    // safety and costs the operator the FRAME LINE they matched on: 1.5.5 caught
-                    // an undefined pool member in semantic validation, under `config validation
-                    // failed:`, and a resolve-stage error is framed `config errors:`. A runbook or
-                    // CI grep written against the old frame stops matching a config that is still
-                    // just as broken.
-                    //
-                    // THE MEMBER CANNOT ESCAPE, because taking no plane from it leaves exactly two
-                    // roads and both end in a refusal that runs before any config is served (boot,
-                    // `--validate` and admin apply all resolve, then validate):
-                    //   * the pool's other members give it no plane either, so it STAYS on the
-                    //     fallback lane in `pools` — where `config_validate`'s pool loop refuses the member
-                    //     by name, in 1.5.5's words (`pool '<p>' references unknown model '<m>'`);
-                    //   * or the other members DO name a plane, the pool is projected to
-                    //     `tool_pools_derived` / `agent_pools_derived`, and `check_failover_pool`
-                    //     below refuses this same member against that plane's registry with the
-                    //     message that names the section it looked in.
-                    // There is no third road: `non_fallback` is only ever pushed on the two projected
-                    // arms, so a pool leaves `pools` only by entering a map that is checked.
-                    None => {}
-                    Some(k) => match kind {
-                        None => kind = Some(k),
-                        Some(prev) if prev == k => {}
-                        Some(_) => homogeneous = false,
-                    },
-                }
-            }
-            if !homogeneous {
-                errors.push(format!(
-                    "pools.{pool_name}: members resolve to more than one plane (a mix of \
-                     `models:`/`tools:`/`agents:`). A pool's kind is INFERRED from its members, so \
-                     every member of a pool must be the same kind. Split the pool by plane."
-                ));
-                continue;
-            }
-            // Fallback-lane pools — and an all-unresolvable pool, which `config_validate` refuses
-            // member by member once it is resolved — stay in `pools`.
-            let derived = match kind {
-                Some(k) if k == tools_section => &mut tool_pools_derived,
-                Some(k) if k == agents_section => &mut agent_pools_derived,
-                _ => continue,
-            };
-            let members = pool.members.iter().map(|m| m.model.clone()).collect();
-            let repeatable = pool.repeatable.clone();
-            let candidates = pools::CandidatePoolCfg {
-                members,
-                repeatable,
-            };
-            derived.insert(pool_name.clone(), candidates);
-            non_fallback.push(pool_name.clone());
-        }
-        // A pool that is NOT a fallback-lane pool must not remain in the fallback `pools` map (its
-        // bare members do not resolve to `models:` and would fail the fallback-lane build). Remove
-        // the projected ones.
-        for name in non_fallback {
-            pools.remove(&name);
+        match serde_yaml::from_value::<std::collections::BTreeMap<String, pools::CandidatePoolCfg>>(
+            stated.clone(),
+        ) {
+            Ok(stated) => *derived = stated,
+            Err(e) => errors.push(format!(
+                "{section}.{}: {e}",
+                busbar_contract::section::RESERVED_POOLS_KEY
+            )),
         }
     }
     // NEUTRAL POOL-LEVEL ROUTING KNOBS → members (1.6.0, fallback plane). `weights:`/`tier:`/
@@ -2290,6 +2213,12 @@ pub fn resolve(
     // Whether `m` names a `tools:` entry. Always false when that entry's owning plane is compiled
     // out: there is no `tools:` registry then, and no pool is inferred onto that plane, so
     // `tool_pools_derived` is empty and the first loop below never iterates.
+    let [tools_section, agents_section] = [
+        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[2],
+        busbar_kernel::config::plane_sections::NAMED_MAP_SECTIONS[3],
+    ];
+    let pools_at =
+        |section: &str| format!("{section}.{}", busbar_contract::section::RESERVED_POOLS_KEY);
     let is_tool_member = |m: &str| -> bool { deploy.tools.0.contains_def(m) };
     // Whether `m` names an `agents:` registration. Always false when that entry's owning plane is
     // compiled out: there is no `agents:` registry then, and no pool is inferred onto that plane, so
@@ -2298,25 +2227,25 @@ pub fn resolve(
     for (pool, def) in &tool_pools_derived {
         check_failover_pool(
             &mut errors,
-            "pools",
+            &pools_at(tools_section),
             pool,
             def,
             is_tool_member,
             is_agent_member,
-            "tools",
-            "agents",
+            tools_section,
+            agents_section,
         );
     }
     for (pool, def) in &agent_pools_derived {
         check_failover_pool(
             &mut errors,
-            "pools",
+            &pools_at(agents_section),
             pool,
             def,
             is_agent_member,
             is_tool_member,
-            "agents",
-            "tools",
+            agents_section,
+            tools_section,
         );
     }
     // ONE POOL PER MEMBER, per plane. The dispatch route resolves a registration to ITS pool and
@@ -2324,8 +2253,8 @@ pub fn resolve(
     // histories for one upstream with the winner chosen by map iteration order — a nondeterminism
     // an operator cannot see. Refused as config, where the ambiguity was written.
     for (section, pools) in [
-        ("pools", &tool_pools_derived),
-        ("pools", &agent_pools_derived),
+        (pools_at(tools_section), &tool_pools_derived),
+        (pools_at(agents_section), &agent_pools_derived),
     ] {
         let mut owner: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
         for (pool, def) in pools {

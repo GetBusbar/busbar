@@ -424,6 +424,9 @@ fn dealt(section: &str, settings: Vec<u8>) -> Result<Vec<u8>, String> {
     }
     let value: serde_json::Value =
         serde_json::from_slice(&settings).map_err(|e| format!("the section is not JSON: {e}"))?;
+    // The section crosses as the deal hands it: its reserved core-owned sub-keys (its `pools`
+    // among them) are the kernel's and are taken off first, by the one strip every crossing uses.
+    let value = crate::config_validate::deal::strip(section, value, &mut Vec::new());
     serde_json::to_vec(&serde_json::json!({ section: value })).map_err(|e| e.to_string())
 }
 
