@@ -2067,7 +2067,7 @@ fn a_declared_chain_the_host_cannot_keep_refuses_the_admit() {
     }
 }
 
-/// A plane store whose trust-decision read parks, once armed, until the test releases it: the
+/// A plane store whose read of the operator's kept trust rulings parks, once armed, until the test releases it: the
 /// store-plugin crossing an admit makes (audit K4 #6).
 struct ParkingStore {
     armed: std::sync::atomic::AtomicBool,
@@ -2100,7 +2100,7 @@ impl crate::plane::store::PlaneStore for ParkingStore {
         kind: &str,
         _: &busbar_contract::records::PlaneSelector,
     ) -> busbar_contract::records::RecordStoreResult<Vec<Vec<u8>>> {
-        if kind == crate::plane::store::KIND_TRUST_DECISION && self.armed.load(Ordering::SeqCst) {
+        if kind != crate::plane::store::KIND_DEMOTION && self.armed.load(Ordering::SeqCst) {
             if let Some(entered) = self.entered.lock().unwrap().take() {
                 entered.send(()).unwrap();
             }
@@ -2151,7 +2151,7 @@ impl crate::plane::store::PlaneStore for ParkingStore {
 }
 
 /// NO PLUGIN CODE RUNS UNDER A HOST LOCK (§11.13 M1; audit K4 #6): while an instance's first admit
-/// is parked in the store plugin reading the operator's trust decisions, a caller-scoped host
+/// is parked in the store plugin reading the operator's kept trust rulings, a caller-scoped host
 /// service of another instance, on another thread, still answers.
 #[test]
 fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
@@ -2189,7 +2189,7 @@ fn an_admit_parked_in_the_store_never_stalls_another_instances_host_service() {
     };
     entered_rx
         .recv_timeout(Duration::from_secs(10))
-        .expect("the second admit reached the store's trust-decision read");
+        .expect("the second admit reached the store's read of the kept trust rulings");
     let (answer_tx, answer_rx) = channel();
     {
         let s = Arc::clone(&s);
