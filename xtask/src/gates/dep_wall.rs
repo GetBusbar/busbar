@@ -23,8 +23,15 @@
 //! plane crates listed in [`LEGACY`], and every external plugin the workspace resolves from its own
 //! repository (a `GetBusbar` git source). The closure is the NORMAL-edge closure `cargo metadata`
 //! resolves, with optional edges that nothing activates left out.
+//!
+//! OWN SOURCE. `std::net` and `tokio::net` are no crate edge, so the closure walk cannot see them:
+//! every in-scope crate's own source is read for them as PATHS ([`banned_paths`]: `use` trees
+//! expanded, renames followed, expressions and macro bodies read), never as a substring.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::str::FromStr;
+
+use proc_macro2::{Delimiter, Group, Spacing, TokenStream, TokenTree};
 
 use serde_json::Value;
 
@@ -348,13 +355,7 @@ pub fn measure(
                 if rel.contains("/tests/") || rel.ends_with("_tests.rs") {
                     continue;
                 }
-                for (_, line) in crate::scan::production_lines(&f.text) {
-                    for p in BANNED_PATHS {
-                        if line.contains(p) {
-                            hits.insert((*p).to_string());
-                        }
-                    }
-                }
+                hits.extend(banned_paths(&f.text).into_iter().map(str::to_string));
             }
         }
         if !hits.is_empty() {
@@ -363,6 +364,254 @@ pub fn measure(
     }
     let names = pkgs.values().map(|p| p.name.clone()).collect();
     Ok((out, roots.len(), names))
+}
+
+/// THE BANNED PATHS ONE SOURCE FILE NAMES, read as PATHS, not as text.
+///
+/// The file is lexed and every path is read segment by segment: a `use` tree is expanded
+/// (`use std::{io, net::TcpStream}` names `std::net::TcpStream`), a leading `::` is the same path, a
+/// path written in an expression, a type or a macro body counts as one written in a `use`, a
+/// rename of a banned path's prefix (`use std as s;`, `extern crate std as s;`) is followed where
+/// the file uses it, and a glob over such a prefix (`use std::*;`) brings the banned module into
+/// scope and counts. A comment or a string literal names no path. An item under `#[cfg(test)]` (or
+/// `cfg(all(test, ..))`) or `#[test]` is test code, not the plugin's production source. A file
+/// that does not lex falls back to the line scan, which reads more, never less.
+pub fn banned_paths(text: &str) -> BTreeSet<&'static str> {
+    let Ok(stream) = TokenStream::from_str(text) else {
+        let mut hits = BTreeSet::new();
+        for (_, line) in crate::scan::production_lines(text) {
+            hits.extend(BANNED_PATHS.iter().filter(|p| line.contains(**p)));
+        }
+        return hits;
+    };
+    let tokens: Vec<TokenTree> = strip_tests(stream).into_iter().collect();
+    // Two passes: a rename is in force wherever the file uses it, before or after the `use`.
+    let mut first = PathScan::default();
+    first.walk(&tokens, None);
+    let mut second = PathScan {
+        aliases: first.aliases,
+        hits: BTreeSet::new(),
+    };
+    second.walk(&tokens, None);
+    second.hits
+}
+
+fn segments(path: &str) -> Vec<&str> {
+    path.split("::").collect()
+}
+
+/// Is this attribute body (`cfg(test)`, `test`, `tokio::test`, `cfg(all(test, ..))`) a test mark?
+fn is_test_attr(body: &TokenStream) -> bool {
+    let toks: Vec<TokenTree> = body.clone().into_iter().collect();
+    let idents_only = toks.iter().all(|t| match t {
+        TokenTree::Ident(_) => true,
+        TokenTree::Punct(p) => p.as_char() == ':',
+        _ => false,
+    });
+    if idents_only {
+        return matches!(toks.last(), Some(TokenTree::Ident(i)) if i == "test");
+    }
+    let [TokenTree::Ident(cfg), TokenTree::Group(g)] = toks.as_slice() else {
+        return false;
+    };
+    if cfg != "cfg" || g.delimiter() != Delimiter::Parenthesis {
+        return false;
+    }
+    let inner: Vec<TokenTree> = g.stream().into_iter().collect();
+    match inner.as_slice() {
+        [TokenTree::Ident(t)] => t == "test",
+        [TokenTree::Ident(all), TokenTree::Group(args)] if all == "all" => args
+            .stream()
+            .into_iter()
+            .any(|t| matches!(t, TokenTree::Ident(i) if i == "test")),
+        _ => false,
+    }
+}
+
+/// The token stream with every test-marked item removed: the attribute, the attributes after it,
+/// and the item up to its first top-level `;` or `{ .. }` body. An inner `#![cfg(test)]` empties
+/// the scope it opens.
+fn strip_tests(stream: TokenStream) -> TokenStream {
+    let toks: Vec<TokenTree> = stream.into_iter().collect();
+    let attr_at = |i: usize| -> Option<(usize, bool)> {
+        let TokenTree::Punct(hash) = toks.get(i)? else {
+            return None;
+        };
+        if hash.as_char() != '#' {
+            return None;
+        }
+        let (inner, at) = match toks.get(i + 1)? {
+            TokenTree::Punct(bang) if bang.as_char() == '!' => (true, i + 2),
+            _ => (false, i + 1),
+        };
+        let TokenTree::Group(g) = toks.get(at)? else {
+            return None;
+        };
+        (g.delimiter() == Delimiter::Bracket && is_test_attr(&g.stream()))
+            .then_some((at + 1 - i, inner))
+    };
+    let mut out: Vec<TokenTree> = Vec::new();
+    let mut i = 0;
+    while i < toks.len() {
+        if let Some((len, inner)) = attr_at(i) {
+            if inner {
+                return TokenStream::new();
+            }
+            i += len;
+            // Skip the item: further attributes, then up to its body or its `;`.
+            while i < toks.len() {
+                match &toks[i] {
+                    TokenTree::Punct(p) if p.as_char() == ';' => {
+                        i += 1;
+                        break;
+                    }
+                    TokenTree::Group(g) if g.delimiter() == Delimiter::Brace => {
+                        i += 1;
+                        break;
+                    }
+                    _ => i += 1,
+                }
+            }
+            continue;
+        }
+        match &toks[i] {
+            TokenTree::Group(g) => {
+                let mut kept = Group::new(g.delimiter(), strip_tests(g.stream()));
+                kept.set_span(g.span());
+                out.push(TokenTree::Group(kept));
+            }
+            t => out.push(t.clone()),
+        }
+        i += 1;
+    }
+    out.into_iter().collect()
+}
+
+/// The path reader [`banned_paths`] runs: renames of a banned path's prefix, and the hits.
+#[derive(Default)]
+struct PathScan {
+    aliases: BTreeMap<String, Vec<String>>,
+    hits: BTreeSet<&'static str>,
+}
+
+impl PathScan {
+    /// `path` with a leading rename resolved and a trailing `self` dropped.
+    fn expand(&self, path: &[String]) -> Vec<String> {
+        let mut full: Vec<String> = match path.split_first() {
+            Some((head, rest)) => match self.aliases.get(head) {
+                Some(target) => target.iter().chain(rest).cloned().collect(),
+                None => path.to_vec(),
+            },
+            None => Vec::new(),
+        };
+        if full.last().is_some_and(|s| s == "self") {
+            full.pop();
+        }
+        full
+    }
+
+    /// Record every banned path `path` names, or every one it reaches when it is a glob.
+    fn judge(&mut self, path: &[String], glob: bool) {
+        if path.is_empty() {
+            return;
+        }
+        let full = self.expand(path);
+        for banned in BANNED_PATHS {
+            let segs = segments(banned);
+            let names = full.len() >= segs.len() && full.iter().zip(&segs).all(|(a, b)| a == b);
+            let reaches =
+                glob && segs.len() > full.len() && full.iter().zip(&segs).all(|(a, b)| a == b);
+            if names || reaches {
+                self.hits.insert(*banned);
+            }
+        }
+    }
+
+    /// `name` now spells `path`, when `path` is a strict prefix of a banned path.
+    fn rename(&mut self, name: String, path: &[String]) {
+        let full = self.expand(path);
+        let prefix = BANNED_PATHS.iter().any(|b| {
+            let segs = segments(b);
+            !full.is_empty()
+                && full.len() < segs.len()
+                && full.iter().zip(&segs).all(|(a, b)| a == b)
+        });
+        if prefix {
+            self.aliases.insert(name, full);
+        }
+    }
+
+    /// Read `toks` for paths. `tree` is the prefix of the `use` tree group they are the body of.
+    fn walk(&mut self, toks: &[TokenTree], tree: Option<&[String]>) {
+        let start = || tree.map(<[String]>::to_vec).unwrap_or_default();
+        let mut chain = start();
+        // A `::` was just read (or a use-tree group opened): the next identifier extends `chain`.
+        let mut sep = tree.is_some();
+        let mut i = 0;
+        while i < toks.len() {
+            match &toks[i] {
+                TokenTree::Ident(id) => {
+                    let word = id.to_string();
+                    let word = word.strip_prefix("r#").unwrap_or(&word).to_string();
+                    if sep {
+                        chain.push(word);
+                    } else if word == "as" && !chain.is_empty() {
+                        self.judge(&chain, false);
+                        if let Some(TokenTree::Ident(name)) = toks.get(i + 1) {
+                            self.rename(name.to_string(), &chain);
+                            i += 1;
+                        }
+                        chain.clear();
+                    } else {
+                        self.judge(&chain, false);
+                        chain = vec![word];
+                    }
+                    sep = false;
+                }
+                TokenTree::Punct(p)
+                    if p.as_char() == ':'
+                        && p.spacing() == Spacing::Joint
+                        && matches!(toks.get(i + 1), Some(TokenTree::Punct(q)) if q.as_char() == ':') =>
+                {
+                    sep = true;
+                    i += 2;
+                    continue;
+                }
+                TokenTree::Punct(p) if p.as_char() == '*' && sep && !chain.is_empty() => {
+                    self.judge(&chain, true);
+                    chain.clear();
+                    sep = false;
+                }
+                TokenTree::Group(g)
+                    if g.delimiter() == Delimiter::Brace && sep && !chain.is_empty() =>
+                {
+                    let inner: Vec<TokenTree> = g.stream().into_iter().collect();
+                    self.walk(&inner, Some(chain.as_slice()));
+                    chain.clear();
+                    sep = false;
+                }
+                TokenTree::Punct(p) if p.as_char() == ',' && tree.is_some() => {
+                    self.judge(&chain, false);
+                    chain = start();
+                    sep = true;
+                }
+                TokenTree::Group(g) => {
+                    self.judge(&chain, false);
+                    chain.clear();
+                    sep = false;
+                    let inner: Vec<TokenTree> = g.stream().into_iter().collect();
+                    self.walk(&inner, None);
+                }
+                _ => {
+                    self.judge(&chain, false);
+                    chain.clear();
+                    sep = false;
+                }
+            }
+            i += 1;
+        }
+        self.judge(&chain, false);
+    }
 }
 
 pub struct DepWallGate;
@@ -503,6 +752,21 @@ impl Gate for DepWallGate {
             &[ROW_NEW],
             ov,
             &["new-offender", "busbar-plane-decisions", "std::net"],
+        ));
+        // A GROUPED IMPORT: `std::{io, net::TcpStream}` names `std::net` as a path, not as text.
+        let mut ov = Overlay::new();
+        ov.set(
+            "crates/busbar-plane-llm/src/planted_grouped_socket.rs",
+            "use std::{io, net::TcpStream};\n\
+             pub fn dial() -> io::Result<TcpStream> { TcpStream::connect(\"127.0.0.1:1\") }\n",
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a plugin that reaches a socket through a grouped import is a new offender",
+            &[ROW_NEW],
+            ov,
+            &["new-offender", "busbar-plane-llm", "std::net"],
         ));
         // A DRAINED PIN: a pin for an offence the tree does not have must be struck.
         let mut ov = Overlay::new();
