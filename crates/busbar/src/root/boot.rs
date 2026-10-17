@@ -158,6 +158,13 @@ pub fn plugins_fetch(
         .collect())
 }
 
+/// The configuration file this process boots from (`--config`, or its default).
+fn config_path() -> std::path::PathBuf {
+    std::path::PathBuf::from(crate::root::cli::resolve_config_path(
+        crate::root::cli::config_path_flag().as_deref(),
+    ))
+}
+
 /// STAGE 0, PLAN: what the configuration file at `path` uses, read off its raw document (secret
 /// references stay raw; environment references are interpolated leniently, as the boot's early
 /// reads do). An unreadable file uses nothing: the boot's own load reports why.
@@ -608,11 +615,12 @@ pub type DoorPlane = std::sync::Arc<
 /// table (`root::connector::the()`). A plane that will not bind refuses the boot (exit 2).
 pub fn load_door_planes() {
     let doors = DOOR_CANDIDATES.get().map_or(&[][..], Vec::as_slice);
+    let used = crate::root::loader::boot::used_planes(&plan(&config_path()), doors);
     // The process's ONE connection table: a plane that declares a need is declared on it.
     let conns: std::sync::Arc<dyn busbar_contract::conn::DeclaredConns> =
         crate::root::connector::the().clone();
     let bound = crate::root::loader::boot::load_planes(
-        doors,
+        &used,
         plugin_logs(),
         std::sync::Arc::new(crate::root::loader::dispatch::NoSink),
         crate::root::dispatch::dispatcher().adopter(),
@@ -705,7 +713,7 @@ pub fn dropped_transports(
             return Vec::new();
         };
         let opened = registry
-            .open_transport_entries(&crate::root::doors::bind())
+            .open_transport_entries(&crate::root::doors::bind(), &plan(&config_path()))
             .and_then(|entries| {
                 entries
                     .doors

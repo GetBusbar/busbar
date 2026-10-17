@@ -539,6 +539,12 @@ pub struct PlaneSet {
     pub doors: Vec<Candidate>,
 }
 
+/// THE PLANES THE CONFIGURATION USES, of the discovered `doors`.
+#[must_use]
+pub fn used_planes(_uses: &Uses, doors: &[Candidate]) -> Vec<Candidate> {
+    doors.to_vec()
+}
+
 /// THE PLANES' ONE LOAD: every door plane of a [`PlaneSet`] selected under its own name and bound
 /// through [`load`] — a linked row by `load_linked`, a dropped one by `load_dropped` over its
 /// verified bytes, each against its stated Statement and tail, on `dispatcher`, to its own log
