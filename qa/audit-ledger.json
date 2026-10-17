@@ -370,6 +370,24 @@
    ]
   },
   {
+   "id": "crates/busbar-auth-oidc/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-oidc/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-oidc/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-auth-sigv4/src",
    "kind": "production",
    "paths": [
@@ -406,6 +424,24 @@
      },
      "report": "The SigV4 plugin now signs the real method, query and sent content type, re-encodes the path, keeps its day-key schedule alive and verifies inbound signatures in constant time with the dummy-secret rule. It still carries its own raw-pointer boundary under `deny(unsafe_code)` where an auth plugin must forbid unsafe code, though the safe SDK wrapper now exists. The query is sorted but never re-encoded to the canonical form, and the HMAC key state derived from the secret is freed unwiped. Clock, allocation and prose nits remain. Read fully."
     }
+   ]
+  },
+  {
+   "id": "crates/busbar-auth-webhook-signature/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-webhook-signature/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-webhook-signature/src/tests"
    ]
   },
   {
@@ -1302,6 +1338,21 @@
    ]
   },
   {
+   "id": "crates/busbar-plane-a2a/build.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-a2a/build.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-plane-decisions/src",
    "kind": "production",
    "paths": [
@@ -1341,6 +1392,21 @@
    ]
   },
   {
+   "id": "crates/busbar-plane-decisions/build.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-decisions/build.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-plane-llm/src",
    "kind": "production",
    "paths": [
@@ -1378,6 +1444,21 @@
      "report": "The llm plane's door is linked only under a development switch; the default build uses its codecs and reply relay through the legacy engine. Several token and billing behaviours differ from 1.5.5 with no registered difference: cache-write tokens billed as their own class, image tokens billed, failed streams billed, cached tokens moved, thinking switched on, hosted tools forwarded. The codec keeps per-thread state. On the door path failover, cuts and a model's protocol override are wrong. Read in three parts; large codec core files sampled."
     }
    ]
+  },
+  {
+   "id": "crates/busbar-plane-llm/build.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-llm/build.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-plane-mcp/src",
@@ -1433,6 +1514,21 @@
    ]
   },
   {
+   "id": "crates/busbar-plane-mcp/build.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-mcp/build.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-plane-streaming/src",
    "kind": "production",
    "paths": [
@@ -1470,6 +1566,21 @@
      "report": "The streaming plane has no ABI door; an older plane crate drives it as a library. Its sample tool executor answers the model's tool calls, which never reach the caller. On a barge-in it cancels and truncates upstream itself. Same-dialect sessions are rebuilt from a narrow model, losing unmodelled events and fields. It claims five dialects and no WebRTC, keys sessions by the raw principal, receives the provider key, sends no error frame on a budget cut, and under-counts Gemini audio seconds. Read fully except the Gemini config mapping, sampled."
     }
    ]
+  },
+  {
+   "id": "crates/busbar-plane-streaming/build.rs",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-streaming/build.rs"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-secret-env/src",
@@ -1837,24 +1948,6 @@
    ]
   },
   {
-   "id": "crates/busbar-voice/src",
-   "kind": "production",
-   "paths": [
-    "crates/busbar-voice/src"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null,
-   "exclude": [
-    "crates/busbar-voice/src/tests"
-   ]
-  },
-  {
    "id": "crates/plugin-loader/src",
    "kind": "production",
    "paths": [
@@ -2089,6 +2182,21 @@
    ]
   },
   {
+   "id": "crates/busbar-auth-oidc/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-oidc/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-auth-sigv4/declares.json",
    "kind": "production",
    "paths": [
@@ -2123,6 +2231,21 @@
      "report": "The plugin's declares document states only the superseded contract range, naming its kind's one version, which the loader no longer reads at admission; a transport-scheme list, where present, is the Statement's needs and is stripped by the one declares reader. Nothing else is declared and nothing is missing. Read fully."
     }
    ]
+  },
+  {
+   "id": "crates/busbar-auth-webhook-signature/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-webhook-signature/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-contract/include",
@@ -2341,6 +2464,66 @@
    ]
   },
   {
+   "id": "crates/busbar-plane-a2a/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-a2a/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-a2a/proto",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-a2a/proto"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-decisions/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-decisions/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-llm/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-llm/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-plane-llm/dialects",
    "kind": "production",
    "paths": [
@@ -2369,6 +2552,21 @@
      "report": "The dialect tables sit inside the plane crate and compile into const tables under a registered drift gate, so Law 5 holds; but the Responses table repeats two keys, which is invalid TOML that the compiler accepts and emits as contradictory rows unchecked, and the Anthropic drop warning carries a run of stray spaces into the log. Read fully."
     }
    ]
+  },
+  {
+   "id": "crates/busbar-plane-mcp/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-plane-mcp/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-secret-env/declares.json",
@@ -2515,6 +2713,36 @@
    ]
   },
   {
+   "id": "crates/busbar-transport-http/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-http/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-transport-stdio/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-stdio/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-transport-tcp/declares.json",
    "kind": "production",
    "paths": [
@@ -2549,6 +2777,21 @@
      "report": "The transport's declares document states only the superseded contract range, and the version it names is the transport kind's version at the plugin's own pinned host, not the shipping host's, whose transport kind is at one. The loader no longer reads the range at admission, so nothing is refused, but the document misstates the kind version it is built for. Read fully."
     }
    ]
+  },
+  {
+   "id": "crates/busbar-transport-webrtc/declares.json",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-transport-webrtc/declares.json"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "crates/busbar-transport-ws/declares.json",
@@ -2707,10 +2950,55 @@
    "fixed_at": null
   },
   {
+   "id": "crates/busbar-auth-oidc/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-oidc/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-oidc/examples",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-oidc/examples"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "crates/busbar-auth-sigv4/src/tests",
    "kind": "test",
    "paths": [
     "crates/busbar-auth-sigv4/src/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-webhook-signature/src/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-webhook-signature/src/tests"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -3320,32 +3608,6 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-plane-decisions/examples",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-plane-decisions/examples"
-   ],
-   "tree_hash": "4a24919ead7d3914245a7c6bc3e8406747b6a1344ab3b23854b7ceb45298f081",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "zero",
-   "counts": {},
-   "report": "The example is the decisions plane's dropped-in door image, one exported symbol over the same door function the linked row holds, built as a cdylib and driven by the plane's conformance suite beside the linked door through the one loader. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "zero",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "4a24919ead7d3914245a7c6bc3e8406747b6a1344ab3b23854b7ceb45298f081",
-     "counts": {},
-     "report": "The example is the decisions plane's dropped-in door image, one exported symbol over the same door function the linked row holds, built as a cdylib and driven by the plane's conformance suite beside the linked door through the one loader. Read fully."
-    }
-   ]
-  },
-  {
    "id": "crates/busbar-plane-llm/tests",
    "kind": "test",
    "paths": [
@@ -3417,21 +3679,6 @@
    "fixed_at": null
   },
   {
-   "id": "crates/busbar-plane-mcp/examples",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-plane-mcp/examples"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
    "id": "crates/busbar-plane-streaming/src/tests",
    "kind": "test",
    "paths": [
@@ -3451,6 +3698,21 @@
    "kind": "test",
    "paths": [
     "crates/busbar-plane-streaming/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-plane-streaming/examples",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-plane-streaming/examples"
    ],
    "tree_hash": null,
    "audited_at": null,
@@ -3685,51 +3947,6 @@
    "report": null,
    "auditor": null,
    "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-voice/src/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-voice/src/tests"
-   ],
-   "tree_hash": null,
-   "audited_at": null,
-   "round": null,
-   "result": "unaudited",
-   "counts": {},
-   "report": null,
-   "auditor": null,
-   "fixed_at": null
-  },
-  {
-   "id": "crates/busbar-voice/tests",
-   "kind": "test",
-   "paths": [
-    "crates/busbar-voice/tests"
-   ],
-   "tree_hash": "27678970dab2b48bfbfe23ac71daf9d50d748b1b3600370629cdc6ada8839f52",
-   "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-   "round": 1,
-   "result": "findings",
-   "counts": {
-    "LOW": 2
-   },
-   "report": "Proves the plane composes a process-global open-call table onto the served door; the table waits on model tool-call ids and refuses client replies by id, branching on carried content that needs a ruling under Law 11, while the runtime on the same door still answers tool calls with an echo executor. Read fully.",
-   "auditor": "opus-q128-architecture",
-   "fixed_at": null,
-   "rounds": [
-    {
-     "round": 1,
-     "result": "findings",
-     "auditor": "opus-q128-architecture",
-     "audited_at": "244a861e35aaa55bcbc30970d8a8722f9cb0b861",
-     "tree_hash": "27678970dab2b48bfbfe23ac71daf9d50d748b1b3600370629cdc6ada8839f52",
-     "counts": {
-      "LOW": 2
-     },
-     "report": "Proves the plane composes a process-global open-call table onto the served door; the table waits on model tool-call ids and refuses client replies by id, branching on carried content that needs a ruling under Law 11, while the runtime on the same door still answers tool calls with an echo executor. Read fully."
-    }
-   ]
   },
   {
    "id": "crates/plugin-loader/src/tests",
@@ -4174,6 +4391,21 @@
    ]
   },
   {
+   "id": "testing/hook-parity",
+   "kind": "instrument",
+   "paths": [
+    "testing/hook-parity"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
    "id": "testing/llm-conformance",
    "kind": "instrument",
    "paths": [
@@ -4280,6 +4512,21 @@
      "report": "The kernel no longer presents any vendor's credential by name: the presenter is driven by a declared scheme, and the vendor protocol constants are compiled only for tests. What remains is that the kernel crate's test for the credential fixture still builds six vendor-named twins with vendor key prefixes and header names. Two fixtures are one-sided goldens of deleted host code still described as two-copy drift guards, and the consumers that exist floor at a single row against hundreds. Read fully except bulk fixture rows."
     }
    ]
+  },
+  {
+   "id": "testing/root-fixtures",
+   "kind": "instrument",
+   "paths": [
+    "testing/root-fixtures"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
   },
   {
    "id": "testing/shadow-oracle",
@@ -4396,9 +4643,11 @@
     "testing/a2a-supplement",
     "testing/a2a-tck",
     "testing/fleet-fixtures",
+    "testing/hook-parity",
     "testing/llm-conformance",
     "testing/mcp-conformance",
     "testing/plane-copies",
+    "testing/root-fixtures",
     "testing/shadow-oracle",
     "testing/voice-conformance",
     "testing/webrtc-conformance",
