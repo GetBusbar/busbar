@@ -900,6 +900,103 @@ fn a_secret_plugin_wires_every_kind_op() {
     assert!(t.resolve.is_some(), "secret kind op resolve is NULL");
 }
 
+/// A kind op a door names no slot for is the SDK's unserved slot: present (never NULL, which the
+/// loader refuses), answering REFUSED and writing nothing but the outcome. The secret door above
+/// names `resolve` alone, so its `check` is unserved; the auth door names the six ops it was
+/// written with, so its `target` is.
+#[test]
+fn a_kind_op_a_door_does_not_name_answers_refused() {
+    use crate::abi::auth::{slot as auth_slot, TargetIn, TargetOut};
+    use crate::abi::secret::{slot as secret_slot, CheckIn};
+    // SAFETY: the macros' `'static` doors and their tables.
+    let secret = unsafe { &*(*secret_plugin::door()).ops.cast::<crate::abi::secret::Ops>() };
+    let auth = unsafe { &*(*auth_plugin::door()).ops.cast::<crate::abi::auth::Ops>() };
+
+    // SAFETY: `CheckIn` is plain data; all-zero is valid.
+    let mut input: CheckIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<CheckIn>(secret_slot::CHECK, Ticket::NONE);
+    let mut out = prefilled_head(size_of::<OutHead>());
+    assert!(secret.check.is_some(), "an unnamed kind op is never NULL");
+    assert_eq!(call(secret.check, &input, &mut out), Outcome::Refused);
+    assert_eq!(out.outcome.outcome(), Outcome::Refused);
+    assert_eq!((out.wake_at_ns, out.lease), (0xAAAA, 0xBBBB), "nothing else is written");
+
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: TargetIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<TargetIn>(auth_slot::TARGET, Ticket::NONE);
+    // SAFETY: as above.
+    let mut out: TargetOut = unsafe { std::mem::zeroed() };
+    out.head = prefilled_head(size_of::<TargetOut>());
+    assert!(auth.target.is_some(), "an unnamed kind op is never NULL");
+    assert_eq!(call(auth.target, &input, &mut out), Outcome::Refused);
+    assert_eq!(out.head.outcome.outcome(), Outcome::Refused);
+
+    // A NULL `out` or `in` is FAULT, as the trampoline answers it.
+    let op = secret.check.expect("present");
+    let faulted = op(ptr::null_mut(), ptr::from_ref(&input).cast(), ptr::null_mut());
+    assert_eq!(faulted.outcome(), Outcome::Fault);
+    let mut out = prefilled_head(size_of::<OutHead>());
+    let faulted = op(ptr::null_mut(), ptr::null(), ptr::from_mut(&mut out).cast());
+    assert_eq!(faulted.outcome(), Outcome::Fault);
+}
+
+mod secret_check_plugin {
+    //! A secret door that SERVES `check`: the slot it names is the one the table holds.
+    use super::*;
+    use crate::abi::secret::{CheckIn, ResolveIn, ResolveOut};
+
+    pub struct Resolve;
+    impl Slot for Resolve {
+        type In = ResolveIn;
+        type Out = ResolveOut;
+        fn call(_: *mut c_void, _: &ResolveIn, _: &mut ResolveOut) -> Outcome {
+            Outcome::Ready
+        }
+    }
+    pub struct Check;
+    impl Slot for Check {
+        type In = CheckIn;
+        type Out = OutHead;
+        fn call(_: *mut c_void, input: &CheckIn, _: &mut OutHead) -> Outcome {
+            if input.settings.len == 0 {
+                Outcome::Failed
+            } else {
+                Outcome::Ready
+            }
+        }
+    }
+
+    crate::plugin_door! {
+        ops: crate::abi::secret::Ops,
+        statement: crate::abi::sdk::door::statement("sdk-door-secret-check", "0.0.1", 1),
+        lifecycle: {
+            validate: Validate, open: Open, refresh: Refresh, retire: Retire, tick: Tick,
+            drive: Drive, cancel: Cancel, release: Release, close: Close,
+        },
+        kind_ops: { resolve: Resolve, check: Check },
+    }
+}
+
+#[test]
+fn a_secret_plugin_that_serves_check_answers_it() {
+    use crate::abi::secret::{slot as secret_slot, CheckIn, Ops};
+    // SAFETY: the macro's `'static` door and its secret table.
+    let t = unsafe { &*(*secret_check_plugin::door()).ops.cast::<Ops>() };
+    assert_eq!(t.head.slots, crate::abi::secret::SLOTS);
+    // SAFETY: plain data; all-zero is valid.
+    let mut input: CheckIn = unsafe { std::mem::zeroed() };
+    input.head = in_head::<CheckIn>(secret_slot::CHECK, Ticket::NONE);
+    let mut out = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.check, &input, &mut out), Outcome::Failed);
+    input.settings.len = 2;
+    let mut out = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.check, &input, &mut out), Outcome::Ready);
+    // `check` answers only its own index.
+    input.head.op = secret_slot::RESOLVE;
+    let mut out = prefilled_head(size_of::<OutHead>());
+    assert_eq!(call(t.check, &input, &mut out), Outcome::Fault);
+}
+
 mod export_plugin {
     //! A REAL kind table: every export kind op wired to the structs `abi::export` states for it.
     use super::*;

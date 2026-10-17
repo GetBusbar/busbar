@@ -72,7 +72,8 @@ use busbar_contract::abi::hook::{
     UserView as HookUserView,
 };
 use busbar_contract::abi::secret::{
-    Ops as SecretOps, ResolveIn as SecretResolveIn, ResolveOut as SecretResolveOut,
+    CheckIn as SecretCheckIn, Ops as SecretOps, ResolveIn as SecretResolveIn,
+    ResolveOut as SecretResolveOut,
 };
 // THE AUTH KIND (v3, design B.3): aliased, as the mechanism's are.
 use busbar_contract::abi::auth::{
@@ -83,7 +84,7 @@ use busbar_contract::abi::auth::{
     OpenOutboundIn as AuthOpenOutboundIn, OpenOutboundOut as AuthOpenOutboundOut,
     OutboundReadyIn as AuthOutboundReadyIn, OutboundReadyOut as AuthOutboundReadyOut,
     RequestFacts as AuthRequestFacts, StripName as AuthStripName, StyleDecl as AuthStyleDecl,
-    VerifyIn as AuthVerifyIn,
+    TargetIn as AuthTargetIn, TargetOut as AuthTargetOut, VerifyIn as AuthVerifyIn,
 };
 // THE PLANE AND TRANSPORT KINDS and THE HOST CONNECTOR: aliased, so the hot lane's names cannot collide.
 use busbar_contract::abi::host::conn::connector as hconn;
@@ -1238,7 +1239,8 @@ fn compute_layout() -> String {
             complete_login,
             open_outbound,
             outbound_ready,
-            fields
+            fields,
+            target
         ]
     );
     record!(s, AuthStyleDecl, [name, flags, points]);
@@ -1380,6 +1382,12 @@ fn compute_layout() -> String {
         AuthFieldsOut,
         [head, fields_len, needed_fields, needed_bytes]
     );
+    record!(
+        s,
+        AuthTargetIn,
+        [head, style, credential, settings, buf, buf_cap]
+    );
+    record!(s, AuthTargetOut, [head, target]);
     record!(s, PlaneOps, [head]);
     record!(s, TransportOps, [head]);
 
@@ -2244,9 +2252,10 @@ fn compute_layout() -> String {
     record!(s, hsvc::SnapshotReadIn, [head, scope, _reserved, into]);
 
     // M3-SHAPES (abi-v2-perkind.md B.2): the secret kind's `resolve`.
-    record!(s, SecretOps, [head, resolve]);
+    record!(s, SecretOps, [head, resolve, check]);
     record!(s, SecretResolveIn, [head, settings]);
     record!(s, SecretResolveOut, [head, secret, error_kind, _reserved]);
+    record!(s, SecretCheckIn, [head, settings, err_buf, err_cap]);
     // M3-SHAPES (abi-v2-perkind.md B.4): the hook kind's decide/transform/notify/configure/
     // status/describe/serve, its views and its Statement tail.
     record!(

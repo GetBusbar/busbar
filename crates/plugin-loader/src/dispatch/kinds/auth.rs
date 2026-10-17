@@ -9,7 +9,8 @@
 //!   `CompleteLoginIn::out_buf`;
 //! * `fields` by `check_fields`, over the host's field buffer and array from `FieldsIn`;
 //! * `begin_login` by `check_begin_login` (its URL and form are plugin memory under the lease, so
-//!   no host capacity is involved).
+//!   no host capacity is involved);
+//! * `target` by `check_target`, over the host's buffer from `TargetIn`.
 //!
 //! `open_outbound` and `outbound_ready` state no rule beyond the mechanism's and answer `Ok`, as
 //! does every lifecycle slot.
@@ -28,10 +29,10 @@
 
 use busbar_contract::abi::auth::{
     self, check_begin_login, check_complete_login, check_fields, check_identify,
-    check_inbound_points, check_style_decl, slot, AuthPoints, BeginLoginIn, BeginLoginOut,
+    check_inbound_points, check_style_decl, check_target, slot, AuthPoints, BeginLoginIn, BeginLoginOut,
     CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut, IdentifyOut, IdentityBuf, OpenOutboundIn,
-    OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StripName, VerifyIn, LOGIN_IDENTITY,
-    VERDICT_IDENTITY,
+    OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StripName, TargetIn, TargetOut, VerifyIn,
+    LOGIN_IDENTITY, VERDICT_IDENTITY,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{reported, Fault};
@@ -277,11 +278,13 @@ unsafe impl InFrame for CompleteLoginIn {}
 unsafe impl InFrame for OpenOutboundIn {}
 unsafe impl InFrame for OutboundReadyIn {}
 unsafe impl InFrame for FieldsIn {}
+unsafe impl InFrame for TargetIn {}
 unsafe impl OutFrame for IdentifyOut {}
 unsafe impl OutFrame for BeginLoginOut {}
 unsafe impl OutFrame for OpenOutboundOut {}
 unsafe impl OutFrame for OutboundReadyOut {}
 unsafe impl OutFrame for FieldsOut {}
+unsafe impl OutFrame for TargetOut {}
 
 /// The group spans an identity answer reports: `out.identity.groups_len` of the host's
 /// `buf.groups`, the count checked against `buf.groups_cap` first. Empty unless the answer is a
@@ -333,6 +336,7 @@ impl Kind for Auth {
             slot::OPEN_OUTBOUND => "open_outbound",
             slot::OUTBOUND_READY => "outbound_ready",
             slot::FIELDS => "fields",
+            slot::TARGET => "target",
             _ => lifecycle_name(s),
         }
     }
@@ -397,6 +401,10 @@ impl Kind for Auth {
             slot::BEGIN_LOGIN => {
                 a.input::<BeginLoginIn>()?;
                 check_begin_login(a.outcome, a.out::<BeginLoginOut>()?)
+            }
+            slot::TARGET => {
+                let cap = a.input::<TargetIn>()?.buf_cap;
+                check_target(a.outcome, a.out::<TargetOut>()?, cap)
             }
             _ => Ok(()),
         }
