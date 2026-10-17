@@ -103,42 +103,25 @@ fn the_far_ends_usage_reaches_the_caller_and_the_sessions_units() {
     );
 }
 
-/// A barge-in owes the far end two frames (cancel, truncate) and the caller one: a far-side answer
-/// reaches only the caller, so it takes the caller's frame and leaves the far end's, in order, to
-/// the caller side's collections.
+/// A barge-in is the caller's to act on (Law 11): the far-side answer carries the event to the
+/// caller as the far end sent it, and nothing is owed the far end.
 #[test]
 fn a_far_side_answer_carries_only_a_frame_for_the_caller() {
     let mut s = sideband();
     s.from_far_end(&audio_delta("it1"), 0);
     while s.next(false).frame.is_some() {}
-    s.from_far_end(
-        &json(
-            serde_json::json!({"type":"input_audio_buffer.speech_started",
-            "audio_start_ms":0,"item_id":"it1"}),
-        ),
-        0,
+    let barge = json(
+        serde_json::json!({"type":"input_audio_buffer.speech_started",
+        "audio_start_ms":420,"item_id":"it1"}),
     );
+    s.from_far_end(&barge, 0);
     let far = s.next(false);
     assert!(
-        matches!(&far.frame, Some((Side::Caller, f)) if text(f).contains("speech_started")),
+        matches!(&far.frame, Some((Side::Caller, f)) if *f == barge),
         "{far:?}"
     );
     assert_eq!(s.next(false), Emit::default(), "no caller frame left");
-    assert!(
-        s.ready(),
-        "the far end's frames are owed: the driver is named"
-    );
-    let first = s.next(true);
-    let second = s.next(true);
-    assert!(
-        matches!(&first.frame, Some((Side::FarEnd, f)) if text(f).contains("response.cancel")),
-        "{first:?}"
-    );
-    assert!(
-        matches!(&second.frame, Some((Side::FarEnd, f)) if text(f).contains("conversation.item.truncate")),
-        "{second:?}"
-    );
-    assert!(!s.ready());
+    assert!(!s.ready(), "nothing is owed the far end");
 }
 
 /// The caller's last piece settles the open turn once: the audio it admitted is in the session's
@@ -167,6 +150,11 @@ fn the_telephony_door_reads_the_carriers_envelope() {
             "mediaFormat":{"encoding":"audio/x-mulaw","sampleRate":8000,"channels":1}}}),
         ),
         false,
+    );
+    let told = s.next(true);
+    assert!(
+        matches!(&told.frame, Some((Side::FarEnd, f)) if text(f).contains("session.update")),
+        "{told:?}"
     );
     assert_eq!(s.next(true), Emit::default());
     s.from_caller(
@@ -326,7 +314,7 @@ fn a_rewritten_session_open_locks_the_rewritten_params_once() {
     assert_eq!(Live::locked(Door::Sideband, &cfg), cfg.session);
     assert_eq!(
         Live::locked(Door::Twilio, &cfg),
-        crate::session_params::g711_config()
+        crate::session_params::g711_over(&cfg.session)
     );
     let mut sessions = Sessions::default();
     let rewritten = SessionConfig {
