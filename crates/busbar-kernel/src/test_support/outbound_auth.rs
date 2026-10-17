@@ -17,6 +17,26 @@ use busbar_contract::auth_calls::{
 };
 use busbar_contract::redacted::Secret;
 
+/// THE DOUBLE'S DEFAULT INBOUND STYLE: the carrier marks a test binary's stand-in axis answers
+/// when no linked row states `FACT_DEFAULT_INBOUND_STYLE` (a test binary links no auth plugin), in
+/// the 1.5.5 precedence order the linked header auth states them. Test data, never shipped: the
+/// shipped lines are that plugin's Statement's, proven by the composition root's tests.
+#[must_use]
+pub fn double_inbound_style() -> Vec<String> {
+    ["authorization", "x-api-key", "x-goog-api-key"]
+        .map(String::from)
+        .to_vec()
+}
+
+/// THE DOUBLE'S OPERATOR CARRIERS: what the stand-in axis answers for the operator credential's
+/// row when no linked row answers it, in the order the linked operator plugin states them.
+#[must_use]
+pub fn double_operator_carriers() -> Vec<String> {
+    ["authorization", "x-admin-token"]
+        .map(String::from)
+        .to_vec()
+}
+
 /// The double's axis: answers no inbound module, serves every outbound style.
 #[must_use]
 pub fn axis() -> Arc<dyn AuthAxis> {
@@ -63,6 +83,24 @@ impl AuthAxis for StandIn {
 
     fn credential_readers(&self) -> Vec<String> {
         self.0.credential_readers()
+    }
+
+    /// The rows' own; where no row answers the operator credential, the double's operator carriers.
+    fn carriers(&self, module: &str) -> Vec<String> {
+        let rows = self.0.carriers(module);
+        if rows.is_empty() && module == crate::config::operator_provider() {
+            return double_operator_carriers();
+        }
+        rows
+    }
+
+    /// The rows' own; where no row states one, the double's default inbound style.
+    fn default_inbound_style(&self) -> Result<Vec<String>, String> {
+        let rows = self.0.default_inbound_style()?;
+        if rows.is_empty() {
+            return Ok(double_inbound_style());
+        }
+        Ok(rows)
     }
 
     fn serving(

@@ -507,6 +507,25 @@ fn test_synth_key_reserved_id_prefixes_refused() {
     }
 }
 
+/// The operator credential's second carrier, as the linked operator plugin states it (test data:
+/// the kernel names no credential line).
+const X_ADMIN_TOKEN: &str = "x-admin-token";
+
+/// The client token the default inbound style yields on `req` (a test binary's stand-in axis
+/// answers the double's style: the linked header auth's three carriers, in 1.5.5 order).
+fn extract(req: &Request<Body>) -> Option<String> {
+    AuthMiddleware::new_builtin(&crate::config::AuthCfg::default_none())
+        .extract_client_token(req.headers())
+}
+
+/// The admin candidate the operator credential's carriers yield on `headers` (the double's).
+fn admin_candidate(headers: &HeaderMap) -> Option<String> {
+    carried(
+        &header_names(&crate::test_support::outbound_auth::double_operator_carriers()),
+        headers,
+    )
+}
+
 /// Helper: build a request with a single header set, for `extract_client_token` unit tests.
 fn req_with(name: &str, value: &str) -> Request<Body> {
     Request::builder()
@@ -519,30 +538,21 @@ fn req_with(name: &str, value: &str) -> Request<Body> {
 #[test]
 fn test_extract_client_token_authorization_bearer() {
     let req = req_with("authorization", "Bearer tok-abc");
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-abc".to_string())
-    );
+    assert_eq!(extract(&req), Some("tok-abc".to_string()));
 }
 
 #[test]
 fn test_extract_client_token_x_api_key() {
     // Anthropic SDK carrier: raw token, no scheme prefix.
     let req = req_with("x-api-key", "tok-x-api-key");
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-x-api-key".to_string())
-    );
+    assert_eq!(extract(&req), Some("tok-x-api-key".to_string()));
 }
 
 #[test]
 fn test_extract_client_token_x_goog_api_key() {
     // Gemini SDK carrier: raw token, no scheme prefix.
     let req = req_with("x-goog-api-key", "tok-x-goog-api-key");
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-x-goog-api-key".to_string())
-    );
+    assert_eq!(extract(&req), Some("tok-x-goog-api-key".to_string()));
 }
 
 #[test]
@@ -555,10 +565,7 @@ fn test_extract_client_token_precedence_is_authorization_first() {
         .header("x-goog-api-key", "from-goog")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("from-auth".to_string())
-    );
+    assert_eq!(extract(&req), Some("from-auth".to_string()));
 
     // Without Authorization, x-api-key wins over x-goog-api-key.
     let req = Request::builder()
@@ -567,10 +574,7 @@ fn test_extract_client_token_precedence_is_authorization_first() {
         .header("x-goog-api-key", "from-goog")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("from-x-api-key".to_string())
-    );
+    assert_eq!(extract(&req), Some("from-x-api-key".to_string()));
 }
 
 #[test]
@@ -582,10 +586,7 @@ fn test_extract_client_token_empty_carrier_falls_through() {
         .header("x-goog-api-key", "tok-x-goog-api-key")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
-        Some("tok-x-goog-api-key".to_string())
-    );
+    assert_eq!(extract(&req), Some("tok-x-goog-api-key".to_string()));
 }
 
 #[test]
@@ -594,7 +595,7 @@ fn test_extract_client_token_none_when_no_carrier() {
         .uri("/v1/messages")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(AuthMiddleware::extract_client_token(&req), None);
+    assert_eq!(extract(&req), None);
 }
 
 #[test]
@@ -618,7 +619,7 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_api_key
             .body(Body::empty())
             .expect("test request must build");
         assert_eq!(
-            AuthMiddleware::extract_client_token(&req),
+            extract(&req),
             Some("tok".to_string()),
             "a non-bearer Authorization ('{non_bearer}') must fall through to x-api-key"
         );
@@ -641,7 +642,7 @@ fn test_extract_client_token_non_bearer_authorization_falls_through_to_x_goog_ap
         .body(Body::empty())
         .expect("test request must build");
     assert_eq!(
-        AuthMiddleware::extract_client_token(&req),
+        extract(&req),
         Some("goog-tok".to_string()),
         "a non-bearer Authorization must fall through to x-goog-api-key"
     );
@@ -738,7 +739,7 @@ fn test_extract_admin_header_token_empty_filtered() {
     // unit test fails against it; the filtered helper now yields `None`.
     let blank = req_with(X_ADMIN_TOKEN, "");
     assert_eq!(
-        admin_carriers(blank.headers()).1,
+        admin_candidate(blank.headers()),
         None,
         "a blank x-admin-token must be treated as absent (None)"
     );
@@ -748,7 +749,7 @@ fn test_extract_admin_header_token_empty_filtered() {
     // trim, matching extract_client_token's carrier filter exactly.
     let present = req_with(X_ADMIN_TOKEN, "admintok");
     assert_eq!(
-        admin_carriers(present.headers()).1,
+        admin_candidate(present.headers()),
         Some("admintok".to_string()),
         "a non-empty x-admin-token must be carried verbatim"
     );
@@ -758,7 +759,7 @@ fn test_extract_admin_header_token_empty_filtered() {
         .uri("/api/v1/admin/keys")
         .body(Body::empty())
         .expect("test request must build");
-    assert_eq!(admin_carriers(absent.headers()).1, None);
+    assert_eq!(admin_candidate(absent.headers()), None);
 }
 
 /// The `admin.forbidden` audit is bounded by the SAME per-(principal, window) counter
@@ -3365,4 +3366,118 @@ async fn test_admin_prefix_is_boundary_safe() {
     );
 
     handle.abort();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// Row 159, K3#1 (ARCHITECT ruling 2026-10-17): THE KERNEL NAMES NO INBOUND CREDENTIAL LINE. The
+// lines a caller's credential sits on are the default inbound style's, the carrier marks of the one
+// auth row stating `FACT_DEFAULT_INBOUND_STYLE`, walked in its Statement's order; the operator
+// credential's lines are its row's own marks.
+
+/// A verify-only fixture whose Statement states the default inbound style over lines no 1.5.5
+/// build ever read: what the kernel reads is the style's words, not its own.
+struct OtherStyle;
+
+impl busbar_contract::abi::sdk::auth_door::VerifyPlugin for OtherStyle {
+    fn open(_settings: &[u8], _secrets: &[&[u8]]) -> Result<Self, &'static str> {
+        Ok(Self)
+    }
+
+    fn verify(
+        &self,
+        _request: &busbar_contract::abi::sdk::auth_door::VerifyView<'_>,
+    ) -> busbar_contract::abi::sdk::auth_door::Answer {
+        busbar_contract::abi::sdk::auth_door::Verdict::Pass.into()
+    }
+}
+
+const OTHER_MARKS: &[busbar_contract::abi::mechanism::door::MarkWord] = &[
+    busbar_contract::abi::sdk::auth_door::carrier("x-other-key"),
+    busbar_contract::abi::sdk::auth_door::carrier("authorization"),
+];
+
+const OTHER_TAIL: &busbar_contract::abi::auth::AuthTail =
+    &busbar_contract::abi::sdk::auth_door::verify_tail(
+        busbar_contract::abi::auth::FACT_DEFAULT_INBOUND_STYLE,
+        busbar_contract::abi::auth::AuthPoints::HEAD,
+    );
+
+mod other_style {
+    busbar_contract::auth_verify_door!(
+        super::OtherStyle,
+        busbar_contract::abi::sdk::auth_door::with_tail(
+            busbar_contract::abi::mechanism::door::Statement {
+                mark_words: super::OTHER_MARKS.as_ptr(),
+                mark_words_len: super::OTHER_MARKS.len(),
+                ..busbar_contract::abi::sdk::door::statement("other-style", "1.0.0", 4)
+            },
+            super::OTHER_TAIL,
+        )
+    );
+}
+
+/// `chain: [keys]` over a registry linking the fixture style.
+fn other_style_chain() -> AuthMiddleware {
+    let registry = busbar_plugin_loader::PluginRegistry::empty()
+        .link(vec![busbar_plugin_loader::LinkedPlugin::auth_door(
+            "other-style",
+            other_style::door,
+        )])
+        .expect("the fixture links");
+    AuthMiddleware::new(
+        &chain_cfg(&["keys"]),
+        &std::sync::Arc::new(registry),
+        &crate::config::secret::SecretResolver::builtins_only(),
+    )
+    .expect("the chain builds")
+}
+
+/// RED on a kernel that names its own carriers: the credential is read off the style's own lines,
+/// in the style's order, and a line the style does not state carries nothing (`x-api-key` is no
+/// line of this style).
+#[test]
+fn the_client_token_is_read_off_the_default_inbound_styles_own_lines() {
+    let mw = other_style_chain();
+    let mut headers = HeaderMap::new();
+    headers.insert("x-api-key", HeaderValue::from_static("from-x-api-key"));
+    assert_eq!(mw.extract_client_token(&headers), None);
+    headers.insert(
+        "authorization",
+        HeaderValue::from_static("Bearer from-bearer"),
+    );
+    assert_eq!(
+        mw.extract_client_token(&headers),
+        Some("from-bearer".to_string())
+    );
+    headers.insert("x-other-key", HeaderValue::from_static("from-other"));
+    assert_eq!(
+        mw.extract_client_token(&headers),
+        Some("from-other".to_string()),
+        "the style's first line wins"
+    );
+    let names: Vec<&str> = mw.carriers().iter().map(HeaderName::as_str).collect();
+    assert_eq!(names, ["x-other-key", "authorization"]);
+}
+
+/// The host strips the default inbound style's lines from every plane's request, whichever carried
+/// the credential, and the operator credential's own lines when an admin chain is configured.
+#[test]
+fn the_gate_strips_the_styles_lines_and_the_operator_credentials() {
+    let app = crate::test_support::TestApp::new()
+        .admin_chain(vec![crate::config::operator_provider().to_string()])
+        .build();
+    let consumed = gate_consumed(&app, false, false);
+    let mut headers = HeaderMap::new();
+    for name in [
+        "authorization",
+        "x-api-key",
+        "x-goog-api-key",
+        X_ADMIN_TOKEN,
+        "x-trace",
+    ] {
+        headers.insert(HeaderName::from_static(name), HeaderValue::from_static("v"));
+    }
+    consumed.strip(&mut headers);
+    let kept: Vec<String> = headers.keys().map(|n| n.as_str().to_string()).collect();
+    assert_eq!(kept, ["x-trace"]);
 }
