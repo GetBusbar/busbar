@@ -898,8 +898,8 @@ pub struct TestApp {
     base_group_names: std::collections::HashSet<String>,
     identity_providers: crate::config::IdentityProviders,
     export_defs: crate::config::ExportDefs,
-    tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
-    agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    tool_pools: std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>,
+    agent_pools: std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>,
     overlay_path: Option<std::path::PathBuf>,
     /// 1.5.3: when `true`, build a LOCKED app (no overlay backend) — the only way to get
     /// `overlay_path: None` now that the default is durable. Without it, `build()` provides a writable
@@ -1200,7 +1200,7 @@ impl TestApp {
     pub fn tool_pool(mut self, name: &str, members: &[&str], repeatable: &[&str]) -> Self {
         self.tool_pools.insert(
             name.into(),
-            crate::failover::CandidatePoolCfg {
+            crate::config::pools::CandidatePoolCfg {
                 members: members.iter().map(|m| (*m).to_string()).collect(),
                 repeatable: repeatable.iter().map(|o| (*o).to_string()).collect(),
             },
@@ -1211,7 +1211,7 @@ impl TestApp {
     pub fn agent_pool(mut self, name: &str, members: &[&str]) -> Self {
         self.agent_pools.insert(
             name.into(),
-            crate::failover::CandidatePoolCfg {
+            crate::config::pools::CandidatePoolCfg {
                 members: members.iter().map(|m| (*m).to_string()).collect(),
                 repeatable: Vec::new(),
             },
