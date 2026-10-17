@@ -1072,8 +1072,11 @@ fn a_claim_states_only_known_flags() {
     // A catalog route is a known flag (ARCHITECT ruling 2026-10-16, 3b C).
     let catalog = claim("V", "/t", CLAIM_EXACT | CLAIM_CATALOG);
     assert_eq!(check_claims(&[catalog], 1), Ok(()));
-    // RED: a bit none of CLAIM_OPEN, CLAIM_EXACT, CLAIM_PATTERN, CLAIM_CATALOG.
-    let unknown = claim("V", "/t", CLAIM_CATALOG << 1);
+    // A signed-ingress path is a known flag (ARCHITECT ruling 2026-10-16, 3b A).
+    let signed = claim("V", "/t", CLAIM_EXACT | CLAIM_SIGNED_INGRESS);
+    assert_eq!(check_claims(&[signed], 1), Ok(()));
+    // RED: a bit none of the known claim bits.
+    let unknown = claim("V", "/t", CLAIM_RAW_AFFIX << 1);
     assert_eq!(
         check_claims(&[unknown], 1),
         f(Rule::UnknownCode, "claim.flags")
@@ -1196,6 +1199,82 @@ fn a_pattern_claims_one_level_only() {
     assert!(!crate::grammar::pattern_matches(p, "/v1/tasks/t1/x"));
     assert!(!crate::grammar::pattern_matches(p, "/v1/tasks/"));
     assert!(!crate::grammar::pattern_matches(p, "/v1/tasks"));
+}
+
+/// THE MULTI-SEGMENT PLACEHOLDER (ARCHITECT ruling 2026-10-16, 3b A): `{name+}` takes one or more
+/// segments, so `/model/{id+}/converse` matches an identifier carrying a raw `/` (an unencoded
+/// inference-profile ARN) and an encoded one alike, the previous release's prefix-and-suffix rule;
+/// it never matches nothing, and a sibling suffix is a different path.
+#[test]
+fn a_plus_placeholder_spans_one_or_more_segments() {
+    let Ok(crate::grammar::Selector::PathPattern(p)) =
+        claim_selector("/model/{id+}/converse", CLAIM_PATTERN, kept)
+    else {
+        panic!("a pattern claim reads as a segment pattern");
+    };
+    assert_eq!(
+        p,
+        &[
+            PathSeg::Lit("model"),
+            PathSeg::Plus,
+            PathSeg::Lit("converse")
+        ]
+    );
+    let arn = "/model/arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.m-v1:0/converse";
+    let encoded =
+        "/model/arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Ainference-profile%2Fus.m-v1%3A0/converse";
+    for path in ["/model/m/converse", arn, encoded, "/model/a/b/c/converse"] {
+        assert!(crate::grammar::pattern_matches(p, path), "{path}");
+    }
+    for path in [
+        "/model/converse",
+        "/model//converse",
+        "/model/m/converse-stream",
+        "/model/m/invoke",
+        "/model/m/converse/x",
+    ] {
+        assert!(!crate::grammar::pattern_matches(p, path), "{path}");
+    }
+}
+
+/// RED: a pattern names at most one `{name+}` (two cannot be split deterministically), and the
+/// placeholder's name is a name.
+#[test]
+fn a_pattern_with_two_plus_placeholders_is_refused_at_registration() {
+    assert_eq!(
+        check_claim_target("/a/{x+}/b/{y+}", CLAIM_PATTERN),
+        f(Rule::Contradiction, "claim.pattern.spans")
+    );
+    assert_eq!(
+        check_claim_target("/a/{+}/b", CLAIM_PATTERN),
+        f(Rule::Contradiction, "claim.pattern")
+    );
+    assert_eq!(check_claim_target("/a/{x+}/b/{y}", CLAIM_PATTERN), Ok(()));
+}
+
+/// Two patterns that differ only after a `{name+}` are disjoint, so the two signed bedrock claims
+/// seal side by side at one precedence; a `{name+}` beside a one-segment variable over the same
+/// suffix overlaps.
+#[test]
+fn plus_patterns_overlap_exactly() {
+    use crate::grammar::Selector;
+    let a = Selector::PathPattern(&[
+        PathSeg::Lit("model"),
+        PathSeg::Plus,
+        PathSeg::Lit("converse"),
+    ]);
+    let b = Selector::PathPattern(&[
+        PathSeg::Lit("model"),
+        PathSeg::Plus,
+        PathSeg::Lit("converse-stream"),
+    ]);
+    let c = Selector::PathPattern(&[
+        PathSeg::Lit("model"),
+        PathSeg::Var,
+        PathSeg::Lit("converse"),
+    ]);
+    assert!(!a.overlaps(&b));
+    assert!(a.overlaps(&c));
 }
 
 #[test]

@@ -625,3 +625,49 @@ fn the_plane_declares_its_published_key_and_is_the_fallback() {
     let kinds: Vec<&[u8]> = kinds.iter().map(|k| abi_text(*k)).collect();
     assert_eq!(kinds, vec![b"pool".as_slice()]);
 }
+
+/// THE SIGNED PATHS ARE THE PREVIOUS RELEASE'S (ARCHITECT ruling 2026-10-16, 3b A): the claims the
+/// door flags `CLAIM_SIGNED_INGRESS`, matched by the guest list's path grammar, name exactly the
+/// paths 1.5.5 put through the signed-request pre-step (the signing dialect's residual rule, its own
+/// codec declaration) — an unencoded inference-profile ARN, which carries a raw `/`, and an encoded
+/// one alike — and no other: the dialect's invoke surfaces and every other dialect's paths sign
+/// nothing. RED arm: a `{id}` placeholder misses the unencoded ARN; a `/model` subtree flag signs
+/// invoke.
+#[test]
+fn the_signed_claims_name_the_paths_the_previous_release_signed() {
+    use busbar_contract::abi::plane::CLAIM_SIGNED_INGRESS;
+    use busbar_contract::abi::transport::route::{path_matches, PATH_PATTERN};
+    let signed: Vec<_> = claims()
+        .into_iter()
+        .filter(|c| c.flags & CLAIM_SIGNED_INGRESS != 0)
+        .collect();
+    assert!(!signed.is_empty(), "the door flags its signed paths");
+    let rule = busbar_plane_llm::codec::DECLS
+        .iter()
+        .find(|d| d.uses_sigv4_ingress_auth())
+        .and_then(|d| d.residual_claims)
+        .expect("the signing dialect states its path rule");
+    let arn = "arn:aws:bedrock:us-east-1:123456789012:inference-profile/us.m-v1:0";
+    let encoded =
+        "arn%3Aaws%3Abedrock%3Aus-east-1%3A123456789012%3Ainference-profile%2Fus.m-v1%3A0";
+    for path in [
+        "/model/m/converse".to_string(),
+        "/model/m/converse-stream".to_string(),
+        format!("/model/{arn}/converse"),
+        format!("/model/{arn}/converse-stream"),
+        format!("/model/{encoded}/converse"),
+        format!("/model/{encoded}/converse-stream"),
+        "/model/m/invoke".to_string(),
+        "/model/m/invoke-with-response-stream".to_string(),
+        format!("/model/{arn}/invoke"),
+        "/v1/messages".to_string(),
+        "/v1/chat/completions".to_string(),
+        "/v1beta/models/m:generateContent".to_string(),
+        "/x/model/m/converse".to_string(),
+    ] {
+        let by_claims = signed
+            .iter()
+            .any(|c| path_matches(PATH_PATTERN, &c.target, &path));
+        assert_eq!(by_claims, rule(&path).is_some(), "{path}");
+    }
+}

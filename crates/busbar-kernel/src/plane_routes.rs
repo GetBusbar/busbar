@@ -73,6 +73,11 @@ pub struct PlaneRefusalSpec {
     pub route: DoorRouteId,
     /// Its plane's rendering.
     pub refuse: PlaneRefuseFn,
+    /// THE SIGNED PATHS of its plane (ARCHITECT ruling 2026-10-16, 3b A): the guest-line path of
+    /// every claim the plane flags `abi::plane::CLAIM_SIGNED_INGRESS`, whatever this route's own
+    /// path and verb. The auth middleware puts a request to a path one of them matches through the
+    /// signed-request pre-step, by path and whatever its verb.
+    pub signed_ingress: Arc<[String]>,
 }
 
 impl std::fmt::Debug for PlaneRefusalSpec {
