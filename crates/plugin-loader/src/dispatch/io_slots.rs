@@ -393,3 +393,7 @@ c_entry! {
         })
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/io_slots_tests.rs"]
+mod tests;
