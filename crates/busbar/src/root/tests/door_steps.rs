@@ -4206,7 +4206,7 @@ pub(crate) mod door_boundary {
     /// The mcp door's registry row, folded from its Statement as the composition root folds it.
     pub(crate) fn row() -> &'static PlaneDecl {
         use crate::root::loader::dispatch::kinds::plane::{linked_probe, registration};
-        busbar_kernel::plane::door::fold(
+        busbar_kernel::plane_driver::door::fold(
             registration(linked_probe(
                 super::tool_door::line_door(),
                 "door-boundary-row",
@@ -4251,7 +4251,7 @@ pub(crate) mod door_boundary {
         row: &'static PlaneDecl,
         value: serde_yaml::Value,
     ) -> Arc<dyn std::any::Any + Send + Sync> {
-        let tools = busbar_kernel::plane::door::DoorSection::new(row.config_section, value);
+        let tools = busbar_kernel::plane_driver::door::DoorSection::new(row.config_section, value);
         (row.build)(&BuildCtx {
             endpoint_slot: None,
             agent_defs: &(),

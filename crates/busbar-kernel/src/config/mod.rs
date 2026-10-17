@@ -1372,10 +1372,13 @@ impl DeployCfg {
     #[must_use]
     pub fn door_sections(&self) -> std::collections::BTreeMap<&'static str, serde_yaml::Value> {
         // A named-definition carrier (`tools:`/`agents:`) holds a door plane's section as the door
-        // judged it ([`busbar_kernel::plane::door::DoorSection`], DECL-FOLD): handed as written.
+        // judged it ([`busbar_kernel::plane_driver::door::DoorSection`], DECL-FOLD): handed as written.
         let named = [&*self.tools.0, &*self.agents.0]
             .into_iter()
-            .filter_map(|c| c.as_any().downcast_ref::<crate::plane::door::DoorSection>())
+            .filter_map(|c| {
+                c.as_any()
+                    .downcast_ref::<crate::plane_driver::door::DoorSection>()
+            })
             .map(|d| (d.section, d.value.clone()));
         self.plane_raw
             .iter()
@@ -2395,7 +2398,7 @@ pub fn resolve(
     // naming an undefined hook booted silently before this.
     //
     // A RAW-carried section ([`DeployCfg::plane_raw`]) whose registered plane parses its section
-    // (a plane served through its door: `busbar_kernel::plane::door`, whose parse is the door's own
+    // (a plane served through its door: `busbar_kernel::plane_driver::door`, whose parse is the door's own
     // `validate`) is judged HERE too, so `--validate` and boot refuse a section its plane refuses,
     // naming the section, and the parsed section answers the same reserved-word checks a declared
     // one does (its `hooks:` list here, its model map's provider references below).

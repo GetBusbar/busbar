@@ -6352,7 +6352,7 @@ fn a_non_fallback_planes_card_is_held_to_the_same_rule() {
 }
 
 /// A plane served through its DOOR: its fee unit rides among its billable classes (the door's
-/// tail holds `fee_units ⊆ billable_classes`), exactly as `plane::door::fold` builds the row.
+/// tail holds `fee_units ⊆ billable_classes`), exactly as `plane_driver::door::fold` builds the row.
 static DOOR_FEE_PLANE: crate::plane::registry::PlaneDecl = crate::plane::registry::PlaneDecl {
     declaration: crate::plane::registry::PlaneDeclaration {
         key: "door-fee-plane",

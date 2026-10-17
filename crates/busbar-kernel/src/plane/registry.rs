@@ -764,7 +764,7 @@ pub type OpenapiSchemasHook = fn(
 pub type OpenapiSchemasHook = fn(std::convert::Infallible);
 
 /// THE SCHEMAS HOOK OF THE DOOR PLANE AT `I` (ARCHITECT Q2): the `components.schemas` its admin
-/// OpenAPI blob states ([`crate::plane::door::stated_schemas`]), inserted into the generator's
+/// OpenAPI blob states ([`crate::plane_driver::door::stated_schemas`]), inserted into the generator's
 /// definitions as written. `None` in a build that generates no document.
 #[cfg(feature = "openapi-schema")]
 pub(crate) const fn stated_schemas_hook<const I: usize>() -> Option<OpenapiSchemasHook> {
@@ -783,7 +783,7 @@ fn stated_schemas<const I: usize>(
     _req_gen: &mut schemars::SchemaGenerator,
     _paths: &mut serde_json::Map<String, serde_json::Value>,
 ) {
-    if let Some(schemas) = crate::plane::door::stated_schemas::<I>() {
+    if let Some(schemas) = crate::plane_driver::door::stated_schemas::<I>() {
         schema_gen.definitions_mut().extend(schemas);
     }
 }

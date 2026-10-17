@@ -157,7 +157,7 @@ fn jsonrpc_mount(decl: &'static PlaneDecl, sections: &str) -> String {
 /// door arm judged, by the composition root at the data router's construction (ARCHITECT
 /// Q-L3B-KHARNESS), so the kernel's router mounts none of them.
 fn served_by_root(slot: &Arc<dyn std::any::Any + Send + Sync>) -> bool {
-    slot.downcast_ref::<busbar_kernel::plane::door::DoorSlot>()
+    slot.downcast_ref::<busbar_kernel::plane_driver::door::DoorSlot>()
         .is_some()
 }
 
