@@ -126,3 +126,41 @@ fn the_kernel_spells_no_instance_in_these_refusals() {
         .collect();
     assert!(found.is_empty(), "{found:#?}");
 }
+
+/// 1.5.5's refusal for a reference to a secret module nothing linked answers, with no plugin
+/// subsystem (v1.5.5:crates/busbar/src/config/secret.rs:101-106), byte for byte: the list is
+/// rendered from the build's linked secret rows, in link order.
+#[test]
+fn an_unlinked_secret_module_with_no_plugins_is_refused_in_1_5_5s_bytes() {
+    let err = crate::config::secret::SecretResolver::builtins_only()
+        .resolve(&crate::config::SecretRef {
+            module: "acme-vault".to_string(),
+            settings: serde_json::Map::new(),
+        })
+        .unwrap_err();
+    assert_eq!(
+        err,
+        "secret module 'acme-vault' is not a built-in (`env` / `file`) and the plugin subsystem \
+         is not enabled, so no secret plugin can resolve secret module 'acme-vault'; a secret \
+         that cannot resolve is a hard error (fail-closed)"
+    );
+}
+
+/// The kernel's code spells no secret module in these refusals' lists.
+#[test]
+fn the_kernel_spells_no_secret_module_list() {
+    for (path, src) in [
+        (
+            "src/preflight.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/preflight.rs")),
+        ),
+        (
+            "src/config/secret.rs",
+            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/config/secret.rs")),
+        ),
+    ] {
+        for list in ["(`env` | `file`)", "(`env` / `file`)"] {
+            assert!(!src.contains(list), "{path} spells `{list}`");
+        }
+    }
+}

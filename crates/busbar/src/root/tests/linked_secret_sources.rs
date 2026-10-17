@@ -404,3 +404,19 @@ fn resolve_linked_file_real_content_still_resolves_including_binary() {
     assert_eq!(got, vec![0x00u8, 0xFF, 0x10, 0x80]);
     let _ = std::fs::remove_file(&binary);
 }
+
+/// The root's linked secret rows list themselves by the words config names them by, in 1.5.5's
+/// order (`env` then `file`: v1.5.5:crates/busbar/src/main.rs:2460, config/secret.rs:102), the
+/// order the kernel renders a refusal's module list in.
+#[test]
+fn the_linked_secret_rows_list_in_1_5_5s_order() {
+    let axis = super::link_secrets(crate::LINKED.secrets, crate::LINKED.secret_declares)
+        .expect("the linked secret doors state");
+    assert_eq!(
+        axis.linked_names(),
+        vec![
+            SECRET_MODULE_ENV.to_string(),
+            SECRET_MODULE_FILE.to_string()
+        ]
+    );
+}

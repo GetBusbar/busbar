@@ -1772,6 +1772,26 @@ fn secret_ref_typo_module_still_fails_at_preflight() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// The unknown-secret-module refusal is 1.5.5's, byte for byte
+/// (v1.5.5:crates/busbar/src/main.rs:2459-2464): its list of the modules a reference may name with
+/// no plugin is rendered from the build's linked secret rows, in link order.
+#[test]
+fn an_unknown_secret_module_is_refused_in_1_5_5s_bytes() {
+    let reg = busbar_plugin_loader::PluginRegistry::empty();
+    let cfg = cfg_with_provider_api_key(crate::config::SecretRef {
+        module: "vaultt".to_string(),
+        settings: serde_json::Map::new(),
+    });
+    let err = validate_secret_refs(&reg, &cfg).expect_err("an unknown module is refused");
+    assert_eq!(
+        err,
+        "providers.acme.api_key references secret module 'vaultt', which is not a built-in \
+         (`env` | `file`) and no loadable `kind: secret` plugin is named or aliased 'vaultt'. Fix \
+         the spelling, install/trust the plugin (see --list-plugins), or use a built-in, \
+         e.g.:\n\n    providers.acme.api_key: { env: MY_SECRET_VAR }\n"
+    );
+}
+
 /// The built-in `env`/`file` modules always pass the registry
 /// pre-flight (they are resolved inline, never through a plugin), even with an EMPTY registry.
 #[test]

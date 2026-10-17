@@ -171,6 +171,13 @@ impl SecretAxis for SecretsStandIn {
         double(module).is_some()
     }
 
+    fn linked_names(&self) -> Vec<String> {
+        vec![
+            SECRET_MODULE_ENV.to_string(),
+            SECRET_MODULE_FILE.to_string(),
+        ]
+    }
+
     fn shared(&self, module: &str) -> Result<Arc<dyn SecretCalls>, String> {
         double(module)
             .map(|d| Arc::new(d) as Arc<dyn SecretCalls>)

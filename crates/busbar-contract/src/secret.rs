@@ -231,6 +231,11 @@ pub trait SecretAxis: Send + Sync {
     /// `secrets:` block and no plugins directory).
     fn linked(&self, module: &str) -> bool;
 
+    /// The word config names each secret plugin this build LINKS by (its first alias, else its
+    /// name), in link order: the list a refusal names as the modules a reference may name with no
+    /// plugins directory.
+    fn linked_names(&self) -> Vec<String>;
+
     /// The process's ONE instance of the linked plugin `module` names, opened on first use with no
     /// settings (a linked source takes no module-level configuration).
     ///

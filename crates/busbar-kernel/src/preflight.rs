@@ -1114,11 +1114,13 @@ pub(crate) fn validate_secret_refs(
             }
             None => {
                 return Err(format!(
-                    "{what} references secret module '{}', which is not a built-in (`env` | `file`) \
+                    "{what} references secret module '{}', which is not a built-in ({}) \
                      and no loadable `kind: secret` plugin is named or aliased '{}'. Fix the \
                      spelling, install/trust the plugin (see --list-plugins), or use a built-in, \
                      e.g.:\n\n    {what}: {{ env: MY_SECRET_VAR }}\n",
-                    r.module, r.module
+                    r.module,
+                    config::secret::linked_list(" | "),
+                    r.module
                 ));
             }
         }
@@ -1126,7 +1128,7 @@ pub(crate) fn validate_secret_refs(
     Ok(())
 }
 
-/// RESOLVE every built-in (`env` / `file`) secret reference, for `--validate` ONLY.
+/// RESOLVE every secret reference a LINKED secret plugin answers, for `--validate` ONLY.
 ///
 /// `config_validate` proves a reference is well-FORMED; it cannot prove the variable is set or the
 /// file is readable, because it runs before anything touches the environment. Without this,

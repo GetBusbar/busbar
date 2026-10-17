@@ -649,6 +649,13 @@ impl SecretAxis for SecretRows {
         self.linked.iter().any(|c| answers(c, module))
     }
 
+    fn linked_names(&self) -> Vec<String> {
+        self.linked
+            .iter()
+            .map(|c| c.aliases.first().unwrap_or(&c.name).clone())
+            .collect()
+    }
+
     fn shared(&self, module: &str) -> Result<Arc<dyn SecretCalls>, String> {
         let c = self
             .linked

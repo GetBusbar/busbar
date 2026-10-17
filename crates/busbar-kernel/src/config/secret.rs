@@ -149,9 +149,10 @@ impl SecretResolver {
         }
         let Some(f) = &self.plugin else {
             return Err(format!(
-                "secret module '{module}' is not a built-in (`env` / `file`) and the plugin \
+                "secret module '{module}' is not a built-in ({}) and the plugin \
                  subsystem is not enabled, so no secret plugin can resolve {}; a secret that \
                  cannot resolve is a hard error (fail-closed)",
+                linked_list(" / "),
                 secret.describe()
             ));
         };
@@ -363,6 +364,19 @@ pub(crate) fn axis() -> Option<&'static dyn busbar_contract::secret::SecretAxis>
 /// block and no plugins directory).
 pub(crate) fn is_linked_secret(module: &str) -> bool {
     axis().is_some_and(|a| a.linked(module))
+}
+
+/// The secret modules this build LINKS, as a refusal lists them (1.5.5's `` `env` / `file` ``
+/// shape): each word backquoted, in link order, joined by `sep`. Rendered from the root's secret
+/// rows; the kernel names none of them.
+pub(crate) fn linked_list(sep: &str) -> String {
+    axis()
+        .map(|a| a.linked_names())
+        .unwrap_or_default()
+        .iter()
+        .map(|n| ["`", n, "`"].concat())
+        .collect::<Vec<_>>()
+        .join(sep)
 }
 
 /// Resolve `secret` to a UTF-8 string through the linked secret plugins alone (no `secrets:` block,
