@@ -1004,8 +1004,8 @@ fn calls_on(code: &str) -> Vec<(Option<char>, String, String)> {
                 .rev()
                 .collect();
             out.push((Some(':'), seg, name));
-        } else if before.ends_with('.') {
-            let recv: String = before[..before.len() - 1]
+        } else if let Some(path) = before.strip_suffix('.') {
+            let recv: String = path
                 .chars()
                 .rev()
                 .take_while(|c| is_ident_char(*c))
@@ -1327,9 +1327,9 @@ fn door_seams<'a>(
         blocking = next;
     }
 
-    // trait -> (method names, the impls that back them)
-    let mut by_trait: BTreeMap<String, (BTreeMap<String, Option<usize>>, BTreeSet<String>)> =
-        BTreeMap::new();
+    // trait -> (method names with their arity, the impls that back them)
+    type Backed = (BTreeMap<String, Option<usize>>, BTreeSet<String>);
+    let mut by_trait: BTreeMap<String, Backed> = BTreeMap::new();
     for (f, _) in fns.iter().zip(&blocking).filter(|(_, b)| **b) {
         let Some((ty, Some(tr))) = &f.owner else {
             continue;
