@@ -341,3 +341,35 @@ fn a_rewritten_session_open_locks_the_rewritten_params_once() {
         "consumed at the open and gone with the session"
     );
 }
+
+/// RED-BEFORE-GREEN (Part 2 #45, Twilio Media Streams "with a µ-law codec"; the telephony lock):
+/// the telephony door's far end is told the session it is locked to once the carrier states its
+/// stream: µ-law both ways, over the operator's own session (here its instructions). RED: nothing
+/// was ever sent, so the far end read the carrier's µ-law as its default PCM16.
+#[test]
+fn the_telephony_door_tells_the_far_end_its_locked_session_at_the_carriers_start() {
+    let cfg = StreamsCfg {
+        session: crate::codec::ir::config::SessionConfig {
+            instructions: Some("be brief".into()),
+            ..StreamsCfg::default().session
+        },
+        ..StreamsCfg::default()
+    };
+    let mut s = Live::open(Door::Twilio, &cfg).expect("a session door");
+    s.from_caller(
+        &json(
+            serde_json::json!({"event":"start","start":{"streamSid":"MZ1","callSid":"CA1",
+            "mediaFormat":{"encoding":"audio/x-mulaw","sampleRate":8000,"channels":1}}}),
+        ),
+        false,
+    );
+    let emit = s.next(true);
+    let Some((Side::FarEnd, frame)) = emit.frame else {
+        panic!("the locked session goes to the far end: {emit:?}");
+    };
+    let v: serde_json::Value = serde_json::from_slice(&frame).expect("json");
+    assert_eq!(v["type"], "session.update", "{v}");
+    assert_eq!(v["session"]["input_audio_format"], "g711_ulaw", "{v}");
+    assert_eq!(v["session"]["output_audio_format"], "g711_ulaw", "{v}");
+    assert_eq!(v["session"]["instructions"], "be brief", "{v}");
+}
