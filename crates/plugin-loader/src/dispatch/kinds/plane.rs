@@ -85,6 +85,7 @@ unsafe impl InFrame for OnPieceIn {}
 unsafe impl InFrame for RefusalIn {}
 unsafe impl InFrame for ServeIn {}
 unsafe impl InFrame for ProjectIn {}
+unsafe impl InFrame for plane::CatalogIn {}
 unsafe impl OutFrame for PlaneOpenOut {}
 unsafe impl OutFrame for PlaneRefreshOut {}
 unsafe impl OutFrame for PlaneDriveOut {}
@@ -94,6 +95,7 @@ unsafe impl OutFrame for OnPieceOut {}
 unsafe impl OutFrame for RefusalOut {}
 unsafe impl OutFrame for ServeOut {}
 unsafe impl OutFrame for ProjectOut {}
+unsafe impl OutFrame for plane::CatalogOut {}
 
 /// What the instance's tail states that the host keeps: the list bounds every answer's indices are
 /// judged against, and the refusal statuses the kernel chooses from. Read once at bind.
@@ -1167,6 +1169,10 @@ impl Kind for Plane {
     type Ops = plane::Ops;
     const TIMEOUT: Outcome = Outcome::Failed;
 
+    fn optional_slot(s: u32) -> bool {
+        s == slot::CATALOG
+    }
+
     fn op_name(s: u32) -> &'static str {
         match s {
             slot::ARRIVE => "arrive",
@@ -1176,6 +1182,7 @@ impl Kind for Plane {
             slot::HYDRATE => "hydrate",
             slot::START => "start",
             slot::PROJECT => "project",
+            slot::CATALOG => "catalog",
             _ => lifecycle_name(s),
         }
     }
@@ -1258,6 +1265,26 @@ impl Kind for Plane {
                 check_serve_records(a.outcome, o, records, i.records_cap as u64, &b)
             }
             slot::PROJECT => project(a),
+            slot::CATALOG => {
+                let i = a.input::<plane::CatalogIn>()?;
+                let o = a.out::<plane::CatalogOut>()?;
+                // SAFETY: as `refusal`: the host's `fields_buf` of `fields_cap` elements.
+                let fields = unsafe {
+                    reported(
+                        i.fields_buf.cast_const(),
+                        u64::from(o.fields_written),
+                        i.fields_cap as u64,
+                        "catalog.fields",
+                    )
+                }?;
+                let caps = Caps {
+                    reply: i.reply_cap as u64,
+                    fields: i.fields_cap as u64,
+                    arena: i.arena_cap as u64,
+                    ..Caps::default()
+                };
+                plane::check::check_catalog(a.outcome, o, fields, &caps)
+            }
             life::OPEN if a.outcome == Outcome::Ready => {
                 let generation = a.input::<OpenIn>()?.generation;
                 snapshot(
@@ -1369,6 +1396,9 @@ impl Kind for Plane {
             slot::PROJECT => a.out::<ProjectOut>().is_ok_and(|o| {
                 o.signals_needed != 0 || o.messages_needed != 0 || o.arena_needed != 0
             }),
+            slot::CATALOG => a
+                .out::<plane::CatalogOut>()
+                .is_ok_and(|o| o.reply_needed != 0 || o.fields_needed != 0 || o.arena_needed != 0),
             life::DRIVE => a
                 .out::<PlaneDriveOut>()
                 .is_ok_and(|o| o.sessions_needed != 0),

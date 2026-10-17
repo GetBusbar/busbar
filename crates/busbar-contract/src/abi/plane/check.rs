@@ -23,20 +23,20 @@ pub use crate::abi::mechanism::check::{Fault, Rule};
 use super::reason_of;
 use super::{units_bill, UNITS_FLOOR};
 use super::{
-    AdminRoute, ArriveOut, BillableClass, Claim, DialectAuth, OnPieceOut, OutField, PinMechanism,
-    PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
-    RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
-    CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    CLAIM_PATTERN, CLAIM_RAW_AFFIX, DIALECT_PROVIDER, EMIT_DONE, EMIT_FINAL_STATUS,
-    EMIT_MESSAGE_END, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE,
-    INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
-    INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT,
-    PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
-    REFUSAL_ANY_DIALECT, REFUSED_UNSUPPORTED_ACTION, ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED,
-    ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE,
-    ROUTE_SCOPE_LOCAL, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK,
-    TAIL_HOOKS_GATED, TAIL_PROBES, TAIL_REFUSED_PIECE, TAP_FAULT_NONE, TRUST_ITEM_APPROVALS,
-    TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
+    AdminRoute, ArriveOut, BillableClass, CatalogOut, Claim, DialectAuth, OnPieceOut, OutField,
+    PinMechanism, PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite,
+    RefusalOut, RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED,
+    CANCEL_OK_PARTIAL, CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED,
+    CLAIM_CATALOG, CLAIM_EXACT, CLAIM_OPEN, CLAIM_PATTERN, CLAIM_RAW_AFFIX, DIALECT_PROVIDER,
+    EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE,
+    EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE,
+    INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT,
+    MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL,
+    RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, REFUSED_UNSUPPORTED_ACTION,
+    ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL,
+    ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE,
+    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TAIL_REFUSED_PIECE, TAP_FAULT_NONE,
+    TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -918,6 +918,34 @@ pub fn check_serve(
     )
 }
 
+/// `catalog`: the reply is valid.
+///
+/// # Errors
+///
+/// The rule the answer breaks.
+pub fn check_catalog(
+    outcome: Outcome,
+    out: &CatalogOut,
+    fields_buf: &[OutField],
+    caps: &Caps,
+) -> Result<(), Fault> {
+    code(u64::from(out._reserved), 0, 0, "catalog._reserved")?;
+    reply(
+        outcome,
+        [
+            "catalog.reply",
+            "catalog.fields",
+            "catalog.arena",
+            "catalog",
+        ],
+        (out.reply_written, out.reply_needed),
+        (out.fields_written, out.fields_needed),
+        (out.arena_written, out.arena_needed),
+        fields_buf,
+        caps,
+    )
+}
+
 /// The lifecycle `cancel`'s disposition: on READY, one of the plane's three (`0` = unwritten is
 /// FAULT); on any other outcome the op did not answer a disposition, and it must be unwritten.
 ///
@@ -1037,7 +1065,7 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
         named(c.carrier, "claim.carrier")?;
         bits(
             u64::from(c.flags),
-            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_RAW_AFFIX),
+            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_CATALOG | CLAIM_RAW_AFFIX),
             "claim.flags",
         )?;
         if dialects_len > 0 || c.refusal_dialect != 0 {
