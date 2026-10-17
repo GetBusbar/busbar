@@ -89,7 +89,7 @@ pub struct BootCtx {
     pub store: Option<std::sync::Arc<dyn crate::plane::store::PlaneStore>>,
 
     /// HYDRATE phase — the freshly-built `App`, off which a hydrate hook attaches its own
-    /// write-through sinks (`spent_token_ledger`, `demotion_record`) and restores them. `None` in the start
+    /// write-through sink (`demotion_record`) and restores them. `None` in the start
     /// phase, where the app has been moved into the router builder and only the handle remains.
     pub app: Option<std::sync::Arc<crate::state::App>>,
 
@@ -139,16 +139,15 @@ impl PlaneBootCtx for BootCtx {
         self.store.is_some()
     }
 
-    /// ATTACH A PLANE'S DURABLE WRITE-THROUGH SINKS — the spent-approval ledger and the
-    /// upstream-demotion record — to the plane-narrowed store, in the hydrate phase. Named HERE, core
+    /// ATTACH A PLANE'S DURABLE WRITE-THROUGH SINK — the upstream-demotion record — to the
+    /// plane-narrowed store, in the hydrate phase. Named HERE, core
     /// side, so the plane's own hydrate hook attaches them without its own code naming an `App` field:
-    /// the sink fields (`spent_token_ledger`, `demotion_record`) are core-owned and the store is the
+    /// the sink field (`demotion_record`) is core-owned and the store is the
     /// core `PlaneStore`, so neither crosses the plane seam. A no-op unless BOTH the freshly-built app
     /// (hydrate phase) and a configured store are present — byte-identical to the old inline
-    /// `app.spent_token_ledger.set_sink(store.clone()); app.demotion_record.set_sink(store)`.
+    /// `app.demotion_record.set_sink(store)`.
     fn attach_durable_sinks(&self) {
         if let (Some(app), Some(store)) = (self.app.as_ref(), &self.store) {
-            app.spent_token_ledger.set_sink(store.clone());
             app.demotion_record.set_sink(store.clone());
         }
     }

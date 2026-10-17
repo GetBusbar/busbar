@@ -350,21 +350,6 @@ pub struct App {
     /// side of the seam (`crate::oauth_as::seam`); core only carries the opaque handle and knows
     /// `Some`/`None`.
     pub oauth_as: Option<Arc<dyn std::any::Any + Send + Sync>>,
-    // ONE CONTAINER PLANE'S PER-GENERATION CLIENT-DIRECTION RUNTIME (which also carries its own
-    // verify-on-call coalescer, formerly a dedicated flat field) is no longer a flat `App` field: it
-    // lives in `plane_slots` under `runtime_slot_key(<that plane's decl key>)`, reached by the plane
-    // through its own accessor (which downcasts the slot inside the plane), so this `App` names no
-    // plane-specific runtime type and holds no plane-specific runtime field for it.
-    /// APPROVALS ALREADY SPENT — the record that makes an operator-configured confirmation
-    /// single-use.
-    ///
-    /// Arc-shared ACROSS config applies, for the same correctness reason the sightings cache and the
-    /// mutation limiter are: this is ACCUMULATED evidence rather than intent, and rebuilding it on
-    /// every apply would re-open every outstanding approval the instant an operator touched an
-    /// unrelated section of config — which is the moment a caller holding a spent approval would
-    /// like it rebuilt. See [`crate::plane::approvals::SpentTokenLedger`] for what a RESTART does to it
-    /// and why that trade was taken.
-    pub spent_token_ledger: Arc<crate::plane::approvals::SpentTokenLedger>,
     /// DEMOTIONS THAT OUTLIVE THE PROCESS THAT TOOK THEM — the write side of the durable quarantine
     /// record, and the reason a restart no longer hands a demoted upstream its approval back.
     ///
