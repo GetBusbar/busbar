@@ -1607,6 +1607,10 @@ mod limits_tests;
 mod budget_cell_tests;
 
 #[cfg(test)]
+#[path = "tests/card_issuer_tests.rs"]
+mod card_issuer_tests;
+
+#[cfg(test)]
 #[path = "../tests/key_expires_at_tests.rs"]
 mod key_expires_at_tests;
 
