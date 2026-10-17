@@ -214,8 +214,7 @@ fn derive_spend_cents_refuses_an_overflow_never_wraps_or_pins() {
 #[test]
 fn rate_card_is_sole_cost_source_and_drives_routing_scalar() {
     let c = card(&[("gpt-5", 2.5, 10.0)]);
-    let cm = resolve_card_fee(Some(&c), 0);
-    let r = cm.rate_for("gpt-5").unwrap();
+    let r = crate::cost::RateNanos::from_cfg(&c["gpt-5"]);
     assert_eq!(
         (r.input, r.output),
         (2_500, 10_000),
@@ -403,7 +402,7 @@ fn four_tier_card_prices_each_tier_against_its_own_rate() {
         Ok(1500),
         "each tier must bill against its own rate; a swapped cache_read/cache_write mapping changes this"
     );
-    let r = cm.rate_for("quad").unwrap();
+    let r = crate::cost::RateNanos::from_cfg(&c["quad"]);
     assert_eq!(
         (r.input, r.output, r.cache_read, r.cache_write),
         (1_000, 2_000, 500, 4_000),
@@ -1039,7 +1038,7 @@ fn the_one_function_does_not_wrap_an_astronomical_bill_down_to_nearly_free() {
 fn a_fractional_cent_rate_prices_exactly_through_the_live_intake() {
     let c = card(&[("m", 0.1, 0.2)]);
     let cm = resolve_card_fee(Some(&c), 0);
-    let r = cm.rate_for("m").expect("the lane is priced");
+    let r = crate::cost::RateNanos::from_cfg(&c["m"]);
     assert_eq!(
         (r.input, r.output),
         (100, 200),
@@ -1074,7 +1073,7 @@ fn a_fractional_cent_rate_prices_exactly_through_the_live_intake() {
 fn a_large_count_times_a_rate_has_no_float_drift() {
     let c = card(&[("m", 0.3, 0.0)]);
     let cm = resolve_card_fee(Some(&c), 0);
-    let r = cm.rate_for("m").expect("the lane is priced");
+    let r = crate::cost::RateNanos::from_cfg(&c["m"]);
     let count: u64 = (1 << 53) + 1;
     assert_eq!(
         one_nanos(&r, &toks(count, 0)),
@@ -1101,9 +1100,7 @@ fn the_intake_prices_every_money_fixture_rate_at_its_1_5_5_figure() {
     ] {
         let v155 = (utok * 1000.0_f64).round() as u64;
         let c = card(&[("m", utok, utok)]);
-        let r = resolve_card_fee(Some(&c), 0)
-            .rate_for("m")
-            .expect("the lane is priced");
+        let r = crate::cost::RateNanos::from_cfg(&c["m"]);
         assert_eq!(
             (r.input, r.output),
             (v155, v155),
