@@ -541,8 +541,8 @@ fn test_lane_state_emitted_for_plane_neutral_breaker_cells() {
         .pool("pool-pn", &[(0, 1)])
         .build();
 
-    let down = "a:t281-down".to_string();
-    let up = "b:t281-up".to_string();
+    let down = busbar_kernel::store::tool_key("t281-down");
+    let up = busbar_kernel::store::agent_key("t281-up");
     let t = now();
     app.plane_breakers.force_open(&down, 0, t + 600);
     app.plane_breakers.record_success(&up, 0);

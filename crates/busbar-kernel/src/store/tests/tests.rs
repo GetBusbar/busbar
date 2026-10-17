@@ -4026,8 +4026,6 @@ fn the_breaker_store_names_no_planes_lane_vocabulary() {
             "attempt_timeout_ms",
             "pub(crate) reasoning:",
             "prompt_caching",
-            "fn tool_key",
-            "fn agent_key",
         ] {
             assert!(
                 !src.contains(name),

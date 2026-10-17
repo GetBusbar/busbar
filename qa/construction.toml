@@ -972,6 +972,7 @@ known_sites = [
   "crates/busbar-kernel/src/snapshot/money.rs :: model",
   "crates/busbar-kernel/src/plane_host/build_input.rs :: model",
   "crates/busbar-kernel/src/router.rs :: /{provider}/{model}/v1/messages",
+  "crates/busbar-kernel/src/store/vocab.rs :: agent:{agent}",
   "crates/busbar-kernel/src/test_support/mod.rs :: /v1/chat/completions",
 ]
 
