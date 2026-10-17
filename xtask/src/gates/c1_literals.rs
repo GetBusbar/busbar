@@ -258,6 +258,50 @@ impl Gate for C1LiteralsGate {
             file,
             "// valkey, in a comment, is prose\npub const X: u8 = 0;\n",
         );
+        // A plugin the registry gains is a word the kernel may not spell, with no edit here: the
+        // vocabulary is the registry's, never a hand copy of it (BUSBAR-1.6.0.md l.2068-2069).
+        let registered = {
+            let reg = cx.read("plugins.yaml").unwrap_or_default();
+            let reg = reg.replacen(
+                "\nplugins:\n",
+                "\nplugins:\n  - repo: busbar-store-zephyrdb\n    kind: store\n    alias: zephyrdb\n    \
+                 crate: busbar-store-zephyrdb-plugin\n    version_line: \"1.0\"\n    service: none\n    \
+                 release_gate: optional\n    gate: suite\n    description: \"planted\"\n    \
+                 declares: \"store-zephyrdb/declares.json\"\n",
+                1,
+            );
+            let mut ov = Overlay::new();
+            ov.set("plugins.yaml", reg);
+            ov.set(file, "pub const PLANTED: &str = \"zephyrdb\";\n");
+            ov
+        };
+        // A registered auth plugin's name in a style the kernel spells (providers.rs's serde rename).
+        let mut style = Overlay::new();
+        style.set(
+            file,
+            "pub const PLANTED: &str = \"oauth-client-credentials\";\n",
+        );
+        // A registered instance whose name is an ordinary word, named as the instance a config
+        // selects (`module: <name>`), is RED.
+        let mut selected = Overlay::new();
+        selected.set(
+            file,
+            "pub const PLANTED: &str = \"set secret.module: env\";\n",
+        );
+        let mut bare = Overlay::new();
+        bare.set(file, "pub const PLANTED: &str = \"memory\";\n");
+        // The same ordinary words in prose, and a one-letter instance name, are not an instance.
+        let mut prose = Overlay::new();
+        prose.set(
+            file,
+            "pub const A: &str = \"cannot read config file {}: {e}\";\n\
+             pub const B: &str = \"the frame's header does not match\";\n\
+             pub const C: &str = \"offset beyond memory\";\n\
+             pub const D: &str = \"conformance.json: transport.carrier.dial.env: {e}\";\n\
+             pub const E: &str = \"routing decisions are logged\";\n\
+             pub const F: &str = \"class {c}\";\n\
+             pub const G: &str = \"C\";\n",
+        );
         let mut report = one_abi::selftest(
             cx,
             self,
@@ -293,6 +337,30 @@ impl Gate for C1LiteralsGate {
                     beside,
                     vec![file, "grpc"],
                 ),
+                (
+                    ROW_LITERAL,
+                    "a kernel literal naming an instance plugins.yaml gains is RED (the vocabulary is the registry's)",
+                    registered,
+                    vec![file, "zephyrdb"],
+                ),
+                (
+                    ROW_LITERAL,
+                    "a kernel literal naming a registered auth plugin (`oauth`) is RED",
+                    style,
+                    vec![file, "oauth"],
+                ),
+                (
+                    ROW_LITERAL,
+                    "an ordinary-word instance a config selects (`module: env`) is RED",
+                    selected,
+                    vec![file, "env"],
+                ),
+                (
+                    ROW_LITERAL,
+                    "an ordinary-word instance spelled as the whole literal (`\"memory\"`) is RED",
+                    bare,
+                    vec![file, "memory"],
+                ),
             ],
         );
         report.push(crate::gates::prove_rows_green(
@@ -308,6 +376,13 @@ impl Gate for C1LiteralsGate {
             "a vocabulary word in a comment is not a literal",
             &[ROW_LITERAL],
             comment,
+        ));
+        report.push(crate::gates::prove_rows_green(
+            cx,
+            self,
+            "an ordinary word in prose, and a one-letter name, is not an instance",
+            &[ROW_LITERAL],
+            prose,
         ));
         report
     }
