@@ -2096,7 +2096,7 @@ pub fn build_app_from_config(
         // durable sink is attached to this instance once at boot, so rebuilding it on an apply would
         // silently detach it and every later quarantine would stop being written down.
         demotion_record: prior.map_or_else(
-            || Arc::new(crate::plane::quarantine::DemotionRecord::new()),
+            || Arc::new(crate::trust::demotion::DemotionRecord::new()),
             |p| p.demotion_record.clone(),
         ),
         auth_scope_caps: cfg
