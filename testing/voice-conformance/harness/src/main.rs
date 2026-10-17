@@ -7,7 +7,7 @@
 //!
 //! A dev-only testkit binary: never shipped, no production dependency. Every assertion drives the door
 //! through `busbar-plugin-loader` BOTH ways — the LINKED door (`busbar_plane_streaming::door::door`)
-//! and the DROPPED door (the `streaming_door` example `cdylib`, dlopened) — and requires both to
+//! and the DROPPED door (the plane's cdylib twin, `busbar-plane-streaming-plugin`, dlopened) — and requires both to
 //! answer identically, then judges the answer, then requires the leg's planted wrong answer to be
 //! refused by the same judgment (`door::judge`). `VOICE_CONFORM_RED=1` makes the planted answers
 //! the subject: every leg must then go RED.
