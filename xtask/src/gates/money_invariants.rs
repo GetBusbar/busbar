@@ -1475,6 +1475,59 @@ impl Gate for MoneyInvariantsGate {
             &["`hook_cost` on HookApplied"],
         ));
 
+        // RED (g) — audit XG HIGH 1: WHAT A WRITER CALL IS FED. A priced figure carried in a `u64`
+        // and handed to `BodyWriter::num` through a price function reads no field, calls no
+        // `.figure(` and names no money type — `HoldOpened::reserved` prices the hold's counts.
+        let hold_anchor =
+            "                body.num(*arrived_ms);\n                write_counts(&mut body, Some(counts));";
+        if cx
+            .read(JOURNAL_SEAM)
+            .unwrap_or_default()
+            .contains(hold_anchor)
+        {
+            let ov7 = plant_over(cx, &fixture, JOURNAL_SEAM, |s| {
+                s.replacen(
+                    hold_anchor,
+                    &format!("{hold_anchor}\n                body.num(self.reserved(None));"),
+                    1,
+                )
+            });
+            report.push(prove_red(
+                &fcx,
+                self,
+                "a price function's u64 fed to a journal writer call is RED",
+                &[ROW_NO_STORED_PRICE],
+                ov7,
+                &["reserved", "HoldOpened"],
+            ));
+        } else {
+            report.note_infra_failure(format!(
+                "money-invariants selftest: {JOURNAL_SEAM} no longer spells the hold writer's counts arm"
+            ));
+        }
+
+        // RED (h) — audit XG HIGH 1: A TUPLE STRUCT'S PAYLOAD IS A FIELD. `FiguresEra` is reached
+        // through `Held`, which the hold writer puts on the chain; a money-typed payload in it is a
+        // stored figure though the struct names no field.
+        let era_from = "pub struct FiguresEra(u64";
+        if cx.read(JOURNAL_SEAM).unwrap_or_default().contains(era_from) {
+            let ov8 = plant_over(cx, &fixture, JOURNAL_SEAM, |s| {
+                s.replacen(era_from, "pub struct FiguresEra(i128", 1)
+            });
+            report.push(prove_red(
+                &fcx,
+                self,
+                "a money-typed tuple-struct payload a journal writer puts on the chain is RED",
+                &[ROW_NO_STORED_PRICE],
+                ov8,
+                &["FiguresEra", "i128"],
+            ));
+        } else {
+            report.note_infra_failure(format!(
+                "money-invariants selftest: {JOURNAL_SEAM} no longer declares `{era_from}..)`"
+            ));
+        }
+
         // RED (b): a stored price/spend field on a store record is caught (#77(3)).
         let ov2 = plant_over(cx, &fixture, STORE_RECORDS_PATH, |s| {
             s.replace(

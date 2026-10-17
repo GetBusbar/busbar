@@ -2547,6 +2547,123 @@ impl Gate for NoFloatMoneyGate {
             &["rate_apply.rs", "`blended_per_mtok`", "`.round()`"],
         ));
 
+        // ── AUDIT XE HIGH 1: A FLOAT REACHED THROUGH WHAT THE TREE DECLARES, NOT WHAT THE LINE SPELLS ─
+        //
+        // `rate_headroom` returns `Option<f64>`; called from `try_admit` and cast with `as`, the line
+        // names no float type, no literal and no listed method. The carriers are derived from every
+        // float-returning item, so the call is a float on the money path.
+        match body_plant(
+            cx,
+            NOT_MONEY_RATIO.file,
+            "try_admit",
+            "let _planted_headroom = self.rate_headroom(cost, key, Some(pool), now).map_or(0, |h| h as u64);",
+        ) {
+            Ok(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a float-returning call cast with `as` inside `try_admit` is flagged (derived carriers)",
+                &[ROW_NO_FLOAT],
+                ov,
+                &["governance/state.rs", "`rate_headroom()`"],
+            )),
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not plant inside `fn try_admit` ({e})"
+            )),
+        }
+        // A float-only method the old nine-name list did not hold, and a read of a field declared
+        // `f64` in every struct that declares it: neither spells a float on the line.
+        report.push(plant(
+            cx,
+            self,
+            "a float-only method outside the old list and a float field read are flagged",
+            &[ROW_NO_FLOAT],
+            "crates/busbar-kernel/src/rate_apply.rs",
+            Edit::Append(
+                "\npub fn planted_carried(c: &CandidateStatic, x: Rate) -> u64 {\n    x.get().ln() as u64 + c.cost_per_mtok as u64\n}\n"
+                    .to_string(),
+            ),
+            &["rate_apply.rs", "`.ln()`", "`.cost_per_mtok`"],
+        ));
+
+        // ── AUDIT XE HIGH 2: THE CRASH-RECOVERY SETTLEMENT WRITER ────────────────────────────────
+        //
+        // `recovery.rs` posts the money figure for every hold a dead node left open, through the
+        // money capability types (`Hold`, `Posted`, `WriteMoney`), and named none of the ledger-side
+        // money types — so it was in no float scan at all.
+        report.push(plant(
+            cx,
+            self,
+            "a float in the crash-recovery settlement writer (recovery.rs) is flagged",
+            &[ROW_NO_FLOAT],
+            "crates/busbar-kernel/src/recovery.rs",
+            Edit::Append(format!(
+                "\npub fn planted_recovered(amount: u64) -> u64 {{ (amount as {float_ty} * 1.5) as u64 }}\n"
+            )),
+            &["recovery.rs", &float_ty],
+        ));
+
+        // ── AUDIT XE HIGH 4: AN INTAKE ROW'S PREMISE IS EVALUATED ────────────────────────────────
+        //
+        // `card_from_config` and `from_config` build every deployment's card from integer cells; a
+        // float written into either is a float on the one path the rule was written for, and it
+        // read green under a row whose span held no float.
+        for (file, boundary, where_) in [
+            (
+                "crates/busbar/src/root/kernel.rs",
+                "card_from_config",
+                "root/kernel.rs",
+            ),
+            (CARD_BUILD_FILE, "from_config", "cost/rate.rs"),
+        ] {
+            match body_plant(
+                cx,
+                file,
+                boundary,
+                &format!("let _planted_card: {float_ty} = 27.1;"),
+            ) {
+                Ok(ov) => report.push(prove_red(
+                    cx,
+                    self,
+                    format!("a float inside the card build `{boundary}` is flagged (no stale exemption)"),
+                    &[ROW_NO_FLOAT],
+                    ov,
+                    &[where_, &float_ty],
+                )),
+                Err(e) => report.note_infra_failure(format!(
+                    "no-float-money selftest: could not plant inside `fn {boundary}` ({e})"
+                )),
+            }
+        }
+        // AND A ROW WHOSE SPAN NO LONGER HOLDS A FLOAT IS REFUSED: `from_micro_rates` with its one
+        // decimal parameter turned integer exempts integer code, so its row's premise is false.
+        match cx.read(CARD_BUILD_FILE) {
+            Ok(text) => {
+                let from = format!("Item = (LaneClass, {float_ty})>");
+                if text.contains(&from) {
+                    let mut ov = Overlay::new();
+                    ov.set(
+                        CARD_BUILD_FILE,
+                        text.replacen(&from, "Item = (LaneClass, u64)>", 1),
+                    );
+                    report.push(prove_red(
+                        cx,
+                        self,
+                        "a money-intake row whose span holds no float is refused",
+                        &[ROW_SCAN_FLOOR, ROW_NO_FLOAT],
+                        ov,
+                        &["from_micro_rates", "holds NO float"],
+                    ));
+                } else {
+                    report.note_infra_failure(format!(
+                        "no-float-money selftest: {CARD_BUILD_FILE} no longer spells `{from}`"
+                    ));
+                }
+            }
+            Err(e) => report.note_infra_failure(format!(
+                "no-float-money selftest: could not read {CARD_BUILD_FILE} ({e})"
+            )),
+        }
+
         // AUDIT XTASK-E HIGH 3: THE MONEY FILES NOBODY HAD TYPED. The settlement writer, the accrual
         // meter and the operator's rate amend were in no float scan set, so a float in what a unit's
         // end posts, in the accrual total or in a rate correction could not go red. They are in the
@@ -3143,6 +3260,21 @@ impl Gate for NoFloatMoneyGate {
             (
                 "an if-let with a zero else",
                 "if let Some(n) = v.as_u64() { n } else { 0 }",
+            ),
+            // AUDIT XE HIGH 3: A ZERO DEFAULT REACHED THROUGH AN INTERMEDIATE COMBINATOR. The
+            // default was judged only when it was the FIRST call after the accessor, so a narrowing
+            // `and_then`/`map` in between read GREEN.
+            (
+                "a narrowing and_then before the zero default",
+                "v.as_u64().and_then(|n| u32::try_from(n).ok()).unwrap_or(0) as u64",
+            ),
+            (
+                "a map before the zero default",
+                "v.as_u64().map(|n| n as u32).unwrap_or(0) as u64",
+            ),
+            (
+                "a path-form read through a filter and a map_or zero",
+                "v.get(\"tokens\").and_then(Json::as_u64).filter(|n| *n > 0).map_or(0, |n| n)",
             ),
             // AUDIT XTASK-E HIGH 4: A `match` WHOSE `None` (OR WILDCARD) ARM IS ZERO. A `{` after the
             // read was judged only as an `if let` body, so each of these was GREEN.
