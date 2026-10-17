@@ -422,3 +422,23 @@ fn an_entry_with_nothing_parked_takes_no_parked_lock() {
     );
     assert_eq!(close(inst, 0), Outcome::Ready);
 }
+
+/// A CROSSING ALLOCATES NOTHING, ITS PER-CALL LOG SCOPE INCLUDED (THE DESIGN, the plugin ABI: "no
+/// allocation and no blocking on the hot path"; the per-call scoped capture is kept). The
+/// thread's capture dispatcher is built once, on the worker's first crossing; every later crossing
+/// scopes the body under it with a reference-count clone and a thread-local swap, and allocates
+/// nothing.
+#[test]
+fn a_crossing_with_its_scoped_capture_allocates_nothing() {
+    let (o, inst, _drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    // The worker's first crossings build its capture slot.
+    assert_eq!(tick(inst), (Outcome::Ready, 42));
+    assert_eq!(tick(inst), (Outcome::Ready, 42));
+    crate::abi::CountingAlloc::reset();
+    let answered = tick(inst);
+    let allocations = crate::abi::CountingAlloc::count();
+    assert_eq!(answered, (Outcome::Ready, 42));
+    assert_eq!(allocations, 0, "a warm crossing allocated");
+    assert_eq!(close(inst, 0), Outcome::Ready);
+}
