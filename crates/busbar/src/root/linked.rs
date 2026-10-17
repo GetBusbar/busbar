@@ -353,6 +353,7 @@ pub fn register_stores(linked: &Linked) {
             registry_build: Some(crate::root::boot::registry),
             plugins_fetch: Some(crate::root::boot::plugins_fetch),
             hook_axis: Some(crate::root::hooks::axis),
+            hook_names: crate::LINKED_HOOK_NAMES,
             store_axis: Some(store_axis),
             secret_axis: Some(secrets),
             export_axis: Some(&crate::root::exports::EXPORTS),
