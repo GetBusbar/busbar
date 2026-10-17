@@ -11,16 +11,16 @@ use busbar_contract::abi::host::conn::connector::DIRECTION_OUTBOUND;
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::plane::{
     FROM_CALLER, FROM_FAR_END, FROM_KERNEL, PIECE_HAS_STATUS, PIECE_LAST, PRINCIPAL_NONE,
-    PRINCIPAL_REQUIRED, ROUTE_DIRECT, ROUTE_POOL,
+    PRINCIPAL_REQUIRED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_POOL,
 };
 use busbar_contract::media::base64_encode;
-use busbar_plane_streaming::claims::{HTTP_TRANSPORT, WS_TRANSPORT};
+use busbar_plane_streaming::claims::WS_TRANSPORT;
 use busbar_plane_streaming::door::{
     refusal_body, AUDIT_KIND, LIVE_STYLE, REALTIME_STYLE, REFUSAL_NO_DOOR, RIDES_LIVE_SOCKET,
-    RIDES_REALTIME_PASS, RIDES_REALTIME_SOCKET,
+    RIDES_REALTIME_SOCKET,
 };
 use busbar_plane_streaming::driven::{
-    mint_reply, GEMINI_SOCKET_PATH, MINT_FAILED_STATUS, REALTIME_SOCKET_PATH, SESSION_OPEN_ACTION,
+    GEMINI_SOCKET_PATH, REALTIME_SOCKET_PATH, SESSION_OPEN_ACTION,
 };
 use busbar_plane_streaming::provider::{GEMINI_LIVE, OPENAI_REALTIME};
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
@@ -30,7 +30,7 @@ use serde_json::{json, Value};
 use crate::codec_legs::{caller_norms, far_norms, fingerprint, frame, usage_tokens, Dialect, Norm};
 use crate::door::{
     arrive, attempt, drive, judge, open, piece, refusal, request, result, session, Answer, Arrived,
-    Emission, Log, Opened, Piece, Rendered, Rig, Session, CALLER_REF, MODEL, PUBLIC, SESSION,
+    Emission, Log, Opened, Piece, Rendered, Rig, Session, MODEL, PUBLIC, SESSION,
 };
 
 // ── the frames the legs push ────────────────────────────────────────────────────────────────────
@@ -68,7 +68,6 @@ pub fn downlink(bytes: usize) -> Vec<u8> {
 }
 
 /// The OpenAI Realtime mint's far-end answer.
-const MINTED: &[u8] = br#"{"value":"ek_oracle_0001","expires_at":1767225600}"#;
 
 /// One `answer` as a line: the step, the outcome and the cumulative units.
 pub fn units_of(what: &str, a: &Answer) -> String {
@@ -168,10 +167,7 @@ fn cred_script(p: &Plugin<Plane>) -> CredObs {
         })
         .collect();
     let _ = open(p, SESSION, Some(PUBLIC));
-    let mut rides = vec![
-        ride("mint", &piece(p, &attempt(7, 0, 1))),
-        ride("sdp", &piece(p, &attempt(8, 1, 1))),
-    ];
+    let mut rides = Vec::new();
     let mut s = Session::open(p, 20, 2);
     rides.push(ride("sideband", &s.push(FROM_CALLER, 0, &uplink(100))));
     let mut g = Session::open(p, 21, 3);
@@ -184,12 +180,11 @@ fn cred_script(p: &Plugin<Plane>) -> CredObs {
 }
 
 fn cred_check(o: &CredObs) -> Result<String, String> {
-    if o.rides.len() != 4 {
-        return Err(format!("expected four far requests, saw {:?}", o.rides));
+    if o.rides.len() != 2 {
+        return Err(format!("expected two far requests, saw {:?}", o.rides));
     }
     for r in &o.rides {
         let (transport, style) = match r.door {
-            "mint" | "sdp" => (HTTP_TRANSPORT, REALTIME_STYLE),
             "sideband" => (WS_TRANSPORT, REALTIME_STYLE),
             _ => (WS_TRANSPORT, LIVE_STYLE),
         };
@@ -229,17 +224,6 @@ fn cred_check(o: &CredObs) -> Result<String, String> {
             ));
         }
     }
-    let mint = &o.rides[0];
-    if !mint
-        .fields
-        .iter()
-        .any(|(n, v)| n.eq_ignore_ascii_case("openai-safety-identifier") && v == CALLER_REF)
-    {
-        return Err(format!(
-            "the mint does not name the caller by the kernel's reference alone: {:?}",
-            mint.fields
-        ));
-    }
     for want in [
         format!("{OPENAI_REALTIME}={REALTIME_STYLE}"),
         format!("{GEMINI_LIVE}={LIVE_STYLE}"),
@@ -252,10 +236,10 @@ fn cred_check(o: &CredObs) -> Result<String, String> {
         }
     }
     Ok(
-        "every far request (mint, SDP, the sideband and Gemini sockets) rides a declared outbound \
+        "every socket's far request (the sideband and Gemini sockets) rides a declared outbound \
          need whose auth style the kernel binds the provider credential to; none carries a \
-         credential field, the caller is named only by the kernel's reference, and each dialect \
-         states its far end's credential style. Resolving the catalog's secret reference, the \
+         credential field, and each dialect states its far end's credential style. The mint \
+         dials nothing: busbar mints the ticket itself (row 132). Resolving the catalog's secret reference, the \
          set-once composition and an unresolvable reference composing nothing are the \
          composition root's (busbar), not the door's"
             .to_string(),
@@ -420,7 +404,9 @@ struct ScopeObs {
     refused: Rendered,
 }
 
-const SCOPE_CLAIMS: [u32; 7] = [0, 1, 2, 3, 4, 5, 9];
+// The sideband door (claim 2) controls a call busbar placed: arrived naming none, it is refused
+// (the plane's own conformance resolves a known one).
+const SCOPE_CLAIMS: [u32; 6] = [0, 1, 3, 4, 5, 9];
 
 fn scope_script(p: &Plugin<Plane>) -> ScopeObs {
     let scope_kinds = p
@@ -473,7 +459,7 @@ fn scope_check(o: &ScopeObs) -> Result<String, String> {
         return Err(format!("the grant refusal rendered as {:?}", o.refused));
     }
     Ok(
-        "the door declares the `session` grant kind, every one of its five doors asks for a \
+        "the door declares the `session` grant kind, every one of its doors asks for a \
          principal (none admits anonymously) under the one session-open operation, an \
          unpublished claim is refused 404 with the plane's own code, and a grant refusal renders \
          as the dialect's permission_error. Matching the key's grants (wildcard, explicit, \
@@ -717,7 +703,7 @@ fn provider_dial(rig: &Rig, slice: &str) -> bool {
         &|o: &DialObs| {
             let mut planted = o.clone();
             if let Some(e) = planted.openai.emissions.iter_mut().find(|e| e.to_far) {
-                e.need = RIDES_REALTIME_PASS;
+                e.need = RIDES_LIVE_SOCKET;
             }
             planted
         },
@@ -831,20 +817,17 @@ fn admit_refusal(rig: &Rig, slice: &str) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct FailObs {
     arrived: Arrived,
-    first: Answer,
-    failed: Answer,
-    second: Answer,
-    caller: Answer,
-    answered: Answer,
-    terminal_attempt: Answer,
-    terminal: Answer,
+    mint_attempt: Answer,
+    mint_far: Answer,
+    opened: Answer,
+    turn_attempt: Answer,
 }
 
 fn fail_script(p: &Plugin<Plane>) -> FailObs {
     let _ = open(p, SESSION, Some(PUBLIC));
     let arrived = arrive(p, 0);
-    let first = piece(p, &attempt(70, 0, 1));
-    let failed = piece(
+    let mint_attempt = piece(p, &attempt(70, 0, 1));
+    let mint_far = piece(
         p,
         &Piece {
             status: 503,
@@ -852,107 +835,59 @@ fn fail_script(p: &Plugin<Plane>) -> FailObs {
                 70,
                 0,
                 FROM_FAR_END,
-                PIECE_HAS_STATUS,
+                PIECE_HAS_STATUS | PIECE_LAST,
                 b"upstream unavailable",
             )
         },
     );
-    let second = piece(p, &attempt(70, 0, 2));
-    let caller = piece(p, &request(70, 0, FROM_CALLER, PIECE_LAST, &[]));
-    let answered = piece(
+    let mut s = Session::open(p, 72, 2);
+    let opened = s.push(FROM_CALLER, 0, &uplink(100));
+    let turn_attempt = piece(
         p,
         &Piece {
-            status: 200,
-            ..request(70, 0, FROM_FAR_END, PIECE_HAS_STATUS | PIECE_LAST, MINTED)
-        },
-    );
-    let terminal_attempt = piece(p, &attempt(71, 0, 1));
-    let terminal = piece(
-        p,
-        &Piece {
-            status: 503,
-            ..request(71, 0, FROM_FAR_END, PIECE_HAS_STATUS | PIECE_LAST, b"down")
+            attempt_no: 2,
+            ..session(72, 2, FROM_KERNEL, 0, &[])
         },
     );
     FailObs {
         arrived,
-        first,
-        failed,
-        second,
-        caller,
-        answered,
-        terminal_attempt,
-        terminal,
+        mint_attempt,
+        mint_far,
+        opened,
+        turn_attempt,
     }
-}
-
-/// Whether two ATTEMPTs answered the same far request: verb, target, fields, body and need.
-fn same_request(a: &Answer, b: &Answer) -> bool {
-    a.verb == b.verb
-        && a.target == b.target
-        && a.fields == b.fields
-        && a.emitted == b.emitted
-        && a.need == b.need
 }
 
 fn fail_check(o: &FailObs) -> Result<String, String> {
-    if o.arrived.outcome != Outcome::Ready || o.arrived.route != (ROUTE_DIRECT, MODEL.to_string()) {
+    if o.arrived.outcome != Outcome::Ready || o.arrived.route != (ROUTE_LOCAL, String::new()) {
         return Err(format!("the mint arrived as {:?}", o.arrived));
     }
-    let f = &o.first;
-    if f.outcome != Outcome::Ready
-        || !f.to_far
-        || f.verb != "POST"
-        || f.target != "/v1/realtime/client_secrets"
-        || f.need != RIDES_REALTIME_PASS
-        || f.emitted.is_empty()
-    {
-        return Err(format!("attempt 1 sent {f:?}"));
+    let m = &o.mint_attempt;
+    if m.outcome != Outcome::Ready || m.to_far || !m.emitted.is_empty() || m.need != 0 {
+        return Err(format!("the mint's ATTEMPT sent {m:?}"));
     }
-    if o.failed.outcome != Outcome::Ready || !o.failed.emitted.is_empty() || o.failed.done {
+    if o.mint_far.outcome != Outcome::Refused || !o.mint_far.emitted.is_empty() {
         return Err(format!(
-            "a failing far end's first bytes reached the caller (the walk could no longer fail \
-             over): {:?}",
-            o.failed
+            "a far end answered a unit that dials nothing: {:?}",
+            o.mint_far
         ));
     }
-    if !same_request(&o.second, f) || !same_request(&o.terminal_attempt, f) {
-        return Err(format!(
-            "a later attempt sent a different request: {:?} vs {:?}",
-            o.second, f
-        ));
+    let f = &o.opened;
+    if f.outcome != Outcome::Ready || !f.to_far || f.need != RIDES_REALTIME_SOCKET {
+        return Err(format!("the session's first turn sent {f:?}"));
     }
-    if o.caller.outcome != Outcome::Ready || !o.caller.emitted.is_empty() {
+    let a = &o.turn_attempt;
+    if a.outcome != Outcome::Ready || a.to_far || !a.emitted.is_empty() {
         return Err(format!(
-            "the re-pushed caller body was answered {:?}",
-            o.caller
+            "a later ATTEMPT of the session's turn carried something of the plane's own: {a:?}"
         ));
-    }
-    let a = &o.answered;
-    if a.outcome != Outcome::Ready
-        || !a.done
-        || a.status != 200
-        || a.emitted != mint_reply(200, MINTED).body
-    {
-        return Err(format!(
-            "attempt 2's answer was not the caller's whole answer, free of attempt 1: {a:?}"
-        ));
-    }
-    let t = &o.terminal;
-    if t.outcome != Outcome::Ready
-        || !t.done
-        || t.status != u32::from(MINT_FAILED_STATUS)
-        || !String::from_utf8_lossy(&t.emitted)
-            .contains("client-secret endpoint returned 503 Service Unavailable")
-    {
-        return Err(format!("the last attempt's failure was rendered {t:?}"));
     }
     Ok(
-        "the mint names the session model's DIRECT route; a failing far end reaches the caller \
-         with nothing before its last piece, so the walk may still fail over; each ATTEMPT is \
-         answered with the same request afresh, and the next far end's answer is the caller's \
-         whole answer; a last attempt that fails is the served plane's 502. Tripping the \
-         breaker cell and refusing further dials are the kernel walk's"
+        "the mint is the plane's own to answer (ROUTE_LOCAL): it dials nothing, so no attempt of \
+         it is ever failed over, and a far end never answers it; a session's dial is its first \
+         turn, and every later ATTEMPT of that turn carries nothing of the plane's own, so the \
+         kernel's walk fails over with the same request. Tripping the breaker cell and refusing \
+         further dials are the kernel walk's"
             .to_string(),
     )
 }
@@ -960,12 +895,12 @@ fn fail_check(o: &FailObs) -> Result<String, String> {
 fn route_failover(rig: &Rig, slice: &str) -> bool {
     let failover = judge(
         slice,
-        "each attempt is answered afresh and nothing reaches the caller before the answer",
+        "a dial is the session's first turn and a later attempt carries nothing of the plane's own",
         &rig.both(fail_script),
         &fail_check,
         &|o: &FailObs| {
             let mut planted = o.clone();
-            planted.second.emitted = b"planted".to_vec();
+            planted.turn_attempt.emitted = b"planted".to_vec();
             planted
         },
     );
@@ -974,7 +909,7 @@ fn route_failover(rig: &Rig, slice: &str) -> bool {
         "a section with no session model names no route",
         &rig.both(|p| {
             let _ = open(p, b"{}", Some(PUBLIC));
-            arrive(p, 0)
+            arrive(p, 3)
         }),
         &|a: &Arrived| {
             if a.outcome == Outcome::Ready && a.route == (ROUTE_POOL, String::new()) {
@@ -984,7 +919,7 @@ fn route_failover(rig: &Rig, slice: &str) -> bool {
                         .to_string(),
                 )
             } else {
-                Err(format!("an unrouted mint arrived as {a:?}"))
+                Err(format!("an unrouted session door arrived as {a:?}"))
             }
         },
         &|a: &Arrived| Arrived {
@@ -1015,7 +950,9 @@ fn audit_script(p: &Plugin<Plane>) -> AuditObs {
         .map(|k| (*k).to_string())
         .collect();
     let _ = open(p, SESSION, Some(PUBLIC));
-    let op_of = (0..5)
+    // The sideband door (claim 2) controls a call busbar placed: arrived with none, it is refused.
+    let op_of = [0, 1, 3, 4]
+        .into_iter()
         .map(|c| {
             let a = arrive(p, c);
             (a.outcome, a.op_class)
@@ -1032,10 +969,6 @@ fn audit_script(p: &Plugin<Plane>) -> AuditObs {
     for x in [
         attempt(82, 0, 1),
         request(82, 0, FROM_CALLER, PIECE_LAST, &[]),
-        Piece {
-            status: 200,
-            ..request(82, 0, FROM_FAR_END, PIECE_HAS_STATUS | PIECE_LAST, MINTED)
-        },
     ] {
         records += piece(p, &x).records;
     }

@@ -37,7 +37,6 @@
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
 
-pub mod broker;
 pub mod claims;
 // `#![deny(missing_docs)]` above is a rule this crate holds itself to; the `codec` module was not
 // written under it and is exempt, scoped to exactly this module.
@@ -62,6 +61,7 @@ pub mod session_pump;
 pub mod session_row;
 pub mod session_unit;
 pub mod sessions;
+pub mod ticket;
 
 #[cfg(test)]
 mod tests;

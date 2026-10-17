@@ -27,10 +27,10 @@ pub struct VoiceSessionRow {
     /// Whether the session has settled into its terminal state (gates eviction).
     pub terminal: bool,
     /// The provider's `rtc_<call_id>` correlation key for a browser-WebRTC session — the `Location`
-    /// header the SDP broker preserved from `POST /v1/realtime/calls`. It ties the brokered media call
-    /// and busbar's sideband control socket to the SAME session, so governance applied here provably
-    /// governs the media that flows there. `None` until the SDP broker sets it (and for topologies
-    /// with no brokered media call). `#[serde(default)]` so a row written before this field existed
+    /// the provider answered busbar's own call with (`POST /v1/realtime/calls`). It ties the call
+    /// busbar placed and busbar's sideband control socket to the SAME session, so governance applied
+    /// here provably governs the media that flows there. `None` until the provider names it (and for
+    /// topologies with no call busbar placed). `#[serde(default)]` so a row written before this field existed
     /// rehydrates cleanly.
     #[serde(default)]
     pub rtc_call_id: Option<String>,

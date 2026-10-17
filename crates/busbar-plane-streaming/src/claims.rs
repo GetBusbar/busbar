@@ -31,6 +31,10 @@ pub const WS_TRANSPORT: &str = "ws";
 /// The transport the two one-shot operations (`transcribe`, `tts`) are claimed against.
 pub const HTTP_TRANSPORT: &str = "http";
 
+/// The datagram transport the browser's media rides (row 132): the SDP door's claim, whose session
+/// busbar terminates, and the upstream call busbar places for it.
+pub const WEBRTC_TRANSPORT: &str = "webrtc";
+
 /// The credential scheme every one of this plane's claims authenticates under.
 ///
 /// One scheme with alternatives, not several schemes, the same discipline `busbar-plane-llm` uses:

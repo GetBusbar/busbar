@@ -1079,7 +1079,70 @@ pub fn compose_served(
     )?;
     served.post = Some(post);
     served.epoch = epoch;
+    // THE CLAIM DOORS (row 132): each served plane's inbound need over a datagram transport binds
+    // its one port at the address the plane's section names there.
+    served.claim_doors =
+        serve_datagram::ClaimDoors::bind(&datagram_binds(doors, sections)?, |t| {
+            crate::root::connector::the().framer_for(t)
+        })?;
     Ok(served)
+}
+
+/// THE BINDS OF THE SERVED PLANES' INBOUND NEEDS that name a settings block (`target_from`): each
+/// at the `listen` its plane's section states there (`<section>.<target_from>.listen`). A block
+/// that states no `listen` binds nothing (that need is served by no port); one that states an
+/// address that is not `ip:port` refuses the composition, naming the setting.
+///
+/// # Errors
+///
+/// The setting whose address does not parse.
+pub fn datagram_binds(
+    doors: &[(String, DoorPlane)],
+    sections: &BTreeMap<&'static str, serde_yaml::Value>,
+) -> Result<Vec<crate::root::loader::boot::InboundBind>, String> {
+    use busbar_contract::abi::host::conn::connector::DIRECTION_INBOUND;
+    let mut binds = Vec::new();
+    for (instance, plugin) in doors {
+        let facts = plugin.served();
+        let Some(section) = sections.get(facts.section) else {
+            continue;
+        };
+        for (i, ((direction, _), target)) in
+            facts.need_auths.iter().zip(&facts.need_targets).enumerate()
+        {
+            if *direction != DIRECTION_INBOUND || target.is_empty() {
+                continue;
+            }
+            let at = format!("{}.{target}", facts.section);
+            let Some(listen) = target
+                .split('.')
+                .try_fold(section, |v, k| v.get(k))
+                .and_then(|block| block.get("listen"))
+                .and_then(serde_yaml::Value::as_str)
+            else {
+                continue;
+            };
+            let listen: std::net::SocketAddr = listen
+                .parse()
+                .map_err(|_| format!("{at}.listen: `{listen}` is not an ip:port address"))?;
+            binds.push(crate::root::loader::boot::InboundBind {
+                owner: crate::root::loader::boot::BindOwner::Need {
+                    instance: instance.clone(),
+                    kind: busbar_contract::abi::mechanism::KindCode::Plane,
+                    need: u32::try_from(i).unwrap_or(u32::MAX),
+                },
+                transport: facts
+                    .need_transports
+                    .get(i)
+                    .map_or_else(String::new, |t| (*t).to_string()),
+                at,
+                listen,
+                tls: None,
+                max_conns: crate::root::loader::boot::DEFAULT_MAX_CONNS,
+            });
+        }
+    }
+    Ok(binds)
 }
 
 /// THE KERNEL'S HOOK STAGE as a door plane's units bind it: the current generation's engine host

@@ -51,12 +51,32 @@ fn seconds() -> u32 {
 
 #[test]
 fn a_one_request_door_opens_no_session() {
-    for door in [Door::Mint, Door::Sdp] {
-        assert!(
-            Live::open(door, &StreamsCfg::default()).is_none(),
-            "{door:?}"
-        );
-    }
+    assert!(Live::open(Door::Mint, &StreamsCfg::default()).is_none());
+}
+
+/// The SDP door's session (row 132) owes the far end busbar's own call before anything else, and
+/// a session told to end ends once what it owes is collected.
+#[test]
+fn the_sdp_sessions_call_is_owed_the_far_end_first() {
+    let mut s = Live::open(Door::Sdp, &StreamsCfg::default()).expect("a session door");
+    assert!(!s.ready(), "nothing owed at the open");
+    s.open_far(b"--form".to_vec());
+    assert!(s.ready());
+    assert_eq!(
+        s.next(true),
+        Emit {
+            frame: Some((Side::FarEnd, b"--form".to_vec())),
+            done: false
+        }
+    );
+    s.end();
+    assert_eq!(
+        s.next(true),
+        Emit {
+            frame: None,
+            done: true
+        }
+    );
 }
 
 #[test]

@@ -1,24 +1,21 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE PLANE'S ANSWERS TO THE KERNEL PLANE DRIVER for its two one-request doors (`BUSBAR-1.6.0.md`
-//! Part 3, section 12): the ephemeral-secret mint and the SDP offer. Each answer is plain data, in
-//! the plane's own vocabulary; writing it into the host's buffers is the door's job.
+//! THE PLANE'S ANSWERS TO THE KERNEL PLANE DRIVER (`BUSBAR-1.6.0.md` Part 3, section 12): which
+//! door a claim is, and the request each session door sends its far end. Each answer is plain data,
+//! in the plane's own vocabulary; writing it into the host's buffers is the door's job.
 //!
 //! | driver crossing | here |
 //! |---|---|
 //! | `arrive` | [`arrive`]: which door the claim is, its dialect and its principal need |
-//! | `on_piece`, ATTEMPT | [`mint_attempt`], [`sdp_attempt`]: the request bound for the far end |
-//! | `on_piece`, from the far end | [`mint_reply`], [`sdp_reply`]: what the caller is answered |
+//! | the mint door's caller body | [`minted`], [`mint_failed`]: the ticket busbar minted, or why not |
+//! | a session's far-end turn | [`Steps::route`]: the request bound for the far end |
 //!
-//! The caller's texts are the served plane's, byte for byte, where the far end answered. A far end
-//! that could not be reached is the kernel's route terminal and is not answered here.
+//! Busbar terminates the browser's media (row 132): the mint door answers a ticket busbar mints
+//! itself and dials nothing; the SDP door is a datagram session whose far end is busbar's own call.
 
-use crate::broker::{
-    clamped_ttl_secs, mint_request_body, minted_answer, read_minted, rtc_call_id_of, CALLS_PATH,
-    CLIENT_SECRETS_PATH, SAFETY_IDENTIFIER_HEADER, SDP_CONTENT_TYPE,
-};
 use crate::codec::ir::config::SessionConfig;
+use crate::ticket::{call_form, minted_answer, CALLS_PATH};
 
 /// The media type of a JSON body.
 pub const JSON_CONTENT_TYPE: &str = "application/json";
@@ -32,9 +29,9 @@ pub const FIELD_CONTENT_LENGTH: &str = "content-length";
 /// The door a claim is, by its index in the snapshot's claims (`crate::door::ROUTES`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Door {
-    /// `POST /v1/realtime/client_secrets`: one ephemeral secret for a browser session.
+    /// `POST /v1/realtime/client_secrets`: one ticket for a browser session, minted by busbar.
     Mint,
-    /// `POST /v1/realtime/calls`: one SDP offer, relayed to the provider.
+    /// `POST /v1/realtime/calls`: one SDP offer, answered by busbar, which terminates the media.
     Sdp,
     /// The browser's sideband socket.
     Sideband,
@@ -79,7 +76,10 @@ impl Door {
     /// `true` for a door that opens a live session rather than answering one request.
     #[must_use]
     pub const fn is_session(self) -> bool {
-        matches!(self, Door::Sideband | Door::Gemini | Door::Twilio)
+        matches!(
+            self,
+            Door::Sdp | Door::Sideband | Door::Gemini | Door::Twilio
+        )
     }
 }
 
@@ -94,8 +94,8 @@ pub struct Arrival {
     pub dialect: u32,
 }
 
-/// `arrive` for claim `claim`: every keyed door opens a session (or brokers one) for a known
-/// principal.
+/// `arrive` for claim `claim`: every keyed door opens a session (or mints the ticket one opens
+/// with) for a known principal.
 #[must_use]
 pub const fn arrive(claim: u32) -> Option<Arrival> {
     match Door::of(claim) {
@@ -122,16 +122,12 @@ pub trait Steps {
     fn approve(&self) -> (&'static str, &'static str);
     /// ADMIT: the units a unit is expected to cost before the far end reports any.
     fn admit(&self) -> Vec<(u32, u64)>;
-    /// ROUTE: the request an attempt sends the far end; `None` when the door sends nothing.
+    /// ROUTE: the request a session's far-end turn sends, under its locked `config`; `call` is the
+    /// provider's call id a sideband session controls. `None` when the door sends nothing.
     ///
     /// # Errors
     /// The request body's serializer text.
-    fn route(
-        &self,
-        config: &SessionConfig,
-        caller_ref: Option<&str>,
-        body: &[u8],
-    ) -> Result<Option<Attempt>, String>;
+    fn route(&self, config: &SessionConfig, call: Option<&str>) -> Result<Option<Attempt>, String>;
     /// METER: a session's units so far, per billable class index, the zero classes left out.
     fn meter(&self, units: &crate::session_unit::CumulativeUnits) -> Vec<(u32, u64)>;
     /// AUDIT: the action a unit on this door is audited under.
@@ -167,26 +163,32 @@ impl Steps for Door {
         }
     }
 
-    /// The session doors dial the dialect's realtime socket (the credential is the kernel's, never
-    /// in the target); the mint and SDP doors send their one request.
-    fn route(
-        &self,
-        config: &SessionConfig,
-        caller_ref: Option<&str>,
-        body: &[u8],
-    ) -> Result<Option<Attempt>, String> {
+    /// The socket doors dial the dialect's realtime socket (the credential is the kernel's, never
+    /// in the target), a sideband session the provider's call it controls; the SDP door places
+    /// busbar's own call, one form carrying the locked session and busbar's description; the mint
+    /// door dials nothing.
+    fn route(&self, config: &SessionConfig, call: Option<&str>) -> Result<Option<Attempt>, String> {
         Ok(match self {
-            Door::Mint => Some(mint_attempt(config, caller_ref, None)?),
-            Door::Sdp => Some(sdp_attempt(body)),
-            Door::Sideband | Door::Twilio => Some(Attempt {
+            Door::Mint => None,
+            Door::Sdp => Some(call_attempt(config)?),
+            Door::Sideband => Some(Attempt {
                 verb: "GET",
-                target: REALTIME_SOCKET_PATH,
+                target: match call {
+                    Some(call) => format!("{REALTIME_SOCKET_PATH}?call_id={call}"),
+                    None => REALTIME_SOCKET_PATH.to_string(),
+                },
+                fields: Vec::new(),
+                body: Vec::new(),
+            }),
+            Door::Twilio => Some(Attempt {
+                verb: "GET",
+                target: REALTIME_SOCKET_PATH.to_string(),
                 fields: Vec::new(),
                 body: Vec::new(),
             }),
             Door::Gemini => Some(Attempt {
                 verb: "GET",
-                target: GEMINI_SOCKET_PATH,
+                target: GEMINI_SOCKET_PATH.to_string(),
                 fields: Vec::new(),
                 body: Vec::new(),
             }),
@@ -227,44 +229,26 @@ pub struct Attempt {
     /// The verb.
     pub verb: &'static str,
     /// The target, under the member's base URL.
-    pub target: &'static str,
+    pub target: String,
     /// The head fields, in order.
     pub fields: Vec<(&'static str, String)>,
     /// The body.
     pub body: Vec<u8>,
 }
 
-/// The mint's ATTEMPT: the locked session params the browser's session is bound to, the secret's
-/// lifetime (the requested one held inside its bounds), and the caller named for attribution.
+/// The SDP door's far-end request: busbar's own call to the provider, one form carrying the locked
+/// session and, as its last part, busbar's own description (the connector frames the form's end).
 ///
 /// # Errors
-/// The body's serializer text.
-pub fn mint_attempt(
-    config: &SessionConfig,
-    caller: Option<&str>,
-    requested_ttl_secs: Option<u64>,
-) -> Result<Attempt, String> {
-    let mut fields = vec![(FIELD_CONTENT_TYPE, JSON_CONTENT_TYPE.to_string())];
-    if let Some(r) = caller.filter(|r| !r.is_empty()) {
-        fields.push((SAFETY_IDENTIFIER_HEADER, r.to_string()));
-    }
+/// The session's serializer text.
+pub fn call_attempt(locked: &SessionConfig) -> Result<Attempt, String> {
+    let (content_type, lead) = call_form(locked)?;
     Ok(Attempt {
         verb: "POST",
-        target: CLIENT_SECRETS_PATH,
-        fields,
-        body: mint_request_body(clamped_ttl_secs(requested_ttl_secs), config)?,
+        target: CALLS_PATH.to_string(),
+        fields: vec![(FIELD_CONTENT_TYPE, content_type)],
+        body: lead,
     })
-}
-
-/// The SDP offer's ATTEMPT: the caller's offer, relayed as it arrived.
-#[must_use]
-pub fn sdp_attempt(offer: &[u8]) -> Attempt {
-    Attempt {
-        verb: "POST",
-        target: CALLS_PATH,
-        fields: vec![(FIELD_CONTENT_TYPE, SDP_CONTENT_TYPE.to_string())],
-        body: offer.to_vec(),
-    }
 }
 
 /// What the caller is answered.
@@ -276,8 +260,6 @@ pub struct Reply {
     pub fields: Vec<(&'static str, String)>,
     /// The body.
     pub body: Vec<u8>,
-    /// For an SDP answer that names its call: the provider's `rtc_` call id, for the session record.
-    pub rtc_call_id: Option<String>,
 }
 
 /// The status the served plane answers a failed mint with.
@@ -293,44 +275,16 @@ pub fn mint_failed(reason: &str) -> Reply {
             "streaming ephemeral-secret mint failed: ephemeral token mint failed: {reason}"
         )
         .into_bytes(),
-        rtc_call_id: None,
     }
 }
 
-/// The caller's answer to the far end's mint answer (`status`, `body`): the secret and its expiry on
-/// a success that carries one, else the served plane's 502 and its text.
+/// The caller's answer to a mint busbar answered: the ticket and its expiry.
 #[must_use]
-pub fn mint_reply(status: u16, body: &[u8]) -> Reply {
-    if !(200..300).contains(&status) {
-        return mint_failed(&format!(
-            "client-secret endpoint returned {}",
-            status_text(status)
-        ));
-    }
-    match read_minted(body) {
-        Ok(minted) => Reply {
-            status: 200,
-            fields: vec![(FIELD_CONTENT_TYPE, JSON_CONTENT_TYPE.to_string())],
-            body: minted_answer(&minted),
-            rtc_call_id: None,
-        },
-        Err(reason) => mint_failed(&reason),
-    }
-}
-
-/// The caller's answer to the far end's SDP answer: its status, its body as an SDP answer, and its
-/// `Location` when it named one; the call id in that `Location` goes to the session record.
-#[must_use]
-pub fn sdp_reply(status: u16, location: Option<&str>, body: &[u8]) -> Reply {
-    let mut fields = vec![(FIELD_CONTENT_TYPE, SDP_CONTENT_TYPE.to_string())];
-    if let Some(loc) = location {
-        fields.push((FIELD_LOCATION, loc.to_string()));
-    }
+pub fn minted(ticket: &str, expires_at_unix: u64) -> Reply {
     Reply {
-        status,
-        fields,
-        body: body.to_vec(),
-        rtc_call_id: location.and_then(rtc_call_id_of),
+        status: 200,
+        fields: vec![(FIELD_CONTENT_TYPE, JSON_CONTENT_TYPE.to_string())],
+        body: minted_answer(ticket, expires_at_unix),
     }
 }
 

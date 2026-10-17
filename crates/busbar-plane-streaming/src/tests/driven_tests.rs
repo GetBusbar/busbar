@@ -28,83 +28,76 @@ fn every_published_claim_arrives_at_its_door_in_its_dialect() {
     assert_eq!(crate::door::ROUTES.len(), 5, "one door per published claim");
 }
 
+/// Busbar terminates the browser's media (row 132): the mint door dials nothing; the SDP door is a
+/// session whose far end is busbar's own call, one form carrying the locked session.
 #[test]
-fn the_mint_attempt_names_the_caller_and_carries_the_locked_session() {
+fn the_mint_door_dials_nothing_and_the_sdp_door_places_busbars_own_call() {
     let cfg = SessionConfig {
         instructions: Some("locked".into()),
         ..SessionConfig::default()
     };
-    let a = mint_attempt(&cfg, Some("vk-1"), None).expect("serializes");
-    assert_eq!((a.verb, a.target), ("POST", "/v1/realtime/client_secrets"));
+    assert_eq!(Door::Mint.route(&cfg, None), Ok(None));
+    assert!(!Door::Mint.is_session());
+    assert!(Door::Sdp.is_session());
+    let call = Door::Sdp
+        .route(&cfg, None)
+        .expect("routes")
+        .expect("a call");
     assert_eq!(
-        a.fields,
-        vec![
-            ("content-type", "application/json".to_string()),
-            ("OpenAI-Safety-Identifier", "vk-1".to_string()),
-        ]
+        (call.verb, call.target.as_str()),
+        ("POST", "/v1/realtime/calls")
     );
-    let body: serde_json::Value = serde_json::from_slice(&a.body).expect("json");
-    assert_eq!(body["expires_after"]["seconds"], 600);
-    assert_eq!(body["session"]["instructions"], "locked");
+    assert_eq!(
+        call.fields,
+        vec![(
+            "content-type",
+            "multipart/form-data; boundary=busbar-call-form".to_string()
+        )]
+    );
+    let (_, lead) = crate::ticket::call_form(&cfg).expect("serializes");
+    assert_eq!(call.body, lead);
+    assert_eq!(call, call_attempt(&cfg).expect("serializes"));
     assert!(
-        a.fields
+        call.fields
             .iter()
             .all(|(n, _)| !n.eq_ignore_ascii_case("authorization")),
         "the plane never writes the credential; the kernel adds it"
     );
-    let anonymous = mint_attempt(&cfg, None, None).expect("serializes");
-    assert_eq!(
-        anonymous.fields,
-        vec![("content-type", "application/json".to_string())],
-        "no reference lent, no caller named"
-    );
 }
 
+/// The sideband door controls the provider's call its busbar call id resolved to.
 #[test]
-fn a_minted_secret_is_answered_and_a_failure_keeps_the_served_text() {
-    let ok = mint_reply(200, br#"{"value":"ek_1","expires_at":9}"#);
+fn a_sideband_session_dials_the_providers_call() {
+    let cfg = SessionConfig::default();
+    let sock = Door::Sideband
+        .route(&cfg, Some("rtc_upstream"))
+        .expect("routes")
+        .expect("dials");
+    assert_eq!(sock.target, "/v1/realtime?call_id=rtc_upstream");
+    let bare = Door::Sideband
+        .route(&cfg, None)
+        .expect("routes")
+        .expect("dials");
+    assert_eq!(bare.target, "/v1/realtime");
+}
+
+/// A ticket's answer and a refused mint, in the served plane's shapes.
+#[test]
+fn a_minted_ticket_is_answered_and_a_failure_keeps_the_served_text() {
+    let ok = minted("ek_1", 9);
     assert_eq!(ok.status, 200);
     let v: serde_json::Value = serde_json::from_slice(&ok.body).expect("json");
     assert_eq!(
         v,
         serde_json::json!({"value": "ek_1", "expires_at_unix": 9})
     );
-
-    let refused = mint_reply(400, b"{}");
+    let refused = mint_failed("no ticket is minted: the principal's key does not stand");
     assert_eq!(refused.status, 502);
     assert_eq!(
         String::from_utf8(refused.body).expect("utf-8"),
-        "streaming ephemeral-secret mint failed: ephemeral token mint failed: client-secret \
-         endpoint returned 400 Bad Request"
+        "streaming ephemeral-secret mint failed: ephemeral token mint failed: no ticket is \
+         minted: the principal's key does not stand"
     );
-    let not_ek = mint_reply(200, br#"{"value":"sk-real"}"#);
-    assert_eq!(not_ek.status, 502);
-    assert!(!String::from_utf8(not_ek.body)
-        .expect("utf-8")
-        .contains("sk-real"));
-}
-
-#[test]
-fn the_sdp_offer_is_relayed_and_its_answer_names_the_call() {
-    let a = sdp_attempt(b"v=0\r\n");
-    assert_eq!((a.verb, a.target), ("POST", "/v1/realtime/calls"));
-    assert_eq!(
-        a.fields,
-        vec![("content-type", "application/sdp".to_string())]
-    );
-    assert_eq!(a.body, b"v=0\r\n");
-
-    let r = sdp_reply(201, Some("/v1/realtime/calls/rtc_abc"), b"v=0 answer");
-    assert_eq!(r.status, 201);
-    assert_eq!(r.rtc_call_id.as_deref(), Some("rtc_abc"));
-    assert_eq!(
-        r.fields,
-        vec![
-            ("content-type", "application/sdp".to_string()),
-            ("location", "/v1/realtime/calls/rtc_abc".to_string()),
-        ]
-    );
-    assert_eq!(sdp_reply(400, None, b"no").rtc_call_id, None);
 }
 
 #[test]
@@ -126,7 +119,7 @@ fn each_loop_step_has_the_planes_answer() {
     );
     let cfg = SessionConfig::default();
     let sock = Door::Gemini
-        .route(&cfg, None, b"")
+        .route(&cfg, None)
         .expect("routes")
         .expect("a session dials");
     assert_eq!(sock.verb, "GET");
@@ -135,8 +128,8 @@ fn each_loop_step_has_the_planes_answer() {
         "the credential is never in the target"
     );
     assert_eq!(
-        Door::Sdp.route(&cfg, None, b"v=0").expect("routes"),
-        Some(sdp_attempt(b"v=0"))
+        Door::Sdp.route(&cfg, None).expect("routes"),
+        Some(call_attempt(&cfg).expect("serializes"))
     );
     let mut units = crate::session_unit::CumulativeUnits::default();
     units.0[1] = 20;

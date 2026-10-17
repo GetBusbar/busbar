@@ -72,7 +72,8 @@ pub enum Side {
 /// The session over its door's codec.
 #[derive(Debug)]
 enum Unit {
-    /// The OpenAI Realtime far end (the sideband socket and the telephony socket).
+    /// The OpenAI Realtime far end (the sideband socket, the telephony socket, and the browser's
+    /// call busbar terminates, its events on the call's data channel).
     Realtime(SessionUnit<OpenAiRealtimeCodec>),
     /// The Gemini Live far end.
     Gemini(SessionUnit<GeminiLiveCodec>),
@@ -151,7 +152,7 @@ impl Live {
         let ceiling = cfg.session_max_secs.map(|s| u64::from(s.get()));
         let locked = rewritten.unwrap_or_else(|| Self::locked(door, cfg));
         let unit = match door {
-            Door::Sideband => Unit::Realtime(SessionUnit::open(
+            Door::Sideband | Door::Sdp => Unit::Realtime(SessionUnit::open(
                 OpenAiRealtimeCodec,
                 locked,
                 false,
@@ -168,7 +169,7 @@ impl Live {
             Door::Gemini => {
                 Unit::Gemini(SessionUnit::open(GeminiLiveCodec, locked, false, 0, None))
             }
-            Door::Mint | Door::Sdp => return None,
+            Door::Mint => return None,
         };
         Some(Live {
             unit,
@@ -182,6 +183,17 @@ impl Live {
             short_near: None,
             short_far: None,
         })
+    }
+
+    /// THE SESSION'S OPENING CALL: `frame`, owed the far end before anything else (the SDP door's
+    /// request, which places busbar's own call and so dials the session's far end at its open).
+    pub fn open_far(&mut self, frame: Vec<u8>) {
+        self.queued.push_front((Side::FarEnd, frame));
+    }
+
+    /// The session ends now: whatever it still owes is collected, then its end.
+    pub fn end(&mut self) {
+        self.ending = true;
     }
 
     /// Queue what `plan` owes either side, the far end's frames first.
@@ -340,6 +352,19 @@ impl Sessions {
             }
         }
         self.rewritten.insert(unit, params);
+    }
+
+    /// Whether stream `stream`'s session is open.
+    #[must_use]
+    pub fn is_open(&self, stream: u64) -> bool {
+        self.live.contains_key(&stream)
+    }
+
+    /// The session-open params stated for the session unit `unit` opens (a hook's rewrite, or a
+    /// ticket's record), until its first piece opens it.
+    #[must_use]
+    pub fn rewritten(&self, unit: u64) -> Option<&SessionConfig> {
+        self.rewritten.get(&unit)
     }
 
     /// Stream `stream`'s session, when one is open.
