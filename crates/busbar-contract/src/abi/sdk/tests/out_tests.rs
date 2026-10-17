@@ -349,6 +349,31 @@ fn an_arrival_names_its_route_and_keeps_the_name() {
     assert_eq!((bare.route, bare.pool.len), (ROUTE_DIRECT, 0));
 }
 
+/// A READY ARRIVAL'S ROUTE NAME COSTS NO HEAP ONCE THE INSTANCE HAS KEPT IT (THE DESIGN
+/// Appendix A.8, "Zero allocation on the READY path"). A plane names the entries of its own
+/// section, a set its config bounds: the first arrival naming an entry keeps the name, and every
+/// later one names the kept copy.
+#[test]
+fn a_route_entry_already_kept_is_named_without_allocating() {
+    use crate::abi::plane::{ArriveOut, ROUTE_DIRECT};
+    let kept = Kept::default();
+    let reporting: Reporting = std::cell::Cell::new(None);
+    let mut first: ArriveOut = zeroed();
+    Out::kept(&mut first, &kept, &reporting, holders()).route(ROUTE_DIRECT, "entry");
+    let mut again: ArriveOut = zeroed();
+    let name = String::from("entry");
+    let mut out = Out::kept(&mut again, &kept, &reporting, holders());
+    crate::abi::CountingAlloc::reset();
+    out.route(ROUTE_DIRECT, &name);
+    let allocations = crate::abi::CountingAlloc::count();
+    drop(name);
+    assert_eq!(
+        allocations, 0,
+        "naming a kept route entry allocated on the READY path"
+    );
+    assert_eq!((again.route, read(again.pool)), (ROUTE_DIRECT, b"entry".to_vec()));
+}
+
 /// THE TRUST FACTS SETTER (ARCHITECT 2026-10-06): the counterparty, item and digest a unit rests
 /// on, each kept in the instance's memory past the call; an empty counterparty, item or digest
 /// states none, and with no instance nothing is stated.
