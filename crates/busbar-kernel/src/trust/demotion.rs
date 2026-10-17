@@ -8,20 +8,20 @@
 //! A drift quarantine is DERIVED, never stored: `crate::trust::Approval::state` compares the
 //! operator's standing approval against the last observation, and a state nobody stores is a state
 //! nothing can leave stale. That is the right design and it has one consequence — the observation is
-//! in process memory, so a restarted process has none, and a server with no observation answers the
+//! in process memory, so a restarted process has none, and an upstream with no observation answers the
 //! owning plane's "unsighted" digest state, which dispatches against the digest the
 //! operator WROTE IN CONFIG.
 //!
 //! That fallback is correct and must stay: a deployment that never runs a refresh has only the
 //! operator's declarative approval, and treating "we have never looked" as "it moved" would empty
-//! the catalogue of every such deployment on the day it shipped. But it is correct only for a server
-//! NOBODY LOOKED AT. For a server somebody looked at and DEMOTED it is wrong, and before this
+//! the catalogue of every such deployment on the day it shipped. But it is correct only for an upstream
+//! NOBODY LOOKED AT. For an upstream somebody looked at and DEMOTED it is wrong, and before this
 //! existed nothing on disk told those two apart — so a restart handed a demoted upstream its
 //! approval back until the next unattended sweep looked again.
 //!
 //! ## Which is why the record is a fact, not a state
 //!
-//! What is written is not "this server is quarantined". It is "a live observation of this server
+//! What is written is not "this upstream is quarantined". It is "a live observation of this upstream
 //! disagreed with the approval, at this time" — an OBSERVATION that outlives the process, in exactly
 //! the way the in-memory sighting was always meant to and could not. It is replayed at boot as
 //! [`crate::trust::Sighting::Demoted`], the derivation runs unchanged on top of it, and the
@@ -33,7 +33,7 @@
 //!
 //! Two things follow, and both are deliberate:
 //!
-//! - A server with NO record replays as nothing at all, so it is `Never` sighted and the declarative
+//! - An upstream with NO record replays as nothing at all, so it is `Never` sighted and the declarative
 //!   fallback applies to it exactly as before. The absence of a row is not a demotion.
 //! - The record is CLEARED by the first observation that agrees with the approval again, which is
 //!   how an operator's remedy takes effect: they fix the upstream, the sweep looks, the row goes.
@@ -56,11 +56,13 @@ use std::sync::{Arc, Mutex};
 /// The CORE-NEUTRAL demotion row — the pure durable fact the quarantine mechanism keeps. It names no
 /// plane type (the plane owns the protocol-named twin, which lives plane-side); its
 /// serde shape is the on-disk `demotion` body, so a body written here reads back through the plane's
-/// own typed view field-for-field. Keyed by `server`, upserted, never purged by age.
+/// own typed view field-for-field. Keyed by its upstream, upserted, never purged by age.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct DemotionRow {
-    /// The registered upstream's local id — the row's primary key.
-    pub server: String,
+    /// The registered upstream's local id — the row's primary key. On disk the member is `server`,
+    /// the name the recorded bodies carry, so a body written before this rename reads back unchanged.
+    #[serde(rename = "server")]
+    pub upstream: String,
     /// The operator-facing word for why it was demoted. Never free-form caller text.
     pub reason: String,
     /// Unix seconds the demotion was recorded.
@@ -68,12 +70,12 @@ pub struct DemotionRow {
 }
 
 impl DemotionRow {
-    /// Serialize this row into the opaque `demotion` [`PlaneRecord`] envelope, keyed by its server.
+    /// Serialize this row into the opaque `demotion` [`PlaneRecord`] envelope, keyed by its upstream.
     /// Demotions are never purged by age, so the disposition is immaterial and left `Active`.
     fn to_plane_record(&self) -> RecordStoreResult<PlaneRecord> {
         Ok(PlaneRecord {
             kind: KIND_DEMOTION.to_string(),
-            id: self.server.clone(),
+            id: self.upstream.clone(),
             parent: None,
             seq: 0,
             ts: self.recorded_at,
@@ -114,19 +116,19 @@ impl DemotionRecord {
             .cloned()
     }
 
-    /// RECORD that a live observation of `server` disagreed with the approval.
+    /// RECORD that a live observation of `upstream` disagreed with the approval.
     ///
     /// A failure is reported and swallowed rather than propagated, and the choice is the same one
     /// the durable call log makes: the demotion is ALREADY IN FORCE in this process the moment the
     /// sweep derives it, so a store hiccup costs durability across a restart and never costs the
     /// refusal itself. What it must not be is silent — a deployment whose quarantines are not
     /// surviving restarts has to be able to find that out.
-    pub(crate) fn record(&self, server: &str, reason: &str, now: u64) {
+    pub(crate) fn record(&self, upstream: &str, reason: &str, now: u64) {
         let Some(store) = self.sink() else {
             return;
         };
         let row = DemotionRow {
-            server: server.to_string(),
+            upstream: upstream.to_string(),
             reason: reason.to_string(),
             recorded_at: now,
         };
@@ -136,7 +138,7 @@ impl DemotionRecord {
         {
             crate::diagnostics::diag_error!(
                 crate::diagnostics::PLANE_DEMOTION_WRITE_FAILED,
-                server = %server,
+                server = %upstream,
                 reason = %reason,
                 error = %e,
                 "the durable demotion record could NOT be written: this upstream is demoted in \
@@ -145,17 +147,17 @@ impl DemotionRecord {
         }
     }
 
-    /// CLEAR `server`'s record — what an observation that agrees with the approval does. Clearing an
+    /// CLEAR `upstream`'s record — what an observation that agrees with the approval does. Clearing an
     /// absent row is a no-op at the store, so this runs on every agreeing observation rather than
     /// the engine tracking whether it had demoted.
-    pub(crate) fn clear(&self, server: &str) {
+    pub(crate) fn clear(&self, upstream: &str) {
         let Some(store) = self.sink() else {
             return;
         };
-        if let Err(e) = store.delete_plane_record(KIND_DEMOTION, server) {
+        if let Err(e) = store.delete_plane_record(KIND_DEMOTION, upstream) {
             crate::diagnostics::diag_error!(
                 crate::diagnostics::PLANE_DEMOTION_CLEAR_FAILED,
-                server = %server,
+                server = %upstream,
                 error = %e,
                 "the durable demotion record for this upstream could NOT be cleared: it is \
                  serving again in THIS process, and a restart would re-establish a quarantine the \
@@ -264,14 +266,14 @@ impl DemotionRecord {
 /// And ONLY `Approved` clears. Every other state leaves the row exactly as it is — an upstream that
 /// has stopped answering has not stopped drifting, and clearing on it would let a demoted upstream
 /// buy its approval back by going dark.
-pub(crate) fn settle(demotions: &DemotionRecord, server: &str, state: crate::trust::TrustState) {
+pub(crate) fn settle(demotions: &DemotionRecord, upstream: &str, state: crate::trust::TrustState) {
     match state {
         // The WALL clock, not the sweep's monotonic tick: this timestamp is read by an operator
         // after a restart, and a tick would be meaningless to them.
         crate::trust::TrustState::Quarantined => {
-            demotions.record(server, state.word(), busbar_kernel::store::now())
+            demotions.record(upstream, state.word(), busbar_kernel::store::now())
         }
-        crate::trust::TrustState::Approved => demotions.clear(server),
+        crate::trust::TrustState::Approved => demotions.clear(upstream),
         _ => {}
     }
 }

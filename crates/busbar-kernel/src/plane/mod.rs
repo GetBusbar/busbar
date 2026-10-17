@@ -94,9 +94,6 @@ pub mod approvals;
 pub mod config;
 pub mod door;
 pub mod observe;
-pub(crate) mod quarantine;
-/// The durable demotion record, which the root attaches to the kernel's host services.
-pub use quarantine::DemotionRecord;
 pub mod registry;
 // A durable task set and its per-task provenance chain were RELOCATED wholesale to a plane crate
 // in the 1.7.0 plane extraction: a task is a SINGLE-plane mechanism, so it lives on the plane that

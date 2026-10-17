@@ -79,10 +79,10 @@ use crate::host_work::{
     owner_of, parse_reference, reference_text, refusal as work_refusal, work_key, Owner, Work,
     WorkBook, WorkBounds, WORK_SCHEMA,
 };
-use crate::plane::quarantine::DemotionRecord;
 use crate::trust::book::{
     Distrust, Effect, KeyRow, KeyState, Ruling, Sight, TrustBook, TrustFacts, Undecided, Unjudged,
 };
+use crate::trust::demotion::DemotionRecord;
 use crate::trust::section::TrustEntry;
 use crate::trust::signed;
 
@@ -1045,7 +1045,7 @@ impl KernelServices {
                 .map_err(TrustRefused::Store)?;
             if fact.item.is_none() && ruling == Ruling::Approve {
                 let cleared = |server: &str| {
-                    crate::plane::quarantine::settle(
+                    crate::trust::demotion::settle(
                         &d.record,
                         server,
                         crate::trust::TrustState::Approved,
@@ -1721,7 +1721,7 @@ impl HostServices for KernelServices {
         let unprefixed = (caller.instance == d.default_instance).then(|| counterparty.to_string());
         submit(pool, later, move || {
             let settle = |server: &str, state| {
-                crate::plane::quarantine::settle(&record, server, state);
+                crate::trust::demotion::settle(&record, server, state);
             };
             if effect == Effect::Demote {
                 settle(&key, crate::trust::TrustState::Quarantined);
