@@ -1050,11 +1050,11 @@ impl Node {
                     arrived,
                     history: history.as_ref(),
                     sealing: Mutex::new(Some(Accruing {
-                        door: None,
                         ran: Ran {
                             hold,
                             ..Ran::default()
                         },
+                        ..Accruing::default()
                     })),
                 };
                 let ended = busbar_kernel::teller::run_unit_async(
