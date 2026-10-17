@@ -377,9 +377,6 @@ pub(crate) fn base_data_router(
     let router = router
         // busbar's OWN API keeps explicit routes (it is not a protocol dialect): discovery,
         // health/metrics/stats above, and the named/adhoc conveniences below.
-        // A model-listing convenience route: client SDKs commonly probe it first for discovery;
-        // UIs build pickers from it.
-        // Governance-scoped like /stats (restricted keys see only their reachable names).
         // Token exchange (1.5.2): a verified IdP identity mints its own self-serve key. DATA plane
         // only, and declared `RouteAuth::None` because the handler runs the auth chain ITSELF (it
         // needs the identified principal to self-scope the minted key). The declaration is what
@@ -396,19 +393,10 @@ pub(crate) fn base_data_router(
             RouteMethod::Post,
             RouteAuth::None,
             crate::auth::exchange::exchange,
-        )
-        .route(
-            "/v1/models",
-            RouteMethod::Get,
-            RouteAuth::Key,
-            endpoints::list_models,
-        )
-        .route(
-            "/v1beta/models",
-            RouteMethod::Get,
-            RouteAuth::Key,
-            endpoints::list_models_v1beta,
         );
+    // The list-models discovery surface (`GET /v1/models`, `GET /v1beta/models`) is no kernel
+    // route: the plane that claims it as a CATALOG route renders it, unit-less, over the names
+    // `endpoints::catalog_names` computes (ARCHITECT ruling 2026-10-16, 3b C).
     // THE CONVENIENCE SURFACES hand their unit to a body-model arrival, so they are mounted only
     // where a plane registered one and no door plane claims the whole tree (a plane served through
     // its door parses these paths itself).

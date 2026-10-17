@@ -201,6 +201,7 @@
 //!     (slot::HYDRATE, offset_of!(Ops, hydrate)),
 //!     (slot::START, offset_of!(Ops, start)),
 //!     (slot::PROJECT, offset_of!(Ops, project)),
+//!     (slot::CATALOG, offset_of!(Ops, catalog)),
 //! ];
 //! assert_eq!(order.len() as u32, KIND_SLOTS);
 //! for (k, (index, offset)) in order.into_iter().enumerate() {
@@ -246,14 +247,16 @@ pub mod slot {
     pub const START: u32 = LIFECYCLE_SLOTS + 5;
     /// Project a unit's request into the hook kind's request view.
     pub const PROJECT: u32 = LIFECYCLE_SLOTS + 6;
+    /// Render a catalog route's listing of the names the kernel hands it.
+    pub const CATALOG: u32 = LIFECYCLE_SLOTS + 7;
 }
 
 /// How many kind ops the table holds after the lifecycle.
-pub const KIND_SLOTS: u32 = 7;
+pub const KIND_SLOTS: u32 = 8;
 /// How many slots the whole table holds ([`OpsHead::slots`]).
 pub const SLOTS: u32 = LIFECYCLE_SLOTS + KIND_SLOTS;
 
-/// The plane kind's ops table: the lifecycle, then the plane's seven ops.
+/// The plane kind's ops table: the lifecycle, then the plane's eight ops.
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
 pub struct Ops {
@@ -275,12 +278,15 @@ pub struct Ops {
     pub start: Option<Op>,
     /// [`slot::PROJECT`]: in [`ProjectIn`], out [`ProjectOut`].
     pub project: Option<Op>,
+    /// [`slot::CATALOG`]: in [`CatalogIn`], out [`CatalogOut`]. A tail addition: a plane that
+    /// claims no [`CLAIM_CATALOG`] route leaves it `None`.
+    pub catalog: Option<Op>,
 }
 
 // ── the op contracts ─────────────────────────────────────────────────────────────────────────────
 
-/// Every kind op's contract, in slot order. `arrive`, `refusal` and `project` are pure: they never
-/// pend.
+/// Every kind op's contract, in slot order. `arrive`, `refusal`, `project` and `catalog` are pure:
+/// they never pend.
 /// `on_piece` pends (a plane waiting on its own upstream) under the stream's deadline. `hydrate`
 /// and `start` are boot-time and off-path.
 #[rustfmt::skip]
@@ -292,6 +298,7 @@ pub const CONTRACTS: [OpContract; KIND_SLOTS as usize] = [
     contract!(HYDRATE, false, true, GenIn, OutHead, Call),
     contract!(START, false, true, GenIn, OutHead, Call),
     contract!(PROJECT, true, false, ProjectIn, ProjectOut, Call),
+    contract!(CATALOG, true, false, CatalogIn, CatalogOut, Call),
 ];
 
 // ── the cancel vocabulary and its billing rule ───────────────────────────────────────────────────
@@ -359,6 +366,13 @@ pub const CLAIM_EXACT: u32 = 1 << 1;
 /// reads it as the claim grammar's segment pattern ([`check::claim_selector`]), so the registry's
 /// sealed precedence is unchanged: exact beats pattern beats prefix. Never with [`CLAIM_EXACT`].
 pub const CLAIM_PATTERN: u32 = 1 << 2;
+/// [`Claim::flags`]: the route is a CATALOG listing, answered with no unit.
+///
+/// The kernel mints no unit for an arrival on it, writes no audit record and meters nothing; it
+/// computes the names its caller may see (its own visibility rule, and every plane generation's
+/// listed names after it) and hands them, with the request head, to the plane's pure `catalog` op
+/// ([`CatalogIn`]), serving the bytes the plane renders (ARCHITECT ruling 2026-10-16, 3b C).
+pub const CLAIM_CATALOG: u32 = 1 << 3;
 /// [`Claim::flags`]: the target is a RAW AFFIX, spelled `<prefix>*<suffix>`. It matches a request
 /// whose raw, undecoded path starts with the prefix and ends with the suffix, compared as bytes:
 /// empty segments, a trailing `/` and a leading `//` count as the bytes they are, and the two
@@ -2184,6 +2198,64 @@ pub struct ServeOut {
     pub records_needed: u32,
 }
 
+/// `catalog`'s `in`: a [`CLAIM_CATALOG`] route's request head and the names the kernel lists for
+/// its caller, in the kernel's order. The plane renders the listing in the dialect the request
+/// names (its own detection) into the host buffers. Pure: it never pends, and no unit exists.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CatalogIn {
+    /// The head.
+    pub head: InHead,
+    /// The request method.
+    pub method: AbiStr,
+    /// The request target (path and query).
+    pub target: AbiStr,
+    /// The request's head fields.
+    pub fields: *const Field,
+    /// How many.
+    pub fields_len: usize,
+    /// The names, each non-empty UTF-8.
+    pub names: *const AbiStr,
+    /// How many.
+    pub names_len: usize,
+    /// HOST buffer for the reply body.
+    pub reply_buf: *mut u8,
+    /// Its capacity.
+    pub reply_cap: usize,
+    /// HOST buffer for the reply's head fields.
+    pub fields_buf: *mut OutField,
+    /// Its capacity.
+    pub fields_cap: usize,
+    /// HOST arena for the bytes of the fields.
+    pub arena_buf: *mut u8,
+    /// Its capacity.
+    pub arena_cap: usize,
+}
+
+/// `catalog`'s `out`.
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct CatalogOut {
+    /// The head.
+    pub head: OutHead,
+    /// Bytes written to `reply_buf`.
+    pub reply_written: u64,
+    /// Short answer: the bytes `reply_buf` needs.
+    pub reply_needed: u64,
+    /// Bytes written to `arena_buf`.
+    pub arena_written: u64,
+    /// Short answer: the bytes `arena_buf` needs.
+    pub arena_needed: u64,
+    /// The reply status number.
+    pub status: u32,
+    /// Fields written to `fields_buf`.
+    pub fields_written: u32,
+    /// Short answer: the fields `fields_buf` needs.
+    pub fields_needed: u32,
+    /// Alignment padding.
+    pub _reserved: u32,
+}
+
 /// The plane's `drive` `in`: the lifecycle's, plus a HOST buffer for the sessions with output
 /// ready. A plane instance holds ONE driver ticket; when a session has unsolicited output the
 /// plane wakes it, and `drive` names the ready sessions by their stream. The kernel then calls
@@ -2339,6 +2411,7 @@ unsafe impl super::sdk::door::AbiIn for OnPieceIn {}
 unsafe impl super::sdk::door::AbiIn for RefusalIn {}
 unsafe impl super::sdk::door::AbiIn for ServeIn {}
 unsafe impl super::sdk::door::AbiIn for ProjectIn {}
+unsafe impl super::sdk::door::AbiIn for CatalogIn {}
 unsafe impl super::sdk::door::AbiOut for PlaneOpenOut {}
 unsafe impl super::sdk::door::AbiOut for PlaneRefreshOut {}
 unsafe impl super::sdk::door::AbiOut for PlaneDriveOut {}
@@ -2348,6 +2421,7 @@ unsafe impl super::sdk::door::AbiOut for OnPieceOut {}
 unsafe impl super::sdk::door::AbiOut for RefusalOut {}
 unsafe impl super::sdk::door::AbiOut for ServeOut {}
 unsafe impl super::sdk::door::AbiOut for ProjectOut {}
+unsafe impl super::sdk::door::AbiOut for CatalogOut {}
 
 // Each plane kind op's `in`/`out`, per [`Ops`]' docs.
 super::sdk::door::slot_structs!(Ops {
@@ -2358,6 +2432,7 @@ super::sdk::door::slot_structs!(Ops {
     slot::HYDRATE => GenIn, OutHead;
     slot::START => GenIn, OutHead;
     slot::PROJECT => ProjectIn, ProjectOut;
+    slot::CATALOG => CatalogIn, CatalogOut;
 });
 
 /// The plane's LIFECYCLE `in`/`out` ([`KindOps::Lifecycle`](super::sdk::door::KindOps::Lifecycle)):

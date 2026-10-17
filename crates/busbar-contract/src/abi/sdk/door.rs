@@ -118,6 +118,11 @@ unsafe impl AbiOut for CancelOut {}
 /// SLOT LAYOUT rule). Its `Lifecycle`'s `out` at slot `open` leads with the lifecycle's `OpenOut`
 /// (a [`Safe`](crate::abi::sdk::safe::Safe) `open` writes the instance there), and its `in` there
 /// with the lifecycle's `OpenIn` (a failed `open` writes its reason into `OpenIn::err_buf`).
+///
+/// # Safety (the all-absent table)
+///
+/// Every field of the table is an integer or an `Option` of a function pointer, so the all-zero
+/// bit pattern is a valid table with every op absent ([`no_ops`]).
 pub unsafe trait KindOps: Copy + 'static {
     /// The kind this table belongs to; the door's `kind` and `kind_abi` follow from it.
     const KIND: KindCode;
@@ -125,6 +130,16 @@ pub unsafe trait KindOps: Copy + 'static {
     /// index: [`Lifecycle`], or a kind's own where the kind widens a lifecycle `in`/`out` (the
     /// plane's `open`, `refresh` and `drive`).
     type Lifecycle: 'static;
+}
+
+/// THE ALL-ABSENT TABLE of a kind: every op `None`, every count `0`. [`plugin_door!`](crate::plugin_door)
+/// fills the ops an invocation does not name from it, so a kind op appended to a kind's table is
+/// absent from a plugin written before it, as it is from a dropped-in table that ends before it.
+#[must_use]
+pub const fn no_ops<T: KindOps>() -> T {
+    // SAFETY: `KindOps`' contract: every field of the table is an integer or an `Option` of a
+    // function pointer, for which all-zero is a valid value (`0`, `None`).
+    unsafe { ::core::mem::zeroed() }
 }
 
 /// The lifecycle's own `in`/`out` for every lifecycle slot (`abi::mechanism::lifecycle`): the
@@ -768,6 +783,9 @@ macro_rules! plugin_door {
             }
             const __STATEMENT: &$crate::abi::mechanism::door::Statement =
                 &__sdk::stamp::<__Ops>($statement);
+            // A kind op the invocation does not name (one its kind appended after the plugin was
+            // written) is absent (`None`), as a dropped-in table that ends before it states.
+            #[allow(clippy::needless_update)]
             const __OPS: &__Ops = &__Ops {
                 head: __sdk::ops_head::<__Ops>(
                     __sdk::kind_op::<__Life, $validate, __Capture, { __lc::slot::VALIDATE }>(),
@@ -783,6 +801,7 @@ macro_rules! plugin_door {
                 $($(
                     $field: __sdk::kind_op::<__Ops, $slot, __Capture, { __sdk::slot_at(::core::mem::offset_of!(__Ops, $field)) }>(),
                 )*)?
+                ..__sdk::no_ops::<__Ops>()
             };
             const __DOOR: &$crate::abi::mechanism::door::Door = &__sdk::door::<__Ops>(
                 __STATEMENT,

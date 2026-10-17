@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-use std::sync::Arc;
-
 use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
@@ -144,53 +142,24 @@ pub async fn stats(
     Json(json!({ "pools": pools, "lanes": lanes })).into_response()
 }
 
-/// `GET /v1/models` — a list-models discovery surface. This is often the first call an SDK
-/// (`client.models.list()`) or a self-hosted UI makes to populate a
-/// model picker, so busbar answers it with every name a client can put in a request body:
-/// configured model entries AND pool names (a pool is a routable model from the client's
-/// point of view).
+/// THE NAMES A CATALOG ROUTE LISTS for a caller (`GET /v1/models`, `GET /v1beta/models`: the
+/// list-models discovery surface an SDK's `models.list()` or a self-hosted UI's model picker reads):
+/// every name a client can put in a request body — configured pool names, then direct models — and
+/// after them each plane generation's listed names, scope-filtered as the plane admits them, each
+/// once. The kernel computes them (its 1.5.5 visibility rule) and the claiming plane renders them in
+/// its dialect's envelope with no unit (ARCHITECT ruling 2026-10-16, 3b C; `abi::plane::CLAIM_CATALOG`).
 ///
 /// Governance-scoped with the same rules as `/stats`: a virtual key with an `allowed_scopes` list
-/// (even an empty one) sees only its visible pools and the models reachable through them —
-/// the model list must not leak topology the pool ACL hides.
-pub async fn list_models(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    Extension(gov): Extension<GovCtx>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    list_models_dialect(app, gov, &headers, false)
-}
-
-/// `GET /v1beta/models` — the same list under a second dialect's discovery path.
-pub async fn list_models_v1beta(
-    crate::state::CurrentApp(app): crate::state::CurrentApp,
-    Extension(gov): Extension<GovCtx>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    list_models_dialect(app, gov, &headers, true)
-}
-
-/// Multiple registered dialects can put their list-models endpoint on the same noun, each with its
-/// own envelope: this build's dialects may share `GET /v1/models` outright, and a dialect may
-/// instead list at `GET /v1(beta)/models`. Primary (POST) surfaces are disjoint by path, so this is
-/// the one place busbar disambiguates callers by PROTOCOL FINGERPRINT instead: each dialect
-/// declares its own fingerprint headers (see `ProtocolDecl::list_models_fingerprint_headers`) or
-/// relies on the `/v1beta` path convention, the first dialect whose fingerprint matches renders the
-/// envelope, and anything left unmatched falls to the registry's residual default dialect.
-///
-/// The list itself is the same data in every dialect: the names a client may put in a
-/// request body. No privileged protocol - the data is one, the rendering is the caller's.
-fn list_models_dialect(
-    app: Arc<App>,
-    gov: GovCtx,
-    headers: &axum::http::HeaderMap,
-    gemini_path: bool,
-) -> Response {
+/// (even an empty one) sees only its visible pools and the models reachable through them — the
+/// model list must not leak topology the pool ACL hides. None listed by any plane: the list, and so
+/// the bytes, are unchanged.
+#[must_use]
+pub fn catalog_names(app: &App, gov: &GovCtx) -> Vec<String> {
     let restricted = gov.key.as_ref().is_some_and(|k| k.allowed_scopes.is_some());
     // The routing tables through the NEUTRAL read seam (money-path Phase 3-4 B): discovery reads the
-    // pool label space, the direct-model index, and pool membership as neutral projections, so
-    // `/v1/models` names no `Lane`/`WeightedLane` and need not relocate with the tables. `pools()`
-    // allocates its projection, so bind it once — the visible-name build reads membership repeatedly.
+    // pool label space, the direct-model index, and pool membership as neutral projections.
+    // `pools()` allocates its projection, so bind it once — the visible-name build reads membership
+    // repeatedly.
     let view = app.engine_tables_view();
     let pools = view.pools();
 
@@ -230,54 +199,13 @@ fn list_models_dialect(
     names.extend(models);
     names.dedup();
     // Each plane generation's listed names, appended after the routing tables' own, scope-filtered
-    // as the plane admits them; a name already listed is not listed twice. None listed: the list,
-    // and so the bytes, are unchanged.
+    // as the plane admits them; a name already listed is not listed twice.
     for name in crate::plane::door::listed(&app.plane_slots, gov.key.as_deref()) {
         if !names.contains(&name) {
             names.push(name);
         }
     }
-
-    // Neutral dispatch: core resolves WHICH dialect answers from the request fingerprint, then hands
-    // that dialect's declaration the visible name list and lets IT shape the envelope. Each
-    // registered dialect's list-models envelope shape is plugin-specific and lives with that
-    // dialect behind `ProtocolDecl::models_list_envelope` — core names no dialect's envelope shape
-    // here.
-    // The dialect selection is the generic detection fold, restricted to the fingerprint headers
-    // each dialect declares (plus the `/v1beta` path convention) and defaulting to the registry's
-    // residual dialect — so core spells NO dialect name here.
-    // Restricting the sniff to those declared fingerprint headers (rather than the full router
-    // headers) keeps this byte-identical to prior behavior: an incidental, unrelated header on a
-    // models-list GET must not steer the envelope, only the fingerprints the dialects actually
-    // declare here do.
-    let mut sniff = axum::http::HeaderMap::new();
-    for &name in crate::proto::known_protocols() {
-        let Some(decl) = crate::proto::decl_for(name) else {
-            continue;
-        };
-        for &hn in decl.list_models_fingerprint_headers {
-            if let Some(v) = headers.get(hn) {
-                sniff.insert(hn, v.clone());
-            }
-        }
-    }
-    let sniff_path = if gemini_path {
-        "/v1beta/models/"
-    } else {
-        "/v1/models"
-    };
-    let dialect = crate::proto::detect_protocol(sniff_path, &sniff)
-        .or_else(crate::proto::residual_default_dialect);
-    match dialect
-        .and_then(crate::proto::decl_for)
-        .and_then(|d| d.models_list_envelope)
-    {
-        Some(build) => Json(build(&names)).into_response(),
-        // Unreachable while any dialect declaring this builder is installed (they always declare
-        // it). If a build ships without one, `/v1/models` still resolves but has no dialect to
-        // render for — an empty JSON object names no protocol and leaks no shape.
-        None => Json(json!({})).into_response(),
-    }
+    names.into_iter().map(str::to_string).collect()
 }
 
 pub async fn healthz(crate::state::CurrentApp(app): crate::state::CurrentApp) -> Response {
