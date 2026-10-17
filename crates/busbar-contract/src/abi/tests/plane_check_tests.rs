@@ -2455,6 +2455,9 @@ const PINNED: &[(u32, RefusalCode, &str)] = &[
         RefusalCode::CredentialUnavailable,
         "credential_unavailable",
     ),
+    // The kernel's own refusals, rendered by the owning plane (ARCHITECT ruling 2026-10-16, 3b B).
+    (44, RefusalCode::MethodNotAllowed, "method_not_allowed"),
+    (45, RefusalCode::Internal, "internal"),
 ];
 
 #[test]

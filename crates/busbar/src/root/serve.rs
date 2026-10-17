@@ -2188,6 +2188,7 @@ pub type DataMounts = (
     Vec<busbar_kernel::plane_routes::PlaneRouteSpec>,
     Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     Vec<busbar_kernel::plane_routes::PlaneRefusalSpec>,
+    Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 );
 
 /// [`data_routes`], and the door planes' session routes beside them (ARCHITECT Q-L5B-SESSION-SERVE;
@@ -2209,7 +2210,7 @@ pub fn data_mounts(
     offers: &[TransportOffer],
 ) -> Result<DataMounts, String> {
     if served.planes.iter().all(|p| p.snapshot.claims.is_empty()) {
-        return Ok((Vec::new(), Vec::new(), Vec::new()));
+        return Ok((Vec::new(), Vec::new(), Vec::new(), None));
     }
     door_mounts(
         served,
@@ -2222,7 +2223,7 @@ pub fn data_mounts(
     .and_then(|m| {
         // THE ROUTES AND THEIR REFUSALS PAIR, or the boot is refused (ARCHITECT 2026-10-06).
         busbar_kernel::plane_routes::pair_door_refusals(&m.routes, &m.sessions, &m.refusals)?;
-        Ok((m.routes, m.sessions, m.refusals))
+        Ok((m.routes, m.sessions, m.refusals, m.refuse_by_path))
     })
 }
 
@@ -2543,6 +2544,9 @@ pub struct DoorMounts {
     pub sessions: Vec<busbar_kernel::plane_routes::PlaneSessionSpec>,
     /// The request routes' unit-less refusals (their `401`, worded by their plane).
     pub refusals: Vec<PlaneRefusalSpec>,
+    /// The kernel-shaped refusals' rendering by the door plane that owns a path (ARCHITECT ruling
+    /// 2026-10-16, 3b B); `None` when no plane claims a path.
+    pub refuse_by_path: Option<busbar_kernel::plane_routes::PlaneRefuseByPathFn>,
 }
 
 impl std::fmt::Debug for DoorMounts {
@@ -2579,6 +2583,7 @@ pub fn door_mounts(
             routes: public,
             sessions: Vec::new(),
             refusals: Vec::new(),
+            refuse_by_path: None,
         });
     }
     let mut upgraded: std::collections::HashSet<DoorClaim> = std::collections::HashSet::new();
@@ -2793,6 +2798,35 @@ pub fn door_mounts(
             }
         })
         .collect();
+    // THE KERNEL-SHAPED REFUSALS (ARCHITECT ruling 2026-10-16, 3b B): a method no route at a path
+    // takes, a body over the cap, a request handler that panicked. The kernel decides the reason,
+    // the status and the words; the plane whose line the guest list matches for the path, whatever
+    // the verb (its own reading, the one the router mounts by), renders the body through its
+    // `refusal`, in the line's refusal dialect, for the target. A failed render is `None`: the
+    // kernel answers its own.
+    let refuse_by_path: busbar_kernel::plane_routes::PlaneRefuseByPathFn = {
+        let routes = Arc::clone(&routes);
+        Arc::new(move |r: &busbar_kernel::plane_routes::KernelRefusal<'_>| {
+            let Matched::MethodMiss(line) = routes.guests.matched("", r.path, &[]) else {
+                return None;
+            };
+            let Claimant::Plane(instance) = &line.claimant else {
+                return None;
+            };
+            let (plane, _) = *routes.of_line.get(&(instance.clone(), line.route.rung))?;
+            let rendered = routes.served.planes[plane].driver.refuse_kernel(
+                r.reason,
+                u32::from(r.status),
+                r.text,
+                line.dialect,
+                r.target.as_bytes(),
+            )?;
+            Some(stated(
+                (rendered.status, rendered.fields),
+                Body::from(rendered.body),
+            ))
+        })
+    };
     let routes_of = requests
         .into_iter()
         .map(|(path, method, auth, (plane, claim))| {
@@ -2870,6 +2904,7 @@ pub fn door_mounts(
         routes: routes_of,
         sessions,
         refusals,
+        refuse_by_path: Some(refuse_by_path),
     })
 }
 
