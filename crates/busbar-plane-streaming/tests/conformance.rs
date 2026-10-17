@@ -117,24 +117,30 @@ fn linked(d: &Dispatcher) -> Plugin<Plane> {
     load_linked::<Plane>(&row(), bind(d, "linked")).expect("the linked streaming door loads")
 }
 
-/// The example `cdylib` in this target dir (`cargo test` builds examples). Under CI a missing
-/// artifact is a failure, never a skip.
-fn dropped(d: &Dispatcher) -> Option<Plugin<Plane>> {
-    let exe = std::env::current_exe().ok()?;
-    let path = exe.parent()?.parent()?.join("examples").join(format!(
-        "{}streaming_door{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ));
+/// The example `cdylib` in this target dir (`cargo test` builds examples). A missing artifact is a
+/// failure naming the command that builds it, on every machine: a both-ways proof never skips its
+/// dropped half (status row 114).
+fn dropped(d: &Dispatcher) -> Plugin<Plane> {
+    let exe = std::env::current_exe().expect("the test binary's own path");
+    let path = exe
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("the test binary sits under the target dir")
+        .join("examples")
+        .join(format!(
+            "{}streaming_door{}",
+            std::env::consts::DLL_PREFIX,
+            std::env::consts::DLL_SUFFIX
+        ));
     assert!(
-        path.exists() || std::env::var_os("CI").is_none(),
-        "the streaming_door example cdylib is not built under CI; a both-ways proof must not skip"
+        path.exists(),
+        "the streaming_door example cdylib is not built at {}; build it with \
+         `cargo build -p busbar-plane-streaming --examples`",
+        path.display()
     );
     let stated = row().statement;
-    path.exists().then(|| {
-        load_dropped::<Plane>(&path, &stated, bind(d, "dropped"))
-            .expect("the dropped streaming door loads")
-    })
+    load_dropped::<Plane>(&path, &stated, bind(d, "dropped"))
+        .expect("the dropped streaming door loads")
 }
 
 fn validate(p: &Plugin<Plane>, settings: &'static [u8]) -> Outcome {
@@ -324,10 +330,7 @@ fn the_dropped_door_answers_as_the_linked_door_does() {
     for url in [Some(PUBLIC), None] {
         // A fresh instance of each door per script: the script opens its instance, and an open
         // instance refuses a second open.
-        let Some(dropped) = dropped(&d) else {
-            eprintln!("skip: the streaming_door example cdylib is not built");
-            return;
-        };
+        let dropped = dropped(&d);
         assert_eq!(
             script(&dropped, url),
             script(&linked(&d), url),
@@ -615,10 +618,7 @@ fn the_one_request_doors_answer_their_pieces_through_the_door() {
 #[test]
 fn the_dropped_door_answers_the_one_request_doors_as_the_linked_door_does() {
     let d = Dispatcher::new(DispatchConfig::default());
-    let Some(dropped) = dropped(&d) else {
-        eprintln!("skip: the streaming_door example cdylib is not built");
-        return;
-    };
+    let dropped = dropped(&d);
     assert_eq!(
         unit_script(&dropped),
         unit_script(&linked(&d)),
@@ -752,10 +752,7 @@ fn a_live_session_is_answered_through_the_door() {
 #[test]
 fn the_dropped_door_answers_a_live_session_as_the_linked_door_does() {
     let d = Dispatcher::new(DispatchConfig::default());
-    let Some(dropped) = dropped(&d) else {
-        eprintln!("skip: the streaming_door example cdylib is not built");
-        return;
-    };
+    let dropped = dropped(&d);
     assert_eq!(
         session_script(&dropped),
         session_script(&linked(&d)),
@@ -784,7 +781,7 @@ fn a_door_that_reaches_the_far_end_names_the_session_model_as_its_direct_route()
     use busbar_contract::abi::plane::{ROUTE_DIRECT, ROUTE_POOL};
     let d = Dispatcher::new(DispatchConfig::default());
     let mut doors = vec![linked(&d)];
-    doors.extend(dropped(&d));
+    doors.push(dropped(&d));
     for p in &doors {
         assert_eq!(open(p, 1, SESSION, Some(PUBLIC)).0, Outcome::Ready);
         for claim in [0, 1, 2, 3, 4] {
@@ -848,7 +845,7 @@ fn project(p: &Plugin<Plane>, claim: u32, rewrite: &'static [u8]) -> (Outcome, S
 fn a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it() {
     let d = Dispatcher::new(DispatchConfig::default());
     let mut doors = vec![linked(&d)];
-    doors.extend(dropped(&d));
+    doors.push(dropped(&d));
     for p in &doors {
         assert_eq!(open(p, 1, SESSION, Some(PUBLIC)).0, Outcome::Ready);
         let (outcome, body, rewritten) = project(p, 2, b"");
@@ -880,7 +877,7 @@ fn a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it() {
 fn every_far_request_names_the_need_it_rides() {
     let d = Dispatcher::new(DispatchConfig::default());
     let mut doors = vec![linked(&d)];
-    doors.extend(dropped(&d));
+    doors.push(dropped(&d));
     for p in &doors {
         assert_eq!(open(p, 1, SESSION, Some(PUBLIC)).0, Outcome::Ready);
         let mut b = Bufs::with_units(1 << 18, 8);
@@ -971,7 +968,7 @@ fn an_authentication_refusal_reads_in_the_dialects_vendor_terms() {
 
     let d = Dispatcher::new(DispatchConfig::default());
     let mut doors = vec![linked(&d)];
-    doors.extend(dropped(&d));
+    doors.push(dropped(&d));
     for p in &doors {
         assert_eq!(open(p, 1, b"{}", Some(PUBLIC)).0, Outcome::Ready);
         let (outcome, body) = refused(
