@@ -311,6 +311,42 @@ impl Gate for KernelTokenWirePurityGate {
             &["planted_wire_read.rs:6", &raw_field],
         ));
 
+        // A TOKEN FIELD ONLY THE DIALECT TABLES NAME. Bedrock's `usage.inputTokens` (and its
+        // `outputTokens`, `cacheReadInputTokens`, `cacheWriteInputTokens`) was on no hand-typed list
+        // (audit XG HIGH 2): the field set is the one the mapping files declare.
+        let camel_field = format!("{}{}", "input", "Tokens");
+        report.push(plant(
+            cx,
+            self,
+            "a token wire field only a dialect table declares is flagged",
+            &[ROW_NO_RAW_FIELD],
+            &format!("{KERNEL_SRC}/planted_wire_read.rs"),
+            Edit::Create(format!(
+                "pub fn class_of(v: &Value) -> i64 {{\n    v[\"{camel_field}\"].as_i64()\n}}\n"
+            )),
+            &[&camel_field],
+        ));
+
+        // THE DERIVED SET HAS A FLOOR. A mapping file that stops calling its token rows token rows
+        // shrinks the field set, and a shrunken set is a refusal, not a narrower clean scan.
+        let chat = "crates/busbar-plane-llm/dialects/openai_chat.toml";
+        let mut shrunk = Overlay::new();
+        shrunk.set(
+            chat,
+            cx.read(chat)
+                .unwrap_or_default()
+                .replace("prim = \"input_tokens\"", "prim = \"input_count\"")
+                .replace("prim = \"output_tokens\"", "prim = \"output_count\""),
+        );
+        report.push(prove_red(
+            cx,
+            self,
+            "a token wire-field set derived under its floor is refused",
+            &[ROW_SCAN_ROOT, ROW_NO_RAW_FIELD],
+            shrunk,
+            &["floor"],
+        ));
+
         // A COMMENT-ONLY MENTION IS PROSE. The rule that exempts it is the rule that lets the
         // kernel document the ban, and a gate its own explanation fails is a gate people delete.
         let mut ov = Overlay::new();
