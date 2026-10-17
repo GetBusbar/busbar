@@ -12,9 +12,7 @@
 //!
 //! Core's own streams (the admin audit log, [`crate::audit::auditlog`]; the usage residual log,
 //! [`crate::residual_log`]) register with an in-core decode ([`Decode::Native`]) and drive their
-//! chain through [`register`], [`append_full`] and [`seed`] directly, with no host handle. A stream
-//! registered across the host seam carries its registrant's own decoder, opaque here
-//! ([`Decode::Seam`]); the seam's slots read it back and drive the same registry.
+//! chain through [`register`], [`append_full`] and [`seed`] directly, with no host handle.
 //!
 //! ## The digest, and the PipeSeparated landmine
 //!
@@ -27,7 +25,6 @@ use crate::audit::journal::{Journal, JournalError, NeutralRecord, Reframe};
 use crate::audit::{frame_prelude, ChainLabels, ChainedRecord, Digest, Framing};
 use crate::plane::store::PlaneStore;
 use busbar_contract::records::{RecordStoreError, RecordStoreResult};
-use std::any::Any;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
@@ -165,9 +162,6 @@ pub(crate) type NativeDecode = fn(&str, &[u8]) -> RecordStoreResult<StreamRecord
 pub(crate) enum Decode {
     /// Decoded in core by the stream's own [`NativeDecode`].
     Native(NativeDecode),
-    /// Decoded by the registrant across the host seam: its decoder, opaque to this registry and read
-    /// back only by the seam that registered it.
-    Seam(Arc<dyn Any + Send + Sync>),
 }
 
 /// The text a failed decode reports, unchanged from the bridge it replaces (a decode fault read
@@ -246,18 +240,13 @@ pub(crate) fn handle(kind_id: u32) -> Option<StreamHandle> {
 
 impl StreamHandle {
     /// Decode one stored body with the stream's in-core decode and re-scope it with the store parent
-    /// `scope` under the stream's framing. A stream decoded across the host seam has no in-core
-    /// decode, so it is an error here.
+    /// `scope` under the stream's framing.
     pub(crate) fn decode_native(
         &self,
         scope: &str,
         body: &[u8],
     ) -> RecordStoreResult<StreamRecord> {
-        let Decode::Native(decode) = &self.decode else {
-            return Err(RecordStoreError(
-                "journal stream decodes only across the host seam".to_string(),
-            ));
-        };
+        let Decode::Native(decode) = &self.decode;
         let r = decode("", body).map_err(|_| RecordStoreError(DECODE_FAILED.to_string()))?;
         Ok(StreamRecord {
             scope: scope.to_string(),
