@@ -233,31 +233,6 @@ fn mint<R>(
     f(host, &vtable)
 }
 
-/// Sign a plane-framed agent-card signing input through the host [`card_sign`](vtable) seam,
-/// returning the 64-byte Ed25519 signature. The card subkey is derived and held HOST-side (see
-/// [`GovState::card_sign`](crate::governance::GovState::card_sign)); the caller passes only the bytes
-/// to sign and receives only the signature — no signing material crosses to the plane. A SAFE wrapper
-/// that keeps the raw fn-pointer + out-buffer read inside this audited module (busbar-core denies
-/// `unsafe` elsewhere). `None` when this deployment holds no card-signing key (the `Refused` status).
-#[must_use]
-pub fn card_sign_over(app: &App, signing_input: &[u8]) -> Option<[u8; 64]> {
-    let scope = DispatchScope::new();
-    with_borrowed_host(app, &scope, |host, vt| {
-        // The slot is wired whenever a plane declares a card-signing domain (`plane-a2a`) and `None`
-        // otherwise (see the vtable's `subkey_sign`): an unwired slot signs nothing, so degrade to
-        // `None` rather than panic — the trait method must exist unconditionally across every feature combo.
-        let sign = vt.subkey_sign?;
-        let mut out = [0u8; 64];
-        let status = sign(
-            host,
-            signing_input.as_ptr(),
-            signing_input.len(),
-            out.as_mut_ptr(),
-        );
-        (status == busbar_contract::abi::hot::StatusClass::Ok).then_some(out)
-    })
-}
-
 // The refusal-fidelity admit outcome is a pure POD naming only `busbar_contract::abi::hot` + std, so it now
 // lives in the substrate beside the neutral `EngineHost` seam; core re-exports it so every in-core
 // caller (`govern_admit_reason_over`, a2a) is unchanged.
@@ -394,7 +369,7 @@ pub async fn identity_admit_over(
 /// (see [`vtable`]'s `clock_now`, which scales the host milliseconds clock up), so this scales it
 /// back down to the seconds `store::now` returns; the value is identical to reading `store::now`
 /// in place. A fresh per-call [`DispatchScope`] backs the borrow — a clock read acquires no host
-/// handle, so nothing outlives the call — mirroring [`card_sign_over`]. A SAFE wrapper that keeps
+/// handle, so nothing outlives the call — mirroring the other borrowed-host reads. A SAFE wrapper that keeps
 /// the raw fn-pointer read inside this audited module (busbar-core denies `unsafe` elsewhere).
 #[must_use]
 pub fn clock_now_secs_over(app: &App) -> u64 {
@@ -636,13 +611,6 @@ impl busbar_kernel::plane_host::RegistryHost for EngineHostImpl {
         // clone coerces to the trait object — no wrapping, the SAME resolver (built-ins + any wired
         // `kind: secret` plugin), fail-closed exactly as core resolution.
         self.app.secret_resolver.clone()
-    }
-
-    fn subkey_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]> {
-        // SAME dispatch as the veneer: a fresh per-call `DispatchScope`, the `card_sign` slot driven
-        // synchronously over a stack-pinned `HostState`, the `HostCtx` never escaping the call. `None`
-        // when no card-signing key is held (or, in a build without `plane-a2a`, the slot is unwired).
-        card_sign_over(&self.app, signing_input)
     }
 
     fn plane_defs(&self) -> Arc<dyn std::any::Any + Send + Sync> {
@@ -2382,7 +2350,7 @@ pub trait MountHost: Send + Sync {
 
 /// The REGISTRY slice: the per-generation registry/snapshot reads a plane pulls off the bound (or
 /// live) snapshot — its type-erased runtime slot, its type-erased defs, the request-id counter, the
-/// neutral secret resolver, and the host-held card-signing key. Split off `EngineHost` as a supertrait.
+/// neutral secret resolver. Split off `EngineHost` as a supertrait.
 pub trait RegistryHost: Send + Sync {
     /// Stamp the NEXT per-request correlation id — one relaxed `fetch_add` on the host-owned counter.
     /// Identical to `busbar_kernel::state::App::next_request_id` (the counter is boot-seeded and carried
@@ -2403,13 +2371,6 @@ pub trait RegistryHost: Send + Sync {
     /// `HostCtx`; the returned `Arc<dyn SecretResolve>` shares the live resolver (built-ins plus any
     /// wired `kind: secret` plugin), fail-closed exactly as core resolution.
     fn secret_resolver(&self) -> Arc<dyn busbar_contract::secret::SecretResolve>;
-
-    /// Sign a plane-framed agent-card signing input, returning the 64-byte Ed25519 signature (None
-    /// when this deployment holds no card-signing key). The card subkey is derived and held HOST-side;
-    /// only the bytes to sign cross in and only the signature crosses out — no key material reaches the
-    /// plane. Mints its transient HostCtx internally over a fresh per-call DispatchScope, drives the
-    /// slot synchronously, returns owned bytes — no HostCtx crosses an `.await`.
-    fn subkey_sign(&self, signing_input: &[u8]) -> Option<[u8; 64]>;
 
     /// The deployment's type-erased plane definitions (`Arc<dyn Any + Send + Sync>` holding the
     /// per-plane config object the owning plane downcasts), off the BOUND snapshot — the
