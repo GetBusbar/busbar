@@ -369,6 +369,7 @@ extern "C" {
 #define BB_PLANE_CLAIM_PATTERN UINT32_C(4) /* [`Claim::flags`]: the target is a path pattern. Each `/`-separated segment is a literal, or a */
 #define BB_PLANE_CLAIM_CATALOG UINT32_C(8) /* [`Claim::flags`]: the route is a CATALOG listing, answered with no unit. */
 #define BB_PLANE_CLAIM_SIGNED_INGRESS UINT32_C(16) /* [`Claim::flags`]: callers sign a request to this route's path (its inbound auth point). */
+#define BB_PLANE_CLAIM_RAW_AFFIX UINT32_C(32) /* [`Claim::flags`]: the target is a RAW AFFIX, spelled `<prefix>*<suffix>`. It matches a request */
 #define BB_PLANE_CLAIM_PROBE UINT32_C(0xffffffff) /* [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose */
 #define BB_PLANE_INGRESS_REQUEST_RESPONSE UINT32_C(1) /* [`PlaneTail::ingress`]: a request expecting one reply. */
 #define BB_PLANE_INGRESS_RESPONSE_STREAM UINT32_C(2) /* [`PlaneTail::ingress`]: a request expecting a streamed reply. */

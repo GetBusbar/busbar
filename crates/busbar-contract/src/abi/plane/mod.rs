@@ -384,6 +384,14 @@ pub const CLAIM_CATALOG: u32 = 1 << 3;
 /// first and is then answered the method refusal, as the previous release answered it (ARCHITECT
 /// ruling 2026-10-16, 3b A).
 pub const CLAIM_SIGNED_INGRESS: u32 = 1 << 4;
+/// [`Claim::flags`]: the target is a RAW AFFIX, spelled `<prefix>*<suffix>`. It matches a request
+/// whose raw, undecoded path starts with the prefix and ends with the suffix, compared as bytes:
+/// empty segments, a trailing `/` and a leading `//` count as the bytes they are, and the two
+/// affixes may share bytes ([`check::raw_affix_matches`]). One spelling per suffix, so a path with
+/// N suffixes is N claims. A raw-affix claim states a fact about paths, read by path: it mounts no
+/// route and takes no arrival (ARCHITECT ruling 2026-10-17). Never with [`CLAIM_OPEN`],
+/// [`CLAIM_EXACT`] or [`CLAIM_PATTERN`]. Bits 3 and 4 are taken by flags in flight.
+pub const CLAIM_RAW_AFFIX: u32 = 1 << 5;
 
 /// [`ArriveIn::claim`]: the arrival is a health probe, not a snapshot claim. Only a plane whose
 /// tail states [`TAIL_PROBES`] is sent one.
