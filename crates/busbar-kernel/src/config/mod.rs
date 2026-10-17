@@ -2606,8 +2606,8 @@ pub fn resolve(
         .and_then(|block| {
             let Some(seam) = crate::oauth_as::seam::seam() else {
                 errors.push(
-                    "oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) \
-                     is not linked into this binary"
+                    "oauth_as: configured, but no authorization-server plane is linked into this \
+                     binary"
                         .to_string(),
                 );
                 return None;

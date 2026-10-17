@@ -1810,8 +1810,7 @@ pub fn build_app_from_config(
             // secret references it carries, and the kernel resolves each one. A block with no
             // `signing_key` resolves nothing, and the owner generates an ephemeral key and says so.
             let seam = crate::oauth_as::seam::seam().ok_or_else(|| {
-                "oauth_as: configured, but the authorization-server plane (busbar-core-oauth2) is not \
-                 linked into this binary"
+                "oauth_as: configured, but no authorization-server plane is linked into this binary"
                     .to_string()
             })?;
             let secrets = checked
@@ -1845,8 +1844,8 @@ pub fn build_app_from_config(
                 .into_iter()
                 .collect();
             // Built through the seam (`crate::oauth_as::seam`), not `crate::oauth_as::plane::AsPlane`
-            // directly: the concrete plane type lives in the sibling `busbar-core-oauth2` crate, which
-            // core cannot name (the one-way dependency runs the other direction). The seam's `build`
+            // directly: the concrete plane type lives in the authorization-server plane's own crate,
+            // which core cannot name (the one-way dependency runs the other direction). The seam's `build`
             // also spawns the plane's own expired-record sweeper — the same "how do I come alive"
             // act this call site used to perform inline (`Storage::sweep_expired` is the only thing
             // that reclaims anything in `oauth-as`, and it runs when it is called and never

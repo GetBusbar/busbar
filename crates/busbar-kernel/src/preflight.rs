@@ -347,7 +347,24 @@ struct PluginRef<'a> {
     missing: String,
     must_be: &'a str,
     label: &'a str,
-    remedy: &'a str,
+    /// What the operator may do instead; none when the build offers nothing to name.
+    remedy: Option<&'a str>,
+}
+
+/// A refusal's closing alternative: `, or <remedy>`, or nothing when there is none.
+fn or(remedy: Option<&str>) -> String {
+    remedy.map(|r| [", or ", r].concat()).unwrap_or_default()
+}
+
+/// The remedy a store refusal offers, 1.5.5's words: `set store.module: <key>` for the linked store
+/// whose row states that what it holds is lost on restart, by the key config selects it with. Read
+/// off the root's rows; none when the build links no such store.
+fn ephemeral_store_remedy() -> Option<String> {
+    root_rows()
+        .stores
+        .iter()
+        .find(|(_, ephemeral, _, _)| *ephemeral)
+        .map(|(key, _, _, _)| format!("set store.module: {key}"))
 }
 
 /// `r` must resolve to a loadable row of `want.kind`, or the preflight refuses in `want`'s words:
@@ -376,7 +393,7 @@ fn require_plugin(
                 "{} is installed in '{dir}' (plugins ARE enabled; loadable: [{}]). Two things to \
                  check: is the plugin subsystem enabled? (it is) — and is the signed {}tarball \
                  actually IN the folder? \
-                 Add it to plugins.fetch or drop the signed tarball in the directory, or {}.",
+                 Add it to plugins.fetch or drop the signed tarball in the directory{}.",
                 want.missing,
                 registry
                     .loadable()
@@ -385,7 +402,7 @@ fn require_plugin(
                     .collect::<Vec<_>>()
                     .join(", "),
                 want.label,
-                want.remedy
+                or(want.remedy)
             ),
         }),
     }
@@ -520,9 +537,9 @@ pub fn plugins_preflight(
         return Err(format!(
             "store.module: '{store_ref}' requires the plugin subsystem, but plugins.enabled is \
              false (the default). Set plugins.enabled: true and place the signed \
-             '{store_ref}' store plugin tarball in the plugins directory ('{}'), or set \
-             store.module: memory.",
-            plugins_cfg.dir
+             '{store_ref}' store plugin tarball in the plugins directory ('{}'){}.",
+            plugins_cfg.dir,
+            or(ephemeral_store_remedy().as_deref())
         ));
     }
     // Same consistency gate for an auth plugin: a configured `kind: auth` module cannot load with
@@ -595,6 +612,7 @@ pub fn plugins_preflight(
 
     // 4. The configured store must resolve to a loadable store plugin.
     if store_is_plugin {
+        let remedy = ephemeral_store_remedy();
         require_plugin(
             &registry,
             &plugins_cfg.dir,
@@ -606,7 +624,7 @@ pub fn plugins_preflight(
                 missing: format!("no plugin matching store.module: '{store_ref}'"),
                 must_be: "a store plugin",
                 label: "",
-                remedy: "set store.module: memory",
+                remedy: remedy.as_deref(),
             },
         )?;
     }
@@ -627,7 +645,7 @@ pub fn plugins_preflight(
                 missing: format!("no plugin matching auth.chain module '{auth_ref}'"),
                 must_be: "an `auth` plugin",
                 label: "`kind: auth` ",
-                remedy: "remove it from auth.chain",
+                remedy: Some("remove it from auth.chain"),
             },
         )?;
     }
@@ -652,7 +670,7 @@ pub fn plugins_preflight(
                 missing: format!("no plugin matching the hook reference '{hook_ref}'"),
                 must_be: "a `hook` plugin",
                 label: "`kind: hook` ",
-                remedy: "remove the hook",
+                remedy: Some("remove the hook"),
             },
         )?;
     }

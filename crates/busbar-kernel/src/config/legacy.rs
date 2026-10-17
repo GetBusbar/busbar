@@ -93,6 +93,15 @@ pub fn pairs(key: &str) -> Vec<(&'static str, &'static str)> {
         .collect()
 }
 
+/// Whether `module` is an auth-chain module the table names REMOVED (its `removed_auth_modules`
+/// row, space-separated): 1.4.x's static-token allowlist, refused by `--validate` and rewritten to
+/// `keys` by `--migrate-config`.
+pub fn removed_auth_module(module: &str) -> bool {
+    text("removed_auth_modules")
+        .split_whitespace()
+        .any(|w| w == module)
+}
+
 /// The FORMER NAMES the plugin config names `alias` by is declared to answer to (its
 /// `former.<alias>` row, space-separated); none when the table has no such row.
 pub fn former_names(alias: &str) -> Vec<String> {

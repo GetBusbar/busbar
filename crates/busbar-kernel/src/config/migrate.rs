@@ -112,7 +112,7 @@ pub(crate) fn detect_legacy_markers(doc: &Value) -> Vec<String> {
             .and_then(|v| v.as_sequence().cloned())
             .is_some_and(|seq| {
                 seq.iter()
-                    .any(|e| matches!(e.as_str(), Some("tokens") | Some("static-tokens")))
+                    .any(|e| e.as_str().is_some_and(super::legacy::removed_auth_module))
             })
         {
             markers.push(
@@ -1182,7 +1182,7 @@ fn migrate_auth(
         let mut out: Vec<Value> = Vec::new();
         for e in std::mem::take(chain) {
             let mapped = match e.as_str() {
-                Some("tokens") | Some("static-tokens") => {
+                Some(m) if super::legacy::removed_auth_module(m) => {
                     rewrote = true;
                     Value::from("keys")
                 }

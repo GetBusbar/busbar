@@ -1127,9 +1127,9 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // plugin name from a typo at this point — only `main.rs`'s post-resolve
         // `auth_plugin_refs`/registry check (run right after this) can. Only the names this function
         // CAN judge without registry access are handled here: `keys` passes, and the specific
-        // REMOVED 1.4.x names get an immediate, precise migration error (no need to wait for a
-        // registry lookup to know `tokens`/`static-tokens` will never resolve to a plugin). Every
-        // other name is deferred to the plugin-aware check, not rejected here — an earlier version
+        // REMOVED 1.4.x names (the root legacy table's `removed_auth_modules` row) get an
+        // immediate, precise migration error (no registry lookup is needed to know they will never
+        // resolve to a plugin). Every other name is deferred to the plugin-aware check, not rejected here — an earlier version
         // of this rule hard-rejected every non-`keys` name unconditionally, which meant NO `kind:
         // auth` plugin (auth-oidc included) could ever pass config_validate, since this check ran
         // first and always lost before the plugin-aware one got a chance. FAIL-CLOSED is still
@@ -1137,7 +1137,7 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
         // tell whether it resolves.
         for entry in &auth.chain {
             let name = entry.module.as_str();
-            if name == "tokens" || name == "static-tokens" {
+            if crate::config::legacy::removed_auth_module(name) {
                 errors.push(format!(
                     "auth.chain names '{name}': the static-token allowlist module was REMOVED \
                      in 1.5.0. Data-plane auth is `keys` (busbar-signed keys, minted via \

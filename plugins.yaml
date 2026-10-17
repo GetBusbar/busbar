@@ -123,6 +123,10 @@ excluded_repos:
 # kernel; crates/busbar/src/root/tests/legacy.rs renders it from here and is red on drift (printing the
 # table to paste). Every row cites the v1.5.5 tag line it is verbatim from; a value never changes.
 legacy:
+  # The 1.4.x static-token allowlist modules REMOVED in 1.5.0, space-separated: an `auth.chain` entry
+  # naming one is refused, and `--migrate-config` rewrites it to `keys`.
+  # v1.5.5:crates/busbar/src/config_validate/mod.rs:1237; config/migrate.rs (1.x detector and chain rewrite)
+  removed_auth_modules: "tokens static-tokens"
   # v1.5.5:crates/busbar/src/config/migrate.rs:267 (the legacy marker's "is Valkey — artifact")
   renamed_display: Valkey
   # The retired backend's own driver URL scheme, which the rewrite leaves untouched.

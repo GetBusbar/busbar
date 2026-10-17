@@ -767,6 +767,7 @@ required-features = ["auth-admin-tokens"]
 "observability_log_type_key" = "request-log-webhook"
 "observability_trace_key" = "otlp_url"
 "observability_trace_key_1_4" = "otlp_endpoint"
+"removed_auth_modules" = "tokens static-tokens"
 "renamed_display" = "Valkey"
 "retired_url_scheme" = "redis"
 "snapshot_recorder_failed" = "prometheus recorder install failed; /metrics will be empty"
