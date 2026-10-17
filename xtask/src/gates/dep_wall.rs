@@ -23,8 +23,19 @@
 //! plane crates listed in [`LEGACY`], and every external plugin the workspace resolves from its own
 //! repository (a `GetBusbar` git source). The closure is the NORMAL-edge closure `cargo metadata`
 //! resolves, with optional edges that nothing activates left out.
+//!
+//! OWN SOURCE. `std::net` and `tokio::net` are no crate edge, so the closure walk cannot see them:
+//! every in-scope crate's own source is read for them as PATHS ([`banned_paths`]: `use` trees
+//! expanded, renames followed, expressions and macro bodies read), never as a substring. A plugin
+//! pinned from its own repository is read from the checkout `cargo metadata` names for its pin
+//! (with the tree's base layer and any plant at `crates/<name>/src` on top); a pinned plugin whose
+//! source cannot be read is a refusal naming it, never a crate passed unread.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::path::{Path, PathBuf};
+use std::str::FromStr;
+
+use proc_macro2::{Delimiter, Group, Spacing, TokenStream, TokenTree};
 
 use serde_json::Value;
 
@@ -84,6 +95,27 @@ type Node = (Vec<(String, String)>, Vec<String>);
 
 /// The measured wall: offending crate -> what it reaches.
 pub type Offenders = BTreeMap<String, BTreeSet<String>>;
+
+/// One measurement of the wall.
+pub struct Measured {
+    pub offenders: Offenders,
+    /// How many crates are in scope.
+    pub roots: usize,
+    /// Every package name the workspace resolves.
+    pub names: BTreeSet<String>,
+    /// Every in-scope crate whose own source could not be read, named with why: a refusal, never
+    /// a crate passed unread.
+    pub unread: Vec<String>,
+}
+
+/// Where an in-scope crate's own source is read.
+enum Source {
+    /// A workspace member, at this directory of the tree.
+    Tree(String),
+    /// A plugin pinned from its own repository: the `git+` source it resolves from, and the `src/`
+    /// beside the manifest `cargo metadata` names in the checkout cargo fetched for the pin.
+    Pinned { source: String, checkout: PathBuf },
+}
 
 /// Exemptions and pins the ledger states.
 #[derive(Default)]
@@ -193,10 +225,7 @@ fn asks(pkg: &Pkg) -> Vec<String> {
 }
 
 /// THE MEASUREMENT: every in-scope crate and what its closure reaches past the wall.
-pub fn measure(
-    cx: &Ctx,
-    carriers: &BTreeSet<String>,
-) -> Result<(Offenders, usize, BTreeSet<String>), String> {
+pub fn measure(cx: &Ctx, carriers: &BTreeSet<String>) -> Result<Measured, String> {
     let json: Value = serde_json::from_str(&cx.cargo_metadata("Cargo.toml")?)
         .map_err(|e| format!("`cargo metadata` output did not parse: {e}"))?;
     let mut pkgs: BTreeMap<String, Pkg> = BTreeMap::new();
@@ -295,7 +324,7 @@ pub fn measure(
     // THE ROOTS: in-tree plugin-kind and legacy crates, and every external plugin.
     let globs = kind_globs(cx)?;
     let root = cx.root().to_string_lossy().to_string();
-    let mut roots: Vec<(String, Option<String>)> = Vec::new(); // (id, in-tree dir)
+    let mut roots: Vec<(String, Source)> = Vec::new();
     for (id, p) in &pkgs {
         if carriers.contains(&p.name) {
             continue;
@@ -310,15 +339,25 @@ pub fn measure(
                     .trim_end_matches("/Cargo.toml")
                     .to_string();
                 if globs.iter().any(|g| glob(g, &dir)) || LEGACY.contains(&dir.as_str()) {
-                    roots.push((id.clone(), Some(dir)));
+                    roots.push((id.clone(), Source::Tree(dir)));
                 }
             }
-            Some(src) if src.starts_with(EXTERNAL_SOURCE) => roots.push((id.clone(), None)),
+            Some(src) if src.starts_with(EXTERNAL_SOURCE) => roots.push((
+                id.clone(),
+                Source::Pinned {
+                    source: src.clone(),
+                    checkout: Path::new(&p.manifest_path)
+                        .parent()
+                        .map(|d| d.join("src"))
+                        .unwrap_or_default(),
+                },
+            )),
             Some(_) => {}
         }
     }
     let mut out = Offenders::new();
-    for (root_id, dir) in &roots {
+    let mut unread = Vec::new();
+    for (root_id, source) in &roots {
         let root_name = pkgs[root_id].name.clone();
         let mut hits = BTreeSet::new();
         let mut seen = BTreeSet::from([root_id.clone()]);
@@ -335,34 +374,356 @@ pub fn measure(
                 }
             }
         }
-        if let Some(dir) = dir {
-            let files = cx
-                .walk(
-                    &WalkSpec::new([format!("{dir}/src")])
-                        .ext("rs")
-                        .allow_empty(),
-                )
-                .unwrap_or_default();
-            for f in files {
-                let rel = f.rel_str();
-                if rel.contains("/tests/") || rel.ends_with("_tests.rs") {
-                    continue;
-                }
-                for (_, line) in crate::scan::production_lines(&f.text) {
-                    for p in BANNED_PATHS {
-                        if line.contains(p) {
-                            hits.insert((*p).to_string());
-                        }
+        match own_source(cx, &root_name, source) {
+            Ok(files) => {
+                for (rel, text) in files {
+                    if rel.contains("/tests/") || rel.ends_with("_tests.rs") {
+                        continue;
                     }
+                    hits.extend(banned_paths(&text).into_iter().map(str::to_string));
                 }
             }
+            Err(why) => unread.push(why),
         }
         if !hits.is_empty() {
             out.entry(root_name).or_default().extend(hits);
         }
     }
-    let names = pkgs.values().map(|p| p.name.clone()).collect();
-    Ok((out, roots.len(), names))
+    Ok(Measured {
+        offenders: out,
+        roots: roots.len(),
+        names: pkgs.values().map(|p| p.name.clone()).collect(),
+        unread,
+    })
+}
+
+/// A crate's own `.rs` source, as `(tree-spelled path, text)`, sorted.
+///
+/// A workspace member is read through `cx` at its directory. A plugin pinned from its own
+/// repository is read from the checkout `cargo metadata` names, with whatever `cx` shows at its
+/// mount dir `crates/<name>/src` (the base layer, or a plant) laid on top, file by file. A pinned
+/// plugin that yields no source file, or a file that does not read, is an `Err` naming the plugin
+/// and its source: the wall is never reported for a crate it did not read.
+fn own_source(cx: &Ctx, name: &str, source: &Source) -> Result<Vec<(String, String)>, String> {
+    match source {
+        Source::Tree(dir) => cx
+            .walk(
+                &WalkSpec::new([format!("{dir}/src")])
+                    .ext("rs")
+                    .allow_empty(),
+            )
+            .map(|files| files.into_iter().map(|f| (f.rel_str(), f.text)).collect())
+            .map_err(|e| format!("`{name}` at {dir}: its source cannot be read: {e}")),
+        Source::Pinned { source, checkout } => {
+            let at = format!("crates/{name}/src");
+            let refuse = |why: String| {
+                format!(
+                    "`{name}` is pinned from its own repository ({source}) and its source cannot be \
+                     read: {why}"
+                )
+            };
+            // The tree lays the crate itself (the base layer, or a crate on disk at its mount).
+            let laid = cx.in_base(format!("crates/{name}")) || cx.abs(&at).is_dir();
+            let mut files: BTreeMap<String, String> = BTreeMap::new();
+            match checkout_sources(checkout) {
+                Ok(read) => {
+                    for (rel, text) in read {
+                        files.insert(format!("{at}/{rel}"), text);
+                    }
+                }
+                Err(why) if !laid => return Err(refuse(why)),
+                Err(_) => {}
+            }
+            if let Ok(shown) = cx.walk(&WalkSpec::new([at.clone()]).ext("rs").allow_empty()) {
+                for f in shown {
+                    files.insert(f.rel_str(), f.text);
+                }
+            }
+            if files.is_empty() {
+                return Err(refuse(format!(
+                    "{} holds no `.rs` file",
+                    checkout.display()
+                )));
+            }
+            Ok(files.into_iter().collect())
+        }
+    }
+}
+
+/// Every `.rs` file under a checkout's `src/`, relative to it. Build output and dot-directories are
+/// not source. A directory or file that does not read is an `Err` naming it.
+fn checkout_sources(src: &Path) -> Result<Vec<(String, String)>, String> {
+    fn visit(dir: &Path, base: &Path, out: &mut Vec<(String, String)>) -> Result<(), String> {
+        let rd = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let mut entries: Vec<PathBuf> = rd.filter_map(|e| e.ok()).map(|e| e.path()).collect();
+        entries.sort();
+        for path in entries {
+            let file = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if file == "target" || file.starts_with('.') {
+                continue;
+            }
+            if path.is_dir() {
+                visit(&path, base, out)?;
+            } else if path.extension().is_some_and(|x| x == "rs") {
+                let text = std::fs::read_to_string(&path)
+                    .map_err(|e| format!("{}: {e}", path.display()))?;
+                let rel = path.strip_prefix(base).unwrap_or(&path);
+                out.push((rel.to_string_lossy().replace('\\', "/"), text));
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    visit(src, src, &mut out)?;
+    Ok(out)
+}
+
+/// THE BANNED PATHS ONE SOURCE FILE NAMES, read as PATHS, not as text.
+///
+/// The file is lexed and every path is read segment by segment: a `use` tree is expanded
+/// (`use std::{io, net::TcpStream}` names `std::net::TcpStream`), a leading `::` is the same path, a
+/// path written in an expression, a type or a macro body counts as one written in a `use`, a
+/// rename of a banned path's prefix (`use std as s;`, `extern crate std as s;`) is followed where
+/// the file uses it, and a glob over such a prefix (`use std::*;`) brings the banned module into
+/// scope and counts. A comment or a string literal names no path. An item under `#[cfg(test)]` (or
+/// `cfg(all(test, ..))`) or `#[test]` is test code, not the plugin's production source. A file
+/// that does not lex falls back to the line scan, which reads more, never less.
+pub fn banned_paths(text: &str) -> BTreeSet<&'static str> {
+    let Ok(stream) = TokenStream::from_str(text) else {
+        let mut hits = BTreeSet::new();
+        for (_, line) in crate::scan::production_lines(text) {
+            hits.extend(BANNED_PATHS.iter().filter(|p| line.contains(**p)));
+        }
+        return hits;
+    };
+    let tokens: Vec<TokenTree> = strip_tests(stream).into_iter().collect();
+    // Two passes: a rename is in force wherever the file uses it, before or after the `use`.
+    let mut first = PathScan::default();
+    first.walk(&tokens, None);
+    let mut second = PathScan {
+        aliases: first.aliases,
+        hits: BTreeSet::new(),
+    };
+    second.walk(&tokens, None);
+    second.hits
+}
+
+fn segments(path: &str) -> Vec<&str> {
+    path.split("::").collect()
+}
+
+/// Is this attribute body (`cfg(test)`, `test`, `tokio::test`, `cfg(all(test, ..))`) a test mark?
+fn is_test_attr(body: &TokenStream) -> bool {
+    let toks: Vec<TokenTree> = body.clone().into_iter().collect();
+    let idents_only = toks.iter().all(|t| match t {
+        TokenTree::Ident(_) => true,
+        TokenTree::Punct(p) => p.as_char() == ':',
+        _ => false,
+    });
+    if idents_only {
+        return matches!(toks.last(), Some(TokenTree::Ident(i)) if i == "test");
+    }
+    let [TokenTree::Ident(cfg), TokenTree::Group(g)] = toks.as_slice() else {
+        return false;
+    };
+    if cfg != "cfg" || g.delimiter() != Delimiter::Parenthesis {
+        return false;
+    }
+    let inner: Vec<TokenTree> = g.stream().into_iter().collect();
+    match inner.as_slice() {
+        [TokenTree::Ident(t)] => t == "test",
+        [TokenTree::Ident(all), TokenTree::Group(args)] if all == "all" => args
+            .stream()
+            .into_iter()
+            .any(|t| matches!(t, TokenTree::Ident(i) if i == "test")),
+        _ => false,
+    }
+}
+
+/// The token stream with every test-marked item removed: the attribute, the attributes after it,
+/// and the item up to its first top-level `;` or `{ .. }` body. An inner `#![cfg(test)]` empties
+/// the scope it opens.
+fn strip_tests(stream: TokenStream) -> TokenStream {
+    let toks: Vec<TokenTree> = stream.into_iter().collect();
+    let attr_at = |i: usize| -> Option<(usize, bool)> {
+        let TokenTree::Punct(hash) = toks.get(i)? else {
+            return None;
+        };
+        if hash.as_char() != '#' {
+            return None;
+        }
+        let (inner, at) = match toks.get(i + 1)? {
+            TokenTree::Punct(bang) if bang.as_char() == '!' => (true, i + 2),
+            _ => (false, i + 1),
+        };
+        let TokenTree::Group(g) = toks.get(at)? else {
+            return None;
+        };
+        (g.delimiter() == Delimiter::Bracket && is_test_attr(&g.stream()))
+            .then_some((at + 1 - i, inner))
+    };
+    let mut out: Vec<TokenTree> = Vec::new();
+    let mut i = 0;
+    while i < toks.len() {
+        if let Some((len, inner)) = attr_at(i) {
+            if inner {
+                return TokenStream::new();
+            }
+            i += len;
+            // Skip the item: further attributes, then up to its body or its `;`.
+            while i < toks.len() {
+                match &toks[i] {
+                    TokenTree::Punct(p) if p.as_char() == ';' => {
+                        i += 1;
+                        break;
+                    }
+                    TokenTree::Group(g) if g.delimiter() == Delimiter::Brace => {
+                        i += 1;
+                        break;
+                    }
+                    _ => i += 1,
+                }
+            }
+            continue;
+        }
+        match &toks[i] {
+            TokenTree::Group(g) => {
+                let mut kept = Group::new(g.delimiter(), strip_tests(g.stream()));
+                kept.set_span(g.span());
+                out.push(TokenTree::Group(kept));
+            }
+            t => out.push(t.clone()),
+        }
+        i += 1;
+    }
+    out.into_iter().collect()
+}
+
+/// The path reader [`banned_paths`] runs: renames of a banned path's prefix, and the hits.
+#[derive(Default)]
+struct PathScan {
+    aliases: BTreeMap<String, Vec<String>>,
+    hits: BTreeSet<&'static str>,
+}
+
+impl PathScan {
+    /// `path` with a leading rename resolved and a trailing `self` dropped.
+    fn expand(&self, path: &[String]) -> Vec<String> {
+        let mut full: Vec<String> = match path.split_first() {
+            Some((head, rest)) => match self.aliases.get(head) {
+                Some(target) => target.iter().chain(rest).cloned().collect(),
+                None => path.to_vec(),
+            },
+            None => Vec::new(),
+        };
+        if full.last().is_some_and(|s| s == "self") {
+            full.pop();
+        }
+        full
+    }
+
+    /// Record every banned path `path` names, or every one it reaches when it is a glob.
+    fn judge(&mut self, path: &[String], glob: bool) {
+        if path.is_empty() {
+            return;
+        }
+        let full = self.expand(path);
+        for banned in BANNED_PATHS {
+            let segs = segments(banned);
+            let names = full.len() >= segs.len() && full.iter().zip(&segs).all(|(a, b)| a == b);
+            let reaches =
+                glob && segs.len() > full.len() && full.iter().zip(&segs).all(|(a, b)| a == b);
+            if names || reaches {
+                self.hits.insert(*banned);
+            }
+        }
+    }
+
+    /// `name` now spells `path`, when `path` is a strict prefix of a banned path.
+    fn rename(&mut self, name: String, path: &[String]) {
+        let full = self.expand(path);
+        let prefix = BANNED_PATHS.iter().any(|b| {
+            let segs = segments(b);
+            !full.is_empty()
+                && full.len() < segs.len()
+                && full.iter().zip(&segs).all(|(a, b)| a == b)
+        });
+        if prefix {
+            self.aliases.insert(name, full);
+        }
+    }
+
+    /// Read `toks` for paths. `tree` is the prefix of the `use` tree group they are the body of.
+    fn walk(&mut self, toks: &[TokenTree], tree: Option<&[String]>) {
+        let start = || tree.map(<[String]>::to_vec).unwrap_or_default();
+        let mut chain = start();
+        // A `::` was just read (or a use-tree group opened): the next identifier extends `chain`.
+        let mut sep = tree.is_some();
+        let mut i = 0;
+        while i < toks.len() {
+            match &toks[i] {
+                TokenTree::Ident(id) => {
+                    let word = id.to_string();
+                    let word = word.strip_prefix("r#").unwrap_or(&word).to_string();
+                    if sep {
+                        chain.push(word);
+                    } else if word == "as" && !chain.is_empty() {
+                        self.judge(&chain, false);
+                        if let Some(TokenTree::Ident(name)) = toks.get(i + 1) {
+                            self.rename(name.to_string(), &chain);
+                            i += 1;
+                        }
+                        chain.clear();
+                    } else {
+                        self.judge(&chain, false);
+                        chain = vec![word];
+                    }
+                    sep = false;
+                }
+                TokenTree::Punct(p)
+                    if p.as_char() == ':'
+                        && p.spacing() == Spacing::Joint
+                        && matches!(toks.get(i + 1), Some(TokenTree::Punct(q)) if q.as_char() == ':') =>
+                {
+                    sep = true;
+                    i += 2;
+                    continue;
+                }
+                TokenTree::Punct(p) if p.as_char() == '*' && sep && !chain.is_empty() => {
+                    self.judge(&chain, true);
+                    chain.clear();
+                    sep = false;
+                }
+                TokenTree::Group(g)
+                    if g.delimiter() == Delimiter::Brace && sep && !chain.is_empty() =>
+                {
+                    let inner: Vec<TokenTree> = g.stream().into_iter().collect();
+                    self.walk(&inner, Some(chain.as_slice()));
+                    chain.clear();
+                    sep = false;
+                }
+                TokenTree::Punct(p) if p.as_char() == ',' && tree.is_some() => {
+                    self.judge(&chain, false);
+                    chain = start();
+                    sep = true;
+                }
+                TokenTree::Group(g) => {
+                    self.judge(&chain, false);
+                    chain.clear();
+                    sep = false;
+                    let inner: Vec<TokenTree> = g.stream().into_iter().collect();
+                    self.walk(&inner, None);
+                }
+                _ => {
+                    self.judge(&chain, false);
+                    chain.clear();
+                    sep = false;
+                }
+            }
+            i += 1;
+        }
+        self.judge(&chain, false);
+    }
 }
 
 /// The first plugin `cargo metadata` resolves from its own repository that is no carrier and that
@@ -396,7 +757,12 @@ impl Gate for DepWallGate {
 
     fn run(&self, cx: &Ctx) -> Verdict {
         let ledger = read_ledger(&cx.read(LEDGER).unwrap_or_default());
-        let (measured, roots, names) = match measure(cx, &ledger.carriers) {
+        let Measured {
+            offenders: measured,
+            roots,
+            names,
+            unread,
+        } = match measure(cx, &ledger.carriers) {
             Ok(m) => m,
             Err(e) => {
                 let why = format!("the wall could not be measured: {e}");
@@ -413,6 +779,7 @@ impl Gate for DepWallGate {
         };
         let mut rows = Vec::new();
         let mut scope = ledger.errors.clone();
+        scope.extend(unread);
         if roots < MIN_ROOTS {
             scope.push(format!(
                 "{roots} crate(s) in scope, under the floor of {MIN_ROOTS}: a scope that small \
