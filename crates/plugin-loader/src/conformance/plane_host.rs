@@ -59,8 +59,8 @@ use busbar_contract::abi::host::service::{
 use busbar_contract::abi::mechanism::call::Span;
 use busbar_contract::abi::mechanism::check::SPAN_ABSENT;
 use busbar_contract::net::{
-    host_ip, ip_is_cloud_metadata, ip_is_internal, is_alternate_ipv4_encoding, parse_url,
-    METADATA_HOSTS,
+    extract_normalized_host, host_ip, ip_is_cloud_metadata, ip_is_internal,
+    is_alternate_ipv4_encoding, parse_url, METADATA_HOSTS,
 };
 use busbar_contract::plane_calls::InstanceDecl;
 use busbar_contract::services::{
@@ -71,6 +71,7 @@ use serde_json::Value;
 
 use crate::dispatch::services::{FILL_OUT_OF_RANGE, NO_TTL, UNTICKETED};
 use crate::dispatch::{HostServices, Ran, Reading, Stored};
+use crate::stand_in::FramedFacts;
 
 /// The completion a pending service answer is handed (the services' own callback type): never
 /// called here, every service this host serves answers at once.
@@ -117,6 +118,8 @@ pub(super) struct Host {
     entitled: Vec<Grant>,
     trusted: Vec<(String, Option<String>, u64)>,
     resolve: BTreeMap<String, Vec<IpAddr>>,
+    /// The URL scheme of a secured destination, as the stand-in transport's facts state it.
+    secure_scheme: String,
     /// The fills drawn so far.
     drawn: AtomicU64,
     kept: Mutex<Kept>,
@@ -204,6 +207,7 @@ impl Host {
             entitled,
             trusted,
             resolve,
+            secure_scheme: FramedFacts::stand_in().secure_scheme,
             drawn: AtomicU64::new(0),
             kept: Mutex::default(),
         })
@@ -404,18 +408,18 @@ fn judge_name(host: &str, class: u32, strict: bool) -> Result<Option<IpAddr>, u6
     Ok(None)
 }
 
-/// A destination as `(host, https)`: an `http(s)` URL (the scheme read without case, any other
-/// scheme refused, a userinfo refused) or a bare `host[:port]` authority (secure).
-fn split(dest: &str) -> Result<(String, bool), u64> {
+/// A destination as `(host, secure)`: a URL of one of the two web schemes the shared host reader
+/// takes (`extract_normalized_host`; the scheme read without case, any other scheme refused, a
+/// userinfo refused), secure when its scheme is `secure_scheme`; or a bare `host[:port]` authority
+/// (secure). The scheme's name is data (`stand_in.json`), never this source's.
+fn split(dest: &str, secure_scheme: &str) -> Result<(String, bool), u64> {
     if let Some((scheme, rest)) = dest.split_once("://") {
-        let lowered = format!("{}://{rest}", scheme.to_ascii_lowercase());
-        let https = if lowered.starts_with("https://") {
-            true
-        } else if lowered.starts_with("http://") {
-            false
-        } else {
+        let scheme = scheme.to_ascii_lowercase();
+        if extract_normalized_host(&format!("{scheme}://host")).is_none() {
             return Err(DEST_SCHEME);
-        };
+        }
+        let https = scheme == secure_scheme;
+        let lowered = format!("{scheme}://{rest}");
         let parts = parse_url(&lowered).map_err(|_| DEST_NO_HOST)?;
         if parts.userinfo {
             return Err(DEST_NO_HOST);
@@ -446,12 +450,17 @@ fn split(dest: &str) -> Result<(String, bool), u64> {
 
 /// The scheme and name arms under egress class `class`: the host, whether it is secure, and the
 /// literal when it is one.
-fn named(dest: &str, class: u32, strict: bool) -> Result<(String, bool, Option<IpAddr>), u64> {
+fn named(
+    dest: &str,
+    class: u32,
+    strict: bool,
+    secure_scheme: &str,
+) -> Result<(String, bool, Option<IpAddr>), u64> {
     // The classes a need may declare are 0..=4; a destination under any other names none.
     if class > EGRESS_LOOPBACK_ALLOWED {
         return Err(DEST_NO_HOST);
     }
-    let (host, https) = split(dest)?;
+    let (host, https) = split(dest, secure_scheme)?;
     if !https && class == EGRESS_OPEN_WEB {
         return Err(DEST_PLAINTEXT);
     }
@@ -547,7 +556,7 @@ impl HostServices for Host {
     fn dest_judge(&self, dest: &str, class: u32, flags: u32, later: Option<Pended>) -> Ran {
         let strict = flags & DEST_REFUSE_PRIVATE != 0;
         // The name and scheme arms first, at once: a refusal never waits on a resolution.
-        let named = match named(dest, class, strict) {
+        let named = match named(dest, class, strict, &self.secure_scheme) {
             Err(v) => return Ran::Now(Stored::ready(v)),
             Ok(_) if flags & DEST_RESOLVE == 0 => return Ran::Now(Stored::ready(DEST_ALLOWED)),
             Ok(n) => n,
