@@ -11,10 +11,13 @@
 //!
 //! ## WHAT COUNTS AS AN ABI SHAPE
 //!
-//! * **`repr-c`** — a `#[repr(C …)]` struct, enum or union. `#[repr(u8)]`/`#[repr(transparent)]`
+//! * **`repr-c`** — a struct, enum or union whose `repr(…)` names `C` among its hints, however
+//!   the attribute is spelled: `#[repr(C)]`, `#[repr(align(8), C)]`, a `#[repr(C)]` sharing its
+//!   line with a `#[derive(…)]`, or `#[cfg_attr(…, repr(C))]`. `#[repr(u8)]`/`#[repr(transparent)]`
 //!   alone are not counted: they fix a discriminant or a wrapper, not a C layout, and the tree uses
 //!   them for on-disk frames and newtypes that never meet a plugin.
-//! * **`extern-fn`** — an `extern "C"` / `extern "C-unwind"` / `extern "system"` fn DEFINITION
+//! * **`extern-fn`** — an `extern "C"` / `extern "C-unwind"` / `extern "system"` / bare `extern`
+//!   (the C ABI with its string left out) fn DEFINITION
 //!   whose signature is NOT one of the ABI's fn types: a slot signature invented outside `abi/`.
 //!   A definition whose parameter and return types EQUAL an `extern "C…" fn(…)` pointer type
 //!   written under `abi/` (`Op`, `DoorFn`, `WakeFn`, …) is an IMPLEMENTATION of that shape, not a
@@ -310,14 +313,43 @@ impl Joined {
     }
 }
 
-/// A line that IS a `#[repr(…)]` attribute naming `C` among its representation hints.
+/// A line holding a `repr(…)` naming `C` among its representation hints, wherever it stands: a
+/// `#[repr(…)]` of its own, one sharing its line with a `#[derive(…)]`, or one inside a
+/// `#[cfg_attr(…, repr(…))]`. The hint list is read to its BALANCED close, so `C` after a hint
+/// that carries parentheses of its own (`#[repr(align(8), C)]`) is still read.
 fn is_repr_c(counted: &str) -> bool {
-    let t = counted.trim_start();
-    let Some(rest) = t.strip_prefix("#[repr(") else {
-        return false;
-    };
-    let inner = rest.split(')').next().unwrap_or("");
-    inner.split(',').any(|h| h.trim() == "C")
+    let c: Vec<char> = counted.chars().collect();
+    let mut i = 0;
+    while i < c.len() {
+        if !word_at(&c, i, "repr") {
+            i += 1;
+            continue;
+        }
+        let open = skip_ws(&c, i + 4);
+        i += 4;
+        if c.get(open) != Some(&'(') {
+            continue;
+        }
+        let close = close_of(&c, open).unwrap_or(c.len());
+        let (mut depth, mut from) = (0i32, open + 1);
+        let mut hints = Vec::new();
+        for (k, ch) in c.iter().enumerate().take(close).skip(open + 1) {
+            match ch {
+                '(' | '[' => depth += 1,
+                ')' | ']' => depth -= 1,
+                ',' if depth == 0 => {
+                    hints.push(c[from..k].iter().collect::<String>());
+                    from = k + 1;
+                }
+                _ => {}
+            }
+        }
+        hints.push(c[from..close.min(c.len())].iter().collect::<String>());
+        if hints.iter().any(|h| h.trim() == "C") {
+            return true;
+        }
+    }
+    false
 }
 
 /// The name of the struct/enum/union a `#[repr(C)]` attribute applies to: the first
@@ -364,25 +396,31 @@ fn extern_items(c: &[char], r: &[char]) -> Vec<ExternItem> {
         }
         let at = i;
         let mut j = skip_ws(c, i + 6);
-        if c.get(j) != Some(&'"') {
+        // `extern fn` with no ABI string is the C ABI: Rust reads the omitted string as "C".
+        let (abi, k) = if word_at(c, j, "fn") {
             i += 6;
-            continue;
-        }
-        let open = j;
-        j += 1;
-        while j < c.len() && c[j] != '"' && c[j] != '\n' {
+            ("C".to_string(), j)
+        } else {
+            if c.get(j) != Some(&'"') {
+                i += 6;
+                continue;
+            }
+            let open = j;
             j += 1;
-        }
-        if j >= c.len() || c[j] != '"' {
-            i = j;
-            continue;
-        }
-        let abi: String = r
-            .get(open + 1..j)
-            .map(|s| s.iter().collect())
-            .unwrap_or_default();
-        let k = skip_ws(c, j + 1);
-        i = j + 1;
+            while j < c.len() && c[j] != '"' && c[j] != '\n' {
+                j += 1;
+            }
+            if j >= c.len() || c[j] != '"' {
+                i = j;
+                continue;
+            }
+            let abi: String = r
+                .get(open + 1..j)
+                .map(|s| s.iter().collect())
+                .unwrap_or_default();
+            i = j + 1;
+            (abi, skip_ws(c, j + 1))
+        };
         if !matches!(abi.as_str(), "C" | "C-unwind" | "system" | "system-unwind") {
             continue;
         }
