@@ -26,17 +26,7 @@ item = "extern 'C-unwind'"
 
 [[finding]]
 rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-contract/src/abi/hot/transport.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
 file = "crates/busbar-contract/src/abi/hot/workitem.rs"
-item = "extern 'C-unwind'"
-
-[[finding]]
-rule = "one-memory-abi:c-unwind"
-file = "crates/busbar-contract/src/abi/mod.rs"
 item = "extern 'C-unwind'"
 
 [[finding]]

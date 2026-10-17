@@ -35,59 +35,13 @@
 pub mod decl;
 pub mod host;
 pub mod pod;
-pub mod transport;
 pub mod workitem;
-
-/// The cdylib ENTRYPOINT convention a dropped-in plane exports so the loader can recover its
-/// [`PlaneDecl`]. This is the HOT-lane analogue of the cold lane's six `busbar_*` symbols
-/// (`abi::cold::symbol`, deleted): a plane `cdylib` exported `busbar_abi()` (the SHARED
-/// `TRANSPORT_VERSION` handshake) and `busbar_plugin_kind()` (==
-/// `"plane"`, [`crate::abi::mechanism::kind::PLANE`]) so it rides the EXACT same tarball / signed-manifest /
-/// trust discovery pipeline; the ONE extra symbol below is how it hands core the `#[repr(C)]` decl
-/// pointer instead of the JSON `call` wire.
-pub mod symbol {
-    /// `busbar_plane_decl() -> *const PlaneDecl` — the plane's ONE hot-lane entrypoint. Returns a
-    /// pointer to a `'static` [`PlaneDecl`](super::PlaneDecl) owned by the library (its
-    /// `#[repr(C)]` vtable, leading with the FROZEN [`AbiPreamble`](crate::abi::AbiPreamble) the loader
-    /// `check_preamble`s before reading any slot). The loader NEVER frees it — it lives for the life
-    /// of the mapped image, exactly like the vocabulary strings the decl points into.
-    pub const PLANE_DECL: &[u8] = b"busbar_plane_decl\0";
-
-    /// `busbar_transport_decl() -> *const TransportDecl` — a TRANSPORT's one hot-lane entrypoint,
-    /// on exactly the terms of [`PLANE_DECL`]: a pointer to a `'static`
-    /// [`TransportDecl`](super::TransportDecl) owned by the library, preamble first, never freed by
-    /// the loader. The transport cdylib also exports `busbar_abi()` and `busbar_plugin_kind()` (==
-    /// `"transport"`).
-    pub const TRANSPORT_DECL: &[u8] = b"busbar_transport_decl\0";
-}
-
-/// `busbar_plane_decl` — the plane cdylib entrypoint's fn-pointer type the loader resolves via
-/// `libloading`. `unsafe extern "C-unwind"` for parity with the cold lane's `AbiFn` (deleted):
-/// a panic in a plane's decl accessor unwinds as a DEFINED forced unwind the loader's guard catches,
-/// rather than aborting at the plugin frame.
-///
-/// # Safety
-/// The returned pointer, when non-null, must address a `'static` [`PlaneDecl`] whose bytes (and the
-/// vocabulary ranges it points into) live for the whole life of the loaded library.
-pub type PlaneDeclFn = unsafe extern "C-unwind" fn() -> *const PlaneDecl;
-
-/// `busbar_transport_decl` — the transport cdylib entrypoint's fn-pointer type, the transport twin of
-/// [`PlaneDeclFn`].
-///
-/// # Safety
-/// The returned pointer, when non-null, must address a `'static` [`TransportDecl`] whose bytes (and
-/// the ranges it borrows) live for the whole life of the loaded library.
-pub type TransportDeclFn = unsafe extern "C-unwind" fn() -> *const TransportDecl;
 
 // Re-export the whole POD surface at the lane root so a plane author writes
 // `crate::abi::hot::Facts`, not `crate::abi::hot::pod::Facts`.
 pub use decl::{BuildCtx, DeclBillableClass, DeclStr, IngressCarrier, OpaqueHandle, PlaneDecl};
 pub use host::PlaneHostVtable;
 pub use pod::*;
-pub use transport::{
-    CarrierSlots, FramerSlots, RawWireOutcome, TransportDecl, WireOutcome, WireSettings, WireWaker,
-    NO_WAKER, TRANSPORT_DECL_MAJOR, TRANSPORT_DECL_MINOR,
-};
 pub use workitem::{
     EmitBodyFn, EmitHandle, EmitHeadFn, EmitKind, HeadField, HeadPart, HeadReadFn, InboundHandle,
     InboundKind, WorkItem,

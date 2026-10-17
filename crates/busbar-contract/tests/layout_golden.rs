@@ -18,13 +18,9 @@ use busbar_contract::abi::hot::decl::{
     BuildCtx, DeclBillableClass, DeclMetricFamily, DeclServedOpClass, DeclStr, PlaneDecl,
 };
 use busbar_contract::abi::hot::host::PlaneHostVtable;
-use busbar_contract::abi::hot::transport::{
-    CarrierSlots, DeclByteList, DeclClaim, DeclStrList, FramerSlots, TransportDecl, WireBytesOut,
-    WireConnFacts, WireDest, WireEnvPair, WireField, WireFramed, WireFramerOut, WireSettings,
-    WireWaker,
-};
 use busbar_contract::abi::hot::workitem::{EmitHandle, HeadField, InboundHandle, WorkItem};
 use busbar_contract::abi::hot::*;
+use busbar_contract::abi::shared::{WireConnFacts, WireField};
 use busbar_contract::abi::AbiPreamble;
 // THE ONE MEMORY ABI (M0 ABI-SPEC): aliased, so a name the hot lane also uses cannot collide.
 use busbar_contract::abi::mechanism::call::{
@@ -691,123 +687,7 @@ fn compute_layout() -> String {
     );
     record!(s, DeclServedOpClass, [op, name]);
 
-    // The TRANSPORT decl, generation 2 (minor 31, TRANSPORT-STACK): the header, the ROW (every
-    // constant the transport declares) and exactly one role's slot table. Several fields are
-    // same-width neighbours (the `DeclStr`s, the flag bytes, the two table pointers) — a swap is
-    // invisible to everything but this.
-    record!(
-        s,
-        TransportDecl,
-        [
-            abi,
-            size,
-            version,
-            key,
-            composes_over,
-            selector_forms,
-            egress_selector_forms,
-            handoff_from,
-            handoff_to,
-            handoff_binding_fact,
-            upgrades_to,
-            handshake_frame_kind,
-            transport_facts,
-            status_namespace,
-            framing,
-            session,
-            session_bound,
-            decodes_payload,
-            unit0_trigger,
-            handshake_max_steps,
-            status_at,
-            _reserved,
-            init,
-            carrier,
-            framer,
-            // The claims (minor 33).
-            claims_ptr,
-            claims_len
-        ]
-    );
-    // One claim of the entry, lowered field for field from `Claim`.
-    record!(
-        s,
-        DeclClaim,
-        [
-            key,
-            selector_forms,
-            transport_facts,
-            status_namespace,
-            session,
-            session_bound,
-            unit0_trigger,
-            status_at,
-            _reserved
-        ]
-    );
-    // One slot per `Carrier` method, named for it: every poll slot is a same-width fn pointer, so a
-    // swap of two is invisible to everything but this.
-    record!(
-        s,
-        CarrierSlots,
-        [
-            size,
-            _reserved,
-            listen,
-            poll_accept,
-            dial,
-            poll_read,
-            poll_write,
-            poll_flush,
-            poll_close,
-            arrival
-        ]
-    );
-    // One slot per `Framer` method, named for it.
-    record!(
-        s,
-        FramerSlots,
-        [
-            size,
-            _reserved,
-            locate,
-            open,
-            ingest,
-            emit,
-            encode_envelope,
-            refusal,
-            close,
-            detach,
-            adopt,
-            // The clock seam.
-            tick
-        ]
-    );
-    record!(s, DeclStrList, [ptr, len]);
-    record!(s, DeclByteList, [ptr, len]);
-    record!(
-        s,
-        WireSettings,
-        [
-            size,
-            version,
-            upstream_http1_only,
-            upstream_h2_prior_knowledge,
-            pool_max_idle_per_host,
-            pool_idle_timeout_secs,
-            request_body_max_bytes,
-            response_body_max_bytes,
-            request_timeout_secs
-        ]
-    );
-    // The host's waker handle: the ONE service the host hands a transport.
-    record!(s, WireWaker, [size, version, wake]);
-    record!(
-        s,
-        WireDest,
-        [size, kind, _reserved, authority, program, args, env, env_len]
-    );
-    record!(s, WireEnvPair, [name, value]);
+    // The connection facts and the borrowed field the connection table carries (`abi::shared`).
     record!(
         s,
         WireConnFacts,
@@ -823,38 +703,6 @@ fn compute_layout() -> String {
             claim
         ]
     );
-    record!(
-        s,
-        WireFramed,
-        [
-            size,
-            end_of_frame,
-            status_class,
-            flags,
-            _reserved,
-            stream,
-            bytes,
-            len,
-            status_code,
-            _reserved2,
-            retry_after_secs
-        ]
-    );
-    record!(
-        s,
-        WireFramerOut,
-        [
-            ctx,
-            send,
-            frame,
-            end,
-            // The host's clock.
-            now_monotonic_nanos,
-            now_unix_nanos,
-            wake_at
-        ]
-    );
-    record!(s, WireBytesOut, [ctx, put]);
     record!(s, WireField, [name, value]);
 
     // THE CONNECTION TABLE: one slot per `Conns` operation, the open descriptor and the
