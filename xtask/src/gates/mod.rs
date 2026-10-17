@@ -18,7 +18,6 @@
 //!    [`Gate::run`] — the trait gives it no other handle — so re-implementing the predicate beside
 //!    the gate, the failure seven of the shell self-tests had, is not something a selftest CAN do.
 
-pub mod abi_freeze;
 pub mod abi_header;
 pub mod abi_location;
 pub mod admin_config_parity;
@@ -3503,14 +3502,6 @@ pub static REGISTRY: &[Registration] = &[
         build: || Box::new(abi_header::AbiHeaderGate),
         summary: "the committed C header (busbar-contract/include/busbar_plugin.h) is exactly what \
                   the abi/ sources render; `cargo xtask abi-header --write` regenerates it",
-    },
-    Registration {
-        name: "abi-freeze",
-        batch: 1,
-        tier: Tier::Fast,
-        build: || Box::new(abi_freeze::AbiFreezeGate),
-        summary: "the condemned busbar-contract abi/hot and abi/cold lanes do not grow (frozen \
-                  until the memory ABI replaces them)",
     },
     Registration {
         name: "contract-stateless",
