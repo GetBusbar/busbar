@@ -1919,3 +1919,31 @@ fn a_login_method_with_no_auth_axis_is_refused_in_1_5_5_words() {
         "the registry's words stay internal: {refusal}"
     );
 }
+
+/// THE KERNEL SERVES NO HOSTED LOGIN PAGE OF ITS OWN (row 159, K3#2; THE DESIGN §8: the hosted
+/// login flow is `busbar-core-oauth2`'s). It mounts `GET /auth/token` declared open and reaches the
+/// flow through the login seam; with no flow registered (this test binary links none) the path
+/// answers 404, never a page, and never the chain's 401. RED before the move: the kernel rendered
+/// the chooser itself (200, HTML).
+#[tokio::test]
+async fn the_kernel_serves_no_hosted_login_page_of_its_own() {
+    crate::snapshot::init();
+    let app = crate::test_support::TestApp::new()
+        .public_url("https://busbar.example.com")
+        .build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let got = reqwest::Client::new()
+        .get(format!("http://{addr}/auth/token"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(got.status().as_u16(), 404, "no flow registered, no page");
+    assert!(
+        !got.text().await.unwrap().contains("<html"),
+        "the kernel renders no login page"
+    );
+    handle.abort();
+}
