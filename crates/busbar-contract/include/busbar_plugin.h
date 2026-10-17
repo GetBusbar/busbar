@@ -852,6 +852,8 @@ typedef uint32_t bb_plane_RefusalCode;
 #define BB_PLANE_RefusalCode_DeadlineExceeded ((bb_plane_RefusalCode)41)
 #define BB_PLANE_RefusalCode_Untrusted ((bb_plane_RefusalCode)42)
 #define BB_PLANE_RefusalCode_CredentialUnavailable ((bb_plane_RefusalCode)43)
+#define BB_PLANE_RefusalCode_MethodNotAllowed ((bb_plane_RefusalCode)44)
+#define BB_PLANE_RefusalCode_Internal ((bb_plane_RefusalCode)45)
 
 /* ---- forward declarations ---- */
 typedef struct bb_mech_AbiStr bb_mech_AbiStr;
