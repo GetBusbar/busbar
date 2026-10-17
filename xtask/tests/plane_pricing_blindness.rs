@@ -5,8 +5,8 @@
 //! DESIGN — the #83 roster's own SPLIT row already says of `busbar-{llm,mcp,a2a,voice}` that
 //! `unit/{admit,approve,meter,route}` and `runtime/metering.rs` "decide admission and price — that
 //! is defs 5/6, not a plane". This file drives it through the dispatcher under
-//! `cargo test --workspace --locked`, beside the pipeline's turnstile, which runs it by name on
-//! every hop.
+//! `cargo test --workspace --locked`, beside ModernCI's `gates` check, which runs it on every
+//! move.
 //!
 //! WHAT THIS PINS, AND WHAT IT DELIBERATELY DOES NOT. It pins the SELFTEST at exit 0 — the proof
 //! that the scanner can still be driven RED by a planted violation of each banned act, and still

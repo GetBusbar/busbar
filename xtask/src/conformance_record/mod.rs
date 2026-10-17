@@ -410,7 +410,7 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
     }
     let runner = rigs::Runner::new(&root, &inputs);
     // The rigs run IN PARALLEL (ARCHITECT 2026-10-02): each is a separate toolchain
-    // (python, node, Docker, cargo) and most of the hop's conformance time is waiting
+    // (python, node, Docker, cargo) and most of the check's conformance time is waiting
     // on one of them; one thread per rig, each in its own work dir.
     let ran: BTreeMap<rigs::Rig, BTreeMap<String, Outcome>> = match &blocked {
         Some(_) => BTreeMap::new(),
@@ -491,8 +491,8 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
         return 3;
     }
     // The manifest `conformance check` reads is rendered from the verdicts just
-    // written: reconcile it here, so producing is ONE command and the turnstile
-    // never has to run a gate to produce (an inheriting rung runs no gate).
+    // written: reconcile it here, so producing is ONE command and the `conformance`
+    // check never has to run a gate to produce.
     if out_dir == root.join("conformance").join("verdicts") {
         match reconcile_manifest(&root) {
             Ok(()) => {
