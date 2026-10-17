@@ -58,11 +58,11 @@ gate --format=tsv columns:
   <id>\\t<PASS|FAIL|SKIP>\\t<title>\\t<detail>       one line per ledger row
   \\t<id>/<cell>\\t<PASS|FAIL>\\t<figure>/<ceiling>\\t<finding(s)>
       under a FAIL row whose detail is a list of coded findings, one line per CELL, indented by
-      one tab: <cell> is the key busbar-release's baseline::cells files a finding under (`busbar
-      × plane`) with its spaces removed (`kind-isolation:law0/busbar×plane`); <figure>/<ceiling>
+      one tab: <cell> is the finding's cell key (`busbar × plane`) with its spaces removed (`kind-isolation:law0/busbar×plane`); <figure>/<ceiling>
       is the cell's measured count over its ceiling (`828/826`), `-` for a side not stated. A row
       measured cell by cell (kind-isolation:law0) prints every cell, the at-ceiling ones PASS.
-      A reader keyed on column 1 (busbar-release's parse_tsv_rows) reads no cell line.";
+      A reader keyed on column 1 reads no cell line; one that trims the line (ModernCI's) reads
+      each cell as a failing id.";
 
 /// The environment variable the legacy release-gate scripts write their ledger through.
 const LEGACY_LEDGER_ENV: &str = "LEDGER";
@@ -226,11 +226,10 @@ pub fn main(args: &[String]) -> i32 {
             Ok(cx) => gates::teller_steps::run_arm(&cx, &args[1..]),
             Err(code) => code,
         },
-        // THE TURNSTILE-FACING PER-SUITE CONFORMANCE ADMISSION COMMAND. Not a gate: it answers a
-        // CLI question (`--suite <id>` / `--musts`) against the manifest `gate conformance-sync`
-        // already reconciled, read-only, so the release pipeline can shell to it directly
-        // (`CONFORMANCE-GATES-PLAN.md` §1.3 — turnstile drives local subprocesses, never GitHub
-        // check-runs).
+        // THE PER-SUITE CONFORMANCE ADMISSION COMMAND. Not a gate: it answers a CLI question
+        // (`--suite <id>` / `--musts`) against the manifest `gate conformance-sync` already
+        // reconciled, read-only, so a branch file's check shells to it directly (the `dev` -> `qa`
+        // move's `conformance` check runs `--musts`; never a GitHub check-run).
         Some("conformance") => match open_ctx() {
             Ok(cx) => conformance_check::main(&cx, &args[1..]),
             Err(code) => code,

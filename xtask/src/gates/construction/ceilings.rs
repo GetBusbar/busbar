@@ -17,8 +17,8 @@ use crate::ctx::Ctx;
 use crate::gates::construction::model::Cfg;
 
 /// THE VARIABLE THAT NAMES THE BASE for a caller that knows better than the derivation (CI
-/// measuring a merge target, a self-test pointing at a planted ref). The release turnstile sets it
-/// to the PR's base sha. An override that does not resolve is RED like any other base that cannot
+/// measuring a merge target, a self-test pointing at a planted ref). ModernCI's branch files set it
+/// (`.ci/default.yaml`: the move's target sha). An override that does not resolve is RED like any other base that cannot
 /// be established — it is not a way to turn a base comparison off. See [`base_ref`].
 pub const BASE_ENV: &str = "XTASK_CEILING_BASE";
 

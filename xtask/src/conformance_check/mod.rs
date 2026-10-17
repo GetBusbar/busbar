@@ -1,9 +1,8 @@
-//! `cargo xtask conformance check` — the TURNSTILE-FACING per-suite conformance admission command.
+//! `cargo xtask conformance check` — the CI-FACING per-suite conformance admission command.
 //!
 //! This is the one command the pipeline shells to: ModernCI's `conformance` check on the
-//! `predev` -> `dev` move (`.ci/predev.yaml`) runs it over a busbar checkout, as a local subprocess,
-//! never a GitHub check-run (`CONFORMANCE-GATES-PLAN.md` §1.3; the busbar-release turnstile that ran
-//! it before is deleted). It answers exactly one question
+//! `dev` -> `qa` move (`.ci/dev.yaml`) runs it over a busbar checkout, as a local subprocess, never
+//! a GitHub check-run (`CONFORMANCE-GATES-PLAN.md` §1.3). It answers exactly one question
 //! per invocation — "is this suite a fresh green, right now, on this commit" — and answers it
 //! deny-safe: every error path (missing manifest, unparseable manifest, unregistered suite id,
 //! missing/absent verdict commit, a non-pass status, a stale pass) is a REFUSAL, never a silent 0.
@@ -16,7 +15,7 @@
 //!
 //! ## The MUST set
 //!
-//! `--musts` (and its alias `--suite all`) is the single call the turnstile board makes to fold
+//! `--musts` (and its alias `--suite all`) is the single call the `conformance` check makes to fold
 //! every registered suite into one admit/deny fact. The MUST set is not a new registry field: the
 //! owner's final, superseding ruling is that **every suite in the registry is a dev-green MUST** —
 //! `CONFORMANCE-MATRIX-RULING.md` lines 107-116 ("OWNER RE-SCOPE ... Supersedes all earlier

@@ -64,7 +64,7 @@ pub struct Row {
     pub cells: Vec<Cell>,
 }
 
-/// One cell of a row: the key busbar-release's `baseline::cells` files a finding under (the words
+/// One cell of a row: the finding's cell key (the words
 /// after the finding's code up to its first count, `busbar × plane`), the cell's own verdict, and
 /// its measured figure against its ceiling, so a rise inside a cell already off its row is visible
 /// on that cell's line.

@@ -441,7 +441,7 @@ fn an_exemption_covers_one_identifier_in_one_file_and_nothing_else() {
 }
 
 /// The gate this file calls BLOCKING, by the two facts that make it one: its source is on disk, and
-/// the registry lists it (the pipeline's turnstile runs every registered gate on every hop, scan and
+/// the registry lists it (ModernCI's `gates` check runs every registered gate on every move, scan and
 /// selftest both). A twin that is absent turns "belt-and-suspenders" into the only belt.
 const BLOCKING_TWIN_SOURCE: &str = "xtask/src/gates/plane_transport_neutrality.rs";
 const BLOCKING_TWIN_REGISTRATION: &str = "name: \"plane-transport-neutrality\"";
