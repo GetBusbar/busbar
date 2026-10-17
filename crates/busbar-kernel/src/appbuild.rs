@@ -2083,13 +2083,6 @@ pub fn build_app_from_config(
         // runtime accessor, which downcasts that slot inside the plane.
         plane_slots,
         oauth_as: oauth_as_plane.clone(),
-        // CARRIED ACROSS THE APPLY for the same reason, and it is the same class of mistake: an
-        // approval already spent is evidence, not intent, and a config apply that forgot it would
-        // hand every outstanding confirmation back to whoever still holds it.
-        spent_token_ledger: prior.map_or_else(
-            || Arc::new(crate::plane::approvals::SpentTokenLedger::new()),
-            |p| p.spent_token_ledger.clone(),
-        ),
         // CARRIED ACROSS THE APPLY, and here the reason is sharper than for the two above: the
         // durable sink is attached to this instance once at boot, so rebuilding it on an apply would
         // silently detach it and every later quarantine would stop being written down.

@@ -1991,7 +1991,6 @@ impl TestApp {
             // production, and `build()` names no slot key or plane runtime type.
             plane_slots,
             plane_sections: self.plane_sections,
-            spent_token_ledger: Default::default(),
             demotion_record: Default::default(),
             auth_scope_caps: std::collections::HashMap::new(),
             role_bindings: self.role_bindings.unwrap_or_default(),
@@ -2049,7 +2048,6 @@ impl TestApp {
         if let Some(durable) = plane_durable_store {
             // Narrowed to the plane surface exactly as boot does — these are plane sinks.
             let plane_store = crate::plane::store::PlaneStoreView::narrow(durable);
-            app.spent_token_ledger.set_sink(plane_store.clone());
             app.demotion_record.set_sink(plane_store);
         }
         // Register the process-wide admin `audit` seam stream ONCE (no-sink), the way the call/task

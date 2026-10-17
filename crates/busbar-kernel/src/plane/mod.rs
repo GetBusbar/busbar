@@ -90,7 +90,6 @@
 // sites, is what states whether a member of this module is reachable.
 #![cfg_attr(not(test), allow(dead_code))]
 
-pub mod approvals;
 pub mod config;
 pub mod observe;
 pub(crate) mod quarantine;
