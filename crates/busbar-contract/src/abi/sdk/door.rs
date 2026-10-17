@@ -457,6 +457,57 @@ unsafe fn enter<S: Entry, H: CaptureHome>(
     }
 }
 
+/// THE UNSERVED SLOT: what [`plugin_door!`](crate::plugin_door) wires for every kind op a door
+/// names no slot for. It answers REFUSED ("not served", each kind op's docs say what the host
+/// reads into that), writing nothing but `outcome` into the host's `out` head; it reads no
+/// instance and no `in` beyond the null check. So a kind op appended to a kind's table is served
+/// as REFUSED by every door written before it, and no slot is ever NULL.
+extern "C" fn unserved(_: *mut c_void, input: *const c_void, out: *mut c_void) -> RawOutcome {
+    if out.is_null() {
+        return RawOutcome::of(Outcome::Fault);
+    }
+    let out_head = out.cast::<OutHead>();
+    // SAFETY: a non-NULL host `out` leads with an `OutHead` (the call convention).
+    let host_out = unsafe { ptr::addr_of!((*out_head).size).read_unaligned() } as usize;
+    if host_out < size_of::<OutHead>() {
+        return RawOutcome::of(Outcome::Fault);
+    }
+    if input.is_null() {
+        // SAFETY: the host's `out` holds at least a whole `OutHead` (checked above).
+        unsafe { write_fault(out_head) };
+        return RawOutcome::of(Outcome::Fault);
+    }
+    // SAFETY: as above.
+    unsafe {
+        ptr::addr_of_mut!((*out_head).outcome).write_unaligned(RawOutcome::of(Outcome::Refused));
+    }
+    RawOutcome::of(Outcome::Refused)
+}
+
+/// A `T` table with every slot the [`unserved`] slot (its head is the caller's to replace): the
+/// base [`plugin_door!`](crate::plugin_door) fills the kind ops a door does not name from.
+#[must_use]
+pub const fn unserved_table<T: KindOps>() -> T {
+    let mut t = MaybeUninit::<T>::zeroed();
+    let slots = (size_of::<T>() - offset_of!(OpsHead, validate)) / size_of::<Option<Op>>();
+    let first = t
+        .as_mut_ptr()
+        .cast::<u8>()
+        .wrapping_add(offset_of!(OpsHead, validate))
+        .cast::<Option<Op>>();
+    let mut i = 0;
+    while i < slots {
+        // SAFETY: `T: KindOps` is `#[repr(C)]` with `head: OpsHead` first and only `Option<Op>`
+        // slots after the head's `size`/`slots`, contiguous (the SLOT LAYOUT rule), so slot `i`
+        // lies inside `t`.
+        unsafe { first.wrapping_add(i).write_unaligned(Some(unserved as Op)) };
+        i += 1;
+    }
+    // SAFETY: every byte after the head's two `u32`s is now a valid `Option<Op>`, and the head's
+    // two `u32`s are zero: every field of `T` holds a valid value.
+    unsafe { t.assume_init() }
+}
+
 /// Write `outcome = FAULT` into a host `out` head, and nothing else.
 ///
 /// # Safety
@@ -635,8 +686,9 @@ pub const fn door<T: KindOps>(
 ///   refuses the load, so all nine are named.
 /// * `kind_ops` — one [`Slot`] per kind op, by the table's field name; its index is read off the
 ///   field's offset (the SLOT LAYOUT rule), and its `in`/`out` must be the ones the kind states for
-///   that index ([`KindSlot`]; a mismatch does not compile). Every field must be named (a struct
-///   literal).
+///   that index ([`KindSlot`]; a mismatch does not compile). A kind op left unnamed is the SDK's
+///   unserved slot, which answers REFUSED (each kind op's docs say what the host reads into that),
+///   so a door written before a kind op was appended to its table still builds.
 /// * `lifecycle: life(L)` — instead of the nine: the SDK's generic lifecycle slots over the kind's
 ///   [`Life`](crate::abi::sdk::life::Life) `L` (`abi::sdk::life`), every one a
 ///   [`Safe`](crate::abi::sdk::safe::Safe) slot over `Held<L>`.
@@ -768,6 +820,9 @@ macro_rules! plugin_door {
             }
             const __STATEMENT: &$crate::abi::mechanism::door::Statement =
                 &__sdk::stamp::<__Ops>($statement);
+            // A kind op the door names no slot for is the SDK's unserved slot (REFUSED), so a door
+            // written before a kind op was appended to its table still builds and states it.
+            #[allow(clippy::needless_update)]
             const __OPS: &__Ops = &__Ops {
                 head: __sdk::ops_head::<__Ops>(
                     __sdk::kind_op::<__Life, $validate, __Capture, { __lc::slot::VALIDATE }>(),
@@ -783,6 +838,7 @@ macro_rules! plugin_door {
                 $($(
                     $field: __sdk::kind_op::<__Ops, $slot, __Capture, { __sdk::slot_at(::core::mem::offset_of!(__Ops, $field)) }>(),
                 )*)?
+                ..__sdk::unserved_table::<__Ops>()
             };
             const __DOOR: &$crate::abi::mechanism::door::Door = &__sdk::door::<__Ops>(
                 __STATEMENT,

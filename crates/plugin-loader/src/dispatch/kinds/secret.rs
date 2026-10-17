@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! THE SECRET KIND: `abi/secret/`. `resolve` is checked by `check_resolve`.
+//! THE SECRET KIND: `abi/secret/`. `resolve` is checked by `check_resolve`; `check` answers an
+//! `OutHead` alone and states no rule beyond the mechanism's (its refusal text is judged where the
+//! host renders it, `check_validate_refusal`).
 
 use busbar_contract::abi::mechanism::call::Outcome;
 use busbar_contract::abi::mechanism::check::Fault;
 use busbar_contract::abi::mechanism::KindCode;
-use busbar_contract::abi::secret::{self, slot, validate, ResolveIn, ResolveOut};
+use busbar_contract::abi::secret::{self, slot, validate, CheckIn, ResolveIn, ResolveOut};
 
 use crate::dispatch::{lifecycle_name, Answer, InFrame, Kind, OutFrame};
 
@@ -16,6 +18,7 @@ pub struct Secret;
 
 // SAFETY: `#[repr(C)]` in `abi/secret/`, each leading with its head; host buffers only.
 unsafe impl InFrame for ResolveIn {}
+unsafe impl InFrame for CheckIn {}
 unsafe impl OutFrame for ResolveOut {}
 
 impl Kind for Secret {
@@ -26,6 +29,7 @@ impl Kind for Secret {
     fn op_name(s: u32) -> &'static str {
         match s {
             slot::RESOLVE => "resolve",
+            slot::CHECK => "check",
             _ => lifecycle_name(s),
         }
     }
