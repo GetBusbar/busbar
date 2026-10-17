@@ -4060,6 +4060,7 @@ async fn serve_configured(
             journal: Arc::clone(&post) as Arc<dyn busbar_kernel_egress::ports::Journal>,
         }),
         None,
+        &busbar_contract::config_time::ConfigScope::config_time(),
     )?;
     let live = Arc::clone(&served.planes[0].live);
     served.post = Some(Arc::clone(&post));
