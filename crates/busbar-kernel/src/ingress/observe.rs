@@ -23,7 +23,7 @@
 //! release's duplicated hash chains and duplicated SSRF guards.
 //!
 //! So this is a LAYER, and it belongs to the MOUNT. That is the argument
-//! [`super::PlaneAdmission`] already makes for keeping the RFC 8707 audience check beside the door
+//! [`crate::plane::PlaneAdmission`] already makes for keeping the RFC 8707 audience check beside the door
 //! instead of in a handler: a property of the door is inherited by every path behind it, and a
 //! handler added later cannot forget it. A refusal the auth middleware issues before any handler
 //! runs is counted here too, which is the case an operator most needs to see and the one a
@@ -34,7 +34,7 @@
 //! Two questions could have been answered by comparing planes, and both are answered by the spine
 //! instead:
 //!
-//! * *Which dialect was spoken?* — [`super::PlaneDispatch::wire_format_of`], off the CLAIM the path
+//! * *Which dialect was spoken?* — [`crate::plane::PlaneDispatch::wire_format_of`], off the CLAIM the path
 //!   matched. A plane whose binding has a door of its own is labelled here with that binding's name
 //!   whatever else the plane speaks, because the door declares what is spoken at it. The fallback
 //!   plane still cannot be labelled here: not "it is the fallback plane" by comparison, but "it has
@@ -43,7 +43,7 @@
 //!   the response it is labelling. Needed as well as the claim, because two of one plane's three
 //!   bindings can SHARE one door: the claim can say `jsonrpc` there, and only the reader knows
 //!   whether the request line or a body member named the operation. See below.
-//! * *Which plane is this?* — [`super::PlaneDispatch::mounted_plane_of`], off the mount table the
+//! * *Which plane is this?* — [`crate::plane::PlaneDispatch::mounted_plane_of`], off the mount table the
 //!   router was built from.
 //!
 //! Add a fourth plane and it is observed by this file without an edit.
@@ -87,9 +87,8 @@ use std::time::Instant;
 // A response extension rather than a request one, because the answer is what carries the fact and
 // the boundary reads it after the handler has run.
 //
-// The type itself is the neutral [`busbar_kernel::plane::observe::Counted`], re-exported here so
-// a plane crate (`busbar_kernel::plane::observe::Counted`) and this middleware name the SAME type
-// across the extraction seam.
+// The type itself is [`Counted`], below: a plane crate (`busbar_kernel::ingress::observe::Counted`)
+// and this middleware name the SAME type across the extraction seam.
 
 /// Emit `busbar_plane_requests_total` + `busbar_plane_request_duration_seconds` for one request
 /// served by a MOUNTED plane, labelled with the plane it arrived on.
@@ -115,7 +114,7 @@ pub(crate) async fn observe(
     // plane request paid across all workers.
     let app = handle.snapshot();
     // The mount table this router was built from decides, so an unmounted plane cannot be counted
-    // and a sibling path (`/mcpx` beside a `/mcp` mount) cannot be attributed to a plane whose
+    // and a sibling path (`/rpcx` beside a `/rpc` mount) cannot be attributed to a plane whose
     // grants are inadmissible everywhere else.
     let path = req.uri().path();
     let plane = app.planes.mounted_plane_of(path);
@@ -160,13 +159,12 @@ pub(crate) async fn observe(
     resp
 }
 
-// ==== merged from busbar-substrate (W4.b P2 engine drain) ====
 /// A MARKER A PLANE'S HANDLER PUTS ON A RESPONSE IT HAS ALREADY LABELLED.
 ///
 /// It carries nothing, and carrying nothing is the point: this is not a channel for the handler to
 /// pass its labels up through, which would put the emit back in one place and the label vocabulary
 /// in another. The handler emits its own series with the binding only it knows, and this says so, so
-/// core's `plane::observe` can cover exactly the requests no handler saw without counting anything
+/// core's `ingress::observe` can cover exactly the requests no handler saw without counting anything
 /// twice.
 ///
 /// A response extension rather than a request one, because the answer is what carries the fact and
