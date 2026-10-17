@@ -10,11 +10,18 @@
 //! `contract-stateless`):
 //!
 //! * **`plugin-path`** — a Rust path into a plugin crate (`busbar_plane_llm::…`) other than
-//!   `<crate>::door`.
+//!   `<crate>::door`. The plugins are every one the binary links: workspace members AND the
+//!   git-pinned crates ([`one_abi::members_with_pinned`]), each under its package's identifier and
+//!   under every key a manifest renames it to. The composition root's generated table counts too
+//!   (BUSBAR-1.6.0.md, gate `door-only`: "`linked_gen.rs` names only `<crate>::door`"): every
+//!   path `linked_gen.rs` emits off an entry placeholder (`{e}::KEY`) and every entry module the
+//!   root's manifest hands it (`[package.metadata.busbar.linked-entry]`, `linked-declares`).
 //! * **`static-seam`** — a `static` whose type holds a function pointer, a `Fn` trait or a trait
-//!   object: a seam another crate installs Rust code into, bypassing every door. Exactly two are
-//!   exempt, the oauth2 and admin cleanliness seams the owner ruled core
-//!   ([`EXEMPT_SEAMS`]); a third is a finding.
+//!   object: a seam another crate installs Rust code into, bypassing every door. The type is read
+//!   through the crate's own declarations: an alias, struct, enum or union the crate declares
+//!   whose definition holds code makes every type naming it hold code. Exactly two are exempt, the
+//!   oauth2 and admin cleanliness seams the owner ruled core ([`EXEMPT_SEAMS`]); a third is a
+//!   finding.
 //!
 //! REPORT-ONLY, armed at today's count as the drain-only ledger `qa/door-only.toml`.
 
@@ -22,6 +29,7 @@ use crate::ctx::{Ctx, Overlay};
 use crate::gates::one_abi::{self, Finding, Spec};
 use crate::gates::{Gate, Report};
 use crate::ledger::Verdict;
+use std::collections::BTreeSet;
 
 pub const ROW_PATH: &str = "door-only:plugin-path";
 pub const ROW_SEAM: &str = "door-only:static-seam";
@@ -84,24 +92,190 @@ fn static_decl(counted: &str) -> Option<(String, String)> {
     None
 }
 
-/// Does a static's declared type hold code: a fn pointer, a `Fn` trait or a trait object?
-fn holds_code(ty: &str) -> bool {
-    one_abi::has_word(ty, "fn")
-        || one_abi::has_word(ty, "Fn")
-        || one_abi::has_word(ty, "FnMut")
-        || one_abi::has_word(ty, "FnOnce")
-        || one_abi::has_word(ty, "dyn")
+/// Does a type hold code: a fn pointer, a `Fn` trait or a trait object, spelled out or through one
+/// of `names` (the crate's declarations that hold code, [`code_names`])?
+fn holds_code(ty: &str, names: &BTreeSet<String>) -> bool {
+    ["fn", "Fn", "FnMut", "FnOnce", "dyn"]
+        .iter()
+        .any(|w| one_abi::has_word(ty, w))
+        || names.iter().any(|n| one_abi::has_word(ty, n))
+}
+
+fn is_ident(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Every `type`, `struct`, `enum` and `union` a blanked source declares, as (name, definition):
+/// an alias's right-hand side, an aggregate's generics, bounds and fields.
+fn declarations(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for kw in ["type", "struct", "enum", "union"] {
+        let mut from = 0;
+        while let Some(i) = text[from..].find(kw) {
+            let at = from + i;
+            from = at + kw.len();
+            if text[..at].chars().next_back().is_some_and(is_ident)
+                || !text[from..].starts_with(char::is_whitespace)
+            {
+                continue;
+            }
+            let rest = text[from..].trim_start();
+            let name: String = rest.chars().take_while(|c| is_ident(*c)).collect();
+            if name.is_empty() {
+                continue;
+            }
+            let body = &rest[name.len()..];
+            // The definition runs to the `;` (an alias, a tuple or unit struct) or through the
+            // braces (a struct, enum or union body) at bracket depth 0.
+            let mut depth = 0i32;
+            let mut end = body.len();
+            for (j, c) in body.char_indices() {
+                match c {
+                    '(' | '[' => depth += 1,
+                    ')' | ']' => depth -= 1,
+                    ';' if depth == 0 => {
+                        end = j;
+                        break;
+                    }
+                    '{' if depth == 0 && kw != "type" => {
+                        let mut braces = 0i32;
+                        end = body.len();
+                        for (k, d) in body[j..].char_indices() {
+                            match d {
+                                '{' => braces += 1,
+                                '}' => {
+                                    braces -= 1;
+                                    if braces == 0 {
+                                        end = j + k;
+                                        break;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            out.push((name, body[..end].to_string()));
+        }
+    }
+    out
+}
+
+/// THE CRATE'S DECLARATIONS THAT HOLD CODE (XF#14), to a fixpoint: an alias of a fn pointer, a
+/// struct with a `Box<dyn …>` field, and every declaration naming one of those. A seam spelled
+/// `OnceLock<Drive>` holds the fn pointer `Drive` aliases as surely as `OnceLock<fn(..)>` does.
+/// Read within the crate: a name the crate does not declare is not resolved.
+fn code_names(texts: &[String]) -> BTreeSet<String> {
+    let decls: Vec<(String, String)> = texts.iter().flat_map(|t| declarations(t)).collect();
+    let mut names = BTreeSet::new();
+    loop {
+        let fresh: Vec<String> = decls
+            .iter()
+            .filter(|(n, def)| !names.contains(n) && holds_code(def, &names))
+            .map(|(n, _)| n.clone())
+            .collect();
+        if fresh.is_empty() {
+            return names;
+        }
+        names.extend(fresh);
+    }
+}
+
+/// The paths a line of `linked_gen.rs` emits off an entry placeholder (`{e}::KEY`, `{}::linked`,
+/// `{e}::{item}`) whose next segment is not `door`, each as the placeholder text it was read as.
+/// A placeholder that continues a path (`crate::root::{module}::…`) names no entry, and `{{` is a
+/// literal brace.
+fn emitted_not_door(code: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = code[from..].find("}::") {
+        let close = from + i;
+        from = close + 3;
+        let Some(open) = code[..close].rfind('{') else {
+            continue;
+        };
+        let inner = &code[open + 1..close];
+        if inner.contains('}') || code[..open].ends_with('{') || code[..open].ends_with("::") {
+            continue;
+        }
+        let after = &code[close + 3..];
+        let tail: String = if after.starts_with('{') {
+            after
+                .chars()
+                .take_while(|c| *c != '}')
+                .chain(['}'])
+                .collect()
+        } else {
+            after.chars().take_while(|c| is_ident(*c)).collect()
+        };
+        if tail != "door" {
+            out.push(format!("{{{inner}}}::{tail}"));
+        }
+    }
+    out
+}
+
+/// The tables of the root's manifest whose values `linked_gen.rs` emits as paths: each linked
+/// row's entry module, and the item that holds its declared metadata.
+const ENTRY_TABLES: &[&str] = &[
+    "package.metadata.busbar.linked-entry",
+    "package.metadata.busbar.linked-declares",
+];
+
+/// Each (line, path) an [`ENTRY_TABLES`] row of a manifest states.
+fn entry_paths(manifest: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for (i, raw) in manifest.lines().enumerate() {
+        let t = raw.trim();
+        if let Some(h) = t.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            inside = ENTRY_TABLES.contains(&h.trim());
+            continue;
+        }
+        if !inside || t.starts_with('#') {
+            continue;
+        }
+        if let Some((_, v)) = t.split_once('=') {
+            let v = v.trim().trim_matches('"');
+            if !v.is_empty() {
+                out.push((i + 1, v.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// Does `path` name a plugin (an identifier in `needles`) at its head and go on to a segment
+/// other than `door`?
+fn path_around_door(path: &str, needles: &BTreeSet<String>) -> bool {
+    path.split_once("::").is_some_and(|(head, rest)| {
+        needles.contains(head)
+            && rest
+                .chars()
+                .take_while(|c| is_ident(*c))
+                .collect::<String>()
+                != "door"
+    })
 }
 
 pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
     let mut findings = Vec::new();
     let mut errors = Vec::new();
-    let members = match one_abi::members(cx) {
+    // EVERY PLUGIN THE BINARY LINKS, the git-pinned ones included (XF#15): a plugin that left for
+    // its own repo is still reached through the same Rust paths.
+    let members = match one_abi::members_with_pinned(cx) {
         Ok(m) => m,
         Err(e) => return (findings, vec![e]),
     };
+    let renames = match cx.read("Cargo.toml") {
+        Ok(root) => crate::manifest::workspace_renames(&root),
+        Err(e) => return (findings, vec![format!("Cargo.toml: {e}")]),
+    };
     let closure = one_abi::binary_closure(&members);
-    let plugin_idents: Vec<String> = members
+    let plugin_idents: BTreeSet<String> = members
         .iter()
         .filter(|m| one_abi::is_plugin_crate(&m.name))
         .map(|m| m.name.replace('-', "_"))
@@ -121,6 +295,16 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
         ));
     }
     for m in scope {
+        // THE WORDS THIS CRATE'S SOURCE SPELLS A PLUGIN BY: every plugin's identifier, and the key
+        // of each edge this manifest (or the workspace table it inherits) renames to a plugin.
+        let mut needles = plugin_idents.clone();
+        let mut decls = m.decls.clone();
+        crate::manifest::resolve_inherited(&mut decls, &renames);
+        for d in &decls {
+            if one_abi::is_plugin_crate(&d.pkg) {
+                needles.insert(d.key.replace('-', "_"));
+            }
+        }
         let files = match one_abi::rs_files(cx, &m.dir) {
             Ok(f) => f,
             Err(e) => {
@@ -128,12 +312,44 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
                 continue;
             }
         };
-        for f in &files {
-            let rel = f.rel_str();
+        let read: Vec<(String, Vec<crate::scan::ScopeLine>)> = files
+            .iter()
+            .map(|f| (f.rel_str(), one_abi::production(&f.text)))
+            .collect();
+        let names = code_names(
+            &read
+                .iter()
+                .map(|(_, lines)| {
+                    lines
+                        .iter()
+                        .map(|l| l.counted.as_str())
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                })
+                .collect::<Vec<_>>(),
+        );
+        // THE COMPOSITION ROOT'S GENERATED TABLE: its entry modules, read off the manifest.
+        let linked_gen = format!("{}/src/linked_gen.rs", m.dir);
+        if read.iter().any(|(rel, _)| *rel == linked_gen) {
+            let manifest = m.manifest_rel();
+            for (no, path) in entry_paths(&m.manifest) {
+                if path_around_door(&path, &needles) {
+                    findings.push(Finding::new(ROW_PATH, &manifest, path, no));
+                }
+            }
+        }
+        for (rel, lines) in &read {
+            let rel = rel.clone();
+            if rel == linked_gen {
+                for sl in lines {
+                    for item in emitted_not_door(&sl.code) {
+                        findings.push(Finding::new(ROW_PATH, &rel, item, sl.no));
+                    }
+                }
+            }
             // A multi-line static's type runs onto the next lines; read up to its `=` or `;`.
-            let lines = one_abi::production(&f.text);
             for (idx, sl) in lines.iter().enumerate() {
-                for p in &plugin_idents {
+                for p in &needles {
                     let needle = format!("{p}::");
                     let mut from = 0;
                     while let Some(i) = sl.counted[from..].find(&needle) {
@@ -173,7 +389,7 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
                             break;
                         }
                     }
-                    if holds_code(&ty) {
+                    if holds_code(&ty, &names) {
                         findings.push(Finding::new(ROW_SEAM, &rel, name, sl.no));
                     }
                 }
