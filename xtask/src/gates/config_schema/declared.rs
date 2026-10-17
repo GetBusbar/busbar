@@ -36,7 +36,7 @@ const DOOR_SECTIONS: &str = ": &[Section] =";
 const CORE_OWNED: &str = "CORE_OWNED_CONCRETE_SECTIONS";
 /// Where the kernel names the plane whose beside section is THE endpoint door
 /// (`impl EndpointSection { const OWNER … }`).
-const OWNER_HOME: &str = "crates/busbar-kernel/src/plane/config.rs";
+const OWNER_HOME: &str = "crates/busbar-kernel/src/config/plane_sections.rs";
 
 /// What the plane declarations declare, ready for the lift reader.
 #[derive(Debug, Default, Clone)]
