@@ -57,10 +57,12 @@ pub const ROW_SUBJECT: &str = "hot-path-perf:vtable-vs-direct";
 pub const ROW_P50: &str = "hot-path-perf:delta-p50-under-1us";
 pub const ROW_P99: &str = "hot-path-perf:delta-p99-under-1us";
 pub const ROW_PER_TOKEN: &str = "hot-path-perf:per-token-host-calls-zero";
+pub const ROW_DOOR: &str = "hot-path-perf:door-crossing-under-1us";
 
 const BENCH_REL: &str = "crates/busbar-kernel/benches/plane_host_vtable_perf.rs";
 const MANIFEST_REL: &str = "crates/busbar-kernel/Cargo.toml";
 const BENCH_NAME: &str = "plane_host_vtable_perf";
+const DOOR_REL: &str = "crates/busbar/tests/door_crossing_perf.rs";
 
 /// One text claim: the row it answers, and the CLAUSES the instrument must ALL carry for it. A
 /// clause is a token sequence (see [`clause_tokens`]) matched against the bench's lexed code, so it
@@ -115,6 +117,28 @@ const CLAIMS: &[Claim] = &[
         bad: "the instrument no longer asserts the per-token host-call counter is zero",
     },
 ];
+
+/// The door lane's perf witness: every request-path op of the contract table crossed through the
+/// one dispatcher against its slot body called directly, the delta judged under the same `1_000`ns
+/// at p50 and at p99, the judge itself proven able to fail, and the verdict asserted.
+const DOOR_CLAIM: Claim = Claim {
+    row: ROW_DOOR,
+    clauses: &[
+        "CONTRACTS.iter().filter(|c| c.request_path)",
+        "let called = plugin.call(s, frame);",
+        "const DOOR_BUDGET_NANOS: u64 = 1_000;",
+        "let p50_delta_nanos = door_p50.saturating_sub(direct_p50);",
+        "let p99_delta_nanos = door_p99.saturating_sub(direct_p99);",
+        "if p50_delta_nanos >= DOOR_BUDGET_NANOS {",
+        "if p99_delta_nanos >= DOOR_BUDGET_NANOS {",
+        "over.extend(over_budget(s, direct, door));",
+        "assert!(over.is_empty(),",
+        "assert!(caught_p50 && caught_p99,",
+    ],
+    ok: "the door witness asserts every request-path crossing is under 1µs at p50 and p99",
+    bad:
+        "the door witness no longer asserts every request-path crossing is under 1µs at p50 and p99",
+};
 
 /// Split a clause into the tokens `proc_macro2` would lex it into: an identifier/number run is one
 /// token, a `"…"` string is one token, and every other non-space character is one punct or
@@ -453,6 +477,21 @@ fn text_cases<'a>(cx: &'a Ctx, gate: &'a dyn Gate, report: &mut Report<'a>) {
                 &[*clause],
             ));
         }
+    }
+
+    // One RED plant per clause of the door lane's witness, the lane the request path crosses.
+    let door = cx.read(DOOR_REL).unwrap_or_default();
+    for clause in DOOR_CLAIM.clauses {
+        let mut ov = Overlay::new();
+        ov.set(DOOR_REL, strike_clause(&door, clause));
+        report.push(prove_red(
+            cx,
+            gate,
+            format!("a door perf witness that drops `{clause}` is RED"),
+            &[ROW_DOOR],
+            ov,
+            &[*clause],
+        ));
     }
 }
 
