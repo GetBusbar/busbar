@@ -190,9 +190,12 @@ pub fn scan(cx: &Ctx) -> (Vec<Finding>, Vec<String>) {
         };
         for f in &files {
             let rel = f.rel_str();
+            // The literal text of every line from the file-wide lexer, so a word on the inner
+            // line of a continued literal is read like any other.
+            let runs = crate::scan::literal_runs(&f.text);
             for sl in one_abi::production(&f.text) {
-                for lit in one_abi::literals(&sl) {
-                    for w in words_in(&lit) {
+                for lit in runs.get(sl.no - 1).into_iter().flatten() {
+                    for w in words_in(lit) {
                         findings.push(Finding::new(ROW_LITERAL, &rel, w, sl.no));
                     }
                 }

@@ -608,23 +608,3 @@ pub fn has_word(hay: &str, word: &str) -> bool {
     }
     false
 }
-
-/// The string literal bodies on a line, read off the raw line at the positions the blanker kept
-/// the quotes at. A literal that runs past the end of the line is read to the end of the line.
-pub fn literals(sl: &ScopeLine) -> Vec<String> {
-    let c: Vec<char> = sl.counted.chars().collect();
-    let r: Vec<char> = sl.raw.chars().collect();
-    if c.len() != r.len() {
-        return Vec::new();
-    }
-    let quotes: Vec<usize> = (0..c.len()).filter(|&i| c[i] == '"').collect();
-    let mut out = Vec::new();
-    let mut i = 0;
-    while i < quotes.len() {
-        let open = quotes[i];
-        let close = quotes.get(i + 1).copied().unwrap_or(c.len());
-        out.push(r[open + 1..close].iter().collect());
-        i += 2;
-    }
-    out
-}
