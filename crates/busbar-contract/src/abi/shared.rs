@@ -4,9 +4,8 @@
 //! THE SHARED SHAPES: the borrowed string and field, the connection facts and the closed
 //! vocabularies as bytes that the memory ABI's connection table (`abi::host::conn`) carries. Their
 //! one home is here, under `abi/` and outside the condemned HOT and COLD lanes (`BUSBAR-1.6.0.md`
-//! THE DESIGN, the plugin ABI: the memory ABI alone); the HOT transport lane, until it is
-//! deleted, names them through re-exports (`abi::hot::decl::DeclStr`,
-//! `abi::hot::transport::{code, WireConnFacts, WireField}`), never a definition of its own.
+//! THE DESIGN, the plugin ABI: the memory ABI alone); the HOT plane lane, until it is deleted,
+//! names `DeclStr` through a re-export (`abi::hot::decl::DeclStr`), never a definition of its own.
 
 /// A borrowed UTF-8 range — the `(ptr, len)` pair a declared vocabulary field spells out
 /// inline, as one `#[repr(C)]` value so a list of them can be borrowed too. A NULL `ptr` is the
