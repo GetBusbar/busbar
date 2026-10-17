@@ -101,22 +101,17 @@
 # AN EDGE EXEMPTION DOES NOT SWALLOW THE OTHER EDGES A CRATE TAKES. A crate reaching one offender
 # through an exempted edge AND through a second, separately-reviewed one keeps its `[[allow]]` row
 # for the second — the exemption is added to that row's `via` list, not substituted for it, so the
-# two compose and the second edge still has to be defended here. That is why the llm and streaming
-# rows below still exist and now name `getrandom` alone: `getrandom -> libc` is a DIFFERENT edge
-# with a different argument, and the ruling above is explicit that it is NOT ruled on.
+# two compose and the second edge still has to be defended here. That is why the llm row below still
+# exists and now names `getrandom` alone: `getrandom -> libc` is a DIFFERENT edge with a different
+# argument, and the ruling above is explicit that it is NOT ruled on. (The streaming row went with
+# its crate's last route to `getrandom`: the plane is pinned from its own repo (row 106), and a
+# pinned crate's dev edge to the loader is no edge cargo compiles here.)
 
 [[allow]]
 crate = "busbar-plane-llm"
 dep = "libc"
 via = "getrandom"
 reason = "THIS ROW NOW COVERS ONE EDGE: getrandom -> libc, which is NOT ruled on. The plane's other route to libc, cpufeatures, is settled tree-wide by the (dep = libc, via = cpufeatures) edge exemption in qa/construction.toml and is no longer argued here; this row's remaining reasoning is preserved verbatim from the reviewed original. Context that still holds: the third, UNREAL route (sonic_rs -> faststr -> rkyv -> uuid_1 -> getrandom -> libc) was closed by the xtask/denylist.rs phantom-optional-dependency fix (edge_is_active) -- faststr's rkyv dependency is optional and its 'rkyv' feature is active nowhere in the workspace, confirmed against the real rustc invocation for busbar-plane-llm, which carries no --cfg feature=\"rkyv\" and no --extern rkyv. getrandom uses libc only to issue the getentropy(2)/getrandom(2) syscall (busbar-llm-codec's own direct `getrandom = { workspace = true }` dependency, drawn by synth_rng.rs's thread-local entropy pool); this is a syscall wrapper, not a socket/file/process primitive. This edge is NOT yet what BUSBAR-1.6.0.md THE DESIGN, §2 wants of a pure plane (entropy should arrive through Ctx, not be drawn by the codec itself) -- verified that busbar_llm_codec::write_error_envelope, the one codec entry point busbar-plane-llm calls that touches entropy, unconditionally calls the anthropic writer's error_envelope() (which mints via synth_rng::fill_entropy/getrandom) even on the call path where the caller supplies its own entropy and the drawn value is immediately overwritten and discarded. Feature-gating that draw (an `os-entropy` feature, default-on for busbar-llm/the engine, off for the plane) needs a source change in crates/busbar-llm-codec/src/{lib.rs,synth_rng.rs,anthropic/writer.rs} outside this waiver's file scope, AND would not by itself clear this xtask report: `cargo metadata`'s resolve graph unifies features across the WHOLE workspace (confirmed: busbar_llm_codec's single metadata node already shows `test-support` active workspace-wide even though busbar-plane-llm's own [dependencies] line never requests it), so a plane-only feature attenuation cannot be distinguished from the engine's own default-on request in this tool's model. Tracked as follow-up debt, not fixed here; re-review if any OTHER path to libc appears."
-owner = "orchestrator, 2026-09-05"
-
-[[allow]]
-crate = "busbar-plane-streaming"
-dep = "libc"
-via = "getrandom"
-reason = "THIS ROW NOW COVERS ONE EDGE: getrandom -> libc, which is NOT ruled on. The plane's other route to libc, cpufeatures, is settled tree-wide by the (dep = libc, via = cpufeatures) edge exemption in qa/construction.toml and is no longer argued here; this row's remaining reasoning is preserved verbatim from the reviewed original. getrandom, reached through sonic_rs -> ahash's hasher seeding, uses libc only to issue the getentropy(2)/getrandom(2) syscall. This edge does not expose a socket, file or process primitive. Re-review if any other path to libc appears."
 owner = "orchestrator, 2026-09-05"
 
 
