@@ -104,6 +104,11 @@ fn install_auth_plugin(dir: &Path) {
     );
 }
 
+/// The plane's section every scenario writes, its canonical resource filled in.
+fn plane_section() -> String {
+    include_str!("fixtures/stdio_plane_section.yaml").replace("{canonical}", canonical())
+}
+
 /// The config skeleton every scenario shares: the MCP resource, `extra` verbatim, and the minimal
 /// provider/model pair ONLY when the linked door that declares `pools:` is linked — the plane that owns
 /// provider lanes. Whether to write them is read off the linked set (`linked_section_pools`, as
@@ -136,8 +141,7 @@ advanced:
   allow_destinations: ["127.0.0.1"]
 store: {{module: memory}}
 {providers}{section}{extra}"#,
-            section = include_str!("fixtures/stdio_plane_section.yaml")
-                .replace("{canonical}", canonical()),
+            section = plane_section(),
         ),
     )
     .unwrap();
@@ -550,43 +554,30 @@ tools:
 }
 
 /// ASKED FOR THE LINE CARRIER, NO PLANE CLAIMING IT: the launch is refused, never turned into a
-/// network server its supervisor did not ask for. With no plane section configured, no served
-/// plane claims the stdio transport (Law 7: the plane is not loaded), so the child exits nonzero
-/// with the line carrier's own refusal on stderr and binds neither listener.
+/// network server its supervisor did not ask for. With the plane's section left out, no served
+/// plane claims the line carrier (Law 7: the plane is not loaded), so the child exits nonzero with
+/// the line carrier's own refusal on stderr and binds neither listener.
 ///
 /// RED ARM: before the fix boot fell through to the listener path, bound `listen` and
 /// `admin_listen`, and ran until killed, so the bounded wait fails.
 #[test]
-fn the_stdio_flag_with_no_plane_claiming_stdio_refuses_and_binds_nothing() {
+fn the_line_flag_with_no_plane_claiming_the_carrier_refuses_and_binds_nothing() {
     let dir = fixture_dir("unclaimed");
-    let provider_lanes = cfg!(linked_section_pools);
-    std::fs::write(
-        dir.join("providers.yaml"),
-        if provider_lanes {
-            "mock:\n  protocol: anthropic\n  base_url: \"http://127.0.0.1:9\"\n  api_key_env: MOCK_KEY\n"
-        } else {
-            "{}\n"
-        },
-    )
-    .unwrap();
-    let providers = if provider_lanes {
-        "providers:\n  mock:\n    api_key: { env: MOCK_KEY }\nmodels:\n  test-model:\n    provider: mock\n"
-    } else {
-        ""
-    };
-    std::fs::write(
-        dir.join("config.yaml"),
-        format!(
-            "listen: \"127.0.0.1:0\"\nadmin_listen: \"127.0.0.1:0\"\nstore: {{module: memory}}\n{providers}"
-        ),
-    )
-    .unwrap();
+    write_configs(&dir, "");
+    // The same deployment with the plane's section taken out: nothing claims the line carrier.
+    let section = plane_section();
+    let config = std::fs::read_to_string(dir.join("config.yaml")).unwrap();
+    assert!(
+        config.contains(&section),
+        "the fixture writes the plane's section"
+    );
+    std::fs::write(dir.join("config.yaml"), config.replace(&section, "")).unwrap();
     let mut child = spawn(&dir, None);
     let exited = common::lines::try_wait_bounded(&mut child.child, Duration::from_secs(80));
     let stderr = child.stderr_so_far();
     let _ = std::fs::remove_dir_all(&dir);
     let code = exited.unwrap_or_else(|e| {
-        panic!("a stdio launch with no plane claiming stdio must refuse, not serve: {e}\n{stderr}")
+        panic!("a line-carrier launch no plane claims must refuse, not serve: {e}\n{stderr}")
     });
     assert_ne!(code, 0, "the refusal exits nonzero: {stderr}");
     assert!(
@@ -595,7 +586,7 @@ fn the_stdio_flag_with_no_plane_claiming_stdio_refuses_and_binds_nothing() {
     );
     assert!(
         !stderr.contains("busbar listening"),
-        "no listener is bound on a stdio launch: {stderr}"
+        "no listener is bound on a line-carrier launch: {stderr}"
     );
     assert!(
         child.stdout.try_recv().is_err(),
@@ -604,14 +595,14 @@ fn the_stdio_flag_with_no_plane_claiming_stdio_refuses_and_binds_nothing() {
 }
 
 /// A SHUTDOWN SIGNAL STOPS THE LINE CARRIER: the signal busbar catches in every mode (SIGTERM, the
-/// way a supervisor stops its child) ends a live stdio session with stdin still open, runs the one
+/// way a supervisor stops its child) ends a live line session with stdin still open, runs the one
 /// shutdown tail and exits 0, as the listener path does on the same signal.
 ///
 /// RED ARM: before the fix the handler was installed and nothing awaited it in this mode, so the
 /// child kept serving until stdin closed and the bounded wait fails.
 #[cfg(unix)]
 #[test]
-fn a_shutdown_signal_ends_a_live_stdio_session_cleanly() {
+fn a_shutdown_signal_ends_a_live_line_session_cleanly() {
     let dir = fixture_dir("sigterm");
     install_auth_plugin(&dir);
     let token = token_for(canonical());
@@ -643,7 +634,7 @@ fn a_shutdown_signal_ends_a_live_stdio_session_cleanly() {
     let stderr = child.stderr_so_far();
     let _ = std::fs::remove_dir_all(&dir);
     let code = exited.unwrap_or_else(|e| {
-        panic!("SIGTERM must end the stdio session with stdin still open: {e}\n{stderr}")
+        panic!("SIGTERM must end the line session with stdin still open: {e}\n{stderr}")
     });
     assert_eq!(code, 0, "a signalled stop is a clean shutdown: {stderr}");
     assert!(child.stdin.is_some(), "stdin was never closed by the test");
