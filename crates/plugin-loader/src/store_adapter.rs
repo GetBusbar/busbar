@@ -26,8 +26,13 @@
 //!   this module touches their wire; the oracle's store-persist cell is what proves it
 //!   (`testing/shadow-oracle/scripts/store-persist.sh`: mint, spend, kill, boot again on the same
 //!   store, read the money back).
-//! - **Slices, the verb seam's recovery records, the sealed replay cache and the migration marker
-//!   are answered from this node's memory.** The store v3 table carries slots for the ledger
+//! - **The disaster-recovery verbs are REFUSED.** `chain_break`, `store_restore` and
+//!   `reseal_epoch_floor` act on the store and the node's journal, and no store operation carries
+//!   any of them (the store v3 table has no restore, no chain break and no epoch floor), so each
+//!   answers [`VerbStoreError::Failed`] and says why in the node's log. None is ever acknowledged
+//!   from this node's memory: an operator told a restore happened must be able to rely on it.
+//! - **Slices, the sealed replay cache and the migration marker are answered from this node's
+//!   memory.** The store v3 table carries slots for the ledger
 //!   operations behind them (`reserve`, `slice_release`, `heads`, `append_batch`), and every store
 //!   this binary loads speaks store ABI v3, which has no table without them; routing these seams to
 //!   those slots is separate work, and until it lands what is said below is what they answer.
@@ -39,7 +44,7 @@
 //!   constant and a reservation is granted in full, stamped with that epoch — a request carrying
 //!   some other epoch is stamped, not refused, because a stale-epoch refusal would be an error and
 //!   there is no fleet for it to be stale against. The grant never expires for the same reason.
-//! - **The sealed replay cache.** Node-local. A restore does NOT clear it: dropping a committed
+//! - **The sealed replay cache.** Node-local. Nothing but its TTL clears it: dropping a committed
 //!   replay slot is precisely how a credential-minting verb re-mints, which is the one thing the
 //!   sealed cache exists to prevent. It is not process-lifetime, though: a slot answers for
 //!   [`REPLAY_TTL_SECS`] — the same window the in-process sibling keeps — and is swept after, or
@@ -88,18 +93,12 @@ pub struct ShimState {
     pub slices_outstanding: usize,
     /// Units granted and NOT given back — granted minus the unspent part every `release` returned.
     /// A net figure, not a running total: it describes what the outstanding reservations above are
-    /// holding, and a restore that clears them zeroes it too.
+    /// holding.
     pub slices_granted: u64,
     /// Keys the sealed replay cache is holding, reserved or committed.
     pub replay_slots: usize,
     /// Of those, the ones with a committed response.
     pub replay_committed: usize,
-    /// How many times the journal chain was broken through the verb seam.
-    pub chain_breaks: u64,
-    /// How many restores were requested through the verb seam.
-    pub restores: u64,
-    /// The epoch the floor was last resealed to.
-    pub epoch_floor: u64,
 }
 
 /// The unit-side store seams over one loaded store.
@@ -157,19 +156,13 @@ fn system_clock() -> ShimClock {
 ///
 /// # The lock order, stated once
 ///
-/// The four mutexes below are independent, and every one of them is on the request path: a slice
-/// draw takes `slices` on every reserve and release. A thread that needs more than one takes them
-/// in the order they are declared here — recovery, then slices, then replay, then migration — and
-/// no thread takes them in any other order. Two orders is a deadlock that wedges
-/// the slice seam for the whole process, because the pair a restore holds is the pair a slice draw
-/// waits on.
-///
-/// Only [`VerbStore::store_restore`] needs two at once, and it needs them because the reseal it
-/// performs must be one critical section. Everything else — the diagnostics read included — takes
-/// one lock, copies what it wants out, drops it, and only then takes the next.
+/// The three mutexes below are independent, and every one of them is on the request path: a slice
+/// draw takes `slices` on every reserve and release. No thread holds two at once: every reader and
+/// writer — the diagnostics read included — takes one lock, copies what it wants out, drops it, and
+/// only then takes the next. A thread that ever needs more than one takes them in the order they
+/// are declared here — slices, then replay, then migration — and in no other order.
 #[derive(Default)]
 struct Shim {
-    recovery: Mutex<Recovery>,
     slices: Mutex<Slices>,
     replay: Mutex<ReplaySlots>,
     /// The migration's marker: the record that this deployment has sealed its opening balances.
@@ -181,14 +174,6 @@ struct Slices {
     next_id: u64,
     granted_total: u64,
     outstanding: HashMap<u64, u64>,
-}
-
-#[derive(Default)]
-struct Recovery {
-    chain_breaks: u64,
-    restores: u64,
-    last_restore: Option<String>,
-    epoch_floor: u64,
 }
 
 /// The one epoch a node-local shim has. There is no fleet to advance it and nothing that could
@@ -244,15 +229,13 @@ impl StoreAdapter {
     /// What the node-local shim is holding.
     ///
     /// One lock at a time, each taken, copied out and dropped before the next — see the lock order
-    /// on [`Shim`]. This is a diagnostics read on a path a restore and every slice draw also walk,
-    /// so holding one of the shim's locks while reaching for another would put a second lock order
-    /// in the process and wedge both threads, and behind them the slice seam.
+    /// on [`Shim`]. This is a diagnostics read on a path every slice draw also walks.
     ///
-    /// What that costs is that the four groups below are read at four instants rather than one, so
+    /// What that costs is that the two groups below are read at two instants rather than one, so
     /// a caller reading while the shim is being written can see one group's figures beside a
     /// slightly older other group's. Each group is still internally whole — the two slice figures
-    /// come out under one guard, and so do the three recovery ones — which is what the figures
-    /// actually have to promise.
+    /// come out under one guard, and so do the two replay ones — which is what the figures actually
+    /// have to promise.
     pub fn shim_state(&self) -> ShimState {
         let (slices_outstanding, slices_granted) = {
             let slices = self.inner.shim.slices();
@@ -265,28 +248,12 @@ impl StoreAdapter {
                 replay.values().filter(|(_, v)| v.is_some()).count(),
             )
         };
-        let (chain_breaks, restores, epoch_floor) = {
-            let recovery = self.inner.shim.recovery();
-            (
-                recovery.chain_breaks,
-                recovery.restores,
-                recovery.epoch_floor,
-            )
-        };
         ShimState {
             slices_outstanding,
             slices_granted,
             replay_slots,
             replay_committed,
-            chain_breaks,
-            restores,
-            epoch_floor,
         }
-    }
-
-    /// The backup reference the last restore named, if one was asked for.
-    pub fn last_restore(&self) -> Option<String> {
-        self.inner.shim.recovery().last_restore.clone()
     }
 
     /// The kernel's slice seam.
@@ -661,30 +628,20 @@ impl Shim {
         self.replay.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn recovery(&self) -> MutexGuard<'_, Recovery> {
-        self.recovery.lock().unwrap_or_else(|p| p.into_inner())
-    }
-
     fn migration(&self) -> MutexGuard<'_, Option<MigrationMarker>> {
         self.migration.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
-#[cfg(test)]
-impl StoreAdapter {
-    /// Stand in for one side of a shim lock interleaving: take the recovery guard, run `between`,
-    /// then take the slices guard — the exact pair, in the exact order, that
-    /// [`VerbStore::store_restore`] takes them in.
-    ///
-    /// It exists because `store_restore` has no pause between its two locks, so a test cannot park
-    /// a thread there; `between` is that pause, and nothing else about the sequence differs.
-    pub(crate) fn hold_recovery_then_slices(&self, between: impl FnOnce()) {
-        let recovery = self.inner.shim.recovery();
-        between();
-        let slices = self.inner.shim.slices();
-        drop(slices);
-        drop(recovery);
-    }
+/// A disaster-recovery verb no store operation carries: refused, never acknowledged from this
+/// node's memory, and named in the node's log with what is missing.
+fn unserved(verb: &'static str, gap: &'static str) -> VerbStoreError {
+    tracing::error!(
+        verb,
+        gap,
+        "a disaster-recovery verb was refused: it would change only this node's memory, never the store or the journal"
+    );
+    VerbStoreError::Failed
 }
 
 impl SliceStore for StoreAdapter {
@@ -709,8 +666,8 @@ impl SliceStore for StoreAdapter {
         })
     }
 
-    /// Give back what was not spent. An id the shim never granted (a slice drawn before a restore,
-    /// say) is accepted and forgotten rather than refused.
+    /// Give back what was not spent. An id the shim never granted is accepted and forgotten rather
+    /// than refused.
     fn release(&self, id: SliceId, unspent: u64) -> Result<(), SliceError> {
         let mut slices = self.inner.shim.slices();
         if let Some(granted) = slices.outstanding.remove(&id.0) {
@@ -725,46 +682,34 @@ impl SliceStore for StoreAdapter {
 }
 
 impl VerbStore for StoreAdapter {
-    /// Break the journal chain. On a deployment whose journal is memory-buffered, the chain is the
-    /// node's own, so the break is recorded here and the node's next entry starts a new one.
+    /// REFUSED: breaking the journal chain is an act on the node's journal, which the store keeps
+    /// and the composition root writes; no operation of the store this adapter holds performs it.
     fn chain_break(&self, _admin: &Grant<AdminVerb>) -> Result<(), VerbStoreError> {
-        let mut recovery = self.inner.shim.recovery();
-        recovery.chain_breaks = recovery.chain_breaks.saturating_add(1);
-        Ok(())
+        Err(unserved(
+            "chain_break",
+            "no store operation breaks the journal chain",
+        ))
     }
 
-    /// Restore from a named backup. The published store keeps its own rows and restoring THEM is an
-    /// operator action off the node (the store's own tooling); what this seam can do here is record
-    /// that a restore was taken and reseal the node-local state that depends on it.
-    ///
-    /// The sealed replay cache deliberately survives — see the module preamble.
+    /// REFUSED: the store v3 table has no restore operation, so a named backup cannot be restored
+    /// through this seam (the store's own tooling restores its rows off the node).
     fn store_restore(
         &self,
         _admin: &Grant<AdminVerb>,
-        backup_ref: &str,
+        _backup_ref: &str,
     ) -> Result<(), VerbStoreError> {
-        let mut recovery = self.inner.shim.recovery();
-        recovery.restores = recovery.restores.saturating_add(1);
-        recovery.last_restore = Some(backup_ref.to_string());
-        // The slices guard is taken BEFORE the recovery one is released, so the reseal is one
-        // critical section: a `reserve` landing between them would otherwise be recorded and then
-        // erased. Recovery-then-slices is the shim's fixed order (stated on `Shim`), and this is
-        // the only place that holds two of its locks at once — every other reader takes one, copies
-        // and drops. `granted_total` is zeroed beside the map it describes — the counter is net
-        // units held by the outstanding reservations, and there are about to be none.
-        let mut slices = self.inner.shim.slices();
-        slices.outstanding.clear();
-        slices.granted_total = 0;
-        drop(slices);
-        drop(recovery);
-        Ok(())
+        Err(unserved(
+            "store_restore",
+            "the store v3 table has no restore operation",
+        ))
     }
 
-    /// Reseal the epoch floor. The shim has one epoch, so the floor becomes it.
+    /// REFUSED: the store v3 table has no epoch-floor operation to reseal.
     fn reseal_epoch_floor(&self, _admin: &Grant<AdminVerb>) -> Result<(), VerbStoreError> {
-        let mut recovery = self.inner.shim.recovery();
-        recovery.epoch_floor = SHIM_EPOCH.0;
-        Ok(())
+        Err(unserved(
+            "reseal_epoch_floor",
+            "the store v3 table has no epoch-floor operation",
+        ))
     }
 
     /// Read the sealed replay slot for a credential-minting verb, reserving it on first sighting so

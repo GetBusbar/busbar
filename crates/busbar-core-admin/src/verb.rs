@@ -707,8 +707,9 @@ pub const NEW_VERBS: &[KernelVerb] = &[
 #[must_use]
 pub const fn effect_bound(verb: KernelVerb) -> bool {
     match verb {
-        // Their effect lands on the store (`Verbs::chain_break` / `store_restore` /
-        // `reseal_epoch_floor`).
+        // Their effect is the bound store's (`Verbs::chain_break` / `store_restore` /
+        // `reseal_epoch_floor`); a store with no operation for one refuses it, never acknowledging
+        // it from node memory (the loader's `StoreAdapter`).
         KernelVerb::ChainBreak | KernelVerb::StoreRestore | KernelVerb::ResealEpochFloor => true,
         // Their effect lands on the node's amendment journal (the composition root's
         // `execute_new_verb`).
