@@ -1004,3 +1004,96 @@ fn an_authentication_refusal_reads_in_the_dialects_vendor_terms() {
         assert_eq!(body["error"]["code"], serde_json::Value::Null);
     }
 }
+
+/// The kernel's `refusal` of `reason` for `unit` in `dialect`: the outcome and the body.
+fn refused_unit(
+    p: &Plugin<Plane>,
+    unit: u64,
+    dialect: u32,
+    reason: busbar_contract::caps::ReasonCode,
+    words: &'static str,
+) -> (Outcome, String) {
+    use busbar_contract::abi::plane::{reason_code, RefusalIn, RefusalOut, REFUSAL_KERNEL};
+    let mut reply = vec![0u8; 1024];
+    let mut fields: Vec<OutField> = vec![z(); 4];
+    let mut arena = vec![0u8; 256];
+    let mut f: Frame<RefusalIn, RefusalOut> = Frame::new(z(), z());
+    (f.input.head, f.out.head) = (in_head(), out_head());
+    f.input.cause = REFUSAL_KERNEL;
+    f.input.status = 429;
+    f.input.dialect = dialect;
+    f.input.unit = unit;
+    f.input.reason = reason_code(reason);
+    f.input.text = text(words);
+    (f.input.reply_buf, f.input.reply_cap) = (reply.as_mut_ptr(), reply.len());
+    (f.input.fields_buf, f.input.fields_cap) = (fields.as_mut_ptr(), fields.len());
+    (f.input.arena_buf, f.input.arena_cap) = (arena.as_mut_ptr(), arena.len());
+    let c = p.call(slot::REFUSAL, &mut f);
+    let written = usize::try_from(f.out.reply_written).expect("a length");
+    (
+        c.outcome,
+        String::from_utf8_lossy(&reply[..written.min(reply.len())]).into_owned(),
+    )
+}
+
+/// RED-BEFORE-GREEN (THE DESIGN section 7: "Where the protocol carries a place to say so, a cut ends
+/// the stream WITH AN ERROR FRAME naming budget exhaustion"; Part 3 section 12: "the plane renders
+/// the error frame through `refusal`"): the kernel's budget cut of a live OpenAI Realtime session,
+/// or of one its cut just ended, is told in-stream as the dialect's `error` event naming the
+/// budget; a Gemini Live session, whose dialect has no in-band error, is told nothing invented; a
+/// refusal before any session opened keeps the REST envelope byte for byte. RED: every cut was the
+/// REST envelope, which no Realtime client reads as an event. Both ways.
+#[test]
+fn a_budget_cut_of_a_live_session_is_told_in_the_dialects_stream() {
+    use busbar_contract::caps::ReasonCode;
+    let d = Dispatcher::new(DispatchConfig::default());
+    let mut doors = vec![linked(&d)];
+    doors.extend(dropped(&d));
+    for p in &doors {
+        assert_eq!(open(p, 1, SESSION, Some(PUBLIC)).0, Outcome::Ready);
+        let mut b = Bufs::new(1 << 16);
+        let audio = uplink(100);
+        let _ = b.call(p, &session(130, FROM_CALLER, 0, &audio));
+        let _ = b.call(p, &session(132, FROM_CALLER, 0, &audio));
+        let _ = b.call(p, &session(132, FROM_CALLER, PIECE_LAST, &[]));
+        let gemini = Push {
+            claim: 3,
+            ..session(
+                131,
+                FROM_CALLER,
+                0,
+                br#"{"realtimeInput":{"audioStreamEnd":true}}"#,
+            )
+        };
+        let _ = b.call(p, &gemini);
+
+        for unit in [130, 132] {
+            let (outcome, body) = refused_unit(
+                p,
+                unit,
+                0,
+                ReasonCode::OverBudget,
+                "the budget is exhausted",
+            );
+            assert_eq!(outcome, Outcome::Ready, "{body}");
+            let v: serde_json::Value = serde_json::from_str(&body).expect("JSON");
+            assert_eq!(v["type"], "error", "an in-stream event: {body}");
+            assert_eq!(v["error"]["code"], "budget_exhausted", "{body}");
+            assert_eq!(v["error"]["message"], "the budget is exhausted", "{body}");
+        }
+
+        let (outcome, body) =
+            refused_unit(p, 131, 1, ReasonCode::OverBudget, "the budget is exhausted");
+        assert_eq!(outcome, Outcome::Ready, "{body}");
+        assert!(body.is_empty(), "no invented Gemini frame: {body}");
+
+        let (outcome, body) =
+            refused_unit(p, 999, 0, ReasonCode::OverBudget, "the budget is exhausted");
+        assert_eq!(outcome, Outcome::Ready, "{body}");
+        assert_eq!(
+            body.as_bytes(),
+            door::refusal_body(429, "the budget is exhausted").as_slice(),
+            "a refusal before the upgrade keeps the REST envelope"
+        );
+    }
+}
