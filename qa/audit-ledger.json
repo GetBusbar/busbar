@@ -168,18 +168,18 @@
    "paths": [
     "crates/busbar/src"
    ],
-   "tree_hash": "9ac1e0276baa670fac012351b170a47464c0b92b25519fec8a233f858c61dcc7",
-   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
-   "round": 2,
+   "tree_hash": "c9620f2d6c082d92a366bf8086ee9300706d23b4cfd69f138c57c206839812f5",
+   "audited_at": "4a5705e8becfb2173c67871cda88f1cfdadd62ed",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 1,
+    "HIGH": 0,
     "MEDIUM": 3,
-    "LOW": 3,
+    "LOW": 4,
     "NIT": 1
    },
-   "report": "In stdio serve mode the binary exits on stdin EOF without draining the money journal's write-behind lane or the plane-record write-behind, so acknowledged records can be lost on a store-only node. In that mode a shutdown signal is caught and ignored, and asking for stdio serving with no plane claiming it silently opens the network listeners. Two planes' pool tables are passed by name. Any plane flag counts as the stdio flag, the generator keeps an unused axis, and several comments are false. Read fully.",
-   "auditor": "opus-reaudit-busbar-src",
+   "report": "Stdio serve mode now drains the money journal and plane records before exit. In that mode a shutdown signal is still caught and ignored, so a supervisor's stop does nothing until stdin closes, and asking for stdio serving with no plane claiming it still opens the network listeners. Two planes' pool tables are still passed by name. Any plane flag counts as the stdio flag, the table generator keeps five axes no row fills, the door apply refresh hangs on a legacy row's axis, and several comments are false. Read fully.",
+   "auditor": "opus-q128-l159",
    "fixed_at": null,
    "exclude": [
     "crates/busbar/src/root",
@@ -213,6 +213,20 @@
       "NIT": 1
      },
      "report": "In stdio serve mode the binary exits on stdin EOF without draining the money journal's write-behind lane or the plane-record write-behind, so acknowledged records can be lost on a store-only node. In that mode a shutdown signal is caught and ignored, and asking for stdio serving with no plane claiming it silently opens the network listeners. Two planes' pool tables are passed by name. Any plane flag counts as the stdio flag, the generator keeps an unused axis, and several comments are false. Read fully."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-q128-l159",
+     "audited_at": "4a5705e8becfb2173c67871cda88f1cfdadd62ed",
+     "tree_hash": "c9620f2d6c082d92a366bf8086ee9300706d23b4cfd69f138c57c206839812f5",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 3,
+      "LOW": 4,
+      "NIT": 1
+     },
+     "report": "Stdio serve mode now drains the money journal and plane records before exit. In that mode a shutdown signal is still caught and ignored, so a supervisor's stop does nothing until stdin closes, and asking for stdio serving with no plane claiming it still opens the network listeners. Two planes' pool tables are still passed by name. Any plane flag counts as the stdio flag, the table generator keeps five axes no row fills, the door apply refresh hangs on a legacy row's axis, and several comments are false. Read fully."
     }
    ]
   },
@@ -549,8 +563,8 @@
     "crates/busbar-core-admin/build.rs"
    ],
    "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 2,
+   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+   "round": 3,
    "result": "findings",
    "counts": {
     "HIGH": 1,
@@ -558,8 +572,8 @@
     "LOW": 1,
     "NIT": 1
    },
-   "report": "The build script still turns manifest metadata into a generated table that links two plane crates and an operator-auth plugin into this cleanliness crate's unit tests, and the manifest still names those plugins (plus an export plugin) as dev-dependencies, as metadata, and through instance-named features. The source stays \"clean\" only because the names live in the manifest; the crate's tests do not use kind-neutral doubles. The generator is also copied, not shared, despite its doc claiming the composition root uses it. Read fully.",
-   "auditor": "opus-ledger-core-admin-build",
+   "report": "The build script still turns manifest metadata into generated tables that link a plane crate and the operator-credential auth plugin into this cleanliness crate's unit tests, and the manifest still names that plane as a dev-dependency, as metadata and in a feature forward, beside the auth plugin. The source stays clean only because the names live in the manifest; the tests do not use kind-neutral doubles. The script's doc still claims the composition root emits its table with the same functions, which it does not. Read fully.",
+   "auditor": "opus-q128-l159",
    "fixed_at": null,
    "rounds": [
     {
@@ -586,6 +600,20 @@
       "NIT": 1
      },
      "report": "The build script still turns manifest metadata into a generated table that links two plane crates and an operator-auth plugin into this cleanliness crate's unit tests, and the manifest still names those plugins (plus an export plugin) as dev-dependencies, as metadata, and through instance-named features. The source stays \"clean\" only because the names live in the manifest; the crate's tests do not use kind-neutral doubles. The generator is also copied, not shared, despite its doc claiming the composition root uses it. Read fully."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-q128-l159",
+     "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+     "tree_hash": "1a4108f5d7e90b1278140efc9fcb944f88700c8dda8b3d66b4b38bed67b0acea",
+     "counts": {
+      "HIGH": 1,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 1
+     },
+     "report": "The build script still turns manifest metadata into generated tables that link a plane crate and the operator-credential auth plugin into this cleanliness crate's unit tests, and the manifest still names that plane as a dev-dependency, as metadata and in a feature forward, beside the auth plugin. The source stays clean only because the names live in the manifest; the tests do not use kind-neutral doubles. The script's doc still claims the composition root emits its table with the same functions, which it does not. Read fully."
     }
    ]
   },
@@ -595,18 +623,18 @@
    "paths": [
     "crates/busbar-core-connector/src"
    ],
-   "tree_hash": "978ec5e2c49768ecb98bd22aa2dbe08a575710d658c8291b5a3adabd18298c7b",
-   "audited_at": "f830faa691149288ddbaeda4b2efa444ce44d4b0",
-   "round": 1,
+   "tree_hash": "76aada588a98f9d865e5e75387eea4c94350b3f73a6ce9d8df6becc721cbc5c7",
+   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+   "round": 2,
    "result": "findings",
    "counts": {
-    "HIGH": 3,
-    "MEDIUM": 7,
-    "LOW": 4,
-    "NIT": 1
+    "HIGH": 5,
+    "MEDIUM": 14,
+    "LOW": 12,
+    "NIT": 2
    },
-   "report": "The connector pools dialled connections under a key that omits the trust they were secured with, so a pinned or client-certificate connection can be lent to another need or instance, and a destination's sealed trust is held per authority, so a second registration at the same host overwrites or erases the first's pin and identity. A mid-stream TLS upgrade hands plaintext buffered before the handshake to the caller as if it were protected. Receive buffers, idle pooled sockets and resolver threads are unbounded. The datagram security engine has no production construction site. Read fully except two datagram helper files and the test kit, sampled.",
-   "auditor": "opus-ledger-core-connector",
+   "report": "The connector still lends a pooled connection across instances and needs regardless of the trust it was secured with, and a registration sealed with no anchors borrows another's client identity. An upstream media leg's read deadlocks on a message longer than the reader's buffer, a TLS write over 64 KiB fails its connection, and a replaced instance's member programs are never stopped. Program leases, framer auto-replies, idle pooled sockets, name-lookup threads, framer re-calls and datagram path maps are unbounded. Read fully except the test kit, sampled.",
+   "auditor": "opus-q128-l159",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-connector/src/tests"
@@ -625,6 +653,20 @@
       "NIT": 1
      },
      "report": "The connector pools dialled connections under a key that omits the trust they were secured with, so a pinned or client-certificate connection can be lent to another need or instance, and a destination's sealed trust is held per authority, so a second registration at the same host overwrites or erases the first's pin and identity. A mid-stream TLS upgrade hands plaintext buffered before the handshake to the caller as if it were protected. Receive buffers, idle pooled sockets and resolver threads are unbounded. The datagram security engine has no production construction site. Read fully except two datagram helper files and the test kit, sampled."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-q128-l159",
+     "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+     "tree_hash": "76aada588a98f9d865e5e75387eea4c94350b3f73a6ce9d8df6becc721cbc5c7",
+     "counts": {
+      "HIGH": 5,
+      "MEDIUM": 14,
+      "LOW": 12,
+      "NIT": 2
+     },
+     "report": "The connector still lends a pooled connection across instances and needs regardless of the trust it was secured with, and a registration sealed with no anchors borrows another's client identity. An upstream media leg's read deadlocks on a message longer than the reader's buffer, a TLS write over 64 KiB fails its connection, and a replaced instance's member programs are never stopped. Program leases, framer auto-replies, idle pooled sockets, name-lookup threads, framer re-calls and datagram path maps are unbounded. Read fully except the test kit, sampled."
     }
    ]
   },
@@ -634,18 +676,18 @@
    "paths": [
     "crates/busbar-core-oauth2/src"
    ],
-   "tree_hash": "f353e547e85b152f5d8e96fa30ddc928eed397cfb2ea07a3dc3218a956f47134",
-   "audited_at": "af6cc2c6f84e49352910ab692ee9065248b11e04",
-   "round": 4,
+   "tree_hash": "f3ecc26e4bb3812d64a9a2f6db5d6b4543bdc6862a2d85c983dd4530ba44d10c",
+   "audited_at": "4a5705e8becfb2173c67871cda88f1cfdadd62ed",
+   "round": 5,
    "result": "findings",
    "counts": {
     "HIGH": 0,
     "MEDIUM": 5,
-    "LOW": 6,
+    "LOW": 5,
     "NIT": 0
    },
-   "report": "The authorization server keeps its records in the deployment's store and now files every point-read record where the linked in-tree store reads it back, so logins complete there. A lost bucket write now blocks a client for two minutes instead of an hour, and the signing key has one minting claim. The store write is still unfenced, so a write landing past its claim can overwrite a newer version. Store rows are never reclaimed, the minted key sits in clear, and document fetches can be starved. Read fully.",
-   "auditor": "opus-reaudit-core-oauth2",
+   "report": "The authorization server keeps its records in the deployment's store and files them where the linked store reads them back. Its store write rests on a version claim that lapses in two minutes and nothing fences the write to it, so a late write can bring back a spent code or overwrite a newer key. Index rows, sessions, staked answers and emptied cells are never reclaimed. The minted signing key sits in the store in clear, one slow site can hold every document fetch, and the sweep runs on its own timer. Read fully.",
+   "auditor": "opus-q128-l159",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-core-oauth2/src/tests"
@@ -704,6 +746,20 @@
       "NIT": 0
      },
      "report": "The authorization server keeps its records in the deployment's store and now files every point-read record where the linked in-tree store reads it back, so logins complete there. A lost bucket write now blocks a client for two minutes instead of an hour, and the signing key has one minting claim. The store write is still unfenced, so a write landing past its claim can overwrite a newer version. Store rows are never reclaimed, the minted key sits in clear, and document fetches can be starved. Read fully."
+    },
+    {
+     "round": 5,
+     "result": "findings",
+     "auditor": "opus-q128-l159",
+     "audited_at": "4a5705e8becfb2173c67871cda88f1cfdadd62ed",
+     "tree_hash": "f3ecc26e4bb3812d64a9a2f6db5d6b4543bdc6862a2d85c983dd4530ba44d10c",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 5,
+      "LOW": 5,
+      "NIT": 0
+     },
+     "report": "The authorization server keeps its records in the deployment's store and files them where the linked store reads them back. Its store write rests on a version claim that lapses in two minutes and nothing fences the write to it, so a late write can bring back a spent code or overwrite a newer key. Index rows, sessions, staked answers and emptied cells are never reclaimed. The minted signing key sits in the store in clear, one slow site can hold every document fetch, and the sweep runs on its own timer. Read fully."
     }
    ]
   },
@@ -1369,17 +1425,17 @@
     "crates/busbar-kernel-wal/src"
    ],
    "tree_hash": "6b47c7499f01c8025ca794d744eeec7f4c4d1ecb38b53944f2cfa14dcbfbe64a",
-   "audited_at": "62fdbdf3bced89535818c761a2d5a56c23aa3f99",
-   "round": 3,
+   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+   "round": 4,
    "result": "findings",
    "counts": {
     "HIGH": 0,
-    "MEDIUM": 2,
+    "MEDIUM": 3,
     "LOW": 3,
     "NIT": 0
    },
-   "report": "Frames carry an end mark and a commit flag: torn writes and altered whole frames are told apart and only the unacknowledged last commit is cut; one layout version is read; a failed sync cuts the batch and opens the next segment at once; directory fsync failures are errors. Gaps: identities from a frame whose header failed its check move the numbering, up to a saturation where every following record is silently passed over; the on-disk store catch-up queue drops records unannounced; some prose and accessors are stale. Read fully.",
-   "auditor": "opus-reaudit-kernel-wal",
+   "report": "Frames carry an end mark and a commit flag: torn writes and altered whole frames are told apart, only the unacknowledged last commit is cut, and corrupt remainders are copied durably before any cut. A failed sync cuts the batch and opens the next segment at once. Gaps: an unverified identity from a frame whose header fails its check moves the numbering, up to a saturation where every following record is silently passed over. On a disk, the store's catch-up queue drops records past its bound and forgets all of them at a restart. Some prose and accessors are stale. Read fully.",
+   "auditor": "opus-q128-l159",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-kernel-wal/src/tests"
@@ -1423,6 +1479,20 @@
       "NIT": 0
      },
      "report": "Frames carry an end mark and a commit flag: torn writes and altered whole frames are told apart and only the unacknowledged last commit is cut; one layout version is read; a failed sync cuts the batch and opens the next segment at once; directory fsync failures are errors. Gaps: identities from a frame whose header failed its check move the numbering, up to a saturation where every following record is silently passed over; the on-disk store catch-up queue drops records unannounced; some prose and accessors are stale. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-q128-l159",
+     "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+     "tree_hash": "6b47c7499f01c8025ca794d744eeec7f4c4d1ecb38b53944f2cfa14dcbfbe64a",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 3,
+      "LOW": 3,
+      "NIT": 0
+     },
+     "report": "Frames carry an end mark and a commit flag: torn writes and altered whole frames are told apart, only the unacknowledged last commit is cut, and corrupt remainders are copied durably before any cut. A failed sync cuts the batch and opens the next segment at once. Gaps: an unverified identity from a frame whose header fails its check moves the numbering, up to a saturation where every following record is silently passed over. On a disk, the store's catch-up queue drops records past its bound and forgets all of them at a restart. Some prose and accessors are stale. Read fully."
     }
    ]
   },
@@ -2058,18 +2128,18 @@
    "paths": [
     "crates/busbar-transport-webrtc/src"
    ],
-   "tree_hash": "80d15bf46efbb7a8ca27bbd580fab97a81b5e6e5290d05e769c5cb5fcd70c2e2",
-   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
-   "round": 1,
+   "tree_hash": "0dfade6d4981e14d6e3e98a241cf72115f4dcc6699a62073f3710b1a218fba07",
+   "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+   "round": 2,
    "result": "findings",
    "counts": {
     "HIGH": 2,
-    "MEDIUM": 4,
-    "LOW": 5,
-    "NIT": 1
+    "MEDIUM": 3,
+    "LOW": 6,
+    "NIT": 0
    },
-   "report": "The webrtc framer passes its handshake shim to the media stack through a per-thread slot with a destructor, a second per-thread slot next to the door's one approved slot. The SRTP keying material it hands the media stack is copied into buffers freed without zeroing. No host path gives it a datagram lane or a certificate, so every begin is refused. Under buffer pressure a data channel can reorder messages and fails the whole association. Oversized rendezvous terms spin on YIELD_MORE. Read fully.",
-   "auditor": "opus-ledger-transport-webrtc",
+   "report": "The webrtc framer hands its handshake shim to the media stack through a per-thread slot with a destructor, beside two module statics. The SRTP keying material it hands on is copied by the media stack into buffers freed without zeroing. A data channel can reorder messages under buffer pressure, and one channel's overflow or write error fails the whole association. Rendezvous terms grow with every advertised candidate and can spin on YIELD_MORE. Each SRTP open allocates twice. The host now drives the framer with a lane and certificate. Read fully.",
+   "auditor": "opus-q128-l159",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-transport-webrtc/src/tests"
@@ -2088,6 +2158,20 @@
       "NIT": 1
      },
      "report": "The webrtc framer passes its handshake shim to the media stack through a per-thread slot with a destructor, a second per-thread slot next to the door's one approved slot. The SRTP keying material it hands the media stack is copied into buffers freed without zeroing. No host path gives it a datagram lane or a certificate, so every begin is refused. Under buffer pressure a data channel can reorder messages and fails the whole association. Oversized rendezvous terms spin on YIELD_MORE. Read fully."
+    },
+    {
+     "round": 2,
+     "result": "findings",
+     "auditor": "opus-q128-l159",
+     "audited_at": "565f24f25e42370f3f8b5d8b2d91d56950eb4866",
+     "tree_hash": "0dfade6d4981e14d6e3e98a241cf72115f4dcc6699a62073f3710b1a218fba07",
+     "counts": {
+      "HIGH": 2,
+      "MEDIUM": 3,
+      "LOW": 6,
+      "NIT": 0
+     },
+     "report": "The webrtc framer hands its handshake shim to the media stack through a per-thread slot with a destructor, beside two module statics. The SRTP keying material it hands on is copied by the media stack into buffers freed without zeroing. A data channel can reorder messages under buffer pressure, and one channel's overflow or write error fails the whole association. Rendezvous terms grow with every advertised candidate and can spin on YIELD_MORE. Each SRTP open allocates twice. The host now drives the framer with a lane and certificate. Read fully."
     }
    ]
   },
