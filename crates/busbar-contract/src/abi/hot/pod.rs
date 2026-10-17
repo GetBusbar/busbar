@@ -10,8 +10,6 @@
 //! written (see `read_sized_field!`). Reorder/resize/insert is a MAJOR airlock bump, caught by the
 //! layout golden.
 
-use std::os::raw::c_void;
-
 /// The POD schema version stamped into each struct's `version` field at construction. Distinct from
 /// the airlock [`ABI_MAJOR`](crate::abi::ABI_MAJOR): this bumps additively as fields are appended.
 ///
