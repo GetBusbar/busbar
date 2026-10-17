@@ -1472,6 +1472,20 @@ fn a_brace_less_cfg_test_item_gates_its_own_line_and_no_more() {
     assert_eq!(gated_lines(src), vec![1, 2]);
 }
 
+/// A FIELD is a brace-less item ended by `,`, not `;`. Read as unresolved, the attribute stayed
+/// armed across the struct's closing brace and latched onto the next braced item, which gated the
+/// whole production fn after the struct.
+#[test]
+fn a_field_level_cfg_test_gates_its_field_and_not_the_fn_after_the_struct() {
+    let src =
+        "struct Probe {\n    #[cfg(test)]\n    seen: u32,\n    #[cfg(test)] calls: u32,\n}\n\n\
+               pub fn production() {\n    std::fs::rename(a, b);\n}\n";
+    assert_eq!(gated_lines(src), vec![2, 3, 4]);
+    // A multi-line signature's `,` is inside the parameter list, not the end of the item.
+    let src = "#[cfg(test)]\nfn helper(\n    a: u32,\n) {\n    std::fs::rename(a, b);\n}\n";
+    assert_eq!(gated_lines(src), vec![1, 2, 3, 4, 5, 6]);
+}
+
 #[test]
 fn a_braced_cfg_test_body_is_gated_to_its_closing_brace_and_not_past_it() {
     let src = "#[cfg(test)]\nmod tests {\n    fn t() {\n        std::fs::rename(a, b);\n    }\n}\n\
