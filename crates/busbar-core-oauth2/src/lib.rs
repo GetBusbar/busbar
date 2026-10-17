@@ -47,6 +47,9 @@
 pub mod cimd;
 pub mod config;
 pub mod consent;
+/// The hosted browser login flow (`GET /auth/token`; THE DESIGN §8), moved from the kernel (row 159,
+/// K3#2) and reached through the kernel's login seam.
+mod hosted_login;
 pub mod plane;
 pub mod policy;
 pub mod routes;
@@ -119,6 +122,9 @@ impl Connections for NoConnections {
 /// for the same reason. `oauth_as:` carries no feature flag (it is a normal dependency, like the
 /// underlying `oauth-as` crate always was), so every real build calls this.
 pub fn install<C: Connections>() {
+    // The hosted login flow: the kernel mounts `GET /auth/token` and routes a credential-form
+    // `POST /auth/token` through this seam (row 159, K3#2).
+    busbar_kernel::auth::login::seam::install(hosted_login::SEAM);
     busbar_kernel::oauth_as::seam::install_as_plane_seam(
         busbar_kernel::oauth_as::seam::AsPlaneSeam {
             check: config::seam_check,

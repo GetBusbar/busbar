@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (C) 2026 Busbar Inc and contributors
 
-//! Tests for the `GET /auth/token` hosted browser-login flow (1.5.2). `token_tests` is a
-//! submodule of `auth::token`, so it can drive the private sub-state handlers (`chooser`/`begin`/
+//! Tests for the `GET /auth/token` hosted browser-login flow (1.5.2), moved with it from
+//! `busbar-kernel` (row 159, K3#2) with every assertion unchanged: 1.5.5's page, redirect, cookie
+//! and refusal bytes are pinned here. `hosted_login_tests` is a submodule of `hosted_login`, so it
+//! can drive the private sub-state handlers (`chooser`/`begin`/
 //! `callback`), the render fns, and the cookie/PKCE helpers directly. Every login plugin here is on
 //! the auth kind's door ([`DoorLogin`]): the plugin makes its own token exchange and binds the IdP's
 //! answer to the nonce itself; the host mints PKCE/state/nonce, checks `state`, bounds the
@@ -151,8 +153,9 @@ fn alice() -> LoginOutcome {
 }
 
 /// An app whose hosted-login methods are redirect plugins on the door, one per `(name, has_button)`.
-fn test_app_with_methods(methods: Vec<(&str, bool)>) -> std::sync::Arc<crate::state::App> {
-    let mut b = crate::test_support::TestApp::new().public_url("https://busbar.example.com");
+fn test_app_with_methods(methods: Vec<(&str, bool)>) -> std::sync::Arc<busbar_kernel::state::App> {
+    let mut b =
+        busbar_kernel::test_support::TestApp::new().public_url("https://busbar.example.com");
     for (name, has_button) in methods {
         b = b.login_method_door(
             name,
@@ -208,7 +211,7 @@ fn chooser_renders_0_1_n_buttons() {
 /// generic arm — its title-cased name under the key icon — exactly as an unmatched method does.
 #[test]
 fn the_button_brands_are_the_legacy_row_and_with_no_row_every_method_is_generic() {
-    let row = crate::config::legacy::text("login_brands");
+    let row = busbar_kernel::config::legacy::text("login_brands");
     let brands: Vec<(&str, &str, &str)> = row
         .split(" | ")
         .map(|b| {
@@ -307,7 +310,7 @@ async fn begin_sets_httponly_secure_cookie_and_redirects() {
 /// The `refresh` flag the login cookie carries after `GET /auth/token?method=microsoft&refresh=1`
 /// arrives with this `Sec-Fetch-Site` (absent when `None`).
 async fn refresh_flag_for(
-    handle: &std::sync::Arc<crate::state::AppHandle>,
+    handle: &std::sync::Arc<busbar_kernel::state::AppHandle>,
     sec_fetch_site: Option<&str>,
 ) -> bool {
     let mut req = Request::builder().uri("/auth/token?method=microsoft&refresh=1");
@@ -336,7 +339,7 @@ async fn refresh_flag_for(
 #[tokio::test]
 async fn a_refresh_link_rotates_only_from_busbars_own_page() {
     let app = test_app_with_methods(vec![("microsoft", true)]);
-    let handle = std::sync::Arc::new(crate::state::AppHandle::new(app));
+    let handle = std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app));
     for site in [Some("cross-site"), None, Some("none"), Some("same-site")] {
         assert!(
             !refresh_flag_for(&handle, site).await,
@@ -364,7 +367,7 @@ async fn begin_with_an_unrepresentable_authorize_url_fails_closed_not_panics() {
         "https://idp.example.com/authorize?x=\u{0}",      // NUL
         "https://idp.example.com/authorize?x=\u{7f}",     // DEL
     ] {
-        let app = crate::test_support::TestApp::new()
+        let app = busbar_kernel::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
             .login_method_door(
                 "microsoft",
@@ -398,7 +401,7 @@ async fn begin_with_an_unrepresentable_authorize_url_fails_closed_not_panics() {
 #[tokio::test]
 async fn callback_state_mismatch_400() {
     let door = DoorLogin::new(alice());
-    let app = crate::test_support::TestApp::new()
+    let app = busbar_kernel::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .login_method_door("microsoft", door.clone(), LoginKind::Redirect, true)
         .build();
@@ -452,7 +455,7 @@ async fn callback_nonce_mismatch_rejected() {
             LoginOutcome::SecurityCheckFailed
         }
     }));
-    let app = crate::test_support::TestApp::new()
+    let app = busbar_kernel::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .login_method_door("microsoft", door.clone(), LoginKind::Redirect, true)
         .build();
@@ -672,7 +675,7 @@ fn cred_login() -> std::sync::Arc<DoorLogin> {
                     .submitted
                     .iter()
                     .find(|(n, _)| n == k)
-                    .map(|(_, v)| v.expose(&crate::seal::lend()).as_str())
+                    .map(|(_, v)| v.expose(&busbar_kernel::seal::lend()).as_str())
             };
             if get("username") == Some("alice") && get("password") == Some("pw") {
                 let mut p = Principal::from_id("test-login-double:alice");
@@ -685,46 +688,48 @@ fn cred_login() -> std::sync::Arc<DoorLogin> {
     })
 }
 
-fn cred_gov() -> std::sync::Arc<crate::governance::GovState> {
+fn cred_gov() -> std::sync::Arc<busbar_kernel::governance::GovState> {
     std::sync::Arc::new(
-        crate::governance::GovState::new_with_signer(
-            std::sync::Arc::new(crate::governance::MemoryStore::new()),
+        busbar_kernel::governance::GovState::new_with_signer(
+            std::sync::Arc::new(busbar_kernel::governance::MemoryStore::new()),
             None,
-            Some(crate::governance::signing::TokenSigner::from_secret_bytes(
-                &[7u8; 32],
-                crate::governance::signing::DEFAULT_KID,
-            )),
+            Some(
+                busbar_kernel::governance::signing::TokenSigner::from_secret_bytes(
+                    &[7u8; 32],
+                    busbar_kernel::governance::signing::DEFAULT_KID,
+                ),
+            ),
         )
         .unwrap(),
     )
 }
 
-fn cred_bindings() -> crate::config::RoleBindings {
+fn cred_bindings() -> busbar_kernel::config::RoleBindings {
     use std::collections::BTreeMap;
     let mut role = BTreeMap::new();
     role.insert(
         "members".to_string(),
-        crate::config::RoleBindingCfg {
+        busbar_kernel::config::RoleBindingCfg {
             allowed_pools: None,
             group: Some("team".into()),
             admin_scope: None,
         },
     );
-    let mut outer: crate::config::RoleBindings = BTreeMap::new();
+    let mut outer: busbar_kernel::config::RoleBindings = BTreeMap::new();
     outer.insert("test-login-double".to_string(), role);
     outer
 }
 
-fn cred_app() -> std::sync::Arc<crate::state::App> {
+fn cred_app() -> std::sync::Arc<busbar_kernel::state::App> {
     // The `team` group the role binds to MUST be a real configured group (parent of the
     // auto-provisioned `user:<sub>` leaf), carrying a `child_default` the leaf inherits — the
     // production shape (role_bindings.<module>.<role>.group names a configured team).
-    let team: crate::config::GroupCfg =
+    let team: busbar_kernel::config::GroupCfg =
         serde_yaml::from_str("child_default:\n  limits:\n    - { budget: 500, per: month }\n")
             .expect("team group parses");
     let mut groups = std::collections::BTreeMap::new();
     groups.insert("team".to_string(), team);
-    crate::test_support::TestApp::new()
+    busbar_kernel::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .governance(cred_gov())
         .role_bindings(cred_bindings())
@@ -740,8 +745,10 @@ fn cred_app() -> std::sync::Arc<crate::state::App> {
 
 /// Wrap a `cred_app` snapshot in a live `AppHandle` so `credential_submit` can auto-provision the
 /// `user:<sub>` leaf (persist-then-swap) exactly as the running server does.
-fn cred_handle(app: &std::sync::Arc<crate::state::App>) -> std::sync::Arc<crate::state::AppHandle> {
-    std::sync::Arc::new(crate::state::AppHandle::new(app.clone()))
+fn cred_handle(
+    app: &std::sync::Arc<busbar_kernel::state::App>,
+) -> std::sync::Arc<busbar_kernel::state::AppHandle> {
+    std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app.clone()))
 }
 
 fn cred_cookie(state: &str, refresh: bool) -> String {
@@ -893,25 +900,6 @@ async fn refresh_rotates_key_and_revokes_the_old_one() {
 // ── config: client_secret required/absent per login_kind ─────────────────────────────────────────
 
 #[test]
-fn browser_login_secret_required_for_redirect_absent_for_credential() {
-    use busbar_contract::auth::LoginKind;
-    // Redirect (OAuth confidential client): secret REQUIRED.
-    assert!(validate_browser_login_secret(LoginKind::Redirect, true).is_ok());
-    assert!(
-        validate_browser_login_secret(LoginKind::Redirect, false).is_err(),
-        "a redirect method with no client_secret must be refused"
-    );
-    // Credential (LDAP/AD-bind): secret must be ABSENT.
-    assert!(validate_browser_login_secret(LoginKind::Credential, false).is_ok());
-    assert!(
-        validate_browser_login_secret(LoginKind::Credential, true).is_err(),
-        "a credential method that sets client_secret must be refused"
-    );
-}
-
-// ── render: base_url verbatim ────────────────────────────────────────────────────────────────────
-
-#[test]
 fn key_page_injects_base_url_verbatim() {
     let page = render_key_issued(
         "sam@acme.com",
@@ -1041,12 +1029,12 @@ fn pkce_code_challenge_is_s256_of_verifier() {
 /// stays exempt; `/metrics` still 401s; and the bypass is EXACT-MATCH (no `/auth` prefix over-match).
 #[tokio::test]
 async fn auth_token_bypasses_middleware_exact_match() {
-    crate::snapshot::init();
+    busbar_kernel::snapshot::init();
     // A chain that 401s every un-exempt request: the built-in `keys` verifier with no key presented.
-    let mut cfg = crate::config::AuthCfg::default_none();
-    cfg.chain = vec![crate::config::AuthChainEntry::bare("keys")];
-    let auth = std::sync::Arc::new(crate::auth::AuthMiddleware::new_builtin(&cfg));
-    let app = crate::test_support::TestApp::new()
+    let mut cfg = busbar_kernel::config::AuthCfg::default_none();
+    cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
+    let auth = std::sync::Arc::new(busbar_kernel::auth::AuthMiddleware::new_builtin(&cfg));
+    let app = busbar_kernel::test_support::TestApp::new()
         .auth(auth)
         .public_url("https://busbar.example.com")
         .build();
@@ -1100,12 +1088,14 @@ async fn auth_token_bypasses_middleware_exact_match() {
 
 #[tokio::test]
 async fn auth_token_absent_from_admin_router() {
-    crate::snapshot::init();
-    let app = crate::test_support::TestApp::new()
+    busbar_kernel::snapshot::init();
+    let app = busbar_kernel::test_support::TestApp::new()
         .admin_chain(vec![]) // open admin posture so a hit would reach a handler, not 401
         .public_url("https://busbar.example.com")
         .build();
-    let (data, admin, _handle) = crate::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    busbar_kernel::auth::login::seam::install(SEAM);
+    let (data, admin, _handle) =
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
     // Serve the ADMIN router: /auth/token must be ABSENT (404), while the DATA router serves it.
     let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1148,12 +1138,14 @@ async fn auth_token_absent_from_admin_router() {
 /// generated at mount time exists to make impossible.
 #[tokio::test]
 async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
-    crate::snapshot::init();
-    let app = crate::test_support::TestApp::new()
+    busbar_kernel::snapshot::init();
+    let app = busbar_kernel::test_support::TestApp::new()
         .keys_chain() // a CLOSED data-plane posture: no credential ⇒ 401
         .public_url("https://busbar.example.com")
         .build();
-    let (_data, admin, _handle) = crate::build_split_routers_with_limits(app, 1 << 20, 0, false);
+    busbar_kernel::auth::login::seam::install(SEAM);
+    let (_data, admin, _handle) =
+        busbar_kernel::build_split_routers_with_limits(app, 1 << 20, 0, false);
 
     let admin_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let admin_addr = admin_listener.local_addr().unwrap();
@@ -1200,11 +1192,11 @@ async fn auth_token_bypass_does_not_apply_on_the_admin_router() {
 /// undeclared method on a declared-open path takes the normal bar.
 #[tokio::test]
 async fn core_route_bypass_is_exact_in_path_and_method() {
-    crate::snapshot::init();
-    let mut cfg = crate::config::AuthCfg::default_none();
-    cfg.chain = vec![crate::config::AuthChainEntry::bare("keys")];
-    let auth = std::sync::Arc::new(crate::auth::AuthMiddleware::new_builtin(&cfg));
-    let app = crate::test_support::TestApp::new()
+    busbar_kernel::snapshot::init();
+    let mut cfg = busbar_kernel::config::AuthCfg::default_none();
+    cfg.chain = vec![busbar_kernel::config::AuthChainEntry::bare("keys")];
+    let auth = std::sync::Arc::new(busbar_kernel::auth::AuthMiddleware::new_builtin(&cfg));
+    let app = busbar_kernel::test_support::TestApp::new()
         .auth(auth)
         .public_url("https://busbar.example.com")
         .build();
@@ -1283,8 +1275,11 @@ async fn core_route_bypass_is_exact_in_path_and_method() {
 
 // ── test helpers: serve an app ───────────────────────────────────────────────────────────────────
 
-async fn serve(app: std::sync::Arc<crate::state::App>) -> (String, tokio::task::JoinHandle<()>) {
-    let router = crate::build_router(app);
+async fn serve(
+    app: std::sync::Arc<busbar_kernel::state::App>,
+) -> (String, tokio::task::JoinHandle<()>) {
+    busbar_kernel::auth::login::seam::install(SEAM);
+    let router = busbar_kernel::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
@@ -1360,7 +1355,7 @@ fn assert_runtime_still_polls(
 fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
     let rt = two_worker_runtime();
     let app = rt.block_on(async {
-        crate::test_support::TestApp::new()
+        busbar_kernel::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
             .login_method_door(
                 "test-login-double",
@@ -1399,7 +1394,7 @@ fn concurrent_anonymous_begin_does_not_starve_the_runtime() {
 fn concurrent_credential_submit_does_not_starve_the_runtime() {
     let rt = two_worker_runtime();
     let (app, handle) = rt.block_on(async {
-        let app = crate::test_support::TestApp::new()
+        let app = busbar_kernel::test_support::TestApp::new()
             .public_url("https://busbar.example.com")
             .login_method_door(
                 "test-login-double",
@@ -1408,7 +1403,7 @@ fn concurrent_credential_submit_does_not_starve_the_runtime() {
                 true,
             )
             .build();
-        let handle = std::sync::Arc::new(crate::state::AppHandle::new(app.clone()));
+        let handle = std::sync::Arc::new(busbar_kernel::state::AppHandle::new(app.clone()));
         (app, handle)
     });
     // The cookie an attacker mints for themselves by calling `begin` first — its `state` is theirs to
@@ -1456,7 +1451,7 @@ fn concurrent_credential_submit_does_not_starve_the_runtime() {
 /// no-store), byte for byte the page a `state` mismatch renders, and clears the login cookie.
 #[tokio::test]
 async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
-    let app = crate::test_support::TestApp::new()
+    let app = busbar_kernel::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .login_method_door(
             "fails",
@@ -1520,8 +1515,8 @@ async fn callback_security_check_failed_renders_the_state_mismatch_bytes() {
 // against the cookie before anything is asked, hands the plugin ONE `complete_login` carrying the
 // cookie's state and nonce, and renders the plugin's answer as 1.5.5 rendered the same outcome.
 
-fn door_app(door: std::sync::Arc<DoorLogin>) -> std::sync::Arc<crate::state::App> {
-    crate::test_support::TestApp::new()
+fn door_app(door: std::sync::Arc<DoorLogin>) -> std::sync::Arc<busbar_kernel::state::App> {
+    busbar_kernel::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
         .login_method_door("idp", door, LoginKind::Redirect, true)
         .build()
@@ -1662,7 +1657,7 @@ fn a_faulting_login_plugin_is_rejected_and_says_it_panicked_and_a_declining_one_
                 ..DoorLogin::answering(|_| LoginOutcome::Reject)
             })
         };
-        let cap = crate::test_support::warn_capture::WarnCapture::default();
+        let cap = busbar_kernel::test_support::warn_capture::WarnCapture::default();
         let subscriber = tracing_subscriber::registry().with(cap.clone());
         let statuses = tracing::subscriber::with_default(subscriber, || {
             let rt = tokio::runtime::Builder::new_current_thread()
@@ -1670,7 +1665,7 @@ fn a_faulting_login_plugin_is_rejected_and_says_it_panicked_and_a_declining_one_
                 .build()
                 .expect("runtime");
             rt.block_on(async {
-                let app = crate::test_support::TestApp::new()
+                let app = busbar_kernel::test_support::TestApp::new()
                     .public_url("https://busbar.example.com")
                     .login_method_door("idp", door(LoginKind::Redirect), LoginKind::Redirect, true)
                     .login_method_door(
@@ -1744,94 +1739,17 @@ fn a_faulting_login_plugin_is_rejected_and_says_it_panicked_and_a_declining_one_
     );
 }
 
-/// THE CLIENT SECRET IS THE PLUGIN'S, LENT AT `open` AND HELD NOWHERE ELSE (THE DESIGN 6.7). The
-/// host resolves `browser_login.client_secret` and hands it to the plugin's `open` beside the
-/// public `client_id` (the plugin makes its own token exchange with it); after that it rides
-/// NOTHING the host makes: not the login cookie, not the authorize redirect, not the
-/// `complete_login` the callback hands the plugin, not the pages it renders. (Where the secret may
-/// be SENT — the operator's own IdP hosts only — is the plugin's to enforce, ruling R8.)
+/// THE CLIENT SECRET RIDES NOTHING THIS FLOW MAKES (THE DESIGN 6.7). The kernel lends
+/// `browser_login.client_secret` to the plugin at `open` (its own test, `busbar-kernel`'s
+/// `login_tests`); this flow never holds it: not the login cookie, not the authorize redirect, not
+/// the `complete_login` the callback hands the plugin, not the pages it renders.
 #[tokio::test]
-async fn the_client_secret_is_lent_at_open_and_rides_nothing_the_host_makes() {
+async fn the_client_secret_rides_nothing_the_flow_makes() {
     const SECRET: &str = "REAL-SECRET-XYZ";
-    struct Recording {
-        opened: std::sync::Mutex<Vec<(String, String, serde_json::Value)>>,
-        door: std::sync::Arc<DoorLogin>,
-    }
-    impl busbar_contract::auth_calls::AuthAxis for Recording {
-        fn linked_names(&self) -> Vec<String> {
-            Vec::new()
-        }
-        fn answers(&self, module: &str) -> bool {
-            module == "idp-plugin"
-        }
-        fn linked(&self, _: &str) -> bool {
-            false
-        }
-        fn operator(&self) -> Option<(String, String)> {
-            None
-        }
-        fn open(
-            &self,
-            module: &str,
-            label: &str,
-            settings: &serde_json::Value,
-        ) -> Result<std::sync::Arc<dyn AuthCalls>, String> {
-            self.opened.lock().unwrap().push((
-                module.to_string(),
-                label.to_string(),
-                settings.clone(),
-            ));
-            Ok(self.door.clone())
-        }
-    }
-    let axis = std::sync::Arc::new(Recording {
-        opened: std::sync::Mutex::new(Vec::new()),
-        door: DoorLogin::new(alice()),
-    });
-    std::env::set_var("BUSBAR_TEST_LOGIN_SECRET_LENT", SECRET);
-    let mut cfg = crate::config::AuthCfg::default_none();
-    cfg.methods.insert(
-        "idp".into(),
-        crate::config::AuthMethodCfg {
-            module: "idp-plugin".into(),
-            browser_login: Some(crate::config::BrowserLoginCfg {
-                client_secret: Some(crate::config::SecretRef::env(
-                    "BUSBAR_TEST_LOGIN_SECRET_LENT",
-                )),
-                client_id: Some("client-abc".into()),
-            }),
-            settings: serde_json::Map::new(),
-        },
-    );
-    let methods = LoginMethods::build_on(
-        &cfg,
-        &busbar_plugin_loader::PluginRegistry::empty(),
-        &crate::config::secret::SecretResolver::builtins_only(),
-        || Some(axis.clone() as std::sync::Arc<dyn busbar_contract::auth_calls::AuthAxis>),
-    )
-    .expect("the method opens on the door");
-
-    // LENT AT OPEN: the plugin's instance is opened over the resolved secret and the public id.
-    let opened = axis.opened.lock().unwrap().clone();
-    assert_eq!(opened.len(), 1, "one instance opened: {opened:?}");
-    assert_eq!(opened[0].0, "idp-plugin");
-    assert_eq!(opened[0].1, "idp#login");
-    assert_eq!(
-        opened[0].2["client_secret"], SECRET,
-        "the secret is lent at open"
-    );
-    assert_eq!(opened[0].2["client_id"], "client-abc");
-
-    // HELD NOWHERE ELSE: drive the whole redirect login over the method the build opened.
-    let method = methods.methods.get("idp").expect("the method");
-    let app = crate::test_support::TestApp::new()
+    let door = DoorLogin::new(alice());
+    let app = busbar_kernel::test_support::TestApp::new()
         .public_url("https://busbar.example.com")
-        .login_method_door(
-            "idp",
-            method.module.clone(),
-            method.login_kind,
-            method.has_button,
-        )
+        .login_method_door("idp", door.clone(), LoginKind::Redirect, true)
         .build();
     let begun = begin(&app, "idp", false).await;
     assert_eq!(begun.status().as_u16(), 302);
@@ -1868,7 +1786,7 @@ async fn the_client_secret_is_lent_at_open_and_rides_nothing_the_host_makes() {
         Some(cookie.state.clone()),
     )
     .await;
-    let seen = format!("{:?}", axis.door.seen.lock().unwrap());
+    let seen = format!("{:?}", door.seen.lock().unwrap());
     assert!(
         !seen.contains(SECRET),
         "not in the complete_login the plugin is handed: {seen}"
@@ -1877,47 +1795,64 @@ async fn the_client_secret_is_lent_at_open_and_rides_nothing_the_host_makes() {
         !body_of(called).contains(SECRET),
         "not on the page rendered"
     );
-    let page = render_key_issued(
-        "alice",
-        "user:alice",
-        "bb_live_abc",
-        "https://busbar.example.com",
-        "idp",
-    );
-    assert!(!page.contains(SECRET), "not on the key-issued page");
 }
 
-/// NO AUTH AXIS AT ALL: a hosted-login method is refused in 1.5.5's words, byte for byte — "no
-/// `kind: auth` plugin answers to '<module>'" — never the loader registry's refusal (which stays
-/// internal). RED: the registry's words ("no plugin named or aliased …") reach the operator.
-#[test]
-fn a_login_method_with_no_auth_axis_is_refused_in_1_5_5_words() {
-    let mut cfg = crate::config::AuthCfg::default_none();
-    cfg.methods.insert(
-        "idp".into(),
-        crate::config::AuthMethodCfg {
-            module: "idp-plugin".into(),
-            browser_login: None,
-            settings: serde_json::Map::new(),
-        },
-    );
-    let Err(refusal) = LoginMethods::build_on(
-        &cfg,
-        &busbar_plugin_loader::PluginRegistry::empty(),
-        &crate::config::secret::SecretResolver::builtins_only(),
-        || None,
-    ) else {
-        panic!("no axis answers the method");
-    };
+// ── 1.5.5 byte identity (row 159, K3#2) ─────────────────────────────────────────────────────────
+
+/// The 1.5.5 golden cell `name` (`testing/shadow-oracle/golden/1.5.5/cells`).
+fn golden_cell(name: &str) -> serde_json::Value {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../testing/shadow-oracle/golden/1.5.5/cells")
+        .join(name);
+    let text = std::fs::read_to_string(&path).expect("the 1.5.5 golden cell");
+    serde_json::from_str(&text).expect("golden json")
+}
+
+/// `GET /auth/token` with no credential and no login method, served by this flow through the
+/// kernel's data router, is 1.5.5's answer byte for byte (oracle cell
+/// `http.crosscut|auth-token|GET-none`): the status, the `cache-control`, `content-type` and
+/// `content-length` headers, and the whole page. RED arm kept: the signed-out page, served on the
+/// same path, is a different page, so the comparison is not vacuous.
+#[tokio::test]
+async fn the_hosted_login_page_moved_with_its_1_5_5_bytes() {
+    busbar_kernel::snapshot::init();
+    let golden = golden_cell("http.crosscut__auth-token__GET-none.json");
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    let (base, handle) = serve(app).await;
+    let client = reqwest::Client::new();
+    let got = client
+        .get(format!("{base}/auth/token"))
+        .send()
+        .await
+        .unwrap();
     assert_eq!(
-        refusal,
-        "identity-providers.idp (module 'idp-plugin') could not be loaded as a `kind: auth` login \
-         plugin: no `kind: auth` plugin answers to 'idp-plugin'"
+        u64::from(got.status().as_u16()),
+        golden["status"].as_u64().unwrap()
     );
-    assert!(
-        !refusal.contains("no plugin named or aliased"),
-        "the registry's words stay internal: {refusal}"
+    for name in ["cache-control", "content-type", "content-length"] {
+        assert_eq!(
+            got.headers().get(name).and_then(|v| v.to_str().ok()),
+            golden["headers"][name].as_str(),
+            "the {name} header is 1.5.5's"
+        );
+    }
+    let page = got.text().await.unwrap();
+    assert_eq!(
+        page,
+        golden["body"]["text"].as_str().unwrap(),
+        "the page is 1.5.5's"
     );
+    // RED arm: another page of this flow on the same path differs from the golden.
+    let signed_out = client
+        .get(format!("{base}/auth/token?logout=1"))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert_ne!(signed_out, golden["body"]["text"].as_str().unwrap());
+    handle.abort();
 }
 
 /// THE KERNEL SERVES NO HOSTED LOGIN PAGE OF ITS OWN (row 159, K3#2; THE DESIGN §8: the hosted

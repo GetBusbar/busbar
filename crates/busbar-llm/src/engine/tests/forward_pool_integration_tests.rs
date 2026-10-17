@@ -988,10 +988,13 @@ async fn test_metrics_requires_auth_in_chain_mode() {
         .send()
         .await
         .expect("GET /auth/token no credential");
-    assert_eq!(
+    // The page itself is the hosted login flow's (`busbar-core-oauth2`, row 159 K3#2), which this
+    // test binary does not link; what this core router owns is the mount, RouteAuth::None, so the
+    // chain never answers it.
+    assert_ne!(
         exchange.status().as_u16(),
-        200,
-        "/auth/token is mounted RouteAuth::None and must serve its signed-out page with no credential"
+        401,
+        "/auth/token is mounted RouteAuth::None: the chain never answers it with no credential"
     );
 
     // With the configured token, the scrape is admitted (200) — the gate is token-based.

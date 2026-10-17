@@ -389,7 +389,7 @@ pub(crate) fn base_data_router(
             crate::auth::exchange::AUTH_TOKEN_PATH,
             RouteMethod::Get,
             RouteAuth::None,
-            crate::auth::token::browser,
+            crate::auth::login::seam::browser,
         )
         .route(
             crate::auth::exchange::AUTH_TOKEN_PATH,

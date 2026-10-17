@@ -544,6 +544,7 @@ dependencies = [
  "busbar-contract",
  "busbar-kernel",
  "bytes",
+ "futures",
  "http",
  "http-body-util",
  "oauth-as",
@@ -554,6 +555,7 @@ dependencies = [
  "serde_yaml_ng",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
