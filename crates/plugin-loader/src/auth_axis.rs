@@ -55,6 +55,8 @@ pub struct AuthRows {
     /// A connection table held by the axis itself (a test's stand-in for the connector, with far
     /// ends of its own), used the same way when no `conns` is read.
     held: Option<Arc<dyn DeclaredConns>>,
+    /// Where each instance opened to serve writes its plugin log (THE DESIGN §11.2).
+    logs: Option<fn() -> crate::dispatch::PluginLogConfig>,
 }
 
 impl std::fmt::Debug for AuthRows {
@@ -72,7 +74,16 @@ impl AuthRows {
             dispatcher,
             conns: None,
             held: None,
+            logs: None,
         }
+    }
+
+    /// Each instance opened to serve writes its log records and diagnostics to its own plugin log
+    /// file under the configured `plugins.logs` that `logs` answers when it opens.
+    #[must_use]
+    pub fn with_logs(mut self, logs: fn() -> crate::dispatch::PluginLogConfig) -> Self {
+        self.logs = Some(logs);
+        self
     }
 
     /// Each instance opened to serve declares its needs on the table `conns` answers when it opens
