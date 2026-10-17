@@ -11,8 +11,9 @@
 
 use super::call::{AbiStr, Blob, DeadlineClass, Outcome, RawOutcome};
 use super::door::{
-    MarkWord, Rewrite, Section, Statement, MARKS_KNOWN, MARK_WORD_CARRIER, MARK_WORD_HOOK,
-    REWRITE_ALIAS, REWRITE_KEY, SECTION_CONSUMED, SECTION_DECLARING, SECTION_REQUIRED,
+    MarkWord, Rewrite, Section, Statement, MARKS_KNOWN, MARK_WORD_HOOK,
+    MARK_WORD_ISSUED_SECRET_ALPHABET, REWRITE_ALIAS, REWRITE_KEY, SECTION_CONSUMED,
+    SECTION_DECLARING, SECTION_REQUIRED,
 };
 use crate::abi::host::conn::connector::{
     Need, DIRECTION_INBOUND, DIRECTION_OUTBOUND, EGRESS_DEFAULT, EGRESS_LOOPBACK_ALLOWED,
@@ -438,7 +439,7 @@ pub fn check_marks(marks: u64, words: &[MarkWord]) -> Result<(), Fault> {
         code(
             u64::from(w.class),
             u64::from(MARK_WORD_HOOK),
-            u64::from(MARK_WORD_CARRIER),
+            u64::from(MARK_WORD_ISSUED_SECRET_ALPHABET),
             "mark_word.class",
         )?;
         named(w.word, "mark_word.word")?;

@@ -251,7 +251,7 @@ fn a_word_mark_has_a_known_class_and_a_word() {
     ];
     assert_eq!(check_marks(0, &ok), Ok(()));
     assert_eq!(
-        check_marks(0, &[word(3, "w")]),
+        check_marks(0, &[word(8, "w")]),
         Err(fault(Rule::UnknownCode, "mark_word.class"))
     );
     assert_eq!(
@@ -534,4 +534,41 @@ fn bounded_checks_the_cap_and_the_alignment_and_leaves_null_to_listed() {
     let off = ok.as_ptr().cast::<u8>().wrapping_add(1).cast::<u64>();
     assert_eq!(bounded(off, 1, "t"), Err(fault(Rule::Misaligned, "t")));
     assert_eq!(bounded(off, 0, "t"), Ok(()));
+}
+
+/// THE ISSUED-CREDENTIAL SHAPE MARKS (row 159, K3#4): an auth row that reads host-held credentials
+/// states the shape of the credential the host issues for it as word marks of five kind-neutral
+/// classes (the public id's prefix, length and alphabet; the secret's length and alphabet), each a
+/// known class the statement check admits, distinct from the hook and carrier classes. RED before
+/// the classes exist.
+#[test]
+fn the_issued_credential_shape_marks_are_known_distinct_classes() {
+    use crate::abi::mechanism::door::{
+        MARK_WORD_ISSUED_ID_ALPHABET, MARK_WORD_ISSUED_ID_LENGTH, MARK_WORD_ISSUED_ID_PREFIX,
+        MARK_WORD_ISSUED_SECRET_ALPHABET, MARK_WORD_ISSUED_SECRET_LENGTH,
+    };
+    let classes = [
+        MARK_WORD_HOOK,
+        MARK_WORD_CARRIER,
+        MARK_WORD_ISSUED_ID_PREFIX,
+        MARK_WORD_ISSUED_ID_LENGTH,
+        MARK_WORD_ISSUED_ID_ALPHABET,
+        MARK_WORD_ISSUED_SECRET_LENGTH,
+        MARK_WORD_ISSUED_SECRET_ALPHABET,
+    ];
+    for (i, c) in classes.iter().enumerate() {
+        assert_eq!(
+            *c,
+            i as u32 + 1,
+            "the classes number on from 1 without a gap"
+        );
+    }
+    let shape = [
+        word(MARK_WORD_ISSUED_ID_PREFIX, "PFX"),
+        word(MARK_WORD_ISSUED_ID_LENGTH, "20"),
+        word(MARK_WORD_ISSUED_ID_ALPHABET, "ABC"),
+        word(MARK_WORD_ISSUED_SECRET_LENGTH, "40"),
+        word(MARK_WORD_ISSUED_SECRET_ALPHABET, "abc"),
+    ];
+    assert_eq!(check_marks(0, &shape), Ok(()));
 }

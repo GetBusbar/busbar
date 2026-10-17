@@ -171,6 +171,22 @@ pub const MARK_WORD_HOOK: u32 = 1;
 /// [`MarkWord::class`]: a carrier class the plugin consumes (an inbound credential carrier an auth
 /// plugin reads; the kernel strips it from what a plane sees). SHARED: never a conflict.
 pub const MARK_WORD_CARRIER: u32 = 2;
+/// [`MarkWord::class`]: the literal prefix of the public id the host issues for the row's
+/// credential kinds (an auth row stating `abi::auth::FACT_READS_CREDENTIALS`). Absent = no prefix.
+/// SHARED. The five ISSUED marks are the issued credential's shape: the host draws every other
+/// symbol from the OS CSPRNG over the stated alphabets and names no format of its own.
+pub const MARK_WORD_ISSUED_ID_PREFIX: u32 = 3;
+/// [`MarkWord::class`]: the issued public id's total length in characters, prefix included, as a
+/// decimal word. SHARED.
+pub const MARK_WORD_ISSUED_ID_LENGTH: u32 = 4;
+/// [`MarkWord::class`]: the issued public id's alphabet after its prefix: distinct ASCII graphic
+/// characters, each drawn with equal weight. SHARED.
+pub const MARK_WORD_ISSUED_ID_ALPHABET: u32 = 5;
+/// [`MarkWord::class`]: the issued secret's length in characters, as a decimal word. SHARED.
+pub const MARK_WORD_ISSUED_SECRET_LENGTH: u32 = 6;
+/// [`MarkWord::class`]: the issued secret's alphabet: distinct ASCII graphic characters, each drawn
+/// with equal weight. SHARED.
+pub const MARK_WORD_ISSUED_SECRET_ALPHABET: u32 = 7;
 
 /// One word mark: its class and the word.
 #[repr(C)]
