@@ -178,6 +178,22 @@ fn an_unaudited_register_is_below_the_floor() {
         f.red(),
         "no production scope has been read, so `--check` is below its floor"
     );
+    assert_eq!(
+        (f.production, f.production_clean),
+        (2, 0),
+        "the denominator"
+    );
+    assert_eq!(
+        f.unclean,
+        vec![
+            "crates/kernel/src  unaudited".to_string(),
+            "crates/plane/src  unaudited".to_string()
+        ]
+    );
+    assert!(
+        f.excuses.is_empty() && f.shapes.is_empty(),
+        "nothing else is red"
+    );
 }
 
 /// XA1#3 RED: ONE ZERO PER SCOPE IS `unconfirmed`, NOT CLEAN, and still below the floor.
@@ -188,12 +204,18 @@ fn one_reading_per_scope_is_below_the_floor() {
     s.commit("base");
     s.settle();
     s.record("crates/kernel/src", 1, "zero", "alice", "");
-    assert!(s.check().red(), "one reader is not the floor");
+    let f = s.check();
+    assert!(f.red(), "one reader is not the floor");
+    assert_eq!(
+        f.unclean,
+        vec!["crates/kernel/src  unconfirmed".to_string()]
+    );
 
     // The positive control: the second, independent reading meets it.
     s.record("crates/kernel/src", 2, "zero", "bob", "");
     let f = s.check();
     assert!(!f.red(), "every production scope clean is green");
+    assert_eq!((f.production, f.production_clean), (1, 1));
 }
 
 /// XA1#1 RED: `sync --write` DROPPED a gone scope whose HIGH finding one zero had contradicted,
@@ -268,9 +290,28 @@ fn a_file_hidden_by_a_hand_edited_exclude_and_excuse_is_red() {
         excuses.push(Json::Object(e));
     });
     s.commit("an unread file, hidden");
+    let f = s.check();
     assert!(
-        s.check().red(),
+        f.red(),
         "the register's excuses and shapes are not the source's, so `--check` is red"
+    );
+    assert!(
+        f.gaps.is_empty() && f.unclean.is_empty(),
+        "the hiding worked on every other rule: {:?} {:?}",
+        f.gaps,
+        f.unclean
+    );
+    assert_eq!(f.excuses.len(), 1, "{:?}", f.excuses);
+    assert!(
+        f.excuses[0].contains("crates/kernel/src/new.rs"),
+        "{:?}",
+        f.excuses
+    );
+    assert_eq!(f.shapes.len(), 1, "{:?}", f.shapes);
+    assert!(
+        f.shapes[0].starts_with("crates/kernel/src  exclude"),
+        "{:?}",
+        f.shapes
     );
 }
 
@@ -292,7 +333,10 @@ fn an_excuse_the_source_never_granted_is_red() {
         e.insert("reason", Json::Str("a file nobody reads".to_string()));
         excuses.push(Json::Object(e));
     });
-    assert!(s.check().red());
+    let f = s.check();
+    assert!(f.red());
+    assert_eq!(f.excuses.len(), 1, "{:?}", f.excuses);
+    assert!(f.shapes.is_empty() && f.unclean.is_empty());
 }
 
 /// XA1#2 RED: a scope's `exclude` or `kind` that is not the derived one is red on its own. A `kind`
@@ -316,7 +360,9 @@ fn a_scope_shape_the_tree_does_not_derive_is_red() {
             ]),
         );
     });
-    assert!(s.check().red(), "an exclude the tree does not derive");
+    let f = s.check();
+    assert!(f.red(), "an exclude the tree does not derive");
+    assert_eq!(f.shapes.len(), 1, "{:?}", f.shapes);
 
     s.settle();
     s.read_clean();
@@ -324,5 +370,10 @@ fn a_scope_shape_the_tree_does_not_derive_is_red() {
     s.edit(|doc| {
         scope_mut(doc, "crates/plane/src").insert("kind", Json::Str("test".to_string()));
     });
-    assert!(s.check().red(), "a kind the tree does not derive");
+    let f = s.check();
+    assert!(f.red(), "a kind the tree does not derive");
+    assert_eq!(
+        f.shapes,
+        vec!["crates/plane/src  kind is 'test', the tree derives 'production'".to_string()]
+    );
 }

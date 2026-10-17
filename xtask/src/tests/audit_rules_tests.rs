@@ -31,7 +31,7 @@ fn scope_of(rounds: &[String]) -> Json {
     sc.insert("fixed_at", Json::Null);
     sc.insert(
         "rounds",
-        Json::Array(rounds.iter().map(|r| scope(r)).collect()),
+        Json::Array(rounds.iter().map(|r| scope(r.as_str())).collect()),
     );
     Json::Object(sc)
 }

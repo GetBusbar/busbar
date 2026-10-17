@@ -10,7 +10,8 @@
 //! scopes BY ID while an id is a DIRECTORY PATH: a rename that changes no code drops the audited
 //! record and derives a bare `unaudited` one in its place. See the `move` section below.
 //!
-//! Every stdout line here is byte-identical to `scripts/audit-ledger.py`'s, and both data files —
+//! Every stdout line here is byte-identical to `scripts/audit-ledger.py`'s (save the lines of the
+//! rules the Python never had: `--check`'s excuse, shape and floor blocks), and both data files —
 //! `qa/audit-ledger.json` and `qa/evidence/AUDIT-STATUS.md` — are written byte-identically. That is
 //! not politeness: the register is 147KB of committed evidence and the report is a committed
 //! document, so a rewrite that reflowed either would bury the one line that changed.
@@ -188,7 +189,7 @@ fn dropped_open(existing: &[Json], removed: &[&String]) -> Vec<(String, String)>
             if !removed.iter().any(|r| r.as_str() == id) {
                 return None;
             }
-            let found = audit::open_findings(sc, None)?;
+            let found = audit::open_findings(sc)?;
             let counts = found.get("counts");
             let held: Vec<String> = ["HIGH", "MEDIUM"]
                 .iter()
@@ -1576,13 +1577,42 @@ pub struct CheckFindings {
     /// tree. See [`crate::audit::phantom_paths`].
     pub phantom: Vec<String>,
     pub owed: Vec<String>,
+    /// The register's excuse list where it is not [`audit::UNCOVERED_BY_DESIGN`]. See
+    /// [`audit::excuse_drift`].
+    pub excuses: Vec<String>,
+    /// Register scopes whose `kind`/`paths`/`exclude` are not the derived ones. See
+    /// [`audit::shape_drift`].
+    pub shapes: Vec<String>,
+    /// THE FLOOR, NOT MET: every production scope that is not `clean`, with its status. Empty is
+    /// not enough on its own: [`CheckFindings::below_floor`] also refuses an empty denominator.
+    pub unclean: Vec<String>,
+    /// THE DENOMINATOR: the production scopes the floor is measured over.
+    pub production: usize,
+    /// How many of them are `clean` (two zero rounds from distinct auditors at the current hash).
+    pub production_clean: usize,
     pub scopes: usize,
     pub clean_pct: f64,
 }
 
+/// What `--check` measures the audit over and the floor beneath which it refuses, stated once for
+/// the printer and the Q128 judge (docs/design/BUSBAR-1.6.0.md l.2064: an instrument "declares the
+/// set it measures over and a floor beneath which its own result is a refusal rather than a
+/// pass").
+pub const FLOOR: &str = "every production scope clean: two zero rounds from distinct auditors at \
+                         the current hash (xtask/src/audit.rs property 3)";
+
 impl CheckFindings {
+    /// THE FLOOR. Below it when a production scope is not `clean`, and below it when there is no
+    /// production scope at all: a measurement over nothing is a refusal, never a pass.
+    pub fn below_floor(&self) -> bool {
+        self.production == 0 || self.production_clean < self.production || !self.unclean.is_empty()
+    }
+
     pub fn red(&self) -> bool {
-        !self.gaps.is_empty()
+        self.below_floor()
+            || !self.excuses.is_empty()
+            || !self.shapes.is_empty()
+            || !self.gaps.is_empty()
             || !self.unscoped.is_empty()
             || !self.missing.is_empty()
             || !self.problems.is_empty()
@@ -1637,13 +1667,20 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
     // lands, and this is the line that says so.
     let have: Vec<String> = rows.iter().map(|r| r.id.clone()).collect();
     let mounted = git.mounted_at("HEAD")?;
-    f.missing = audit::derive_scopes(git.repo(), &mounted)
+    let derived = audit::derive_scopes(git.repo(), &mounted);
+    f.missing = derived
         .iter()
         .filter_map(|d| d.get("id").as_str().map(str::to_string))
         .filter(|i| !have.contains(i))
         .collect();
 
     f.problems = audit::register_problems(&doc);
+
+    // THE REGISTER'S EXCUSES AND SHAPES ARE THE SOURCE'S, OR THE CHECK IS JUDGING A HAND EDIT.
+    // Coverage reads the committed excuse list and every hash reads the committed `exclude`, so
+    // either one edited by hand hides a file from a `clean` scope with no hash moving.
+    f.excuses = audit::excuse_drift(&doc);
+    f.shapes = audit::shape_drift(&doc, &derived);
 
     // A SCOPE ADDRESSED AT NOTHING. Checked here, with the rest of the questions about whether the
     // instrument can be believed, and before any reading of a result means anything: a scope whose
@@ -1685,7 +1722,7 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
         // recorded them, or drop the scope entirely.
         if let (true, Some(found)) = (
             matches!(r.status, "open" | "stale"),
-            audit::open_findings(sc, r.current_hash.as_deref()),
+            audit::open_findings(sc),
         ) {
             let counts = found.get("counts");
             let empty = !counts.truthy();
@@ -1816,7 +1853,16 @@ pub fn check(git: &Git, register: &std::path::Path) -> Result<CheckFindings, Str
         }
     }
 
+    // THE FLOOR, over its stated denominator: every production scope, each `clean`. `kind` is held
+    // to the derived one above, so no scope leaves the denominator by a hand edit.
     let prod = audit::production(&rows);
+    f.production = prod.len();
+    f.production_clean = prod.iter().filter(|r| r.status == "clean").count();
+    f.unclean = prod
+        .iter()
+        .filter(|r| r.status != "clean")
+        .map(|r| format!("{}  {}", r.id, r.status))
+        .collect();
     f.clean_pct = audit::bar(&prod, "clean").1;
     Ok(f)
 }
@@ -1888,14 +1934,42 @@ fn cmd_check(git: &Git, register: &std::path::Path) -> i32 {
         "  ",
     );
 
+    block(
+        &f.excuses,
+        "excuse(s) in the register that are not the ones xtask/src/audit.rs grants:",
+        "  ",
+    );
+    block(
+        &f.shapes,
+        "scope(s) whose kind/paths/exclude are not the shape the tree derives:",
+        "  ",
+    );
+    block(
+        &f.unclean,
+        "production scope(s) below the floor (not clean):",
+        "  ",
+    );
+    // THE DENOMINATOR AND THE FLOOR, stated on every run, red or green.
+    println!(
+        "audit ledger: floor -- {FLOOR}; {} of {} production scope(s) clean ({:.1}% of \
+         production LOC)",
+        f.production_clean, f.production, f.clean_pct
+    );
+    if f.production == 0 {
+        println!(
+            "audit ledger: the register holds no production scope, so there is nothing the floor \
+             could be met over"
+        );
+    }
+
     if f.red() {
         println!("audit ledger --check: RED");
         return 1;
     }
     println!(
         "audit ledger --check: GREEN -- {} scopes, coverage complete, no scope open at \
-         HIGH/MEDIUM ({:.1}% of production LOC clean)",
-        f.scopes, f.clean_pct
+         HIGH/MEDIUM, every one of {} production scope(s) clean",
+        f.scopes, f.production
     );
     0
 }

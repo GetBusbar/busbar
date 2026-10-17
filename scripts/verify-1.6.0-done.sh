@@ -1617,11 +1617,14 @@ step "design-bindings --strict"    cargo xtask gate design-bindings --strict
 end_group
 
 # ─────────────────────────────────────────────────────────────────────────────────────────────────
-begin_group "AUDIT-LEDGER — every production path is covered by a scope, nothing open at HIGH/MEDIUM"
+begin_group "AUDIT-LEDGER — every production path is covered by a scope and every production scope is clean"
 # qa/audit-ledger.json carries one scope per production path, its tree hash at the audited commit and
-# the round that produced the result. --check is red two ways: a tracked production file that no
-# scope covers (coverage cannot silently regress when a crate is added), and a scope with findings
-# recorded and no fix commit stamped. A result whose tree hash has moved reads `stale` in
+# the round that produced the result. --check is red, among its other rules: on a tracked production
+# file that no scope covers (coverage cannot silently regress when a crate is added); on a scope with
+# findings recorded that no fix stamp and no two other auditors' zero rounds at one tree have
+# answered; on an excuse or a scope shape the source does not derive; and below its floor, which it
+# states on every run: every production scope clean (two zero rounds from distinct auditors at the
+# current hash), over a denominator that is not empty. A result whose tree hash has moved reads `stale` in
 # qa/evidence/AUDIT-STATUS.md rather than green — an audit describes one tree, not the code forever.
 if [ -f qa/audit-ledger.json ]; then
   # The gate's own RED proof runs first, as everywhere else. It judges the five rules about the
@@ -1631,15 +1634,19 @@ if [ -f qa/audit-ledger.json ]; then
   # The `audit-ledger` GATE was deleted with the old register; what survives, and what
   # judges a restored register, is `cargo xtask ledger`. Its rules' own RED proofs are its unit
   # tests, declared by count so a filter that drifts off them is RED rather than vacuously green.
-  # 28 = the 11 audit rule tests (xtask/src/audit.rs) + the 12 audit_cmd tests (hygiene_tests 4,
-  # move_tests 8, the eighth L-R23's: `sync --write` keeps a gone scope with an open HIGH/MEDIUM
-  # unless `--drop` names it) + the five pinned-scope tests (xtask/src/audit_pinned/pinned_tests.rs: a moved pin
+  # 42 = the 11 audit rule tests (xtask/src/audit.rs) + the 5 answered-finding tests
+  # (xtask/src/tests/audit_rules_tests.rs: one zero, the finder's own zero, a moved tree and two
+  # zeros at two trees answer nothing; two other auditors at one tree do) + the 14 audit_cmd tests
+  # (hygiene_tests 4, move_tests 10, among them L-R23's: `sync --write` keeps a gone scope with an
+  # open HIGH/MEDIUM unless `--drop` names it) + the 7 check tests (xtask/src/tests/
+  # audit_check_tests.rs: the floor, a contradicted finding held open and kept by `sync`, a
+  # hand-edited excuse, exclude or kind is red) + the five pinned-scope tests (xtask/src/audit_pinned/pinned_tests.rs: a moved pin
   # reads stale, a byte-identical pin carries the record, an unproducible pin is RED naming it, a
   # twin / non-plugin git dep is not mounted, the tree wins). THE FILTER NAMES THE THREE MODULES, not
   # the bare substring `audit`: that substring also selected q128's two `an_audit_of_*` tests and the
   # construction gate's two `no_response_escapes_audit_tests`, so the run passed 31 against a declared
   # 29 and this step was RED on tests that are not the ledger's rules (they run in TEST).
-  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 28 cargo test -p xtask --lib -- audit:: audit_cmd:: audit_pinned::
+  step "audit ledger rules (xtask audit + audit_cmd + audit_pinned tests)" filtered_cargo_test 42 cargo test -p xtask --lib -- audit:: audit_cmd:: audit_pinned::
   step "audit-ledger --check"  cargo xtask ledger --check
 else
   absent_step "audit ledger" "qa/audit-ledger.json"
