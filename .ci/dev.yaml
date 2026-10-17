@@ -249,7 +249,7 @@ checks:
     needs: [oracle]
     # The self-hosted OIDF suite runs in the backend's docker; ModernCI places this check only on a
     # backend probed to have all of these, and says which one is missing otherwise.
-    requires: [cc, docker, docker-compose, python3-venv, curl, git]
+    requires: [cc, docker, docker-compose, docker-amd64, python3-venv, curl, git]
     # The rig logs, fetched with `modernci call artifact --check conformance` (a red suite's reason).
     outputs: [target/conformance-record]
   verify-done:
