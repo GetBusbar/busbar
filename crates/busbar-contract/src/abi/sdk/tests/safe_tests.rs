@@ -395,3 +395,30 @@ fn red_an_answer_leased_from_a_table_the_body_dropped_is_fault() {
     assert_eq!(drive(inst, DRIVE_STATE_LEASE), Outcome::Failed);
     assert_eq!(close(inst, 0), Outcome::Ready);
 }
+
+/// THE REQUEST PATH TAKES NO SHARED LOCK WHEN NOTHING IS PARKED (THE DESIGN §11.2, "no allocation
+/// and no blocking on the hot path"). Every worker on an instance enters through the same `Head`;
+/// an entry on an instance with nothing parked must not touch the parked table's mutex, so it
+/// cannot wait on another worker holding it.
+#[test]
+fn an_entry_with_nothing_parked_takes_no_parked_lock() {
+    let (o, inst, _drops) = open(OPEN_READY);
+    assert_eq!(o, Outcome::Ready);
+    // SAFETY: the instance the SDK minted above, alive until the `close` below.
+    let h = unsafe { super::head(inst) }.expect("an open instance has a head");
+    let held = h.parked();
+    let at = inst as usize;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let _ = tx.send(tick(at as *mut c_void));
+    });
+    let answered = rx.recv_timeout(std::time::Duration::from_secs(5));
+    drop(held);
+    worker.join().expect("the worker returns");
+    assert_eq!(
+        answered.ok(),
+        Some((Outcome::Ready, 42)),
+        "an entry with nothing parked waited on the parked table's lock"
+    );
+    assert_eq!(close(inst, 0), Outcome::Ready);
+}
