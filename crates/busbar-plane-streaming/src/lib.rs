@@ -47,9 +47,7 @@ pub mod config;
 pub mod diagnostics;
 pub mod door;
 pub mod driven;
-pub mod governed;
 pub mod meta;
-pub mod open_calls;
 /// What an `on_piece` answer owes the reply buffer across re-calls, and the one settle of its buffers.
 mod piece;
 pub mod provider;
@@ -62,6 +60,7 @@ pub mod session_pump;
 pub mod session_row;
 pub mod session_unit;
 pub mod sessions;
+pub mod splice;
 
 #[cfg(test)]
 mod tests;

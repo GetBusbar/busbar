@@ -17,11 +17,11 @@ use crate::codec::ir::codec::{DuplexReader, DuplexWriter, WireEvent};
 use crate::codec::ir::config::SessionConfig;
 use crate::codec::ir::usage::IrDuplexUsage;
 use crate::codec::topology::twilio::{CallerStep, TwilioBridge};
-use crate::governed::GovernedSession;
 use crate::meta;
 use crate::session::{class_counts, TurnCounters};
 use crate::session_pump::{SessionPump, TurnSink};
 use crate::session_row::VoiceSessionRow;
+use crate::splice::LockedKeys;
 
 /// The billable classes a session reports, in the tail's order (their index is the class a unit
 /// count names).
@@ -77,6 +77,8 @@ pub struct SessionUnit<C> {
     writes: Vec<VoiceSessionRow>,
     units: CumulativeUnits,
     twilio: Option<TwilioBridge>,
+    /// The far end has been sent the locked session the telephony carrier's start called for.
+    locked_told: bool,
     opened_ns: u64,
     ceiling_secs: Option<u64>,
     ended: bool,
@@ -84,7 +86,7 @@ pub struct SessionUnit<C> {
 
 impl<C> SessionUnit<C>
 where
-    C: DuplexReader + DuplexWriter,
+    C: DuplexReader + DuplexWriter + LockedKeys,
 {
     /// A session over `codec`, locked to `locked`, opened at `now_ns`, bounded by `ceiling_secs`.
     /// `telephony` puts the telephony carrier's envelope on the caller's side. `id` names the session
@@ -124,15 +126,11 @@ where
             pump: SessionPump::new(codec, Some(locked)),
             units: CumulativeUnits::default(),
             twilio: telephony.then(TwilioBridge::default),
+            locked_told: false,
             opened_ns: now_ns,
             ceiling_secs,
             ended: false,
         }
-    }
-
-    /// Bind the node's open-call table for this session.
-    pub fn bind_governed(&mut self, governed: GovernedSession) {
-        self.pump.bind_governed(governed);
     }
 
     /// The session's cumulative units, per class in [`CLASSES`] order.
@@ -169,22 +167,37 @@ where
             .collect()
     }
 
-    /// A piece from the caller.
+    /// A piece from the caller. Behind the telephony carrier's envelope, the carrier's start is
+    /// translated into the locked session the far end is told before any audio (the carrier
+    /// configures nothing itself: µ-law both ways over the operator's session).
     pub fn from_caller(&mut self, bytes: &[u8]) -> Plan {
         if self.ended {
             return Plan::default();
         }
-        let frame = match self.twilio.as_mut() {
-            None => WireEvent(Bytes::copy_from_slice(bytes)),
-            Some(bridge) => match bridge.from_caller(bytes) {
-                CallerStep::Audio(w) => w,
-                CallerStep::Stop | CallerStep::Refused => return self.end(),
-                CallerStep::Nothing => return Plan::default(),
-            },
+        let (frame, mut to_far_end) = match self.twilio.as_mut() {
+            None => (Some(WireEvent(Bytes::copy_from_slice(bytes))), Vec::new()),
+            Some(bridge) => {
+                let step = bridge.from_caller(bytes);
+                let started = bridge.started();
+                let frame = match step {
+                    CallerStep::Audio(w) => Some(w),
+                    CallerStep::Stop | CallerStep::Refused => return self.end(),
+                    CallerStep::Nothing => None,
+                };
+                let mut told = Vec::new();
+                if started && !self.locked_told {
+                    self.locked_told = true;
+                    told.extend(self.pump.locked_update().map(|w| w.0.to_vec()));
+                }
+                (frame, told)
+            }
         };
-        let out = self.pump.on_client_frame(frame);
+        if let Some(frame) = frame {
+            let out = self.pump.on_client_frame(frame);
+            to_far_end.extend(out.upstream.into_iter().map(|w| w.0.to_vec()));
+        }
         Plan {
-            to_far_end: out.upstream.into_iter().map(|w| w.0.to_vec()).collect(),
+            to_far_end,
             to_caller: Vec::new(),
             end: false,
         }
@@ -208,13 +221,11 @@ where
         }
     }
 
-    /// The clock, at `now_ns` and `now_ms`: a session past its ceiling is told why and ends; the
-    /// node's unanswered calls past their deadline are swept.
-    pub fn tick(&mut self, now_ns: u64, now_ms: u64) -> Plan {
+    /// The clock, at `now_ns`: a session past its ceiling is told why and ends.
+    pub fn tick(&mut self, now_ns: u64, _now_ms: u64) -> Plan {
         if self.ended {
             return Plan::default();
         }
-        self.pump.sweep_expired(now_ms);
         let Some(ceiling) = self.ceiling_secs else {
             return Plan::default();
         };
@@ -236,13 +247,11 @@ where
         plan
     }
 
-    /// The session ends: its open turn settles once, the node forgets its open calls, and the
-    /// session's record is written terminal.
+    /// The session ends: its open turn settles once, and the session's record is written terminal.
     pub fn end(&mut self) -> Plan {
         if !self.ended {
             self.ended = true;
             self.pump.settle_open_turn(&mut self.units);
-            self.pump.forget_governed_calls();
             self.row.terminal = true;
             self.writes.push(self.row.clone());
         }

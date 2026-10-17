@@ -40,7 +40,10 @@ fn the_callers_audio_on_the_telephony_door_reaches_the_far_end() {
     // The served telephony leg handed Twilio's `event`-tagged frames to the realtime reader, which
     // reads only `type`-tagged ones: the caller's audio reached no one.
     let mut s = telephony();
-    assert_eq!(s.from_caller(&start("audio/x-mulaw")), Plan::default());
+    let started = s.from_caller(&start("audio/x-mulaw"));
+    assert!(started.to_caller.is_empty() && !started.end, "{started:?}");
+    assert_eq!(started.to_far_end.len(), 1, "the locked session, once");
+    assert!(text(&started.to_far_end).contains("g711_ulaw"));
     let plan = s.from_caller(&media("MZ1", &[0x7f; 160]));
     let up = text(&plan.to_far_end);
     assert!(up.contains("input_audio_buffer.append"), "{up}");
@@ -89,7 +92,10 @@ fn model_audio_and_a_barge_in_reach_the_caller_in_the_carriers_envelope() {
     );
     let plan = s.from_far_end(&barge, 0);
     assert!(text(&plan.to_caller).contains("\"event\":\"clear\""));
-    assert!(text(&plan.to_far_end).contains("response.cancel"));
+    assert!(
+        plan.to_far_end.is_empty(),
+        "busbar authors nothing upstream on a barge-in (Law 11)"
+    );
 }
 
 #[test]

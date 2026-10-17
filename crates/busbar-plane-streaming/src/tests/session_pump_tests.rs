@@ -3,13 +3,10 @@
 
 //! Tests for `crates/busbar-plane-streaming/src/session_pump.rs`.
 
-use std::sync::{Arc, Mutex};
-
 use bytes::Bytes;
 
 use super::*;
 use crate::codec::ir::codec::OpenAiRealtimeCodec;
-use crate::governed::{GovernedCalls, ReplyRefusal};
 
 fn wire(v: serde_json::Value) -> WireEvent {
     WireEvent(Bytes::from(serde_json::to_vec(&v).expect("json")))
@@ -85,7 +82,7 @@ fn a_usage_report_closes_the_turn_with_its_counters_and_the_session_continues() 
 }
 
 #[test]
-fn a_sink_that_refuses_cuts_the_session_and_tells_the_far_end_to_stop() {
+fn a_sink_that_refuses_closes_the_session_and_authors_nothing_upstream() {
     let mut p = pump();
     let mut sink = Turns {
         refuse: true,
@@ -93,37 +90,7 @@ fn a_sink_that_refuses_cuts_the_session_and_tells_the_far_end_to_stop() {
     };
     let out = p.on_server_frame(usage_done(), 0, &mut sink);
     assert!(out.close);
-    assert!(texts(&out.upstream).contains("response.cancel"));
-}
-
-#[test]
-fn a_barge_in_cancels_and_truncates_at_what_was_heard() {
-    let mut p = pump();
-    let mut sink = Turns::default();
-    let b64 = busbar_contract::media::base64_encode(&[0u8; 96]);
-    let _ = p.on_server_frame(
-        wire(
-            serde_json::json!({"type":"response.output_audio.delta","delta":b64,
-            "item_id":"it7","output_index":0,"content_index":0}),
-        ),
-        0,
-        &mut sink,
-    );
-    let out = p.on_server_frame(
-        wire(
-            serde_json::json!({"type":"input_audio_buffer.speech_started",
-            "audio_start_ms":0,"item_id":"it7"}),
-        ),
-        0,
-        &mut sink,
-    );
-    let up = texts(&out.upstream);
-    assert!(up.contains("response.cancel"), "{up}");
-    assert!(
-        up.contains("conversation.item.truncate") && up.contains("\"audio_end_ms\":2"),
-        "{up}"
-    );
-    assert!(texts(&out.downlink).contains("speech_started"));
+    assert!(out.upstream.is_empty(), "{}", texts(&out.upstream));
 }
 
 /// LAW 11 (QUESTIONS Q98): a tool call is part of the model's response. Every frame of it is relayed
@@ -231,75 +198,6 @@ fn p_item_voice_tool_args_streamed_fragments_reach_the_caller_whole_and_once() {
     assert_eq!(sink.closed[0].1.tool_calls, 1, "one call, counted once");
 }
 
-/// A table that records what the pump asked of it.
-#[derive(Default)]
-struct Table {
-    planned: Mutex<Vec<(u64, String, u64)>>,
-    open: Mutex<Vec<String>>,
-    closed: Mutex<Vec<u64>>,
-}
-
-impl GovernedCalls for Table {
-    fn planned(&self, session: u64, call_id: &str, now_ms: u64) -> bool {
-        self.planned
-            .lock()
-            .expect("lock")
-            .push((session, call_id.to_string(), now_ms));
-        self.open.lock().expect("lock").push(call_id.to_string());
-        true
-    }
-    fn replied(&self, _session: u64, call_id: &str) -> Result<(), ReplyRefusal> {
-        let mut open = self.open.lock().expect("lock");
-        match open.iter().position(|c| c == call_id) {
-            Some(i) => {
-                open.remove(i);
-                Ok(())
-            }
-            None => Err(ReplyRefusal::UnknownCall),
-        }
-    }
-    fn expired(&self, _now_ms: u64) -> usize {
-        0
-    }
-    fn closed(&self, session: u64) {
-        self.closed.lock().expect("lock").push(session);
-    }
-}
-
-#[test]
-fn a_relayed_call_waits_for_the_callers_reply() {
-    let table = Arc::new(Table::default());
-    let mut p = pump();
-    p.bind_governed(GovernedSession {
-        session: 7,
-        calls: table.clone(),
-    });
-    let mut sink = Turns::default();
-    for f in call_frames("cc", "lookup", "{}") {
-        let out = p.on_server_frame(f, 42, &mut sink);
-        assert!(out.upstream.is_empty(), "the gateway never answers a call");
-    }
-    assert_eq!(
-        *table.planned.lock().expect("lock"),
-        vec![(7, "cc".to_string(), 42)]
-    );
-    let reply = |id: &str| {
-        wire(
-            serde_json::json!({"type":"conversation.item.create","item":{
-            "type":"function_call_output","call_id":id,"output":"{}"}}),
-        )
-    };
-    let forged = p.on_client_frame(reply("nope"));
-    assert!(forged.refused_reply && forged.upstream.is_empty());
-    let real = p.on_client_frame(reply("cc"));
-    assert!(!real.refused_reply);
-    let up = texts(&real.upstream);
-    assert!(up.contains("function_call_output") && up.contains("response.create"));
-    p.forget_governed_calls();
-    assert_eq!(*table.closed.lock().expect("lock"), vec![7]);
-    assert_eq!(p.governed_session(), Some(7));
-}
-
 #[test]
 fn a_callers_session_update_is_replaced_by_the_locked_config() {
     let locked = SessionConfig {
@@ -370,43 +268,6 @@ fn uplink_ms(ms: usize) -> WireEvent {
 }
 
 #[test]
-fn two_open_tool_calls_wait_on_two_different_correlations() {
-    let table = Arc::new(Table::default());
-    let mut p = pump();
-    p.bind_governed(GovernedSession {
-        session: 1,
-        calls: table.clone(),
-    });
-    let mut sink = Turns::default();
-    for f in call_frames("cc", "a", "{}")
-        .into_iter()
-        .chain(call_frames("dd", "b", "{}"))
-    {
-        let _ = p.on_server_frame(f, 0, &mut sink);
-    }
-    let planned: Vec<String> = table
-        .planned
-        .lock()
-        .expect("lock")
-        .iter()
-        .map(|(_, c, _)| c.clone())
-        .collect();
-    assert_eq!(planned, ["cc", "dd"], "each call is its own wait");
-    let reply = |id: &str| {
-        wire(
-            serde_json::json!({"type":"conversation.item.create","item":{
-            "type":"function_call_output","call_id":id,"output":"{}"}}),
-        )
-    };
-    assert!(!p.on_client_frame(reply("dd")).refused_reply);
-    assert!(
-        p.on_client_frame(reply("dd")).refused_reply,
-        "a wait is woken once"
-    );
-    assert!(!p.on_client_frame(reply("cc")).refused_reply);
-}
-
-#[test]
 fn an_upstream_error_still_meters_the_turn_it_ended() {
     let mut p = pump();
     let mut sink = Turns::default();
@@ -451,14 +312,15 @@ fn a_barge_in_bills_what_the_interrupted_turn_served_on_the_turn_that_takes_over
     assert_eq!((closed.audio_ms_in, closed.tool_calls), (1_000, 1));
 }
 
+/// A caller frame the reader cannot read is the caller's to send (Law 5): it is relayed and
+/// counts nothing.
 #[test]
-fn a_caller_frame_that_is_not_utf8_or_names_no_known_event_goes_nowhere() {
+fn a_caller_frame_the_reader_cannot_read_is_relayed_and_counts_nothing() {
     let mut p = pump();
     let mut sink = Turns::default();
     let bad = p.on_client_frame(WireEvent(Bytes::from_static(&[0xff, 0xfe, 0x00])));
-    assert!(bad.upstream.is_empty() && bad.downlink.is_empty() && !bad.close);
-    let unknown = p.on_client_frame(wire(serde_json::json!({"type":"teleport.now"})));
-    assert!(unknown.upstream.is_empty() && unknown.downlink.is_empty());
+    assert_eq!(bad.upstream.len(), 1);
+    assert!(bad.downlink.is_empty() && !bad.close);
     p.settle_open_turn(&mut sink);
     assert!(sink.closed.is_empty(), "nothing was counted");
 }
