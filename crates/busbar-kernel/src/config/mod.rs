@@ -550,10 +550,10 @@ pub struct RootCfg {
     /// The `tool_pools:` failover pools for this section's owning plane, carried through `resolve`
     /// VERBATIM — operator intent, like `tool_defs` beside it, projected onto
     /// `state::App::tool_pools` at build. Empty ⇒ no failover on that plane.
-    pub tool_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub tool_pools: std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>,
     /// The `agent_pools:` failover pools for this section's owning plane, carried through `resolve`
     /// VERBATIM onto `state::App::agent_pools`. Empty ⇒ no failover on that plane.
-    pub agent_pools: std::collections::BTreeMap<String, crate::failover::CandidatePoolCfg>,
+    pub agent_pools: std::collections::BTreeMap<String, crate::config::pools::CandidatePoolCfg>,
     /// LAW 7 — the plane config sections this config writes content into (the deletion gate's
     /// `is_present()`). A linked plane whose section is absent hydrates, starts, builds and serves
     /// nothing; see `state::App::plane_configured`.

@@ -750,7 +750,7 @@ fn an_applied_door_section_carries_its_pools_and_hands_the_plane_no_work_key() {
     let written: serde_yaml::Value =
         serde_yaml::from_str("fs: { url: \"http://fs\" }\nwork: { max_live: 4 }\n")
             .expect("a section");
-    let pool = busbar_kernel::failover::CandidatePoolCfg {
+    let pool = busbar_kernel::config::pools::CandidatePoolCfg {
         members: vec!["fs".to_string()],
         ..Default::default()
     };

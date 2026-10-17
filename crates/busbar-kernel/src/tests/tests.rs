@@ -2597,7 +2597,7 @@ fn planeless_config_gets_inert_plane_breakers_and_apply_upgrades() {
     let mut with_pool = planeless();
     with_pool.tool_pools.insert(
         "search".to_string(),
-        crate::failover::CandidatePoolCfg {
+        crate::config::pools::CandidatePoolCfg {
             members: vec!["search-eu".to_string(), "search-us".to_string()],
             ..Default::default()
         },

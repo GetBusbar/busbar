@@ -1173,7 +1173,7 @@ pub fn with_pools(
     mut sections: BTreeMap<&'static str, serde_yaml::Value>,
     pools: &[(
         &'static str,
-        BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+        BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
     )],
 ) -> BTreeMap<&'static str, serde_yaml::Value> {
     for (key, stated) in pools {
@@ -1187,7 +1187,7 @@ pub fn with_pools(
 /// The unified pools each door section carries at its reserved `pools` key, by section key.
 pub type DoorPoolsByKey = [(
     &'static str,
-    BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
 ); 2];
 
 /// The door sections' unified pools as the generation `tools`/`agents` resolved them, by section
@@ -1195,8 +1195,8 @@ pub type DoorPoolsByKey = [(
 /// from, so a door plane's section is built the same way on both paths (audit root-R1 leftover C1).
 #[must_use]
 pub fn door_pools(
-    tools: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
-    agents: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    tools: &BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
+    agents: &BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
 ) -> DoorPoolsByKey {
     [
         (
@@ -1230,7 +1230,7 @@ fn section_with_pools(
     written: &serde_yaml::Value,
     pools: &[(
         &'static str,
-        BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+        BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
     )],
 ) -> serde_yaml::Value {
     let mut section = written.clone();
@@ -1279,7 +1279,7 @@ fn settings_path(
 /// hands a plane each member's bare name.
 pub fn pools_into(
     section: &mut serde_yaml::Value,
-    stated: &BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg>,
+    stated: &BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg>,
 ) {
     use busbar_contract::section::{
         POOL_MEMBERS_KEY, POOL_MEMBER_GRANTED_KEY, POOL_MEMBER_NAME_KEY, POOL_MEMBER_TIER_KEY,

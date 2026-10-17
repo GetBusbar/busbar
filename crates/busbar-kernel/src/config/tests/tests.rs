@@ -3629,22 +3629,22 @@ fn failover_pools_are_absent_by_default() {
 /// turned into the answer, and a default that drifted here would be invisible there.
 #[test]
 fn nothing_is_repeatable_unless_the_operator_names_it() {
-    let pool = crate::failover::CandidatePoolCfg {
+    let pool = crate::config::pools::CandidatePoolCfg {
         members: vec!["a".into(), "b".into()],
         repeatable: vec!["search_code".into()],
     };
     assert_eq!(
         pool.repeatability("search_code"),
-        crate::failover::Repeatable::Yes
+        crate::config::pools::Repeatable::Yes
     );
     assert_eq!(
         pool.repeatability("send_email"),
-        crate::failover::Repeatable::No,
+        crate::config::pools::Repeatable::No,
         "an operation nobody spoke about is NEVER repeated"
     );
     assert_eq!(
-        crate::failover::CandidatePoolCfg::default().repeatability("search_code"),
-        crate::failover::Repeatable::No,
+        crate::config::pools::CandidatePoolCfg::default().repeatability("search_code"),
+        crate::config::pools::Repeatable::No,
         "and an empty declaration repeats nothing at all"
     );
 }

@@ -282,14 +282,15 @@ fn a_pool_members_tier_is_read_off_its_member() {
 /// is core-owned). RED before the tier: every member written bare, all at tier `0`, rotated.
 #[test]
 fn named_definition_pools_are_tiered_in_declared_order_and_the_plane_sees_bare_names() {
-    let stated: std::collections::BTreeMap<String, busbar_kernel::failover::CandidatePoolCfg> = [(
-        "twins".to_string(),
-        busbar_kernel::failover::CandidatePoolCfg {
-            members: vec!["b".to_string(), "a".to_string()],
-            repeatable: vec!["read".to_string()],
-        },
-    )]
-    .into();
+    let stated: std::collections::BTreeMap<String, busbar_kernel::config::pools::CandidatePoolCfg> =
+        [(
+            "twins".to_string(),
+            busbar_kernel::config::pools::CandidatePoolCfg {
+                members: vec!["b".to_string(), "a".to_string()],
+                repeatable: vec!["read".to_string()],
+            },
+        )]
+        .into();
     let mut section: serde_yaml::Value = serde_yaml::from_str("a: {}\nb: {}").expect("yaml");
     crate::root::serve::pools_into(&mut section, &stated);
     let p = DoorPools::of(&section);
