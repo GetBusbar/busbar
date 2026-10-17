@@ -369,6 +369,7 @@ impl PlaneDriver {
             trust: trust.into_iter().collect(),
             scope_kinds: d.scope_kinds.iter().map(|k| (*k).to_string()).collect(),
             record_chains: d.record_chains.clone(),
+            ticket_prefix: d.ticket_prefix.map(str::to_string),
         };
         // The instance's own work bounds (its section's reserved `work:`), the host's where it
         // states none; a section that misstates them refuses the instance.

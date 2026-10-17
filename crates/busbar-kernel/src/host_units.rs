@@ -77,6 +77,9 @@ pub struct UnitRecords {
     /// The caller credential each unit lends its passthrough member (the caller-credential
     /// lending), held while the unit runs and dropped (zeroised) at its end.
     lent: Mutex<HashMap<u64, busbar_contract::redacted::Secret<Vec<u8>>>>,
+    /// What admitted each unit, for `ticket.take`: `Some` the record of the ticket the gate spent
+    /// admitting it, `None` a key. Taken once; the unit's end drops what was never taken.
+    tickets: Mutex<HashMap<u64, Option<Vec<u8>>>>,
 }
 
 impl std::fmt::Debug for UnitRecords {
@@ -110,6 +113,28 @@ impl UnitRecords {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&unit);
+        self.lock_tickets().remove(&unit);
+    }
+
+    fn lock_tickets(&self) -> MutexGuard<'_, HashMap<u64, Option<Vec<u8>>>> {
+        self.tickets.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The unit `unit` was admitted by `ticket`: `Some` the record of the ticket the gate spent
+    /// admitting it, `None` a key. Only a unit in flight holds one (`false` otherwise).
+    pub fn ticketed(&self, unit: u64, ticket: Option<Vec<u8>>) -> bool {
+        let records = self.lock();
+        if !records.contains_key(&unit) {
+            return false;
+        }
+        self.lock_tickets().insert(unit, ticket);
+        true
+    }
+
+    /// TAKE what admitted `unit`, once: `Some(Some(record))` a ticket's record, `Some(None)` a key,
+    /// and `None` for a unit not in flight or one already taken.
+    pub fn take_ticket(&self, unit: u64) -> Option<Option<Vec<u8>>> {
+        self.lock_tickets().remove(&unit)
     }
 
     /// The caller of `unit` presented `credential`: lent, while the unit runs, to a passthrough

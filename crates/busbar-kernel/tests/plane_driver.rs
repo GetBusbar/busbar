@@ -1597,6 +1597,7 @@ fn declaring() -> Double {
                 mechanisms: &[],
             }],
             record_chains: Vec::new(),
+            ticket_prefix: None,
         },
         ..Double::default()
     }

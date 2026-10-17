@@ -268,10 +268,12 @@ fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
         tail.dialects_len as u64,
     )
     .map_err(|f| format!("the plane tail breaks {:?} at {}", f.rule, f.field))?;
+    let mut declared = declared(&tail);
+    declared.ticket_prefix = ticket_prefix(st)?;
     Ok(PlaneFacts {
         bounds: Bounds::of(&tail),
         refusal_statuses,
-        declared: declared(&tail),
+        declared,
         served: ServedFacts {
             section: sections
                 .iter()
@@ -440,6 +442,31 @@ fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
     unsafe { std::slice::from_raw_parts(p, n) }.to_vec()
 }
 
+/// The issued-id prefix `st` declares (its one
+/// [`MARK_WORD_ISSUED_ID_PREFIX`](busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX)
+/// word mark): what leads every ticket the host mints for the plane (row 132). `None` = none
+/// declared; two are refused, as is an empty one.
+fn ticket_prefix(st: &Statement) -> Result<Option<&'static str>, String> {
+    use busbar_contract::abi::mechanism::door::MARK_WORD_ISSUED_ID_PREFIX;
+    let mut found = None;
+    for i in 0..st.mark_words_len {
+        // SAFETY: the loader's Statement check refused a NULL `mark_words` with a count; it holds
+        // `mark_words_len` `'static` word marks.
+        let w = unsafe { st.mark_words.add(i).read_unaligned() };
+        if w.class != MARK_WORD_ISSUED_ID_PREFIX {
+            continue;
+        }
+        let word = kept(w.word);
+        if word.is_empty() {
+            return Err("the plane declares an empty issued-id prefix".to_string());
+        }
+        if found.replace(word).is_some() {
+            return Err("the plane declares two issued-id prefixes".to_string());
+        }
+    }
+    Ok(found)
+}
+
 /// What the tail declares for the instance's admission: record kinds, signing, scope kinds and the
 /// trust keys (each judged at bind by `check_tail_trust_keys`).
 fn declared(t: &PlaneTail) -> InstanceDecl {
@@ -478,6 +505,7 @@ fn declared(t: &PlaneTail) -> InstanceDecl {
         scope_kinds: words(t.scope_kinds, t.scope_kinds_len),
         trust_keys,
         record_chains: listed(t.record_chains, t.record_chains_len),
+        ticket_prefix: None,
     }
 }
 

@@ -319,6 +319,9 @@ pub struct InstanceDecl {
     /// [`InstanceDecl::record_kinds`]): the kernel frames and verifies their chain (Part 3, the plane driver, "Record
     /// writes ... A record kind the plane declares as chained keeps its declared framing").
     pub record_chains: Vec<crate::abi::plane::RecordChain>,
+    /// The issued-id prefix its Statement declares (`MARK_WORD_ISSUED_ID_PREFIX`), which leads every
+    /// ticket the host mints for it; `None` = it mints none.
+    pub ticket_prefix: Option<&'static str>,
 }
 
 /// The trust facts a READY `arrive` stated, owned (a counterparty, and optionally an item and
