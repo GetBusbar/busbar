@@ -10,13 +10,11 @@
 
 use core::fmt;
 
-/// The transport kind's ABI generation.
+/// The transport kind's ABI generation, named here for the transports that reach it on this path.
 ///
-/// Transports are in-tree and never dynamically loaded, so there is no loader window to police —
-/// but the ABI-surface scan needs something to compare against, and a constant every transport
-/// names is the difference between one generation and each crate having invented its own. It sits
-/// beside the store's for the same reason: a kind's ABI is the kind's, not a plugin's.
-pub const TRANSPORT_ABI: super::AbiVersion = super::AbiVersion(1);
+/// It is defined once, in `abi::transport`, from the kind's own `ABI_VERSION`: this is a re-export,
+/// not a second home, so the generation a transport answers is the generation the kind declares.
+pub use crate::abi::transport::TRANSPORT_ABI;
 
 /// The transport fact keys the kernel reserves, spelled once.
 ///
