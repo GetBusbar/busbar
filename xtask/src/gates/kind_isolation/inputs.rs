@@ -436,9 +436,7 @@ fn include_targets(
     if ident.is_empty() || !rest[ident.len()..].starts_with('!') {
         let what = if rest.starts_with('$') {
             "a macro metavariable"
-        } else if (ident == "r" || ident == "br")
-            && rest[ident.len()..].starts_with(['"', '#'])
-        {
+        } else if (ident == "r" || ident == "br") && rest[ident.len()..].starts_with(['"', '#']) {
             "a raw string"
         } else {
             "an argument that is no literal"
