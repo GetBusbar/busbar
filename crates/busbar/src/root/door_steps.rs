@@ -2735,6 +2735,7 @@ fn token_exchange_binding(
     entry: &str,
     registration: &serde_yaml::Value,
     reach: &DoorReach<'_>,
+    scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
     use busbar_contract::section::{
         AUDIENCE_KEY, DEFAULT_SUBJECT_TOKEN_TYPE, SUBJECT_TOKEN_KEY, SUBJECT_TOKEN_TYPE_KEY,
@@ -2753,10 +2754,7 @@ fn token_exchange_binding(
         })?;
     let credential = reach
         .secrets
-        .resolve_at_config(
-            &subject,
-            &busbar_contract::config_time::ConfigScope::config_time(),
-        )
+        .resolve_at_config(&subject, scope)
         .map_err(|e| {
             format!("member '{entry}': busbar's own subject token for it cannot resolve: {e}")
         })?;
@@ -2817,9 +2815,10 @@ fn upstream_credential_binding(
     member_name: &str,
     registration: &serde_yaml::Value,
     reach: &DoorReach<'_>,
+    scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Option<busbar_kernel::plane_driver::AuthBinding>, String> {
     Ok(
-        upstream_credential(member_name, registration, reach)?.map(|(binding, per)| {
+        upstream_credential(member_name, registration, reach, scope)?.map(|(binding, per)| {
             refresher::keep(&per);
             binding
         }),
@@ -2833,6 +2832,7 @@ fn upstream_credential(
     member_name: &str,
     registration: &serde_yaml::Value,
     reach: &DoorReach<'_>,
+    scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Option<(busbar_kernel::plane_driver::AuthBinding, Arc<PerHop>)>, String> {
     use busbar_contract::section::{
         CREDENTIAL_LEASE_TTL_KEY, CREDENTIAL_PLACEMENT_KEY, CREDENTIAL_SECRET_KEY,
@@ -2901,7 +2901,7 @@ fn upstream_credential(
     let credential = busbar_contract::redacted::Secret::new(
         reach
             .secrets
-            .resolve_string(&secret)
+            .resolve_string_at_config(&secret, scope)
             .map_err(|e| {
                 format!(
                     "member '{member_name}': busbar's own upstream credential for it cannot \
@@ -2997,13 +2997,14 @@ impl PerHop {
     /// RE-RESOLVE the credential and swap what the binding presents: the same value keeps its
     /// handle; a changed one is opened (outside every lock a hop could wait on) and swapped in
     /// whole; one that no longer resolves, or whose new value will not bind, empties the cell (fail
-    /// closed). Off the request path only: the binding's build, and the [`refresher`]'s own thread.
-    fn refresh(&self) {
+    /// closed). Off the request path only: the binding's build, and the [`refresher`]'s own thread,
+    /// each holding the config-time proof (THE DESIGN §11.11 R4: a refresh is config time).
+    fn refresh(&self, scope: &busbar_contract::config_time::ConfigScope) {
         let _one = self
             .refreshing
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Ok(value) = self.secrets.resolve_string(&self.secret) else {
+        let Ok(value) = self.secrets.resolve_string_at_config(&self.secret, scope) else {
             self.held.store(None);
             return;
         };
@@ -3127,8 +3128,11 @@ mod refresher {
             }
             if !due.is_empty() {
                 drop(kept);
+                // THE REFRESHER'S TICK IS CONFIG TIME (BUSBAR-1.6.0.md l.1468, R4: "boot, config
+                // apply, refresh"): the proof is minted here, once per tick, and handed down.
+                let scope = busbar_contract::config_time::ConfigScope::config_time();
                 for per in due {
-                    per.refresh();
+                    per.refresh(&scope);
                 }
                 kept = book
                     .kept
@@ -3164,8 +3168,9 @@ mod refresher {
             .iter()
             .filter_map(|k| k.per.upgrade())
             .collect();
+        let scope = busbar_contract::config_time::ConfigScope::config_time();
         for per in live {
-            per.refresh();
+            per.refresh(&scope);
         }
     }
 }
@@ -3274,6 +3279,7 @@ pub fn member_routes(
     pools: &DoorPools,
     served: &crate::root::loader::dispatch::kinds::plane::ServedFacts,
     reach: &DoorReach<'_>,
+    scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<BTreeMap<String, busbar_kernel::plane_driver::MemberRoute>, String> {
     use busbar_contract::abi::mechanism::rendering::{ReadBlob, ReadNeed};
     use busbar_kernel::plane_driver::{resolve_member_needs, AuthBinding, MemberAuth, MemberRoute};
@@ -3458,10 +3464,12 @@ pub fn member_routes(
             // subject token, exchanged per call for the caller's down-scope the plane states; else
             // an `upstream_credential:` registration: busbar's own credential, presented per request.
             match section.get(entry.as_str()) {
-                Some(registration) => match token_exchange_binding(&entry, registration, reach)? {
-                    Some(binding) => Some(binding),
-                    None => upstream_credential_binding(&entry, registration, reach)?,
-                },
+                Some(registration) => {
+                    match token_exchange_binding(&entry, registration, reach, scope)? {
+                        Some(binding) => Some(binding),
+                        None => upstream_credential_binding(&entry, registration, reach, scope)?,
+                    }
+                }
                 None => None,
             }
         };
@@ -3505,10 +3513,7 @@ pub fn member_routes(
         } else {
             reach
                 .secrets
-                .resolve_at_config(
-                    &r.provider.credential,
-                    &busbar_contract::config_time::ConfigScope::config_time(),
-                )
+                .resolve_at_config(&r.provider.credential, scope)
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
         };
         let settings = sealed_params(&r.name, &r.style, r.provider, &credential)?.to_json();

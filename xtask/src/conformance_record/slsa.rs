@@ -11,7 +11,7 @@
 //! WHERE THE ARTIFACT COMES FROM is not this rig's to decide: provenance is minted by a trusted
 //! builder in CI (keyless, OIDC), never on a developer box. The caller hands both files in with
 //! `--slsa-artifact` and `--slsa-provenance`; with neither, the suite is `not-run` and says so.
-//! Which job mints them at the predev/dev hop is an open ARCHITECT/owner question (lane handoff
+//! Which job mints them on the `dev` -> `qa` move is an open ARCHITECT/owner question (lane handoff
 //! CONFORMANCE-RIGS.md).
 
 use serde_json::Value;

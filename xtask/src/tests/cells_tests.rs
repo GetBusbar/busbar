@@ -1,14 +1,14 @@
-//! The cell decomposition of `gate --format=tsv`, judged against busbar-release's own examples
-//! (its `testdata/trust/github.json` law0 and deps rows, as `cargo xtask gate kind-isolation
-//! --format=tsv` printed them), and the proof that busbar-release's row reader reads the same rows,
-//! byte for byte, with the cell lines in the output.
+//! The cell decomposition of `gate --format=tsv`, judged against recorded law0 and deps rows (as
+//! `cargo xtask gate kind-isolation --format=tsv` printed them), and the proof that a column-1 row
+//! reader reads the same rows, byte for byte, with the cell lines in the output, while a trimming
+//! reader (ModernCI's) reads one failing id per FAIL cell.
 
 use super::*;
 use crate::ledger::{Row, Status};
 
-/// busbar-release `turnstile::gate::parse_tsv_rows` (origin/main), verbatim but for its
-/// `GateRow` being a JSON object here: the reader busbar-release builds its gate report from.
-pub(crate) fn busbar_release_parse_tsv_rows(stdout: &str) -> Vec<serde_json::Value> {
+/// A column-1 row reader: column 1 is the row id, column 2 its status, and a line whose id is
+/// empty or whose status is not PASS/FAIL/SKIP is no row. Each row as a JSON object.
+pub(crate) fn column1_parse_tsv_rows(stdout: &str) -> Vec<serde_json::Value> {
     stdout
         .lines()
         .filter_map(|line| {
@@ -37,9 +37,9 @@ pub(crate) fn rows_only(rows: &[Row]) -> String {
     rows.iter().map(|r| format!("{}\n", r.tsv())).collect()
 }
 
-/// busbar-release's JSON report rows for `stdout`, as one byte string.
+/// The column-1 reader's rows for `stdout` as a JSON report, one byte string.
 pub(crate) fn report_json(stdout: &str) -> String {
-    serde_json::to_string_pretty(&busbar_release_parse_tsv_rows(stdout)).expect("json")
+    serde_json::to_string_pretty(&column1_parse_tsv_rows(stdout)).expect("json")
 }
 
 /// A ModernCI-style reader: the failing ids of a log, `<id>\tFAIL\t...` after trimming the line,
@@ -54,8 +54,8 @@ pub(crate) fn failing_ids(stdout: &str) -> Vec<String> {
         .collect()
 }
 
-/// busbar-release `testdata/trust/github.json`, `base-remeasured-ledger/gate-kind-isolation.log`:
-/// the law0 row's detail as the wire carried it (tabs already flattened).
+/// A recorded `gate-kind-isolation.log` (a base re-measured over its ledger): the law0 row's
+/// detail as the wire carried it (tabs already flattened).
 const LAW0_WIRE: &str =
     "20 hit(s) off the [[law0]] ceilings, 3 finding(s) over 14 neutral crate(s): \
 law0-rise busbar × instance:secret 37 hit(s) against a ceiling of 35: this landing grew a neutral \
@@ -73,7 +73,7 @@ nobody wrote down is an edge nobody reviewed: add the row with `count = \"1\"` a
 or delete the dependency. 1 declaration(s), in dependencies.";
 
 #[test]
-fn the_law0_wire_decomposes_into_busbar_releases_cells() {
+fn the_law0_wire_decomposes_into_its_cells() {
     let found = findings(LAW0_WIRE).expect("a list of coded findings");
     assert_eq!(found.len(), 3, "{found:#?}");
     let parts: Vec<(&str, String, Option<u64>)> = found.iter().map(|f| finding_parts(f)).collect();
@@ -106,7 +106,7 @@ fn the_law0_wire_decomposes_into_busbar_releases_cells() {
 }
 
 #[test]
-fn an_unstructured_fail_row_prints_one_line_per_busbar_release_cell() {
+fn an_unstructured_fail_row_prints_one_line_per_finding_cell() {
     let row = Row::fail(
         "kind-isolation:law0",
         "a neutral crate's Law 0 count",
@@ -124,7 +124,7 @@ fn an_unstructured_fail_row_prints_one_line_per_busbar_release_cell() {
             "\tkind-isolation:law0/busbar-kernel×transport\tFAIL\t286/269",
         ]
     );
-    // The key is busbar-release's, however long: the words after the code up to the first count.
+    // The key is the finding's cell, however long: the words after the code up to the first count.
     let deps = Row::fail("kind-isolation:deps", "a dependency edge", DEPS_WIRE);
     let lines = cell_lines(&deps);
     assert_eq!(lines.len(), 1, "{lines:#?}");
@@ -164,17 +164,17 @@ fn a_row_with_no_coded_findings_keeps_its_single_line() {
         Row::skip("x:z", "skipped", "reason: not-run here"),
     ];
     assert_eq!(render(&rows), rows_only(&rows));
-    // busbar-release's `findings` reads the LOC row as one finding, filed under the unnamed cell:
+    // `findings` reads the LOC row as one finding, filed under the unnamed cell:
     // the row itself, so no `loc:kernel/` line repeats it.
     let loc = findings("busbar-kernel 29590 (ceiling 29284)").expect("one finding");
     assert_eq!(finding_parts(&loc[0]).1, "");
 }
 
-/// THE READER busbar-release BUILDS ITS REPORT FROM SEES THE SAME ROWS: every cell line opens with
-/// a tab, so its column 1 is empty and the line is not a row to it. A trimming reader reads one
-/// failing id per FAIL cell.
+/// A COLUMN-1 READER SEES THE SAME ROWS: every cell line opens with a tab, so its column 1 is empty
+/// and the line is not a row to it. A trimming reader (ModernCI's) reads one failing id per FAIL
+/// cell.
 #[test]
-fn busbar_releases_rows_are_byte_identical_and_a_trimming_reader_sees_the_cells() {
+fn column1_rows_are_byte_identical_and_a_trimming_reader_sees_the_cells() {
     let rows = vec![
         Row::pass("kind-isolation:name", "names", "40 crate(s)"),
         Row::fail("kind-isolation:law0", "law0", LAW0_WIRE),

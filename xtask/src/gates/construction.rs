@@ -886,8 +886,8 @@ mod tests {
     /// LOC-ONCE RED ARM 1: A KERNEL THAT GROWS BY 500 LINES MOVES NO ROW. Size is not a CI check
     /// (owner 2026-10-02): the plant appends 500 lines of plain code to the Teller loop's own file,
     /// which `loc-ceilings:kernel` and `loc-ceilings:kernel:teller` used to refuse, and every row
-    /// the gate emits keeps the status it had on the unplanted tree. The turnstile then judges the
-    /// candidate no worse than its base and ADMITs it.
+    /// the gate emits keeps the status it had on the unplanted tree. ModernCI then judges the
+    /// candidate no worse than its base and lands it.
     #[test]
     fn a_kernel_that_grows_by_500_lines_moves_no_row() {
         let cx = Ctx::workspace().expect("workspace");

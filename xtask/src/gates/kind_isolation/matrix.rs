@@ -17,7 +17,7 @@
 //! This row is MEASURED on every run and its number is printed (the total and the ten heaviest
 //! cells with their heaviest file in the row's detail; every cell and every `file:line` in
 //! `--report`), but it NEVER FAILS the gate: not on the per-push registration, not on the ship
-//! twin, and not as a "figure rose" in the turnstile (a PASS row carries no figure to compare).
+//! twin, and not as a "figure rose" in a base-relative judge (a PASS row carries no figure to compare).
 //! The ceiling comparison below is still evaluated, and its findings are carried in the detail as
 //! REPORT-ONLY text; they are not a verdict. Every other kind-isolation row (`:deps`, `:test-deps`,
 //! `:closure`, `:vocab`, `:registry`, the edge census, ship-edge, unlisted-dep-edge, the
@@ -2823,7 +2823,7 @@ pub fn rule_law0(
 /// How far one cell sits from its `[[law0]]` row, in HITS: above it (a rise), below it (slack the
 /// ledger owes back), or the whole count when no row exists (a new leak). The FAIL row's detail
 /// opens with the sum of these, and that leading number is the figure a base-relative verdict
-/// compares (busbar-release `baseline::figure`).
+/// compares.
 ///
 /// It was the FINDING COUNT, and a count of cells cannot see a cell grow: once a cell was off its
 /// row, every further hit in it left the figure where it was. The row was armed red on predev
@@ -2843,7 +2843,7 @@ fn law0_off(now: usize, ceiling: Option<usize>) -> usize {
 /// never against the slack under its `[[law0]]` row.
 ///
 /// [`ROW_LAW0`] is red on predev on purpose (cells held at the arming measure stay RED until
-/// drained, #725), so the turnstile judges it by its FIGURE alone, and a figure is a sum over
+/// drained, #725), so a base-relative judge reads it by its FIGURE alone, and a figure is a sum over
 /// cells: what one cell grows another can pay for. Under `|now - ceiling|` a hit written into a
 /// cell that sits under its row LOWERS the figure — slack read as a drain — and a hit drained out of
 /// a cell over its row pays for a hit grown in another. So the verdict on one branch depended on what
@@ -2853,11 +2853,11 @@ fn law0_off(now: usize, ceiling: Option<usize>) -> usize {
 ///
 /// This row asks the one question that does not depend on the base's slack: DID THIS BRANCH GROW A
 /// NEUTRAL CELL? Its subject is the base every provenance rule of this gate reads (`base_ref`; in CI
-/// the turnstile hands it over as `XTASK_CEILING_BASE`: a pull-request check's merge-base, a
-/// merge-group entry's entry ahead), measured by THIS tree's code over the base's bytes. So the PR
+/// the branch file hands it over as `XTASK_CEILING_BASE`: a lane move's target, the `dev` -> `qa`
+/// move's own previous commit), measured by THIS tree's code over the base's bytes. So the PR
 /// check and the merge group judge the same thing, the branch's own per-cell delta, and not
 /// whatever slack the base carried. It is PASS on a base that grew nothing, so a grown cell is a
-/// NEW red in the turnstile, never a figure another cell can offset.
+/// NEW red to the base-relative judge, never a figure another cell can offset.
 ///
 /// * A cell that grew is RED, however much slack its `[[law0]]` row has (BUSBAR-1.6.0.md: the
 ///   neutral ceiling is 0, ARMED, and no ratchet row raises it).
@@ -3117,9 +3117,9 @@ impl BaseTree<'_> {
 /// THE MERGE-BASE'S LEDGER, AS THE BASE HAD IT: `bcx` is this tree laid back to the base's bytes.
 ///
 /// A BASE THAT PREDATES THE LEDGER IS A BASE WITH NO ROWS, NOT A BASE THAT CANNOT BE READ. The
-/// predev -> dev hop measures against `dev`, and `dev` is 1.5.5 (a71b21e9), which never carried
+/// `dev` -> `qa` move measures against `qa`, and `qa` is 1.5.5 (a71b21e9), which never carried
 /// `qa/kind-isolation.toml`. This used to refuse there ("the merge-base's Law 0 cells could not be
-/// read"), so the row named no cell at all on the one hop DEV-GREEN is judged on (BUSBAR-1.6.0.md
+/// read"), so the row named no cell at all on the one move DEV-GREEN is judged on (BUSBAR-1.6.0.md
 /// Part 5, DONE = DEV-GREEN item 3). The base's cells ARE readable: its bytes are in history and
 /// they are measured by this tree's code, exactly as on any other base. Only its `[[law0]]` rows
 /// are missing, and a base with no rows covers no rise, which is already this row's rule for a row
@@ -3651,8 +3651,8 @@ fn measured_row(
         Some(LAW0_ENFORCED_NEUTRAL_CRATES),
     ));
 
-    // THE HIT TOTALS ARE THE PASS DETAIL'S AND `--report`'s, NEVER THE FAIL DETAIL'S. The release
-    // turnstile reads a standing-red row's figure as the detail's LEADING integer, and a FAIL
+    // THE HIT TOTALS ARE THE PASS DETAIL'S AND `--report`'s, NEVER THE FAIL DETAIL'S. A base-relative
+    // judge reads a standing-red row's figure as the detail's LEADING integer, and a FAIL
     // detail that opened with the hit total turned every extra hit in an already-listed cell into
     // a higher figure and a DENY. A red row's figure is the number of findings it carries.
     let headline = format!(
@@ -5324,7 +5324,7 @@ mod tests {
     }
 
     /// The number a base-relative verdict reads off a FAIL row: the detail's leading count
-    /// (busbar-release `baseline::figure`; this detail carries no `(ceiling` marker).
+    /// (this detail carries no `(ceiling` marker).
     fn figure_of(row: &Row) -> usize {
         assert!(
             !row.detail.contains("(ceiling"),
@@ -5436,10 +5436,10 @@ mod tests {
     }
 
     /// THE LAW 0 ROW'S CELLS ON THE `--format=tsv` WIRE (`crate::cells`, BUSBAR-1.6.0.md Law 9:
-    /// busbar-release judges this row per cell). Two cells over their rows and one at its row print
-    /// three cell lines under the FAIL row, keyed as busbar-release keys each finding, with the
+    /// this row is judged per cell). Two cells over their rows and one at its row print
+    /// three cell lines under the FAIL row, keyed by each finding's cell, with the
     /// at-ceiling cell PASS. RED ARM: one hit grown in one cell changes that cell's line and no
-    /// other cell's. The rows busbar-release reads, and the JSON report it builds from them, are
+    /// other cell's. The rows a column-1 reader reads, and any report built from them, are
     /// byte-identical to the output before cell lines existed (pinned here as a literal).
     #[test]
     fn the_law0_row_prints_one_tsv_line_per_cell() {
@@ -5478,8 +5478,7 @@ mod tests {
                 "kind-isolation:law0/busbar-kernel\u{d7}transport FAIL 7/5",
             ]
         );
-        // The FAIL cells are keyed exactly as busbar-release's `baseline::cells` files the row's
-        // findings.
+        // The FAIL cells are keyed exactly as `crate::cells` files the row's findings.
         let keyed: BTreeSet<String> = crate::cells::findings(&crate::ledger::flatten(&base.detail))
             .expect("coded findings")
             .iter()
@@ -5513,7 +5512,7 @@ mod tests {
             "kind-isolation:law0/busbar-kernel\u{d7}plane FAIL 13/10"
         );
 
-        // THE REPORT busbar-release READS: its rows from this output equal its rows from the output
+        // THE ROWS A COLUMN-1 READER READS: its rows from this output equal its rows from the output
         // before cell lines, byte for byte. The literal is the row line as the gate printed it
         // before this change.
         let before =
@@ -5581,7 +5580,7 @@ mod tests {
             ("busbar-kernel", "auth", 4),
         ]);
         let head_row = rule_law0(&crates, &reg, Some(&head));
-        // TODAY: the figure the turnstile compares fell, 3 -> 2, so the hit was admitted.
+        // TODAY: the figure a base-relative judge compares fell, 3 -> 2, so the hit was admitted.
         assert!(
             figure_of(&head_row) < figure_of(&base_row),
             "{} -> {}",
@@ -5745,7 +5744,7 @@ mod tests {
     }
 
     /// A rise in one cell held over its row, paid for by a drain in another: the #725 figure is
-    /// flat, so the turnstile admits it. The per-cell row does not.
+    /// flat, so a figure-only judge admits it. The per-cell row does not.
     #[test]
     fn a_drain_elsewhere_does_not_pay_for_a_rise() {
         let crates = vec![neutral_kernel("busbar-kernel")];
@@ -6749,7 +6748,7 @@ mod tests {
     ///
     /// (a) A NEW CROSS-KIND EDGE IS STILL DENIED: a plane named in `busbar-kernel-wal`, a cell
     ///     with no `[[cell]]` row, turns the row FAIL with `unlisted-cell` naming it, and the
-    ///     row's figure (the leading integer the release turnstile reads) rises. The plant was a
+    ///     row's figure (the leading integer a base-relative judge reads) rises. The plant was a
     ///     transport naming a plane until the tcp transport moved to its own repo; both
     ///     transports left on the tree carry a listed `× plane` cell, and the WAL names no plane.
     /// (b) MORE HITS IN A LISTED CELL ARE NOT: five hundred lines of plane vocabulary in the
