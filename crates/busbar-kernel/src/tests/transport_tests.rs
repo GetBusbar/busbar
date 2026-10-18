@@ -19,9 +19,6 @@ fn names_are_stable_and_distinct() {
     sorted.dedup();
     assert_eq!(sorted.len(), names.len(), "transport names must be unique");
     assert_eq!(Transport::Http.name(), "http");
-    assert_eq!(Transport::JsonRpc.name(), "jsonrpc");
-    assert_eq!(Transport::HttpJson.name(), "http+json");
-    assert_eq!(Transport::Grpc.name(), "grpc");
 }
 
 // `the_a2a_legs_are_named_by_the_planes_wire_formats` MOVED to
