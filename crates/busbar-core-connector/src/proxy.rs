@@ -50,9 +50,9 @@ pub use busbar_contract::proxy_route::{ProxyChoice, ProxyHop};
 /// function prove the value is well-formed enough for that reasoning to hold, so that residue
 /// case redacts wholesale rather than print a maybe-credential.
 fn redact_userinfo(v: &str) -> String {
-    // The authority the one split reads ([`busbar_contract::net::split_authority`]): it ends at a
+    // The authority the one split reads ([`busbar_contract::net::url_authority`]): it ends at a
     // `\` as the dialling stack ends it, so the text after one is never shown as the host.
-    let parts = busbar_contract::net::split_authority(v);
+    let parts = busbar_contract::net::url_authority(v);
     let (host_port, tail) = (parts.host_port, parts.tail);
     let shown = if parts.userinfo.is_some() {
         format!("***@{host_port}{tail}")

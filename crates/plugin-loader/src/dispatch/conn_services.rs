@@ -1238,7 +1238,7 @@ fn auth_request(
     };
     // The authority the socket dials, read by the one split; the fragment is never sent, and a
     // web path's `\` is the `/` the dialling stack sends.
-    let parts = busbar_contract::net::split_authority(target);
+    let parts = busbar_contract::net::url_authority(target);
     let authority = parts.host_port;
     let path_query = parts.tail.split('#').next().unwrap_or("");
     let (path, query) = match path_query.split_once('?') {

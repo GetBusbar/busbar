@@ -745,7 +745,7 @@ pub struct Authority<'a> {
 /// `https://evil.example\@victim.example/` has the authority `evil.example`, the host the socket
 /// dials, and no userinfo. Pure: no allocation, no normalisation.
 #[must_use]
-pub fn split_authority(url: &str) -> Authority<'_> {
+pub fn url_authority(url: &str) -> Authority<'_> {
     let (scheme, rest) = match url.split_once("://") {
         Some((s, r))
             if s.starts_with(|c: char| c.is_ascii_alphabetic())

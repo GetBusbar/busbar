@@ -3628,9 +3628,9 @@ pub fn sealed_settings(
 }
 
 /// The host of `base_url`, the one the request dials: its authority read by the one split
-/// ([`busbar_contract::net::split_authority`]), before its port.
+/// ([`busbar_contract::net::url_authority`]), before its port.
 fn base_url_host(base_url: &str) -> &str {
-    busbar_contract::net::split_authority(base_url)
+    busbar_contract::net::url_authority(base_url)
         .host_port
         .split(':')
         .next()

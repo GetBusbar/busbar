@@ -1703,8 +1703,8 @@ fn settings_derived(target_from: &str) -> bool {
 /// everything else as written. `None` when no userinfo is found to leave out. The text left out is
 /// never kept, returned or repeated.
 fn without_userinfo(target: &str) -> Option<String> {
-    // The authority the one split reads ([`busbar_contract::net::split_authority`]).
-    let parts = busbar_contract::net::split_authority(target);
+    // The authority the one split reads ([`busbar_contract::net::url_authority`]).
+    let parts = busbar_contract::net::url_authority(target);
     parts.userinfo?;
     let scheme = parts.scheme.map(|s| format!("{s}://")).unwrap_or_default();
     Some(format!("{scheme}{}{}", parts.host_port, parts.tail))

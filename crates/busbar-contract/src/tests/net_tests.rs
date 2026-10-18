@@ -337,7 +337,7 @@ fn ipv6_link_local_is_its_own_predicate_not_a_metadata_one() {
 #[test]
 fn the_authority_ends_where_the_dialling_stack_ends_it() {
     fn at(url: &str) -> (Option<&str>, Option<&str>, &str, &str) {
-        let a = split_authority(url);
+        let a = url_authority(url);
         (a.scheme, a.userinfo, a.host_port, a.tail)
     }
     assert_eq!(
@@ -372,13 +372,7 @@ fn the_authority_ends_where_the_dialling_stack_ends_it() {
     ] {
         assert_eq!(
             url_host(url).as_deref(),
-            Some(
-                split_authority(url)
-                    .host_port
-                    .split(':')
-                    .next()
-                    .unwrap_or("")
-            ),
+            Some(url_authority(url).host_port.split(':').next().unwrap_or("")),
             "{url}"
         );
     }
