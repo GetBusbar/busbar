@@ -9853,3 +9853,80 @@ async fn the_pools_door_bills_no_tokens_for_an_answer_it_cannot_translate() {
         "an untranslated answer bills no tokens"
     );
 }
+
+/// AN UNTRANSLATABLE 2XX GIVES THE LANE'S BUDGET UNIT BACK (`$`; legacy
+/// `crossproto_delivery_billing_tests::untranslatable_500_does_not_charge` and
+/// `ingress_indistinguishability_tests::test_untranslatable_2xx_refunds_budget_and_trips_breaker`):
+/// a far end in another dialect answers 2xx that its reader refuses, so the caller gets its own
+/// 500 and nothing is delivered. The member's lifetime request budget is refunded whole (5 stays
+/// 5), as 1.5.5's spend guard refunded every non-delivery, and no tokens bill.
+/// RED: the unit spent at the dial kept for an answer the caller never received (5 -> 4).
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refunds_the_budget_unit_of_an_answer_it_cannot_translate() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-untranslatable-budget";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, door_word("unreadable_answer")).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some(door_word("untranslatable_dialect")),
+            lane_budget: Some(5),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.chat().await;
+    assert_eq!(status, 500, "{}", String::from_utf8_lossy(&body));
+    assert_eq!(far.served(), 1, "the far end was dialled and answered");
+    assert_eq!(
+        rig.app.store.lane_budget_remaining(0),
+        Some(5),
+        "a non-delivery refunds the budget unit"
+    );
+    assert_eq!(rig.tokens_after().await, 0, "and bills no tokens");
+}
+
+/// A DELIVERED CROSS-DIALECT ANSWER BILLS ONCE AND KEEPS ITS BUDGET UNIT (`$`; legacy
+/// `crossproto_delivery_billing_tests::delivered_cross_protocol_response_bills_once`): a far end
+/// in another dialect answers a whole message (1 in, 1 out) that is translated and delivered to
+/// the caller. Its two tokens bill exactly once, and the member's lifetime budget unit spent at
+/// the dial is kept (5 -> 4).
+/// RED: a delivered answer refunded as a non-delivery (5 stays 5), or its tokens billed twice.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_bills_a_delivered_cross_dialect_answer_once_and_keeps_its_budget_unit() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-crossdialect-delivered-budget";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, door_word("messages_answer")).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            dialect: Some(door_word("messages_dialect")),
+            lane_budget: Some(5),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    let (status, _, body) = rig.chat().await;
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&body));
+    let answer: serde_json::Value = serde_json::from_slice(&body).expect("a JSON answer");
+    assert!(
+        answer.get("choices").is_some(),
+        "the caller's own dialect: {answer}"
+    );
+    assert_eq!(
+        rig.tokens_after().await,
+        2,
+        "its 1 + 1 tokens bill exactly once"
+    );
+    assert_eq!(
+        rig.app.store.lane_budget_remaining(0),
+        Some(4),
+        "a delivered answer keeps the budget unit"
+    );
+}
