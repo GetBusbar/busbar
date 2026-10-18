@@ -1330,3 +1330,37 @@ fn nat64_dns64_synthesis_of_imds_is_refused_even_under_allow_private() {
         "must be refused AS METADATA, not merely pinned as an ordinary public address: {err:?}"
     );
 }
+
+/// A BASE URL'S BACKSLASH ENDS ITS AUTHORITY BEFORE THE USERINFO IS STRIPPED, as 1.5.5's
+/// `host_from_base` read it (v1.5.5 `crates/busbar/src/proxy/egress.rs:18`, folding `\` to `/`
+/// before the last `@`; row 74 and row 75, F25): the WHATWG reader the stack dials with ends the
+/// authority at the first `\`, so `evil.example.com\@victim.example` names `evil.example.com` and
+/// `user:pass@host.example.com\p` names `host.example.com`. The host the destination judge reads
+/// is the host that is dialled. RED: a strip that reads past the backslash to the last `@` dials
+/// `victim.example`, a host 1.5.5 never judged nor signed.
+#[test]
+fn a_base_urls_backslash_ends_its_authority_before_the_userinfo_is_stripped() {
+    for (written, host) in [
+        (
+            "https://evil.example.com\\@victim.example/path",
+            "evil.example.com",
+        ),
+        ("https://user:pass@host.example.com\\p", "host.example.com"),
+    ] {
+        let stripped = strip_userinfo(written);
+        let (https, dialled, port, _) =
+            split_url(&stripped).unwrap_or_else(|e| panic!("{written}: {e}"));
+        assert!(https, "{written}");
+        assert_eq!(dialled, host, "{written}: the dialled host is 1.5.5's");
+        assert_eq!(port, 443, "{written}");
+        match check_structure(&stripped, &[], GuardPolicy::default(), &Denylist::default()) {
+            Ok(Structure::Name { host: judged, .. }) => {
+                assert_eq!(
+                    judged, dialled,
+                    "{written}: the judge reads the dialled host"
+                );
+            }
+            other => panic!("{written}: the judge reads a name: {other:?}"),
+        }
+    }
+}
