@@ -3,33 +3,35 @@
 
 //! THE SESSION PUMP: what one live session does with each frame, in both directions, sans I/O.
 //!
-//! A frame from the far end ([`SessionPump::on_server_frame`]) or from the caller
-//! ([`SessionPump::on_client_frame`]) is decoded through the session's codec and answered with an
-//! [`Outbound`] plan: the frames bound for the far end, the frames bound for the caller, and whether
-//! the session must close. Nothing here sends, sleeps, reads a clock or holds a key; the caller
-//! carries the plan, hands in the time where a rule needs one, and is told when a turn closes.
+//! A session's caller and far end speak the same dialect, so the pump is a RELAY (Law 5: "A RELAY
+//! (same dialect) runs the reader only as that read-only tap and sends the client's bytes with
+//! governed byte-level splices; a WRITER runs only when translating"). A frame from the far end
+//! ([`SessionPump::on_server_frame`]) reaches the caller as the far end sent it; a frame from the
+//! caller ([`SessionPump::on_client_frame`]) reaches the far end as the caller sent it, except
+//! that a frame configuring the session, or asking for one response under its own settings, takes
+//! the session's locked keys ([`crate::splice`]). The reader reads each frame only to meter it.
 //!
-//! What the pump holds for the session: the codec's decode state (sequence, call correlation,
-//! barge-in playback position), the in-flight tool calls accumulated across their streamed
-//! arguments, the open turn's own counters (the uplink audio admitted and the tool calls opened
-//! since the last turn closed, the two quantities no usage report carries), the locked session
-//! config the caller cannot override, and the node's open-call table binding when one is composed.
+//! Nothing here answers for the caller (Law 11): a tool call, a barge-in, an error reach the caller
+//! as they came, and the caller acts on them. Nothing here sends, sleeps, reads a clock or holds a
+//! key; the caller carries the plan and is told when a turn closes.
+//!
+//! What the pump holds for the session: the codec's decode state, the open turn's own counters (the
+//! uplink audio admitted and the tool calls opened since the last turn closed, the two quantities no
+//! usage report carries), and the locked session config.
 //!
 //! What it asks of its caller, through [`TurnSink`]: when a turn closes (a usage report, an error,
 //! or the session ending with a turn open), the turn's usage and counters, and whether the session
 //! stays open.
 
-use std::collections::HashMap;
-
-use crate::codec::ir::codec::{DecodeState, DuplexReader, DuplexWriter, WireEvent};
+use crate::codec::ir::codec::{DecodeState, DuplexReader, DuplexWriter, WireEvent, WireRef};
 use crate::codec::ir::config::SessionConfig;
 use crate::codec::ir::control::IrDuplexControl;
 use crate::codec::ir::event::{IrClientEvent, IrServerEvent};
 use crate::codec::ir::media::AudioFormat;
-use crate::codec::ir::tool::{CallRef, IrDuplexTool};
+use crate::codec::ir::tool::IrDuplexTool;
 use crate::codec::ir::usage::IrDuplexUsage;
-use crate::governed::GovernedSession;
 use crate::session::TurnCounters;
+use crate::splice::{splice, LockedKeys};
 
 /// The reason code of the error frame a session past its configured ceiling is closed with.
 pub const SESSION_CEILING_REASON: &str = "session_expired";
@@ -43,26 +45,10 @@ pub struct Outbound {
     pub downlink: Vec<WireEvent>,
     /// The session must close: its turn sink answered that it may not continue.
     pub close: bool,
-    /// This frame carried a tool reply the node's table refused: nothing on this session was
-    /// waiting on the identifier it named. A bit rather than silence, because a refused reply put
-    /// nothing on the upstream wire, and a caller that could not tell that apart from a frame that
-    /// was never sent could not report a client answering calls it was never asked to make.
-    pub refused_reply: bool,
-}
-
-impl Outbound {
-    /// Queue one framed uplink event, honouring a dialect drop: the writer answers `None` when the
-    /// upstream dialect has no verb for the concept, and nothing is what a dropped concept puts on
-    /// the wire.
-    fn push_up(&mut self, framed: Option<WireEvent>) {
-        if let Some(w) = framed {
-            self.upstream.push(w);
-        }
-    }
 }
 
 /// Where a closed turn goes: its usage and its counters. The answer is whether the session may
-/// continue; `false` cuts it (the far end is told to stop responding and the session closes).
+/// continue; `false` closes it.
 pub trait TurnSink {
     /// One turn closed.
     fn turn_closed(&mut self, usage: Option<&IrDuplexUsage>, counters: TurnCounters) -> bool;
@@ -78,36 +64,22 @@ impl TurnSink for Unmetered {
     }
 }
 
-/// ONE IN-FLIGHT TOOL CALL, correlated across the `CallOpen → CallArgs* → CallClose` frames the
-/// model streams: its wire id, so a close that carries only the correlation still names its call,
-/// and whether its close was already handed to the node's open-call table.
-#[derive(Debug, Default, Clone)]
-struct PendingCall {
-    call_id: String,
-    planned: bool,
-}
-
 /// THE SESSION PUMP over the session's codec `C`.
 #[derive(Debug)]
 pub struct SessionPump<C> {
     codec: C,
     decode: DecodeState,
-    calls: HashMap<CallRef, PendingCall>,
     turn: TurnCounters,
-    /// The locked `session` config: the authoritative copy the plane re-applies. A caller's
-    /// `session.update` is a hint reconciled against it, never trusted blind.
+    /// The locked `session` config: its keys are spliced over a caller's own.
     locked_config: Option<SessionConfig>,
     /// The format uplink audio is counted in when a frame's wire states none: the locked config's
-    /// input format, else PCM16.
+    /// input format, else the one the caller's session update states, else PCM16.
     audio_in: AudioFormat,
-    /// The node's open-call table, when one is composed. `None`: a caller-authored result is carried
-    /// upstream verbatim.
-    governed: Option<GovernedSession>,
 }
 
 impl<C> SessionPump<C>
 where
-    C: DuplexReader + DuplexWriter,
+    C: DuplexReader + DuplexWriter + LockedKeys,
 {
     /// A pump over `codec`, locked to `locked_config` when one is given.
     pub fn new(codec: C, locked_config: Option<SessionConfig>) -> Self {
@@ -118,42 +90,14 @@ where
         SessionPump {
             codec,
             decode: DecodeState::default(),
-            calls: HashMap::new(),
             turn: TurnCounters::default(),
             locked_config,
             audio_in,
-            governed: None,
-        }
-    }
-
-    /// Bind the node's open-call table for this session.
-    pub fn bind_governed(&mut self, governed: GovernedSession) {
-        self.governed = Some(governed);
-    }
-
-    /// The node's session id, when a table is bound.
-    #[must_use]
-    pub fn governed_session(&self) -> Option<u64> {
-        self.governed.as_ref().map(|g| g.session)
-    }
-
-    /// Sweep the table's unanswered calls past their deadline at `now_ms`; how many ended.
-    pub fn sweep_expired(&self, now_ms: u64) -> usize {
-        match &self.governed {
-            Some(g) => g.calls.expired(now_ms),
-            None => 0,
-        }
-    }
-
-    /// The session ends: the table forgets every call it had open.
-    pub fn forget_governed_calls(&self) {
-        if let Some(g) = &self.governed {
-            g.calls.closed(g.session);
         }
     }
 
     /// The error frame a session past its `ceiling_secs` ceiling is told before it closes, in its
-    /// dialect; `None` when the dialect drops the concept.
+    /// dialect; `None` when the dialect has no place to say so.
     pub fn ceiling_error(&mut self, ceiling_secs: u64) -> Option<WireEvent> {
         self.codec.write_down(
             IrServerEvent::Error {
@@ -166,156 +110,87 @@ where
         )
     }
 
-    /// A FRAME FROM THE FAR END, at `now_ms`. A tool call is part of the model's response: it is
-    /// relayed to the caller as the model streamed it (translated only between dialects), and the
-    /// caller runs the tool and answers it (Law 11; QUESTIONS Q98). Nothing here runs a tool or
-    /// authors its result. A call's close enters the wait for the caller's reply in the node's
-    /// open-call table, when one is bound.
+    /// The locked session as a frame that configures the far end: what a caller-side envelope that
+    /// configures nothing itself (the telephony carrier) is translated into. `None` with no lock.
+    pub fn locked_update(&mut self) -> Option<WireEvent> {
+        let config = self.locked_config.clone()?;
+        self.codec.write_up(
+            IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }),
+            &mut self.decode,
+        )
+    }
+
+    /// A FRAME FROM THE FAR END. It reaches the caller as the far end sent it: a tool call is part
+    /// of the model's response and the caller runs it, a barge-in is the caller's to act on (Law 11;
+    /// QUESTIONS Q98). The reader reads it only to meter: a usage report or an error closes the open
+    /// turn, and a tool call the far end opens is counted.
     pub fn on_server_frame(
         &mut self,
         frame: WireEvent,
-        now_ms: u64,
+        _now_ms: u64,
         sink: &mut dyn TurnSink,
     ) -> Outbound {
         let mut out = Outbound::default();
-        let events = self.codec.read_down(frame, &mut self.decode);
-        for ev in events {
-            if matches!(ev, IrServerEvent::Error { .. }) {
-                self.settle_turn(sink, None, &mut out);
-            }
+        if frame.0.is_empty() {
+            return out;
+        }
+        for ev in self
+            .codec
+            .read_down_ref(WireRef(&frame.0), &mut self.decode)
+        {
             match ev {
                 IrServerEvent::Usage(u) => self.settle_turn(sink, Some(&u), &mut out),
-                IrServerEvent::SpeechStarted { item_id, .. } => {
-                    let heard_ms = self.decode.flush_playback();
-                    out.push_up(self.codec.write_up(
-                        IrClientEvent::Control(IrDuplexControl::ResponseCancel),
-                        &mut self.decode,
-                    ));
-                    out.push_up(self.codec.write_up(
-                        IrClientEvent::Control(IrDuplexControl::ItemTruncate {
-                            item_ref: item_id.clone(),
-                            content_index: 0,
-                            audio_played_ms: heard_ms,
-                        }),
-                        &mut self.decode,
-                    ));
-                    out.downlink.extend(self.codec.write_down(
-                        IrServerEvent::SpeechStarted {
-                            item_id,
-                            audio_start_ms: 0,
-                        },
-                        &mut self.decode,
-                    ));
-                }
-                IrServerEvent::Tool(t) => {
-                    let call_ref = t.call_ref();
-                    match &t {
-                        IrDuplexTool::CallOpen { call_id, .. } => {
-                            self.turn.open_tool_call();
-                            self.calls
-                                .entry(call_ref)
-                                .or_default()
-                                .call_id
-                                .clone_from(call_id);
-                        }
-                        IrDuplexTool::CallArgs { call_id, .. } => {
-                            let e = self.calls.entry(call_ref).or_default();
-                            if e.call_id.is_empty() {
-                                e.call_id.clone_from(call_id);
-                            }
-                        }
-                        IrDuplexTool::CallClose { call_id, .. } => {
-                            let e = self.calls.entry(call_ref).or_default();
-                            if e.call_id.is_empty() {
-                                e.call_id.clone_from(call_id);
-                            }
-                            if !e.planned {
-                                e.planned = true;
-                                if let Some(g) = &self.governed {
-                                    g.calls.planned(g.session, &e.call_id, now_ms);
-                                }
-                            }
-                        }
-                        IrDuplexTool::CallResult { .. } => {}
-                    }
-                    // The call is the caller's to answer, as the realtime protocols define it: it is
-                    // relayed as-is, and the gateway never authors its result.
-                    if !matches!(t, IrDuplexTool::CallResult { .. }) {
-                        out.downlink.extend(
-                            self.codec
-                                .write_down(IrServerEvent::Tool(t), &mut self.decode),
-                        );
-                    }
-                }
-                ev @ (IrServerEvent::AudioFrame(_)
-                | IrServerEvent::AudioDone { .. }
-                | IrServerEvent::SpeechStopped { .. }
-                | IrServerEvent::SessionCreated { .. }
-                | IrServerEvent::Error { .. }) => {
-                    out.downlink
-                        .extend(self.codec.write_down(ev, &mut self.decode));
-                }
-                IrServerEvent::RateLimits => {}
+                IrServerEvent::Error { .. } => self.settle_turn(sink, None, &mut out),
+                IrServerEvent::Tool(IrDuplexTool::CallOpen { .. }) => self.turn.open_tool_call(),
+                _ => {}
             }
         }
+        out.downlink.push(frame);
         out
     }
 
-    /// A FRAME FROM THE CALLER. A `session.update` is replaced by the locked config; a tool reply is
-    /// carried only when the node's table has the call open; uplink audio is counted; everything
-    /// else is written through to the far end.
+    /// A FRAME FROM THE CALLER. It reaches the far end as the caller sent it; uplink audio is
+    /// counted; a frame that configures the session or asks for a response under its own settings
+    /// takes the locked keys. A frame that is not JSON goes nowhere: the lock is judged on what
+    /// the reader reads, and bytes it cannot read are never handed to a far end whose own reader
+    /// might read them differently.
     pub fn on_client_frame(&mut self, frame: WireEvent) -> Outbound {
         let mut out = Outbound::default();
-        let events = self.codec.read_up(frame, &mut self.decode);
-        for ev in events {
+        if serde_json::from_slice::<serde::de::IgnoredAny>(&frame.0).is_err() {
+            return out;
+        }
+        let mut configures = false;
+        let mut responds = false;
+        for ev in self.codec.read_up_ref(WireRef(&frame.0), &mut self.decode) {
             match ev {
+                IrClientEvent::AudioFrame(f) => {
+                    self.turn
+                        .admit_audio(f.format.unwrap_or(self.audio_in), f.media.len());
+                }
                 IrClientEvent::Control(IrDuplexControl::SessionConfigure { config }) => {
-                    let effective = self.locked_config.clone().unwrap_or(config);
-                    out.push_up(self.codec.write_up(
-                        IrClientEvent::Control(IrDuplexControl::SessionConfigure {
-                            config: effective,
-                        }),
-                        &mut self.decode,
-                    ));
-                }
-                IrClientEvent::Tool(IrDuplexTool::CallResult {
-                    call_ref,
-                    call_id,
-                    name,
-                    output,
-                }) if self.governed.is_some() => {
-                    let replied = self
-                        .governed
+                    configures = true;
+                    let locked = self
+                        .locked_config
                         .as_ref()
-                        .map(|g| g.calls.replied(g.session, &call_id));
-                    match replied {
-                        Some(Ok(())) => {
-                            self.calls.remove(&call_ref);
-                            out.push_up(self.codec.write_up(
-                                IrClientEvent::Tool(IrDuplexTool::CallResult {
-                                    call_ref,
-                                    call_id,
-                                    name,
-                                    output,
-                                }),
-                                &mut self.decode,
-                            ));
-                            out.push_up(self.codec.write_up(
-                                IrClientEvent::Control(IrDuplexControl::ResponseCreate {
-                                    response: None,
-                                }),
-                                &mut self.decode,
-                            ));
-                        }
-                        _ => out.refused_reply = true,
+                        .and_then(|c| c.input_audio_format);
+                    if let Some(fmt) = locked.or(config.input_audio_format) {
+                        self.audio_in = fmt;
                     }
                 }
-                ev => {
-                    if let IrClientEvent::AudioFrame(f) = &ev {
-                        self.turn
-                            .admit_audio(f.format.unwrap_or(self.audio_in), f.media.len());
-                    }
-                    out.push_up(self.codec.write_up(ev, &mut self.decode));
+                IrClientEvent::Control(IrDuplexControl::ResponseCreate { .. }) => responds = true,
+                _ => {}
+            }
+        }
+        let rule = match (&self.locked_config, configures, responds) {
+            (Some(locked), true, _) => Some(self.codec.configure_rule(locked)),
+            (Some(_), false, true) => self.codec.response_rule(),
+            _ => None,
+        };
+        match rule {
+            None => out.upstream.push(frame),
+            Some(rule) => {
+                if let Some(spliced) = splice(&frame.0, &rule) {
+                    out.upstream.push(WireEvent(spliced.into()));
                 }
             }
         }
@@ -323,7 +198,7 @@ where
     }
 
     /// Close the open turn: its usage and counters go to `sink`; a sink that refuses to continue
-    /// cuts the session (the far end is told to stop responding, and the plan closes).
+    /// closes the session.
     fn settle_turn(
         &mut self,
         sink: &mut dyn TurnSink,
@@ -332,10 +207,6 @@ where
     ) {
         let counters = self.turn.close();
         if !sink.turn_closed(usage, counters) {
-            out.push_up(self.codec.write_up(
-                IrClientEvent::Control(IrDuplexControl::ResponseCancel),
-                &mut self.decode,
-            ));
             out.close = true;
         }
     }

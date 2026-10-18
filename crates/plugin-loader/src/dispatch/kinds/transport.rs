@@ -107,8 +107,10 @@ fn owned(s: AbiStr, field: &str) -> Result<&'static str, String> {
         return Ok("");
     }
     // SAFETY: a tail string is `'static` plugin data; `check_tail`/`check_claims` refused a NULL
-    // pointer with a count before this reads it.
-    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    // pointer with a count before this reads it, and its length is capped before the slice is
+    // formed.
+    let bytes = unsafe { crate::dispatch::validate::lent_str(s) }
+        .ok_or_else(|| format!("the transport tail's {field} is longer than any string may be"))?;
     std::str::from_utf8(bytes)
         .map(crate::intern_name)
         .map_err(|_| format!("the transport tail's {field} is not UTF-8"))
@@ -154,8 +156,10 @@ fn tail_facts(st: &Statement) -> Result<TransportFacts, String> {
     let extensions: &[u8] = if st.extensions.ptr.is_null() {
         &[]
     } else {
-        // SAFETY: a non-NULL Statement blob is `'static` plugin data of its stated length.
-        unsafe { std::slice::from_raw_parts(st.extensions.ptr, st.extensions.len) }
+        // SAFETY: a non-NULL Statement blob is `'static` plugin data of its stated length, capped
+        // before the slice is formed.
+        unsafe { crate::dispatch::validate::lent(st.extensions.ptr, st.extensions.len) }
+            .ok_or("the Statement's extensions are longer than any blob may be")?
     };
     let offered = check_offered_points(extensions).map_err(broke)?;
     let claims: Vec<&'static str> = names

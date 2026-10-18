@@ -338,7 +338,7 @@ pub mod timing;
 pub mod test_support;
 pub mod tls;
 pub mod topology;
-/// The wire-selection axis (`Transport`, `UpstreamWireKind`), the contract's.
+/// The channel axis (`Transport`), the contract's.
 pub use busbar_contract::transport::transport;
 
 #[cfg(test)]

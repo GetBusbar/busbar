@@ -276,17 +276,14 @@ fn slot(
     RawOutcome::of(a.outcome)
 }
 
-/// The caller's bytes (`len` of them at `ptr`), or `None` for a length behind NULL.
+/// The caller's bytes (`len` of them at `ptr`), or `None` for a length behind NULL or over the hard
+/// byte maximum: capped before the slice is formed (THE DESIGN §11.13 M1).
 ///
 /// # Safety
 /// A non-NULL `ptr` names `len` live bytes for the call.
 unsafe fn bytes<'a>(ptr: *mut u8, len: usize) -> Option<&'a mut [u8]> {
-    match (ptr.is_null(), len) {
-        (_, 0) => Some(&mut []),
-        (true, _) => None,
-        // SAFETY: the caller's contract.
-        (false, n) => Some(unsafe { std::slice::from_raw_parts_mut(ptr, n) }),
-    }
+    // SAFETY: the caller's contract.
+    unsafe { super::validate::lent_mut(ptr, len) }
 }
 
 /// How much of an [`EstablishIn`] a caller must state: everything before the appended
@@ -495,8 +492,8 @@ unsafe fn optional_text<'a>(s: AbiStr) -> Result<Option<&'a str>, ()> {
     if s.ptr.is_null() || s.len == 0 {
         return Ok(None);
     }
-    // SAFETY: the caller's contract.
-    let b = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    // SAFETY: the caller's contract; the length is capped before the slice is formed.
+    let b = unsafe { super::validate::lent_str(s) }.ok_or(())?;
     std::str::from_utf8(b).map(Some).map_err(|_| ())
 }
 
