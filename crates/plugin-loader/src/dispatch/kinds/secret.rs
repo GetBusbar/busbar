@@ -34,6 +34,11 @@ impl Kind for Secret {
         }
     }
 
+    /// `check` is optional: a source that states none passes every reference it is handed.
+    fn optional_slot(s: u32) -> bool {
+        s == slot::CHECK
+    }
+
     fn check(a: &Answer) -> Result<(), Fault> {
         match a.slot {
             slot::RESOLVE => validate::check_resolve(a.out::<ResolveOut>()?),

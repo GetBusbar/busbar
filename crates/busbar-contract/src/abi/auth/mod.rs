@@ -167,7 +167,7 @@ pub struct Ops {
     /// first mint and for an un-encodable key.
     pub fields: Option<Op>,
     /// The destination one outbound style's credential sends to, for the kernel to judge (the
-    /// need's target is the kernel's to judge, THE DESIGN §5): PURE (no I/O, never dials, reads
+    /// need's target is the kernel's to judge, THE DESIGN's needs section): PURE (no I/O, never dials, reads
     /// only the credential and settings it is handed), called with NO instance (the `instance`
     /// argument is NULL) at config time and at the generation seal, never pends; `Call`. In
     /// [`TargetIn`] (fixed 168 B), out [`TargetOut`] (fixed 104 B). READY with a present

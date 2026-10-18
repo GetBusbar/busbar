@@ -29,10 +29,10 @@
 
 use busbar_contract::abi::auth::{
     self, check_begin_login, check_complete_login, check_fields, check_identify,
-    check_inbound_points, check_style_decl, check_target, slot, AuthPoints, BeginLoginIn, BeginLoginOut,
-    CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut, IdentifyOut, IdentityBuf, OpenOutboundIn,
-    OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StripName, TargetIn, TargetOut, VerifyIn,
-    LOGIN_IDENTITY, VERDICT_IDENTITY,
+    check_inbound_points, check_style_decl, check_target, slot, AuthPoints, BeginLoginIn,
+    BeginLoginOut, CompleteLoginIn, FieldSpan, FieldsIn, FieldsOut, IdentifyOut, IdentityBuf,
+    OpenOutboundIn, OpenOutboundOut, OutboundReadyIn, OutboundReadyOut, StripName, TargetIn,
+    TargetOut, VerifyIn, LOGIN_IDENTITY, VERDICT_IDENTITY,
 };
 use busbar_contract::abi::mechanism::call::{AbiStr, Outcome, Span};
 use busbar_contract::abi::mechanism::check::{reported, Fault};
@@ -339,6 +339,12 @@ impl Kind for Auth {
             slot::TARGET => "target",
             _ => lifecycle_name(s),
         }
+    }
+
+    /// `target` is optional: a style that states none sends its credential to no destination of
+    /// its own choosing.
+    fn optional_slot(s: u32) -> bool {
+        s == slot::TARGET
     }
 
     fn check(a: &Answer) -> Result<(), Fault> {
