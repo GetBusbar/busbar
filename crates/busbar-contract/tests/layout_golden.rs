@@ -1477,7 +1477,9 @@ fn compute_layout() -> String {
             resource_metadata,
             resource_facts,
             listed,
-            listed_len
+            listed_len,
+            arrival_spans,
+            arrival_spans_len
         ]
     );
     record!(s, pkind::ProviderFacts, [name, protocol, error_map]);

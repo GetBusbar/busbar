@@ -1341,6 +1341,8 @@ mod plane_plugin {
     pub const SNAPSHOT: &PlaneSnapshot = &PlaneSnapshot {
         listed: std::ptr::null(),
         listed_len: 0,
+        arrival_spans: std::ptr::null(),
+        arrival_spans_len: 0,
         resource_facts: Blob {
             ptr: std::ptr::null(),
             len: 0,
