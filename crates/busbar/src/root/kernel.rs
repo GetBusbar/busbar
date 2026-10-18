@@ -63,7 +63,6 @@ use busbar_contract::caps::{
 use busbar_kernel::inflight::ArrivalDoor;
 use busbar_kernel::slice::GroupLeaseSlip;
 use busbar_kernel::teller::{Evidence, UnitCtx, Units};
-use busbar_kernel_egress::trust::Trust;
 
 /// Take the kernel's seal. Boot only, once per process.
 ///
@@ -1669,8 +1668,6 @@ pub struct ProductionUnits {
     /// second one here would be a second answer to "has this credential been seen" that an
     /// operator's flush could not reach (item 249).
     pub auth_bindings: auth_bindings::AuthBindings,
-    /// The trust unit. Stateless: it is handed the pool view and the kind facts per call.
-    pub trust: Trust,
     /// The arrival door, bound to the admission unit and to nothing else.
     pub arrival_door: AdmissionDoor,
     /// The journal, the ledger and the audit record chain.
@@ -1772,7 +1769,6 @@ impl ProductionUnits {
             // deployment whose keys are busbar's own binds them through
             // `ProductionUnits::with_auth_bindings` at boot, where the governance state exists.
             auth_bindings: auth_bindings::AuthBindings::without_directory(),
-            trust: Trust,
             arrival_door: AdmissionDoor,
             durability,
             #[cfg(feature = "root-admin")]
