@@ -129,6 +129,8 @@ use replay::{apply_opened, replay_into, same_movement, Replayed, Replayer};
 /// The checkpoints this node holds, re-derived from the chain for a reader (Q128 kernel-ledger
 /// HIGH 1, ARCHITECT ruling A1). Split out for `structure-lint`.
 mod held;
+// Its readers are the admin units (`root-admin`) and the tests.
+#[cfg(any(test, feature = "root-admin"))]
 pub use held::CheckpointUnreadable;
 pub use replay::{JournalDisagreement, Recoverable};
 
