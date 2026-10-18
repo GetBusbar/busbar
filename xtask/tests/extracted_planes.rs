@@ -108,19 +108,41 @@ fn text(b: Vec<u8>) -> String {
     String::from_utf8_lossy(&b).into_owned()
 }
 
-/// Every file under `dir` at `rev` in the repository at `repo_path`, by path relative to `dir`.
-fn tree(repo_path: &Path, rev: &str, dir: &str) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    let names = text(git(
-        repo_path,
-        &["ls-tree", "-r", "--name-only", rev, "--", dir],
-    )?);
+/// A repository the test reads: busbar's own checkout (paths from its root), or a fetched store.
+enum Repo<'a> {
+    /// This checkout, run from its root.
+    Checkout(&'a Path),
+    /// A bare store, always named by `--git-dir`. It lives under this checkout's `target/`, inside
+    /// busbar's work tree, so git's discovery from that directory finds BUSBAR's repository: the
+    /// fetch lands in busbar's object store and every path is read under the `target/...` prefix,
+    /// which holds nothing, so the copy reads as empty.
+    Store(&'a Path),
+}
+
+impl Repo<'_> {
+    fn git(&self, args: &[&str]) -> Result<Vec<u8>, String> {
+        match self {
+            Repo::Checkout(dir) => git(dir, args),
+            Repo::Store(dir) => {
+                let flag = format!("--git-dir={}", dir.display());
+                let mut all = vec![flag.as_str()];
+                all.extend_from_slice(args);
+                git(dir, &all)
+            }
+        }
+    }
+}
+
+/// Every file under `dir` at `rev` in `repo`, by path relative to `dir` (`.` is the whole tree).
+fn tree(repo: &Repo, rev: &str, dir: &str) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let names = text(repo.git(&["ls-tree", "-r", "--name-only", rev, "--", dir])?);
     let mut out = BTreeMap::new();
     for name in names.lines().filter(|l| !l.is_empty()) {
         let rel = name
             .strip_prefix(&format!("{dir}/"))
             .unwrap_or(name)
             .to_string();
-        out.insert(rel, git(repo_path, &["show", &format!("{rev}:{name}")])?);
+        out.insert(rel, repo.git(&["show", &format!("{rev}:{name}")])?);
     }
     Ok(out)
 }
@@ -180,17 +202,37 @@ fn compare(
     bad
 }
 
-/// The repository at `rev`, fetched into this checkout's target directory (shallow, by commit).
+/// A bare store at `dir`, made if absent. Bare and named by `--git-dir` (see `Repo::Store`).
+fn store(dir: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(dir).map_err(|err| format!("{}: {err}", dir.display()))?;
+    if !dir.join("HEAD").is_file() {
+        let path = dir.display().to_string();
+        git(dir, &["init", "-q", "--bare", &path])?;
+    }
+    Ok(())
+}
+
+/// `what` (a commit, or a ref the source names) from `url` into the store at `dir`, shallow.
+fn fetch_into(dir: &Path, url: &str, what: &str) -> Result<(), String> {
+    store(dir)?;
+    let repo = Repo::Store(dir);
+    if repo
+        .git(&["cat-file", "-e", &format!("{what}^{{commit}}")])
+        .is_err()
+    {
+        repo.git(&["fetch", "-q", "--depth", "1", url, what])?;
+    }
+    Ok(())
+}
+
+/// The repository at `rev`, fetched into a store in this checkout's target directory.
 fn fetch(e: &Extraction) -> Result<PathBuf, String> {
     let name = e.repo.rsplit('/').next().unwrap_or("repo");
-    let dir = root().join("target").join("extracted-planes").join(name);
-    std::fs::create_dir_all(&dir).map_err(|err| format!("{}: {err}", dir.display()))?;
-    if git(&dir, &["rev-parse", "--git-dir"]).is_err() {
-        git(&dir, &["init", "-q"])?;
-    }
-    if git(&dir, &["cat-file", "-e", &format!("{}^{{commit}}", e.rev)]).is_err() {
-        git(&dir, &["fetch", "-q", "--depth", "1", e.repo, e.rev])?;
-    }
+    let dir = root()
+        .join("target")
+        .join("extracted-planes")
+        .join(format!("{name}.git"));
+    fetch_into(&dir, e.repo, e.rev)?;
     Ok(dir)
 }
 
@@ -251,13 +293,14 @@ fn an_extracted_plane_is_the_tree_busbar_held() {
             );
         }
         // THE COPY DRIFTED: the repository at `rev` against the crate at `base`.
-        let base = tree(&here, e.base, e.crate_dir).expect("busbar's crate at the base");
+        let base =
+            tree(&Repo::Checkout(&here), e.base, e.crate_dir).expect("busbar's crate at the base");
         assert!(!base.is_empty(), "{}: no files at {}", e.crate_dir, e.base);
         let repo = fetch(e).unwrap_or_else(|err| {
             panic!("{}: fetching {} at {}: {err}", e.crate_dir, e.repo, e.rev)
         });
-        let copy = tree(&repo, e.rev, e.repo_dir).expect("the copy at rev");
-        let elsewhere = tree(&repo, e.rev, ".").expect("the repository at rev");
+        let copy = tree(&Repo::Store(&repo), e.rev, e.repo_dir).expect("the copy at rev");
+        let elsewhere = tree(&Repo::Store(&repo), e.rev, ".").expect("the repository at rev");
         let bad = compare(e, &base, &copy, &elsewhere);
         assert!(
             bad.is_empty(),
@@ -321,4 +364,55 @@ fn the_comparison_refuses_a_drifted_copy() {
     let mut stale = faithful(&base);
     stale.insert("src/door.rs".to_string(), b"door".to_vec());
     assert_eq!(compare(e, &base, &stale, &elsewhere).len(), 1);
+}
+
+/// RED: a store under this checkout's `target/` is its own repository. The comparison once read a
+/// fetched copy through git's discovery from that directory, which found busbar's repository
+/// instead: every file of the plane read as "not in the copy". Here a one-file repository is
+/// fetched into such a store and its tree must come back whole.
+#[test]
+fn a_store_inside_the_checkout_reads_the_fetched_tree_not_busbars() {
+    let scratch = root()
+        .join("target")
+        .join("extracted-planes")
+        .join(format!("selftest-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    let src = scratch.join("src");
+    std::fs::create_dir_all(src.join("plane")).expect("the source's directory");
+    std::fs::write(src.join("plane").join("lib.rs"), b"held").expect("the source's file");
+    let src_path = src.display().to_string();
+    git(&src, &["init", "-q", &src_path]).expect("git init the source");
+    git(&src, &["add", "plane/lib.rs"]).expect("git add");
+    git(
+        &src,
+        &[
+            "-c",
+            "user.name=extracted-planes",
+            "-c",
+            "user.email=extracted-planes@invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "-c",
+            "core.hooksPath=/dev/null",
+            "commit",
+            "-q",
+            "-m",
+            "one file",
+        ],
+    )
+    .expect("git commit");
+    let rev = text(git(&src, &["rev-parse", "HEAD"]).expect("the source's head"));
+    let rev = rev.trim();
+
+    let dir = scratch.join("copy.git");
+    fetch_into(&dir, &format!("file://{src_path}"), "HEAD").expect("fetch into the store");
+    let copy = tree(&Repo::Store(&dir), rev, "plane").expect("the fetched copy");
+    assert_eq!(
+        copy.into_iter().collect::<Vec<_>>(),
+        vec![("lib.rs".to_string(), b"held".to_vec())],
+        "the store read something other than the tree it fetched"
+    );
+    let whole = tree(&Repo::Store(&dir), rev, ".").expect("the fetched repository");
+    assert_eq!(whole.keys().collect::<Vec<_>>(), vec!["plane/lib.rs"]);
+    let _ = std::fs::remove_dir_all(&scratch);
 }
