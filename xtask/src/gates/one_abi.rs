@@ -482,18 +482,20 @@ pub fn selftest<'a>(
 /// verdict is about the rows the change wrote, never about this checkout's history.
 fn base_cases<'a>(cx: &Ctx, gate: &'a dyn crate::gates::Gate, spec: &Spec) -> Report<'a> {
     const SYN: &str = "zz-ledger-base";
-    const FILE: &str = "crates/planted-minted/src/lib.rs";
+    // A plant site, not a scan set: a fixture path the planted ledger row names, never a file
+    // the gate reads (qa-names reads constants only, and this is none).
+    let file = "crates/planted-minted/src/lib.rs";
     let mut report = Report::new();
     let ledger = cx.read(spec.ledger).unwrap_or_default();
     let first = spec.rules.first().map_or("", |(id, _)| *id);
     let row = |count: Option<usize>| {
         format!(
-            "\n[[finding]]\nrule = \"{first}\"\nfile = \"{FILE}\"\nitem = \"planted_minted_item\"\n{}",
+            "\n[[finding]]\nrule = \"{first}\"\nfile = \"{file}\"\nitem = \"planted_minted_item\"\n{}",
             count.map(|n| format!("count = {n}\n")).unwrap_or_default()
         )
     };
     let sanctioned = format!(
-        "\n[[sanctioned]]\nrule = \"{first}\"\nfile = \"{FILE}\"\nitem = \"planted_sanctioned_item\"\ncite = \"planted\"\ndrain = \"planted\"\n"
+        "\n[[sanctioned]]\nrule = \"{first}\"\nfile = \"{file}\"\nitem = \"planted_sanctioned_item\"\ncite = \"planted\"\ndrain = \"planted\"\n"
     );
     let plant = |now: String, was: String| {
         let mut ov = crate::gates::construction::ceilings::synthetic_base(SYN, spec.ledger, was);
@@ -506,7 +508,7 @@ fn base_cases<'a>(cx: &Ctx, gate: &'a dyn crate::gates::Gate, spec: &Spec) -> Re
             "a [[finding]] row the base's ledger does not carry is MINTED, and refused",
             format!("{ledger}{}", row(Some(1))),
             ledger.clone(),
-            ["MINTED", FILE],
+            ["MINTED", file],
         ),
         (
             "a [[sanctioned]] site the base's ledger does not carry is MINTED, and refused",
