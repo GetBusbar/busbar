@@ -3245,14 +3245,23 @@ impl DataRoutes {
             joining,
         } = opened;
         let joining = Arc::new(Mutex::new(Some(joining)));
+        // The admitted unit, so an open whose plane never states its head can end its session.
+        let admitted_unit: Arc<Mutex<Option<u64>>> = Arc::default();
         let admitted = {
             let joining = Arc::clone(&joining);
+            let admitted_unit = Arc::clone(&admitted_unit);
             Box::new(move |unit: u64| {
                 let j = joining
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .take();
-                j.map_or(Err("admitted twice".to_owned()), |j| j.admit(unit))
+                let joined = j.map_or(Err("admitted twice".to_owned()), |j| j.admit(unit));
+                if joined.is_ok() {
+                    *admitted_unit
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(unit);
+                }
+                joined
             }) as Box<dyn FnOnce(u64) -> Result<(), String> + Send>
         };
         let ended = Box::new(|unit: u64| crate::root::connector::the().unpair(unit))
@@ -3266,11 +3275,25 @@ impl DataRoutes {
         tokio::spawn(self.session(door, caller, arrival, verdict, attach));
         match said.await {
             Ok(Ok(())) => {
-                // The plane's head where it stated one before the session ran, else the created
-                // status alone; the body is the framer's own description.
-                let mut head = head;
-                let (status, fields) = head.try_recv().unwrap_or((CREATED, Vec::new()));
-                stated((status, fields), Body::from(description))
+                // THE PLANE'S HEAD, stated on the session's first crossing (ARCHITECT row 132
+                // ruling (a)): the open answers under it, the body the framer's own description.
+                // A plane that states none within the open's bound is the open's failure: its
+                // session ends, and the caller is refused, never answered without the plane.
+                match serve_datagram::plane_head(head, OPEN_HEAD_WAIT).await {
+                    Some((status, fields)) => stated((status, fields), Body::from(description)),
+                    None => {
+                        let unit = *admitted_unit
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        if let Some(unit) = unit {
+                            crate::root::connector::the().unpair(unit);
+                        }
+                        stated(
+                            (refusal_status(ReasonCode::PlanePanic), Vec::new()),
+                            Body::empty(),
+                        )
+                    }
+                }
             }
             Ok(Err(Some(rendered))) => stated(
                 (rendered.status, rendered.fields),
@@ -3911,6 +3934,9 @@ const SWITCHED: u32 = 101;
 /// The status a datagram session's caller is answered with when its plane states no head of its
 /// own: the session was created (`201 Created`).
 const CREATED: u32 = 201;
+
+/// How long a datagram session's open waits for its plane's head: the connector's open bound.
+const OPEN_HEAD_WAIT: std::time::Duration = busbar_core_connector::compose::DEFAULT_OPEN_TIMEOUT;
 
 /// WHAT A SESSION'S CARRIER DOES AROUND ITS ADMISSION: the status its caller was answered with
 /// (the session's money settles on it); what runs once the unit is admitted, before the session

@@ -16,6 +16,7 @@
 //! where the block now lives.
 
 use super::*;
+use busbar_kernel::config::groups::LimitMetric;
 use busbar_kernel::plugin_admission::sign::TrustPolicy;
 
 /// `plugins.trust` resolved by THE ROOT'S ONE BUILDER — the one boot admits plugins under, carried
@@ -399,10 +400,10 @@ impl AdminService {
                 spend_cents: usage.spend_cents,
                 requests_cap: b.requests_cap,
                 tokens_cap: b.tokens_cap,
-                tokens_input_cap: b.tokens_input_cap,
-                tokens_output_cap: b.tokens_output_cap,
-                tokens_cache_read_cap: b.tokens_cache_read_cap,
-                tokens_cache_write_cap: b.tokens_cache_write_cap,
+                tokens_input_cap: b.class_cap(LimitMetric::TokensInput),
+                tokens_output_cap: b.class_cap(LimitMetric::TokensOutput),
+                tokens_cache_read_cap: b.class_cap(LimitMetric::TokensCacheRead),
+                tokens_cache_write_cap: b.class_cap(LimitMetric::TokensCacheWrite),
                 budget_cap: b.budget_cap,
                 budget_remaining_cents: b
                     .budget_cap
