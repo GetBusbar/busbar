@@ -103,42 +103,25 @@ fn the_far_ends_usage_reaches_the_caller_and_the_sessions_units() {
     );
 }
 
-/// A barge-in owes the far end two frames (cancel, truncate) and the caller one: a far-side answer
-/// reaches only the caller, so it takes the caller's frame and leaves the far end's, in order, to
-/// the caller side's collections.
+/// A barge-in is the caller's to act on (Law 11): the far-side answer carries the event to the
+/// caller as the far end sent it, and nothing is owed the far end.
 #[test]
 fn a_far_side_answer_carries_only_a_frame_for_the_caller() {
     let mut s = sideband();
     s.from_far_end(&audio_delta("it1"), 0);
     while s.next(false).frame.is_some() {}
-    s.from_far_end(
-        &json(
-            serde_json::json!({"type":"input_audio_buffer.speech_started",
-            "audio_start_ms":0,"item_id":"it1"}),
-        ),
-        0,
+    let barge = json(
+        serde_json::json!({"type":"input_audio_buffer.speech_started",
+        "audio_start_ms":420,"item_id":"it1"}),
     );
+    s.from_far_end(&barge, 0);
     let far = s.next(false);
     assert!(
-        matches!(&far.frame, Some((Side::Caller, f)) if text(f).contains("speech_started")),
+        matches!(&far.frame, Some((Side::Caller, f)) if *f == barge),
         "{far:?}"
     );
     assert_eq!(s.next(false), Emit::default(), "no caller frame left");
-    assert!(
-        s.ready(),
-        "the far end's frames are owed: the driver is named"
-    );
-    let first = s.next(true);
-    let second = s.next(true);
-    assert!(
-        matches!(&first.frame, Some((Side::FarEnd, f)) if text(f).contains("response.cancel")),
-        "{first:?}"
-    );
-    assert!(
-        matches!(&second.frame, Some((Side::FarEnd, f)) if text(f).contains("conversation.item.truncate")),
-        "{second:?}"
-    );
-    assert!(!s.ready());
+    assert!(!s.ready(), "nothing is owed the far end");
 }
 
 /// The caller's last piece settles the open turn once: the audio it admitted is in the session's
@@ -167,6 +150,11 @@ fn the_telephony_door_reads_the_carriers_envelope() {
             "mediaFormat":{"encoding":"audio/x-mulaw","sampleRate":8000,"channels":1}}}),
         ),
         false,
+    );
+    let told = s.next(true);
+    assert!(
+        matches!(&told.frame, Some((Side::FarEnd, f)) if text(f).contains("session.update")),
+        "{told:?}"
     );
     assert_eq!(s.next(true), Emit::default());
     s.from_caller(
@@ -326,7 +314,7 @@ fn a_rewritten_session_open_locks_the_rewritten_params_once() {
     assert_eq!(Live::locked(Door::Sideband, &cfg), cfg.session);
     assert_eq!(
         Live::locked(Door::Twilio, &cfg),
-        crate::session_params::g711_config()
+        crate::session_params::g711_over(&cfg.session)
     );
     let mut sessions = Sessions::default();
     let rewritten = SessionConfig {
@@ -340,4 +328,36 @@ fn a_rewritten_session_open_locks_the_rewritten_params_once() {
         sessions.rewritten.is_empty(),
         "consumed at the open and gone with the session"
     );
+}
+
+/// RED-BEFORE-GREEN (Part 2 #45, Twilio Media Streams "with a µ-law codec"; the telephony lock):
+/// the telephony door's far end is told the session it is locked to once the carrier states its
+/// stream: µ-law both ways, over the operator's own session (here its instructions). RED: nothing
+/// was ever sent, so the far end read the carrier's µ-law as its default PCM16.
+#[test]
+fn the_telephony_door_tells_the_far_end_its_locked_session_at_the_carriers_start() {
+    let cfg = StreamsCfg {
+        session: crate::codec::ir::config::SessionConfig {
+            instructions: Some("be brief".into()),
+            ..StreamsCfg::default().session
+        },
+        ..StreamsCfg::default()
+    };
+    let mut s = Live::open(Door::Twilio, &cfg).expect("a session door");
+    s.from_caller(
+        &json(
+            serde_json::json!({"event":"start","start":{"streamSid":"MZ1","callSid":"CA1",
+            "mediaFormat":{"encoding":"audio/x-mulaw","sampleRate":8000,"channels":1}}}),
+        ),
+        false,
+    );
+    let emit = s.next(true);
+    let Some((Side::FarEnd, frame)) = emit.frame else {
+        panic!("the locked session goes to the far end: {emit:?}");
+    };
+    let v: serde_json::Value = serde_json::from_slice(&frame).expect("json");
+    assert_eq!(v["type"], "session.update", "{v}");
+    assert_eq!(v["session"]["input_audio_format"], "g711_ulaw", "{v}");
+    assert_eq!(v["session"]["output_audio_format"], "g711_ulaw", "{v}");
+    assert_eq!(v["session"]["instructions"], "be brief", "{v}");
 }

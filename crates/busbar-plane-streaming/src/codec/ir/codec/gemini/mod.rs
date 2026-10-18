@@ -278,6 +278,19 @@ fn session_config_from_setup(setup: &Value, st: &mut DecodeState) -> SessionConf
     }
 }
 
+/// The `setup` members a session locked to `cfg` states, as the governed splice puts them over a
+/// caller's own `setup` ([`crate::splice`]).
+#[must_use]
+pub(crate) fn setup_locked(cfg: &SessionConfig) -> serde_json::Map<String, Value> {
+    match setup_from_session_config(cfg) {
+        Value::Object(mut m) => match m.remove(wire::SETUP) {
+            Some(Value::Object(setup)) => setup,
+            _ => serde_json::Map::new(),
+        },
+        _ => serde_json::Map::new(),
+    }
+}
+
 /// Re-frame a shared [`SessionConfig`] back onto a Gemini `setup` object. The inverse of
 /// [`session_config_from_setup`] at the IR level (byte-lossy by design — cross-dialect setup is a
 /// genuine map, not verbatim carriage). Modalities are re-UPPERCASED to Gemini's enum tokens; the
@@ -851,10 +864,9 @@ impl DuplexWriter for GeminiLiveCodec {
             IrServerEvent::Usage(u) => json!({ wire::USAGE_METADATA: usage_to_metadata(&u) }),
             // Gemini has no discrete rate-limit event; frame an empty usage-metadata marker.
             IrServerEvent::RateLimits => json!({ wire::USAGE_METADATA: {} }),
-            // Gemini has no first-class error frame; surface it inside serverContent for the client.
-            IrServerEvent::Error { code, message } => json!({
-                wire::SERVER_CONTENT: { "error": { "code": code, "message": message } }
-            }),
+            // Gemini Live has no in-band error message (it reports errors with the socket's close),
+            // so an error frames nothing rather than a member no Gemini client reads.
+            IrServerEvent::Error { .. } => return None,
         };
         Some(wire_of(&v))
     }

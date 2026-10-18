@@ -475,6 +475,12 @@ pub enum CallerStep {
 }
 
 impl TwilioBridge {
+    /// Whether the carrier has stated its stream: its `start` was read and admitted.
+    #[must_use]
+    pub fn started(&self) -> bool {
+        self.stream_sid.is_some()
+    }
+
     /// Read one caller frame. A start with no stream id, or in another media format, is refused; so
     /// is a frame that is not Twilio's shape or carries a payload that is not clean base64 (data
     /// resuming after padding is never billed as a longer payload). An event this reader does not

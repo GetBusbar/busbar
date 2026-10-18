@@ -1449,3 +1449,20 @@ fn a_tool_call_whose_arguments_never_parse_frames_nothing() {
         "a call whose arguments never became whole frames nothing"
     );
 }
+
+/// RED-BEFORE-GREEN (THE DESIGN section 7, "Where the protocol carries a place to say so"; the
+/// cross-dialect map's `openai_structured_error`: "Gemini reports errors via WebSocket close codes,
+/// not a structured in-band error message"): the Gemini writer frames no error. RED: it invented a
+/// `serverContent.error` member no Gemini client reads.
+#[test]
+fn the_gemini_writer_invents_no_in_band_error() {
+    let mut st = DecodeState::default();
+    let framed = GeminiLiveCodec.write_down(
+        IrServerEvent::Error {
+            code: "session_expired".into(),
+            message: "the session reached its ceiling".into(),
+        },
+        &mut st,
+    );
+    assert!(framed.is_none(), "{framed:?}");
+}

@@ -11,13 +11,13 @@
 //! the same wire bytes (for cross: the bridged B wire) through a live session on the door that
 //! speaks the dialect — the caller's frames as caller pieces, the far end's as far-end pieces — on
 //! the linked and the dropped door, and holds what the door relays to the SESSION RULES the plane
-//! states (`session_pump`): a caller frame reaches the far end as it arrived, except that the
-//! caller's session configuration is replaced by the locked one; a far-end frame reaches the caller
-//! as it arrived, except that usage and rate-limit reports are consumed (usage becomes reported
-//! units), a far-end tool RESULT is never relayed, and a barge-in also cancels and truncates the
-//! far end's response at the audio the caller heard. Compared on the correlation fingerprint, the
-//! same rule the codec half uses. The expectation is computed from the wire by the codec, never by
-//! the door.
+//! states (`session_pump`, Law 5's relay): a caller frame reaches the far end as it arrived,
+//! except that a frame configuring the session or asking for a response takes the session's
+//! locked keys (the plane's governed splice, `busbar_plane_streaming::splice`); a far-end frame
+//! reaches the caller as it arrived, every one of them (a usage report also becomes reported
+//! units), and nothing goes to the far end on the caller's behalf (Law 11). Compared on the
+//! correlation fingerprint, the same rule the codec half uses. The expectation is computed from the
+//! wire by the codec and the splice, never by the door.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -32,6 +32,7 @@ use busbar_plane_streaming::codec::ir::{
 use busbar_plane_streaming::door::{read_settings, RIDES_LIVE_SOCKET, RIDES_REALTIME_SOCKET};
 use busbar_plane_streaming::driven::{GEMINI_SOCKET_PATH, REALTIME_SOCKET_PATH};
 use busbar_plane_streaming::session_door::PER_SESSION_CLASS;
+use busbar_plane_streaming::splice::{splice, LockedKeys};
 use busbar_plugin_loader::dispatch::kinds::plane::Plane;
 use busbar_plugin_loader::dispatch::Plugin;
 use bytes::Bytes;
@@ -398,36 +399,35 @@ pub struct Expected {
     answered: bool,
 }
 
-/// The locked config, as it reads on the dialect's wire.
-fn locked_norms(dialect: Dialect, locked: &SessionConfig) -> Vec<Norm> {
-    let (mut w, mut r) = (DecodeState::default(), DecodeState::default());
-    let configure = IrClientEvent::Control(IrDuplexControl::SessionConfigure {
-        config: locked.clone(),
+/// The caller frame `bytes` as the session's lock leaves it: a frame configuring the session, or
+/// asking for a response, takes the locked keys; any other frame is as it arrived. `None` for a
+/// governed frame that cannot be read as one object (it goes nowhere).
+fn governed(dialect: Dialect, locked: &SessionConfig, bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut st = DecodeState::default();
+    let evs = dialect.read_up(bytes, &mut st);
+    let configures = evs.iter().any(|e| {
+        matches!(
+            e,
+            IrClientEvent::Control(IrDuplexControl::SessionConfigure { .. })
+        )
     });
-    match dialect.write_up(configure, &mut w) {
-        Some(wire) => norm_up(&dialect.read_up(&wire.0, &mut r)),
-        None => Vec::new(),
+    let responds = evs.iter().any(|e| {
+        matches!(
+            e,
+            IrClientEvent::Control(IrDuplexControl::ResponseCreate { .. })
+        )
+    });
+    let rule = match (dialect, configures, responds) {
+        (Dialect::OpenAi, true, _) => Some(OpenAiRealtimeCodec.configure_rule(locked)),
+        (Dialect::Gemini, true, _) => Some(GeminiLiveCodec.configure_rule(locked)),
+        (Dialect::OpenAi, false, true) => OpenAiRealtimeCodec.response_rule(),
+        (Dialect::Gemini, false, true) => GeminiLiveCodec.response_rule(),
+        _ => None,
+    };
+    match rule {
+        None => Some(bytes.to_vec()),
+        Some(rule) => splice(bytes, &rule),
     }
-}
-
-/// A barge-in's cancel and truncate, at `heard_ms` of `item`, as they read on the dialect's wire
-/// (a dialect with no verb for them frames nothing).
-fn barge_norms(dialect: Dialect, item: &str, heard_ms: u64) -> Vec<Norm> {
-    let (mut w, mut r) = (DecodeState::default(), DecodeState::default());
-    let mut out = Vec::new();
-    for ev in [
-        IrClientEvent::Control(IrDuplexControl::ResponseCancel),
-        IrClientEvent::Control(IrDuplexControl::ItemTruncate {
-            item_ref: item.to_string(),
-            content_index: 0,
-            audio_played_ms: heard_ms,
-        }),
-    ] {
-        if let Some(wire) = dialect.write_up(ev, &mut w) {
-            out.extend(norm_up(&dialect.read_up(&wire.0, &mut r)));
-        }
-    }
-    out
 }
 
 /// The session rules over `wires`, read by the codec (never by the door).
@@ -435,8 +435,8 @@ pub fn expect(dialect: Dialect, wires: &[Wire]) -> Expected {
     let locked = read_settings(SESSION)
         .expect("the leg's section reads")
         .session;
-    let locked = locked_norms(dialect, &locked);
     let mut st = DecodeState::default();
+    let mut sent = DecodeState::default();
     let mut x = Expected {
         far: Vec::new(),
         caller: Vec::new(),
@@ -447,39 +447,24 @@ pub fn expect(dialect: Dialect, wires: &[Wire]) -> Expected {
     for w in wires {
         match w.dir {
             Dir::Up => {
-                for ev in dialect.read_up(&w.bytes, &mut st) {
-                    match ev {
-                        IrClientEvent::Control(IrDuplexControl::SessionConfigure { .. }) => {
-                            x.far.extend(locked.iter().cloned());
-                        }
-                        ev => x.far.extend(norm_up(std::slice::from_ref(&ev))),
-                    }
+                if let Some(bytes) = governed(dialect, &locked, &w.bytes) {
+                    x.far.extend(norm_up(&dialect.read_up(&bytes, &mut sent)));
                 }
             }
             Dir::Down => {
                 x.answered = true;
-                for ev in dialect.read_down(&w.bytes, &mut st) {
-                    match ev {
-                        IrServerEvent::Usage(u) => {
-                            for (sum, n) in sums.iter_mut().zip([
-                                u.audio_in,
-                                u.audio_out,
-                                u.text_in,
-                                u.text_out,
-                            ]) {
-                                *sum = sum.saturating_add(n);
-                            }
+                let evs = dialect.read_down(&w.bytes, &mut st);
+                for ev in &evs {
+                    if let IrServerEvent::Usage(u) = ev {
+                        for (sum, n) in
+                            sums.iter_mut()
+                                .zip([u.audio_in, u.audio_out, u.text_in, u.text_out])
+                        {
+                            *sum = sum.saturating_add(n);
                         }
-                        IrServerEvent::RateLimits
-                        | IrServerEvent::Tool(IrDuplexTool::CallResult { .. }) => {}
-                        IrServerEvent::SpeechStarted { item_id, .. } => {
-                            let heard = st.flush_playback();
-                            x.far.extend(barge_norms(dialect, &item_id, heard));
-                            x.caller.push(Norm::SpeechStart);
-                        }
-                        ev => x.caller.extend(norm_down(std::slice::from_ref(&ev))),
                     }
                 }
+                x.caller.extend(norm_down(&evs));
             }
         }
     }
