@@ -70,7 +70,10 @@ pub const ROW_NO_INLINE: &str = "blocking-ffi:no-inline-ffi";
 // (`Txn::read_store`, `Txn::store_write`, `hooks::offload_bounded`) this gate polices now live
 // under `crates/busbar-kernel/src`.
 const CORE: &str = "crates/busbar-kernel/src";
-const FIXED_ROOTS: &[&str] = &[CORE, "crates/busbar/src", "crates/busbar-llm/src"];
+// `crates/busbar-llm/src` is struck (DEV-GREEN row 83, coordinator ruling 2026-10-18): the retired
+// engine crate is deleted and the llm plane is its door crate, `crates/busbar-plane-llm`, read with
+// every other crate by the population scan below.
+const FIXED_ROOTS: &[&str] = &[CORE, "crates/busbar/src"];
 // `a2a` is struck: FLIP-A2A deleted crates/busbar-a2a, and the A2A plane is crates/busbar-plane-a2a,
 // a memory-ABI door that declares no `PLANE_DECL` (so no root resolves for it). Its source is still
 // read: the scan population is every crate under `crates/` (`population::source_population`).

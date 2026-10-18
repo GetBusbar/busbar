@@ -399,16 +399,12 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
 
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-llm/src/zz_planted_shape.rs",
+        "crates/busbar-plane-llm/src/zz_planted_shape.rs",
         "pub fn planted_second_attempt_site() {\n    let _ = \
          ctx.client().get().request(method, url);\n}\n\npub fn planted_extra_door() {\n    \
          unit.finish_inner(end);\n}\n\npub fn planted_door_caller() {\n    \
          finish_admitted(end);\n    finish_rejected(end);\n}\n\npub fn planted_pick_a() {\n    \
          pick_among(lanes);\n}\n\npub fn planted_pick_b() {\n    pick_among(lanes);\n}\n",
-    );
-    ov.set(
-        "crates/busbar-llm/src/unit/zz_planted_escape.rs",
-        "pub fn planted_response_escape() -> Response {\n    Response::new()\n}\n",
     );
     // A second unit attempt goes where the rule scans (a crate that drives a unit's walk).
     ov.set(
@@ -418,20 +414,13 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     r.push(prove_red(
         cx,
         gate,
-        "a second attempt site, a second terminal door, two more lane picks and a Response \
-         escaping a step other than Audit",
-        &[
-            "one-attempt-seam",
-            "single-terminal",
-            "one-pick-site",
-            "no-response-escapes-audit",
-        ],
+        "a second attempt site, a second terminal door and two more lane picks",
+        &["one-attempt-seam", "single-terminal", "one-pick-site"],
         ov,
         &[
             "planted_second_attempt_site",
             "planted_extra_door",
             "zz_planted_shape.rs",
-            "planted_response_escape",
         ],
     ));
 
@@ -500,6 +489,12 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     let planes = ConstructionGate::cfg(cx)
         .and_then(|c| c.plane_crates())
         .unwrap_or_default();
+    // No legacy engine crate is listed any more (DEV-GREEN row 83): the gate owes no
+    // `ports-only:<crate>` row, so there is no row for a plant to turn red. The census row
+    // (`plane_crates = 0`, its deletion named) is what holds the list at empty.
+    if planes.is_empty() {
+        return r;
+    }
     let mut ov = on(base);
     for p in &planes {
         // item 376 (Q11/Q32): the needle moved from `busbar_core::` (a deleted crate, absorbed
@@ -540,7 +535,7 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
 
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-llm/src/zz_planted_token.rs",
+        "crates/busbar-plane-llm/src/zz_planted_token.rs",
         "pub fn planted_forged_token() {\n    let _ = UnitToken::mint(seal);\n    let _ = \
          KernelSeal::acquire_for_kernel(x);\n    let _ = AdmitToken::mint(y);\n}\n",
     );
@@ -563,7 +558,7 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // path-prefixed form is reached. Covering that row here proves the DELEGATION too: six planted
     // forgeries, five counted by `token-sealed` and the sixth by its own row, never one twice.
     ov.set(
-        "crates/busbar-llm/src/zz_planted_sealed.rs",
+        "crates/busbar-plane-llm/src/zz_planted_sealed.rs",
         "pub fn planted_forged_kernel_values() {\n    let _ = CallId::seal(seal, 7);\n    let _ = \
          Origin::seal(seal, kind);\n    let _ = SessionId::mint(seal, 9);\n    let _ = \
          IdempotencyKey::mint(seal, digest);\n    let _ = UnitEnd::seal(exit, outcome, \
@@ -604,19 +599,19 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         // pre-#73 constructor, and that it reported the planted `AdmitToken::mint(` line (4) as an
         // offender SITE — so the label can no longer be green on a symbol the scan cannot see.
         &[
-            "`UnitToken::mint(` at crates/busbar-llm/src/zz_planted_token.rs",
+            "`UnitToken::mint(` at crates/busbar-plane-llm/src/zz_planted_token.rs",
             "call site(s) of `KernelSeal::acquire_for_kernel(`",
             "pre-#73 name `AdmitToken::mint(`",
-            "(ceiling 0): crates/busbar-llm/src/zz_planted_token.rs:4",
+            "(ceiling 0): crates/busbar-plane-llm/src/zz_planted_token.rs:4",
             // X-178. One string per symbol, each naming the SPELLING and the SITE, so a row that
             // goes red for some other reason cannot satisfy this case.
-            "`CallId::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:2",
-            "`Origin::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:3",
-            "`SessionId::mint(` at crates/busbar-llm/src/zz_planted_sealed.rs:4",
-            "`IdempotencyKey::mint(` at crates/busbar-llm/src/zz_planted_sealed.rs:5",
-            "`UnitEnd::seal(` at crates/busbar-llm/src/zz_planted_sealed.rs:6",
+            "`CallId::seal(` at crates/busbar-plane-llm/src/zz_planted_sealed.rs:2",
+            "`Origin::seal(` at crates/busbar-plane-llm/src/zz_planted_sealed.rs:3",
+            "`SessionId::mint(` at crates/busbar-plane-llm/src/zz_planted_sealed.rs:4",
+            "`IdempotencyKey::mint(` at crates/busbar-plane-llm/src/zz_planted_sealed.rs:5",
+            "`UnitEnd::seal(` at crates/busbar-plane-llm/src/zz_planted_sealed.rs:6",
             // The verbs-unit symbol lands on its own sub-row, which prints sites as `path:line`.
-            "(ceiling 0): crates/busbar-llm/src/zz_planted_sealed.rs:7",
+            "(ceiling 0): crates/busbar-plane-llm/src/zz_planted_sealed.rs:7",
             // Q-GG2: a mint in busbar-contract source is caught, data file beside it or not.
             "`Pass::mint(` at crates/busbar-contract/src/caps/fixtures/zz_planted_contract_mint.rs:2",
         ],
@@ -624,7 +619,7 @@ fn loop_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
 
     let mut ov = on(base);
     ov.set(
-        "crates/busbar-llm/src/zz_planted_loop.rs",
+        "crates/busbar-plane-llm/src/zz_planted_loop.rs",
         "pub fn planted_loop_entry_a() {\n    let _ = run_unit(ctx);\n}\n\npub fn \
          planted_loop_entry_b() {\n    let _ = run_unit(ctx);\n}\n\npub fn \
          planted_legacy_a() {\n    run_gauntlet(unit);\n}\n\npub fn planted_legacy_b() {\n    \

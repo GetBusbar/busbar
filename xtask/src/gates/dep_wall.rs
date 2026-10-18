@@ -60,7 +60,10 @@ const BANNED_PATHS: &[&str] = &["std::net", "tokio::net"];
 /// scans. Its eight pins in the ledger drained with it and are struck there. `busbar-a2a` likewise
 /// (FLIP-A2A): the a2a plane is its door crate `busbar-plane-a2a`, a `gate.plugin_kinds.plane` row.
 /// `busbar-voice` likewise (FLIP-STREAMING).
-const LEGACY: &[&str] = &["crates/busbar-llm"];
+/// `busbar-llm` likewise, the last of them (DEV-GREEN row 83, coordinator ruling 2026-10-18): the
+/// llm plane is its door crate `busbar-plane-llm`, a `gate.plugin_kinds.plane` row. No legacy engine
+/// crate is left for this list to name.
+const LEGACY: &[&str] = &[];
 
 /// The external source a plugin repository resolves from.
 const EXTERNAL_SOURCE: &str = "git+https://github.com/GetBusbar/";
