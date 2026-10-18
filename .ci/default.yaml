@@ -7,19 +7,13 @@ deadline: 6h
 # (`modernci call measure {repo, from, check}`), never run on every move.
 on:
   move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny]
-  manual: [oracle, test-gated, snapshot-print]
+  manual: [oracle, test-gated]
 env:
   RUSTFLAGS: "-D warnings"
   CARGO_TERM_COLOR: never
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_INCREMENTAL: "0"
 checks:
-  snapshot-print:
-    run: |
-      . .ci/tool.sh rust
-      cargo build -q -p xtask
-      cargo xtask gate config-schema --write || true
-      git --no-pager diff -- crates/busbar-kernel/src/config/config-schema.snapshot.json
   preflight:
     run: |
       . .ci/tool.sh rust

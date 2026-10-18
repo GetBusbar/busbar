@@ -241,22 +241,28 @@ enum DriftState {
 /// The first line the two renders disagree on, so a stale snapshot says WHERE rather than only
 /// THAT. The shell printed sixty lines of `diff -u`; one located line is what a reader acts on.
 fn first_difference(committed: &str, fresh: &str) -> String {
-    for (i, (a, b)) in committed.lines().zip(fresh.lines()).enumerate() {
-        if a != b {
-            return format!(
-                "first difference at line {}: committed {:?} vs fresh {:?}.",
-                i + 1,
-                a.trim(),
-                b.trim()
-            );
-        }
+    // PROBE: the whole differing middle of both renders, between their common head and tail.
+    let c: Vec<&str> = committed.lines().collect();
+    let f: Vec<&str> = fresh.lines().collect();
+    let head = c.iter().zip(&f).take_while(|(a, b)| a == b).count();
+    let tail = c[head..]
+        .iter()
+        .rev()
+        .zip(f[head..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let mut out = format!(
+        "SNAPDIFF head={head} committed_mid={} fresh_mid={}\n",
+        c.len() - head - tail,
+        f.len() - head - tail
+    );
+    for (n, l) in f[head..f.len() - tail].iter().enumerate() {
+        out.push_str(&format!("SNAP+ {}: {l}\n", head + n + 1));
     }
-    format!(
-        "the two agree for {} line(s) and then differ in length (committed {} line(s), fresh {}).",
-        committed.lines().count().min(fresh.lines().count()),
-        committed.lines().count(),
-        fresh.lines().count()
-    )
+    for (n, l) in c[head..c.len() - tail].iter().enumerate() {
+        out.push_str(&format!("SNAP- {}: {l}\n", head + n + 1));
+    }
+    out
 }
 
 /// THE BASELINE ARM, AND THE THREE BYPASSES IT CLOSES.
