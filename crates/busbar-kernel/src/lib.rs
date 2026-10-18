@@ -332,6 +332,9 @@ pub mod timing;
 // where it now lives (`test_support::seam`, `test_support::engine_kit`).
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+/// The kernel's neutral test seam: a test-support consumer that links no plane installs it.
+#[cfg(feature = "test-support")]
+pub mod testkit;
 pub mod tls;
 pub mod topology;
 /// The channel axis (`Transport`), the contract's.

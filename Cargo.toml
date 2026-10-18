@@ -5,7 +5,6 @@ members = [
     "crates/busbar-core-connector",
     "crates/busbar-core-admin",
     "crates/busbar-core-oauth2",
-    "crates/busbar-llm",
     "crates/busbar-contract",
     "crates/busbar-kernel",
     "crates/busbar-kernel-identity",
