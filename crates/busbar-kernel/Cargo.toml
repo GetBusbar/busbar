@@ -176,7 +176,7 @@ hooks-ranking = []
 # W4.b P2: substrate absorbed. The neutral capability markers `dispatch`/`relay`/`runtime` (formerly
 # forwarded via `busbar-substrate/*`) are now declared HERE and forward to the pure value crate's
 # same-named markers so the value-side `#[cfg]` sites arm in lock-step, exactly as before.
-plane-mcp = ["egress-seam", "jsonrpc-ingress", "dispatch"]
+plane-mcp = ["jsonrpc-ingress", "dispatch"]
 # THE A2A PLANE, in-core today (`src/a2a`), behind the SAME switch the binary already uses for the
 # A2A crate (`busbar-a2a`): one plane-kind name for A2A-the-protocol and A2A-the-plane, never two.
 # Default-on — the shipped engine speaks A2A. With it OFF, `src/a2a` (and its plane-side helper
@@ -188,7 +188,7 @@ plane-mcp = ["egress-seam", "jsonrpc-ingress", "dispatch"]
 # Phase-B B1 FORWARDS to substrate, exactly as `plane-mcp` does — `Due::from_verify_decision` and the
 # other relocated `#[cfg(feature = "plane-a2a")]` sites now live in substrate, so this must turn the
 # substrate marker on with it.
-plane-a2a = ["egress-seam", "egress-stream", "card-signing", "jsonrpc-ingress", "relay"]
+plane-a2a = ["card-signing", "jsonrpc-ingress", "relay"]
 # THE NEUTRAL INBOUND WS CAPABILITY — arms the core-side duplex session mount (router.rs,
 # `mount_plane_session`) that answers a door plane's session upgrade. NAMES NO PLANE: any duplex
 # plane turns on the same capability. Forwards to the neutral `runtime` (which arms `axum/ws` and the
@@ -209,18 +209,9 @@ runtime = ["dep:tokio-tungstenite", "axum/ws"]
 # a plane. Each is enabled ONLY transitively by the plane feature(s) that supply the capability, so its
 # truth value — and thus every gated item's compilation — is byte-identical to the plane-token gate it
 # replaced:
-#   egress-seam   — the host-mediated governed-egress fetch adapter (`egress::seam` + the `plane_host::
-#                   egress` scoped/driver twins). Enabled by `plane-mcp` OR `plane-a2a` (was
-#                   `any(plane-mcp, plane-a2a)`), matching the substrate egress-seam types those gates
-#                   name, which core's plane forwards compile in lock-step.
-#   egress-stream — the streaming relay leg of that adapter (`stream_head`/`pump`/`HostlessEgress::
-#                   stream`). Enabled by `plane-a2a` only (was `plane-a2a`), matching the substrate
-#                   `HostlessEgress::stream` sub-gate.
 #   card-signing  — the host card-sign vtable slot (`plane_host::vtable::card_sign`), wired only when a
 #                   plane declares a card-signing domain. Enabled by `plane-a2a` only (was `plane-a2a`),
 #                   matching `governance::GovState::card_sign`.
-egress-seam = []
-egress-stream = []
 card-signing = []
 #   jsonrpc-ingress  — the RFC 9728 JSON-RPC discovery/metadata ingress (`ingress::protocol`'s
 #                   re-export + the `App`-facing `ResourceMetadata`/`metadata_handler` stayers). Served
