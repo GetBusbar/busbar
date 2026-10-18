@@ -1144,10 +1144,15 @@ async fn every_mounted_planes_unitless_401_and_413_answer_the_1_6_0_baseline() {
         let open = configured(TestApp::new(), &sections, None).build();
         let oversized = serde_json::json!({ "pad": "x".repeat(4096) }).to_string();
         let (status, ct, body) = answered(open, &mount, oversized).await;
+        // The plane renders this refusal in its own dialect, so its member order is the plane's
+        // serializer's: the kernel pins what it says, the plane's own conformance its bytes.
+        let said: serde_json::Value = serde_json::from_str(&body).expect("a JSON-RPC refusal");
+        let baseline: serde_json::Value =
+            serde_json::from_str(MOUNTED_413_BASELINE).expect("the baseline is JSON");
         assert_eq!(
-            (status, body.as_str()),
-            (413, MOUNTED_413_BASELINE),
-            "`{}`: the mounted 413",
+            (status, said),
+            (413, baseline),
+            "`{}`: the mounted 413: {body}",
             decl.key
         );
         assert!(ct.starts_with("application/json"), "`{}`: {ct}", decl.key);
