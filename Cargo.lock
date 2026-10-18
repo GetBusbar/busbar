@@ -824,7 +824,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-decisions"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=838bae4a4b2fb63f22b7947663f6f23b5a611feb#838bae4a4b2fb63f22b7947663f6f23b5a611feb"
+source = "git+https://github.com/GetBusbar/busbar-plane-decisions?rev=90ed03de8aa1db96dcda611ab25df6c1d80afd99#90ed03de8aa1db96dcda611ab25df6c1d80afd99"
 dependencies = [
  "busbar-contract",
  "serde",
