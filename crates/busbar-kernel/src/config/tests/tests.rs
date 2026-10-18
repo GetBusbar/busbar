@@ -4557,3 +4557,17 @@ fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
     .expect("the plane's own section alone parses");
     assert!(!bare.plane_raw.contains_key("beside_owned"));
 }
+
+/// An `on_exhausted` mapping naming BOTH `fallback_pool` and `queue` is refused with an "exactly
+/// one of" error, never force-fit to one of them. Rehomes
+/// `crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::test_config_parsing_both_fallback_and_queue_conflicts`.
+#[test]
+fn an_on_exhausted_naming_both_a_fallback_and_a_queue_is_refused() {
+    let err =
+        serde_yaml::from_str::<OnExhaustedCfg>("{ fallback_pool: cold, queue: { max_ms: 250 } }")
+            .expect_err("both keys present is an error");
+    assert!(
+        err.to_string().contains("exactly one of"),
+        "must reject both fallback_pool and queue; got: {err}"
+    );
+}
