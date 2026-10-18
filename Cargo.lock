@@ -403,7 +403,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=4d9e8f4cec149d6142854ef2b63c1e639b85f87d#4d9e8f4cec149d6142854ef2b63c1e639b85f87d"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=cc59d737972c1b881a164b437d63c4f29f6a15c1#cc59d737972c1b881a164b437d63c4f29f6a15c1"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -419,7 +419,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oidc-plugin"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=4d9e8f4cec149d6142854ef2b63c1e639b85f87d#4d9e8f4cec149d6142854ef2b63c1e639b85f87d"
+source = "git+https://github.com/GetBusbar/busbar-auth-oidc?rev=cc59d737972c1b881a164b437d63c4f29f6a15c1#cc59d737972c1b881a164b437d63c4f29f6a15c1"
 dependencies = [
  "busbar-auth-oidc",
  "busbar-contract",
@@ -600,7 +600,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=049592be7a06945cd35bfc32d72ac0fb21197a57#049592be7a06945cd35bfc32d72ac0fb21197a57"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=1ec1d8259962f3b1d98f989bf6e9967a7c00268c#1ec1d8259962f3b1d98f989bf6e9967a7c00268c"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -610,7 +610,7 @@ dependencies = [
 [[package]]
 name = "busbar-export-prometheus-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=049592be7a06945cd35bfc32d72ac0fb21197a57#049592be7a06945cd35bfc32d72ac0fb21197a57"
+source = "git+https://github.com/GetBusbar/busbar-export-prometheus?rev=1ec1d8259962f3b1d98f989bf6e9967a7c00268c#1ec1d8259962f3b1d98f989bf6e9967a7c00268c"
 dependencies = [
  "busbar-contract",
  "busbar-export-prometheus",
@@ -640,7 +640,7 @@ dependencies = [
 [[package]]
 name = "busbar-hook-ranking"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=50a43e1819da5586c2ecdf401040d9c5ddad3a8e#50a43e1819da5586c2ecdf401040d9c5ddad3a8e"
+source = "git+https://github.com/GetBusbar/busbar-hook-ranking?rev=64a0380cd51e2875815d5167434f5e1604b8c106#64a0380cd51e2875815d5167434f5e1604b8c106"
 dependencies = [
  "busbar-contract",
  "serde_json",
