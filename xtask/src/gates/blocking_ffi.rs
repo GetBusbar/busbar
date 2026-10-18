@@ -125,6 +125,15 @@ struct Seam {
     /// another type's method (`table.open(raw_key)` is not `HookAxis::open`, which takes four). An
     /// arity the reader could not settle, on either side, matches.
     arity: BTreeMap<String, Option<usize>>,
+    /// A derived seam's trait and the types whose impls back it: what a receiver must be bound to
+    /// for a call of one of its method names to be this seam's.
+    types: Vec<String>,
+    /// THE RECEIVERS a derived seam's call may be made on: every name the tree binds to one of
+    /// [`Seam::types`] (a field, parameter or binding typed with it, or a fn returning it). A
+    /// method name is not a type (`conns.open(..)` is the connector's, `post.open(..)` the node's
+    /// posting site): a call whose receiver is bound to none of them is another type's method.
+    /// `None` for a hand row, and a receiver the reader cannot name is held to be the seam's.
+    bound: Option<BTreeSet<String>>,
 }
 
 fn strs(names: &[&str]) -> Vec<String> {
@@ -142,6 +151,8 @@ fn seams() -> Vec<Seam> {
                 .to_string(),
             derived: false,
             arity: BTreeMap::new(),
+            types: Vec::new(),
+            bound: None,
         },
         // A `kind: auth` VERIFY plugin, direct or via the chain runner.
         Seam {
@@ -153,6 +164,8 @@ fn seams() -> Vec<Seam> {
                     .to_string(),
             derived: false,
             arity: BTreeMap::new(),
+            types: Vec::new(),
+            bound: None,
         },
         // A `kind: secret` plugin: SecretResolver's non-built-in arm is a transport_call.
         Seam {
@@ -169,6 +182,8 @@ fn seams() -> Vec<Seam> {
                 .to_string(),
             derived: false,
             arity: BTreeMap::new(),
+            types: Vec::new(),
+            bound: None,
         },
         // dlopen + the plugin CONSTRUCTOR: a staging copy, dynamic-linker work, then the open.
         Seam {
@@ -179,6 +194,8 @@ fn seams() -> Vec<Seam> {
                 .to_string(),
             derived: false,
             arity: BTreeMap::new(),
+            types: Vec::new(),
+            bound: None,
         },
         // Whole-snapshot builders: each re-resolves the hook chain, i.e. secrets + opens, per hook.
         Seam {
@@ -200,6 +217,8 @@ fn seams() -> Vec<Seam> {
                     .to_string(),
             derived: false,
             arity: BTreeMap::new(),
+            types: Vec::new(),
+            bound: None,
         },
         // A `kind: export` / `kind: hook` plugin serving an inbound HTTP route.
         Seam {
@@ -210,6 +229,8 @@ fn seams() -> Vec<Seam> {
                 .to_string(),
             derived: false,
             arity: BTreeMap::new(),
+            types: Vec::new(),
+            bound: None,
         },
     ]
 }
@@ -714,12 +735,141 @@ fn seam_hit(seam: &Seam, lines: &[&str], idx: usize) -> bool {
             }
             let want = seam.arity.get(m).copied().flatten();
             let got = call_arity(lines, idx, open);
-            !awaited(lines, idx, open) && (want.is_none() || got.is_none() || want == got)
+            !awaited(lines, idx, open)
+                && (want.is_none() || got.is_none() || want == got)
+                && receiver_bound(seam, line, open, m)
         })
     });
     method
         || seam.bare.iter().any(|b| bare_call(line, b))
         || (seam.msg.starts_with("secret-plugin") && resolver_resolve(line))
+}
+
+/// Whether the receiver of the `.name(` call whose `(` is at char `open` is one [`Seam::bound`]
+/// names. A hand row binds every receiver; a receiver the reader cannot name (a call result, an
+/// index, a line that starts with the dot) is held to be the seam's, the direction this gate is
+/// allowed to be wrong in.
+fn receiver_bound(seam: &Seam, line: &str, open: usize, name: &str) -> bool {
+    let Some(bound) = &seam.bound else {
+        return true;
+    };
+    let chars: Vec<char> = line.chars().collect();
+    // Back from the `(` over any space and the method's name to its `.`.
+    let mut dot = open.min(chars.len());
+    while dot > 0 && chars[dot - 1].is_whitespace() {
+        dot -= 1;
+    }
+    dot = dot.saturating_sub(name.chars().count());
+    if dot == 0 || chars[dot - 1] != '.' {
+        return true;
+    }
+    let mut end = dot - 1;
+    // `recv().name(` or `recv(..).name(`: the receiver is the fn the call result comes from.
+    if end > 0 && chars[end - 1] == ')' {
+        let mut depth = 0_i32;
+        let mut i = end;
+        while i > 0 {
+            i -= 1;
+            match chars[i] {
+                ')' => depth += 1,
+                '(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 {
+            return true;
+        }
+        end = i;
+    }
+    let mut start = end;
+    while start > 0 && (chars[start - 1].is_alphanumeric() || chars[start - 1] == '_') {
+        start -= 1;
+    }
+    if start == end {
+        return true;
+    }
+    let ident: String = chars[start..end].iter().collect();
+    bound.contains(&ident)
+}
+
+/// Fill each derived seam's [`Seam::bound`] from the tree: every identifier written `ident: <type>`
+/// where the type names one of the seam's [`Seam::types`] (a field, a parameter, a typed binding),
+/// and every `fn name(..) -> <type>` returning one.
+fn bind_receivers<'a>(door: &mut [Seam], texts: impl Iterator<Item = &'a str>) {
+    let texts: Vec<&str> = texts.collect();
+    for seam in door.iter_mut().filter(|s| s.derived) {
+        let mut bound = BTreeSet::new();
+        for text in &texts {
+            for line in text.lines() {
+                if !seam.types.iter().any(|t| has_word(line, t)) {
+                    continue;
+                }
+                bind_line(line, &seam.types, &mut bound);
+            }
+        }
+        seam.bound = Some(bound);
+    }
+}
+
+/// Whether `word` appears in `line` at identifier boundaries.
+fn has_word(line: &str, word: &str) -> bool {
+    line.match_indices(word).any(|(i, _)| {
+        let before = line[..i].chars().next_back();
+        let after = line[i + word.len()..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+            && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+    })
+}
+
+/// The names one line binds to one of `types`: `ident: ..Type..` (the type running to the next
+/// `,`, `;`, `=`, `)` or `{`), and `fn name(..) -> ..Type..`.
+fn bind_line(line: &str, types: &[String], bound: &mut BTreeSet<String>) {
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        // `ident :` that is not `::`.
+        if chars[i] == ':' && chars.get(i + 1) != Some(&':') && (i == 0 || chars[i - 1] != ':') {
+            let mut e = i;
+            while e > 0 && chars[e - 1] == ' ' {
+                e -= 1;
+            }
+            let mut b = e;
+            while b > 0 && (chars[b - 1].is_alphanumeric() || chars[b - 1] == '_') {
+                b -= 1;
+            }
+            let mut j = i + 1;
+            let mut depth = 0_i32;
+            while j < chars.len() {
+                match chars[j] {
+                    '<' | '(' | '[' => depth += 1,
+                    '>' | ')' | ']' if depth > 0 => depth -= 1,
+                    ',' | ';' | '=' | ')' | '{' if depth == 0 => break,
+                    _ => {}
+                }
+                j += 1;
+            }
+            let ty: String = chars[i + 1..j].iter().collect();
+            if b < e && types.iter().any(|t| has_word(&ty, t)) {
+                bound.insert(chars[b..e].iter().collect());
+            }
+        }
+        i += 1;
+    }
+    if let (Some(f), Some(arrow)) = (line.find("fn "), line.find("->")) {
+        let after = &line[f + 3..];
+        let name: String = after
+            .chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() && types.iter().any(|t| has_word(&line[arrow..], t)) {
+            bound.insert(name);
+        }
+    }
 }
 
 /// THE ONE READING OF A LINE. Every rule below reads the BLANKED copy (`ScopeLine::counted`:
@@ -1363,6 +1513,14 @@ fn door_seams<'a>(
                 bare: Vec::new(),
                 derived: true,
                 arity: methods,
+                types: std::iter::once(tr.clone())
+                    .chain(
+                        impls
+                            .iter()
+                            .filter_map(|i| i.split(' ').next().map(str::to_string)),
+                    )
+                    .collect(),
+                bound: None,
             }
         })
         .collect();
@@ -1530,6 +1688,8 @@ impl Gate for BlockingFfiGate {
                     ]);
                 }
             };
+        let mut door = door;
+        bind_receivers(&mut door, files.iter().map(|f| f.text.as_str()));
         let mut table = seams();
         table.extend(door);
         let tkey = table_key(&table);
@@ -1854,15 +2014,17 @@ impl Gate for BlockingFfiGate {
         );
         ov.set(
             format!("{CORE}/planted_zap_site.rs"),
-            "async fn zap_site(z: &dyn ZapCalls) {\n\
+            "async fn zap_site(z: &dyn ZapCalls, post: &NodePost) {\n\
              \x20   let a = z.zap_later(1).await;\n\
              \x20   let b = z.zap_now(2);\n\
+             \x20   let c = post.zap_now(3);\n\
              }\n",
         );
         report.push(prove_red(
             cx,
             self,
-            "a door-backed method the loader grows is a seam without anyone listing it",
+            "a door-backed method the loader grows is a seam without anyone listing it, and the same \
+             name on a receiver bound to another type is not",
             &[ROW_NO_INLINE],
             ov,
             &[
