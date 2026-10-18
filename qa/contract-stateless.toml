@@ -23,13 +23,16 @@ drain = "none — mandated by SPEC 1297"
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/abi/hot/host.rs"
 item = "LIVE_GENERATIONS"
+count = 1
 
 [[finding]]
 rule = "contract-stateless:static"
 file = "crates/busbar-contract/src/abi/hot/host.rs"
 item = "NEXT_GENERATION"
+count = 1
 
 [[finding]]
 rule = "contract-stateless:thread-local"
 file = "crates/busbar-contract/src/abi/hot/host.rs"
 item = "thread_local!"
+count = 1
