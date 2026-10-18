@@ -3,7 +3,7 @@
 
 //! The network guard: what a destination may be dialled, and to which address.
 //!
-//! ## Why it is the trust unit's and not a transport's
+//! ## Why it is not a transport's
 //!
 //! This check was written three times over — once on each fetch path that reached out to a
 //! configured URL — and the second copy was already borrowing the first's vocabulary in its own
@@ -12,12 +12,9 @@
 //!
 //! It lived in a neutral leaf for exactly that reason, and it is here now for one more: a transport
 //! that resolved a name itself was a transport that had to remember to guard it, and every new
-//! carrier was a new place to forget. The trust unit already decides where a unit may go — the
-//! allow-list, the per-kind rule, the lane — so the address a destination resolves to belongs
-//! beside those. Which dials reach this guard is stated in the trust unit's module header: the
-//! fetches the host makes on an operator's or a caller's behalf do, and the provider dial is
-//! judged by the same metadata denylist twice: once at configuration time, as 1.5.5 judged it, and
-//! again over every address its name resolves to when it is dialled ([`DialDenylist`]).
+//! carrier was a new place to forget. The provider dial is judged by the same metadata denylist
+//! twice: once at configuration time, as 1.5.5 judged it, and again over every address its name
+//! resolves to when it is dialled ([`DialDenylist`]).
 //!
 //! ## RESOLVE THEN PIN, and why a name check is not a guard
 //!
@@ -1079,7 +1076,7 @@ fn dial_key(host: &str) -> String {
     host.trim_end_matches('.').to_ascii_lowercase()
 }
 
-/// Why the trust unit would not let a destination be dialled.
+/// Why the network guard would not let a destination be dialled.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkRefusal {
     /// The destination is not one this check applies to: only an upstream is dialled at an address.
