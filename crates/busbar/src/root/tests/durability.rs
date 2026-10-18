@@ -1331,8 +1331,9 @@ fn the_restart_reconciliation_goes_red_on_a_book_that_lost_a_row() {
     assert_eq!(restarted.recovered_holds, 0, "every hold was closed");
     assert_eq!(restarted.incarnation, 2, "the second boot of this journal");
 
-    // A book that lost a row.
-    restarted.ledger.book_mut().retain_from(86_401);
+    // A book that lost both rows.
+    *restarted.ledger.book_mut().entry(key.clone(), 86_400) = Default::default();
+    *restarted.ledger.book_mut().entry(other.clone(), 86_400) = Default::default();
     let findings = restarted.reconcile_with_journal();
     assert_eq!(
         findings.len(),
