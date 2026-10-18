@@ -1139,7 +1139,12 @@ impl PlanePurityStrictGate {
 
     /// The two measured tables: the six categories over production+test scope combined, and the
     /// BACKWARDS class broken out per plane crate over test scope only.
-    fn counts(m: &Measurement) -> StrictTables {
+    ///
+    /// A [`planes::PLANE_KEYS`] key whose crate is not on disk (`missing`, from
+    /// [`planes::missing_plane_key_roots`]) gets NO reach measurement, so its row reads "no
+    /// measurement" and is RED: a key pointing at a deleted directory would otherwise measure zero
+    /// hits and pass by judging nothing (row 115).
+    fn counts(m: &Measurement, missing: &[String]) -> StrictTables {
         let mut cats: BTreeMap<String, u64> = BTreeMap::new();
         for c in scanner::CATEGORIES {
             let n = if c == "BACKWARDS" {
@@ -1152,7 +1157,10 @@ impl PlanePurityStrictGate {
         }
         let mut reach: BTreeMap<String, u64> = BTreeMap::new();
         for k in planes::PLANE_KEYS {
-            let prefix = format!("crates/busbar-{k}/");
+            if missing.contains(&planes::plane_key_src(k)) {
+                continue;
+            }
+            let prefix = format!("crates/{}/", planes::plane_key_crate(k));
             reach.insert(
                 k.to_string(),
                 m.test_reverse
@@ -1201,9 +1209,12 @@ fn strict_rows(
         let Some(measured) = reach.get(k) else {
             rows.push(Row::fail(
                 id,
-                format!("busbar-{k}'s test-reach was measured"),
-                "no measurement for this plane crate — an uncompared row reads as a ceiling met"
-                    .to_string(),
+                format!("{}'s test-reach was measured", planes::plane_key_crate(k)),
+                format!(
+                    "no measurement for this plane crate ({} is not on disk, or was not read) — \
+                     an uncompared row reads as a ceiling met",
+                    planes::plane_key_src(k)
+                ),
             ));
             continue;
         };
@@ -1215,7 +1226,10 @@ fn strict_rows(
                 crate::ledger::Status::Pass
             },
             id,
-            format!("busbar-{k}'s own test code reaches busbar_core:: within its ceiling"),
+            format!(
+                "{}'s own test code reaches busbar_core:: within its ceiling",
+                planes::plane_key_crate(k)
+            ),
             d.detail(),
         ));
     }
@@ -1249,7 +1263,7 @@ impl Gate for PlanePurityStrictGate {
             Ok(m) => m,
             Err(e) => return Verdict::of(unscannable(&self.owed(), &e)),
         };
-        let (cats, reach) = Self::counts(&m);
+        let (cats, reach) = Self::counts(&m, &planes::missing_plane_key_roots(cx));
         Verdict::of(strict_rows(&ceilings, &cats, &reach))
     }
 
@@ -1263,7 +1277,7 @@ impl Gate for PlanePurityStrictGate {
         // happen to be today would make this case report on the tree's debt rather than on the
         // ratchet — so it would go red for a reason that says nothing about the gate. The ceilings
         // are set to the measured counts and the SAME counts are then pushed under them below.
-        let measured = measure(cx).map(|m| Self::counts(&m));
+        let measured = measure(cx).map(|m| Self::counts(&m, &planes::missing_plane_key_roots(cx)));
         match &measured {
             Ok((cats, reach)) => {
                 let mut at = Overlay::new();
@@ -1295,6 +1309,25 @@ impl Gate for PlanePurityStrictGate {
             ov,
             &["not a bare integer"],
         ));
+
+        // A PLANE KEY WHOSE CRATE IS NOT ON DISK IS REFUSED, NOT MEASURED AS ZERO (row 115; the
+        // coordinator's ruling on the llm key, 2026-10-18). The key's root is planted absent over a
+        // fixture that holds every ceiling at its measure, so the only red is the unmeasured key.
+        if let Ok((cats, reach)) = &measured {
+            for key in planes::PLANE_KEYS {
+                let mut ov = Overlay::new();
+                ov.set(strict::STRICT_TOML, ceilings_at(&base, cats, reach));
+                ov.remove(planes::plane_key_src(key));
+                report.push(prove_red(
+                    cx,
+                    self,
+                    format!("{key}: a plane key whose crate is not on disk is refused"),
+                    &[&strict_reach_row(key)],
+                    ov,
+                    &[&planes::plane_key_src(key), "not on disk"],
+                ));
+            }
+        }
 
         // ONE MORE HIT THAN THE CEILING ALLOWS is the ratchet doing its job, and it is planted as
         // a real violation in test scope rather than as a lowered number — a case that only edits
@@ -1375,7 +1408,12 @@ fn ceilings_at(base: &str, cats: &BTreeMap<String, u64>, reach: &BTreeMap<String
 /// which is what puts them in the scope `--strict` adds and `--check` deliberately does not see.
 fn strict_plants() -> Vec<(&'static str, String, &'static str)> {
     let neutral_test = |leaf: &str| format!("crates/busbar-kernel/src/tests/{leaf}");
-    let plane_test = |key: &str| format!("crates/busbar-{key}/src/tests/planted_strict_reach.rs");
+    let plane_test = |key: &str| {
+        format!(
+            "{}/tests/planted_strict_reach.rs",
+            planes::plane_key_src(key)
+        )
+    };
     let mut out: Vec<(&'static str, String, &'static str)> = vec![
         (
             "PATH-INCLUDE",
