@@ -868,7 +868,7 @@ fn read_compiled(rel: &str, text: &str) -> Vec<Compiled> {
         let mut st = crate::scan::LexState::default();
         let mut depth = 0i32;
         let mut open_mods: Vec<(String, i32)> = Vec::new();
-        let mut pending: Option<String> = None;
+        let mut pending: Option<Option<String>> = None;
         for (line_no, raw) in text.lines().enumerate() {
             let code = crate::scan::blank_code(raw, &mut st);
             let at = format!("{rel}:{}", line_no + 1);
