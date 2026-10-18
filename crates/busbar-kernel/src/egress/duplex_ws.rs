@@ -5,10 +5,9 @@
 //! neutral home for any plane's outbound duplex socket.
 //!
 //! A plane that selects [`crate::transport::Transport::WebSocket`] dials the upstream here. The
-//! dialer hands back a
-//! message [`Stream`]`<Item = Vec<u8>>` + [`Sink`]`<Vec<u8>>` pair — EXACTLY the shape
-//! [`crate::ingress::byte_duplex::serve_messages`] consumes — so the plane composes whatever session
-//! logic it needs on top and never holds a socket, a resolver, or the WS framing.
+//! dialer hands back a message [`Stream`]`<Item = Vec<u8>>` + [`Sink`]`<Vec<u8>>` pair — EXACTLY the
+//! shape [`crate::ingress::byte_duplex::serve_messages`] consumes — so the plane composes whatever
+//! session logic it needs on top and never holds a socket, a resolver, or the WS framing.
 //!
 //! ## THE GUARD IS NOT OPTIONAL (the egress-audit finding this closes)
 //!
