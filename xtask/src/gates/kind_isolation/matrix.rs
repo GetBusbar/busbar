@@ -4168,7 +4168,7 @@ fn law0_row_raised(
             let c = crates
                 .iter()
                 .find(|c| c.name == r.krate && is_core_neutral(c))?;
-            cx.exists(&format!("{}/Cargo.toml", c.dir))
+            cx.exists(format!("{}/Cargo.toml", c.dir))
                 .then(|| (r, c.dir.clone()))
         })
         .ok_or_else(|| {

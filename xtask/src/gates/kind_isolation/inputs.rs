@@ -437,7 +437,7 @@ fn include_targets(
         let what = if rest.starts_with('$') {
             "a macro metavariable"
         } else if (ident == "r" || ident == "br")
-            && rest[ident.len()..].starts_with(|c| c == '"' || c == '#')
+            && rest[ident.len()..].starts_with(['"', '#'])
         {
             "a raw string"
         } else {
@@ -1557,7 +1557,7 @@ pub fn selftest<'a>(
     // XC2#4: AN INCLUDE INTO AN UNSCANNED FILE OF THE SAME CRATE. `#[path = "target/leak.rs"]` is
     // `hidden-source`; the same file spliced by `include!` was read by nothing, because the include
     // reader only reports a target in ANOTHER crate.
-    let lib = cx.read(&format!("{store}/src/lib.rs")).unwrap_or_default();
+    let lib = cx.read(format!("{store}/src/lib.rs")).unwrap_or_default();
     report.push(prove_rows_red(
         cx,
         gate,
