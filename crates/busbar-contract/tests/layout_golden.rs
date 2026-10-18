@@ -1532,7 +1532,7 @@ fn compute_layout() -> String {
     record!(s, tkind::ListenOut, [head, listener, addr_written]);
     record!(s, tkind::AcceptIn, [head, listener, peer_buf, peer_cap]);
     record!(s, tkind::AcceptOut, [head, conn, peer_written]);
-    record!(s, tkind::DialIn, [head, dest]);
+    record!(s, tkind::DialIn, [head, dest, supervision_key]);
     record!(s, tkind::ConnOut, [head, conn]);
     record!(s, tkind::ReadIn, [head, conn, buf, cap]);
     record!(
