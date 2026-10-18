@@ -5354,6 +5354,44 @@ mod pools_door_walk_and_breaker {
         assert!(fars.iter().all(|far| far.served() == 1));
     }
 
+    /// A CALLER'S FAULT IS NEVER RETRIED ON ANOTHER MEMBER: a two-member pool whose far ends both
+    /// answer a 400 relays the first 400 to the caller, and exactly one member was dialled; the
+    /// walk does not try the second for a fault that is the caller's own. Rehomes
+    /// `crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_client_fault_no_failover_two_lanes`.
+    /// RED: the second member dialled, or the 400 replaced by a terminal.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_never_retries_a_callers_fault_on_another_member() {
+        let _one = ONE_PUBLISHER.lock().await;
+        let instance = "rehome-walk-client-fault-once";
+        let _published = Withdrawn(instance);
+        let fars = [
+            seat_far_end(
+                400,
+                r#"{"error":{"message":"bad input","type":"invalid_request_error"}}"#,
+            )
+            .await,
+            seat_far_end(
+                400,
+                r#"{"error":{"message":"bad input","type":"invalid_request_error"}}"#,
+            )
+            .await,
+        ];
+        let rig = rig(
+            instance,
+            RigOpts {
+                members: &[(fars[0].port, 1), (fars[1].port, 1)],
+                ..RigOpts::default()
+            },
+        )
+        .await;
+        assert_eq!(rig.chat().await.0, 400, "the caller's fault is relayed");
+        assert_eq!(
+            fars[0].served() + fars[1].served(),
+            1,
+            "one member dialled: a caller's fault is not retried"
+        );
+    }
+
     /// One member of the messages dialect stating [`ERROR_MAP`], its far end answering `reply`.
     async fn mapped_member(
         instance: &'static str,
