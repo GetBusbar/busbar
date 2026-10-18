@@ -1033,7 +1033,7 @@
    ],
    "tree_hash": "5b82a631a6464deac959ed5b8907b96860e47573f39c4e77559cf5bacff84518",
    "audited_at": "d65ba4073d202e4660e561fad25ff450e0bf9372",
-   "round": 3,
+   "round": 4,
    "result": "findings",
    "counts": {
     "HIGH": 0,
@@ -1041,8 +1041,8 @@
     "LOW": 1,
     "NIT": 0
    },
-   "report": "The earlier medium (an infinite signal mis-ranked) is fixed with a test first: the ranking key orders infinity by partial comparison exactly as 1.5.5 ranked ascending and descending. The memory ABI is reached only through the hook door macro and the logic crate forbids unsafe code. Words, keys, direction, absent demotion, index tiebreak and abstain match 1.5.5. One low: a NaN signal now ranks as absent where 1.5.5 was unstable; no producer yields NaN. Read fully.",
-   "auditor": "opus-confirm-ad78954",
+   "report": "The door rides the hook memory ABI through the hook door macro; the logic crate forbids unsafe code and the dynamic library's only unsafe is the exported door symbol. Sorting and tie-breaking match 1.5.5, and open takes the policy word the kernel sends. One low: a NaN key is treated as absent, so an all-NaN pool abstains where 1.5.5 preferred by index; the SDK's presence bits and clamped inputs keep NaN from occurring, and the change prevents a sort panic. Read fully.",
+   "auditor": "opus-confirm-2",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-hook-ranking/src/tests"
@@ -1089,6 +1089,20 @@
       "NIT": 0
      },
      "report": "The earlier medium (an infinite signal mis-ranked) is fixed with a test first: the ranking key orders infinity by partial comparison exactly as 1.5.5 ranked ascending and descending. The memory ABI is reached only through the hook door macro and the logic crate forbids unsafe code. Words, keys, direction, absent demotion, index tiebreak and abstain match 1.5.5. One low: a NaN signal now ranks as absent where 1.5.5 was unstable; no producer yields NaN. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "findings",
+     "auditor": "opus-confirm-2",
+     "audited_at": "d65ba4073d202e4660e561fad25ff450e0bf9372",
+     "tree_hash": "5b82a631a6464deac959ed5b8907b96860e47573f39c4e77559cf5bacff84518",
+     "counts": {
+      "HIGH": 0,
+      "MEDIUM": 0,
+      "LOW": 1,
+      "NIT": 0
+     },
+     "report": "The door rides the hook memory ABI through the hook door macro; the logic crate forbids unsafe code and the dynamic library's only unsafe is the exported door symbol. Sorting and tie-breaking match 1.5.5, and open takes the policy word the kernel sends. One low: a NaN key is treated as absent, so an all-NaN pool abstains where 1.5.5 preferred by index; the SDK's presence bits and clamped inputs keep NaN from occurring, and the change prevents a sort panic. Read fully."
     }
    ]
   },
@@ -3090,11 +3104,11 @@
    ],
    "tree_hash": "0d962685c05bc71a2b26d0c3ca00f619bd14a5bdf1d39c1c5f63663239fd9ca0",
    "audited_at": "d65ba4073d202e4660e561fad25ff450e0bf9372",
-   "round": 3,
+   "round": 4,
    "result": "zero",
    "counts": {},
-   "report": "The declared contract ABI range (minimum 2, maximum 2) matches the secret kind's ABI version 2 on this tree and at the plugin's own pin. The fleet declares gate refuses the old range of one, which served as the failing proof, and the loader no longer admits by range, so customers see no change. The memory ABI is reached only through the door and the logic crate forbids unsafe code. Read fully.",
-   "auditor": "opus-confirm-ad78954",
+   "report": "The declaration states the contract ABI range minimum 2, maximum 2, equal to the secret kind's ABI version on this tree and at the plugin's own pin, as the fleet plugin gates require. The loader no longer reads the range at admission. No other keys are present and none are needed: the source declares no diagnostics, metrics, destinations or disk need, and environment reads are not disk. Read fully.",
+   "auditor": "opus-confirm-2",
    "fixed_at": null,
    "rounds": [
     {
@@ -3133,6 +3147,15 @@
      "tree_hash": "0d962685c05bc71a2b26d0c3ca00f619bd14a5bdf1d39c1c5f63663239fd9ca0",
      "counts": {},
      "report": "The declared contract ABI range (minimum 2, maximum 2) matches the secret kind's ABI version 2 on this tree and at the plugin's own pin. The fleet declares gate refuses the old range of one, which served as the failing proof, and the loader no longer admits by range, so customers see no change. The memory ABI is reached only through the door and the logic crate forbids unsafe code. Read fully."
+    },
+    {
+     "round": 4,
+     "result": "zero",
+     "auditor": "opus-confirm-2",
+     "audited_at": "d65ba4073d202e4660e561fad25ff450e0bf9372",
+     "tree_hash": "0d962685c05bc71a2b26d0c3ca00f619bd14a5bdf1d39c1c5f63663239fd9ca0",
+     "counts": {},
+     "report": "The declaration states the contract ABI range minimum 2, maximum 2, equal to the secret kind's ABI version on this tree and at the plugin's own pin, as the fleet plugin gates require. The loader no longer reads the range at admission. No other keys are present and none are needed: the source declares no diagnostics, metrics, destinations or disk need, and environment reads are not disk. Read fully."
     }
    ]
   },
