@@ -1284,11 +1284,12 @@ fn contract(fold: &Fold, styles: &[Style]) {
         let Some(m) = x.minting.as_ref().filter(|m| m.on_demand.is_none()) else {
             continue;
         };
-        assert!(
-            !at(&l("fields before the first mint")).starts_with("Ready"),
-            "{}: nothing is presented before a token is minted: {}",
-            l("fields before the first mint"),
-            at(&l("fields before the first mint"))
+        assert_eq!(
+            at(&l("fields before the first mint")),
+            "Ready fields=[]",
+            "{}: before the first mint a call answers READY with no fields, so the upstream \
+             answers 401 (THE DESIGN, outbound auth)",
+            l("fields before the first mint")
         );
         assert_eq!(
             at(&l("refresh due ahead of expiry")),
