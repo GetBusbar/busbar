@@ -183,6 +183,7 @@ pub fn run() -> bool {
     check_vacuous_config_is_red(&mut fails);
     check_stale_waiver_is_red(&mut fails);
     check_stale_edge_exemption_is_red(&mut fails);
+    check_pure_set_resolution(&mut fails);
 
     if fails.is_empty() {
         println!("\nxtask denylist --selftest: ALL GREEN");
@@ -529,6 +530,7 @@ fn check_stale_waiver_is_red(fails: &mut Vec<String>) {
     let report = denylist::Report {
         hits: Vec::new(),
         crates_scanned: 3,
+        scanned: Vec::new(),
         defects: Vec::new(),
         stale_waivers: vec!["a waiver that matched nothing".to_string()],
     };
@@ -681,5 +683,169 @@ fn check_stale_edge_exemption_is_red(fails: &mut Vec<String>) {
             "stale-exemption check: an exemption for an absent offender produced {stale:?} — \
              expected exactly one row naming async-std"
         ));
+    }
+}
+
+/// THE PURE SET IS RESOLVED FROM THE RESOLVE GRAPH, NEVER SKIPPED (audit XA1 HIGH 4), proven over a
+/// SYNTHETIC `cargo metadata` answer so every arm is reachable whatever today's real graph holds:
+///
+///   * a plane laid at `crates/<package>` with no manifest on disk resolves by NAME among the
+///     pinned (`git+`) packages, where matching its laid path against the checkout manifest never
+///     could;
+///   * a hook the workspace links and no glob names is ENROLLED from the default distribution, and
+///     its closure's banned crate is a hit;
+///   * an auth package the graph carries but nothing links is NOT enrolled;
+///   * a crate under `crates/` the graph does not resolve, and one it resolves twice, are DEFECTS
+///     naming the crate rather than warnings beside a counted crate.
+fn check_pure_set_resolution(fails: &mut Vec<String>) {
+    let banned = denylist::load_banned_lists(&workspace_root());
+    let pkg = |id: &str, name: &str, source: Option<&str>, manifest: &str| {
+        serde_json::json!({
+            "id": id, "name": name, "source": source, "manifest_path": manifest,
+            "dependencies": [], "features": {},
+        })
+    };
+    let edge = |name: &str, to: &str| serde_json::json!({ "name": name, "pkg": to, "dep_kinds": [{ "kind": null, "target": null }] });
+    let git = Some("git+https://example.invalid/x?rev=1#1");
+    let graph = |extra_plane: bool| {
+        let mut packages = vec![
+            pkg("root", "busbar", None, "/w/crates/busbar/Cargo.toml"),
+            pkg(
+                "plane-x",
+                "busbar-plane-x",
+                git,
+                "/cargo/git/checkouts/x/plane-x/Cargo.toml",
+            ),
+            pkg(
+                "hook-y",
+                "busbar-hook-y",
+                git,
+                "/cargo/git/checkouts/y/hook-y/Cargo.toml",
+            ),
+            pkg(
+                "auth-z",
+                "busbar-auth-z",
+                git,
+                "/cargo/git/checkouts/z/auth-z/Cargo.toml",
+            ),
+            pkg(
+                "reqwest",
+                "reqwest",
+                Some("registry+https://example.invalid"),
+                "/r/Cargo.toml",
+            ),
+        ];
+        if extra_plane {
+            packages.push(pkg(
+                "plane-x-2",
+                "busbar-plane-x",
+                git,
+                "/cargo/git/checkouts/x2/plane-x/Cargo.toml",
+            ));
+        }
+        let node = |id: &str, deps: Vec<serde_json::Value>| serde_json::json!({ "id": id, "deps": deps, "features": [] });
+        serde_json::json!({
+            "packages": packages,
+            "workspace_members": ["root"],
+            "resolve": { "nodes": [
+                node("root", vec![edge("busbar_plane_x", "plane-x"), edge("busbar_hook_y", "hook-y")]),
+                node("plane-x", vec![]),
+                node("hook-y", vec![edge("reqwest", "reqwest")]),
+                node("auth-z", vec![]),
+                node("reqwest", vec![]),
+            ]},
+        })
+    };
+    let root = std::path::Path::new("/xtask-selftest-no-such-root");
+    let laid = |name: &str, dir: &str, kind: &str| PureCrate {
+        name: name.to_string(),
+        dir: root.join("crates").join(dir),
+        kind: kind.to_string(),
+        report_name: dir.to_string(),
+    };
+    let kinds: Vec<String> = ["plane", "hook", "auth"].map(String::from).to_vec();
+    let before = fails.len();
+
+    let meta = denylist::parse_metadata(&graph(false));
+    let (resolved, defects) = denylist::resolve_pure_crates(
+        &meta,
+        root,
+        vec![
+            laid("busbar-plane-x", "busbar-plane-x", "plane"),
+            laid("busbar-hook-planted", "hook-planted", "hook"),
+        ],
+        &kinds,
+    );
+    let ids: Vec<(String, String)> = resolved
+        .iter()
+        .map(|r| (r.pc.name.clone(), r.id.clone()))
+        .collect();
+    if !ids.contains(&("busbar-plane-x".to_string(), "plane-x".to_string())) {
+        fails.push(format!(
+            "pure-set resolution: a plane laid at crates/busbar-plane-x did not resolve to its \
+             pinned package by name (resolved: {ids:?})"
+        ));
+    }
+    match resolved.iter().find(|r| r.pc.name == "busbar-hook-y") {
+        Some(r) => {
+            let hits = denylist::closure_hits(&meta, &r.id, &r.pc.report_name, &banned);
+            if !hits.iter().any(|h| h.offender == "reqwest") {
+                fails.push(
+                    "pure-set resolution: the linked hook's closure reached reqwest and no hit \
+                     named it"
+                        .to_string(),
+                );
+            }
+        }
+        None => fails.push(format!(
+            "pure-set resolution: a hook the default distribution links was not enrolled \
+             (resolved: {ids:?})"
+        )),
+    }
+    if ids.iter().any(|(n, _)| n == "busbar-auth-z") {
+        fails.push(
+            "pure-set resolution: an auth package nothing links was enrolled as shipped"
+                .to_string(),
+        );
+    }
+    if !(defects.len() == 1 && defects[0].contains("busbar-hook-planted")) {
+        fails.push(format!(
+            "pure-set resolution: an unresolved crate under crates/ must be exactly one defect \
+             naming busbar-hook-planted, got {defects:?}"
+        ));
+    }
+
+    let meta = denylist::parse_metadata(&graph(true));
+    let (_, defects) = denylist::resolve_pure_crates(
+        &meta,
+        root,
+        vec![laid("busbar-plane-x", "busbar-plane-x", "plane")],
+        &kinds,
+    );
+    if !(defects.len() == 1
+        && defects[0].contains("busbar-plane-x")
+        && defects[0].contains("ambiguous"))
+    {
+        fails.push(format!(
+            "pure-set resolution: two pinned packages of one name must be one defect naming the \
+             ambiguity, got {defects:?}"
+        ));
+    }
+
+    let empty = serde_json::json!({ "packages": [], "resolve": { "nodes": [] } });
+    let (_, defects) =
+        denylist::resolve_pure_crates(&denylist::parse_metadata(&empty), root, Vec::new(), &kinds);
+    if !defects.iter().any(|d| d.contains("no workspace member")) {
+        fails.push(format!(
+            "pure-set resolution: a resolve graph with no workspace member derived a distribution \
+             without saying so, got {defects:?}"
+        ));
+    }
+
+    if fails.len() == before {
+        println!(
+            "  RED    pure-set resolution: a laid plane resolves by name, a linked hook is enrolled \
+             and its banned edge is a hit, an unresolved or ambiguous crate is a defect"
+        );
     }
 }

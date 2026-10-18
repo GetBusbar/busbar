@@ -3,7 +3,10 @@
 //! DERIVES the MCP and A2A method inventory, and the method x direction x transport MATRIX, from
 //! sources that enumerate mechanically, and writes it to `qa/method-inventory.json`, which
 //! `crates/busbar/tests/method_coverage.rs` turns into a build failure for any cell that is neither
-//! implemented nor explicitly waived. NOT A GATE: a human runs it, reads the diff, and commits it.
+//! implemented nor explicitly waived. A human runs `--write`, reads the diff, and commits it; the
+//! `method-inventory` gate ([`crate::gates::method_inventory_gate`]) runs the `--check` derivation in
+//! every `cargo xtask gate --all`, so a hand edit of the committed file is a red row, not a quiet
+//! loss of owed cells (Law 8: "a roster maintained by hand is a defect with a date on it").
 //!
 //! WHY THE LIST IS NOT TYPED OUT BY HAND. The owner's ruling for 1.6.0 is "i want full alphabet
 //! coverage not just A-J. I want A-Z". A hand-written method list is precisely how coverage ends at
@@ -24,11 +27,14 @@
 //! set; [`extra_surfaces`] lists the surfaces that are neither rpcs nor JSON-RPC methods, with the
 //! requirement ids that exercise them; every N/A cell carries a reason.
 //!
-//! The SDK sources are located in the cargo registry (`$CARGO_HOME` or `~/.cargo`,
-//! `registry/src/*/rmcp-3.1.2/src/model.rs`; a2a-pb 0.2.0's `proto/a2a.proto` is the copy the A2A
-//! plane vendors, `crates/busbar-plane-a2a/proto/a2a.proto`) and the command
-//! REFUSES rather than skips when they are absent: an inventory derived from an absent source would
-//! be an inventory of nothing.
+//! The sources are OBTAINED, each against a pin: rmcp 3.1.2's `src/model.rs` is fetched as
+//! crates.io publishes it, through `cargo metadata` over a throwaway manifest that depends on
+//! `rmcp = "=3.1.2"` (nothing in this workspace depends on rmcp any more, so no build downloads it),
+//! and must hash to [`RMCP_MODEL_SHA256`]; a2a-pb 0.2.0's `proto/a2a.proto` is the copy the A2A
+//! plane vendors, `crates/busbar-plane-a2a/proto/a2a.proto`, and must hash to [`A2A_PROTO_SHA256`].
+//! The command REFUSES rather than skips when either is absent or not the pinned bytes: an
+//! inventory derived from an absent source would be an inventory of nothing, and one derived from
+//! other bytes would carry a `derived_from` label that is false.
 //!
 //! The command is a faithful port of the retired Python script of the same name; its output is
 //! byte-identical to that script's, and the file's `_comment` header names this command.
@@ -36,7 +42,6 @@
 use crate::ctx::Ctx;
 use crate::rx::Regex;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 
 pub const RMCP_VERSION: &str = "3.1.2";
 pub const A2A_PB_VERSION: &str = "0.2.0";
@@ -830,53 +835,128 @@ pub fn render_from(model_src: &str, proto_src: &str) -> Result<String, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Sources: the cargo registry
+// Sources: rmcp 3.1.2 as crates.io publishes it, and the A2A plane's vendored a2a-pb 0.2.0 proto
 // ---------------------------------------------------------------------------
 
-/// `<registry>/src/*/<pattern>`, the last in sorted order, or a refusal.
-pub fn find_source(pattern: &str, what: &str) -> Result<PathBuf, String> {
-    let home = std::env::var("CARGO_HOME")
-        .ok()
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| PathBuf::from(h).join(".cargo"))
-        })
-        .unwrap_or_else(|| PathBuf::from(".cargo"));
-    let src = home.join("registry").join("src");
-    let mut hits: Vec<PathBuf> = std::fs::read_dir(&src)
-        .map(|rd| {
-            rd.flatten()
-                .map(|e| e.path().join(pattern))
-                .filter(|p| p.exists())
-                .collect()
-        })
-        .unwrap_or_default();
-    hits.sort();
-    hits.pop().ok_or_else(|| {
-        format!(
-            "cannot find {what} under {}/registry/src/*/{pattern}. Run `cargo fetch` for a crate depending on it. This REFUSES rather than skipping: an inventory derived from an absent source would be an inventory of nothing.",
-            home.display()
-        )
-    })
-}
+/// sha256 of `src/model.rs` inside crates.io's `rmcp-3.1.2.crate` (crate checksum
+/// c8dddc5b1924b9a59fba420166160ca2c4663a4e01803e52eda33070f56d63c8). The MCP half of the inventory
+/// is derived from exactly these bytes, or not at all.
+pub const RMCP_MODEL_SHA256: &str =
+    "fc49cdae250ff899812be8b9efb3a33a03ba445603df699df7bedaa33dc004e0";
+
+/// sha256 of `proto/a2a.proto` inside crates.io's `a2a-pb-0.2.0.crate` (crate checksum
+/// d1906cb085ae1e93e25c7874c563120a6bfb596157fffcb00cac1362292a1a13). The A2A plane vendors that
+/// file; this pin is what makes [`A2A_PB_VERSION`] in `derived_from` a checked fact about the copy
+/// read rather than a label beside it.
+pub const A2A_PROTO_SHA256: &str =
+    "4b74c0baa923ae0acb55474e548f1d6e5d3f83b80d757b65f8bf3e99a3c2257f";
+
+/// The overlay key a self-test plants rmcp's `src/model.rs` text under, in place of the fetch.
+pub const RMCP_SOURCE_KEY: &str = "sdk-source:rmcp-3.1.2/src/model.rs";
 
 /// Where the plane keeps its vendored copy of a2a-pb's `proto/a2a.proto`, repo-relative: in the
 /// tree while the plane lived here, and since it left for its own repo (row 106), in the checkout of
 /// the rev the root pins, which [`Ctx::workspace`] lays at this same path as its BASE layer.
-const A2A_PROTO_IN_TREE: &str = "crates/busbar-plane-a2a/proto/a2a.proto";
+pub const A2A_PROTO_IN_TREE: &str = "crates/busbar-plane-a2a/proto/a2a.proto";
 
-fn read_sources(cx: &Ctx) -> Result<(String, String), String> {
-    let rmcp = find_source(
-        &format!("rmcp-{RMCP_VERSION}/src/model.rs"),
-        &format!("rmcp {RMCP_VERSION}"),
-    )?;
+static RMCP_MODEL: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+
+/// rmcp 3.1.2's `src/model.rs`, OBTAINED rather than hoped for.
+///
+/// No build of this workspace downloads rmcp any more (its last member, `busbar-mcp`, is deleted
+/// and the workspace pin struck), so looking for it in the cargo registry found it only on a
+/// machine that happened to have it, and the drift test said SKIPPED everywhere else. The source of
+/// truth is the published crate itself: a throwaway manifest under the scratch directory depends on
+/// `rmcp = "=3.1.2"`, `cargo metadata` over it fetches the crate (verified by cargo against the
+/// registry index checksum) and names its manifest path, and the file read there must hash to
+/// [`RMCP_MODEL_SHA256`]. Offline first, as `cargo xtask denylist` does; the network only when the
+/// local cache cannot answer. Any failure is a refusal naming what is missing.
+fn rmcp_model(cx: &Ctx) -> Result<String, String> {
+    if let Some(planted) = cx.overlay_command(RMCP_SOURCE_KEY) {
+        return Ok(planted);
+    }
+    RMCP_MODEL.get_or_init(|| fetch_rmcp_model(cx)).clone()
+}
+
+fn fetch_rmcp_model(cx: &Ctx) -> Result<String, String> {
+    let refuse = |why: String| {
+        format!(
+            "cannot obtain rmcp {RMCP_VERSION}'s src/model.rs: {why}. This REFUSES rather than \
+             skipping: an inventory derived from an absent source would be an inventory of nothing."
+        )
+    };
+    let dir = cx
+        .scratch()
+        .join(format!("rmcp-{RMCP_VERSION}-source-{}", std::process::id()));
+    std::fs::create_dir_all(dir.join("src"))
+        .map_err(|e| refuse(format!("{}: {e}", dir.display())))?;
+    let manifest = dir.join("Cargo.toml");
+    let written = std::fs::write(
+        &manifest,
+        format!(
+            "[package]\nname = \"xtask-rmcp-source\"\nversion = \"0.0.0\"\nedition = \"2021\"\n\
+             publish = false\n\n[dependencies]\nrmcp = {{ version = \"={RMCP_VERSION}\", \
+             default-features = false }}\n\n[workspace]\n"
+        ),
+    )
+    .and_then(|()| std::fs::write(dir.join("src/lib.rs"), ""));
+    written.map_err(|e| refuse(format!("{}: {e}", manifest.display())))?;
+    let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
+    let run = |offline: bool| {
+        let mut cmd = std::process::Command::new(&cargo);
+        cmd.arg("metadata").arg("--format-version=1");
+        if offline {
+            cmd.arg("--offline");
+        }
+        cmd.arg("--manifest-path").arg(&manifest).output()
+    };
+    let out = match run(true) {
+        Ok(o) if o.status.success() => o,
+        _ => run(false).map_err(|e| refuse(format!("{cargo} metadata: {e}")))?,
+    };
+    let answer = if out.status.success() {
+        serde_json::from_slice::<serde_json::Value>(&out.stdout)
+            .map_err(|e| refuse(format!("cargo metadata is not JSON: {e}")))
+    } else {
+        Err(refuse(format!(
+            "cargo metadata over {} exited {}: {}",
+            manifest.display(),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )))
+    };
+    let _ = std::fs::remove_dir_all(&dir);
+    let answer = answer?;
+    let model = answer["packages"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|p| p["name"] == "rmcp" && p["version"] == RMCP_VERSION)
+        .and_then(|p| p["manifest_path"].as_str())
+        .and_then(|m| std::path::Path::new(m).parent())
+        .map(|d| d.join("src").join("model.rs"))
+        .ok_or_else(|| refuse("cargo metadata resolves no rmcp package at that version".into()))?;
+    std::fs::read_to_string(&model).map_err(|e| refuse(format!("{}: {e}", model.display())))
+}
+
+/// The two sources, each checked against its pin: rmcp 3.1.2's `src/model.rs` ([`rmcp_model`]) and
+/// the A2A plane's vendored a2a-pb 0.2.0 `proto/a2a.proto`, read through the context (the tree, else
+/// the pinned plane's checkout laid as its base). A source that is absent, or whose bytes are not
+/// the pinned version's, is a refusal: the `derived_from` labels name those versions, and an
+/// inventory derived from other bytes under those labels would be a forgery of its own provenance.
+pub fn read_sources(cx: &Ctx) -> Result<(String, String), String> {
+    let model = rmcp_model(cx)?;
+    let got = crate::sha256::hex(model.as_bytes());
+    if got != RMCP_MODEL_SHA256 {
+        return Err(format!(
+            "the rmcp {RMCP_VERSION} src/model.rs read is not the published one (sha256 {got}, \
+             pinned {RMCP_MODEL_SHA256}); the MCP half is derived from rmcp {RMCP_VERSION}'s bytes \
+             or not at all"
+        ));
+    }
     // THE A2A PLANE VENDORS a2a-pb's `proto/a2a.proto` byte for byte (its gRPC line generates the
     // messages from it, ARCHITECT ruling Q1 (C)), so the source is the plane's copy, read through
-    // the context (the tree, else the pinned plane's checkout laid as its base), not a registry
-    // download of a crate nothing depends on any more.
+    // the context, and the pin is what holds "byte for byte" true.
     let proto = cx.read(A2A_PROTO_IN_TREE).map_err(|e| {
         format!(
             "cannot find a2a-pb {A2A_PB_VERSION}'s a2a.proto at {A2A_PROTO_IN_TREE} ({e}). This \
@@ -884,7 +964,14 @@ fn read_sources(cx: &Ctx) -> Result<(String, String), String> {
              inventory of nothing."
         )
     })?;
-    let model = std::fs::read_to_string(&rmcp).map_err(|e| format!("{}: {e}", rmcp.display()))?;
+    let got = crate::sha256::hex(proto.as_bytes());
+    if got != A2A_PROTO_SHA256 {
+        return Err(format!(
+            "the A2A plane's vendored {A2A_PROTO_IN_TREE} is no longer a2a-pb {A2A_PB_VERSION}'s \
+             proto/a2a.proto (sha256 {got}, pinned {A2A_PROTO_SHA256}); the inventory's \
+             derived_from would name a version it was not derived from"
+        ));
+    }
     Ok((model, proto))
 }
 
@@ -1124,7 +1211,12 @@ pub fn main(cx: &Ctx, args: &[String]) -> i32 {
             println!("qa/method-inventory.json matches a fresh derivation");
             0
         }
-        Err(e) => die(&e),
+        // DRIFT IS THE CHECK'S FINDING, so it exits 1 (the gate failed), apart from 2 (a source
+        // that would not read: the check could not be asked).
+        Err(e) => {
+            eprintln!("method-inventory: {e}");
+            1
+        }
     }
 }
 
@@ -1440,21 +1532,13 @@ mod tests {
         assert!(!text.contains("scripts/method-inventory.py"));
     }
 
-    /// The committed file must equal a fresh derivation from the real pinned sources. Skipped (said
-    /// aloud) when the cargo registry does not hold them; `cargo xtask method-inventory --check`
-    /// REFUSES in that case rather than skipping.
+    /// The committed file must equal a fresh derivation from the real pinned sources. A source that
+    /// cannot be obtained FAILS this test: it used to return early, SKIPPED, on every machine whose
+    /// cargo registry did not already hold rmcp, which was every machine.
     #[test]
     fn the_committed_inventory_equals_a_fresh_derivation_of_the_real_sources() {
-        let Ok(cx) = crate::ctx::Ctx::workspace() else {
-            eprintln!(
-                "SKIPPED: the workspace (with its pinned planes) does not open on this machine"
-            );
-            return;
-        };
-        let Ok((model, proto)) = read_sources(&cx) else {
-            eprintln!("SKIPPED: rmcp/a2a-pb sources are not in the cargo registry on this machine");
-            return;
-        };
+        let cx = crate::ctx::Ctx::workspace().expect("the workspace opens with its pinned planes");
+        let (model, proto) = read_sources(&cx).expect("the pinned sources are obtained");
         let fresh = render_from(&model, &proto).expect("the real sources derive");
         let committed = std::fs::read_to_string(
             std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

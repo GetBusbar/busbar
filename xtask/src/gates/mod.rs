@@ -53,6 +53,7 @@ pub mod inventory_ref;
 pub mod kernel_token_wire_purity;
 pub mod kind_isolation;
 pub mod linked_dropped_features;
+pub mod method_inventory_gate;
 pub mod money_invariants;
 pub mod no_deferral;
 pub mod no_float_money;
@@ -3346,6 +3347,14 @@ pub static REGISTRY: &[Registration] = &[
         tier: Tier::Fast,
         build: || Box::new(design_bindings::DesignBindingsGate),
         summary: "every qa/parity-bindings.md (Appendix B) binding cites a check that compares something",
+    },
+    Registration {
+        name: "method-inventory",
+        batch: 1,
+        tier: Tier::Full,
+        build: || Box::new(method_inventory_gate::MethodInventoryGate),
+        summary: "qa/method-inventory.json equals a fresh derivation from rmcp 3.1.2 and the vendored \
+                  a2a-pb 0.2.0 proto, each obtained and checked against its pin (Law 8)",
     },
     Registration {
         name: "denylist",

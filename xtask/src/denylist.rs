@@ -63,6 +63,10 @@ pub struct Hit {
 pub struct Report {
     pub hits: Vec<Hit>,
     pub crates_scanned: usize,
+    /// THE LIST the closure walk covered, one `<crate> (<kind>, <where its source was read>)` per
+    /// pure crate (Law 8, BUSBAR-1.6.0.md l.2066: "A census reports the LIST it scanned, not the
+    /// count"). `crates_scanned` is its length.
+    pub scanned: Vec<String>,
     /// Reasons the run could not be TRUSTED, as distinct from reasons it found something. A gate
     /// whose own input vanished — the rule table renamed away, the crates directory unreadable, no
     /// crate matched at all — has proven nothing, and printing "0 hits" for it would publish that
@@ -247,11 +251,15 @@ type DepEdge = (String, String, bool);
 /// A resolve node's outgoing edges plus its own resolved feature set.
 type Node = (Vec<DepEdge>, Vec<String>);
 
-struct Metadata {
+pub(crate) struct Metadata {
     /// package id -> name
     names: BTreeMap<String, String>,
     /// package id -> manifest_path
     manifest_paths: BTreeMap<String, String>,
+    /// package id -> `source` (`git+…`, `registry+…`), empty for a path package.
+    sources: BTreeMap<String, String>,
+    /// The workspace members' package ids: where the default distribution's closure starts.
+    workspace_members: Vec<String>,
     /// package id -> node
     nodes: BTreeMap<String, Node>,
     /// package id -> the set of that package's OWN normal-kind dependencies that are `optional =
@@ -315,9 +323,10 @@ fn run_cargo_metadata(manifest_path: &Path) -> Value {
         .unwrap_or_else(|e| panic!("xtask denylist: cargo metadata produced invalid JSON: {e}"))
 }
 
-fn parse_metadata(v: &Value) -> Metadata {
+pub(crate) fn parse_metadata(v: &Value) -> Metadata {
     let mut names = BTreeMap::new();
     let mut manifest_paths = BTreeMap::new();
+    let mut sources = BTreeMap::new();
     let mut optional_normal_deps: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     let mut feature_defs: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
     for pkg in v["packages"].as_array().cloned().unwrap_or_default() {
@@ -332,6 +341,10 @@ fn parse_metadata(v: &Value) -> Metadata {
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
+        );
+        sources.insert(
+            id.clone(),
+            pkg["source"].as_str().unwrap_or_default().to_string(),
         );
         let mut optional = BTreeSet::new();
         for dep in pkg["dependencies"].as_array().cloned().unwrap_or_default() {
@@ -393,9 +406,17 @@ fn parse_metadata(v: &Value) -> Metadata {
             .collect();
         nodes.insert(id, (deps, features));
     }
+    let workspace_members = v["workspace_members"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.as_str().map(str::to_string))
+        .collect();
     Metadata {
         names,
         manifest_paths,
+        sources,
+        workspace_members,
         nodes,
         optional_normal_deps,
         feature_defs,
@@ -477,12 +498,225 @@ fn find_package_id(meta: &Metadata, crate_dir: &Path, crate_name: &str) -> Optio
     None
 }
 
+/// Where a resolved pure crate's OWN source is read from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum SourceAt {
+    /// Through the `Ctx`, at this repo-relative crate directory: a crate of the tree, or a pinned
+    /// crate the base layer lays at `crates/<package>` (so an overlay can plant into it).
+    Tree(String),
+    /// Off the disk at this directory: a pinned crate of the default distribution that no layer of
+    /// the `Ctx` lays (its checkout under `$CARGO_HOME`).
+    Checkout(PathBuf),
+}
+
+/// A pure crate with the resolve-graph node its closure is walked from.
+pub(crate) struct Resolved {
+    pub(crate) pc: PureCrate,
+    pub(crate) id: String,
+    pub(crate) src: SourceAt,
+}
+
+/// THE PURE SET, RESOLVED, AND WHAT COULD NOT BE (audit XA1 HIGH 4).
+///
+/// Two inputs, one set:
+///
+/// * `tree` — the crates under `crates/*` the kind globs match ([`pure_crates`]). Each must resolve
+///   to exactly ONE node of `cargo metadata`. A crate whose manifest is on disk resolves by that
+///   manifest path. A crate the `Ctx` shows at `crates/<package>` with no manifest on disk is a
+///   pinned crate the base layer laid there, and `cargo metadata` reports its manifest under
+///   `$CARGO_HOME`, so it resolves by package NAME among the `git+` packages instead. Matching the
+///   laid path against the checkout path never succeeds, and the run used to print a warning,
+///   walk no closure and count the crate as scanned anyway.
+/// * the DEFAULT DISTRIBUTION — every package the workspace members reach over compiled normal
+///   edges whose name is `busbar-<kind>-…` for a pure `kind` (BUSBAR-1.6.0.md #34: "ALL plugin
+///   instances = `busbar-<kind>-<name>`"). This is how a pinned hook or auth plugin, which the base
+///   layer does not lay and no glob under `crates/` can name, enters the set: derived from what the
+///   binary links, not from a list somebody keeps.
+///
+/// A tree crate that does not resolve, or resolves twice, is a DEFECT naming it: a pure crate whose
+/// closure cannot be walked is a crate nobody checked, and that is a refusal, not a pass. A
+/// distribution walk that starts from no workspace member is a defect too: it measured nothing.
+pub(crate) fn resolve_pure_crates(
+    meta: &Metadata,
+    root: &Path,
+    tree: Vec<PureCrate>,
+    kinds: &[String],
+) -> (Vec<Resolved>, Vec<String>) {
+    let mut out: Vec<Resolved> = Vec::new();
+    let mut defects = Vec::new();
+    for pc in tree {
+        let rel = format!("crates/{}", pc.report_name);
+        let named: Vec<&String> = meta
+            .names
+            .iter()
+            .filter(|(_, n)| **n == pc.name)
+            .map(|(id, _)| id)
+            .collect();
+        let found: Result<String, String> = if pc.dir.join("Cargo.toml").exists() {
+            find_package_id(meta, &pc.dir, &pc.name).ok_or_else(|| {
+                format!(
+                    "{} ({}) at {rel}: cargo metadata resolves no package `{}` whose manifest is \
+                     {rel}/Cargo.toml",
+                    pc.name, pc.kind, pc.name
+                )
+            })
+        } else {
+            let pinned: Vec<&String> = named
+                .iter()
+                .copied()
+                .filter(|id| meta.sources.get(*id).is_some_and(|s| s.starts_with("git+")))
+                .collect();
+            match pinned.as_slice() {
+                [one] => Ok((*one).clone()),
+                [] => Err(format!(
+                    "{} ({}) at {rel}: no manifest of it is on disk and cargo metadata resolves no \
+                     pinned (git) package `{}`",
+                    pc.name, pc.kind, pc.name
+                )),
+                many => Err(format!(
+                    "{} ({}) at {rel}: cargo metadata resolves {} pinned packages named `{}`, so the \
+                     closure to walk is ambiguous",
+                    pc.name,
+                    pc.kind,
+                    many.len(),
+                    pc.name
+                )),
+            }
+        };
+        match found {
+            Ok(id) => out.push(Resolved {
+                pc,
+                id,
+                src: SourceAt::Tree(rel),
+            }),
+            Err(why) => defects.push(format!(
+                "{why} — a pure crate whose dependency closure cannot be walked was checked by \
+                 nobody, so the scan refuses rather than counting it"
+            )),
+        }
+    }
+
+    if meta.workspace_members.is_empty() {
+        defects.push(
+            "cargo metadata names no workspace member, so the default distribution's pure crates \
+             cannot be derived"
+                .to_string(),
+        );
+    }
+    for id in distribution(meta) {
+        let Some(name) = meta.names.get(&id) else {
+            continue;
+        };
+        let Some(kind) = kinds
+            .iter()
+            .find(|k| name.starts_with(&format!("busbar-{k}-")))
+        else {
+            continue;
+        };
+        if out.iter().any(|r| r.pc.name == *name) {
+            continue;
+        }
+        let dir = meta
+            .manifest_paths
+            .get(&id)
+            .and_then(|m| Path::new(m).parent())
+            .map(Path::to_path_buf)
+            .unwrap_or_default();
+        let src = match dir.strip_prefix(root) {
+            Ok(rel) => SourceAt::Tree(rel.to_string_lossy().replace('\\', "/")),
+            Err(_) => SourceAt::Checkout(dir.clone()),
+        };
+        out.push(Resolved {
+            pc: PureCrate {
+                name: name.clone(),
+                dir,
+                kind: kind.clone(),
+                report_name: name.clone(),
+            },
+            id,
+            src,
+        });
+    }
+    (out, defects)
+}
+
+/// Every package id the workspace members reach over NORMAL edges that are compiled
+/// ([`edge_is_active`]), the members included: the default distribution `cargo metadata` resolved.
+fn distribution(meta: &Metadata) -> BTreeSet<String> {
+    let mut seen: BTreeSet<String> = meta.workspace_members.iter().cloned().collect();
+    let mut queue: VecDeque<String> = seen.iter().cloned().collect();
+    while let Some(id) = queue.pop_front() {
+        let Some((deps, _)) = meta.nodes.get(&id) else {
+            continue;
+        };
+        for (dep_name, dep_pkg, is_normal) in deps {
+            if !is_normal || dep_pkg.is_empty() || !edge_is_active(meta, &id, dep_name) {
+                continue;
+            }
+            if seen.insert(dep_pkg.clone()) {
+                queue.push_back(dep_pkg.clone());
+            }
+        }
+    }
+    seen
+}
+
+/// The overlay key a planted `cargo metadata` answer for the root manifest is read under — the key
+/// [`Ctx::cargo_metadata`] reads, so a self-test plants a resolve graph without a fixture workspace.
+pub const METADATA_KEY: &str = "cargo-metadata:Cargo.toml";
+
+type MetadataMemo = std::sync::Mutex<BTreeMap<PathBuf, std::sync::Arc<Value>>>;
+static METADATA_MEMO: std::sync::OnceLock<MetadataMemo> = std::sync::OnceLock::new();
+
+/// The root manifest's `cargo metadata` answer: the planted one when an overlay carries it, else
+/// the real one, run once per root per process (the self-test's baseline and planted runs read the
+/// same lockfile).
+pub(crate) fn metadata_of(cx: &Ctx) -> std::sync::Arc<Value> {
+    if let Some(planted) = cx.overlay_command(METADATA_KEY) {
+        return std::sync::Arc::new(serde_json::from_str(&planted).unwrap_or(Value::Null));
+    }
+    let root = cx.root().to_path_buf();
+    let memo = METADATA_MEMO.get_or_init(Default::default);
+    if let Some(hit) = memo.lock().unwrap_or_else(|e| e.into_inner()).get(&root) {
+        return std::sync::Arc::clone(hit);
+    }
+    let v = std::sync::Arc::new(run_cargo_metadata(&root.join("Cargo.toml")));
+    memo.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(root, std::sync::Arc::clone(&v));
+    v
+}
+
+/// A checkout crate's own `src/`, as `(rel, text)` pairs, `rel` written `<package>/src/…`.
+fn checkout_src_files(pc: &PureCrate, dir: &Path) -> Vec<(String, String)> {
+    let mut paths = Vec::new();
+    walk_rs_files(&dir.join("src"), &mut paths);
+    paths.sort();
+    paths
+        .into_iter()
+        .filter_map(|f| {
+            let rel = f
+                .strip_prefix(dir)
+                .ok()?
+                .to_string_lossy()
+                .replace('\\', "/");
+            let text = std::fs::read_to_string(&f).ok()?;
+            Some((format!("{}/{rel}", pc.report_name), text))
+        })
+        .collect()
+}
+
 const TOKIO_BANNED_FEATURES: &[&str] = &["net", "fs", "process"];
 
 /// The transitive normal-dependency closure hits for one pure crate: banned crate names, and
 /// `tokio` nodes carrying a banned feature. `path` on each hit is the dependency chain from the
 /// pure crate to the offender, root first.
-fn closure_hits(meta: &Metadata, root_id: &str, root_name: &str, banned: &BannedLists) -> Vec<Hit> {
+pub(crate) fn closure_hits(
+    meta: &Metadata,
+    root_id: &str,
+    root_name: &str,
+    banned: &BannedLists,
+) -> Vec<Hit> {
     let mut hits = Vec::new();
     let mut visited = BTreeSet::new();
     visited.insert(root_id.to_string());
@@ -1069,22 +1303,30 @@ fn find_bypass_path(
 /// one place the `via` question is asked, so a per-crate waiver and a tree-wide edge exemption are
 /// decided by the identical walk and an exemption can never be the looser of the two.
 ///
-/// A crate that was not found in `cargo metadata` (already warned about by the caller) cannot be
-/// via-checked and is NOT covered — a missing root must never read as a satisfied waiver.
+/// `roots` maps each resolved pure crate's report name to its resolve-graph node. A crate with no
+/// entry (it did not resolve, which the caller already reports) cannot be via-checked and is NOT
+/// covered — a missing root must never read as a satisfied waiver.
 fn covered_by_via(
     meta: &Metadata,
-    crates: &[PureCrate],
+    roots: &BTreeMap<String, String>,
     crate_name: &str,
     offender: &str,
     via: &[String],
 ) -> bool {
-    let Some(pc) = crates.iter().find(|c| c.report_name == crate_name) else {
+    let Some(root_id) = roots.get(crate_name) else {
         return false;
     };
-    let Some(root_id) = find_package_id(meta, &pc.dir, &pc.name) else {
-        return false;
-    };
-    find_bypass_path(meta, &root_id, &pc.report_name, via, offender).is_none()
+    find_bypass_path(meta, root_id, crate_name, via, offender).is_none()
+}
+
+/// `report name -> package id` for the fixture entry points, which resolve by manifest path alone.
+fn roots_by_manifest(meta: &Metadata, crates: &[PureCrate]) -> BTreeMap<String, String> {
+    crates
+        .iter()
+        .filter_map(|pc| {
+            find_package_id(meta, &pc.dir, &pc.name).map(|id| (pc.report_name.clone(), id))
+        })
+        .collect()
 }
 
 /// Which `(crate, offender)` pairs are FULLY covered, by a per-crate `[[allow]]` entry or by a
@@ -1109,7 +1351,7 @@ fn covered_by_via(
 /// NEITHER is a bypass and the pair stays red.
 fn fully_waived_pairs(
     meta: &Metadata,
-    crates: &[PureCrate],
+    roots: &BTreeMap<String, String>,
     allowed: &[AllowEntry],
     exemptions: &[EdgeExemption],
 ) -> BTreeSet<(String, String)> {
@@ -1118,16 +1360,16 @@ fn fully_waived_pairs(
     // THE EDGE RULINGS, STATED ONCE AND APPLIED EVERYWHERE. No per-crate entry is needed or
     // wanted: that is the whole reason this seam exists, and minting one row per crate that
     // rediscovers the same edge is the failure it was added to end.
-    for pc in crates {
+    for crate_name in roots.keys() {
         for e in exemptions {
             if covered_by_via(
                 meta,
-                crates,
-                &pc.report_name,
+                roots,
+                crate_name,
                 &e.dep,
                 std::slice::from_ref(&e.via),
             ) {
-                out.insert((pc.report_name.clone(), e.dep.clone()));
+                out.insert((crate_name.clone(), e.dep.clone()));
             }
         }
     }
@@ -1145,7 +1387,7 @@ fn fully_waived_pairs(
                         .filter(|e| e.dep == entry.offender)
                         .map(|e| e.via.clone()),
                 );
-                if covered_by_via(meta, crates, &entry.crate_name, &entry.offender, &via) {
+                if covered_by_via(meta, roots, &entry.crate_name, &entry.offender, &via) {
                     out.insert((entry.crate_name.clone(), entry.offender.clone()));
                 }
                 // else: a bypass exists — the hit(s) stay red, and the bypassing path is already
@@ -1237,7 +1479,18 @@ pub(crate) fn stale_edge_exemptions(exemptions: &[EdgeExemption], hits: &[Hit]) 
 /// it — which is a proof about a fixture, and drifts from the tree the gate actually judges. The
 /// one input still read outside the `Ctx` is `cargo metadata`, which needs a real manifest on a
 /// real disk; that is why the resolve-graph half keeps its fixture workspaces.
+///
+/// THE PURE SET IS RESOLVED, NEVER SKIPPED (audit XA1 HIGH 4): see [`resolve_pure_crates`]. The
+/// resolve graph is the root manifest's `cargo metadata` answer, or the one an overlay plants under
+/// [`METADATA_KEY`].
 pub fn run(cx: &Ctx) -> Report {
+    let refused = |defect: String| Report {
+        hits: Vec::new(),
+        crates_scanned: 0,
+        scanned: Vec::new(),
+        defects: vec![defect],
+        stale_waivers: Vec::new(),
+    };
     let root = cx.root();
     // X-1206: READ CHECKED. The subset reader dropped any line it could not place, so a config it
     // misread scanned less than the file said and reported clean over it.
@@ -1246,15 +1499,10 @@ pub fn run(cx: &Ctx) -> Report {
     }) {
         Ok(doc) => doc,
         Err(e) => {
-            return Report {
-                hits: Vec::new(),
-                crates_scanned: 0,
-                defects: vec![format!(
-                    "{CONFIG_REL} could not be read ({e}), so the denylist has no kinds, no \
-                     patterns and nothing to prove"
-                )],
-                stale_waivers: Vec::new(),
-            }
+            return refused(format!(
+                "{CONFIG_REL} could not be read ({e}), so the denylist has no kinds, no patterns \
+                 and nothing to prove"
+            ))
         }
     };
     let banned = banned_lists_of(&config);
@@ -1262,67 +1510,72 @@ pub fn run(cx: &Ctx) -> Report {
     // an exemption and the self-test can prove this rule against the tree the gate is pointed at.
     let exemptions = edge_exemptions_of(&config);
     let allowed = load_allowlist(root);
-    let crates = match pure_crates(cx, &config) {
-        Ok(crates) if crates.is_empty() => {
-            // Every pure kind's glob matched nothing. On a tree that has planes, hooks and auth
-            // crates this can only mean the scan was pointed somewhere it was not meant to be, and
-            // a scan of nothing is not a clean bill of health.
-            return Report {
-                hits: Vec::new(),
-                crates_scanned: 0,
-                defects: vec![format!(
-                    "no crate under {}/crates matched any pure kind's glob — nothing was scanned, \
-                     so nothing was proven",
-                    root.display()
-                )],
-                stale_waivers: Vec::new(),
-            };
-        }
+    let tree = match pure_crates(cx, &config) {
         Ok(crates) => crates,
-        Err(defect) => {
-            return Report {
-                hits: Vec::new(),
-                crates_scanned: 0,
-                defects: vec![defect],
-                stale_waivers: Vec::new(),
-            }
-        }
+        Err(defect) => return refused(defect),
     };
+    let kinds = config.table("rules.source-denylist").get_list("kinds");
 
-    let meta_json = run_cargo_metadata(&root.join("Cargo.toml"));
-    let meta = parse_metadata(&meta_json);
+    let meta = parse_metadata(&metadata_of(cx));
+    let (resolved, mut defects) = resolve_pure_crates(&meta, root, tree, &kinds);
+    if resolved.is_empty() {
+        // No pure crate under `crates/` and none in the default distribution. On a tree that ships
+        // planes, hooks and auth plugins this can only mean the scan was pointed somewhere it was
+        // not meant to be, and a scan of nothing is not a clean bill of health.
+        defects.push(format!(
+            "no pure-kind crate under {}/crates and none in the default distribution — nothing \
+             was scanned, so nothing was proven",
+            root.display()
+        ));
+    }
     let fragments = config.table("gate").get_list("test_path_fragments");
 
     let mut hits = Vec::new();
-    for pc in &crates {
-        if let Some(id) = find_package_id(&meta, &pc.dir, &pc.name) {
-            hits.extend(closure_hits(&meta, &id, &pc.report_name, &banned));
-        } else {
-            eprintln!(
-                "xtask denylist: warning: {} ({}) not found in `cargo metadata` output; skipped",
-                pc.name, pc.kind
-            );
-        }
-        let src_root = format!("crates/{}/src", pc.report_name);
-        let files: Vec<(String, String)> = if cx.exists(&src_root) {
-            match cx.walk(&WalkSpec::new([src_root.clone()]).ext("rs")) {
-                Ok(fs) => fs.into_iter().map(|f| (f.rel_str(), f.text)).collect(),
-                Err(e) => {
-                    return Report {
-                        hits: Vec::new(),
-                        crates_scanned: 0,
-                        defects: vec![format!(
-                            "{src_root} would not list ({e}) — a crate whose source cannot be read \
-                             is scanned as zero files, and zero files carry no banned path"
-                        )],
-                        stale_waivers: Vec::new(),
+    let mut scanned = Vec::new();
+    for r in &resolved {
+        hits.extend(closure_hits(&meta, &r.id, &r.pc.report_name, &banned));
+        let files: Vec<(String, String)> = match &r.src {
+            SourceAt::Tree(rel) => {
+                let src_root = format!("{rel}/src");
+                if cx.exists(&src_root) {
+                    match cx.walk(&WalkSpec::new([src_root.clone()]).ext("rs")) {
+                        Ok(fs) => fs.into_iter().map(|f| (f.rel_str(), f.text)).collect(),
+                        Err(e) => {
+                            return refused(format!(
+                                "{src_root} would not list ({e}) — a crate whose source cannot be \
+                                 read is scanned as zero files, and zero files carry no banned path"
+                            ))
+                        }
                     }
+                } else {
+                    Vec::new()
                 }
             }
-        } else {
-            Vec::new()
+            SourceAt::Checkout(dir) => {
+                let files = checkout_src_files(&r.pc, dir);
+                if files.is_empty() {
+                    defects.push(format!(
+                        "{} ({}): its checkout {} reads no source under src/ — a crate whose \
+                         source cannot be read is scanned as zero files, and zero files carry no \
+                         banned path",
+                        r.pc.name,
+                        r.pc.kind,
+                        dir.display()
+                    ));
+                }
+                files
+            }
         };
-        hits.extend(own_src_hits_over(&files, pc, &banned, &fragments));
+        hits.extend(own_src_hits_over(&files, &r.pc, &banned, &fragments));
+        scanned.push(format!(
+            "{} ({}, {})",
+            r.pc.report_name,
+            r.pc.kind,
+            match &r.src {
+                SourceAt::Tree(rel) => rel.clone(),
+                SourceAt::Checkout(_) => "pinned checkout".to_string(),
+            }
+        ));
     }
 
     // Both directions, off the SAME unfiltered hit list: which exceptions are doing work, and
@@ -1331,13 +1584,18 @@ pub fn run(cx: &Ctx) -> Report {
     // claim of the two, so it is the last thing that should get a weaker check.
     let mut stale = stale_waivers(&allowed, &hits);
     stale.extend(stale_edge_exemptions(&exemptions, &hits));
-    let waived = fully_waived_pairs(&meta, &crates, &allowed, &exemptions);
+    let roots: BTreeMap<String, String> = resolved
+        .iter()
+        .map(|r| (r.pc.report_name.clone(), r.id.clone()))
+        .collect();
+    let waived = fully_waived_pairs(&meta, &roots, &allowed, &exemptions);
     hits.retain(|h| !waived.contains(&(h.crate_name.clone(), h.offender.clone())));
 
     Report {
         hits,
-        crates_scanned: crates.len(),
-        defects: Vec::new(),
+        crates_scanned: resolved.len(),
+        scanned,
+        defects,
         stale_waivers: stale,
     }
 }
@@ -1387,7 +1645,12 @@ pub fn run_on_with_edges(
         .into_iter()
         .map(|(dep, via)| EdgeExemption::for_selftest(dep, via))
         .collect();
-    let waived = fully_waived_pairs(&meta, &crates, &allowed, &exemptions);
+    let waived = fully_waived_pairs(
+        &meta,
+        &roots_by_manifest(&meta, &crates),
+        &allowed,
+        &exemptions,
+    );
 
     let root = manifest_path.parent().unwrap();
     let mut hits = Vec::new();
@@ -1487,6 +1750,9 @@ pub fn print_report(report: &Report) -> bool {
                 "xtask denylist: OK — {} pure-kind crate(s) scanned, 0 banned transitive source(s)",
                 report.crates_scanned
             );
+            for s in &report.scanned {
+                println!("  scanned {s}");
+            }
             return true;
         }
         println!(

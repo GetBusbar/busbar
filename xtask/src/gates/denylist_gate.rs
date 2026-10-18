@@ -55,7 +55,11 @@ impl Gate for DenylistGate {
             rows.push(Row::pass(
                 ROW_SCAN,
                 "the pure-kind crate list resolved and was scanned",
-                format!("{} crate(s) scanned", report.crates_scanned),
+                format!(
+                    "{} crate(s) scanned: {}",
+                    report.crates_scanned,
+                    report.scanned.join(", ")
+                ),
             ));
         }
 
@@ -283,7 +287,7 @@ impl Gate for DenylistGate {
         // one extra normal edge from a shipped pinned plugin to `reqwest` (BUSBAR-1.6.0.md l.2184:
         // "source-denylist (hyper/reqwest/tokio-net out of plane closure)"), and the hits row must
         // go red naming the plugin and the offender.
-        let real_metadata = cx.cargo_metadata("Cargo.toml").unwrap_or_default();
+        let real_metadata = denylist::metadata_of(cx);
         for (label, from) in [
             (
                 "a pinned plane's closure reaching a banned crate is a red hits row",
@@ -298,7 +302,7 @@ impl Gate for DenylistGate {
                 "busbar-auth-header",
             ),
         ] {
-            let real = real_metadata.clone();
+            let real = std::sync::Arc::clone(&real_metadata);
             report.push(prove_red(
                 cx,
                 self,
@@ -335,15 +339,11 @@ impl Gate for DenylistGate {
     }
 }
 
-/// The overlay key a planted `cargo metadata` answer for the root manifest is read under
-/// ([`Ctx::cargo_metadata`]).
-const METADATA_KEY: &str = "cargo-metadata:Cargo.toml";
-
 /// The `cargo metadata` answer `real`, with one planted NORMAL edge `from -> to` in the resolve
 /// graph, as an overlay planting that answer. `None` when either package is absent from the answer:
 /// an empty overlay, which the harness reports as an inert plant rather than a proof.
-fn metadata_with_edge(real: &str, from: &str, to: &str) -> Option<Overlay> {
-    let mut v: serde_json::Value = serde_json::from_str(real).ok()?;
+fn metadata_with_edge(real: &serde_json::Value, from: &str, to: &str) -> Option<Overlay> {
+    let mut v = real.clone();
     let id_of = |v: &serde_json::Value, name: &str| {
         v["packages"]
             .as_array()?
@@ -364,6 +364,6 @@ fn metadata_with_edge(real: &str, from: &str, to: &str) -> Option<Overlay> {
         "dep_kinds": [{ "kind": null, "target": null }],
     }));
     let mut ov = Overlay::new();
-    ov.set_command(METADATA_KEY, serde_json::to_string(&v).ok()?);
+    ov.set_command(denylist::METADATA_KEY, serde_json::to_string(&v).ok()?);
     Some(ov)
 }
