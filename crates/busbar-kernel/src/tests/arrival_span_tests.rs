@@ -11,9 +11,12 @@ use tracing_subscriber::Layer;
 
 use super::ArrivalSpan;
 
-/// Every span opened under it: its name and level.
+/// One span opened: its name, its level and how many fields its callsite declares.
+type OpenedSpan = (&'static str, tracing::Level, usize);
+
+/// Every span opened under it.
 #[derive(Clone, Default)]
-struct Opened(Arc<Mutex<Vec<(&'static str, tracing::Level, usize)>>>);
+struct Opened(Arc<Mutex<Vec<OpenedSpan>>>);
 
 impl<S: tracing::Subscriber> Layer<S> for Opened {
     fn on_new_span(
