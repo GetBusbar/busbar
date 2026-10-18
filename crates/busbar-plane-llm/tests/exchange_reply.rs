@@ -3901,6 +3901,34 @@ mod rehomed_metering {
         assert_eq!(read.tokens(), (600, 400));
     }
 
+    /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cross_protocol_stream_delivers_trailing_usage_anthropic_sse`.
+    /// 1.5.5: the plain-SSE sibling of the JSON-array cell above. A chat-dialect stream whose
+    /// usage (600 / 400) arrives in its own trailing chunk, to an anthropic caller, reports the
+    /// real `output_tokens` (400) on its terminal `message_delta`, and 600 / 400 bill.
+    /// RED: the trailing usage dropped from the terminal `message_delta` (0 or absent).
+    #[test]
+    fn a_chat_streams_trailing_usage_reaches_an_anthropic_callers_terminal_message_delta() {
+        let (arrived, lane) = ask("anthropic", "openai", true);
+        let ctx = reply_ctx(&arrived, &lane);
+        let far = [
+            "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":null}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":600,\"completion_tokens\":400}}\n\n",
+            "data: [DONE]\n\n",
+        ];
+        let pieces: Vec<&[u8]> = far.iter().map(|frame| frame.as_bytes()).collect();
+        let read = answer(&ctx, 200, SSE_HEAD, &pieces, false);
+        let text = read.text();
+        let output_tokens = text.split("\n\n").find_map(|frame| {
+            let data = frame.lines().find_map(|line| line.strip_prefix("data: "))?;
+            let v: Value = serde_json::from_str(data).ok()?;
+            (v["type"] == "message_delta").then(|| v["usage"]["output_tokens"].as_i64())?
+        });
+        assert_eq!(output_tokens, Some(400), "{text}");
+        assert_eq!(read.tokens(), (600, 400));
+    }
+
     /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_mid_stream_transport_error_does_not_bill_partial_usage`
     /// (map row 341). 1.5.5 (#62): an anthropic stream to a chat caller, cut after it reported 100
     /// input (`message_start`) and 50 output (`message_delta`), bills exactly those 150 tokens.
