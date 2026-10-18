@@ -1225,3 +1225,25 @@ fn an_admitted_recovery_verb_on_a_node_with_no_store_is_a_store_failure() {
         );
     }
 }
+
+/// THE DISASTER-RECOVERY VERBS ARE SERVED AS AN HONEST REFUSAL, NOT COUNTED AS BOUND (ARCHITECT
+/// ruling, audit PL2 HIGH 4): the store ABI has no operation for any of the three, so none has an
+/// effect bound, yet each stays on the accepted surface, answering the refusal that names what it
+/// lacks. Every other served verb is served because its effect is bound.
+#[test]
+fn the_disaster_recovery_verbs_are_served_as_a_refusal_with_no_effect_bound() {
+    use crate::verb::{effect_bound, refuses_unbound, served, NEW_VERBS};
+    for verb in [
+        KernelVerb::ChainBreak,
+        KernelVerb::StoreRestore,
+        KernelVerb::ResealEpochFloor,
+    ] {
+        assert!(!effect_bound(verb), "{verb:?}: no effect is bound");
+        assert!(served(verb), "{verb:?}: served as its refusal");
+    }
+    for &verb in NEW_VERBS {
+        if !refuses_unbound(verb) {
+            assert_eq!(served(verb), effect_bound(verb), "{verb:?}");
+        }
+    }
+}

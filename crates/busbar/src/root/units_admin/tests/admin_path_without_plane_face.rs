@@ -871,7 +871,7 @@ async fn an_unbound_verb_is_not_served_it_answers_the_unmounted_404_and_seals_no
     }
     let unbound: std::collections::BTreeSet<(&str, &str)> = busbar_core_admin::NEW_VERBS
         .iter()
-        .filter(|verb| !busbar_core_admin::verb::effect_bound(**verb))
+        .filter(|verb| !busbar_core_admin::verb::served(**verb))
         .filter_map(|verb| {
             let name = busbar_core_admin::verb_name(*verb)?;
             busbar_core_admin::admin_codec::verbs::table()

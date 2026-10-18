@@ -707,10 +707,11 @@ pub const NEW_VERBS: &[KernelVerb] = &[
 #[must_use]
 pub const fn effect_bound(verb: KernelVerb) -> bool {
     match verb {
-        // Their effect is the bound store's (`Verbs::chain_break` / `store_restore` /
-        // `reseal_epoch_floor`); a store with no operation for one refuses it, never acknowledging
-        // it from node memory (the loader's `StoreAdapter`).
-        KernelVerb::ChainBreak | KernelVerb::StoreRestore | KernelVerb::ResealEpochFloor => true,
+        // NO EFFECT IS BOUND to the disaster-recovery verbs: the store ABI has no restore,
+        // chain-break or epoch-floor operation, so the loader's `StoreAdapter` refuses each, naming
+        // the missing operation. They are SERVED as that refusal ([`served`]), never counted as
+        // bound.
+        KernelVerb::ChainBreak | KernelVerb::StoreRestore | KernelVerb::ResealEpochFloor => false,
         // Their effect lands on the node's amendment journal (the composition root's
         // `execute_new_verb`).
         KernelVerb::Adjust | KernelVerb::AmendRateHistory => true,
@@ -728,6 +729,25 @@ pub const fn effect_bound(verb: KernelVerb) -> bool {
         // `NEW_VERBS` is unserved by default, never served onto a surface with no handler for it.
         _ => !is_new_verb(verb),
     }
+}
+
+/// THE VERBS SERVED AS AN HONEST REFUSAL (ARCHITECT ruling, audit PL2 HIGH 4, under Q56: the
+/// accepted 17-verb surface): mounted, documented and audited, each answering a refusal that names
+/// the store operation it lacks, with no effect bound ([`effect_bound`] is `false` for each).
+#[must_use]
+pub const fn refuses_unbound(verb: KernelVerb) -> bool {
+    matches!(
+        verb,
+        KernelVerb::ChainBreak | KernelVerb::StoreRestore | KernelVerb::ResealEpochFloor
+    )
+}
+
+/// WHETHER THIS BUILD SERVES `verb`: an effect is bound to it, or it is one of the verbs served as
+/// an honest refusal ([`refuses_unbound`]). The question the administrative mount and the generated
+/// document ask; a verb neither bound nor refusing is handed to the surface's own fallback.
+#[must_use]
+pub const fn served(verb: KernelVerb) -> bool {
+    effect_bound(verb) || refuses_unbound(verb)
 }
 
 /// Whether `verb` is one of [`NEW_VERBS`] (a `const` membership test for [`effect_bound`]).

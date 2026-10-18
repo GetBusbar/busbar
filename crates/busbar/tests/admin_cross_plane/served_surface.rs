@@ -63,8 +63,8 @@ fn loop_verbs() -> BTreeMap<&'static str, crate::verb::KernelVerb> {
         .collect()
 }
 
-/// THE OPERATIONS THE TABLE DECLARES AND THIS BUILD DOES NOT SERVE: a kernel verb whose effect is
-/// not bound (`verb::effect_bound`). The node's mount hands each to the surface's own fallback — the
+/// THE OPERATIONS THE TABLE DECLARES AND THIS BUILD DOES NOT SERVE: a kernel verb this build does not
+/// serve (`verb::served`). The node's mount hands each to the surface's own fallback — the
 /// unmounted `404`, no audit row — so none is served and none is documented. Each keeps its admin
 /// corpus entry and cells: they are what shows the answer is 1.5.5's own for a path it never had.
 fn unbound_declared_operations() -> BTreeSet<Op> {
@@ -74,7 +74,7 @@ fn unbound_declared_operations() -> BTreeSet<Op> {
         .filter(|row| {
             verbs
                 .get(row.verb)
-                .is_some_and(|v| !crate::verb::effect_bound(*v))
+                .is_some_and(|v| !crate::verb::served(*v))
         })
         .map(|row| (row.method.to_string(), row.template.to_string()))
         .collect()

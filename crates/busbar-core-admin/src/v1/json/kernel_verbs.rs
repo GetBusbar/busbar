@@ -18,9 +18,10 @@
 //! verb's contract below is what the root's code does — its request shape, its success body and
 //! the statuses its refusals map to (`units_admin::answer_for`) — never what a design once intended.
 //!
-//! A NEW VERB WITH NO EFFECT BOUND IN THIS BUILD (`crate::verb::effect_bound`) is not served — the
-//! node's mount hands it to the surface's own fallback, which answers the unmounted `404` — so this
-//! document does not describe it either: [`operations`] asks the same one question the mount asks.
+//! A NEW VERB THIS BUILD DOES NOT SERVE (no effect bound and no honest refusal,
+//! `crate::verb::served`) is handed by the node's mount to the surface's own fallback, which
+//! answers the unmounted `404`, so this document does not describe it either: [`operations`] asks
+//! the same one question the mount asks.
 //! Since owner answer Q71(2) bound `verify`, `plane_facts`, `plane_record_write` and
 //! `commit_upgrade`, every one of the nine is bound; the three trust verbs are bound with them
 //! (ARCHITECT 2026-10-06).
@@ -1238,8 +1239,8 @@ pub(crate) fn operations(
         let Some(row) = table.iter().find(|row| row.verb == name) else {
             continue;
         };
-        // The mount's own question: a verb with no bound effect is not served, so not described.
-        if !crate::verb::effect_bound(verb) {
+        // The mount's own question: a verb this build does not serve is not described.
+        if !crate::verb::served(verb) {
             continue;
         }
         let Some(doc) = doc_for(verb, gen, req_gen) else {
