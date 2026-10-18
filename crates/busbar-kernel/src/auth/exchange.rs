@@ -42,7 +42,7 @@ pub(crate) async fn exchange(
     // the headless exchange's (a CI/BYOK IdP-bearer exchange).
     let req = match crate::auth::login::seam::credential_form(handle.clone(), req).await {
         Ok(answered) => return answered,
-        Err(req) => req,
+        Err(req) => *req,
     };
     // Identity comes from the VERIFIED chain, never the body. The IdP credential rides the same
     // carriers as any data-plane token (Authorization: Bearer / x-api-key / x-goog-api-key).

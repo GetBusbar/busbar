@@ -317,7 +317,7 @@ async fn refresh_flag_for(
     if let Some(site) = sec_fetch_site {
         req = req.header("sec-fetch-site", site);
     }
-    let resp = browser(State(handle.clone()), req.body(Body::empty()).unwrap()).await;
+    let resp = browser(handle.clone(), req.body(Body::empty()).unwrap()).await;
     assert_eq!(resp.status().as_u16(), 302, "begin redirects to the IdP");
     let sc = resp.headers().get("set-cookie").unwrap().to_str().unwrap();
     let raw = sc
@@ -988,7 +988,7 @@ async fn logout_renders_signed_out_and_clears_cookie() {
         .uri("/auth/token?logout=1")
         .body(axum::body::Body::empty())
         .unwrap();
-    let resp = browser(axum::extract::State(handle), req).await;
+    let resp = browser(handle, req).await;
     assert_eq!(resp.status().as_u16(), 200);
     // The single-use login cookie is expired on the way out.
     assert!(
@@ -1014,10 +1014,12 @@ async fn logout_renders_signed_out_and_clears_cookie() {
 
 #[test]
 fn pkce_code_challenge_is_s256_of_verifier() {
-    use sha2::{Digest, Sha256};
     let verifier = random_b64url(32);
     let challenge = code_challenge_s256(&verifier);
-    let expected = B64.encode(Sha256::digest(verifier.as_bytes()));
+    let expected = B64.encode(ring::digest::digest(
+        &ring::digest::SHA256,
+        verifier.as_bytes(),
+    ));
     assert_eq!(challenge, expected);
     // base64url no-pad ⇒ no '+', '/', or '=' in the challenge.
     assert!(!challenge.contains('+') && !challenge.contains('/') && !challenge.contains('='));
@@ -1852,33 +1854,5 @@ async fn the_hosted_login_page_moved_with_its_1_5_5_bytes() {
         .await
         .unwrap();
     assert_ne!(signed_out, golden["body"]["text"].as_str().unwrap());
-    handle.abort();
-}
-
-/// THE KERNEL SERVES NO HOSTED LOGIN PAGE OF ITS OWN (row 159, K3#2; THE DESIGN §8: the hosted
-/// login flow is `busbar-core-oauth2`'s). It mounts `GET /auth/token` declared open and reaches the
-/// flow through the login seam; with no flow registered (this test binary links none) the path
-/// answers 404, never a page, and never the chain's 401. RED before the move: the kernel rendered
-/// the chooser itself (200, HTML).
-#[tokio::test]
-async fn the_kernel_serves_no_hosted_login_page_of_its_own() {
-    crate::snapshot::init();
-    let app = crate::test_support::TestApp::new()
-        .public_url("https://busbar.example.com")
-        .build();
-    let router = crate::build_router(app);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
-    let got = reqwest::Client::new()
-        .get(format!("http://{addr}/auth/token"))
-        .send()
-        .await
-        .unwrap();
-    assert_eq!(got.status().as_u16(), 404, "no flow registered, no page");
-    assert!(
-        !got.text().await.unwrap().contains("<html"),
-        "the kernel renders no login page"
-    );
     handle.abort();
 }

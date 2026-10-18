@@ -495,6 +495,13 @@ pub mod seam {
     /// A boxed, sendable handler future.
     pub type Answer<T> = Pin<Box<dyn Future<Output = T> + Send>>;
 
+    /// A credential-form answer: the flow's response, or the request handed back (boxed: it is the
+    /// large arm) when the submission is not the flow's.
+    pub type FormAnswer = Result<Response, Box<Request<Body>>>;
+
+    /// The flow's `POST /auth/token` handler.
+    pub type CredentialFormFn = fn(Arc<AppHandle>, Request<Body>) -> Answer<FormAnswer>;
+
     /// The flow's two handlers.
     #[derive(Clone, Copy)]
     pub struct LoginSeam {
@@ -503,8 +510,7 @@ pub mod seam {
         /// A `POST /auth/token` the flow owns (a credential-form submission): its answer, or the
         /// request handed back untouched when it is not the flow's (the headless exchange then
         /// judges it).
-        pub credential_form:
-            fn(Arc<AppHandle>, Request<Body>) -> Answer<Result<Response, Request<Body>>>,
+        pub credential_form: CredentialFormFn,
     }
 
     static SEAM: OnceLock<LoginSeam> = OnceLock::new();
@@ -527,13 +533,10 @@ pub mod seam {
     }
 
     /// A `POST /auth/token`: the flow's answer when it is the flow's, else the request back.
-    pub(crate) async fn credential_form(
-        handle: Arc<AppHandle>,
-        req: Request<Body>,
-    ) -> Result<Response, Request<Body>> {
+    pub(crate) async fn credential_form(handle: Arc<AppHandle>, req: Request<Body>) -> FormAnswer {
         match SEAM.get() {
             Some(seam) => (seam.credential_form)(handle, req).await,
-            None => Err(req),
+            None => Err(Box::new(req)),
         }
     }
 }

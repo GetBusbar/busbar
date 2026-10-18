@@ -35,7 +35,7 @@ use base64::Engine as _;
 
 use busbar_contract::auth::{BeginLogin, CompleteLogin, LoginOutcome, Principal};
 use busbar_contract::auth_calls::LoginCallback;
-use busbar_kernel::auth::login::seam::{Answer, LoginSeam};
+use busbar_kernel::auth::login::seam::{Answer, FormAnswer, LoginSeam};
 use busbar_kernel::auth::login::{
     issue_self_key, login_method, login_methods, login_step, LoginStep, SelfKeyIssue,
 };
@@ -887,13 +887,10 @@ fn seam_browser(handle: Arc<AppHandle>, req: Request<Body>) -> Answer<Response> 
 /// login cookie (set by `begin` when a Credential method rendered its form) and is completed here;
 /// a request with no login cookie is not the flow's and goes back to the headless exchange (a
 /// CI/BYOK IdP-bearer exchange has none).
-fn seam_credential_form(
-    handle: Arc<AppHandle>,
-    req: Request<Body>,
-) -> Answer<Result<Response, Request<Body>>> {
+fn seam_credential_form(handle: Arc<AppHandle>, req: Request<Body>) -> Answer<FormAnswer> {
     Box::pin(async move {
         let Some(cookie) = read_login_cookie(&req) else {
-            return Err(req);
+            return Err(Box::new(req));
         };
         // Small, bounded read of the form body (credential fields + the CSRF `__state`).
         let bytes = axum::body::to_bytes(req.into_body(), 64 * 1024)
