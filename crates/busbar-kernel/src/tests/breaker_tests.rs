@@ -417,3 +417,92 @@ fn the_classifier_places_every_shared_dialect_error_as_recorded() {
         );
     }
 }
+
+/// Every classification the operator's `error_map` may name parses to its class, `billing` and
+/// `client_error` included; an unknown word is `None` (no fallback arm). Rehomes
+/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_status_class_from_str_exhaustive.
+#[test]
+fn every_error_map_class_word_parses_and_an_unknown_word_does_not() {
+    for (word, class) in [
+        ("rate_limit", StatusClass::RateLimit),
+        ("overloaded", StatusClass::Overloaded),
+        ("server_error", StatusClass::ServerError),
+        ("timeout", StatusClass::Timeout),
+        ("network", StatusClass::Network),
+        ("auth", StatusClass::Auth),
+        ("billing", StatusClass::Billing),
+        ("client_error", StatusClass::ClientError),
+    ] {
+        assert_eq!(status_class_from_str(word), Some(class), "{word}");
+    }
+    assert_eq!(status_class_from_str("invalid"), None);
+    assert_eq!(status_class_from_str("unknown_code"), None);
+}
+
+/// A provider code the operator mapped wins over the HTTP status (`1113` -> billing on a 402); a
+/// code the map does not name falls back to the status (500 -> server error). Rehomes
+/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_normalize_raw_error_with_provider_override.
+#[test]
+fn a_mapped_provider_code_overrides_and_an_unmapped_one_falls_back_to_the_status() {
+    let map = err_map(&[("1113", "billing")]);
+    let raw = |status: u16, code: &str| RawUpstreamError {
+        http_status: status,
+        provider_code: Some(code.to_string()),
+        structured_type: None,
+        retry_after_secs: None,
+    };
+    assert_eq!(
+        normalize_raw_error(&raw(402, "1113"), &map).class,
+        StatusClass::Billing
+    );
+    assert_eq!(
+        normalize_raw_error(&raw(500, "9999"), &map).class,
+        StatusClass::ServerError
+    );
+}
+
+/// With no map, the HTTP status alone classifies: 401 auth, 429 rate limit, 500 server error, 400
+/// client error. Rehomes
+/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_normalize_raw_error_http_status_fallback.
+#[test]
+fn with_no_map_the_status_alone_classifies() {
+    for (status, class) in [
+        (401, StatusClass::Auth),
+        (429, StatusClass::RateLimit),
+        (500, StatusClass::ServerError),
+        (400, StatusClass::ClientError),
+    ] {
+        let raw = RawUpstreamError {
+            http_status: status,
+            provider_code: None,
+            structured_type: None,
+            retry_after_secs: None,
+        };
+        assert_eq!(
+            normalize_raw_error(&raw, &HashMap::new()).class,
+            class,
+            "{status}"
+        );
+    }
+}
+
+/// The map is read as written, right or wrong: a code the operator mapped to `rate_limit` reads as
+/// a rate limit, and the same code mapped to `billing` reads as billing. Rehomes
+/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_normalize_wrong_mapping_fails.
+#[test]
+fn the_operators_mapping_decides_the_class_as_written() {
+    let raw = RawUpstreamError {
+        http_status: 402,
+        provider_code: Some("1113".to_string()),
+        structured_type: None,
+        retry_after_secs: None,
+    };
+    assert_eq!(
+        normalize_raw_error(&raw, &err_map(&[("1113", "rate_limit")])).class,
+        StatusClass::RateLimit
+    );
+    assert_eq!(
+        normalize_raw_error(&raw, &err_map(&[("1113", "billing")])).class,
+        StatusClass::Billing
+    );
+}
