@@ -569,7 +569,7 @@ impl Gate for PlanePurityGate {
             "an include! dual-compile, carrying a pragma that must not launder it",
             &[ROW_PATH_INCLUDE],
             &plant_at,
-            "include!(\"../../../busbar-a2a/src/witness.rs\"); // plane-purity: frozen-wire abuse\n",
+            "include!(\"../../../busbar-plane-a2a/src/witness.rs\"); // plane-purity: frozen-wire abuse\n",
             &[ROW_PATH_INCLUDE, "planted_plane_purity.rs:1"],
         ));
 

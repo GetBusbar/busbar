@@ -279,25 +279,56 @@ pub fn run<'a>(gate: &'a StructureLintGate, cx: &'a Ctx) -> Report<'a> {
     // names it would then scan zero files, which is the passing answer to a ban. Planted against
     // the llm plane: mcp, a2a and streaming are DOOR-ONLY planes since P3 DEL-MCP (ARCHITECT
     // 2026-10-05), FLIP-A2A (#787) and FLIP-STREAMING (#503) and declare no grammar.
-    match plane_grammar_file(cx, "busbar-llm") {
-        Some((rel, text)) => {
+    //
+    // THE LLM PLANE HAS A DOOR ROW TOO (`plane-llm-door = "plane-door"`), and the ownership rule
+    // (`roots::resolve`) consults a door row for any key no declaration claimed. So a plant that
+    // moves only the grammar leaves llm located at its door crate and the row GREEN: that plant
+    // proved nothing about the refusal. The plane is unlocatable only when BOTH are gone, so the
+    // red plant takes both; and the green twin takes the door row alone, so the DECLARATION is
+    // proven to locate the plane by itself rather than riding on the door.
+    let llm_door = "plane-llm-door = \"plane-door\"";
+    let llm_manifest = format!("{}/{}", roots::CRATES, crate::planes::DOOR_MANIFEST);
+    match (
+        plane_grammar_file(cx, "busbar-llm"),
+        cx.read(&llm_manifest).ok().filter(|t| t.contains(llm_door)),
+    ) {
+        (Some((rel, text)), Some(manifest)) => {
+            let mut doorless = Overlay::new();
+            doorless.set(
+                &llm_manifest,
+                manifest.replace(llm_door, "plane-llm-door = \"\""),
+            );
+            report.push(green_case(
+                cx,
+                gate,
+                "a plane whose door row left the manifest is still located by its declaration",
+                &[roots::ROW_PLANE_ROOTS],
+                doorless,
+            ));
+
             let mut ov = Overlay::new();
             ov.set(
                 &rel,
                 text.replace(crate::planes::PLANE_GRAMMAR, "pub const MOVED_AWAY"),
             );
+            ov.set(
+                &llm_manifest,
+                manifest.replace(llm_door, "plane-llm-door = \"\""),
+            );
             report.push(tree_case(
                 cx,
                 gate,
-                "a plane whose declaration moved is refused, not silently unscanned",
+                "a plane whose declaration moved and whose door row left is refused, not silently \
+                 unscanned",
                 &[roots::ROW_PLANE_ROOTS],
                 ov,
                 &["PLANE-ROOT-MISSING", "llm"],
             ));
         }
-        None => report.note_infra_failure(
-            "structure-lint selftest: no file declares the llm plane's grammar, so the plane-root \
-             rule has nothing to plant against",
+        _ => report.note_infra_failure(
+            "structure-lint selftest: no file declares the llm plane's grammar, or the manifest \
+             carries no `plane-llm-door = \"plane-door\"` row, so the plane-root rule has nothing \
+             to plant against",
         ),
     }
 

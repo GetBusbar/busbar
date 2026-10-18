@@ -18,7 +18,7 @@
 //! The measure is every line of every file under the directory, whatever its extension. A frozen
 //! lane's tests die with it, so they are frozen with it.
 
-use crate::ctx::{Ctx, Overlay, WalkSpec};
+use crate::ctx::{Ctx, Overlay, WalkError, WalkSpec};
 use crate::gates::{prove_green, prove_red, Gate, Report};
 use crate::ledger::{Row, Verdict};
 
@@ -36,13 +36,18 @@ pub const CONDEMNED: &[&str] = &[
 ];
 
 /// Every line of every file under `dir`, and how many files that is.
+///
+/// THE WALK IS ASKED, NOT THE DIRECTORY. This used to open with `cx.exists(dir)`, a stat that no
+/// overlay can answer for a directory the overlay alone lays: a deleted lane growing back is
+/// exactly such a directory, and it measured zero, so the UNFROZEN rule below never saw it. The
+/// walk resolves a root from the disk, the base layer AND the overlay, and refuses only a root
+/// none of them lays, which is the one "nothing here" this measure turns into zero.
 fn measure(cx: &Ctx, dir: &str) -> Result<(u64, usize), String> {
-    if !cx.exists(dir) {
-        return Ok((0, 0));
-    }
-    let files = cx
-        .list(&WalkSpec::new([dir]))
-        .map_err(|e| format!("{dir}: {e}"))?;
+    let files = match cx.list(&WalkSpec::new([dir]).allow_empty()) {
+        Ok(files) => files,
+        Err(WalkError::MissingRoot { .. }) => return Ok((0, 0)),
+        Err(e) => return Err(format!("{dir}: {e}")),
+    };
     let mut lines = 0u64;
     let mut n = 0usize;
     for f in files {
@@ -168,7 +173,10 @@ impl Gate for AbiFreezeGate {
             &["GREW", CONDEMNED[0]],
         ));
 
-        // A NEW FILE in the COLD lane is growth as well.
+        // THE COLD LANE GROWING BACK. The lane is deleted (row 84, #961) and its row struck, so
+        // a file there is not GROWTH against a row but a condemned directory with no row at all:
+        // UNFROZEN, and RED. This is the case that holds the CONDEMNED loop to a directory that
+        // does not exist on disk, the only shape the loop still guards for this lane.
         let mut planted = Overlay::new();
         planted.set(
             format!("{}/planted.rs", CONDEMNED[1]),
@@ -177,10 +185,10 @@ impl Gate for AbiFreezeGate {
         report.push(prove_red(
             cx,
             self,
-            "a new file in the COLD lane is RED",
+            "a deleted COLD lane that grows back is UNFROZEN and RED",
             &[ROW_FROZEN],
             planted,
-            &["GREW", CONDEMNED[1]],
+            &["UNFROZEN", CONDEMNED[1]],
         ));
 
         // SLACK: the row above the measurement.
