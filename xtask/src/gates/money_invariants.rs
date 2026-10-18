@@ -1696,7 +1696,7 @@ impl Gate for MoneyInvariantsGate {
         });
 
         // RED (c): a plane/plugin crate sealing its own facts line is caught (#77(2)).
-        let victim = "crates/busbar-llm/src/lib.rs";
+        let victim = "crates/busbar-plane-llm/src/lib.rs";
         let vtext = cx.read(victim).unwrap_or_default();
         let mut ov3 = Overlay::new();
         ov3.set(
@@ -1709,7 +1709,7 @@ impl Gate for MoneyInvariantsGate {
             "a plane crate sealing a facts line is RED",
             &[ROW_SINGLE_SEAL],
             ov3,
-            &["busbar-llm"],
+            &["busbar-plane-llm"],
         ));
 
         report
