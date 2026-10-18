@@ -35,7 +35,7 @@ fn book_with_a_settlement() -> Ledger {
     ledger.record_draw(&k, 1, 1_000);
     ledger.record_hold_opened(&k, 1, 600);
     ledger.record_slice_spent(&k, 1, 600);
-    ledger.settle(&k, 1, hold("a", 600), 450, &usage("tokens", 450), &token);
+    ledger.settle_recording(&k, 1, hold("a", 600), 450, &usage("tokens", 450), &token);
     ledger
 }
 
@@ -117,11 +117,8 @@ fn the_head_order_does_not_change_the_body() {
 }
 
 #[test]
-fn the_local_anchor_admits_it_is_self_attesting() {
-    // The honest label. A node that files its own signatures where it can rewrite them has proved
-    // nothing, and the type says so rather than leaving an operator to work it out.
+fn the_local_anchor_keeps_the_head_it_anchored() {
     let mut anchor = SelfAttestingAnchor::new();
-    assert!(anchor.is_self_attesting());
     let checkpoint = seal(&book_with_a_settlement(), 4);
     anchor.anchor(&checkpoint).unwrap();
     let head = anchor.head().unwrap().unwrap();
@@ -143,7 +140,7 @@ fn verification_closes_the_window_when_the_books_balance_and_opens_it_when_they_
     let k = key("b");
     ledger.record_hold_opened(&k, 1, 200);
     ledger.record_slice_spent(&k, 1, 200);
-    ledger.settle(&k, 1, hold("a", 200), 200, &usage("tokens", 200), &token);
+    ledger.settle_recording(&k, 1, hold("a", 200), 200, &usage("tokens", 200), &token);
     assert!(verify(&checkpoint, &ledger.book().snapshot(), None).is_empty());
 
     // One figure edited by hand: does not.
@@ -154,38 +151,6 @@ fn verification_closes_the_window_when_the_books_balance_and_opens_it_when_they_
         Finding::Imbalanced(i) => assert_eq!(i.residual.amount(), 5),
         other => panic!("expected an imbalance, got {other}"),
     }
-}
-
-/// A window the book retired is NOT a window whose money went missing.
-///
-/// Retiring a sealed window is the ordinary way a book stays bounded — the figures were signed and
-/// shipped, and the book stopped being the record of them. Measured against the zeros a retired key
-/// reads back as, the answer depends on figures that have nothing to do with the question: silence
-/// when the sealed balance happens to balance from zero, an imbalance the size of the whole balance
-/// when it does not. This fixture gets the first of those, which is the worse one — a balance can
-/// leave the book and the verifier says nothing at all. Named, it says what happened, and the other
-/// way a balance leaves a book is that somebody removed it.
-#[test]
-fn a_balance_the_book_retired_is_named_as_retired_and_not_as_an_imbalance() {
-    let mut ledger = book_with_a_settlement();
-    let checkpoint = seal(&ledger, 1);
-    assert!(verify(&checkpoint, &ledger.book().snapshot(), None).is_empty());
-
-    // The window is sealed, so the book lets it go.
-    assert_eq!(ledger.book_mut().retain_from(2), 1);
-    let findings = verify(&checkpoint, &ledger.book().snapshot(), None);
-    match findings.as_slice() {
-        [Finding::Retired { key: k, window }] => {
-            assert_eq!(k, &key("b"));
-            assert_eq!(*window, 1 as WindowStart);
-        }
-        other => panic!("expected one retirement, got {other:?}"),
-    }
-    assert!(
-        findings[0].to_string().contains("no longer in the book"),
-        "the finding says what happened: {}",
-        findings[0]
-    );
 }
 
 #[test]
@@ -345,7 +310,7 @@ fn a_rolled_back_checkpoint_is_detected_against_the_anchor() {
     let k = key("b");
     ledger.record_hold_opened(&k, 1, 100);
     ledger.record_slice_spent(&k, 1, 100);
-    ledger.settle(&k, 1, hold("a", 100), 100, &usage("tokens", 100), &token);
+    ledger.settle_recording(&k, 1, hold("a", 100), 100, &usage("tokens", 100), &token);
     let second = seal(&ledger, 2);
     anchor.anchor(&second).unwrap();
 

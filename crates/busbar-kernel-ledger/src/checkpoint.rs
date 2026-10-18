@@ -156,18 +156,14 @@ impl std::error::Error for AnchorError {}
 ///
 /// **The requirement this trait cannot enforce.** An anchor sink that the node can rewrite proves
 /// nothing, and there is no way for an implementation to demonstrate to this crate that it is out
-/// of reach. So the requirement is stated, and the default is labelled self-attestation through
-/// [`CheckpointAnchor::is_self_attesting`].
+/// of reach. So the requirement is stated, and the default is named for what it is
+/// ([`SelfAttestingAnchor`]); the root labels a self-attested head on the ledger endpoint.
 pub trait CheckpointAnchor {
     /// Put it there. An implementation should read back what it wrote and report a mismatch.
     fn anchor(&mut self, checkpoint: &Checkpoint) -> Result<(), AnchorError>;
 
     /// The most recently anchored checkpoint's identity, if there is one.
     fn head(&self) -> Result<Option<AnchoredHead>, AnchorError>;
-
-    /// Whether this sink is inside the node's own write authority. The default local file anchor
-    /// answers `true`, and says so on the ledger endpoint rather than quietly.
-    fn is_self_attesting(&self) -> bool;
 }
 
 /// What the anchor sink says the last anchored checkpoint was.
@@ -488,8 +484,7 @@ fn push_text(body: &mut Vec<u8>, text: &str) {
 ///
 /// It keeps the head in memory rather than naming a path, because this crate does not open files —
 /// the point being made here is about TRUST, not about storage. Whatever the integrator binds
-/// underneath, it answers `true` to [`CheckpointAnchor::is_self_attesting`] as long as the node can
-/// write to it.
+/// underneath, its head is self-attested as long as the node can write to it.
 #[derive(Debug, Default)]
 pub struct SelfAttestingAnchor {
     head: Option<AnchoredHead>,
@@ -520,9 +515,5 @@ impl CheckpointAnchor for SelfAttestingAnchor {
 
     fn head(&self) -> Result<Option<AnchoredHead>, AnchorError> {
         Ok(self.head.clone())
-    }
-
-    fn is_self_attesting(&self) -> bool {
-        true
     }
 }
