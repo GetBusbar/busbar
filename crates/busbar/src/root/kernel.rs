@@ -119,6 +119,18 @@ impl PinnedHistory {
         self.history.snapshot(self.at)
     }
 
+    /// The history as it stood at `at`, never past this pin: a sealed checkpoint's totals are
+    /// re-derived against the snapshot they were sealed at ([`Checkpoint::history_seq`]).
+    ///
+    /// [`Checkpoint::history_seq`]: busbar_kernel_ledger::checkpoint::Checkpoint::history_seq
+    #[must_use]
+    pub fn view_at(
+        &self,
+        at: busbar_kernel_ledger::cost::HistorySeq,
+    ) -> busbar_kernel_ledger::cost::HistoryView<'_> {
+        self.history.snapshot(at.min(self.at))
+    }
+
     /// The snapshot's own number — the figure a posting records so a reader can reproduce it.
     #[must_use]
     pub fn seq(&self) -> busbar_kernel_ledger::cost::HistorySeq {

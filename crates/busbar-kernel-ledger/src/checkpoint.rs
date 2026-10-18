@@ -211,6 +211,58 @@ pub struct Checkpoint {
     pub signature: Option<Signature>,
 }
 
+/// A SEALED CHECKPOINT WITHOUT ITS BALANCES: everything [`Checkpoint`] holds but the totals, and
+/// how many balances it sealed.
+///
+/// What a node keeps of the checkpoints it sealed (Q128 kernel-ledger HIGH 1, ARCHITECT ruling A1):
+/// a full copy of the book per kept checkpoint is what grew memory with uptime, so the totals are
+/// not kept. A reader that needs them re-derives them from the chain, and [`Self::with_totals`]
+/// rejoins them to this head; the body digest then says whether the re-derived figures are the
+/// ones that were sealed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckpointHead {
+    /// Which checkpoint in the deployment's sequence.
+    pub checkpoint_seq: u64,
+    /// Which node sealed it.
+    pub node: u64,
+    /// When, in whole seconds.
+    pub wall: u64,
+    /// Every node chain's head at the moment of sealing.
+    pub heads: Vec<ChainHead>,
+    /// How many balances it sealed.
+    pub balances: usize,
+    /// How far the backup had got.
+    pub backup_watermark: u64,
+    /// The store's sequence high-water at the moment of sealing.
+    pub store_seq_high_water: u64,
+    /// The history snapshot the sealed totals were derived against.
+    pub history_seq: Option<HistorySeq>,
+    /// The digest of the sealed body.
+    pub body_hash: [u8; 32],
+    /// The signature over that body, if a signer was available.
+    pub signature: Option<Signature>,
+}
+
+impl CheckpointHead {
+    /// The checkpoint again, with `totals` as its balances. The body digest is NOT recomputed:
+    /// [`Checkpoint::body_hash_verifies`] on the result says whether these are the sealed figures.
+    #[must_use]
+    pub fn with_totals(&self, totals: BTreeMap<(TotalsKey, WindowStart), Totals>) -> Checkpoint {
+        Checkpoint {
+            checkpoint_seq: self.checkpoint_seq,
+            node: self.node,
+            wall: self.wall,
+            heads: self.heads.clone(),
+            totals,
+            backup_watermark: self.backup_watermark,
+            store_seq_high_water: self.store_seq_high_water,
+            history_seq: self.history_seq,
+            body_hash: self.body_hash,
+            signature: self.signature.clone(),
+        }
+    }
+}
+
 impl Checkpoint {
     /// Seal a set of totals into a checkpoint, digesting and signing the body.
     ///
@@ -308,6 +360,23 @@ impl Checkpoint {
         checkpoint.body_hash = checkpoint.body_digest();
         checkpoint.signature = secret.map(|secret| secret.sign(&body)).transpose()?;
         Ok(checkpoint)
+    }
+
+    /// This checkpoint without its balances: what a node keeps of a seal ([`CheckpointHead`]).
+    #[must_use]
+    pub fn head(&self) -> CheckpointHead {
+        CheckpointHead {
+            checkpoint_seq: self.checkpoint_seq,
+            node: self.node,
+            wall: self.wall,
+            heads: self.heads.clone(),
+            balances: self.totals.len(),
+            backup_watermark: self.backup_watermark,
+            store_seq_high_water: self.store_seq_high_water,
+            history_seq: self.history_seq,
+            body_hash: self.body_hash,
+            signature: self.signature.clone(),
+        }
     }
 
     /// The totals this checkpoint sealed for one balance, zeros if it sealed none.

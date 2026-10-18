@@ -3480,3 +3480,82 @@ fn a_recovered_posting_names_the_card_in_force_at_its_arrival() {
     );
     assert_ne!(in_force, busbar_kernel_ledger::cost::HistorySeq::OPENING);
 }
+
+/// THE HELD CHECKPOINTS ARE RE-DERIVED FROM THE CHAIN, AS THEY WERE SEALED (Q128 kernel-ledger
+/// HIGH 1, ARCHITECT ruling A1): the node keeps each seal's head and not its balances, and one
+/// ordered walk of its journal hands every held checkpoint back with the very figures it sealed,
+/// oldest first, the same set the ring holds.
+#[test]
+fn every_held_checkpoint_is_re_derived_from_the_chain_as_it_was_sealed() {
+    let token = token();
+    let mut durability = memory_node();
+    let key = totals_key("vk_held");
+    let mut sealed = Vec::new();
+    for n in 1..=3u64 {
+        settle_one(&mut durability, &key, 1_000, 100 * n, n);
+        sealed.push(
+            durability
+                .seal_checkpoint(&token, StepName::Meter, 1_700_000_000 + n)
+                .expect("the seal goes down"),
+        );
+    }
+    assert!(
+        sealed
+            .windows(2)
+            .all(|pair| pair[0].totals != pair[1].totals),
+        "each seal holds figures the one before it did not"
+    );
+    let mut served = Vec::new();
+    durability
+        .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.clone()))
+        .expect("every held checkpoint re-derives");
+    assert_eq!(served, sealed);
+}
+
+/// RED (ARCHITECT A1): A HELD CHECKPOINT THE CHAIN DOES NOT REPRODUCE IS REFUSED BY ITS SEQUENCE
+/// NUMBER, never served with numbers. A figure the book moved with no record behind it is sealed
+/// into the second checkpoint, so the chain re-derives figures that are not the sealed ones; and a
+/// held head no record on the chain carries is refused as not on the chain.
+#[test]
+fn a_held_checkpoint_the_chain_does_not_reproduce_is_refused_by_its_seq() {
+    use crate::root::durability::CheckpointUnreadable;
+
+    let token = token();
+    let mut durability = memory_node();
+    settle_one(&mut durability, &totals_key("vk_held"), 1_000, 400, 1);
+    let first = durability
+        .seal_checkpoint(&token, StepName::Meter, 1_700_000_001)
+        .expect("the seal goes down");
+    durability
+        .ledger
+        .book_mut()
+        .entry(totals_key("vk_unrecorded"), 86_400)
+        .settled = 1;
+    let second = durability
+        .seal_checkpoint(&token, StepName::Meter, 1_700_000_002)
+        .expect("the seal goes down");
+
+    let mut served = Vec::new();
+    let refused = durability
+        .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.checkpoint_seq))
+        .expect_err("a figure no record carries cannot be re-derived");
+    assert_eq!(
+        refused,
+        CheckpointUnreadable::Diverged {
+            checkpoint_seq: second.checkpoint_seq
+        }
+    );
+    assert_eq!(
+        served,
+        vec![first.checkpoint_seq],
+        "no figure past the refusal"
+    );
+
+    let mut stray = first.head();
+    stray.checkpoint_seq = 99;
+    durability.checkpoints = vec![stray];
+    assert_eq!(
+        durability.each_held_checkpoint(&mut |_| {}),
+        Err(CheckpointUnreadable::NotOnChain { checkpoint_seq: 99 })
+    );
+}

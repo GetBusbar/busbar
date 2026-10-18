@@ -140,7 +140,7 @@ fn the_interval_seals_a_changed_book_and_never_an_unchanged_one() {
         .expect("due")
         .expect("sealed");
     assert_eq!(sealed.wall, armed + 60);
-    assert_eq!(durability.checkpoints, vec![sealed]);
+    assert_eq!(durability.checkpoints, vec![sealed.head()]);
     let replayed = durability
         .journal
         .replay()

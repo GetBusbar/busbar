@@ -51,6 +51,7 @@ use busbar_kernel::teller::UnitCtx;
 use busbar_kernel_audit::{expose, AuditChain, AuditKeySet, AuditRecord};
 use busbar_kernel_scope::Scope;
 
+use crate::root::durability::CheckpointUnreadable;
 use crate::root::kernel::{ProductionUnits, RegisteredUnits};
 use crate::root::ledger_identity::{LedgerSnapshot, LegacySnapshot};
 use busbar_core_admin::rate::{MutationClass, CONFIG_CLASS_RULES};
@@ -295,8 +296,21 @@ pub trait LedgerView: Send + Sync {
     /// pinned at `i64::MAX`.
     fn legacy_rows(&self) -> Result<crate::root::ledger_identity::LegacySnapshot, MoneyError>;
 
-    /// The sealed checkpoints, oldest first.
-    fn checkpoints(&self) -> Vec<Checkpoint>;
+    /// THE SEALED CHECKPOINTS, OLDEST FIRST, each handed to `each` in turn with the balances it
+    /// sealed (Q128 kernel-ledger HIGH 1, ARCHITECT ruling A1). Handed over one at a time rather
+    /// than returned as a list: a node keeps each seal's head, and the figures are re-derived from
+    /// its chain as the read reaches them, so a read never holds more than one checkpoint's
+    /// figures.
+    ///
+    /// # Errors
+    ///
+    /// The first checkpoint whose figures cannot be served: its record is not on the chain, the
+    /// chain re-derives figures that are not the sealed ones, or the journal cannot be read. The
+    /// refusal names its sequence number and carries no figure.
+    fn each_checkpoint(
+        &self,
+        each: &mut dyn FnMut(&Checkpoint),
+    ) -> Result<(), CheckpointUnreadable>;
 
     /// The keyset a checkpoint's seal is verified against — the audit chain's own (Q71(3): one
     /// keyset, #82). Empty by default: a view bound to no chain vouches for no signature.
@@ -397,14 +411,19 @@ pub trait LedgerView: Send + Sync {
     }
 
     /// What the `verify` verb checks (owner answer Q71(2)): the sealed checkpoints, oldest first,
+    /// each handed to `each` through the same re-derivation [`LedgerView::each_checkpoint`] reads,
     /// and the book's balances as they stand NOW — both as of one moment, so a settlement landing
     /// between the two reads cannot read as an imbalance.
     ///
     /// The book is an option, and `None` is "this view holds no book", NEVER "the book is empty":
     /// the verifier then checks the checkpoints alone and says it did not verify a book. The default
     /// is exactly that, which is the true answer for a view with no book behind it.
-    fn verify_snapshot(&self) -> (Vec<Checkpoint>, Option<BookTotals>) {
-        (self.checkpoints(), None)
+    fn verify_snapshot(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
+        VerifySnapshot {
+            read: self.each_checkpoint(each),
+            book: None,
+            anchored: None,
+        }
     }
 
     /// What this node's boot reconciliation found: the book it rebuilt from its journal against a
@@ -429,12 +448,22 @@ pub trait LedgerView: Send + Sync {
 
     /// [`LedgerView::verify_snapshot`] with the anchor's head, all as of one moment. `None`
     /// is "this view holds no anchor", which the verifier writes down as such; the default is that.
-    fn verify_snapshot_anchored(
-        &self,
-    ) -> (Vec<Checkpoint>, Option<BookTotals>, Option<AnchoredHead>) {
-        let (checkpoints, book) = self.verify_snapshot();
-        (checkpoints, book, None)
+    fn verify_snapshot_anchored(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
+        self.verify_snapshot(each)
     }
+}
+
+/// What one `verify` read took as of one moment: whether every held checkpoint was handed over
+/// (`Err` names the first that could not be, and the checkpoints after it were not), the book's
+/// balances now, and the anchor's head.
+#[derive(Debug)]
+pub struct VerifySnapshot {
+    /// Every held checkpoint handed over, or the first that could not be.
+    pub read: Result<(), CheckpointUnreadable>,
+    /// The book's balances now; `None` = this view holds no book.
+    pub book: Option<BookTotals>,
+    /// The anchor's head; `None` = this view holds no anchor.
+    pub anchored: Option<AnchoredHead>,
 }
 
 /// The book's balances, per bucket, dimension, scope and window — what a checkpoint seals and what
@@ -468,8 +497,8 @@ impl LedgerView for UnopenedLedger {
         Ok(crate::root::ledger_identity::LegacySnapshot::new())
     }
 
-    fn checkpoints(&self) -> Vec<Checkpoint> {
-        Vec::new()
+    fn each_checkpoint(&self, _: &mut dyn FnMut(&Checkpoint)) -> Result<(), CheckpointUnreadable> {
+        Ok(())
     }
 
     fn migration_marker(&self) -> Option<busbar_kernel_ledger::migration::MigrationMarker> {
@@ -663,8 +692,15 @@ impl LedgerView for NodeLedger {
         ))
     }
 
-    fn checkpoints(&self) -> Vec<Checkpoint> {
-        self.lock().checkpoints.clone()
+    /// Re-derived from this node's chain under the lock a seal takes, so the held set the walk
+    /// reads is the one the ring holds ([`Durability::each_held_checkpoint`]).
+    ///
+    /// [`Durability::each_held_checkpoint`]: crate::root::durability::Durability::each_held_checkpoint
+    fn each_checkpoint(
+        &self,
+        each: &mut dyn FnMut(&Checkpoint),
+    ) -> Result<(), CheckpointUnreadable> {
+        self.lock().each_held_checkpoint(each)
     }
 
     fn checkpoint_keys(&self) -> AuditKeySet {
@@ -717,12 +753,13 @@ impl LedgerView for NodeLedger {
     }
 
     /// Both halves under ONE hold of the lock a settlement takes.
-    fn verify_snapshot(&self) -> (Vec<Checkpoint>, Option<BookTotals>) {
+    fn verify_snapshot(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
         let durability = self.lock();
-        (
-            durability.checkpoints.clone(),
-            Some(durability.ledger.book().snapshot()),
-        )
+        VerifySnapshot {
+            read: durability.each_held_checkpoint(each),
+            book: Some(durability.ledger.book().snapshot()),
+            anchored: None,
+        }
     }
 
     fn restart_findings(&self) -> Vec<String> {
@@ -747,15 +784,13 @@ impl LedgerView for NodeLedger {
 
     /// All three under ONE hold of the lock a seal takes, so a checkpoint sealed between reads
     /// cannot read as a head that differs.
-    fn verify_snapshot_anchored(
-        &self,
-    ) -> (Vec<Checkpoint>, Option<BookTotals>, Option<AnchoredHead>) {
+    fn verify_snapshot_anchored(&self, each: &mut dyn FnMut(&Checkpoint)) -> VerifySnapshot {
         let durability = self.lock();
-        (
-            durability.checkpoints.clone(),
-            Some(durability.ledger.book().snapshot()),
-            durability.anchored_head(),
-        )
+        VerifySnapshot {
+            read: durability.each_held_checkpoint(each),
+            book: Some(durability.ledger.book().snapshot()),
+            anchored: durability.anchored_head(),
+        }
     }
 }
 
@@ -2136,10 +2171,19 @@ fn render_ledger_view(
                 .map_err(refused)?
                 .into_bytes()
         }
+        // A held checkpoint whose figures the chain does not reproduce refuses the read, named
+        // by its sequence number in the node's log and served as no figure at all (ARCHITECT A1).
         KernelVerb::GetLedgerCheckpoints => render_checkpoints(
-            &view.checkpoints(),
+            view,
             &crate::root::durability::KeySetVerifier::new(view.checkpoint_keys()),
         )
+        .map_err(|unreadable| {
+            tracing::warn!(
+                checkpoint_seq = unreadable.checkpoint_seq(),
+                "ledger checkpoints read refused: {unreadable}"
+            );
+            busbar_core_admin::GovernanceError::Store
+        })?
         .into_bytes(),
         KernelVerb::GetLedgerReconciliation => {
             // As the totals arm above: a refused row is off the ledger side of the identity too,
@@ -2432,70 +2476,83 @@ fn render_totals(
 /// `seal_verifies` is [`Checkpoint::verify_seal`] against the
 /// audit keyset (Q71(3): one keyset), and `seal_refusal` is its refusal in its own words — EDITED,
 /// UNSIGNED or a signature the keyset rejects — or `null` when the seal verifies.
-fn render_checkpoints(checkpoints: &[Checkpoint], keys: &dyn CheckpointVerifier) -> String {
+///
+/// The checkpoints are rendered as the view hands them over, one at a time
+/// ([`LedgerView::each_checkpoint`]); one the view cannot hand over refuses the whole read, and
+/// nothing rendered before it is served.
+fn render_checkpoints(
+    view: &dyn LedgerView,
+    keys: &dyn CheckpointVerifier,
+) -> Result<String, CheckpointUnreadable> {
     let mut out = String::from("{\"checkpoints\":[");
-    for (i, cp) in checkpoints.iter().enumerate() {
-        if i > 0 {
+    let mut first = true;
+    view.each_checkpoint(&mut |cp| {
+        if !std::mem::take(&mut first) {
             out.push(',');
         }
-        out.push_str("{\"checkpoint_seq\":");
-        out.push_str(&cp.checkpoint_seq.to_string());
-        out.push_str(",\"node\":");
-        out.push_str(&cp.node.to_string());
-        out.push_str(",\"wall\":");
-        out.push_str(&cp.wall.to_string());
-        out.push_str(",\"backup_watermark\":");
-        out.push_str(&cp.backup_watermark.to_string());
-        out.push_str(",\"store_seq_high_water\":");
-        out.push_str(&cp.store_seq_high_water.to_string());
-        out.push_str(",\"body_hash\":");
-        json_string(&hex32(&cp.body_hash), &mut out);
-        out.push_str(",\"body_hash_verifies\":");
-        out.push_str(if cp.body_hash_verifies() {
-            "true"
-        } else {
-            "false"
-        });
-        // The signature's PRESENCE is a fact an operator needs; its bytes are not something an
-        // administrative read hands out. A checkpoint nobody signed and a checkpoint whose signature
-        // this response withheld would otherwise look the same.
-        out.push_str(",\"signed\":");
-        out.push_str(if cp.signature.is_some() {
-            "true"
-        } else {
-            "false"
-        });
-        match cp.verify_seal(keys) {
-            Ok(()) => out.push_str(",\"seal_verifies\":true,\"seal_refusal\":null"),
-            Err(refusal) => {
-                out.push_str(",\"seal_verifies\":false,\"seal_refusal\":");
-                json_string(&refusal.to_string(), &mut out);
-            }
+        render_checkpoint(cp, keys, &mut out);
+    })?;
+    out.push_str("]}");
+    Ok(out)
+}
+
+/// One checkpoint's object, appended to `out`.
+fn render_checkpoint(cp: &Checkpoint, keys: &dyn CheckpointVerifier, out: &mut String) {
+    out.push_str("{\"checkpoint_seq\":");
+    out.push_str(&cp.checkpoint_seq.to_string());
+    out.push_str(",\"node\":");
+    out.push_str(&cp.node.to_string());
+    out.push_str(",\"wall\":");
+    out.push_str(&cp.wall.to_string());
+    out.push_str(",\"backup_watermark\":");
+    out.push_str(&cp.backup_watermark.to_string());
+    out.push_str(",\"store_seq_high_water\":");
+    out.push_str(&cp.store_seq_high_water.to_string());
+    out.push_str(",\"body_hash\":");
+    json_string(&hex32(&cp.body_hash), out);
+    out.push_str(",\"body_hash_verifies\":");
+    out.push_str(if cp.body_hash_verifies() {
+        "true"
+    } else {
+        "false"
+    });
+    // The signature's PRESENCE is a fact an operator needs; its bytes are not something an
+    // administrative read hands out. A checkpoint nobody signed and a checkpoint whose signature
+    // this response withheld would otherwise look the same.
+    out.push_str(",\"signed\":");
+    out.push_str(if cp.signature.is_some() {
+        "true"
+    } else {
+        "false"
+    });
+    match cp.verify_seal(keys) {
+        Ok(()) => out.push_str(",\"seal_verifies\":true,\"seal_refusal\":null"),
+        Err(refusal) => {
+            out.push_str(",\"seal_verifies\":false,\"seal_refusal\":");
+            json_string(&refusal.to_string(), out);
         }
-        out.push_str(",\"heads\":[");
-        for (j, head) in cp.heads.iter().enumerate() {
-            if j > 0 {
-                out.push(',');
-            }
-            out.push_str("{\"node\":");
-            out.push_str(&head.node.to_string());
-            out.push_str(",\"node_seq\":");
-            out.push_str(&head.node_seq.to_string());
-            out.push_str(",\"hash\":");
-            json_string(&hex32(&head.hash), &mut out);
-            out.push('}');
+    }
+    out.push_str(",\"heads\":[");
+    for (j, head) in cp.heads.iter().enumerate() {
+        if j > 0 {
+            out.push(',');
         }
-        out.push_str("],\"totals\":[");
-        for (j, ((key, window), totals)) in cp.totals.iter().enumerate() {
-            if j > 0 {
-                out.push(',');
-            }
-            render_totals_cell(key, *window, totals, &mut out);
+        out.push_str("{\"node\":");
+        out.push_str(&head.node.to_string());
+        out.push_str(",\"node_seq\":");
+        out.push_str(&head.node_seq.to_string());
+        out.push_str(",\"hash\":");
+        json_string(&hex32(&head.hash), out);
+        out.push('}');
+    }
+    out.push_str("],\"totals\":[");
+    for (j, ((key, window), totals)) in cp.totals.iter().enumerate() {
+        if j > 0 {
+            out.push(',');
         }
-        out.push_str("]}");
+        render_totals_cell(key, *window, totals, out);
     }
     out.push_str("]}");
-    out
 }
 
 /// One sealed balance, as the checkpoint holds it.
