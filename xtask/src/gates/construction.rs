@@ -158,6 +158,7 @@ impl ConstructionGate {
     fn ids(cx: &Ctx) -> Result<Vec<String>, String> {
         let cfg = ConstructionGate::cfg(cx)?;
         let mut ids: Vec<String> = vec![
+            "one-attempt-seam",
             "request-path-fn-size",
             "no-uninstalled-seam",
             "neutral-no-dialect",
@@ -334,6 +335,7 @@ impl ConstructionGate {
             &'r (dyn Fn() -> Result<Vec<CRow>, String> + Sync),
         );
         let rules: &[Rule] = &[
+            ("one-attempt-seam", &|| rules::one_attempt_seam(&tree, &cfg)),
             ("request-path-fn-size", &|| {
                 rules::request_path_fn_size(&tree, &cfg)
             }),

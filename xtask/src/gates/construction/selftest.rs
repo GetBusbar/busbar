@@ -410,18 +410,25 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
         "crates/busbar-llm/src/unit/zz_planted_escape.rs",
         "pub fn planted_response_escape() -> Response {\n    Response::new()\n}\n",
     );
+    // A second unit attempt goes where the rule scans (a crate that drives a unit's walk).
+    ov.set(
+        "crates/busbar-kernel-egress/src/zz_planted_attempt.rs",
+        "pub fn planted_second_attempt_site() {\n    let _ = e.conns.open(caller, need, &desc);\n}\n",
+    );
     r.push(prove_red(
         cx,
         gate,
-        "a second terminal door, two more lane picks and a Response escaping a step other than \
-         Audit",
+        "a second attempt site, a second terminal door, two more lane picks and a Response \
+         escaping a step other than Audit",
         &[
+            "one-attempt-seam",
             "single-terminal",
             "one-pick-site",
             "no-response-escapes-audit",
         ],
         ov,
         &[
+            "planted_second_attempt_site",
             "planted_extra_door",
             "zz_planted_shape.rs",
             "planted_response_escape",
@@ -848,8 +855,9 @@ fn ceiling_file_cases<'a>(
         return r;
     };
 
-    // ONE PLANTED CEILINGS FILE FOR TWO RULES. The per-crate reach figures and `ceiling-census` are
-    // each proven by a different number or string in this one file, touching disjoint keys and read by disjoint rows — one whole-gate drive instead of
+    // ONE PLANTED CEILINGS FILE FOR THREE RULES. The per-crate reach figures, `ceiling-census` and
+    // the `one-attempt-seam` scan-set arm are each proven by a different number or string in this
+    // one file, touching disjoint keys and read by disjoint rows — one whole-gate drive instead of
     // one per rule, and each row is still held to its own naming string.
     let mut combined = text.clone();
     let mut combined_cover: Vec<String> = Vec::new();
@@ -943,6 +951,30 @@ fn ceiling_file_cases<'a>(
         &refs(&control),
         on(base),
     ));
+
+    // -- one-attempt-seam: THE SCAN SET GOING EMPTY ----------------------------------------------
+    //
+    // `one-attempt-seam` counts send-verb sites OUTSIDE `allowed_function`, and its `inside == 0`
+    // arm is the one that notices the seam MOVED — the send verb matched nothing inside the allowed
+    // function, i.e. the scan set went empty. A blind-stub audit found that arm was driven by NO
+    // selftest case: stub it and `construction --selftest` gained ZERO failures.
+    //
+    // The plant makes the verb match nothing ANYWHERE, so `extra` is empty too and the row's single
+    // offender is the arm under test — nothing else can be what turned it red.
+    let verbless = combined.replace(
+        r#"send_verb = '\.conns\.open\('"#,
+        r#"send_verb = '\.zz_planted_verb_that_matches_nothing\('"#,
+    );
+    if verbless != combined {
+        combined = verbless;
+        combined_cover.push("one-attempt-seam".to_string());
+        combined_naming.push("performs no attempt at all".to_string());
+    } else {
+        r.note_infra_failure(
+            "[rules.one-attempt-seam] send_verb could not be rewritten, so the arm that refuses an \
+             empty scan set is unproven rather than passing",
+        );
+    }
 
     combined_cover.dedup();
     if !combined_cover.is_empty() {
