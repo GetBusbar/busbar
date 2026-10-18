@@ -8,16 +8,16 @@
 //! ## Why this lives in the substrate
 //!
 //! The LLM money path (its `NativeRuntime` bundle + the `Lane`/`WeightedLane` routing tables) is being
-//! relocated into `busbar-llm`. A handful of core readers that STAY — the `/metrics` lane-state scrape,
+//! relocated into the retired engine crate. A handful of core readers that STAY — the `/metrics` lane-state scrape,
 //! the `/v1/models` discovery listing, and the boot-time telemetry label bank — read those tables only
 //! for NEUTRAL facts: pool label spaces, per-pool member lane indices, the direct-model index, one
 //! lane's wire identity ([`LaneView`]), and a pool's live queue-park depth. Expressed through this
 //! trait, those readers name no plane type, so they need not move when the tables do.
 //!
-//! It lives in `busbar-substrate` (not `busbar-llm`) so a zero-plane binary — one that `git-rm`'d
-//! `busbar-llm` (the `plane-delete-test --all` posture) — still boots: core reaches an
+//! It lives in `busbar-substrate` (not the retired engine crate) so a zero-plane binary — one that `git-rm`'d
+//! the retired engine crate (the `plane-delete-test --all` posture) — still boots: core reaches an
 //! [`EMPTY_VIEW`] (zero pools, zero models) when no plane contributed a runtime slot, and never names a
-//! `busbar-llm` type to do it.
+//! the retired engine crate type to do it.
 //!
 //! ## What this is NOT
 //!
@@ -46,7 +46,7 @@ pub struct LaneView<'a> {
 }
 
 /// THE NEUTRAL READ SEAM over a data-plane's routing tables. Implemented by the plane's concrete
-/// runtime (today the still-in-core `NativeRuntime`; after the pivot, `busbar-llm`'s own runtime,
+/// runtime (today the still-in-core `NativeRuntime`; after the pivot, the retired engine crate's own runtime,
 /// reached via a viewer fn-pointer). Every accessor returns a NEUTRAL projection — never the plane's
 /// `Lane`/`WeightedLane` — so the staying `/metrics`, `/v1/models`, and telemetry readers name no
 /// plane type. Cold/scrape paths only; the projections allocate.

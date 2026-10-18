@@ -413,18 +413,15 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     r.push(prove_red(
         cx,
         gate,
-        "a second attempt site, a second terminal door, a door outside Audit, two more lane picks \
-         and a Response escaping a step other than Audit",
+        "a second terminal door, two more lane picks and a Response escaping a step other than \
+         Audit",
         &[
-            "one-attempt-seam",
             "single-terminal",
-            "terminal-doors-in-audit-step",
             "one-pick-site",
             "no-response-escapes-audit",
         ],
         ov,
         &[
-            "planted_second_attempt_site",
             "planted_extra_door",
             "zz_planted_shape.rs",
             "planted_response_escape",
@@ -454,7 +451,7 @@ fn shape_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<'a> {
     // not appended: the end of a request-path file is a `#[cfg(test)]` module, and a function
     // planted inside one is test code the rule is right to ignore.
     let mut ov = on(base);
-    let target = "crates/busbar-llm/src/engine/pipeline.rs";
+    let target = "crates/busbar-kernel/src/limits/admission.rs";
     if let Ok(basetext) = cx.read(target) {
         let body: String = (0..400)
             .map(|i| format!("    let _planted_{i} = {i};\n"))
@@ -830,7 +827,7 @@ fn unit_crate_cases<'a>(gate: &'a dyn Gate, cx: &Ctx, base: &Overlay) -> Report<
 }
 
 /// THE RULES PLANTED THROUGH THE CEILINGS FILE rather than through the tree: the per-crate reach
-/// figures, the census floors and the `one-attempt-seam` scan set. Each reads a NUMBER or a string
+/// figures, and the census floors. Each reads a NUMBER or a string
 /// in `qa/construction.toml`, and the honest plant for a rule about a number is a different number.
 fn ceiling_file_cases<'a>(
     gate: &'a dyn Gate,
@@ -851,9 +848,8 @@ fn ceiling_file_cases<'a>(
         return r;
     };
 
-    // ONE PLANTED CEILINGS FILE FOR THREE RULES. The per-crate reach figures, `ceiling-census` and
-    // the `one-attempt-seam` scan-set arm are each proven by a different number or string in this
-    // one file, touching disjoint keys and read by disjoint rows — one whole-gate drive instead of
+    // ONE PLANTED CEILINGS FILE FOR TWO RULES. The per-crate reach figures and `ceiling-census` are
+    // each proven by a different number or string in this one file, touching disjoint keys and read by disjoint rows — one whole-gate drive instead of
     // one per rule, and each row is still held to its own naming string.
     let mut combined = text.clone();
     let mut combined_cover: Vec<String> = Vec::new();
@@ -947,30 +943,6 @@ fn ceiling_file_cases<'a>(
         &refs(&control),
         on(base),
     ));
-
-    // -- one-attempt-seam: THE SCAN SET GOING EMPTY ----------------------------------------------
-    //
-    // `one-attempt-seam` counts send-verb sites OUTSIDE `allowed_function`, and its `inside == 0`
-    // arm is the one that notices the seam MOVED — the send verb matched nothing inside the allowed
-    // function, i.e. the scan set went empty. A blind-stub audit found that arm was driven by NO
-    // selftest case: stub it and `construction --selftest` gained ZERO failures.
-    //
-    // The plant makes the verb match nothing ANYWHERE, so `extra` is empty too and the row's single
-    // offender is the arm under test — nothing else can be what turned it red.
-    let verbless = combined.replace(
-        r#"send_verb = '\.client\(\)\.get\(\)\.request\('"#,
-        r#"send_verb = '\.zz_planted_verb_that_matches_nothing\('"#,
-    );
-    if verbless != combined {
-        combined = verbless;
-        combined_cover.push("one-attempt-seam".to_string());
-        combined_naming.push("performs no attempt at all".to_string());
-    } else {
-        r.note_infra_failure(
-            "[rules.one-attempt-seam] send_verb could not be rewritten, so the arm that refuses an \
-             empty scan set is unproven rather than passing",
-        );
-    }
 
     combined_cover.dedup();
     if !combined_cover.is_empty() {

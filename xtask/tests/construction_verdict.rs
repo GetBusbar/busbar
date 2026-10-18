@@ -215,7 +215,6 @@ ceiling-census	FAIL	every rule table, plane crate and kind glob is still counted
 
 /// The gate's problems, in rule order: one per rule whose table the frozen ceilings file lacks.
 const PINNED_PROBLEMS: &[&str] = &[
-    "one-attempt-seam: qa/construction.toml has no [rules.one-attempt-seam] table",
     "request-path-fn-size: qa/construction.toml has no [rules.request-path-fn-size] table",
     "ports-only: qa/construction.toml has no [rules.ports-only] table",
     "no-uninstalled-seam: qa/construction.toml has no [rules.no-uninstalled-seam] table",
@@ -225,7 +224,6 @@ const PINNED_PROBLEMS: &[&str] = &[
     "teller-step-order: qa/construction.toml has no [rules.teller-step-order] table",
     "one-teller-loop: qa/construction.toml has no [rules.one-teller-loop] table",
     "no-response-escapes-audit: qa/construction.toml has no [rules.no-response-escapes-audit] table",
-    "terminal-doors-in-audit-step: qa/construction.toml has no [rules.terminal-doors-in-audit-step] table",
     "one-pick-site: qa/construction.toml has no [rules.one-pick-site] table",
     "no-unit-crates: qa/construction.toml has no [rules.no-unit-crates] table",
     "manifest-allowlist: qa/construction.toml has no [rules.manifest-allowlist] table",

@@ -391,7 +391,7 @@ async fn the_queue_frees_one_permit_to_exactly_one_of_two_waiters() {
 /// NO LOST WAKEUP: a slot freed in the window around the moment a waiter parks is kept for it, so
 /// the waiter dispatches well inside a short wait rather than missing the wake and timing out.
 /// Driven fifty times so the free lands on both sides of the park. Rehomes
-/// `crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::queue_no_lost_wakeup_when_permit_freed_in_the_window`.
+/// the retired engine crate's `src/engine/tests/on_exhausted_tests.rs::queue_no_lost_wakeup_when_permit_freed_in_the_window`.
 /// RED: a wake fired before the waiter registered is lost, and the waiter waits out its bound.
 #[tokio::test]
 async fn a_slot_freed_as_its_waiter_parks_is_not_lost() {

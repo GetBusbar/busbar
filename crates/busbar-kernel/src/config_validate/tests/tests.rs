@@ -6706,7 +6706,7 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
 }
 
 /// An EMPTY `error_map` is valid: the HTTP status still classifies every answer. Rehomes
-/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_empty_error_map_is_valid_but_bad_value_fails
+/// the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_empty_error_map_is_valid_but_bad_value_fails
 /// (its bad-value half is `test_error_map_invalid_class_message_lists_full_valid_set`). RED arm:
 /// the same deployment with one unknown class word is refused naming it.
 #[test]

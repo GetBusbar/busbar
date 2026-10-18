@@ -5,7 +5,7 @@
 //! (the "fix the 85" pass after the A6/HostCtx dev-dependency-cycle cleanup): every test in this file
 //! builds a `TestApp` with real lanes/pools and reads the topology back through `App::engine_tables_view`,
 //! which projects the FALLBACK plane's own runtime slot through that plane decl's `viewer` fn-pointer
-//! (`state.rs::App::engine_tables_view`'s doc). Only the REAL `busbar_llm` plane sets `viewer`/
+//! (`state.rs::App::engine_tables_view`'s doc). Only the REAL the retired engine crate plane sets `viewer`/
 //! `build_runtime` to something that actually returns lane/pool tables — a neutral fake plane (all
 //! hooks `None`/no-op) would leave every one of these reading the empty `EMPTY_VIEW` projection, which
 //! is a different, false-negative failure than what these tests exist to pin. That only type-checks

@@ -149,7 +149,7 @@ fn spilled_reflects_heap_overflow_of_the_inline_capacity() {
     );
 }
 
-/// LEGACY `crates/busbar-llm/src/engine/tests/signal_catalog_tests.rs::default_path_allocates_no_signals_container`.
+/// LEGACY the retired engine crate's `src/engine/tests/signal_catalog_tests.rs::default_path_allocates_no_signals_container`.
 /// ZERO COST WHEN UNDECLARED: a candidate's bag on the default path (no hook declares a signal) is
 /// empty and holds no heap buffer, and a bag of up to four declared signals still lives inline, so
 /// declaring the usual handful of signals adds no allocation per candidate.

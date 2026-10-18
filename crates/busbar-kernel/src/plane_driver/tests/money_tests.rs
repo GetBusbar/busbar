@@ -339,7 +339,7 @@ fn a_later_window() -> u64 {
     today
 }
 
-/// F25 row 380: rehomed from crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::
+/// F25 row 380: rehomed from the retired engine crate's src/engine/tests/ingress_integration_tests.rs::
 /// test_flat_fee_charge_and_refund_use_charged_at_window (#29, flat-fee side). The admission
 /// charges the 30-cent flat fee into the ARRIVAL (`charged_at`) window; a non-2xx end refunds it in
 /// that SAME window (net 0 there), and nothing ever lands in the wall clock's window.
@@ -375,7 +375,7 @@ fn test_flat_fee_charge_and_refund_use_charged_at_window() {
     );
 }
 
-/// F25 row 626: rehomed from crates/busbar-llm/src/engine/tests/usage_tap_tests.rs::
+/// F25 row 626: rehomed from the retired engine crate's src/engine/tests/usage_tap_tests.rs::
 /// test_nonstream_token_fee_uses_charged_at_window_not_clock (#29, token side). A completion's
 /// 600 input + 400 output tokens ledger into the ARRIVAL (`charged_at`) window of the bound group's
 /// windowed bucket, never the wall clock's, and the key's all-time bucket holds all 1000.
@@ -415,7 +415,7 @@ fn test_nonstream_token_fee_uses_charged_at_window_not_clock() {
     );
 }
 
-/// F25 row 718: rehomed from crates/busbar-llm/src/unit/tests/meter.rs::
+/// F25 row 718: rehomed from the retired engine crate's src/unit/tests/meter.rs::
 /// the_fee_unit_is_one_per_delivered_request_that_routed_upstream. One flat fee per delivered
 /// request that routed upstream, at the ledger: a delivered 2xx whose plane reported its fee unit
 /// keeps the 5 cents; delivered with no upstream leg (no fee unit reported), routed but

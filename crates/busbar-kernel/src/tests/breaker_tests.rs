@@ -420,7 +420,7 @@ fn the_classifier_places_every_shared_dialect_error_as_recorded() {
 
 /// Every classification the operator's `error_map` may name parses to its class, `billing` and
 /// `client_error` included; an unknown word is `None` (no fallback arm). Rehomes
-/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_status_class_from_str_exhaustive.
+/// the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_status_class_from_str_exhaustive.
 #[test]
 fn every_error_map_class_word_parses_and_an_unknown_word_does_not() {
     for (word, class) in [
@@ -441,7 +441,7 @@ fn every_error_map_class_word_parses_and_an_unknown_word_does_not() {
 
 /// A provider code the operator mapped wins over the HTTP status (`1113` -> billing on a 402); a
 /// code the map does not name falls back to the status (500 -> server error). Rehomes
-/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_normalize_raw_error_with_provider_override.
+/// the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_normalize_raw_error_with_provider_override.
 #[test]
 fn a_mapped_provider_code_overrides_and_an_unmapped_one_falls_back_to_the_status() {
     let map = err_map(&[("1113", "billing")]);
@@ -463,7 +463,7 @@ fn a_mapped_provider_code_overrides_and_an_unmapped_one_falls_back_to_the_status
 
 /// With no map, the HTTP status alone classifies: 401 auth, 429 rate limit, 500 server error, 400
 /// client error. Rehomes
-/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_normalize_raw_error_http_status_fallback.
+/// the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_normalize_raw_error_http_status_fallback.
 #[test]
 fn with_no_map_the_status_alone_classifies() {
     for (status, class) in [
@@ -488,7 +488,7 @@ fn with_no_map_the_status_alone_classifies() {
 
 /// The map is read as written, right or wrong: a code the operator mapped to `rate_limit` reads as
 /// a rate limit, and the same code mapped to `billing` reads as billing. Rehomes
-/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_normalize_wrong_mapping_fails.
+/// the retired engine crate's src/engine/tests/forward_pool_integration_tests.rs::test_normalize_wrong_mapping_fails.
 #[test]
 fn the_operators_mapping_decides_the_class_as_written() {
     let raw = RawUpstreamError {

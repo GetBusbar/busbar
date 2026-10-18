@@ -430,7 +430,7 @@ fn a_door_owns_the_plane_axis_for_its_key_and_a_legacy_row_keeps_the_rest() {
 /// merge, `on_swap`) yields with the plane axis: the fallback flag is the door's own tail's
 /// (`TAIL_FALLBACK`), and the core's readers walk the kernel's own tables
 /// (`busbar_kernel::plane_host::ConfigTables`, pinned equal to the engine's view on the same config
-/// by busbar-llm's `view_parity_tests`). RED while the door's row carried the legacy engine: its
+/// by the retired engine crate's `view_parity_tests`). RED while the door's row carried the legacy engine: its
 /// `build_runtime` and `viewer` were the legacy row's, so the core read the engine's tables.
 #[test]
 fn a_door_taking_the_fallback_planes_key_serves_it_with_its_own_row() {

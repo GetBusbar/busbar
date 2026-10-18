@@ -10,7 +10,7 @@
 //! A path-model dialect (Gemini keeps the model in `/v1beta/models/{model}:generateContent`, Bedrock
 //! in `/model/{id}/converse`) parses its OWN model out of the URL and then runs the SAME resolution +
 //! forward every other dialect runs. That parsing is the dialect's statement about its own URL space,
-//! so it belongs in the dialect's crate (`busbar-llm`), not in core. But the resolution + forward it
+//! so it belongs in the dialect's crate (the retired engine crate), not in core. But the resolution + forward it
 //! then calls (`ingress_path_model`, `operation_ingress`, the `finish_rejected`/`ingress_error`
 //! error-shaping, the mount-aware `envelope_dialect`) is deeply `App`/`GovCtx`/`CallerToken`-bound and
 //! stays in core. [`ArrivalHost`] is the seam between the two: core implements it over its live `App`;
@@ -149,7 +149,7 @@ pub struct Arrival {
 
 /// A path-model dialect's own ingress: one arrival in, one boxed [`PlaneAnswer`] future out (#28) —
 /// the plane answers, and the catch-all that awaits it is the outer handler that serves it. `pub` so
-/// the composition root and the dialect crate (`busbar-llm`) name the registration-pair type. Boxed
+/// the composition root and the dialect crate (the retired engine crate) name the registration-pair type. Boxed
 /// deliberately: as a `match` arm every arrival's future inlined into the dispatch coroutine's union,
 /// inflating the future every request carried regardless of dialect — a `fn` pointer to a boxed future
 /// keeps that cost on the requests that take it.
@@ -222,7 +222,7 @@ pub fn path_ingress_for(name: &str) -> Option<PathIngress> {
 // plane's relocated `operation_ingress`) is registered through, mirroring the path-model seam above.
 // A body-model protocol keeps the model IN THE BODY, so its arrival does no URL parsing; but the
 // resolution + forward tail (`operation_ingress` → the one engine) reads the LLM routing tables and
-// so RELOCATED into `busbar-llm`. Core's `protocol_dispatch` resolves the body-arrival by protocol
+// so RELOCATED into the retired engine crate. Core's `protocol_dispatch` resolves the body-arrival by protocol
 // name and calls it, naming no LLM type — exactly the plane ABI, reusing `Arrival`/`ArrivalHost`/
 // `ArrivalCtx`.
 // ============================================================================

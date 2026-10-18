@@ -8056,7 +8056,7 @@ fn an_owned_anchor_the_boot_would_refuse_is_refused_by_the_same_rule() {
     );
 }
 
-/// LEGACY `crates/busbar-llm/src/unit/tests/verify.rs::asking_whether_a_name_is_configured_allocates_nothing`
+/// LEGACY the retired engine crate's `src/unit/tests/verify.rs::asking_whether_a_name_is_configured_allocates_nothing`
 /// (coordinator ruling 2026-10-17: no-alloc is a Law). ASKING WHETHER A NAME IS CONFIGURED ALLOCATES
 /// NOTHING: the destination guard asks it on every request, so the probe answers from the door's
 /// own pools and entries as they are held, never from a projection built per call. Eight pools, so

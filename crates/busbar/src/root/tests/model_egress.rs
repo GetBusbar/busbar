@@ -119,7 +119,7 @@ fn the_all_pools_credential_default_reaches_every_pool_without_its_own_and_every
     );
 }
 
-/// LEGACY `crates/busbar-llm/src/engine/tests/ingress_integration_tests.rs::test_forward_resolved_by_model_uses_lane_default_breaker_cell`.
+/// LEGACY the retired engine crate's `src/engine/tests/ingress_integration_tests.rs::test_forward_resolved_by_model_uses_lane_default_breaker_cell`.
 /// A ROUTE NAMING A MODEL DIRECTLY RECORDS ON THE LANE-DEFAULT CELL (`""`), the one cell 1.5.5's
 /// `/<model>/v1/messages` and its by-model forward both selected: one transient on the direct
 /// route's pool arms a cooldown on the lane's `""` cell and none under the model's own name, so a
@@ -127,7 +127,6 @@ fn the_all_pools_credential_default_reaches_every_pool_without_its_own_and_every
 /// RED: a direct route recorded under the model's name leaves the `""` cell's cooldown at 0.
 #[test]
 fn a_direct_routes_fault_is_recorded_on_the_lanes_default_cell() {
-    use busbar_kernel::store::LaneRuntime as _;
     let app = TestApp::new()
         .lane(LaneSpec::new("m0", "wire-under-test", "http://127.0.0.1:9"))
         .build();
