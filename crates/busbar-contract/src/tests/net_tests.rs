@@ -331,3 +331,52 @@ fn ipv6_link_local_is_its_own_predicate_not_a_metadata_one() {
         assert!(!host_is_link_local_v6(host), "{host}");
     }
 }
+
+/// THE ONE AUTHORITY SPLIT reads v1.5.5's authority: it ends at `/`, `?`, `#` and (no scheme, or a
+/// web scheme) `\`; the userinfo runs to the authority's last `@`; a generic scheme keeps its `\`.
+#[test]
+fn the_authority_ends_where_the_dialling_stack_ends_it() {
+    let at = |url: &str| {
+        let a = split_authority(url);
+        (a.scheme, a.userinfo, a.host_port, a.tail)
+    };
+    assert_eq!(
+        at("https://evil.example\\@victim.example/p"),
+        (Some("https"), None, "evil.example", "\\@victim.example/p")
+    );
+    assert_eq!(
+        at("https://u:p@w@host.example:8443/x?q#f"),
+        (Some("https"), Some("u:p@w"), "host.example:8443", "/x?q#f")
+    );
+    assert_eq!(
+        at("http://host.example#f@other.example"),
+        (Some("http"), None, "host.example", "#f@other.example")
+    );
+    assert_eq!(
+        at("host.example\\x@other"),
+        (None, None, "host.example", "\\x@other")
+    );
+    assert_eq!(
+        at("ldap://a\\b@dir.example/o"),
+        (Some("ldap"), Some("a\\b"), "dir.example", "/o")
+    );
+    assert_eq!(at("WSS://h.example"), (Some("WSS"), None, "h.example", ""));
+    // The authority the split reads is the host the WHATWG reader reads.
+    for url in [
+        "https://evil.example\\@victim.example/p",
+        "https://u:p@host.example/x",
+        "http://host.example?x@y",
+    ] {
+        assert_eq!(
+            url_host(url).as_deref(),
+            Some(
+                split_authority(url)
+                    .host_port
+                    .split(':')
+                    .next()
+                    .unwrap_or("")
+            ),
+            "{url}"
+        );
+    }
+}

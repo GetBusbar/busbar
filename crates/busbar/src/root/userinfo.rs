@@ -44,9 +44,10 @@ impl UserinfoBasic {
     /// UTF-8 presents nothing, a pass that does not is no pass (`extract_authority`'s two arms).
     #[must_use]
     pub fn of(url: &str) -> Option<Self> {
-        let (_, rest) = url.split_once("://")?;
-        let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
-        let (spelled, _) = rest[..end].rsplit_once('@')?;
+        // The authority the one split reads ([`busbar_contract::net::split_authority`]).
+        let parts = busbar_contract::net::split_authority(url);
+        parts.scheme?;
+        let spelled = parts.userinfo?;
         let (user, pass) = match spelled.split_once(':') {
             Some((user, pass)) => (user, Some(pass).filter(|p| !p.is_empty())),
             None => (spelled, None),

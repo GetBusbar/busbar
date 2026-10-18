@@ -1703,21 +1703,11 @@ fn settings_derived(target_from: &str) -> bool {
 /// everything else as written. `None` when no userinfo is found to leave out. The text left out is
 /// never kept, returned or repeated.
 fn without_userinfo(target: &str) -> Option<String> {
-    let start = match target.split_once("://") {
-        Some((scheme, _))
-            if !scheme.is_empty()
-                && scheme
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')) =>
-        {
-            scheme.len() + 3
-        }
-        _ => 0,
-    };
-    let rest = &target[start..];
-    let end = rest.find(['/', '?', '#', '\\']).unwrap_or(rest.len());
-    let at = rest[..end].rfind('@')?;
-    Some(format!("{}{}", &target[..start], &rest[at + 1..]))
+    // The authority the one split reads ([`busbar_contract::net::split_authority`]).
+    let parts = busbar_contract::net::split_authority(target);
+    parts.userinfo?;
+    let scheme = parts.scheme.map(|s| format!("{s}://")).unwrap_or_default();
+    Some(format!("{scheme}{}{}", parts.host_port, parts.tail))
 }
 
 impl DeclaredConns for Connector {
