@@ -24,7 +24,7 @@
    "lint": 5,
    "oracle-cell": 72,
    "oracle-family": 5,
-   "test": 428
+   "test": 426
   }
  },
  "dropped_since_last_write": [],
@@ -3863,14 +3863,7 @@
     {
      "kind": "test",
      "ref": "a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked",
-     "proves": "stream_options.include_usage is forced upstream",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked",
-     "proves": "injection happens without client opt-in",
+     "proves": "stream_options.include_usage is forced upstream; injection happens without client opt-in",
      "source": "curated",
      "status": "mapped"
     },
@@ -3883,7 +3876,7 @@
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:read_response_subtracts_cached_prefix_from_prompt_tokens, test:read_response_subtracts_cached_prefix_from_input_tokens, test:test_cached_content_token_count_reads_into_cache_read, test:test_gemini_usage_counts_thinking_tokens_as_output, test:a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked, test:a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked, test:strip_same_proto_usage_fires_without_object_field"
+   "verdict_detail": "test:read_response_subtracts_cached_prefix_from_prompt_tokens, test:read_response_subtracts_cached_prefix_from_input_tokens, test:test_cached_content_token_count_reads_into_cache_read, test:test_gemini_usage_counts_thinking_tokens_as_output, test:a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked, test:strip_same_proto_usage_fires_without_object_field"
   },
   {
    "id": "PB-83",
@@ -3995,20 +3988,13 @@
     {
      "kind": "test",
      "ref": "an_omitted_max_tokens_is_filled_and_an_explicit_one_is_kept",
-     "proves": "an explicit client value is never rewritten on a real forward",
-     "source": "curated",
-     "status": "mapped"
-    },
-    {
-     "kind": "test",
-     "ref": "an_omitted_max_tokens_is_filled_and_an_explicit_one_is_kept",
-     "proves": "injection on a cross-protocol forward",
+     "proves": "an explicit client value is never rewritten on a real forward; injection on a cross-protocol forward",
      "source": "curated",
      "status": "mapped"
     }
    ],
    "verdict": "PASS",
-   "verdict_detail": "test:per_model_then_global_then_4096, test:test_requires_max_tokens_per_protocol, test:an_omitted_max_tokens_is_filled_and_an_explicit_one_is_kept, test:an_omitted_max_tokens_is_filled_and_an_explicit_one_is_kept"
+   "verdict_detail": "test:per_model_then_global_then_4096, test:test_requires_max_tokens_per_protocol, test:an_omitted_max_tokens_is_filled_and_an_explicit_one_is_kept"
   },
   {
    "id": "PB-86",
