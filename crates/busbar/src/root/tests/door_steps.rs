@@ -6472,6 +6472,74 @@ pub(crate) mod program_member {
     }
 }
 
+/// THE STDIO SUPERVISOR, END TO END (THE DESIGN §2, l.388: "the stdio supervisor is the stdio
+/// transport's"; 1.5.5's crash-loop policy): a registration whose program ends at once, called over
+/// and over through the composed door and the real connector for longer than the whole backoff
+/// (100 + 200 + 400 + 800 ms), is spawned exactly five times: the fifth end inside a minute stops
+/// its restarts and every later call is refused without a spawn. The policy lives in the stdio
+/// carrier, keyed by the member's supervision key the connector hands each spawn. RED with the
+/// connector's own supervisor deleted and the carrier's absent: every call spawns the program anew.
+#[cfg(all(linked_axis_plane_door, linked_axis_node))]
+mod program_member_supervised {
+    use super::tool_door::{rig_tools, send, tool_digest, CALL};
+    use crate::root::serve::planes_tests::{Published, PUBLISHING};
+
+    /// The section: one registration whose program appends a line to `spawns` and ends.
+    fn section(spawns: &std::path::Path) -> serde_yaml::Value {
+        let mut fs = serde_yaml::Mapping::new();
+        fs.insert("transport".into(), "stdio".into());
+        fs.insert("command".into(), "/bin/sh".into());
+        fs.insert(
+            "args".into(),
+            serde_yaml::Value::Sequence(vec![
+                "-c".into(),
+                format!("echo spawned >> '{}'; exit 1", spawns.display()).into(),
+            ]),
+        );
+        fs.insert(
+            "pin".into(),
+            serde_yaml::from_str("{ mechanism: pinned_pubkey, key: \"sha256/K=\" }").unwrap(),
+        );
+        fs.insert(
+            "tools_allow".into(),
+            serde_yaml::from_str(&format!(
+                "{{ read_file: {{ schema_hash: \"{}\" }} }}",
+                tool_digest()
+            ))
+            .unwrap(),
+        );
+        let mut tools = serde_yaml::Mapping::new();
+        tools.insert("fs".into(), serde_yaml::Value::Mapping(fs));
+        serde_yaml::Value::Mapping(tools)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_program_that_keeps_ending_is_spawned_five_times_then_refused() {
+        let _one = PUBLISHING.lock().await;
+        let instance = "door-program-supervised";
+        let _published = Published(instance);
+        let spawns =
+            std::env::temp_dir().join(format!("busbar-{instance}-{}-spawns", std::process::id()));
+        let _ = std::fs::remove_file(&spawns);
+        let rig = rig_tools(instance, 0, section(&spawns), &|app| app);
+
+        // Called every 150 ms for 3.6 s: well past the four backoffs (1.5 s), well inside a minute.
+        for _ in 0..24 {
+            let _ = send(&rig.router, Some(&rig.token), CALL).await;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        let spawned = std::fs::read_to_string(&spawns)
+            .unwrap_or_default()
+            .lines()
+            .count();
+        let _ = std::fs::remove_file(&spawns);
+        assert_eq!(
+            spawned, 5,
+            "five ends inside a minute stop the restarts: spawned {spawned} times"
+        );
+    }
+}
+
 /// LAW 11 FOR A STDIO CHILD (ARCHITECT Q6), end to end through the composed door and the real
 /// connector. RED against the deleted reply ("no satisfier for that ask on the stdio leg ... not
 /// proxied to busbar's caller"), which answered a granted ask on the caller's behalf: the child's
