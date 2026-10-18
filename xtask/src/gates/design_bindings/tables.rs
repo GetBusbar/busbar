@@ -466,8 +466,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
         ("test", "read_response_subtracts_cached_prefix_from_input_tokens", "responses: the cached count is subtracted"),
         ("test", "test_cached_content_token_count_reads_into_cache_read", "gemini: the cached count reads into cache_read"),
         ("test", "test_gemini_usage_counts_thinking_tokens_as_output", "gemini tokens_out includes thoughtsTokenCount"),
-        ("test", "a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked", "stream_options.include_usage is forced upstream"),
-        ("test", "a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked", "injection happens without client opt-in"),
+        ("test", "a_streamed_request_asks_a_far_end_that_reports_usage_only_when_asked", "stream_options.include_usage is forced upstream; injection happens without client opt-in"),
         ("test", "strip_same_proto_usage_fires_without_object_field", "the same-protocol hide-back seam"),
     ]),
     ("PB-83", &[
@@ -483,8 +482,7 @@ pub static SEED: &[(&str, &[SeededCheck])] = &[
     ("PB-85", &[
         ("test", "per_model_then_global_then_4096", "default_max_tokens is injected only when the IR carries none; a caller value survives"),
         ("test", "test_requires_max_tokens_per_protocol", "the per-dialect requires_max_tokens table"),
-        ("test", "an_omitted_max_tokens_is_filled_and_an_explicit_one_is_kept", "an explicit client value is never rewritten on a real forward"),
-        ("test", "an_omitted_max_tokens_is_filled_and_an_explicit_one_is_kept", "injection on a cross-protocol forward"),
+        ("test", "an_omitted_max_tokens_is_filled_and_an_explicit_one_is_kept", "an explicit client value is never rewritten on a real forward; injection on a cross-protocol forward"),
     ]),
     ("PB-87", &[
         ("test", "rerank_resp_billing_is_flat", "a rerank reporting no search units projects Billing::Flat"),
