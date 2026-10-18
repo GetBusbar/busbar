@@ -312,6 +312,38 @@ fn the_checkpoint_ring_holds_the_latest_1024_and_evicts_the_oldest_at_1025() {
     );
 }
 
+/// N SEALS HOLD NO COPY OF THE BOOK BEYOND ONE IN FLIGHT (Q128 kernel-ledger HIGH 1, ARCHITECT
+/// ruling A1): the node keeps one live book, the deltas not yet sealed, and at most one sealed
+/// snapshot while a seal is being made, however many seals it has made. RED before the ruling: the
+/// ring kept a full copy of the book per seal, so fifty seals of an eight-balance book held four
+/// hundred balances.
+#[test]
+fn n_seals_hold_no_copy_of_the_book_beyond_one_in_flight() {
+    let token = token();
+    let mut durability = memory_node();
+    for n in 0..8u64 {
+        let key = TotalsKey::new(
+            BucketId::new(format!("vk_bound_{n}")),
+            CapDimension::NanoUnits,
+            BucketScope::All,
+        );
+        durability.ledger.book_mut().entry(key, 86_400).settled = 1;
+    }
+    let book = durability.ledger.book().len();
+    assert_eq!(book, 8);
+    for n in 0..50u64 {
+        durability
+            .seal_checkpoint(&token, StepName::Meter, NOW + n)
+            .expect("the seal goes down");
+    }
+    assert!(
+        durability.sealed_balances_held() <= book,
+        "fifty seals hold {} sealed balances beside a live book of {book}: at most one sealed \
+         snapshot may be held",
+        durability.sealed_balances_held()
+    );
+}
+
 /// U12: A REWOUND CHECKPOINT IS A `/verify` FINDING. Two checkpoints are sealed and the second is
 /// anchored; the ring is then rewound to the first (what a node restored from an older copy of its
 /// own state holds). `GET /admin/verify` compares the anchored head with the checkpoint it verifies
