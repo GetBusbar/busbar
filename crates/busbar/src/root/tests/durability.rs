@@ -3509,7 +3509,19 @@ fn every_held_checkpoint_is_re_derived_from_the_chain_as_it_was_sealed() {
     durability
         .each_held_checkpoint(&mut |checkpoint| served.push(checkpoint.clone()))
         .expect("every held checkpoint re-derives");
-    assert_eq!(served, sealed);
+    // The set the ring holds (the cadence may have sealed beside the explicit seals), in order,
+    // and every explicit seal among them with the very figures it sealed.
+    assert_eq!(
+        served.iter().map(Checkpoint::head).collect::<Vec<_>>(),
+        durability.checkpoints
+    );
+    for seal in &sealed {
+        assert!(
+            served.contains(seal),
+            "checkpoint {} is served as it was sealed",
+            seal.checkpoint_seq
+        );
+    }
 }
 
 /// RED (ARCHITECT A1): A HELD CHECKPOINT THE CHAIN DOES NOT REPRODUCE IS REFUSED BY ITS SEQUENCE
@@ -3545,10 +3557,10 @@ fn a_held_checkpoint_the_chain_does_not_reproduce_is_refused_by_its_seq() {
             checkpoint_seq: second.checkpoint_seq
         }
     );
-    assert_eq!(
-        served,
-        vec![first.checkpoint_seq],
-        "no figure past the refusal"
+    assert!(served.contains(&first.checkpoint_seq), "{served:?}");
+    assert!(
+        served.iter().all(|seq| *seq < second.checkpoint_seq),
+        "no figure past the refusal: {served:?}"
     );
 
     let mut stray = first.head();
