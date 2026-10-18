@@ -48,8 +48,56 @@ fn join_or_none(items: &[String]) -> String {
 }
 
 // ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
-// STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): the rule's subject, the retired engine crate's send seam, left the tree with
-// the crate; its table is struck from qa/construction.toml in the same commit.
+
+pub fn one_attempt_seam(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
+    let c = cfg.rule("one-attempt-seam")?;
+    let allowed = need_str(c, "allowed_function", "one-attempt-seam")?;
+    let ceiling = need_int(c, "max_extra_sites", "one-attempt-seam")?;
+    let send = Regex::new(need_str(c, "send_verb", "one-attempt-seam")?)?;
+    // The crates whose code drives a unit's walk; every file when none is named.
+    let roots = c.list_of("roots");
+    let files: Option<Vec<String>> = (!roots.is_empty()).then(|| {
+        tree.files
+            .keys()
+            .filter(|rel| roots.iter().any(|root| rel.starts_with(root.as_str())))
+            .cloned()
+            .collect()
+    });
+
+    let mut extra: Vec<String> = Vec::new();
+    let mut inside = 0usize;
+    for (rel, l) in tree.grep(&send, true, files.as_deref()) {
+        let fname = tree
+            .enclosing_fn(rel, l.no)
+            .map_or("<no enclosing fn>".to_string(), |f| f.name.clone());
+        if fname == allowed {
+            inside += 1;
+        } else {
+            extra.push(format!("{fname} at {rel}:{}", l.no));
+        }
+    }
+    let mut offenders = extra;
+    if inside == 0 {
+        offenders.push(format!(
+            "allowed function `{allowed}` performs no attempt at all (the seam moved; update \
+             qa/construction.toml or restore it)"
+        ));
+    }
+    let current = offenders.len() as i64;
+    let detail = format!(
+        "{current} attempt site(s) outside `{allowed}` (ceiling {ceiling}): {}",
+        join_or_none(&offenders)
+    );
+    Ok(vec![plain(
+        "one-attempt-seam",
+        current <= ceiling,
+        format!("exactly one function sends the upstream attempt (`{allowed}`)"),
+        detail,
+        current,
+        ceiling,
+        offenders,
+    )])
+}
 
 // ── 2. request-path-fn-size ──────────────────────────────────────────────────────────────────────
 
