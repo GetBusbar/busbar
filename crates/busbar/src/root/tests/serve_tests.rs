@@ -5432,7 +5432,7 @@ mod pools_door_walk_and_breaker {
     /// A CALLER'S FAULT IS NEVER RETRIED ON ANOTHER MEMBER: a two-member pool whose far ends both
     /// answer a 400 relays the first 400 to the caller, and exactly one member was dialled; the
     /// walk does not try the second for a fault that is the caller's own. Rehomes
-    /// `crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_client_fault_no_failover_two_lanes`.
+    /// the retired engine crate's `src/engine/tests/forward_pool_integration_tests.rs::test_client_fault_no_failover_two_lanes`.
     /// RED: the second member dialled, or the 400 replaced by a terminal.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_pools_door_never_retries_a_callers_fault_on_another_member() {

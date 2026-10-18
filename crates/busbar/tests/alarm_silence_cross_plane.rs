@@ -4,7 +4,7 @@
 //! CROSS-PLANE ALARM/DISPUTE SILENCE TEST, relocated here from `src/tests/alarm_silence_tests.rs`
 //! (the "fix the 38" pass after the A6/HostCtx dev-dependency-cycle cleanup): it drives a real
 //! request lifecycle (success, failed-upstream, `/healthz`, `/stats`) through `build_router`, which
-//! only routes `/pa/v1/messages`/`/pb/v1/messages` through the REAL `busbar_llm` plane's
+//! only routes `/pa/v1/messages`/`/pb/v1/messages` through the REAL the retired engine crate plane's
 //! `build_runtime`/`viewer` — same reason as `endpoints_cross_plane.rs` (see its header). What this
 //! test asserts (no tracing event or metric name mentions "alarm"/"dispute" on a 1.5.5-shaped
 //! deployment) is core's own structured-field/metric-set behaviour, not anything about the routed

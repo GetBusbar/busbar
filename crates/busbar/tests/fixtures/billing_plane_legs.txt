@@ -7,5 +7,5 @@
 # A door plane (the `plane-door` axis: busbar-plane-mcp since FLIP-MCP, busbar-plane-a2a since FLIP-A2A,
 # busbar-plane-streaming since FLIP-STREAMING) has no row: it is not a linked plane, and its units
 # bill through the kernel plane driver's one money seam (`plane_driver::money`, PlaneMoney), proven by
-# the driver suites.
-busbar-llm unit busbar-llm/src/unit/node.rs
+# the driver suites. The model plane's row is struck with its retired engine crate (DEV-GREEN row 83,
+# coordinator ruling 2026-10-18): it is a door plane too, so no linked plane bills on a leg of its own.

@@ -90,16 +90,24 @@ fn billing_rows() -> &'static [Vec<&'static str>] {
     })
 }
 
-/// Every billing plane named by the fixture is a plane the composition root LINKS (a
-/// `[package.metadata.busbar.linked]` row carrying the `plane` axis) — so the data cannot drift onto
-/// a crate this binary does not carry, and the gate cannot shrink by a row going stale.
+/// The billing planes named by the fixture ARE the planes the composition root LINKS (each a
+/// `[package.metadata.busbar.linked]` row carrying the `plane` axis), both ways — so the data cannot
+/// drift onto a crate this binary does not carry, the gate cannot shrink by a row going stale, and a
+/// linked plane cannot bill unnamed. Since the retired engine crate's deletion (DEV-GREEN row 83,
+/// coordinator ruling 2026-10-18) every plane is a door plane and both sets are empty: each bills
+/// through the kernel plane driver's one money seam, proven by the driver suites.
 #[test]
 fn every_billing_plane_is_a_linked_plane() {
     let linked: Vec<String> = common::linked_plane_crates()
         .into_iter()
         .map(|(_, krate)| krate)
         .collect();
-    assert!(!billing_plane_crates().is_empty(), "no billing plane named");
+    let named: std::collections::BTreeSet<&str> = billing_plane_crates().iter().copied().collect();
+    let linked_set: std::collections::BTreeSet<&str> = linked.iter().map(String::as_str).collect();
+    assert_eq!(
+        named, linked_set,
+        "the billing planes named are the linked planes of this binary"
+    );
     for plane in billing_plane_crates() {
         assert!(
             linked.iter().any(|k| k == plane),

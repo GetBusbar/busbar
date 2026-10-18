@@ -1636,7 +1636,7 @@ mod residual_tests;
 pub mod build_input;
 // THE NEUTRAL READ-SIDE PROJECTION of a data-plane's routing tables (1.6.0 money-path Phase 3-4 B):
 // the `EngineTablesView` trait + `LaneView` + the zero-plane `EMPTY_VIEW` the core scrape/discovery
-// readers name so they need not move when the tables relocate into `busbar-llm`.
+// readers name so they need not move when the tables relocate into the retired engine crate.
 pub mod engine_view;
 // `PlaneSlots` through any pointer to a slot holder (`Arc`, load guard, borrow), so a plane's slot
 // readers can take `&impl PlaneSlots` instead of a concrete snapshot type without touching callers.
@@ -2439,7 +2439,7 @@ pub trait RegistryHost: Send + Sync {
     fn plane_defs(&self) -> Arc<dyn std::any::Any + Send + Sync>;
 }
 
-/// The HOOK/CONFIG-FACADE slice (App-retype WEDGE 2d): the residual `busbar-llm` request-path reads off
+/// The HOOK/CONFIG-FACADE slice (App-retype WEDGE 2d): the residual the retired engine crate request-path reads off
 /// the resolved hook/config facades — the rewrite/tap/gate chains, the routing policy, the requested-
 /// signal bitmask and the group-membership walk. Each is a pure borrow of the bound snapshot tied to
 /// `&self`, no `HostCtx`. Split off `EngineHost` as a supertrait; every borrow is byte-identical to the
@@ -2845,7 +2845,7 @@ pub trait EngineHost:
     // The cross-protocol translation seam's global-fallback max-output-tokens and effort→budget-table
     // reads are GONE from this neutral host trait: they are LLM-plane vocabulary, so the engine now
     // reads them off the LLM plane's own per-generation runtime (`NativeRuntime`) rather than through a
-    // neutral `PlaneHost` method over `App`. See busbar-llm `engine/wire.rs`.
+    // neutral `PlaneHost` method over `App`. See the retired engine crate `engine/wire.rs`.
 }
 
 /// Compile-time witness for the M4 god-trait split: any `EngineHost` implementor IS every capability

@@ -117,7 +117,7 @@ fn planes() -> &'static [&'static str] {
 /// bidirectional protocols do. Every mapped column must be a real declared ledger plane.
 ///
 /// The map is keyed by the crate's directory suffix (`crates/busbar-<suffix>`), and it covers BOTH
-/// halves of every plane: the plane crate `scripts/plane-keys.sh` names (`busbar-llm`, …) and the
+/// halves of every plane: the plane crate `scripts/plane-keys.sh` names (the retired engine crate, …) and the
 /// pure `busbar-plane-*` crate the workspace carries beside it. The pure crates were invisible to
 /// this check until item 257 — it enumerated the four-entry shell variable and nothing else, so two
 /// workspace plane crates answered to no column and nothing said so. `plane-streaming` is the

@@ -101,8 +101,8 @@ pub fn cfg_with_provider_api_key(api_key: crate::config::SecretRef) -> crate::co
 // dev-dependency-cycle cleanup moved every test that asserts REAL llm/mcp/a2a behaviour out to
 // `tests/*_cross_plane.rs` (the only place with ONE `busbar_kernel` in the graph — see that target's
 // docs), this crate's OWN `#[cfg(test)]` unit tests can no longer reach a real plane's `PLANE_DECL` at
-// all: calling `busbar_llm::testkit::install_test_seams()` from here would register the REAL `llm`
-// PlaneDecl into busbar_llm's OWN dependency-copy of this crate's process statics, not this compiled
+// all: calling the retired engine crate's `testkit::install_test_seams()` from here would register the REAL `llm`
+// PlaneDecl into the retired engine crate's OWN dependency-copy of this crate's process statics, not this compiled
 // unit's — completely inert. A unit test that merely needs "some plane exists" so `pools:`/config
 // resolution has an owner (not one that asserts what that plane DOES) calls this instead.
 //
@@ -172,7 +172,7 @@ pub const NEUTRAL_FALLBACK: crate::plane::registry::PlaneDecl = crate::plane::re
 /// registered to own this config section". Call at the top of a test that builds/parses a
 /// `RootCfg`/`DeployCfg` (directly or via `resolve`) but asserts nothing about real llm/mcp/a2a
 /// behaviour; a test that DOES assert real plane behaviour belongs in `tests/*_cross_plane.rs`
-/// instead, where the real `busbar_llm`/`busbar_mcp` and agent-engine crates are reachable.
+/// instead, where the real the retired engine crate/`busbar_mcp` and agent-engine crates are reachable.
 pub fn register_neutral_test_plane() {
     crate::plane::registry::register_test_plane(&NEUTRAL_FALLBACK_PLANE);
 }

@@ -1149,7 +1149,7 @@ fn validate_refuses_a_publish_as_collision_with_a_namespaced_default() {
 /// installed set is folded AHEAD of the built-ins — so a naive fold reorders the list. It was
 /// measured doing exactly that during this work (cohere went from slot 6 to slot 2). The order is
 /// preserved by taking the dialects out in the built-in table's own order and appending each to
-/// `busbar_llm::DECLS`, which keeps the installed set a PREFIX of the operator-visible list at
+/// the retired engine crate's `DECLS`, which keeps the installed set a PREFIX of the operator-visible list at
 /// every step; this test is what makes that a checked property rather than a careful intention.
 #[cfg(linked_section_pools)]
 #[test]

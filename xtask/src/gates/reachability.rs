@@ -276,12 +276,12 @@ const ROSTER: &[Plane] = &[
         key: "llm",
         on_disk: "llm",
         module: "units_llm",
-        linked_crate: "busbar-llm",
+        linked_crate: "busbar-plane-llm",
         register_tokens: &["LlmPlane"],
-        note: "the 1.5.5 plane; `plane-llm` carries the crate edge, the protocol DECLS and the \
-               plane decl together. Its pre-unification module is gone: what the root keeps is \
-               the plane-free node its units are handed to (`root/plane_node.rs`, on the `node` \
-               axis)",
+        note: "a DOOR plane since its retired engine crate was deleted (DEV-GREEN row 83, \
+               coordinator ruling 2026-10-18): served through its memory-ABI door (`plane-llm-door`, \
+               the `plane-door` row linking `busbar-plane-llm`), the one composition's driver and \
+               the data route driving it; its pre-unification module is gone",
     },
     // RE-POINTED TO THE DOOR SHAPE (P3 DEL-MCP, ARCHITECT 2026-10-05): the legacy engine
     // `busbar-mcp` is deleted and the plane is served through its memory-ABI door alone — the

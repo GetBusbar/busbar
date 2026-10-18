@@ -9,7 +9,7 @@
 //! `test-linked` table and its generated loop installs this entry, as it installs a plane's.
 
 #[path = "proto/tests/neutral_protocols.rs"]
-mod neutral_protocols;
+pub(crate) mod neutral_protocols;
 
 /// The neutral seam's entry in a consumer's `test-linked` table.
 pub static TEST_SEAM: crate::test_support::seam::TestPlaneSeam =

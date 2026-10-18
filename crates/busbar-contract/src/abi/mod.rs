@@ -468,7 +468,7 @@ pub unsafe fn write_out<T>(out: *mut MaybeUninit<T>, value: T) {
 
 /// A `System` wrapper that counts every allocation THIS THREAD makes, for THIS CRATE'S OWN TESTS
 /// only. Ported from the deleted `plane-abi-spike` (`git show 527bdbf96^:crates/plane-abi-spike/src/lib.rs`)
-/// verbatim in idiom (see also `busbar-llm`'s `CountingJemalloc` /
+/// verbatim in idiom (see also the retired engine crate's `CountingJemalloc` /
 /// `engine/tests/alloc_gate_tests.rs`, the same "counting allocator, exact count asserted" pattern
 /// applied to jemalloc instead of `System`): a `#[global_allocator]` in a LIBRARY is inherited by
 /// every binary that links it, so this is declared `#[cfg(test)]` ONLY — a dependent never gets it

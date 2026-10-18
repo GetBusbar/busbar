@@ -158,7 +158,6 @@ impl ConstructionGate {
     fn ids(cx: &Ctx) -> Result<Vec<String>, String> {
         let cfg = ConstructionGate::cfg(cx)?;
         let mut ids: Vec<String> = vec![
-            "one-attempt-seam",
             "request-path-fn-size",
             "no-uninstalled-seam",
             "neutral-no-dialect",
@@ -174,7 +173,6 @@ impl ConstructionGate {
             "one-teller-loop",
             "one-teller-loop:run_gauntlet",
             "no-response-escapes-audit",
-            "terminal-doors-in-audit-step",
             "one-pick-site",
             rules2::ROW_NO_UNIT_CRATES,
             "lean-core",
@@ -336,7 +334,6 @@ impl ConstructionGate {
             &'r (dyn Fn() -> Result<Vec<CRow>, String> + Sync),
         );
         let rules: &[Rule] = &[
-            ("one-attempt-seam", &|| rules::one_attempt_seam(&tree, &cfg)),
             ("request-path-fn-size", &|| {
                 rules::request_path_fn_size(&tree, &cfg)
             }),
@@ -358,9 +355,6 @@ impl ConstructionGate {
             ("one-teller-loop", &|| rules::one_teller_loop(&tree, &cfg)),
             ("no-response-escapes-audit", &|| {
                 rules::no_response_escapes_audit(&tree, &cfg)
-            }),
-            ("terminal-doors-in-audit-step", &|| {
-                rules::terminal_doors_in_audit_step(&tree, &cfg)
             }),
             ("one-pick-site", &|| rules::one_pick_site(&tree, &cfg)),
             (rules2::ROW_NO_UNIT_CRATES, &|| {

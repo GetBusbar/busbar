@@ -5,7 +5,7 @@
 //! `src/tests/key_expires_at_tests.rs` (the "fix the 38" pass after the A6/HostCtx
 //! dev-dependency-cycle cleanup): it builds a real `TestApp` with a lane/pool and drives a REAL HTTP
 //! round trip through `build_router`, which only routes `/pa/v1/messages` to the pool `pa` through
-//! the REAL `busbar_llm` plane's `build_runtime`/`viewer` — same reason as `endpoints_cross_plane.rs`
+//! the REAL the retired engine crate plane's `build_runtime`/`viewer` — same reason as `endpoints_cross_plane.rs`
 //! (see its header). What this test asserts (a key row's `expires_at` is unenforced; the token's own
 //! `exp` IS) is core's own governance/auth behaviour, not anything about the routed plane's dialect —
 //! the real

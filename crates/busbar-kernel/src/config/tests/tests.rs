@@ -1477,10 +1477,10 @@ fn error_class<'a>(p: &'a ResolvedProvider, code: &str) -> Option<&'a str> {
 
 // THE HOOK-PATH / FALLBACK-PATH EQUIVALENCE (1.6.0 pools stage-B) MOVED to
 // `crates/busbar/tests/config_cross_plane.rs::resolve_provider_hook_and_core_fallback_agree` — it calls the REAL
-// `busbar_llm::PLANE_HOOKS.resolve_provider` hook, which only type-checks against core's OWN
+// the retired engine crate's `PLANE_HOOKS.resolve_provider` hook, which only type-checks against core's OWN
 // `ProviderDef`/`ProviderDeploy` when there is ONE `busbar_kernel` in the graph (an integration-test
 // target), not the two copies busbar-kernel's own `#[cfg(test)]` dev-dependency back-edge onto
-// busbar-llm produces. See that file's header for the full rationale.
+// the retired engine crate produces. See that file's header for the full rationale.
 
 /// A provider credential is a SECRET REFERENCE, never an inline literal. A plain-string
 /// `api_key:` (the pre-1.0 inline-key shape) is REJECTED AT PARSE (SecretRef deserializes only
@@ -1656,7 +1656,7 @@ fn test_on_exhausted_rejects_unknown_and_legacy_string_form() {
     assert!(serde_yaml::from_str::<OnExhaustedCfg>("fallback_pols: x").is_err());
 }
 
-/// F25 row 518: rehomed from crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::
+/// F25 row 518: rehomed from the retired engine crate's src/engine/tests/on_exhausted_tests.rs::
 /// test_config_parsing_queue_unknown_inner_key_fails. `deny_unknown_fields` on the queue's inner
 /// body: a typo'd `max_millis` fails parsing instead of being ignored, while the same body spelled
 /// `max_ms` parses to the 250 ms queue.
@@ -1674,7 +1674,7 @@ fn test_config_parsing_queue_unknown_inner_key_fails() {
     assert_eq!(ok.to_runtime(), OnExhausted::Queue { max_ms: 250 });
 }
 
-/// F25 row 36: rehomed from crates/busbar-llm/src/engine/engine_tests/stream_deadline_tests.rs::
+/// F25 row 36: rehomed from the retired engine crate's src/engine/engine_tests/stream_deadline_tests.rs::
 /// the_total_deadline_the_stream_rides_defaults_to_five_minutes. The total deadline a proxied
 /// stream rides defaults to the value the binding names: 300 seconds.
 #[test]
@@ -4560,7 +4560,7 @@ fn a_section_a_plane_owns_beside_its_own_is_lifted_raw_for_it() {
 
 /// An `on_exhausted` mapping naming BOTH `fallback_pool` and `queue` is refused with an "exactly
 /// one of" error, never force-fit to one of them. Rehomes
-/// `crates/busbar-llm/src/engine/tests/on_exhausted_tests.rs::test_config_parsing_both_fallback_and_queue_conflicts`.
+/// the retired engine crate's `src/engine/tests/on_exhausted_tests.rs::test_config_parsing_both_fallback_and_queue_conflicts`.
 #[test]
 fn an_on_exhausted_naming_both_a_fallback_and_a_queue_is_refused() {
     let err =

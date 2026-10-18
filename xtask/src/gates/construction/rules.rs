@@ -48,47 +48,8 @@ fn join_or_none(items: &[String]) -> String {
 }
 
 // ── 1. one-attempt-seam ──────────────────────────────────────────────────────────────────────────
-
-pub fn one_attempt_seam(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
-    let c = cfg.rule("one-attempt-seam")?;
-    let allowed = need_str(c, "allowed_function", "one-attempt-seam")?;
-    let ceiling = need_int(c, "max_extra_sites", "one-attempt-seam")?;
-    let send = Regex::new(need_str(c, "send_verb", "one-attempt-seam")?)?;
-
-    let mut extra: Vec<String> = Vec::new();
-    let mut inside = 0usize;
-    for (rel, l) in tree.grep(&send, true, None) {
-        let fname = tree
-            .enclosing_fn(rel, l.no)
-            .map_or("<no enclosing fn>".to_string(), |f| f.name.clone());
-        if fname == allowed {
-            inside += 1;
-        } else {
-            extra.push(format!("{fname} at {rel}:{}", l.no));
-        }
-    }
-    let mut offenders = extra;
-    if inside == 0 {
-        offenders.push(format!(
-            "allowed function `{allowed}` performs no attempt at all (the seam moved; update \
-             qa/construction.toml or restore it)"
-        ));
-    }
-    let current = offenders.len() as i64;
-    let detail = format!(
-        "{current} attempt site(s) outside `{allowed}` (ceiling {ceiling}): {}",
-        join_or_none(&offenders)
-    );
-    Ok(vec![plain(
-        "one-attempt-seam",
-        current <= ceiling,
-        format!("exactly one function sends the upstream attempt (`{allowed}`)"),
-        detail,
-        current,
-        ceiling,
-        offenders,
-    )])
-}
+// STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): the rule's subject, the retired engine crate's send seam, left the tree with
+// the crate; its table is struck from qa/construction.toml in the same commit.
 
 // ── 2. request-path-fn-size ──────────────────────────────────────────────────────────────────────
 
@@ -1330,49 +1291,8 @@ pub fn no_response_escapes_audit(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, St
 }
 
 // ── 12. terminal-doors-in-audit-step ─────────────────────────────────────────────────────────────
-
-pub fn terminal_doors_in_audit_step(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
-    let c = cfg.rule("terminal-doors-in-audit-step")?;
-    let crate_name = need_str(c, "crate", "terminal-doors-in-audit-step")?;
-    let allowed_file = need_str(c, "allowed_file", "terminal-doors-in-audit-step")?;
-    let ceiling = need_int(c, "max_extra_sites", "terminal-doors-in-audit-step")?;
-    let prefix = format!("crates/{crate_name}/");
-    let files: Vec<String> = tree
-        .files
-        .keys()
-        .filter(|r| r.starts_with(prefix.as_str()))
-        .cloned()
-        .collect();
-
-    let mut offenders = Vec::new();
-    for door in c.list_of("doors") {
-        for (rel, l) in call_sites(tree, &door, Some(&files))? {
-            if rel == allowed_file {
-                continue;
-            }
-            offenders.push(format!("`{door}(` at {rel}:{}", l.no));
-        }
-    }
-    let current = offenders.len() as i64;
-    let detail = if current == 0 && !tree.files.contains_key(allowed_file) {
-        format!("{VACUOUS}no door is called in {crate_name} and {allowed_file} does not exist yet")
-    } else {
-        format!(
-            "{current} terminal-door call(s) in {crate_name} outside {allowed_file} (ceiling \
-             {ceiling}): {}",
-            join_or_none(&offenders)
-        )
-    };
-    Ok(vec![plain(
-        "terminal-doors-in-audit-step",
-        current <= ceiling,
-        "the plane's terminal doors are called only from its Audit step",
-        detail,
-        current,
-        ceiling,
-        offenders,
-    )])
-}
+// STRUCK (DEV-GREEN row 83, coordinator ruling 2026-10-18): the rule's subject, the retired engine crate's terminal doors and Audit step,
+// left the tree with the crate; its table is struck from qa/construction.toml in the same commit.
 
 // ── 13. one-pick-site ────────────────────────────────────────────────────────────────────────────
 

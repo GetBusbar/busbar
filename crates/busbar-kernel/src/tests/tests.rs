@@ -1692,7 +1692,7 @@ fn boot_refuses_a_provider_api_key_that_does_not_resolve() {
 /// path for a keyless local upstream rests on this building an App at all.
 ///
 /// What that lane then does on the wire — no auth header, and skipped by the prober — is asserted at
-/// the seams that decide it, in busbar-llm's `auth_style_tests` and `health` tests, rather than
+/// the seams that decide it, in the retired engine crate's `auth_style_tests` and `health` tests, rather than
 /// re-derived here through a lane accessor that exists only for the test.
 #[test]
 fn boot_starts_a_keyless_lane_declared_none() {
@@ -2896,7 +2896,7 @@ pub(crate) fn frozen_str(key: &str) -> String {
         .to_string()
 }
 
-/// F25 row 634: rehomed from crates/busbar-llm/src/engine/tests/wire_tests.rs::unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect.
+/// F25 row 634: rehomed from the retired engine crate's src/engine/tests/wire_tests.rs::unknown_ingress_error_envelope_is_core_s_own_and_names_no_dialect.
 /// Pins: an ingress name that resolves to no protocol is answered in the kernel's OWN envelope —
 /// the status as given (503), `application/json`, the agnostic `kind` stated VERBATIM
 /// (`overloaded`, never rewritten onto a dialect's vocabulary), the message verbatim — and with no
