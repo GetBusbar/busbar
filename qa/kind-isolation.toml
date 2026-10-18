@@ -393,18 +393,6 @@ crate = "busbar-kernel-egress"
 kind = "plane"
 
 [[cell]]
-crate = "busbar-llm"
-kind = "contract"
-
-[[cell]]
-crate = "busbar-llm"
-kind = "plane"
-
-[[cell]]
-crate = "busbar-llm"
-kind = "transport"
-
-[[cell]]
 crate = "busbar-plane-a2a"
 kind = "legacy"
 
@@ -597,16 +585,6 @@ drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an arch
 
 [[dep]]
 from    = "busbar"
-to      = "busbar-llm"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-llm: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar"
 to      = "busbar-plugin-loader"
 half    = "shipped"
 count   = "1"
@@ -655,31 +633,6 @@ verdict = "allowed"
 cite    = "BUSBAR-1.6.0.md THE DESIGN, §8 — a cleanliness crate reaches the kernel and the contract (ARCHITECTURE_ALLOWED cleanliness -> contract); ARCHITECT BOOT-LOOP ruling R2, 2026-09-27: the contract's route vocabulary is named from the crate that owns it, and the loader re-exports none of it."
 why     = "busbar-core-oauth2 names busbar-contract: declared normal in the shipped graph, 1 declaration(s) at this commit, replacing its busbar-plugin-loader edge (whose only use was the contract's RouteAuth/RouteMethod). The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-[[dep]]
-from    = "busbar-llm"
-to      = "busbar-contract"
-half    = "shipped"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §2 manifest allow-list — busbar-contract is the face every kind is written against."
-why     = "busbar-llm names busbar-contract: declared normal, optional in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-
-
-[[dep]]
-from    = "busbar"
-to      = "busbar-llm"
-half    = "test"
-count   = "1"
-verdict = "allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — the composition root is the one thing that names all three axes."
-why     = "busbar names busbar-llm: declared dev in the test graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
-
-
-
 
 [[dep]]
 from    = "busbar-core-oauth2"
@@ -772,25 +725,6 @@ why     = "busbar-kernel names busbar-plugin-loader: declared normal in the ship
 drain   = "none: BUSBAR-1.6.0.md grants this class. Draining it would be an architecture change and not a landing — what this row holds is the NUMBER, so a second declaration of a granted edge is still a landing that has to say why."
 
 [[dep]]
-from    = "busbar-llm"
-to      = "busbar-kernel"
-half    = "shipped"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-llm names busbar-kernel: declared normal in the shipped graph, 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-kernel dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
-
-
-
-
-
-# busbar-core-connector (formerly busbar-core-connsec) is the core-side connection-security seam carved out of busbar-kernel
-# (DECISIONS #40). It is `cleanliness` kind: BUSBAR-1.6.0.md:3780 (R2/#37) seats it in the same
-# tier as busbar-core-admin and busbar-core-oauth2 -- compiled in, one-way dependency on the kernel, off
-# the hot path, never a plugin -- and the kind table names it exactly. It reaches the contract and
-# the kernel, both granted cleanliness classes (ARCHITECTURE_ALLOWED).
-[[dep]]
 from    = "busbar-core-connector"
 to      = "busbar-contract"
 half    = "shipped"
@@ -830,16 +764,6 @@ cite    = "BUSBAR-1.6.0.md:3780 (R2/#37) and ARCHITECT ruling: cleanliness crate
 why     = "busbar-core-oauth2 names busbar-kernel: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
 drain   = "none: the architecture grants cleanliness -> kernel. What this row holds is the NUMBER; the dependency stays one-way, so the kernel naming busbar-core-oauth2 back would be an ungranted class."
 
-
-[[dep]]
-from    = "busbar-llm"
-to      = "busbar-kernel"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "BUSBAR-1.6.0.md THE DESIGN, §1 / §9 — no clause grants this pair. Measured debt surfaced by the W4.a/W4.b busbar-core -> busbar-kernel and busbar-substrate -> busbar-substrate-values absorption (1.6.0): the edge is real and shipped, and this row holds the number rather than passing it in silence."
-why     = "busbar-llm names busbar-kernel: declared dev in the test graph (dev-dependencies), 1 declaration(s) at this commit. The count is TODAY'S MEASUREMENT, exact in both directions — above it is the landing that grew the coupling, below it is stale slack that was not drained on the commit that drained the edge."
-drain   = "delete the busbar-kernel dependency from busbar-llm's Cargo.toml. A crate reaches another kind through the contract face it is written against, never by naming the crate; `cargo xtask gate kind-isolation` prints the declaration that states it."
 
 [[dep]]
 from    = "busbar"
@@ -1173,16 +1097,6 @@ drain   = "none: the architecture grants cleanliness -> kernel. What this row ho
 # verdict the one the architecture implies, and its drain. None is introduced here. The two A2A
 # rows (`busbar-core-admin -> busbar-a2a`, `busbar-a2a -> busbar-core-admin`) are STRUCK: FLIP-A2A
 # (#787) deleted busbar-a2a, so neither edge can be taken.
-
-[[dep]]
-from    = "busbar-core-admin"
-to      = "busbar-llm"
-half    = "test"
-count   = "1"
-verdict = "not-allowed"
-cite    = "A cleanliness crate's dependency is ONE-WAY onto the kernel (DECISIONS #5; BUSBAR-1.6.0.md:3780, R2/#37): `cleanliness -> legacy` is in neither ARCHITECTURE_ALLOWED nor ARCHITECTURE_TCB, so the verdict is the one the architecture implies; the edge is test-only and pre-existing at predev d7929b661d."
-why     = "busbar-core-admin names busbar-llm: declared dev in the test graph (features test-support) so the moved cross-plane drift test registers the plane decls and the self-enveloping admin-verb backing through its testkit. 1 declaration(s) at this commit, absent from every release build. The count is TODAY'S MEASUREMENT, exact in both directions."
-drain   = "dies with the retiring LLM engine: the drift test drives the llm plane crate's surface, and the dev-dependency is deleted."
 
 [[dep]]
 from    = "busbar-plugin-loader"
