@@ -79,8 +79,7 @@ busbar-kernel-breaker = { path = "../busbar-kernel-breaker" }
 # depends only on `busbar-contract`, so the edge is acyclic and kernel -> kernel, exactly as the
 # ledger, audit and breaker edges above.
 busbar-kernel-identity = { path = "../busbar-kernel-identity" }
-# The egress grant gate (authorization, Part 2 #36), re-exported as `busbar_kernel::egress_grant` for
-# the planes that gate their outbound credential on it.
+# The admin-API scope matrix the admin gate calls (authorization, Part 2 #36).
 busbar-kernel-scope = { path = "../busbar-kernel-scope" }
 # The folded `timing` module (former busbar-timing, OWNER Q70) calls `atexit(3)` for its process-exit
 # dump, and only under the non-default `timing` feature. The default build does not link it.
