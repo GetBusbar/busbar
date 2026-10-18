@@ -1141,7 +1141,7 @@ async fn test_role_bound_principal_governed_like_a_virtual_key() {
 /// Bearer on `authorization`, raw on `x-api-key` and on `x-goog-api-key`), the Bearer wins when it
 /// and `x-api-key` are both present (oracle cell `http.crosscut|bearer-and-x-api-key`), and a bad
 /// credential on any line is 1.5.5's 401. A present non-Bearer `authorization` (a SigV4 signature
-/// header) falls through to `x-api-key`, as the Bedrock SDK's key-carrying shape needs. RED before
+/// header) falls through to `x-api-key`, as a signed-request SDK's key-carrying shape needs. RED before
 /// the header auth states its lines: no line yields a credential, so every request is 401.
 #[tokio::test]
 async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
@@ -1182,7 +1182,7 @@ async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
         async move { req.send().await.unwrap().status().as_u16() }
     };
     let bearer = |t: &str| format!("Bearer {t}");
-    let sigv4 = "AWS4-HMAC-SHA256 Credential=AKIA0000000000000000/20240101/us-east-1/bedrock/\
+    let sigv4 = "AWS4-HMAC-SHA256 Credential=AKIA0000000000000000/20240101/us-east-1/svc/\
                  aws4_request, SignedHeaders=host, Signature=00"
         .to_string();
     let cases: Vec<CarrierCase> = vec![
