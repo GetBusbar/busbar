@@ -1185,7 +1185,7 @@ async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
     let sigv4 = "AWS4-HMAC-SHA256 Credential=AKIA0000000000000000/20240101/us-east-1/bedrock/\
                  aws4_request, SignedHeaders=host, Signature=00"
         .to_string();
-    let cases: Vec<(&str, Vec<(&'static str, String)>, u16)> = vec![
+    let cases: Vec<CarrierCase> = vec![
         ("bearer alone", vec![("authorization", bearer(&token))], 200),
         ("x-api-key alone", vec![("x-api-key", token.clone())], 200),
         (
@@ -1234,3 +1234,6 @@ async fn the_data_listener_reads_the_three_1_5_5_lines_in_1_5_5_order() {
     }
     server.abort();
 }
+
+/// One carrier case: what it shows, the request lines it carries, and the status it is answered.
+type CarrierCase = (&'static str, Vec<(&'static str, String)>, u16);
