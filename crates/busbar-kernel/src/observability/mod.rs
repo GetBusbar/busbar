@@ -136,5 +136,5 @@ pub fn init_logging(
 }
 
 #[cfg(test)]
-#[path = "tests/observability_tests.rs"]
+#[path = "../tests/observability_tests.rs"]
 mod tests;
