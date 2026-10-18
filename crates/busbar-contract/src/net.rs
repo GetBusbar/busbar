@@ -738,7 +738,7 @@ pub struct Authority<'a> {
 /// THE ONE AUTHORITY SPLIT: every caller that reads a URL's host, strips its userinfo or masks it
 /// reads the authority here, so no two of them can end it at different bytes.
 ///
-/// v1.5.5's reading (the signed-host derivation, `host_from_base`): an optional `scheme://`; the
+/// v1.5.5's reading (`host_from_base`): an optional `scheme://`; the
 /// authority ends at the first `/`, `?` or `#` and, when the scheme is absent or a
 /// [`UrlFamily::Web`] scheme, at the first `\` too (the WHATWG parser the dialling stacks use reads
 /// `\` as `/` there); the userinfo is everything before the authority's LAST `@`. So
@@ -756,10 +756,15 @@ pub fn split_authority(url: &str) -> Authority<'_> {
         }
         _ => (None, url),
     };
+    // The scheme lower-cased on the stack (no web scheme is longer than eight bytes), then read
+    // by [`UrlFamily::of`]: the one list of web schemes.
     let web = scheme.is_none_or(|s| {
-        ["http", "https", "ws", "wss"]
-            .iter()
-            .any(|w| s.eq_ignore_ascii_case(w))
+        let mut low = [0u8; 8];
+        s.len() <= low.len() && {
+            low[..s.len()].copy_from_slice(s.as_bytes());
+            low[..s.len()].make_ascii_lowercase();
+            std::str::from_utf8(&low[..s.len()]).is_ok_and(|l| UrlFamily::of(l) == UrlFamily::Web)
+        }
     });
     let end = if web {
         rest.find(['/', '?', '#', '\\'])
