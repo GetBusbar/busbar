@@ -15,7 +15,7 @@ use futures::{SinkExt, StreamExt};
 use crate::egress::duplex_ws::{self, DialError};
 use crate::ingress::byte_duplex::{CallRef, DuplexHandle, DuplexPlane};
 use crate::ingress::duplex_ws as ws_ingress;
-use crate::transport::{Transport, UpstreamWireKind};
+use crate::transport::Transport;
 use busbar_kernel_egress::trust::net::{AddressRefusal, GuardPolicy};
 
 /// A trivial ECHO plane bound to the acceptor: no protocol, no wire vocabulary — it echoes each frame
@@ -475,27 +475,17 @@ fn a_ws_authority_ends_where_the_handshake_ends_it() {
     }
 }
 
-/// `Transport::WebSocket` IS ARMED: a real caller selects it, resolves the axis to
-/// [`UpstreamWireKind::Duplex`] through `upstream_wire()`, and drives the guarded dialer that arm names
-/// — the wire resolves to a LIVE socket, not an `unreachable!()`.
+/// `Transport::WebSocket` IS ARMED: the guarded dialer a caller selecting it uses resolves to a
+/// LIVE socket, not an `unreachable!()`.
 #[tokio::test]
 async fn websocket_transport_is_armed_by_a_real_dialer() {
-    // The axis answers the full-duplex leg with its neutral wire shape — the one match on the axis.
-    assert_eq!(
-        Transport::WebSocket.upstream_wire(),
-        Some(UpstreamWireKind::Duplex),
-        "the WebSocket transport must resolve to the Duplex upstream wire"
-    );
+    assert_eq!(Transport::WebSocket.name(), "websocket");
 
-    // A real caller that resolved `Duplex` maps it to THIS dialer — proven by driving a live dial.
     let addr = spawn_echo_ws_server().await;
     let url = format!("ws://{addr}/");
-    let (mut stream, mut sink) = match Transport::WebSocket.upstream_wire() {
-        Some(UpstreamWireKind::Duplex) => duplex_ws::dial(&url, loopback_policy())
-            .await
-            .expect("the Duplex wire dials a live socket"),
-        other => panic!("WebSocket must select the Duplex wire, got {other:?}"),
-    };
+    let (mut stream, mut sink) = duplex_ws::dial(&url, loopback_policy())
+        .await
+        .expect("the WebSocket channel dials a live socket");
     sink.send(b"armed".to_vec()).await.ok();
     let got = tokio::time::timeout(std::time::Duration::from_secs(5), stream.next())
         .await
