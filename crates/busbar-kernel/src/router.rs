@@ -128,7 +128,10 @@ pub(crate) const AXUM_BODY_LIMIT_413_MARKER: &[u8] = b"length limit exceeded";
 /// unclaimed residual path. Before it had one, every oversized POST — mounted plane or not — was
 /// answered in the residual-default dialect's envelope.
 pub(crate) async fn reshape_body_limit_413(
-    axum::extract::State(handle): axum::extract::State<std::sync::Arc<state::AppHandle>>,
+    axum::extract::State((handle, core_routes)): axum::extract::State<(
+        std::sync::Arc<state::AppHandle>,
+        &'static crate::core_routes::CoreRouteTable,
+    )>,
     req: axum::http::Request<axum::body::Body>,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -142,7 +145,7 @@ pub(crate) async fn reshape_body_limit_413(
     }
     // The snapshot is taken AFTER the inner stack runs, so a config apply mid-request shapes the
     // answer with the mount table that is live when the answer is written.
-    reshape_oversized_413(&handle.snapshot().planes, &path, resp).await
+    reshape_oversized_413(&handle.snapshot().planes, Some(core_routes), &path, resp).await
 }
 
 /// Per-process count of requests that entered the middleware stack — the idleness signal for the
@@ -222,6 +225,7 @@ pub(crate) async fn server_timing(
 /// through verbatim (the body is buffered to inspect the sentinel, then re-attached unchanged).
 pub(crate) async fn reshape_oversized_413(
     planes: &crate::plane::PlaneDispatch,
+    refusals: Option<&crate::core_routes::CoreRouteTable>,
     path: &str,
     resp: axum::response::Response,
 ) -> axum::response::Response {
@@ -257,6 +261,12 @@ pub(crate) async fn reshape_oversized_413(
     {
         // A relayed upstream 413 (or any non-axum 413): pass through untouched, body re-attached.
         return axum::response::Response::from_parts(parts, axum::body::Body::from(bytes));
+    }
+    // A MOUNTED plane's body-limit 413 is worded by the plane (audit K4#2 (b)).
+    if let crate::plane::Ingress::Mounted(plane) = planes.ingress_of(path) {
+        if let Some(refuse) = refusals.and_then(|t| t.mounted_refusal(plane)) {
+            return refuse(busbar_contract::caps::ReasonCode::BodyTooLarge, path);
+        }
     }
     fallback_error_response(
         planes,
@@ -783,7 +793,7 @@ pub(crate) fn apply_common_layers(
         // envelope. Must wrap the `DefaultBodyLimit` layer above, so it is applied LAST (the last
         // `.layer()` is the outermost on the response path) and therefore sees that layer's 413.
         .layer(axum::middleware::from_fn_with_state(
-            handle.clone(),
+            (handle.clone(), core_routes),
             reshape_body_limit_413,
         ));
     // THE PLANE INGRESS BOUNDARY. Outside the auth layer, which in axum means it observes the

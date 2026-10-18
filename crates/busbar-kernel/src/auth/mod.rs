@@ -2002,8 +2002,15 @@ pub(crate) async fn auth_middleware(
     // authenticate): a `401` this middleware decides on it is rendered by the route's plane. `None`
     // on every residual data-plane path, which keeps its envelope byte for byte.
     // `(the route's plane rendering, the request target it renders for)`.
-    let door: Option<(busbar_kernel::plane_routes::PlaneRefuseFn, String)> =
-        core_routes.door_refusal(&path, req.method()).map(|refuse| {
+    // A MOUNTED path of a plane that matches none of its door routes is refused by that plane's
+    // own rendering too (audit K4#2 (b)): the kernel decides, the plane words it.
+    let door: Option<(busbar_kernel::plane_routes::PlaneRefuseFn, String)> = core_routes
+        .door_refusal(&path, req.method())
+        .or_else(|| match app.planes.ingress_of(&path) {
+            crate::plane::Ingress::Mounted(plane) => core_routes.mounted_refusal(plane),
+            crate::plane::Ingress::Fallback(_) => None,
+        })
+        .map(|refuse| {
             let target = req
                 .uri()
                 .path_and_query()

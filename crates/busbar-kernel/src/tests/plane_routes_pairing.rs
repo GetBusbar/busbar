@@ -25,6 +25,7 @@ fn refusal(path: &str, method: RouteMethod) -> PlaneRefusalSpec {
             path: path.to_string(),
             method,
         },
+        plane: String::new(),
         refuse: Arc::new(|_: busbar_contract::caps::ReasonCode, _: &str| PlaneResponse::default()),
     }
 }

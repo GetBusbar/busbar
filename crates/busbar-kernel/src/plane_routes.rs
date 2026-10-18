@@ -71,6 +71,10 @@ pub struct DoorRouteId {
 pub struct PlaneRefusalSpec {
     /// The door route it words the `401` of.
     pub route: DoorRouteId,
+    /// The key of the plane the route is a door of: a mounted path of that plane that is no door
+    /// route has its unit-less `401` and body-limit `413` worded by the same rendering (audit
+    /// K4#2 (b): the plane renders its refusal, the kernel never shapes its wire).
+    pub plane: String,
     /// Its plane's rendering.
     pub refuse: PlaneRefuseFn,
 }

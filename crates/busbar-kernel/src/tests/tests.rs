@@ -495,8 +495,13 @@ async fn test_oversized_body_413_reshaped_to_json_not_plain_text() {
     )
         .into_response();
 
-    let reshaped =
-        reshape_oversized_413(&residual_planes(), "/v1/chat/completions", axum_native_413).await;
+    let reshaped = reshape_oversized_413(
+        &residual_planes(),
+        None,
+        "/v1/chat/completions",
+        axum_native_413,
+    )
+    .await;
     assert_eq!(reshaped.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
     let ct = reshaped
         .headers()
@@ -531,7 +536,7 @@ async fn test_reshape_oversized_413_passthrough() {
 
     // Non-413: untouched.
     let ok = (axum::http::StatusCode::OK, "hello").into_response();
-    let passed = reshape_oversized_413(&residual_planes(), "/v1/chat/completions", ok).await;
+    let passed = reshape_oversized_413(&residual_planes(), None, "/v1/chat/completions", ok).await;
     assert_eq!(passed.status(), axum::http::StatusCode::OK);
     let bytes = passed.into_body().collect().await.unwrap().to_bytes();
     assert_eq!(
@@ -550,8 +555,13 @@ async fn test_reshape_oversized_413_passthrough() {
         r#"{"error":{"type":"request_too_large","message":"native"}}"#,
     )
         .into_response();
-    let passed =
-        reshape_oversized_413(&residual_planes(), "/v1/chat/completions", already_json).await;
+    let passed = reshape_oversized_413(
+        &residual_planes(),
+        None,
+        "/v1/chat/completions",
+        already_json,
+    )
+    .await;
     let bytes = passed.into_body().collect().await.unwrap().to_bytes();
     let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     assert_eq!(
@@ -584,8 +594,13 @@ async fn test_relayed_upstream_413_not_reshaped() {
     )
         .into_response();
 
-    let passed =
-        reshape_oversized_413(&residual_planes(), "/v1/chat/completions", upstream_413).await;
+    let passed = reshape_oversized_413(
+        &residual_planes(),
+        None,
+        "/v1/chat/completions",
+        upstream_413,
+    )
+    .await;
     assert_eq!(passed.status(), axum::http::StatusCode::PAYLOAD_TOO_LARGE);
     // Content-type must remain the upstream's text/plain — NOT rewritten to application/json.
     assert_eq!(
@@ -622,8 +637,13 @@ async fn test_axum_marker_413_is_reshaped_even_as_plain_text() {
     )
         .into_response();
 
-    let reshaped =
-        reshape_oversized_413(&residual_planes(), "/v1/chat/completions", axum_native_413).await;
+    let reshaped = reshape_oversized_413(
+        &residual_planes(),
+        None,
+        "/v1/chat/completions",
+        axum_native_413,
+    )
+    .await;
     assert_eq!(
         reshaped
             .headers()

@@ -122,6 +122,19 @@ impl CoreRouteTable {
             .map(|r| &r.refuse)
     }
 
+    /// The unit-less refusal of the plane keyed `plane`: the rendering of any one of its door routes
+    /// (a plane renders every unit-less refusal alike), or `None` when this router serves no door of
+    /// it. Read for a MOUNTED path of the plane that matches no door route (audit K4#2 (b)).
+    pub(crate) fn mounted_refusal(
+        &self,
+        plane: &str,
+    ) -> Option<&busbar_kernel::plane_routes::PlaneRefuseFn> {
+        self.door_refusals
+            .iter()
+            .find(|r| r.plane == plane)
+            .map(|r| &r.refuse)
+    }
+
     /// Every declared route, in mount order. The enumeration a router-walking test iterates so a
     /// newly mounted route JOINS the assertion instead of escaping it. Read by the plane-boundary
     /// ratchet; production never enumerates (it only ever asks about one path).
