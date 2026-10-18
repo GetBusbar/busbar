@@ -1828,7 +1828,7 @@ slot!(
             .iter()
             .map(|n| String::from_utf8_lossy(n.bytes()).into_owned())
             .collect();
-        let rendered = crate::exchange::catalog::render(path, &head, &names);
+        let rendered = crate::exchange::catalog::render_listing(path, &head, &names);
         let (mut reply, mut fields, mut arena) =
             (input.reply_buf(), input.fields_buf(), input.arena_buf());
         reply.extend(&rendered.body);
