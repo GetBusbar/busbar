@@ -2633,13 +2633,17 @@ fn rule_deps(cx: &Ctx, crates: &[CrateInfo], reg: &KindRegistry, half: Half, shi
     // THE STRUCTURAL REFUSALS, which no ledger row can waive: they are not about how MANY
     // declarations a pair has, they are about the pair existing at all.
     for c in crates {
-        let Some(from) = c.kind else { continue };
+        if c.kind.is_none() {
+            continue;
+        }
         for decl in half.decls(c) {
             let dep = decl.cite();
             let Some(target) = by_name.get(decl.pkg.as_str()) else {
                 continue;
             };
-            let Some(to) = target.kind else { continue };
+            if target.kind.is_none() {
+                continue;
+            }
 
             // THE PLANE FAMILY IS INSTANCE-SEALED. A plane's codec is a module of the plane crate
             // itself; any other instance is one plane reaching into another's vocabulary.
