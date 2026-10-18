@@ -12,12 +12,13 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use busbar_contract::caps::{DurableWrite, Grant, KernelSeal, StepName};
+use busbar_contract::caps::StepName;
+use busbar_kernel_wal::backend::MemoryFactory;
+use busbar_kernel_wal::record::{Record, FRAME_BYTES};
+use busbar_kernel_wal::ship::{ShipError, Shipper};
+use busbar_kernel_wal::wal::{Mode, Wal, STORE_BACKLOG_RECORDS};
 
-use crate::backend::MemoryFactory;
-use crate::record::{Record, FRAME_BYTES};
-use crate::ship::{ShipError, Shipper};
-use crate::wal::{Mode, Wal, STORE_BACKLOG_RECORDS};
+use super::fixtures::durability_token;
 
 /// A store that refuses while `down` is set and keeps everything it takes.
 #[derive(Clone, Default)]
@@ -39,10 +40,6 @@ impl Shipper<Record> for Store {
     }
 }
 
-fn token() -> Grant<DurableWrite> {
-    Grant::<DurableWrite>::mint(&KernelSeal::acquire_for_kernel())
-}
-
 /// RED before the fix: past the bound the oldest records left the queue and were only counted, so
 /// the store, once it answered, never received them.
 #[test]
@@ -57,10 +54,10 @@ fn an_on_disk_store_outage_longer_than_the_queue_still_reaches_the_store_whole()
         Box::new(store.clone()),
         Mode::OnDisk,
         1024 * FRAME_BYTES as u64,
-        crate::tests::fixtures::wall_ms,
+        super::fixtures::wall_ms,
     )
     .expect("a memory segment opens");
-    let token = token();
+    let token = durability_token();
 
     let mut written = 0u64;
     while written < STORE_BACKLOG_RECORDS as u64 + 3 * BATCH {

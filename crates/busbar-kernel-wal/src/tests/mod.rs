@@ -11,4 +11,3 @@ mod no_disk;
 mod quarantine_numbering;
 mod record_layout;
 mod segment_dir_sync;
-mod store_debt;

@@ -30,8 +30,5 @@ busbar-contract = { path = "../busbar-contract" }
 ring = { workspace = true }
 
 [dev-dependencies]
-# The contract's dev-only `test-seal`, so this crate's own batteries can mint the durability token a
-# commit takes (the same edge `busbar-kernel`'s batteries over this log take).
-busbar-contract = { path = "../busbar-contract", features = ["test-seal"] }
 # Independent RustCrypto witness: the tests check ring-computed digests against it byte for byte.
 sha2 = { workspace = true }
