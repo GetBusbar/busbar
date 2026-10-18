@@ -2338,7 +2338,8 @@ impl Conns for Connector {
                 door,
                 io: Arc::clone(&self.io),
             };
-            let conn = Connection::spawn(&via, &program, &env, dial).map_err(|f| map(&f))?;
+            // A one-shot line is no member: it carries no supervision key.
+            let conn = Connection::spawn(&via, &program, &env, dial, 0).map_err(|f| map(&f))?;
             // A program is a dialled, single-use line (no pool, no judgement): its one exchange
             // rides EXCHANGE_STREAM, as a freshly dialled connection's does.
             let line = Line::new(conn);

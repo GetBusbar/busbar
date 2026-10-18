@@ -3272,6 +3272,7 @@ struct bb_transport_AcceptOut {
 struct bb_transport_DialIn {
     bb_mech_InHead head;
     const bb_transport_Destination *dest;
+    uint64_t supervision_key;
 };
 
 /* `dial`'s `out`. */
@@ -5741,10 +5742,11 @@ BB_ASSERT(BB_ALIGNOF(bb_transport_AcceptOut) == 8, "bb_transport_AcceptOut: alig
 BB_ASSERT(offsetof(bb_transport_AcceptOut, head) == 0, "bb_transport_AcceptOut.head: offset");
 BB_ASSERT(offsetof(bb_transport_AcceptOut, conn) == 96, "bb_transport_AcceptOut.conn: offset");
 BB_ASSERT(offsetof(bb_transport_AcceptOut, peer_written) == 104, "bb_transport_AcceptOut.peer_written: offset");
-BB_ASSERT(sizeof(bb_transport_DialIn) == 96, "bb_transport_DialIn: size");
+BB_ASSERT(sizeof(bb_transport_DialIn) == 104, "bb_transport_DialIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_DialIn) == 8, "bb_transport_DialIn: alignment");
 BB_ASSERT(offsetof(bb_transport_DialIn, head) == 0, "bb_transport_DialIn.head: offset");
 BB_ASSERT(offsetof(bb_transport_DialIn, dest) == 88, "bb_transport_DialIn.dest: offset");
+BB_ASSERT(offsetof(bb_transport_DialIn, supervision_key) == 96, "bb_transport_DialIn.supervision_key: offset");
 BB_ASSERT(sizeof(bb_transport_ConnOut) == 104, "bb_transport_ConnOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_transport_ConnOut) == 8, "bb_transport_ConnOut: alignment");
 BB_ASSERT(offsetof(bb_transport_ConnOut, head) == 0, "bb_transport_ConnOut.head: offset");

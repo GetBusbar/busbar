@@ -882,6 +882,11 @@ pub struct DialIn {
     pub head: InHead,
     /// The destination.
     pub dest: *const Destination,
+    /// THE SUPERVISION KEY of the member this dial runs a program for, opaque: minted fresh for
+    /// each member and kept while the member's program is unchanged across re-declarations, so a
+    /// carrier that supervises what it runs resets its supervision exactly when the member is new.
+    /// `0` = no member identity (an authority dial, or a program no member runs). Appended.
+    pub supervision_key: u64,
 }
 
 /// `dial`'s `out`.

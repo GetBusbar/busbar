@@ -701,6 +701,7 @@ impl Connection {
         program: &busbar_contract::conn::Program,
         env: &crate::spawn_env::HeldEnv,
         dial: Dial,
+        supervision_key: u64,
     ) -> Result<Self, Failure> {
         if !program.command.starts_with('/') {
             return Err(Failure::Refused(
@@ -710,7 +711,7 @@ impl Connection {
         let carried = Carried::dial(
             Arc::clone(&via.door),
             Arc::clone(&via.io),
-            &Dest::Program(program.clone(), env.clone()),
+            &Dest::Program(program.clone(), env.clone(), supervision_key),
         )
         .map_err(dial_failure)?;
         let established = Established {
