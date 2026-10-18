@@ -199,12 +199,10 @@ plane-a2a = ["egress-seam", "egress-stream", "card-signing", "relay"]
 duplex-ws  = ["runtime"]
 # The neutral capability markers. `dispatch`/`relay` gate the `#[cfg]`/dead-code-allowance sites in
 # this crate's engine source; `runtime` arms the full-duplex WS transport (client handshake +
-# `axum/ws`). `dispatch` and `runtime` forward to the contract's same-named markers, which gate its
-# `Transport`/`UpstreamWireKind` wire-selection axis, so the two arm in lock-step; the contract has
-# no `relay` marker (the one it had was empty), so `relay` gates this crate's sites alone.
-dispatch = ["busbar-contract/dispatch"]
+# `axum/ws`). All three gate this crate's sites alone: the contract's channel axis is ungated.
+dispatch = []
 relay = []
-runtime = ["dep:tokio-tungstenite", "axum/ws", "busbar-contract/runtime"]
+runtime = ["dep:tokio-tungstenite", "axum/ws"]
 # ── NEUTRAL CAPABILITY MARKERS (plane-purity) ──────────────────────────────────────────────────────
 # The neutral crates must name NO plane token in source (enforced by the plane-purity
 # lint). These pure markers stand in for the `#[cfg(feature = "plane-mcp"/"plane-a2a")]` gates that
