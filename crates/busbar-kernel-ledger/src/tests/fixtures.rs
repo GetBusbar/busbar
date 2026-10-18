@@ -14,11 +14,3 @@ pub fn key(bucket: &str) -> TotalsKey {
     )
 }
 
-/// A key narrowed to a pool.
-pub fn pool_key(bucket: &str, pool: &str) -> TotalsKey {
-    TotalsKey::new(
-        BucketId::new(bucket),
-        CapDimension::NanoUnits,
-        BucketScope::Pool(pool.to_string()),
-    )
-}
