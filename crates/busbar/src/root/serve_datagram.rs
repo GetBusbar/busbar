@@ -364,6 +364,20 @@ pub(super) struct DatagramCaller {
     from: tokio::sync::Mutex<mpsc::Receiver<Vec<u8>>>,
     head: Mutex<Option<oneshot::Sender<(u32, HeadFields)>>>,
     stated: std::sync::atomic::AtomicU32,
+    /// The session's opening piece was read: the association's open, one empty piece before the
+    /// caller's first message, so the plane crosses the session once before the open is answered
+    /// (the open waits for the head that crossing states).
+    opened: std::sync::atomic::AtomicBool,
+}
+
+/// THE PLANE'S HEAD for a datagram session's open: the head the plane states on its session's first
+/// crossing, waited for within `wait`; `None` when it states none in time (or the session ended
+/// without one).
+pub(super) async fn plane_head(
+    head: oneshot::Receiver<(u32, HeadFields)>,
+    wait: std::time::Duration,
+) -> Option<(u32, HeadFields)> {
+    tokio::time::timeout(wait, head).await.ok()?.ok()
 }
 
 impl CallerEnd for DatagramCaller {
@@ -386,6 +400,9 @@ impl CallerEnd for DatagramCaller {
 
 impl SessionCaller for DatagramCaller {
     async fn read(&self) -> Option<Vec<u8>> {
+        if !self.opened.swap(true, std::sync::atomic::Ordering::AcqRel) {
+            return Some(Vec::new());
+        }
         self.from.lock().await.recv().await
     }
 }
@@ -457,6 +474,7 @@ impl Opened {
                 from: tokio::sync::Mutex::new(from),
                 head: Mutex::new(Some(head_tx)),
                 stated: std::sync::atomic::AtomicU32::new(0),
+                opened: std::sync::atomic::AtomicBool::new(false),
             },
             head,
             joining: Joining {

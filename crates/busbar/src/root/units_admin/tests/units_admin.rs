@@ -1101,6 +1101,7 @@ fn the_admin_listener_is_exempt_from_the_cap_the_data_listener_is_refused_at() {
             &node.kernel,
             &node.units.arrival_door,
             PrincipalId::new("caller"),
+            node.kernel.next_call(),
         ),
     };
     let Err(refused) = node.inflight.insert(entering) else {

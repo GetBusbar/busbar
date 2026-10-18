@@ -363,7 +363,12 @@ fn production_units_is_the_kernels_units_trait() {
 fn the_arrival_door_opens_a_hold_that_reserves_nothing() {
     let kernel = new_kernel();
     let door = AdmissionDoor;
-    let hold = busbar_kernel::inflight::arrival_hold(&kernel, &door, PrincipalId::new("k-7"));
+    let hold = busbar_kernel::inflight::arrival_hold(
+        &kernel,
+        &door,
+        PrincipalId::new("k-7"),
+        kernel.next_call(),
+    );
     assert_eq!(hold.reserved(), 0);
     assert_eq!(hold.principal(), &PrincipalId::new("k-7"));
 }

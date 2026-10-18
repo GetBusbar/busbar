@@ -359,7 +359,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=648b6683d0b9274c02a20f6da17146ba1b85f74c#648b6683d0b9274c02a20f6da17146ba1b85f74c"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=3149dd7ef8509fd1fcbed9369c9684c179b99b8c#3149dd7ef8509fd1fcbed9369c9684c179b99b8c"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -368,7 +368,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-admin-tokens-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=648b6683d0b9274c02a20f6da17146ba1b85f74c#648b6683d0b9274c02a20f6da17146ba1b85f74c"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=3149dd7ef8509fd1fcbed9369c9684c179b99b8c#3149dd7ef8509fd1fcbed9369c9684c179b99b8c"
 dependencies = [
  "busbar-auth-admin-tokens",
  "busbar-contract",
@@ -941,7 +941,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-grpc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=a9c1100506ea15016c71388a825de76a6a9a80bc#a9c1100506ea15016c71388a825de76a6a9a80bc"
+source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=a17bb27572fded6618407360152924f8f97c4f95#a17bb27572fded6618407360152924f8f97c4f95"
 dependencies = [
  "busbar-contract",
  "bytes",
@@ -1413,7 +1413,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3159,7 +3159,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3646,7 +3646,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4256,7 +4256,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
