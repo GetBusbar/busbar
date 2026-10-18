@@ -8,7 +8,7 @@
 //! contract's (`busbar_contract::protocol`). Moved verbatim from `busbar-substrate-values` when that
 //! crate was deleted (SD-8); `proto/registry.rs` keeps only the population glue core owns.
 
-use busbar_contract::protocol::{ProtocolDecl, StreamTranslator};
+use busbar_contract::protocol::ProtocolDecl;
 
 // ── TEST-SUPPORT PROTOCOL REGISTRATION (the neutral seam) ──────────────────────────────────────────
 // A protocol crate's test-kit registers its `&'static ProtocolDecl` here — a SUBSTRATE type — exactly
@@ -468,40 +468,6 @@ pub fn known_protocols() -> &'static [&'static str] {
 // byte-identical. They read the SAME singleton `registry()` returns, so — exactly as `known_protocols`
 // already does — under core's own test binary they observe the core-test built-in tail once any core
 // accessor has seeded the substrate hook (idempotent, self-healing).
-
-// ── THE NEUTRAL STREAMING-TRANSLATOR FACTORY — RELOCATED DOWN from `busbar_kernel::proto` ────────────
-// The plugin-provided fn-ptr factory that builds a concrete stream translator for an ingress→egress
-// pair, and the single construction seam both forward paths call. Moved onto the neutral substrate so
-// the the retired engine crate plugin installs its factory and drives the seam through the neutral ABI rather than
-// reaching BACK into `busbar-core`. The `OnceLock` moving DOWN to the single-compiled substrate is a
-// strict improvement for the "one instance" invariant (core is dual-compilable). `busbar-core` keeps
-// its `#[cfg(test)]` fixture-routing arm (its own test binary routes straight to the netted concrete
-// factory) and re-exports the production arm + the installer at their historical paths.
-
-/// The plugin-provided factory that builds a concrete stream translator for an ingress→egress pair.
-type StreamTranslatorFactory = fn(&str, &str, bool) -> Option<Box<dyn StreamTranslator>>;
-
-static STREAM_TRANSLATOR_FACTORY: std::sync::OnceLock<StreamTranslatorFactory> =
-    std::sync::OnceLock::new();
-
-/// Install the plugin's streaming-translator factory. Idempotent-by-first-write (the composition root
-/// registers once); a second install is ignored so a test harness cannot clobber a live pointer.
-pub fn install_stream_translator_factory(f: StreamTranslatorFactory) {
-    let _ = STREAM_TRANSLATOR_FACTORY.set(f);
-}
-
-/// THE SINGLE streaming-translator construction seam the forward paths call. Neutral in and out. It
-/// routes to the installed pointer (returns `None` — legacy raw passthrough — when no plugin installed
-/// one, e.g. a core-only build with no dialects).
-pub fn new_stream_translator(
-    ingress: &str,
-    egress: &str,
-    is_sse: bool,
-) -> Option<Box<dyn StreamTranslator>> {
-    STREAM_TRANSLATOR_FACTORY
-        .get()
-        .and_then(|f| f(ingress, egress, is_sse))
-}
 
 /// The set of streaming `Content-Type` values across every declared protocol — a registry aggregate
 /// folded once at boot from `ProtocolDecl::streaming_content_type`.
