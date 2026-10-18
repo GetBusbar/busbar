@@ -86,10 +86,12 @@ impl AdminNode {
             key,
         };
 
+        let call = self.kernel.next_call();
         let arrival = busbar_kernel::inflight::arrival_hold(
             &self.kernel,
             &self.units.arrival_door,
             PrincipalId::new("admin"),
+            call,
         );
         let entered = self.inflight.insert(busbar_kernel::inflight::Enter {
             key,
@@ -107,7 +109,7 @@ impl AdminNode {
             Err(_refused) => unavailable_answer(),
             Ok(slot) => {
                 let ctx = UnitCtx {
-                    call: busbar_contract::caps::CallId::UNBOUND,
+                    call,
                     key,
                     origin: busbar_contract::caps::OriginKind::Client,
                     session: None,

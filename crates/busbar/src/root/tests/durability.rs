@@ -1653,7 +1653,7 @@ fn a_figures_era_hold_decodes_read_only_and_the_book_equals_the_chain() {
         .iter()
         .find_map(HoldOpened::from_record)
         .expect("the figures-era hold reads back");
-    let Held::FiguresEra(era) = hold.held else {
+    let Held::FiguresEra(era) = &hold.held else {
         panic!("a figures-era record decoded as {:?}", hold.held);
     };
     assert_eq!(era.nanos(), 5_000, "the old figure reads exactly");
