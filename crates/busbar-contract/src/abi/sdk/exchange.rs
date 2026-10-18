@@ -110,6 +110,8 @@ pub struct Exchange {
     observe: bool,
     /// What they said, once read: kept across replays, which answer without writing them again.
     observed: Option<Observed>,
+    /// The reply's head ends the reads; its body is never read ([`Exchange::head_only`]).
+    head_only: bool,
     /// The stream the exchange established, once it has: what a caller that gives the exchange up
     /// closes on the host ([`Exchange::stream`]).
     stream: Option<u64>,
@@ -143,6 +145,7 @@ impl Exchange {
             member: None,
             observe: false,
             observed: None,
+            head_only: false,
             stream: None,
         }
     }
@@ -171,7 +174,8 @@ impl Exchange {
     /// delivery on the response head and dropped the body unread (THE DESIGN §2, a port keeps
     /// 1.5.5's surface).
     #[must_use]
-    pub fn head_only(self) -> Self {
+    pub fn head_only(mut self) -> Self {
+        self.head_only = true;
         self
     }
 
@@ -332,7 +336,8 @@ fn send(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Answer<()> 
     }
 }
 
-/// Send, then read the reply to its terminal piece into `state`.
+/// Send, then read the reply to its terminal piece into `state` (for a head-only exchange, its
+/// head or ack).
 fn send_and_read(
     c: &mut Connector<'_>,
     state: &mut Exchange,
@@ -383,8 +388,14 @@ fn send_and_read(
         }
         // The terminal piece ends the reads, on the entry that first saw it and on every replay
         // of that read. A replayed earlier read never does: the piece descriptor is the op's one
-        // parked slot, rewritten by each replayed read: only `ended` marks the terminal one.
-        if fresh && matches!(p.kind, REPLY_ACK | REPLY_END) {
+        // parked slot, rewritten by each replayed read: only `ended` marks the terminal one. A
+        // head-only exchange's head is its terminal piece, by the same bookkeeping.
+        let terminal = match p.kind {
+            REPLY_ACK | REPLY_END => true,
+            REPLY_HEAD => state.head_only,
+            _ => false,
+        };
+        if fresh && terminal {
             state.ended = Some(this);
         }
         if state.ended == Some(this) {
@@ -419,7 +430,8 @@ fn observe(c: &mut Connector<'_>, state: &mut Exchange, stream: u64) -> Poll<()>
 /// ONE REQUEST, ONE REPLY over the declared framed need `need` to `target` (`None` = the need's
 /// `target_from`): establish, send the [`Exchange::request`] (head, body, end), read the reply to
 /// its terminal piece, close. PENDING until it completes; READY with the reply's code, reason,
-/// fields and body, or why it failed. Bounded by the op's deadline and by [`REPLY_MAX`].
+/// fields and body, or why it failed. Bounded by the op's deadline and by [`REPLY_MAX`]. A
+/// [`Exchange::head_only`] exchange ends at the head and answers an empty body.
 pub fn exchange(
     c: &mut Connector<'_>,
     state: &mut Exchange,
