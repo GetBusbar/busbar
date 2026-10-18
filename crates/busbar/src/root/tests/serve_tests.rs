@@ -4483,6 +4483,42 @@ async fn the_pools_door_attributes_spend_and_a_spent_budget_refuses() {
     assert_eq!(far.served(), 1, "the refused unit dialled nothing");
 }
 
+/// A FAILED UNIT'S FEE COMES BACK AND ITS ADMISSION SLOT DOES NOT (legacy
+/// `chain::the_refund_is_the_terminal_doors_and_it_lands_on_the_ledger`, item 366): the key's group
+/// charges a flat 1-cent fee per request; a unit whose far end answers 503 keeps its admitted
+/// request on the ledger, while the fee base the admission charged is refunded (spend 0) and
+/// nothing is billable.
+/// RED: the fee kept for an answer that was never delivered, or the admission slot refunded too.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_door_refunds_a_failed_units_fee_and_keeps_its_admission() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-failed-fee-refund";
+    let _published = Withdrawn(instance);
+    let down = seat_far_end(503, OVERLOADED).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(down.port, 1)],
+            budget_cents: Some(5),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_ne!(rig.chat().await.0, 200, "the far end fails");
+    // The refund lands when the unit ends, after its admission is on the ledger.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut ledger = rig.ledger_after(0).await;
+    while (ledger.0 == 0 || ledger.1 != 0) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        ledger = rig.ledger_after(0).await;
+    }
+    let (requests, spend, _, billable) = ledger;
+    assert_eq!(requests, 1, "the admission slot is never refunded");
+    assert_eq!(spend, 0, "the fee base the admission charged is refunded");
+    assert_eq!(billable, 0, "nothing billable");
+}
+
 /// AUDIT-CHAIN: every unit the door serves seals exactly one record on the node's chain.
 #[cfg(linked_driver_proofs)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -8086,6 +8122,54 @@ mod pools_door_money {
             ],
             "one line per streamed tier"
         );
+    }
+
+    /// A 2XX STREAM IS SEALED WITH THE END ITS TAP SAW, NOT THE END ITS STATUS LINE CLAIMS (legacy
+    /// `chain::a_stream_audited_at_its_end_seals_the_class_the_tap_reported`): both answers go out
+    /// under a 200 status line, yet a stream cut after its first frame is sealed `Partial` and a
+    /// transfer that failed before its first byte is sealed `Error`; neither is sealed `Complete`.
+    /// RED: a record sealed from the status line (`Complete`) for an answer that never completed.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_pools_door_seals_a_2xx_stream_with_the_end_its_tap_saw() {
+        for (instance, pieces, finish) in [
+            (
+                "rehome-sealed-end-cut",
+                vec![(0, frame(FRAMES[0])), (50, Vec::new())],
+                busbar_kernel_audit::FinishClass::Partial,
+            ),
+            (
+                "rehome-sealed-end-failed",
+                vec![(50, Vec::new())],
+                busbar_kernel_audit::FinishClass::Error,
+            ),
+        ] {
+            let _one = ONE_PUBLISHER.lock().await;
+            let _published = Withdrawn(instance);
+            let far = far_end_scripted(SeatScript {
+                head: STREAM_HEAD.to_string(),
+                pieces,
+                finish: None,
+            })
+            .await;
+            let rig = rig(
+                instance,
+                RigOpts {
+                    members: &[(far.port, 1)],
+                    ..RigOpts::default()
+                },
+            )
+            .await;
+            let (status, _, _) = rig
+                .send("POST", "/v1/chat/completions", Some(streamed_chat()))
+                .await;
+            assert_eq!(status, 200, "{instance}: served on 2xx headers");
+            let record = sealed_as(&rig, finish).await;
+            assert_ne!(
+                record.outcome.finish,
+                busbar_kernel_audit::FinishClass::Complete,
+                "{instance}"
+            );
+        }
     }
 }
 
