@@ -48,7 +48,7 @@
 //! everywhere else on this seam, a write's `Ok(())` is not evidence of durability: the engine finds
 //! out what its backend kept by READING IT BACK at boot.
 
-use crate::plane::store::{decode, encode, PlaneStore, KIND_DEMOTION, KIND_TRUST_DECISION};
+use crate::store::plane_view::{decode, encode, PlaneStore, KIND_DEMOTION, KIND_TRUST_DECISION};
 use crate::trust::book::RulingRow;
 use busbar_contract::records::{PlaneDisposition, PlaneRecord, PlaneSelector, RecordStoreResult};
 use std::sync::{Arc, Mutex};

@@ -44,7 +44,11 @@
 //! bytes to make a failing test pass: a change here is a change to a persisted digest, and the test
 //! failing is the tripwire working.
 
-use crate::plane::store::{decode, PlaneStore, KIND_AUDIT, KIND_CALL};
+use crate::store::plane_view::{decode, PlaneStore, KIND_AUDIT};
+
+/// A plane's per-call log kind, as the recorded golden chain carries it. The kernel declares no
+/// plane's kinds; this fixture names the tag its bytes were written under.
+const KIND_CALL: &str = "call";
 use busbar_contract::records::{AuditRecord, PlaneRecordRef, PlaneSelector, RecordStoreResult};
 
 /// The one field this golden reads back off a frozen `call`-stream body — the tail digest. Decoded
