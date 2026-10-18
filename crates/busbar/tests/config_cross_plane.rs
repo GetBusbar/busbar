@@ -308,6 +308,30 @@ tools:
     );
 }
 
+/// A MALFORMED `pools:` UNDER ANY PLANE'S SECTION REFUSES BOOT, as 1.5.5 refused a malformed pool:
+/// the reserved sub-key is read for every declared section alike (R1#5, Law 1), and the refusal
+/// names where it was written.
+#[test]
+fn a_malformed_pools_block_under_any_plane_section_is_refused() {
+    register_planes();
+    for section in ["tools", "agents"] {
+        for pools in [
+            "[a, b]",
+            "{ p: { members: not-a-list } }",
+            "{ p: { members: [a, b], unknown_knob: 1 } }",
+        ] {
+            let deploy = deploy_yaml(&format!("{section}:\n  pools: {pools}\n"));
+            let errs = resolve(&deploy, &HashMap::new())
+                .expect_err("a malformed pools block must refuse boot");
+            assert!(
+                errs.iter()
+                    .any(|e| e.starts_with(&format!("{section}.pools: "))),
+                "`{section}.pools: {pools}` is refused naming where it was written: {errs:?}"
+            );
+        }
+    }
+}
+
 /// A one-member pool changes nothing, so writing one is a mistake and is named as one.
 #[test]
 fn a_failover_pool_needs_two_members() {
