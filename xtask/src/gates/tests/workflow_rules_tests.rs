@@ -230,3 +230,45 @@ fn gateway_expressions_and_github_hosted_images_are_allowed() {
         assert!(r17(&text).is_empty(), "{ok} must be allowed");
     }
 }
+
+/// R14's one tag-pinned call accepts exactly itself: the named path at the named tag, stating the
+/// recorded sha. Every other form of that path is a finding; any other path is the ordinary rule's.
+#[test]
+fn r14_reads_the_named_tag_pinned_call_exactly() {
+    const PATH: &str =
+        "slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml";
+    const SHA: &str = "# f7dd8c54c2067bafc12ca7a55595d5ee9b75204a";
+    assert_eq!(
+        tag_pinned_call(&format!("{PATH}@v2.1.0"), Some(SHA)),
+        Some(None)
+    );
+    assert!(matches!(
+        tag_pinned_call(&format!("{PATH}@v2.0.0"), Some(SHA)),
+        Some(Some(_))
+    ));
+    assert!(matches!(
+        tag_pinned_call(
+            &format!("{PATH}@v2.1.0"),
+            Some("# 0000000000000000000000000000000000000000")
+        ),
+        Some(Some(_))
+    ));
+    assert!(matches!(
+        tag_pinned_call(&format!("{PATH}@v2.1.0"), None),
+        Some(Some(_))
+    ));
+    assert!(matches!(
+        tag_pinned_call(
+            &format!("{PATH}@f7dd8c54c2067bafc12ca7a55595d5ee9b75204a"),
+            Some("# v2.1.0")
+        ),
+        Some(Some(_))
+    ));
+    assert_eq!(
+        tag_pinned_call(
+            "slsa-framework/slsa-github-generator/.github/workflows/generator_container_slsa3.yml@v2.1.0",
+            Some(SHA)
+        ),
+        None
+    );
+}
