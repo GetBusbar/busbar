@@ -54,24 +54,22 @@ pub fn one_attempt_seam(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
     let allowed = need_str(c, "allowed_function", "one-attempt-seam")?;
     let ceiling = need_int(c, "max_extra_sites", "one-attempt-seam")?;
     let send = Regex::new(need_str(c, "send_verb", "one-attempt-seam")?)?;
-    // The crates whose code drives a unit's walk; every file when none is named.
-    let roots = c.list_of("roots");
-    let files: Option<Vec<String>> = (!roots.is_empty()).then(|| {
-        tree.files
-            .keys()
-            .filter(|rel| roots.iter().any(|root| rel.starts_with(root.as_str())))
-            .cloned()
-            .collect()
-    });
+    // THE NAMED KNOWN SITES (`file::fn`): a send that is not a unit's attempt, each with its cite in
+    // the ceilings file. Measured, never assumed: a known site that sends nothing is RED.
+    let known = c.list_of("known_sites");
+    let mut known_seen: Vec<String> = Vec::new();
 
     let mut extra: Vec<String> = Vec::new();
     let mut inside = 0usize;
-    for (rel, l) in tree.grep(&send, true, files.as_deref()) {
+    for (rel, l) in tree.grep(&send, true, None) {
         let fname = tree
             .enclosing_fn(rel, l.no)
             .map_or("<no enclosing fn>".to_string(), |f| f.name.clone());
+        let site = format!("{rel}::{fname}");
         if fname == allowed {
             inside += 1;
+        } else if known.contains(&site) {
+            known_seen.push(site);
         } else {
             extra.push(format!("{fname} at {rel}:{}", l.no));
         }
@@ -83,10 +81,22 @@ pub fn one_attempt_seam(tree: &Tree, cfg: &Cfg) -> Result<Vec<CRow>, String> {
              qa/construction.toml or restore it)"
         ));
     }
+    for site in &known {
+        if !known_seen.contains(site) {
+            offenders.push(format!(
+                "known site `{site}` opens nothing any more (strike it from known_sites)"
+            ));
+        }
+    }
+    known_seen.sort();
+    known_seen.dedup();
     let current = offenders.len() as i64;
     let detail = format!(
-        "{current} attempt site(s) outside `{allowed}` (ceiling {ceiling}): {}",
-        join_or_none(&offenders)
+        "{current} attempt site(s) outside `{allowed}` (ceiling {ceiling}): {}; known site(s) \
+         measured: {} ({})",
+        join_or_none(&offenders),
+        known_seen.len(),
+        join_or_none(&known_seen)
     );
     Ok(vec![plain(
         "one-attempt-seam",
