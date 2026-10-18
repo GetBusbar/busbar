@@ -10,7 +10,7 @@ deadline: 6h
 # joins on.move once the static busbar-oracle judges (busbar-release #378) are pinned, since the
 # glibc-linked ones cannot run on the backends; until then it is manual here and absolute on .ci/dev.yaml.
 on:
-  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated]
+  move: [preflight, gates, clippy, compile, test, doctest, deletion-matrix, deny, test-gated, xtask-selftest]
   manual: [oracle]
 env:
   RUSTFLAGS: "-D warnings"
@@ -230,9 +230,10 @@ checks:
       plugin busbar-secret-env busbar-secret-env-plugin optional
       plugin busbar-plane-decisions busbar-plane-decisions-plugin optional
       cargo build --workspace --locked
-      # The hop's nextest limits (busbar-release build_test.rs NEXTEST_TOOL_CONFIG): the two
-      # whole-battery selftests get twelve minutes and start first.
-      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' '' '[[profile.default.overrides]]' 'filter = "test(selftest_runs_every_registered_gates_red_proof) | test(list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree)"' 'slow-timeout = { period = "60s", terminate-after = 12 }' 'priority = 100' > "$cfg"
+      # The hop's nextest limits (busbar-release build_test.rs NEXTEST_TOOL_CONFIG): the
+      # whole-registry gate run gets twelve minutes and starts first. Every gate's RED proof runs in
+      # its own check, xtask-selftest, one process per gate.
+      cfg=$(mktemp); printf '%s\n' '[profile.default]' 'slow-timeout = { period = "60s", terminate-after = 5 }' '' '[[profile.default.overrides]]' 'filter = "test(list_and_a_named_gate_run_and_all_reaches_a_verdict_over_the_real_tree)"' 'slow-timeout = { period = "60s", terminate-after = 12 }' 'priority = 100' > "$cfg"
       # $MODERNCI_ONLY: ModernCI re-runs one suspect test alone (a flake check).
       cargo nextest run --workspace --locked --no-fail-fast --tool-config-file "modernci:$cfg" ${MODERNCI_ONLY:+-E "$MODERNCI_ONLY"}
     scope: affected
@@ -331,3 +332,25 @@ checks:
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
     needs: [gates]
+    # The candidate recording, handed to any check that `needs: [oracle]` (content-addressed, laid
+    # into the needing check's slot on any machine).
+    outputs: [target/oracle/recordings]
+  xtask-selftest:
+    # EVERY REGISTERED GATE'S RED PROOF (xtask/src/gates/mod.rs: this check is the ONE place every
+    # gate's cases are driven; `cargo test -p xtask` pins the dispatcher with one gate's). One
+    # `xtask selftest <gate>` process per gate, so no two batteries overlap while they are measured;
+    # a gate whose proof cannot go red, or that has none, fails the check by name.
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      set -uo pipefail
+      gates=$(cargo xtask gate --list | awk 'NF { print $1 }' | awk '!seen[$0]++')
+      [ -n "$gates" ] || { echo "xtask gate --list named no gate"; exit 1; }
+      red=""
+      for g in $gates; do
+        echo "== cargo xtask selftest $g"
+        cargo xtask selftest "$g" || red="$red $g"
+      done
+      [ -z "$red" ] || { echo "red proofs that did not prove RED:$red"; exit 1; }
+      echo "every registered gate's red proof went RED as declared"
+    needs: [gates]
+    requires: [cc, git-history]

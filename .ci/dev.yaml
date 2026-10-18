@@ -161,7 +161,7 @@ env:
       _bbt_ensure "$_bbt_t" || return 1
     done
 on:
-  move: [gates, oracle, conformance, verify-done, q128-audit, test-gated]
+  move: [gates, oracle, conformance, verify-done, q128-audit, test-gated, xtask-selftest]
 checks:
   gates:
     # The rung re-runs every registered gate on the commit, ABSOLUTE (no `baseline`: every row
@@ -200,6 +200,10 @@ checks:
       ./bin/oracle record --bin target/release/busbar --plane all --out target/oracle/recordings/candidate
       ./bin/oracle replay --golden testing/shadow-oracle/golden/1.5.5 --candidate target/oracle/recordings/candidate --out target/oracle/reports/dev --strict
     needs: [gates]
+    # The candidate recording is handed to the checks that judge it (conformance's llm rigs, by
+    # `needs: [oracle]`): content-addressed and laid into the needing check's slot on any machine,
+    # a reused oracle result included. No check leans on a file another left on a host.
+    outputs: [target/oracle/recordings]
   conformance:
     # Every registered suite recorded on this commit (the llm rigs judge the oracle's candidate
     # recording), then every MUST a fresh pass for it. A not-run suite denies.
@@ -275,9 +279,30 @@ checks:
     needs: [oracle]
     # The self-hosted OIDF suite runs in the backend's docker; ModernCI places this check only on a
     # backend probed to have all of these, and says which one is missing otherwise.
-    requires: [cc, docker, docker-compose, docker-amd64, python3-venv, curl, git]
+    # playwright-deps: the browser libraries webrtc-browser's chromium and firefox load (a backend
+    # capability; until a backend has it the check waits and says why, never runs without it).
+    requires: [cc, docker, docker-compose, docker-amd64, playwright-deps, python3-venv, curl, git]
     # The rig logs, fetched with `modernci call artifact --check conformance` (a red suite's reason).
     outputs: [target/conformance-record]
+  xtask-selftest:
+    # EVERY REGISTERED GATE'S RED PROOF (xtask/src/gates/mod.rs: this check is the ONE place every
+    # gate's cases are driven; `cargo test -p xtask` pins the dispatcher with one gate's). One
+    # `xtask selftest <gate>` process per gate, so no two batteries overlap while they are measured;
+    # a gate whose proof cannot go red, or that has none, fails the check by name.
+    run: |
+      if [ -f .ci/tool.sh ]; then . .ci/tool.sh rust; else _bbt_run() { eval "$BUSBAR_TOOL_SH"; }; _bbt_run rust; fi || exit 1
+      set -uo pipefail
+      gates=$(cargo xtask gate --list | awk 'NF { print $1 }' | awk '!seen[$0]++')
+      [ -n "$gates" ] || { echo "xtask gate --list named no gate"; exit 1; }
+      red=""
+      for g in $gates; do
+        echo "== cargo xtask selftest $g"
+        cargo xtask selftest "$g" || red="$red $g"
+      done
+      [ -z "$red" ] || { echo "red proofs that did not prove RED:$red"; exit 1; }
+      echo "every registered gate's red proof went RED as declared"
+    needs: [gates]
+    requires: [cc, git-history]
   verify-done:
     # The done-oracle, full run: exit 0 only (3 is a --fast, provisional answer). Its PARITY group
     # obtains the judge through bin/oracle as the oracle check does (BUSBAR_RELEASE_TOKEN).
