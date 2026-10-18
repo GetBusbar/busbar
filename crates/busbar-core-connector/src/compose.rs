@@ -1359,8 +1359,12 @@ impl Connection {
         }
         if !matches!(self.phase, Phase::Connecting) {
             moved |= self.flush(cx)?;
-            // At the receive cap the socket waits for the holder to take what was read.
-            if self.unread_bytes() < RECEIVE_BUFFER_BYTES {
+            // At the receive cap the socket waits for the holder to take what was read; past the
+            // write side's room (a caller's writes fill at most WRITE_BUFFER_BYTES of it, the rest
+            // is what the framer answered on its own) it waits for the far end to take what it is
+            // owed, so a far end that sends and never reads is held back.
+            if self.unread_bytes() < RECEIVE_BUFFER_BYTES && self.out.len() < 2 * WRITE_BUFFER_BYTES
+            {
                 moved |= self.read(cx)?;
             }
         }
