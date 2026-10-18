@@ -29,7 +29,7 @@ pub const PATH: &str = "/v1/models";
 
 /// What the caller reads: the status, the head fields and the body.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Listing {
+pub struct ModelsCatalogAnswer {
     /// The status.
     pub status: u16,
     /// The head fields, in order.
@@ -76,12 +76,16 @@ pub fn dialect(path: &str, fields: &[(Vec<u8>, Vec<u8>)]) -> Option<&'static Pro
 /// the dialect's list envelope, `content-type: application/json`. A dialect that declares no
 /// envelope answers an empty JSON object, which names no protocol and leaks no shape.
 #[must_use]
-pub fn render_listing(path: &str, fields: &[(Vec<u8>, Vec<u8>)], names: &[String]) -> Listing {
+pub fn render_listing(
+    path: &str,
+    fields: &[(Vec<u8>, Vec<u8>)],
+    names: &[String],
+) -> ModelsCatalogAnswer {
     let names: Vec<&str> = names.iter().map(String::as_str).collect();
     let value = dialect(path, fields)
         .and_then(|d| d.models_list_envelope)
         .map_or_else(|| serde_json::json!({}), |build| build(&names));
-    Listing {
+    ModelsCatalogAnswer {
         status: 200,
         fields: vec![(
             "content-type".to_string(),
