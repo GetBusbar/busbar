@@ -737,7 +737,7 @@ fn seam_hit(seam: &Seam, lines: &[&str], idx: usize) -> bool {
             let got = call_arity(lines, idx, open);
             !awaited(lines, idx, open)
                 && (want.is_none() || got.is_none() || want == got)
-                && receiver_bound(seam, line, open, m)
+                && receiver_bound(seam, lines, idx, open, m)
         })
     });
     method
@@ -747,15 +747,24 @@ fn seam_hit(seam: &Seam, lines: &[&str], idx: usize) -> bool {
 
 /// Whether the receiver of the `.name(` call whose `(` is at char `open` is one [`Seam::bound`]
 /// names. A hand row binds every receiver; a receiver the reader cannot name (a call result, an
-/// index, a line that starts with the dot) is held to be the seam's, the direction this gate is
+/// index) is held to be the seam's, the direction this gate is
 /// allowed to be wrong in.
-fn receiver_bound(seam: &Seam, line: &str, open: usize, name: &str) -> bool {
+fn receiver_bound(seam: &Seam, lines: &[&str], idx: usize, open: usize, name: &str) -> bool {
     let Some(bound) = &seam.bound else {
         return true;
     };
-    let chars: Vec<char> = line.chars().collect();
+    // The call's text up to its `(`. A chain split across lines (`table\n    .conns\n    .open(`)
+    // keeps its receiver on the lines above, so those are joined on until the text opens with
+    // something other than a `.` (at most eight lines up).
+    let mut text: String = lines[idx].chars().take(open).collect();
+    let mut back = idx;
+    while text.trim_start().starts_with('.') && back > 0 && idx - back < 8 {
+        back -= 1;
+        text = format!("{}{}", lines[back].trim_end(), text.trim_start());
+    }
+    let chars: Vec<char> = text.chars().collect();
     // Back from the `(` over any space and the method's name to its `.`.
-    let mut dot = open.min(chars.len());
+    let mut dot = chars.len();
     while dot > 0 && chars[dot - 1].is_whitespace() {
         dot -= 1;
     }
@@ -2018,13 +2027,15 @@ impl Gate for BlockingFfiGate {
              \x20   let a = z.zap_later(1).await;\n\
              \x20   let b = z.zap_now(2);\n\
              \x20   let c = post.zap_now(3);\n\
+             \x20   let d = post\n\
+             \x20       .zap_now(4);\n\
              }\n",
         );
         report.push(prove_red(
             cx,
             self,
             "a door-backed method the loader grows is a seam without anyone listing it, and the same \
-             name on a receiver bound to another type is not",
+             name on a receiver bound to another type is not, its chain split across lines or not",
             &[ROW_NO_INLINE],
             ov,
             &[
