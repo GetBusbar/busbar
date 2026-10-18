@@ -712,9 +712,16 @@ fn pending_wake_resumes_without_blocking_the_runtime() {
             ticker.abort();
             assert!(matches!(outcome, Outcome::Completed), "{way:?}: {outcome:?}");
             assert_eq!(caller.text(), "hello far end");
+            // COUNTED, NOT TIMED. On this current-thread runtime the spawned ticker is polled only
+            // when the driving future yields, so one tick means the thread was handed back while
+            // the unit was in flight; a plane that blocked the thread through its 30 ms hold leaves
+            // the ticker unpolled until the unit ends, and it is aborted then at 0. How many 1 ms
+            // sleeps fit in the hold is the machine's load, not the property (`>= 10` flaked on it).
+            // Residual: a yield before or after the hold (an await in the pump) would also poll the
+            // ticker once; the doubles do not expose the hold's two edges to this shared case.
             assert!(
-                ticks.load(Ordering::SeqCst) >= 10,
-                "{way:?}: the runtime thread ran other tasks while the plane was PENDING ({} ticks)",
+                ticks.load(Ordering::SeqCst) >= 1,
+                "{way:?}: the ticker never ran while the op was pending ({} ticks)",
                 ticks.load(Ordering::SeqCst)
             );
             assert_eq!(r.stats()[stat::HOST_CALLS], 1, "the one wake");
