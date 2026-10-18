@@ -180,7 +180,9 @@ const STAND_IN: RootInstall = RootInstall {
     registry_build: Some(crate::test_support::registry_stand_in),
     plugins_fetch: Some(crate::test_support::fetch_stand_in),
     hook_axis: Some(crate::test_support::hook_axis_stand_in),
-    hook_names: STAND_IN_HOOK_NAMES,
+    // A test build links no hook row of the root's: the operator surface lists none, as before the
+    // root's install record carried them.
+    hook_names: &[],
     store_axis: Some(crate::test_support::store_axis_stand_in),
     secret_axis: Some(&crate::test_support::SecretsStandIn),
     export_axis: Some(&crate::test_support::export_axis::STAND_IN),
@@ -194,14 +196,6 @@ const STAND_IN: RootInstall = RootInstall {
 pub(crate) const STAND_IN_HOOK_DOORS: &[busbar_contract::abi::mechanism::door::DoorFn] = &[
     #[cfg(feature = "hooks-ranking")]
     crate::test_support::ranking_double::door,
-];
-
-/// The printed names of the hook doors a test build links ([`STAND_IN_HOOK_DOORS`], one per door):
-/// the ranking double's own Statement name, under its feature.
-#[cfg(any(test, feature = "test-support"))]
-const STAND_IN_HOOK_NAMES: &[&str] = &[
-    #[cfg(feature = "hooks-ranking")]
-    crate::test_support::ranking_double::NAME,
 ];
 
 /// The composition root's linked store and hook entries (the build's in-process stores and, when
