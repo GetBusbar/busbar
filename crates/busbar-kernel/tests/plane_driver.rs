@@ -1032,6 +1032,11 @@ impl PlaneCalls for Double {
 
     fn cancel(&self, ticket: Ticket) -> Option<busbar_contract::plane_calls::Cancelled> {
         self.count(stat::CANCELS);
+        // THE PLANE'S UNIT TABLE, keyed from `arrive`: a cancel frees the unit it finds, which is
+        // only the unit some piece already taught it the ticket of.
+        if let Some(key) = self.tickets.lock().unwrap().get(&ticket).copied() {
+            self.heads.lock().unwrap().remove(&key);
+        }
         let u = self.unit_of(ticket);
         self.disposition(&u)
             .map(|disposition| busbar_contract::plane_calls::Cancelled {
@@ -3031,5 +3036,91 @@ async fn a_credential_that_cannot_be_presented_reaches_the_caller_as_a_fixed_cla
         renders.len(),
         1,
         "one fixed class: the caller cannot tell which source failed"
+    );
+}
+
+// ── a unit cancelled before its first piece (audit P-M7) ────────────────────────────────────
+
+/// A far end whose walk never picks a member: the unit waits in its route step with no piece
+/// crossed until the driver cancels it.
+struct Stalls;
+
+impl busbar_kernel::plane_driver::FarEnd for Stalls {
+    fn member<'a>(
+        &'a self,
+        _: &'a busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: u32,
+    ) -> impl Future<Output = busbar_kernel::plane_driver::Pick> + Send + 'a {
+        std::future::pending()
+    }
+
+    async fn send(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        false
+    }
+
+    async fn next(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+    ) -> Option<busbar_kernel::plane_driver::FarPiece> {
+        None
+    }
+
+    async fn write(
+        &self,
+        _: &busbar_contract::caps::Pass<busbar_contract::caps::Route>,
+        _: busbar_kernel::plane_driver::OutboundRequest,
+    ) -> bool {
+        false
+    }
+}
+
+/// A UNIT CANCELLED BEFORE ITS FIRST PIECE IS FREED (audit P-M7): a plane keys its units from
+/// `arrive` (`ArriveIn::unit`), and the host's own `cancel` of a unit no piece ever reached names
+/// that unit, so the plane finds and frees it. RED: the cancel carried the ticket alone, which the
+/// plane learns only from a piece, so the unit stayed in its table forever (in a plane that did so, until
+/// its 4096-unit cap answered every arrival 429).
+#[tokio::test]
+async fn a_unit_cancelled_before_its_first_piece_is_freed() {
+    let r = Arc::new(rig(
+        Way::Double,
+        BufferCaps::default(),
+        cases::Book::default(),
+    ));
+    let (steps, caller) = (common::TestUnits::passing(), cases::Caller::default());
+    let units = r
+        .driver
+        .unit(&steps, &Stalls, &caller, cases::arrival("/call", b"x"), 0);
+    let reloader = {
+        let r = r.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+            r.driver.reload();
+        })
+    };
+    let outcome = drive_over(&units).await;
+    reloader.await.unwrap();
+    assert!(
+        matches!(
+            outcome,
+            busbar_contract::caps::Outcome::Failed(
+                busbar_contract::caps::StepName::Route,
+                busbar_contract::caps::ReasonCode::Drain
+            )
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(r.stats()[stat::ON_PIECES], 0, "no piece crossed");
+    assert_eq!(
+        r.stats()[stat::CANCELS],
+        1,
+        "the driver's own cancel crossed"
+    );
+    assert!(
+        r.plane.heads.lock().unwrap().is_empty(),
+        "the cancel found the unit `arrive` keyed, and freed it"
     );
 }
