@@ -1448,7 +1448,7 @@ pub const MAX_METRIC_LANES: usize = 16;
 /// `RefreshIn::head.extensions`): the plane's other owned sections the applied document writes,
 /// the same JSON object [`PlaneOpenIn::owned`] carries at `open` (keyed by section name, each as
 /// written). Absent = the document writes none. A plane that reads no owned section at `refresh`
-/// never reads it; the host resolves a need's `owned.` trust path against it (§11: a new field
+/// never reads it; the host resolves a need's `owned.` trust path against it (ABI rule: a new field
 /// lives in the extensions blob first).
 pub const EXT_OWNED: &str = "owned";
 
