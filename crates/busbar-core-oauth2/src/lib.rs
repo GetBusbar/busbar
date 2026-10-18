@@ -125,6 +125,7 @@ pub fn install<C: Connections>() {
             build: plane::seam_build::<C>,
             mount: routes::seam_mount,
             verify_dpop: plane::seam_verify_dpop,
+            tick: plane::seam_tick,
         },
     );
 }

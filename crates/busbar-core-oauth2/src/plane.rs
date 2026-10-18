@@ -64,9 +64,8 @@ pub(crate) struct AsPlane {
     plain_metadata: Option<bytes::Bytes>,
     /// The verifiers a DPoP proof at busbar's resource is checked with: the plane's ES256 one.
     dpop_verifiers: oauth_as::jwt::JwsVerifiers,
-    /// This server's expired-record sweeper, stopped when the server is let go ([`Sweeper`]).
-    /// `None` for a server built without one (a test that drives the store directly).
-    sweeper: Option<Sweeper>,
+    /// When this server last swept its expired records, on the kernel's clock ([`SweepClock`]).
+    sweep: SweepClock,
     /// What the next generation carries on from this one.
     carried: Arc<Carried>,
 }
@@ -293,7 +292,7 @@ impl AsPlane {
             sessions,
             plain_metadata,
             dpop_verifiers,
-            sweeper: None,
+            sweep: SweepClock::default(),
             carried,
         })
     }
@@ -629,9 +628,9 @@ pub(crate) fn seam_verify_dpop(
     })
 }
 
-/// THE SEAM-TYPED BUILDER (`busbar_kernel::oauth_as::seam::AsPlaneSeam::build`): builds the plane AND
-/// spawns its sweeper — the whole "how do I come alive" act `appbuild.rs` used to perform inline
-/// before the extraction — and hands back the type-erased object `App::oauth_as` stores. This is
+/// THE SEAM-TYPED BUILDER (`busbar_kernel::oauth_as::seam::AsPlaneSeam::build`): builds the plane and
+/// hands back the type-erased object `App::oauth_as` stores. It starts no timer: the kernel's clock
+/// ticks the plane through [`seam_tick`]. This is
 /// the function pointer `busbar_core_oauth2::install` actually registers; core cannot call
 /// [`AsPlane::build`] directly, since that would name this crate's type from busbar-core.
 ///
@@ -691,124 +690,130 @@ pub(crate) fn seam_build<C: crate::Connections>(
     };
     // The document fetch rides the composition root's connection table (`C`), read at fetch time.
     let fetch = Arc::new(super::cimd::ConnectorFetch { table: C::table });
-    let mut plane =
+    let plane =
         AsPlane::build_carrying(identity, key_material, protected_resources, fetch, carried)
             .map_err(|e| e.to_string())?;
-    // `Storage::sweep_expired` is the only thing that reclaims anything in `oauth-as`, and it runs
-    // when it is called and never otherwise. Spawned here, once per generation, and OWNED by the
-    // generation's server: a reload builds a new server with its own sweeper, and letting the old
-    // generation go stops the old one ([`Sweeper`]), so a reload leaves exactly one.
-    plane.sweeper = Some(spawn_sweeper(
-        plane.server(),
-        std::time::Duration::from_secs(60),
-    ));
+    // No timer starts here: the sweep runs on the kernel's clock, through the seam's `tick`.
     Ok(Arc::new(plane) as Arc<dyn std::any::Any + Send + Sync>)
 }
 
-/// ONE SERVER'S SWEEPER, as its server holds it. Dropping it stops the sweep: the server owns its
-/// sweeper, so when a reload lets a generation's server go, that generation's sweeper goes with it
-/// rather than holding the old server alive and sweeping it forever.
-pub(crate) struct Sweeper {
-    task: tokio::task::AbortHandle,
-    /// Alive exactly while the sweep task is: the task holds the only strong reference.
-    #[cfg_attr(not(test), allow(dead_code))]
-    running: std::sync::Weak<()>,
-}
+/// HOW OFTEN A SERVER SWEEPS: once a minute of the kernel's clock.
+pub(crate) const SWEEP_EVERY: std::time::Duration = std::time::Duration::from_secs(60);
 
-impl Drop for Sweeper {
-    fn drop(&mut self) {
-        self.task.abort();
-    }
-}
-
-impl Sweeper {
-    /// Whether the sweep task is still running (read by the reload test).
+/// ONE SERVER'S SWEEP CLOCK: when it last swept, and whether its current store fault was already
+/// said at `warn`. The server owns no timer; the kernel's clock ticks it ([`seam_tick`]), and the
+/// clock only decides whether this tick is due a sweep.
+#[derive(Default)]
+pub(crate) struct SweepClock {
+    /// The tick the cadence counts from: the first tick a server sees, then each sweep.
+    last: std::sync::Mutex<Option<std::time::SystemTime>>,
+    /// Warn-once transition latch: a store fault persists across ticks, so it is said at `warn` on
+    /// the transition into failing and held at `debug` after; any good sweep resets it.
+    warned: std::sync::atomic::AtomicBool,
+    /// How many sweeps this server has run (read by the tests).
     #[cfg(test)]
-    pub(crate) fn probe(&self) -> std::sync::Weak<()> {
-        self.running.clone()
+    pub(crate) swept: std::sync::atomic::AtomicUsize,
+}
+
+impl SweepClock {
+    /// Whether the tick at `now` is due a sweep: the first tick a server sees starts its count and
+    /// sweeps nothing (a fresh server holds nothing expired), and every tick [`SWEEP_EVERY`] or more
+    /// after the last sweep is due one. A clock that steps back is due nothing until it passes the
+    /// last sweep again.
+    fn due(&self, now: std::time::SystemTime) -> bool {
+        let mut last = self
+            .last
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match *last {
+            None => {
+                *last = Some(now);
+                false
+            }
+            Some(at) if now.duration_since(at).is_ok_and(|gap| gap >= SWEEP_EVERY) => {
+                *last = Some(now);
+                true
+            }
+            Some(_) => false,
+        }
     }
 }
 
 impl AsPlane {
+    /// One tick of the kernel's clock: sweep the expired records when the tick is due one.
+    ///
+    /// `Storage::sweep_expired` is the ONLY thing that reclaims anything in `oauth-as`, and it runs
+    /// when it is called and never otherwise. Expiry is enforced on read, so an unswept deployment is
+    /// not a security hole; it is a memory one, and the endpoints that fill it take no credential,
+    /// so an unauthenticated caller sets the rate. A failure is logged and the next due tick tries
+    /// again.
+    pub(crate) async fn tick(&self, now: std::time::SystemTime) {
+        if !self.sweep.due(now) {
+            return;
+        }
+        #[cfg(test)]
+        self.sweep
+            .swept
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // The trait must be in scope for the call; `Storage` is imported here rather than at the
+        // module top so nothing else in this file can reach for a raw store operation.
+        use oauth_as::store::Storage as _;
+        match self.server.store().sweep_expired(now).await {
+            Ok(n) => {
+                self.sweep
+                    .warned
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                if n > 0 {
+                    tracing::debug!(reclaimed = n, "oauth_as: swept expired records");
+                }
+            }
+            Err(e) => {
+                if !self
+                    .sweep
+                    .warned
+                    .swap(true, std::sync::atomic::Ordering::Relaxed)
+                {
+                    diag_warn!(
+                        OAUTH_AS_SWEEP_FAILED,
+                        error = %e,
+                        "oauth_as: sweeping expired records failed; retrying on the next tick"
+                    );
+                } else {
+                    diag_debug!(
+                        OAUTH_AS_SWEEP_FAILED,
+                        error = %e,
+                        "oauth_as: sweeping expired records failed; retrying on the next tick"
+                    );
+                }
+            }
+        }
+    }
+
     /// The unconfigured signing key this server signs with (PKCS#8 DER), when it has one.
     #[cfg(test)]
     pub(crate) fn unconfigured_key(&self) -> Option<Vec<u8>> {
         self.carried.ephemeral_key.get().cloned()
     }
 
-    /// This server's sweeper, when it was built with one.
+    /// This server's sweep clock (read by the tests).
     #[cfg(test)]
-    pub(crate) fn sweeper(&self) -> Option<&Sweeper> {
-        self.sweeper.as_ref()
+    pub(crate) fn sweep_clock(&self) -> &SweepClock {
+        &self.sweep
     }
 }
 
-/// SWEEP EXPIRED RECORDS, on busbar's own timer, for as long as `server` is held.
-///
-/// `Storage::sweep_expired` is the ONLY thing that reclaims anything in `oauth-as`, and it runs when
-/// it is called and never otherwise. Expiry is enforced on read, so an unswept deployment is not a
-/// security hole — it is a memory one, and the endpoints that fill it take no credential, so an
-/// unauthenticated caller sets the rate. A failure is logged and the loop continues: a sweeper that
-/// exits on the first transient error is a sweeper that is not running by the time anyone looks.
-///
-/// The task holds the server WEAKLY: it never keeps a server alive, and it ends when the
-/// [`Sweeper`] the caller keeps is dropped (or the server is gone at a tick).
-pub(crate) fn spawn_sweeper(server: &Arc<AsServer>, every: std::time::Duration) -> Sweeper {
-    let server = Arc::downgrade(server);
-    let alive = Arc::new(());
-    let running = Arc::downgrade(&alive);
-    let task = tokio::spawn(async move {
-        let _alive = alive;
-        let mut ticker = tokio::time::interval(every);
-        // The first tick fires immediately, which would sweep an empty store at boot for nothing.
-        ticker.tick().await;
-        loop {
-            ticker.tick().await;
-            let Some(server) = server.upgrade() else {
-                return;
-            };
-            // The trait must be in scope for the call; `Storage` is imported here rather than at the
-            // module top so nothing else in this file can reach for a raw store operation.
-            use oauth_as::store::Storage as _;
-            // Warn-once transition latch: the sweep runs every tick and a store fault persists, so
-            // warn on the TRANSITION into the failing state and hold subsequent ticks at debug.
-            // Reset on any successful sweep so a future outage re-warns.
-            static SWEEP_FAILED_WARNED: std::sync::atomic::AtomicBool =
-                std::sync::atomic::AtomicBool::new(false);
-            match server
-                .store()
-                .sweep_expired(std::time::SystemTime::now())
-                .await
-            {
-                Ok(0) => {
-                    SWEEP_FAILED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
-                }
-                Ok(n) => {
-                    SWEEP_FAILED_WARNED.store(false, std::sync::atomic::Ordering::Relaxed);
-                    tracing::debug!(reclaimed = n, "oauth_as: swept expired records");
-                }
-                Err(e) => {
-                    if !SWEEP_FAILED_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                        diag_warn!(
-                            OAUTH_AS_SWEEP_FAILED,
-                            error = %e,
-                            "oauth_as: sweeping expired records failed; retrying on the next tick"
-                        );
-                    } else {
-                        diag_debug!(
-                            OAUTH_AS_SWEEP_FAILED,
-                            error = %e,
-                            "oauth_as: sweeping expired records failed; retrying on the next tick"
-                        );
-                    }
-                }
-            }
+/// THE SEAM-TYPED TICK (`busbar_kernel::oauth_as::seam::AsPlaneSeam::tick`): one tick of the kernel's
+/// clock for the generation's server [`seam_build`] returned.
+pub(crate) fn seam_tick(
+    plane: &Arc<dyn std::any::Any + Send + Sync>,
+    now: std::time::SystemTime,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    let plane = Arc::clone(plane).downcast::<AsPlane>().ok();
+    Box::pin(async move {
+        if let Some(plane) = plane {
+            plane.tick(now).await;
         }
-    });
-    Sweeper {
-        task: task.abort_handle(),
-        running,
-    }
+    })
 }
 
 #[cfg(test)]

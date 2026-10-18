@@ -53,6 +53,12 @@ pub struct CheckedAsBlock {
     pub secret_refs: Vec<(String, SecretRef)>,
 }
 
+/// One tick of the kernel's clock for one generation's plane (the type of [`AsPlaneSeam::tick`]).
+type AsPlaneTickFn = fn(
+    &Arc<dyn Any + Send + Sync>,
+    std::time::SystemTime,
+) -> Pin<Box<dyn Future<Output = ()> + Send>>;
+
 /// The plane's DPoP verification (the type of [`AsPlaneSeam::verify_dpop`]).
 type AsDpopVerifyFn =
     fn(&Arc<dyn Any + Send + Sync>, DpopPresentation) -> Pin<Box<dyn Future<Output = bool> + Send>>;
@@ -75,9 +81,8 @@ pub struct AsPlaneSeam {
     /// sessions, an ephemeral key) carries across the generation swap. And the deployment's
     /// configured store (its typed records and its single-use claims; `None` without one): the
     /// server keeps what it holds there, under the kernel's own record kinds, so every node on one
-    /// store serves one authorization server (THE DESIGN §1, "Nodes share one store"). Also spawns the
-    /// plane's own expired-record sweeper, mirroring what `appbuild.rs` did inline before the
-    /// extraction — the seam owns the whole "how do I come alive" act, not just allocation.
+    /// store serves one authorization server (THE DESIGN §1, "Nodes share one store"). It starts no
+    /// timer: its time-driven work runs on the kernel's clock through [`Self::tick`].
     /// Returns the type-erased object `App::oauth_as` stores, or the plane's own build error
     /// rendered to a string (boot refuses with it exactly as it did when this call was inline).
     pub build: AsPlaneBuildFn,
@@ -93,6 +98,12 @@ pub struct AsPlaneSeam {
     /// key the token's `cnf.jkt` names. `true` only when all hold. The authorization server owns
     /// this because it owns the key verifiers and the replay ledger; the door owns the decision.
     pub verify_dpop: AsDpopVerifyFn,
+
+    /// One tick of THE KERNEL'S CLOCK for the generation's plane (THE DESIGN §1: "one clock, which
+    /// also drives every plugin's tick"): the plane does its time-driven work here (its
+    /// expired-record sweep, at the cadence it owns) and runs no timer of its own. `plane` is the
+    /// object [`Self::build`] returned; `now` is the kernel's wall clock at the tick.
+    pub tick: AsPlaneTickFn,
 }
 
 static SEAM: OnceLock<AsPlaneSeam> = OnceLock::new();
@@ -119,4 +130,27 @@ pub fn install_as_plane_seam(seam: AsPlaneSeam) {
 /// Read the registered seam, or `None` when this binary never linked `busbar-core-oauth2`.
 pub(crate) fn seam() -> Option<&'static AsPlaneSeam> {
     SEAM.get()
+}
+
+/// THE KERNEL'S CLOCK, TICKING THE AUTHORIZATION SERVER: every
+/// [`crate::host_records::FLUSH_INTERVAL`], the CURRENT generation's server, read off `handle` at
+/// each tick (so a reload's new server is ticked and the retired one is not), is handed one tick
+/// through [`AsPlaneSeam::tick`]. A tick with no seam registered or no `oauth_as:` configured does
+/// nothing. The composition root runs it once, for the process's life; it never ends.
+pub async fn ticks(handle: Arc<crate::state::AppHandle>) {
+    let every = crate::host_records::FLUSH_INTERVAL;
+    let mut at = tokio::time::interval_at(tokio::time::Instant::now() + every, every);
+    at.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        at.tick().await;
+        let app = handle.load();
+        tick_once(&app, std::time::SystemTime::now()).await;
+    }
+}
+
+/// One tick of [`ticks`] over one generation: its authorization server, when it has one.
+pub async fn tick_once(app: &crate::state::App, now: std::time::SystemTime) {
+    if let (Some(seam), Some(plane)) = (seam(), app.oauth_as_any()) {
+        (seam.tick)(plane, now).await;
+    }
 }

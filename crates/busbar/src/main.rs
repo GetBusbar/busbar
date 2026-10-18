@@ -1081,6 +1081,12 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
         response_headers_cfg.server_timing,
     );
     credential_handle.set(std::sync::Arc::clone(&app_handle));
+    // THE KERNEL'S CLOCK TICKS THE AUTHORIZATION SERVER (THE DESIGN §1, "one clock, which also drives
+    // every plugin's tick"): its expired-record sweep runs on the kernel's cadence, never a timer of
+    // its own; a deployment without `oauth_as:` ticks nothing.
+    tokio::spawn(busbar_kernel::oauth_as::seam::ticks(std::sync::Arc::clone(
+        &app_handle,
+    )));
     let _ = door_live_handle.set(std::sync::Arc::clone(&app_handle));
     app_handle.on_apply(Box::new({
         let door_appliers = door_appliers.clone();

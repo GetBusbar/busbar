@@ -40,9 +40,8 @@ serde_json = { workspace = true }
 bytes = { workspace = true }
 http = { workspace = true }
 http-body-util = { workspace = true }
-# The plane's own sweeper (`plane::spawn_sweeper`) and the CIMD fetch's hop-deadline timeout are
-# PRODUCTION code, not test-only — this is a real (non-dev) dependency, matching what it cost when
-# both lived inside busbar-core (a normal dependency there too).
+# The CIMD fetch's hop-deadline timeout is PRODUCTION code, not test-only, so this is a real (non-dev)
+# dependency. The expired-record sweep runs on the kernel's clock and spawns nothing of its own.
 tokio = { workspace = true, features = ["rt", "sync", "time"] }
 tracing = { workspace = true }
 serde = { workspace = true }
