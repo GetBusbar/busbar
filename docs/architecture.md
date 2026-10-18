@@ -334,7 +334,7 @@ For a pool target, the LLM plane's engine (`crates/busbar-llm/src/engine/pipelin
    usable, use it; otherwise fall through.
 2. **Exclusions**: configured `failover.exclusions` and already-tried lanes (across
    failover hops) are removed from the candidate set.
-3. **SWRR**: `select_weighted` (`crates/busbar-kernel-egress/src/trust/swrr.rs`) runs Nginx-style smooth weighted
+3. **SWRR**: `select_weighted_in` (`crates/busbar-kernel/src/store/in_memory/availability.rs`) runs Nginx-style smooth weighted
    round-robin over the *usable* candidates, using per-pool `current_weight` state.
    A lane is usable only if it isn't dead, isn't out of lifetime budget, and its
    breaker cell admits it.
