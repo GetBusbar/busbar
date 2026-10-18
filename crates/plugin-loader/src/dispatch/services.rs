@@ -408,24 +408,21 @@ fn caller(ctx: HostCtx) -> Option<Caller> {
     super::handle::resolve(ctx)?.caller.get().cloned()
 }
 
-/// A checked range of the caller's, copied: `None` for NULL with a length.
+/// A checked range of the caller's, copied: `None` for NULL with a length, or a length over the
+/// hard byte maximum (refused before any slice is formed, THE DESIGN §11.13 M1).
 fn bytes_of(s: AbiStr, field: &'static str) -> Option<Vec<u8>> {
     check::text(s, field).ok()?;
-    if s.len == 0 {
-        return Some(Vec::new());
-    }
-    // SAFETY: a checked range of the caller's, live for the call; copied before any pend.
-    Some(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec())
+    // SAFETY: a range of the caller's, live for the call, its length capped by `lent_str` before
+    // the slice is formed; copied before any pend.
+    unsafe { super::validate::lent_str(s) }.map(<[u8]>::to_vec)
 }
 
-/// A checked blob of the caller's, copied: `None` for NULL with a length.
+/// A checked blob of the caller's, copied: `None` for NULL with a length, or a length over the hard
+/// byte maximum (refused before any slice is formed, THE DESIGN §11.13 M1).
 fn blob_of(b: Blob, field: &'static str) -> Option<Vec<u8>> {
     check::listed(b.ptr, b.len, field).ok()?;
-    if b.len == 0 {
-        return Some(Vec::new());
-    }
-    // SAFETY: a checked range of the caller's, live for the call; copied before any pend.
-    Some(unsafe { std::slice::from_raw_parts(b.ptr, b.len) }.to_vec())
+    // SAFETY: as `bytes_of`.
+    unsafe { super::validate::lent(b.ptr, b.len) }.map(<[u8]>::to_vec)
 }
 
 /// A checked UTF-8 string of the caller's, copied: `None` for NULL with a length or bad UTF-8.
@@ -553,15 +550,12 @@ extern "C" fn dest_judge(ctx: HostCtx, input: *const c_void, out: *mut ServiceOu
             {
                 return Answered::fault();
             }
-            // SAFETY: a checked range of the caller's, live for the call; copied before any pend.
-            let dest = if i.dest.len == 0 {
-                String::new()
-            } else {
-                String::from_utf8_lossy(unsafe {
-                    std::slice::from_raw_parts(i.dest.ptr, i.dest.len)
-                })
-                .into_owned()
+            // SAFETY: a checked range of the caller's, live for the call, its length capped before
+            // the slice is formed; copied before any pend.
+            let Some(dest) = (unsafe { super::validate::lent_str(i.dest) }) else {
+                return Answered::fault();
             };
+            let dest = String::from_utf8_lossy(dest).into_owned();
             let provider = Arc::clone(&served.provider);
             // SAFETY: `into` checked above; the caller's buffers, where the judged addresses go.
             unsafe {
