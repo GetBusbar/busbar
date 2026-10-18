@@ -44,7 +44,7 @@ const EXTRACTIONS: &[Extraction] = &[Extraction {
     repo: "https://github.com/GetBusbar/busbar-plane-streaming",
     repo_dir: "plane-streaming",
     base: "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
-    rev: "1897fde8298994b398f9c62c5dab98d12541cdc1",
+    rev: "55f953f3a450cfc4a1624f809dc4c69e06aa3243",
     edited: &[
         (
             "Cargo.toml",
