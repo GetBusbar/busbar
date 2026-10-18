@@ -164,6 +164,17 @@ impl Exchange {
         self
     }
 
+    /// Judge the reply on its HEAD alone: the first head (or ack) piece ends the reads and the
+    /// stream is closed, its facts read first where [`Exchange::observing`] asks. The body is never
+    /// read or buffered, so a slow or huge body after the head neither runs the op into its
+    /// deadline nor passes [`REPLY_MAX`]; the reply answers an empty body. 1.5.5 judged a webhook
+    /// delivery on the response head and dropped the body unread (THE DESIGN §2, a port keeps
+    /// 1.5.5's surface).
+    #[must_use]
+    pub fn head_only(self) -> Self {
+        self
+    }
+
     /// What the stream's facts said ([`Exchange::observing`]); `None` before they were read, for
     /// an exchange that did not ask, or a host that offers no facts.
     #[must_use]
