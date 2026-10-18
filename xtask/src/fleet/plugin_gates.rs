@@ -7,8 +7,9 @@
 //!
 //! The policy is `.github/fleet/deps.toml` at the pin: the socket/TLS ban (BUSBAR-1.6.0.md line
 //! 3980) and the C-dependency allow-list. Cargo.lock parity with busbar's lock is RED
-//! (PLUGIN-TEMPLATE ruling 3b). `declares.json`'s `contract_abi` is the top of the loader's
-//! `supported_abi(kind)` at the pin, min = max (THE DESIGN §11.8).
+//! (PLUGIN-TEMPLATE ruling 3b). `declares.json` states no contract-ABI range (THE DESIGN §2: a
+//! plugin declares its kind's ABI version); while the fleet strips it, a range still stated must be
+//! the top of the loader's `supported_abi(kind)` at the pin, min = max.
 //!
 //! Output is byte-for-byte the Python's, including where Python's `repr` leaks into a finding (the
 //! `sorted(missing)` list of CDEP, the parsed `contract_abi` of DECLARES).
@@ -915,9 +916,12 @@ fn abi_matches(got: &Json, want: u64) -> bool {
     }
 }
 
-/// declares.json states the kind's current contract ABI at the pin, min = max.
+/// declares.json states no contract-ABI range (THE DESIGN §2 l.237-240, §9 l.1164-1165: a plugin
+/// declares its kind's ABI version, never a range). THE ORDERED STEP, agreed with the fleet: while
+/// the fleet's re-render strips the field from every repo, a file WITHOUT it passes and a file that
+/// still states it must state the kind's current contract ABI at the pin, min = max, as before.
+/// The next step refuses a stated range outright.
 pub fn declares(root: &Path, kind: &str, text: &str) -> Res<Vec<String>> {
-    let want = kind_abi(root, kind)?;
     let doc = match json_lite::parse(text) {
         Ok(d) => d,
         Err(e) => return Ok(vec![format!("DECLARES declares.json is not JSON: {e}")]),
@@ -925,7 +929,10 @@ pub fn declares(root: &Path, kind: &str, text: &str) -> Res<Vec<String>> {
     let Json::Object(obj) = &doc else {
         return Err("plugin-gates: declares.json is not a JSON object".to_string());
     };
-    let got = obj.get("contract_abi").cloned().unwrap_or(Json::Null);
+    let Some(got) = obj.get("contract_abi").cloned() else {
+        return Ok(Vec::new());
+    };
+    let want = kind_abi(root, kind)?;
     if !abi_matches(&got, want) {
         return Ok(vec![format!(
             "DECLARES contract_abi is {}; busbar at the pin speaks {kind} v{want} (min = max = {want}). Re-render it with busbar-release plugin sync.",
@@ -1650,11 +1657,21 @@ fn cases() -> Vec<(&'static str, Res<Vec<String>>, bool)> {
     };
     if let Err(e) = setup() {
         let msg = format!("plugin-gates: selftest temp dir: {e}");
-        for name in ["declares current", "declares stale", "declares literal"] {
+        for name in [
+            "declares absent",
+            "declares current",
+            "declares stale",
+            "declares literal",
+        ] {
             v.push((name, Err(msg.clone()), false));
         }
         return v;
     }
+    v.push((
+        "declares absent",
+        declares(d, "store", r#"{"needs": []}"#),
+        false,
+    ));
     v.push((
         "declares current",
         declares(d, "store", r#"{"contract_abi": {"min": 4, "max": 4}}"#),
@@ -2011,6 +2028,7 @@ mod tests {
         plane_pin_answered_nothing => "plane pin answered nothing",
         bothways_no_red_arm => "bothways no RED arm",
         bothways_no_equality_arm => "bothways no equality arm",
+        declares_absent => "declares absent",
         declares_current => "declares current",
         declares_stale => "declares stale",
         declares_literal => "declares literal",
@@ -2291,26 +2309,21 @@ mod tests {
         )
         .unwrap();
         let tail = "; busbar at the pin speaks auth v3 (min = max = 3). Re-render it with busbar-release plugin sync.";
-        let go = |json: &str| declares(d, "auth", json).unwrap().remove(0);
-        assert_eq!(go("{}"), format!("DECLARES contract_abi is None{tail}"));
+        let go = |json: &str| declares(d, "auth", json).unwrap();
+        // ABSENT is the shape the fleet re-renders to: it passes.
+        assert!(go("{}").is_empty());
+        assert!(go(r#"{"needs": ["http"]}"#).is_empty());
+        // STATED, a range is still held to the kind's version at the pin, min = max.
         assert_eq!(
             go(r#"{"contract_abi": {"max": 3, "min": true, "x": [1, "a", null, false]}}"#),
-            format!("DECLARES contract_abi is {{'max': 3, 'min': True, 'x': [1, 'a', None, False]}}{tail}")
+            [format!("DECLARES contract_abi is {{'max': 3, 'min': True, 'x': [1, 'a', None, False]}}{tail}")]
         );
         assert_eq!(
             go(r#"{"contract_abi": "s"}"#),
-            format!("DECLARES contract_abi is s{tail}")
+            [format!("DECLARES contract_abi is s{tail}")]
         );
-        assert!(
-            !declares(d, "auth", r#"{"contract_abi": {"max": 3.0, "min": true}}"#)
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            declares(d, "auth", r#"{"contract_abi": {"max": 3, "min": 3.0}}"#)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(!go(r#"{"contract_abi": {"max": 3.0, "min": true}}"#).is_empty());
+        assert!(go(r#"{"contract_abi": {"max": 3, "min": 3.0}}"#).is_empty());
     }
 
     #[test]
