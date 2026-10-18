@@ -43,8 +43,8 @@ const EXTRACTIONS: &[Extraction] = &[Extraction {
     crate_dir: "crates/busbar-plane-streaming",
     repo: "https://github.com/GetBusbar/busbar-plane-streaming",
     repo_dir: "plane-streaming",
-    base: "a88c8109b44c896e4300410e33e7efaf776f1265",
-    rev: "4d88a2b0274bb5bf5ff127147100500424d44364",
+    base: "faa7d5bc8f5d01ca9ebfb4bef3fa6debd4f44a78",
+    rev: "1897fde8298994b398f9c62c5dab98d12541cdc1",
     edited: &[
         (
             "Cargo.toml",
@@ -65,8 +65,8 @@ const EXTRACTIONS: &[Extraction] = &[Extraction {
     moved: &[
         (
             "tests/conformance.rs",
-            "plane-streaming-plugin/tests/conformance.rs",
-            "the dropped-in door's conformance suite runs against the cdylib twin",
+            "plane-streaming-plugin/tests/both_ways.rs",
+            "the door's op-by-op both-ways script runs in the cdylib twin, against its dropped image",
         ),
         (
             "examples/streaming_door.rs",
@@ -285,7 +285,7 @@ fn the_comparison_refuses_a_drifted_copy() {
     base.insert("examples/streaming_door.rs".to_string(), b"x".to_vec());
     let mut elsewhere = BTreeMap::new();
     elsewhere.insert(
-        "plane-streaming-plugin/tests/conformance.rs".to_string(),
+        "plane-streaming-plugin/tests/both_ways.rs".to_string(),
         b"c".to_vec(),
     );
     elsewhere.insert(
