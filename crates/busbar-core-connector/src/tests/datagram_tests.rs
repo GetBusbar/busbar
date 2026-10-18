@@ -1347,3 +1347,120 @@ fn an_answer_whose_lines_do_not_mirror_refuses_the_open() {
         assert_eq!(closes(&sink), 1);
     });
 }
+
+/// RED (THE DESIGN §5, datagram media: "ICE path migration rebinds only on a verified round-trip
+/// check (a spoof is a RED)"): a path one accepted association already holds on a shared port stays
+/// its own when ANOTHER association hears a check from it. A check proves only that its sender
+/// knows that other association's password, never that it owns the source address, so a caller
+/// sending its own valid checks from a spoofed source took over another caller's media.
+#[test]
+fn a_path_one_association_holds_is_never_taken_by_a_check_another_hears_from_it() {
+    let (da, db) = (
+        scripted(Knobs::default()),
+        scripted_as(Knobs::default(), (B_UFRAG, B_PWD)),
+    );
+    let mut port = super::Associations::new();
+    let a = port.add(settled(da.clone())).unwrap();
+    let b = port.add(settled(db.clone())).unwrap();
+    let pa = p("203.0.113.1:1000");
+    let now = Instant::now();
+    let (id, y) = port
+        .datagram(pa, &check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, 1), now)
+        .unwrap();
+    assert_eq!(id, a);
+    y.unwrap();
+    let (id, _) = port.datagram(pa, &[0x80, 0x6f, 0, 1], now).unwrap();
+    assert_eq!(id, a, "control: a's path finds a");
+    // b's own valid check, from a's address.
+    let (id, y) = port
+        .datagram(pa, &check(B_UFRAG, FAR_UFRAG, B_PWD, 2), now)
+        .unwrap();
+    assert_eq!(id, b);
+    y.unwrap();
+    let (id, _) = port.datagram(pa, &[0x80, 0x6f, 0, 2], now).unwrap();
+    assert_eq!(id, a, "a's path is still a's");
+}
+
+/// RED (resource bounds): the paths a port routes to one association are only those it still
+/// owns. An association holds at most a bounded set of heard paths; the port kept every address it
+/// ever routed for the association, so valid checks from ever-new sources grew it without limit.
+#[test]
+fn a_port_keeps_no_path_for_an_association_that_no_longer_owns_it() {
+    let da = scripted(Knobs::default());
+    let mut port = super::Associations::new();
+    let a = port.add(settled(da.clone())).unwrap();
+    let now = Instant::now();
+    for i in 0..64_u16 {
+        let from = SocketAddr::from(([203, 0, 113, 1], 1000 + i));
+        let txid = u8::try_from(i % 250).unwrap() + 1;
+        let (id, y) = port
+            .datagram(from, &check(HOST_UFRAG, FAR_UFRAG, HOST_PWD, txid), now)
+            .unwrap();
+        assert_eq!(id, a);
+        y.unwrap();
+    }
+    let routed = port.by_path.values().filter(|id| **id == a).count();
+    assert!(
+        routed <= 16,
+        "the port routes {routed} paths to an association that heard at most 16 of them"
+    );
+}
+
+/// RED (resource bounds): the far end's description is bounded. Buffered whole until the
+/// exchange's end with no cap, a far end that answered without end grew host memory without limit.
+#[test]
+fn a_far_end_description_past_its_bound_fails_the_open() {
+    use busbar_contract::conn::{ConnError, PieceKind};
+    use busbar_contract::transport::wire::WireStatusClass;
+    crate::support::worker().block_on(async {
+        let sink = Arc::new(Sink::default());
+        let pairing = super::Pairing::new(sink.clone(), p("127.0.0.1:3478"));
+        let d = leg(&pairing);
+        d.exchanged(head(WireStatusClass::Success), b"").unwrap();
+        let chunk = vec![b'a'; 16 * 1024];
+        let mut answered = Ok(None);
+        for _ in 0..64 {
+            answered = d.exchanged(piece(PieceKind::Body), &chunk);
+            if answered.is_err() {
+                break;
+            }
+        }
+        assert_eq!(
+            answered,
+            Err(ConnError::Refused),
+            "1 MiB of description is refused"
+        );
+        assert!(pairing.closed(), "nothing half-bridges");
+    });
+}
+
+/// RED (resource bounds; THE DESIGN §5 "Writes are back-pressured"): a message a plugin writes in
+/// parts on the upstream leg is bounded. Gathered until its end with no cap, a write that never
+/// ended grew host memory without limit.
+#[test]
+fn a_message_written_in_parts_past_its_bound_is_refused() {
+    use busbar_contract::conn::{ConnError, PieceKind};
+    use busbar_contract::transport::wire::WireStatusClass;
+    crate::support::worker().block_on(async {
+        let sink = Arc::new(Sink::default());
+        let pairing = super::Pairing::new(sink.clone(), p("127.0.0.1:3478"));
+        let d = leg(&pairing);
+        d.exchanged(head(WireStatusClass::Success), b"").unwrap();
+        let fp = hex(&SessionCert::mint().unwrap().fingerprint());
+        let answer = format!("{FAR_UFRAG} {FAR_PWD} {fp} 203.0.113.9:50000");
+        d.exchanged(piece(PieceKind::Body), answer.as_bytes())
+            .unwrap();
+        d.exchanged(piece(PieceKind::Completion), b"").unwrap();
+        assert!(!pairing.closed(), "the leg runs");
+        let chunk = vec![b'a'; 16 * 1024];
+        let mut wrote = Ok(0);
+        for _ in 0..64 {
+            wrote = d.write(&chunk, false, false);
+            if wrote.is_err() {
+                break;
+            }
+        }
+        assert_eq!(wrote, Err(ConnError::Refused), "1 MiB unended is refused");
+        d.close();
+    });
+}
