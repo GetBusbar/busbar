@@ -3,8 +3,6 @@
 
 //! The book of balances.
 
-use crate::totals::Book;
-
 // ── THE BOOKS SATURATE (#10 `BUSBAR-1.6.0.md:331`) ───────────────────────────────────────────────
 // `Totals::headroom` and `Totals::overdraft_carried` subtracted bare `i128`s until this block was
 // written. A plain `-` panics on overflow in a debug build and WRAPS in a release one, and the wrap
