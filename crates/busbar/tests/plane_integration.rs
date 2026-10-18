@@ -1113,8 +1113,8 @@ async fn answered(
 }
 
 /// EVERY MOUNTED JSON-RPC PLANE'S UNIT-LESS `401` AND `413` ANSWER THE 1.6.0 BASELINE BYTES, for
-/// both the endpoint-door plane and the `agents:` plane: an unauthenticated POST to a path beneath
-/// the mount that is no door route, and an oversized POST to the mount itself (on a composition
+/// both the endpoint-door plane and the `agents:` plane: an unauthenticated POST to the mount, and
+/// an oversized POST to the mount (on a composition
 /// with no credential chain, where the body limit is the first answer).
 #[tokio::test]
 async fn every_mounted_planes_unitless_401_and_413_answer_the_1_6_0_baseline() {
@@ -1123,8 +1123,9 @@ async fn every_mounted_planes_unitless_401_and_413_answer_the_1_6_0_baseline() {
     for decl in [door_plane(), agents_plane()] {
         let mount = jsonrpc_mount(decl, &sections);
         let app = configured(TestApp::new().keys_chain(), &sections, None).build();
-        let (status, ct, body) =
-            answered(app.clone(), &format!("{mount}/not-a-route"), "{}".into()).await;
+        // At the mount itself, a route every JSON-RPC plane claims: a path beneath it that the
+        // plane does not claim is the residual's, not the plane's.
+        let (status, ct, body) = answered(app.clone(), &mount, "{}".into()).await;
         // A plane bound to an audience answers its admission's challenge; any other the JSON-RPC
         // arm's bytes.
         let expected = if app.planes.admission_for(&mount).is_some() {
@@ -1132,10 +1133,14 @@ async fn every_mounted_planes_unitless_401_and_413_answer_the_1_6_0_baseline() {
         } else {
             MOUNTED_401_BASELINE
         };
+        // What the refusal says is pinned; its member order is the serializer's that renders it.
+        let said: serde_json::Value = serde_json::from_str(&body).expect("a JSON refusal");
+        let baseline: serde_json::Value =
+            serde_json::from_str(expected).expect("the baseline is JSON");
         assert_eq!(
-            (status, body.as_str()),
-            (401, expected),
-            "`{}`: the mounted 401",
+            (status, said),
+            (401, baseline),
+            "`{}`: the mounted 401: {body}",
             decl.key
         );
         assert!(ct.starts_with("application/json"), "`{}`: {ct}", decl.key);
