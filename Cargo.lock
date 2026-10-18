@@ -359,7 +359,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-admin-tokens"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=3149dd7ef8509fd1fcbed9369c9684c179b99b8c#3149dd7ef8509fd1fcbed9369c9684c179b99b8c"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=b1337ce8805b1f9ee2e3f83bbf907e232559191f#b1337ce8805b1f9ee2e3f83bbf907e232559191f"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -368,7 +368,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-admin-tokens-plugin"
 version = "1.5.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=3149dd7ef8509fd1fcbed9369c9684c179b99b8c#3149dd7ef8509fd1fcbed9369c9684c179b99b8c"
+source = "git+https://github.com/GetBusbar/busbar-auth-admin-tokens?rev=b1337ce8805b1f9ee2e3f83bbf907e232559191f#b1337ce8805b1f9ee2e3f83bbf907e232559191f"
 dependencies = [
  "busbar-auth-admin-tokens",
  "busbar-contract",
@@ -377,7 +377,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=0839d7c6dcaaa090d835a87cdd14bcd9ba258690#0839d7c6dcaaa090d835a87cdd14bcd9ba258690"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=b1623c7dd454dd3f3e23670f0d44c9e3ed07b49a#b1623c7dd454dd3f3e23670f0d44c9e3ed07b49a"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -429,7 +429,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=c50e40bda6f5c176655119b438228bda2df5650e#c50e40bda6f5c176655119b438228bda2df5650e"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=80025af386ab08afe88bcd552c572e3021ba013f#80025af386ab08afe88bcd552c572e3021ba013f"
 dependencies = [
  "busbar-contract",
  "hex",
@@ -442,7 +442,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-webhook-signature"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-webhook-signature?rev=fd3bb09947ec4cffceb68a7f7674abed6df47810#fd3bb09947ec4cffceb68a7f7674abed6df47810"
+source = "git+https://github.com/GetBusbar/busbar-auth-webhook-signature?rev=4829b62c48fb9f6da79cad59bf42cb1d5dfce7c2#4829b62c48fb9f6da79cad59bf42cb1d5dfce7c2"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -914,7 +914,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-env"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=d73a5c503b9a7cddbcda22a643aa4b842f168c87#d73a5c503b9a7cddbcda22a643aa4b842f168c87"
+source = "git+https://github.com/GetBusbar/busbar-secret-env?rev=046296aecc8088128dee36971f8da8cd8fd79175#046296aecc8088128dee36971f8da8cd8fd79175"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -923,7 +923,7 @@ dependencies = [
 [[package]]
 name = "busbar-secret-file"
 version = "1.0.0"
-source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=e1a5a17a4953faaeb69ba5b6e5bc141d21cd133c#e1a5a17a4953faaeb69ba5b6e5bc141d21cd133c"
+source = "git+https://github.com/GetBusbar/busbar-secret-file?rev=ae5e56064da74fc0f7a53d3f7bc9d27f89fd3424#ae5e56064da74fc0f7a53d3f7bc9d27f89fd3424"
 dependencies = [
  "busbar-contract",
  "serde_json",
@@ -941,7 +941,7 @@ dependencies = [
 [[package]]
 name = "busbar-transport-grpc"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=a17bb27572fded6618407360152924f8f97c4f95#a17bb27572fded6618407360152924f8f97c4f95"
+source = "git+https://github.com/GetBusbar/busbar-transport-grpc?rev=f1b5d4d75f5cdaa46eff23cfef44e0a675d2fbb4#f1b5d4d75f5cdaa46eff23cfef44e0a675d2fbb4"
 dependencies = [
  "busbar-contract",
  "bytes",
