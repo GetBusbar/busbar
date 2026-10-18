@@ -219,10 +219,6 @@ pub use busbar_plugin_loader::durable;
 /// A lane's credential, bound by the auth plugin that serves its style (P2 D1, the auth split).
 pub mod bound_credential;
 pub mod egress;
-/// THE EGRESS GRANT GATE: may busbar spend its own outbound credential on a subject for this
-/// caller? Authorization, so it lives in `busbar-kernel-scope` (Part 2 #36); re-exported here for
-/// the planes that already reach the kernel.
-pub use busbar_kernel_scope::egress as egress_grant;
 pub mod endpoints;
 pub mod export;
 pub mod failover;
