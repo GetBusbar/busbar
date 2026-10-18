@@ -59,8 +59,8 @@ busbar-export-file = { git = "https://github.com/GetBusbar/busbar-export-file", 
 busbar-export-file-plugin = { git = "https://github.com/GetBusbar/busbar-export-file", rev = "21d134472a9c9a322d082f7bdef75150de97c010" }
 busbar-export-otlp = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "d4e24f17b57ae9e16026fbe6a56a1e8966773e51" }
 busbar-export-otlp-plugin = { git = "https://github.com/GetBusbar/busbar-export-otlp", rev = "d4e24f17b57ae9e16026fbe6a56a1e8966773e51" }
-busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "049592be7a06945cd35bfc32d72ac0fb21197a57" }
-busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "049592be7a06945cd35bfc32d72ac0fb21197a57" }
+busbar-export-prometheus = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "65346c953856af5030ab141a55d59e458c608bff" }
+busbar-export-prometheus-plugin = { git = "https://github.com/GetBusbar/busbar-export-prometheus", rev = "65346c953856af5030ab141a55d59e458c608bff" }
 # THE SECRET SOURCES (THE DESIGN, "Plugins"; ARCHITECT 2026-10-02 WIRE-SECRET): `busbar` links each logic
 # crate's door on the secret axis; the kernel's test build answers the axis with its own in-crate
 # double (`busbar_kernel::test_support::secrets`), naming neither. One rev each.
