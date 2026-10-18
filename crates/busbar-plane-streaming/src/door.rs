@@ -64,8 +64,8 @@ use busbar_contract::abi::plane::{
     class_of, reason_of, ArriveIn, ArriveOut, BillableClass, DialectAuth, OnPieceIn, OnPieceOut,
     OpClass, OutField, PlaneCancelIn, PlaneCancelOut, PlaneDriveIn, PlaneDriveOut, PlaneOpenIn,
     PlaneOpenOut, PlaneRefreshOut, PlaneSnapshot, PlaneTail, ProjectIn, ProjectOut, RefusalClass,
-    RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, ANSWER_LAYOUT, CANCEL_FAILED, CLAIM_EXACT,
-    CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
+    RefusalCode, RefusalIn, RefusalOut, ServeIn, ServeOut, UnitCount, ANSWER_LAYOUT, CANCEL_FAILED,
+    CLAIM_EXACT, CLAIM_OPEN, EMIT_DONE, EMIT_TO_FAR_END, FROM_CALLER, FROM_FAR_END, FROM_KERNEL,
     INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, PIECE_HAS_STATUS, PIECE_LAST, PIECE_OUT_TEXT,
     ROUTE_DIRECT, SHAPE_PIECEWISE, SPAN_ABSENT, UNITS_ESTIMATED, UNITS_REPORTED,
 };
@@ -1161,13 +1161,48 @@ const FIELD_CONTENT_TYPE: &str = "content-type";
 /// A refusal body's document type.
 const CONTENT_TYPE_JSON: &str = "application/json";
 
+/// The OpenAI Realtime dialect's index in the tail's dialects.
+const REALTIME_DIALECT: u32 = 0;
+
+/// The error code a live session's budget cut is told under.
+pub const BUDGET_EXHAUSTED_CODE: &str = "budget_exhausted";
+
+/// A live session's budget cut, told in its stream (THE DESIGN section 7: "Where the protocol
+/// carries a place to say so, a cut ends the stream WITH AN ERROR FRAME naming budget
+/// exhaustion"): OpenAI Realtime's `error` event naming the budget; nothing in a dialect with no
+/// in-band error (Gemini Live closes, Twilio Media Streams has no error event).
+#[must_use]
+pub fn session_cut_render(dialect: u32, text: &str) -> Vec<u8> {
+    if dialect != REALTIME_DIALECT {
+        return Vec::new();
+    }
+    serde_json::to_vec(&serde_json::json!({
+        "type": "error",
+        "error": {
+            "type": "invalid_request_error",
+            "code": BUDGET_EXHAUSTED_CODE,
+            "message": text,
+        }
+    }))
+    .unwrap_or_default()
+}
+
 // `refusal`: the kernel's status and text (a hook's veto, an admission's refusal) in the dialects'
-// error shape, as JSON, before any upgrade.
-slot!(Refusal, RefusalIn, RefusalOut, |_, input, out| {
+// error shape, as JSON, before any upgrade; a live session's budget cut in its own stream.
+slot!(Refusal, RefusalIn, RefusalOut, |instance, input, out| {
     let given = input.get();
     let status = u16::try_from(given.status).unwrap_or(0);
     let text = input.field(|i| &i.text).as_str().unwrap_or_default();
-    let body = refusal_render(status, given.reason, text);
+    let cut = given.reason == RefusalCode::OverBudget as u32
+        && given.unit != 0
+        && instance
+            .get()
+            .is_some_and(|p| lock(&p.sessions).served(given.unit));
+    let body = if cut {
+        session_cut_render(given.dialect, text)
+    } else {
+        refusal_render(status, given.reason, text)
+    };
     let (mut reply, mut fields, mut arena) =
         (input.reply_buf(), input.fields_buf(), input.arena_buf());
     reply.extend(&body);
