@@ -8056,3 +8056,51 @@ fn an_owned_anchor_the_boot_would_refuse_is_refused_by_the_same_rule() {
         "the rule itself takes the CA"
     );
 }
+
+/// LEGACY `crates/busbar-llm/src/unit/tests/verify.rs::asking_whether_a_name_is_configured_allocates_nothing`
+/// (coordinator ruling 2026-10-17: no-alloc is a Law). ASKING WHETHER A NAME IS CONFIGURED ALLOCATES
+/// NOTHING: the destination guard asks it on every request, so the probe answers from the door's
+/// own pools and entries as they are held, never from a projection built per call. Eight pools, so
+/// an answer that allocates per pool cannot hide in a slack bound, and both answers are asked: a
+/// name that is a pool, one that is an entry, and one that is nothing, because a probe that
+/// allocated only on the miss would still allocate on the request path.
+///
+/// Measured on jemalloc's per-thread allocated-bytes counter, the binary's own allocator.
+/// RED: a probe that builds a list of the configured names to search allocates on every call.
+#[cfg(not(target_env = "msvc"))]
+#[test]
+fn asking_whether_a_name_is_configured_allocates_nothing() {
+    use busbar_kernel::door::PoolView as _;
+    use tikv_jemalloc_ctl::thread as jethread;
+    let mut yaml = String::from("m: {}\npools:\n");
+    for i in 0..8 {
+        yaml.push_str(&format!("  p{i}:\n    members: [m]\n"));
+    }
+    let p = pools(&yaml);
+    let app = busbar_kernel::test_support::TestApp::new().build();
+    let view = super::DoorPoolView {
+        pools: &p,
+        key: None,
+        app: &app,
+    };
+    let allocated = || {
+        jethread::allocatedp::read()
+            .map(|m| m.get())
+            .expect("jemalloc's per-thread counter reads")
+    };
+    // Warm the counter's own read before the measured window.
+    let _ = allocated();
+    let before = allocated();
+    let pool = view.is_configured(std::hint::black_box("p3"));
+    let entry = view.is_configured(std::hint::black_box("m"));
+    let miss = view.is_configured(std::hint::black_box("nothing-by-that-name"));
+    let after = allocated();
+    assert!(pool, "p3 is a configured pool");
+    assert!(entry, "m is a configured entry");
+    assert!(!miss, "nothing by that name is configured");
+    assert_eq!(
+        after - before,
+        0,
+        "a membership probe on the request path allocates nothing"
+    );
+}
