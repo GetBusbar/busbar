@@ -1063,3 +1063,93 @@ async fn an_audience_bound_token_is_confined_to_its_door_plane() {
     handle.abort();
     server.shutdown().await;
 }
+
+// ── THE MOUNTED PLANES' UNIT-LESS REFUSALS: the 1.6.0 baseline (audit K4#2) ─────────────────────
+
+/// THE 1.6.0 BASELINE of a mounted JSON-RPC plane's `401` on a path that is no door route: the
+/// bytes the kernel's own JSON-RPC arm answers today (`ingress::jsonrpc::transport_refusal`). No
+/// 1.5.5 golden exists for these paths (v1.5.5 mounted no JSON-RPC plane); this is the baseline the
+/// plane's own `refusal` must reproduce once the kernel hands it the reason (ARCHITECT ruling, audit
+/// K4#2 (b)).
+const MOUNTED_401_BASELINE: &str =
+    r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"authentication failed"}}"#;
+
+/// THE 1.6.0 BASELINE of the `401` on a path beneath a mount whose plane is an OAuth protected
+/// resource (it binds an audience): the RFC 6750 challenge the kernel's admission answers, which is
+/// not the JSON-RPC arm and does not move with the plane's own refusal.
+const ADMISSION_401_BASELINE: &str = r#"{"error":"unauthorized","error_description":"Authentication is required for this resource."}"#;
+
+/// THE 1.6.0 BASELINE of a mounted JSON-RPC plane's body-limit `413` (as [`MOUNTED_401_BASELINE`]).
+const MOUNTED_413_BASELINE: &str = r#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"request body exceeds the maximum allowed size"}}"#;
+
+/// One request through the REAL layer stack under a 64-byte body cap: its status, content type and
+/// body.
+async fn answered(
+    app: std::sync::Arc<busbar_kernel::state::App>,
+    path: &str,
+    body: String,
+) -> (u16, String, String) {
+    let (router, _handle) = busbar_kernel::build_router_with_limits(app, 64, 1024, false);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let r = reqwest::Client::new()
+        .post(format!("http://{addr}{path}"))
+        .header("content-type", "application/json")
+        .body(body)
+        .send()
+        .await
+        .unwrap();
+    let status = r.status().as_u16();
+    let ct = r
+        .headers()
+        .get("content-type")
+        .and_then(|h| h.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let text = r.text().await.unwrap();
+    server.abort();
+    (status, ct, text)
+}
+
+/// EVERY MOUNTED JSON-RPC PLANE'S UNIT-LESS `401` AND `413` ANSWER THE 1.6.0 BASELINE BYTES, for
+/// both the endpoint-door plane and the `agents:` plane: an unauthenticated POST to a path beneath
+/// the mount that is no door route, and an oversized POST to the mount itself (on a composition
+/// with no credential chain, where the body limit is the first answer).
+#[tokio::test]
+async fn every_mounted_planes_unitless_401_and_413_answer_the_1_6_0_baseline() {
+    busbar_kernel::snapshot::init();
+    let sections = format!("{}{AGENTS_YAML}", door_section_yaml("gateway.example.com"));
+    for decl in [door_plane(), agents_plane()] {
+        let mount = jsonrpc_mount(decl, &sections);
+        let app = configured(TestApp::new().keys_chain(), &sections, None).build();
+        let (status, ct, body) =
+            answered(app.clone(), &format!("{mount}/not-a-route"), "{}".into()).await;
+        // A plane bound to an audience answers its admission's challenge; any other the JSON-RPC
+        // arm's bytes.
+        let expected = if app.planes.admission_for(&mount).is_some() {
+            ADMISSION_401_BASELINE
+        } else {
+            MOUNTED_401_BASELINE
+        };
+        assert_eq!(
+            (status, body.as_str()),
+            (401, expected),
+            "`{}`: the mounted 401",
+            decl.key
+        );
+        assert!(ct.starts_with("application/json"), "`{}`: {ct}", decl.key);
+        // The body limit is measured on a composition with no credential chain: under one, an
+        // audience-bound plane's admission challenge answers an unauthenticated caller first.
+        let open = configured(TestApp::new(), &sections, None).build();
+        let oversized = serde_json::json!({ "pad": "x".repeat(4096) }).to_string();
+        let (status, ct, body) = answered(open, &mount, oversized).await;
+        assert_eq!(
+            (status, body.as_str()),
+            (413, MOUNTED_413_BASELINE),
+            "`{}`: the mounted 413",
+            decl.key
+        );
+        assert!(ct.starts_with("application/json"), "`{}`: {ct}", decl.key);
+    }
+}
