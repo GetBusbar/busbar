@@ -934,7 +934,9 @@ known_sites = [
   "crates/busbar-kernel/src/config/migrate.rs :: model",
   "crates/busbar-kernel/src/config/migrate.rs :: pools.{pname}.members[].target -> model",
   "crates/busbar-kernel/src/config/mod.rs :: completion",
-  "crates/busbar-kernel/src/config/mod.rs :: agents.{agent}: `hooks:` names `{hook}`, which is not defined in the                      top-level `hooks:` map. Define it there, or remove the reference.",
+  # `crates/busbar-kernel/src/config/mod.rs :: agents.{agent}: `hooks:` names ...` STRUCK: the
+  # message is now written over the section (`{section}.{entry}`), so the plane noun is no longer in
+  # the file.
   "crates/busbar-kernel/src/config/pools.rs :: a bare member name, or a member object `{ model, weight, ... }`",
   # Moved from the retired shared value crate with the code that carries it (#83a SD-8), reviewed
   # there and frozen: the published title of BUSBAR-3020 (docs/diagnostics.md, byte-identical).
