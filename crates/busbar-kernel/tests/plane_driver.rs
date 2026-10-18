@@ -3126,3 +3126,87 @@ async fn a_unit_cancelled_before_its_first_piece_is_freed() {
         "the cancel found the unit `arrive` keyed, and freed it"
     );
 }
+
+/// THE SPANS A UNIT'S WALK OPENS, as one capturing subscriber reads them: each span's name, its
+/// parent's name, and each field it recorded with its value.
+#[derive(Clone, Default)]
+struct SpanLog(Arc<Mutex<Vec<SpanSeen>>>);
+
+/// One span the log saw.
+#[derive(Debug, Clone)]
+struct SpanSeen {
+    name: &'static str,
+    parent: Option<&'static str>,
+    fields: Vec<(&'static str, String)>,
+}
+
+/// A field visitor: every field's name and its value as written.
+struct Fields<'a>(&'a mut Vec<(&'static str, String)>);
+
+impl tracing::field::Visit for Fields<'_> {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0.push((field.name(), format!("{value:?}")));
+    }
+}
+
+impl<S> tracing_subscriber::Layer<S> for SpanLog
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+{
+    fn on_new_span(
+        &self,
+        attrs: &tracing::span::Attributes<'_>,
+        id: &tracing::span::Id,
+        ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let parent = ctx
+            .span(id)
+            .and_then(|s| s.parent())
+            .map(|p| p.metadata().name());
+        let mut fields = Vec::new();
+        attrs.record(&mut Fields(&mut fields));
+        self.0.lock().unwrap().push(SpanSeen {
+            name: attrs.metadata().name(),
+            parent,
+            fields,
+        });
+    }
+}
+
+/// EACH ATTEMPT OF THE WALK OPENS `forward_once`, NAMING ITS LANE, under the unit's request span
+/// (status row 173; v1.5.5 `proxy/engine/walk.rs:382`: `forward_once`, `fields(lane = ..)`, at
+/// the hot-path level, `docs/observability.md` l.162-174), so the OTLP export carries the attempt
+/// beneath `forward` as 1.5.5's did. One span per member tried: a walk that fails over to a second
+/// member opens a second. RED before the walk opened it: no `forward_once` at all.
+#[tokio::test]
+async fn each_attempt_opens_forward_once_naming_its_lane_under_the_units_span() {
+    use tracing::Instrument as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let log = SpanLog::default();
+    let _subscribed =
+        tracing::subscriber::set_default(tracing_subscriber::registry().with(log.clone()));
+    let r = rig(Way::Double, BufferCaps::default(), cases::Book::default());
+    let (steps, far, caller) = (
+        common::TestUnits::passing(),
+        cases::Far::new(&["member-a"], &[]),
+        cases::Caller::default(),
+    );
+    let units = r
+        .driver
+        .unit(&steps, &far, &caller, cases::arrival("/v1", b"hi"), 0);
+    let _outcome = cases::drive(&units)
+        .instrument(tracing::span!(
+            busbar_kernel::observability::HOTPATH_LEVEL,
+            "forward"
+        ))
+        .await;
+    let seen = log.0.lock().unwrap().clone();
+    let once: Vec<&SpanSeen> = seen.iter().filter(|s| s.name == "forward_once").collect();
+    assert_eq!(once.len(), 1, "one attempt, one span: {seen:?}");
+    assert_eq!(once[0].parent, Some("forward"), "{seen:?}");
+    assert_eq!(
+        once[0].fields,
+        vec![("lane", "member-a".to_string())],
+        "1.5.5's one field, naming the member tried"
+    );
+}

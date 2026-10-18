@@ -1103,6 +1103,18 @@ impl<S: AttemptSteps, F: FarEnd, C: CallerEnd> super::PlaneUnits<'_, S, F, C> {
             if far_bound {
                 self.routing_tap(attempt_no, &member, self.far.remaining(run.token), failed);
             }
+            // THE ATTEMPT'S SPAN, one per member the walk tries (v1.5.5 `proxy/engine/walk.rs:382`:
+            // `forward_once`, its field `lane`, at the hot-path level), opened under the unit's
+            // request span and held until the attempt ends or fails over.
+            let _attempt_span = if far_bound {
+                tracing::span!(
+                    crate::observability::HOTPATH_LEVEL,
+                    "forward_once",
+                    lane = %member
+                )
+            } else {
+                tracing::Span::none()
+            };
             let mut request = OutboundRequest {
                 member,
                 pool,

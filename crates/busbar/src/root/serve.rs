@@ -511,6 +511,8 @@ pub struct ServedPlane {
     pub kernel: Arc<KernelServices>,
     /// Its tail's dialects, in order: what a unit's dialect index names.
     pub dialects: Vec<&'static str>,
+    /// Its tail's operation classes, in order: what a unit's operation class index names.
+    pub op_classes: Vec<&'static str>,
 }
 
 /// WHAT ONE GENERATION OF A DOOR PLANE IS SERVED OVER: its section as written, its refresh
@@ -1668,6 +1670,7 @@ pub(crate) fn compose_planes_over(
             live,
             kernel: Arc::clone(&kernel),
             dialects: served_facts.dialects.clone(),
+            op_classes: served_facts.op_classes.clone(),
         });
     }
     Ok(served)
@@ -2758,6 +2761,14 @@ pub fn door_mounts(
                     }),
                 };
             }
+            // THE ARRIVAL SPAN its claim states (status row 173), its callsite built here, once.
+            let arrival = routes.served.planes[plane]
+                .snapshot
+                .claims
+                .get(claim as usize)
+                .and_then(|c| {
+                    busbar_kernel::observability::arrival::ArrivalSpan::named(&c.arrival_span)
+                });
             let routes = Arc::clone(&routes);
             PlaneRouteSpec {
                 path,
@@ -2767,7 +2778,17 @@ pub fn door_mounts(
                     let routes = Arc::clone(&routes);
                     Box::pin(async move {
                         match DoorRequest::of(ctx) {
-                            Some(req) => routes.answer(plane, claim, req).await,
+                            Some(req) => match arrival {
+                                // The unit's request span (`forward`) opens under it.
+                                Some(arrival) => {
+                                    use tracing::Instrument as _;
+                                    routes
+                                        .answer(plane, claim, req)
+                                        .instrument(arrival.open())
+                                        .await
+                                }
+                                None => routes.answer(plane, claim, req).await,
+                            },
                             None => stated(
                                 (refusal_status(ReasonCode::PlanePanic), Vec::new()),
                                 Body::empty(),
@@ -3558,14 +3579,15 @@ impl DataRoutes {
         let late: crate::root::linked::node::Late =
             Box::new(move || report_of(&money, unit, &facts));
         // THE UNIT'S REQUEST SPAN, as the previous release's forward opened one around the whole
-        // walk (at the hot-path level, so the OTLP export carries it): the pool and the dialect the
-        // request was read in are recorded once the plane has read it.
+        // walk (at the hot-path level, so the OTLP export carries it; v1.5.5
+        // `proxy/engine/mod.rs:120`: `pool`, `ingress`, `op`, `request_id`): the pool, the dialect
+        // the request was read in and its operation class are recorded once the plane has read it.
         let span = tracing::span!(
             busbar_kernel::observability::HOTPATH_LEVEL,
             "forward",
-            plane = %served.instance,
             pool = tracing::field::Empty,
             ingress = tracing::field::Empty,
+            op = tracing::field::Empty,
             request_id = tracing::field::Empty
         );
         let ended = {
@@ -3594,6 +3616,9 @@ impl DataRoutes {
             }
             if let Some(dialect) = served.dialects.get(decoded.dialect as usize) {
                 span.record("ingress", *dialect);
+            }
+            if let Some(op) = served.op_classes.get(decoded.op_class as usize) {
+                span.record("op", *op);
             }
         }
         drop(span);
