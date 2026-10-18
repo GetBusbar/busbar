@@ -514,11 +514,12 @@ fn secret_field_must_be_string_or_base64_string() {
     assert!(validate_secret_fields(&bad_type).is_err());
 }
 
-/// `x-busbar-secret: true` nested under a root property — whether written inline or via a
-/// `$ref` into `$defs` (the shape struct-derivation naturally produces) — is rejected, not
-/// silently accepted.
+/// `x-busbar-secret: true` on a member of a nested OBJECT property — written inline or via a `$ref`
+/// into `$defs` (the shape struct-derivation naturally produces) — is ACCEPTED: `resolve_settings()`
+/// resolves a reference there (Q128 export-webhook M2, ruling). RED before the fix: the walk refused
+/// any marker below the root's own properties.
 #[test]
-fn nested_secret_field_is_rejected_inline_and_via_ref() {
+fn nested_secret_field_is_accepted_inline_and_via_ref() {
     let inline_nested = serde_json::json!({
         "$schema": SCHEMA_2020_12, "type": "object",
         "properties": {
@@ -528,7 +529,7 @@ fn nested_secret_field_is_rejected_inline_and_via_ref() {
             },
         },
     });
-    assert!(validate_secret_fields(&inline_nested).is_err());
+    validate_secret_fields(&inline_nested).unwrap();
 
     let ref_nested = serde_json::json!({
         "$schema": SCHEMA_2020_12, "type": "object",
@@ -540,7 +541,7 @@ fn nested_secret_field_is_rejected_inline_and_via_ref() {
             },
         },
     });
-    assert!(validate_secret_fields(&ref_nested).is_err());
+    validate_secret_fields(&ref_nested).unwrap();
 
     let flattened = serde_json::json!({
         "$schema": SCHEMA_2020_12, "type": "object",
@@ -1212,4 +1213,22 @@ fn pack_refuses_a_version_the_statement_does_not_state() {
         super::statement_version_is(b"not a rendering", &r.version).is_err(),
         "an unreadable rendering is refused, never passed"
     );
+}
+
+/// A marker resolve_settings() never reaches is still refused: under an array's `items`, a
+/// `patternProperties` value or `additionalProperties` (it walks plain object members only).
+#[test]
+fn a_secret_marker_under_an_array_or_a_map_is_rejected() {
+    let field = serde_json::json!({"type": "string", "x-busbar-secret": true});
+    for nested in [
+        serde_json::json!({"type": "array", "items": field}),
+        serde_json::json!({"type": "object", "patternProperties": {"^k": field}}),
+        serde_json::json!({"type": "object", "additionalProperties": field}),
+    ] {
+        let schema = serde_json::json!({
+            "$schema": SCHEMA_2020_12, "type": "object",
+            "properties": {"holder": nested},
+        });
+        assert!(validate_secret_fields(&schema).is_err(), "{schema}");
+    }
 }

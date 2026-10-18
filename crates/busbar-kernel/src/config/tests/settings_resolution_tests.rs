@@ -234,3 +234,70 @@ fn the_kernel_resolver_answers_the_same_at_config_time_for_a_built_in() {
     );
     std::env::remove_var(&var);
 }
+
+/// A NESTED SECRET REFERENCE RESOLVES (Q128 export-webhook M2, ruling: busbar pack accepts a nested
+/// `x-busbar-secret` marker and `resolve_settings` resolves it). A ref-shaped value inside a plain
+/// nested object (`auth_header.value`) is delivered resolved; a `{ literal: … }` below the root still
+/// passes verbatim; an array element is never entered. RED before the fix: only the root's own
+/// members resolved, so the nested ref reached the plugin as an unresolved object.
+#[test]
+fn a_nested_secret_ref_resolves_and_a_literal_or_array_does_not() {
+    let var = format!("BUSBAR_NESTED_SECRET_TEST_{}", std::process::id());
+    std::env::set_var(&var, "tok-9");
+    let resolver = SecretResolver::builtins_only();
+    let settings = obj(&[
+        (
+            "auth_header",
+            serde_json::json!({ "name": "Authorization", "value": { "env": var } }),
+        ),
+        (
+            "kept",
+            serde_json::json!({ "inner": { "literal": { "env": var } } }),
+        ),
+        ("list", serde_json::json!([{ "env": var }])),
+    ]);
+    let out = resolve_settings(
+        &settings,
+        &resolver,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .unwrap();
+    assert_eq!(
+        out.get("auth_header").unwrap(),
+        &serde_json::json!({ "name": "Authorization", "value": "tok-9" })
+    );
+    assert_eq!(
+        out.get("kept").unwrap(),
+        &serde_json::json!({ "inner": { "env": var } })
+    );
+    assert_eq!(
+        out.get("list").unwrap(),
+        &serde_json::json!([{ "env": var }])
+    );
+    std::env::remove_var(&var);
+}
+
+/// FAIL-CLOSED BELOW THE ROOT TOO: a nested ref that cannot resolve is a hard error naming its
+/// DOTTED PATH (`auth_header.value`), never the value. RED before the fix: the unresolved nested
+/// ref was handed to the plugin with no error at all.
+#[test]
+fn an_unresolvable_nested_secret_ref_fails_closed_naming_its_dotted_path() {
+    let var = format!("BUSBAR_NESTED_SECRET_MISSING_{}", std::process::id());
+    std::env::remove_var(&var);
+    let resolver = SecretResolver::builtins_only();
+    let settings = obj(&[(
+        "auth_header",
+        serde_json::json!({ "name": "Authorization", "value": { "env": var } }),
+    )]);
+    let err = resolve_settings(
+        &settings,
+        &resolver,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("'auth_header.value'"),
+        "names the dotted path: {err}"
+    );
+    assert!(!err.contains("Authorization"), "never a value: {err}");
+}
