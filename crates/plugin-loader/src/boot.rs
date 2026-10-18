@@ -806,6 +806,9 @@ pub struct Opening<'a> {
     /// resolved through it, in that order, into `OpenIn::secrets`, and stripped from the settings
     /// `open` is handed (ARCHITECT 2026-10-02).
     pub secrets: &'a dyn busbar_contract::secret::SecretResolve,
+    /// The config-time proof the boot that loads holds (THE DESIGN §11.11 R4): every declared
+    /// secret resolves through it, so a source that reads the disk answers on the host's lane.
+    pub scope: &'a busbar_contract::config_time::ConfigScope,
 }
 
 /// What [`load`] bound: `(instance, bound)`, in selection order.
@@ -872,7 +875,12 @@ fn open_ready<K: crate::dispatch::Kind>(
     let mut block = instance_settings(opening.doc, K::CODE, instance)
         .map(|(v, _)| v.clone())
         .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
-    let mut held = Secrets(resolve_secrets(&mut block, &keys, opening.secrets)?);
+    let mut held = Secrets(resolve_secrets(
+        &mut block,
+        &keys,
+        opening.secrets,
+        opening.scope,
+    )?);
     let blobs = held.blobs();
     let settings = serde_json::to_vec(&block).unwrap_or_default();
     let mut i: OpenIn = blank_in();
@@ -908,9 +916,10 @@ pub fn resolve_secrets(
     block: &mut serde_json::Value,
     keys: &[String],
     resolver: &dyn busbar_contract::secret::SecretResolve,
+    scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Vec<Vec<u8>>, String> {
     keys.iter()
-        .map(|path| resolve_one(block, path, resolver))
+        .map(|path| resolve_one(block, path, resolver, scope))
         .collect()
 }
 
@@ -922,6 +931,7 @@ fn resolve_one(
     block: &mut serde_json::Value,
     path: &str,
     resolver: &dyn busbar_contract::secret::SecretResolve,
+    scope: &busbar_contract::config_time::ConfigScope,
 ) -> Result<Vec<u8>, String> {
     let Some(found) = take_path(block, path) else {
         return Ok(Vec::new());
@@ -929,7 +939,7 @@ fn resolve_one(
     let r: busbar_contract::secret_ref::SecretRef =
         serde_json::from_value(found).map_err(not_a_reference(format!("settings.{path}")))?;
     resolver
-        .resolve(&r)
+        .resolve_at_config(&r, scope)
         .map_err(|e| format!("settings.{path}: the secret did not resolve: {e}"))
 }
 

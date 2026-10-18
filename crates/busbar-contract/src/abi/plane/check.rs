@@ -27,15 +27,16 @@ use super::{
     PlaneDriveOut, PlaneSnapshot, PlaneTail, ProjectOut, RecordChain, RecordWrite, RefusalOut,
     RefusalStatus, RouteCost, ServeOut, TrustKey, UnitCount, CANCEL_ABORTED, CANCEL_OK_PARTIAL,
     CHAIN_DIGESTS_SCOPE, CHAIN_LENGTH_PREFIXED, CHAIN_PIPE_SEPARATED, CLAIM_EXACT, CLAIM_OPEN,
-    CLAIM_PATTERN, CLAIM_TICKET, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END, EMIT_TO_FAR_END,
-    EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP, INGRESS_DUPLEX_SESSION,
-    INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM, INGRESS_SUBSCRIPTION, MAX_METRIC_LANES,
-    MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT, PIECE_OUT_TEXT, PIN_FINGERPRINT,
-    PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT, REFUSAL_ANY_DIALECT, REFUSED_UNSUPPORTED_ACTION,
-    ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED, ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL,
-    ROUTE_PUBLIC, ROUTE_SCOPE, ROUTE_SCOPE_LOCAL, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE,
-    SHAPE_WHOLE, TAIL_FALLBACK, TAIL_HOOKS_GATED, TAIL_PROBES, TAIL_REFUSED_PIECE, TAP_FAULT_NONE,
-    TRUST_ITEM_APPROVALS, TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
+    CLAIM_PATTERN, CLAIM_RAW_AFFIX, CLAIM_TICKET, EMIT_DONE, EMIT_FINAL_STATUS, EMIT_MESSAGE_END,
+    EMIT_TO_FAR_END, EMIT_UNWATCH_CATALOGUE, EMIT_WATCH_CATALOGUE, INGRESS_ACCEPT_LOOP,
+    INGRESS_DUPLEX_SESSION, INGRESS_REQUEST_RESPONSE, INGRESS_RESPONSE_STREAM,
+    INGRESS_SUBSCRIPTION, MAX_METRIC_LANES, MAX_REFUSAL_TEXT, MECHANISM_PEER_KEY, MECHANISM_ROOT,
+    PIECE_OUT_TEXT, PIN_FINGERPRINT, PRINCIPAL_OPTIONAL, RECORD_AUDIT, RECORD_PUT,
+    REFUSAL_ANY_DIALECT, REFUSED_UNSUPPORTED_ACTION, ROUTE_CARRIES_OWN_TOKEN, ROUTE_COUNTED,
+    ROUTE_DIRECT, ROUTE_LOCAL, ROUTE_ONCE, ROUTE_POOL, ROUTE_PUBLIC, ROUTE_SCOPE,
+    ROUTE_SCOPE_LOCAL, ROUTE_SESSION, ROUTE_STREAM, SHAPE_PIECEWISE, SHAPE_WHOLE, TAIL_FALLBACK,
+    TAIL_HOOKS_GATED, TAIL_PROBES, TAIL_REFUSED_PIECE, TAP_FAULT_NONE, TRUST_ITEM_APPROVALS,
+    TRUST_PIN, TRUST_PRIVATE_REACH, UNITS_ESTIMATED, VERDICT_HARD,
 };
 use crate::abi::hook::{
     signal, MessageView, SignalEntry, REQUEST_HAS_MAX_TOKENS, REQUEST_HAS_TOOLS, REQUEST_STREAM,
@@ -1036,7 +1037,7 @@ pub fn check_claims(claims: &[Claim], dialects_len: u64) -> Result<(), Fault> {
         named(c.carrier, "claim.carrier")?;
         bits(
             u64::from(c.flags),
-            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_TICKET),
+            u64::from(CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN | CLAIM_RAW_AFFIX | CLAIM_TICKET),
             "claim.flags",
         )?;
         if dialects_len > 0 || c.refusal_dialect != 0 {
@@ -1089,10 +1090,34 @@ pub fn check_claim_target(target: &str, flags: u32) -> Result<(), Fault> {
     if flags & CLAIM_EXACT != 0 && flags & CLAIM_PATTERN != 0 {
         return Err(fault(Rule::Contradiction, "claim.flags"));
     }
+    if flags & CLAIM_RAW_AFFIX != 0 {
+        if flags & (CLAIM_OPEN | CLAIM_EXACT | CLAIM_PATTERN) != 0 {
+            return Err(fault(Rule::Contradiction, "claim.flags"));
+        }
+        raw_affix(target).ok_or_else(|| fault(Rule::Contradiction, "claim.affix"))?;
+    }
     if flags & CLAIM_PATTERN != 0 {
         pattern_shape(target)?;
     }
     Ok(())
+}
+
+/// A [`CLAIM_RAW_AFFIX`] target's two affixes, `(prefix, suffix)`, or `None` when it is not one:
+/// exactly one `*`, a prefix that starts with `/`, and a non-empty suffix.
+#[must_use]
+pub fn raw_affix(target: &str) -> Option<(&str, &str)> {
+    let (prefix, suffix) = target.split_once('*')?;
+    (prefix.starts_with('/') && !suffix.is_empty() && !suffix.contains('*'))
+        .then_some((prefix, suffix))
+}
+
+/// Whether the raw, undecoded request `path` matches the [`CLAIM_RAW_AFFIX`] target `target`: it
+/// starts with the prefix and ends with the suffix, as bytes and nothing else. A target that is no
+/// raw affix matches nothing.
+#[must_use]
+pub fn raw_affix_matches(target: &str, path: &str) -> bool {
+    raw_affix(target)
+        .is_some_and(|(prefix, suffix)| path.starts_with(prefix) && path.ends_with(suffix))
 }
 
 /// A [`CLAIM_PATTERN`] target read as its segment pattern, by the one grammar

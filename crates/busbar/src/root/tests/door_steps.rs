@@ -768,7 +768,13 @@ fn resolve_upgrading(
         models: None,
         upgrades,
     };
-    super::member_routes(&section, &DoorPools::of(&section), served, &reach)
+    super::member_routes(
+        &section,
+        &DoorPools::of(&section),
+        served,
+        &reach,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
 }
 
 /// SEAM-L(n), `spelled_for`: a need over a framer composed over the base URL's carrier dials the
@@ -1400,8 +1406,14 @@ async fn a_member_under_an_oauth_grant_presents_its_minted_then_refreshed_bearer
             dialects: vec!["d"],
             ..Default::default()
         };
-        let routes = super::member_routes(&section, &DoorPools::of(&section), &facts, &reach)
-            .expect("the member resolves");
+        let routes = super::member_routes(
+            &section,
+            &DoorPools::of(&section),
+            &facts,
+            &reach,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .expect("the member resolves");
         let _ = std::fs::remove_file(&key_file);
         let binding = routes["m"].auth.clone().expect("its credential is bound");
         assert!(
@@ -1567,7 +1579,13 @@ fn jwt_bearer_routes(
         dialects: vec!["d"],
         ..Default::default()
     };
-    let routes = super::member_routes(&section, &DoorPools::of(&section), &facts, &reach);
+    let routes = super::member_routes(
+        &section,
+        &DoorPools::of(&section),
+        &facts,
+        &reach,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    );
     let _ = std::fs::remove_file(&key_file);
     routes
 }
@@ -6765,10 +6783,14 @@ fn a_bearer_placement_presents_the_secret_only_as_the_bearer() {
     let path = own_secret("bearer", "s3cr3t-vendor-token\n");
     let reach = own_reach();
     for placement in [", placement: bearer", ""] {
-        let binding =
-            super::upstream_credential_binding("planner", &registration(&path, placement), &reach)
-                .expect("it binds")
-                .expect("an upstream credential is a binding");
+        let binding = super::upstream_credential_binding(
+            "planner",
+            &registration(&path, placement),
+            &reach,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        )
+        .expect("it binds")
+        .expect("an upstream credential is a binding");
         assert!(
             !binding.passthrough,
             "busbar's own credential, never the caller's"
@@ -6791,9 +6813,14 @@ fn a_bearer_placement_presents_the_secret_only_as_the_bearer() {
     let bare: serde_yaml::Value =
         serde_yaml::from_str("url: 'https://agent.vendor/planner'").expect("yaml");
     assert!(
-        super::upstream_credential_binding("planner", &bare, &reach)
-            .expect("no block is no error")
-            .is_none(),
+        super::upstream_credential_binding(
+            "planner",
+            &bare,
+            &reach,
+            &busbar_contract::config_time::ConfigScope::config_time()
+        )
+        .expect("no block is no error")
+        .is_none(),
         "no upstream_credential: nothing is bound, so nothing is presented"
     );
     let _ = std::fs::remove_file(&path);
@@ -6810,6 +6837,7 @@ fn a_named_header_placement_presents_the_secret_verbatim_in_that_header() {
         "planner",
         &registration(&path, ", placement: {header: X-API-Key}"),
         &reach,
+        &busbar_contract::config_time::ConfigScope::config_time(),
     )
     .expect("it binds")
     .expect("a binding");
@@ -6827,6 +6855,7 @@ fn a_named_header_placement_presents_the_secret_verbatim_in_that_header() {
         "planner",
         &registration(&path, ", placement: {header: ''}"),
         &reach,
+        &busbar_contract::config_time::ConfigScope::config_time(),
     ));
     assert!(err.contains("member 'planner'"), "{err}");
     let _ = std::fs::remove_file(&path);
@@ -6846,6 +6875,7 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
         "planner",
         &registration(missing, ""),
         &reach,
+        &busbar_contract::config_time::ConfigScope::config_time(),
     ));
     assert!(
         err.contains("member 'planner'") && err.contains("cannot resolve"),
@@ -6868,15 +6898,25 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
                 block.insert(key, serde_yaml::Value::from(ms));
             }
         }
-        let err = refused(super::upstream_credential_binding("planner", &bare, &reach));
+        let err = refused(super::upstream_credential_binding(
+            "planner",
+            &bare,
+            &reach,
+            &busbar_contract::config_time::ConfigScope::config_time(),
+        ));
         assert!(
             err.contains("member 'planner'") && err.contains("lease_ttl_ms"),
             "{err}"
         );
     }
-    let (_, per) = super::upstream_credential("planner", &registration(&path, ""), &reach)
-        .expect("it binds")
-        .expect("a binding");
+    let (_, per) = super::upstream_credential(
+        "planner",
+        &registration(&path, ""),
+        &reach,
+        &busbar_contract::config_time::ConfigScope::config_time(),
+    )
+    .expect("it binds")
+    .expect("a binding");
     use busbar_contract::auth_calls::PerRequestHandle as _;
     let first = per
         .handle_now()
@@ -6887,7 +6927,7 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
         Some(first),
         "a hop before the next refresh presents what the last refresh left"
     );
-    per.refresh();
+    per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
     for _ in 0..8 {
         assert_eq!(
             per.handle_now(),
@@ -6896,7 +6936,7 @@ fn an_unresolvable_credential_fails_closed_and_names_the_member() {
         );
     }
     std::fs::write(&path, "tok").expect("put it back");
-    per.refresh();
+    per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
     assert!(
         per.handle_now().is_some(),
         "a refresh that finds it back serves it again"
@@ -6933,6 +6973,7 @@ fn a_secret_pasted_as_its_reference_is_never_echoed_in_the_refusal() {
             "planner",
             &registration,
             &reach,
+            &busbar_contract::config_time::ConfigScope::config_time(),
         ));
         assert!(
             !err.contains(SECRET),
@@ -7061,7 +7102,7 @@ fn a_rotated_secret_is_presented_on_the_first_hop_after_the_next_refresh() {
         vec![("authorization".to_string(), "Bearer old-token".to_string())]
     );
 
-    per.refresh();
+    per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
     assert_eq!(
         opens(),
         1,
@@ -7073,7 +7114,7 @@ fn a_rotated_secret_is_presented_on_the_first_hop_after_the_next_refresh() {
         Some(first),
         "a hop before the next refresh presents what the last refresh left"
     );
-    per.refresh();
+    per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
     let next = per.handle_now().expect("it resolves");
     assert_ne!(
         next, first,
@@ -7085,7 +7126,7 @@ fn a_rotated_secret_is_presented_on_the_first_hop_after_the_next_refresh() {
         vec![("authorization".to_string(), "Bearer new-token".to_string())],
         "the first hop after the refresh presents the new value"
     );
-    per.refresh();
+    per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
     assert_eq!(per.handle_now(), Some(next));
     assert_eq!(
         opens(),
@@ -7107,6 +7148,7 @@ fn a_rotated_header_credential_is_presented_in_the_same_header() {
         "planner",
         &registration(&path, ", placement: {header: X-API-Key}"),
         &reach,
+        &busbar_contract::config_time::ConfigScope::config_time(),
     )
     .expect("it binds")
     .expect("a binding");
@@ -7117,7 +7159,7 @@ fn a_rotated_header_credential_is_presented_in_the_same_header() {
         vec![("x-api-key".to_string(), "key-old".to_string())]
     );
     rotate(&path, "key-new");
-    per.refresh();
+    per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
     let next = per.handle_now().expect("it resolves");
     assert_ne!(next, first, "the rotation re-opened the binding");
     assert_eq!(
@@ -7165,7 +7207,7 @@ fn hops_racing_a_rotation_each_present_one_whole_value() {
             "value-old-0000000000"
         };
         rotate(&path, value);
-        per.refresh();
+        per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -7257,7 +7299,7 @@ fn a_hop_resolves_nothing_and_takes_no_lock() {
     );
     drop(held);
 
-    per.refresh();
+    per.refresh(&busbar_contract::config_time::ConfigScope::config_time());
     assert_eq!(resolved(), built + 1, "a refresh resolves, once");
     let _ = std::fs::remove_file(&path);
 }
@@ -7345,7 +7387,9 @@ fn an_open_runs_under_no_lock_a_hop_waits_on() {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(release_rx);
     let refreshing = std::sync::Arc::clone(&per);
-    let refresh = std::thread::spawn(move || refreshing.refresh());
+    let refresh = std::thread::spawn(move || {
+        refreshing.refresh(&busbar_contract::config_time::ConfigScope::config_time())
+    });
     entered_rx
         .recv_timeout(std::time::Duration::from_secs(5))
         .expect("the refresh reached the auth plugin's open");
