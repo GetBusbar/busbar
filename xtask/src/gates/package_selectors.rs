@@ -1357,8 +1357,8 @@ mod tests {
         scan_json_commands(
             "qa/x.json",
             "{\n  \"run\": \"m=$(cargo metadata --locked); cargo build -p busbar-kernel\",\n\
-             \x20 \"summary\": \"it ran `cargo test -p busbar-llm --lib x` and found nothing\",\n\
-             \x20 \"positive_control\": \"cargo test -p busbar-llm usage (run in the pin)\"\n}\n",
+             \x20 \"summary\": \"it ran `cargo test -p busbar-plane-llm --lib x` and found nothing\",\n\
+             \x20 \"positive_control\": \"cargo test -p busbar-plane-llm usage (run in the pin)\"\n}\n",
             &mut out,
         );
         assert_eq!(

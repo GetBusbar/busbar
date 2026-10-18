@@ -453,7 +453,7 @@ pub fn scan(cx: &Ctx, a: &Addresses, corpus: Option<&Corpus>, t: &Tables, f: &mu
 /// The names already in the 46 that now also pair busbar-plane-llm (`claims.rs`, `diagnostics.rs`,
 /// `meta.rs`, `attempt`, `claim`, `dialect_auth`, `encode`, `settle` and the rest) are NOT counted
 /// again. #1161's own new code adds no pair: its one new plane-llm file (`exchange/catalog.rs`)
-/// names its listing `Listing` / `render_listing`, so it duplicates nothing.
+/// names its listing `ModelsCatalogAnswer` / `render_listing`, so it duplicates nothing.
 ///
 /// MANDATORY DRAIN (owner: lane a29e9b3, busbar-llm retirement): the busbar-plane-llm extraction
 /// (status row 106, the #1072 recipe) re-lowers UNLEDGERED_ARMED to the measure after extraction in
