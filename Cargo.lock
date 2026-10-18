@@ -388,7 +388,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-oauth"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=b0f504e1b0874c72759848ff158c0bd1c8d6d050#b0f504e1b0874c72759848ff158c0bd1c8d6d050"
+source = "git+https://github.com/GetBusbar/busbar-auth-oauth?rev=1a06c16ff63562d8ec5b4101737f49ca9bbe002b#1a06c16ff63562d8ec5b4101737f49ca9bbe002b"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -396,7 +396,6 @@ dependencies = [
  "ring",
  "serde",
  "serde_json",
- "serde_urlencoded",
  "sha2",
  "zeroize",
 ]
