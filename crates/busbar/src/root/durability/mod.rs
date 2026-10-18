@@ -480,6 +480,14 @@ impl Durability {
         Ok(ack)
     }
 
+    /// HOW MANY SEALED BALANCES THIS NODE HOLDS IN MEMORY beside its live book: every balance of
+    /// every checkpoint it keeps. The measure of the bound the Q128 kernel-ledger ruling sets (A1):
+    /// one live book, the unsealed deltas, and at most one sealed snapshot in flight.
+    #[cfg(test)]
+    pub(crate) fn sealed_balances_held(&self) -> usize {
+        self.checkpoints.iter().map(|c| c.totals.len()).sum()
+    }
+
     /// The newest migration marker on the chain, if this deployment has migrated.
     ///
     /// The same replay [`JournalMigrationRecords::read_marker`] does, reachable without a durability
