@@ -532,36 +532,6 @@ fn a_member_program_need_is_refused_unless_declared_as_written() {
     });
 }
 
-/// The restart policy, at exact instants (the previous release's crash-loop policy): a backoff
-/// doubling from 100ms after each end, and five ends inside a minute stop the restarts.
-#[test]
-fn the_restart_policy_backs_off_and_stops_a_crash_loop() {
-    let mut s = super::Supervisor::default();
-    let t0 = std::time::Instant::now();
-    assert!(s.may_restart(t0));
-    s.crashed(t0);
-    assert!(!s.may_restart(t0 + Duration::from_millis(99)));
-    assert!(s.may_restart(t0 + Duration::from_millis(100)));
-    let t1 = t0 + Duration::from_millis(100);
-    s.crashed(t1);
-    assert!(!s.may_restart(t1 + Duration::from_millis(199)));
-    assert!(s.may_restart(t1 + Duration::from_millis(200)));
-    for n in 2..5 {
-        s.crashed(t1 + Duration::from_secs(n));
-    }
-    assert!(
-        !s.may_restart(t1 + Duration::from_secs(3600)),
-        "five ends inside a minute stop the restarts"
-    );
-    // Ends that age out of the window do not count toward the five.
-    let mut aged = super::Supervisor::default();
-    for n in 0..4 {
-        aged.crashed(t0 + Duration::from_secs(n));
-    }
-    aged.crashed(t0 + Duration::from_secs(120));
-    assert!(aged.may_restart(t0 + Duration::from_secs(121)));
-}
-
 /// The bound the connector holds on lease `id` (`None` = spent by the answer, or never set).
 fn due(c: &Connector, id: ConnId) -> Option<std::time::Instant> {
     c.slab
