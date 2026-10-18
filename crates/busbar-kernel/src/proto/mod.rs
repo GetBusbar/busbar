@@ -167,8 +167,8 @@ pub fn residual_default_dialect() -> Option<&'static str> {
 // so it names no protocol submodule: delete a protocol and the marker is simply never injected.
 // RELOCATED DOWN to `busbar_kernel::proto`; re-exported here at its historical path.
 
-// The NEUTRAL streaming-translator seam (`StreamTranslator` trait, `install_stream_translator_factory`
-// and the `new_stream_translator` construction seam) lives in `installed.rs`, exported below.
+// No streaming-translator factory is installed in the kernel: a plane builds its own translator
+// inside its door (the kernel's walk never translates a stream).
 // The neutral `StreamTranslator` trait RELOCATED DOWN to `busbar_kernel::proto`; re-exported here
 // at its historical `busbar_kernel::proto::StreamTranslator` path so core's forward path is unchanged.
 
@@ -180,7 +180,7 @@ pub fn residual_default_dialect() -> Option<&'static str> {
 // drained core's own suite of any dependence on the witnessed codec: the concrete-codec tests moved
 // beside the types they exercise, in the plugin crate's own test tree, where they name
 // `crate::proto_codec::…` in the plugin. Production core drives translation through the neutral
-// `DialectCodec` seam + the installed `StreamTranslator` factory and names none of these.
+// `DialectCodec` seam and names none of these.
 
 // `find_frame_terminator` and `parse_sse_frame` RELOCATED DOWN to `busbar_kernel::proto` (a
 // dialect's stream translator and reassembler drive them); re-exported here at their
