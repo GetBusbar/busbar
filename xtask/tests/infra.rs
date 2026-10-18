@@ -597,7 +597,22 @@ fn the_plane_key_contract_matches_plane_keys_sh() {
         "xtask::planes::PLANE_KEYS_KIND_ONLY and scripts/plane-keys.sh's PLANE_KEYS_KIND_ONLY are ONE list"
     );
     let src = planes::plane_src_roots();
-    assert_eq!(src[0], "crates/busbar-llm/src");
+    // The llm key's root is its door crate since the retired engine crate was deleted (DEV-GREEN
+    // row 83): a key pointing at a deleted directory judges nothing (row 115).
+    assert_eq!(src[0], "crates/busbar-plane-llm/src");
+    for r in &src {
+        assert!(
+            repo_root().join(r).is_dir(),
+            "plane key root `{r}` is listed but is not a directory in this tree -- a gate keyed on \
+             it would scan zero files and pass every ban silently"
+        );
+    }
+    // The shell's twin mapping says the same: `plane_ondisk_key llm` is `plane-llm`.
+    assert!(
+        keys_sh_text().contains("    llm) printf 'plane-llm' ;;"),
+        "scripts/plane-keys.sh's plane_ondisk_key must map llm to its door crate, as \
+         xtask::planes::plane_key_crate does"
+    );
     assert!(!src.contains(&"crates/busbar-llm-codec/src".to_string()));
     assert!(!src.contains(&"crates/busbar-voice-codec/src".to_string()));
     // READ THE SHELL, DO NOT RESTATE IT. This assertion used to be a literal copy of
@@ -1708,4 +1723,9 @@ fn no_deferral_refuses_a_tracked_file_hidden_from_discovery_by_name() {
         "the row names the hidden file {rel} and says UNPROVEN: {}",
         floor.detail
     );
+}
+
+fn keys_sh_text() -> String {
+    std::fs::read_to_string(repo_root().join("scripts/plane-keys.sh"))
+        .expect("scripts/plane-keys.sh is readable")
 }
