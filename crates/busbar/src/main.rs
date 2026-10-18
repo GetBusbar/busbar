@@ -1049,10 +1049,11 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     if let Some(refusal) = root::serve::lines::refusal() {
         die(refusal);
     }
+    // The flag passed settles it: a launch that asked for the line carrier is served on
+    // it or refused by it (`serve_lines` refuses when no served plane claims the carrier), and never
+    // falls through to the listeners its supervisor did not ask for.
     let mut served = served;
-    let line_served = (line_flag_passed(std::env::args())
-        && root::serve::lines::line_claim(&served).is_some())
-    .then(|| std::mem::take(&mut served));
+    let line_served = line_flag_passed(std::env::args()).then(|| std::mem::take(&mut served));
     // Each data-chain auth with the points its opened instance declares (THE DESIGN §6): a line's
     // point set is their union, and the guest list's seal judges it.
     let data_chain: Vec<root::serve::ChainAuth> = data_chain
@@ -1256,6 +1257,9 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // crash).
     // ONE signal fans out to BOTH listeners (data + admin) so both planes drain together.
     let (shutdown_tx, _keep_open) = tokio::sync::broadcast::channel::<()>(1);
+    // The line-serve mode's own subscription, taken before the signal task below can send, so a
+    // signal that lands while boot finishes still stops the line carrier.
+    let line_shutdown = line_served.as_ref().map(|_| shutdown_tx.subscribe());
     // Publish the sender so `POST /admin/restart` can trigger the SAME drain a signal does. A
     // process-global is the honest home: restarting is a process-wide act, not a property of an
     // `App` snapshot, and `AppHandle` is built before this channel exists.
@@ -1299,17 +1303,21 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     // every frame; what changes is only the transport: busbar is somebody's CHILD PROCESS here, so
     // it binds no listener at all (a child that opened ports would be a network server its
     // supervisor never asked for) and speaks newline-delimited JSON-RPC on its own stdin/stdout.
-    // EOF on stdin is the shutdown signal, and the tail below is the listener path's own shutdown
-    // tail (`root::shutdown::tail`): the final budget/metering flush, the plane record write-behind
-    // and the journal's lane to the store, all drained before the process exits.
+    // EOF on stdin ends the serve, and so does the shutdown signal the listener path drains on
+    // (SIGINT/SIGTERM, caught above for both modes): either one runs the listener path's own
+    // shutdown tail (`root::shutdown::tail`): the final budget/metering flush, the plane record
+    // write-behind and the journal's lane to the store, all drained before the process exits.
     // The mode is served when a served door plane, compiled in or dropped in, claims the stdio
-    // transport. With none there is nothing to serve on stdin/stdout, so the build falls through to
-    // its listener path.
+    // transport. With none there is nothing to serve on stdin/stdout, and `serve_lines` refuses:
+    // nonzero exit, the sentence on stderr, no listener bound.
     if let Some(served) = line_served {
-        let code = root::serve::lines::serve_lines(served, app_handle.clone(), || {
-            root::kernel::ROOT_CARD.pin()
-        })
-        .await;
+        let stop = recv_shutdown(line_shutdown.unwrap_or_else(|| shutdown_tx.subscribe()));
+        let code = tokio::select! {
+            code = root::serve::lines::serve_lines(served, app_handle.clone(), || {
+                root::kernel::ROOT_CARD.pin()
+            }) => code,
+            () = stop => 0,
+        };
         let gov = app_handle.load().governance.clone();
         root::shutdown::tail(gov, &late_services, book.as_ref().map(|b| &b.durability)).await;
         std::process::exit(code);
