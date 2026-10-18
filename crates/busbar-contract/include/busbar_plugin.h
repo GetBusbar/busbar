@@ -4052,7 +4052,7 @@ struct bb_hio_SpawnIn {
     size_t env_len;
 };
 
-/* ---- layout proof: 287 of 291 structures are pinned by the golden ---- */
+/* ---- layout proof: 290 of 294 structures are pinned by the golden ---- */
 #if UINTPTR_MAX == UINT64_MAX
 #ifdef __cplusplus
 #define BB_ASSERT(c, m) static_assert(c, m)
@@ -5485,13 +5485,14 @@ BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneDriveOut) == 8, "bb_plane_PlaneDriveOut: alig
 BB_ASSERT(offsetof(bb_plane_PlaneDriveOut, head) == 0, "bb_plane_PlaneDriveOut.head: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneDriveOut, sessions_written) == 96, "bb_plane_PlaneDriveOut.sessions_written: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneDriveOut, sessions_needed) == 100, "bb_plane_PlaneDriveOut.sessions_needed: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneCancelIn) == 128, "bb_plane_PlaneCancelIn: size");
+BB_ASSERT(sizeof(bb_plane_PlaneCancelIn) == 136, "bb_plane_PlaneCancelIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneCancelIn) == 8, "bb_plane_PlaneCancelIn: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneCancelIn, cancel) == 0, "bb_plane_PlaneCancelIn.cancel: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneCancelIn, records_buf) == 96, "bb_plane_PlaneCancelIn.records_buf: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneCancelIn, records_cap) == 104, "bb_plane_PlaneCancelIn.records_cap: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneCancelIn, arena_buf) == 112, "bb_plane_PlaneCancelIn.arena_buf: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneCancelIn, arena_cap) == 120, "bb_plane_PlaneCancelIn.arena_cap: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneCancelIn, unit) == 128, "bb_plane_PlaneCancelIn.unit: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneCancelOut) == 120, "bb_plane_PlaneCancelOut: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneCancelOut) == 8, "bb_plane_PlaneCancelOut: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneCancelOut, cancel) == 0, "bb_plane_PlaneCancelOut.cancel: offset");
