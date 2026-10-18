@@ -696,7 +696,11 @@ fn pending_wake_resumes_without_blocking_the_runtime() {
             .unwrap();
         rt.block_on(async {
             let r = rig(way, BufferCaps::default(), Book::default());
-            let (steps, far, caller) = (TestUnits::passing(), Far::new(&["pend"], CHUNKS), Caller::default());
+            let (steps, far, caller) = (
+                TestUnits::passing(),
+                Far::new(&["pend"], CHUNKS),
+                Caller::default(),
+            );
             let ticks = Arc::new(AtomicU64::new(0));
             let ticker = {
                 let ticks = ticks.clone();
@@ -707,10 +711,15 @@ fn pending_wake_resumes_without_blocking_the_runtime() {
                     }
                 })
             };
-            let units = r.driver.unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
+            let units = r
+                .driver
+                .unit(&steps, &far, &caller, arrival("/call", b"x"), 0);
             let outcome = drive(&units).await;
             ticker.abort();
-            assert!(matches!(outcome, Outcome::Completed), "{way:?}: {outcome:?}");
+            assert!(
+                matches!(outcome, Outcome::Completed),
+                "{way:?}: {outcome:?}"
+            );
             assert_eq!(caller.text(), "hello far end");
             // COUNTED, NOT TIMED. On this current-thread runtime the spawned ticker is polled only
             // when the driving future yields, so one tick means the thread was handed back while
