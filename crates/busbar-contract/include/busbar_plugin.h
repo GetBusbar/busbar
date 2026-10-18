@@ -454,6 +454,7 @@ extern "C" {
 #define BB_PLANE_MECHANISM_PEER_KEY UINT32_C(2) /* [`PinMechanism::flags`], on a root only: the mechanism's key material is the FAR END'S KEY, a pin */
 #define BB_PLANE_MAX_METRIC_LANES ((size_t)16) /* The most lane words a plane's tail may declare ([`PlaneTail::metric_lanes`]). */
 #define BB_PLANE_EXT_OWNED "owned" /* A plane `refresh`'s EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in */
+#define BB_PLANE_MAX_ARRIVAL_SPAN ((size_t)64) /* The longest arrival span name a snapshot may state ([`PlaneSnapshot::arrival_spans`]). */
 
 /* transport */
 #define BB_TRANSPORT_MAX_PIECES UINT64_C(4096) /* The most frame pieces one framer answer may produce. */
@@ -2712,6 +2713,8 @@ struct bb_plane_PlaneSnapshot {
     bb_mech_Blob resource_facts;
     const bb_mech_AbiStr *listed;
     size_t listed_len;
+    const bb_mech_AbiStr *arrival_spans;
+    size_t arrival_spans_len;
 };
 
 /* ONE PROVIDER'S DIALECT FACTS, as a plane receives them at `open` (THE DESIGN section 4: a */
@@ -5265,7 +5268,7 @@ BB_ASSERT(offsetof(bb_plane_AdminRoute, target) == 16, "bb_plane_AdminRoute.targ
 BB_ASSERT(offsetof(bb_plane_AdminRoute, flags) == 32, "bb_plane_AdminRoute.flags: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, _reserved) == 36, "bb_plane_AdminRoute._reserved: offset");
 BB_ASSERT(offsetof(bb_plane_AdminRoute, audit_verb) == 40, "bb_plane_AdminRoute.audit_verb: offset");
-BB_ASSERT(sizeof(bb_plane_PlaneSnapshot) == 144, "bb_plane_PlaneSnapshot: size");
+BB_ASSERT(sizeof(bb_plane_PlaneSnapshot) == 160, "bb_plane_PlaneSnapshot: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneSnapshot) == 8, "bb_plane_PlaneSnapshot: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, size) == 0, "bb_plane_PlaneSnapshot.size: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, _reserved) == 4, "bb_plane_PlaneSnapshot._reserved: offset");
@@ -5280,6 +5283,8 @@ BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, resource_metadata) == 88, "bb_plane_P
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, resource_facts) == 104, "bb_plane_PlaneSnapshot.resource_facts: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, listed) == 128, "bb_plane_PlaneSnapshot.listed: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, listed_len) == 136, "bb_plane_PlaneSnapshot.listed_len: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, arrival_spans) == 144, "bb_plane_PlaneSnapshot.arrival_spans: offset");
+BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, arrival_spans_len) == 152, "bb_plane_PlaneSnapshot.arrival_spans_len: offset");
 BB_ASSERT(sizeof(bb_plane_ProviderFacts) == 56, "bb_plane_ProviderFacts: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ProviderFacts) == 8, "bb_plane_ProviderFacts: alignment");
 BB_ASSERT(offsetof(bb_plane_ProviderFacts, name) == 0, "bb_plane_ProviderFacts.name: offset");

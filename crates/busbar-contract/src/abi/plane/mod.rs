@@ -1529,7 +1529,20 @@ pub struct PlaneSnapshot {
     pub listed: *const AbiStr,
     /// How many.
     pub listed_len: usize,
+    /// THE ARRIVAL SPANS of its claims (status row 173: the request span a route's arrival opens,
+    /// as the previous release's ingress entry spans did), PARALLEL to [`PlaneSnapshot::claims`]:
+    /// entry `i` names the span an arrival on `claims[i]` opens, empty = that claim opens none. Each
+    /// name is DATA the kernel builds one tracing callsite for when it binds the snapshot, never per
+    /// request; a non-empty name is `[a-z0-9_]`, at most [`MAX_ARRIVAL_SPAN`] bytes. NULL/0 = no
+    /// claim opens one; any other length than `claims_len` refuses the snapshot. A tail addition: a
+    /// snapshot whose `size` ends before it opens none, and the host reads nothing past that `size`.
+    pub arrival_spans: *const AbiStr,
+    /// How many: `0` or `claims_len`.
+    pub arrival_spans_len: usize,
 }
+
+/// The longest arrival span name a snapshot may state ([`PlaneSnapshot::arrival_spans`]).
+pub const MAX_ARRIVAL_SPAN: usize = 64;
 
 /// ONE PROVIDER'S DIALECT FACTS, as a plane receives them at `open` (THE DESIGN section 4: a
 /// plane receives, at open, the dialect fields of the providers it references and resolves model

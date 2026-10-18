@@ -1641,6 +1641,8 @@ pub struct OwnedClaim {
     /// The dialect a refusal on this route wears before `arrive` has read the arrival (an index
     /// into the tail's dialects, opaque to the host): the guest-list line's dialect.
     pub refusal_dialect: u16,
+    /// The span an arrival on it opens (`PlaneSnapshot::arrival_spans`); empty = none.
+    pub arrival_span: String,
 }
 
 /// One admin route of a snapshot, owned by the host.
@@ -1725,7 +1727,9 @@ fn owned_str(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<Option<
 /// are judged here by the contract's element checks before any element string is read: a claim's
 /// refusal dialect against the `dialects` its tail declares.
 pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<OwnedSnapshot> {
-    use busbar_contract::abi::plane::check::{check_admin_routes, check_claims, check_listed};
+    use busbar_contract::abi::plane::check::{
+        check_admin_routes, check_arrival_spans, check_claims, check_listed,
+    };
     if p.is_null() {
         return None;
     }
@@ -1750,21 +1754,40 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
     } else {
         unsafe { std::slice::from_raw_parts(s.listed, s.listed_len) }
     };
+    // SAFETY: as above; a snapshot from before the list was appended reads NULL with `0`, and the
+    // check refused any length but `0` or one per claim.
+    let spans = if s.arrival_spans_len == 0 {
+        &[][..]
+    } else {
+        unsafe { std::slice::from_raw_parts(s.arrival_spans, s.arrival_spans_len) }
+    };
     check_claims(claims, dialects).ok()?;
     check_admin_routes(routes).ok()?;
     check_listed(listed).ok()?;
+    check_arrival_spans(spans).ok()?;
+    // A span name is `[a-z0-9_]`: the kernel builds a callsite of it, so nothing else is a name.
+    let span_of = |i: usize| -> Option<String> {
+        let name = spans.get(i).map_or(Some(String::new()), |n| {
+            owned_str(*n).map(Option::unwrap_or_default)
+        })?;
+        name.bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+            .then_some(name)
+    };
     let text = |a| owned_str(a)?.or(Some(String::new()));
     Some(OwnedSnapshot {
         generation: s.generation,
         claims: claims
             .iter()
-            .map(|c| {
+            .enumerate()
+            .map(|(i, c)| {
                 Some(OwnedClaim {
                     verb: text(c.verb)?,
                     target: text(c.target)?,
                     carrier: text(c.carrier)?,
                     flags: c.flags,
                     refusal_dialect: c.refusal_dialect,
+                    arrival_span: span_of(i)?,
                 })
             })
             .collect::<Option<_>>()?,
