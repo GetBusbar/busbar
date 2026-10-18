@@ -19,6 +19,30 @@ ratchets:
     maps:
       rules.ports-only.max_per_crate: { values: lower, strike: tightens }
       rules.ports-only-tests.max_per_crate: { values: lower, strike: tightens }
+  # Finding ledgers (2026-10-18): a struck finding is a drained offender, a tightening; any added
+  # or reworded row still goes to a person.
+  - path: qa/c1-literals.toml
+    format: toml
+    rows:
+      finding: { key: [rule, file, item], strike: tightens }
+  - path: qa/one-memory-abi.toml
+    format: toml
+    rows:
+      finding: { key: [rule, file, item], strike: tightens }
+  - path: qa/abi-freeze.toml
+    format: toml
+    rows:
+      frozen: { key: [dir], lower: [lines], strike: tightens }
+  # Allow lists: a struck entry allows less. `reason`/`class` are NOT ignored: a changed reason or a
+  # keep->port flip goes to a person.
+  - path: qa/scripts-allowlist.toml
+    format: toml
+    rows:
+      script: { key: [path], strike: tightens }
+  - path: qa/denylist-allow.toml
+    format: toml
+    rows:
+      allow: { key: [crate, dep, via], strike: tightens }
 # The PR battery, named explicitly so a check declared below but NOT listed here is on-demand only
 # (`modernci call measure {repo, from, check}`), never run on every move.
 # test-gated runs on every move (OWNER 2026-10-16, "dev should stay green"), no worse than dev. oracle
