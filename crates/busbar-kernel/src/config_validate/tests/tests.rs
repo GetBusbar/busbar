@@ -6673,3 +6673,32 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
                 (declared: calls); remove them or fix the name";
     assert!(errs.iter().any(|e| e == want), "{errs:?}");
 }
+
+/// An EMPTY `error_map` is valid: the HTTP status still classifies every answer. Rehomes
+/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_empty_error_map_is_valid_but_bad_value_fails
+/// (its bad-value half is `test_error_map_invalid_class_message_lists_full_valid_set`). RED arm:
+/// the same deployment with one unknown class word is refused naming it.
+#[test]
+fn an_empty_error_map_is_valid_and_an_unknown_class_word_is_not() {
+    crate::test_support::register_neutral_test_plane();
+    let cfg_with = |error_map: HashMap<String, String>| {
+        let mut p = make_provider(proto_a(), "https://api.example.com", "API_KEY");
+        p.error_map = error_map;
+        let mut providers = HashMap::new();
+        providers.insert("p".to_string(), p);
+        let mut models = HashMap::new();
+        models.insert("m".to_string(), make_model("p", 10));
+        let mut pools = HashMap::new();
+        pools.insert("mypool".to_string(), make_pool(vec![make_member("m")]));
+        make_root_cfg(providers, models, pools)
+    };
+    assert!(
+        validate(&cfg_with(HashMap::new())).is_ok(),
+        "an empty error_map relies on the HTTP status and is valid"
+    );
+    let errs = validate(&cfg_with(
+        [("1234".to_string(), "not_a_status_class".to_string())].into(),
+    ))
+    .expect_err("an unknown class word is refused");
+    assert!(errs.join(" | ").contains("invalid StatusClass"), "{errs:?}");
+}
