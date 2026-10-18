@@ -1030,11 +1030,13 @@ impl PlaneCalls for Double {
         Outcome::Fault
     }
 
-    fn cancel(&self, ticket: Ticket) -> Option<busbar_contract::plane_calls::Cancelled> {
+    fn cancel(&self, ticket: Ticket, unit: u64) -> Option<busbar_contract::plane_calls::Cancelled> {
         self.count(stat::CANCELS);
-        // THE PLANE'S UNIT TABLE, keyed from `arrive`: a cancel frees the unit it finds, which is
-        // only the unit some piece already taught it the ticket of.
-        if let Some(key) = self.tickets.lock().unwrap().get(&ticket).copied() {
+        // THE PLANE'S UNIT TABLE, keyed from `arrive`: a cancel frees the unit it names, or the one
+        // a piece already taught it the ticket of.
+        let named = (unit != 0).then_some(unit);
+        let taught = self.tickets.lock().unwrap().get(&ticket).copied();
+        if let Some(key) = named.or(taught) {
             self.heads.lock().unwrap().remove(&key);
         }
         let u = self.unit_of(ticket);

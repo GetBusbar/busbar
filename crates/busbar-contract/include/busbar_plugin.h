@@ -2962,6 +2962,7 @@ struct bb_plane_PlaneCancelIn {
     size_t records_cap;
     uint8_t *arena_buf;
     size_t arena_cap;
+    uint64_t unit;
 };
 
 /* The plane's `cancel` `out`: the lifecycle's, embedded first, and what the plane wrote. */

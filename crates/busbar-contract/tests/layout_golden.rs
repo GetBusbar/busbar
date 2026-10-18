@@ -1973,7 +1973,7 @@ fn compute_layout() -> String {
     record!(
         s,
         pkind::PlaneCancelIn,
-        [cancel, records_buf, records_cap, arena_buf, arena_cap]
+        [cancel, records_buf, records_cap, arena_buf, arena_cap, unit]
     );
     record!(
         s,

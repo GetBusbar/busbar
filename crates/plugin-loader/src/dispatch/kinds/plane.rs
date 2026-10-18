@@ -1396,6 +1396,7 @@ impl PlaneCancel {
                     records_cap: 0,
                     arena_buf: std::ptr::null_mut(),
                     arena_cap: 0,
+                    unit: 0,
                 },
                 plane::PlaneCancelOut {
                     cancel: base.out,
