@@ -4018,14 +4018,13 @@ mod rehomed_metering {
     }
 
     /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_streaming_translate_abort_trips_breaker_and_skips_billing`
-    /// (map row 367), HELD TO 1.5.5 (coordinator ruling 2026-10-15). v1.5.5's own
-    /// `test_streaming_translate_abort_trips_breaker_and_skips_billing`
-    /// (`crates/busbar/src/proxy/tests/ingress_indistinguishability_tests.rs:3091`, over
-    /// `crates/busbar/src/proxy/response_body.rs`'s `billing_failed` gate): a translated stream
-    /// whose reframing gives up after its first byte records a transient on the far end (the
-    /// optimistic success reversed, the breaker cell trips Open) and is NOT token-billed, though
-    /// 600 / 400 had been captured before the abort.
-    /// RED: an abort that records no fault, or one that bills what it captured.
+    /// (map row 367). #62 governs (OWNER-LOCKED 2026-09-20: a mid-stream cut is not a refund; the
+    /// caller pays for what streamed), ruled for this row on 2026-10-17 over the 2026-10-15 ruling
+    /// that held it to 1.5.5's zero; logged in the accepted-differences register under #62. A
+    /// translated stream whose reframing gives up after its first byte records a transient on the
+    /// far end (the optimistic success reversed, the breaker cell trips Open) and bills the 600 /
+    /// 400 the far end reported before the abort, as its two drop siblings below bill them.
+    /// RED: an abort that records no fault, or one that bills less than the far end reported.
     #[test]
     fn rehomed_streaming_translate_abort_trips_breaker_and_skips_billing() {
         let (arrived, lane) = ask("anthropic", "openai", true);
@@ -4043,10 +4042,10 @@ mod rehomed_metering {
         );
         assert_eq!(
             read.tokens(),
-            (0, 0),
-            "an aborted stream is not token-billed"
+            (600, 400),
+            "an aborted stream bills what the far end reported before the abort (#62)"
         );
-        assert_eq!(end.units, Units::default(), "nothing billed");
+        assert_eq!(end.units.tokens_in + end.units.tokens_out, 1000);
     }
 
     /// REHOMES `crates/busbar-llm/src/engine/tests/ingress_indistinguishability_tests.rs::test_cancel_drop_bills_partial_tokens`
