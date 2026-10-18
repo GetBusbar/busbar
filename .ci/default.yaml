@@ -4,6 +4,21 @@
 to: dev
 on_green: merge
 deadline: 6h
+# Ratchets (ModernCI #1801/#1814): a rule-file edit proven to only TIGHTEN these rows is judged with
+# its own rules and asks no person (Law 9: tightening is allowed). A raise, an added row, a reorder or
+# a new file still asks the owner. Both files are under `rules: ["qa/*.toml"]` below.
+ratchets:
+  - path: qa/kind-isolation.toml
+    format: toml
+    rows:
+      law0: { key: [crate, axis], lower: [count], ignore: [cite], strike: tightens }
+      # `verdict` is NOT ignored: a changed verdict goes to a person.
+      dep: { key: [from, to, half], lower: [count], ignore: [cite, why, drain], strike: tightens }
+  - path: qa/construction.toml
+    format: toml
+    maps:
+      rules.ports-only.max_per_crate: { values: lower, strike: tightens }
+      rules.ports-only-tests.max_per_crate: { values: lower, strike: tightens }
 # The PR battery, named explicitly so a check declared below but NOT listed here is on-demand only
 # (`modernci call measure {repo, from, check}`), never run on every move.
 # test-gated runs on every move (OWNER 2026-10-16, "dev should stay green"), no worse than dev. oracle
