@@ -266,6 +266,11 @@ checks:
         rm -rf "$T/uv"; mkdir "$T/uv"; tar -C "$T/uv" --strip-components=1 -xzf "$T/uv.tgz"
       fi
       export UV_PYTHON_INSTALL_DIR="$T/python" UV_CACHE_DIR="$T/uv-cache"
+      # The webrtc-browser rig installs its own pinned Playwright (npm ci) and browsers
+      # (`npx playwright install chromium firefox`); ModernCI's playwright-deps capability provides only
+      # the system libraries they load. The browsers go in this check's cache, never $HOME/.cache, which
+      # every concurrent job on a backend shares.
+      export PLAYWRIGHT_BROWSERS_PATH="${MODERNCI_CACHE_DIR:-$T}/ms-playwright"
       "$T/uv/uv" python install 3.12.15
       if [ ! -x "$T/py/bin/python3" ] || [ "$("$T/py/bin/python3" -c 'import sys; print(sys.version.split()[0])')" != 3.12.15 ]; then
         rm -rf "$T/py"; "$T/uv/uv" venv --managed-python --python 3.12.15 --seed "$T/py"
