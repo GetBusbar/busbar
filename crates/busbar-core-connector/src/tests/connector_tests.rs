@@ -2333,6 +2333,24 @@ fn a_pinned_target_every_dial_would_admit_is_admitted_at_declare() {
     assert_eq!(DeclaredConns::declared(&c, OWNER, NeedId(2)), Some(Ok(())));
 }
 
+/// RED (THE DESIGN §5: `open-web` is "public https only"; v1.5.5 `validate_webhook_url` refused a
+/// private webhook target and disabled the sink): an open-web need whose config pins it to a
+/// private literal the allowlist does not name is REFUSED at declare, over a secure connection too.
+/// Its configured target does not make it operator infrastructure.
+#[test]
+fn an_open_web_need_pinned_to_a_private_literal_is_refused_at_declare() {
+    let c = plain_and_secure_connector();
+    let need = pinned_need("sec", EGRESS_OPEN_WEB);
+    assert_eq!(
+        DeclaredConns::declare(&c, OWNER, NeedId(0), &need, Some("10.0.0.5:443"), None),
+        Err(ConnError::Refused)
+    );
+    assert_eq!(
+        DeclaredConns::declared(&c, OWNER, NeedId(0)),
+        Some(Err(ConnError::Refused))
+    );
+}
+
 /// RED: a pinned literal the guard refuses (a cloud metadata address, which no class and no
 /// configured target lifts) is refused at declare, over connection security too.
 #[test]
