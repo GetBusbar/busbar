@@ -52,19 +52,26 @@ pub(crate) async fn exchange(
     // Identity comes from the VERIFIED chain, never the body. The IdP credential rides the same
     // carriers as any data-plane token (the default inbound style's, in its order).
     let candidate = app.auth.extract_client_token(req.headers());
-    // THE SENDER CONSTRAINT THE DATA PLANE HOLDS (RFC 9449; `auth::dpop`), held here too: this
-    // route runs the chain itself, past the middleware, and a DPoP-bound token presented as a bearer
-    // (or with a proof that does not verify) must not mint itself an unbound key. A request that is
-    // neither a DPoP presentation nor a bound bearer is unconstrained, exactly as before.
-    let candidate = match crate::auth::dpop::judge(
-        &app,
-        req.method(),
-        req.uri().path(),
-        req.headers(),
-        candidate.as_deref(),
-    )
-    .await
-    {
+    // THE SENDER CONSTRAINT THE DATA PLANE HOLDS (RFC 9449; `auth::dpop`), held here too wherever
+    // this deployment runs its own authorization server (`oauth_as:`, new in 1.6.0, the only issuer
+    // of the DPoP-bound tokens it would swap): this route runs the chain itself, past the
+    // middleware, and such a token presented as a bearer (or with a proof that does not verify)
+    // must not mint itself an unbound key. With no authorization server the exchange answers
+    // exactly as 1.5.5's did (v1.5.5 `auth/exchange.rs`, which read no DPoP at all), whatever the
+    // presented token's claims.
+    let judged = if app.oauth_as.is_some() {
+        crate::auth::dpop::judge(
+            &app,
+            req.method(),
+            req.uri().path(),
+            req.headers(),
+            candidate.as_deref(),
+        )
+        .await
+    } else {
+        crate::auth::dpop::SenderConstraint::Unconstrained
+    };
+    let candidate = match judged {
         crate::auth::dpop::SenderConstraint::Unconstrained => candidate,
         crate::auth::dpop::SenderConstraint::Proven(token) => Some(token),
         crate::auth::dpop::SenderConstraint::Refused => {

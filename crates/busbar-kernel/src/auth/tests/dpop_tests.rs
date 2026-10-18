@@ -108,10 +108,16 @@ async fn a_dpop_bound_token_presented_as_a_bearer_is_refused() {
     assert_eq!(status, 401, "whichever carrier presents it as a bearer");
 }
 
-/// `(status, body)` of `POST /auth/token` with `headers`, on the deployment [`stats`] reads.
-async fn exchanged(headers: &[(&str, String)]) -> (u16, String) {
+/// `(status, body)` of `POST /auth/token` with `headers`, on the deployment [`stats`] reads, with
+/// an authorization server (`oauth_as:`) when `serving_as`.
+async fn exchanged(serving_as: bool, headers: &[(&str, String)]) -> (u16, String) {
     crate::snapshot::init();
-    let app = TestApp::new().idp_chain().build();
+    let mut app = TestApp::new().idp_chain();
+    if serving_as {
+        // The bound-bearer refusal reads only that a server runs, never the server itself.
+        app = app.oauth_as_plane(std::sync::Arc::new(()));
+    }
+    let app = app.build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -126,24 +132,47 @@ async fn exchanged(headers: &[(&str, String)]) -> (u16, String) {
     out
 }
 
-/// RED (Q128 kernel part 10, MEDIUM): THE TOKEN EXCHANGE HOLDS THE SENDER CONSTRAINT the data plane
-/// holds. `POST /auth/token` runs the chain itself, past the middleware's RFC 9449 judgement, so a
-/// DPoP-bound token presented there as a bearer reached the mint and could be swapped for an unbound
-/// key. It is refused as an unauthenticated caller now; an unbound bearer still reaches the grant
-/// check exactly as before.
+/// RED (Q128 kernel part 10, MEDIUM): WHERE THIS DEPLOYMENT RUNS ITS OWN AUTHORIZATION SERVER, THE
+/// TOKEN EXCHANGE HOLDS THE SENDER CONSTRAINT the data plane holds. `POST /auth/token` runs the
+/// chain itself, past the middleware's RFC 9449 judgement, so a DPoP-bound token presented there as
+/// a bearer reached the mint and could be swapped for an unbound key. It is refused as an
+/// unauthenticated caller now; an unbound bearer still reaches the grant check exactly as before.
 #[tokio::test]
 async fn the_token_exchange_refuses_a_dpop_bound_token_presented_as_a_bearer() {
     let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
-    let (status, body) = exchanged(&[("authorization", format!("Bearer {bound}"))]).await;
+    let (status, body) = exchanged(true, &[("authorization", format!("Bearer {bound}"))]).await;
     assert_eq!(
         (status, body.as_str()),
         (401, r#"{"error":"not authenticated"}"#),
         "a bound token is no bearer at the exchange either"
     );
     let unbound = jwt(serde_json::json!({ "sub": "a" }));
-    let (status, _) = exchanged(&[("authorization", format!("Bearer {unbound}"))]).await;
+    let (status, _) = exchanged(true, &[("authorization", format!("Bearer {unbound}"))]).await;
     assert_ne!(
         status, 401,
         "an unbound bearer is identified and judged by the grant, as before"
+    );
+}
+
+/// 1.5.5 PARITY (v1.5.5 `crates/busbar/src/auth/exchange.rs`, which reads no DPoP; its refusals at
+/// l.113-117): WITH NO AUTHORIZATION SERVER the exchange answers a 1.5.5-shaped request exactly as
+/// before, byte for byte, whatever the presented token's claims. A token carrying `cnf.jkt` and the
+/// same token's subject without it get the same answer.
+#[tokio::test]
+async fn without_an_authorization_server_the_exchange_answers_as_1_5_5_did() {
+    let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
+    let unbound = jwt(serde_json::json!({ "sub": "a" }));
+    let as_bound = exchanged(false, &[("authorization", format!("Bearer {bound}"))]).await;
+    let as_unbound = exchanged(false, &[("authorization", format!("Bearer {unbound}"))]).await;
+    assert_eq!(as_bound, as_unbound, "the claims move nothing here");
+    assert_ne!(
+        as_bound.0, 401,
+        "an identified caller is never refused as unauthenticated"
+    );
+    let no_credential = exchanged(false, &[]).await;
+    assert_eq!(
+        no_credential,
+        (401, r#"{"error":"not authenticated"}"#.to_string()),
+        "v1.5.5 exchange.rs l.113: no identity, its words"
     );
 }
