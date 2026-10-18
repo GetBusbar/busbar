@@ -225,6 +225,8 @@ pub struct Served<B> {
     leases: Mutex<HashMap<u64, Leased>>,
     next_lease: AtomicU64,
     texts: Mutex<VecDeque<Text>>,
+    /// The read buffers this instance's wire ops reuse.
+    reads: super::wire::ReadBufs,
 }
 
 impl<B> std::fmt::Debug for Served<B> {
@@ -242,6 +244,7 @@ impl<B: StoreSlots> Served<B> {
             next_lease: AtomicU64::new(0),
             // Sized here, once: keeping a text never grows the ring.
             texts: Mutex::new(VecDeque::with_capacity(TEXT_RING)),
+            reads: super::wire::ReadBufs::default(),
         }
     }
 
@@ -348,7 +351,12 @@ fn op_enter<'a, B: StoreSlots>(
     if instance.resuming() && parked.is_none() {
         return None;
     }
-    Some(Op::enter(instance.ticket(), s.host.as_ref(), parked))
+    Some(Op::enter(
+        instance.ticket(),
+        s.host.as_ref(),
+        parked,
+        Some(&s.reads),
+    ))
 }
 
 /// The op's answer, settled: PENDING parks its context (FAULT when it pends on no ticket, or on the
@@ -810,7 +818,7 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
             let Some(parked) = instance.resume::<Parked>().map(|b| *b) else {
                 return Outcome::Fault;
             };
-            let mut cx = Op::enter(ticket, host.as_ref(), Some(parked));
+            let mut cx = Op::enter(ticket, host.as_ref(), Some(parked), None);
             return match served.store().connect(&mut cx) {
                 Step::Ready(Ok(())) => {
                     drop(cx.into_parked());
@@ -839,7 +847,7 @@ impl<B: StoreSlots> SafeSlot for Open<B> {
             // No instance exists to hold the reason: it goes into the host's lent reason buffer.
             Err(e) => return open_failed(input, &mut out, |o| &o.err_len, &e),
         };
-        let mut cx = Op::enter(ticket, host.as_ref(), None);
+        let mut cx = Op::enter(ticket, host.as_ref(), None, None);
         match store.connect(&mut cx) {
             Step::Ready(Ok(())) => {
                 // The step's connection closes with its op (`Parked`'s drop).
