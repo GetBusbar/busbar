@@ -210,16 +210,18 @@ why = """Exactly one function in the workspace may send the egress request for a
 (the pooled hot path and the degraded walk path) mean every fix to the attempt — a timeout arm, a \
 breaker recording, a header rule — has to be made twice and is made once. The architecture's loop \
 has one ROUTE step and one dispatch; the code should have one too."""
-# REPOINTED (DEV-GREEN row 83, coordinator ruling 2026-10-18): the seam MOVED, it did not die. It was the retired engine crate's
-# `engine/attempt/mod.rs::attempt` (the egress client's `.client().get().request(`); every unit's
-# attempt is now the kernel walk's far end opening the member through the connector, in
-# `plane_driver/far_end.rs::send_attempt` (`e.conns.open(`). The scan is held to the crates that
-# drive a unit's walk (the kernel, its egress member crate and the composition root): the
-# contract's ABI host shim `abi/host/conn::host_open` is a PLUGIN'S own declared need being opened
-# for it, a different seam the dep-wall and needs gates hold, not a second attempt for a unit.
+# REPOINTED (DEV-GREEN row 83, coordinator ruling 2026-10-18): the seam MOVED, it did not die. It
+# was the retired engine crate's `engine/attempt/mod.rs::attempt` (the egress client's
+# `.client().get().request(`); every unit's attempt is now the kernel walk's far end opening the
+# member through the connector, in `plane_driver/far_end.rs::send_attempt` (`e.conns.open(`). The
+# scan is the whole workspace, as it always was.
 send_verb = '\.conns\.open\('
 allowed_function = "send_attempt"
-roots = ["crates/busbar-kernel/", "crates/busbar-kernel-egress/", "crates/busbar/"]
+# THE ONE NAMED KNOWN SITE, measured: the contract's ABI host shim opens a PLUGIN'S OWN declared
+# connection for it (THE DESIGN §5 / DECISIONS #40: a plugin reaches the network only through a
+# declared need, and the host opens it on its behalf), not a second attempt for a unit. Each entry
+# is `file::fn`; a known site that stops opening anything is RED, so the list cannot go stale.
+known_sites = ["crates/busbar-contract/src/abi/host/conn/mod.rs::host_open"]
 max_extra_sites = 0
 
 # ── 2. request-path-fn-size ──────────────────────────────────────────────────────────────────────
