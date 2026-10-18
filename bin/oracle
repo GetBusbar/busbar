@@ -361,7 +361,7 @@ fi
 # sha256 is the pin's `sha256_linux_<arch>` line. The pin read is the BASE's: $MODERNCI_TO_SHA's
 # testing/shadow-oracle/oracle-rust.pin when ModernCI names a base that holds one (a candidate never
 # picks its own judge; a pin bump judges from the commit after it lands), else this tree's (the first
-# predev -> dev move: dev holds no pin; .ci/predev.yaml says so). A pin with no line for this host's
+# dev -> qa move: .ci/dev.yaml fetches the pinned judge). A pin with no line for this host's
 # architecture has NO JUDGE (red, never another architecture's, never a source build). A `.sig` beside
 # the asset is verified against busbar-release's release key (Ed25519 over "<asset name>\n<sha256>\n",
 # busbar-release-cli update.rs RELEASE_KEY_SPKI) before the bytes are ever made executable; a
