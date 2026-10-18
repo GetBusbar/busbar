@@ -33,9 +33,20 @@ const AUTHORIZATION: &str = "authorization";
 /// The operator's own header carrier (1.5.5's admin header).
 const OPERATOR_HEADER: &str = "x-admin-token";
 
-/// The token of a `Bearer <token>` line, or `None` for any other scheme or an empty token.
+/// A line's value as the admin door reads it (`HeaderValue::to_str`: visible ASCII and tab), or
+/// `None` for one that does not read as text, which the door treats as absent.
+fn text(value: &[u8]) -> Option<&str> {
+    value
+        .iter()
+        .all(|&b| b == b'\t' || (32..127).contains(&b))
+        .then(|| std::str::from_utf8(value).ok())
+        .flatten()
+}
+
+/// The token of a `Bearer <token>` line, or `None` for any other scheme or an empty token
+/// (`admin_carriers`' bearer reading).
 fn bearer_token(value: &[u8]) -> Option<&str> {
-    let (scheme, token) = std::str::from_utf8(value).ok()?.split_once(' ')?;
+    let (scheme, token) = text(value)?.split_once(' ')?;
     (scheme.eq_ignore_ascii_case("bearer") && !token.is_empty()).then_some(token)
 }
 
@@ -90,9 +101,11 @@ impl VerifyPlugin for OperatorDouble {
     }
 
     fn verify(&self, request: &VerifyView<'_>) -> Answer {
+        // `admin_carriers`' reading: a present-but-blank (or non-text) `x-admin-token` is absent.
         let header = request
             .line(OPERATOR_HEADER)
-            .map(|v| std::str::from_utf8(v).unwrap_or("\u{fffd}"));
+            .and_then(text)
+            .filter(|t| !t.is_empty());
         let verdict = judge(
             &self.digest,
             request.line(AUTHORIZATION).and_then(bearer_token),
