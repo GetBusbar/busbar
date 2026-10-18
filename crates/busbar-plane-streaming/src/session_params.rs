@@ -18,6 +18,18 @@ pub fn g711_config() -> SessionConfig {
     }
 }
 
+/// THE TELEPHONY LOCK over the operator's `session`: its instructions, voice, tools and turn
+/// detection, with `g711_ulaw` on both audio formats ([`g711_config`]).
+#[must_use]
+pub fn g711_over(session: &SessionConfig) -> SessionConfig {
+    let g711 = g711_config();
+    SessionConfig {
+        input_audio_format: g711.input_audio_format,
+        output_audio_format: g711.output_audio_format,
+        ..session.clone()
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/session_params_tests.rs"]
 mod tests;

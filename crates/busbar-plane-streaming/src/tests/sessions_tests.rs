@@ -30,10 +30,11 @@ fn the_telephony_door_opens_a_session_behind_the_twilio_envelope() {
     );
     assert!(String::from_utf8_lossy(&plan.to_far_end[0]).contains("input_audio_buffer.append"));
 
-    // The RED arm: the same frames on the browser sideband, where no envelope is expected.
+    // The RED arm: the same frames on the browser sideband, where no envelope is read: the frame
+    // is relayed as the caller sent it, never translated into the caller's audio.
     let mut bare = open(Door::Sideband, &locked, 0, None, "call-2", "ref").expect("a session");
     let _ = bare.from_caller(&start);
-    assert!(bare.from_caller(&media).to_far_end.is_empty());
+    assert_eq!(bare.from_caller(&media).to_far_end, vec![media.clone()]);
 }
 
 #[test]

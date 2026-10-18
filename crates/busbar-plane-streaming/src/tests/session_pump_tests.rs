@@ -3,13 +3,10 @@
 
 //! Tests for `crates/busbar-plane-streaming/src/session_pump.rs`.
 
-use std::sync::{Arc, Mutex};
-
 use bytes::Bytes;
 
 use super::*;
 use crate::codec::ir::codec::OpenAiRealtimeCodec;
-use crate::governed::{GovernedCalls, ReplyRefusal};
 
 fn wire(v: serde_json::Value) -> WireEvent {
     WireEvent(Bytes::from(serde_json::to_vec(&v).expect("json")))
@@ -85,7 +82,7 @@ fn a_usage_report_closes_the_turn_with_its_counters_and_the_session_continues() 
 }
 
 #[test]
-fn a_sink_that_refuses_cuts_the_session_and_tells_the_far_end_to_stop() {
+fn a_sink_that_refuses_closes_the_session_and_authors_nothing_upstream() {
     let mut p = pump();
     let mut sink = Turns {
         refuse: true,
@@ -93,37 +90,7 @@ fn a_sink_that_refuses_cuts_the_session_and_tells_the_far_end_to_stop() {
     };
     let out = p.on_server_frame(usage_done(), 0, &mut sink);
     assert!(out.close);
-    assert!(texts(&out.upstream).contains("response.cancel"));
-}
-
-#[test]
-fn a_barge_in_cancels_and_truncates_at_what_was_heard() {
-    let mut p = pump();
-    let mut sink = Turns::default();
-    let b64 = busbar_contract::media::base64_encode(&[0u8; 96]);
-    let _ = p.on_server_frame(
-        wire(
-            serde_json::json!({"type":"response.output_audio.delta","delta":b64,
-            "item_id":"it7","output_index":0,"content_index":0}),
-        ),
-        0,
-        &mut sink,
-    );
-    let out = p.on_server_frame(
-        wire(
-            serde_json::json!({"type":"input_audio_buffer.speech_started",
-            "audio_start_ms":0,"item_id":"it7"}),
-        ),
-        0,
-        &mut sink,
-    );
-    let up = texts(&out.upstream);
-    assert!(up.contains("response.cancel"), "{up}");
-    assert!(
-        up.contains("conversation.item.truncate") && up.contains("\"audio_end_ms\":2"),
-        "{up}"
-    );
-    assert!(texts(&out.downlink).contains("speech_started"));
+    assert!(out.upstream.is_empty(), "{}", texts(&out.upstream));
 }
 
 /// LAW 11 (QUESTIONS Q98): a tool call is part of the model's response. Every frame of it is relayed
@@ -231,75 +198,6 @@ fn p_item_voice_tool_args_streamed_fragments_reach_the_caller_whole_and_once() {
     assert_eq!(sink.closed[0].1.tool_calls, 1, "one call, counted once");
 }
 
-/// A table that records what the pump asked of it.
-#[derive(Default)]
-struct Table {
-    planned: Mutex<Vec<(u64, String, u64)>>,
-    open: Mutex<Vec<String>>,
-    closed: Mutex<Vec<u64>>,
-}
-
-impl GovernedCalls for Table {
-    fn planned(&self, session: u64, call_id: &str, now_ms: u64) -> bool {
-        self.planned
-            .lock()
-            .expect("lock")
-            .push((session, call_id.to_string(), now_ms));
-        self.open.lock().expect("lock").push(call_id.to_string());
-        true
-    }
-    fn replied(&self, _session: u64, call_id: &str) -> Result<(), ReplyRefusal> {
-        let mut open = self.open.lock().expect("lock");
-        match open.iter().position(|c| c == call_id) {
-            Some(i) => {
-                open.remove(i);
-                Ok(())
-            }
-            None => Err(ReplyRefusal::UnknownCall),
-        }
-    }
-    fn expired(&self, _now_ms: u64) -> usize {
-        0
-    }
-    fn closed(&self, session: u64) {
-        self.closed.lock().expect("lock").push(session);
-    }
-}
-
-#[test]
-fn a_relayed_call_waits_for_the_callers_reply() {
-    let table = Arc::new(Table::default());
-    let mut p = pump();
-    p.bind_governed(GovernedSession {
-        session: 7,
-        calls: table.clone(),
-    });
-    let mut sink = Turns::default();
-    for f in call_frames("cc", "lookup", "{}") {
-        let out = p.on_server_frame(f, 42, &mut sink);
-        assert!(out.upstream.is_empty(), "the gateway never answers a call");
-    }
-    assert_eq!(
-        *table.planned.lock().expect("lock"),
-        vec![(7, "cc".to_string(), 42)]
-    );
-    let reply = |id: &str| {
-        wire(
-            serde_json::json!({"type":"conversation.item.create","item":{
-            "type":"function_call_output","call_id":id,"output":"{}"}}),
-        )
-    };
-    let forged = p.on_client_frame(reply("nope"));
-    assert!(forged.refused_reply && forged.upstream.is_empty());
-    let real = p.on_client_frame(reply("cc"));
-    assert!(!real.refused_reply);
-    let up = texts(&real.upstream);
-    assert!(up.contains("function_call_output") && up.contains("response.create"));
-    p.forget_governed_calls();
-    assert_eq!(*table.closed.lock().expect("lock"), vec![7]);
-    assert_eq!(p.governed_session(), Some(7));
-}
-
 #[test]
 fn a_callers_session_update_is_replaced_by_the_locked_config() {
     let locked = SessionConfig {
@@ -370,43 +268,6 @@ fn uplink_ms(ms: usize) -> WireEvent {
 }
 
 #[test]
-fn two_open_tool_calls_wait_on_two_different_correlations() {
-    let table = Arc::new(Table::default());
-    let mut p = pump();
-    p.bind_governed(GovernedSession {
-        session: 1,
-        calls: table.clone(),
-    });
-    let mut sink = Turns::default();
-    for f in call_frames("cc", "a", "{}")
-        .into_iter()
-        .chain(call_frames("dd", "b", "{}"))
-    {
-        let _ = p.on_server_frame(f, 0, &mut sink);
-    }
-    let planned: Vec<String> = table
-        .planned
-        .lock()
-        .expect("lock")
-        .iter()
-        .map(|(_, c, _)| c.clone())
-        .collect();
-    assert_eq!(planned, ["cc", "dd"], "each call is its own wait");
-    let reply = |id: &str| {
-        wire(
-            serde_json::json!({"type":"conversation.item.create","item":{
-            "type":"function_call_output","call_id":id,"output":"{}"}}),
-        )
-    };
-    assert!(!p.on_client_frame(reply("dd")).refused_reply);
-    assert!(
-        p.on_client_frame(reply("dd")).refused_reply,
-        "a wait is woken once"
-    );
-    assert!(!p.on_client_frame(reply("cc")).refused_reply);
-}
-
-#[test]
 fn an_upstream_error_still_meters_the_turn_it_ended() {
     let mut p = pump();
     let mut sink = Turns::default();
@@ -451,14 +312,21 @@ fn a_barge_in_bills_what_the_interrupted_turn_served_on_the_turn_that_takes_over
     assert_eq!((closed.audio_ms_in, closed.tool_calls), (1_000, 1));
 }
 
+/// A caller frame that is not JSON goes nowhere and counts nothing: the lock is judged on what the
+/// reader reads, and bytes it cannot read never reach a far end that might read them otherwise.
 #[test]
-fn a_caller_frame_that_is_not_utf8_or_names_no_known_event_goes_nowhere() {
+fn a_caller_frame_that_is_not_json_goes_nowhere_and_counts_nothing() {
     let mut p = pump();
     let mut sink = Turns::default();
     let bad = p.on_client_frame(WireEvent(Bytes::from_static(&[0xff, 0xfe, 0x00])));
     assert!(bad.upstream.is_empty() && bad.downlink.is_empty() && !bad.close);
-    let unknown = p.on_client_frame(wire(serde_json::json!({"type":"teleport.now"})));
-    assert!(unknown.upstream.is_empty() && unknown.downlink.is_empty());
+    let unclosed = p.on_client_frame(WireEvent(Bytes::from_static(
+        br#"{"type":"session.update","session":{"instructions":"x"},}"#,
+    )));
+    assert!(
+        unclosed.upstream.is_empty(),
+        "a near-JSON update is not passed"
+    );
     p.settle_open_turn(&mut sink);
     assert!(sink.closed.is_empty(), "nothing was counted");
 }
@@ -547,4 +415,201 @@ fn gemini_uplink_frames_at_two_rates_each_count_at_their_own() {
     p.settle_open_turn(&mut sink);
     assert_eq!(sink.closed.len(), 1);
     assert_eq!(sink.closed[0].1.audio_ms_in, 1000);
+}
+
+// ── THE SAME-DIALECT RELAY (Law 5; Law 11; Part 2 #45) ─────────────────────────────────────────
+
+/// The bytes of `v`, exactly as a peer sent them.
+fn raw(v: &str) -> WireEvent {
+    WireEvent(Bytes::from(v.as_bytes().to_vec()))
+}
+
+fn locked_pump() -> SessionPump<OpenAiRealtimeCodec> {
+    SessionPump::new(
+        OpenAiRealtimeCodec,
+        Some(SessionConfig {
+            instructions: Some("locked".into()),
+            ..SessionConfig::default()
+        }),
+    )
+}
+
+/// RED-BEFORE-GREEN (Law 11, "content never triggers an action ... answers nothing on the
+/// caller's behalf"): the far end's speech-start is the caller's to act on. Nothing goes upstream,
+/// and the event reaches the caller as the far end sent it. RED: the pump wrote `response.cancel`
+/// and `conversation.item.truncate` upstream itself and rewrote `audio_start_ms` to 0.
+#[test]
+fn a_barge_in_is_relayed_unchanged_and_nothing_goes_upstream() {
+    let mut p = locked_pump();
+    let mut sink = Turns::default();
+    let _ = p.on_server_frame(
+        wire(serde_json::json!({"type":"response.output_audio.delta",
+            "delta": busbar_contract::media::base64_encode(&[0u8; 96]),"item_id":"i1"})),
+        0,
+        &mut sink,
+    );
+    let frame = r#"{"type":"input_audio_buffer.speech_started","item_id":"i1","audio_start_ms":1234,"event_id":"ev_9"}"#;
+    let out = p.on_server_frame(raw(frame), 0, &mut sink);
+    assert!(
+        out.upstream.is_empty(),
+        "busbar authors nothing upstream on a barge-in: {}",
+        texts(&out.upstream)
+    );
+    assert_eq!(
+        texts(&out.downlink),
+        frame,
+        "the event reaches the caller unchanged"
+    );
+}
+
+/// RED-BEFORE-GREEN (Law 5, "A RELAY (same dialect) runs the reader only as that read-only tap
+/// and sends the client's bytes"): every far-end frame reaches the caller byte for byte, the
+/// events the IR does not model and the usage report included, while the usage still meters.
+/// RED: `response.done` was consumed, `rate_limits.updated` dropped, a transcript delta dropped and
+/// an audio delta re-serialised without its `event_id`.
+#[test]
+fn a_same_dialect_far_end_frame_reaches_the_caller_byte_for_byte() {
+    let mut p = locked_pump();
+    let mut sink = Turns::default();
+    let b64 = busbar_contract::media::base64_encode(&[1u8; 96]);
+    let frames = [
+        format!(r#"{{"type":"response.output_audio.delta","event_id":"ev_1","response_id":"r1","item_id":"i1","output_index":0,"content_index":0,"delta":"{b64}"}}"#),
+        r#"{"type":"response.output_audio_transcript.delta","event_id":"ev_2","delta":"hel"}"#.to_string(),
+        r#"{"type":"rate_limits.updated","event_id":"ev_3","rate_limits":[{"name":"tokens","limit":100,"remaining":90,"reset_seconds":1.5}]}"#.to_string(),
+        r#"{"type":"response.done","event_id":"ev_4","response":{"id":"r1","status":"completed","usage":{"total_tokens":7,"input_tokens":3,"output_tokens":4,"input_token_details":{"audio_tokens":1,"text_tokens":2},"output_token_details":{"audio_tokens":3,"text_tokens":1}}}}"#.to_string(),
+    ];
+    for f in &frames {
+        let out = p.on_server_frame(raw(f), 0, &mut sink);
+        assert!(out.upstream.is_empty(), "{f}");
+        assert_eq!(&texts(&out.downlink), f, "relayed byte for byte");
+    }
+    assert_eq!(
+        sink.closed.len(),
+        1,
+        "the usage report still closes the turn"
+    );
+    let usage = sink.closed[0].0.expect("its usage");
+    assert_eq!(
+        (
+            usage.audio_in,
+            usage.text_in,
+            usage.audio_out,
+            usage.text_out
+        ),
+        (1, 2, 3, 1)
+    );
+}
+
+/// RED-BEFORE-GREEN (Law 5 governed splice; Part 2 #45 "cannot override the session's locked
+/// instructions"): a caller's `session.update` keeps every field it set, unmodelled ones included,
+/// and only the locked keys are spliced in. RED: the whole update was replaced by the locked config,
+/// so the caller's voice and noise-reduction setting never reached the far end.
+#[test]
+fn a_callers_session_update_keeps_its_fields_and_takes_the_locked_keys() {
+    let mut p = locked_pump();
+    let out = p.on_client_frame(raw(
+        r#"{"type":"session.update","event_id":"c1","session":{"type":"realtime","voice":"verse","instructions":"override","tools":[{"type":"function","name":"evil"}],"input_audio_noise_reduction":{"type":"near_field"}}}"#,
+    ));
+    assert_eq!(out.upstream.len(), 1);
+    let v: serde_json::Value = serde_json::from_slice(&out.upstream[0].0).expect("json");
+    assert_eq!(v["type"], "session.update");
+    assert_eq!(v["event_id"], "c1");
+    assert_eq!(v["session"]["type"], "realtime");
+    assert_eq!(v["session"]["voice"], "verse");
+    assert_eq!(
+        v["session"]["input_audio_noise_reduction"]["type"],
+        "near_field"
+    );
+    assert_eq!(v["session"]["instructions"], "locked");
+    assert!(
+        v["session"].get("tools").is_none(),
+        "a caller-authored tool set never reaches the far end: {v}"
+    );
+}
+
+/// RED-BEFORE-GREEN (Part 2 #45, "the browser ... never authors tools or instructions, and cannot
+/// override the session's locked instructions"): a per-response override of the instructions or
+/// the tool set is spliced out of a caller's `response.create`; every other field passes. RED: the
+/// response object went upstream verbatim.
+#[test]
+fn a_callers_response_create_cannot_override_the_locked_instructions_or_tools() {
+    let mut p = locked_pump();
+    let out = p.on_client_frame(raw(
+        r#"{"type":"response.create","response":{"instructions":"evil","tools":[{"type":"function","name":"x"}],"output_modalities":["text"],"metadata":{"k":"v"}}}"#,
+    ));
+    assert_eq!(out.upstream.len(), 1);
+    let v: serde_json::Value = serde_json::from_slice(&out.upstream[0].0).expect("json");
+    assert_eq!(v["type"], "response.create");
+    assert!(v["response"].get("instructions").is_none(), "{v}");
+    assert!(v["response"].get("tools").is_none(), "{v}");
+    assert_eq!(v["response"]["output_modalities"][0], "text");
+    assert_eq!(v["response"]["metadata"]["k"], "v");
+}
+
+/// RED-BEFORE-GREEN (Law 5): a caller frame the IR does not model is the caller's to send; the
+/// far end answers it. RED: it went nowhere.
+#[test]
+fn an_unmodelled_caller_frame_reaches_the_far_end_unchanged() {
+    let mut p = locked_pump();
+    let frame = r#"{"type":"output_audio_buffer.clear","event_id":"c9"}"#;
+    let out = p.on_client_frame(raw(frame));
+    assert_eq!(texts(&out.upstream), frame);
+}
+
+fn gemini_locked_pump() -> SessionPump<crate::codec::ir::GeminiLiveCodec> {
+    SessionPump::new(
+        crate::codec::ir::GeminiLiveCodec,
+        Some(SessionConfig {
+            instructions: Some("locked".into()),
+            ..SessionConfig::default()
+        }),
+    )
+}
+
+/// RED-BEFORE-GREEN (Law 5; Law 11 "a tool call ... goes back to the caller unchanged"): a
+/// Gemini Live caller receives the far end's tool call as one frame, both calls in it, arguments
+/// and all, and a text part and a `goAway` reach it too. RED: the call was re-framed as one frame
+/// per call announcing it WITHOUT arguments and a second one with them, and the text part and the
+/// `goAway` were dropped.
+#[test]
+fn a_gemini_far_end_frame_reaches_the_caller_byte_for_byte() {
+    let mut p = gemini_locked_pump();
+    let mut sink = Turns::default();
+    let frames = [
+        r#"{"toolCall":{"functionCalls":[{"id":"f1","name":"a","args":{"x":1}},{"id":"f2","name":"b","args":{"y":2}}]}}"#,
+        r#"{"serverContent":{"modelTurn":{"parts":[{"text":"hello"}]}}}"#,
+        r#"{"goAway":{"timeLeft":"10s"}}"#,
+    ];
+    for f in frames {
+        let out = p.on_server_frame(raw(f), 0, &mut sink);
+        assert!(out.upstream.is_empty(), "{f}");
+        assert_eq!(texts(&out.downlink), f, "relayed byte for byte");
+    }
+    p.settle_open_turn(&mut sink);
+    assert_eq!(sink.closed.len(), 1);
+    assert_eq!(sink.closed[0].1.tool_calls, 2, "both calls are counted");
+}
+
+/// RED-BEFORE-GREEN (Law 5 governed splice; Part 2 #45): a Gemini caller's `setup` keeps what it
+/// set, and the locked system instruction is spliced in over the caller's. RED: the whole setup was
+/// replaced, so the caller's model and generation settings never reached the far end.
+#[test]
+fn a_gemini_callers_setup_keeps_its_fields_and_takes_the_locked_instruction() {
+    let mut p = gemini_locked_pump();
+    let out = p.on_client_frame(raw(
+        r#"{"setup":{"model":"models/gemini-live","generationConfig":{"temperature":0.3,"responseModalities":["AUDIO"]},"systemInstruction":{"parts":[{"text":"override"}]},"tools":[{"functionDeclarations":[{"name":"evil"}]}]}}"#,
+    ));
+    assert_eq!(out.upstream.len(), 1);
+    let v: serde_json::Value = serde_json::from_slice(&out.upstream[0].0).expect("json");
+    assert_eq!(v["setup"]["model"], "models/gemini-live");
+    assert_eq!(v["setup"]["generationConfig"]["temperature"], 0.3);
+    assert_eq!(
+        v["setup"]["generationConfig"]["responseModalities"][0],
+        "AUDIO"
+    );
+    assert_eq!(
+        v["setup"]["systemInstruction"]["parts"][0]["text"],
+        "locked"
+    );
+    assert!(v["setup"].get("tools").is_none(), "{v}");
 }

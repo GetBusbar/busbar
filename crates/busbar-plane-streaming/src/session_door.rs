@@ -14,8 +14,8 @@
 //! - A FAR-END piece goes through the session ([`SessionUnit::from_far_end`]); a frame it owes the
 //!   caller is that answer's emission.
 //! - ONE FRAME PER ANSWER. Every frame keeps its own message boundary, so a piece that leaves more
-//!   than one frame owed (a barge-in's cancel and truncate, a caller frame and its echo) answers the
-//!   first and queues the rest. A queued frame is the session's unsolicited output: the door wakes
+//!   than one frame owed (the telephony carrier's start and the locked session it is translated
+//!   into, a ceiling's error and the end) answers the first and queues the rest. A queued frame is the session's unsolicited output: the door wakes
 //!   the instance's driver ticket, `drive` names the session, and each collection (`FROM_KERNEL`,
 //!   no bytes, no attempt) answers the next queued frame, toward the side it is bound for.
 //! - EVERY ANSWER REPORTS THE SESSION'S CUMULATIVE UNITS, the six classes the plane counts, and,
@@ -40,7 +40,7 @@ use crate::codec::ir::config::SessionConfig;
 use crate::codec::ir::GeminiLiveCodec;
 use crate::config::StreamsCfg;
 use crate::driven::{Door, Steps};
-use crate::session_params::g711_config;
+use crate::session_params::g711_over;
 use crate::session_unit::{CumulativeUnits, Plan, SessionUnit};
 
 /// Nanoseconds per second, on the kernel's tick clock.
@@ -131,11 +131,11 @@ impl Live {
     }
 
     /// The session params `door` locks under `cfg`, as the open's hooks are shown them: the
-    /// carrier's µ-law for the telephony door, the section's session for every other.
+    /// section's session, with the carrier's µ-law both ways on the telephony door.
     #[must_use]
     pub fn locked(door: Door, cfg: &StreamsCfg) -> SessionConfig {
         match door {
-            Door::Twilio => g711_config(),
+            Door::Twilio => g711_over(&cfg.session),
             _ => cfg.session.clone(),
         }
     }
