@@ -1542,8 +1542,10 @@ pub fn selftest<'a>(
     use crate::ctx::Overlay;
     use crate::gates::prove_rows_red;
 
-    const WIRE: &str = "crates/busbar-transport-stdio";
-    const STORE: &str = "crates/busbar-store-memory";
+    // Plant sites, not scan sets: the pinned checkouts mount here for the battery, so these are
+    // fixture paths handed to an overlay (qa-names reads constants only, and these are none).
+    let wire = "crates/busbar-transport-stdio";
+    let store = "crates/busbar-store-memory";
     fn with(files: &[(&str, &str)]) -> Overlay {
         let mut ov = Overlay::new();
         for (rel, body) in files {
@@ -1555,7 +1557,7 @@ pub fn selftest<'a>(
     // XC2#4: AN INCLUDE INTO AN UNSCANNED FILE OF THE SAME CRATE. `#[path = "target/leak.rs"]` is
     // `hidden-source`; the same file spliced by `include!` was read by nothing, because the include
     // reader only reports a target in ANOTHER crate.
-    let lib = cx.read(&format!("{STORE}/src/lib.rs")).unwrap_or_default();
+    let lib = cx.read(&format!("{store}/src/lib.rs")).unwrap_or_default();
     report.push(prove_rows_red(
         cx,
         gate,
@@ -1564,11 +1566,11 @@ pub fn selftest<'a>(
         &[ROW_INPUTS],
         with(&[
             (
-                format!("{STORE}/src/target/spliced.rs").as_str(),
+                format!("{store}/src/target/spliced.rs").as_str(),
                 "pub const P: &str = \"busbar-plane-llm\";\n",
             ),
             (
-                format!("{STORE}/src/lib.rs").as_str(),
+                format!("{store}/src/lib.rs").as_str(),
                 format!(
                     "{}\npub mod spliced {{\n    include!(\"target/spliced.rs\");\n}}\n",
                     lib.trim_end()
@@ -1638,7 +1640,7 @@ pub fn selftest<'a>(
         "an `include!` of a raw string is refused, not skipped",
         &[ROW_INPUTS],
         with(&[(
-            format!("{WIRE}/src/planted_raw_include.rs").as_str(),
+            format!("{wire}/src/planted_raw_include.rs").as_str(),
             "pub mod smuggled {\n    include!(r\"../../busbar-plane-llm/src/meta.rs\");\n}\n",
         )]),
         &[
@@ -1653,7 +1655,7 @@ pub fn selftest<'a>(
         "an `include!` of a macro metavariable is refused, not skipped",
         &[ROW_INPUTS],
         with(&[(
-            format!("{WIRE}/src/planted_macro_include.rs").as_str(),
+            format!("{wire}/src/planted_macro_include.rs").as_str(),
             "macro_rules! splice {\n    ($p:literal) => {\n        include!($p);\n    };\n}\n\
              splice!(\"../../busbar-plane-llm/src/meta.rs\");\n",
         )]),
@@ -1682,11 +1684,11 @@ pub fn selftest<'a>(
             &[ROW_INPUTS],
             with(&[
                 (
-                    format!("{WIRE}/src/{stem}.rs").as_str(),
+                    format!("{wire}/src/{stem}.rs").as_str(),
                     format!("{attr}\npub mod smuggled;\n").as_str(),
                 ),
                 (
-                    format!("{WIRE}/src/{stem}/smuggled.rs").as_str(),
+                    format!("{wire}/src/{stem}/smuggled.rs").as_str(),
                     "//! A decoy where a plain `mod smuggled;` would look.\n",
                 ),
             ]),
