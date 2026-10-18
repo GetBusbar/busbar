@@ -69,7 +69,9 @@ pub use rigs::{
     voice_config_command, Inputs, LlmRun, VoiceRun, WebrtcRun, WsRun, LLM_DIALECTS,
     MCP_NODE_VERSION, VOICE_PLANE, WEBRTC_SUITE,
 };
-pub use slsa::{decide_slsa, provenance_commit, SlsaRun};
+pub use slsa::{
+    decide_slsa, dev_bin_assets, provenance_commit, SlsaRun, SOURCE_BRANCH, SOURCE_URI,
+};
 pub use subject::{b64url, base_config};
 pub use tls::{decide_tls, TlsRun};
 

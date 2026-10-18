@@ -783,6 +783,55 @@ pub fn encode_head(
     Ok(y.wire)
 }
 
+/// How many `YIELD_MORE` answers in a row may write nothing before the framing FAULTs: a framer
+/// that owes more and gives nothing would otherwise hold the host worker forever (Law 0).
+pub(crate) const MORE_STALLS: usize = 64;
+
+/// The most bytes one op's `YIELD_MORE` re-calls may write before the framing FAULTs: an op's own
+/// input is bounded (a socket read, a write under the write buffer), so a framer that keeps writing
+/// past this is not answering it.
+pub(crate) const MORE_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Whether one answer wrote anything: wire bytes, frame bytes, a piece or a head.
+pub(crate) fn wrote(o: &FramerOut) -> bool {
+    let y = &o.yielded;
+    y.wire_len != 0 || y.frame_len != 0 || y.pieces_len != 0 || y.heads_len != 0
+}
+
+/// The re-calls of one op: their count with nothing written, and the bytes written.
+#[derive(Default)]
+pub(crate) struct Recalls {
+    stalls: usize,
+    bytes: u64,
+}
+
+impl Recalls {
+    /// Count one more answer that owed more: a FAULT once [`MORE_STALLS`] in a row wrote nothing,
+    /// or the op's answers wrote past [`MORE_BYTES`].
+    pub(crate) fn owed(&mut self, o: &FramerOut) -> Result<(), Refused> {
+        self.stalls = if wrote(o) { 0 } else { self.stalls + 1 };
+        self.bytes = self
+            .bytes
+            .saturating_add(o.yielded.wire_len)
+            .saturating_add(o.yielded.frame_len);
+        if self.stalls >= MORE_STALLS {
+            return Err(Refused {
+                outcome: Outcome::Fault,
+                error: format!(
+                    "the framer owed more {MORE_STALLS} times in a row and wrote nothing"
+                ),
+            });
+        }
+        if self.bytes > MORE_BYTES {
+            return Err(Refused {
+                outcome: Outcome::Fault,
+                error: format!("the framer's answers to one op ran past {MORE_BYTES} bytes"),
+            });
+        }
+        Ok(())
+    }
+}
+
 /// Which op a `YIELD_MORE` re-call repeats.
 #[derive(Clone, Copy)]
 enum Again {
@@ -896,6 +945,7 @@ impl Framing {
 
     /// Re-call `again` with no new bytes until the framer owes nothing more.
     fn more(&mut self, again: Again, y: &mut Yielded) -> Result<(), Refused> {
+        let mut recalls = Recalls::default();
         loop {
             let sink = self.bufs.sink();
             let mut o: FramerOut = blank_out();
@@ -933,6 +983,7 @@ impl Framing {
             if self.bufs.take(&o, y)? {
                 return Ok(());
             }
+            recalls.owed(&o)?;
         }
     }
 
@@ -1033,6 +1084,7 @@ impl Framing {
     /// The framer refused to give the connection up.
     pub fn detach(mut self) -> Result<Vec<u8>, Refused> {
         let mut left = Vec::new();
+        let mut recalls = Recalls::default();
         loop {
             let mut i: FramingIn = blank_in();
             i.framing = self.token;
@@ -1048,6 +1100,7 @@ impl Framing {
                 self.token = 0;
                 return Ok(left);
             }
+            recalls.owed(&o)?;
         }
     }
 
@@ -1105,6 +1158,7 @@ impl Framing {
             });
         }
         let mut y = Yielded::default();
+        let mut recalls = Recalls::default();
         loop {
             i.sink = self.bufs.sink();
             let mut o: FramerOut = blank_out();
@@ -1113,6 +1167,7 @@ impl Framing {
                 self.token = 0;
                 return Ok(y);
             }
+            recalls.owed(&o)?;
         }
     }
 

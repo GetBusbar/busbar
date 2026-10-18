@@ -385,7 +385,12 @@ selftest() {
   say ""
   say "-- the shipped legs, accounted for --"
   local shipped; shipped="$(declared_legs | paste -sd' ' -)"
-  ( emit_verdict ) >/dev/null 2>&1 || die "the shipped scaffold does not self-account cleanly: $shipped"
+  local verdict_out
+  if ! verdict_out="$( ( emit_verdict ) 2>&1 )"; then
+    # Say WHY: the verdict's own words (its last lines), so a red here names the leg and its result.
+    printf '%s\n' "$verdict_out" | tail -n 60 >&2
+    die "the shipped scaffold does not self-account cleanly: $shipped"
+  fi
   local n; n="$(declared_legs | grep -c . || true)"
   say ""
   say "self-test PASS, $n legs accounted for: $shipped"

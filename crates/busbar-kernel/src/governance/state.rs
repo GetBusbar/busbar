@@ -1,5 +1,4 @@
 use super::*;
-use busbar_contract::records::{UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT};
 use busbar_contract::redacted::Secret;
 use busbar_kernel_ledger::{
     cost::{
@@ -1977,10 +1976,7 @@ impl GovState {
         for (bi, bucket) in buckets.iter().enumerate() {
             if bucket.requests_cap.is_none()
                 && bucket.tokens_cap.is_none()
-                && bucket.tokens_input_cap.is_none()
-                && bucket.tokens_output_cap.is_none()
-                && bucket.tokens_cache_read_cap.is_none()
-                && bucket.tokens_cache_write_cap.is_none()
+                && bucket.class_caps.is_empty()
                 && bucket.budget_cap.is_none()
             {
                 continue; // uncapped bucket (e.g. the key's attribution bucket) never blocks
@@ -1993,29 +1989,25 @@ impl GovState {
             // after a concurrent admission already rolled the cell forward - its charge lands on
             // the live cell in PASS 2, so the check must read that same cell, never treat it as a
             // fresh window). Only a genuinely STALE (older-window) or absent cell reads as empty.
-            // Per-tier token counters (`tokens_input`/…): read the matching cell tier ONLY when its
-            // cap is set — same best-effort post-paid shape as `tokens_cap`, mirroring the cost
-            // tiers. `tokens_input` reads the `input` tier (uncached input; cache_read is a separate
-            // tier), so a cache-read unit never counts against the input cap.
-            // A per-tier counter is read only when its cap is set.
-            let tier =
-                |c: &BudgetCell, cap: Option<u64>, unit| cap.map_or(0, |_| c.total_tier(unit));
-            let (requests, tokens, t_input, t_output, t_cache_read, t_cache_write, derived) =
-                match map.get(bucket.bucket_id) {
-                    Some(cell) if cell.window_start >= window => (
-                        cell.requests,
-                        bucket.tokens_cap.map_or(0, |_| cell.total_tokens()),
-                        tier(cell, bucket.tokens_input_cap, UNIT_INPUT),
-                        tier(cell, bucket.tokens_output_cap, UNIT_OUTPUT),
-                        tier(cell, bucket.tokens_cache_read_cap, UNIT_CACHE_READ),
-                        tier(cell, bucket.tokens_cache_write_cap, UNIT_CACHE_WRITE),
-                        bucket.budget_cap.map_or(Ok(0), |_| {
-                            (cell.spend(cost, true)).and_then(Money::minor_i64)
-                        }),
-                    ),
-                    // stale or absent cell = fresh window = nothing used
-                    _ => (0, 0, 0, 0, 0, 0, Ok(0)),
-                };
+            // Per-class token counters (`tokens_<class>`): each capped class's count on the cell,
+            // read only for a class that carries a cap — the same best-effort post-paid shape as
+            // `tokens_cap`. A class counts only itself: a `tokens_input` cap reads the `input`
+            // class, so a cache-read count never counts against it.
+            let (requests, tokens, live, derived) = match map.get(bucket.bucket_id) {
+                Some(cell) if cell.window_start >= window => (
+                    cell.requests,
+                    bucket.tokens_cap.map_or(0, |_| cell.total_tokens()),
+                    Some(cell),
+                    bucket.budget_cap.map_or(Ok(0), |_| {
+                        (cell.spend(cost, true)).and_then(Money::minor_i64)
+                    }),
+                ),
+                // stale or absent cell = fresh window = nothing used
+                _ => (0, 0, None, Ok(0)),
+            };
+            let class_blocked = (bucket.class_caps.iter())
+                .find(|c| live.map_or(0, |cell| cell.total_tier(c.class)) >= c.cap)
+                .map(|c| c.metric.as_str());
             // #42 AT THE DOOR (item 124): a spend the one function REFUSES — the card present and
             // silent about a model or class this bucket holds, or an overflow — BLOCKS on the
             // budget metric. This door used to drop an unpriced model's whole consumption
@@ -2039,20 +2031,8 @@ impl GovState {
                 Some("requests")
             } else if bucket.tokens_cap.is_some_and(|cap| tokens >= cap) {
                 Some("tokens")
-            } else if bucket.tokens_input_cap.is_some_and(|cap| t_input >= cap) {
-                Some("tokens_input")
-            } else if bucket.tokens_output_cap.is_some_and(|cap| t_output >= cap) {
-                Some("tokens_output")
-            } else if bucket
-                .tokens_cache_read_cap
-                .is_some_and(|cap| t_cache_read >= cap)
-            {
-                Some("tokens_cache_read")
-            } else if bucket
-                .tokens_cache_write_cap
-                .is_some_and(|cap| t_cache_write >= cap)
-            {
-                Some("tokens_cache_write")
+            } else if class_blocked.is_some() {
+                class_blocked
             } else if bucket.budget_cap.is_some_and(|cap| {
                 refused || derived >= cap || derived.saturating_add(fee).saturating_add(guess) > cap
             }) {

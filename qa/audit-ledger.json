@@ -1802,18 +1802,16 @@
    "paths": [
     "crates/busbar-plane-mcp/src"
    ],
-   "tree_hash": "c757cd7b9043572454ed65bf10ca44d5672eed55074d5a842d87fc651f1b61f4",
-   "audited_at": "00555bd98ac1a143587ea4ab8948d8ef3b44dcf0",
-   "round": 2,
+   "tree_hash": "da9b4eb22b57a74b728b4a63692ecb416de9578add58cf367c4fdfa598ee07cc",
+   "audited_at": "a88c8109b44c896e4300410e33e7efaf776f1265",
+   "round": 3,
    "result": "findings",
    "counts": {
-    "HIGH": 3,
-    "MEDIUM": 8,
-    "LOW": 7,
-    "NIT": 2
+    "HIGH": 8,
+    "MEDIUM": 14
    },
-   "report": "The plane now serves the session revisions and the legacy event stream inbound, relays tool results unchanged and judges argument hosts through the host. As a client it still cannot reach a legacy-only server, and it keeps one upstream session per server shared by every caller with repeated request ids. A deployment without a signing key folds all callers into one session owner. Large task results are not stored, resource subscriptions on the stateless stream never deliver, and units cancelled early leak. Read fully except test-only client test files.",
-   "auditor": "opus-reaudit-plane-mcp",
+   "report": "The plane serves the session revisions and the legacy event stream inbound and relays tool results unchanged. As a client it still cannot reach a legacy-only server, and it keeps one upstream session per server shared by every caller. The task path drops the caller's down-scope, lets an answer rewrite admitted arguments and fails on stdio servers. The operator connect verb blocks calls to session servers, streamed answers are re-encoded, and without a signing key all callers share one owner. Read fully.",
+   "auditor": "opus-q128-l159",
    "fixed_at": null,
    "exclude": [
     "crates/busbar-plane-mcp/src/tests"
@@ -1846,6 +1844,18 @@
       "NIT": 2
      },
      "report": "The plane now serves the session revisions and the legacy event stream inbound, relays tool results unchanged and judges argument hosts through the host. As a client it still cannot reach a legacy-only server, and it keeps one upstream session per server shared by every caller with repeated request ids. A deployment without a signing key folds all callers into one session owner. Large task results are not stored, resource subscriptions on the stateless stream never deliver, and units cancelled early leak. Read fully except test-only client test files."
+    },
+    {
+     "round": 3,
+     "result": "findings",
+     "auditor": "opus-q128-l159",
+     "audited_at": "a88c8109b44c896e4300410e33e7efaf776f1265",
+     "tree_hash": "da9b4eb22b57a74b728b4a63692ecb416de9578add58cf367c4fdfa598ee07cc",
+     "counts": {
+      "HIGH": 8,
+      "MEDIUM": 14
+     },
+     "report": "The plane serves the session revisions and the legacy event stream inbound and relays tool results unchanged. As a client it still cannot reach a legacy-only server, and it keeps one upstream session per server shared by every caller. The task path drops the caller's down-scope, lets an answer rewrite admitted arguments and fails on stdio servers. The operator connect verb blocks calls to session servers, streamed answers are re-encoded, and without a signing key all callers share one owner. Read fully."
     }
    ]
   },

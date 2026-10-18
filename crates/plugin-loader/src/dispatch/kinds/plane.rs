@@ -219,6 +219,29 @@ fn bounds<'a>(a: &Answer<'a>) -> Result<&'a Bounds, Fault> {
 /// billable class, so the plane can report it), the Statement's sections, exactly one of them
 /// declaring (`check_sections`), and refusal statuses that pass `check_refusal_statuses`.
 fn tail_facts(st: &Statement) -> Result<PlaneFacts, String> {
+    OVER_CAP.with(|c| c.set(false));
+    let facts = tail_facts_read(st);
+    if OVER_CAP.with(|c| c.replace(false)) {
+        return Err("the plane tail states a list or string longer than its cap".to_string());
+    }
+    facts
+}
+
+std::thread_local! {
+    /// A tail read ([`kept`], [`kept_blob`], [`listed`]) met a length over its cap, or a list or
+    /// string NULL with a count: nothing was formed over it, and [`tail_facts`] refuses the plane
+    /// (THE DESIGN §11.13 M1, "Every slice built from a plugin-reported length is capped and
+    /// validated before it is formed").
+    static OVER_CAP: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Note a tail length refused before any slice was formed over it.
+fn over_cap() {
+    OVER_CAP.with(|c| c.set(true));
+}
+
+/// [`tail_facts`]' reading, every slice it forms capped first.
+fn tail_facts_read(st: &Statement) -> Result<PlaneFacts, String> {
     // SAFETY: `PlaneTail` is a `#[repr(C)]` kind tail of integers and pointers (all-zero valid); a
     // non-NULL kind tail is `'static` plugin data of its stated size.
     let tail: PlaneTail =
@@ -402,8 +425,10 @@ fn stated_provider_keys(
         return Ok(None);
     }
     // SAFETY: a non-NULL Statement blob is `len` bytes of `'static` plugin data, read here while the
-    // plugin is loaded; the descriptor is decoded into owned values before this returns.
-    let bytes = unsafe { std::slice::from_raw_parts(ext.ptr, ext.len) };
+    // plugin is loaded, its length capped before the slice is formed; the descriptor is decoded
+    // into owned values before this returns.
+    let bytes = unsafe { crate::dispatch::validate::lent(ext.ptr, ext.len) }
+        .ok_or("the Statement's extensions are longer than any blob may be")?;
     busbar_contract::provider_keys::stated(bytes)
         .map_err(|e| format!("the plane's provider keys are refused: {e}"))
 }
@@ -414,8 +439,11 @@ fn kept(s: AbiStr) -> &'static str {
         return "";
     }
     // SAFETY: `check_tail` judged every tail string: a non-NULL span of `len` bytes of `'static`
-    // plugin data, read here while the plugin is loaded and copied.
-    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    // plugin data, read here while the plugin is loaded and copied; its length capped first.
+    let Some(bytes) = (unsafe { crate::dispatch::validate::lent_str(s) }) else {
+        over_cap();
+        return "";
+    };
     String::from_utf8_lossy(bytes).into_owned().leak()
 }
 
@@ -425,8 +453,12 @@ fn kept_blob(b: Blob) -> &'static [u8] {
         return &[];
     }
     // SAFETY: `check_dialect_auth` judged the blob (`tail_facts`): a non-NULL span of `len` bytes of
-    // `'static` plugin data, read here while the plugin is loaded and copied.
-    let bytes = unsafe { std::slice::from_raw_parts(b.ptr, b.len) };
+    // `'static` plugin data, read here while the plugin is loaded and copied; its length capped
+    // first.
+    let Some(bytes) = (unsafe { crate::dispatch::validate::lent(b.ptr, b.len) }) else {
+        over_cap();
+        return &[];
+    };
     bytes.to_vec().leak()
 }
 
@@ -436,8 +468,12 @@ fn listed<T: Copy>(p: *const T, n: usize) -> Vec<T> {
         return Vec::new();
     }
     // SAFETY: `check_tail` refused a NULL list counted non-zero; the list is `'static` plugin data
-    // of `n` entries.
-    unsafe { std::slice::from_raw_parts(p, n) }.to_vec()
+    // of `n` entries, its length capped before the slice is formed.
+    let Some(list) = (unsafe { crate::dispatch::validate::lent(p, n) }) else {
+        over_cap();
+        return Vec::new();
+    };
+    list.to_vec()
 }
 
 /// What the tail declares for the instance's admission: record kinds, signing, scope kinds and the
@@ -660,28 +696,33 @@ pub fn registration(
                   owned: &[u8],
                   public_url: Option<&str>,
                   facts: &[busbar_contract::plane_calls::DialectFacts]| {
+                // NO PLUGIN CODE UNDER THE PROBES' LOCK (THE DESIGN §11.13 M1): the probe is taken
+                // out of the list under it, bound, opened or refreshed with it let go, and put
+                // back under it. A caller that finds its probe out binds one of its own; the one
+                // put back second is let go, outside the lock.
                 let url = public_url.unwrap_or_default().to_string();
-                let mut probes = probes
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                let at = match probes
-                    .iter()
-                    .position(|p| p.url == url && p.owned == owned && p.facts == facts)
-                {
-                    Some(at) => at,
-                    None => {
-                        probes.push(Probe {
-                            url: url.clone(),
-                            owned: owned.to_vec(),
-                            facts: facts.to_vec(),
-                            plugin: bind()?,
-                            generation: 0,
-                        });
-                        probes.len() - 1
-                    }
+                let same = |p: &Probe| p.url == url && p.owned == owned && p.facts == facts;
+                let lock = || {
+                    probes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
                 };
-                let probe = &mut probes[at];
-                facing(
+                let taken = {
+                    let mut list = lock();
+                    let at = list.iter().position(same);
+                    at.map(|at| list.swap_remove(at))
+                };
+                let mut probe = match taken {
+                    Some(probe) => probe,
+                    None => Probe {
+                        url: url.clone(),
+                        owned: owned.to_vec(),
+                        facts: facts.to_vec(),
+                        plugin: bind()?,
+                        generation: 0,
+                    },
+                };
+                let faced = facing(
                     &probe.plugin,
                     &dialects,
                     &mut probe.generation,
@@ -689,7 +730,18 @@ pub fn registration(
                     owned,
                     public_url,
                     facts,
-                )
+                );
+                let spare = {
+                    let mut list = lock();
+                    if list.iter().any(same) {
+                        Some(probe)
+                    } else {
+                        list.push(probe);
+                        None
+                    }
+                };
+                drop(spare);
+                faced
             },
         ),
     })
@@ -1707,16 +1759,28 @@ impl crate::dispatch::Plugin<Plane> {
     }
 }
 
-/// A string of the plugin's generation data, owned; `None` when absent. Called only on data a READY
-/// crossing's checks accepted (no string counted over a NULL pointer).
+/// A string of the plugin's generation data, owned; `Some(None)` when absent, `None` (the snapshot
+/// refused) for bad UTF-8 or a length over the hard byte maximum, which is refused before any slice
+/// is formed (THE DESIGN §11.13 M1). Called only on data a READY crossing's checks accepted (no
+/// string counted over a NULL pointer).
 fn owned_str(s: busbar_contract::abi::mechanism::call::AbiStr) -> Option<Option<String>> {
     if s.ptr.is_null() {
         return Some(None);
     }
     // SAFETY: the plugin's generation data, valid until `retire` of its generation, and read only
-    // inside the READY crossing that published it; the contract's checks refused a NULL with a count.
-    let bytes = unsafe { std::slice::from_raw_parts(s.ptr, s.len) };
+    // inside the READY crossing that published it; its length capped before the slice is formed.
+    let bytes = unsafe { crate::dispatch::validate::lent_str(s) }?;
     std::str::from_utf8(bytes).ok().map(|t| Some(t.to_string()))
+}
+
+/// A blob of the plugin's generation data, owned; `Some(None)` when absent, `None` (the snapshot
+/// refused) for a length over the hard byte maximum, refused before any slice is formed.
+fn owned_blob(b: Blob) -> Option<Option<Vec<u8>>> {
+    if b.ptr.is_null() {
+        return Some(None);
+    }
+    // SAFETY: as `owned_str`.
+    unsafe { crate::dispatch::validate::lent(b.ptr, b.len) }.map(|bytes| Some(bytes.to_vec()))
 }
 
 /// Copy the snapshot a READY `open`/`refresh` published: the loader's own `check_snapshot` has
@@ -1731,23 +1795,16 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
     // A READY answer's snapshot, whose size and lists this crossing's check accepted; valid until
     // `retire` of its generation. Read as its publisher wrote it.
     let s = &as_written(p);
-    // SAFETY: the check refused a list counted over a NULL pointer; each names `*_len` entries.
-    let claims = if s.claims_len == 0 {
-        &[][..]
-    } else {
-        unsafe { std::slice::from_raw_parts(s.claims, s.claims_len) }
-    };
-    // SAFETY: as above.
-    let routes = if s.admin_routes_len == 0 {
-        &[][..]
-    } else {
-        unsafe { std::slice::from_raw_parts(s.admin_routes, s.admin_routes_len) }
-    };
-    // SAFETY: as above; a snapshot from before the list was appended reads NULL with `0`.
-    let listed = if s.listed_len == 0 {
-        &[][..]
-    } else {
-        unsafe { std::slice::from_raw_parts(s.listed, s.listed_len) }
+    // SAFETY: the check refused a list counted over a NULL pointer or over its cap; each names
+    // `*_len` entries, bounded again before the slice is formed. A snapshot from before `listed`
+    // was appended reads NULL with `0`.
+    let (claims, routes, listed) = unsafe {
+        use crate::dispatch::validate::lent;
+        (
+            lent(s.claims, s.claims_len)?,
+            lent(s.admin_routes, s.admin_routes_len)?,
+            lent(s.listed, s.listed_len)?,
+        )
     };
     check_claims(claims, dialects).ok()?;
     check_admin_routes(routes).ok()?;
@@ -1778,20 +1835,17 @@ pub(crate) fn copy_snapshot(p: *const PlaneSnapshot, dialects: u64) -> Option<Ow
                 })
             })
             .collect::<Option<_>>()?,
-        openapi: (!s.openapi.ptr.is_null()).then(|| {
-            // SAFETY: the check accepted the blob; it names `len` bytes of generation data.
-            unsafe { std::slice::from_raw_parts(s.openapi.ptr, s.openapi.len) }.to_vec()
-        }),
+        openapi: owned_blob(s.openapi)?,
         audience: owned_str(s.audience)?,
         resource_metadata: owned_str(s.resource_metadata)?,
-        resource_facts: (!s.resource_facts.ptr.is_null()).then(|| {
-            // SAFETY: the check accepted the blob; it names `len` bytes of generation data.
-            unsafe { std::slice::from_raw_parts(s.resource_facts.ptr, s.resource_facts.len) }
-                .to_vec()
-        }),
+        resource_facts: owned_blob(s.resource_facts)?,
         listed: listed
             .iter()
             .map(|n| owned_str(*n).flatten())
             .collect::<Option<_>>()?,
     })
 }
+
+#[cfg(test)]
+#[path = "../../tests/plane_probe_tests.rs"]
+mod probe_tests;

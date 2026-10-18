@@ -29,9 +29,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use busbar_contract::records::{
-    ScopeRef, UNIT_CACHE_READ, UNIT_CACHE_WRITE, UNIT_INPUT, UNIT_OUTPUT,
-};
+use busbar_contract::records::ScopeRef;
 
 use crate::config::groups::{AdmissionMode, LimitMetric};
 
@@ -154,13 +152,10 @@ pub struct GroupBucket {
     /// Total-token cap per window (`{ tokens: N, per: <window> }`), if any. Best-effort: tokens
     /// land post-response, so the cap blocks the NEXT request once crossed.
     pub tokens_cap: Option<u64>,
-    /// Per-tier token caps (`{ tokens_input: N, per: <window> }` etc.), each best-effort exactly
-    /// like `tokens_cap`. Mirror the cost tiers: `tokens_input` = uncached input, `tokens_output`
-    /// = output, `tokens_cache_read`, `tokens_cache_write` = cache creation.
-    pub tokens_input_cap: Option<u64>,
-    pub tokens_output_cap: Option<u64>,
-    pub tokens_cache_read_cap: Option<u64>,
-    pub tokens_cache_write_cap: Option<u64>,
+    /// Per-class token caps (`{ tokens_<class>: N, per: <window> }`), each best-effort exactly
+    /// like `tokens_cap`, one per capped class, in check order ([`LimitMetric`]'s order). The
+    /// class is an opaque ledger class name ([`LimitMetric::capped_class`]).
+    pub class_caps: Vec<ClassCap>,
     /// Spend cap per window (`{ budget: N, per: <window> }`) in abstract cents, if any. Derived at
     /// check time from the cell's token ledger x the current rate card (+ the flat per-request
     /// fee x requests).
@@ -178,6 +173,28 @@ pub struct GroupBucket {
     /// or `estimate` when ANY budget limit merged into this bucket declared it (the
     /// strictest wins, as [`AdmissionMode::governing`] reads it).
     pub budget_admission: AdmissionMode,
+}
+
+/// ONE PER-CLASS TOKEN CAP of a bucket: the limit's metric (its config word is the refusal's
+/// vocabulary), the ledger class it counts, and the cap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClassCap {
+    /// The limit metric the cap was configured under.
+    pub metric: LimitMetric,
+    /// The ledger class the cap counts ([`LimitMetric::capped_class`]).
+    pub class: &'static str,
+    /// The cap: the count at which the bucket blocks the next admission.
+    pub cap: u64,
+}
+
+impl GroupBucket {
+    /// The cap configured under `metric` on this bucket, if any: the admin view's read of one
+    /// per-class cap.
+    pub fn class_cap(&self, metric: LimitMetric) -> Option<u64> {
+        (self.class_caps.iter())
+            .find(|c| c.metric == metric)
+            .map(|c| c.cap)
+    }
 }
 
 /// One resolved group: its enabled flag, in-flight cap, per-window enforcement buckets, and parent
@@ -209,10 +226,8 @@ pub(crate) struct ChainBucket<'a> {
     pub window: &'static str,
     pub requests_cap: Option<u64>,
     pub tokens_cap: Option<u64>,
-    pub tokens_input_cap: Option<u64>,
-    pub tokens_output_cap: Option<u64>,
-    pub tokens_cache_read_cap: Option<u64>,
-    pub tokens_cache_write_cap: Option<u64>,
+    /// The bucket's per-class token caps ([`GroupBucket::class_caps`]).
+    pub class_caps: &'a [ClassCap],
     pub budget_cap: Option<i64>,
     /// `Some(scope)` = the bucket is scope-qualified: it checks/charges/accrues ONLY when the
     /// request was dispatched through that scope (today, always `kind: "pool"`). `None` = applies
@@ -364,10 +379,7 @@ impl CostModel {
             .filter(|b| {
                 b.requests_cap.is_some()
                     || b.tokens_cap.is_some()
-                    || b.tokens_input_cap.is_some()
-                    || b.tokens_output_cap.is_some()
-                    || b.tokens_cache_read_cap.is_some()
-                    || b.tokens_cache_write_cap.is_some()
+                    || !b.class_caps.is_empty()
                     || b.budget_cap.is_some()
             })
             .map(|b| b.bucket_id.clone())
@@ -446,19 +458,22 @@ impl CostModel {
                                     bucket.requests_cap = min_u(bucket.requests_cap)
                                 }
                                 LimitMetric::Tokens => bucket.tokens_cap = min_u(bucket.tokens_cap),
-                                LimitMetric::TokensInput => {
-                                    bucket.tokens_input_cap = min_u(bucket.tokens_input_cap)
-                                }
-                                LimitMetric::TokensOutput => {
-                                    bucket.tokens_output_cap = min_u(bucket.tokens_output_cap)
-                                }
-                                LimitMetric::TokensCacheRead => {
-                                    bucket.tokens_cache_read_cap =
-                                        min_u(bucket.tokens_cache_read_cap)
-                                }
-                                LimitMetric::TokensCacheWrite => {
-                                    bucket.tokens_cache_write_cap =
-                                        min_u(bucket.tokens_cache_write_cap)
+                                LimitMetric::TokensInput
+                                | LimitMetric::TokensOutput
+                                | LimitMetric::TokensCacheRead
+                                | LimitMetric::TokensCacheWrite => {
+                                    if let Some(class) = metric.capped_class() {
+                                        let caps = &mut bucket.class_caps;
+                                        match caps.iter_mut().find(|c| c.metric == metric) {
+                                            Some(c) => c.cap = c.cap.min(l.amount),
+                                            None => caps.push(ClassCap {
+                                                metric,
+                                                class,
+                                                cap: l.amount,
+                                            }),
+                                        }
+                                        caps.sort_by_key(|c| c.metric);
+                                    }
                                 }
                                 LimitMetric::Budget => {
                                     let amount = i64::try_from(l.amount).unwrap_or(i64::MAX);
@@ -559,28 +574,6 @@ impl CostModel {
 
     pub fn group_named(&self, name: &str) -> Option<&GroupRuntime> {
         self.group_idx.get(name).map(|&i| &self.groups[i])
-    }
-
-    /// The effective rate for `model` (the resolved rate-card key), read off the card. Semantics of
-    /// the three outcomes:
-    /// - card absent: `Some(zero)` - every model prices at 0.
-    /// - card present, model priced: `Some(rate)`.
-    /// - card present, model UNKNOWN: `None` - fail-closed.
-    ///
-    /// A VIEW of the card for callers that size an estimate from per-tier rates; no figure in this
-    /// module is priced through it. A class the card could not represent (item 22) reads 0 here
-    /// and REFUSES in every figure, because the figures are the one function's.
-    #[inline]
-    pub fn rate_for(&self, model: &str) -> Option<RateNanos> {
-        if !self.card.pricing_enabled() {
-            return Some(RateNanos::default());
-        }
-        self.card.lane_rates(model).map(|r| RateNanos {
-            input: r.nanos_per_unit(UNIT_INPUT),
-            output: r.nanos_per_unit(UNIT_OUTPUT),
-            cache_read: r.nanos_per_unit(UNIT_CACHE_READ),
-            cache_write: r.nanos_per_unit(UNIT_CACHE_WRITE),
-        })
     }
 
     /// PRICE a neutral [`busbar_contract::billing::Usage`] for `model` into nano-units — the
@@ -736,10 +729,7 @@ impl CostModel {
                     window: b.window,
                     requests_cap: b.requests_cap,
                     tokens_cap: b.tokens_cap,
-                    tokens_input_cap: b.tokens_input_cap,
-                    tokens_output_cap: b.tokens_output_cap,
-                    tokens_cache_read_cap: b.tokens_cache_read_cap,
-                    tokens_cache_write_cap: b.tokens_cache_write_cap,
+                    class_caps: &b.class_caps,
                     budget_cap: b.budget_cap,
                     scope: b.scope.as_ref(),
                     downgrade_to: b.downgrade_to.as_ref(),
