@@ -1139,12 +1139,12 @@ impl AuthMiddleware {
         }
     }
 
-    /// The caller's credential, as the host's default inbound style yields it ([`carried`] over
+    /// The caller's credential, as the host's default inbound style yields it ([`carried_credential`] over
     /// this chain's carriers): the first of its carrier lines, in its Statement's order, that
     /// presents one. The kernel names no credential line (THE DESIGN §6, "Auth points and guest
     /// lists"); the returned token is validated identically whichever line carried it.
     pub fn extract_client_token(&self, headers: &HeaderMap) -> Option<String> {
-        carried(&self.carriers, headers)
+        carried_credential(&self.carriers, headers)
     }
 
     /// The default inbound style's carriers: every line the host strips from a plane's request
@@ -1363,7 +1363,7 @@ fn unauthorized_response(
 /// protocol's vocabulary, owner Q1), another scheme presenting nothing there; every other line is
 /// taken raw, a present-but-blank value ABSENT so a blank line never masks a credential on a later
 /// one and never reaches a constant-time compare. The lines are the style's own words.
-pub fn carried(carriers: &[HeaderName], headers: &HeaderMap) -> Option<String> {
+pub fn carried_credential(carriers: &[HeaderName], headers: &HeaderMap) -> Option<String> {
     carriers.iter().find_map(|carrier| {
         let value = headers.get(carrier)?.to_str().ok()?;
         if *carrier == AUTHORIZATION {
@@ -1459,7 +1459,7 @@ pub(crate) struct AdminCarried {
 /// chain = the explicit open posture). The operator credential is judged on the request's head
 /// ([`admin_head`]) through its door ([`OperatorCredential::judge`]; the both-carriers fold is the
 /// plugin's); an external admin module takes the candidate the operator credential's carriers yield
-/// ([`carried`]).
+/// ([`carried_credential`]).
 /// Unknown names are skipped with a loud log (config_validate rejects them at boot). `probe`: each
 /// module answers on the spot (`verify_now`, the sync [`admin_door`]); else its verify is AWAITED
 /// (the middleware). The kernel keeps no verdict of any module: a plugin caches inside itself.
@@ -1476,7 +1476,7 @@ async fn run_admin_chain(
     }
     // The candidate the operator credential's style yields on its own carriers (1.5.5 handed every
     // admin module the Bearer, else the second line): the style names the lines, not the kernel.
-    let candidate = carried(
+    let candidate = carried_credential(
         &header_names(app.admin_modules.operator.carriers()),
         headers,
     );
