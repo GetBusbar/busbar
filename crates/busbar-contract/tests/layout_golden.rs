@@ -1562,7 +1562,9 @@ fn compute_layout() -> String {
             alpn_buf,
             alpn_cap,
             accept,
-            _accept_reserved
+            _accept_reserved,
+            defaults_buf,
+            defaults_cap
         ]
     );
     record!(
@@ -1577,7 +1579,9 @@ fn compute_layout() -> String {
             secure,
             has_name,
             alpn_written,
-            alpn_needed
+            alpn_needed,
+            defaults_written,
+            defaults_needed
         ]
     );
     record!(s, tkind::FramerOut, [head, yielded, framing, datagram]);

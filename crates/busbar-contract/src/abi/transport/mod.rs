@@ -1031,6 +1031,16 @@ pub struct LocateIn {
     pub accept: u32,
     /// Alignment padding.
     pub _accept_reserved: u32,
+    /// HOST buffer for THE FRAMER'S OWN HEAD LINES on a request to `target`: the field lines its
+    /// wire adds to an outgoing head that does not state them (a default it would otherwise write
+    /// at `encode`). The host adds each the request does not carry to the head BEFORE the auth
+    /// kind signs it, so the auth signs the complete head and nothing is added after it (THE
+    /// DESIGN section 6, step 5); the framer then writes the head as handed and adds no line of
+    /// its own. Field lines, `name: value` CRLF each. Appended: a framer that predates it states
+    /// none, and adds its defaults at `encode` as before.
+    pub defaults_buf: *mut u8,
+    /// Its capacity.
+    pub defaults_cap: usize,
 }
 
 /// `locate`'s `out`.
@@ -1059,6 +1069,10 @@ pub struct LocateOut {
     pub alpn_written: u64,
     /// Short answer: the bytes `alpn_buf` needs.
     pub alpn_needed: u64,
+    /// Bytes of `defaults_buf` written ([`LocateIn::defaults_buf`]); `0` = the framer adds no line.
+    pub defaults_written: u64,
+    /// Short answer: the bytes `defaults_buf` needs.
+    pub defaults_needed: u64,
 }
 
 /// Every framer op's `out`.
