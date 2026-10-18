@@ -520,7 +520,7 @@ fn extract(req: &Request<Body>) -> Option<String> {
 
 /// The admin candidate the operator credential's carriers yield on `headers` (the double's).
 fn admin_candidate(headers: &HeaderMap) -> Option<String> {
-    carried(
+    carried_credential(
         &header_names(&crate::test_support::outbound_auth::double_operator_carriers()),
         headers,
     )
