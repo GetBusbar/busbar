@@ -8,7 +8,7 @@
 //! bytes on the served binary).
 
 use busbar_contract::abi::plane::{CLAIM_CATALOG, CLAIM_EXACT};
-use busbar_plane_llm::exchange::catalog::{render, BETA_PATH, PATH};
+use busbar_plane_llm::exchange::catalog::{render_listing, BETA_PATH, PATH};
 use busbar_plane_llm::plane_door::claims;
 
 fn head(pairs: &[(&str, &str)]) -> Vec<(Vec<u8>, Vec<u8>)> {
@@ -19,7 +19,7 @@ fn head(pairs: &[(&str, &str)]) -> Vec<(Vec<u8>, Vec<u8>)> {
 }
 
 fn body(path: &str, pairs: &[(&str, &str)]) -> String {
-    let rendered = render(path, &head(pairs), &[]);
+    let rendered = render_listing(path, &head(pairs), &[]);
     assert_eq!(rendered.status, 200, "{path} {pairs:?}");
     assert_eq!(
         rendered.fields,
@@ -53,7 +53,7 @@ fn an_empty_listing_is_the_previous_releases_bytes_in_each_dialect() {
 #[test]
 fn the_names_are_rendered_in_the_order_the_kernel_hands_them() {
     let names = ["pool-b".to_string(), "pool-a".to_string(), "m".to_string()];
-    let rendered = render(BETA_PATH, &head(&[]), &names);
+    let rendered = render_listing(BETA_PATH, &head(&[]), &names);
     let value: serde_json::Value = serde_json::from_slice(&rendered.body).expect("JSON");
     let got: Vec<&str> = value["models"]
         .as_array()
