@@ -241,26 +241,33 @@ enum DriftState {
 /// The first line the two renders disagree on, so a stale snapshot says WHERE rather than only
 /// THAT. The shell printed sixty lines of `diff -u`; one located line is what a reader acts on.
 fn first_difference(committed: &str, fresh: &str) -> String {
-    // PROBE: the whole differing middle of both renders, between their common head and tail.
+    // PROBE: a line diff (LCS) of the two renders, as `@ <fresh line>` hunks of `+`/`-` lines.
     let c: Vec<&str> = committed.lines().collect();
     let f: Vec<&str> = fresh.lines().collect();
-    let head = c.iter().zip(&f).take_while(|(a, b)| a == b).count();
-    let tail = c[head..]
-        .iter()
-        .rev()
-        .zip(f[head..].iter().rev())
-        .take_while(|(a, b)| a == b)
-        .count();
-    let mut out = format!(
-        "SNAPDIFF head={head} committed_mid={} fresh_mid={}\n",
-        c.len() - head - tail,
-        f.len() - head - tail
-    );
-    for (n, l) in f[head..f.len() - tail].iter().enumerate() {
-        out.push_str(&format!("SNAP+ {}: {l}\n", head + n + 1));
+    let (n, m) = (c.len(), f.len());
+    let mut t = vec![vec![0_u32; m + 1]; n + 1];
+    for i in (0..n).rev() {
+        for j in (0..m).rev() {
+            t[i][j] = if c[i] == f[j] {
+                t[i + 1][j + 1] + 1
+            } else {
+                t[i + 1][j].max(t[i][j + 1])
+            };
+        }
     }
-    for (n, l) in c[head..c.len() - tail].iter().enumerate() {
-        out.push_str(&format!("SNAP- {}: {l}\n", head + n + 1));
+    let (mut i, mut j) = (0, 0);
+    let mut out = String::from("SNAPDIFF ");
+    while i < n || j < m {
+        if i < n && j < m && c[i] == f[j] {
+            i += 1;
+            j += 1;
+        } else if j < m && (i == n || t[i][j + 1] >= t[i + 1][j]) {
+            out.push_str(&format!("@{} +{} ;; ", j + 1, f[j]));
+            j += 1;
+        } else {
+            out.push_str(&format!("@{} -{} ;; ", j + 1, c[i]));
+            i += 1;
+        }
     }
     out
 }
