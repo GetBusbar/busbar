@@ -58,7 +58,8 @@ use busbar_kernel::config::Destinations;
 ///   the ARCHITECT ruling CRATES-14: "the 'refused unless allowlisted' default applies to the
 ///   provider and IdP egress classes only"): a provider dial, its configured `base_url` included, is
 ///   refused a private or loopback address unless `advanced.allow_destinations` names it.
-/// - the default class and `open-web`: a destination from request data or the network.
+/// - the default class (a destination from request data or the network) and `open-web` (public
+///   https only, its configured target included: [`judged_class`]).
 ///
 /// Not here: `operator-infrastructure` (THE DESIGN §5 egress-class table, owner 2026-09-27:
 /// private, loopback and plaintext allowed; pinned) and `loopback-allowed`, which the guard's
@@ -115,14 +116,18 @@ pub fn names_loopback(host: &str) -> bool {
 }
 
 /// The classes a need whose config names its target is lifted out of, to operator infrastructure:
-/// the request-data classes. Never `provider`: a provider dial is refused a private address unless
-/// allowlisted whether or not its config names the target (ARCHITECT ruling CRATES-14).
-const LIFTED_WHEN_CONFIGURED: &[u32] = &[connector::EGRESS_DEFAULT, connector::EGRESS_OPEN_WEB];
+/// the default class alone. Never `provider`: a provider dial is refused a private address unless
+/// allowlisted whether or not its config names the target (ARCHITECT ruling CRATES-14). Never
+/// `open-web`: THE DESIGN §5 egress-class table holds it to "public https only", and 1.5.5 refused a
+/// configured webhook target on a loopback, private, CGNAT or link-local host and left that sink
+/// disabled (v1.5.5 `crates/busbar/src/observability.rs:214-240` `validate_webhook_url`,
+/// `crates/busbar/src/export/webhook.rs:89-97`); the allowlist stays its escape hatch.
+const LIFTED_WHEN_CONFIGURED: &[u32] = &[connector::EGRESS_DEFAULT];
 
 /// The class a dial's address is judged under: a need's own, or (its target named by its config,
-/// `configured`, in a request-data class) the operator's own destination, judged as operator
-/// infrastructure (THE DESIGN §5 egress-class table, owner-signed 2026-09-27). A provider need
-/// keeps its class.
+/// `configured`, in the default class) the operator's own destination, judged as operator
+/// infrastructure (THE DESIGN §5 egress-class table, owner-signed 2026-09-27). A provider or
+/// open-web need keeps its class.
 #[must_use]
 pub fn judged_class(class: u32, configured: bool) -> u32 {
     let trusted = connector::EGRESS_OPERATOR_INFRASTRUCTURE;
