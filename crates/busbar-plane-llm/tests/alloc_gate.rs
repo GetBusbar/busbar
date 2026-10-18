@@ -297,3 +297,60 @@ fn alloc_gate_request_echo_body_materialized_once() {
          over the committed bound {ECHO_BODY_SCALING_MAX_ALLOCS}."
     );
 }
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/alloc_gate_tests.rs::alloc_gate_dialect_seam_resolution_is_free_for_every_dialect`
+/// (coordinator ruling 2026-10-18: no-alloc is a Law). RESOLVING A DIALECT BY NAME COSTS NOTHING,
+/// for all six: the same stateless question (`requested_candidate_count`) asked through this plane's
+/// own resolution (`codec::decl_of(name)` then its codec) and on the dialect's writer directly
+/// allocates the same number of times. The difference is the resolution's own per-call cost, and
+/// it must be none: `decl_of` reads a `'static` table and the codec is a `&'static` borrow.
+///
+/// RED: a resolution that builds or boxes a codec per call allocates on every request of that
+/// dialect, and its count runs ahead of the writer's.
+#[test]
+fn resolving_every_dialect_by_name_allocates_nothing() {
+    use busbar_plane_llm::codec::proto_codec::{self as p, ProtocolWriter};
+    use busbar_plane_llm::codec::{
+        anthropic, bedrock, cohere, decl_of, gemini, openai_chat, openai_responses,
+    };
+
+    fn resolution_costs_what_the_writer_costs(
+        name: &'static str,
+        writer: &dyn ProtocolWriter,
+        body: &serde_json::Value,
+    ) {
+        let codec = decl_of(name)
+            .and_then(busbar_contract::protocol::ProtocolDecl::dialect)
+            .unwrap_or_else(|| panic!("{name} declares a codec"));
+        // Warm both sides outside the measured windows: a first touch of a lazy static a writer
+        // reads is a per-process cost, not a per-request one.
+        let _ = codec.requested_candidate_count(body);
+        let _ = writer.requested_candidate_count(body);
+        let direct = allocations_of(|| {
+            let _ = writer.requested_candidate_count(body);
+        });
+        let resolved = allocations_of(|| {
+            let codec = decl_of(name)
+                .and_then(busbar_contract::protocol::ProtocolDecl::dialect)
+                .expect("declared");
+            let _ = codec.requested_candidate_count(body);
+        });
+        assert_eq!(
+            resolved, direct,
+            "asking the `{name}` dialect one stateless question cost {resolved} allocation(s) \
+             through its resolution but {direct} on the writer itself"
+        );
+    }
+
+    let body = serde_json::json!({ "model": "m", "messages": [] });
+    resolution_costs_what_the_writer_costs(p::PROTO_ANTHROPIC, &anthropic::AnthropicWriter, &body);
+    resolution_costs_what_the_writer_costs(p::PROTO_BEDROCK, &bedrock::BedrockWriter, &body);
+    resolution_costs_what_the_writer_costs(p::PROTO_COHERE, &cohere::CohereWriter, &body);
+    resolution_costs_what_the_writer_costs(p::PROTO_GEMINI, &gemini::GeminiWriter, &body);
+    resolution_costs_what_the_writer_costs(p::PROTO_OPENAI, &openai_chat::OpenAiWriter, &body);
+    resolution_costs_what_the_writer_costs(
+        p::PROTO_RESPONSES,
+        &openai_responses::ResponsesWriter,
+        &body,
+    );
+}
