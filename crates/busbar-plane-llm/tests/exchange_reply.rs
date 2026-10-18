@@ -3153,8 +3153,11 @@ fn a_stream_cut_after_its_first_byte_ends_in_1_5_5s_bytes_for_every_caller_diale
 /// A RESPONSES STREAM THE FAR END ENDS AS FAILED BILLS NO TOKENS (row-159 audit plane-llm L3#4;
 /// ARCHITECT 2026-10-13: 1.5.5 billed nothing for a stream with a terminal error, v1.5.5
 /// proxy/response_body.rs:550-575), `$`: its `response.failed` event carries usage, and the answer
-/// still reports 0 in and 0 out, as the buffered `status: "failed"` answer does. RED: the stream's
-/// failed usage (5 in, 2 out) reported as billable.
+/// still reports 0 in and 0 out, as the buffered `status: "failed"` answer does. Not #62: a failure
+/// the far end reports itself is not a cut busbar or the caller made (ARCHITECT ruling 2026-10-17),
+/// unlike a translation that aborts after the first byte, which bills what streamed
+/// (`rehomed_streaming_translate_abort_trips_breaker_and_skips_billing`). RED: the stream's failed
+/// usage (5 in, 2 out) reported as billable.
 #[test]
 fn a_responses_stream_that_fails_bills_no_tokens_and_agrees_with_its_buffered_twin() {
     let mut arrived = arrival("responses", true);
