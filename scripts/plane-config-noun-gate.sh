@@ -122,7 +122,14 @@ CORE_ROOTS="crates/busbar-kernel/src"
 # the P3 flip deleted. The plane is a door now (`busbar-plane-streaming`) and declares no PlaneDecl,
 # so the noun cannot be read off one; it is kept here by name rather than dropped from the scan. The
 # floor below counts it.
-NAMED_NOUNS="streams"
+#
+# `agents` IS KEPT THE SAME WAY: it is the A2A plane's 1.5.5 customer config key, and FLIP-A2A struck
+# `a2a` from PLANE_KEYS (its legacy crate is deleted; the plane is the pinned `busbar-plane-a2a`), so
+# its PlaneDecl is no longer read and the noun fell out of the scan with no diagnostic: the armed
+# residual "fell" 10 -> 9 on dev while core still declared both `agents` parse targets, and the same
+# drop hid a NEW `pools` target (the self-serve mint's grant list). scripts/plane-keys.sh: "Leaving
+# PLANE_KEYS must not let the word in."
+NAMED_NOUNS="streams agents"
 
 # Resolve the four section nouns from each plane crate's DECLARED PlaneDecl.config_section — never a
 # restated literal. `<key> -> crates/busbar-<key>/src`; read the `config_section: "<noun>",` line.

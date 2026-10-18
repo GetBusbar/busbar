@@ -1419,6 +1419,12 @@ step "plane-config-noun-gate --selftest" bash scripts/plane-config-noun-gate.sh 
 # RE-MEASURED 2026-10-13 on predev 163843dd2c: 10 (pools 5 · agents 2 · streams 3). streams fell 7 -> 3,
 # and `tools` is no longer a scanned noun since mcp left PLANE_KEYS (5e52651535): the gate reads its
 # nouns off the PLANE_KEYS planes' PlaneDecls. The floor follows the measure down, never up.
+# RE-MEASURED 2026-10-18 on dev e757601362: the armed gate read 9, and that fall was NOT a drain.
+# FLIP-A2A struck `a2a` from PLANE_KEYS, so `agents` fell out of the noun set (-2) while core still
+# declares both targets, and the same drop hid a NEW `pools` target (+1, the self-serve mint's grant
+# list). plane-config-noun-gate.sh now keeps `agents` by name, as it keeps `streams`: 11. The grant
+# list is renamed off the noun (`granted_pools`, not a parse target): 10 (pools 5 · agents 2 ·
+# streams 3), exactly the floor.
 CONFIG_NOUN_FLOOR=10
 config_noun_residual() {
   local out rc line count
