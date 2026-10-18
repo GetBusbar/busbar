@@ -159,6 +159,7 @@ const FAM_STDIO: &[&str] = &["busbar-transport-stdio"];
 const FAM_TCP: &[&str] = &["busbar-transport-tcp"];
 const FAM_SSE: &[&str] = &["busbar-transport-http"];
 const FAM_GRPC: &[&str] = &["busbar-transport-grpc"];
+const FAM_WEBRTC: &[&str] = &["busbar-transport-webrtc"];
 
 // ── STORES (no backend crate exists in this tree — any reference is premature coupling) ────────
 const FAM_NONE: &[&str] = &[];
@@ -470,7 +471,7 @@ const NOUNS: &[Noun] = &[
     Noun {
         key: "webrtc",
         kind: "transport",
-        family: FAM_NONE,
+        family: FAM_WEBRTC,
         tokens: &["busbar_transport_webrtc", "busbar-transport-webrtc"],
         camel: &[],
         section: None,
