@@ -148,3 +148,27 @@ fn spilled_reflects_heap_overflow_of_the_inline_capacity() {
         "past inline capacity (4) must spill to the heap"
     );
 }
+
+/// LEGACY `crates/busbar-llm/src/engine/tests/signal_catalog_tests.rs::default_path_allocates_no_signals_container`.
+/// ZERO COST WHEN UNDECLARED: a candidate's bag on the default path (no hook declares a signal) is
+/// empty and holds no heap buffer, and a bag of up to four declared signals still lives inline, so
+/// declaring the usual handful of signals adds no allocation per candidate.
+/// RED: a bag that allocates before its fifth entry, or an empty bag that holds a heap buffer.
+#[test]
+fn a_bag_of_up_to_four_signals_never_spills_onto_the_heap() {
+    let mut bag = SignalBag::new();
+    assert!(bag.is_empty() && !bag.spilled(), "the default path's bag");
+    for (signal, value) in [
+        (
+            Signal::CandidateBreakerState,
+            SignalValue::Str(Cow::Borrowed("closed")),
+        ),
+        (Signal::CandidateErrorRate, SignalValue::F64(0.0)),
+        (Signal::CandidateLatencyP95Ms, SignalValue::U64(1)),
+        (Signal::RequestedModel, SignalValue::Bool(true)),
+    ] {
+        bag.push(signal, value);
+        assert!(!bag.spilled(), "{} entries stay inline", bag.len());
+    }
+    assert_eq!(bag.len(), 4);
+}
