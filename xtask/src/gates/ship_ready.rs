@@ -115,7 +115,7 @@ fn posture_of_branch_output(out: Result<String, String>) -> Posture {
     }
 }
 
-fn is_shipping(target: &str) -> bool {
+pub(crate) fn is_shipping(target: &str) -> bool {
     SHIPPING_TARGETS.contains(&target)
 }
 
