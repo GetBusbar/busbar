@@ -838,7 +838,7 @@ enum Again {
     Ingest,
     Emit(u64),
     Timer,
-    Refuse(Option<u64>, u32),
+    Refuse(Option<u64>, u32, bool),
 }
 
 impl Framing {
@@ -963,12 +963,13 @@ impl Framing {
                     i.sink = sink;
                     self.door.cross(Call::Emit(&mut i, &mut o))
                 }
-                Again::Refuse(stream, status) => {
+                Again::Refuse(stream, status, head_sent) => {
                     let mut i: RefuseIn = blank_in();
                     i.framing = self.token;
                     i.stream = stream.unwrap_or(0);
                     i.has_stream = u32::from(stream.is_some());
                     i.status = status;
+                    i.head_sent = u32::from(head_sent);
                     i.sink = sink;
                     self.door.cross(Call::Refuse(&mut i, &mut o))
                 }
@@ -1038,7 +1039,9 @@ impl Framing {
     }
 
     /// `refuse`: a refusal's bytes for `stream` (`None` = the whole connection), with its neutral
-    /// `status` for the framer to map to its wire (`0` = none stated).
+    /// `status` for the framer to map to its wire (`0` = none stated). `head_sent` = the host already
+    /// sent the stream's response head, so the refusal is its closing lines only (never on a
+    /// refusal for the whole connection).
     ///
     /// # Errors
     ///
@@ -1048,12 +1051,15 @@ impl Framing {
         stream: Option<u64>,
         bytes: &[u8],
         status: u32,
+        head_sent: bool,
     ) -> Result<Yielded, Refused> {
+        let head_sent = head_sent && stream.is_some();
         let mut i: RefuseIn = blank_in();
         i.framing = self.token;
         i.stream = stream.unwrap_or(0);
         i.has_stream = u32::from(stream.is_some());
         i.status = status;
+        i.head_sent = u32::from(head_sent);
         i.bytes = bytes.as_ptr();
         i.len = bytes.len();
         i.sink = self.bufs.sink();
@@ -1061,7 +1067,7 @@ impl Framing {
         ready(self.door.cross(Call::Refuse(&mut i, &mut o)))?;
         let mut y = Yielded::default();
         if !self.bufs.take(&o, &mut y)? {
-            self.more(Again::Refuse(stream, status), &mut y)?;
+            self.more(Again::Refuse(stream, status, head_sent), &mut y)?;
         }
         Ok(y)
     }

@@ -1203,6 +1203,14 @@ pub struct RefuseIn {
     pub status: u32,
     /// Alignment padding.
     pub _reserved2: u32,
+    /// `1` = a response head already went out on this stream, set by the host, which sent it; the
+    /// framer then writes the refusal as closing lines only. `0` = no head went out (and always on
+    /// a refusal for the whole connection): the refusal is the whole answer, and the framer writes
+    /// head lines only here, for an answer that is its closing lines alone. Appended (Q128 grpc
+    /// L1): a framer cannot tell from its own state whether the host answered the head.
+    pub head_sent: u32,
+    /// Alignment padding.
+    pub _reserved3: u32,
 }
 
 /// `finish`'s `in` (the framer's `close`).

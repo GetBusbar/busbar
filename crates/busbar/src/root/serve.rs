@@ -3332,7 +3332,7 @@ impl DataRoutes {
                 Ok(messages) => messages,
                 Err(why) => {
                     let status = refusal_status(ReasonCode::DecodeFailed);
-                    return match stream.refuse(why.error.as_bytes(), status) {
+                    return match stream.refuse(why.error.as_bytes(), status, false) {
                         Ok(block) => serve_framed::whole(status, &block),
                         Err(_) => stated((status, Vec::new()), Body::empty()),
                     };
