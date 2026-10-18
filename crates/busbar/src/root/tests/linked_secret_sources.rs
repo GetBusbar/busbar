@@ -8,8 +8,9 @@
 //! and `config/tests/secret_tests.rs` (ARCHITECT R-FIX3, 2026-09-26): the kernel's tests now
 //! resolve against its in-crate secret double (`busbar_kernel::test_support::secrets`), which
 //! reproduces the sources' refusal text for the refusals it makes and nothing more, so every
-//! assertion on a source's own decision (fail-closed on empty / blank / missing, the mis-encoding
-//! diagnosis, the regular-file guard) and on its 1.5.5 refusal words also lives here,
+//! assertion on a source's own decision (fail-closed on empty / missing, a blank value resolving
+//! and a mis-encoded one read as unset as in 1.5.5, the regular-file guard) and on its 1.5.5
+//! refusal words also lives here,
 //! unchanged, against the real sources — the pin the double's copied text is held to.
 //!
 //! [`resolve_linked`] is the kernel resolver's linked branch at CONFIG TIME
@@ -140,27 +141,24 @@ fn env_whitespace_only_name_is_rejected() {
     }
 }
 
-/// A BLANK-but-present env value is not a credential: three spaces handed upstream as a bearer
-/// token is the failure this refuses (the kernel's string path trims only `['\r', '\n']`).
+/// AS 1.5.5 (`crates/busbar/src/config/secret.rs` `resolve_builtin`, l.255-263): a SET variable
+/// whose value is whitespace only RESOLVES, its bytes untouched; 1.5.5 refused only an EMPTY value.
+/// Refusing a blank one is a behaviour difference no owner has signed (THE DESIGN §2: the default
+/// is 1.5.5's behaviour), so this pins 1.5.5's outcome.
 #[test]
-fn resolve_linked_env_whitespace_only_value_is_fail_closed() {
+fn resolve_linked_env_whitespace_only_value_resolves_as_in_1_5_5() {
     for blank in ["   ", "\t", "\n\n", " \t\r\n "] {
         let var = unique("ENV_BLANK");
         std::env::set_var(&var, blank);
-        let err = resolve_linked(&SecretRef::env(&var))
-            .expect_err(&format!("whitespace-only value {blank:?} must be refused"));
-        assert!(err.contains(&var), "the error must name the source: {err}");
-        assert!(
-            !err.contains("is unset"),
-            "a SET-but-blank variable is not 'unset' — that diagnosis sends an operator to set a \
-             variable that is already set: {err}"
-        );
+        let got = resolve_linked(&SecretRef::env(&var)).unwrap_or_else(|e| {
+            panic!("whitespace-only value {blank:?} resolves, as in 1.5.5: {e}")
+        });
+        assert_eq!(got, blank.as_bytes(), "untouched");
         std::env::remove_var(&var);
     }
 }
 
-/// NEGATIVE CONTROL for the blank-value guard: a legitimate credential still resolves, its bytes
-/// EXACTLY as stored (a trailing newline is part of a PEM chain; this is the RAW-bytes path).
+/// A credential resolves with its bytes EXACTLY as stored (a trailing newline is part of a PEM chain; this is the RAW-bytes path).
 #[test]
 fn resolve_linked_env_surrounding_whitespace_is_preserved_not_trimmed() {
     let var = unique("ENV_PADDED");
@@ -168,37 +166,33 @@ fn resolve_linked_env_surrounding_whitespace_is_preserved_not_trimmed() {
     let got = resolve_linked(&SecretRef::env(&var)).unwrap();
     assert_eq!(
         got, b"  s3cr3t-value\n",
-        "a real credential resolves byte-for-byte; the blank guard must not trim it"
+        "a real credential resolves byte-for-byte, never trimmed"
     );
     std::env::remove_var(&var);
 }
 
-/// A variable that IS SET but holds bytes that are not valid UTF-8 is not reported as "unset": an
-/// operator told their variable is unset will set it again, the one action that cannot fix it.
+/// AS 1.5.5: a variable that is SET but holds bytes that are not valid UTF-8 is refused with
+/// 1.5.5's own sentence, "is unset" (`std::env::var`'s one error covers both, and 1.5.5 rendered
+/// it so). Naming the encoding instead is a behaviour difference no owner has signed.
 #[cfg(unix)]
 #[test]
-fn resolve_linked_env_mis_encoded_value_is_not_reported_as_unset() {
+fn resolve_linked_env_mis_encoded_value_is_refused_as_unset_as_in_1_5_5() {
     use std::os::unix::ffi::OsStrExt;
     let var = unique("ENV_NOT_UNICODE");
     // Lone 0xFF: valid in an OsString, never valid UTF-8.
     std::env::set_var(&var, std::ffi::OsStr::from_bytes(&[0x73, 0xff, 0x74]));
     let err = resolve_linked(&SecretRef::env(&var))
         .expect_err("a mis-encoded variable cannot resolve to a usable secret");
-    assert!(err.contains(&var), "the error must name the source: {err}");
     assert!(
-        !err.contains("is unset"),
-        "a SET but mis-encoded variable is NOT unset — telling an operator to set it again sends \
-         them at the wrong fix: {err}"
-    );
-    assert!(
-        err.contains("UTF-8") || err.contains("encod"),
-        "the error must say what is actually wrong (the encoding), not just that it failed: {err}"
+        err.contains(&format!(
+            "secret env:{var} cannot resolve: environment variable '{var}' is unset"
+        )),
+        "1.5.5's sentence: {err}"
     );
     std::env::remove_var(&var);
 }
 
-/// NEGATIVE CONTROL for the mis-encoding diagnosis: a genuinely absent variable still reports
-/// "unset".
+/// A genuinely absent variable reports "unset", 1.5.5's sentence.
 #[test]
 fn resolve_linked_env_genuinely_unset_still_reports_unset() {
     let var = unique("ENV_STILL_UNSET");
@@ -362,25 +356,23 @@ fn resolve_linked_file_missing_path_still_reports_cannot_resolve() {
     );
 }
 
-/// The blank-credential rule on the `file:` side: a file holding only whitespace is refused.
+/// AS 1.5.5 on the `file:` side: a file holding only whitespace RESOLVES, its bytes untouched;
+/// 1.5.5 refused only an EMPTY file.
 #[test]
-fn resolve_linked_file_whitespace_only_content_is_fail_closed() {
+fn resolve_linked_file_whitespace_only_content_resolves_as_in_1_5_5() {
     for blank in [b"   ".to_vec(), b"\n\r\n".to_vec(), b"\t \n".to_vec()] {
         let path = temp_path("FILE_BLANK");
         std::fs::write(&path, &blank).unwrap();
-        let err = resolve_linked(&SecretRef::file(path.to_str().unwrap())).expect_err(&format!(
-            "whitespace-only file content {blank:?} must be refused"
-        ));
-        assert!(
-            err.contains("BLANK") || err.contains("blank"),
-            "a present-but-blank file is not a credential: {err}"
-        );
+        let got = resolve_linked(&SecretRef::file(path.to_str().unwrap())).unwrap_or_else(|e| {
+            panic!("whitespace-only file content {blank:?} resolves, as in 1.5.5: {e}")
+        });
+        assert_eq!(got, blank, "untouched");
         let _ = std::fs::remove_file(&path);
     }
 }
 
-/// NEGATIVE CONTROL for the file blank guard: surrounding whitespace is kept byte-for-byte, and a
-/// BINARY secret that is not UTF-8 at all still resolves (the guard tests all-whitespace bytes).
+/// A file secret keeps its surrounding whitespace byte-for-byte, and a BINARY secret that is not
+/// UTF-8 at all resolves.
 #[test]
 fn resolve_linked_file_real_content_still_resolves_including_binary() {
     let padded = temp_path("FILE_PADDED");
