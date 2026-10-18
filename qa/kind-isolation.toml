@@ -394,19 +394,11 @@ kind = "plane"
 
 [[cell]]
 crate = "busbar-plane-a2a"
-kind = "legacy"
-
-[[cell]]
-crate = "busbar-plane-a2a"
 kind = "plane"
 
 [[cell]]
 crate = "busbar-plane-llm"
 kind = "plane"
-
-[[cell]]
-crate = "busbar-plane-mcp"
-kind = "legacy"
 
 [[cell]]
 crate = "busbar-plane-mcp"
