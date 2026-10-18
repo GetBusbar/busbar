@@ -107,3 +107,43 @@ async fn a_dpop_bound_token_presented_as_a_bearer_is_refused() {
     let (status, _) = stats(&[("x-api-key", bound)]).await;
     assert_eq!(status, 401, "whichever carrier presents it as a bearer");
 }
+
+/// `(status, body)` of `POST /auth/token` with `headers`, on the deployment [`stats`] reads.
+async fn exchanged(headers: &[(&str, String)]) -> (u16, String) {
+    crate::snapshot::init();
+    let app = TestApp::new().idp_chain().build();
+    let router = crate::build_router(app);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let mut req = reqwest::Client::new().post(format!("http://{addr}/auth/token"));
+    for (k, v) in headers {
+        req = req.header(*k, v);
+    }
+    let resp = req.send().await.unwrap();
+    let out = (resp.status().as_u16(), resp.text().await.unwrap());
+    handle.abort();
+    out
+}
+
+/// RED (Q128 kernel part 10, MEDIUM): THE TOKEN EXCHANGE HOLDS THE SENDER CONSTRAINT the data plane
+/// holds. `POST /auth/token` runs the chain itself, past the middleware's RFC 9449 judgement, so a
+/// DPoP-bound token presented there as a bearer reached the mint and could be swapped for an unbound
+/// key. It is refused as an unauthenticated caller now; an unbound bearer still reaches the grant
+/// check exactly as before.
+#[tokio::test]
+async fn the_token_exchange_refuses_a_dpop_bound_token_presented_as_a_bearer() {
+    let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
+    let (status, body) = exchanged(&[("authorization", format!("Bearer {bound}"))]).await;
+    assert_eq!(
+        (status, body.as_str()),
+        (401, r#"{"error":"not authenticated"}"#),
+        "a bound token is no bearer at the exchange either"
+    );
+    let unbound = jwt(serde_json::json!({ "sub": "a" }));
+    let (status, _) = exchanged(&[("authorization", format!("Bearer {unbound}"))]).await;
+    assert_ne!(
+        status, 401,
+        "an unbound bearer is identified and judged by the grant, as before"
+    );
+}

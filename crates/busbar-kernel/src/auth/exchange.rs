@@ -52,6 +52,25 @@ pub(crate) async fn exchange(
     // Identity comes from the VERIFIED chain, never the body. The IdP credential rides the same
     // carriers as any data-plane token (the default inbound style's, in its order).
     let candidate = app.auth.extract_client_token(req.headers());
+    // THE SENDER CONSTRAINT THE DATA PLANE HOLDS (RFC 9449; `auth::dpop`), held here too: this
+    // route runs the chain itself, past the middleware, and a DPoP-bound token presented as a bearer
+    // (or with a proof that does not verify) must not mint itself an unbound key. A request that is
+    // neither a DPoP presentation nor a bound bearer is unconstrained, exactly as before.
+    let candidate = match crate::auth::dpop::judge(
+        &app,
+        req.method(),
+        req.uri().path(),
+        req.headers(),
+        candidate.as_deref(),
+    )
+    .await
+    {
+        crate::auth::dpop::SenderConstraint::Unconstrained => candidate,
+        crate::auth::dpop::SenderConstraint::Proven(token) => Some(token),
+        crate::auth::dpop::SenderConstraint::Refused => {
+            return refusal(ExchangeError::Unauthorized)
+        }
+    };
     let verdict = AuthMiddleware::run_chain_on_request_path(
         &app.auth,
         candidate,
