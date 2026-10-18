@@ -4674,3 +4674,23 @@ mod rehomed_metering {
         );
     }
 }
+
+/// AN OPENAI FAR END'S WHOLE ANSWER READS AS AN ANTHROPIC MESSAGE: an anthropic caller served by an
+/// openai member gets `type: message`, a `text` content block carrying the answer, `end_turn` for
+/// `stop`, and the serving model the far end named; never the raw openai body. Rehomes
+/// crates/busbar-llm/src/engine/tests/forward_pool_integration_tests.rs::test_cross_protocol_nonstream_openai_lane_to_anthropic_client
+/// and ::test_cross_protocol_nonstream_preserves_model.
+#[test]
+fn an_openai_whole_answer_reads_as_an_anthropic_message_naming_the_serving_model() {
+    let far = br#"{"object":"chat.completion","model":"glm-4.5","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}"#;
+    let w = whole::translate(HOST, &ctx("anthropic", "openai", false, false), 200, far);
+    assert_eq!(w.end, WholeEnd::Delivered, "{:?}", w.refused);
+    assert_eq!(w.answer.status, 200);
+    let got: Value = serde_json::from_slice(&w.answer.body).expect("anthropic JSON");
+    assert_eq!(got["type"], "message", "{got}");
+    assert_eq!(got["content"][0]["type"], "text", "{got}");
+    assert_eq!(got["content"][0]["text"], "hi", "{got}");
+    assert_eq!(got["stop_reason"], "end_turn", "{got}");
+    assert_eq!(got["model"], "glm-4.5", "the serving model survives: {got}");
+    assert!(got.get("choices").is_none(), "no raw openai body: {got}");
+}
