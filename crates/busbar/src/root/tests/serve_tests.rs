@@ -4561,6 +4561,45 @@ async fn the_pools_doors_gate_hook_refuses_before_dispatch() {
     assert_eq!(far.served(), 0, "nothing was dispatched");
 }
 
+/// A GATE'S VETO KEEPS THE ADMISSION AND GIVES THE FEE BACK, AS 1.5.5 DID (legacy
+/// `approve::a_veto_refuses_at_approve_which_is_before_the_door`): v1.5.5 admitted and charged a
+/// unit before its gates ran (`ingress/dispatch.rs` `governance_guard` ahead of
+/// `forward_with_pool_parsed`, whose gates fire at `proxy/engine/mod.rs:946`), and the vetoed
+/// answer's non-2xx end refunded the flat fee (`finish_admitted`); the hook stages run at the head
+/// of the route leg after admit (K5, BUSBAR-1.6.0.md). So a vetoed unit answers the gate's status,
+/// dials nothing, keeps its admitted request and nets no spend.
+/// RED: the vetoed unit's fee kept, its admission dropped, or a far end dialled.
+#[cfg(linked_driver_proofs)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_pools_doors_gate_veto_keeps_the_admission_and_refunds_the_fee() {
+    let _one = ONE_PUBLISHER.lock().await;
+    let instance = "serve-door-gate-money";
+    let _published = Withdrawn(instance);
+    let far = seat_far_end(200, SERVED_BY_TWIN).await;
+    let rig = rig(
+        instance,
+        RigOpts {
+            members: &[(far.port, 1)],
+            reject_at_gate: true,
+            budget_cents: Some(5),
+            ..RigOpts::default()
+        },
+    )
+    .await;
+    assert_eq!(rig.chat().await.0, 451, "the gate's own status");
+    assert_eq!(far.served(), 0, "nothing was dispatched");
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    let mut ledger = rig.ledger_after(0).await;
+    while (ledger.0 == 0 || ledger.1 != 0) && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        ledger = rig.ledger_after(0).await;
+    }
+    let (requests, spend, _, billable) = ledger;
+    assert_eq!(requests, 1, "the admission stands");
+    assert_eq!(spend, 0, "the vetoed unit's fee is refunded");
+    assert_eq!(billable, 0, "nothing billable");
+}
+
 /// HOOKS-TAP: the rewrite and observe hooks run over the door's payloads: the request-stage tap
 /// sees the request as the global rewrite left it.
 #[cfg(linked_driver_proofs)]
