@@ -44,23 +44,24 @@ pub use busbar_contract::proxy_route::{ProxyChoice, ProxyHop};
 /// has ALREADY FAILED, so a masker that had to parse could only fail the same way and return
 /// the raw value. Userinfo is everything before the LAST `@` of the authority — last, because
 /// a password may itself contain an unencoded `@` (`svcacct:hunter2-Pr0xyP@ss@proxy.corp`),
-/// and the authority ends at the first `/`, `?` or `#` because userinfo may not contain one.
+/// and the authority ends at the first `/`, `?` or `#` because userinfo may not contain one, and
+/// at a `\` because the dialling stack reads it as `/`.
 /// An `@` that appears only AFTER the authority cannot be userinfo, but neither can this
 /// function prove the value is well-formed enough for that reasoning to hold, so that residue
 /// case redacts wholesale rather than print a maybe-credential.
 fn redact_userinfo(v: &str) -> String {
-    let (scheme, rest) = match v.split_once("://") {
-        Some((s, r)) => (Some(s), r),
-        None => (None, v),
+    // The authority the one split reads ([`busbar_contract::net::split_authority`]): it ends at a
+    // `\` as the dialling stack ends it, so the text after one is never shown as the host.
+    let parts = busbar_contract::net::split_authority(v);
+    let (host_port, tail) = (parts.host_port, parts.tail);
+    let shown = if parts.userinfo.is_some() {
+        format!("***@{host_port}{tail}")
+    } else if tail.contains('@') {
+        "***".to_string()
+    } else {
+        format!("{host_port}{tail}")
     };
-    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
-    let (authority, tail) = rest.split_at(authority_end);
-    let shown = match authority.rsplit_once('@') {
-        Some((_userinfo, host_port)) => format!("***@{host_port}{tail}"),
-        None if rest.contains('@') => "***".to_string(),
-        None => rest.to_string(),
-    };
-    match scheme {
+    match parts.scheme {
         Some(s) => format!("{s}://{shown}"),
         None => shown,
     }

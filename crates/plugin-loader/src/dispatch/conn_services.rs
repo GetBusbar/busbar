@@ -1236,17 +1236,22 @@ fn auth_request(
     } else {
         None
     };
-    let rest = target.split_once("://").map_or(target, |(_, r)| r);
-    let (authority, path_query) = match rest.find(['/', '?']) {
-        Some(at) => (&rest[..at], &rest[at..]),
-        None => (rest, "/"),
-    };
+    // The authority the socket dials, read by the one split; the fragment is never sent, and a
+    // web path's `\` is the `/` the dialling stack sends.
+    let parts = busbar_contract::net::split_authority(target);
+    let authority = parts.host_port;
+    let path_query = parts.tail.split('#').next().unwrap_or("");
     let (path, query) = match path_query.split_once('?') {
-        Some((p, q)) => (
-            if p.is_empty() { "/" } else { p },
-            Some(q.as_bytes().to_vec()),
-        ),
+        Some((p, q)) => (p, Some(q.as_bytes().to_vec())),
         None => (path_query, None),
+    };
+    let path = if path.is_empty() { "/" } else { path };
+    let path: Vec<u8> = if parts.web {
+        path.bytes()
+            .map(|b| if b == b'\\' { b'/' } else { b })
+            .collect()
+    } else {
+        path.as_bytes().to_vec()
     };
     let point = if binding.points.has(AuthPoint::HeadBody) {
         AuthPoint::HeadBody
@@ -1259,7 +1264,7 @@ fn auth_request(
         body: (point == AuthPoint::HeadBody).then(|| body.to_vec()),
         method: h.method.clone(),
         authority: authority.to_string(),
-        path: path.as_bytes().to_vec(),
+        path,
         query,
         timestamp: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
