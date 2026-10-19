@@ -379,6 +379,12 @@ mod dispatch_test_plugin;
 #[path = "tests/dispatch_tests.rs"]
 mod dispatch_tests;
 
+/// One size per struct, at the host: every other size refused with a declared code (ruling 21).
+#[cfg(test)]
+#[allow(unsafe_code)] // TEST ONLY: raw doors and plugin-shaped structs
+#[path = "tests/exact_size_tests.rs"]
+mod exact_size_tests;
+
 /// The plane door's test plugin, compiled in: the LINKED door of `plane_conformance_tests` (the
 /// same source is the `plane_door_plugin` example `cdylib`, the DROPPED door).
 #[cfg(test)]
