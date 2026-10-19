@@ -6586,26 +6586,28 @@ fn a_fee_unit_declared_as_a_class_is_neither_owed_nor_priced_by_the_card() {
 fn a_service_account_key_file_is_read_through_the_file_source_at_config_time() {
     let json = br#"{"client_email":"a@b","private_key":"k"}"#.to_vec();
     let mut asked = Vec::new();
-    let read = super::service_account_json(b"/keys/sa.json\n".to_vec(), |file| {
+    let sealed = |bytes: Vec<u8>| busbar_contract::redacted::Secret::new(bytes);
+    let read = super::service_account_json(sealed(b"/keys/sa.json\n".to_vec()), |file| {
         asked.push(file.file_path().map(str::to_string));
-        Ok(json.clone())
+        Ok(busbar_contract::secret::Resolved::new(json.clone()))
     })
     .expect("the key file reads");
-    assert_eq!(read, json);
+    assert_eq!(read, sealed(json.clone()));
     assert_eq!(asked, vec![Some("/keys/sa.json".to_string())]);
 
-    let inline = super::service_account_json(json.clone(), |_| {
+    let inline = super::service_account_json(sealed(json.clone()), |_| {
         panic!("an inline service account opens no file")
     })
     .expect("inline");
-    assert_eq!(inline, json);
+    assert_eq!(inline, sealed(json));
 }
 
 /// RED: a key file that cannot be read refuses in 1.5.5's words, and the credential (the path it
 /// names) is never rendered.
 #[test]
 fn an_unreadable_service_account_key_file_refuses_in_1_5_5s_words_without_the_path() {
-    let refused = super::service_account_json(b"/keys/secret-name.json".to_vec(), |_| {
+    let named = busbar_contract::redacted::Secret::new(b"/keys/secret-name.json".to_vec());
+    let refused = super::service_account_json(named, |_| {
         Err("secret file:/keys/secret-name.json cannot resolve: No such file or directory (os error 2)".to_string())
     })
     .expect_err("an unreadable key file refuses");

@@ -1215,8 +1215,10 @@ pub fn validate_with_unset(cfg: &RootCfg, unset_env_vars: &[String]) -> Result<(
                     &provider_cfg.api_key,
                     &busbar_contract::config_time::ConfigScope::config_time(),
                 )
+                .map(busbar_contract::secret::Resolved::sealed)
                 .unwrap_or_default();
-                if !resolved_key.trim().is_empty() {
+                // Read under the kernel's seal (Part 2 #54): only whether it is blank.
+                if !resolved_key.expose(&crate::seal::lend()).trim().is_empty() {
                     diag_warn!(
                         CONFIG_PASSTHROUGH_UNUSED_APIKEY,
                         provider = %provider_name,
@@ -2448,7 +2450,11 @@ fn validate_providers_with(
                 &provider_cfg.api_key,
                 &busbar_contract::config_time::ConfigScope::config_time(),
             )
+            .map(busbar_contract::secret::Resolved::sealed)
             .unwrap_or_default();
+            // Read under the kernel's seal (Part 2 #54): judged by the serving plugin, never held.
+            let seal = crate::seal::lend();
+            let cred = cred.expose(&seal);
             if !cred.trim().is_empty() {
                 // The credential's shape is the serving auth plugin's to judge, in its own words,
                 // through the same `open_outbound` the build binds it with (never dialing).
@@ -2489,18 +2495,22 @@ fn validate_providers_with(
                 &provider_cfg.api_key,
                 &config_time,
             )
+            .map(|text| text.into_bytes().sealed())
             .unwrap_or_default();
             // A credential naming its key file is read as the build reads it, in the same words.
-            let cred = match service_account_json(cred.into_bytes(), |file| {
+            let json = match service_account_json(cred, |file| {
                 crate::config::secret::SecretResolver::builtins_only()
                     .resolve_at_config(file, &config_time)
             }) {
-                Ok(json) => String::from_utf8(json).unwrap_or_default(),
+                Ok(json) => json,
                 Err(e) => {
                     errors.push(format!("provider '{provider_name}' (jwt-bearer auth): {e}"));
-                    String::new()
+                    busbar_contract::redacted::Secret::default()
                 }
             };
+            // Read under the kernel's seal (Part 2 #54): judged by the serving plugin, never held.
+            let seal = crate::seal::lend();
+            let cred = std::str::from_utf8(json.expose(&seal)).unwrap_or_default();
             if !cred.trim().is_empty() {
                 // THE NEED'S TARGET IS THE KERNEL'S TO JUDGE (THE DESIGN §5; ARCHITECT ruling
                 // 2026-09-28, Q2 (a)): the service account's `token_uri`, under the SAME operator
@@ -2612,24 +2622,31 @@ fn outbound_credential_refusals(
 ///
 /// The key file the credential names cannot be read.
 pub fn service_account_json(
-    credential: Vec<u8>,
-    read_file: impl FnOnce(&busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String>,
-) -> Result<Vec<u8>, String> {
-    let named = match std::str::from_utf8(&credential) {
+    credential: busbar_contract::redacted::Secret<Vec<u8>>,
+    read_file: impl FnOnce(
+        &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::secret::Resolved<Vec<u8>>, String>,
+) -> Result<busbar_contract::redacted::Secret<Vec<u8>>, String> {
+    // Read under the kernel's seal (Part 2 #54): only whether it names a key file, and which.
+    let named = match std::str::from_utf8(credential.expose(&crate::seal::lend())) {
         Ok(text) if !text.trim_start().starts_with('{') && !text.trim().is_empty() => {
             text.trim().to_string()
         }
         _ => return Ok(credential),
     };
     let file = busbar_contract::secret_ref::SecretRef::file(named.clone());
-    read_file(&file).map_err(|e| {
-        // The file source's refusal names the path; only its reason is 1.5.5's to show.
-        let why = e.split_once(" cannot resolve: ").map_or_else(
-            || e.replace(&named, "<key file>"),
-            |(_, why)| why.to_string(),
-        );
-        format!("could not read service-account key file named by this lane's credential: {why}")
-    })
+    read_file(&file)
+        .map(busbar_contract::secret::Resolved::sealed)
+        .map_err(|e| {
+            // The file source's refusal names the path; only its reason is 1.5.5's to show.
+            let why = e.split_once(" cannot resolve: ").map_or_else(
+                || e.replace(&named, "<key file>"),
+                |(_, why)| why.to_string(),
+            );
+            format!(
+                "could not read service-account key file named by this lane's credential: {why}"
+            )
+        })
 }
 
 /// THE SERVICE ACCOUNT'S TOKEN ENDPOINT: the `token_uri` of the service-account JSON a `jwt-bearer`

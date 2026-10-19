@@ -177,6 +177,15 @@ impl<T: Zeroize, O: OwnerSeal> Secret<T, O> {
     }
 }
 
+impl<T: Zeroize, O> Secret<T, O> {
+    /// The seam's answer sealed to the owner that asked
+    /// ([`Resolved::sealed_to`](crate::secret::Resolved::sealed_to)): the one crate-private way a
+    /// secret is made for any owner.
+    pub(crate) fn owned(secret: T) -> Self {
+        Self(secret, PhantomData)
+    }
+}
+
 impl<T: Zeroize> From<T> for Secret<T> {
     fn from(secret: T) -> Self {
         Self(secret, PhantomData)

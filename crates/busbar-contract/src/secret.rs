@@ -17,6 +17,8 @@
 //! [`SecretCalls`]. The [`SecretResolve`] seam followed the config secret reference it takes into
 //! this crate once that reference merged here, when `busbar-api` retired.
 
+use zeroize::Zeroize;
+
 use crate::secret_ref::SecretRef;
 
 /// The result type every [`SecretModule`] call returns.
@@ -118,7 +120,7 @@ pub trait SecretModule: Send + Sync + 'static {
     fn resolve(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> SecretResult<Vec<u8>>;
+    ) -> SecretResult<Resolved<Vec<u8>>>;
 
     /// Resolve with the caller's ADVISORY deadline, in milliseconds from now (`None` = the caller
     /// set no bound). The wire request has always carried this field and the dispatcher has always
@@ -135,7 +137,7 @@ pub trait SecretModule: Send + Sync + 'static {
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
         deadline_ms: Option<u64>,
-    ) -> SecretResult<Vec<u8>> {
+    ) -> SecretResult<Resolved<Vec<u8>>> {
         let _ = deadline_ms;
         self.resolve(settings)
     }
@@ -244,11 +246,11 @@ pub trait SecretModule: Send + Sync + 'static {
 pub trait SecretResolve: Send + Sync {
     /// Resolve a reference to raw bytes (fail-closed). Some consumers — a raw-file loader, for
     /// instance — need the untrimmed bytes rather than a string.
-    fn resolve(&self, secret: &SecretRef) -> Result<Vec<u8>, String>;
+    fn resolve(&self, secret: &SecretRef) -> Result<Resolved<Vec<u8>>, String>;
 
     /// Resolve a reference to a UTF-8 STRING (trailing newline trimmed; fail-closed on non-UTF-8 or
     /// empty). Some consumers — a credential-minting path, for instance — need the string form.
-    fn resolve_string(&self, secret: &SecretRef) -> Result<String, String>;
+    fn resolve_string(&self, secret: &SecretRef) -> Result<Resolved<String>, String>;
 
     /// [`Self::resolve`] at CONFIG TIME, with its proof: the one way a reference to a source that
     /// reads the disk resolves (THE DESIGN Q-DISK R4, OWNER 2026-10-13). Every other source answers
@@ -257,7 +259,7 @@ pub trait SecretResolve: Send + Sync {
         &self,
         secret: &SecretRef,
         _scope: &crate::config_time::ConfigScope,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<Resolved<Vec<u8>>, String> {
         self.resolve(secret)
     }
 
@@ -266,8 +268,109 @@ pub trait SecretResolve: Send + Sync {
         &self,
         secret: &SecretRef,
         _scope: &crate::config_time::ConfigScope,
-    ) -> Result<String, String> {
+    ) -> Result<Resolved<String>, String> {
         self.resolve_string(secret)
+    }
+}
+
+/// WHAT THE SEAM ANSWERS ([`SecretResolve`], [`SecretAxis::open`]'s resolver, [`SecretModule`]): a
+/// resolved secret's material, held for the owner that asked. It offers NO read of its own: the
+/// asker seals it to itself ([`Resolved::sealed_to`] for a plugin crate's own seal,
+/// [`Resolved::sealed`] for the kernel) and reads the [`Secret`](crate::redacted::Secret) that
+/// comes back through that owner's one sealed accessor. `Debug` prints `[REDACTED]`, nothing
+/// serializes it, and its memory is zeroized on drop, exactly as a `Secret`'s.
+pub struct Resolved<T: Zeroize + Default>(pub(crate) T);
+
+impl<T: Zeroize + Default> Resolved<T> {
+    /// The material a source resolved, as the seam answers it.
+    pub fn new(material: T) -> Self {
+        Self(material)
+    }
+
+    /// A kernel-owned secret handed across the seam, under the kernel seal that may read it: its
+    /// material moves (never copied out in the clear) into the answer.
+    pub fn of_kernel<S: crate::plugin::KernelSeal + ?Sized>(
+        secret: crate::redacted::Secret<T>,
+        _seal: &S,
+    ) -> Self {
+        let mut secret = secret;
+        Self(core::mem::take(&mut secret.0))
+    }
+
+    /// SEAL the answer to the asking owner `O` (a plugin crate's own seal, [`own_seal!`](crate::own_seal)):
+    /// the one way out of it. The material moves into the `Secret`, which only `O` reads.
+    pub fn sealed_to<O>(mut self) -> crate::redacted::Secret<T, O> {
+        crate::redacted::Secret::owned(core::mem::take(&mut self.0))
+    }
+
+    /// Whether the answer holds no material at all: what a fail-closed caller refuses, read
+    /// without the material ever leaving the seal.
+    pub fn is_empty(&self) -> bool
+    where
+        T: AsRef<[u8]>,
+    {
+        self.0.as_ref().is_empty()
+    }
+
+    /// SEAL the answer to the kernel ([`Kernel`](crate::redacted::Kernel)): read only under a
+    /// kernel seal ([`Secret::expose`](crate::redacted::Secret::expose)).
+    pub fn sealed(self) -> crate::redacted::Secret<T> {
+        self.sealed_to()
+    }
+}
+
+/// Why resolved bytes are not the text a text secret is ([`Resolved::into_text`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotText {
+    /// The bytes are not UTF-8.
+    NotUtf8,
+    /// Nothing is left once the trailing newlines are trimmed.
+    Empty,
+}
+
+impl Resolved<Vec<u8>> {
+    /// The answer as the UTF-8 TEXT a text secret is: trailing `\r` / `\n` trimmed, refused when
+    /// the bytes are not UTF-8 or nothing is left. The material never leaves the seal: what is not
+    /// kept is zeroized here.
+    ///
+    /// # Errors
+    /// [`NotText`]: not UTF-8, or empty once trimmed.
+    pub fn into_text(mut self) -> Result<Resolved<String>, NotText> {
+        let bytes = core::mem::take(&mut self.0);
+        let mut text = match String::from_utf8(bytes) {
+            Ok(text) => text,
+            Err(e) => {
+                e.into_bytes().zeroize();
+                return Err(NotText::NotUtf8);
+            }
+        };
+        let kept = text.trim_end_matches(['\r', '\n']).len();
+        if kept == 0 {
+            text.zeroize();
+            return Err(NotText::Empty);
+        }
+        let mut tail = text.split_off(kept);
+        tail.zeroize();
+        Ok(Resolved(text))
+    }
+}
+
+impl Resolved<String> {
+    /// The text answer as its bytes, still sealed (the material moves; nothing is copied out).
+    pub fn into_bytes(mut self) -> Resolved<Vec<u8>> {
+        Resolved(core::mem::take(&mut self.0).into_bytes())
+    }
+}
+
+impl<T: Zeroize + Default> core::fmt::Debug for Resolved<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+impl<T: Zeroize + Default> Drop for Resolved<T> {
+    fn drop(&mut self) {
+        self.0.zeroize();
     }
 }
 
@@ -341,6 +444,6 @@ pub trait SecretAxis: Send + Sync {
         &self,
         module: &str,
         settings: &serde_json::Value,
-        resolve: &dyn Fn(&SecretRef) -> Result<Vec<u8>, String>,
+        resolve: &dyn Fn(&SecretRef) -> Result<Resolved<Vec<u8>>, String>,
     ) -> Result<std::sync::Arc<dyn SecretCalls>, String>;
 }

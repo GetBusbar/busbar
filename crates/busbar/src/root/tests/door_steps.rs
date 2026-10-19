@@ -7041,7 +7041,12 @@ fn per_hop_over(
     secrets: std::sync::Arc<dyn busbar_contract::secret::SecretResolve>,
 ) -> super::PerHop {
     let secret = busbar_contract::secret_ref::SecretRef::file(path.display().to_string());
-    let value = secrets.resolve_string(&secret).expect("it resolves");
+    let value = secrets
+        .resolve_string(&secret)
+        .expect("it resolves")
+        .sealed();
+    let seal = busbar_kernel::seal::lend();
+    let value = value.expose(&seal);
     let settings = serde_json::json!({});
     let handle = {
         use busbar_contract::auth_calls::OutboundAuth as _;
@@ -7232,7 +7237,10 @@ struct CountingResolves {
 }
 
 impl busbar_contract::secret::SecretResolve for CountingResolves {
-    fn resolve(&self, secret: &busbar_contract::secret_ref::SecretRef) -> Result<Vec<u8>, String> {
+    fn resolve(
+        &self,
+        secret: &busbar_contract::secret_ref::SecretRef,
+    ) -> Result<busbar_contract::secret::Resolved<Vec<u8>>, String> {
         self.resolved
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         busbar_contract::secret::SecretResolve::resolve(&self.inner, secret)
@@ -7241,7 +7249,7 @@ impl busbar_contract::secret::SecretResolve for CountingResolves {
     fn resolve_string(
         &self,
         secret: &busbar_contract::secret_ref::SecretRef,
-    ) -> Result<String, String> {
+    ) -> Result<busbar_contract::secret::Resolved<String>, String> {
         self.resolved
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         busbar_contract::secret::SecretResolve::resolve_string(&self.inner, secret)

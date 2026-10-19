@@ -16,7 +16,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// A reference's bytes through the linked secret plugins alone.
 fn resolve_linked(secret: &SecretRef) -> Result<Vec<u8>, String> {
-    SecretResolver::builtins_only().resolve(secret)
+    SecretResolver::builtins_only()
+        .resolve(secret)
+        .map(crate::test_support::revealed)
+}
+
+/// A reference's text through the linked secret plugins alone, revealed for the assertion.
+fn resolve_linked_string(secret: &SecretRef) -> Result<String, String> {
+    super::resolve_linked_string(secret).map(crate::test_support::revealed)
 }
 
 /// A process-lifetime-unique suffix so parallel test threads never pick the same env var name.

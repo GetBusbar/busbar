@@ -28,9 +28,11 @@ use busbar_contract::redacted::Secret;
 use busbar_contract::secret_ref::SecretRef;
 
 /// How a program's environment REFERENCE turns into its value: a string secret resolved through
-/// the secret plugins the build links, at config time (it takes the proof). `Err` names the
-/// reference's source, never a byte of the secret.
-pub type SpawnSecretFn = fn(&SecretRef, &ConfigScope) -> Result<String, String>;
+/// the secret plugins the build links, at config time (it takes the proof). The value comes back
+/// sealed ([`busbar_contract::secret::Resolved`]), never bare; `Err` names the reference's source,
+/// never a byte of the secret.
+pub type SpawnSecretFn =
+    fn(&SecretRef, &ConfigScope) -> Result<busbar_contract::secret::Resolved<String>, String>;
 
 /// The installed [`SpawnSecretFn`]; until one is installed no reference resolves, and a program
 /// that states one is not spawned (fail-closed).
@@ -123,7 +125,7 @@ fn resolve_each(
                     reference.describe()
                 )
             })?;
-        env.push((name.clone(), Secret::new(value)));
+        env.push((name.clone(), value.sealed()));
     }
     Ok(env)
 }
@@ -300,7 +302,10 @@ pub(crate) fn refresh_all() {
 /// resolution is counted by variable, so a cell can tell a spawn resolved nothing. One function for
 /// every cell of this crate: the first install holds for the whole test binary.
 #[cfg(test)]
-pub(crate) fn counting_env(r: &SecretRef, _scope: &ConfigScope) -> Result<String, String> {
+pub(crate) fn counting_env(
+    r: &SecretRef,
+    _scope: &ConfigScope,
+) -> Result<busbar_contract::secret::Resolved<String>, String> {
     let var = r
         .env_var()
         .ok_or_else(|| format!("{} does not resolve", r.describe()))?;
@@ -309,7 +314,9 @@ pub(crate) fn counting_env(r: &SecretRef, _scope: &ConfigScope) -> Result<String
         .unwrap_or_else(PoisonError::into_inner)
         .entry(var.to_string())
         .or_insert(0) += 1;
-    std::env::var(var).map_err(|_| format!("{} does not resolve", r.describe()))
+    std::env::var(var)
+        .map(busbar_contract::secret::Resolved::new)
+        .map_err(|_| format!("{} does not resolve", r.describe()))
 }
 
 #[cfg(test)]

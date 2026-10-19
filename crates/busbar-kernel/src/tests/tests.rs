@@ -1096,7 +1096,13 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
     let var = "BUSBAR_K5B_LINKED_SECRET_ROW";
     std::env::set_var(var, "hunter2");
     let resolver = SecretResolver::builtins_only();
-    assert_eq!(resolver.resolve(&SecretRef::env(var)).unwrap(), b"hunter2");
+    assert_eq!(
+        resolver
+            .resolve(&SecretRef::env(var))
+            .map(crate::test_support::revealed)
+            .unwrap(),
+        b"hunter2"
+    );
     let missing = resolver
         .resolve(&SecretRef::env("BUSBAR_K5B_NO_SUCH_VARIABLE"))
         .expect_err("an unset variable refuses");
@@ -1124,8 +1130,17 @@ fn the_linked_secret_sources_are_plugins_on_the_secret_table() {
         reg.resolve("env").is_some(),
         "the dropped-in row registered"
     );
-    let cold = SecretResolver::with_plugin(Box::new(|_, _| Ok(b"from-the-cold-lane".to_vec())));
-    assert_eq!(cold.resolve(&SecretRef::env(var)).unwrap(), b"hunter2");
+    let cold = SecretResolver::with_plugin(Box::new(|_, _| {
+        Ok(busbar_contract::secret::Resolved::new(
+            b"from-the-cold-lane".to_vec(),
+        ))
+    }));
+    assert_eq!(
+        cold.resolve(&SecretRef::env(var))
+            .map(crate::test_support::revealed)
+            .unwrap(),
+        b"hunter2"
+    );
     std::env::remove_var(var);
     let _ = std::fs::remove_dir_all(&dir);
 }

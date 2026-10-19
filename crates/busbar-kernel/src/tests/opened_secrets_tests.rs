@@ -57,11 +57,16 @@ fn a_slow_secret_source_does_not_stall_another_modules_resolution() {
     let answered = done.recv_timeout(Duration::from_secs(3));
     let _ = release.send(());
     assert_eq!(
-        answered.expect("another module's resolution was stalled behind a slow source"),
+        answered
+            .expect("another module's resolution was stalled behind a slow source")
+            .map(crate::test_support::revealed),
         Ok(b"fast".to_vec())
     );
     assert_eq!(
-        slow_side.join().expect("the slow side ends"),
+        slow_side
+            .join()
+            .expect("the slow side ends")
+            .map(crate::test_support::revealed),
         Ok(b"slow".to_vec())
     );
 }
@@ -75,11 +80,15 @@ fn a_plugin_is_opened_once_under_its_key() {
         Ok(Arc::new(Source { gate: None }) as Arc<dyn SecretCalls>)
     };
     assert_eq!(
-        opened.resolve("one-source", "a", None, open),
+        opened
+            .resolve("one-source", "a", None, open)
+            .map(crate::test_support::revealed),
         Ok(b"a".to_vec())
     );
     assert_eq!(
-        opened.resolve("one-source", "b", None, open),
+        opened
+            .resolve("one-source", "b", None, open)
+            .map(crate::test_support::revealed),
         Ok(b"b".to_vec())
     );
     assert_eq!(opens.load(Ordering::SeqCst), 1);
@@ -115,7 +124,9 @@ fn a_dropped_in_source_is_handed_the_callers_config_time_proof() {
     let open = || Ok(Arc::new(DiskSource) as Arc<dyn SecretCalls>);
     let scope = busbar_contract::config_time::ConfigScope::config_time();
     assert_eq!(
-        opened.resolve("disk-source", "at-config", Some(&scope), open),
+        opened
+            .resolve("disk-source", "at-config", Some(&scope), open)
+            .map(crate::test_support::revealed),
         Ok(b"at-config".to_vec())
     );
     let refused = opened

@@ -828,7 +828,9 @@ pub fn build_app_from_config(
                             mc.provider,
                             provider_cfg.api_key.describe()
                         )
-                    })?
+                    })
+                    // AUDIT POINT: the lane's carrier takes the credential's plaintext.
+                    .map(crate::config::secret::handed_on)?
             };
             slot.insert(resolved);
         }
@@ -1828,7 +1830,8 @@ pub fn build_app_from_config(
                             reference,
                             &busbar_contract::config_time::ConfigScope::config_time(),
                         )
-                        .map(|value| (path.clone(), value))
+                        // AUDIT POINT: the authorization-server plane's seam takes the plaintext.
+                        .map(|value| (path.clone(), crate::config::secret::handed_on(value)))
                         .map_err(|e| format!("{path}: {e}"))
                 })
                 .collect::<Result<Vec<_>, _>>()?;

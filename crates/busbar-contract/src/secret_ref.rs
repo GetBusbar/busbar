@@ -43,6 +43,8 @@ use std::fmt;
 use serde::de::{self, Deserializer, MapAccess, Visitor};
 use serde::Deserialize;
 
+use crate::secret::Resolved;
+
 /// The built-in `env` secret module name (settings: `{ key: <ENV_VAR> }`).
 pub const SECRET_MODULE_ENV: &str = "env";
 /// The built-in `file` secret module name (settings: `{ path: <FILE> }`).
@@ -160,31 +162,34 @@ impl SecretRef {
     /// `resolve`'s error for the first reference that does not resolve, or a template with no text.
     pub fn resolve_template(
         &self,
-        resolve: &dyn Fn(&SecretRef) -> Result<String, String>,
-    ) -> Result<String, String> {
+        resolve: &dyn Fn(&SecretRef) -> Result<Resolved<String>, String>,
+    ) -> Result<Resolved<String>, String> {
         if self.module != SECRET_MODULE_TEMPLATE {
             return resolve(self);
         }
         let text = self
             .template_text()
             .ok_or_else(|| "a template reference carries no text".to_string())?;
-        let mut out = String::with_capacity(text.len());
+        // The value is built inside the answer it is handed back in: every resolved piece moves
+        // into it and is zeroized where it was, so no piece is held bare.
+        let mut out = Resolved::new(String::with_capacity(text.len()));
         let mut rest = text;
         while let Some(at) = rest.find("${") {
-            out.push_str(&rest[..at]);
+            out.0.push_str(&rest[..at]);
             let after = &rest[at + 2..];
             match after.find('}') {
                 Some(end) if end > 0 => {
-                    out.push_str(&resolve(&SecretRef::env(&after[..end]))?);
+                    let piece = resolve(&SecretRef::env(&after[..end]))?;
+                    out.0.push_str(&piece.0);
                     rest = &after[end + 1..];
                 }
                 _ => {
-                    out.push_str("${");
+                    out.0.push_str("${");
                     rest = after;
                 }
             }
         }
-        out.push_str(rest);
+        out.0.push_str(rest);
         Ok(out)
     }
 
@@ -355,7 +360,7 @@ impl<'de> Deserialize<'de> for SecretRef {
                                     return Err(de::Error::custom(
                                         "a secret reference `module:` must be a string naming a \
                                          secret module (the value is not echoed)",
-                                    ))
+                                    ));
                                 }
                             }
                         }

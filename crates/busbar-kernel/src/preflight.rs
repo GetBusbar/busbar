@@ -826,11 +826,13 @@ pub(crate) fn resolve_admin_token(
     let op = config::operator_provider();
     let token = resolver
         .resolve_string_at_config(r, &busbar_contract::config_time::ConfigScope::config_time())
-        .map_err(|e| unresolved_token(op, &e))?;
-    if token.trim().is_empty() {
+        .map_err(|e| unresolved_token(op, &e))?
+        .sealed();
+    // Read under the kernel's seal (Part 2 #54): only whether it is blank.
+    if token.expose(&crate::seal::lend()).trim().is_empty() {
         return Err(blank_token(op));
     }
-    Ok(Some(busbar_contract::redacted::Secret::new(token)))
+    Ok(Some(token))
 }
 
 /// Parse resolved bytes into a 32-byte ed25519 secret: accept RAW 32 bytes or 64 hex chars. Shared
@@ -896,8 +898,10 @@ pub(crate) fn resolve_signing_key(
              `openssl rand -hex 32`), or OMIT auth.signing_key entirely if this deployment never \
              issues busbar-signed keys."
         )
-        })?;
-    let secret = parse_signing_secret(&bytes)?;
+        })?
+        .sealed();
+    // Read under the kernel's seal (Part 2 #54): parsed into the signer, never held bare.
+    let secret = parse_signing_secret(bytes.expose(&crate::seal::lend()))?;
     Ok(Some(TokenSigner::from_secret_bytes(&secret, DEFAULT_KID)))
 }
 
@@ -952,8 +956,12 @@ pub fn resolve_operator_public_key(
              or 64 hex chars — the `operator.pub` your operator ceremony produced), or OMIT \
              auth.operator_pub entirely if this fleet has not run the operator ceremony."
         )
-    })?;
-    Ok(Some(parse_operator_public_key(&bytes)?))
+    })?
+    .sealed();
+    // Read under the kernel's seal (Part 2 #54): a public key, parsed and kept as one.
+    Ok(Some(parse_operator_public_key(
+        bytes.expose(&crate::seal::lend()),
+    )?))
 }
 
 /// Validate ONE `secrets:` block key against the plugin registry and return the plugin's CANONICAL
@@ -1242,7 +1250,7 @@ pub(crate) fn build_secret_resolver(
             move |module: &str,
                   settings: &str,
                   scope: Option<&busbar_contract::config_time::ConfigScope>|
-                  -> Result<Vec<u8>, String> {
+                  -> Result<busbar_contract::secret::Resolved<Vec<u8>>, String> {
                 if let Some(axis) = config::secret::axis().filter(|a| a.answers(module)) {
                     // Keyed by the plugin's CANONICAL name, so an alias and its canonical spelling
                     // open the plugin once.
@@ -1307,13 +1315,13 @@ impl OpenedSecrets {
         settings: &str,
         scope: Option<&busbar_contract::config_time::ConfigScope>,
         open: impl FnOnce() -> Result<Arc<dyn busbar_contract::secret::SecretCalls>, String>,
-    ) -> Result<Vec<u8>, String> {
+    ) -> Result<busbar_contract::secret::Resolved<Vec<u8>>, String> {
         let calls = self.calls(key, open)?;
         match scope {
             Some(scope) => calls.resolve_at_config(settings.as_bytes(), scope),
             None => calls.resolve(settings.as_bytes()),
         }
-        .map(|m| m.expose(&crate::seal::lend()).clone())
+        .map(|m| busbar_contract::secret::Resolved::of_kernel(m, &crate::seal::lend()))
         .map_err(|r| r.text)
     }
 }

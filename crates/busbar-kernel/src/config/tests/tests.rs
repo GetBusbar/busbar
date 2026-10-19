@@ -2030,6 +2030,7 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     // env: set, non-empty.
     std::env::set_var("BUSBAR_T_SECRET_ENV_OK", "s3cr3t-value");
     assert_eq!(
+            .map(crate::test_support::revealed)
         SecretResolver::builtins_only()
             .resolve(&SecretRef::env("BUSBAR_T_SECRET_ENV_OK"))
             .unwrap(),
@@ -2060,10 +2061,18 @@ fn test_secret_ref_builtin_resolution_fail_closed() {
     std::fs::write(&path, "file-secret\n").unwrap();
     let sref = SecretRef::file(path.to_str().unwrap());
     assert_eq!(
-        SecretResolver::builtins_only().resolve(&sref).unwrap(),
+        SecretResolver::builtins_only()
+            .resolve(&sref)
+            .map(crate::test_support::revealed)
+            .unwrap(),
         b"file-secret\n".to_vec()
     );
-    assert_eq!(resolve_linked_string(&sref).unwrap(), "file-secret");
+    assert_eq!(
+        resolve_linked_string(&sref)
+            .map(crate::test_support::revealed)
+            .unwrap(),
+        "file-secret"
+    );
     std::fs::remove_file(&path).unwrap();
 
     // file: missing -> error.

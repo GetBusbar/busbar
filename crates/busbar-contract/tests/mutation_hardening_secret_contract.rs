@@ -9,7 +9,9 @@
 //! (`crates/busbar-kernel/src/config/tests/linked_secret_hardening_tests.rs`). Integration test —
 //! public-surface only, same convention as `mutation_hardening_record_store.rs` in this same directory.
 
-use busbar_contract::secret::{SecretErrorKind, SecretModule, SecretModuleError, SecretResult};
+use busbar_contract::secret::{
+    Resolved, SecretErrorKind, SecretModule, SecretModuleError, SecretResult,
+};
 use std::sync::atomic::Ordering;
 
 // ── `SecretErrorKind` / `SecretModuleError` construction + Display ─────────────────────────────────────
@@ -64,6 +66,14 @@ fn secret_error_from_string_and_str_are_internal_kind() {
 
 // ── `SecretModule::resolve_with_deadline` DEFAULT — forwards to `resolve`, ignores the deadline ──
 
+// This suite's own seal: what a module answers is sealed to the asker, and read under its seal.
+busbar_contract::own_seal!(Own);
+
+/// The answer's bytes, sealed to this suite and read under its seal.
+fn read(answer: Resolved<Vec<u8>>) -> Vec<u8> {
+    answer.sealed_to::<Own>().expose_own(&Own::here()).clone()
+}
+
 struct RecordingModule {
     calls: std::sync::atomic::AtomicUsize,
 }
@@ -72,10 +82,10 @@ impl SecretModule for RecordingModule {
     fn resolve(
         &self,
         settings: &serde_json::Map<String, serde_json::Value>,
-    ) -> SecretResult<Vec<u8>> {
+    ) -> SecretResult<Resolved<Vec<u8>>> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         match settings.get("v").and_then(|v| v.as_str()) {
-            Some(v) => Ok(v.as_bytes().to_vec()),
+            Some(v) => Ok(Resolved::new(v.as_bytes().to_vec())),
             None => Err(SecretModuleError::invalid("missing v")),
         }
     }
@@ -91,10 +101,10 @@ fn resolve_with_deadline_default_forwards_to_resolve_and_ignores_deadline() {
 
     // With a deadline...
     let got = m.resolve_with_deadline(&settings, Some(50)).unwrap();
-    assert_eq!(got, b"hi");
+    assert_eq!(read(got), b"hi");
     // ...and with none — both reach the same underlying `resolve`.
     let got = m.resolve_with_deadline(&settings, None).unwrap();
-    assert_eq!(got, b"hi");
+    assert_eq!(read(got), b"hi");
     assert_eq!(m.calls.load(Ordering::SeqCst), 2);
 
     // The error path forwards too, unmodified.

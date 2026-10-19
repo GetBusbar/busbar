@@ -13,10 +13,18 @@ fn env_module_resolves_and_fails_closed() {
     std::env::set_var(&var, "s3cret\n");
     let r = SecretRef::env(&var);
     assert_eq!(
-        SecretResolver::builtins_only().resolve(&r).unwrap(),
+        SecretResolver::builtins_only()
+            .resolve(&r)
+            .map(crate::test_support::revealed)
+            .unwrap(),
         b"s3cret\n"
     );
-    assert_eq!(resolve_linked_string(&r).unwrap(), "s3cret");
+    assert_eq!(
+        resolve_linked_string(&r)
+            .map(crate::test_support::revealed)
+            .unwrap(),
+        "s3cret"
+    );
     std::env::remove_var(&var);
     let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
     assert!(err.contains("unset"), "unset env is fail-closed: {err}");
@@ -33,10 +41,18 @@ fn file_module_resolves_and_fails_closed() {
     std::fs::write(&path, b"file-secret\n").unwrap();
     let r = SecretRef::file(path.to_string_lossy().into_owned());
     assert_eq!(
-        SecretResolver::builtins_only().resolve(&r).unwrap(),
+        SecretResolver::builtins_only()
+            .resolve(&r)
+            .map(crate::test_support::revealed)
+            .unwrap(),
         b"file-secret\n"
     );
-    assert_eq!(resolve_linked_string(&r).unwrap(), "file-secret");
+    assert_eq!(
+        resolve_linked_string(&r)
+            .map(crate::test_support::revealed)
+            .unwrap(),
+        "file-secret"
+    );
     std::fs::write(&path, b"").unwrap();
     let err = SecretResolver::builtins_only().resolve(&r).unwrap_err();
     assert!(err.contains("EMPTY"), "empty file is fail-closed: {err}");

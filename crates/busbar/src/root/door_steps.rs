@@ -2748,7 +2748,8 @@ fn token_exchange_binding(
         .resolve_at_config(&subject, scope)
         .map_err(|e| {
             format!("member '{entry}': busbar's own subject token for it cannot resolve: {e}")
-        })?;
+        })?
+        .sealed();
     let mut settings = serde_json::Map::new();
     for (key, value) in [
         ("token_url", entry_text(block, TOKEN_URL_KEY)),
@@ -2772,9 +2773,15 @@ fn token_exchange_binding(
                  '{TOKEN_EXCHANGE_STYLE}' a token-exchange registration is bound under"
             )
         })?;
+    // Revealed under the kernel's seal (Part 2 #54): to open the binding, and nowhere else.
     let handle = auth
-        .open_outbound(TOKEN_EXCHANGE_STYLE, &credential, &settings)
+        .open_outbound(
+            TOKEN_EXCHANGE_STYLE,
+            credential.expose(&busbar_kernel::seal::lend()),
+            &settings,
+        )
         .map_err(|e| format!("member '{entry}' {e}"))?;
+    drop(credential);
     Ok(Some(busbar_kernel::plane_driver::AuthBinding {
         auth,
         handle,
@@ -2889,18 +2896,17 @@ fn upstream_credential(
             )
         })?;
     let settings = placement_settings(header.as_deref());
-    let credential = busbar_contract::redacted::Secret::new(
-        reach
-            .secrets
-            .resolve_string_at_config(&secret, scope)
-            .map_err(|e| {
-                format!(
-                    "member '{member_name}': busbar's own upstream credential for it cannot \
-                     resolve: {e}"
-                )
-            })?
-            .into_bytes(),
-    );
+    let credential = reach
+        .secrets
+        .resolve_string_at_config(&secret, scope)
+        .map_err(|e| {
+            format!(
+                "member '{member_name}': busbar's own upstream credential for it cannot \
+                 resolve: {e}"
+            )
+        })?
+        .into_bytes()
+        .sealed();
     let (auth, decl) = reach.auths.serving(style, &settings)?.ok_or_else(|| {
         format!(
             "member '{member_name}': no linked or dropped-in auth plugin serves the style \
@@ -2999,7 +3005,7 @@ impl PerHop {
             self.held.store(None);
             return;
         };
-        let value = busbar_contract::redacted::Secret::new(value.into_bytes());
+        let value = value.into_bytes().sealed();
         // Revealed under the kernel's seal (Part 2 #54): for its digest, and to open a rotation.
         let seal = busbar_kernel::seal::lend();
         let digest = busbar_contract::abi::sdk::digest::sha256(value.expose(&seal));
@@ -3500,12 +3506,13 @@ pub fn member_routes(
     }
     for r in resolved {
         let credential = if r.provider.credential.is_none() {
-            Vec::new()
+            busbar_contract::redacted::Secret::default()
         } else {
             reach
                 .secrets
                 .resolve_at_config(&r.provider.credential, scope)
                 .map_err(|e| format!("provider '{}' credential: {e}", r.name))?
+                .sealed()
         };
         // A service-account credential naming its key file is read here, at configuration time,
         // through the secret kind's file source: the serving plugin is handed the JSON and opens no
@@ -3518,7 +3525,10 @@ pub fn member_routes(
         } else {
             credential
         };
-        let settings = sealed_params(&r.name, &r.style, r.provider, &credential)?.to_json();
+        // Revealed under the kernel's seal (Part 2 #54): its token endpoint, and the binding.
+        let seal = busbar_kernel::seal::lend();
+        let settings =
+            sealed_params(&r.name, &r.style, r.provider, credential.expose(&seal))?.to_json();
         let (auth, decl) = reach.auths.serving(&r.style, &settings)?.ok_or_else(|| {
             format!(
                 "member '{}': no linked or dropped-in auth plugin serves the style '{}'",
@@ -3528,7 +3538,7 @@ pub fn member_routes(
         let settings = sealed_settings(r.params, &r.provider.base_url, &settings)
             .map_err(|e| format!("member '{}': {e}", r.entry))?;
         let handle = auth
-            .open_outbound(&r.style, &credential, &settings)
+            .open_outbound(&r.style, credential.expose(&seal), &settings)
             .map_err(|e| format!("provider '{}' {e}", r.name))?;
         // EVERY need its style names is bound (ARCHITECT Q-L5B-NEEDS): the first is its own, the
         // rest ride beside it, each opened when a far request names it.
