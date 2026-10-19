@@ -19,17 +19,50 @@
 
 use crate::caps::*;
 
+/// Every way an accrual is turned away, with its rendering. Hand-kept, so the cell below holds it to
+/// the enum's own variants (Law 8).
+const REFUSALS: &[(AccrualRefused, &str)] = &[
+    (AccrualRefused::ParentNotAdmitted, "parent not admitted"),
+    (AccrualRefused::ParentExited, "parent already exited"),
+    (AccrualRefused::PrincipalMismatch, "principal mismatch"),
+];
+
+/// Every way the cell refuses a transition, with its rendering. Hand-kept, as above.
+const CELL_ERRORS: &[(CellError, &str)] = &[
+    (CellError::AlreadyAdmitted, "cell already admitted"),
+    (CellError::AlreadyTaken, "cell already taken"),
+];
+
+/// The variants `hold.rs` declares for `name`: the unit-variant lines of its `pub enum` block.
+fn declared_variants(name: &str) -> usize {
+    let hold = include_str!("../hold.rs");
+    let head = format!("pub enum {name} {{");
+    let body = hold
+        .split_once(head.as_str())
+        .unwrap_or_else(|| panic!("hold.rs declares `{name}`"))
+        .1;
+    let body = body.split_once("\n}").expect("the enum closes").0;
+    body.lines()
+        .map(str::trim)
+        .filter(|l| !l.starts_with("//") && l.ends_with(',') && !l.is_empty())
+        .count()
+}
+
+/// The two lists above name every variant their enum declares: a refusal added to the type and not
+/// to the list is one whose rendering nothing reads back.
+#[test]
+fn the_refusal_lists_name_every_declared_variant() {
+    assert_eq!(REFUSALS.len(), declared_variants("AccrualRefused"));
+    assert_eq!(CELL_ERRORS.len(), declared_variants("CellError"));
+}
+
 #[test]
 fn every_refusal_the_cell_can_give_says_which_one_it_was() {
     // Three ways an accrual is turned away and two ways a hold is, each read off a log line by
     // somebody deciding whether a child has to post late. A rendering that collapsed them would
     // make the two decisions indistinguishable.
-    let refusals = [
-        (AccrualRefused::ParentNotAdmitted, "parent not admitted"),
-        (AccrualRefused::ParentExited, "parent already exited"),
-        (AccrualRefused::PrincipalMismatch, "principal mismatch"),
-    ];
-    for (refusal, spelling) in refusals {
+    let refusals = REFUSALS;
+    for (refusal, spelling) in refusals.iter().copied() {
         assert_eq!(refusal.to_string(), spelling);
         let as_error: &dyn std::error::Error = &refusal;
         assert_eq!(as_error.to_string(), spelling);
@@ -39,11 +72,7 @@ fn every_refusal_the_cell_can_give_says_which_one_it_was() {
     spellings.dedup();
     assert_eq!(spellings.len(), 3, "two refusals render as one sentence");
 
-    let cell_errors = [
-        (CellError::AlreadyAdmitted, "cell already admitted"),
-        (CellError::AlreadyTaken, "cell already taken"),
-    ];
-    for (error, spelling) in cell_errors {
+    for (error, spelling) in CELL_ERRORS.iter().copied() {
         assert_eq!(error.to_string(), spelling);
         let as_error: &dyn std::error::Error = &error;
         assert_eq!(as_error.to_string(), spelling);
