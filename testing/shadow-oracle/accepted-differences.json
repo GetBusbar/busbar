@@ -3301,6 +3301,31 @@
         "baseline": "1.5.5",
         "by": "2026-12-31"
       }
+    },
+    {
+      "id": "GEN-LIMITS an apply's limits are in force only once its generation is live",
+      "kind": "improvement",
+      "changelog": "A configuration apply puts its `limits:` in force only when the new configuration goes live: while it is validated and built, and when it is refused, live traffic keeps the running configuration's limits.",
+      "by": "owner (Matthew Jackson), BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982); applied by coordinator ruling 2026-10-19 (Q128 p1#6/p12#4, PR #1208)",
+      "cells": "^admin\\.ops\\|(PostConfigApply|PutConfigSettings)\\|limits-refused-in-flight$",
+      "expected_cells": 0,
+      "classes": [
+        "body"
+      ],
+      "rationale": "v1.5.5 installed a candidate configuration's operational limits process-wide BEFORE validating it (crates/busbar/src/main.rs:2704 `limits::InstallGuard::install(&cfg.limits)` ahead of :2711 `config_validate::validate(&cfg)` at the v1.5.5 tag) and kept them in force for the whole build, rolling back only when the build failed. So while an apply was being validated and built — including one that was then refused — requests served by the running generation read the candidate's body caps, gauge limit, probe timings and hook content ceiling. BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982): a reload 'builds and checks new lists, swaps them in atomically — requests already inside finish on the old ones — and is refused, leaving the running generation serving, if any check fails'. 1.6.0 validates first, reads the candidate's limits through a build-scoped view no other thread sees (busbar_kernel::config::limits::BuildScope), and publishes them only when the generation goes live (AppHandle::swap, InstalledLimits::keep). The steady state is identical: an accepted apply's limits are in force from its swap, a refused one never changes a live limit. Only the transient window during an apply differs. No oracle cell observes a request served DURING an apply, so the cells are OWED: `cells` names them and expected_cells is 0, the way R-22 writes owed cells. The premise probes the existing successful apply cell. Proof: crates/busbar-kernel/src/tests/tests.rs a_built_generations_limits_are_in_force_only_once_it_is_live.",
+      "premise": {
+        "cell": "admin.ops|PostConfigApply|ok",
+        "status": 200
+      },
+      "signoff": {
+        "who": "owner (Matthew Jackson)",
+        "when": "2026-10-19",
+        "ruling": "BUSBAR-1.6.0.md THE DESIGN §6 item 8 (l.980-982), applied by coordinator ruling 2026-10-19 (Q128 p1#6/p12#4: keep the fix over 1.5.5's install-before-validate, v1.5.5 main.rs:2704/2711); not a fresh owner signature"
+      },
+      "expires": {
+        "baseline": "1.5.5",
+        "by": "2026-12-31"
+      }
     }
   ]
 }
