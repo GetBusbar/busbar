@@ -4,9 +4,8 @@
 //! # busbar-kernel-scope — the APPROVE step's scope half
 //!
 //! The kernel loop's approve step asks one question: does the principal hold enough scope for what
-//! this operation needs? This crate is that question for the admin API, and the egress grant gate:
-//! a small, pure data model with no I/O, no wire format and no store, so it can be proven correct
-//! on its own.
+//! this operation needs? This crate is that question for the admin API: a small, pure data model
+//! with no I/O, no wire format and no store, so it can be proven correct on its own.
 //!
 //! ## What is in here
 //!
@@ -19,14 +18,9 @@
 //!   oracle corpus's DATA (`testing/shadow-oracle/fixtures/openapi-1.5.5.json`, each operation's
 //!   `x-busbar-required-scope`): the rule above is proven against every one of them, read from the
 //!   1.5.5 document itself, instead of a hand-picked sample or a second copy here.
-//! - [`egress`] — the egress gate: a virtual-key grant check before busbar spends its own outbound
-//!   credential.
 
 #![forbid(unsafe_code)]
 #![deny(missing_docs)]
-
-/// The egress gate: a virtual-key grant check before busbar spends its own outbound credential.
-pub mod egress;
 
 /// The two-rung authorization chain and a principal's grant set, from their one home.
 pub use busbar_contract::authz::{Grants, Scope};
@@ -60,7 +54,7 @@ const READ_ONLY_POST_PATHS: &[&str] = &["/config/validate", "/plugins/inspect"];
 ///   into `GET`/`HEAD` and DOWNGRADED to `read-only`, where 1.5.5 fails closed to `full`. That is the wrong direction for an authorization matrix to differ in, whatever else
 ///   filters the verb first.
 /// - **The dry-run paths are matched on PATH ALONE**, with no method gate, exactly as the 1.5.5
-///   1.5.5 matrix does. Requiring `POST` would answer `full` for a pair 1.5.5 answers `read-only`
+///   matrix does. Requiring `POST` would answer `full` for a pair 1.5.5 answers `read-only`
 ///   for.
 /// - **The query string is not part of the operation's identity.** The kernel gate hands
 ///   `uri().path()`; the root's approve step hands the request's recorded path, which carries

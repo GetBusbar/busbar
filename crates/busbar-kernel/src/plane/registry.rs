@@ -637,55 +637,13 @@ pub struct BuildCtx<'a> {
     /// `OnceLock`) off its own prior runtime object across a config apply without the composition root
     /// naming the plane's runtime type. Reached by key through [`crate::plane_host::PlaneSlots::plane_slot`]
     /// and downcast inside the plane's own `build`, exactly as the runtime accessors downcast the live
-    /// slot. The A2A plane reads it to carry its `VerifyGate` and card-fetch `OnceLock`; a plane with no
-    /// carry-over ignores it.
+    /// slot. A plane with no carry-over ignores it.
     pub prior: Option<&'a dyn crate::plane_host::PlaneSlots>,
     /// THIS GENERATION'S RESOLVED `providers:` (catalog-merged), from which a door plane's probe is
     /// handed the dialect facts of the providers its section references, as its served instance
     /// is; `None` = none (a test build that states none).
     pub providers:
         Option<&'a std::collections::HashMap<String, crate::config::providers::ResolvedProvider>>,
-    /// THE HOSTLESS-EGRESS DRIVER of the App this generation builds, handed to a plane's `build` on
-    /// this context rather than read off a process-wide static: a plane that runs a governed hop
-    /// holds the driver of the App that built it, so two Apps in one process each drive their own.
-    /// [`EgressDriver::core`] in the App build; `Default` (no driver) where a test states none.
-    pub hostless: EgressDriver,
-}
-
-/// THE HOSTLESS-EGRESS DRIVER A PLANE'S `build` IS HANDED ([`BuildCtx::hostless`]): the
-/// neutral `&dyn HostlessEgress` a plane runs a governed hop through, or none. A field of the
-/// build context in every build, empty in a build that compiles no egress seam, so a test that
-/// spells a `BuildCtx` literal states `Default::default()` whatever features are unified.
-#[derive(Clone, Copy, Default)]
-pub struct EgressDriver(
-    #[cfg(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay")))]
-    Option<&'static dyn crate::egress::seam::HostlessEgress>,
-);
-
-impl EgressDriver {
-    /// The App's own driver: the core-backed `CoreHostlessEgress` (the `plane_host` FFI egress
-    /// vtable) where the egress seam is compiled, none where it is not.
-    #[must_use]
-    pub fn core() -> Self {
-        #[cfg(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay")))]
-        {
-            Self(Some(&crate::egress::seam::CoreHostlessEgress))
-        }
-        #[cfg(not(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay"))))]
-        {
-            Self()
-        }
-    }
-}
-
-#[cfg(all(feature = "egress-seam", any(feature = "dispatch", feature = "relay")))]
-impl EgressDriver {
-    /// The driver, or `None` when this context carries none: a plane that gets `None` has no egress
-    /// backend behind it and refuses the hop rather than inventing one.
-    #[must_use]
-    pub fn get(self) -> Option<&'static dyn crate::egress::seam::HostlessEgress> {
-        self.0
-    }
 }
 
 /// A PLANE BOOT HOOK — [`PlaneDecl::hydrate`] or [`PlaneDecl::start`]. Handed the [`PlaneBootCtx`] for

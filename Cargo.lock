@@ -377,7 +377,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-header"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=0839d7c6dcaaa090d835a87cdd14bcd9ba258690#0839d7c6dcaaa090d835a87cdd14bcd9ba258690"
+source = "git+https://github.com/GetBusbar/busbar-auth-header?rev=4e94c5d903023255cf3538b05461943b650e8bbd#4e94c5d903023255cf3538b05461943b650e8bbd"
 dependencies = [
  "busbar-contract",
  "serde",
@@ -428,7 +428,7 @@ dependencies = [
 [[package]]
 name = "busbar-auth-sigv4"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=c50e40bda6f5c176655119b438228bda2df5650e#c50e40bda6f5c176655119b438228bda2df5650e"
+source = "git+https://github.com/GetBusbar/busbar-auth-sigv4?rev=dce6932fe7196d1e8cf1bd0618607f1e920f0a6c#dce6932fe7196d1e8cf1bd0618607f1e920f0a6c"
 dependencies = [
  "busbar-contract",
  "hex",
@@ -805,7 +805,7 @@ dependencies = [
 [[package]]
 name = "busbar-plane-a2a"
 version = "1.6.0"
-source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=a644de52561abb942ed212d6bb2a2de43f58f0b2#a644de52561abb942ed212d6bb2a2de43f58f0b2"
+source = "git+https://github.com/GetBusbar/busbar-plane-a2a?rev=d7cf79d32b442c8e68610adb82192db5f7d05911#d7cf79d32b442c8e68610adb82192db5f7d05911"
 dependencies = [
  "base64 0.22.1",
  "busbar-contract",
@@ -861,9 +861,9 @@ dependencies = [
 [[package]]
 name = "busbar-plane-streaming"
 version = "1.6.0"
+source = "git+https://github.com/GetBusbar/busbar-plane-streaming?rev=55f953f3a450cfc4a1624f809dc4c69e06aa3243#55f953f3a450cfc4a1624f809dc4c69e06aa3243"
 dependencies = [
  "busbar-contract",
- "busbar-plugin-loader",
  "bytes",
  "serde",
  "serde_json",

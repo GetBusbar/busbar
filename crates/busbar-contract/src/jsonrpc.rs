@@ -424,6 +424,30 @@ fn is_loopback_origin(origin: &str) -> bool {
     matches!(host, "localhost" | "127.0.0.1" | "[::1]")
 }
 
+/// A unit-less kernel refusal of `Unauthenticated`, as v1.5.5 wrote it on the wire.
+const UNITLESS_UNAUTHENTICATED: &[u8] =
+    br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"authentication failed"}}"#;
+/// A unit-less kernel refusal of `BodyTooLarge`, as v1.5.5 wrote it on the wire.
+const UNITLESS_BODY_TOO_LARGE: &[u8] = br#"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"request body exceeds the maximum allowed size"}}"#;
+
+/// THE JSON-RPC RENDERING OF A KERNEL REFUSAL THAT NAMES NO UNIT: the exact bytes v1.5.5 answered
+/// when it refused a request before any unit was made, for the reason codes
+/// ([`crate::abi::plane::RefusalCode`]) that had a body of their own (no credential, and a body
+/// over the cap: [`INVALID_REQUEST`], `id` null, the section 5 value for an unattributable
+/// failure); `None` for every other reason. The renderer decides to answer with it; the bytes live
+/// here once, beside the envelope they are an instance of.
+#[must_use]
+pub fn unitless_kernel_body(reason: u32) -> Option<&'static [u8]> {
+    use crate::abi::plane::RefusalCode;
+    if reason == RefusalCode::Unauthenticated.code() {
+        Some(UNITLESS_UNAUTHENTICATED)
+    } else if reason == RefusalCode::BodyTooLarge.code() {
+        Some(UNITLESS_BODY_TOO_LARGE)
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 #[path = "tests/jsonrpc_tests.rs"]
 mod jsonrpc_tests;

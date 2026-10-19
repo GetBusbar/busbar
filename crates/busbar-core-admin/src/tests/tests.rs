@@ -114,11 +114,11 @@ async fn test_admin_v1_info_reports_version_features_and_topology() {
             .contains(&busbar_kernel::config::operator_provider()),
         "auth_modules must contain `admin-tokens` iff its row is linked: {auth_modules:?}"
     );
-    // RED with a hook name spelled here rather than installed by the root (Law 1).
+    // RED with a hook name spelled here rather than read off the root's install record (Law 1).
     assert_eq!(
         body["build"]["hook_plugins"],
-        serde_json::json!(crate::TEST_LINKED_HOOKS),
-        "hook_plugins must be exactly the linked hook rows the root installed"
+        serde_json::json!(busbar_kernel::preflight::root_rows().hook_names),
+        "hook_plugins must be exactly the linked hook rows the root's install record carries"
     );
     // Topology keys are present and numeric (exact counts depend on the TestApp fixture).
     assert!(body["topology"]["pools"].is_number());
@@ -4155,7 +4155,7 @@ async fn test_admin_v1_plugins_catalog_by_type() {
     assert!(h_items
         .iter()
         .any(|p| p["name"] == "weighted" && p["loader"] == "compiled-in"));
-    for linked in crate::TEST_LINKED_HOOKS {
+    for linked in busbar_kernel::preflight::root_rows().hook_names {
         assert!(
             h_items
                 .iter()
@@ -5898,6 +5898,67 @@ async fn proof_max_ttl_ceiling_refuses_overask_and_clamps_default() {
         exp < t0 + busbar_kernel::governance::mint_policy::DEFAULT_KEY_TTL_SECS,
         "the clamped exp is strictly below the unclamped 90-day default"
     );
+}
+
+/// THE MINT POLICY'S LIFETIME CEILING HOLDS ON ROTATION (`auth.policy.max_ttl`): `POST
+/// /keys/{id}/rotate` re-mints the key's token, and a re-minted token is a mint — its lifetime is
+/// the default a mint with no expiry gets, CLAMPED to the ceiling exactly as `POST /keys` clamps it.
+///
+/// RED while rotation stamped the fixed 90-day default whatever the policy said: a deployment that
+/// caps keys at a day handed out a 90-day token on every rotate.
+#[tokio::test]
+async fn proof_max_ttl_ceiling_clamps_a_rotated_token() {
+    busbar_kernel::snapshot::init();
+    const CEIL: u64 = 24 * 3600; // auth.policy.max_ttl = "24h"
+    let store = Arc::new(MemoryStore::new());
+    let gov = gov_with_signer(store, Some("admintok".to_string()));
+    let policy = busbar_kernel::governance::mint_policy::MintPolicy {
+        self_mint: None,
+        block_max_ttl_secs: Some(CEIL),
+        block_binding_modes: None,
+        ceilings: Default::default(),
+    };
+    let app = crate::new_test_app()
+        .governance(gov)
+        .mint_policy(policy)
+        .build();
+    let router = crate::build_router(app);
+    let (addr, handle, client) = spin_up(router).await;
+    let admin = |req: reqwest::RequestBuilder| {
+        req.header("x-admin-token", "admintok")
+            .header("content-type", "application/json")
+    };
+    let created: serde_json::Value = admin(client.post(format!("http://{addr}/api/v1/admin/keys")))
+        .body(serde_json::json!({"name": "rotated-under-ceiling"}).to_string())
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    let id = created["id"]
+        .as_str()
+        .expect("the mint answers an id")
+        .to_string();
+    let t0 = busbar_kernel::store::now();
+    let rotated = admin(client.post(format!("http://{addr}/api/v1/admin/keys/{id}/rotate")))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rotated.status().as_u16(), 200, "the rotate answers");
+    let rotated: serde_json::Value = rotated.json().await.unwrap();
+    let exp = rotated["expires_at"]
+        .as_u64()
+        .expect("a signed-token rotate answers expires_at");
+    assert!(
+        exp <= busbar_kernel::store::now() + CEIL,
+        "the rotated token outlives the 24h max_ttl ceiling: exp={exp}, now={t0}, ceiling={CEIL}"
+    );
+    assert!(
+        exp >= t0 + CEIL,
+        "the rotated token's default lifetime is clamped TO the ceiling, not below it: exp={exp}"
+    );
+    handle.abort();
 }
 
 /// The per-role POOL/TTL mint ceiling (`auth.policy.mint_ceilings.<role>`) bounds a DELEGATED

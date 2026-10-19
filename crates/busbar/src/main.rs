@@ -254,7 +254,8 @@ fn validate_worker_threads_config(wt: Option<usize>) -> Result<Option<usize>, St
 // crate this replaced did.
 include!(concat!(env!("OUT_DIR"), "/linked.rs"));
 // `LINKED_HOOK_NAMES`: each linked hook row's name as the admin surface prints it (the manifest's
-// `linked-name` rows), handed to the admin crate below so it names no hook plugin.
+// `linked-name` rows), carried on the root's install record (`root::linked::register_stores`) so the
+// admin crate names no hook plugin.
 include!(concat!(env!("OUT_DIR"), "/linked_hook_names.rs"));
 
 /// REGISTER THE LINKED PROTOCOLS — the composition root's one write into the protocol axis, over
@@ -318,9 +319,6 @@ fn register_planes() {
     // above. Unconditional: the admin surface carries no feature flag at this layer; core mounts it
     // through the seam whenever this (mandatory) sibling is linked, which is every real build.
     busbar_core_admin::install();
-    // The hook rows this build links, by the names the admin surface prints (Law 1: the admin crate
-    // spells no hook plugin; which hooks a build carries is the manifest's data).
-    busbar_core_admin::v1::service::install_hook_plugins(LINKED_HOOK_NAMES);
 
     // THE ROOT UNITS' SEALS. Each reads what its unit composes against the axes installed above and
     // against nothing else — it binds no listener, opens no store, reads no configuration and writes
@@ -971,6 +969,14 @@ async fn run(data_workers: usize, late_services: std::sync::Arc<root::serve::Lat
     )
     .unwrap_or_else(|e| die(e));
     root_rules.hold_owned_anchors(&served.need_trust());
+    // THE DOOR PLANES THE BOOT LEFT UNOPENED (their section absent, Law 7): a door plane is opened
+    // once, here, so an apply that first writes one's section is stored and validated but
+    // RESTART-TO-APPLY, reported in the apply's answer and given no slot until the next boot (the
+    // 1.5.5 precedent for what is mounted once at boot, `plugin_routes::paths_awaiting_restart`).
+    // Without governance no door plane is opened at all, at boot or after a restart: none is held.
+    if app.governance.is_some() {
+        root_rules.hold_unopened(served.unopened(root::boot::door_planes()));
+    }
     served.spawn_ticks();
     // RELIABILITY STATE IS STATELESS (store-or-RAM rule): a plane's own in-memory health/backoff
     // bookkeeping lives in RAM only and is RE-LEARNED after a restart — none of it is this crate's

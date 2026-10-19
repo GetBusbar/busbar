@@ -210,7 +210,9 @@ pub struct MintCeilingCfg {
     /// OMITTED (`None`) = ALL pools; explicit `[]` = NO pools; `[list]` = exactly those. The ceiling
     /// is an upper bound: an enforced mint must request a subset.
     pub allowed_pools: Option<Vec<String>>,
-    /// The binding modes this role may mint. Absent ⇒ the block-level `binding_modes` applies.
+    /// The binding modes this role may mint. Absent ⇒ the block-level `binding_modes` applies. Present,
+    /// it narrows the block-level list: every entry must be one the block-level list allows (refused
+    /// at validation), and a mint must satisfy both.
     pub binding_modes: Option<Vec<BindingMode>>,
 }
 
@@ -248,9 +250,10 @@ pub struct AuthPolicyCfg {
 
 /// Per-provider browser-login parameters (`identity-providers.<name>.browser_login:`). PRESENCE of
 /// this block is what makes a provider show a button on the hosted login page; a provider WITHOUT it
-/// is headless-only (still usable via `POST /auth/token`). Holds the confidential-client secret used by
-/// the CORE (never the plugin) during the code→token exchange. `deny_unknown_fields`: a typo here
-/// (e.g. `client_secrets:`) must fail boot, not silently disable the button.
+/// is headless-only (still usable via `POST /auth/token`). Names the confidential-client secret the
+/// plugin is lent at `open` for its own code→token exchange (the host keeps none of it; see
+/// `client_secret`). `deny_unknown_fields`: a typo here (e.g. `client_secrets:`) must fail boot, not
+/// silently disable the button.
 // `Serialize` for the same single reason `IdentityProviderCfg` has it: it is a nested field of one,
 // so the overlay's per-entry merge projection needs it. Config-internal, never a reader-facing view.
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq)]
@@ -384,8 +387,9 @@ pub struct AuthCfg {
     /// `DEFAULT_KEY_TTL_SECS` (90d).
     pub key_ttl: Option<String>,
     /// The resolved `auth.policy:` token-mint POLICY block (1.6.0, additive). Carried verbatim from
-    /// [`AuthDeployCfg::policy`]; `Default` when the block is omitted. Parsed/validated/carried in
-    /// this increment; consulted by the mint path in a later, Store-touching increment.
+    /// [`AuthDeployCfg::policy`]; `Default` when the block is omitted. Enforced at mint:
+    /// `self_mint` gates the self-serve exchange and the TTL / pool / binding-mode ceilings are
+    /// applied at `MintPolicy::check_mint` (see [`AuthPolicyCfg`]).
     pub policy: AuthPolicyCfg,
 }
 
