@@ -30,9 +30,13 @@
 //! (`crates/<package>`, the base layer every gate reads, with a plant's overlay on top), and a
 //! pinned plugin the base does not lay is read from the checkout `cargo metadata` resolves for its
 //! pin. A pinned root whose source reads no file is refused, never scanned as clean. A TRANSPORT
-//! is a carrier (#40(a): "the carrier plugins are the one named exception", THE DESIGN §5), so the
-//! source rule skips it, keyed on the plugin's declared kind
-//! ([`crate::gates::kind_isolation::plugin_kind`]) and on no crate name.
+//! is a carrier (#40(a): "the carrier plugins are the one named exception", THE DESIGN §5).
+//!
+//! THE CARRIER IS A KIND, NOT A ROW (ARCHITECT ruling on #1254's question). #40(a) names the carrier
+//! plugins as the one exception to the WHOLE wall, so a plugin whose declared kind
+//! ([`crate::gates::kind_isolation::plugin_kind`]) is `transport` is no root of it: neither its
+//! closure nor its source is measured. No crate name exempts anything: the ledger's old
+//! `carrier<TAB>crate` row is retired, and a ledger that still carries one is refused.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -95,10 +99,9 @@ type Node = (Vec<(String, String)>, Vec<String>);
 /// The measured wall: offending crate -> what it reaches.
 pub type Offenders = BTreeMap<String, BTreeSet<String>>;
 
-/// Exemptions and pins the ledger states.
+/// The pins the ledger states.
 #[derive(Default)]
 struct Ledger {
-    carriers: BTreeSet<String>,
     pinned: BTreeSet<(String, String)>,
     errors: Vec<String>,
 }
@@ -112,15 +115,18 @@ fn read_ledger(text: &str) -> Ledger {
         }
         let parts: Vec<&str> = t.split('\t').collect();
         match parts.as_slice() {
-            ["carrier", name] => {
-                l.carriers.insert((*name).to_string());
-            }
+            ["carrier", name] => l.errors.push(format!(
+                "{LEDGER}:{}: `carrier<TAB>{name}` names a crate as a carrier, and a carrier is a \
+                 KIND: a plugin whose declared kind is `transport` is exempt with no row, and no \
+                 other plugin is. Strike the row",
+                i + 1
+            )),
             [krate, offender] => {
                 l.pinned
                     .insert(((*krate).to_string(), (*offender).to_string()));
             }
             _ => l.errors.push(format!(
-                "{LEDGER}:{}: `{t}` is neither `carrier<TAB>crate` nor `crate<TAB>offender`",
+                "{LEDGER}:{}: `{t}` is not `crate<TAB>offender`",
                 i + 1
             )),
         }
@@ -202,11 +208,15 @@ fn asks(pkg: &Pkg) -> Vec<String> {
     out
 }
 
-/// THE MEASUREMENT: every in-scope crate and what its closure reaches past the wall.
-pub fn measure(
-    cx: &Ctx,
-    carriers: &BTreeSet<String>,
-) -> Result<(Offenders, usize, BTreeSet<String>), String> {
+/// Whether `name` is a CARRIER: a plugin whose declared kind is `transport` (#40(a)'s one named
+/// exception, THE DESIGN §5), read off the kind table and never off a crate name.
+fn is_carrier(name: &str) -> bool {
+    crate::gates::kind_isolation::plugin_kind(name) == Some("transport")
+}
+
+/// THE MEASUREMENT: every in-scope crate and what its closure reaches past the wall, how many roots
+/// that is, and how many carriers the kind exempted.
+pub fn measure(cx: &Ctx) -> Result<(Offenders, usize, usize), String> {
     let json: Value = serde_json::from_str(&cx.cargo_metadata("Cargo.toml")?)
         .map_err(|e| format!("`cargo metadata` output did not parse: {e}"))?;
     let mut pkgs: BTreeMap<String, Pkg> = BTreeMap::new();
@@ -306,8 +316,14 @@ pub fn measure(
     let globs = kind_globs(cx)?;
     let root = cx.root().to_string_lossy().to_string();
     let mut roots: Vec<(String, Option<String>)> = Vec::new(); // (id, in-tree dir)
+    let mut carriers = 0usize;
     for (id, p) in &pkgs {
-        if carriers.contains(&p.name) {
+        let in_scope = match &p.source {
+            None => true,
+            Some(src) => src.starts_with(EXTERNAL_SOURCE),
+        };
+        if in_scope && is_carrier(&p.name) {
+            carriers += 1;
             continue;
         }
         match &p.source {
@@ -345,17 +361,14 @@ pub fn measure(
                 }
             }
         }
-        if crate::gates::kind_isolation::plugin_kind(&root_name) != Some("transport") {
-            let files = own_source(cx, &pkgs[root_id], dir.as_deref())?;
-            for (rel, text) in files {
-                if rel.contains("/tests/") || rel.ends_with("_tests.rs") {
-                    continue;
-                }
-                for (_, line) in crate::scan::production_lines(&text) {
-                    for p in BANNED_PATHS {
-                        if line.contains(p) {
-                            hits.insert((*p).to_string());
-                        }
+        for (rel, text) in own_source(cx, &pkgs[root_id], dir.as_deref())? {
+            if rel.contains("/tests/") || rel.ends_with("_tests.rs") {
+                continue;
+            }
+            for (_, line) in crate::scan::production_lines(&text) {
+                for p in BANNED_PATHS {
+                    if line.contains(p) {
+                        hits.insert((*p).to_string());
                     }
                 }
             }
@@ -364,8 +377,7 @@ pub fn measure(
             out.entry(root_name).or_default().extend(hits);
         }
     }
-    let names = pkgs.values().map(|p| p.name.clone()).collect();
-    Ok((out, roots.len(), names))
+    Ok((out, roots.len(), carriers))
 }
 
 /// A root's own production-candidate source as `(path, text)`, every `.rs` file under its `src/`.
@@ -410,6 +422,35 @@ fn own_source(cx: &Ctx, pkg: &Pkg, dir: Option<&str>) -> Result<Vec<(String, Str
     Ok(files.into_iter().collect())
 }
 
+/// The tree's own `cargo metadata`, with one normal edge `krate -> socket2` added to the resolve:
+/// a dependency closure planted without a fixture workspace ([`Ctx::cargo_metadata`]'s overlay key).
+/// `None` when the resolve has no `krate` node or no `socket2` package to point at.
+fn socket2_edge(cx: &Ctx, krate: &str) -> Option<Overlay> {
+    let mut json: Value = serde_json::from_str(&cx.cargo_metadata("Cargo.toml").ok()?).ok()?;
+    let id_of = |json: &Value, name: &str| -> Option<String> {
+        json["packages"]
+            .as_array()?
+            .iter()
+            .find(|p| p["name"].as_str() == Some(name))
+            .and_then(|p| p["id"].as_str())
+            .map(str::to_string)
+    };
+    let from = id_of(&json, krate)?;
+    let to = id_of(&json, "socket2")?;
+    let node = json["resolve"]["nodes"]
+        .as_array_mut()?
+        .iter_mut()
+        .find(|n| n["id"].as_str() == Some(from.as_str()))?;
+    node["deps"].as_array_mut()?.push(serde_json::json!({
+        "name": "socket2",
+        "pkg": to,
+        "dep_kinds": [{ "kind": null, "target": null }],
+    }));
+    let mut ov = Overlay::new();
+    ov.set_command("cargo-metadata:Cargo.toml", json.to_string());
+    Some(ov)
+}
+
 pub struct DepWallGate;
 
 impl Gate for DepWallGate {
@@ -423,7 +464,7 @@ impl Gate for DepWallGate {
 
     fn run(&self, cx: &Ctx) -> Verdict {
         let ledger = read_ledger(&cx.read(LEDGER).unwrap_or_default());
-        let (measured, roots, names) = match measure(cx, &ledger.carriers) {
+        let (measured, roots, carriers) = match measure(cx) {
             Ok(m) => m,
             Err(e) => {
                 let why = format!("the wall could not be measured: {e}");
@@ -446,25 +487,12 @@ impl Gate for DepWallGate {
                  proves the wall vacuously"
             ));
         }
-        for c in &ledger.carriers {
-            if !c.contains("transport") {
-                scope.push(format!(
-                    "`{c}` is exempted as a carrier and is not a transport crate"
-                ));
-            } else if !names.contains(c) {
-                scope.push(format!(
-                    "`{c}` is exempted as a carrier and the workspace resolves no such crate: strike \
-                     the exemption"
-                ));
-            }
-        }
         rows.push(if scope.is_empty() {
             Row::pass(
                 ROW_SCOPE,
                 "the dependency wall is measured",
                 format!(
-                    "{roots} crate(s) in scope, {} carrier(s) exempt",
-                    ledger.carriers.len()
+                    "{roots} crate(s) in scope, {carriers} transport carrier(s) exempt by kind"
                 ),
             )
         } else {
@@ -609,23 +637,54 @@ impl Gate for DepWallGate {
             ov,
             &["drained", "busbar-plane-decisions", "reqwest"],
         ));
-        // A CARRIER EXEMPTION ON A CRATE THAT IS NOT A TRANSPORT is refused.
+        // A CRATE-NAMED CARRIER ROW is refused, even naming a transport: the carrier is a kind.
         let mut ov = Overlay::new();
         ov.set(
             LEDGER,
             format!(
-                "{}\ncarrier\tbusbar-plane-decisions\n",
+                "{}\ncarrier\tbusbar-transport-stdio\n",
                 cx.read(LEDGER).unwrap_or_default().trim_end()
             ),
         );
         report.push(prove_red(
             cx,
             self,
-            "only a transport crate may be exempted as a carrier",
+            "a crate-named carrier row is refused: the carrier exemption is a kind, never a row",
             &[ROW_SCOPE],
             ov,
-            &["busbar-plane-decisions", "not a transport crate"],
+            &["carrier<TAB>busbar-transport-stdio", "Strike the row"],
         ));
+
+        // THE CLOSURE HALF OF THE WALL, over a planted resolve: one edge to `socket2` added to a
+        // pinned NON-transport plugin is a new offender naming the crate and `socket2`; the same
+        // edge on a transport moves no row, because a transport is a carrier by its kind.
+        match socket2_edge(cx, "busbar-secret-env") {
+            Some(ov) => report.push(prove_red(
+                cx,
+                self,
+                "a non-transport plugin with socket2 in its closure is a new offender",
+                &[ROW_NEW],
+                ov,
+                &["new-offender", "busbar-secret-env", "socket2"],
+            )),
+            None => report.note_infra_failure(
+                "dep-wall selftest: the resolve carries no `busbar-secret-env` node or no `socket2` \
+                 package, so the closure plant has nothing to plant against",
+            ),
+        }
+        match socket2_edge(cx, "busbar-transport-stdio") {
+            Some(ov) => report.push(prove_rows_green(
+                cx,
+                self,
+                "a transport with socket2 in its closure is a carrier, not an offender",
+                &[ROW_NEW],
+                ov,
+            )),
+            None => report.note_infra_failure(
+                "dep-wall selftest: the resolve carries no `busbar-transport-stdio` node or no \
+                 `socket2` package, so the carrier closure plant has nothing to plant against",
+            ),
+        }
         report
     }
 }

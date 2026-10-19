@@ -4,11 +4,20 @@
 use super::*;
 
 #[test]
-fn the_ledger_reads_carriers_and_pins_and_refuses_anything_else() {
+fn the_ledger_reads_pins_and_refuses_a_carrier_row_and_anything_else() {
     let l = read_ledger("# note\ncarrier\tbusbar-transport-tcp\nbusbar-llm\trustls\nnonsense\n");
-    assert!(l.carriers.contains("busbar-transport-tcp"));
     assert!(l.pinned.contains(&("busbar-llm".into(), "rustls".into())));
-    assert_eq!(l.errors.len(), 1);
+    assert_eq!(l.pinned.len(), 1);
+    assert_eq!(l.errors.len(), 2);
+    assert!(l.errors[0].contains("carrier<TAB>busbar-transport-tcp"));
+}
+
+#[test]
+fn a_carrier_is_the_transport_kind_and_nothing_else() {
+    assert!(is_carrier("busbar-transport-stdio"));
+    assert!(is_carrier("busbar-transport-http"));
+    assert!(!is_carrier("busbar-secret-env"));
+    assert!(!is_carrier("busbar-plane-decisions"));
 }
 
 #[test]

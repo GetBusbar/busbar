@@ -8,18 +8,12 @@
 # RED (strike it in the commit that drained it). It reaches zero when the coexistence window closes,
 # and this file is deleted then.
 #
-# `carrier<TAB>crate` exempts a transport CARRIER, whose whole job is the socket. The connector is a
-# cleanliness crate and never in scope.
-carrier	busbar-transport-stdio
+# A transport CARRIER, whose whole job is the socket, is exempt by its declared KIND (`transport`),
+# never by a row here: a `carrier<TAB>crate` row is refused. The connector is a cleanliness crate and
+# never in scope.
 busbar-llm	hyper-util
 busbar-llm	reqwest
 busbar-llm	rustls
 busbar-llm	socket2
 busbar-llm	tokio (net)
 busbar-llm	tokio-rustls
-# busbar-transport-grpc reaches socket2 only as socket2 <- tokio <- hyper: tokio's `net` feature is on by
-# workspace feature unification, and the door opens no socket (it frames the host's bytes through
-# hyper_io!). Same precedent as the http and ws doors. ARCHITECT ruling GRPC-DOOR Q2 2026-10-01.
-busbar-transport-grpc	socket2
-busbar-transport-http	socket2
-busbar-transport-ws	socket2
