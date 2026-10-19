@@ -308,3 +308,26 @@ fn an_encode_answered_yield_more_faults_and_is_never_sent_truncated() {
         "a whole answer is the message"
     );
 }
+
+/// RED (Q128 arch u22 MEDIUM 4; `busbar_contract::abi::transport`, "A STREAM'S OWN BACKPRESSURE"):
+/// a `PIECE_WRITABLE` piece is the framer telling the host a stream may be emitted on again, never
+/// a frame: it is never handed up as a piece (relayed, it reached a reader as an empty body piece,
+/// ahead of the head on a dialled stream). The messages around it are handed up as they came.
+#[test]
+fn a_writable_piece_is_never_handed_up_as_a_frame() {
+    let door = Arc::new(TestDoor::new(
+        "messages",
+        &["messages"],
+        &[],
+        Knobs {
+            messages: Some(1),
+            ..Knobs::default()
+        },
+    ));
+    let (mut f, _) = Framing::begin(door, SIDE_DIAL, "t", &Established::default()).unwrap();
+    let y = f.ingest(b"w", false).unwrap();
+    assert!(y.pieces.is_empty(), "a writable piece is no frame: {y:?}");
+    let y = f.ingest(b"xwz", false).unwrap();
+    let got: Vec<Vec<u8>> = y.pieces.iter().map(|p| p.bytes.clone()).collect();
+    assert_eq!(got, vec![b"x".to_vec(), b"z".to_vec()]);
+}
