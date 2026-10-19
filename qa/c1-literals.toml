@@ -61,11 +61,6 @@ item = "ranking"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/diagnostics/mod.rs"
-item = "streaming"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/plane/registry.rs"
 item = "openapi"
 

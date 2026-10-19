@@ -747,10 +747,8 @@ impl LaneSpec {
     }
     fn to_lane_data(&self) -> crate::store::LaneData {
         crate::store::LaneData {
-            reasoning: false,
-            prompt_caching: false,
-            model: self.model.clone(),
-            provider: self.provider.clone(),
+            member: self.model.clone(),
+            route: self.provider.clone(),
             max: self.max,
             sem: self
                 .sem
@@ -765,8 +763,6 @@ impl LaneSpec {
             ok: self.ok,
             err: self.err,
             client_fault: self.client_fault,
-            upstream_model: self.upstream_model.clone(),
-            attempt_timeout_ms: None,
         }
     }
 }
@@ -2040,6 +2036,7 @@ impl TestApp {
             // exercise. Recorder not installed ⇒ empty table (no `/metrics`), as when metrics are off.
             plugin_routes,
             boot_route_paths,
+            planes_awaiting_restart: Vec::new(),
         });
         // Mirror main's boot-version floor so rollback tests have a v0 to restore.
         crate::admin::seam::record_boot(&app);
