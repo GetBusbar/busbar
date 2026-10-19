@@ -594,6 +594,51 @@ fn money_reading(cx: &Ctx, f: &crate::ctx::SourceFile, walk: Walk) -> std::sync:
     }
 }
 
+/// THE PLANE CRATES THE COUNT-READ SCAN WALKS ([`crate::gates::kind_isolation::plane_kind_crates`]),
+/// memoised for a tree whose manifests are the unplanted tree's.
+///
+/// The census behind it walks the WHOLE repository for every `Cargo.toml` and folds the base
+/// layer's pinned crates into that listing, which made it the dearest single read of a gate run:
+/// a self-test case paid for it once per case although no case of this battery plants a manifest.
+/// What this gate reads of it — each plane crate's name and manifest, or the census's refusal — is
+/// a function of the `.toml` files (every manifest, the root manifest's pins and the kind registry)
+/// and the base layer alone. So it is read once per (root, base layer and its size) while the
+/// overlay touches no `.toml`, and read afresh for any tree that plants one, or when `walk` says
+/// the full walk.
+fn plane_crates(
+    cx: &Ctx,
+    walk: Walk,
+) -> Result<Vec<crate::gates::kind_isolation::PlaneKindCrate>, String> {
+    type Memo = std::collections::HashMap<
+        (std::path::PathBuf, Option<usize>),
+        Result<Vec<crate::gates::kind_isolation::PlaneKindCrate>, String>,
+    >;
+    static MEMO: std::sync::OnceLock<std::sync::Mutex<Memo>> = std::sync::OnceLock::new();
+    let plants_a_manifest = cx
+        .overlay()
+        .is_some_and(|ov| ov.paths().any(|p| p.to_string_lossy().ends_with(".toml")));
+    if !walk.memoised || plants_a_manifest {
+        return crate::gates::kind_isolation::plane_kind_crates(cx);
+    }
+    let key = (
+        cx.root().to_path_buf(),
+        cx.base().map(|b| b.paths().count()),
+    );
+    let memo = MEMO.get_or_init(Default::default);
+    if let Some(hit) = memo
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&key)
+    {
+        return hit.clone();
+    }
+    let read = crate::gates::kind_isolation::plane_kind_crates(cx);
+    memo.lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(key, read.clone());
+    read
+}
+
 /// Whether a per-file reading may come from its memo or must be taken afresh — the shape
 /// `kind-isolation`'s matrix keeps (`matrix::Walk`). A self-test case is a gate run over a tree one
 /// plant away from the last; the gate reads ~1 900 crate-source files per run (the derived money
@@ -2474,7 +2519,7 @@ impl NoFloatMoneyGate {
         // provider's body, so every crate the kind census calls a plane is a count-read area, named
         // or not: the decision plane read a billed usage figure in no area at all. Its `src/` is
         // walked whole; a plane whose source reads as empty is refused, never scanned as zero hits.
-        match crate::gates::kind_isolation::plane_kind_crates(cx) {
+        match plane_crates(cx, walk) {
             Ok(planes) => {
                 for plane in planes {
                     let dir = plane
