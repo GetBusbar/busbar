@@ -127,10 +127,10 @@ impl PlaneStore for EveryVerb {
 /// (`plane_token_live` had widened it unseen).
 #[test]
 fn plane_store_declares_exactly_the_plane_methods() {
-    let src = include_str!("../store.rs");
+    let src = include_str!("../plane_view.rs");
     let start = src
         .find("pub trait PlaneStore")
-        .expect("store.rs declares the PlaneStore trait");
+        .expect("plane_view.rs declares the PlaneStore trait");
     let trait_src = &src[start..];
     let end = trait_src
         .find("\n}\n")
