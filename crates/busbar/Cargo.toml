@@ -477,6 +477,8 @@ plane-streaming = "busbar_plane_streaming::door"
 # Each linked plane door's declared metadata (its manifest `declares` section, as JSON): the item that
 # holds it. A door row with no row here declares nothing.
 [package.metadata.busbar.linked-declares]
+# RED PLANT (door-only:plugin-path): a generated row naming <crate>::linked::KEY.
+secret-env = "busbar_secret_env::linked::KEY"
 plane-mcp-door = "busbar_plane_mcp::DECLARES"
 plane-a2a-door = "busbar_plane_a2a::DECLARES"
 # The file source reads the disk (`"disk": true`): the host resolves it only at config time, on its
