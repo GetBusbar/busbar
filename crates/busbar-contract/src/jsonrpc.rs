@@ -351,17 +351,39 @@ pub fn read_response(value: &Value, sent_id: &Value) -> Result<Reply, NotAnAnswe
 /// `serde_json`'s own `Number` equality — which compares the parsed REPRESENTATION — would refuse a
 /// peer that echoed `1` as `1.0`. Refusing a correct answer is as much a correlation failure as
 /// accepting a wrong one, so the comparison is on the numeric value. It is still exact: no
-/// cross-type coercion, and `"1"` never matches `1`.
+/// cross-type coercion, and `"1"` never matches `1`. Two integers compare as integers, and an
+/// integer meets a non-integer through f64 only where the integer is exact in an f64 (within
+/// 2^53 of zero): past that, two distinct integers share one f64 and would answer each other.
 fn same_id(got: &Value, sent: &Value) -> bool {
     match (got, sent) {
         (Value::String(a), Value::String(b)) => a == b,
-        (Value::Number(a), Value::Number(b)) => {
-            a == b
-                || match (a.as_f64(), b.as_f64()) {
-                    (Some(x), Some(y)) => x == y,
-                    _ => false,
-                }
-        }
+        (Value::Number(a), Value::Number(b)) => a == b || same_number(a, b),
+        _ => false,
+    }
+}
+
+/// The largest integer magnitude every f64 holds exactly.
+const F64_EXACT: u64 = 1 << 53;
+
+/// Whether two JSON numbers hold the same value, never through an inexact f64.
+fn same_number(a: &serde_json::Number, b: &serde_json::Number) -> bool {
+    if let (Some(x), Some(y)) = (a.as_i64(), b.as_i64()) {
+        return x == y;
+    }
+    if let (Some(x), Some(y)) = (a.as_u64(), b.as_u64()) {
+        return x == y;
+    }
+    // An integer on either side that an f64 cannot hold exactly is never another number's equal.
+    let exact = |n: &serde_json::Number| match (n.as_i64(), n.as_u64()) {
+        (Some(i), _) => i.unsigned_abs() <= F64_EXACT,
+        (None, Some(u)) => u <= F64_EXACT,
+        (None, None) => true,
+    };
+    if !exact(a) || !exact(b) {
+        return false;
+    }
+    match (a.as_f64(), b.as_f64()) {
+        (Some(x), Some(y)) => x == y,
         _ => false,
     }
 }
