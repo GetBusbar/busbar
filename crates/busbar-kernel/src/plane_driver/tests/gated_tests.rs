@@ -135,7 +135,9 @@ fn the_gate_first_binder_names_the_dialect_a_unit_arrived_in() {
     let binder = super::HostGatedHooks {
         host,
         plane_key: "plane-a".to_string(),
-        keys: std::sync::Arc::new(|_: &str| None),
+        keys: std::sync::Arc::new(
+            |_: &str| -> Option<std::sync::Arc<busbar_contract::records::VirtualKey>> { None },
+        ),
         dialects: vec!["dialect-0".to_string(), "dialect-1".to_string()],
     };
     assert_eq!(binder.dialect(1), "dialect-1");
