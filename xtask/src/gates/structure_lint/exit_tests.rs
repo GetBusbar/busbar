@@ -205,3 +205,65 @@ fn item_236_the_debt_half_of_the_plane_ledger_can_fail() {
         &["STALE-CONCERN", "a-concern-nothing-is-owed-against"],
     );
 }
+
+/// The a2a copy of the armed duplicate `success` (mcp+a2a), renamed in an overlay: one standing
+/// duplicate drained. Refuses to plant nothing: the file must still spell the declaration.
+fn drain_one_armed_duplicate(ov: &mut Overlay) {
+    const A2A_JSONRPC: &str = "crates/busbar-plane-a2a/src/jsonrpc.rs";
+    let cx = Ctx::workspace().expect("workspace");
+    let text = cx.read(A2A_JSONRPC).expect("the a2a plane's jsonrpc.rs reads");
+    assert!(
+        text.contains("fn success("),
+        "{A2A_JSONRPC} no longer declares `fn success(`: the drain would plant nothing"
+    );
+    ov.set(
+        A2A_JSONRPC,
+        text.replacen("fn success(", "fn planted_drained_success(", 1),
+    );
+}
+
+/// Q128 section 40: the unledgered row is a LIST, not a count. Draining one armed duplicate and
+/// adding one new plane-local copy keeps the count where it was; the new copy is still named.
+#[test]
+fn q128_40_a_drain_plus_a_new_copy_is_not_the_armed_list() {
+    let mut ov = Overlay::new();
+    drain_one_armed_duplicate(&mut ov);
+    ov.set(
+        "crates/busbar-plane-a2a/src/a2a/planted_swapped_copy.rs",
+        "pub fn planted_swapped_copy() {}\n",
+    );
+    ov.set(
+        "crates/busbar-plane-mcp/src/planted_swapped_copy.rs",
+        "pub fn planted_swapped_copy() {}\n",
+    );
+    names(&run(ov), UNLEDGERED, &["`planted_swapped_copy`"]);
+}
+
+/// Q128 section 40: an armed name that is no longer duplicated is struck from the list, so the list
+/// only shrinks; the row that says so names it.
+#[test]
+fn q128_40_an_armed_duplicate_that_is_gone_is_stale() {
+    let mut ov = Overlay::new();
+    drain_one_armed_duplicate(&mut ov);
+    names(&run(ov), STALE_LEDGER, &["`success`", "a2a+mcp"]);
+}
+
+/// Q128 section 39: the kernel's `proto/` and `handlers/` are agnostic core, not protocol arms; a
+/// branch on an axis there is named like one anywhere else in the kernel.
+#[test]
+fn q128_39_the_axis_ban_judges_the_kernel_proto_and_handlers() {
+    let mut ov = Overlay::new();
+    ov.set("crates/busbar-kernel/src/proto/planted_axis_branch.rs", BRANCH);
+    ov.set(
+        "crates/busbar-kernel/src/handlers/planted_axis_branch.rs",
+        BRANCH,
+    );
+    names(
+        &run(ov),
+        AXIS_PURITY,
+        &[
+            "crates/busbar-kernel/src/proto/planted_axis_branch.rs:2",
+            "crates/busbar-kernel/src/handlers/planted_axis_branch.rs:2",
+        ],
+    );
+}

@@ -68,6 +68,10 @@ use crate::gates::{prove_red, prove_rows_green, Case, Expect, Gate, Report};
 use crate::ledger::{Row, Verdict};
 use crate::scan;
 
+#[cfg(test)]
+#[path = "tests/money_invariants_closure_tests.rs"]
+mod closure_tests;
+
 pub const ROW_NO_PLUGIN_KEYED: &str = "money-invariants:no-plugin-keyed-money";
 pub const ROW_NO_STORED_PRICE: &str = "money-invariants:no-stored-price";
 pub const ROW_SINGLE_SEAL: &str = "money-invariants:single-seal-site";

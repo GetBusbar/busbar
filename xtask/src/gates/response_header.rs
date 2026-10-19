@@ -701,3 +701,72 @@ fn translate(run: &LegacyRun) -> Result<Vec<Row>, String> {
     }
     Ok(rows)
 }
+
+#[cfg(test)]
+mod q128_tests {
+    //! Q128 section 37: the route-emission rule is keyed on the `HDR_ROUTE_*` constants, not on one
+    //! call shape, and every sanctioned emission site reads the operator's opt-in gate.
+
+    use super::*;
+    use crate::ledger::Status;
+
+    const ROW_EMISSION: &str = "response-header:route-emission-site";
+    const DRIVER: &str = "crates/busbar-kernel/src/plane_driver/route.rs";
+
+    fn emission_row(ov: Overlay) -> Row {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        ResponseHeaderGate
+            .run(&cx.with_overlay(ov))
+            .rows
+            .into_iter()
+            .find(|r| r.id == ROW_EMISSION)
+            .expect("the gate emits its route-emission row")
+    }
+
+    fn assert_red_naming(row: &Row, needle: &str) {
+        assert_eq!(
+            row.status,
+            Status::Fail,
+            "{} must be RED over the plant: {}",
+            row.id,
+            row.detail
+        );
+        assert!(
+            row.detail.contains(needle),
+            "{} must name `{needle}`: {}",
+            row.id,
+            row.detail
+        );
+    }
+
+    /// The plane driver's emission shape (`fields.push((HDR_ROUTE_POLICY.as_bytes()…`), copied
+    /// anywhere else, is an ungated route-* header write.
+    #[test]
+    fn q128_37_the_driver_push_shape_outside_a_sanctioned_site_is_flagged() {
+        let mut ov = Overlay::new();
+        ov.set(
+            format!("{CORE}/planted_route_push.rs"),
+            "fn bypass(fields: &mut Vec<(Vec<u8>, Vec<u8>)>) {\n    \
+             fields.push((crate::proxy::HDR_ROUTE_POLICY.as_bytes().to_vec(), b\"cheapest\".to_vec()));\n}\n",
+        );
+        assert_red_naming(&emission_row(ov), "planted_route_push.rs:2");
+    }
+
+    /// A sanctioned emission site that stops reading `route_policy_headers_enabled()` writes the
+    /// route-* headers unconditionally, and is named.
+    #[test]
+    fn q128_37_a_sanctioned_site_that_stops_reading_the_gate_is_flagged() {
+        let cx = Ctx::workspace().expect("the workspace opens");
+        let text = cx.read(DRIVER).expect("the plane driver's route.rs reads");
+        assert!(
+            text.contains("route_policy_headers_enabled()"),
+            "{DRIVER} no longer reads the gate: the plant would plant nothing"
+        );
+        let mut ov = Overlay::new();
+        ov.set(
+            DRIVER,
+            text.replace("route_policy_headers_enabled()", "planted_ungated()"),
+        );
+        assert_red_naming(&emission_row(ov), DRIVER);
+    }
+}
