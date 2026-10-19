@@ -3841,7 +3841,11 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
     assert_eq!(node.sweep(Arrived::at(EPOCH * 1_000 + 5, 99)), 1);
 
     let durability = book.lock().unwrap_or_else(|p| p.into_inner());
-    assert_eq!(durability.ledger.book().len(), 1, "the swept unit posted one line");
+    assert_eq!(
+        durability.ledger.book().len(),
+        1,
+        "the swept unit posted one line"
+    );
     let records: Vec<_> = durability
         .audit_records
         .iter()
@@ -3899,7 +3903,11 @@ fn a_swept_unit_seals_exactly_one_audit_record_whose_amount_is_its_ledger_line()
         .filter_map(|r| crate::root::durability::decode_audit(r).expect("every record decodes"))
         .filter(|r| r.what.unit_key == key)
         .collect();
-    assert_eq!(read_back.len(), 1, "the swept unit's record is on the journal");
+    assert_eq!(
+        read_back.len(),
+        1,
+        "the swept unit's record is on the journal"
+    );
 }
 
 /// Q128 p29#5: NO UNIT SETTLES WITH ZERO AUDIT RECORDS. Every unit the sweep settles has its one

@@ -67,8 +67,8 @@ use busbar_contract::caps::{
     Authenticate, Authenticated, CallId, Canary, CellError, Consumption, Decode, Dial,
     DurabilityLost, DurableWrite, Encode, Exit, Grant, Hold, HoldAccrual, HoldCell, HoldCellState,
     KernelSeal, Meter, Origin, OriginKind, Outcome, Pass, Posted, PostingFlags, PrincipalId,
-    QuantitySource, ReasonCode, Refusal, Route, SeatVerdict, SessionId, Step, StepName,
-    UnitEnd, UnitKey, Usage, UsageLine, VerifiedDestination, Verify, WriteMoney,
+    QuantitySource, ReasonCode, Refusal, Route, SeatVerdict, SessionId, Step, StepName, UnitEnd,
+    UnitKey, Usage, UsageLine, VerifiedDestination, Verify, WriteMoney,
 };
 
 use crate::registry::Generation;

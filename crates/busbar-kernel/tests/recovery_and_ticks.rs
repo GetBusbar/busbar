@@ -325,9 +325,15 @@ fn a_swept_unit_hands_back_its_line_under_its_reported_class_and_its_audit_pass(
         &ConcurrencyGauge::new(),
     )
     .expect("the sweep is the second key to the cell");
-    assert_eq!(swept.line.class, busbar_kernel::teller::KERNEL_ACCRUAL_CLASS);
+    assert_eq!(
+        swept.line.class,
+        busbar_kernel::teller::KERNEL_ACCRUAL_CLASS
+    );
     assert_eq!(swept.line.quantity, 0);
-    assert!(swept.line.estimated, "nothing reported: the zero is estimated");
+    assert!(
+        swept.line.estimated,
+        "nothing reported: the zero is estimated"
+    );
     assert!(swept.audit.call() != busbar_contract::caps::CallId::UNBOUND);
 }
 
