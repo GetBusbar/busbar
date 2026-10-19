@@ -865,7 +865,7 @@ impl<'s> DoorSteps<'s> {
                 pool,
                 // The first member until one answers; the money steps take the serving member's
                 // own key when its answer commits (`MoneySeam::served`).
-                model: lanes.first().cloned().unwrap_or_default(),
+                lane: lanes.first().cloned().unwrap_or_default(),
                 classes: Arc::clone(&self.facts.classes),
                 arrived: self.arrived,
                 mode: exhaustion_of(&self.app, key),

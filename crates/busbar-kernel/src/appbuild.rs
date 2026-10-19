@@ -727,6 +727,10 @@ pub fn build_app_from_config(
     // missing provider), so the lane-build loop reuses that handle instead of re-looking it up —
     // there is no second lookup and no `expect` on the startup path.
     let mut lane_provider_cfgs: Vec<&config::ResolvedProvider> = Vec::new();
+    // Each lane's MODEL-ENTRY FACTS, captured in the same lockstep: what the model entry states of
+    // its lane beyond the breaker's identity and limits. The breaker store holds none of them (it
+    // reads none of them); they ride beside it to the lane input below.
+    let mut lane_model_facts: Vec<LaneModelFacts> = Vec::new();
     let mut by_model = HashMap::new();
     // Per-model configured default_max_tokens (injected at the translation seam for protocols that
     // require max_tokens). Captured here because `cfg.models` is consumed by this loop.
@@ -840,9 +844,15 @@ pub fn build_app_from_config(
             .unwrap_or(tokio::sync::Semaphore::MAX_PERMITS);
         by_model.insert(model.clone(), lanes_data.len());
         lane_provider_cfgs.push(provider_cfg);
+        lane_model_facts.push(LaneModelFacts {
+            upstream_model: mc.upstream_model.clone(),
+            attempt_timeout_ms: mc.attempt_timeout_ms,
+            reasoning: mc.reasoning.unwrap_or(false),
+            prompt_caching: mc.prompt_caching.unwrap_or(false),
+        });
         lanes_data.push(LaneData {
-            model: model.clone(),
-            provider: mc.provider.clone(),
+            member: model.clone(),
+            route: mc.provider.clone(),
             max: max_concurrent,
             sem: std::sync::Arc::new(tokio::sync::Semaphore::new(max_concurrent)),
             limited,
@@ -854,10 +864,6 @@ pub fn build_app_from_config(
             ok: 0,
             err: 0,
             client_fault: 0,
-            upstream_model: mc.upstream_model.clone(),
-            attempt_timeout_ms: mc.attempt_timeout_ms,
-            reasoning: mc.reasoning.unwrap_or(false),
-            prompt_caching: mc.prompt_caching.unwrap_or(false),
         });
 
         eprintln!(
@@ -902,10 +908,11 @@ pub fn build_app_from_config(
         // Reuse the provider handle resolved (and validated via `die`) in the lanes_data loop above,
         // captured in lockstep into `lane_provider_cfgs`. No redundant re-lookup / `expect` here.
         let provider_cfg = lane_provider_cfgs[idx];
+        let facts = &lane_model_facts[idx];
         let legacy = crate::plane_host::LegacyLaneKeys::of(provider_cfg);
         // The provider entry's lane-capability keys, carried unread in its table and resolved
         // against the lane's wire model by `ir::lane_caps` (architect ruling LANECAPS-MOVE).
-        let lane_caps = legacy.lane_caps(ld.upstream_model.as_deref().unwrap_or(&ld.model));
+        let lane_caps = legacy.lane_caps(facts.upstream_model.as_deref().unwrap_or(&ld.member));
         let Some(protocol) = crate::proto::lane_protocol_name(provider_cfg.dialect()) else {
             // The "supported:" roster is DERIVED from the registry (`known_protocols()`), not a
             // hand-maintained literal: the codec dialects are whatever the linked plane crates
@@ -914,7 +921,7 @@ pub fn build_app_from_config(
             // vocabulary level. Empty roster is a real answer.
             return Err(format!(
                 "provider '{}' uses unknown protocol '{}' (supported: {})",
-                ld.provider,
+                ld.route,
                 provider_cfg.dialect(),
                 crate::proto::known_protocols().join(", ")
             ));
@@ -923,7 +930,7 @@ pub fn build_app_from_config(
         // the empty-key warning); no second read of the secret-bearing env var. This PLAINTEXT is
         // carried into the neutral carrier because the plane cannot re-resolve a secret ref.
         let api_key = provider_api_keys
-            .get(&ld.provider)
+            .get(&ld.route)
             .cloned()
             .unwrap_or_default();
         // The base URL, trailing-slash-trimmed once here (the plane consumes it verbatim into the
@@ -939,8 +946,8 @@ pub fn build_app_from_config(
         let url_userinfo = crate::egress::engine::UrlUserinfo::of(&provider_cfg.base_url);
         let (token_url, token_userinfo) = lane_token_endpoint(provider_cfg.token_url.as_deref());
         lane_inputs.push(LaneInput {
-            model: ld.model.clone(),
-            provider: ld.provider.clone(),
+            model: ld.member.clone(),
+            provider: ld.route.clone(),
             protocol: protocol.to_string(),
             base_url,
             url_userinfo,
@@ -948,7 +955,7 @@ pub fn build_app_from_config(
             path_base: provider_cfg.path_base.clone(),
             organization: legacy.organization,
             project: legacy.project,
-            upstream_model: ld.upstream_model.clone(),
+            upstream_model: facts.upstream_model.clone(),
             api_key: busbar_contract::redacted::Secret::new(api_key),
             auth_style: auth_style_of(provider_cfg.auth),
             scope: provider_cfg.scope.clone(),
@@ -961,11 +968,11 @@ pub fn build_app_from_config(
                 .collect(),
             health: provider_cfg.health.as_ref().map(health_input_of),
             allow_metadata_hosts: provider_cfg.allow_metadata_hosts.clone(),
-            context_max: model_context_max.get(&ld.model).copied().flatten(),
-            lane_default_max_tokens: model_default_max_tokens.get(&ld.model).copied().flatten(),
-            attempt_timeout_ms: ld.attempt_timeout_ms,
-            reasoning: ld.reasoning,
-            prompt_caching: ld.prompt_caching,
+            context_max: model_context_max.get(&ld.member).copied().flatten(),
+            lane_default_max_tokens: model_default_max_tokens.get(&ld.member).copied().flatten(),
+            attempt_timeout_ms: facts.attempt_timeout_ms,
+            reasoning: facts.reasoning,
+            prompt_caching: facts.prompt_caching,
             lane_caps,
             max_concurrent: ld.max,
             limited: ld.limited,
@@ -2202,4 +2209,17 @@ pub fn build_app_from_config(
             destinations,
         },
     ))
+}
+
+/// What a `models:` entry states of its lane beyond the breaker's identity and limits, carried
+/// beside the breaker store's [`LaneData`] (which reads none of it) to the lane input.
+struct LaneModelFacts {
+    /// The wire model name the lane sends in place of its config name.
+    upstream_model: Option<String>,
+    /// The entry's per-attempt time-to-headers cap (ms).
+    attempt_timeout_ms: Option<u64>,
+    /// The entry's reasoning-capability flag.
+    reasoning: bool,
+    /// The entry's prompt-caching capability flag.
+    prompt_caching: bool,
 }

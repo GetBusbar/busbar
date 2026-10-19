@@ -747,10 +747,8 @@ impl LaneSpec {
     }
     fn to_lane_data(&self) -> crate::store::LaneData {
         crate::store::LaneData {
-            reasoning: false,
-            prompt_caching: false,
-            model: self.model.clone(),
-            provider: self.provider.clone(),
+            member: self.model.clone(),
+            route: self.provider.clone(),
             max: self.max,
             sem: self
                 .sem
@@ -765,8 +763,6 @@ impl LaneSpec {
             ok: self.ok,
             err: self.err,
             client_fault: self.client_fault,
-            upstream_model: self.upstream_model.clone(),
-            attempt_timeout_ms: None,
         }
     }
 }
