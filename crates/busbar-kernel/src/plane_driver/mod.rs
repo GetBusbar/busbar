@@ -53,6 +53,7 @@
 //! stalled flush every second, and a reload never waits on a store write (the unit waiting on it is
 //! cancelled; the write itself runs on).
 
+pub mod attempt_auth;
 mod cancel;
 mod epoch;
 mod far_end;
