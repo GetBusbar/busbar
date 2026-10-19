@@ -462,16 +462,10 @@ extern "C" {
 #define BB_PLANE_EXT_OWNED "owned" /* A plane `refresh`'s EXTENSIONS KEY ([`crate::abi::mechanism::extensions`], carried in */
 #define BB_PLANE_FACT_CONCURRENCY_CAP UINT16_C(1) /* [`MemberFact::fact`], on a member: the most units the member serves at once (its concurrency */
 #define BB_PLANE_FACT_CONTEXT_WINDOW UINT16_C(2) /* [`MemberFact::fact`], on a member: the largest request the member accepts, in the plane's own */
-#define BB_PLANE_FACT_PROBE_INTERVAL UINT16_C(3) /* [`MemberFact::fact`], on a member: the seconds between two health probes of it. Read today at */
-#define BB_PLANE_FACT_PROBE_TIMEOUT UINT16_C(4) /* [`MemberFact::fact`], on a member: the seconds one health probe of it may take (the same read */
-#define BB_PLANE_FACT_PROBE_MODE UINT16_C(5) /* [`MemberFact::fact`], on a member: how it is probed, [`PROBE_MODE_NONE`], */
-#define BB_PLANE_FACT_ATTEMPT_TIMEOUT_MS UINT16_C(6) /* [`MemberFact::fact`], on a member or an entry: the milliseconds one attempt may take; a */
-#define BB_PLANE_FACT_MAX_REQUESTS UINT16_C(7) /* [`MemberFact::fact`], on a member: the most requests the member serves in its life; not stated */
-#define BB_PLANE_FACT_FAILOVER_TIMEOUT_SECS UINT16_C(8) /* [`MemberFact::fact`], on an entry: the failover budget, seconds of wall clock across one unit's */
-#define BB_PLANE_FACT_FAILOVER_MAX_HOPS UINT16_C(9) /* [`MemberFact::fact`], on an entry: the most failover hops one unit takes on the entry. */
-#define BB_PLANE_PROBE_MODE_NONE UINT64_C(1) /* [`FACT_PROBE_MODE`]'s value: the member is never probed. */
-#define BB_PLANE_PROBE_MODE_DEAD UINT64_C(2) /* [`FACT_PROBE_MODE`]'s value: the member is probed only while its breaker holds it down. */
-#define BB_PLANE_PROBE_MODE_ACTIVE UINT64_C(3) /* [`FACT_PROBE_MODE`]'s value: the member is probed on its interval, up or down. */
+#define BB_PLANE_FACT_ATTEMPT_TIMEOUT_MS UINT16_C(3) /* [`MemberFact::fact`], on a member or an entry: the milliseconds one attempt may take; a */
+#define BB_PLANE_FACT_MAX_REQUESTS UINT16_C(4) /* [`MemberFact::fact`], on a member: the most requests the member serves in its life; not stated */
+#define BB_PLANE_FACT_FAILOVER_TIMEOUT_SECS UINT16_C(5) /* [`MemberFact::fact`], on an entry: the failover budget, seconds of wall clock across one unit's */
+#define BB_PLANE_FACT_FAILOVER_MAX_HOPS UINT16_C(6) /* [`MemberFact::fact`], on an entry: the most failover hops one unit takes on the entry. */
 #define BB_PLANE_MAX_ROUTE_ENTRIES ((size_t)1024) /* The most routing entries one snapshot may state ([`PlaneSnapshot::routing`]). */
 #define BB_PLANE_MAX_ROUTE_MEMBERS ((size_t)1024) /* The most members (and the most excluded lanes) one routing entry may state. */
 #define BB_PLANE_MAX_ROUTE_PATH ((size_t)8) /* The most segments one entry's config path may have ([`RouteEntry::path`]). */
@@ -2825,6 +2819,7 @@ struct bb_plane_ProviderFacts {
     bb_mech_AbiStr name;
     bb_mech_AbiStr protocol;
     bb_mech_Blob error_map;
+    bb_mech_AbiStr base_url;
 };
 
 /* The plane's `open` `in`: the lifecycle's, plus the deployment's public base URL. */
@@ -5541,11 +5536,12 @@ BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, arrival_spans) == 144, "bb_plane_Plan
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, arrival_spans_len) == 152, "bb_plane_PlaneSnapshot.arrival_spans_len: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, routing) == 160, "bb_plane_PlaneSnapshot.routing: offset");
 BB_ASSERT(offsetof(bb_plane_PlaneSnapshot, routing_len) == 168, "bb_plane_PlaneSnapshot.routing_len: offset");
-BB_ASSERT(sizeof(bb_plane_ProviderFacts) == 56, "bb_plane_ProviderFacts: size");
+BB_ASSERT(sizeof(bb_plane_ProviderFacts) == 72, "bb_plane_ProviderFacts: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_ProviderFacts) == 8, "bb_plane_ProviderFacts: alignment");
 BB_ASSERT(offsetof(bb_plane_ProviderFacts, name) == 0, "bb_plane_ProviderFacts.name: offset");
 BB_ASSERT(offsetof(bb_plane_ProviderFacts, protocol) == 16, "bb_plane_ProviderFacts.protocol: offset");
 BB_ASSERT(offsetof(bb_plane_ProviderFacts, error_map) == 32, "bb_plane_ProviderFacts.error_map: offset");
+BB_ASSERT(offsetof(bb_plane_ProviderFacts, base_url) == 56, "bb_plane_ProviderFacts.base_url: offset");
 BB_ASSERT(sizeof(bb_plane_PlaneOpenIn) == 216, "bb_plane_PlaneOpenIn: size");
 BB_ASSERT(BB_ALIGNOF(bb_plane_PlaneOpenIn) == 8, "bb_plane_PlaneOpenIn: alignment");
 BB_ASSERT(offsetof(bb_plane_PlaneOpenIn, open) == 0, "bb_plane_PlaneOpenIn.open: offset");

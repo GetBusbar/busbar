@@ -1185,3 +1185,76 @@ fn a_tail_states_its_stream_ceiling_and_a_tail_of_another_size_is_refused() {
         assert!(bind(size).is_err(), "a {size}-byte tail is refused");
     }
 }
+
+/// Step 2b: the provider facts a plane is handed at open carry the base URL the kernel spelled,
+/// byte for byte, and an empty one stays empty.
+#[test]
+fn provider_facts_carry_the_base_url_as_spelled() {
+    use busbar_contract::plane_calls::DialectFacts;
+    let dialects = [
+        DialectFacts {
+            name: "eng-a".into(),
+            protocol: "one".into(),
+            error_map: None,
+            base_url: "https://a.example/v1".into(),
+        },
+        DialectFacts {
+            name: "eng-b".into(),
+            protocol: "two".into(),
+            error_map: None,
+            base_url: String::new(),
+        },
+    ];
+    let lowered = crate::dispatch::kinds::plane::provider_facts(&dialects);
+    let read = |s: AbiStr| {
+        // SAFETY: each string points into `dialects`, alive for this test.
+        String::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec()).unwrap()
+    };
+    assert_eq!(read(lowered[0].base_url), "https://a.example/v1");
+    assert_eq!(lowered[1].base_url.len, 0);
+}
+
+/// Step 2b: every Statement section that states an entry noun is kept as `(section, noun)`, in
+/// Statement order, for the kernel's generic refusals; a section stating none is not listed.
+#[test]
+fn a_statements_entry_nouns_are_kept_for_the_kernel() {
+    use busbar_contract::abi::mechanism::door::{
+        KindTailHead, Section, Statement, SECTION_CONSUMED, SECTION_DECLARING,
+    };
+    use busbar_contract::abi::plane::{PlaneTail, INGRESS_REQUEST_RESPONSE};
+    let s = |t: &'static str| AbiStr {
+        ptr: t.as_ptr(),
+        len: t.len(),
+    };
+    let tail: &'static PlaneTail = Box::leak(Box::new(PlaneTail {
+        head: KindTailHead {
+            size: size_of::<PlaneTail>() as u32,
+            _reserved: 0,
+        },
+        ingress: INGRESS_REQUEST_RESPONSE,
+        ..PlaneTail::ZERO
+    }));
+    let sections: &'static [Section] = Box::leak(Box::new([
+        Section {
+            name: s("verb"),
+            flags: SECTION_DECLARING,
+            entry_noun: s("entry"),
+            ..Section::ZERO
+        },
+        Section {
+            name: s("read"),
+            flags: SECTION_CONSUMED,
+            ..Section::ZERO
+        },
+    ]));
+    let mut st: Statement = z();
+    st.kind_tail = &tail.head;
+    st.sections = sections.as_ptr();
+    st.sections_len = sections.len();
+    let facts = Plane::context(&st)
+        .expect("the tail binds")
+        .expect("a plane has a context")
+        .downcast::<PlaneFacts>()
+        .expect("the plane's facts");
+    assert_eq!(facts.served.entry_nouns, vec![("verb", "entry")]);
+}

@@ -26,6 +26,7 @@ fn publish_then_drop(gens: &Generations<PlaneSnapshot>, generation: u64) -> *con
         resource_metadata: None,
         resource_facts: None,
         listed: vec!["listed".to_string()],
+        ..SnapshotSpec::default()
     };
     let p = gens.publish(generation, &spec);
     // Everything the plugin owned is overwritten and dropped.
@@ -213,4 +214,129 @@ fn a_record_retention_table_lowers_to_the_tail_codes() {
     assert_eq!(TABLE[0].rule, RETENTION_TERMINAL_ONLY);
     assert_eq!(TABLE[1].rule, RETENTION_AGE);
     assert_eq!(check_record_retentions(&TABLE, 2), Ok(()));
+}
+
+/// Step 2b, THE ROUTING ROUND TRIP: a spec's routing, lowered, passes `check_routing`, and read
+/// back it equals the spec field by field (an empty fallback, upstream or tier lowers absent and
+/// reads back empty). An empty spec lowers NULL/0.
+#[test]
+fn a_published_routing_round_trips_and_passes_the_check() {
+    use crate::abi::plane::check::{check_routing, check_snapshot};
+    use crate::abi::plane::{
+        FACT_ATTEMPT_TIMEOUT_MS, FACT_CONCURRENCY_CAP, FACT_FAILOVER_MAX_HOPS, FACT_MAX_REQUESTS,
+    };
+    let spec = SnapshotSpec {
+        routing: vec![
+            RouteEntrySpec {
+                section: "sec".into(),
+                entry: "e1".into(),
+                path: vec!["sec".into(), "e1".into()],
+                fallback: "e2".into(),
+                exclude: vec!["b".into()],
+                facts: vec![(FACT_FAILOVER_MAX_HOPS, 3), (FACT_ATTEMPT_TIMEOUT_MS, 9000)],
+                members: vec![
+                    RouteMemberSpec {
+                        lane: "a".into(),
+                        provider: "p".into(),
+                        upstream: "wire-a".into(),
+                        weight: 2,
+                        tier: "gold".into(),
+                        tags: vec!["fast".into()],
+                        facts: vec![(FACT_CONCURRENCY_CAP, 4), (FACT_MAX_REQUESTS, 10)],
+                    },
+                    RouteMemberSpec {
+                        lane: "b".into(),
+                        provider: "p".into(),
+                        weight: 1,
+                        ..RouteMemberSpec::default()
+                    },
+                ],
+            },
+            RouteEntrySpec {
+                section: "sec".into(),
+                entry: "e2".into(),
+                path: vec!["sec".into(), "e2".into()],
+                members: vec![RouteMemberSpec {
+                    lane: "a".into(),
+                    provider: "p".into(),
+                    weight: 1,
+                    ..RouteMemberSpec::default()
+                }],
+                ..RouteEntrySpec::default()
+            },
+        ],
+        ..SnapshotSpec::default()
+    };
+    let gens = Generations::<PlaneSnapshot>::default();
+    let p = gens.publish(4, &spec);
+    // SAFETY: the published snapshot lives until its generation retires.
+    let snap = unsafe { &*p };
+    assert_eq!(check_snapshot(snap, 4), Ok(()));
+    // SAFETY: the snapshot's routing names `routing_len` entries in its backing.
+    let entries = unsafe { std::slice::from_raw_parts(snap.routing, snap.routing_len) };
+    assert_eq!(check_routing(entries), Ok(()));
+    let text = |s: AbiStr| -> String {
+        if s.ptr.is_null() {
+            return String::new();
+        }
+        // SAFETY: a present string in the snapshot's backing.
+        String::from_utf8(unsafe { std::slice::from_raw_parts(s.ptr, s.len) }.to_vec()).unwrap()
+    };
+    let texts = |p: *const AbiStr, n: usize| -> Vec<String> {
+        if n == 0 {
+            return Vec::new();
+        }
+        // SAFETY: as above.
+        unsafe { std::slice::from_raw_parts(p, n) }
+            .iter()
+            .map(|s| text(*s))
+            .collect()
+    };
+    let facts = |p: *const crate::abi::plane::MemberFact, n: usize| -> Vec<(u16, u64)> {
+        if n == 0 {
+            return Vec::new();
+        }
+        // SAFETY: as above.
+        unsafe { std::slice::from_raw_parts(p, n) }
+            .iter()
+            .map(|f| (f.fact, f.value))
+            .collect()
+    };
+    let read: Vec<RouteEntrySpec> = entries
+        .iter()
+        .map(|e| RouteEntrySpec {
+            section: text(e.section),
+            entry: text(e.entry),
+            path: texts(e.path, e.path_len),
+            fallback: text(e.fallback),
+            exclude: texts(e.exclude, e.exclude_len),
+            facts: facts(e.facts, e.facts_len),
+            members: if e.members_len == 0 {
+                Vec::new()
+            } else {
+                // SAFETY: as above.
+                unsafe { std::slice::from_raw_parts(e.members, e.members_len) }
+                    .iter()
+                    .map(|m| RouteMemberSpec {
+                        lane: text(m.lane),
+                        provider: text(m.provider),
+                        upstream: text(m.upstream),
+                        weight: m.weight,
+                        tier: text(m.tier),
+                        tags: texts(m.tags, m.tags_len),
+                        facts: facts(m.facts, m.facts_len),
+                    })
+                    .collect()
+            },
+        })
+        .collect();
+    assert_eq!(read, spec.routing);
+    assert!(
+        entries[1].fallback.ptr.is_null(),
+        "an empty fallback is absent"
+    );
+    let none = gens.publish(5, &SnapshotSpec::default());
+    // SAFETY: as above.
+    let none = unsafe { &*none };
+    assert!(none.routing.is_null() && none.routing_len == 0);
 }

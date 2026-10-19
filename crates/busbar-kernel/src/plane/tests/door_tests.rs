@@ -23,6 +23,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
         key,
         section,
         named_map: section == NAMED,
+        entry_nouns: Vec::new(),
         owns: Vec::new(),
         consumes: Vec::new(),
         requires: Vec::new(),
@@ -103,6 +104,7 @@ fn registration(key: &'static str, section: &'static str) -> PlaneRegistration {
                     admission: public_url
                         .map(|u| (format!("{u}/fleet"), format!("{u}/.well-known/fleet"))),
                     listed: Vec::new(),
+                    routing: Vec::new(),
                 })
             },
         ),
@@ -375,6 +377,7 @@ fn a_doors_owned_section_is_carried_and_handed_to_its_facing() {
                 claims: Vec::new(),
                 admission: audience,
                 listed: Vec::new(),
+                routing: Vec::new(),
             })
         },
     );
@@ -625,5 +628,66 @@ fn a_doors_probe_is_handed_its_referenced_providers_dialect_facts() {
     assert!(
         slot.facing.claims.is_empty(),
         "no resolved providers, none handed"
+    );
+}
+
+/// RED, THE PROBE IS HANDED EACH PROVIDER'S BASE URL AS THE BOOT LINE SHOWS IT (step 2b,
+/// `ProviderFacts::base_url`): its `user:pass@` stripped and its trailing `/` trimmed, so no
+/// credential reaches the plane; an empty `base_url` is handed empty, as v1.5.5 printed it empty
+/// (`crates/busbar/src/main.rs:2886-2888`, `provider_cfg.base_url.trim_end_matches('/')`).
+#[test]
+fn a_doors_probe_is_handed_each_providers_base_url_stripped_and_trimmed() {
+    let mut reg = registration("door-fold-base-url", NAMED);
+    reg.facing = Arc::new(
+        |_: &[u8],
+         _: &[u8],
+         _: Option<&str>,
+         dialects: &[busbar_contract::plane_calls::DialectFacts]| {
+            Ok(busbar_contract::plane_calls::DoorFacing {
+                claims: dialects
+                    .iter()
+                    .map(|d| (format!("{}={}", d.name, d.base_url), "first"))
+                    .collect(),
+                ..Default::default()
+            })
+        },
+    );
+    let decl = fold(reg).expect("folds");
+    let provider = |yaml: &str| -> crate::config::providers::ResolvedProvider {
+        serde_yaml::from_str::<crate::config::providers::ProviderCfg>(yaml)
+            .expect("a provider")
+            .into()
+    };
+    let providers: std::collections::HashMap<String, crate::config::providers::ResolvedProvider> = [
+        (
+            "eng-a".to_string(),
+            provider("protocol: one\nbase_url: 'https://user:s3cret@a.example/v1/'\napi_key: {env: A}\n"),
+        ),
+        (
+            "eng-b".to_string(),
+            provider("protocol: two\nbase_url: ''\napi_key: {env: B}\n"),
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let section = DoorSection::new(
+        NAMED,
+        serde_yaml::from_str("models: {m1: {provider: eng-a}, m2: {provider: eng-b}}").unwrap(),
+    );
+    let ctx = BuildCtx {
+        endpoint_slot: None,
+        agent_defs: &(),
+        tool_defs: &section,
+        public_url: None,
+        prior: None,
+        providers: Some(&providers),
+    };
+    let slot = (decl.build)(&ctx).expect("a slot");
+    let slot = slot.downcast_ref::<DoorSlot>().expect("a door slot");
+    let handed: Vec<&str> = slot.facing.claims.iter().map(|(t, _)| t.as_str()).collect();
+    assert_eq!(handed, ["eng-a=https://a.example/v1", "eng-b="]);
+    assert!(
+        handed.iter().all(|h| !h.contains("s3cret")),
+        "no credential reaches the plane"
     );
 }

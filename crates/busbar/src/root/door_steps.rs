@@ -1919,9 +1919,13 @@ pub fn dialect_facts(
     providers: &BTreeMap<String, ProviderRoute>,
 ) -> Vec<busbar_contract::plane_calls::DialectFacts> {
     busbar_contract::plane_calls::dialect_facts(section, |name| {
-        providers
-            .get(name)
-            .map(|p| (p.protocol.clone(), p.error_map.clone()))
+        providers.get(name).map(|p| {
+            (
+                p.protocol.clone(),
+                p.error_map.clone(),
+                busbar_kernel_egress::trust::net::display_base_url(&p.base_url),
+            )
+        })
     })
 }
 
