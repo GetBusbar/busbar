@@ -1160,3 +1160,91 @@ fn the_issued_credential_shape_is_read_from_its_marks_and_a_malformed_one_refuse
 
 /// One refused-marks case: what it shows, the marks the row states, and the class it reads.
 type RefusedMarks = (&'static str, Vec<(u32, &'static str)>, u32);
+
+// ---- the auth validators judge every enum and flag (u10 LOW) ----
+
+/// RED (u10 LOW; THE DESIGN: "an unknown enum or flag value is FAULT"): a begin_login form whose
+/// field names an unknown kind, an unknown `required` value or no name is FAULT, never a plain
+/// text field; a well-formed form passes.
+#[test]
+fn begin_login_red_a_form_field_of_an_unknown_kind() {
+    use busbar_contract::abi::auth::{LoginField, FORM_PASSWORD, FORM_TEXT};
+    let field = |name: &'static str, kind: u32, required: u32| LoginField {
+        name: AbiStr {
+            ptr: name.as_ptr(),
+            len: name.len(),
+        },
+        label: NO_STR,
+        kind,
+        required,
+    };
+    let form = |fields: &'static [LoginField]| BeginLoginOut {
+        form: fields.as_ptr(),
+        form_len: fields.len(),
+        ..begin_login_out(BEGIN_FORM, "")
+    };
+    let good: &'static [LoginField] = Box::leak(Box::new([
+        field("user", FORM_TEXT, 1),
+        field("pass", FORM_PASSWORD, 0),
+    ]));
+    assert_eq!(
+        check(
+            slot::BEGIN_LOGIN,
+            Outcome::Ready,
+            &begin_login_in(),
+            &form(good)
+        ),
+        Ok(())
+    );
+    for (bad, why) in [
+        (field("user", 9, 1), "an unknown kind"),
+        (field("user", FORM_TEXT, 2), "an unknown `required`"),
+        (field("", FORM_TEXT, 1), "no name"),
+    ] {
+        let bad: &'static [LoginField] = Box::leak(Box::new([bad]));
+        assert!(
+            check(
+                slot::BEGIN_LOGIN,
+                Outcome::Ready,
+                &begin_login_in(),
+                &form(bad)
+            )
+            .is_err(),
+            "{why}"
+        );
+    }
+}
+
+/// RED (u10 LOW): an auth tail stating a capability or fact bit outside the known set refuses the
+/// load, the superseded body-hash fact (bit 2) included; the known bits bind.
+#[test]
+fn an_auth_tail_with_an_unknown_cap_or_fact_bit_is_refused() {
+    use busbar_contract::abi::auth::{AuthTail, CAP_INBOUND, FACT_CACHEABLE, LOGIN_KIND_NONE};
+    use busbar_contract::abi::mechanism::door::KindTailHead;
+    use busbar_contract::abi::sdk::door::statement;
+    let bind = |caps: u32, facts: u32| {
+        let tail = Box::leak(Box::new(AuthTail {
+            head: KindTailHead {
+                size: size_of::<AuthTail>() as u32,
+                _reserved: 0,
+            },
+            caps,
+            facts,
+            login_kind: LOGIN_KIND_NONE,
+            inbound_points: POINT_HEAD,
+            ..AuthTail::ZERO
+        }));
+        let st = busbar_contract::abi::mechanism::door::Statement {
+            kind_tail: std::ptr::from_ref(tail).cast(),
+            ..statement("t", "1", 0)
+        };
+        <Auth as Kind>::context(&st).map(|_| ())
+    };
+    assert_eq!(bind(CAP_INBOUND, FACT_CACHEABLE), Ok(()));
+    assert!(bind(CAP_INBOUND | 1 << 6, 0).is_err(), "an unknown cap bit");
+    assert!(bind(CAP_INBOUND, 1 << 7).is_err(), "an unknown fact bit");
+    assert!(
+        bind(CAP_INBOUND, 2).is_err(),
+        "the superseded body-hash fact"
+    );
+}
