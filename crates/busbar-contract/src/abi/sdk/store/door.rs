@@ -38,6 +38,7 @@ use std::sync::Mutex;
 
 use serde::de::DeserializeOwned;
 use serde::Serialize;
+use zeroize::Zeroize;
 
 use super::op::Parked;
 use super::{
@@ -144,9 +145,10 @@ unsafe impl Sync for Leased {}
 
 impl Drop for Leased {
     fn drop(&mut self) {
+        // A secret's bytes are zeroised before they are freed, by a wipe the optimiser keeps.
         if self.secret {
             for b in &mut self.bytes {
-                b.iter_mut().for_each(|x| *x = 0);
+                (**b).zeroize();
             }
         }
     }
@@ -435,6 +437,44 @@ fn json<T: DeserializeOwned>(l: Lent<'_, Blob>) -> Result<T, Text> {
 
 fn to_json<T: Serialize>(v: &T) -> Box<[u8]> {
     serde_json::to_vec(v).unwrap_or_default().into_boxed_slice()
+}
+
+/// A credential's secret answer: serialised at its exact size, so no growth or shrink copy is freed
+/// holding the secret, and the decoded credential's own secret wiped once it is written. The bytes
+/// go under a secret lease, which wipes them at release.
+fn secret_json(c: &mut CredentialSecret) -> Box<[u8]> {
+    /// Counts what a serialisation writes, so the answer is allocated once at its size.
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0 += b.len();
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut count = Count(0);
+    let mut out = Vec::new();
+    if serde_json::to_writer(&mut count, &*c).is_ok() {
+        out = Vec::with_capacity(count.0);
+        if serde_json::to_writer(&mut out, &*c).is_err() || out.len() != out.capacity() {
+            out.zeroize();
+            out = Vec::new();
+        }
+    }
+    c.secret.zeroize();
+    out.into_boxed_slice()
+}
+
+/// A credential the host handed in, its secret wiped when the slot lets it go (on every path,
+/// a parked op's early return included).
+struct Wiped(CredentialSecret);
+
+impl Drop for Wiped {
+    fn drop(&mut self) {
+        self.0.secret.zeroize();
+    }
 }
 
 fn blob_over(bytes: &[u8], fmt: u32, secret: bool) -> Blob {
@@ -1035,7 +1075,10 @@ slot!(
     /// `put_credential` (slot 13).
     PutCredential(BlobIn, OutHead) |s, i, o, cx| {
         match json::<CredentialSecret>(i.field(|i| &i.record)) {
-            Ok(c) => done(s, o, step!(o, s.store.put_credential(cx, &c))),
+            Ok(c) => {
+                let c = Wiped(c);
+                done(s, o, step!(o, s.store.put_credential(cx, &c.0)))
+            }
             Err(e) => refused(s, o, e),
         }
     }
@@ -1045,7 +1088,10 @@ slot!(
     PutKeyWithCredential(KeyWithCredentialIn, OutHead) |s, i, o, cx| {
         let k = match json::<VirtualKey>(i.field(|i| &i.key)) { Ok(k) => k, Err(e) => return refused(s, o, e) };
         match json::<CredentialSecret>(i.field(|i| &i.credential)) {
-            Ok(c) => done(s, o, step!(o, s.store.put_key_with_credential(cx, &k, &c))),
+            Ok(c) => {
+                let c = Wiped(c);
+                done(s, o, step!(o, s.store.put_key_with_credential(cx, &k, &c.0)))
+            }
             Err(e) => refused(s, o, e),
         }
     }
@@ -1063,7 +1109,10 @@ slot!(
         let kind = match text_of(i.field(|i| &i.kind)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         let id = match text_of(i.field(|i| &i.id)) { Ok(t) => t, Err(e) => return refused(s, o, e) };
         match step!(o, s.store.lookup_credential_secret(cx, kind, id)) {
-            Ok(c) => lease_one(s, o, c.as_ref().map(to_json), true),
+            Ok(mut c) => {
+                let secret = c.as_mut().map(secret_json);
+                lease_one(s, o, secret, true)
+            }
             Err(e) => failed(s, o, e.0),
         }
     }
@@ -1081,7 +1130,10 @@ slot!(
 slot!(
     /// `list_credentials_since` (slot 18): secret blobs.
     ListCredentialsSince(U64In, LeasedListOut) |s, i, o, cx| {
-        listed(s, o, step!(o, s.store.list_credentials_since(cx, i.value)), true)
+        match step!(o, s.store.list_credentials_since(cx, i.value)) {
+            Ok(mut v) => lease_list(s, o, v.iter_mut().map(secret_json).collect(), true),
+            Err(e) => failed(s, o, e.0),
+        }
     }
 );
 slot!(
