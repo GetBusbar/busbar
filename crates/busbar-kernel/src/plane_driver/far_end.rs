@@ -1105,6 +1105,7 @@ impl EgressFarEnd<'_> {
         request: &OutboundRequest,
         url: &str,
         extensions: Vec<u8>,
+        defaults: &[(Vec<u8>, Vec<u8>)],
     ) -> Option<Vec<AuthField>> {
         let (authority, path_query) = split(url);
         let (path, query) = match path_query.split_once('?') {
@@ -1126,8 +1127,10 @@ impl EgressFarEnd<'_> {
             path: path.as_bytes().to_vec(),
             query,
             timestamp: self.egress.clock.now_secs(),
+            // The head the auth signs is the head that goes out: the plane's fields and the
+            // framer's own lines it adds (THE DESIGN section 6, step 5: nothing is added after).
             headers: if binding.style_flags & STYLE_NEEDS_HEADERS != 0 {
-                request.fields.clone()
+                request.fields.iter().chain(defaults).cloned().collect()
             } else {
                 Vec::new()
             },
@@ -1243,6 +1246,20 @@ impl EgressFarEnd<'_> {
             return false;
         }
         let url = join(&base_url, &request.target);
+        // THE FRAMER'S OWN HEAD LINES for this target (THE DESIGN section 6, step 5): each one the
+        // request does not carry is part of the head the auth signs and goes out after the plane's
+        // fields, where 1.5.5's client wrote its defaults; the framer adds nothing at encode.
+        let defaults: Vec<(Vec<u8>, Vec<u8>)> = e
+            .conns
+            .head_defaults(e.caller, need, &url)
+            .into_iter()
+            .filter(|(name, _)| {
+                !request
+                    .fields
+                    .iter()
+                    .any(|(n, _)| n.eq_ignore_ascii_case(name))
+            })
+            .collect();
         // 2. The one auth call; its fields lead the head (1.5.5's order).
         let mut auth = Vec::new();
         if let Some(binding) = route.auth.as_ref().filter(|_| !waived) {
@@ -1262,7 +1279,7 @@ impl EgressFarEnd<'_> {
                 return false;
             };
             match self
-                .auth_fields(binding, handle, &request, &url, extensions)
+                .auth_fields(binding, handle, &request, &url, extensions, &defaults)
                 .await
             {
                 Some(fields) => auth = fields,
@@ -1280,7 +1297,9 @@ impl EgressFarEnd<'_> {
         let (_, path) = split(&url);
         // The head's fields the framer encodes: the auth fields, then the plane's. It holds the
         // auth values, so it wipes itself when the open has taken it.
-        let mut head = Head(Vec::with_capacity(request.fields.len() + auth.len()));
+        let mut head = Head(Vec::with_capacity(
+            request.fields.len() + auth.len() + defaults.len(),
+        ));
         // The auth fields FIRST, then the plane's: 1.5.5's egress header order.
         head.0.extend(auth.iter().map(|f| {
             (
@@ -1292,6 +1311,14 @@ impl EgressFarEnd<'_> {
         head.0.extend(
             request
                 .fields
+                .iter()
+                .filter(|(n, _)| !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n)))
+                .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
+        );
+        // The framer's own lines last, as 1.5.5's client added its defaults after every field the
+        // request carried; one the auth wrote is the auth's.
+        head.0.extend(
+            defaults
                 .iter()
                 .filter(|(n, _)| !auth.iter().any(|f| f.name.eq_ignore_ascii_case(n)))
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),

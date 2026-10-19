@@ -83,6 +83,8 @@ struct Table {
     broken: Mutex<std::collections::HashSet<u64>>,
     /// The connections whose stream FAILS once their scripted pieces are read.
     failing: Mutex<Vec<u64>>,
+    /// The head lines the framer states for every target (`PollConns::head_defaults`).
+    defaults: Mutex<Vec<(Vec<u8>, Vec<u8>)>>,
 }
 
 fn piece(kind: PieceKind, len: usize, status: Option<(u32, Option<u64>)>) -> Piece {
@@ -240,6 +242,10 @@ impl Conns for Table {
 }
 
 impl PollConns for Table {
+    fn head_defaults(&self, _: InstanceId, _: NeedId, _: &str) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.defaults.lock().unwrap().clone()
+    }
+
     fn poll_read(
         &self,
         _: InstanceId,
@@ -2783,4 +2789,54 @@ async fn an_answer_cut_after_its_head_ends_on_a_cut_piece_and_a_complete_one_doe
         pieces.iter().all(|p| !p.cut),
         "a complete answer is not cut: {pieces:?}"
     );
+}
+
+/// THE FRAMER'S OWN HEAD LINES GO OUT IN THE HEAD THE AUTH SIGNS (THE DESIGN section 6, step 5:
+/// nothing is added after the auth runs), in 1.5.5's order: the auth's fields, the plane's, then the
+/// client's defaults (v1.5.5's goldens: `authorization, content-type, accept, host`). A default the
+/// request already carries is the request's, never doubled. RED before the walk read them: the head
+/// went out without the framer's lines, which the framer then added at encode, after the auth.
+#[tokio::test]
+async fn the_framers_own_head_lines_follow_the_planes_fields_in_the_head_that_goes_out() {
+    let r = rig(
+        &[("a.test", Script::Answer(200, None, vec![b"ok"]))],
+        OnExhausted::Status503,
+        None,
+    );
+    *r.table.defaults.lock().unwrap() = vec![
+        (b"accept".to_vec(), b"*/*".to_vec()),
+        (b"host".to_vec(), b"a.test".to_vec()),
+    ];
+    let t = token();
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    assert!(far.send(&t, request()).await);
+    let _ = drain(&far, &t).await;
+    let opened = r.table.opened.lock().unwrap().clone();
+    let head: Vec<(&str, &[u8])> = opened[0]
+        .1
+        .iter()
+        .map(|(n, v)| (n.as_str(), v.as_slice()))
+        .collect();
+    assert_eq!(
+        head,
+        [
+            ("authorization", b"Bearer sk-test".as_slice()),
+            ("content-type", b"application/json".as_slice()),
+            ("accept", b"*/*".as_slice()),
+            ("host", b"a.test".as_slice()),
+        ]
+    );
+
+    // A default the request carries stays the request's.
+    let far = r.egress.unit(route());
+    assert!(matches!(far.member(&t, 1).await, Pick::Member { .. }));
+    let mut req = request();
+    req.fields
+        .push((b"Accept".to_vec(), b"text/plain".to_vec()));
+    assert!(far.send(&t, req).await);
+    let _ = drain(&far, &t).await;
+    let opened = r.table.opened.lock().unwrap().clone();
+    let head: Vec<&str> = opened[1].1.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(head, ["authorization", "content-type", "Accept", "host"]);
 }

@@ -718,6 +718,23 @@ pub trait PollConns: Conns {
         }
     }
 
+    /// THE FRAMER'S OWN HEAD LINES on a request `owner`'s `need` opens to `target` (the transport
+    /// ABI's `LocateIn::defaults_buf`): the field lines its wire adds to a head that does not state
+    /// them, in the framer's order. The host's walk adds each one its request does not carry BEFORE
+    /// the auth kind signs the head, so nothing is added after the auth runs (THE DESIGN section 6,
+    /// step 5); the framer then writes the head as handed. Host-side only, never lowered. The default
+    /// is none: a table whose framers state none, and a framer that predates the field, add theirs
+    /// at encode as before.
+    fn head_defaults(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let _ = (owner, need, target);
+        Vec::new()
+    }
+
     /// SEAL ONE REGISTRATION'S PRIVATE REACH (`abi::plane::TRUST_PRIVATE_REACH`, SEAM-4k: keyed
     /// per REGISTRATION, never per destination): `owner`'s `need` may dial a private address at
     /// `target`'s authority on an open that names `member` ([`OpenDesc::member`]) and on no other,

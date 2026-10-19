@@ -2567,6 +2567,25 @@ impl Conns for Connector {
 }
 
 impl PollConns for Connector {
+    /// The framer the need rides, located at `target`: its own head lines. A carrier carried as
+    /// itself, a need nobody declared, or a target the framer refuses states none.
+    fn head_defaults(
+        &self,
+        owner: InstanceId,
+        need: NeedId,
+        target: &str,
+    ) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let door = self
+            .over
+            .lock()
+            .expect("needs")
+            .get(&(owner, need))
+            .map(|n| Arc::clone(&n.door));
+        door.and_then(|door| self.located(&door, target))
+            .map(|located| located.defaults)
+            .unwrap_or_default()
+    }
+
     fn poll_read(
         &self,
         caller: InstanceId,
