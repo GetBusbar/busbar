@@ -131,21 +131,6 @@ item = "http"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
-item = "websocket"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
-item = "ws"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
-item = "wss"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/egress/engine/client.rs"
 item = "https"
 

@@ -5,7 +5,7 @@
 //! working — the connector serves unix-domain targets for operator-infrastructure needs; no socket
 //! in the plugin"). A `tcp` need names `unix:/absolute/path` as its target:
 //!
-//! * in the operator-infrastructure (or loopback-allowed) class it opens a raw stream to a real
+//! * in the operator-infrastructure class it opens a raw stream to a real
 //!   unix-domain far end, writes reach it, and a read with nothing ready pends and is woken through
 //!   the connector's ticket wake;
 //! * in every other class it is refused before any dial;
@@ -139,23 +139,25 @@ fn an_operator_infrastructure_need_reaches_a_unix_domain_far_end() {
     });
 }
 
-/// A loopback-allowed need is admitted to a unix target too.
+/// RED (ARCHITECT ruling 2026-10-03, VALKEY-UNIX: "the connector serves unix-domain targets for
+/// operator-infrastructure needs"; THE DESIGN §5: loopback-allowed is "https, or loopback
+/// plaintext; the node's own ports refused"): a loopback-allowed need is refused a unix target
+/// before any dial. Admitted with no judgement at all, it could reach any local socket the process
+/// can open, the node's own control sockets included.
 #[test]
-fn a_loopback_allowed_need_reaches_a_unix_domain_far_end() {
+fn a_loopback_allowed_need_is_refused_a_unix_target() {
     worker().block_on(async {
         let (path, target) = socket_path("lb");
         far_end(&path);
         let c = connector(Arc::new(AtomicU64::new(0)));
         c.declare_need(OWNER, NeedId(0), "tcp", EGRESS_LOOPBACK_ALLOWED)
             .expect("declares");
-        let id = open(&c, &target).expect("the unix target opens");
-        c.close(OWNER, id).unwrap();
+        assert_eq!(open(&c, &target), Err(ConnError::Refused));
         let _ = std::fs::remove_file(&path);
     });
 }
 
-/// RED: a unix target is refused, before any dial, to every class but operator-infrastructure and
-/// loopback-allowed.
+/// RED: a unix target is refused, before any dial, to every class but operator-infrastructure.
 #[test]
 fn a_unix_target_is_refused_to_every_other_class() {
     worker().block_on(async {

@@ -1058,7 +1058,7 @@
       "capability": "hooks-tap",
       "plane": "streaming-client",
       "state": "proven",
-      "test": "crates/busbar-plane-streaming/tests/conformance.rs::a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it",
+      "test": "crates/busbar-plane-streaming-plugin/tests/both_ways.rs::a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it",
       "root": {
         "state": "none",
         "leg": "root-voice",
@@ -1069,7 +1069,7 @@
       "capability": "hooks-tap",
       "plane": "streaming-server",
       "state": "proven",
-      "test": "crates/busbar-plane-streaming/tests/conformance.rs::a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it",
+      "test": "crates/busbar-plane-streaming-plugin/tests/both_ways.rs::a_session_open_is_projected_for_the_hooks_and_a_rewrite_patches_it",
       "root": {
         "state": "none",
         "leg": "root-voice",
