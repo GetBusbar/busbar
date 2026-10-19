@@ -792,3 +792,73 @@ fn a_dial_begin_with_a_foreign_stale_or_forged_binding_ref_is_refused() {
         None
     );
 }
+
+/// RED (the opening body's length): an `emit` whose `body_len` breaks the contract (a length with
+/// `body_len_known` `0`, a flag past `1`, a padding byte) is the host's own fault and never
+/// crosses; a known length, and no length at all, cross.
+#[test]
+fn an_emit_whose_body_length_breaks_the_contract_never_crosses() {
+    let admit = |i: &EmitIn| {
+        Transport::admit(
+            slot::EMIT,
+            std::ptr::from_ref(i).cast(),
+            size_of::<EmitIn>(),
+            40,
+        )
+    };
+    let mut i: EmitIn = z();
+    assert_eq!(admit(&i), None, "no length stated");
+    i.body_len_known = 1;
+    i.body_len = 12;
+    assert_eq!(admit(&i), None, "a whole body's length");
+    let mut streamed = i;
+    streamed.body_len_known = 0;
+    assert_eq!(
+        admit(&streamed),
+        Some(Outcome::Fault),
+        "a length a streamed body states"
+    );
+    let mut flag = i;
+    flag.body_len_known = 2;
+    assert_eq!(admit(&flag), Some(Outcome::Fault), "a flag past 1");
+    let mut pad = i;
+    pad._body_len_reserved = 1;
+    assert_eq!(admit(&pad), Some(Outcome::Fault), "the padding");
+}
+
+/// RED (deadline classes, the op contracts): a TICKETED framer crossing is stamped with the class
+/// its op's contract states, `Stream` for `begin`, `ingest` and `emit` (a pending auth call inside
+/// one runs under the stream's deadline), never the carrier's `Connection`; a carrier's ticketed
+/// I/O keeps `Connection`; a ticket-less crossing is `Call`.
+#[test]
+fn a_ticketed_framer_crossing_is_stamped_with_its_contracts_class() {
+    use crate::dispatch::plugin::stamped_class;
+    use busbar_contract::abi::mechanism::call::DeadlineClass;
+    use busbar_contract::abi::mechanism::ticket::Ticket;
+    let real = Ticket {
+        slot: 3,
+        generation: 7,
+    };
+    for s in [slot::BEGIN, slot::INGEST, slot::EMIT] {
+        assert_eq!(
+            stamped_class::<Transport>(s, real),
+            DeadlineClass::Stream,
+            "{} on a ticket",
+            Transport::op_name(s)
+        );
+        assert_eq!(
+            stamped_class::<Transport>(s, Ticket::NONE),
+            DeadlineClass::Call,
+            "{} ticket-less",
+            Transport::op_name(s)
+        );
+    }
+    for s in [slot::READ, slot::WRITE, slot::DIAL, slot::ACCEPT] {
+        assert_eq!(
+            stamped_class::<Transport>(s, real),
+            DeadlineClass::Connection,
+            "{} on a ticket",
+            Transport::op_name(s)
+        );
+    }
+}

@@ -751,6 +751,25 @@ pub fn check_emit_status(i: &EmitIn, answers_head: bool) -> Result<(), Fault> {
     }
 }
 
+/// An `emit`'s OPENING BODY LENGTH ([`EmitIn::body_len`]): `body_len_known` is `0` or `1`, its
+/// padding is zero, and a length rides only with `body_len_known` `1` (a streamed body states
+/// none). The host stamps it; a framer refuses the emit that breaks it, before any byte of it
+/// reaches the wire.
+///
+/// # Errors
+///
+/// The rule the emit breaks.
+pub fn check_emit_body_len(i: &EmitIn) -> Result<(), Fault> {
+    if i._body_len_reserved != 0 {
+        return Err(fault(Rule::UnknownCode, "emit._body_len_reserved"));
+    }
+    match (i.body_len_known, i.body_len) {
+        (0, 0) | (1, _) => Ok(()),
+        (0, _) => Err(fault(Rule::Contradiction, "emit.body_len")),
+        _ => Err(fault(Rule::UnknownCode, "emit.body_len_known")),
+    }
+}
+
 /// Every fault row: names a claim, `lo <= hi`, and a fault reading that is stated (never
 /// `FAULT_NONE`: a code the table does not cover already reads none).
 ///

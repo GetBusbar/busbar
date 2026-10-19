@@ -1039,6 +1039,37 @@ fn an_emit_states_a_status_only_on_an_accepted_streams_answer_head() {
     );
 }
 
+/// THE OPENING BODY'S LENGTH ON AN EMIT: a length rides only with `body_len_known` `1`; a
+/// streamed body (and every other emit) states none; `body_len_known` is `0` or `1`.
+#[test]
+fn an_emit_states_a_body_length_only_when_it_is_known() {
+    let mut i: EmitIn = z();
+    assert_eq!(check_emit_body_len(&i), Ok(()), "no length stated");
+    i.body_len_known = 1;
+    assert_eq!(check_emit_body_len(&i), Ok(()), "an empty body, known");
+    i.body_len = 4096;
+    assert_eq!(check_emit_body_len(&i), Ok(()), "a whole body's length");
+    // RED: a length on an emit that states none (a streamed body).
+    i.body_len_known = 0;
+    assert_eq!(
+        check_emit_body_len(&i),
+        f(Rule::Contradiction, "emit.body_len")
+    );
+    // RED: `body_len_known` is a flag, `0` or `1` and nothing else.
+    i.body_len_known = 2;
+    assert_eq!(
+        check_emit_body_len(&i),
+        f(Rule::UnknownCode, "emit.body_len_known")
+    );
+    // RED: the padding is not a channel.
+    i.body_len_known = 1;
+    i._body_len_reserved = 1;
+    assert_eq!(
+        check_emit_body_len(&i),
+        f(Rule::UnknownCode, "emit._body_len_reserved")
+    );
+}
+
 fn fault_row(claim: u32, lo: u32, hi: u32, fault: u32) -> FaultRow {
     FaultRow {
         claim,

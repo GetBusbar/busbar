@@ -1275,8 +1275,13 @@ extern "C" fn auth_call(ctx: HostCtx, input: *const c_void, out: *mut ServiceOut
         if let Some(r) = refused_ref(owner, &i.auth).or_else(|| refused_unit(&i.unit)) {
             return r;
         }
-        if svc::check_auth_call_in(&i).is_err() {
-            return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED);
+        match svc::check_auth_call_in(&i) {
+            // A request view that declares no scheme never grants: refused by name.
+            Err(f) if f.field == "head_view.scheme" && f.rule == check::Rule::Missing => {
+                return Answered::bare(Outcome::Refused, svc::SCHEME_UNDECLARED_REFUSED);
+            }
+            Err(_) => return Answered::bare(Outcome::Refused, AUTH_IN_MALFORMED),
+            Ok(()) => {}
         }
         Answered::bare(Outcome::Refused, AUTH_HANDLE_NOT_SERVED)
     })

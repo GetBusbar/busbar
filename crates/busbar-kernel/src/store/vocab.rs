@@ -340,8 +340,10 @@ pub struct Admit {
 /// Snapshot of lane stats for /stats endpoint.
 #[derive(Debug, Clone)]
 pub struct LaneSnapshot {
-    pub model: String,
-    pub provider: String,
+    /// The member the lane serves: the config entry's name, as the routing table keys it.
+    pub member: String,
+    /// The route the lane dials: the destination entry the member is bound to.
+    pub route: String,
     pub max_concurrent: usize,
     pub inflight: i64,
     pub free_slots: usize,
@@ -385,7 +387,7 @@ pub struct LaneSnapshot {
     pub last_trip_at: u64,
 }
 
-/// One lane's PORTABLE health state, keyed by its STABLE IDENTITY (model + provider) instead of
+/// One lane's PORTABLE health state, keyed by its STABLE IDENTITY (member + route) instead of
 /// its array position. This is the carrier that lets learned reliability state survive the
 /// two events that invalidate positional indexing: a config APPLY that changes the lane set (the
 /// new store is built with the surviving lanes' snapshots restored), and — via serde, for the
@@ -398,8 +400,10 @@ pub struct LaneSnapshot {
 #[allow(dead_code)]
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct LaneHealthSnapshot {
-    pub model: String,
-    pub provider: String,
+    /// The member the lane serves ([`LaneSnapshot::member`]).
+    pub member: String,
+    /// The route the lane dials ([`LaneSnapshot::route`]).
+    pub route: String,
     /// Remaining lifetime request budget (`-1` = unlimited).
     pub budget: i64,
     /// Default-cell breaker: FSM state, cooldown deadline (unix secs), consecutive-error streak.

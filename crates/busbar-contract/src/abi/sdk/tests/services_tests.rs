@@ -8,7 +8,8 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use super::*;
 use crate::abi::host::service::{
     ABSENT, CLAIM_TAKEN, DEST_ALLOWED, DEST_INTERNAL, DEST_METADATA, HOOK_GATE, HOOK_REWRITE,
-    MAX_RANDOM_FILL, NOT_ENTITLED, SERVICES, TRUST_NEW, TRUST_SAME,
+    MAX_RANDOM_FILL, NOT_ENTITLED, SCHEME_PLAIN, SCHEME_SECURE, SCHEME_UNDECLARED, SERVICES,
+    TRUST_NEW, TRUST_SAME,
 };
 use crate::abi::mechanism::call::Span;
 use crate::abi::mechanism::ticket::Ticket;
@@ -1655,7 +1656,60 @@ fn request() -> HeadViewArgs<'static> {
         authority: "a.example",
         query: Some("key=k"),
         fields: &[("x-credential", b"c")],
+        scheme: SCHEME_SECURE,
     }
+}
+
+/// The scheme code the last `sees_scheme` call's view carried.
+static SEEN_SCHEME: std::sync::Mutex<Option<u8>> = std::sync::Mutex::new(None);
+
+/// An `auth.call` host that records the scheme code its request view carries, then continues.
+extern "C" fn sees_scheme(_ctx: HostCtx, input: *const c_void, out: *mut ServiceOut) -> RawOutcome {
+    // SAFETY: the wrapper hands a live `AuthCallIn` and `out`.
+    unsafe {
+        let i = input.cast::<AuthCallIn>().read_unaligned();
+        *SEEN_SCHEME.lock().unwrap() = Some(i.request.scheme);
+        answer_auth(input, out, FLOW_CONTINUE, &[])
+    }
+}
+
+/// RED (the upstream's scheme): the code the host declared for the stream reaches the auth in the
+/// view, as is; a request view that declares none hands `SCHEME_UNDECLARED`, never plain.
+#[test]
+fn auth_call_hands_the_auth_the_scheme_the_request_carries() {
+    let t = auth_table(Some(sees_scheme));
+    let call = |request: &HeadViewArgs<'_>| {
+        match services(&t).auth_call::<Own>(
+            ticketed(0),
+            LINE_REF,
+            UnitRef::NONE,
+            POINT_HEAD,
+            1,
+            1,
+            request,
+            None,
+        ) {
+            Poll::Ready(r) => assert_eq!(r.expect("answered").flow, FLOW_CONTINUE),
+            Poll::Pending => panic!("did not pend"),
+        }
+        SEEN_SCHEME.lock().unwrap().take()
+    };
+    assert_eq!(call(&request()), Some(SCHEME_SECURE));
+    let plain = HeadViewArgs {
+        scheme: SCHEME_PLAIN,
+        ..request()
+    };
+    assert_eq!(call(&plain), Some(SCHEME_PLAIN));
+    let undeclared = HeadViewArgs {
+        scheme: SCHEME_UNDECLARED,
+        ..request()
+    };
+    assert_eq!(
+        call(&undeclared),
+        Some(SCHEME_UNDECLARED),
+        "the default declares nothing"
+    );
+    assert_eq!(HeadViewArgs::default().scheme, SCHEME_UNDECLARED);
 }
 
 #[test]

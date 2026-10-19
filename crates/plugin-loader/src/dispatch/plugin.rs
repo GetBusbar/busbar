@@ -1814,11 +1814,7 @@ impl<K: Kind> Plugin<K> {
             // The dispatcher owns only the mechanism's own bit; a kind's bit the caller set on the
             // head (the export scrape's `SCRAPE_FLAG_HOOK_FAMILIES`) rides through untouched.
             head.flags = (head.flags & !FLAG_RESUME) | if resume { FLAG_RESUME } else { 0 };
-            head.deadline_class = if ticket.is_none() {
-                DeadlineClass::Call as u8
-            } else {
-                DeadlineClass::Connection as u8
-            };
+            head.deadline_class = stamped_class::<K>(s, ticket) as u8;
             head.ticket = ticket;
             inst.cross(s, i, o, out_size)
         };
@@ -1835,6 +1831,17 @@ impl<K: Kind> Plugin<K> {
             recall: token,
             ..Called::from(crossed)
         }
+    }
+}
+
+/// THE DEADLINE CLASS a crossing of `s` on `ticket` is stamped with: `Call` ticket-less (it may
+/// not pend); on a real ticket, the class the kind's contract states for the op
+/// ([`Kind::ticketed_class`]).
+pub(crate) fn stamped_class<K: Kind>(s: u32, ticket: Ticket) -> DeadlineClass {
+    if ticket.is_none() {
+        DeadlineClass::Call
+    } else {
+        K::ticketed_class(s)
     }
 }
 

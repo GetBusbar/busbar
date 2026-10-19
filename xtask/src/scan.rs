@@ -105,6 +105,9 @@ pub fn test_scope(src: &str) -> Vec<ScopeLine> {
     let mut in_test = false;
     let mut pending = false;
     let mut pend_age = 0u32;
+    // Parens and brackets opened since the attribute: a `,` inside a parameter list does not end
+    // the item.
+    let mut pend_open: i32 = 0;
     let mut depth: i32 = 0;
     let mut lex = LexState::default();
 
@@ -127,8 +130,19 @@ pub fn test_scope(src: &str) -> Vec<ScopeLine> {
         } else if pending {
             gated = true;
             let t = code.trim_start();
+            pend_open += delta(&counted, '(', ')') + delta(&counted, '[', ']');
             if code.trim().is_empty() || t.starts_with("#[") {
                 pend_age += 1;
+            } else if ends_field(&code, pend_open) {
+                // A FIELD, VARIANT OR ARM: a brace-less item ended by `,`. It gates this line and
+                // no more, or the attribute stays armed past the struct's `}` and gates the next
+                // braced item, which is production code.
+                pending = false;
+            } else if braces(&counted) < 0 {
+                // The ENCLOSING item closed before the attribute found its own: nothing of the
+                // attribute's reaches past this brace.
+                pending = false;
+                gated = false;
             } else if counted.contains('{') {
                 pending = false;
                 depth = braces(&counted);
@@ -158,9 +172,12 @@ pub fn test_scope(src: &str) -> Vec<ScopeLine> {
             // The attribute holds no literal, so the blanked line strips to the same remainder —
             // and that remainder is the one the braces are counted off.
             let rest_counted = strip_cfg_attr(&counted);
+            pend_open = delta(&rest_counted, '(', ')') + delta(&rest_counted, '[', ']');
             if rest.trim().is_empty() {
                 pending = true;
                 pend_age = 0;
+            } else if ends_field(&rest, pend_open) {
+                // `#[cfg(test)] calls: u32,` — a field on the attribute's own line.
             } else if rest_counted.contains('{') {
                 depth = braces(&rest_counted);
                 if depth > 0 {
@@ -205,6 +222,12 @@ fn code_of(line: &str, comment_at: Option<usize>) -> String {
         Some(at) => line.chars().take(at).collect(),
         None => line.to_string(),
     }
+}
+
+/// A brace-less item that ends in `,` — a struct field, an enum variant, a match arm — with no
+/// paren or bracket the attribute's item opened still open.
+fn ends_field(code: &str, open: i32) -> bool {
+    open <= 0 && code.trim_end().ends_with(',')
 }
 
 /// Brace depth of ONE ALREADY-BLANKED line. Takes [`blank_code`] output and nothing else, which is

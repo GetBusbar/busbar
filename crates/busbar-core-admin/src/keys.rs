@@ -568,7 +568,10 @@ pub(crate) async fn create_key(
     let idem_ckey: Option<(String, String)> = idem_key.as_ref().map(|k| (actor.clone(), k.clone()));
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
-        match replays.probe(ck.clone(), busbar_kernel::store::now()) {
+        match replays
+            .probe_off_worker(ck.clone(), busbar_kernel::store::now())
+            .await
+        {
             // The first (and only) probe of a request that presented no key replays nothing.
             Probe::NoKey => {}
             // A COMPLETED prior mint (the real 201 object): replay it verbatim.
@@ -1438,7 +1441,10 @@ pub(crate) async fn rotate_key(
         .map(|k| (actor.clone(), crate::idempotency::rotate_replay_key(&id, k)));
     let mut idem_reservation: Option<crate::idempotency::Reservation<'_, Value>> = None;
     if let Some(ref ck) = idem_ckey {
-        match replays.probe(ck.clone(), busbar_kernel::store::now()) {
+        match replays
+            .probe_off_worker(ck.clone(), busbar_kernel::store::now())
+            .await
+        {
             Probe::NoKey => {}
             Probe::Replay(cached) => return json_response(StatusCode::OK, cached),
             Probe::InFlight => {
@@ -1464,8 +1470,25 @@ pub(crate) async fn rotate_key(
     // a revoked key with a fresh secret. Gate acquired INSIDE the closure for cancellation safety
     // (a scheduled spawn_blocking runs to completion even if the handler future is dropped).
     // The re-minted signed token gets the SAME default lifetime a mint with no `expires_in` /
-    // `expires_at` would receive (rotate takes no body today).
-    let exp = busbar_kernel::store::now().saturating_add(DEFAULT_KEY_TTL_SECS);
+    // `expires_at` would receive (rotate takes no body today) — and, being a mint, under the SAME
+    // lifetime ceiling (`auth.policy.max_ttl` and the caller's role cap): a default is clamped,
+    // never refused, so a rotate is answered exactly as before wherever no ceiling is configured.
+    // The pool and mode ceilings are not asked: a rotate re-mints the key's existing binding.
+    let now = busbar_kernel::store::now();
+    let caller_roles: &[String] = principal.0.as_ref().map_or(&[], |p| p.roles.as_slice());
+    let ttl = app
+        .mint_policy
+        .check_mint(&MintRequest {
+            roles: caller_roles,
+            requested_pools: Some(&[]),
+            requested_ttl_secs: DEFAULT_KEY_TTL_SECS,
+            explicit_ttl: false,
+            requested_mode: None,
+        })
+        // A default naming no pools and no mode is clamped, never refused; were it refused, the
+        // token would be minted already expired rather than past the ceiling (fail closed).
+        .unwrap_or(0);
+    let exp = now.saturating_add(ttl);
     // The rotate is about to be handed to `spawn_blocking`'s uncancellable task — from here on, a
     // dropped handler future (client disconnect) must NOT clear the sentinel. See
     // `Reservation::in_flight`.

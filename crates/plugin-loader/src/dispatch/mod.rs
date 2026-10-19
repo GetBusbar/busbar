@@ -114,6 +114,17 @@ pub trait Kind: Send + Sync + 'static {
         lifecycle_name(slot)
     }
 
+    /// THE DEADLINE CLASS a crossing of `slot` on a REAL ticket is stamped with
+    /// (`InHead::deadline_class`): the class the kind's op contract states for it, so a pending
+    /// service call inside the op runs under that class's deadline. The default is
+    /// [`DeadlineClass::Connection`](busbar_contract::abi::mechanism::call::DeadlineClass), for a
+    /// kind whose ticketed ops are its carrier I/O. A ticket-less crossing is always
+    /// `DeadlineClass::Call`.
+    fn ticketed_class(slot: u32) -> busbar_contract::abi::mechanism::call::DeadlineClass {
+        let _ = slot;
+        busbar_contract::abi::mechanism::call::DeadlineClass::Connection
+    }
+
     /// Whether `slot` is a kind op this kind states OPTIONAL: a door may leave it NULL (absent),
     /// and the host reads an absent one as a pass. Every other slot NULL refuses the load.
     fn optional_slot(slot: u32) -> bool {
