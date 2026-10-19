@@ -223,12 +223,24 @@ pub fn apply_rewrite(arrived: &mut Arrived, rewrite: &[u8]) -> Option<Vec<u8>> {
         return None;
     }
     let dialect = decl(arrived.dialect).and_then(|d| d.dialect())?;
-    let mut v = arrived.parsed.clone()?;
+    let old = arrived.parsed.clone()?;
+    let mut v = old.clone();
     let obj = v.as_object_mut()?;
     if !dialect.apply_rewrite_to_ingress_body(obj, &reply.messages, &reply.tools) {
         return None;
     }
-    let bytes = crate::codec::json::to_vec(&v).ok()?;
+    // THE REWRITE IS SPLICED, never re-serialized (DIALECT FIDELITY, owner 2026-10-02; Q128 arch
+    // u59): only the members the rewrite changed are written over the caller's bytes, so every
+    // other member keeps its key order, spacing and number spelling. A body the splice cannot read
+    // as the parsed shape is written whole, the one fallback.
+    let bytes = if v == old {
+        arrived.body.clone()
+    } else {
+        match crate::codec::json_splice::diff(&arrived.body, &old, &v) {
+            Some(spliced) => spliced,
+            None => crate::codec::json::to_vec(&v).ok()?,
+        }
+    };
     arrived.body.clone_from(&bytes);
     arrived.parsed = Some(v);
     Some(bytes)
