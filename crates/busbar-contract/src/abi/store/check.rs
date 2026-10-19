@@ -731,7 +731,7 @@ pub fn check_count(outcome: Outcome, out: &CountOut) -> Result<(), Fault> {
 /// [`RETENTION_TERMINAL_ONLY`]. The host writes only those; a store refuses any other code rather
 /// than guess which rows it may drop.
 pub fn check_kind_before(input: &KindBeforeIn) -> Result<(), Fault> {
-    if crate::records::Retention::from_code(input.retention).is_none() {
+    if input.retention != RETENTION_AGE && input.retention != RETENTION_TERMINAL_ONLY {
         return Err(KIND_BEFORE_RETENTION);
     }
     Ok(())
