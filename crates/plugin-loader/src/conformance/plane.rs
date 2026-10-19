@@ -145,8 +145,8 @@ use busbar_contract::abi::plane::{
 use serde_json::Value;
 
 use super::{
-    answered, bind_far, called, close, crossings, dispatcher, input, json, load, on_ticket_frame,
-    output, ready_step, release, submit_on, validate, Fold, Leg, Recorder, Subject,
+    answered, called, close, crossings, dispatcher, input, json, load, on_ticket_frame, output,
+    ready_step, release, submit_on, validate, Fold, Leg, Recorder, Subject,
 };
 use crate::dispatch::kinds::plane::{OwnedSnapshot, Plane};
 use crate::dispatch::{now_ns, Called, DispatchConfig, Dispatcher, Frame, Lent, Plugin};
@@ -1329,7 +1329,17 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     });
     // The plane's own declared needs (a card it fetches, a callback it delivers) reach the far
     // ends its inputs state (`far_ends`), as the auth script's do; naming none, the leg's table.
-    let p = load::<Plane>(s, leg, bind_far(&d, "plane", s)).expect("the plane door loads");
+    let far = s.far_table();
+    let bound = match &far {
+        Some(table) => crate::dispatch::Bind {
+            conns: crate::dispatch::ConnTable::Host(
+                Arc::clone(table) as Arc<dyn busbar_contract::conn::DeclaredConns>
+            ),
+            ..super::bind(&d, "plane")
+        },
+        None => s.bind(&d, "plane"),
+    };
+    let p = load::<Plane>(s, leg, bound).expect("the plane door loads");
     // The loaded instance is admitted on what its Statement declares, as the kernel admits it.
     if let Some(h) = &k.carried.host {
         h.admit(&p.declared());
@@ -1576,6 +1586,17 @@ pub(super) fn fold(s: &Subject, leg: Leg) -> Fold {
     }
     let fold = r.fold();
     contract(&fold, s.kind_inputs("plane"));
+    // AN UNREACHED SCHEME WAS NEVER TOUCHED (row 114): the claim conformance.json states is that
+    // no open of this fold rode one; an open that did is the scheme reached, not unreached.
+    if let Some(table) = &far {
+        let tried = table.unreached_opens();
+        assert!(
+            tried.is_empty(),
+            "the fold opened a need over an unreached scheme {tried:?}: conformance.json says the \
+             suite never reaches it, so either the plane reached it (the claim is wrong) or the \
+             scheme is exercised here and needs a far end, not an unreached entry"
+        );
+    }
     let unreported = unreported_classes(&fold, &billable);
     assert!(
         unreported.is_empty(),

@@ -68,6 +68,10 @@ pub struct HttpsConns {
     /// Schemes a deployment's other transports serve that this table frames no far end for
     /// ([`HttpsConns::unreached`]).
     unreached: Vec<String>,
+    /// The needs declared over an unreached scheme, and the scheme each names.
+    unreached_needs: Mutex<HashMap<(InstanceId, NeedId), String>>,
+    /// Per unreached scheme, the opens attempted on a need over it ([`HttpsConns::unreached_opens`]).
+    unreached_tried: Mutex<HashMap<String, u64>>,
 }
 
 impl std::fmt::Debug for HttpsConns {
@@ -99,7 +103,25 @@ impl HttpsConns {
             far: Mutex::default(),
             sent: Mutex::default(),
             unreached: Vec::new(),
+            unreached_needs: Mutex::default(),
+            unreached_tried: Mutex::default(),
         }
+    }
+
+    /// Per unreached scheme, how many opens were attempted on a need over it, sorted by scheme;
+    /// a scheme no open tried is absent. The suite asserts this is empty after a fold: an
+    /// unreached scheme is a claim that the fold never touches it.
+    #[must_use]
+    pub fn unreached_opens(&self) -> Vec<(String, u64)> {
+        let mut tried: Vec<(String, u64)> = self
+            .unreached_tried
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .map(|(s, n)| (s.clone(), *n))
+            .collect();
+        tried.sort();
+        tried
     }
 
     /// The same table, also answering the boot's scheme match for `schemes`: transports the
@@ -148,6 +170,104 @@ impl HttpsConns {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
+    }
+}
+
+/// The fewest characters an unreached scheme's `why` may have: a reason, not a word.
+pub const UNREACHED_WHY_MIN: usize = 40;
+
+/// JUDGE `inputs.unreached_schemes` (row 114: no silent skip): each entry is
+/// `{ "scheme", "why", "covered_by": ["<path>::<test fn>", ...] }`, and is refused, naming what is
+/// wrong, unless its `why` is a reason of at least [`UNREACHED_WHY_MIN`] characters; it cites at
+/// least one cell, each a `#[test] fn` in a file at `<path>` under `root` (the plugin's own repo)
+/// that exercises the scheme; the scheme is not `framed` (the table's own, which it reaches); and a
+/// need the door declares (`need_transports`) names it. The schemes, in order.
+///
+/// # Errors
+/// The first entry refused, and why.
+pub fn judge_unreached(
+    value: &serde_json::Value,
+    framed: &str,
+    need_transports: &[String],
+    root: &std::path::Path,
+) -> Result<Vec<String>, String> {
+    let Some(entries) = value.as_array() else {
+        return Err("unreached_schemes is a list of objects".to_string());
+    };
+    let mut schemes = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
+        let at = format!("unreached_schemes[{i}]");
+        let Some(obj) = e.as_object() else {
+            return Err(format!(
+                "{at} must be an object {{\"scheme\", \"why\", \"covered_by\"}}"
+            ));
+        };
+        let scheme = obj
+            .get("scheme")
+            .and_then(serde_json::Value::as_str)
+            .filter(|s| !s.is_empty())
+            .ok_or_else(|| format!("{at}.scheme names no scheme"))?;
+        let why = obj
+            .get("why")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or_default()
+            .trim();
+        if why.chars().count() < UNREACHED_WHY_MIN {
+            return Err(format!(
+                "{at}.why for `{scheme}` is not a reason (at least {UNREACHED_WHY_MIN} characters)"
+            ));
+        }
+        if scheme == framed {
+            return Err(format!(
+                "{at}: `{scheme}` is the framed table's own scheme, which the suite reaches"
+            ));
+        }
+        if !need_transports.iter().any(|t| t == scheme) {
+            return Err(format!(
+                "{at}: `{scheme}` is named by no declared need, so nothing is unreached"
+            ));
+        }
+        let cells: Vec<&str> = obj
+            .get("covered_by")
+            .and_then(serde_json::Value::as_array)
+            .map(|a| a.iter().filter_map(serde_json::Value::as_str).collect())
+            .unwrap_or_default();
+        if cells.is_empty() {
+            return Err(format!(
+                "{at}.covered_by for `{scheme}` cites no cell that exercises it"
+            ));
+        }
+        for cell in cells {
+            covered(root, cell).map_err(|why| format!("{at}.covered_by `{cell}`: {why}"))?;
+        }
+        schemes.push(scheme.to_string());
+    }
+    Ok(schemes)
+}
+
+/// `<path>::<fn>` resolves to a `#[test]` function in the file at `path` under `root`.
+fn covered(root: &std::path::Path, cell: &str) -> Result<(), String> {
+    let (path, name) = cell
+        .rsplit_once("::")
+        .ok_or_else(|| "is not `<path>::<test fn>`".to_string())?;
+    let text = std::fs::read_to_string(root.join(path))
+        .map_err(|e| format!("{path} does not read: {e}"))?;
+    let lines: Vec<&str> = text.lines().map(str::trim).collect();
+    let decl = format!("fn {name}(");
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with(&decl) || l.contains(&format!(" {decl}")))
+        .ok_or_else(|| format!("no fn {name} in {path}"))?;
+    // The attributes and doc lines straight above the fn carry `#[test]`.
+    let tested = lines[..at]
+        .iter()
+        .rev()
+        .take_while(|l| l.starts_with("#[") || l.starts_with("///"))
+        .any(|l| *l == "#[test]");
+    if tested {
+        Ok(())
+    } else {
+        Err(format!("fn {name} in {path} is not a #[test]"))
     }
 }
 
@@ -220,6 +340,21 @@ impl Conns for HttpsConns {
         need: NeedId,
         desc: &OpenDesc<'_>,
     ) -> Result<ConnId, ConnError> {
+        let unreached = self
+            .unreached_needs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&(caller, need))
+            .cloned();
+        if let Some(scheme) = unreached {
+            *self
+                .unreached_tried
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entry(scheme)
+                .or_insert(0) += 1;
+            return Err(ConnError::Refused);
+        }
         self.slab.check_need(caller, need)?;
         let (declared_target, trust) = {
             let needs = self.needs.lock().unwrap_or_else(PoisonError::into_inner);
@@ -332,6 +467,12 @@ impl DeclaredConns for HttpsConns {
         target: Option<&str>,
         trust: Option<&str>,
     ) -> Result<(), ConnError> {
+        if self.unreached.iter().any(|s| *s == spec.transport) {
+            self.unreached_needs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert((owner, need), spec.transport.clone());
+        }
         let unresolved = (!spec.target_from.is_empty() && target.is_none())
             || (!spec.trust_from.is_empty() && trust.is_none());
         let answer =
