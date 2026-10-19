@@ -44,36 +44,19 @@
 //!
 //! ## The declared claim set seals, and this is where that is measured
 //!
-//! **164 of the cross-plane pairs overlap** — 100 across selector families and 64 within the path
-//! family. Both numbers follow from the overlap rule as the design writes it, and neither is a
-//! rounding of the other. (The decisions plane joining the seal, item 251, added eleven: its two
-//! exact paths against every header claim, and its `/v1/models` against the model-serving plane's
-//! `v1/models/<tail>` pattern — which the order settles in the exact path's favour.)
+//! The linked claim table is folded from the manifest's `claims` axis, and NO linked row is on it:
+//! every linked plane is a door (`plane-door`), whose routes are its Statement's claims, mounted by
+//! the data route, not declared constants handed here. So `LINKED.claims` is empty, the seal holds
+//! the core admin plane's claims alone, and there is NO cross-plane pair: nothing is resolved and
+//! nothing refused. (The counts this section once pinned — 164 overlapping pairs — were folded over
+//! pure planes' `PlaneMeta::CLAIMS`, the llm plane's among them; none of those rows is linked now.)
 //!
-//! The 90 are the conservative arm, and they are conservative because a request really does carry
-//! both a path and a header: `HeaderPresent("x-api-key")` and `ExactPath("/tools")` can be true of one
-//! arrival, so an overlap is the honest answer rather than a limitation. The 63 are what is left
-//! inside the path family once the grammar reads a suffix and a substring as the segment
-//! constraints they are: a suffix pins a pattern's last segments, a substring carrying slashes asks
-//! for consecutive whole ones, and a pattern with a literal in the way cannot produce a path that
-//! satisfies either. That reading is what took the path-family count from 119 to 65, and naming the
-//! audio surface one path at a time rather than as a prefix — so that the two one-shot audio
-//! operations belong to the plane the inventory gives them to, instead of being described by two
-//! planes at once — took it from 65 to 63, and the decisions plane's `/v1/models` made it 64. Of the
-//! 64, 24 involve a pattern ending in a tail (which
-//! can supply whatever the fragment asks for), 24 are a fragment landing inside a pattern's
-//! variable segment, and 16 are two fragment forms that can be satisfied at once by writing a path
-//! with both. Every one of them is a real shape, not a gap in the reasoning.
-//!
-//! All 164 are settled by the sealed order, and none of them is a refusal. That is not the check
-//! being softened: every one of the 164 is a pair whose two claims sit at different precedence, so
-//! the order already says which plane takes bytes both describe, and the pair is recorded in
-//! `resolved` with its winner named. The tests below pin the count at 164, the refusal count at
-//! zero and the sealed order itself, so a declaration change that turns a resolved pair into a tie —
-//! the shape nothing can decide — has to say so here. A root that skipped the check to get a node
-//! running would be choosing which plane's DECLARATION owns a shape by accident of registration
-//! order, which is the one thing the check exists to prevent — for the declarations. See the section
-//! above for the live routes it does not reach.
+//! The rule itself is unchanged and still proven: the planted tests below hold that two planes at
+//! equal precedence refuse at boot with both named, that different precedence resolves with the
+//! winner named, and that disjoint scheme sets never collide. A root that skipped the check would be
+//! choosing which plane's DECLARATION owns a shape by accident of registration order, which is the
+//! one thing the check exists to prevent — for the declarations. See the section above for the live
+//! routes it does not reach.
 //!
 //! ## No transport is built over another
 //!

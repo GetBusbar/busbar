@@ -18,6 +18,21 @@
 //! that a header-present claim conservatively overlaps another claim on the same header is expected
 //! and is not a boot refusal. The overlap rule is what stops two DIFFERENT planes claiming one
 //! request; ordering is what settles a contest inside this one.
+//!
+//! ## One ladder, 1.5.5's
+//!
+//! The ladder the served door walks is each dialect's own claim predicate, folded tightest-first
+//! ([`crate::exchange::arrive::detect`]); this table states the same ladder as declared claims. The
+//! two are held to ONE answer, and that answer is 1.5.5's router (`proto/detect.rs`
+//! `protocol_id`), by a test that walks both over 1.5.5's whole resolver table and the shapes the
+//! two once disagreed on (`tests/claims_ladder.rs`). Every rung below reproduces a 1.5.5 rung:
+//! rung 6 is 1.5.5's `/v1{,beta}/models/` PREFIX, so a bare `/v1/models` (the listing) names no
+//! dialect; rung 13 is 1.5.5's `/model/` ... `/invoke`, whatever lies between; and rung 14 holds
+//! 1.5.5's whole `/v1/audio/` surface.
+//!
+//! The selector grammar reads a path as its non-empty segments, where 1.5.5 compared raw strings,
+//! so the two pattern rungs (6 and 13) can read a path carrying an empty segment (`//`) differently
+//! from 1.5.5. No other shape differs.
 
 use busbar_contract::grammar::{Claim, PathSeg, Selector};
 
@@ -74,16 +89,26 @@ const fn claim(selector: Selector) -> Claim {
     }
 }
 
-/// A path pattern that matches a model-scoped invoke path.
-const MODEL_INVOKE: &[PathSeg] = &[PathSeg::Lit("model"), PathSeg::Var, PathSeg::Lit("invoke")];
+/// A path pattern that matches a model-scoped invoke path: `/model/`, one or more segments (a model
+/// id an unencoded client sends with its own `/` spans several), then `invoke` — 1.5.5's
+/// `starts_with("/model/") && ends_with("/invoke")`.
+const MODEL_INVOKE: &[PathSeg] = &[PathSeg::Lit("model"), PathSeg::Plus, PathSeg::Lit("invoke")];
 
-/// A path pattern that matches the whole model-scoped surface of one API version.
-const V1_MODELS: &[PathSeg] = &[PathSeg::Lit("v1"), PathSeg::Lit("models"), PathSeg::Tail];
+/// A path pattern that matches the model-scoped surface of one API version: `/v1/models/` and at
+/// least one segment after it — 1.5.5's `/v1/models/` prefix, which the bare listing path
+/// `/v1/models` does not carry.
+const V1_MODELS: &[PathSeg] = &[
+    PathSeg::Lit("v1"),
+    PathSeg::Lit("models"),
+    PathSeg::Var,
+    PathSeg::Tail,
+];
 
-/// A path pattern that matches the whole model-scoped surface of the preview API version.
+/// The same surface of the preview API version (1.5.5's `/v1beta/models/` prefix).
 const V1BETA_MODELS: &[PathSeg] = &[
     PathSeg::Lit("v1beta"),
     PathSeg::Lit("models"),
+    PathSeg::Var,
     PathSeg::Tail,
 ];
 
@@ -124,9 +149,13 @@ busbar_contract::claims_from_ladder! {
     5 => "gemini", Selector::PathContains(":batchEmbedContents"),
     5 => "gemini", Selector::PathContains(":predict"),
 
-    // Rung 6: the same vendor's model-scoped surface without an action suffix, on either version.
+    // Rung 6: the same vendor's model-scoped surface without an action suffix, on either version:
+    // 1.5.5's `/v1{,beta}/models/` prefix. A pattern needs a segment after `models`, so the prefix
+    // with nothing after it is its own exact path.
     6 => "gemini", Selector::PathPattern(V1_MODELS),
     6 => "gemini", Selector::PathPattern(V1BETA_MODELS),
+    6 => "gemini", Selector::ExactPath("/v1/models/"),
+    6 => "gemini", Selector::ExactPath("/v1beta/models/"),
 
     // Rung 7: the widely-copied chat surface.
     7 => "openai", Selector::PathSuffix("/v1/chat/completions"),
@@ -148,29 +177,26 @@ busbar_contract::claims_from_ladder! {
     // Rung 12: one vendor's turn-shaped surface.
     12 => "bedrock", Selector::PathContains("/converse"),
 
-    // Rung 13: the same vendor's model-scoped invoke path.
+    // Rung 13: the same vendor's model-scoped invoke path. `/model/invoke` is 1.5.5's too (it
+    // starts with `/model/` and ends with `/invoke`); the pattern needs a segment between, so it
+    // is stated as its own exact path.
     13 => "bedrock", Selector::PathPattern(MODEL_INVOKE),
+    13 => "bedrock", Selector::ExactPath("/model/invoke"),
 
-    // Rung 14: the loosest rung — the non-chat surfaces of the widely-copied dialect.
-    //
-    // The audio surface is named one path at a time rather than as the whole `/v1/audio/` prefix.
-    // Two of that prefix's three paths — `transcriptions` and `speech` — are the one-shot operations
-    // the architecture's plane inventory gives to the voice plane, and the voice plane claims them
-    // by name. A prefix claim here claimed them too, so the two planes' claims overlapped on the
-    // request rather than dividing it, and which one answered rested on the boot ordering agreeing
-    // with the inventory rather than on either plane saying what it owns. What is left is the path
-    // no other plane claims.
+    // Rung 14: the loosest rung — the non-chat surfaces of the widely-copied dialect, 1.5.5's set
+    // exactly: the whole `/v1/audio/` surface (transcriptions, translations and speech) with them.
     14 => "openai", Selector::PathSuffix("/v1/embeddings"),
     14 => "openai", Selector::PathSuffix("/v1/moderations"),
     14 => "openai", Selector::PathContains("/v1/images/"),
-    14 => "openai", Selector::PathSuffix("/v1/audio/translations"),
+    14 => "openai", Selector::PathContains("/v1/audio/"),
 }
 
-/// Which dialect a request's path and headers name, by walking the ladder in order.
+/// Which dialect a request's path and headers name, by walking the DECLARED ladder in order.
 ///
-/// The kernel does this walk itself from the declared claims; the same walk is exposed here so the
-/// decode step can name the dialect it is about to read without a second, differently-ordered
-/// answer existing anywhere.
+/// The served door does not call this: it names an arrival's dialect by folding each dialect's
+/// own claim predicate ([`crate::exchange::arrive::detect`]). This walk answers what the
+/// declaration says, and the ladder test holds the two to one answer, 1.5.5's, over its whole
+/// resolver table.
 #[must_use]
 pub fn dialect_for<'h>(
     path: &str,

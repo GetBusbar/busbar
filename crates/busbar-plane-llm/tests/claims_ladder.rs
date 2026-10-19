@@ -7,6 +7,7 @@
 use busbar_contract::grammar::Selector;
 use busbar_contract::plane::PlaneMeta;
 use busbar_plane_llm::claims::{dialect_for, CLAIMS, LADDER};
+use busbar_plane_llm::exchange::arrive::detect;
 use busbar_plane_llm::LlmPlane;
 
 /// The ladder has fourteen rungs, numbered without a gap.
@@ -92,6 +93,8 @@ fn each_rung_routes_its_own_dialect() {
         ("/v1beta/models/x:predict", &[], "gemini"),
         ("/v1/models/gpt-4o", &[], "gemini"),
         ("/v1beta/models/gemini", &[], "gemini"),
+        ("/v1/models/", &[], "gemini"),
+        ("/v1beta/models/", &[], "gemini"),
         ("/v1/chat/completions", &[], "openai"),
         ("/v2/chat", &[], "cohere"),
         ("/v1/chat", &[], "cohere"),
@@ -101,12 +104,11 @@ fn each_rung_routes_its_own_dialect() {
         ("/v1/messages", &[], "anthropic"),
         ("/model/claude/converse", &[], "bedrock"),
         ("/model/claude/invoke", &[], "bedrock"),
+        ("/model/invoke", &[], "bedrock"),
         ("/v1/embeddings", &[], "openai"),
         ("/v1/moderations", &[], "openai"),
         ("/v1/images/generations", &[], "openai"),
-        // Not `/v1/audio/speech` and not `/v1/audio/transcriptions`: those two are the voice
-        // plane's one-shot operations, and this plane's audio claim is the path it leaves behind.
-        ("/v1/audio/translations", &[], "openai"),
+        ("/v1/audio/speech", &[], "openai"),
     ];
     assert_eq!(
         cases.len(),
@@ -152,7 +154,7 @@ fn a_header_rung_wins_over_a_path_rung() {
     );
 }
 
-/// The selector forms this plane uses are the five the ladder needs and no others.
+/// The selector forms this plane uses are the six the ladder needs and no others.
 ///
 /// A form the transport cannot evaluate is refused at boot, so the set is worth pinning: a sixth
 /// form appearing here is a claim that may not be evaluable where it is claimed.
@@ -164,6 +166,7 @@ fn the_ladder_uses_only_the_forms_it_needs() {
                 entry.claim.selector,
                 Selector::HeaderPresent(_)
                     | Selector::HeaderPrefix(_, _)
+                    | Selector::ExactPath(_)
                     | Selector::PathContains(_)
                     | Selector::PathSuffix(_)
                     | Selector::PathPattern(_)
@@ -215,4 +218,110 @@ fn the_two_target_carried_dialects_name_a_path_segment() {
         })
         .count();
     assert_eq!(carried, 2);
+}
+
+/// ONE LADDER, 1.5.5'S. The declared ladder ([`dialect_for`] over [`LADDER`]) and the ladder the
+/// served door walks ([`detect`], each dialect's own claim predicate) give ONE answer, and it is the
+/// answer 1.5.5's router gave (v1.5.5 `crates/busbar/src/proto/detect.rs` `protocol_id`): every
+/// path of 1.5.5's `resolver_table` (its body-disambiguated paths among them), and the shapes the
+/// declared ladder once answered otherwise.
+///
+/// RED before the declared ladder was put back to 1.5.5's rungs: `/v1/models` (the listing) named
+/// gemini because rung 6 was a pattern whose tail matched nothing; `/v1/audio/transcriptions` and
+/// `/v1/audio/speech` named no dialect because rung 14 had dropped them; `/model/a/b/invoke` and
+/// `/model/invoke` named none because rung 13 took exactly one segment between.
+#[test]
+fn the_declared_ladder_and_the_served_walk_are_one_ladder_1_5_5s() {
+    type Case = (
+        &'static str,
+        &'static [(&'static str, &'static str)],
+        Option<&'static str>,
+    );
+    let cases: &[Case] = &[
+        // 1.5.5's resolver_table, the protocol column.
+        ("/v1/chat/completions", &[], Some("openai")),
+        ("/v1/embeddings", &[], Some("openai")),
+        ("/v1/moderations", &[], Some("openai")),
+        ("/v1/images/generations", &[], Some("openai")),
+        ("/v1/audio/transcriptions", &[], Some("openai")),
+        ("/v1/audio/translations", &[], Some("openai")),
+        ("/v1/audio/speech", &[], Some("openai")),
+        ("/v2/chat", &[], Some("cohere")),
+        ("/v2/embed", &[], Some("cohere")),
+        ("/v2/rerank", &[], Some("cohere")),
+        ("/v1/responses", &[], Some("responses")),
+        (
+            "/claude-3/v1/messages",
+            &[("anthropic-version", "2023-06-01")],
+            Some("anthropic"),
+        ),
+        (
+            "/v1/messages",
+            &[("x-api-key", "sk-ant-xxx")],
+            Some("anthropic"),
+        ),
+        (
+            "/v1/messages",
+            &[("anthropic-beta", "prompt-caching-2024-07-31")],
+            Some("anthropic"),
+        ),
+        (
+            "/v1beta/models/x:generateContent",
+            &[("x-goog-api-key", "k")],
+            Some("gemini"),
+        ),
+        ("/v1beta/models/x:embedContent", &[], Some("gemini")),
+        ("/v1beta/models/x:predict", &[], Some("gemini")),
+        (
+            "/model/m/converse",
+            &[("authorization", "AWS4-HMAC-SHA256 Credential=x")],
+            Some("bedrock"),
+        ),
+        ("/v1/models", &[], None),
+        ("/healthz", &[], None),
+        // 1.5.5's body-disambiguated paths: the router named the dialect from the path alone.
+        ("/model/m/invoke", &[], Some("bedrock")),
+        ("/v1beta/models/x:generateContent", &[], Some("gemini")),
+        // The shapes the declared ladder once answered otherwise.
+        ("/v1/models/x", &[], Some("gemini")),
+        ("/v1/models/", &[], Some("gemini")),
+        ("/v1beta/models", &[], None),
+        ("/v1beta/models/x", &[], Some("gemini")),
+        ("/model/a/b/invoke", &[], Some("bedrock")),
+        ("/model/invoke", &[], Some("bedrock")),
+        ("/model/a", &[], None),
+        ("/v1/audio/anything-else", &[], Some("openai")),
+        // 1.5.5's header order: a header rung wins over every path rung.
+        (
+            "/v1/chat/completions",
+            &[("x-goog-api-key", "k")],
+            Some("gemini"),
+        ),
+        ("/v1/audio/speech", &[("x-api-key", "k")], Some("anthropic")),
+    ];
+    let mut differing = Vec::new();
+    for (path, headers, want) in cases {
+        let header = |name: &str| {
+            headers
+                .iter()
+                .find(|(n, _)| n.eq_ignore_ascii_case(name))
+                .map(|(_, v)| *v)
+        };
+        let fields: Vec<(&[u8], &[u8])> = headers
+            .iter()
+            .map(|(n, v)| (n.as_bytes(), v.as_bytes()))
+            .collect();
+        let declared = dialect_for(path, &header);
+        let served = detect(path, &fields);
+        if declared != *want || served != *want {
+            differing.push(format!(
+                "{path} {headers:?}: 1.5.5 {want:?}, declared {declared:?}, served {served:?}"
+            ));
+        }
+    }
+    assert!(
+        differing.is_empty(),
+        "the declared ladder, the served walk and 1.5.5 are not one ladder:\n{}",
+        differing.join("\n")
+    );
 }
