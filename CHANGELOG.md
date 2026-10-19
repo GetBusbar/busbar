@@ -1023,7 +1023,13 @@ each dialect translates, field by field, is listed in the generated
 - A translated Gemini request or answer carries `functionCall.id` / `functionResponse.id`, a failed
   tool result as `functionResponse.response.error`, a `fileData.mimeType`, the caller's
   transcription prompt and temperature, and reads Vertex `createTime`, a `functionResponse.id` as
-  the call id, and the image content-policy stops as safety stops.
+  the call id, and the image content-policy stops as safety stops. It also writes the caller's
+  metadata as `labels`, a reasoning-off ask as `thinkingBudget: 0` on a model that accepts it, a
+  tool subset by omission or as ANY plus `allowedFunctionNames`, a JSON tool result in
+  `functionResponse.response` and a media one in `functionResponse.parts`, and the requested output
+  modalities as `responseModalities`; it leaves out another family's reasoning signature; and a
+  translated answer carries the per-modality token detail lists, `groundingMetadata` and
+  `safetyRatings`.
 - A buffered OpenAI chat response carries its citations as nested `url_citation` annotations, the
   shape the published Chat Completions schema defines.
 - On a same-dialect route the caller receives every upstream response header except hop-by-hop
