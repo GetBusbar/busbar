@@ -1189,23 +1189,6 @@ impl EgressFarEnd<'_> {
             return false;
         }
         let url = join(&base_url, &request.target);
-        // THE FRAMER'S OWN HEAD for this target (THE DESIGN section 6, step 5): each of its lines
-        // the request does not carry is part of the head the auth signs and goes out after the
-        // plane's fields, where 1.5.5's client wrote its defaults; then, where the framer states
-        // it, the opening body's length, last, for a non-empty body whose head carries none. The
-        // framer adds nothing at encode.
-        let located = e.conns.head_defaults(e.caller, need, &url);
-        let carried = |name: &[u8]| {
-            request
-                .fields
-                .iter()
-                .any(|(n, _)| n.eq_ignore_ascii_case(name))
-        };
-        let defaults: Vec<(Vec<u8>, Vec<u8>)> = located
-            .lines
-            .into_iter()
-            .filter(|(name, _)| !carried(name))
-            .collect();
         let opening: &[u8] = if request.text { &[] } else { &request.body };
         // 2. THE ATTEMPT'S AUTH RECORD (THE DESIGN §6, "Auth points and guest lists", item 5): the
         // kernel makes no auth call and adds no auth line. The framer finalises the head (its own
@@ -1256,15 +1239,15 @@ impl EgressFarEnd<'_> {
         // (`OpenDesc::method`, `OpenDesc::head_target`), never fields: the framer writes its own
         // wire head from them.
         let (_, path) = split(&url);
-        // The head's fields as the plane stated them, then the framer's own lines it stated at
-        // locate, as 1.5.5's client added its defaults after every field the request carried. No
-        // auth line is here: the framer adds the auth's lines, replacing any of the same name.
-        let mut head = Head(Vec::with_capacity(request.fields.len() + defaults.len()));
+        // The head's fields as the plane stated them, and nothing else (THE DESIGN §6, "Auth points
+        // and guest lists", item 5): the kernel adds no line on the dialled side. The framer's own
+        // lines (its defaults, the body's length) and the auth's lines are the transport's, added
+        // by the framer as it begins the request, before its auth call signs the head.
+        let mut head = Head(Vec::with_capacity(request.fields.len()));
         head.0.extend(
             request
                 .fields
                 .iter()
-                .chain(defaults.iter())
                 .map(|(n, v)| (String::from_utf8_lossy(n).into_owned(), v.clone())),
         );
         let borrowed: Vec<(&str, &[u8])> = head
