@@ -100,3 +100,53 @@ fn a_planted_full_literal_is_red_and_its_spread_green() {
     .unwrap();
     assert!(valued.is_empty(), "{valued:?}");
 }
+
+/// Every builder a plugin may spread as a base exists, and its own body spreads `ZERO`, a parameter
+/// it forwards, or another listed builder: the allow-list cannot outlive what it names.
+#[test]
+fn every_listed_builder_spreads_zero_itself() {
+    let idx = index(&root().join(CONTRACT_SRC)).unwrap();
+    for h in ZERO_HELPERS {
+        assert_eq!(
+            idx.helpers().get(*h),
+            Some(&true),
+            "`{h}` is not a contract builder whose body spreads ZERO"
+        );
+    }
+}
+
+/// A literal's type is resolved as far as the file says: a same-named type the plugin defines, or
+/// one a `use` brings from elsewhere, is not the contract's.
+#[test]
+fn a_same_named_type_that_is_not_the_contracts_is_not_judged() {
+    let idx = index(&root().join(CONTRACT_SRC)).unwrap();
+    let lit = "fn f() -> ConnFacts { ConnFacts { size: 0, claim: X } }";
+    let local = format!("struct ConnFacts {{ size: u32, claim: u8 }}\n{lit}");
+    assert!(scan_text(&idx, "p.rs", &local).unwrap().is_empty());
+    let other = format!("use crate::stack::ConnFacts;\n{lit}");
+    assert!(scan_text(&idx, "p.rs", &other).unwrap().is_empty());
+    let pathed = "fn f() { let _ = stack::ConnFacts { size: 0, claim: X }; }";
+    assert!(scan_text(&idx, "p.rs", pathed).unwrap().is_empty());
+    let ours = format!("use busbar_contract::abi::transport::ConnFacts;\n{lit}");
+    assert_eq!(scan_text(&idx, "p.rs", &ours).unwrap().len(), 1);
+}
+
+/// A base is judged: `ZERO`, `default()` and a listed builder pass; any other base is a finding.
+#[test]
+fn a_base_that_is_not_zero_or_a_builder_is_red() {
+    let idx = index(&root().join(CONTRACT_SRC)).unwrap();
+    for ok in [
+        "const S: Statement = Statement { size: 8, ..Statement::ZERO };",
+        "const S: Statement = Statement { size: 8, ..statement(N, V, 4) };",
+        "const S: Statement = Statement { size: 8, ..with_tail(statement(N, V, 4), &T) };",
+    ] {
+        assert!(scan_text(&idx, "p.rs", ok).unwrap().is_empty(), "{ok}");
+    }
+    let red = scan_text(
+        &idx,
+        "p.rs",
+        "const S: Statement = Statement { size: 8, ..mine() };",
+    )
+    .unwrap();
+    assert_eq!(red.len(), 1, "{red:?}");
+}

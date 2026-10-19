@@ -8,8 +8,7 @@
 //! WHAT IS JUDGED. Every `T { … }` struct expression in a plugin crate's non-test code (the module
 //! tree from `src/lib.rs`, `src/main.rs` and `src/bin/*.rs`; a `#[cfg(test)]` module or item and a
 //! `#[test]` fn are skipped, and so is a module only a `#[cfg(test)]` declaration reaches) whose
-//! `T` is a contract struct with a `ZERO`. Any base satisfies it (`..T::ZERO`, `..ZERO`, `..base()`):
-//! each one keeps an appended field compiling. Expressions inside a macro invocation are not seen.
+//! `T` is a contract struct with a `ZERO`. Expressions inside a macro invocation are not seen.
 //!
 //! ONLY A LITERAL THE BASE CAN SHORTEN. A base-less literal names every field, and a base beside
 //! every field is `clippy::needless_update`. So a literal is judged when at least one field it
@@ -17,11 +16,18 @@
 //! fix drops those fields and spreads `..T::ZERO`, and the result is lint-clean. A literal whose
 //! every field carries a value (a pointer-and-length pair) is not judged.
 //!
-//! NAMES, NOT PATHS. The gate reads source, not types, so `T` is matched by its last path segment.
-//! Where the contract holds two structs of one name, the literal's own field names pick the
-//! candidates (every struct of that name whose fields include all of the literal's); the literal is
-//! judged only when every candidate states a `ZERO`, so a name shared with a struct that has none
-//! is never a false finding.
+//! THE BASE. A literal that spreads a base is judged by it: `..T::ZERO` (or any path ending in
+//! `ZERO`), `..T::default()` / `..Default::default()`, or a call to one of the contract's own
+//! builders in [`ZERO_HELPERS`] (each of which spreads `ZERO` itself, held by a test) is a base an
+//! appended field reads as zero from. Any other base is a finding.
+//!
+//! TYPE IDENTITY. The gate reads source, not types, so a literal's type is resolved as far as the
+//! file says: a path through `busbar_contract`, or a name a `use` brings from it, is the contract's;
+//! a name a `use` brings from anywhere else, a path through `crate`/`self`/`super` or a local
+//! module, and a name the plugin crate defines itself are not. A bare name no `use` resolves (a
+//! glob import) is taken as the contract's. Where the contract holds two structs of one name, the
+//! literal's own field names pick the candidates (every struct of that name whose fields include
+//! all of the literal's); the literal is judged only when every candidate states a `ZERO`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -32,6 +38,19 @@ type Res<T> = Result<T, String>;
 
 /// Where the contract's source sits under a busbar checkout.
 pub const CONTRACT_SRC: &str = "crates/busbar-contract/src";
+
+/// The contract's own builders a plugin may spread as a base (`..statement(…)`): each one's body
+/// spreads `ZERO`, a parameter it forwards, or another builder here (held by a test).
+pub const ZERO_HELPERS: &[&str] = &[
+    "statement",
+    "statement_with_tail",
+    "with_tail",
+    "verify_tail",
+    "outbound_tail",
+    "with_operator",
+    "with_credential_kinds",
+    "with_inbound",
+];
 
 /// One contract struct: its named fields, and whether it states a `ZERO`.
 #[derive(Debug, Clone)]
@@ -44,6 +63,8 @@ struct Def {
 #[derive(Debug, Default)]
 pub struct ZeroIndex {
     defs: BTreeMap<String, Vec<Def>>,
+    /// Each [`ZERO_HELPERS`] builder found, and whether its body spreads an accepted base.
+    helpers: BTreeMap<String, bool>,
 }
 
 impl ZeroIndex {
@@ -57,7 +78,14 @@ impl ZeroIndex {
             .collect()
     }
 
-    /// Whether a base-less literal `name { fields }` must carry a base.
+    /// Each [`ZERO_HELPERS`] builder the contract defines, and whether its own body spreads
+    /// `ZERO`, a parameter or another listed builder.
+    #[must_use]
+    pub fn helpers(&self) -> &BTreeMap<String, bool> {
+        &self.helpers
+    }
+
+    /// Whether a literal `name { fields }` is one of a ZERO-bearing contract struct.
     fn judged(&self, name: &str, fields: &BTreeSet<String>) -> bool {
         let Some(defs) = self.defs.get(name) else {
             return false;
@@ -119,6 +147,13 @@ fn index_items(items: &[syn::Item], idx: &mut ZeroIndex) {
                     index_items(inner, idx);
                 }
             }
+            syn::Item::Fn(f)
+                if !test_only(&f.attrs)
+                    && ZERO_HELPERS.contains(&f.sig.ident.to_string().as_str()) =>
+            {
+                idx.helpers
+                    .insert(f.sig.ident.to_string(), helper_spreads(f));
+            }
             _ => {}
         }
     }
@@ -139,6 +174,154 @@ pub fn index(contract_src: &Path) -> Res<ZeroIndex> {
         index_items(&parsed.items, &mut idx);
     }
     Ok(idx)
+}
+
+/// Whether a builder's body spreads an accepted base: `ZERO`, one of its own parameters, or a
+/// call to another [`ZERO_HELPERS`] builder.
+fn helper_spreads(f: &syn::ItemFn) -> bool {
+    struct Bases<'a> {
+        params: &'a BTreeSet<String>,
+        ok: bool,
+    }
+    impl<'ast> Visit<'ast> for Bases<'_> {
+        fn visit_expr_struct(&mut self, e: &'ast syn::ExprStruct) {
+            if let Some(b) = &e.rest {
+                let param = matches!(&**b, syn::Expr::Path(p)
+                    if p.path.get_ident().is_some_and(|i| self.params.contains(&i.to_string())));
+                if param || base_ok(b) {
+                    self.ok = true;
+                }
+            }
+            syn::visit::visit_expr_struct(self, e);
+        }
+    }
+    let params: BTreeSet<String> = f
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|a| match a {
+            syn::FnArg::Typed(t) => match &*t.pat {
+                syn::Pat::Ident(i) => Some(i.ident.to_string()),
+                _ => None,
+            },
+            syn::FnArg::Receiver(_) => None,
+        })
+        .collect();
+    let mut v = Bases {
+        params: &params,
+        ok: false,
+    };
+    v.visit_block(&f.block);
+    v.ok
+}
+
+/// Whether a base reads an appended field as zero: a path ending in `ZERO`, a `default()` call,
+/// or a call to a [`ZERO_HELPERS`] builder.
+fn base_ok(b: &syn::Expr) -> bool {
+    match b {
+        syn::Expr::Path(p) => p.path.segments.last().is_some_and(|s| s.ident == "ZERO"),
+        syn::Expr::Call(c) => match &*c.func {
+            syn::Expr::Path(p) => p.path.segments.last().is_some_and(|s| {
+                s.ident == "default" || ZERO_HELPERS.contains(&s.ident.to_string().as_str())
+            }),
+            _ => false,
+        },
+        syn::Expr::Paren(p) => base_ok(&p.expr),
+        syn::Expr::Group(g) => base_ok(&g.expr),
+        _ => false,
+    }
+}
+
+/// Every name a file's `use` items bring in, mapped to the path it names (`use a::b::{self, C as
+/// D}` maps `b` to `a::b` and `D` to `a::b::C`). Globs bring no name.
+fn use_map(items: &[syn::Item]) -> BTreeMap<String, String> {
+    fn walk(t: &syn::UseTree, prefix: &mut Vec<String>, out: &mut BTreeMap<String, String>) {
+        match t {
+            syn::UseTree::Path(p) => {
+                prefix.push(p.ident.to_string());
+                walk(&p.tree, prefix, out);
+                prefix.pop();
+            }
+            syn::UseTree::Name(n) => {
+                let name = n.ident.to_string();
+                if name == "self" {
+                    if let Some(last) = prefix.last() {
+                        out.insert(last.clone(), prefix.join("::"));
+                    }
+                } else {
+                    out.insert(name.clone(), [prefix.join("::"), name].join("::"));
+                }
+            }
+            syn::UseTree::Rename(r) => {
+                out.insert(
+                    r.rename.to_string(),
+                    [prefix.join("::"), r.ident.to_string()].join("::"),
+                );
+            }
+            syn::UseTree::Glob(_) => {}
+            syn::UseTree::Group(g) => {
+                for t in &g.items {
+                    walk(t, prefix, out);
+                }
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    for item in items {
+        if let syn::Item::Use(u) = item {
+            if !test_only(&u.attrs) {
+                walk(&u.tree, &mut Vec::new(), &mut out);
+            }
+        }
+    }
+    out
+}
+
+/// Every type name a parsed file defines (struct, enum, union, alias), at any inline depth.
+fn local_types(items: &[syn::Item], out: &mut BTreeSet<String>) {
+    for item in items {
+        match item {
+            syn::Item::Struct(s) => {
+                out.insert(s.ident.to_string());
+            }
+            syn::Item::Enum(e) => {
+                out.insert(e.ident.to_string());
+            }
+            syn::Item::Union(u) => {
+                out.insert(u.ident.to_string());
+            }
+            syn::Item::Type(t) => {
+                out.insert(t.ident.to_string());
+            }
+            syn::Item::Mod(m) => {
+                if let Some((_, inner)) = &m.content {
+                    local_types(inner, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Whether a literal's path may name a contract type, as far as the file resolves it.
+fn contract_path(
+    path: &syn::Path,
+    uses: &BTreeMap<String, String>,
+    locals: &BTreeSet<String>,
+) -> bool {
+    let Some(first) = path.segments.first().map(|s| s.ident.to_string()) else {
+        return false;
+    };
+    if first == "busbar_contract" {
+        return true;
+    }
+    if ["crate", "self", "super", "Self"].contains(&first.as_str()) {
+        return false;
+    }
+    if let Some(full) = uses.get(&first) {
+        return full == "busbar_contract" || full.starts_with("busbar_contract::");
+    }
+    path.segments.len() == 1 && !locals.contains(&first)
 }
 
 /// Whether an attribute list compiles its item only under test: `#[test]`, `#[cfg(test)]` or
@@ -193,6 +376,8 @@ fn is_zero(e: &syn::Expr) -> bool {
 struct Finder<'a> {
     idx: &'a ZeroIndex,
     file: String,
+    uses: BTreeMap<String, String>,
+    locals: &'a BTreeSet<String>,
     found: Vec<String>,
 }
 
@@ -218,36 +403,42 @@ impl<'ast> Visit<'ast> for Finder<'_> {
     }
 
     fn visit_expr_struct(&mut self, e: &'ast syn::ExprStruct) {
-        if e.rest.is_none() && e.qself.is_none() {
-            if let Some(seg) = e.path.segments.last() {
-                let name = seg.ident.to_string();
-                let fields: BTreeSet<String> = e
-                    .fields
-                    .iter()
-                    .filter_map(|f| match &f.member {
-                        syn::Member::Named(n) => Some(n.to_string()),
-                        syn::Member::Unnamed(_) => None,
-                    })
-                    .collect();
-                let zeroed: Vec<String> = e
-                    .fields
-                    .iter()
-                    .filter(|f| is_zero(&f.expr))
-                    .filter_map(|f| match &f.member {
-                        syn::Member::Named(n) => Some(n.to_string()),
-                        syn::Member::Unnamed(_) => None,
-                    })
-                    .collect();
-                if !zeroed.is_empty() && self.idx.judged(&name, &fields) {
-                    self.found.push(format!(
-                        "ZERO-SPREAD {}:{}: `{name} {{ … }}` names every field without a base; \
-                         drop the zero field(s) {} and spread `..{name}::ZERO`, so a field the \
-                         contract appends later keeps it compiling",
-                        self.file,
-                        seg.ident.span().start().line,
-                        zeroed.join(", ")
-                    ));
+        let seg = e.path.segments.last();
+        if let (None, Some(seg)) = (&e.qself, seg) {
+            let name = seg.ident.to_string();
+            let named = |f: &syn::FieldValue| match &f.member {
+                syn::Member::Named(n) => Some(n.to_string()),
+                syn::Member::Unnamed(_) => None,
+            };
+            let fields: BTreeSet<String> = e.fields.iter().filter_map(named).collect();
+            let line = seg.ident.span().start().line;
+            let ours =
+                contract_path(&e.path, &self.uses, self.locals) && self.idx.judged(&name, &fields);
+            match &e.rest {
+                Some(b) if ours && !base_ok(b) => self.found.push(format!(
+                    "ZERO-SPREAD {}:{line}: `{name} {{ … }}` spreads a base that is not \
+                     `{name}::ZERO`, a `default()` or a contract builder; an appended field \
+                     would read as whatever that base holds",
+                    self.file
+                )),
+                None if ours => {
+                    let zeroed: Vec<String> = e
+                        .fields
+                        .iter()
+                        .filter(|f| is_zero(&f.expr))
+                        .filter_map(named)
+                        .collect();
+                    if !zeroed.is_empty() {
+                        self.found.push(format!(
+                            "ZERO-SPREAD {}:{line}: `{name} {{ … }}` names every field without a \
+                             base; drop the zero field(s) {} and spread `..{name}::ZERO`, so a \
+                             field the contract appends later keeps it compiling",
+                            self.file,
+                            zeroed.join(", ")
+                        ));
+                    }
                 }
+                _ => {}
             }
         }
         syn::visit::visit_expr_struct(self, e);
@@ -259,13 +450,23 @@ impl<'ast> Visit<'ast> for Finder<'_> {
 /// # Errors
 /// Text that is not parseable Rust.
 pub fn scan_text(idx: &ZeroIndex, file: &str, text: &str) -> Res<Vec<String>> {
-    Ok(scan_parsed(idx, file, &parse(Path::new(file), text)?))
+    let parsed = parse(Path::new(file), text)?;
+    let mut locals = BTreeSet::new();
+    local_types(&parsed.items, &mut locals);
+    Ok(scan_parsed(idx, file, &parsed, &locals))
 }
 
-fn scan_parsed(idx: &ZeroIndex, file: &str, parsed: &syn::File) -> Vec<String> {
+fn scan_parsed(
+    idx: &ZeroIndex,
+    file: &str,
+    parsed: &syn::File,
+    locals: &BTreeSet<String>,
+) -> Vec<String> {
     let mut f = Finder {
         idx,
         file: file.to_string(),
+        uses: use_map(&parsed.items),
+        locals,
         found: Vec::new(),
     };
     f.visit_file(parsed);
@@ -354,14 +555,19 @@ fn modules(entry: &Path) -> Res<Vec<(PathBuf, syn::File)>> {
 /// # Errors
 /// A reachable module file that cannot be read or parsed.
 pub fn scan_tree(idx: &ZeroIndex, entry: &Path, shown_from: &Path) -> Res<Vec<String>> {
+    let mods = modules(entry)?;
+    let mut locals = BTreeSet::new();
+    for (_, parsed) in &mods {
+        local_types(&parsed.items, &mut locals);
+    }
     let mut found = Vec::new();
-    for (f, parsed) in modules(entry)? {
+    for (f, parsed) in mods {
         let shown = f
             .strip_prefix(shown_from)
             .unwrap_or(&f)
             .display()
             .to_string();
-        found.extend(scan_parsed(idx, &shown, &parsed));
+        found.extend(scan_parsed(idx, &shown, &parsed, &locals));
     }
     Ok(found)
 }
