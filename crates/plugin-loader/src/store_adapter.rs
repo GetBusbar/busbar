@@ -106,6 +106,41 @@ pub struct ShimState {
 ///
 /// Cheap to clone — every clone is the same store and the same shim — so the root can hand one
 /// handle to the kernel and one to the verbs unit without threading lifetimes.
+///
+/// It answers NO disaster-recovery verb. `chain_break`, `store_restore` and `reseal_epoch_floor`
+/// are named by neither BUSBAR-1.6.0.md nor 1.5.5, and this adapter answered each `Ok` while doing
+/// nothing, so the admin caller was told "applied" for a restore that never happened (Q128 arch
+/// u71). They are deleted end to end (coordinator ruling: 1.5.5 parity), and none compiles:
+///
+/// ```compile_fail,E0599
+/// use busbar_contract::verb_store::Store as _;
+/// fn f(
+///     a: &busbar_plugin_loader::store_adapter::StoreAdapter,
+///     g: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+/// ) {
+///     let _ = a.chain_break(g);
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use busbar_contract::verb_store::Store as _;
+/// fn f(
+///     a: &busbar_plugin_loader::store_adapter::StoreAdapter,
+///     g: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+/// ) {
+///     let _ = a.store_restore(g, "nightly");
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use busbar_contract::verb_store::Store as _;
+/// fn f(
+///     a: &busbar_plugin_loader::store_adapter::StoreAdapter,
+///     g: &busbar_contract::caps::Grant<busbar_contract::caps::AdminVerb>,
+/// ) {
+///     let _ = a.reseal_epoch_floor(g);
+/// }
+/// ```
 #[derive(Clone)]
 pub struct StoreAdapter {
     inner: Arc<Inner>,

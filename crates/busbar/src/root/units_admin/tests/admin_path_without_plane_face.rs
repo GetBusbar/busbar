@@ -778,8 +778,15 @@ const THE_UNBOUND_VERBS: [(&str, &str); 0] = [];
 /// `(method, path)`. They are no longer in the
 /// table at all; while they were, they were unbound and answered the unmounted `404`. Removing them
 /// must not move that answer by a byte.
+///
+/// And the three disaster-recovery verbs (`chain_break`, `store_restore`, `reseal_epoch_floor`):
+/// named by neither BUSBAR-1.6.0.md nor 1.5.5, so 1.5.5 parity deletes them end to end (Q128 arch
+/// u71, coordinator ruling). RED before the deletion: each was served, answered `204 applied` while
+/// the shipped store adapter did nothing, and sealed an `applied` row. Now each answers exactly the
+/// published 1.5.5 answer for a path it never had — the unmounted `404`, byte for byte — and seals
+/// nothing.
 #[cfg(feature = "root-admin")]
-const THE_REMOVED_VERBS: [(&str, &str); 9] = [
+const THE_REMOVED_VERBS: [(&str, &str); 12] = [
     ("POST", "/api/v1/admin/operator-key"),
     ("POST", "/api/v1/admin/escrow"),
     ("POST", "/api/v1/admin/dual-control"),
@@ -789,6 +796,9 @@ const THE_REMOVED_VERBS: [(&str, &str); 9] = [
     ("POST", "/api/v1/admin/dispute-max-age"),
     ("POST", "/api/v1/admin/disputes/resolve"),
     ("POST", "/api/v1/admin/slices/resolve"),
+    ("POST", "/api/v1/admin/chain-break"),
+    ("POST", "/api/v1/admin/store-restore"),
+    ("POST", "/api/v1/admin/reseal-epoch-floor"),
 ];
 
 /// AN ADMIN VERB WHOSE EFFECT IS NOT BOUND IS NOT SERVED (architect ruling 2026-09-24).
