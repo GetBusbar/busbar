@@ -352,13 +352,13 @@ fn a_pin_that_cannot_be_produced_turns_check_red_naming_it() {
     assert!(err.contains(sha), "names the commit: {err}");
 }
 
-/// RED (d): ONLY A PLUGIN KIND'S LOGIC CRATE IN THE DEFAULT DISTRIBUTION IS MOUNTED. The cdylib twin,
-/// a git dependency of no plugin kind, a plugin only a dev-dependency names and a plugin behind a
+/// RED (d): ONLY A PLUGIN KIND'S CRATES IN THE DEFAULT DISTRIBUTION ARE MOUNTED. A git dependency of
+/// no plugin kind, a plugin only a dev-dependency names, and a plugin and its cdylib twin behind a
 /// feature `default` leaves off are all `git+` packages of the lock, and none of them is mounted —
-/// the three that are not the twin carry commits no repository has, so reading any of them would
-/// be an error here.
+/// they carry commits no repository has, so reading any of them would be an error here. The linked
+/// twin is mounted beside its logic crate (RED (f)).
 #[test]
-fn a_cdylib_twin_and_a_non_plugin_git_dep_are_not_mounted() {
+fn a_non_plugin_git_dep_and_an_off_default_plugin_are_not_mounted() {
     let s = Scratch::new("twin");
     let v1 = s.plugin_commit(LIB_V1);
     s.fill_cargo_db();
@@ -373,13 +373,13 @@ fn a_cdylib_twin_and_a_non_plugin_git_dep_are_not_mounted() {
         .into_iter()
         .map(|p| p.package)
         .collect();
-    assert_eq!(pins, vec![LOGIC.to_string()]);
+    assert_eq!(pins, vec![LOGIC.to_string(), format!("{LOGIC}-plugin")]);
     let all = g.files_at("HEAD").expect("HEAD lists");
     for absent in [
-        "crates/busbar-plane-demo-plugin/",
         "crates/left-pad/",
         "crates/busbar-auth-devonly/",
         "crates/busbar-export-off/",
+        "crates/busbar-export-off-plugin/",
     ] {
         assert!(
             !all.keys().any(|k| k.starts_with(absent)),
@@ -389,12 +389,12 @@ fn a_cdylib_twin_and_a_non_plugin_git_dep_are_not_mounted() {
     assert!(all.contains_key("crates/busbar-plane-demo/src/lib.rs"));
     assert!(
         !all.keys().any(|k| k.contains("README")),
-        "only the logic crate's directory is mounted, not the plugin repo"
+        "only the crates' directories are mounted, not the plugin repo"
     );
 }
 
 /// RED (e): THE TREE WINS. A pinned package whose `crates/<package>` is still on disk is read from
-/// disk, never overlaid by the pin.
+/// disk, never overlaid by the pin; its linked twin, which the tree does not hold, is the one pin.
 #[test]
 fn a_pinned_package_still_in_the_tree_is_not_mounted() {
     let s = Scratch::new("tree-wins");
@@ -405,7 +405,13 @@ fn a_pinned_package_still_in_the_tree_is_not_mounted() {
         Some(LIB_V2),
     );
     let g = s.git();
-    assert!(g.pins_at("HEAD").expect("pins read").is_empty());
+    let pins: Vec<String> = g
+        .pins_at("HEAD")
+        .expect("pins read")
+        .into_iter()
+        .map(|p| p.package)
+        .collect();
+    assert_eq!(pins, vec![format!("{LOGIC}-plugin")]);
     let all = g.files_at("HEAD").expect("HEAD lists");
     let tracked = git(
         &s.busbar(),

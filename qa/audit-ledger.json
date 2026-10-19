@@ -334,6 +334,24 @@
    ]
   },
   {
+   "id": "crates/busbar-auth-admin-tokens-plugin/src",
+   "kind": "production",
+   "paths": [
+    "crates/busbar-auth-admin-tokens-plugin/src"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null,
+   "exclude": [
+    "crates/busbar-auth-admin-tokens-plugin/src/tests"
+   ]
+  },
+  {
    "id": "crates/busbar-auth-header/src",
    "kind": "production",
    "paths": [
@@ -3423,6 +3441,21 @@
    "kind": "test",
    "paths": [
     "crates/busbar-auth-admin-tokens/tests"
+   ],
+   "tree_hash": null,
+   "audited_at": null,
+   "round": null,
+   "result": "unaudited",
+   "counts": {},
+   "report": null,
+   "auditor": null,
+   "fixed_at": null
+  },
+  {
+   "id": "crates/busbar-auth-admin-tokens-plugin/tests",
+   "kind": "test",
+   "paths": [
+    "crates/busbar-auth-admin-tokens-plugin/tests"
    ],
    "tree_hash": null,
    "audited_at": null,

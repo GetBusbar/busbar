@@ -15,9 +15,13 @@
 //! over byte-identical code hashes identically whichever repository holds it.
 //!
 //! WHICH PACKAGES ([`pins_for`]): a `git+` package of `R`'s `Cargo.lock` whose name resolves to one
-//! of the seven plugin kinds (the kind-isolation table, [`crate::gates::kind_isolation::plugin_kind`]),
-//! that is not the `-plugin` cdylib twin, and that the DEFAULT DISTRIBUTION compiles in
-//! ([`default_distribution`]). A plugin only a test links is out of this ledger.
+//! of the seven plugin kinds (the kind-isolation table, [`crate::gates::kind_isolation::plugin_kind`])
+//! and that the DEFAULT DISTRIBUTION compiles in ([`default_distribution`]). A plugin repo's
+//! `-plugin` cdylib twin is such a package when the default build links it: its source ships in the
+//! binary, so it is mounted at `crates/<twin>` and is a production scope of its own, beside its
+//! logic crate's (coordinator ruling: the twins the default build links are production scopes,
+//! audited like any other). A plugin, or a twin, only a test or a non-default feature links is not
+//! in this ledger.
 //!
 //! WHERE THE BYTES COME FROM ([`PinStore`]): cargo's own git database (`$CARGO_HOME/git/db/*`,
 //! bare repositories cargo fills when it resolves the workspace — every `cargo xtask` run has
@@ -28,10 +32,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-
-/// The suffix of a plugin repo's cdylib twin (`busbar-transport-tcp-plugin`). The twin packages the
-/// logic crate; the logic crate is the scope.
-pub const CDYLIB_SUFFIX: &str = "-plugin";
 
 /// The crate whose default features ARE the default distribution.
 pub const ROOT_CRATE_DIR: &str = "crates/busbar";
@@ -187,10 +187,11 @@ fn dep_name(entry: &str) -> String {
     entry.split_whitespace().next().unwrap_or("").to_string()
 }
 
-/// Whether `name` is a pinned-plugin candidate by NAME: one of the seven plugin kinds, and not the
-/// cdylib twin.
+/// Whether `name` is a pinned-plugin candidate by NAME: one of the seven plugin kinds. A `-plugin`
+/// cdylib twin resolves to its logic crate's kind and is a candidate like it; whether either is
+/// mounted is the default distribution's answer ([`pins_for`]), never the name's.
 pub fn is_plugin_package(name: &str) -> bool {
-    !name.ends_with(CDYLIB_SUFFIX) && crate::gates::kind_isolation::plugin_kind(name).is_some()
+    crate::gates::kind_isolation::plugin_kind(name).is_some()
 }
 
 // ---------------------------------------------------------------------------------------------
