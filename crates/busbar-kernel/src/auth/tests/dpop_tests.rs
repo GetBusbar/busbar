@@ -4,7 +4,8 @@
 //! RFC 9449 AT THE DOOR, the half this crate can prove without an authorization server: what a
 //! bearer that was never DPoP-bound gets (exactly what it got before), what a DPoP presentation gets
 //! when no `oauth_as:` plane is configured (exactly what 1.5.5 gave it: the header is not a
-//! credential carrier), and that a DPoP-BOUND token presented as a bearer is refused. The proof
+//! credential carrier), and that a DPoP-BOUND token presented as a bearer is refused where an
+//! authorization server runs and admitted as 1.5.5 admitted it where none does. The proof
 //! verification itself runs through the authorization-server seam, so its tests live with the
 //! plane (`busbar-core-oauth2`'s `fapi2_tests`).
 
@@ -48,8 +49,19 @@ fn only_a_token_carrying_cnf_jkt_is_dpop_bound() {
 /// `(status, body)` of `GET /stats` with `headers`, on a deployment whose chain identifies any
 /// credential and that runs NO authorization server.
 async fn stats(headers: &[(&str, String)]) -> (u16, String) {
+    stats_on(headers, false).await
+}
+
+/// [`stats`], on a deployment that runs an authorization server when `authorization_server` (an
+/// opaque stand-in handle: the door reads only that one is configured before it refuses a bound
+/// bearer).
+async fn stats_on(headers: &[(&str, String)], authorization_server: bool) -> (u16, String) {
     crate::snapshot::init();
-    let app = TestApp::new().idp_chain().build();
+    let mut app = TestApp::new().idp_chain();
+    if authorization_server {
+        app = app.oauth_as_plane(std::sync::Arc::new(()));
+    }
+    let app = app.build();
     let router = crate::build_router(app);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -97,15 +109,29 @@ async fn without_an_authorization_server_a_dpop_presentation_is_no_credential() 
     );
 }
 
-/// RFC 9449 s7.1: a DPoP-bound token is not a bearer token. Presented as one it is refused, with
-/// the refusal an invalid credential gets.
+/// RFC 9449 s7.1: a DPoP-bound token is not a bearer token, where this deployment runs the
+/// authorization server that binds tokens. Presented as one there, it is refused with the refusal
+/// an invalid credential gets.
 #[tokio::test]
-async fn a_dpop_bound_token_presented_as_a_bearer_is_refused() {
+async fn with_an_authorization_server_a_dpop_bound_bearer_is_refused() {
+    let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
+    let (status, _) = stats_on(&[("authorization", format!("Bearer {bound}"))], true).await;
+    assert_eq!(status, 401);
+    let (status, _) = stats_on(&[("x-api-key", bound)], true).await;
+    assert_eq!(status, 401, "whichever carrier presents it as a bearer");
+}
+
+/// WITH NO AUTHORIZATION SERVER a token carrying `cnf.jkt` is a bearer like any other, exactly as
+/// 1.5.5 judged it (THE DESIGN §2 PORT R7/R8: the default is 1.5.5's behaviour). RED: the door
+/// refused every bound bearer whatever the config, so an operator IdP token 1.5.5 admitted was a
+/// 401 here.
+#[tokio::test]
+async fn without_an_authorization_server_a_dpop_bound_bearer_is_admitted_as_1_5_5_did() {
     let bound = jwt(serde_json::json!({ "sub": "a", "cnf": { "jkt": "abc" } }));
     let (status, _) = stats(&[("authorization", format!("Bearer {bound}"))]).await;
-    assert_eq!(status, 401);
+    assert_eq!(status, 200);
     let (status, _) = stats(&[("x-api-key", bound)]).await;
-    assert_eq!(status, 401, "whichever carrier presents it as a bearer");
+    assert_eq!(status, 200, "whichever carrier presents it as a bearer");
 }
 
 /// `(status, body)` of `POST /auth/token` with `headers`, on the deployment [`stats`] reads, with
