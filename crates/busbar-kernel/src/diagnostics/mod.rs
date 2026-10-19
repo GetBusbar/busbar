@@ -710,38 +710,39 @@ pub const SELF_SUBJECT_UNSAFE: Diagnostic = Diagnostic {
     retired: false,
 };
 
-/// A configured egress API key contains bytes invalid for a header value — RETIRED: nothing in the
-/// tree raises it. The number is kept so a log line from a pre-release build still resolves.
+/// A configured egress API key contains bytes invalid for a header value: the auth plugin that
+/// presents a static header omits it and raises this code, at warn, on each request it meets.
 pub const EGRESS_APIKEY_INVALID_BYTES: Diagnostic = Diagnostic {
     code: 4013,
     class: Class::Auth,
     slug: "egress-apikey-invalid-bytes",
-    title: "Egress API key contains invalid header bytes (auth header omitted) — RETIRED",
+    title: "Egress API key contains invalid header bytes (auth header omitted)",
     severity: Severity::Actionable,
-    summary:
-        "RETIRED. A configured static egress credential contained bytes that are invalid in a \
-              header value, so the auth header was omitted and the upstream rejected the request. \
-              Nothing raises this code.",
-    action: "Nothing emits this code.",
+    summary: "A configured static egress credential contains bytes that are invalid in a header \
+              value (an ASCII control character, such as a trailing newline), so the auth plugin \
+              omits the auth header and the upstream rejects the request with 401. It is raised on \
+              each request that would have carried the header.",
+    action: "Fix the credential's configured value: strip the control character (often a trailing \
+             newline in the secret's source). Egress to that upstream 401s until it is fixed.",
     since: "1.6.0",
-    retired: true,
+    retired: false,
 };
 
-/// A minted OAuth token contains bytes invalid for a header value — RETIRED: nothing in the tree
-/// raises it. The number is kept so a log line from a pre-release build still resolves.
+/// A minted token contains bytes invalid for a header value: the auth plugin that mints it omits
+/// the header and raises this code, at warn, when such a token is minted.
 pub const EGRESS_OAUTH_TOKEN_INVALID_BYTES: Diagnostic = Diagnostic {
     code: 4014,
     class: Class::Auth,
     slug: "egress-oauth-token-invalid-bytes",
-    title: "Minted OAuth token contains invalid header bytes (auth header omitted) — RETIRED",
+    title: "Minted OAuth token contains invalid header bytes (auth header omitted)",
     severity: Severity::Actionable,
-    summary:
-        "RETIRED. An OAuth token minted for egress contained bytes invalid in a header value, \
-              so the `Bearer` auth header was omitted and the upstream rejected the request. Nothing \
-              raises this code.",
-    action: "Nothing emits this code.",
+    summary: "A token minted for egress contains bytes invalid in a header value, so the `Bearer` \
+              auth header is omitted and the upstream rejects the request with 401. It is raised \
+              when such a token is minted.",
+    action: "Investigate the token endpoint: a minted token with a control character in it is \
+             malformed. Egress to that upstream 401s until a well-formed token is minted.",
     since: "1.6.0",
-    retired: true,
+    retired: false,
 };
 
 /// The OAuth token endpoint returned a 200 with an empty access_token. Warn-once (latched).
@@ -1942,18 +1943,21 @@ pub const PLANE_AUDIT_ROW_UNREADABLE: Diagnostic = Diagnostic {
     retired: false,
 };
 
+/// An egress bearer credential contains bytes invalid for a header value: the auth plugin that
+/// presents it omits the header and raises this code on each request it meets. An actionable warn
+/// line, as it was before the code existed; the catalogue never demotes it to debug.
 pub const PROTO_AUTH_INVALID_HEADER_BYTES: Diagnostic = Diagnostic {
     code: 7087,
     class: Class::Plane,
     slug: "proto-auth-invalid-header-bytes",
     title: "Egress credential has invalid header bytes (auth header omitted)",
-    severity: Severity::BenignRecurring,
+    severity: Severity::Actionable,
     summary:
-        "An egress authorization credential contained bytes that are not valid in an HTTP header \
-              (e.g. an ASCII control character), so the Authorization header was omitted entirely \
+        "An egress authorization credential contains bytes that are not valid in an HTTP header \
+              (e.g. an ASCII control character), so the Authorization header is omitted entirely \
               rather than sent malformed — the upstream will reject the request with 401. The key \
-              itself is never logged, only the protocol name. This is a bad-credential misconfig \
-              that can recur per request, so it is logged at debug.",
+              itself is never logged, only the protocol name. It is raised on each request that \
+              would have carried the header.",
     action:
         "Fix the misconfigured lane's credential — the configured secret contains invalid header \
              bytes. The protocol name in the log line locates the lane.",
