@@ -859,18 +859,6 @@ pub struct Route {
     pub _reserved: u32,
 }
 
-impl Route {
-    /// THE EMPTY DECLARATION: every field zero (NULL lists, empty strings, no flags). A plugin
-    /// builds its value as `Route { …, ..Route::ZERO }` so a field appended later reads as not
-    /// declared.
-    pub const ZERO: Self = Self {
-        path: AbiStr::ZERO,
-        method: AbiStr::ZERO,
-        auth: 0,
-        _reserved: 0,
-    };
-}
-
 /// [`Tail::kind_class`]: a GATE (fire-and-wait; `decide`/`transform` may block the chain) — OLD
 /// `HookKind::Gate`.
 pub const CLASS_GATE: u32 = 0;
