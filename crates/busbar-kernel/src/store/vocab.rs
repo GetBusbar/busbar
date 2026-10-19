@@ -117,7 +117,6 @@ pub enum BreakerState {
 /// registration keyed this way can never collide with a bare-name key another caller uses directly,
 /// nor with a key built under a different fixed prefix (e.g. [`agent_key`]'s `agent:`). The id is
 /// the caller's own registration id, which is what every refusal names.
-#[cfg_attr(not(feature = "dispatch"), allow(dead_code))]
 pub fn tool_key(server: &str) -> String {
     format!("tool:{server}")
 }
@@ -126,7 +125,6 @@ pub fn tool_key(server: &str) -> String {
 /// registration keyed this way can never collide with a bare-name key another caller uses directly,
 /// nor with a key built under a different fixed prefix (e.g. [`tool_key`]'s `tool:`). The id is
 /// the caller's own registration id, which is what every refusal names.
-#[cfg_attr(not(feature = "relay"), allow(dead_code))]
 pub fn agent_key(agent: &str) -> String {
     format!("agent:{agent}")
 }

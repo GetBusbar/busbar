@@ -17,11 +17,6 @@ item = "a2a (plane-a2a)"
 [[finding]]
 rule = "c1-literals:feature"
 file = "crates/busbar-kernel/Cargo.toml"
-item = "jsonrpc (jsonrpc-ingress)"
-
-[[finding]]
-rule = "c1-literals:feature"
-file = "crates/busbar-kernel/Cargo.toml"
 item = "mcp (plane-mcp)"
 
 [[finding]]
@@ -76,11 +71,6 @@ item = "sigv4"
 
 [[finding]]
 rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/ingress/protocol.rs"
-item = "jsonrpc"
-
-[[finding]]
-rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/plane/registry.rs"
 item = "openapi"
 
@@ -128,21 +118,6 @@ item = "https"
 rule = "c1-literals:literal"
 file = "crates/busbar-kernel/src/diagnostics/mod.rs"
 item = "http"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
-item = "websocket"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
-item = "ws"
-
-[[finding]]
-rule = "c1-literals:literal"
-file = "crates/busbar-kernel/src/egress/duplex_ws.rs"
-item = "wss"
 
 [[finding]]
 rule = "c1-literals:literal"
