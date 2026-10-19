@@ -248,7 +248,7 @@ impl<G: Governance, S: Store + ?Sized> Verbs<G, S> {
         granted: VerbScope,
         now: u64,
     ) -> Result<(), Refusal> {
-        self.admit(verb, actor, granted, now)
+        self.admit(verb, actor, granted, now).map(|_| ())
     }
 
     /// `chain_break` — deliberately break the journal chain. Admitted through
