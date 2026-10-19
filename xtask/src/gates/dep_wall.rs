@@ -545,3 +545,7 @@ impl Gate for DepWallGate {
 #[cfg(test)]
 #[path = "tests/dep_wall_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "tests/dep_wall_pinned_tests.rs"]
+mod pinned_tests;
