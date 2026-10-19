@@ -647,8 +647,7 @@ fn host_scope(state: &HostState, d: &EgressDesc) -> u32 {
 /// The HTTP open: resolve-then-pin (or honor the plane's already-judged pin — Design A), connect over
 /// a pinned per-hop client, observe the peer identity, spawn the streaming task, register the arena
 /// closer, and hand back the [`EgressOpen`]. Takes the dispatch `scope` directly (never the wider
-/// [`HostState`] — the egress family reads no `App`), so the SAME body serves the FFI vtable slot and
-/// the hostless in-core entry the extracted planes drive today (see [`egress_open_scoped`]).
+/// [`HostState`] — the egress family reads no `App`).
 fn open_http(
     scope: &DispatchScope,
     d: &EgressDesc,
@@ -673,8 +672,8 @@ fn open_http(
     let fault_url = busbar_kernel_egress::trust::net::redact_userinfo(&url);
 
     // The privilege scope this hop is JUDGED against is HOST authority (`allow_scope`), NOT the plane's
-    // POD word: the FFI vtable entry passes `0` (a plane may not self-grant private/plaintext — FFI-F2),
-    // while the hostless in-core entry passes the CORE-authored `d.allowlist_scope`. `guard_policy`
+    // POD word: the FFI vtable entry passes `0` (a plane may not self-grant private/plaintext — FFI-F2);
+    // a test drives the host-authored scope directly. `guard_policy`
     // relaxes only the private/plaintext arms; cloud-metadata stays refused whatever the scope.
     let policy = guard_policy(allow_scope);
 
@@ -1255,8 +1254,8 @@ pub(crate) extern "C-unwind" fn egress_fault(
     })
 }
 
-/// The scope-based body of [`egress_fault`], shared by the FFI slot (which recovers the scope off the
-/// `HostCtx`) and the hostless in-core entry (which supplies its own dispatch scope). Reads the last
+/// The scope-based body of [`egress_fault`], run by the FFI slot (which recovers the scope off the
+/// `HostCtx`). Reads the last
 /// stashed fault back into the caller's `(out, cause, url)` buffers, leaving it stashed on truncation.
 ///
 /// # Safety
@@ -1314,7 +1313,7 @@ pub(crate) extern "C-unwind" fn egress_poll(
     })
 }
 
-/// The scope-based body of [`egress_poll`], shared by the FFI slot and the hostless in-core entry.
+/// The scope-based body of [`egress_poll`], run by the FFI slot.
 /// Serves the next body chunk; on a mid-body `Fault` it STASHES the real flattened cause into `scope`
 /// so the plane reads it back through [`egress_fault`] (byte-identical to the plane's own `with_cause`).
 ///
@@ -1385,317 +1384,14 @@ pub(crate) extern "C-unwind" fn egress_close(host: HostCtx, egress: EgressId) ->
     slot(host, |_| close_status(egress))
 }
 
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// SCOPE-BASED (HOSTLESS) ENTRIES — the in-core twins of the FFI slots above, for a within-core seam
-// user that has NO `HostCtx` to open (the extracted a2a/mcp transports today; the same posture
-// `journal_append_scoped_full_hostless` records). Each supplies its OWN dispatch scope and funnels
-// into the EXACT same bodies (`open_http`, `egress_fault_body`, `egress_poll_body`, `close_and_remove`)
-// the FFI slots run — one code path, two entries — so nothing about the governed hop diverges. HTTP
-// only: the hostless egress serves the plane transports, which are HTTP.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
-/// Open a governed HTTP egress over a caller-supplied dispatch `scope` (no `HostCtx`). The in-core twin
-/// of [`egress_open`]'s HTTP arm.
-#[cfg(feature = "egress-seam")]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn egress_open_scoped(
-    scope: &DispatchScope,
-    desc: *const EgressDesc,
-    out: *mut MaybeUninit<EgressOpen>,
-) -> StatusClass {
-    guarded(|| {
-        if desc.is_null() || out.is_null() {
-            return StatusClass::Refused;
-        }
-        // SAFETY: a non-null `desc` is a live, initialized `EgressDesc` for the call (ABI).
-        let d = unsafe { &*desc };
-        let Some(kind) = d.kind.kind() else {
-            return StatusClass::Unsupported;
-        };
-        match kind {
-            // The hostless entry's `EgressDesc` is CORE-AUTHORED (built by `crate::egress::seam` from a
-            // host-side `HopSpec`), so its `allowlist_scope` IS host authority — passed through as the
-            // judged scope. This is the trusted twin of the FFI slot's `0` (see `egress_open`).
-            EgressKind::OneShot => open_http(scope, d, d.allowlist_scope, out),
-            // The hostless in-core egress entry serves HTTP; raw/subprocess remain a HostCtx-slot path.
-            EgressKind::RawConn | EgressKind::Subprocess => StatusClass::Unsupported,
-        }
-    })
-}
-
-/// Read the last stashed fault off `scope` (no `HostCtx`). The in-core twin of [`egress_fault`].
-#[cfg(feature = "egress-seam")]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn egress_fault_scoped(
-    scope: &DispatchScope,
-    out: *mut MaybeUninit<EgressFault>,
-    cause_buf: *mut u8,
-    cause_cap: usize,
-    url_buf: *mut u8,
-    url_cap: usize,
-) -> StatusClass {
-    guarded(|| {
-        // SAFETY: caller's out/buffers are writable ranges for the call (ABI) — forwarded verbatim.
-        unsafe { egress_fault_body(scope, out, cause_buf, cause_cap, url_buf, url_cap) }
-    })
-}
-
-/// Poll the next body chunk over `scope` (no `HostCtx`). The in-core twin of [`egress_poll`].
-#[cfg(feature = "egress-seam")]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn egress_poll_scoped(
-    scope: &DispatchScope,
-    egress: EgressId,
-    buf: *mut u8,
-    buf_cap: usize,
-    out_written: *mut usize,
-) -> StatusClass {
-    guarded(|| {
-        // SAFETY: caller's `buf`/`out_written` describe live ranges for the call (ABI) — forwarded.
-        unsafe { egress_poll_body(scope, egress, buf, buf_cap, out_written) }
-    })
-}
-
-/// Close and reclaim a governed egress (no `HostCtx`). The in-core twin of [`egress_close`]; teardown
-/// needs no scope (the registry is process-wide), so it just closes.
-#[cfg(feature = "egress-seam")]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn egress_close_scoped(egress: EgressId) -> StatusClass {
-    guarded(|| close_status(egress))
-}
-
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-// SAFE DRIVER WRAPPERS for the neutral fetch adapter (`crate::egress::seam`).
-//
-// busbar-core denies `unsafe` everywhere EXCEPT this audited `plane_host` FFI module. The fetch
-// adapter that re-expresses `egress_poll` as the planes' existing buffered/streamed return types
-// lives in `crate::egress` (a `#![deny(unsafe_code)]` module) and drives the egress slots through
-// these wrappers — each does the raw out-param read / borrowed-bytes decode HERE and hands back only
-// OWNED, fully-decoded values, so no raw pointer ever escapes to the seam. This keeps ALL egress-slot
-// `unsafe` in the one sanctioned module while the neutral adapter (and the `Response`/`StreamHead`
-// projection) stays plane-blind in `crate::egress`.
-// ─────────────────────────────────────────────────────────────────────────────────────────────
-
 /// A borrowed byte range as the ABI's `(ptr, len)` pair: an empty range is `(null, 0)`, never a
-/// dangling non-null pointer. Shared with the seam so a desc and a head encode "absent" one way.
+/// dangling non-null pointer, so a desc and a head encode "absent" one way.
 pub(crate) fn borrowed_range(bytes: &[u8]) -> (*const u8, usize) {
     if bytes.is_empty() {
         (std::ptr::null(), 0)
     } else {
         (bytes.as_ptr(), bytes.len())
     }
-}
-
-/// Map two host allowlist-scope bools onto the [`EgressDesc::allowlist_scope`] bit convention this
-/// module reads. Exposed so the seam builds a desc without duplicating the bit values.
-#[cfg(feature = "egress-seam")]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn scope_bits(allow_private: bool, allow_plaintext: bool) -> u32 {
-    let mut scope = 0u32;
-    if allow_private {
-        scope |= SCOPE_ALLOW_PRIVATE;
-    }
-    if allow_plaintext {
-        scope |= SCOPE_ALLOW_PLAINTEXT;
-    }
-    scope
-}
-
-/// The fully-decoded connect head of a governed egress the seam adopts — every field OWNED, no
-/// borrowed host pointer. The `peer_spki` / `location` / `content_type` strings are decoded HERE from
-/// the borrowed head bytes; the plane composes its own return types over them.
-#[cfg(feature = "egress-seam")]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) struct OpenedHead {
-    /// The opaque egress handle the seam polls the body off and closes.
-    pub id: EgressId,
-    /// The observed status/response code.
-    pub status: u16,
-    /// The observed peer SPKI pin (`sha256/…`), or `None` on a plaintext hop / an unwalkable cert.
-    /// Decoded from the SAME bytes `crate::egress::trust::spki::pin` produced, so it is byte-identical to
-    /// the pin a plane's own `peer_spki_of` would compute (they share that one function).
-    pub peer_spki: Option<String>,
-    /// The response `Location`, verbatim, when the head surfaced one (a redirect).
-    pub location: Option<String>,
-    /// The response `content-type`, verbatim, when the head surfaced one.
-    pub content_type: Option<String>,
-    /// Busbar's own end of the handshake: whether a client identity was carried into the TLS
-    /// handshake (offered if the peer asked). See [`EgressHead::client_identity_offered`].
-    pub client_identity_offered: bool,
-}
-
-// The fully-decoded egress fault the seam composes its own operator string over relocated to
-// `busbar_kernel::egress::seam::EgressFaultInfo` (field-neutral: the plugin `EgressFailClass`, a
-// status, and the flattened CAUSE and TARGET-url kept SEPARATE), so a plane crate reads it without
-// naming core. Re-exported here so every in-core construction/return below — `drive_open`,
-// `drive_fault`, `OpenOutcome::Fault` — is unchanged, and so is `busbar_kernel::egress::seam`'s use.
-#[cfg(feature = "egress-seam")]
-pub use busbar_kernel::egress::seam::EgressFaultInfo;
-
-/// The outcome of driving [`egress_open`] over a host: the adopted head, or the neutral fault detail.
-#[cfg(feature = "egress-seam")]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) enum OpenOutcome {
-    Opened(OpenedHead),
-    Fault(EgressFaultInfo),
-}
-
-/// Decode the host's packed response-header records (`u32 name_len | name | u32 val_len | val`, LE)
-/// and pull out `content-type` and `location` (the two the host surfaces). The names are packed
-/// lower-case by the host; matched case-insensitively for robustness.
-#[cfg(feature = "egress-seam")]
-fn decode_head_headers(bytes: &[u8]) -> (Option<String>, Option<String>) {
-    let mut content_type = None;
-    let mut location = None;
-    let mut i = 0usize;
-    while let Some(name) = read_u32(bytes, &mut i)
-        .and_then(|nl| read_str(bytes, &mut i, nl))
-        .and_then(|name| {
-            let vl = read_u32(bytes, &mut i)?;
-            let value = read_str(bytes, &mut i, vl)?;
-            Some((name, value))
-        })
-    {
-        let (n, v) = name;
-        if n.eq_ignore_ascii_case("content-type") {
-            content_type = Some(v);
-        } else if n.eq_ignore_ascii_case("location") {
-            location = Some(v);
-        }
-    }
-    (content_type, location)
-}
-
-/// Drive [`egress_open`] over `host` for `desc`, returning a fully-decoded [`OpenOutcome`]. All raw
-/// out-param reads and borrowed-head-byte decodes happen here; the caller receives only owned values.
-#[cfg(feature = "egress-seam")]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn drive_open(scope: &DispatchScope, desc: &EgressDesc) -> OpenOutcome {
-    let mut out = MaybeUninit::<EgressOpen>::uninit();
-    let status = egress_open_scoped(scope, desc as *const EgressDesc, &mut out);
-    if status != StatusClass::Ok {
-        return OpenOutcome::Fault(drive_fault(scope));
-    }
-    // SAFETY: `egress_open` returned `Ok`, so it initialized the out-param (init-only-on-Ok).
-    let open = unsafe { out.assume_init() };
-    let head = open.head;
-    let peer_spki = if head.observed_spki_ptr.is_null() || head.observed_spki_len == 0 {
-        None
-    } else {
-        // SAFETY: on `Ok`, the head's SPKI pointer borrows host-owned bytes live while the egress is
-        // open. We copy them into an owned String immediately, before any close.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(head.observed_spki_ptr, head.observed_spki_len) };
-        Some(String::from_utf8_lossy(bytes).into_owned())
-    };
-    let (content_type, location) = if head.resp_headers_ptr.is_null() || head.resp_headers_len == 0
-    {
-        (None, None)
-    } else {
-        // SAFETY: as above — the head's response-header pointer borrows host-owned bytes live while
-        // the egress is open; decoded into owned Strings here.
-        let bytes =
-            unsafe { std::slice::from_raw_parts(head.resp_headers_ptr, head.resp_headers_len) };
-        decode_head_headers(bytes)
-    };
-    OpenOutcome::Opened(OpenedHead {
-        id: open.id,
-        status: head.status_code,
-        peer_spki,
-        location,
-        content_type,
-        client_identity_offered: head.client_identity_offered != 0,
-    })
-}
-
-/// Read the neutral fault detail of the last failed [`egress_open`] in this dispatch scope through
-/// [`egress_fault`], with generous buffers. Returns a host-fault fallback when none is pending (which
-/// should not happen after a non-`Ok` open, but keeps the seam total).
-#[cfg(feature = "egress-seam")]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn drive_fault(scope: &DispatchScope) -> EgressFaultInfo {
-    // A first read with fixed buffers; if the header reports a longer cause/url, re-read once with
-    // exact buffers (the read is non-destructive until it fits — see `egress_fault`).
-    fn read_once(
-        scope: &DispatchScope,
-        cause_cap: usize,
-        url_cap: usize,
-    ) -> Option<(EgressFault, String, String)> {
-        let mut out = MaybeUninit::<EgressFault>::uninit();
-        let mut cause = vec![0u8; cause_cap];
-        let mut url = vec![0u8; url_cap];
-        let status = egress_fault_scoped(
-            scope,
-            &mut out,
-            cause.as_mut_ptr(),
-            cause.len(),
-            url.as_mut_ptr(),
-            url.len(),
-        );
-        if status != StatusClass::Ok {
-            return None;
-        }
-        // SAFETY: `Ok` ⇒ the out-param is initialized.
-        let fault = unsafe { out.assume_init() };
-        let c = String::from_utf8_lossy(&cause[..(fault.cause_len as usize).min(cause.len())])
-            .into_owned();
-        let u =
-            String::from_utf8_lossy(&url[..(fault.url_len as usize).min(url.len())]).into_owned();
-        Some((fault, c, u))
-    }
-
-    let first = read_once(scope, 4096, 4096);
-    let Some((fault, cause, url)) = first else {
-        return EgressFaultInfo {
-            class: EgressFailClass::Fault,
-            status: 0,
-            cause: String::new(),
-            url: String::new(),
-        };
-    };
-    // Re-read with exact buffers if the fixed ones truncated (the header carries the FULL lengths).
-    let (fault, cause, url) = if fault.cause_len as usize > cause.len().max(4096)
-        || fault.url_len as usize > url.len().max(4096)
-        || cause.len() < fault.cause_len as usize
-        || url.len() < fault.url_len as usize
-    {
-        read_once(
-            scope,
-            (fault.cause_len as usize).max(1),
-            (fault.url_len as usize).max(1),
-        )
-        .unwrap_or((fault, cause, url))
-    } else {
-        (fault, cause, url)
-    };
-    EgressFaultInfo {
-        class: fault.fail_class,
-        status: fault.status_code,
-        cause,
-        url,
-    }
-}
-
-/// Poll up to `buf.len()` readable bytes off a governed egress into `buf`. Returns the status class
-/// and the count written. A safe wrapper around [`egress_poll`]: the raw buffer pointer read stays
-/// HERE. `Ok`+`0` is EOF; `Fault` is a mid-body transport failure; `Gone` is a reclaimed id.
-#[cfg(feature = "egress-seam")]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn drive_poll(
-    scope: &DispatchScope,
-    id: EgressId,
-    buf: &mut [u8],
-) -> (StatusClass, usize) {
-    let mut written: usize = 0;
-    let class = egress_poll_scoped(scope, id, buf.as_mut_ptr(), buf.len(), &mut written);
-    (class, written)
-}
-
-/// Close and reclaim a governed egress — the seam's teardown once the body is read or the stream ends.
-#[cfg(feature = "egress-seam")]
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) fn drive_close(id: EgressId) -> StatusClass {
-    egress_close_scoped(id)
 }
 
 #[cfg(test)]
