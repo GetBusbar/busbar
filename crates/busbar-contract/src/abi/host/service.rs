@@ -1176,8 +1176,10 @@ pub const FLOW_CONTINUE: u32 = 0;
 /// [`AuthAnswer::flow`]: the transport stops the request and asks [`op::UNIT_REFUSE`] for the answer.
 pub const FLOW_STOP: u32 = 1;
 
-/// What [`op::AUTH_CALL`] and [`op::UNIT_HAND_IN`] answer beyond [`ServiceOut`]. At the peer point
-/// it is the whole answer: continue or stop, with no field, name or byte beside it.
+/// What [`op::AUTH_CALL`] and [`op::UNIT_HAND_IN`] answer beyond [`ServiceOut`].
+///
+/// At the peer point it is the whole answer: continue or stop, with no field, name or byte beside
+/// it.
 ///
 /// Written by the host into the caller's `answer` on READY, and only then; the caller's check
 /// ([`check_auth_call`], [`check_unit_hand_in`]) refuses one of another size. The pattern
